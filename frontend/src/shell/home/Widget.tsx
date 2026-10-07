@@ -31,8 +31,6 @@ function Body({ widget, edit, onRemove }: { widget: WidgetModel; edit: boolean; 
       return <SearchWidget edit={edit} size={widget.size} />;
     case "build":
       return <BuildWidget edit={edit} />;
-    case "spacer":
-      return edit ? <div className="hw-body hw-spacer-ph" aria-hidden="true">Empty</div> : null;
     case "apps":
       return <AppsWidget widget={widget} />;
     case "playground":
@@ -175,8 +173,8 @@ export function WidgetFrame(p: WidgetFrameProps): ReactNode {
             : spec.label
         : spec.label;
   const seeAll = SEE_ALL[widget.source];
-  // The search and build widgets ARE their box, and a spacer is nothing at all: no header in view mode.
-  const bare = (widget.source === "search" || widget.source === "build" || widget.source === "spacer") && !edit;
+  // The search and build widgets ARE their box: no header in view mode.
+  const bare = (widget.source === "search" || widget.source === "build") && !edit;
   return (
     <section
       id={p.anchorId}
@@ -185,14 +183,12 @@ export function WidgetFrame(p: WidgetFrameProps): ReactNode {
         ` hw-size-${widget.size}` +
         (bare && widget.source === "search" ? " is-search" : "") +
         (bare && widget.source === "build" ? " is-build" : "") +
-        (widget.source === "spacer" ? " is-spacer" : "") +
         (edit ? " is-edit" : "") +
         (widget.source === "app" ? " is-app" : "") +
         (p.dragging ? " is-dragging" : "") +
         (p.dropTarget ? " is-drop" : "")
       }
       data-wid={widget.id}
-      aria-hidden={!edit && widget.source === "spacer" ? true : undefined}
       draggable={edit}
       tabIndex={edit ? 0 : undefined}
       aria-label={edit ? `${title} widget. Alt plus arrow keys to move.` : undefined}

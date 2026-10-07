@@ -13,10 +13,9 @@ export type WidgetSource =
   | "bots"
   | "folder"
   | "index"
-  | "app"
-  | "spacer";
+  | "app";
 export type WidgetSize = "1x1" | "2x1" | "1x2" | "2x2" | "4x1"; // cols x rows
-export type WidgetFormat = "cards" | "list" | "icons" | "board" | "count" | "live" | "bar" | "blank";
+export type WidgetFormat = "cards" | "list" | "icons" | "board" | "count" | "live" | "bar";
 
 export interface Widget {
   id: string;
@@ -115,12 +114,6 @@ export const SOURCES: Record<WidgetSource, SourceSpec> = {
     description: "How many files are searchable, and how fresh.",
     sizes: ["1x1", "2x1"],
     formats: ["count"],
-  },
-  spacer: {
-    label: "Blank space",
-    description: "An empty cell: keep room between widgets, or leave a gap where you want one.",
-    sizes: ["1x1", "2x1", "1x2", "2x2", "4x1"],
-    formats: ["blank"],
   },
 };
 
@@ -287,7 +280,6 @@ export const FORMAT_LABELS: Record<WidgetFormat, string> = {
   count: "Count",
   live: "Live",
   bar: "Search bar",
-  blank: "Blank",
 };
 
 /** Menu labels for sizes. */

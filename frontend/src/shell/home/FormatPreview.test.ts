@@ -20,10 +20,6 @@ describe("previewKind", () => {
   test("the search bar draws a search input", () => {
     expect(previewKind("search", "bar")).toBe("search-bar");
   });
-  test("the spacer draws an empty dashed box", () => {
-    expect(previewKind("spacer", "blank")).toBe("spacer-blank");
-  });
-
   test("the build widget draws a prompt composer", () => {
     expect(previewKind("build", "bar")).toBe("build-prompt");
   });

@@ -17,8 +17,7 @@ export type PreviewKind =
   | "count-index"
   | "app-live"
   | "search-bar"
-  | "build-prompt"
-  | "spacer-blank";
+  | "build-prompt";
 
 /** Which illustration a (source, format) pair draws. Pure, so it is testable. */
 export function previewKind(source: WidgetSource, format: WidgetFormat): PreviewKind {
@@ -38,8 +37,6 @@ export function previewKind(source: WidgetSource, format: WidgetFormat): Preview
       return "app-live";
     case "bar":
       return source === "build" ? "build-prompt" : "search-bar";
-    case "blank":
-      return "spacer-blank";
     case "count":
       return source === "bots" ? "count-bots" : source === "index" ? "count-index" : "count-tasks";
   }
@@ -157,8 +154,6 @@ export function FormatPreview({ source, format }: { source: WidgetSource; format
         <span className="fp-prompt-send" aria-hidden="true" />
       </div>
     );
-  } else if (kind === "spacer-blank") {
-    body = <div className="fp-spacer" aria-hidden="true" />;
   } else if (kind === "app-live") {
     body = (
       <div className="fp-win">

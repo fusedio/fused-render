@@ -2159,30 +2159,6 @@ a.hw-more:hover {
 .hw-widget.is-build { text-align: left; padding: 0; }
 .hw-widget.is-build .home-composer-wrap { margin-bottom: 0; }
 
-/* ---- Blank space widget ------------------------------------------------- */
-/* View mode: nothing at all, but it keeps its cells so the gap stays put.
-   Edit mode: a dashed outline the user can drag, resize and remove. */
-.hw-widget.is-spacer:not(.is-edit) {
-  padding: 0;
-  background: none;
-  border-color: transparent;
-  pointer-events: none;
-}
-.hw-widget.is-spacer.is-edit {
-  border-style: dashed;
-  background: color-mix(in srgb, var(--fg) 3%, transparent);
-}
-.hw-spacer-ph {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--fg-muted);
-  font-size: 12px;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-
 .hw-build-ph {
   width: 100%;
   box-sizing: border-box;
@@ -2236,12 +2212,6 @@ a.hw-more:hover {
   height: 18px;
   border-radius: 50%;
   background: var(--accent);
-}
-.fp-spacer {
-  width: 220px;
-  height: 90px;
-  border: 1px dashed var(--border);
-  border-radius: 12px;
 }
 
 .hw-widget.is-app { padding: 0; }

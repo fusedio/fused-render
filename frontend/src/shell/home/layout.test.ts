@@ -43,7 +43,6 @@ test("every source declares sizes and formats; spec defaults hold", () => {
   expect(SOURCES.build.sizes[0]).toBe("4x1");
   expect(SOURCES.search.sizes[0]).toBe("4x1");
   expect(SOURCES.search.sizes).toContain("1x1");
-  expect(SOURCES.spacer.sizes[0]).toBe("1x1");
 });
 
 test("normalizeLayout falls back to default on garbage", () => {
@@ -187,14 +186,6 @@ test("a 1x1 search widget is kept by normalizeLayout", () => {
   expect(normalizeLayout({ version: 2, widgets: [w("s", "search", "1x1", "bar")] }).widgets).toEqual([
     { id: "s", source: "search", size: "1x1", format: "bar" },
   ]);
-});
-
-test("spacer widgets: kept by normalizeLayout and never de-duplicated", () => {
-  expect(normalizeLayout({ version: 2, widgets: [w("g", "spacer", "2x1", "blank")] }).widgets).toEqual([
-    { id: "g", source: "spacer", size: "2x1", format: "blank" },
-  ]);
-  const two = normalizeLayout({ version: 2, widgets: [w("g1", "spacer", "1x1", "blank"), w("g2", "spacer", "1x1", "blank")] });
-  expect(two.widgets).toHaveLength(2);
 });
 
 test("pageTitle is the last path segment", () => {
