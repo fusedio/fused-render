@@ -10,6 +10,7 @@ import {
   hydrateBookmarks,
   loadBookmarks,
   moveItem,
+  movePinned,
   pinBookmark,
   pinnedBookmarks,
   refreshBookmarks,
@@ -122,6 +123,23 @@ describe("mutators", () => {
     await pinBookmark("nested");
     expect(puts).toBe(0);
     expect(pinnedBookmarks(loadBookmarks())).toEqual([]);
+  });
+
+  test("movePinned reorders inside the pinned head, either side of the target", async () => {
+    await seed([bm("p1", true), bm("p2", true), bm("p3", true), bm("a")]);
+    await movePinned("p3", "p1", false);
+    expect(ids(loadBookmarks())).toEqual(["p3", "p1", "p2", "a"]);
+    await movePinned("p3", "p2", true);
+    expect(ids(loadBookmarks())).toEqual(["p1", "p2", "p3", "a"]);
+  });
+
+  test("movePinned refuses an unpinned party on either side — no write", async () => {
+    await seed([bm("p1", true), bm("p2", true), bm("a")]);
+    await movePinned("a", "p1", false);
+    await movePinned("p1", "a", true);
+    await movePinned("p1", "p1", true);
+    expect(puts).toBe(0);
+    expect(ids(loadBookmarks())).toEqual(["p1", "p2", "a"]);
   });
 
   test("moveItem clamps a top-level drop into the pinned head", async () => {

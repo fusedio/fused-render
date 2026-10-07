@@ -77,7 +77,16 @@ export function railRuns(
   return runs;
 }
 
-function renderRailItem(item: SidebarRailItem) {
+/** The rail's own tooltip (`.sidebar-rail-tip`): the label beside the icon,
+    fixed-positioned so the scrolling middle's overflow box cannot clip it, and
+    quick — the native `title` takes a second to appear, and a column of
+    unlabelled icons is exactly where that second is felt. */
+interface RailTip {
+  show: (label: string, el: HTMLElement) => void;
+  hide: () => void;
+}
+
+function renderRailItem(item: SidebarRailItem, tip: RailTip) {
   return (
     <React.Fragment key={item.key}>
       {item.pinBottom && <span className="sidebar-rail-flex" aria-hidden="true" />}
@@ -89,9 +98,13 @@ function renderRailItem(item: SidebarRailItem) {
           ((item.active ?? location.pathname === item.href) ? " active" : "")
         }
         aria-label={item.label}
-        title={item.label}
+        onMouseEnter={(e) => tip.show(item.label, e.currentTarget)}
+        onMouseLeave={tip.hide}
+        onFocus={(e) => tip.show(item.label, e.currentTarget)}
+        onBlur={tip.hide}
         onClick={(e) => {
           e.preventDefault();
+          tip.hide();
           if (item.onClick) item.onClick(e);
           else navigateUrl(item.href);
         }}
@@ -230,6 +243,15 @@ export function SidebarFrame({
   // True only while the handle is captured — used to suppress the collapse
   // transition and text selection mid-drag.
   const [resizing, setResizing] = useState(false);
+  // The collapsed rail's tooltip: which label, at which y (the icon's centre).
+  const [railTip, setRailTip] = useState<{ label: string; y: number } | null>(null);
+  const tip: RailTip = {
+    show: (label, el) => {
+      const r = el.getBoundingClientRect();
+      setRailTip({ label, y: r.top + r.height / 2 });
+    },
+    hide: () => setRailTip(null),
+  };
   // `fromCollapsed` fixes which RULE the whole gesture is read by — the seam of an
   // open panel (`resizeWidth`) or the edge of a shut one (`reopenWidth`) — decided
   // once at pointerdown rather than re-decided from the live collapsed flag on
@@ -394,15 +416,24 @@ export function SidebarFrame({
             {railRuns(rail).map((run) =>
               run.scrolls ? (
                 <div className="sidebar-rail-scroll" key={run.items[0].key}>
-                  {run.items.map(renderRailItem)}
+                  {run.items.map((item) => renderRailItem(item, tip))}
                 </div>
               ) : (
-                run.items.map(renderRailItem)
+                run.items.map((item) => renderRailItem(item, tip))
               )
             )}
           </div>
         )}
       </nav>
+      {railTip && (
+        <div
+          className="sidebar-rail-tip"
+          role="tooltip"
+          style={{ top: railTip.y, left: SIDEBAR_RAIL_WIDTH + 8 }}
+        >
+          {railTip.label}
+        </div>
+      )}
       {handle}
       </>
     );

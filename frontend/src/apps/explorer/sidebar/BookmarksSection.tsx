@@ -16,6 +16,7 @@ import {
   deleteFolder,
   renameBookmark,
   moveItem,
+  movePinned,
   createFolderWith,
   toggleFolder,
   isDescendant,
@@ -219,7 +220,7 @@ interface BookmarkRowProps {
   onMouseLeave: () => void;
   onGlyphClick: (e: React.MouseEvent<HTMLSpanElement>) => void;
   registerRef: (el: HTMLDivElement | null) => void;
-  // Absent on a pinned row: pins neither drag nor take drops.
+  // Absent when the row neither drags nor takes drops.
   dragProps?: DragProps;
   // The folder a FILE dragged out of the listing may land in — null for a
   // bookmark that doesn't point at the filesystem at all.
@@ -242,7 +243,7 @@ function BookmarkRow({ b, child, parentId, active, dirty, missing, isRenaming, o
          destination is not on screen. */
       data-fs-drop-path={fsDropPath ?? undefined}
       data-fs-drop-announce={fsDropPath ? "1" : undefined}
-      draggable={pinned ? "false" : "true"}
+      draggable={dragProps ? "true" : "false"}
       ref={registerRef}
       onMouseEnter={onMouseEnter}
       onMouseLeave={onMouseLeave}
@@ -418,6 +419,9 @@ export default function BookmarksSection() {
   // imperative classList toggling below).
   const draggedIdRef = useRef<string | null>(null);
   const draggedIsFolderRef = useRef(false);
+  // A pinned row's drag reorders the pinned head only (movePinned): the tree
+  // rows refuse it, and pinned rows refuse any other drag.
+  const draggedIsPinnedRef = useRef(false);
 
   // A new bookmark opens the unpinned list (lib/bookmarks `addBookmark`), and
   // the section may be scrolled past it — so scroll it into view once the row
@@ -739,6 +743,7 @@ export default function BookmarksSection() {
     }
     draggedIdRef.current = id;
     draggedIsFolderRef.current = rowIsFolder;
+    draggedIsPinnedRef.current = false;
     row.classList.add("dragging");
     hideTooltip();
     e.dataTransfer.effectAllowed = "move";
@@ -756,6 +761,7 @@ export default function BookmarksSection() {
     rowIsFolder: boolean
   ) => {
     if (draggedIdRef.current === null || draggedIdRef.current === id) return;
+    if (draggedIsPinnedRef.current) return; // pins reorder among pins only
     const row = e.currentTarget;
     if (overOwnSubtree(id)) {
       // No zone classes either — the whole subtree is a dead drop target.
@@ -782,6 +788,7 @@ export default function BookmarksSection() {
     rowIsChild: boolean
   ) => {
     if (draggedIdRef.current === null || draggedIdRef.current === id) return;
+    if (draggedIsPinnedRef.current) return;
     if (overOwnSubtree(id)) return; // moveItem's cycle guard is the backstop
     const draggedId = draggedIdRef.current;
     const row = e.currentTarget;
@@ -834,8 +841,42 @@ export default function BookmarksSection() {
     // Fires even on Escape-cancelled drags — the universal cleanup.
     draggedIdRef.current = null;
     draggedIsFolderRef.current = false;
+    draggedIsPinnedRef.current = false;
     clearDragClasses();
   };
+
+  // --- the pinned head's own drag: pins reorder among pins -------------------
+  // Above/below only (no "into": pins never combine or nest), and only a
+  // pinned drag is accepted — a tree row dragged up here gets no affordance.
+  const pinnedDragProps = (id: string): DragProps => ({
+    onDragStart: (e) => {
+      onRowDragStart(e, id, false);
+      if (draggedIdRef.current === id) draggedIsPinnedRef.current = true;
+    },
+    onDragOver: (e) => {
+      if (!draggedIsPinnedRef.current || draggedIdRef.current === id) return;
+      const row = e.currentTarget;
+      const rect = row.getBoundingClientRect();
+      const below = e.clientY - rect.top > rect.height / 2;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+      row.classList.toggle("drag-above", !below);
+      row.classList.toggle("drag-below", below);
+    },
+    onDragLeave: onRowDragLeave,
+    onDrop: async (e) => {
+      const draggedId = draggedIdRef.current;
+      if (!draggedIsPinnedRef.current || draggedId === null || draggedId === id) return;
+      e.preventDefault();
+      const rect = e.currentTarget.getBoundingClientRect();
+      const below = e.clientY - rect.top > rect.height / 2;
+      draggedIdRef.current = null;
+      draggedIsPinnedRef.current = false;
+      await movePinned(draggedId, id, below);
+      notifyBookmarksChanged();
+    },
+    onDragEnd: onRowDragEnd,
+  });
 
   // Reordering the tree only. Where a FILE drag may land is not a handler at
   // all any more — it is `data-fs-drop-path` on the row (see BookmarkRow).
@@ -934,12 +975,13 @@ export default function BookmarksSection() {
       );
     });
 
-  // A pinned row: the same BookmarkRow, minus drag/drop.
+  // A pinned row: the same BookmarkRow, dragging only among its fellow pins.
   const renderPinned = (b: Bookmark): React.ReactNode => (
     <BookmarkRow
       key={b.id}
       b={b}
       pinned
+      dragProps={pinnedDragProps(b.id)}
       active={rowActive(b)}
       dirty={rowDirty(b)}
       missing={isBookmarkMissing(b.id)}

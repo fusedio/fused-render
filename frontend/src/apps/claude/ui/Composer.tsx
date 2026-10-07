@@ -56,6 +56,14 @@ import { outboxHint } from "./outbox";
 export const CHAT_PLACEHOLDER = "Reply to Claude…";
 export const HOME_PLACEHOLDER = "Ask Claude…";
 
+/** The idle box also teaches its own shortcut: a bare "/" anywhere in the shell
+ *  focuses this composer (platform/lib/chat-focus). Shown only while the box is
+ *  NOT focused — once the caret is here the hint has nothing left to say. */
+export const SLASH_HINT = "press / to focus";
+export function withSlashHint(placeholder: string): string {
+  return placeholder + "   ·   " + SLASH_HINT;
+}
+
 /** The disabled Send's tooltip when the caller hands no reason (P4R1-2). The
  *  real sentence is `schedBlockReason`'s, threaded through `blockedReason`; this
  *  is the floor, so a dead control is never a dead control with nothing to say. */
@@ -1065,6 +1073,8 @@ export function ComposerCard({
   // `push` when the value CHANGES, so a silent push is a composer that writes
   // nothing at all.
   const focusedRef = useRef(false);
+  // The same fact as a render input, for the placeholder's "/" hint alone.
+  const [boxFocused, setBoxFocused] = useState(false);
   /**
    * HAS THE READER TYPED SINCE THE BOX WAS LAST FILLED FROM THE RECORD — the
    * held road's answer to "is somebody mid-sentence here" (live repro,
@@ -1992,12 +2002,14 @@ export function ComposerCard({
           placeholder={
             blocked && blockedPlaceholder
               ? blockedPlaceholder
-              : variant === "home"
-                ? // `homePlaceholderFor` names the KIND once the pane has decided
-                  // it ("Ask Claude about this project…"); the markup's own
-                  // kind-free wording stands until then (T:5392).
-                  placeholder || HOME_PLACEHOLDER
-                : CHAT_PLACEHOLDER
+              : (boxFocused ? (t: string) => t : withSlashHint)(
+                  variant === "home"
+                    ? // `homePlaceholderFor` names the KIND once the pane has decided
+                      // it ("Ask Claude about this project…"); the markup's own
+                      // kind-free wording stands until then (T:5392).
+                      placeholder || HOME_PLACEHOLDER
+                    : CHAT_PLACEHOLDER,
+                )
           }
           spellCheck={false}
           // AND GRAMMARLY OFF, all three spellings, exactly as T:4156-4157 and
@@ -2033,9 +2045,11 @@ export function ComposerCard({
           // typing in, and never over one somebody is.
           onFocus={() => {
             focusedRef.current = true;
+            setBoxFocused(true);
           }}
           onBlur={() => {
             focusedRef.current = false;
+            setBoxFocused(false);
             // A SENTENCE ENDS WHEN THE READER LEAVES THE BOX (Bugbot
             // 4039858841): the held road's "mid-sentence" flag is not a
             // permanent claim, and an idle box takes remote news again.

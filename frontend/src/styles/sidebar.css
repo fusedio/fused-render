@@ -269,6 +269,36 @@ a.sidebar-rail-btn {
   line-height: 1;
 }
 
+/* The rail's tooltip (SidebarFrame `railTip`): the Tasks page's `[data-tip]`
+   look (schedule.css), beside the icon instead of under it, and fixed so the
+   scrolling middle cannot clip it. Quick: 120ms, not the native title's
+   second. */
+.sidebar-rail-tip {
+  position: fixed;
+  transform: translateY(-50%);
+  z-index: 30;
+  padding: 3px 7px;
+  font-size: 11px;
+  line-height: 1.3;
+  font-weight: 500;
+  white-space: nowrap;
+  color: var(--fg);
+  background: var(--bg-popover);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  box-shadow: 0 2px 8px var(--shadow-sm);
+  pointer-events: none;
+  animation: sidebar-rail-tip-in 0.1s ease 0.12s backwards;
+}
+@keyframes sidebar-rail-tip-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
 /* Group boundary inside the rail — stands in for the expanded sidebar's
    uppercase headings. */
 .sidebar-rail-sep {

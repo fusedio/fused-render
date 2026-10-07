@@ -320,6 +320,23 @@ export function unpinBookmark(id: string): Promise<void> {
   return setPinned(id, false);
 }
 
+// Reorder INSIDE the pinned head: `id` lands just above or below `targetId`.
+// Both must be pinned top-level bookmarks; anything else writes nothing (the
+// sidebar only offers this drag between pinned rows, this is the backstop).
+export function movePinned(id: string, targetId: string, below: boolean): Promise<void> {
+  return mutate((items) => {
+    if (id === targetId) return null;
+    const from = items.findIndex((it) => it.id === id);
+    const moved = items[from];
+    const target = items.find((it) => it.id === targetId);
+    if (!moved || !target || !isPinned(moved) || !isPinned(target)) return null;
+    items.splice(from, 1);
+    const to = items.findIndex((it) => it.id === targetId) + (below ? 1 : 0);
+    items.splice(to, 0, moved);
+    return items;
+  });
+}
+
 // Id of the bookmark most recently added in this shell, for the sidebar to
 // scroll the new row into view (a new bookmark lands at the TOP of the
 // unpinned top-level list, which is above the fold once the reader has
