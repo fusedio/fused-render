@@ -145,13 +145,32 @@ class _Spawner:
     docstring) survives a caller that spawns from a short-lived thread and
     then exits it.
 
-    Stdlib-only (queue + concurrent.futures.Future, both always available);
-    harmless to construct on non-Linux since the thread is started lazily on
-    first use and this class does nothing Linux-specific itself."""
+    A daemon thread, not a `concurrent.futures.ThreadPoolExecutor`: pool
+    workers are non-daemon and get joined at interpreter shutdown before
+    atexit handlers run, which would end the PDEATHSIG scope (and kill the
+    children it protects) earlier than the process's real exit. A daemon
+    thread carries no such join and lives until the process does.
+
+    `os.register_at_fork(after_in_child=...)` resets this spawner's state in
+    a child produced by a bare `os.fork()` (no exec): there, `_thread` still
+    references the parent's thread object, which doesn't exist in the
+    child, so without the reset the first `spawn()` call would enqueue to a
+    worker that will never run and hang forever."""
 
     def __init__(self) -> None:
         self._jobs: "queue.Queue[tuple[Future, object]]" = queue.Queue()
         self._thread: threading.Thread | None = None
+        self._start_lock = threading.Lock()
+        if hasattr(os, "register_at_fork"):
+            os.register_at_fork(after_in_child=self._reset_after_fork)
+
+    def _reset_after_fork(self) -> None:
+        """Runs in the child, immediately after `os.fork()`. Drop the
+        inherited thread reference and give the child its own queue and
+        lock, so its first `spawn()` starts a fresh spawner thread instead
+        of enqueuing to the parent's, which doesn't exist here."""
+        self._jobs = queue.Queue()
+        self._thread = None
         self._start_lock = threading.Lock()
 
     def _ensure_started(self) -> None:

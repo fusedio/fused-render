@@ -271,6 +271,40 @@ def test_child_outlives_the_thread_that_called_spawn():
         job.close()
 
 
+def test_spawner_resets_after_fork():
+    """A bare os.fork() (no exec) duplicates the whole process, including the
+    spawner's lazily-started `_thread` object — which doesn't exist as a
+    running thread in the child. Without a reset, the child's first
+    Job.spawn() call would enqueue its fork+exec onto a worker that will
+    never run there and hang forever."""
+    true_bin = shutil.which("true")
+    assert true_bin is not None
+    job = Job()
+    job.spawn(Path(true_bin), [])  # starts the spawner thread in the parent
+
+    pid = os.fork()
+    if pid == 0:
+        # Bound the spawn call so a stale-spawner hang can't wedge the test
+        # run: SIGALRM force-exits the child instead of hanging forever.
+        def _timeout(signum, frame):
+            os._exit(1)
+
+        signal.signal(signal.SIGALRM, _timeout)
+        signal.alarm(5)
+        try:
+            job.spawn(Path(true_bin), [])
+        except BaseException:
+            os._exit(1)
+        else:
+            os._exit(0)
+
+    _, status = os.waitpid(pid, 0)
+    assert os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0, (
+        "child's first spawn() after fork hung or failed against the stale parent spawner"
+    )
+    job.close()
+
+
 @pytest.mark.parametrize("mechanism", _mechanisms())
 def test_close_kills_the_whole_process_group(tmp_path, monkeypatch, mechanism):
     """Deliberate teardown: job.close() reaps the server and its grandchild
