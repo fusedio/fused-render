@@ -649,11 +649,12 @@ export default function App({ config }: { config: Config }) {
   // Render-time write is safe — it changes pathname, so the re-render (via
   // fused:urlchange) derives the real route. (Legacy /view/_home,
   // /view/_account, and the whole /view//embed namespaces are rewritten at
-  // boot by router.ts.) With the flag on, a bare /home goes to Bots too: the
-  // sidebar hides Home, so the only way to land there is the old default URL.
+  // boot by router.ts.) With the flag on, /home still answers by URL: it is
+  // the pinned Home bookmark's door (shell/bookmarks.py seeds that pin), and
+  // a bare /home used to bounce to Bots before that pin existed.
   seedBotsEnabled(config.bots_enabled);
   const frontDoor = botsFrontDoor() ? "/bots" : "/home";
-  if (location.pathname === "/" || (frontDoor === "/bots" && location.pathname === "/home")) {
+  if (location.pathname === "/") {
     history.replaceState(null, "", frontDoor);
   }
   // A fresh install's first load lands on the setup wizard instead (its own

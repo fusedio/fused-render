@@ -21,7 +21,7 @@ from urllib.parse import unquote, urlsplit
 from fastapi import APIRouter, Body, Header
 from fastapi.responses import JSONResponse
 
-from fused_render.shell import storage
+from fused_render.shell import prefs, storage
 
 router = APIRouter()
 
@@ -40,6 +40,42 @@ def _require_fused(x_fused: str | None) -> JSONResponse | None:
 
 def _path() -> str:
     return os.path.join(storage.home_dir(), "bookmarks.json")
+
+
+# ------------------------------------------------------------- the Home pin
+#
+# With `bots_enabled` on, Bots takes Home's row in the sidebar, so Home has no
+# door left but its URL. The first pinned bookmark becomes that door: seeded
+# ONCE per state dir (the marker file below), after which it is the user's —
+# they can rename it, move it among the pins, unpin or delete it, and it
+# never comes back. Not seeded when a bookmark already points at /home.
+
+HOME_PIN_URL = "/home"
+HOME_PIN = {"id": "home-pin", "name": "Home", "url": HOME_PIN_URL,
+            "created_at": 0, "icon": "🏠", "pinned": True}
+
+
+def _home_pin_marker() -> str:
+    return os.path.join(storage.home_dir(), "bookmarks.home-pin")
+
+
+def _seed_home_pin(items: list) -> bool:
+    """Prepend the pinned Home bookmark on the first GET with bots on. Returns
+    True when the tree changed. The marker is written either way, so a tree
+    that already had a /home bookmark is not re-examined every GET."""
+    if not prefs.bots_enabled() or os.path.exists(_home_pin_marker()):
+        return False
+    try:
+        os.makedirs(os.path.dirname(_home_pin_marker()), exist_ok=True)
+        with open(_home_pin_marker(), "w", encoding="utf-8") as fh:
+            fh.write("1")
+    except OSError:
+        return False
+    if any(isinstance(b, dict) and b.get("url") == HOME_PIN_URL
+           for b in _flatten_bookmarks(items)):
+        return False
+    items.insert(0, dict(HOME_PIN))
+    return True
 
 
 # Bookmark name -> uniqueness stem, mirroring sanitizeBookmarkStem in the
@@ -223,12 +259,18 @@ async def _compute_missing(leaves: list) -> list:
 async def get_bookmarks():
     data = storage.read_json(_path())
     # Absent or corrupt (not a list) -> report not-yet-written; a valid file
-    # (even []) reports exists=true.
+    # (even []) reports exists=true. The Home pin seeds into an absent file
+    # too — a fresh bots install should open with the door in place.
     if not isinstance(data, list):
-        return {"exists": False, "bookmarks": [], "missing": []}
+        data = []
+        if not _seed_home_pin(data):
+            return {"exists": False, "bookmarks": [], "missing": []}
+        storage.write_json(_path(), data)
     # Order matters: sanitize before dedupe, so a dropped garbage entry never
     # claims a name that a real bookmark would then get suffixed around.
     changed = _sanitize_tree(data)
+    if _seed_home_pin(data):
+        changed = True
     # Pre-D97 files may hold duplicate names; migrate once (write only when
     # something actually changed — the normal GET stays read-only).
     if _dedupe_names(data):

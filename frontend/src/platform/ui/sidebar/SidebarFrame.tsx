@@ -428,6 +428,10 @@ export function SidebarFrame({
           </div>
         )}
       </nav>
+      {handle}
+      {/* AFTER the handle, never before it: a conditional sibling ahead of it
+          would shift the handle's slot and React would remount the node that
+          holds pointer capture across a collapse (Bugbot, #1479). */}
       {railTip && (
         <div
           className="sidebar-rail-tip"
@@ -437,7 +441,6 @@ export function SidebarFrame({
           {railTip.label}
         </div>
       )}
-      {handle}
       </>
     );
   }

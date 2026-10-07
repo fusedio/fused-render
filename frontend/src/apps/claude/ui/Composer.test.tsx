@@ -21,7 +21,6 @@ import { act, create, type ReactTestRenderer } from "react-test-renderer";
 
 const {
   ComposerCard, BLOCKED_SEND_TITLE, CHAT_PLACEHOLDER, HOME_PLACEHOLDER, freshBox,
-  withSlashHint,
 } = await import("./Composer");
 const { DEFAULT_EFFORT, DEFAULT_MODEL, DEFAULT_PERMISSION } =
   await import("./composer-defaults");
@@ -136,22 +135,13 @@ function mount(over: Partial<Parameters<typeof ComposerCard>[0]> = {}) {
   };
 }
 
-test("the placeholder names who is being replied to, per variant (T:4156/4227), and teaches '/' while idle", () => {
-  expect(mount().box().props.placeholder).toBe(withSlashHint(CHAT_PLACEHOLDER));
+test("the placeholder names who is being replied to, per variant (T:4156/4227)", () => {
+  expect(mount().box().props.placeholder).toBe(CHAT_PLACEHOLDER);
   expect(mount({ variant: "home" }).box().props.placeholder).toBe(
-    withSlashHint(HOME_PLACEHOLDER),
+    HOME_PLACEHOLDER,
   );
   expect(CHAT_PLACEHOLDER).toBe("Reply to Claude…");
   expect(HOME_PLACEHOLDER).toBe("Ask Claude…");
-  expect(withSlashHint("x")).toContain("press / to focus");
-});
-
-test("the '/' hint leaves the placeholder once the box has the caret", () => {
-  const c = mount();
-  act(() => c.box().props.onFocus());
-  expect(c.box().props.placeholder).toBe(CHAT_PLACEHOLDER);
-  act(() => c.box().props.onBlur());
-  expect(c.box().props.placeholder).toBe(withSlashHint(CHAT_PLACEHOLDER));
 });
 
 test("Enter sends and clears; Shift+Enter is a newline (T:17916)", () => {

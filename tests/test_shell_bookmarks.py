@@ -402,3 +402,45 @@ def test_missing_checks_run_concurrently_not_serially(tmp_path, monkeypatch):
     assert elapsed < 2.0, f"GET took {elapsed:.1f}s — checks not concurrent"
 
 
+
+
+# --- the Home pin (bots_enabled) ---------------------------------------------
+
+
+def _bots_on(monkeypatch, on=True):
+    monkeypatch.setattr(bookmarks_mod.prefs, "bots_enabled", lambda: on)
+
+
+def test_home_pin_is_seeded_once_with_bots_on(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    _bots_on(monkeypatch)
+    tree = [{"id": "1", "name": "a", "url": "/view/x", "created_at": 1}]
+    client.put("/api/bookmarks", json=tree, headers=FUSED)
+    got = client.get("/api/bookmarks").json()["bookmarks"]
+    assert got[0]["url"] == "/home" and got[0]["pinned"] is True
+    assert [b["id"] for b in got] == ["home-pin", "1"]
+    assert (home / "bookmarks.home-pin").exists()
+    # The user deletes it: it stays gone.
+    client.put("/api/bookmarks", json=tree, headers=FUSED)
+    assert [b["id"] for b in client.get("/api/bookmarks").json()["bookmarks"]] == ["1"]
+
+
+def test_home_pin_seeds_into_an_absent_file(tmp_path, monkeypatch):
+    client, _ = _client(tmp_path, monkeypatch)
+    _bots_on(monkeypatch)
+    got = client.get("/api/bookmarks").json()
+    assert got["exists"] is True
+    assert [b["url"] for b in got["bookmarks"]] == ["/home"]
+
+
+def test_home_pin_is_not_seeded_with_bots_off_or_when_home_is_bookmarked(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    _bots_on(monkeypatch, on=False)
+    assert client.get("/api/bookmarks").json()["exists"] is False
+    assert not (home / "bookmarks.home-pin").exists()
+    _bots_on(monkeypatch)
+    tree = [{"id": "f", "type": "folder", "name": "F", "collapsed": False,
+             "children": [{"id": "h", "name": "mine", "url": "/home", "created_at": 1}]}]
+    client.put("/api/bookmarks", json=tree, headers=FUSED)
+    assert client.get("/api/bookmarks").json()["bookmarks"] == tree
+    assert (home / "bookmarks.home-pin").exists()
