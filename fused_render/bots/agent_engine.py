@@ -1468,11 +1468,21 @@ def _ask_builtin(bot, sess: Turn, args: dict):
             continue  # unanswered: the CLI reads an omitted key as "not answered", which is true
         by_lower = {l.lower(): l for l in labels}
         if multi:
-            parts = [p.strip() for p in said.split(",") if p.strip()]
-            picked = [by_lower.get(p.lower(), p) for p in parts]
+            # Labels are found in the reply by construction (longest first, as whole comma- or space-bounded runs),
+            # never by splitting the reply on commas: a label may itself contain one, and permission_server matches
+            # the ", "-join in option order. What is left once the labels are lifted out is the user's own words,
+            # kept as ONE typed option so their commas survive too.
+            rest = said
+            hit = set()
+            for label in sorted(labels, key=len, reverse=True):
+                m = re.search(r"(?<![^\s,])" + re.escape(label) + r"(?![^\s,])", rest, re.IGNORECASE)
+                if m:
+                    hit.add(label)
+                    rest = rest[:m.start()] + "," + rest[m.end():]
+            rest = re.sub(r"\s*,\s*", ", ", rest).strip(" ,")
             # Chosen labels in option order, then anything typed (permission_server: typed comes LAST).
-            chosen = [l for l in labels if l in picked]
-            typed = [p for p in picked if p not in labels]
+            chosen = [l for l in labels if l in hit]
+            typed = [rest] if rest else []
             value = ", ".join(chosen + typed)
         else:
             value = by_lower.get(said.lower(), said)

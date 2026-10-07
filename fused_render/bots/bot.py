@@ -55,6 +55,17 @@ BUILD_POLL_S = 15          # how often a build watcher asks the server for the t
 BUILD_MAX_S = 3 * 3600     # stop watching after this long
 # Hand-offs (docs §11): Super Bot gives an ordinary bot a task and gets ONE result back.
 HANDOFF_MAX_S = BUILD_MAX_S  # a target may wait on the user at the Mac (login, approval) for a long time
+
+
+def _clip(text: str, n: int) -> str:
+    """`text` flattened to one line and cut to about `n` chars at a word, with an ellipsis when anything was dropped."""
+    flat = " ".join(re.sub(r"\*\*|`", "", str(text or "")).split())  # bold / code marks read as noise in a plain line
+    if len(flat) <= n:
+        return flat
+    cut = flat[:n]
+    if " " in cut[n // 2:]:
+        cut = cut[:cut.rfind(" ")]
+    return cut.rstrip(" ,;:-") + "…"
 HANDOFF_KEEP = 40          # meta["handoffs"] rows kept on Super Bot
 _LEGACY_HANDOFF_STATES = {"queued": "received", "running": "working", "waiting": "blocked",
                           "error": "failed", "stopped": "cancelled"}  # read once at load, never written
@@ -2293,7 +2304,9 @@ class Bot:
                   handoff=self._handoff_ref(hd, task=hd["task"], task_dir=task_dir or ""), via=hd.get("origin_via"))
         if t is not None and not t.deleted and self._exists(t.id):
             try:
-                t.emit("system", f"Sent to Super Bot: {text[:280]}", source="handoff", via=None)
+                # A short pointer, not the result (the bot's own "done" row above has it in full): cut at a word and
+                # marked as cut, so it never ends mid-word like a clipped message.
+                t.emit("system", f"Sent to Super Bot: {_clip(text, 280)}", source="handoff", via=None)
             except Exception:  # noqa: BLE001
                 logger.debug("hand-off line not written on %s", t.id, exc_info=True)
 

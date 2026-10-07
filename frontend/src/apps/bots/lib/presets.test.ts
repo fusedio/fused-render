@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { Preset } from "./api";
-import { BLANKS, blankQ, filterCards, firstPick, matchQ, newBotInit, pickCards, presetNote, presetQ, queryWords } from "./presets";
+import { BLANKS, blankQ, filterCards, firstPick, highlightRuns, matchQ, matchedSkill, newBotInit, pickCards, presetNote, presetQ, queryWords } from "./presets";
 
 const P = (key: string, name: string, skills: string[]): Preset =>
   ({ key, name, color: "#0a66c2", order: 0, model: "haiku", instructions: `Browse ${name}.`, apps: [], skills });
@@ -115,5 +115,30 @@ describe("Super Bot card", () => {
     expect(v.preset).toBe("");
     expect(v.face).toEqual({ icon: "claude", color: "#262624" });
     expect(v.presetNote).toContain("One per Mac");
+  });
+});
+
+describe("highlightRuns", () => {
+  test("splits into plain and hit runs, case-insensitive, every word", () => {
+    expect(highlightRuns("X timeline digest", queryWords("DIGEST x"))).toEqual([["X", true], [" timeline ", false], ["digest", true]]);
+  });
+  test("no query or empty text: one plain run", () => {
+    expect(highlightRuns("Gmail", [])).toEqual([["Gmail", false]]);
+    expect(highlightRuns("", ["g"])).toEqual([["", false]]);
+  });
+  test("regex characters in the query are literal", () => {
+    expect(highlightRuns("a+b (c)", ["+b", "(c)"])).toEqual([["a", false], ["+b", true], [" ", false], ["(c)", true]]);
+  });
+});
+
+describe("matchedSkill", () => {
+  const p = PRESETS[0];
+  test("names the playbook that matched when the name did not", () => {
+    expect(matchedSkill(p, queryWords("recruiters"))).toBe("Find recruiters");
+    expect(matchedSkill(p, queryWords("feed"))).toBe("Summarize my feed");
+  });
+  test("empty when the query is empty or the name itself matched", () => {
+    expect(matchedSkill(p, [])).toBe("");
+    expect(matchedSkill(p, queryWords("linkedin"))).toBe("");
   });
 });

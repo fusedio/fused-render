@@ -708,8 +708,8 @@ div.bots-page:is(.lcol, .lfit) .bots .botfoot { justify-content: center; padding
 .bots-page #pnone { margin-top: 10px; }
 /* Search hits: the matched run in a card's name, and the playbook title that matched in place of "N playbooks". */
 .bots-page #pmodal .pcard mark { background: none; color: var(--accent); font-weight: 600; }
-.bots-page #pmodal .pcard small.hit { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 4px; }
-.bots-page #pmodal .pcard { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 14px 6px 10px; border-radius: 14px; background: var(--inset); border: 2px solid transparent; color: var(--text); cursor: pointer; transition: .15s; }
+.bots-page #pmodal .pcard small.hit { width: 100%; overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; padding: 0 4px; box-sizing: border-box; line-height: 1.3; }
+.bots-page #pmodal .pcard { display: flex; flex-direction: column; align-items: center; gap: 4px; min-width: 0; padding: 14px 6px 10px; border-radius: 14px; background: var(--inset); border: 2px solid transparent; color: var(--text); cursor: pointer; transition: .15s; }
 .bots-page #pmodal .pcard:hover { border-color: var(--accent); transform: translateY(-2px); }
 .bots-page #pmodal .pcard .av { width: 48px; height: 48px; margin-bottom: 4px; }
 .bots-page #pmodal .pcard b { font-size: 13px; font-weight: 500; }
@@ -759,7 +759,9 @@ div.bots-page:is(.lcol, .lfit) .bots .botfoot { justify-content: center; padding
 .bots-page [data-slot="select-trigger"]:hover { background: var(--inset); }
 .bots-page [data-slot="checkbox"] { accent-color: var(--accent); border-color: var(--muted); }
 .bots-page [data-slot="checkbox"][data-checked] { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
-.bots-page [data-slot="dialog-overlay"] { background: rgba(0,0,0,.55); backdrop-filter: blur(2px); }
+/* The dialog portals to <body>, outside .bots-page: scope by the page being mounted, or this never matches and the
+   create / settings dialogs sit on a bare black/10 scrim while the picker (#pmodal) dims and blurs. */
+:root:has(.bots-page) [data-slot="dialog-overlay"] { background: rgba(0,0,0,.55); backdrop-filter: blur(2px); }
 .bots-page [data-slot="dialog-content"] { background: var(--card); color: var(--text); border-radius: 20px; padding: 22px 24px; box-shadow: var(--shadow); --tw-ring-shadow: 0 0 #0000; font-size: 13px; }
 .bots-page [data-slot="dialog-title"] { margin: 0 0 12px; font-size: 16px; font-weight: 400; line-height: 1.45; }
 .bots-page [data-slot="dialog-description"] { margin: 0 0 14px; color: var(--muted); font-size: 13px; }
