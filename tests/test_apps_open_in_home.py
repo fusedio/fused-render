@@ -14,7 +14,7 @@ FUSED = {"X-Fused": "1"}
 
 def _app(tmp_path):
     d = tmp_path / "myapp"
-    d.mkdir()
+    d.mkdir(exist_ok=True)
     return d
 
 
