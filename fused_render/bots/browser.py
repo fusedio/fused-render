@@ -1006,6 +1006,18 @@ class BrowserProcess:
                 time.sleep(0.1)
             else:
                 raise RuntimeError("Chrome did not come up")
+            # The window Chrome opened on launch: the first view to act adopts it
+            # (_page_target). The page appears a beat after DevTools answers.
+            sess["launch_tab"] = ""
+            for _ in range(20):
+                try:
+                    launch = [t for t in _http(port, "/json/list") if t.get("type") == "page"]
+                except Exception:  # noqa: BLE001
+                    launch = []
+                if launch:
+                    sess["launch_tab"] = launch[0]["id"]
+                    break
+                time.sleep(0.1)
             for v in self.views:
                 v._main_tab = None
                 v._fresh = True  # no window yet in this process: _page_target may open one even when visible
@@ -1376,6 +1388,29 @@ class Browser:
             time.sleep(0.1)
         raise RuntimeError("the new tab did not appear")
 
+    def _adopt_launch_tab(self, port, url):
+        """Chrome opens one window on about:blank at launch. The first view to act
+        on a shared process claims it instead of opening a window beside it:
+        otherwise a popped-out browser showed the bot's page in one window and
+        a blank tab in a second window behind it. Only that launch tab is taken
+        (a blank tab another bot's user opened by hand is theirs)."""
+        with self.proc.lock:  # two views cold-starting together must not both claim it
+            tid = (self.session() or {}).get("launch_tab")
+            if not tid or any(tid in v._own for v in self.proc.views if v is not self):
+                return None
+            t = next((x for x in _http(port, "/json/list") if x.get("id") == tid and x.get("type") == "page"), None)
+            if t is None or (t.get("url") or "about:blank") != "about:blank":
+                return None
+            self._own.append(tid)
+            self._write_own()
+        if url and url != "about:blank":
+            ws = WS(t["webSocketDebuggerUrl"])
+            try:
+                ws.call("Page.navigate", url=url)  # do not wait for the load
+            finally:
+                ws.close()
+        return t
+
     def _minimize(self, port, targets):
         """Minimise the windows holding `targets` (this bot handed back while
         another bot's user still has the shared Chrome on the desktop)."""
@@ -1415,7 +1450,8 @@ class Browser:
                 raise RuntimeError("the desktop window was closed")
             if self.shared():
                 last = self.last_url()
-                tabs = [self._new_window(port, _with_scheme(last) if last and last != "about:blank" else "about:blank")]
+                url = _with_scheme(last) if last and last != "about:blank" else "about:blank"
+                tabs = [self._adopt_launch_tab(port, url) or self._new_window(port, url)]
             else:
                 tabs = [_http(port, "/json/new?about:blank", method="PUT")]
         self._fresh = False
