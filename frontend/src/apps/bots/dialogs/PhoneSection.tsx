@@ -6,7 +6,7 @@
 // the dialog's Save — except the switch and the number, which write at once: the bridge reads both from disk, and
 // step 2 (this Mac's own handles) only happens after the switch is on there, so a Save-then-reopen would be the
 // only way through the checklist. "Send a test text" also saves first, for the same reason.
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { openFdaSettings } from "@platform/lib/api";
 import { fdaCopy, pokeFda, relaunchHref, useFda } from "@platform/lib/fda";
 import { api, type ImessageState } from "../lib/api";
@@ -64,10 +64,22 @@ export function PhoneSection({ botId, handle, setHandle, enabled, setEnabled, co
 
   const openSettings = () => { setOpened(true); openFdaSettings().catch(() => {}).finally(pokeFda); };
   // Writes the switch and the number now (see the header), then re-reads the bridge so the next step unlocks.
-  const persist = async (on: boolean, h: string) => {
-    await act(() => api.settings(botId, { imessage_handle: normHandle(h), imessage_enabled: on }));
-    const r = await act(() => api.imessage(), true);
-    if (r) setSt(r);
+  // One write at a time, and every write sends what the user wants NOW (`want`), not what the click that queued it
+  // saw: two quick toggles collapse into the last state instead of racing, so the switch can never stay on after the
+  // user turned it off. An empty or half-typed number is left out of the body: the stored one stays (off is meant
+  // to remember it), and the blur path only writes a number that normalises to something.
+  const want = useRef({ on: enabled, h: handle });
+  const chain = useRef<Promise<void>>(Promise.resolve());
+  const persist = (on: boolean, h: string): Promise<void> => {
+    want.current = { on, h };
+    const run = async () => {
+      const { on: o, h: hh } = want.current, nh = normHandle(hh);
+      await act(() => api.settings(botId, { imessage_enabled: o, ...(nh ? { imessage_handle: nh } : {}) }));
+      const r = await act(() => api.imessage(), true);
+      if (r) setSt(r);
+    };
+    chain.current = chain.current.then(run, run);
+    return chain.current;
   };
   const flip = (on: boolean) => { setEnabled(on); void persist(on, handle); };
   const choose = (h: string) => { setHandle(h); setOther(false); void persist(enabled, h); };
