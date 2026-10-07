@@ -1378,9 +1378,11 @@ def _permission(bot, sess: Turn, args: dict):
 
 def _ask(bot, sess: Turn, args: dict):
     q = (args.get("message") or "").strip() or "I need your input to continue."
-    opts = [str(o).strip()[:80] for o in (args.get("options") or []) if str(o).strip()][:5]
+    opts = [str(o).strip()[:80] for o in (args.get("options") or []) if str(o).strip()][:7]
     q, q_sum = channels.base.split_summary(q, str(args.get("summary") or ""))
-    ev = bot.emit("question", q, **({"options": opts} if len(opts) >= 2 else {}), **({"summary": q_sum} if q_sum else {}))
+    multi = bool(args.get("multi")) and len(opts) >= 2
+    ev = bot.emit("question", q, **({"options": opts} if len(opts) >= 2 else {}), **({"multi": True} if multi else {}),
+                  **({"summary": q_sum} if q_sum else {}))
     bot.set_status("waiting", waiting_on=_seq(ev))
     bot.asking = True
     drove = False

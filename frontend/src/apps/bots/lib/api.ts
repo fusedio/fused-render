@@ -43,6 +43,8 @@ export interface BotEvent {
   /** action: the full raw tool result (<= 1500 chars), shown when the chip is opened. Notes may carry one too (unused). */
   detail?: unknown;
   options?: string[];
+  /** Several options may be ticked; the answer is a comma-separated list (or "None"). */
+  multi?: boolean;
   offer?: Offer;
   app?: AppRef;
   reply?: ReplyRef;

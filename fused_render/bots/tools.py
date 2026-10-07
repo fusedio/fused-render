@@ -182,8 +182,11 @@ TOOL_SPECS: dict[str, dict] = {
                              "before finishing when a task took real exploration; not when a matching PLAYBOOK already worked.",
               "inputSchema": _s(title=REQ, trigger=REQ, steps=REQ)},
     "ask": {"description": "Ask the user something and wait for the answer (a decision, a choice). Never for passwords, codes or "
-                           "sign-ins (use login). With 2-5 short `options` the user can pick one with a click; they may still type.",
-            "inputSchema": _s(message=REQ, options={"type": "array", "items": {"type": "string"}, "maxItems": 5},
+                           "sign-ins (use login). With 2-7 short `options` the user can pick one with a click; they may still type. "
+                           "`multi: true` lets them tick several and press Done: the answer is then a comma-separated list "
+                           "(or \"None\").",
+            "inputSchema": _s(message=REQ, options={"type": "array", "items": {"type": "string"}, "maxItems": 7},
+                              multi={"type": "boolean", "description": "Several options may be picked at once."},
                               summary={"type": "string", "description": "When CHANNEL is present: the question in one short plain sentence, for the text message."})},
     "login": {"description": "The page needs a sign-in, 2FA or captcha: opens a real Chrome window on the user's desktop where "
                              "they sign in with their own keyboard (password manager and passkeys work), waits until they reply "

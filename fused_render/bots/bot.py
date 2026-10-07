@@ -111,7 +111,7 @@ SUPER_GREETING = ("Hi, I'm Super Bot. I use Claude Code's tools on this Mac (fil
 SOCIAL_PRESETS = ("linkedin", "youtube", "x", "reddit", "instagram", "facebook", "tiktok")
 SUPER_SETUP = ("Open https://accounts.google.com/. If it asks you to sign in, use login so I can sign in to Google in your "
                "browser; wait until I'm signed in (the account page loads). If I'm already signed in, say so. "
-               "Then offer me the social bots: ask (one `ask`, with these as `options`) which ones I want to start with: "
+               "Then offer me the social bots: ask (one `ask` with `multi: true` and these as `options`) which ones I want to start with: "
                "@SOCIAL@. I may name several, or none. For each one I pick, call `bot_create` once with `preset` set to its "
                "key, `name` set to its site name, and `logins_from` set to \"Super Bot\" so it shares your browser and my "
                "Google sign-in; your browser is already signed in to Google, so bots on it are too. "
