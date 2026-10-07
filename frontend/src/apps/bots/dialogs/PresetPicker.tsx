@@ -41,10 +41,11 @@ export function PresetPicker({ onDone }: { onDone: (pick: NewBotPick | null) => 
         </button>
         <h3>New bot</h3>
         <p className="muted lead">
-          Create your own bot from scratch, or pick a pre-built bot that comes with playbooks
+          {hasSuper ? "Start from scratch, or pick a pre-built bot with playbooks" : "Start from scratch, a pre-built bot with playbooks"}
+          {/* The tip is CSS (::after on hover / focus), not `title`: a native tooltip takes a second to appear. */}
           <span className="info" tabIndex={0} role="img" aria-label="What a playbook is"
-            title={"A playbook is a ready-made task the bot already knows how to run, like “X timeline digest” or “Gmail unread inbox digest”. Ask for it by name; edit or add your own under Skills once the bot exists."}>i</span>
-          {hasSuper ? "" : " — or make Super Bot for this Mac"}.
+            data-note={"A playbook is a ready-made task the bot already knows, like “X timeline digest”. Ask for it by name; edit or add your own under Skills once the bot exists."}>i</span>
+          {hasSuper ? "" : ", or Super Bot"}
         </p>
         <label className="search psearch">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg>
