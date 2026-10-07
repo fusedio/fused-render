@@ -340,10 +340,16 @@ def _app_at(url_or_path):
     if s.endswith("/index.html"):
         s = s[: -len("/index.html")]
     builds_root = _builds_root()
-    root = builds_root.rstrip("/") + "/"
-    if not s.startswith(root):
+    # `s` is either a /render?path= URL (always forward slashes) or a plain
+    # filesystem path (native separators — a backslash on Windows, from a
+    # caller like _resolve_app that hands this a folder it found under
+    # builds_root). Comparing against builds_root with forward slashes either
+    # way so a native Windows path still matches its own root.
+    s_slash = s.replace(os.sep, "/") if os.sep != "/" else s
+    root = builds_root.replace(os.sep, "/").rstrip("/") + "/"
+    if not s_slash.startswith(root):
         return None
-    d = os.path.join(builds_root, s[len(root):].split("/")[0])
+    d = os.path.join(builds_root, *s_slash[len(root):].split("/"))
     return {"name": _app_title(d), "dir": d, "params": params} if os.path.isfile(os.path.join(d, "index.html")) else None
 
 
