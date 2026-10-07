@@ -160,6 +160,12 @@ TOOL_SPECS: dict[str, dict] = {
                             "Use it when the task asks to save/export or the result is longer than a chat message. "
                             "ARTIFACTS lists what this task saved already: never save the same thing twice.",
              "inputSchema": _s(name=REQ, text=REQ)},
+    "recall": {"description": "Fetch your own earlier conversation verbatim: `seq` (the number after # in a summary or index "
+                              "line) returns that message in full; `query` (keywords) lists the earlier messages and FILES that "
+                              "match. Use it when a follow-up refers to something you said, found or were asked before this "
+                              "session's context, instead of redoing the work.",
+               "inputSchema": _s(seq={"type": "integer", "description": "a message number, e.g. 42 for [#42]"},
+                                 query={"type": "string", "description": "keywords; all must appear"})},
     "remember": {"description": "Save one short durable note to your MEMORY (site quirks, user preferences, where things live). "
                                 "Never secrets. One note per fact; do not repeat what MEMORY already says.",
                  "inputSchema": _s(text=REQ)},
@@ -910,6 +916,8 @@ def execute(bot, act: str, d: dict, obs: dict) -> tuple[str, str]:
         if act == "remember":
             note = d.get("text") or d.get("message") or ""
             return f"remember \"{note[:120]}\"", bot.remember(note)
+        if act == "recall":
+            return bot.recall(d.get("seq"), d.get("query") or d.get("text") or "")
         if act == "learn":
             try:
                 nm = bot.skill_save(d.get("title") or d.get("name"), d.get("trigger") or d.get("value"),

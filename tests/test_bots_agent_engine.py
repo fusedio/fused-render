@@ -375,9 +375,13 @@ def test_text_then_done(server, fake_cli, monkeypatch):
 
     # The spawn: docs §6 argv, mcp.json, the first message, low effort's budget clamp.
     argv = fake_cli("argv")[0]["argv"]
-    for flag in ("-p", "--verbose", "--replay-user-messages", "--strict-mcp-config", "--no-session-persistence",
+    for flag in ("-p", "--verbose", "--replay-user-messages", "--strict-mcp-config", "--autocompact",
                  "--disable-slash-commands", "--tools=", "--setting-sources="):
         assert flag in argv
+    # Bot threads (docs §6): sessions persist so the next turn can --resume them; a fake Bot without a
+    # conversation record runs every turn fresh, so nothing is resumed here.
+    assert "--no-session-persistence" not in argv and "--resume" not in argv
+    assert argv[argv.index("--autocompact") + 1] == str(agent_engine.WINDOW_DEFAULT)
     assert "--include-partial-messages" not in argv
     assert argv[argv.index("--model") + 1] == "haiku"
     assert argv[argv.index("--effort") + 1] == "low"
@@ -1300,3 +1304,78 @@ def test_builtin_label():
     assert L("WebFetch", {"url": "https://x.test/a"}) == "fetch https://x.test/a"
     assert L("Frobnicate", {"thing": "it"}) == "Frobnicate it"
     assert len(L("Bash", {"command": "x" * 500})) < 140
+
+
+# ---- Bot threads: one conversation, resumed per turn, rolled over on budget (docs §6) ------------
+class ConvBot(FakeBot):
+    """FakeBot plus the conversation record `run()` resumes (bot.py's surface, in memory)."""
+
+    def __init__(self, bid="c1"):
+        super().__init__(bid)
+        self.seq = 0
+        self.conv = {"session_id": None, "tokens": 0, "since_seq": 0, "summary": "", "sent": {}, "prompt_hash": "",
+                     "turns": 0, "rollovers": 0}
+        self.summaries = []
+
+    def conversation(self):
+        return self.conv
+
+    def conversation_update(self, **kw):
+        self.conv.update(kw)
+
+    def conversation_rollover(self, summary, prompt_hash=""):
+        self.conv.update(session_id=None, tokens=0, since_seq=len(self.events), summary=summary, sent={},
+                         prompt_hash=prompt_hash, web_touched=False, rollovers=self.conv["rollovers"] + 1)
+
+    def transcript_lines(self, since_seq=0, limit=None):
+        if len(self.events) < 3:
+            return []  # turn 1: a thin transcript (the digest, no model call)
+        return [f"[#{i}] USER: earlier ask {i}" for i in range(1, 7)]  # enough lines for a summary call
+
+    def summarize_conversation(self, since_seq=0):
+        self.summaries.append(since_seq)
+        return "SUMMARY NOTE: the user asked for three posts; #2 was Beta."
+
+
+def test_conversation_resumes_and_rolls_over(server, fake_cli, monkeypatch):
+    bot = ConvBot()
+    # Turn 1: no session yet -> a fresh one, seeded from the (thin) digest, no --resume.
+    run_task(bot, [{"text": "Hello."}, {"result": "Hi."}], monkeypatch)  # the text step carries `usage`
+    argv1 = fake_cli("argv")[0]["argv"]
+    assert "--resume" not in argv1 and "--no-session-persistence" not in argv1
+    first = fake_cli("user")[0]["user"]
+    # A thin transcript seeds the session with the digest (no model call), under the summary heading.
+    assert first.startswith("YOU: 'Tester'") and "CONVERSATION SUMMARY" in first and "bot: hi there" in first
+    assert first.rstrip().endswith("TASK: say hi")
+    sid = bot.conv["session_id"]
+    assert sid and sid.startswith("fake-session-") and bot.conv["tokens"] > 0 and bot.conv["turns"] == 1
+    assert bot.conv["prompt_hash"] and "MEMORY" in bot.conv["sent"]
+    assert bot.summaries == []  # a thin transcript takes the digest: no model call
+
+    # Turn 2: the same conversation is resumed; the preamble carries only what changed.
+    run_task(bot, [{"result": "Again."}], monkeypatch, task="and the second one?")
+    argv2 = fake_cli("argv")[1]["argv"]
+    assert argv2[argv2.index("--resume") + 1] == sid
+    second = fake_cli("user")[1]["user"]
+    assert second.startswith("TURN 2 ·") and "YOU: 'Tester'" not in second and "CONVERSATION SUMMARY" not in second
+    assert "Unchanged since earlier in this conversation (still apply): MEMORY" in second
+    assert second.rstrip().endswith("TASK: and the second one?")
+    assert bot.conv["session_id"] == sid and bot.conv["turns"] == 2
+
+    # Turn 3: over budget -> rollover: a summary seeds a fresh session, no --resume, and the user hears once.
+    bot.conv["tokens"] = agent_engine.rollover_at("haiku")
+    run_task(bot, [{"result": "Fresh."}], monkeypatch, task="third")
+    argv3 = fake_cli("argv")[2]["argv"]
+    assert "--resume" not in argv3
+    third = fake_cli("user")[2]["user"]
+    assert "CONVERSATION SUMMARY" in third and "SUMMARY NOTE: the user asked for three posts" in third
+    assert len(bot.summaries) == 1 and bot.conv["rollovers"] == 2  # turn 1 was a (silent) rollover from nothing
+    assert bot.conv["session_id"] and bot.conv["session_id"] != sid  # the new process minted a new session
+    assert any(e["role"] == "note" and e["text"].startswith("Conversation compacted at") for e in bot.events)
+
+
+def test_context_window_rule():
+    assert agent_engine.context_window("haiku") == agent_engine.WINDOW_DEFAULT
+    assert agent_engine.context_window("claude-sonnet-5") == agent_engine.WINDOW_1M
+    assert agent_engine.context_window("sonnet[1m]") == agent_engine.WINDOW_1M
+    assert agent_engine.rollover_at("haiku") == agent_engine.WINDOW_DEFAULT // 2

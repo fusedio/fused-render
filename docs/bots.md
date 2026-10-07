@@ -495,9 +495,11 @@ Verified on claude 2.1.287 (scratch spike, 2026-10-02):
 - `claude -p --input-format stream-json --output-format stream-json --verbose
   --replay-user-messages --include-partial-messages --model <m> --effort <e>
   --system-prompt-file <f> --tools= --setting-sources= --mcp-config <mcp.json>
-  --strict-mcp-config --allowedTools "mcp__bot__*" --no-session-persistence
-  --disable-slash-commands` connects our stdio server, lists its tools, calls
-  them with ZERO permission prompts under the subscription login.
+  --strict-mcp-config --allowedTools "mcp__bot__*" --autocompact <window>
+  [--resume <session_id>] --disable-slash-commands` connects our stdio server,
+  lists its tools, calls them with ZERO permission prompts under the
+  subscription login. (`--no-session-persistence` was dropped on 2026-10-07:
+  the session IS the bot's conversation now, see "Bot threads" below.)
 - A tool result `[{"type":"image","data":<b64>,"mimeType":"image/png"}, {"type":"text",…}]`
   reaches the model (it named the colour of a 64×64 test frame).
 - A user message written to stdin MID-TURN is absorbed into the running turn
@@ -548,20 +550,78 @@ one `action` row, `builtin_label` text such as "run `make test`" / "write
 as `detail`, like every other chip).
 The fake CLI plays a built-in with `{"builtin": "Read", "args", "output"}`.
 
-Process model: ONE `claude` process per bot per TASK, spawned by
-`start_task`, killed when the task ends (`done`, Stop, error, step cap);
-`--max-turns` does not exist on this CLI, so the engine counts `tool_use`
-blocks itself (MAX_STEPS = 60, same as OpenBot) and interrupts past the cap.
-The first user message carries what OpenBot's `_prompt` carried once per task:
-YOU (config), STANDING INSTRUCTIONS, MEMORY, PLAYBOOKS, CONVERSATION SO FAR,
-APPS / APP TOOLS / APP SKILLS / CONTACTS / FILES, OFFER hints, the APP GUIDE
-when triggered, `CURRENT PAGE (where your browser is right now; these refs
-are valid)` when the browser already sits on a real page (`status_cached()`
-running and not about:/chrome://; observed through the session so its refs
-and `prev_url`/visited are the live ones), then `TASK: …`. The system prompt file holds the role, the
-rules and the tool semantics (the OpenBot SYSTEM_PROMPT rewritten for native
-tools: no JSON envelope, no "you have no tools" paragraph, no
-`_TOOL_CONFUSION`).
+Process model: ONE `claude` process per bot per TURN (one incoming message,
+answered), spawned by `start_task`, killed when the turn ends (`done`, Stop,
+error, step cap); `--max-turns` does not exist on this CLI, so the engine
+counts `tool_use` blocks itself (MAX_STEPS = 60, same as OpenBot) and
+interrupts past the cap. The per-turn bookkeeping is `agent_engine.Turn`
+(token, process, one-run ledger, repeat/stuck state, last observation).
+
+**Bot threads** (2026-10-07, design <https://claude.ai/artifact/6ZFS5kHjxiL7efGPxVxuph>).
+A bot has ONE conversation with the user, ever growing; the turn's process
+RESUMES it: `bot.meta["conversation"]` = `{session_id, tokens, window,
+since_seq, born_at, summary, sent, prompt_hash, web_touched, last_turn_ts,
+turns, rollovers}`, and `run()` passes `--resume <session_id>` when the
+record has one under budget. fused owns the budget, not the CLI: `_drive`
+reads the context size off every `assistant` event (`usage.input_tokens +
+cache_creation + cache_read`, the newest wins: the conversation's size now,
+`_ctx_reading`) and persists it as `tokens`; `_conversation_plan` rolls the
+conversation over when `tokens >= rollover_at(model)` = `ROLLOVER_FRACTION`
+(0.5, owner) × `context_window(model)` (1M for `[1m]` / Fable / Opus 5 /
+Sonnet 5, the frontend's rule; else 200k), when the system prompt's hash
+changed (spiked 2026-10-07 on claude 2.1.292: a new `--system-prompt-file`
+is IGNORED on a resumed session, so the prompt is fixed for a session's
+life), or when there is no session yet (the first turn under this design,
+and the turn after a `ResumeLost`: a resumed process that dies before
+`system/init`, or whose first answer is an error naming the session, is
+rolled over and the turn re-run once). A rollover writes a handover note
+with ONE model call (`bot.summarize_conversation(since_seq)`: `SUMMARY_PROMPT`
+over `bot.transcript_lines`, the last 300 user / done / question / approval
+/ action-chip lines, `bot._ai_call` so the ledger sees it; a slice under
+four lines takes the digest with no call), stores it as `summary`, resets
+`session_id`, `tokens`, `sent`, `web_touched` and sets `since_seq = bot.seq`;
+an over-budget rollover also writes a `note` "Conversation compacted at Nk
+tokens…". `--autocompact <window>` is passed so the CLI's own compaction
+(floor 100k) never fires first. Sessions live where the CLI keeps them,
+`~/.claude/projects/<encoded cwd>/<session_id>.jsonl` (cwd = the bot's cache
+dir, or Super Bot's Inbox).
+
+The turn's message (`first_message(bot, task, past, page, conv)` → `(text,
+sent)`): a FRESH session gets YOU (config), the changeable sections
+(`_sections`: INSTRUCTIONS, MEMORY, FILES, CONTACTS, APPS, BOTS, OFFERS
+DECLINED, APP TOOLS), `CONVERSATION SUMMARY` (the rollover's note; with none,
+`CONVERSATION SO FAR` = `bot.past_conversation`, now budget-based: the newest
+lines whole up to 6000 chars, older ones cut to 160 with their `[#seq]`, so a
+recent answer is never lost to the old 400-char cut), then the per-turn parts
+and `TASK: …`. A RESUMED session already holds all that in its history and
+gets a one-line `TURN n · message from <origin> · approvals …` header (with
+"refs from earlier turns are dead"), the CHANNEL / HAND-OFF paragraph, only
+the sections whose sha1 differs from `conversation["sent"]` (marked
+"(updated since earlier in this conversation)"; a section that emptied says
+so), one line naming the unchanged ones, then the per-turn parts and `TASK`.
+Per-turn parts, never hashed: PLAYBOOKS for this message, ARTIFACTS, Super
+Bot's HAND-OFFS board (`handoffs.handoffs_section`, docs §11), the APP
+SKILLS this message needs, OFFER hints, the APP GUIDE when triggered, and
+`CURRENT PAGE (where your browser is right now; these refs are valid)` when
+the browser already sits on a real page (`status_cached()` running and not
+about:/chrome://; observed through the turn so its refs and
+`prev_url`/visited are the live ones). `sent` is persisted right after the
+message is written (the sections are in the session's history whatever
+happens to the turn). Three more consequences of the conversation: Super
+Bot's `web_touched` starts true when `conversation["web_touched"]` is set
+(a hand-off result landed in this session; handoffs.py sets it, a rollover
+clears it) instead of the old string match on CONVERSATION SO FAR; a NOT RUN
+AGAIN result no longer re-sends the cached value (it is above in context);
+and at `NUDGE_FRACTION` (0.8) of the rollover mark the next tool result
+carries one `CONTEXT:` line asking the model to `remember` durable facts
+(OpenClaw's memory flush, through a tool result because mid-turn stdin is
+ignored), once per turn. `recall {seq | query}` (every bot, both engines;
+`bot.recall`) returns one earlier message in full by `[#seq]`, or the last 12
+earlier messages (and FILES) containing every keyword, 300 chars each.
+
+The system prompt file holds the role, the rules and the tool semantics (the
+OpenBot SYSTEM_PROMPT rewritten for native tools: no JSON envelope, no "you
+have no tools" paragraph, no `_TOOL_CONFUSION`).
 
 Tool table (`tools.py`; names are the MCP tool names, so the model sees
 `mcp__bot__<name>`): `observe`, `screenshot`, `goto`, `click`, `type`,
@@ -585,9 +645,10 @@ observation (160 elements, 6000 chars of text) and is one call away.
 quality 60) and is auto-attached to an action result when the harness sees
 the second repeat (same label AND nothing visible changed) or a page with fewer than 3
 interactive elements (canvas apps). The engine sets `browser.shoot_actions =
-False` for the task (the post-step observe screenshots anyway). `read` returns up to 6000 chars. The
-ledger records `usage.input_tokens` per assistant turn so context growth is
-measured, not guessed; `--autocompact` is left at its default as a net.
+False` for the turn (the post-step observe screenshots anyway). `read` returns up to 6000 chars. The
+ledger's `input_tokens` is the `result` event's turn aggregate (cost
+accounting); the conversation's size is the per-assistant-event reading
+above (`conversation.tokens`, what the rollover judges by).
 
 Observation = `browser.observe()` (its private `_snapshot(ws)`): `Accessibility.getFullAXTree` on the
 main frame (plus same-process child frames from `Page.getFrameTree`),

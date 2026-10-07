@@ -159,6 +159,9 @@ def main():
 
     pos = 0
     turn_no = 0
+    # The session this process runs: the one `--resume` named, else a fresh id (the engine persists it).
+    session_id = flag("--resume") or ("fake-session-%d" % os.getpid())
+    ctx = int(os.environ.get("BOTS_FAKE_CTX") or 0)  # the context size every assistant event reports (rollover tests)
     while True:
         text = messages.get()
         if text is None:
@@ -168,7 +171,7 @@ def main():
         abort.clear()
         with lock:
             state["turn"], state["result_sent"] = True, False
-        emit({"type": "system", "subtype": "init", "model": model,
+        emit({"type": "system", "subtype": "init", "model": model, "session_id": session_id,
               "tools": ["mcp__bot__" + n for n in names], "mcp_servers": [{"name": "bot", "status": "connected"}]})
         # --replay-user-messages echo
         emit({"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": text}]}})
@@ -183,12 +186,14 @@ def main():
                 continue
             mid += 1
             msg_id = "msg_%d_%d" % (turn_no, mid)
+            usage = {"input_tokens": ctx or 100 + mid, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+                     "output_tokens": 4}
             if "text" in step:
-                emit({"type": "assistant", "message": {"id": msg_id, "role": "assistant", "model": model,
+                emit({"type": "assistant", "message": {"id": msg_id, "role": "assistant", "model": model, "usage": usage,
                                                        "content": [{"type": "text", "text": step["text"]}]}})
             elif "tool" in step:
                 tid = "toolu_%d_%d" % (turn_no, mid)
-                emit({"type": "assistant", "message": {"id": msg_id, "role": "assistant", "model": model,
+                emit({"type": "assistant", "message": {"id": msg_id, "role": "assistant", "model": model, "usage": usage,
                                                        "content": [{"type": "tool_use", "id": tid,
                                                                     "name": "mcp__bot__" + step["tool"],
                                                                     "input": step.get("args") or {}}]}})
@@ -221,7 +226,7 @@ def main():
                      "content": [{"type": "text", "text": step.get("output") or ""}]}]}})
             elif "result" in step:
                 finish({"type": "result", "subtype": "success", "is_error": False, "result": step["result"],
-                        "num_turns": mid, "total_cost_usd": 0.0012, "session_id": "fake-session",
+                        "num_turns": mid, "total_cost_usd": 0.0012, "session_id": session_id,
                         "usage": {"input_tokens": 100 + mid, "output_tokens": 5}, "stop_reason": "end_turn"})
                 done = True
             elif "fail" in step:
