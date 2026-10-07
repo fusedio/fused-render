@@ -56,6 +56,17 @@ BUILD_POLL_S = 15          # how often a build watcher asks the server for the t
 BUILD_MAX_S = 3 * 3600     # stop watching after this long
 # Hand-offs (docs §11): Super Bot gives an ordinary bot a task and gets ONE result back.
 HANDOFF_MAX_S = BUILD_MAX_S  # a target may wait on the user at the Mac (login, approval) for a long time
+
+
+def _clip(text: str, n: int) -> str:
+    """`text` flattened to one line and cut to about `n` chars at a word, with an ellipsis when anything was dropped."""
+    flat = " ".join(re.sub(r"\*\*|`", "", str(text or "")).split())  # bold / code marks read as noise in a plain line
+    if len(flat) <= n:
+        return flat
+    cut = flat[:n]
+    if " " in cut[n // 2:]:
+        cut = cut[:cut.rfind(" ")]
+    return cut.rstrip(" ,;:-") + "…"
 HANDOFF_KEEP = 40          # meta["handoffs"] rows kept on Super Bot
 _LEGACY_HANDOFF_STATES = {"queued": "received", "running": "working", "waiting": "blocked",
                           "error": "failed", "stopped": "cancelled"}  # read once at load, never written
@@ -101,9 +112,9 @@ SUPER_INSTRUCTIONS = ("You are my assistant on this Mac. Use Claude Code's tools
 # The seeded Super Bot's first line (registry.seed_super): fixed text, no model call. On a fresh install Claude may not
 # be linked yet, and `greet()`'s fallback after a failed call would make an error the user's first impression. The page
 # appends a "Connect your phone" button to this line (source "seed", components/Thread.tsx).
-SUPER_GREETING = ("Hi, I'm Super Bot. I use Claude Code's tools on this Mac (files, PDFs, images, shell, code) plus a "
-                  "browser. Once Claude is linked I'll ask you to sign in to Google in my browser, then offer the social "
-                  "bots that can share it. Ask me for anything here, or connect your phone to text me.")
+SUPER_GREETING = ("Hi, I'm Super Bot. I run on this Mac through the Claude Code you're signed in to, with its tools (files, "
+                  "PDFs, images, shell, code) plus a browser. First I'll ask you to sign in to Google in my browser, then "
+                  "offer the social bots that can share it. Ask me for anything here, or connect your phone to text me.")
 # Super Bot's first task (owner's ask, 2026-10-07): sign the shared browser in to Google, then offer the
 # social presets, each made on Super Bot's browser (`bot_create` with logins_from) so one sign-in serves
 # them all. Seeded Super Bot: held in meta["setup"] until Claude is linked (tick_routines); a Super Bot made
@@ -2438,11 +2449,15 @@ class Bot:
             flat = " ".join(text.split())
             m = re.match(r"(.+?[.!?])(?:\s|$)", flat)
             summary = (m.group(1) if m else flat)[:600]
-        self.emit("done", text, summary=summary, source="handoff",
-                  handoff=self._handoff_ref(hd, task=hd["task"], task_dir=task_dir or ""), via=hd.get("origin_via"))
+        card = self.emit("done", text, summary=summary, source="handoff",
+                         handoff=self._handoff_ref(hd, task=hd["task"], task_dir=task_dir or ""), via=hd.get("origin_via"))
         if t is not None and not t.deleted and self._exists(t.id):
             try:
-                t.emit("system", f"Sent to Super Bot: {text[:280]}", source="handoff", via=None)
+                # A short pointer, not the result (the bot's own "done" row above has it in full): cut at a word and
+                # marked as cut, so it never ends mid-word like a clipped message. `link` is the card it became in
+                # Super Bot's chat ("Read more" in components/Thread.tsx opens that chat at it).
+                t.emit("system", f"Sent to Super Bot: {_clip(text, 280)}", source="handoff", via=None,
+                       link={"bot": self.id, "seq": card.get("seq")})
             except Exception:  # noqa: BLE001
                 logger.debug("hand-off line not written on %s", t.id, exc_info=True)
 

@@ -41,7 +41,7 @@ export function activeHandoff(b: Pick<Bot, "handoffs">): Handoff | null {
 
 /** "running · step 3" ("running · step 3/60" with a step cap), "waiting for you", "idle · browser off", … */
 export const statusLabel = (b: Bot): string =>
-  ({ running: `running · step ${b.step || 0}${b.step_cap ? "/" + b.step_cap : ""}`, waiting: "waiting for you", paused: "paused", error: "error",
+  ({ running: `running · step ${b.step || 0}`, waiting: "waiting for you", paused: "paused", error: "error",
      idle: b.browser?.running ? "idle" : "idle · browser off" } as Record<string, string>)[b.status] || b.status;
 
 // Recency skips system notes: a browser going to sleep is not activity and must not reorder the list.

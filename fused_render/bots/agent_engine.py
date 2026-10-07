@@ -1343,6 +1343,8 @@ def _permission(bot, sess: Turn, args: dict):
     when Stop landed while the card was up."""
     name = str(args.get("tool_name") or "tool")
     inp = args.get("input") if isinstance(args.get("input"), dict) else {}
+    if name == "AskUserQuestion":
+        return _ask_builtin(bot, sess, args)  # a question for the user, not a call to approve
     preview = builtin_label(name, inp)
     if name in BUILTIN_SAFE:
         return _permission_answer(True, args)  # reading never asks (web reads flip web_touched in _builtin_use)
@@ -1376,13 +1378,15 @@ def _permission(bot, sess: Turn, args: dict):
                                            "or finish and say what you could not do." + "".join(f"\n{n}" for n in notes))
 
 
-def _ask(bot, sess: Turn, args: dict):
-    q = (args.get("message") or "").strip() or "I need your input to continue."
-    opts = [str(o).strip()[:80] for o in (args.get("options") or []) if str(o).strip()][:7]
-    q, q_sum = channels.base.split_summary(q, str(args.get("summary") or ""))
-    multi = bool(args.get("multi")) and len(opts) >= 2
+def _ask_wait(bot, sess: Turn, q: str, opts: list, summary: str = "", multi: bool = False):
+    """Raise one question card and wait for the user. (answers, lines, page) — the
+    inbox messages that answered it and the harness lines a take-over in the
+    live view adds (hand-back note first, the fresh page last) — or None when
+    Stop landed.
+    Shared by the `ask` tool and Super Bot's AskUserQuestion (_ask_builtin)."""
+    multi = bool(multi) and len(opts) >= 2  # several options may be ticked; the answer comes back comma-separated
     ev = bot.emit("question", q, **({"options": opts} if len(opts) >= 2 else {}), **({"multi": True} if multi else {}),
-                  **({"summary": q_sum} if q_sum else {}))
+                  **({"summary": summary} if summary else {}))
     bot.set_status("waiting", waiting_on=_seq(ev))
     bot.asking = True
     drove = False
@@ -1410,13 +1414,93 @@ def _ask(bot, sess: Turn, args: dict):
             lines.append("The user took over your browser in the live view meanwhile and handed it back: the page, the "
                          "login state and which tab is in front may all have changed. Do not assume anything from "
                          "before; act on the page below.")
+    bot.set_status("running", waiting_on=None)
+    page = "\n" + tools.format_observation(_observe(bot, sess), compact=True) if drove else ""
+    return answer, lines, page
+
+
+def _ask(bot, sess: Turn, args: dict):
+    q = (args.get("message") or "").strip() or "I need your input to continue."
+    opts = [str(o).strip()[:80] for o in (args.get("options") or []) if str(o).strip()][:7]
+    q, q_sum = channels.base.split_summary(q, str(args.get("summary") or ""))
+    got = _ask_wait(bot, sess, q, opts, q_sum, multi=bool(args.get("multi")))
+    if got is None:
+        return None
+    answer, lines, page = got
     lines.extend(f"USER ANSWER: {a}" for a in answer)
     if not answer:
         lines.append("USER ANSWER: (none; the user handed the browser back without a reply)")
-    bot.set_status("running", waiting_on=None)
-    if drove:
-        lines.append("\n" + tools.format_observation(_observe(bot, sess), compact=True))
+    if page:
+        lines.append(page)
     return _result("\n".join(lines))
+
+
+# The description carried by an option the USER typed (claude_agent/permission_server.py TYPED_OPTION_NOTE): the
+# model reads its own input back and must know which entry it did not author.
+TYPED_OPTION_NOTE = "Written by the user in the chat, not offered by you."
+
+
+def _ask_builtin(bot, sess: Turn, args: dict):
+    """Claude Code's own AskUserQuestion, arriving through the permission tool.
+    Not an approval: each question becomes the same card the `ask` tool raises
+    (options as buttons, free text welcome), and the answers ride back on the
+    allow as `updatedInput` = the parked input plus `answers` keyed by the exact
+    question text (claude_agent/permission_server.py has the wire, verified
+    against the CLI: a plain allow reads as "the user did not answer"). A typed
+    reply that is no option is appended to that question's options, so the CLI's
+    label check finds it. None when Stop landed."""
+    inp = args.get("input") if isinstance(args.get("input"), dict) else {}
+    questions = [q for q in (inp.get("questions") or []) if isinstance(q, dict) and str(q.get("question") or "").strip()]
+    if not questions:
+        return _permission_answer(True, args)
+    answers: dict = {}
+    out_qs = []
+    for q in questions:
+        text = str(q["question"]).strip()
+        options = [o for o in (q.get("options") or []) if isinstance(o, dict) and str(o.get("label") or "").strip()]
+        labels = [str(o["label"]).strip() for o in options]
+        multi = bool(q.get("multiSelect"))
+        card = text + (" (pick one or more; separate with commas)" if multi and labels else "")
+        got = _ask_wait(bot, sess, card, labels[:7], multi=multi)  # multiSelect gets the tick-several card
+        if got is None:
+            return None
+        said = " ".join(a.strip() for a in got[0] if a.strip()).strip()
+        if not said:
+            out_qs.append(q)
+            continue  # unanswered: the CLI reads an omitted key as "not answered", which is true
+        by_lower = {l.lower(): l for l in labels}
+        if multi:
+            # Labels are found in the reply by construction (longest first, as whole comma- or space-bounded runs),
+            # never by splitting the reply on commas: a label may itself contain one, and permission_server matches
+            # the ", "-join in option order. What is left once the labels are lifted out is the user's own words,
+            # kept as ONE typed option so their commas survive too.
+            rest = said
+            hit = set()
+            for label in sorted(labels, key=len, reverse=True):
+                m = re.search(r"(?<![^\s,])" + re.escape(label) + r"(?![^\s,])", rest, re.IGNORECASE)
+                if m:
+                    hit.add(label)
+                    rest = rest[:m.start()] + "," + rest[m.end():]
+            rest = re.sub(r"\s*,\s*", ", ", rest).strip(" ,")
+            # Chosen labels in option order, then anything typed (permission_server: typed comes LAST).
+            chosen = [l for l in labels if l in hit]
+            typed = [rest] if rest else []
+            value = ", ".join(chosen + typed)
+        else:
+            value = by_lower.get(said.lower(), said)
+            typed = [] if value in labels else [value]
+        answers[text] = value
+        if typed:
+            options = options + [{"label": t, "description": TYPED_OPTION_NOTE} for t in typed]
+            out_qs.append(dict(q, options=options))
+        else:
+            out_qs.append(q)
+    updated = dict(inp, questions=out_qs)
+    for model_written in ("response", "answers", "annotations"):
+        updated.pop(model_written, None)
+    if answers:
+        updated["answers"] = answers
+    return {"content": [{"type": "text", "text": json.dumps({"behavior": "allow", "updatedInput": updated})}], "isError": False}
 
 
 def _login(bot, sess: Turn, args: dict):
