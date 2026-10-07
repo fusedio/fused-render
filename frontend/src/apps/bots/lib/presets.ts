@@ -51,7 +51,8 @@ export function filterCards(cards: PickCard[], query: string): { shown: PickCard
  *  opens; `title` / `sub` are the two texts shown; `key` is unique per row. */
 export interface SearchRow { key: string; pick: NewBotPick; face: Face; name: string; title: string; sub: string; kind: "card" | "skill" }
 
-/** Rows for `query`: cards whose own name holds every word first (sites, blanks, Super Bot — in card order), then one
+/** Rows for `query`: cards whose VISIBLE name holds every word first (sites, blanks, Super Bot — in card order; the
+ *  grid's hidden search text, with its "assistant mac shell" tokens, is not what a row can show lit), then one
  *  row per playbook whose title holds every word, in site order. A site matched only through its playbooks has no
  *  card row: its playbook rows are the reason it shows. [] for an empty query (the grid shows then). */
 export function searchRows(cards: PickCard[], query: string): SearchRow[] {
@@ -60,12 +61,12 @@ export function searchRows(cards: PickCard[], query: string): SearchRow[] {
   const own: SearchRow[] = [], skills: SearchRow[] = [];
   for (const c of cards) {
     if (c.pick.kind === "super") {
-      if (matchQ(superQ, words)) own.push({ key: "super", pick: c.pick, face: SUPER_FACE, name: SUPER_NAME, title: SUPER_NAME, sub: SUPER_BLURB, kind: "card" });
+      if (matchQ(SUPER_NAME.toLowerCase(), words)) own.push({ key: "super", pick: c.pick, face: SUPER_FACE, name: SUPER_NAME, title: SUPER_NAME, sub: SUPER_BLURB, kind: "card" });
       continue;
     }
     if (c.pick.kind === "blank") {
       const b = c.pick.blank;
-      if (matchQ(blankQ(b), words)) own.push({ key: `blank:${b.name}`, pick: c.pick, face: b.face, name: b.name, title: b.name, sub: "From scratch", kind: "card" });
+      if (matchQ(b.name.toLowerCase(), words)) own.push({ key: `blank:${b.name}`, pick: c.pick, face: b.face, name: b.name, title: b.name, sub: "From scratch", kind: "card" });
       continue;
     }
     const p = c.pick.preset, face: Face = { icon: p.key, color: p.color };

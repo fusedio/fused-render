@@ -14,7 +14,7 @@ import { esc, fmtDay, fmtTime, fmtWhen } from "../lib/format";
 import { md } from "../lib/md";
 import { chosenOption, firstNewIndex, isHandoff, isNoise, liveCards, optionKey, rowKeys, searchCountText, searchHit, sessionBreak } from "../lib/thread";
 import { act, clearScrollSeq, cur, eventsOf, getState, jumpTo, markSeen, openDialog, select, setNewCount, setScrollToEnd, showBanner, unviewed, useBots, viewedSet } from "../state/store";
-import { END_GAP, gapOf, evBox, highlightSearch, pinToEnd, restoreAnchor, topVisible, updateToBottom, type Anchor } from "./threadDom";
+import { END_GAP, clearSearchHighlight, gapOf, evBox, highlightSearch, pinToEnd, restoreAnchor, topVisible, updateToBottom, type Anchor } from "./threadDom";
 import { SetupLines } from "./SetupLines";
 
 const EMPTY: BotEvent[] = [];
@@ -341,7 +341,7 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
   const onBeside = useCallback((a: AppRef) => showAppBeside(a), []);
 
   // The search tint lives in the document's highlight registry, not the DOM: drop it when the thread goes.
-  useEffect(() => () => { const th = threadRef.current; if (th) highlightSearch(th, ""); }, [threadRef]);
+  useEffect(() => clearSearchHighlight, []);
 
   // ---- after every commit: scroll rules, search, viewed tracking, the pill, seen ----
   useLayoutEffect(() => {

@@ -72,20 +72,27 @@ const highlightApi = (): { set: (n: string, h: unknown) => void; delete: (n: str
   const g = globalThis as unknown as { CSS?: { highlights?: { set: (n: string, h: unknown) => void; delete: (n: string) => void } }; Highlight?: HighlightCtor };
   return g.CSS?.highlights && g.Highlight ? g.CSS.highlights : null;
 };
-/** Light every occurrence of `q` (lower-cased, non-empty) inside the rows marked `.hit`; "" clears. Returns the
- *  number of occurrences (0 when the API is missing, so the caller falls back to counting rows). */
+/** Drop the search tint from the document (the thread unmounting, the box emptied). */
+export function clearSearchHighlight(): void { highlightApi()?.delete(SEARCH_HL); }
+/** Light every occurrence of `q` (non-empty) inside the rows marked `.hit`, case-insensitively; "" clears. Returns
+ *  the number of occurrences (0 when the API is missing, so the caller falls back to counting rows). */
 export function highlightSearch(th: HTMLElement, q: string): number {
   const api = highlightApi();
   if (!api) return 0;
   if (!q) { api.delete(SEARCH_HL); return 0; }
   const ranges: Range[] = [];
+  // Matched on the node's own text with a case-insensitive pattern — never on a lower-cased copy, whose length
+  // can differ (İ, ß) and put the offsets off or past the node. Chrome (time, reactions, the day and New
+  // dividers) is not message text and is skipped.
+  const re = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi");
   const walker = document.createTreeWalker(th, NodeFilter.SHOW_TEXT);
   for (let node = walker.nextNode(); node; node = walker.nextNode()) {
     const el = node.parentElement;
-    if (!el || !el.closest(".hit") || el.closest("time, .when, .rx, .acts")) continue;
-    const text = (node.textContent || "").toLowerCase();
-    for (let i = text.indexOf(q); i >= 0; i = text.indexOf(q, i + q.length)) {
-      const r = document.createRange(); r.setStart(node, i); r.setEnd(node, i + q.length); ranges.push(r);
+    if (!el || !el.closest(".hit") || el.closest("time, .when, .rx, .acts, .day, .new, .texted")) continue;
+    const text = node.textContent || "";
+    for (const m of text.matchAll(re)) {
+      if (!m[0]) break;
+      const r = document.createRange(); r.setStart(node, m.index!); r.setEnd(node, m.index! + m[0].length); ranges.push(r);
     }
   }
   const Ctor = (globalThis as unknown as { Highlight: HighlightCtor }).Highlight;
