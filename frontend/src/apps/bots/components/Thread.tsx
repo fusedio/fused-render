@@ -340,6 +340,9 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
   const rxs = b?.reactions || {};
   const onBeside = useCallback((a: AppRef) => showAppBeside(a), []);
 
+  // The search tint lives in the document's highlight registry, not the DOM: drop it when the thread goes.
+  useEffect(() => () => { const th = threadRef.current; if (th) highlightSearch(th, ""); }, [threadRef]);
+
   // ---- after every commit: scroll rules, search, viewed tracking, the pill, seen ----
   useLayoutEffect(() => {
     const th = threadRef.current; if (!th) return;

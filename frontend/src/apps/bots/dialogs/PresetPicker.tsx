@@ -2,7 +2,7 @@
 // a blank bot), then the bot dialog opens with the pick filled in. Four blank starters fill the first row, then the
 // presets in the order the backend returns them. The search box hides the cards that miss; Enter picks the first preset
 // still showing (a blank only when nothing else is left). Escape, the backdrop and Cancel dismiss (null).
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { Face } from "../components/Face";
 import { api, type Preset } from "../lib/api";
 import { SUPER_BLURB, SUPER_FACE, SUPER_NAME, highlightRuns, pickCards, queryWords, searchRows, type NewBotPick } from "../lib/presets";
@@ -12,6 +12,7 @@ export function PresetPicker({ onDone }: { onDone: (pick: NewBotPick | null) => 
   const [presets, setPresets] = useState<Preset[]>([]);
   const [query, setQuery] = useState("");
   const qRef = useRef<HTMLInputElement>(null);
+  const doneRef = useRef(onDone); doneRef.current = onDone;  // the Escape listener is bound once; it must call the live prop
   useEffect(() => {
     let live = true;
     void act(() => api.presets(), true).then((r) => { if (live) setPresets(r?.presets || []); });
@@ -24,7 +25,7 @@ export function PresetPicker({ onDone }: { onDone: (pick: NewBotPick | null) => 
       if (e.key !== "Escape") return;
       e.stopPropagation();
       if (qRef.current?.value) { setQuery(""); return; }
-      onDone(null);
+      doneRef.current(null);
     };
     document.addEventListener("keydown", key, true);
     return () => document.removeEventListener("keydown", key, true);
@@ -39,6 +40,17 @@ export function PresetPicker({ onDone }: { onDone: (pick: NewBotPick | null) => 
   const rows = useMemo(() => searchRows(cards, query), [cards, query]);
   const hl = (text: string) => highlightRuns(text, words).map(([run, hit], i) => (hit ? <mark key={i}>{run}</mark> : run));
   const firstCard = rows.findIndex((r) => r.kind === "card"), firstSkill = rows.findIndex((r) => r.kind === "skill");
+  const listRef = useRef<HTMLDivElement>(null);
+  // Arrow keys walk the rows; Up from the first row returns to the box.
+  const moveRow = (e: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+    const all = Array.from(listRef.current?.querySelectorAll<HTMLElement>(".prow") || []);
+    const i = all.indexOf(document.activeElement as HTMLElement);
+    if (i < 0) return;
+    e.preventDefault();
+    if (e.key === "ArrowDown") all[Math.min(i + 1, all.length - 1)]?.focus();
+    else if (i === 0) qRef.current?.focus(); else all[i - 1]?.focus();
+  };
   return (
     <div id="pmodal" className="modal show" role="dialog" aria-modal="true" aria-label="New bot"
       onClick={(e) => { if (e.target === e.currentTarget) onDone(null); }}>
@@ -58,12 +70,16 @@ export function PresetPicker({ onDone }: { onDone: (pick: NewBotPick | null) => 
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg>
           <input id="pq" ref={qRef} type="search" placeholder="Search sites and playbooks (e.g. digest, mentions)" autoComplete="off" value={query}
             onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={(e) => { if (e.key !== "Enter") return; e.preventDefault(); if (rows[0]) onDone(rows[0].pick); }} />
+            onKeyDown={(e) => {
+              if (e.key === "Enter") { e.preventDefault(); if (rows[0]) onDone(rows[0].pick); }
+              else if (e.key === "ArrowDown") { e.preventDefault(); listRef.current?.querySelector<HTMLElement>(".prow")?.focus(); }
+            }} />
         </label>
         {searching ? (
-          <div id="plist" className="plist" role="listbox" aria-label="Search results">
+          // Plain buttons (a list of actions, not a listbox): Tab / arrows move, Enter / click pick.
+          <div id="plist" ref={listRef} className="plist" aria-label="Search results" onKeyDown={moveRow}>
             {rows.map((r, i) => (
-              <button key={r.key} className={`prow ${r.kind}`} role="option" data-key={r.key} onClick={() => onDone(r.pick)}
+              <button key={r.key} className={`prow ${r.kind}`} data-key={r.key} onClick={() => onDone(r.pick)}
                 title={r.kind === "skill" ? `Make a ${r.sub} bot; it knows “${r.title}”` : undefined}>
                 {i === firstCard ? <small className="sect">Bots</small> : i === firstSkill ? <small className="sect">Playbooks</small> : null}
                 <span className="av"><Face b={{ name: r.name, face: r.face }} /></span>
