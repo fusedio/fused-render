@@ -667,7 +667,8 @@ class Bot:
     #   summary      the handover note the current session was seeded with
     #   sent         {section: sha1} of the prompt sections the session has seen (the preamble resends only changes)
     #   prompt_hash  the system prompt the session was born with (it cannot change on resume)
-    #   web_touched  Super Bot: a hand-off result (web-derived text) is in this session's context
+    #   web_touched  Super Bot: a hand-off result (web-derived text) reached this conversation. Never cleared by a
+    #                rollover: the summary and the hand-off board carry that text into the fresh session too
     #   last_turn_ts when the last turn ended; turns, rollovers: counters for the page
     SUMMARY_CAP = 8000
     TRANSCRIPT_LINES = 300
@@ -691,7 +692,7 @@ class Bot:
             c = self.conversation()
             c.update(session_id=None, tokens=0, since_seq=self.seq, born_at=time.time(),
                      summary=(summary or "").strip()[:self.SUMMARY_CAP], sent={}, prompt_hash=prompt_hash,
-                     web_touched=False, rollovers=int(c.get("rollovers") or 0) + 1)
+                     rollovers=int(c.get("rollovers") or 0) + 1)
             self.save()
 
     def transcript_lines(self, since_seq=0, limit=None):
@@ -831,16 +832,21 @@ class Bot:
         if note.lower() in cur.lower():
             return "already in memory"
         lines = [l for l in cur.splitlines() if l.strip()]
+        tidied = ""
         if len(lines) >= self.MEMORY_LINES or len(cur) + len(note) > self.MEMORY_CAP:
             # Full: tidy it (one model call merges duplicates and drops stale notes) and try once more.
             if self.curate_memory():
                 cur = self.memory()
                 lines = [l for l in cur.splitlines() if l.strip()]
+                tidied = (f" (memory was tidied first and has {len(lines)} notes now; the MEMORY section in your "
+                          "context is stale, the next turn shows the new one)")
+                if note.lower() in cur.lower():
+                    return "already in memory" + tidied  # the rewrite folded this fact in
             if len(lines) >= self.MEMORY_LINES or len(cur) + len(note) > self.MEMORY_CAP:
                 return "memory is full even after tidying: `forget` notes that no longer matter, or ask the user to trim it in Settings"
         stamp = time.strftime("%Y-%m-%d")
         self.set_memory(cur.rstrip("\n") + f"\n- [{stamp}] {note}")
-        return "saved to memory"
+        return "saved to memory" + tidied
 
     def forget(self, text):
         """`forget`: drop every memory line containing `text` (case-insensitive)."""
@@ -901,7 +907,12 @@ class Bot:
             return False
         if text == cur:
             return False
-        self.set_memory(text)
+        with self.lock:
+            if self.memory().strip() != cur:
+                # The user (Settings) or another turn changed memory.md while the model was writing: theirs stands.
+                logger.info("bot %s: memory curation skipped, memory.md changed meanwhile", self.id)
+                return False
+            self.set_memory(text)
         self.emit("note", f"Memory tidied: {old_n} → {len(new)} notes.")
         return True
 
@@ -2955,6 +2966,16 @@ def delete(bid):
     # fresh Bot with deleted=False that could save the folder back. With the folder gone, get() has nothing to load.
     shutil.rmtree(bpaths.bot_dir(bid), ignore_errors=True)
     shutil.rmtree(bpaths.bot_cache_dir(bid), ignore_errors=True)
+    # A deleted Super Bot's queued hand-offs would otherwise sit at the head of each target's in-memory queue
+    # forever (sweep cannot see a forgotten Super Bot), and _handoff_start refuses a queue whose head is not its own.
+    for other in reg.loaded():
+        if other is b:
+            continue
+        try:
+            with other.lock:
+                other._handoff_queue[:] = [k for k in other._handoff_queue if k[0] != bid]
+        except Exception:  # noqa: BLE001
+            pass
     reg.forget(bid)
     # Close Super Bot's open hand-offs to this bot now rather than on the next scheduler pass.
     from fused_render.bots import handoffs

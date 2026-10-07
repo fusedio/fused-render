@@ -682,7 +682,13 @@ def _app_in_text(text: str):
     return _call(fn, None, text) if fn else None
 
 
-_RESUME_ERR = re.compile(r"session|resume|conversation|transcript", re.I)
+# The CLI's own words for a session it cannot pick up again (a deleted or moved transcript). An API or model
+# failure that merely mentions "session" keeps the live session and goes through the ordinary retry.
+_RESUME_ERR = re.compile(r"(no|unknown|missing|invalid|expired|could not|cannot|unable to|failed to)[^.\n]{0,40}"
+                         r"\b(session|conversation)\b"
+                         r"|\b(session|conversation)\b[^.\n]{0,40}(not found|does not exist|expired|missing|invalid|unknown|"
+                         r"could not be|cannot be)"
+                         r"|(could not|cannot|unable to|failed to) resume", re.I)
 
 
 def _ctx_reading(sess: Turn, usage) -> None:
