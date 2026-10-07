@@ -16,8 +16,14 @@ router = APIRouter()
 MAX_WIDGETS = 48
 MAX_APP_PATH = 4096
 # Version 1 predates the search widget; the client prepends one when it loads a
-# version-1 document and stamps 2. The server keeps whichever version it was given.
-VERSIONS = {1, 2}
+# version-1 document. Versions 1 and 2 carry no coordinates; version 3 gives
+# every widget an explicit top-left cell (x, y) on a 4-column grid. The client
+# migrates older documents and writes 3 on its next change; the server keeps
+# whichever version it was given and never migrates.
+VERSIONS = {1, 2, 3}
+GRID_COLS = 4
+MAX_ROWS = 64
+_DIMS = {"1x1": (1, 1), "2x1": (2, 1), "1x2": (1, 2), "2x2": (2, 2), "4x1": (4, 1)}
 SOURCES = {"search", "build", "apps", "playground", "sessions", "recents", "tasks", "bots", "folder", "index", "app"}
 SIZES = {"1x1", "2x1", "1x2", "2x2", "4x1"}
 FORMATS = {"cards", "list", "icons", "board", "count", "live", "bar"}
@@ -42,6 +48,7 @@ def _clean(doc) -> dict | None:
     if not isinstance(widgets, list) or len(widgets) > MAX_WIDGETS:
         return None
     out = []
+    taken: set[tuple[int, int]] = set()
     for w in widgets:
         if not isinstance(w, dict):
             return None
@@ -52,6 +59,18 @@ def _clean(doc) -> dict | None:
         if w.get("size") not in SIZES or w.get("format") not in FORMATS:
             return None
         item = {k: w[k] for k in ("id", "source", "size", "format")}
+        if doc["version"] == 3:
+            x, y = w.get("x"), w.get("y")
+            if not all(isinstance(v, int) and not isinstance(v, bool) for v in (x, y)):
+                return None
+            c, r = _DIMS[w["size"]]
+            if x < 0 or x + c > GRID_COLS or y < 0 or y + r > MAX_ROWS:
+                return None
+            cells = {(x + i, y + j) for i in range(c) for j in range(r)}
+            if cells & taken:
+                return None
+            taken |= cells
+            item["x"], item["y"] = x, y
         fid = w.get("folderId")
         if isinstance(fid, str):
             item["folderId"] = fid

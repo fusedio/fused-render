@@ -146,3 +146,45 @@ def test_old_version_document_is_kept_as_is(tmp_path, monkeypatch):
     new = {"version": 2, "widgets": [{"id": "s", "source": "search", "size": "2x1", "format": "bar"}, *old["widgets"]]}
     assert client.put("/api/home/layout", json=new, headers=FUSED).status_code == 200
     assert client.get("/api/home/layout").json() == {"exists": True, "layout": new}
+
+
+def _v3(*items):
+    return {
+        "version": 3,
+        "widgets": [
+            {"id": i, "source": "apps", "size": size, "format": "cards", "x": x, "y": y}
+            for i, size, x, y in items
+        ],
+    }
+
+
+def test_v3_coords_roundtrip(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    lay = _v3(("a", "2x2", 0, 0), ("b", "1x1", 3, 0), ("c", "4x1", 0, 5))
+    assert client.put("/api/home/layout", json=lay, headers=FUSED).status_code == 200
+    assert json.loads((home / "home_layout.json").read_text("utf-8")) == lay
+    assert client.get("/api/home/layout").json() == {"exists": True, "layout": lay}
+
+
+def test_v3_requires_integer_coords(tmp_path, monkeypatch):
+    client, _ = _client(tmp_path, monkeypatch)
+    base = _v3(("a", "1x1", 0, 0))["widgets"][0]
+    for bad in ({"y": None}, {"x": True}, {"x": 1.5}, {"y": "2"}):
+        lay = {"version": 3, "widgets": [{**base, **bad}]}
+        assert client.put("/api/home/layout", json=lay, headers=FUSED).status_code == 400
+    missing = {"version": 3, "widgets": [{k: v for k, v in base.items() if k != "x"}]}
+    assert client.put("/api/home/layout", json=missing, headers=FUSED).status_code == 400
+
+
+def test_v3_rejects_out_of_bounds(tmp_path, monkeypatch):
+    client, _ = _client(tmp_path, monkeypatch)
+    for item in (("a", "2x1", 3, 0), ("a", "1x2", 0, 63), ("a", "1x1", -1, 0), ("a", "1x1", 0, -1), ("a", "1x1", 4, 0)):
+        assert client.put("/api/home/layout", json=_v3(item), headers=FUSED).status_code == 400
+
+
+def test_v3_rejects_overlap(tmp_path, monkeypatch):
+    client, _ = _client(tmp_path, monkeypatch)
+    lay = _v3(("a", "2x2", 0, 0), ("b", "1x1", 1, 1))
+    assert client.put("/api/home/layout", json=lay, headers=FUSED).status_code == 400
+    ok = _v3(("a", "2x2", 0, 0), ("b", "1x1", 2, 1))
+    assert client.put("/api/home/layout", json=ok, headers=FUSED).status_code == 200
