@@ -822,7 +822,10 @@ def _conversation_plan(bot, model: str, sp_hash: str) -> tuple:
     why = "over budget" if sid and tokens >= limit else ("system prompt changed" if sid else "new")
     since = int(conv.get("since_seq") or 0)
     lines = _call(getattr(bot, "transcript_lines", None), [], since)
-    summary = _call(getattr(bot, "summarize_conversation", None), "", since) if len(lines) >= 4 else "\n".join(_call(bot.past_conversation, []))
+    previous = (conv.get("summary") or "").strip()
+    summary = _call(getattr(bot, "summarize_conversation", None), "", since, previous) if len(lines) >= 4 else ""
+    if not summary:  # a thin slice, or a summary call that failed: the previous note plus the digest
+        summary = ((previous + "\n\nSINCE THEN:\n" if previous else "") + "\n".join(_call(bot.past_conversation, []))).strip()
     _call(getattr(bot, "conversation_rollover", None), None, summary, sp_hash)
     if why != "new":
         # Memory upkeep rides on the rollover (bot.curate_memory): one more call, every ~half a window.
@@ -920,15 +923,17 @@ def run(bot, task: str, label: str | None = None) -> None:
             if isinstance(conv, dict):
                 # The sections are in the session's history now, whatever happens to this turn.
                 _call(getattr(bot, "conversation_update", None), None, sent=sent, turns=int(conv.get("turns") or 0) + 1)
-            if sess.is_super:
-                try:
-                    from fused_render.bots import handoffs
-                    handoffs.mark_seen(bot)  # the board (and new results) are in the session now
-                except Exception:  # noqa: BLE001
-                    pass
             if sess.stopping:
                 sess.interrupt()
-            return _drive(bot, sess, proc)
+            out = _drive(bot, sess, proc)
+            if sess.is_super:
+                # Only now: a ResumeLost above re-spawns with a fresh preamble, which must still carry the board.
+                try:
+                    from fused_render.bots import handoffs
+                    handoffs.mark_seen(bot)
+                except Exception:  # noqa: BLE001
+                    pass
+            return out
 
         try:
             outcome, final = spawn(resume_id)
@@ -939,7 +944,9 @@ def run(bot, task: str, label: str | None = None) -> None:
             if sess is not None:
                 _end_session(sess)
             since = int(conv.get("since_seq") or 0) if isinstance(conv, dict) else 0
-            summary = _call(getattr(bot, "summarize_conversation", None), "", since) or "\n".join(_call(bot.past_conversation, []))
+            previous = (conv.get("summary") or "").strip() if isinstance(conv, dict) else ""
+            summary = (_call(getattr(bot, "summarize_conversation", None), "", since, previous)
+                       or ((previous + "\n\nSINCE THEN:\n" if previous else "") + "\n".join(_call(bot.past_conversation, []))))
             _call(getattr(bot, "conversation_rollover", None), None, summary, _sha(sp_text))
             conv = _call(getattr(bot, "conversation", None), None)
             outcome, final = spawn(None)
@@ -995,6 +1002,10 @@ def run(bot, task: str, label: str | None = None) -> None:
             if sess.ctx_tokens:
                 upd["tokens"] = sess.ctx_tokens
             upd["window"] = context_window(sess.model)
+            if sess.is_super and sess.web_touched:
+                # Page text the turn read is in the session now: every later resumed turn asks before writes and
+                # commands too (a rollover keeps the flag: the summary and the board carry that text forward).
+                upd["web_touched"] = True
             _call(getattr(bot, "conversation_update", None), None, **upd)
         if sess is not None:
             _end_session(sess)

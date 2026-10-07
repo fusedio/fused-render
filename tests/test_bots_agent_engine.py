@@ -1332,9 +1332,9 @@ class ConvBot(FakeBot):
             return []  # turn 1: a thin transcript (the digest, no model call)
         return [f"[#{i}] USER: earlier ask {i}" for i in range(1, 7)]  # enough lines for a summary call
 
-    def summarize_conversation(self, since_seq=0):
-        self.summaries.append(since_seq)
-        return "SUMMARY NOTE: the user asked for three posts; #2 was Beta."
+    def summarize_conversation(self, since_seq=0, previous=""):
+        self.summaries.append((since_seq, previous))
+        return "SUMMARY NOTE: the user asked for three posts; #2 was Beta." + (" | " + previous if previous else "")
 
 
 def test_conversation_resumes_and_rolls_over(server, fake_cli, monkeypatch):
@@ -1370,6 +1370,7 @@ def test_conversation_resumes_and_rolls_over(server, fake_cli, monkeypatch):
     third = fake_cli("user")[2]["user"]
     assert "CONVERSATION SUMMARY" in third and "SUMMARY NOTE: the user asked for three posts" in third
     assert len(bot.summaries) == 1 and bot.conv["rollovers"] == 2  # turn 1 was a (silent) rollover from nothing
+    assert bot.summaries[0][1].startswith("user: hello")  # the previous note (turn 1's digest) was folded in
     assert bot.conv["session_id"] and bot.conv["session_id"] != sid  # the new process minted a new session
     assert any(e["role"] == "note" and e["text"].startswith("Conversation compacted at") for e in bot.events)
 
