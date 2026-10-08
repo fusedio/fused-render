@@ -688,6 +688,17 @@
   display: flex;
   flex-direction: column;
 }
+/* Flex-column children with auto inline margins or intrinsic sizing do not
+   stretch, so pin them to the full width. */
+.files-home.is-focus .home-strips,
+.files-home.is-focus .hw-stage,
+.files-home.is-focus .hw-stage-main,
+.files-home.is-focus .hw-grid,
+.files-home.is-focus .hw-grid > * {
+  width: 100%;
+  align-self: stretch;
+  box-sizing: border-box;
+}
 .files-home.is-focus .hw-grid > .is-build {
   margin-block: auto;
 }
