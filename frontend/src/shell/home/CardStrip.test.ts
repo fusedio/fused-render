@@ -15,3 +15,15 @@ test("stripEdges: no overflow means neither", () => {
   expect(stripEdges(0, 400, 400)).toEqual({ canPrev: false, canNext: false });
   expect(stripEdges(0, 400, 400.5)).toEqual({ canPrev: false, canNext: false });
 });
+
+import { nearEnd } from "./CardStrip";
+test("nearEnd: far from the end is false", () => {
+  expect(nearEnd(0, 400, 1000)).toBe(false);
+});
+test("nearEnd: within one viewport of the end is true", () => {
+  expect(nearEnd(200, 400, 1000)).toBe(true);
+  expect(nearEnd(600, 400, 1000)).toBe(true);
+});
+test("nearEnd: no overflow is true", () => {
+  expect(nearEnd(0, 400, 400)).toBe(true);
+});

@@ -17,6 +17,11 @@ export function stripEdges(
   };
 }
 
+/** Within one viewport of the end (also true when the content does not overflow). */
+export function nearEnd(scrollLeft: number, clientWidth: number, scrollWidth: number): boolean {
+  return scrollLeft + clientWidth >= scrollWidth - clientWidth;
+}
+
 // Keep a button press from starting a widget drag in edit mode.
 const stop = (e: { stopPropagation: () => void }) => e.stopPropagation();
 
@@ -25,8 +30,11 @@ export function CardStrip({
   rows,
   total,
   variant = "cards",
+  onNearEnd,
   children,
 }: {
+  /** Called whenever the strip is within one viewport of its end (scroll, resize, new content). */
+  onNearEnd?: () => void;
   variant?: "cards" | "icons";
   count: number | null;
   rows: number;
@@ -35,9 +43,12 @@ export function CardStrip({
 }) {
   const scroller = useRef<HTMLDivElement>(null);
   const [edges, setEdges] = useState({ canPrev: false, canNext: false });
+  const nearEndRef = useRef(onNearEnd);
+  nearEndRef.current = onNearEnd;
   const update = useCallback(() => {
     const el = scroller.current;
     if (!el) return;
+    if (nearEnd(el.scrollLeft, el.clientWidth, el.scrollWidth)) nearEndRef.current?.();
     const next = stripEdges(el.scrollLeft, el.clientWidth, el.scrollWidth);
     setEdges((prev) => (prev.canPrev === next.canPrev && prev.canNext === next.canNext ? prev : next));
   }, []);

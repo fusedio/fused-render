@@ -8,7 +8,7 @@ import { fallbackTile } from "../../../dock/lib";
 import { CardStrip } from "../CardStrip";
 import { SkeletonRow } from "../skeleton";
 import { MAX_ROW, useStripCount } from "../strip";
-import { useAllApps, useHomeApps } from "../data";
+import { usePagedApps, useHomeApps } from "../data";
 import { mergeApps } from "./mergeApps";
 import { CELL, dims, itemCapacity, type Widget } from "../layout";
 import { EmptyLine, ErrorLine, ListSkeleton } from "./bits";
@@ -60,8 +60,8 @@ export function AppsWidget({ widget }: { widget: Widget }) {
   // Cards ask for what the measured row can draw (the server's recents-first
   // fast path depends on it); icon tiles ask for their fixed capacity.
   const { apps, appsError, retry } = useHomeApps(cards ? limit : Math.min(cap * 2, MAX_ROW), 1, widget.sort ?? "opened");
-  const { all } = useAllApps(!cards);
-  const merged = cards ? [] : mergeApps((apps ?? []).slice(0, MAX_ROW), all ?? [], widget.sort ?? "opened");
+  const { all, loadMore } = usePagedApps(!cards);
+  const merged = cards ? [] : mergeApps((apps ?? []).slice(0, MAX_ROW), all);
   return (
     <div ref={ref} className="hw-body">
       {apps === null ? (
@@ -78,7 +78,7 @@ export function AppsWidget({ widget }: { widget: Widget }) {
             ))}
           </CardStrip>
         ) : (
-          <CardStrip variant="icons" count={count} rows={rows} total={merged.length}>
+          <CardStrip variant="icons" onNearEnd={loadMore} count={count} rows={rows} total={merged.length}>
             {merged.map((app) => (
               <AppTile key={app.path} app={app} />
             ))}

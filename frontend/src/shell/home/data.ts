@@ -1,7 +1,7 @@
 // Data hooks for the widgets whose content is fetched. The apps and sessions
 // effects are Home's former strip effects, moved here unchanged apart from
 // `rows`: a 2x2 widget draws two rows, so it asks for twice the cards a row fits.
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   getAppsPage,
   getHomeApps,
@@ -17,27 +17,55 @@ import { api as botsApi, type Bot } from "@apps/bots/lib/api";
 import type { AppsSort } from "./layout";
 import { MAX_ROW } from "./strip";
 
-/** The whole app catalog (recency-then-name order) for the icons strip, which
-    lists every app. Fetched only when `enabled`; a failure leaves `all` null so
-    the capped home list still renders. */
-export function useAllApps(enabled: boolean) {
-  const [all, setAll] = useState<AppInfo[] | null>(null);
-  const [nonce, setNonce] = useState(0);
-  useCurrentAppsChanged(() => setNonce((n) => n + 1));
-  useEffect(() => {
-    if (!enabled) return;
-    let alive = true;
-    getAppsPage({ offset: 0, limit: 500 }).then(
+export const APPS_PAGE = 48;
+
+/** True once every catalog app is loaded: the running count reaches the
+    server's total, or a page came back empty. */
+export function pageDone(loaded: number, received: number, total: number): boolean {
+  return received === 0 || loaded + received >= total;
+}
+
+/** The app catalog (recency-then-name order) for the icons strip, paged
+    lazily. Nothing is fetched on mount; the strip calls `loadMore` when it is
+    scrolled near its end (or does not yet overflow), and each call appends the
+    next APPS_PAGE apps. Calls while a request is pending, while disabled, or
+    once `done` are no-ops. A failed page leaves state unchanged. An
+    apps-changed announcement resets to empty so the strip asks again. */
+export function usePagedApps(enabled: boolean) {
+  const [all, setAll] = useState<AppInfo[]>([]);
+  const [done, setDone] = useState(false);
+  const loaded = useRef<AppInfo[]>([]);
+  const doneRef = useRef(false);
+  const inFlight = useRef(false);
+  const gen = useRef(0);
+  useCurrentAppsChanged(() => {
+    gen.current += 1;
+    inFlight.current = false;
+    loaded.current = [];
+    doneRef.current = false;
+    setAll([]);
+    setDone(false);
+  });
+  const loadMore = useCallback(() => {
+    if (!enabled || doneRef.current || inFlight.current) return;
+    inFlight.current = true;
+    const g = gen.current;
+    getAppsPage({ offset: loaded.current.length, limit: APPS_PAGE }).then(
       (r) => {
-        if (alive) setAll(r.apps);
+        if (g !== gen.current) return;
+        inFlight.current = false;
+        const fin = pageDone(loaded.current.length, r.apps.length, r.total);
+        loaded.current = [...loaded.current, ...r.apps];
+        doneRef.current = fin;
+        setAll(loaded.current);
+        setDone(fin);
       },
-      () => {},
+      () => {
+        if (g === gen.current) inFlight.current = false;
+      },
     );
-    return () => {
-      alive = false;
-    };
-  }, [enabled, nonce]);
-  return { all };
+  }, [enabled]);
+  return { all, loadMore, done };
 }
 
 /** Fused apps — hydrate the recent row first. The server only scans the full
