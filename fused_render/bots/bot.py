@@ -1573,7 +1573,8 @@ class Bot:
                 "memory": self.memory() if detail else None,
                 "skills": self.skills() if detail else None,
                 "shot": f"/api/bots/{self.id}/shot" if shot_ts else None,
-                "shot_ts": shot_ts, "viewport": list(getattr(browser_mod, "VIEWPORT", (1280, 800)))}
+                "shot_ts": shot_ts, "viewport": list(vp if isinstance(vp := getattr(self.browser, "viewport", None), (tuple, list))
+                                 else getattr(browser_mod, "VIEWPORT", (1280, 800)))}
 
     # -- routines ------------------------------------------------------------
     # meta["routines"]: [{id, task, kind: interval|daily|once, minutes, time "HH:MM",

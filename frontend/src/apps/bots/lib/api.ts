@@ -343,6 +343,8 @@ export const api = {
   popout: (id: string) => post<Ok>(`${bid(id)}/popout`, {}, "popout"),
   dock: (id: string) => post<Ok>(`${bid(id)}/dock`, {}, "dock"),
   wake: (id: string) => post<Ok>(`${bid(id)}/wake`, {}, "wake"),
+  /** The bot's Chrome window follows the live view's stage size (browser.py set_viewport). */
+  viewport: (id: string, w: number, h: number) => post<Ok & { viewport: [number, number] }>(`${bid(id)}/viewport`, { w, h }, "viewport"),
   /** The user clicked this bot open (or deep-linked to it): Super Bot's first task starts from this, nothing else. */
   open: (id: string) => post<Ok & { setup?: "started" | "pending" | "none" }>(`${bid(id)}/open`, {}, "open"),
   goto: (id: string, url: string) => post<{ ok: true; url: string }>(`${bid(id)}/goto`, { url }, "goto"),

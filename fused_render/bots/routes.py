@@ -628,9 +628,19 @@ def _tool(bid, body):
         return _error(str(e) or "stale task token", 409)
 
 
+def _viewport(bid, body):
+    """The live view's stage size: the bot's Chrome window follows it (stored for the next launch when asleep)."""
+    try:
+        w, h = int(body.get("w")), int(body.get("h"))
+    except (TypeError, ValueError):
+        raise ValueError("w and h must be integers") from None
+    w, h = _bot(bid).browser.set_viewport(w, h)
+    return {"ok": True, "viewport": [w, h]}
+
+
 _POSTS = {"goto": _goto, "nav": _nav, "tab": _tab, "attach": _attach, "react": _react,
           "flag": _flag, "settings": _settings, "profile": _profile, "clone": _clone, "routines": _routines,
-          "skills": _skills, "reveal": _reveal, "tool": _tool}
+          "skills": _skills, "reveal": _reveal, "tool": _tool, "viewport": _viewport}
 
 
 @router.delete("/api/bots/{bid}")

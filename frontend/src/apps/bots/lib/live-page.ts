@@ -5,8 +5,9 @@
 // Everything here is per CDP session: re-applied on every socket (onOpen) and forgotten with it (onReset).
 import { pickFile } from "@platform/lib/api";
 import { askAuth, askConfirm, askPrompt } from "../dialogs/ask";
-import { showToast } from "../state/store";
-import { cdp, focusCtl, inCtl, linked, onEvent, onOpen, onReset } from "./cdp";
+import { cur, showToast } from "../state/store";
+import { api } from "./api";
+import { cdp, focusCtl, inCtl, inFull, linked, onEvent, onOpen, onReset } from "./cdp";
 import { authKey } from "./live";
 
 const toast = (text: string) => showToast({ text, ts: Date.now() / 1000 });
@@ -14,32 +15,31 @@ const toast = (text: string) => showToast({ text, ts: Date.now() / 1000 });
 let fetchOn = false, interceptsOn = false;
 const authSeen = new Set<string>();
 
-// Viewport fit. The bot's Chrome is a fixed 1280x800 window (browser.py VIEWPORT): the bot's coordinates and screenshots
-// assume it, so while you only watch the frame keeps that shape (letterboxed in the stage). While you drive, the page is
-// emulated at the stage's own size so it fills it, and the emulation is cleared again before the bot gets the page back.
-// Per session like the other switches: a new socket re-applies it, a dropped one forgets it.
-let fitted: string | null = null;  // "WxH" currently emulated, null when cleared
+// Viewport fit. The bot's Chrome window follows the stage's size (browser.py set_viewport resizes the window; the bot
+// addresses elements by ref and scales its screenshots, so any size suits it). Sent while the live view is open, whoever
+// drives, so the frame fills the stage; the size sticks for the bot afterwards. Per bot: the last size sent is remembered
+// so a poll or a store change does not repeat it.
+let fitted: { id: string; size: string } | null = null;
 export function fitViewport(): void {
-  if (!linked()) return;
-  const stage = document.getElementById("stage");
-  const want = inCtl() && stage ? `${Math.max(640, Math.round(stage.clientWidth))}x${Math.max(480, Math.round(stage.clientHeight))}` : null;
-  if (want === fitted) return;
-  fitted = want;
-  if (!want) { cdp("Emulation.clearDeviceMetricsOverride"); return; }
-  const [w, h] = want.split("x").map(Number);
-  cdp("Emulation.setDeviceMetricsOverride", { width: w, height: h, deviceScaleFactor: 0, mobile: false });
+  const b = cur(); const stage = document.getElementById("stage");
+  if (!b || !stage || !inFull() || !stage.clientWidth || !stage.clientHeight) return;
+  const size = `${Math.round(stage.clientWidth)}x${Math.round(stage.clientHeight)}`;
+  if (fitted && fitted.id === b.id && fitted.size === size) return;
+  fitted = { id: b.id, size };
+  const [w, h] = size.split("x").map(Number);
+  void api.viewport(b.id, w, h).catch(() => { fitted = null; });
 }
 let fitTimer: ReturnType<typeof setTimeout> | null = null;
-/** The stage was resized (gutter drag, window): refit while you drive, debounced so a drag sends one override at the end. */
+/** The stage was resized (gutter drag, window, Stage opening): refit, debounced so a drag sends one resize at the end. */
 export function fitViewportSoon(): void {
   if (fitTimer) clearTimeout(fitTimer);
-  fitTimer = setTimeout(() => { fitTimer = null; fitViewport(); }, 150);
+  fitTimer = setTimeout(() => { fitTimer = null; fitViewport(); }, 200);
 }
 
 /** Bring the session's switches in line with whether you drive. Cheap; called on open and on every store change. */
 export function syncDriving(): void {
+  fitViewportSoon();
   if (!linked()) return;
-  fitViewport();
   const want = inCtl();
   if (want !== fetchOn) {
     fetchOn = want;
@@ -53,7 +53,7 @@ export function syncDriving(): void {
   }
 }
 onOpen.push(syncDriving);
-onReset.push(() => { fetchOn = false; interceptsOn = false; fitted = null; authSeen.clear(); authAsking.clear(); });
+onReset.push(() => { fetchOn = false; interceptsOn = false; authSeen.clear(); authAsking.clear(); });
 
 // alert / confirm / prompt / beforeunload. While you drive they are real dialogs (confirm and beforeunload can be refused,
 // prompt has its text field). While you only watch they are accepted at once, as the bot's own run would (a dialog left
