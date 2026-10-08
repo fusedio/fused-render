@@ -20,14 +20,19 @@ const authSeen = new Set<string>();
 // drives, so the frame fills the stage; the size sticks for the bot afterwards. Per bot: the last size sent is remembered
 // so a poll or a store change does not repeat it.
 let fitted: { id: string; size: string } | null = null;
+let fitting = false, refit = false;  // one resize in flight at a time (each takes Chrome up to seconds on a heavy page); the newest size follows
 export function fitViewport(): void {
   const b = cur(); const stage = document.getElementById("stage");
   if (!b || !stage || !inFull() || !stage.clientWidth || !stage.clientHeight) return;
   const size = `${Math.round(stage.clientWidth)}x${Math.round(stage.clientHeight)}`;
   if (fitted && fitted.id === b.id && fitted.size === size) return;
-  fitted = { id: b.id, size };
+  if (fitting) { refit = true; return; }
+  fitted = { id: b.id, size }; fitting = true;
   const [w, h] = size.split("x").map(Number);
-  void api.viewport(b.id, w, h).catch(() => { fitted = null; });
+  api.viewport(b.id, w, h).catch(() => { fitted = null; }).finally(() => {
+    fitting = false;
+    if (refit) { refit = false; fitViewportSoon(); }
+  });
 }
 let fitTimer: ReturnType<typeof setTimeout> | null = null;
 /** The stage was resized (gutter drag, window, Stage opening): refit, debounced so a drag sends one resize at the end. */
