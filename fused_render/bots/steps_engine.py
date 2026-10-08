@@ -166,7 +166,7 @@ def run(bot, task, label=None):
         bot.emit("system", f"Task started: {label or task}")
         if not bot._ensure_model_ready(ai, task):
             return
-        bot.browser.start(False)
+        bot.browser.start()
         history.extend(bot._offer_hints(task))  # step-1 nudges toward an app that fits, or one worth building
         for step in range(1, botmod.MAX_STEPS + 1):
             bot._wait_if_paused()

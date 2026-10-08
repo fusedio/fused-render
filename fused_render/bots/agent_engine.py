@@ -860,7 +860,7 @@ def run(bot, task: str, label: str | None = None) -> None:
         except AttributeError:
             pass
         bot.emit("system", f"Task started: {label or task}")
-        bot.browser.start(False)
+        bot.browser.start()
         bin_path = claude_cli.runnable()
         if not bin_path:
             raise RuntimeError("the Claude Code CLI (`claude`) was not found; install it or pick a local model")
