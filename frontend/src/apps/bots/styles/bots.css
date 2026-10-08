@@ -547,7 +547,7 @@ div.bots-page.sideapp .preview > :is(.shotwrap, .toast, .cap, .info) { display: 
 .bots-page #full .toast .pill { background: rgba(0,0,0,.7); color: #fff; box-shadow: none; -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); }
 .bots-page #full .toast .pill time { color: rgba(255,255,255,.6); }
 /* Below the screen: a few quiet sections, each a small heading and its lines. */
-.bots-page .info { margin: 18px 14px 14px; padding: 0 4px; color: var(--muted); font-size: 12px; line-height: 1.55; overflow: auto; display: flex; flex-direction: column; gap: 18px; }
+.bots-page .info { margin: 18px 14px 14px; padding: 0 4px; color: var(--muted); font-size: 12px; line-height: 1.55; overflow: hidden auto;  /* the inbox rows bleed 4px into the side padding on purpose; that must never become a horizontal scrollbar (which then forces a vertical one) */ display: flex; flex-direction: column; gap: 18px; }
 .bots-page .info h4 { margin: 0 0 4px; font-size: 10px; font-weight: 400; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); opacity: .8; }
 .bots-page .info .task { white-space: pre-wrap; color: var(--text); }
 .bots-page .info .note { text-align: center; padding: 28px 12px 8px; font-size: 13px; line-height: 1.5; }
