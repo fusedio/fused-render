@@ -99,6 +99,7 @@ import { runOrCopyInTerminal } from "@platform/lib/runOrCopyInTerminal";
 import { McpDialog } from "@apps/explorer/McpDialog";
 import PreviewSidebar from "@apps/explorer/PreviewSidebar";
 import { ChatMount } from "@apps/claude";
+import { OPEN_CHAT_EVENT, armFocusOnRegister } from "@platform/lib/chat-focus";
 
 /** The chat companion's mode key, in `templates` and in `_side` alike. */
 const CHAT_MODE = "claude";
@@ -1496,6 +1497,29 @@ function TemplatePreview({
       return true;
     };
   });
+  // Bare "/" with no chat on screen (lib/chat-focus): open the Claude sidebar
+  // and let its composer take the caret once it mounts. Same every-render ref
+  // as the ask above, so the once-installed listener never reads stale gates.
+  const openChatRef = useRef<() => boolean>(() => false);
+  useEffect(() => {
+    openChatRef.current = () => {
+      if (!splitCapable || !claudeSideReady) return false;
+      // Already on Claude but its composer did not take the key (still
+      // booting): arm the focus for when it registers, and keep the key.
+      armFocusOnRegister();
+      // No `tab`: a keystroke is not an explicit companion pick, so the
+      // remembered tab (lib/side-tab-store) stays what the reader chose.
+      if (activeSide !== CHAT_MODE) applySide(CHAT_MODE);
+      return true;
+    };
+  });
+  useEffect(() => {
+    const onOpenChat = (e: Event) => {
+      if (!e.defaultPrevented && openChatRef.current()) e.preventDefault();
+    };
+    document.addEventListener(OPEN_CHAT_EVENT, onOpenChat);
+    return () => document.removeEventListener(OPEN_CHAT_EVENT, onOpenChat);
+  }, []);
   // A directory's `_listing` mode embeds its OWN `<Listing>` (the folder
   // peek, below) — the same window, a CHILD component — and that component
   // installs its own copy of this pair for its OWN companion pane

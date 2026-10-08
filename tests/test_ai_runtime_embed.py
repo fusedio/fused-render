@@ -384,7 +384,8 @@ def test_the_catalog_publishes_acceptsPaths_and_promptScheme(client, monkeypatch
     the failure these fields exist to prevent."""
     monkeypatch.setattr(
         ai_runtime, "embed_family",
-        lambda model_id: "dual" if "siglip" in model_id else "text")
+        lambda model_id: "dual" if "siglip" in model_id or "embeddinggemma" in model_id
+        else "text")
     rows = client.get("/api/ai/catalog").json()["capabilities"]
     embeddings = next(r for r in rows if r["capability"] == "embeddings")
     assert embeddings["models"], "the embeddings row must offer something"
@@ -396,6 +397,9 @@ def test_the_catalog_publishes_acceptsPaths_and_promptScheme(client, monkeypatch
             # A dual encoder has no retrieval convention, and `"none"` travels
             # as None so a frontend truthiness test agrees with the route.
             assert entry["promptScheme"] is None
+        elif "embeddinggemma" in entry["id"]:
+            assert entry["acceptsPaths"] is True
+            assert entry["promptScheme"] == "gemma-embedding"
         else:
             assert entry["acceptsPaths"] is False
             assert entry["promptScheme"] in ("bge", "e5", "nomic")
@@ -523,3 +527,27 @@ def test_on_a_MAC_the_same_model_is_served_rather_than_refused(client,
     response = _post(client, {"texts": ["a cat"], "model": MLX_ONLY})
     assert response.status_code == 200
     assert len(served) == 1
+
+
+GEMMA = "mlx-community/embeddinggemma-2-bf16"
+
+
+def _mac(monkeypatch):
+    monkeypatch.setattr(registry.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "arm64")
+
+
+def test_embeddinggemma2_takes_kind_on_texts(client, monkeypatch, served):
+    _mac(monkeypatch)
+    _families(monkeypatch, {GEMMA: "dual"})
+    response = _post(client, {"texts": ["red shoes"], "kind": "query", "model": GEMMA})
+    assert response.status_code == 200
+    assert served == [(GEMMA, {"texts": ["red shoes"], "kind": "query"})]
+
+
+def test_embeddinggemma2_takes_paths_without_kind(client, monkeypatch, served):
+    _mac(monkeypatch)
+    _families(monkeypatch, {GEMMA: "dual"})
+    response = _post(client, {"paths": ["/tmp/pic.png"], "model": GEMMA})
+    assert response.status_code == 200
+    assert served == [(GEMMA, {"paths": ["/tmp/pic.png"]})]

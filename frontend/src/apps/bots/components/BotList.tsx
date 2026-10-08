@@ -7,7 +7,7 @@ import { activeHandoff, lastBotMsg, lastTs, lastUserTs, routineGlyph, routineNot
 import { fmtAgo, fmtWhen } from "../lib/format";
 import { glideRows, rowOffsets, toggleLeft } from "../lib/layout";
 import { waitingUnread } from "../lib/unread";
-import { openDialog, select, setShowHidden, unreadCount, useBots, type BotsState } from "../state/store";
+import { openBot, openDialog, setShowHidden, unreadCount, useBots, type BotsState } from "../state/store";
 import { Face } from "./Face";
 
 export interface BotListProps {
@@ -15,6 +15,8 @@ export interface BotListProps {
   onAddBot: () => void;
   /** #usage: the Model usage dialog. */
   onOpenUsage: () => void;
+  /** #browsers: the Browsers dialog (the logins bots share). */
+  onOpenBrowsers: () => void;
   /** #builds: the Builds panel (builds/ also clears the chip's `fresh`). */
   onOpenBuilds: () => void;
   /** #apps: the Apps gallery. */
@@ -32,7 +34,7 @@ function Row({ b, S, onContextMenu }: { b: Bot; S: BotsState; onContextMenu: Bot
   const ho = b.kind === "super" ? activeHandoff(b) : null;
   return (
     <div className={`bot${sel ? " sel" : ""}`} data-id={b.id} title="Right-click for options"
-      onClick={() => select(b.id)}
+      onClick={() => openBot(b.id)}
       onContextMenu={(e) => { e.preventDefault(); onContextMenu(b.id, e.clientX, e.clientY); }}>
       {/* The selected row's avatar opens Settings, like the header avatar; on any other row it just selects. */}
       <span className={`av${sel ? " settings" : ""}`} title={sel ? "Settings" : undefined}
@@ -58,7 +60,7 @@ function Row({ b, S, onContextMenu }: { b: Bot; S: BotsState; onContextMenu: Bot
   );
 }
 
-export function BotList({ onAddBot, onOpenUsage, onOpenBuilds, onOpenApps, onContextMenu }: BotListProps) {
+export function BotList({ onAddBot, onOpenUsage, onOpenBrowsers, onOpenBuilds, onOpenApps, onContextMenu }: BotListProps) {
   const S = useBots();
   const [q, setQ] = useState("");
   const listRef = useRef<HTMLDivElement>(null);
@@ -106,6 +108,9 @@ export function BotList({ onAddBot, onOpenUsage, onOpenBuilds, onOpenApps, onCon
         <button id="usage" onClick={onOpenUsage}
           title={u ? `${u.hour} in the last hour · ${u.errors} failed · click for details` : "Model calls made today · click for details"}>
           {u ? `${u.today} call${u.today === 1 ? "" : "s"} today` : "…"}
+        </button>
+        <button id="browsers" className="ptog" title="Browsers · the logins your bots share" onClick={onOpenBrowsers}>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M3 12h18M12 3c2.5 2.6 3.8 5.6 3.8 9s-1.3 6.4-3.8 9c-2.5-2.6-3.8-5.6-3.8-9S9.5 5.6 12 3Z" /></svg>
         </button>
         <button id="add" title="New bot" onClick={onAddBot}>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>

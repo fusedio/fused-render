@@ -45,6 +45,7 @@ from _theme_sources import (
     OPT_IN_ATTR,
     SELF_TOGGLING_TEMPLATES,
     SHARED_PALETTE_SELECTORS,
+    PRESET_KEY,
     THEME_KEY,
     TIER_ONE_TEMPLATES,
     TOKENIZED_SHARED_ASSETS,
@@ -358,3 +359,70 @@ def test_non_tier_one_templates_do_not_opt_in(name):
     open_tag = re.search(r"<html\b[^>]*>", html, re.I)
     assert open_tag, f"{name}: no <html> tag"
     assert OPT_IN_ATTR not in open_tag.group(0)
+
+
+# ---------------------------------------------------------------- colour presets
+
+
+def _preset_ids():
+    src = read_repo_file("frontend/src/platform/lib/theme.ts")
+    body = re.search(r"THEME_PRESETS[^=]*=\s*\[([\s\S]*?)\];", src).group(1)
+    return re.findall(r"id:\s*\"([\w-]+)\"", body)
+
+
+def test_the_preset_key_is_spelled_identically_in_theme_ts_and_the_bootstrap():
+    for path in ("frontend/src/platform/lib/theme.ts", "frontend/index.html"):
+        assert PRESET_KEY in read_repo_file(path), f"{path} must use {PRESET_KEY!r}"
+    assert PRESET_KEY != THEME_KEY
+
+
+def test_the_bootstrap_stamps_the_preset_before_paint():
+    html = read_repo_file("frontend/index.html")
+    head = html[: html.index("</head>")]
+    assert "data-theme-name" in head
+
+
+def test_runtime_never_learns_about_presets():
+    assert "theme-name" not in read_repo_file("fused_render/static/runtime.js")
+
+
+def test_every_non_default_preset_has_a_dark_and_a_light_block():
+    ids = _preset_ids()
+    assert ids[0] == "default" and len(ids) == 3
+    css = read_repo_file("frontend/src/styles/tokens.css")
+    for pid in ids[1:]:
+        dark = re.search(
+            r':root\[data-theme-name="%s"\]\s*\{([^{}]*)\}' % re.escape(pid), css
+        )
+        light = re.search(
+            r':root\[data-theme-name="%s"\]\[data-theme="light"\]\s*\{([^{}]*)\}'
+            % re.escape(pid),
+            css,
+        )
+        assert dark, f"preset {pid!r} has no dark block in tokens.css"
+        assert light, f"preset {pid!r} has no light block in tokens.css"
+        assert set(re.findall(r"--[\w-]+", dark.group(1))) == set(
+            re.findall(r"--[\w-]+", light.group(1))
+        ), f"preset {pid!r}: dark and light override different tokens"
+
+
+def test_preset_blocks_have_a_pre_paint_background():
+    html = read_repo_file("frontend/index.html")
+    for pid in _preset_ids()[1:]:
+        assert f'html[data-theme-name="{pid}"]' in html
+        assert f'html[data-theme-name="{pid}"][data-theme="light"]' in html
+
+
+def test_bootstrap_preset_ids_match_theme_ts_in_index_and_lan():
+    expected = [i for i in _preset_ids() if i != "default"]
+    for path in ("frontend/index.html", "frontend/lan.html"):
+        html = read_repo_file(path)
+        head = html[: html.index("</head>")]
+        guard = re.search(
+            r'getItem\("fused-render:theme-preset"\);\s*if \(([^)]*)\)', head
+        )
+        assert guard, f"{path}: no preset guard in the bootstrap"
+        assert re.findall(r'"([\w-]+)"', guard.group(1)) == expected, path
+        for pid in expected:
+            assert f'html[data-theme-name="{pid}"]' in head, (path, pid)
+            assert f'html[data-theme-name="{pid}"][data-theme="light"]' in head, (path, pid)

@@ -1,4 +1,4 @@
-// #bdmodal (OpenBot index.html + builds.js buildDialog): the New build dialog, and with an app the "New task · <app>"
+// #bdmodal (OpenBot index.html + builds.js buildDialog): the New app dialog, and with an app the "New task · <app>"
 // variant that asks for a change to that existing app (name and folder fixed). buildDialog(app?) in builds.ts opens it
 // and resolves with the fields (or null). Esc / backdrop / Cancel close; ⌘↩ or Ctrl+Enter starts when allowed.
 import { useEffect, useRef, useState } from "react";
@@ -31,7 +31,7 @@ function Box({ req }: { req: BuildDialogReq }) {
 
   return (
     <div className="box">
-      <h3 id="bdtitle">{app ? `New task · ${app.name || app.folder || "App"}` : "New build"}</h3>
+      <h3 id="bdtitle">{app ? `New task · ${app.name || app.folder || "App"}` : "New app"}</h3>
       <div className="body">
         <label className="field" id="bdnamefield" style={app ? { display: "none" } : undefined}>App name<input id="bdname" ref={nameRef} placeholder="e.g. Invoice tracker" value={name} onChange={(e) => setName(e.target.value)} /></label>
         <p className="muted where">Folder: <code id="bddir">{where}</code></p>
@@ -57,7 +57,7 @@ function Box({ req }: { req: BuildDialogReq }) {
         </div>
         <label className="field">Approvals
           <select id="bdmode" value={mode} onChange={(e) => setMode(e.target.value)}>
-            <option value="default">Ask before risky tools (answer in the Builds panel)</option>
+            <option value="default">Ask before risky tools (answer on the Tasks page)</option>
             <option value="auto">Never ask · unattended</option>
             <option value="plan">Plan only · no edits</option>
           </select>
@@ -65,7 +65,7 @@ function Box({ req }: { req: BuildDialogReq }) {
       </div>
       <div className="row">
         <button id="bdcancel" onClick={() => req.resolve(null)}>Cancel</button>
-        <button id="bdok" className="primary" title="⌘↩ / Ctrl+Enter" disabled={disabled} onClick={() => { if (!disabled) req.resolve(read()); }}>{app ? "Start task" : "Start build"}</button>
+        <button id="bdok" className="primary" title="⌘↩ / Ctrl+Enter" disabled={disabled} onClick={() => { if (!disabled) req.resolve(read()); }}>{app ? "Start task" : "Create app"}</button>
       </div>
     </div>
   );

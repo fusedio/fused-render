@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { Preset } from "./api";
-import { BLANKS, blankQ, filterCards, firstPick, matchQ, newBotInit, pickCards, presetNote, presetQ, queryWords } from "./presets";
+import { BLANKS, blankQ, filterCards, firstPick, highlightRuns, matchQ, newBotInit, searchRows, pickCards, presetNote, presetQ, queryWords } from "./presets";
 
 const P = (key: string, name: string, skills: string[]): Preset =>
   ({ key, name, color: "#0a66c2", order: 0, model: "haiku", instructions: `Browse ${name}.`, apps: [], skills });
@@ -79,11 +79,12 @@ describe("newBotInit", () => {
       title: "New LinkedIn bot", name: "LinkedIn bot", model: "haiku", instructions: "Browse LinkedIn.",
       face: { icon: "linkedin", color: "#0a66c2" }, preset: "linkedin",
       presetNote: "Comes with 2 playbooks: Find recruiters, Summarize my feed. Edit them under Skills once the bot exists.",
+      skills: ["Find recruiters", "Summarize my feed"],
     });
   });
   test("a blank fills its name and face, sonnet, no note, no preset", () => {
     expect(newBotInit({ kind: "blank", blank: BLANKS[2] })).toEqual({
-      title: "New Blue Bot", name: "Blue Bot", model: "sonnet", instructions: "", face: { shape: "square", color: "#2f7ae5" }, presetNote: "", preset: "",
+      title: "New Blue Bot", name: "Blue Bot", model: "sonnet", instructions: "", face: { shape: "square", color: "#2f7ae5" }, presetNote: "", preset: "", skills: [],
     });
   });
   test("presetNote counts the playbooks", () => {
@@ -115,5 +116,38 @@ describe("Super Bot card", () => {
     expect(v.preset).toBe("");
     expect(v.face).toEqual({ icon: "claude", color: "#262624" });
     expect(v.presetNote).toContain("One per Mac");
+  });
+});
+
+describe("highlightRuns", () => {
+  test("splits into plain and hit runs, case-insensitive, every word", () => {
+    expect(highlightRuns("X timeline digest", queryWords("DIGEST x"))).toEqual([["X", true], [" timeline ", false], ["digest", true]]);
+  });
+  test("no query or empty text: one plain run", () => {
+    expect(highlightRuns("Gmail", [])).toEqual([["Gmail", false]]);
+    expect(highlightRuns("", ["g"])).toEqual([["", false]]);
+  });
+  test("regex characters in the query are literal", () => {
+    expect(highlightRuns("a+b (c)", ["+b", "(c)"])).toEqual([["a", false], ["+b", true], [" ", false], ["(c)", true]]);
+  });
+});
+
+describe("searchRows", () => {
+  test("empty query: no rows (the grid shows)", () => {
+    expect(searchRows(cards, "  ")).toEqual([]);
+  });
+  test("cards matched on their own name first, then playbook rows, each naming its site", () => {
+    const rows = searchRows(cards, "feed");
+    expect(rows.map((r) => [r.kind, r.title, r.sub])).toEqual([["skill", "Summarize my feed", "LinkedIn"]]);
+    const li = searchRows(cards, "linkedin");
+    expect(li.map((r) => [r.kind, r.title])).toEqual([["card", "LinkedIn"]]);
+    expect(li[0].pick).toEqual({ kind: "preset", preset: PRESETS[0] });
+  });
+  test("every word must be in one text: a name word plus a playbook word matches nothing", () => {
+    expect(searchRows(cards, "linkedin feed")).toEqual([]);
+  });
+  test("blank bots and Super Bot are card rows", () => {
+    expect(searchRows(pickCards(PRESETS, true), "super").map((r) => r.key)).toEqual(["super"]);
+    expect(searchRows(cards, "blue").map((r) => [r.kind, r.title, r.sub])).toEqual([["card", "Blue Bot", "From scratch"]]);
   });
 });

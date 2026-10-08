@@ -261,6 +261,25 @@ def test_migrate_layout_moves_a_0_11_home(app_home):
     assert bpaths.migrate_layout() == 0  # idempotent
 
 
+def test_migrate_layout_leaves_the_browsers_folders_alone(app_home):
+    """cache/browsers/<id>/session.json and data/browsers/<id>/profile (browsers.py) are the new layout, not
+    0.11.x bot folders: a boot must not move them under bots/ (that lost the session and wedged the launch)."""
+    base = os.path.join(app_home, "bots")
+    sess = os.path.join(base, "cache", "browsers", "b1", "session.json")
+    prof = os.path.join(base, "data", "browsers", "b1", "profile")
+    os.makedirs(os.path.dirname(sess)); open(sess, "w").write("{}")
+    os.makedirs(prof)
+    assert bpaths.migrate_layout() == 0
+    assert os.path.isfile(sess) and os.path.isdir(prof)
+    assert not os.path.exists(os.path.join(base, "cache", "bots", "browsers"))
+    # a pass with nothing to move marks the install: later folders of any name are never swept
+    assert os.path.isfile(os.path.join(base, ".layout-v2"))
+    os.makedirs(os.path.join(base, "cache", "future-thing"))
+    os.makedirs(os.path.join(base, "cache", "deadbeef"))  # no such bot: not a bot's cache either
+    assert bpaths.migrate_layout() == 0
+    assert os.path.isdir(os.path.join(base, "cache", "future-thing")) and os.path.isdir(os.path.join(base, "cache", "deadbeef"))
+
+
 def test_migrate_layout_never_overwrites(app_home):
     base = os.path.join(str(app_home), "bots")
     _touch(os.path.join(base, "data", "b1", "bot.json"), '{"id": "b1", "name": "old"}')

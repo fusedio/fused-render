@@ -1,6 +1,7 @@
 // The bot-level flows behind the dialogs and the bot menu (OpenBot dialogs.js): create, save settings, delete,
 // clone, export. Each runs its calls through act() so the page shows the effect and errors land in the banner.
 import { api, type Bot, type Face } from "../lib/api";
+import { loginValue } from "../lib/botform";
 import { act, cur, getState, select, setState } from "../state/store";
 import { askConfirm } from "./ask";
 
@@ -22,6 +23,8 @@ export interface BotDialogValue {
   superAccess: string;
   /** App folders whose tools never ask this bot for approval (Settings > Permissions > Trusted apps). */
   trustedApps: string[];
+  /** Logins: "" = a fresh browser of its own; else the `browser_id` of the bot whose sign-ins it shares. */
+  browserId: string;
 }
 
 /** The phone keys go only with Super Bot's settings: sending another bot's old value back (or "") would plant a key
@@ -33,7 +36,7 @@ const phone = (v: BotDialogValue): { imessage_handle?: string; imessage_enabled?
  *  focus into the composer. Everything else is a Settings matter once the bot exists. */
 export async function createBot(v: BotDialogValue): Promise<void> {
   const r = await act(() => api.create({ name: v.name, model: v.model, effort: v.effort, instructions: v.instructions, approval: v.approval, build_access: v.buildAccess, encrypt: v.encrypt, preset: v.preset || "",
-    kind: v.kind || "bot", super_access: v.superAccess }));
+    kind: v.kind || "bot", super_access: v.superAccess, ...(v.browserId ? { browser_id: v.browserId } : {}) }));
   const id = r?.id;
   if (id && v.trustedApps.length) await act(() => api.settings(id, { name: v.name, trusted_apps: v.trustedApps }));
   if (id && v.profile) await act(() => api.profile(id, v.profile));
@@ -42,11 +45,17 @@ export async function createBot(v: BotDialogValue): Promise<void> {
   document.getElementById("input")?.focus();
 }
 
-/** Settings → Save: the settings, then the face, then the Chrome profile import. A blank name saves nothing. */
+/** Settings → Save: a Logins switch first (its own call: the backend refuses it mid-task, and that must not lose the
+ *  rest), then the settings, the face, the Chrome profile import. Encrypt belongs to the browser: after a switch it is
+ *  sent only when the user changed it, so the old browser's flag never overwrites the new one's. A blank name saves nothing. */
 export async function saveSettings(id: string, v: BotDialogValue): Promise<void> {
   if (!v.name) return;
+  const was = getState().bots.find((x) => x.id === id);
+  const switched = !!was && v.kind !== "super" && v.browserId !== loginValue(was);
+  if (switched) await act(() => api.settings(id, { browser_id: v.browserId }));
+  const encrypt = switched && v.encrypt === !!was?.encrypt ? {} : { encrypt: v.encrypt };
   await act(() => api.settings(id, { name: v.name, model: v.model, effort: v.effort, instructions: v.instructions, memory: v.memory, approval: v.approval,
-    build_access: v.buildAccess, encrypt: v.encrypt, ...phone(v), super_access: v.superAccess,
+    build_access: v.buildAccess, ...encrypt, ...phone(v), super_access: v.superAccess,
     trusted_apps: v.trustedApps }));
   if (v.face && v.kind !== "super") await act(() => api.flag(id, { face: v.face }));
   if (v.profile) await act(() => api.profile(id, v.profile));
@@ -55,17 +64,18 @@ export async function saveSettings(id: string, v: BotDialogValue): Promise<void>
 /** Delete… (confirmed): drops the bot's events and cursor so nothing of it lingers, then deletes it. Defaults to the selected bot. */
 export async function deleteBot(b: Bot | undefined = cur()): Promise<void> {
   if (!b) return;
-  if (!(await askConfirm(`Delete "${b.name}"?`, "Its browser profile and history are removed."))) return;
+  const others = (b.shared_with || []).map((o) => o.name).join(", ");
+  if (!(await askConfirm(`Delete "${b.name}"?`, others ? `Its history is removed. Its logins stay with ${others}.` : "Its browser profile and history are removed."))) return;
   const s = getState(), events = { ...s.events }, cursors = { ...s.cursors };
   delete events[b.id]; delete cursors[b.id];
   setState({ events, cursors });
   await act(() => api.remove(b.id));
 }
 
-/** Clone: the copy is selected. */
-export async function cloneBot(id: string | undefined = getState().sel || undefined): Promise<void> {
+/** Clone: the copy is selected. share (default): it signs in with the source's logins (same browser); false: a copy of them. */
+export async function cloneBot(id: string | undefined = getState().sel || undefined, share = true): Promise<void> {
   if (!id) return;
-  const r = await act(() => api.clone(id));
+  const r = await act(() => api.clone(id, undefined, share));
   if (r?.id) select(r.id);
 }
 

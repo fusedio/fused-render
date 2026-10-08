@@ -2926,8 +2926,10 @@ export function createApp(
   prompt: string,
   model: DefaultModel = "",
   effort: SessionEffort = "",
+  // Paths from uploadTaskShot — the composer's pasted/dropped attachments.
+  images: string[] = [],
 ): Promise<NewAppResult> {
-  return postJson<NewAppResult>("/api/apps/new", { name, prompt, model, effort });
+  return postJson<NewAppResult>("/api/apps/new", { name, prompt, model, effort, images });
 }
 
 // -- Claude sessions (GET /api/claude-sessions) -------------------------------

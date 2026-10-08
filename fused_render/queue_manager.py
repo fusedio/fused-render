@@ -190,6 +190,14 @@ def _owner_rec(raw) -> dict | None:
             # dropped on load was a field every transaction after the first
             # silently lost.
             "consumed": bool(raw.get("consumed")),
+            # WHICH TOKENS `consume_claim` HAS SPENT ON THIS OWNER (D1310) —
+            # dropped here exactly like `consumed` used to be (B1 above):
+            # a transaction re-reads the index from disk, so a field
+            # `_owner_rec` does not carry forward is a field
+            # `release_spent_placeholder` can never find again after the
+            # very `_txn` that set it returns.
+            "spent": [t for t in (raw.get("spent") or [])
+                     if isinstance(t, str) and t][-CLAIM_CAP:],
             # THE PROCESS CURRENTLY SPAWNING THIS OWNER (B1b) — 0 unless
             # `starting` is also true. `_spawning` (`__init__`) is this
             # process's own in-flight set and answers "is MY spawn still
@@ -872,8 +880,8 @@ class QueueManager:
                         # trip). `spawner_pid`/`spawn_started` are set
                         # separately, by `_pump`, the moment it marks this
                         # owner `starting`.
-                        "claims": [], "consumed": False, "spawner_pid": 0,
-                        "spawn_started": 0.0}
+                        "claims": [], "consumed": False, "spent": [],
+                        "spawner_pid": 0, "spawn_started": 0.0}
         return rec["owner"]
 
     @staticmethod

@@ -69,6 +69,10 @@ _loaded = {}
 #: engines should not have to translate.
 _DUAL = "dual"
 _TEXT = "text"
+_UNIFIED = "unified"
+
+_TOKEN_BUDGET = 32768
+_IMAGE_CHUNK = 8
 
 #: The field on `mlx_embeddings`' `BaseModelOutput` that carries the pooled,
 #: normalized sentence vector — the single seam the prose path rests on. Ported
@@ -187,6 +191,26 @@ def _mlx_load(repo_id):
     return mlx_embed_load(repo_id)
 
 
+def _mlx_vlm_load(path):
+    try:
+        from mlx_vlm.embedding_loader import load_embedding_model
+        from mlx_vlm.models.embedding_gemma2 import EmbeddingGemma2Processor
+        from mlx_vlm.utils import load_config
+    except ImportError as e:
+        raise RuntimeError(
+            f"mlx-vlm could not be imported from the runner environment "
+            f"at {sys.prefix} ({e.__class__.__name__}: {e}). That is an "
+            "environment failure rather than a problem with this model."
+        ) from e
+    from pathlib import Path
+
+    root = Path(path)
+    config = load_config(root)
+    config["audio_config"] = None
+    model = load_embedding_model(root, config=config)
+    return model, EmbeddingGemma2Processor.from_pretrained(root)
+
+
 def _read_json(path):
     """One small JSON file out of the snapshot, or `{}` when it is not there.
 
@@ -236,6 +260,8 @@ def _family(config, model_id):
             f"model_type={config.get('model_type')!r}, which is not an "
             f"embedding family this runner reads "
             f"({', '.join(sorted(formats.MLX_EMBED_MODEL_TYPES))}).")
+    if family in formats.MLX_VLM_EMBED_MODEL_TYPES:
+        return _UNIFIED
     return _DUAL if family in formats.DUAL_EMBED_MODEL_TYPES else _TEXT
 
 
@@ -347,7 +373,10 @@ def load(model_id, path):
 
     config = _read_json(os.path.join(path, "config.json"))
     family = _family(config, model_id)
-    model, second = _mlx_load(model_id)
+    if family == _UNIFIED:
+        model, second = _mlx_vlm_load(path)
+    else:
+        model, second = _mlx_load(model_id)
     _loaded.clear()
     _loaded["model"] = model
     _loaded["family"] = family
@@ -373,6 +402,9 @@ def load(model_id, path):
     _loaded["length"] = _text_length(config, family, model_id)
     if family == _DUAL:
         _loaded["processor"] = second
+    elif family == _UNIFIED:
+        _loaded["processor"] = second
+        _loaded["tokenizer"] = second.tokenizer
     else:
         _loaded["tokenizer"] = second
 
@@ -544,6 +576,56 @@ def _prose_vectors(model, tokenizer, texts, kind):
     return _to_lists(embeds)
 
 
+def _pooled(output):
+    embeds = getattr(output, _TEXT_EMBEDS_FIELD, None)
+    if embeds is None:
+        raise RuntimeError(
+            f"this model's output carries no {_TEXT_EMBEDS_FIELD!r} — "
+            f"mlx-vlm changed the field this runner pools through "
+            f"(got {type(output).__name__})")
+    return _to_lists(embeds)
+
+
+def _unified_text_vectors(model, tokenizer, texts, kind):
+    import mlx.core as mx
+
+    encoded = tokenizer(embed_common.prompted(texts, kind, _loaded["scheme"]),
+                        truncation=True, max_length=_loaded["length"])["input_ids"]
+    pad = tokenizer.pad_token_id or 0
+    order = sorted(range(len(encoded)), key=lambda i: len(encoded[i]))
+    vectors = [None] * len(encoded)
+    start = 0
+    while start < len(order):
+        stop = start + 1
+        while (stop < len(order)
+               and (stop - start + 1) * len(encoded[order[stop]]) <= _TOKEN_BUDGET):
+            stop += 1
+        chunk = order[start:stop]
+        width = len(encoded[chunk[-1]])
+        ids = [encoded[i] + [pad] * (width - len(encoded[i])) for i in chunk]
+        mask = [[1] * len(encoded[i]) + [0] * (width - len(encoded[i])) for i in chunk]
+        output = model(mx.array(ids), attention_mask=mx.array(mask))
+        for index, row in zip(chunk, _pooled(output)):
+            vectors[index] = row
+        start = stop
+    return vectors
+
+
+def _unified_image_vectors(model, processor, paths):
+    import mlx.core as mx
+
+    images = [embed_common.open_image(path) for path in paths]
+    vectors = []
+    for start in range(0, len(images), _IMAGE_CHUNK):
+        chunk = images[start:start + _IMAGE_CHUNK]
+        inputs = processor(text=[processor.image_token] * len(chunk),
+                           images=[[image] for image in chunk],
+                           padding=True, return_tensors="np")
+        output = model(**{key: mx.array(value) for key, value in inputs.items()})
+        vectors.extend(_pooled(output))
+    return vectors
+
+
 def generate(body):
     """One embedding call. Returns `{vectors, dim}` — see `embed_common.py`."""
     _pin_stream()
@@ -553,12 +635,12 @@ def generate(body):
     # A prose load stores a `tokenizer` and a dual load a `processor` (see
     # `load`), so the readiness check asks for whichever this family needs
     # rather than for one name both would have had to share.
-    second = _loaded.get("processor" if family == _DUAL else "tokenizer")
+    second = _loaded.get("tokenizer" if family == _TEXT else "processor")
     if model is None or family is None or second is None:
         raise RuntimeError("no model is loaded")
 
     source, items, kind = embed_common.request_kind(body)
-    if source == "paths" and family != _DUAL:
+    if source == "paths" and family == _TEXT:
         # **Refused by NAME, never attempted.** A text encoder has no vision
         # tower, and the tokenizer this family loaded has no idea images exist —
         # so the alternative is an `AttributeError` from inside
@@ -571,8 +653,12 @@ def generate(body):
             f"{_loaded['model_id']} is a text encoder — it has no vision tower, "
             f"so 'paths' is not something it can read. Pass 'texts' instead, or "
             f"pick a dual encoder (a SigLIP checkpoint) to embed images.")
-    if source == "paths":
+    if source == "paths" and family == _UNIFIED:
+        vectors = _unified_image_vectors(model, second, items)
+    elif source == "paths":
         vectors = _image_vectors(model, second, items)
+    elif family == _UNIFIED:
+        vectors = _unified_text_vectors(model, _loaded["tokenizer"], items, kind)
     elif family == _DUAL:
         # `kind` reaches nothing here: SigLIP has no retrieval convention, so
         # its scheme is `"none"` and there is no prefix to apply.

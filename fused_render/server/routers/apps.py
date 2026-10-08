@@ -1353,6 +1353,7 @@ def _session_choice_error(field: str, value, allowed) -> str | None:
 
 def _create_app_task(entry_html: str, prompt: str, model: str = "",
                      effort: str = "",
+                     images: list[str] | None = None,
                      permission_mode: str = "") -> tuple[dict | None, str | None]:
     """Create the scaffolding TASK: the prompt, on the app's index.html, due now.
 
@@ -1387,7 +1388,10 @@ def _create_app_task(entry_html: str, prompt: str, model: str = "",
     must not fail the creation that already succeeded, but the reason rides
     back so the UI is not silent about the prompt going nowhere. An entry that
     was stored but whose send failed comes back as the entry — its own
-    `state`/`error` say so, where every task's does."""
+    `state`/`error` say so, where every task's does.
+
+    `images` (5th, so `/api/apps/new` can pass it positionally) is the
+    composer's uploaded attachment paths, handed to `schedule.create` as-is."""
     try:
         # `permission_mode` "" keeps `schedule.create`'s default ("auto", the
         # broadest); the App Doctor CHECK task passes "plan" so the CLI itself
@@ -1395,7 +1399,7 @@ def _create_app_task(entry_html: str, prompt: str, model: str = "",
         entry = schedule.create(
             entry_html, prompt, datetime.now(timezone.utc),
             immediate=True, model=model, effort=effort,
-            permission_mode=permission_mode)
+            permission_mode=permission_mode, images=images or None)
     except Exception as exc:  # noqa: BLE001 — the reason belongs in the response
         return None, f"failed to create the app's task: {exc}"
     entry_id = str(entry.get("id") or "")
@@ -1457,6 +1461,20 @@ def api_new_app(body: dict = Body(...), x_fused: str | None = Header(default=Non
         err = _session_choice_error(field, value, allowed)
         if err is not None:
             return _error(err)
+
+    # The composer's pasted/dropped attachments: paths `POST /api/schedule/shot`
+    # minted. Shape here, containment + existence through `schedule._images`
+    # (the task-shots dir only) — BEFORE the folder is scaffolded, so a stale
+    # path is a 400 and not an app with no task.
+    images = body.get("images")
+    if images is not None and not (
+            isinstance(images, list) and all(isinstance(i, str) for i in images)):
+        return _error("'images' must be a list of strings")
+    if images:
+        try:
+            schedule._images(images)
+        except ValueError as exc:
+            return _error(str(exc))
 
     root = fused_dir()
     dest = os.path.join(root, "local", name)
@@ -1532,7 +1550,8 @@ def api_new_app(body: dict = Body(...), x_fused: str | None = Header(default=Non
 
     task, task_error = None, None
     if prompt.strip():
-        task, task_error = _create_app_task(entry_html, prompt, model, effort)
+        task, task_error = _create_app_task(entry_html, prompt, model, effort,
+                                            images)
 
     return {
         "path": os.path.abspath(dest),

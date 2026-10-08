@@ -6589,3 +6589,18 @@ The wrapper now writes `.meta` first and creates `.cmd` by tmp+mv, so a listed c
 ## D1334 — `apps_open_in_home`: apps open inside the Home window (2026-10-07, feat/apps-open-in-home-window)
 
 New global pref (default off, desktop app on macOS and Linux). The decision point is server-side, read at open time, so there is no live-apply hook and no frontend prefs race: `POST /api/windows/open` answers `{ok, in_home: true}` without calling the window hook and `openAppWindow` reads that as "not handled", so the click navigates in place like the browser shell. Hotkey launcher and the `open_app` hook call the new `WindowManager.open_app_in_home` (Home window, else MRU, else new; same frame handoff as `edit`) with `window_policy.app_home_path` (explorer view of the entry, not the embed). Once loaded the window re-keys and stops being Home, so the next app targets the MRU window by design. Linux: the WebKitGTK host had no "load into an existing window", so a new `open_in_home` IPC command plus `GtkBackend.load` do the same; the Linux frame store is keyed at creation and is not re-keyed on navigation, so the window keeps its frame name (macOS re-keys it). The Preferences toggle is disabled while native windows are off. The AppPage Open button's tooltip still says "its own window" under the pref; left as is.
+
+## D1335 — Colour presets are orthogonal to Appearance (2026-10-07, theme-presets)
+
+A preset (`default`, `high-contrast`, `midnight`) is a second attribute, `data-theme-name`, on the top-level shell `<html>`, stored in `localStorage["fused-render:theme-preset"]`; the existing `fused-render:theme` key and its values are unchanged. Each preset has a dark and a light variant in `tokens.css`, so `data-theme` still means the light/dark BASE and every consumer (Tailwind dark variant, runtime.js, templates, `=== "dark"` checks) works untouched. Phase 1 overrides only the shell's surface, ink and accent tokens, and leaves views and templates alone: they keep receiving only light/dark, and runtime.js never learns about presets. Phase 2 bridges the tailwind.css shadcn palette, the Claude chat, bots and the terminal theme. Phase 3 reaches the templates.
+
+Midnight preset: true black (OLED), it uses a golden accent (#facc15 dark, #a16207 light).
+
+Nord and Solarized were dropped before merge to avoid maintaining presets nobody asked for; stale stored ids fall back to default.
+
+Claude chat surfaces, text and border (`--c-bg`, `--c-panel`, `--c-surface`, `--c-surface-2`, `--c-bubble-user`, `--c-fg`, `--c-dim`, `--c-faint`, `--c-border`, `--c-card-bg`, `--c-card-border`) now alias the shell tokens in `apps/claude/styles/chat.css`, so the side panel follows every preset; the accent stays Claude orange.
+
+In-progress/running status colour (`--status-progress`) is now the accent (was `#facc15` / `#ca8a04`) so the app has one yellow.
+
+Midnight now uses a golden accent (#facc15 dark, #a16207 light) instead of the brand lime; the running status follows via `--accent`, so it is still one yellow per theme.
+- D1335 follow-up (review fixes): annotation layer (ann/layer.ts) stays literal because it injects into the app's own document (token leak); presets now override task/playground/am-surface tokens; High contrast derives accent roles (--accent-soft/--icon-html/--app-icon-yellow) from --accent; --c-card-border is an fg-muted mix; bootstrap preset ids pinned by tests/test_theme.py; lan.html now carries the preset bootstrap.

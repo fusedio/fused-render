@@ -163,10 +163,12 @@ try {
 /** The desk's table, fetched on mount and again whenever `signal` changes —
  *  the caller passes a digest of the task pulse (`pulseSignal`), since a task
  *  appearing adds a row and a task finishing flips a row's `unread`, both on
- *  the server. Errors keep the last answer: a failed read is not an empty desk. */
+ *  the server. Errors keep the last answer: a failed read is not an empty desk.
+ *  `enabled` false skips the fetch (the rail's copy while the sidebar is open). */
 function useCurrentApps(
   signal: string,
   refreshEpoch: number,
+  enabled = true,
 ): { entries: CurrentAppEntry[]; adopt: (apps: CurrentAppEntry[]) => void } {
   const [apps, setApps] = useState<CurrentAppEntry[]>(knownApps);
   // Every table this hook shows is SEQUENCED: a read applies only if nothing
@@ -176,6 +178,7 @@ function useCurrentApps(
   // wins; a stale answer is dropped, not merged.
   const seq = useRef(0);
   useEffect(() => {
+    if (!enabled) return;
     const mine = ++seq.current;
     getCurrentApps().then(
       (r) => {
@@ -185,7 +188,7 @@ function useCurrentApps(
       },
       () => {},
     );
-  }, [signal, refreshEpoch]);
+  }, [signal, refreshEpoch, enabled]);
   // A table handed in from elsewhere — the open's answer carries one — takes
   // the newest sequence, so any read still in flight is stale by definition.
   const adopt = useCallback((next: CurrentAppEntry[]) => {
@@ -194,6 +197,41 @@ function useCurrentApps(
     setApps(next);
   }, []);
   return { entries: apps, adopt };
+}
+
+/** The desk in the order the section shows it — for the collapsed rail's app
+ *  icons. Fetches only while `enabled` (the rail is on screen), on mount and on
+ *  the same add/open nudges the section hears; no pulse-driven refetch, and no
+ *  running/queued/unread state (the rail draws icons only). */
+export function useDeskAppsOrdered(enabled: boolean): CurrentApp[] {
+  const [refreshEpoch, setRefreshEpoch] = useState(0);
+  const { entries } = useCurrentApps("", refreshEpoch, enabled);
+  // Another tab's drag repaints here too (orderListeners): the bump is only a
+  // re-render, and the list below is rebuilt on every render — a handful of
+  // rows, so no memo to key.
+  const [, setOrderEpoch] = useState(0);
+  useEffect(() => {
+    if (!enabled) return;
+    const refetch = () => setRefreshEpoch((n) => n + 1);
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === DESK_CHANGED_KEY) refetch();
+    };
+    const onOrder = () => setOrderEpoch((n) => n + 1);
+    window.addEventListener(CURRENT_APPS_CHANGED_EVENT, refetch);
+    window.addEventListener("storage", onStorage);
+    orderListeners.add(onOrder);
+    return () => {
+      window.removeEventListener(CURRENT_APPS_CHANGED_EVENT, refetch);
+      window.removeEventListener("storage", onStorage);
+      orderListeners.delete(onOrder);
+    };
+  }, [enabled]);
+  // Expanded: the rail is not drawn and `entries` is the snapshot of the last
+  // collapse — numbering off it would renumber the section's live rows.
+  if (!enabled) return [];
+  const found = currentApps(entries, [], new Set(), []);
+  assignSequences(appOrder, found); // idempotent, same as the section's
+  return bySequence(found, appOrder);
 }
 
 interface RowDragProps {

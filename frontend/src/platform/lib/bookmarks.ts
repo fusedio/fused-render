@@ -19,6 +19,9 @@ export interface Bookmark {
   url: string;
   created_at: number;
   icon?: string; // single emoji; absent -> default ★ glyph
+  // Top-level only (folders and nested rows never pin). Pinned rows are always
+  // the HEAD of the top-level array, so pin order is just array order.
+  pinned?: boolean;
   type?: undefined; // discriminant vs BookmarkFolder
 }
 
@@ -269,10 +272,75 @@ function mutate(transform: (items: BookmarkItem[]) => BookmarkItem[] | null): Pr
   });
 }
 
+// --- pinned head ---------------------------------------------------------------
+// Pinned bookmarks are the head of the top-level array, so the sidebar's
+// non-scrolling pinned block and the tree below it are one ordered list split
+// at a point. Both readers below go by the flag rather than by position, so a
+// hand-edited file with a pin out of place still renders every pin once.
+
+const isPinned = (item: BookmarkItem): boolean => !isFolder(item) && item.pinned === true;
+
+export function pinnedBookmarks(items: BookmarkItem[]): Bookmark[] {
+  return items.filter((it): it is Bookmark => isPinned(it));
+}
+
+export function unpinnedItems(items: BookmarkItem[]): BookmarkItem[] {
+  return items.filter((it) => !isPinned(it));
+}
+
+// Index just past the last pinned top-level item — where the unpinned list
+// starts. Equal to the pinned count on a well-formed tree.
+function pinnedHeadEnd(items: BookmarkItem[]): number {
+  for (let i = items.length - 1; i >= 0; i--) if (isPinned(items[i])) return i + 1;
+  return 0;
+}
+
+// Pin (true) or unpin (false) a TOP-LEVEL bookmark. Pin moves it to the end of
+// the pinned head; unpin moves it to the top of the unpinned list — the same
+// slot, seen from either side. A nested bookmark, a folder, or a no-op
+// (already in that state) writes nothing.
+function setPinned(id: string, pinned: boolean): Promise<void> {
+  return mutate((items) => {
+    const at = items.findIndex((it) => it.id === id);
+    const target = items[at];
+    if (!target || isFolder(target) || isPinned(target) === pinned) return null;
+    items.splice(at, 1);
+    if (pinned) target.pinned = true;
+    else delete target.pinned;
+    items.splice(pinnedHeadEnd(items), 0, target);
+    return items;
+  });
+}
+
+export function pinBookmark(id: string): Promise<void> {
+  return setPinned(id, true);
+}
+
+export function unpinBookmark(id: string): Promise<void> {
+  return setPinned(id, false);
+}
+
+// Reorder INSIDE the pinned head: `id` lands just above or below `targetId`.
+// Both must be pinned top-level bookmarks; anything else writes nothing (the
+// sidebar only offers this drag between pinned rows, this is the backstop).
+export function movePinned(id: string, targetId: string, below: boolean): Promise<void> {
+  return mutate((items) => {
+    if (id === targetId) return null;
+    const from = items.findIndex((it) => it.id === id);
+    const moved = items[from];
+    const target = items.find((it) => it.id === targetId);
+    if (!moved || !target || !isPinned(moved) || !isPinned(target)) return null;
+    items.splice(from, 1);
+    const to = items.findIndex((it) => it.id === targetId) + (below ? 1 : 0);
+    items.splice(to, 0, moved);
+    return items;
+  });
+}
+
 // Id of the bookmark most recently added in this shell, for the sidebar to
 // scroll the new row into view (a new bookmark lands at the TOP of the
-// top-level list, which is above the fold once the reader has scrolled the
-// section). Consume-once via takeLastAddedBookmarkId so an unrelated later
+// unpinned top-level list, which is above the fold once the reader has
+// scrolled the section). Consume-once via takeLastAddedBookmarkId so an unrelated later
 // re-render can't scroll again.
 let lastAddedId: string | null = null;
 
@@ -289,8 +357,9 @@ export async function addBookmark(name: string, url: string): Promise<void> {
     // NEWEST FIRST (Akshil, 2026-10-04): the bookmark just made is the one the
     // reader is about to use, so it opens the list rather than closing it —
     // appended, it sat under every folder and older row, below the fold on a
-    // tree of any size. Folders and older bookmarks keep their relative order.
-    items.unshift(item);
+    // tree of any size. "The list" is the UNPINNED one: it lands right after
+    // the pinned head, never above a pin. Everything else keeps its order.
+    items.splice(pinnedHeadEnd(items), 0, item);
     return items;
   });
   // Only after the write commits — a failed PUT rejects above and leaves no
@@ -343,14 +412,18 @@ export function moveItem(
       }
     }
 
+    // Pinned rows don't drag (the sidebar gives them no drag handlers); this
+    // is the backstop, so a pin never lands in a folder or mid-list.
     const moved = removeById(items, id);
-    if (!moved) return null;
+    if (!moved || isPinned(moved)) return null;
 
     // Destination resolved AFTER removal so a vanished folder (or one that
     // lived inside the moved subtree) bails without saving — nothing is lost.
     const dest = containerOf(items, parentId);
     if (!dest) return null;
-    dest.splice(targetIndex, 0, moved);
+    // Nothing unpinned may land inside the pinned head: clamp to just past it.
+    const at = parentId === null ? Math.max(targetIndex, pinnedHeadEnd(dest)) : targetIndex;
+    dest.splice(at, 0, moved);
     return prune(items);
   });
 }
@@ -378,11 +451,12 @@ export function createFolderWith(
   return enqueue(async () => {
     const items = clone(cache);
     const target = findById(items, targetId);
-    if (!target || isFolder(target)) return null;
+    // A pin never folds into a folder (pins are top-level only).
+    if (!target || isFolder(target) || isPinned(target)) return null;
 
     // Remove dragged from wherever it lives — top level or any nested folder.
     const dragged = removeById(items, draggedId);
-    if (!dragged || isFolder(dragged)) return null; // combine is bookmarks-only
+    if (!dragged || isFolder(dragged) || isPinned(dragged)) return null; // combine is bookmarks-only
 
     // Re-find the containing array AFTER removal: if dragged shared the
     // target's parent and sat earlier, the target's index has shifted.

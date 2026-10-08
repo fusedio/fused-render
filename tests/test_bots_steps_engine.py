@@ -75,8 +75,9 @@ def test_system_prompt_fills_the_apps_root(tmp_path, monkeypatch):
 class FakeBrowser:
     """The slice of browser.Browser the steps engine and Bot touch."""
 
-    def __init__(self, data_dir, cache_dir):
+    def __init__(self, data_dir, cache_dir, proc=None):
         self.data_dir, self.cache_dir = data_dir, cache_dir
+        self.proc = proc  # a Bot passes its browser's BrowserProcess; the fake never spawns Chrome
         self.profile = os.path.join(data_dir, "profile")
         self.downloads = os.path.join(data_dir, "downloads")
         self.shot_path = os.path.join(cache_dir, "shot.png")
@@ -101,6 +102,13 @@ class FakeBrowser:
 
     def window_closed(self):
         return False
+
+    def shared(self):
+        return False
+
+    def sleep(self):
+        self.calls.append(("stop",))
+        return True
 
     def recover_stuck_google_popup(self):
         return False

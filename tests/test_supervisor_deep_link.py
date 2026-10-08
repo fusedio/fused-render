@@ -96,7 +96,7 @@ def test_file_uri_with_encoded_space_decoded_to_view_url(opened, tmp_path):
 
     f = tmp_path / "my report.parquet"  # space forces percent-encoding
     f.write_text("x")
-    uri = "file://" + quote(str(f))  # e.g. file:///tmp/.../my%20report.parquet
+    uri = f.as_uri()  # e.g. file:///tmp/.../my%20report.parquet, or file:///C:/... on Windows
     assert "%20" in uri
 
     cmd = core._absolute_command(protocol.Open(uri))
@@ -109,14 +109,14 @@ def test_file_uri_with_utf8_decoded(opened, tmp_path):
 
     f = tmp_path / "café.csv"
     f.write_text("x")
-    uri = "file://" + quote(str(f))
+    uri = f.as_uri()
     core._open_command(4242, core._absolute_command(protocol.Open(uri)))
     assert opened == [view_url(4242, str(f))]
 
 
-def test_plain_absolute_path_unchanged_by_absolute_command():
+def test_plain_absolute_path_unchanged_by_absolute_command(tmp_path):
     # A plain absolute path must not be mangled by file:// handling.
-    p = str(Path("/home/user/data.csv"))
+    p = str(tmp_path / "data.csv")
     assert core._absolute_command(protocol.Open(p)) == protocol.Open(p)
 
 

@@ -96,10 +96,12 @@ def _status_bot(b, shot_for: str, fast: bool, cursors: dict) -> dict:
     st = b.meta.get("status")
     idle = st in ("idle", "waiting", "paused", "error")
     running = b.thread is not None and b.thread.is_alive()
+    if shot_for == b.id:
+        b.last_looked = time.time()  # a shared browser's idle sleep (bot._may_sleep) must not quit under the bot on screen
     # Popped-out window closed by the user -> dock it back automatically.
     # Non-blocking: a second poll arriving mid-relaunch just skips.
-    try:
-        if b.browser.window_closed() and b.browser.lock.acquire(blocking=False):
+    try:  # only the bot that popped out watches (another bot on a shared browser would see "no tabs of mine" and dock it)
+        if b.meta.get("visible") and b.browser.window_closed() and b.browser.lock.acquire(blocking=False):
             try:
                 if b.browser.window_closed():
                     b.window(False, closed=True)
@@ -204,8 +206,11 @@ def bots_create(body: dict = Body(...), x_fused: str | None = Header(default=Non
     kind = body.get("kind") or "bot"
     if kind not in bm.KINDS:
         raise ValueError(f"kind must be one of {', '.join(bm.KINDS)}")
+    browser = body.get("browser_id") or ""
+    if not isinstance(browser, str):
+        raise ValueError("browser_id must be a browser id")
     b = registry.create(body.get("name") or "", body.get("model") or "", body.get("effort") or "", body.get("instructions") or "",
-                        preset=preset, kind=kind)
+                        preset=preset, kind=kind, browser=browser)
     if body.get("approval") in ("ask", "auto"):
         b.meta["approval"] = body["approval"]
     if body.get("build_access") in bm.BUILD_MODES:
@@ -220,6 +225,53 @@ def bots_create(body: dict = Body(...), x_fused: str | None = Header(default=Non
     if body.get("encrypt"):
         b.set_encrypt(True)
     return {"ok": True, "id": b.id}
+
+
+@router.get("/api/bots/browsers")
+@_handled
+def bots_browsers():
+    """Every browser (set of logins) a bot uses, with the bots on it (docs §5)."""
+    from fused_render.bots import browsers
+    return {"ok": True, "browsers": browsers.listing(registry.all())}
+
+
+@router.post("/api/bots/browsers/{bid}")
+@_handled
+def bots_browser_op(bid: str, body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    """Settings > Browsers: {op: rename {name} | encrypt {on} | profile {profile} | signin | dock | delete}.
+    Encrypt, profile import and sign-in go through a bot on the browser (any: the flag and the
+    profile belong to the browser; sign-in pops that bot's window). Delete moves every bot on it
+    to a fresh browser of its own, which takes the old one down with the last of them."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    from fused_render.bots import browsers
+    bm = _botmod()
+    bid = os.path.basename(bid or "")
+    bots = [b for b in registry.all() if b.browser_id == bid]
+    if not bots or not browsers.exists(bid):
+        raise ValueError("no such browser")
+    op = body.get("op") or ""
+    if op == "rename":
+        return {"ok": True, "name": browsers.rename(bid, body.get("name") or "")}
+    if op == "encrypt":
+        bots[0].set_encrypt(_truthy(body.get("on")))
+        return {"ok": True}
+    if op == "profile":
+        bm.import_profile(bots[0], body.get("profile") or "")
+        return {"ok": True}
+    if op in ("signin", "dock"):
+        b = next((x for x in bots if x.meta.get("visible")), None) or bots[0]
+        b.window(op == "signin")
+        return {"ok": True, "bot": b.id}
+    if op == "delete":
+        busy = [b.meta.get("name") or b.id for b in bots if b.thread and b.thread.is_alive()]
+        if busy:  # all or nothing: a refusal half-way would leave some bots moved and some on the old logins
+            raise ValueError(f"stop {', '.join(busy)}'s task first, then delete the browser")
+        for b in bots:
+            bm.set_browser(b, "", fresh=True)  # each gets a logged-out browser of its own; the last move removes this one
+        return {"ok": True}
+    raise ValueError("op must be rename, encrypt, profile, signin, dock or delete")
 
 
 @router.get("/api/bots/profiles")
@@ -364,13 +416,14 @@ def bot_send(bid: str, body: dict = Body(...), x_fused: str | None = Header(defa
 
 
 _CONTROL = {"pause": "pause", "resume": "resume", "stop": "stop", "takeover": "takeover",
-            "giveback": "giveback", "wake": "wake_browser"}
+            "giveback": "giveback", "wake": "wake_browser", "open": "opened"}
 
 
 @router.post("/api/bots/{bid}/{op}")
 @_handled
 def bot_control(bid: str, op: str, body: dict = Body(default=None), x_fused: str | None = Header(default=None)):
-    """pause | resume | stop | takeover | giveback | wake, and the rest of the
+    """pause | resume | stop | takeover | giveback | wake | open (the user clicked the bot open: Super Bot's
+    first task, docs §5), and the rest of the
     one-segment POSTs (window, goto, nav, tab, attach, react, flag, settings,
     profile, clone, routines, skills, reveal, tool)."""
     guard = _require_fused(x_fused)
@@ -378,8 +431,8 @@ def bot_control(bid: str, op: str, body: dict = Body(default=None), x_fused: str
         return guard
     body = body if isinstance(body, dict) else {}
     if op in _CONTROL:
-        getattr(_bot(bid), _CONTROL[op])()
-        return {"ok": True}
+        out = getattr(_bot(bid), _CONTROL[op])()
+        return {"ok": True, **(out if isinstance(out, dict) else {})}
     fn = _POSTS.get(op)
     if fn is None:
         return _error(f"unknown bot action {op!r}", 404)
@@ -501,9 +554,10 @@ def _settings(bid, body):
         b.meta["super_access"] = body["super_access"]
     if body.get("memory") is not None:
         b.set_memory(body["memory"])
+    moved = body.get("browser_id") is not None and bm.set_browser(b, str(body["browser_id"]))
     enc = body.get("encrypt")
-    if enc is not None and bool(enc) != bool(b.meta.get("encrypt")):
-        b.set_encrypt(enc)
+    if not moved and enc is not None and bool(enc) != bool(b.meta.get("encrypt")):
+        b.set_encrypt(enc)  # after a move the dialog's flag was the OLD browser's: the new one keeps its own
     if model:
         b.meta["model"] = model
     if effort:
@@ -518,7 +572,8 @@ def _profile(bid, body):
 
 
 def _clone(bid, body):
-    b = registry.clone(bid, body.get("name") or "")
+    share = body.get("share")
+    b = registry.clone(bid, body.get("name") or "", share=True if share is None else _truthy(share))
     return {"ok": True, "id": b.id}
 
 
@@ -564,7 +619,7 @@ def _reveal(bid, body):
 
 
 def _tool(bid, body):
-    """botmcp's tools/call (docs §6): delegated to the agent engine."""
+    """botmcp's tools/call (docs §5): delegated to the agent engine."""
     try:
         from fused_render.bots import agent_engine
     except Exception:  # noqa: BLE001
@@ -634,7 +689,7 @@ def bot_step_thumb(bid: str, name: str):
 @router.get("/api/bots/{bid}/tools")
 @_handled
 def bot_tools(bid: str, token: str = Query(default="")):
-    """botmcp's tools/list (docs §6): the roster the agent engine builds for this task."""
+    """botmcp's tools/list (docs §5): the roster the agent engine builds for this task."""
     try:
         from fused_render.bots import agent_engine
     except Exception:  # noqa: BLE001

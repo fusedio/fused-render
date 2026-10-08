@@ -54,6 +54,8 @@ export interface BotsState {
   fast: boolean;
   /** Bumped by select() (and on leaving the live view after renderDirty): OpenBot's render(true), "scroll the thread to the end on a new bot". */
   scrollThread: number;
+  /** jumpTo(): the message the thread scrolls to once it renders that bot (null once done). */
+  scrollSeq: { bot: string; seq: number } | null;
   /** Set by send(): the next render shows the message you just sent. The thread clears it (setScrollToEnd(false)). */
   scrollToEnd: boolean;
   banner: { show: boolean; text: string };
@@ -73,9 +75,9 @@ let S: BotsState = {
   bots: [], events: {}, cursors: {}, sel: typeof location === "undefined" ? null : initialSel(),
   usage: null, imessage: null,
   seen: typeof localStorage === "undefined" ? {} : loadSeen(), base: {}, viewed: {}, newMark: null, newCount: 0, pinned: true,
-  showHidden: false, renderDirty: false, slow: [], fast: false, scrollThread: 0, scrollToEnd: false,
+  showHidden: false, renderDirty: false, slow: [], fast: false, scrollThread: 0, scrollToEnd: false, scrollSeq: null,
   banner: { show: false, text: "" }, toasts: [],
-  buildsChip: { n: "", live: false, warn: false, fresh: false, title: "Builds · Claude tasks that create fused apps", hidden: false },
+  buildsChip: { n: "", live: false, warn: false, fresh: false, title: "Tasks · Claude tasks that create fused apps", hidden: false },
   ui: { dialog: null, panel: null, menu: null },
 };
 
@@ -194,6 +196,27 @@ function writeUrlBot(id: string | null) {
   } catch { /* no history (tests) */ }
 }
 
+const openedOnce = new Set<string>();
+const openRetryAt: Record<string, number> = {};
+const OPEN_RETRY_MS = 3_000;
+/** Tell the server the bot is open (the Bots page shows it). Once per bot per page load, except while Super Bot's first
+ *  task is `pending` (Claude not linked or not measured yet) or the call failed: then it is asked again every
+ *  OPEN_RETRY_MS so linking Claude later, or a measure landing, still starts it. The server rate-limits the measure
+ *  itself (one a minute) and finishes a recent open on its own once it lands, so asking often is cheap and a fallback. */
+function sendOpen(id: string): void {
+  if (openedOnce.has(id) || (openRetryAt[id] || 0) > Date.now()) return;
+  openedOnce.add(id);
+  void act(() => api.open(id), true).then((r) => {
+    if (r === undefined || r.setup === "pending") { openedOnce.delete(id); openRetryAt[id] = Date.now() + OPEN_RETRY_MS; }
+  });
+}
+
+/** A user gesture opened the bot (a row click): select it and send the open. */
+export function openBot(id: string): void {
+  select(id);
+  sendOpen(id);
+}
+
 export function select(id: string | null): void {
   batch(() => {
     if (id !== S.sel) { for (const cb of [...selectListeners]) cb(id); clearToast(); }  // a reply and a status toast belong to one bot
@@ -202,6 +225,13 @@ export function select(id: string | null): void {
     const b = cur(); if (b) { setNewMark(b); markSeen(b.id, b.seq); }
   });
 }
+
+/** Open `id`'s chat at message `seq` ("Read more" on a hand-off line). The thread clears scrollSeq once it has scrolled. */
+export function jumpTo(id: string, seq: number): void {
+  if (!S.bots.some((b) => b.id === id)) return;
+  batch(() => { select(id); commit({ scrollSeq: { bot: id, seq } }); });
+}
+export const clearScrollSeq = (): void => { if (S.scrollSeq) commit({ scrollSeq: null }); };
 
 // Another writer (an embedded app's params, back/forward) moved `?bot=`: follow it without the select() resets.
 function onUrlChange() {
@@ -260,6 +290,9 @@ export async function pollOnce(): Promise<void> {
       // Nothing selected yet: Super Bot (seeded on first run, registry.seed_super) is the chat a new user should land in.
       if (!S.sel && r.bots.length) select(r.bots.find((b) => b.kind === "super" && !b.hidden)?.id || r.bots.filter((b) => !b.hidden)[0]?.id || r.bots[0].id);
       if (S.sel && !r.bots.find((b) => b.id === S.sel)) select(r.bots[0]?.id || null);
+      // The bot on screen is open: the Bots page shows it (by a click, a deep link or landing here). Only this page
+      // polls, so onboarding or another page never counts. Once per bot per page load; the server ignores repeats.
+      if (S.sel && !document.hidden) sendOpen(S.sel);
       updateTitle();
     });
   } catch (e) {

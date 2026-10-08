@@ -3,17 +3,18 @@
 // trusted apps, the phone) has a first-run default that is right and lives in Settings once the bot exists. Enter
 // in Name creates; Escape, the backdrop and Cancel dismiss (null). Same black dialog as BotSettings.
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Settings2Icon } from "lucide-react";
+import { ChevronRightIcon, Settings2Icon } from "lucide-react";
 import { cn } from "@platform/lib/utils";
 import { Button } from "@platform/shadcn/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@platform/shadcn/ui/dialog";
 import { Field, FieldDescription, FieldGroup, FieldLabel } from "@platform/shadcn/ui/field";
 import { Input } from "@platform/shadcn/ui/input";
 import { NativeSelect, NativeSelectOption } from "@platform/shadcn/ui/native-select";
+import { RadioGroup, RadioGroupItem } from "@platform/shadcn/ui/radio-group";
 import { Textarea } from "@platform/shadcn/ui/textarea";
 import { Face } from "../components/Face";
 import type { Face as FaceT } from "../lib/api";
-import { EFFORTS, modelsFor } from "../lib/botform";
+import { browserOf, EFFORTS, loginGroups, loginHint, loginLabel, modelsFor } from "../lib/botform";
 import { faceOf } from "../lib/face";
 import { newBotInit, type NewBotPick } from "../lib/presets";
 import { getState } from "../state/store";
@@ -23,10 +24,13 @@ import { DIALOG_CLASS, FOOTER_CLASS } from "./BotSettings";
 
 export interface CreateBotProps {
   pick: NewBotPick;
+  /** A value creates; null (Escape, the backdrop) closes the whole New-bot flow. */
   onClose: (v: BotDialogValue | null) => void;
+  /** The Cancel button: back to the chooser (the pick was one click; the chooser is where a second thought goes). */
+  onBack: () => void;
 }
 
-export function CreateBot({ pick, onClose }: CreateBotProps) {
+export function CreateBot({ pick, onClose, onBack }: CreateBotProps) {
   const isSuper = pick.kind === "super";
   const [fresh] = useState(() => newBotInit(pick));
   const [name, setName] = useState(fresh.name || `Bot ${getState().bots.length + 1}`);
@@ -35,6 +39,13 @@ export function CreateBot({ pick, onClose }: CreateBotProps) {
   const [instructions, setInstructions] = useState(fresh.instructions || "");
   const [face, setFace] = useState<FaceT | null | undefined>(fresh.face);
   const [more, setMore] = useState(false);
+  // Logins: a fresh browser or another browser's sign-ins, listed per browser. With a Super Bot around, the default is
+  // its browser, so a new bot starts signed in wherever Super Bot is (Google, usually). Making Super Bot asks nothing.
+  const [groups] = useState(() => (isSuper ? [] : loginGroups(getState().bots)));
+  const [superBrowser] = useState(() => { const s = getState().bots.find((b) => b.kind === "super"); return s ? browserOf(s) : ""; });
+  const [share, setShare] = useState(() => !!superBrowser && groups.some((g) => g.id === superBrowser));
+  const [shareWith, setShareWith] = useState(() => (groups.some((g) => g.id === superBrowser) ? superBrowser : groups[0]?.id || ""));
+  const [showSkills, setShowSkills] = useState(false);
   const busy = useRef(false);  // the face picker (a sibling modal) is up: its clicks are not outside presses to act on
 
   // The avatar subject: the face is hashed from the name the dialog opened with until one is picked.
@@ -49,6 +60,7 @@ export function CreateBot({ pick, onClose }: CreateBotProps) {
     name: name.trim(), model, effort, instructions, memory: "", approval: "ask", buildAccess: "scoped", encrypt: false, profile: "",
     face: faceOf(bm), imessage: "", imessageEnabled: false, imessageTo: "", preset: fresh.preset || "",
     kind: isSuper ? "super" : "bot", superAccess: "ask", trustedApps: [],
+    browserId: share && groups.some((g) => g.id === shareWith) ? shareWith : "",
   });
   const ok = () => { if (name.trim()) onClose(read()); };
   const editAvatar = async () => {
@@ -58,16 +70,16 @@ export function CreateBot({ pick, onClose }: CreateBotProps) {
 
   return (
     <Dialog open modal={false} onOpenChange={(open) => { if (!open && !busy.current) onClose(null); }}>
-      <DialogContent showCloseButton={false} className={cn(DIALOG_CLASS, "sm:max-w-[480px]")}>
-        <DialogHeader className="gap-1 px-6 pt-5 pb-4">
+      <DialogContent showCloseButton={false} className={cn(DIALOG_CLASS, "flex max-h-[90vh] flex-col sm:max-w-[480px]")}>
+        <DialogHeader className="shrink-0 gap-1 px-6 pt-5 pb-4">
           <DialogTitle>{fresh.title}</DialogTitle>
           <DialogDescription className="sr-only">Name it, say what it should do, pick a model.</DialogDescription>
         </DialogHeader>
-        <FieldGroup className="px-6 pb-5">
+        <FieldGroup className="min-h-0 overflow-y-auto px-6 pb-5">
           <button type="button" disabled={isSuper} onClick={() => { void editAvatar(); }}
-            className="group flex w-fit cursor-pointer appearance-none flex-col items-center gap-1.5 self-start rounded-lg border-0 bg-transparent p-0 outline-none focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-default"
+            className="group flex w-fit cursor-pointer appearance-none flex-col items-center gap-2 self-center rounded-lg border-0 bg-transparent p-0 outline-none focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-default"
             title={isSuper ? "Super Bot's avatar is fixed" : "Edit avatar"}>
-            <span className="size-12 [&>svg]:block [&>svg]:size-full"><Face b={bm} /></span>
+            <span className="size-20 [&>svg]:block [&>svg]:size-full"><Face b={bm} /></span>
             {isSuper ? null : <span className="text-xs text-muted-foreground group-hover:text-foreground">Edit avatar</span>}
           </button>
           <Field>
@@ -75,6 +87,33 @@ export function CreateBot({ pick, onClose }: CreateBotProps) {
             <Input id="bmname" placeholder="e.g. LinkedIn scout" value={name} onChange={(e) => setName(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Enter") ok(); }} />
           </Field>
+          {groups.length ? (
+            <Field>
+              <FieldLabel>Logins</FieldLabel>
+              <RadioGroup value={share ? "share" : "fresh"} onValueChange={(v) => setShare(v === "share")} className="gap-3">
+                <label className="flex cursor-pointer items-start gap-2.5">
+                  <RadioGroupItem value="fresh" className="mt-0.5" />
+                  <span className="flex flex-col gap-0.5">
+                    <span className="text-sm">Fresh browser</span>
+                    <span className="text-[13px] text-muted-foreground">Starts logged out of everything.</span>
+                  </span>
+                </label>
+                <div className="flex flex-col gap-1.5">
+                  <label className="flex cursor-pointer items-center gap-2.5">
+                    <RadioGroupItem value="share" />
+                    <span className="text-sm">Same logins as</span>
+                  </label>
+                  <div className="flex flex-col gap-1.5 pl-[26px]">
+                    <NativeSelect className="w-full" id="bmshare" aria-label="Browser whose logins to share" value={shareWith}
+                      onChange={(e) => { setShareWith(e.target.value); setShare(true); }} onFocus={() => setShare(true)}>
+                      {groups.map((g) => <NativeSelectOption key={g.id} value={g.id}>{loginLabel(g)}</NativeSelectOption>)}
+                    </NativeSelect>
+                    <span className="text-[13px] text-muted-foreground">{loginHint(groups.find((g) => g.id === shareWith)) || "Shares that browser's sign-ins."} Log in once, every bot on it stays in.</span>
+                  </div>
+                </div>
+              </RadioGroup>
+            </Field>
+          ) : null}
           <Field>
             <FieldLabel htmlFor="bminstr">What it should do</FieldLabel>
             <Textarea id="bminstr" rows={3} value={instructions} onChange={(e) => setInstructions(e.target.value)} className="max-h-56"
@@ -96,17 +135,33 @@ export function CreateBot({ pick, onClose }: CreateBotProps) {
               <FieldDescription>How much it thinks per step. Applies from the next task.</FieldDescription>
             </Field>
           ) : null}
+          {fresh.skills.length ? (
+            <div className="-mt-2 text-sm text-muted-foreground">
+              <button type="button" aria-expanded={showSkills} onClick={() => setShowSkills((v) => !v)}
+                className="inline-flex cursor-pointer items-center gap-1 appearance-none border-0 bg-transparent p-0 text-inherit hover:text-foreground">
+                <ChevronRightIcon className={cn("size-3.5 transition-transform", showSkills && "rotate-90")} />
+                Comes with {fresh.skills.length} playbooks
+              </button>
+              {showSkills ? (
+                <ul className="mt-1.5 mb-0 list-disc space-y-0.5 pl-5">
+                  {fresh.skills.map((sk) => <li key={sk}>{sk}</li>)}
+                  <li className="list-none -ml-5 pt-1 opacity-80">Edit them under Skills once the bot exists.</li>
+                </ul>
+              ) : null}
+            </div>
+          ) : null}
           <FieldDescription className="-mt-2">
-            {fresh.presetNote ? fresh.presetNote + " " : ""}
+            {fresh.skills.length ? "" : fresh.presetNote ? fresh.presetNote + " " : ""}
             {isSuper ? "" : "It asks you before anything it cannot undo; change that and more under Settings once it exists."}
           </FieldDescription>
         </FieldGroup>
-        <DialogFooter className={cn(FOOTER_CLASS, "sm:justify-between")}>
-          <Button variant="ghost" size="icon" aria-pressed={more} aria-label="More options" title="Thinking effort" onClick={() => setMore((m) => !m)}>
+        <DialogFooter className={cn(FOOTER_CLASS, "shrink-0 sm:justify-between")}>
+          <Button variant="outline" size="icon" aria-pressed={more} aria-label="Thinking effort" title={more ? "Hide the thinking setting" : "Thinking effort"}
+            className={cn(more && "bg-foreground text-background hover:bg-foreground hover:text-background dark:bg-foreground dark:text-background dark:hover:bg-foreground")} onClick={() => setMore((m) => !m)}>
             <Settings2Icon />
           </Button>
           <div className="flex gap-2">
-            <Button variant="outline" onClick={() => onClose(null)}>Cancel</Button>
+            <Button variant="outline" onClick={onBack} title="Back to the bot picker">Cancel</Button>
             <Button disabled={!name.trim()} onClick={ok}>{isSuper ? "Make Super Bot" : "Create bot"}</Button>
           </div>
         </DialogFooter>

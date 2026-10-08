@@ -115,29 +115,34 @@ def workbench_plugin_dir() -> str | None:
 
 
 def canvases_root() -> str:
-    """Where canvas clones live (`~/.fused-render/canvases`) — the fact a template
-    needs to answer "is this target a canvas clone?", which is what gates the
-    workbench skills above.
+    """Where canvas clones live (`~/.fused-render/canvases`, or the flavor's own
+    home) — the fact a template needs to answer "is this target a canvas
+    clone?", which is what gates the workbench skills above.
 
     The server exports the already-resolved answer (`FUSED_RENDER_CANVASES_DIR`,
     from `canvases.canvases_root()`). Deliberately a DUPLICATED rule rather than
     an import — templates must not import `fused_render` (SPEC PY-15) — and the
     fallback is therefore character-for-character what `canvases.canvases_root()`
-    and `_canvas_push.canvases_root()` use: a HARDCODED `~/.fused-render/canvases`
-    that deliberately does NOT go through `home_dir()`.
+    (via `shell.storage.base_home_dir()`) and `_canvas_push.canvases_root()` use:
+    `FUSED_RENDER_HOME` if set, else `~/.fused-render`, plus `canvases` —
+    deliberately NOT through `home_dir()` above.
 
     That looks wrong beside every other helper in this module and is not: canvas
     clones are the one thing the app does not nest per branch, so resolving this
-    through `home_dir()` would answer `<home>/branches/<ref>/canvases` on a branch
-    build while the server kept its clones in `~/.fused-render/canvases`. The
-    disagreement would not raise anything — `_in_canvases_root` would simply say
-    "not a canvas" for a real clone, and the gate's default answer is to withhold
-    the workbench skills, so the failure would be silent. If the server's rule
-    ever gains branch nesting, this string moves with it (a test pins the two
-    together).
+    through `home_dir()` (which layers branch nesting on top of
+    `FUSED_RENDER_HOME_DIR`) would answer `<home>/branches/<ref>/canvases` on a
+    branch build while the server kept its clones unnested, under the flavor's
+    base home. The disagreement would not raise anything — `_in_canvases_root`
+    would simply say "not a canvas" for a real clone, and the gate's default
+    answer is to withhold the workbench skills, so the failure would be
+    silent. If the server's rule ever gains branch nesting, this string moves
+    with it (a test pins the two together).
     """
-    return os.environ.get("FUSED_RENDER_CANVASES_DIR") or os.path.expanduser(
-        "~/.fused-render/canvases")
+    override = os.environ.get("FUSED_RENDER_CANVASES_DIR")
+    if override:
+        return override
+    base = os.environ.get("FUSED_RENDER_HOME") or os.path.expanduser("~/.fused-render")
+    return os.path.join(base, "canvases")
 
 
 def fused_cli_dir() -> str | None:

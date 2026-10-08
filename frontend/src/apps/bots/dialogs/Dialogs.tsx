@@ -1,5 +1,5 @@
 // The modal host: routes the store's ui.dialog request (newBot → preset chooser → create form, settings, routines,
-// skills, usage) to its dialog,
+// skills, usage, browsers) to its dialog,
 // and always mounts the two imperative layers above them (the face picker and the confirm). Each request mounts a
 // fresh dialog, so forms start clean (add forms empty) exactly as OpenBot reset them per open.
 //
@@ -10,6 +10,7 @@ import { useEffect, useRef } from "react";
 import { closeDialog, getState, openDialog, poll, select, useBotsSelector, type DialogReq } from "../state/store";
 import { createBot, saveSettings } from "./actions";
 import { BotSettings } from "./BotSettings";
+import { BrowsersDialog } from "./Browsers";
 import { Confirm } from "./Confirm";
 import { CreateBot } from "./CreateBot";
 import { FacePicker } from "./FacePicker";
@@ -43,9 +44,14 @@ export function Dialogs() {
   }, [needDetail, b?.id]);
 
   let dialog = null;
-  // "+ New bot": the preset chooser first; a pick reopens the slot as the create form filled in from it.
+  // "+ New bot": the preset chooser first; a pick reopens the slot as the create form filled in from it. In the form,
+  // Cancel steps BACK to the chooser (the pick was one click; the chooser is where a second thought goes), while
+  // Escape and a press outside leave the whole flow. The chooser's X / outside press close.
   if (req?.kind === "newBot" && !req.pick) dialog = <PresetPicker key={key} onDone={(p) => { if (p) openDialog({ kind: "newBot", pick: p }); else closeDialog(); }} />;
-  else if (req?.kind === "newBot" && req.pick) dialog = <CreateBot key={key} pick={req.pick} onClose={(v) => { closeDialog(); if (v) void createBot(v); }} />;
+  else if (req?.kind === "newBot" && req.pick) {
+    dialog = <CreateBot key={key} pick={req.pick} onBack={() => openDialog({ kind: "newBot" })}
+      onClose={(v) => { closeDialog(); if (v) void createBot(v); }} />;
+  }
   else if (b && !needDetail) {
     if (req?.kind === "settings") {
       const bid = b.id, tab = typeof req.tab === "string" ? req.tab : undefined;
@@ -55,6 +61,7 @@ export function Dialogs() {
     else if (req?.kind === "skills") dialog = <SkillsDialog key={key} b={b} onClose={closeDialog} />;
   }
   if (req?.kind === "usage") dialog = <UsageDialog key={key} onClose={closeDialog} />;
+  if (req?.kind === "browsers") dialog = <BrowsersDialog key={key} onClose={closeDialog} />;
   return (
     <>
       {dialog}

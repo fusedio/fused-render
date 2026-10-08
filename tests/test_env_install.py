@@ -35,6 +35,7 @@ import subprocess
 import sys
 import threading
 import time
+import types
 from pathlib import Path
 
 import pytest
@@ -1394,7 +1395,17 @@ def test_a_joining_caller_starts_no_second_mirror_thread(
             started.append(1)
             super().__init__(*a, **kw)
 
-    monkeypatch.setattr(envinstall.threading, "Thread", _CountingThread)
+    # `envinstall.threading` IS the stdlib threading module (not a copy), so
+    # patching its `Thread` attribute would mutate it for every other module
+    # that imported threading too, including other tests running concurrently
+    # under xdist. A module-like shim built from threading's own namespace
+    # (Lock, get_ident, Event, … all still real) with only `Thread` swapped
+    # keeps the patch scoped to this one module's own `envinstall.threading`
+    # name, without breaking envinstall's other threading.* calls.
+    shim = types.ModuleType("threading_shim_for_test")
+    shim.__dict__.update(vars(threading))
+    shim.Thread = _CountingThread
+    monkeypatch.setattr(envinstall, "threading", shim)
 
     first = envinstall.start(proj)  # claims — spawns the mirror
     envinstall.start(proj)  # joins — must not spawn a second one
@@ -2788,11 +2799,29 @@ def test_cancellation_kills_the_recorded_pid(tmp_path, monkeypatch, detached):
     recycled one inside the SERVER's group would make an unguarded `killpg` take
     the server down with it. It killed a pytest session while this was being
     written, which is why the case is parametrized rather than assumed.
+
+    `start_new_session` is POSIX-only (the stdlib says so explicitly) — on
+    Windows it is silently ignored, so this would otherwise spawn the child
+    into the SAME console/process group as the pytest job itself, whichever
+    way `detached` fell. `cancel`'s Windows road is
+    `os.kill(pid, CTRL_BREAK_EVENT)` (`_kill`, unconditionally — there is no
+    leader check to fall back on there, unlike the POSIX branch), and
+    `GenerateConsoleCtrlEvent` targets a process GROUP id, not a bare pid: fed
+    a pid that never led a group of its own, it can land on whatever group the
+    runner's shell and every worker inherited, breaking the whole job instead
+    of just this one child. `CREATE_NEW_PROCESS_GROUP` is what actually gives
+    the child its own group on Windows — the Windows equivalent of
+    `start_new_session`, needed unconditionally there because `_kill` has no
+    "same-group" road to exercise on that platform at all (`_spawn` always
+    creates a new group); `detached` keeps choosing between the two real
+    POSIX roads.
     """
+    creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
     # A child that will not finish on its own, standing in for a slow download.
     child = subprocess.Popen(
         [sys.executable, "-c", "import time; time.sleep(600)"],
         start_new_session=detached,
+        creationflags=creationflags,
     )
     key = "ca9ce11ed0000001"  # 16 hex: keys are validated now
     d = envinstall.progress_dir(key)
@@ -2816,6 +2845,9 @@ def test_cancellation_kills_the_recorded_pid(tmp_path, monkeypatch, detached):
 
 
 @requires_fused
+@pytest.mark.skipif(os.name == "nt", reason="killpg/getpgid are POSIX-only; "
+                    "_kill's Windows path uses CTRL_BREAK_EVENT/taskkill instead, "
+                    "which this test's own-process-group hazard does not apply to")
 def test_cancelling_a_pid_in_our_own_group_does_not_kill_us(tmp_path, monkeypatch):
     """The guard, asserted directly rather than only via the parametrized case.
 
@@ -2919,8 +2951,9 @@ def test_the_worker_syncs_the_project_into_the_named_venv(tmp_path, monkeypatch)
         seen["cmd"] = cmd
         seen["cwd"] = kw.get("cwd")
         seen["env"] = kw.get("env")
-        os.makedirs(os.path.join(venv_dir, "bin"), exist_ok=True)
-        open(os.path.join(venv_dir, "bin", "python"), "w").close()
+        interpreter = worker._venv_python(venv_dir)
+        os.makedirs(os.path.dirname(interpreter), exist_ok=True)
+        open(interpreter, "w").close()
 
         class _P:
             returncode = 0
@@ -3060,8 +3093,9 @@ def test_the_sync_leaves_the_users_link_mode_alone(tmp_path, monkeypatch):
 
     def _fake_run(cmd, **kw):
         seen["env"] = kw.get("env")
-        os.makedirs(os.path.join(venv_dir, "bin"), exist_ok=True)
-        open(os.path.join(venv_dir, "bin", "python"), "w").close()
+        interpreter = worker._venv_python(venv_dir)
+        os.makedirs(os.path.dirname(interpreter), exist_ok=True)
+        open(interpreter, "w").close()
 
         class _P:
             returncode = 0
@@ -3104,8 +3138,9 @@ def test_the_sync_skips_default_dependency_groups(tmp_path, monkeypatch):
 
     def _fake_run(cmd, **kw):
         seen["cmd"] = cmd
-        os.makedirs(os.path.join(venv_dir, "bin"), exist_ok=True)
-        open(os.path.join(venv_dir, "bin", "python"), "w").close()
+        interpreter = worker._venv_python(venv_dir)
+        os.makedirs(os.path.dirname(interpreter), exist_ok=True)
+        open(interpreter, "w").close()
 
         class _P:
             returncode = 0
@@ -3128,11 +3163,12 @@ def test_the_sync_skips_default_dependency_groups(tmp_path, monkeypatch):
     assert "--no-default-groups" in seen["cmd"]
 
 
-def _fake_build_run(seen, venv_dir):
+def _fake_build_run(seen, venv_dir, worker):
     def _fake_run(cmd, **kw):
         seen["cmd"] = cmd
-        os.makedirs(os.path.join(venv_dir, "bin"), exist_ok=True)
-        open(os.path.join(venv_dir, "bin", "python"), "w").close()
+        interpreter = worker._venv_python(venv_dir)
+        os.makedirs(os.path.dirname(interpreter), exist_ok=True)
+        open(interpreter, "w").close()
 
         class _P:
             returncode = 0
@@ -3158,7 +3194,7 @@ def test_no_build_is_the_default(tmp_path, monkeypatch):
     seen = {}
 
     monkeypatch.setattr(worker.subprocess, "Popen",
-                        _fake_popen(_fake_build_run(seen, venv_dir)))
+                        _fake_popen(_fake_build_run(seen, venv_dir, worker)))
     monkeypatch.setattr(worker, "pty", None)
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
 
@@ -3189,7 +3225,7 @@ def test_no_build_also_skips_installing_the_local_project(tmp_path, monkeypatch)
     seen = {}
 
     monkeypatch.setattr(worker.subprocess, "Popen",
-                        _fake_popen(_fake_build_run(seen, venv_dir)))
+                        _fake_popen(_fake_build_run(seen, venv_dir, worker)))
     monkeypatch.setattr(worker, "pty", None)
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
 
@@ -3211,7 +3247,7 @@ def test_allow_build_drops_no_build(tmp_path, monkeypatch):
     seen = {}
 
     monkeypatch.setattr(worker.subprocess, "Popen",
-                        _fake_popen(_fake_build_run(seen, venv_dir)))
+                        _fake_popen(_fake_build_run(seen, venv_dir, worker)))
     monkeypatch.setattr(worker, "pty", None)
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
 
@@ -3240,8 +3276,9 @@ def test_a_locked_project_is_never_synced_frozen(tmp_path, monkeypatch):
 
     def _fake_run(cmd, **kw):
         seen["cmd"] = cmd
-        os.makedirs(os.path.join(venv_dir, "bin"), exist_ok=True)
-        open(os.path.join(venv_dir, "bin", "python"), "w").close()
+        interpreter = worker._venv_python(venv_dir)
+        os.makedirs(os.path.dirname(interpreter), exist_ok=True)
+        open(interpreter, "w").close()
 
         class _P:
             returncode = 0
@@ -3281,8 +3318,9 @@ def test_the_worker_writes_the_sidecar_before_the_ready_marker(tmp_path, monkeyp
     real_replace, real_open = os.replace, open
 
     def _fake_run(cmd, **kw):
-        os.makedirs(os.path.join(venv_dir, "bin"), exist_ok=True)
-        open(os.path.join(venv_dir, "bin", "python"), "w").close()
+        interpreter = worker._venv_python(venv_dir)
+        os.makedirs(os.path.dirname(interpreter), exist_ok=True)
+        open(interpreter, "w").close()
         # `uv sync` writes the lock for an unlocked project; the digest has to be
         # taken from THAT, not from the pre-sync state.
         with real_open(os.path.join(proj, "uv.lock"), "w") as fh:
@@ -3351,8 +3389,9 @@ def test_an_unmarked_venv_directory_is_removed_before_syncing(tmp_path, monkeypa
     monkeypatch.setattr(worker, "_venv_runs", lambda d: False)
 
     def _fake_run(cmd, **kw):
-        os.makedirs(os.path.join(venv_dir, "bin"), exist_ok=True)
-        open(os.path.join(venv_dir, "bin", "python"), "w").close()
+        interpreter = worker._venv_python(venv_dir)
+        os.makedirs(os.path.dirname(interpreter), exist_ok=True)
+        open(interpreter, "w").close()
 
         class _P:
             returncode = 0
@@ -3404,8 +3443,9 @@ def test_an_unmarked_venv_that_still_runs_is_adopted_not_destroyed(tmp_path, mon
     monkeypatch.setattr(worker, "_venv_runs", lambda d: True)
 
     def _fake_run(cmd, **kw):
-        os.makedirs(os.path.join(venv_dir, "bin"), exist_ok=True)
-        open(os.path.join(venv_dir, "bin", "python"), "w").close()
+        interpreter = worker._venv_python(venv_dir)
+        os.makedirs(os.path.dirname(interpreter), exist_ok=True)
+        open(interpreter, "w").close()
 
         class _P:
             returncode = 0
@@ -3443,8 +3483,9 @@ def test_an_unmarked_venv_whose_probe_is_inconclusive_is_left_alone(tmp_path, mo
     monkeypatch.setattr(worker, "_venv_runs", lambda d: None)
 
     def _fake_run(cmd, **kw):
-        os.makedirs(os.path.join(venv_dir, "bin"), exist_ok=True)
-        open(os.path.join(venv_dir, "bin", "python"), "w").close()
+        interpreter = worker._venv_python(venv_dir)
+        os.makedirs(os.path.dirname(interpreter), exist_ok=True)
+        open(interpreter, "w").close()
 
         class _P:
             returncode = 0
@@ -3525,8 +3566,9 @@ def test_a_read_only_project_syncs_in_a_mirror_beside_the_venv(tmp_path, monkeyp
     def _fake_run(cmd, **kw):
         seen["cwd"] = kw.get("cwd")
         seen["env"] = kw.get("env")
-        os.makedirs(os.path.join(venv_dir, "bin"), exist_ok=True)
-        open(os.path.join(venv_dir, "bin", "python"), "w").close()
+        interpreter = worker._venv_python(venv_dir)
+        os.makedirs(os.path.dirname(interpreter), exist_ok=True)
+        open(interpreter, "w").close()
 
         class _P:
             returncode = 0
@@ -3577,8 +3619,9 @@ def test_a_writable_project_gets_no_mirror(tmp_path, monkeypatch):
 
     def _fake_run(cmd, **kw):
         seen["cwd"] = kw.get("cwd")
-        os.makedirs(os.path.join(venv_dir, "bin"), exist_ok=True)
-        open(os.path.join(venv_dir, "bin", "python"), "w").close()
+        interpreter = worker._venv_python(venv_dir)
+        os.makedirs(os.path.dirname(interpreter), exist_ok=True)
+        open(interpreter, "w").close()
 
         class _P:
             returncode = 0
@@ -3643,8 +3686,9 @@ def test_the_mirror_keeps_the_lock_it_RESOLVED_last_time(tmp_path, monkeypatch):
     worker = _worker_module("_env_install_worker_mirror_lock")
 
     def _fake_run(cmd, **kw):
-        os.makedirs(os.path.join(venv_dir, "bin"), exist_ok=True)
-        open(os.path.join(venv_dir, "bin", "python"), "w").close()
+        interpreter = worker._venv_python(venv_dir)
+        os.makedirs(os.path.dirname(interpreter), exist_ok=True)
+        open(interpreter, "w").close()
 
         class _P:
             returncode = 0
@@ -3693,8 +3737,9 @@ def test_a_lock_the_project_SHIPS_wins_over_the_mirrors(tmp_path, monkeypatch):
     worker = _worker_module("_env_install_worker_shipped_lock")
 
     def _fake_run(cmd, **kw):
-        os.makedirs(os.path.join(venv_dir, "bin"), exist_ok=True)
-        open(os.path.join(venv_dir, "bin", "python"), "w").close()
+        interpreter = worker._venv_python(venv_dir)
+        os.makedirs(os.path.dirname(interpreter), exist_ok=True)
+        open(interpreter, "w").close()
 
         class _P:
             returncode = 0
@@ -3991,8 +4036,9 @@ def test_a_bundled_venvs_sidecar_records_its_place_in_the_PACKAGE(tmp_path, monk
     venv_dir = str(tmp_path / "home" / "venvs" / "abc")
 
     def _fake_run(cmd, **kw):
-        os.makedirs(os.path.join(venv_dir, "bin"), exist_ok=True)
-        open(os.path.join(venv_dir, "bin", "python"), "w").close()
+        interpreter = worker._venv_python(venv_dir)
+        os.makedirs(os.path.dirname(interpreter), exist_ok=True)
+        open(interpreter, "w").close()
 
         class _P:
             returncode = 0
@@ -4059,8 +4105,9 @@ def test_a_users_folder_still_gets_its_absolute_path_in_the_sidecar(tmp_path, mo
     venv_dir = str(tmp_path / "home" / "venvs" / "abc")
 
     def _fake_run(cmd, **kw):
-        os.makedirs(os.path.join(venv_dir, "bin"), exist_ok=True)
-        open(os.path.join(venv_dir, "bin", "python"), "w").close()
+        interpreter = worker._venv_python(venv_dir)
+        os.makedirs(os.path.dirname(interpreter), exist_ok=True)
+        open(interpreter, "w").close()
 
         class _P:
             returncode = 0

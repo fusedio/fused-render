@@ -235,7 +235,14 @@ def open_db():
 
 
 def new_messages(db, after_rowid):
-    """[(rowid, handle, text, service)] for 1:1 texts from others after `after_rowid`.
+    """[(rowid, handle, text, service, is_group)] for texts from others after
+    `after_rowid`, one row per message that still has text to show — the
+    channel's `_tick` is the policy layer that decides what to skip (group
+    chats, SMS, whoever isn't its owner), the same way it already decides
+    for `service`/`handle`. A row this returns always advances the cursor
+    even when the channel goes on to skip it, so a group chat (or any other
+    skipped row) at the tip of the log can never leave the cursor stuck
+    replaying rows the channel has already looked at and declined.
     `service` is the handle's ("iMessage", "SMS", "RCS"); the channel trusts only iMessage."""
     rows = db.execute(
         """select m.ROWID, h.id, m.text, m.attributedBody, c.chat_identifier, h.service
@@ -249,11 +256,9 @@ def new_messages(db, after_rowid):
         if rowid in seen:
             continue
         seen.add(rowid)
-        if (chat_id or "").startswith("chat"):
-            continue  # group chat
         t = (text or "").strip() or decode_attributed_body(body).strip()
         if t and t != "￼":  # U+FFFC = attachment-only message
-            out.append((rowid, norm_handle(handle), t, service or ""))
+            out.append((rowid, norm_handle(handle), t, service or "", (chat_id or "").startswith("chat")))
     return out
 
 
