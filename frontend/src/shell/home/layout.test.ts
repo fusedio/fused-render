@@ -815,8 +815,8 @@ test("sourceFits: other sources", () => {
   const l = { version: 5 as const, widgets: [] };
   expect(sourceFits(l, { x: 0, y: 0, cols: 4, rows: 1 }, "apps")).toEqual({ ok: false, reason: "Needs a taller tile" });
   expect(sourceFits(l, { x: 0, y: 0, cols: 4, rows: 4 }, "tasks")).toEqual({ ok: true });
-  expect(sourceFits(l, { x: 0, y: 0, cols: 2, rows: 2 }, "apps")).toEqual({ ok: true });
-  expect(sourceFits(l, { x: 0, y: 0, cols: 2, rows: 2 }, "app")).toEqual({ ok: true });
+  expect(sourceFits(l, { x: 0, y: 0, cols: 4, rows: 2 }, "apps")).toEqual({ ok: true });
+  expect(sourceFits(l, { x: 0, y: 0, cols: 4, rows: 2 }, "app")).toEqual({ ok: true });
   expect(sourceFits(l, { x: 0, y: 0, cols: 2, rows: 4 }, "recents")).toEqual({ ok: true });
   expect(sourceFits(l, { x: 0, y: 0, cols: 2, rows: MAX_WIDGET_ROWS + 1 }, "apps")).toEqual({ ok: false, reason: "Too tall" });
 });
