@@ -512,6 +512,7 @@ class Bot:
         self._tool_apps = set()
         self._skills_loaded = []
         self._handoff_queue = []  # hand-offs waiting for this bot to go idle: [(super bot id, hand-off id)], FIFO
+        self._held_lock = threading.Lock()  # one _flush_held at a time: one hand back can release control twice
         dirty = False
         if self.meta.pop("channel_forwards", None) is not None:
             dirty = True  # per-bot forwards are gone (docs §10): only a task's origin hears back
@@ -2032,19 +2033,24 @@ class Bot:
         of landing in the inbox of one that is gone."""
         if after is not None:
             after.join()
-        while True:
-            with self.lock:
-                if self.meta.get("control"):
-                    return  # taken over again: the rest wait for the next hand back
-                held = self.meta.get("held") or []
-                if not held:
-                    return
-                h, self.meta["held"] = held[0], held[1:]
-                self.save()
-            try:
-                self._deliver(h.get("text") or "", h.get("shown") or "", h.get("via") or dict(chan.WEB), {"seq": h.get("seq")})
-            except Exception:  # noqa: BLE001 — one bad message must not strand the rest
-                logger.warning("bot %s: queued message %s not delivered", self.id, h.get("seq"), exc_info=True)
+        if not self._held_lock.acquire(blocking=False):
+            return  # another flusher is delivering; it drains the queue in order
+        try:
+            while True:
+                with self.lock:
+                    if self.meta.get("control"):
+                        return  # taken over again: the rest wait for the next hand back
+                    held = self.meta.get("held") or []
+                    if not held:
+                        return
+                    h, self.meta["held"] = held[0], held[1:]
+                    self.save()
+                try:
+                    self._deliver(h.get("text") or "", h.get("shown") or "", h.get("via") or dict(chan.WEB), {"seq": h.get("seq")})
+                except Exception:  # noqa: BLE001 — one bad message must not strand the rest
+                    logger.warning("bot %s: queued message %s not delivered", self.id, h.get("seq"), exc_info=True)
+        finally:
+            self._held_lock.release()
 
     HANDBACK_STILLS = 50
 
