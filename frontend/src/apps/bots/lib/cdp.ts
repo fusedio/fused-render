@@ -9,7 +9,7 @@
 import { useSyncExternalStore } from "react";
 import { flushSync } from "react-dom";
 import { pickFile } from "@platform/lib/api";
-import { askConfirm } from "../dialogs/ask";
+import { askAuth, askConfirm } from "../dialogs/ask";
 import { act, cur, getState, poll, select, setFast, showBanner, showToast, subscribe as subscribeStore } from "../state/store";
 import { api, type Bot } from "./api";
 import { BTN, CAST, CDP_MODS, frameDims, furlTarget, keyAction, nextDown, showUrl, toPageXY, type FrameMeta, type LastDown } from "./live";
@@ -85,6 +85,7 @@ export function linkSync(): void {
     cdp("Input.setInterceptDrags", { enabled: true });
     cdp("Page.startScreencast", { format: "jpeg", ...CAST, everyNthFrame: 1 });
     publishLink();
+    syncFetch();
   };
   ws.onmessage = (ev) => {
     const m = JSON.parse(String(ev.data)), p = m.params || {};
@@ -105,9 +106,37 @@ export function linkSync(): void {
       void fileChooser(p as { backendNodeId?: number; mode?: string });
     } else if (m.method === "Input.dragIntercepted") {
       drag = { data: p.data as Record<string, unknown>, entered: false };
+    } else if (m.method === "Fetch.requestPaused") {
+      cdp("Fetch.continueRequest", { requestId: p.requestId });  // only here for the auth challenges; every request goes on at once
+    } else if (m.method === "Fetch.authRequired") {
+      void authChallenge(p as { requestId: string; request?: { url?: string }; authChallenge?: { source?: string; origin?: string; realm?: string } });
     }
   };
-  ws.onclose = ws.onerror = () => { if (link.ws === ws) { link.ws = null; publishLink(); } };
+  ws.onclose = ws.onerror = () => { if (link.ws === ws) { link.ws = null; fetchOn = false; publishLink(); } };
+}
+
+// HTTP auth (401/407 challenges) has no prompt in headless Chrome: the request just fails. With the Fetch domain enabled
+// (handleAuthRequests) Chrome asks us instead. There is no auth-only pattern, so every request pauses and is continued at
+// once while enabled; that round trip is paid only while you drive (syncFetch), never while the bot works.
+let fetchOn = false;
+const authSeen = new Set<string>();
+export function syncFetch(): void {
+  const want = inCtl();
+  if (want === fetchOn || !linked()) return;
+  fetchOn = want;
+  if (want) cdp("Fetch.enable", { handleAuthRequests: true, patterns: [{ urlPattern: "*" }] });
+  else { cdp("Fetch.disable"); authSeen.clear(); }
+}
+async function authChallenge(p: { requestId: string; request?: { url?: string }; authChallenge?: { source?: string; origin?: string; realm?: string } }): Promise<void> {
+  const ch = p.authChallenge || {}, key = `${ch.source || ""}|${ch.origin || ""}|${ch.realm || ""}`;
+  // A second challenge for the same origin+realm in one take-over means the password was wrong: stop, do not loop.
+  if (authSeen.has(key) || !inCtl()) { cdp("Fetch.continueWithAuth", { requestId: p.requestId, authChallengeResponse: { response: "CancelAuth" } }); return; }
+  authSeen.add(key);
+  const who = ch.source === "Proxy" ? `The proxy ${ch.origin || ""}` : `${ch.origin || p.request?.url || "The site"}`;
+  const creds = await askAuth("Sign in required", `${who} asks for a user name and password${ch.realm ? ` (${ch.realm})` : ""}.`);
+  cdp("Fetch.continueWithAuth", { requestId: p.requestId, authChallengeResponse: creds
+    ? { response: "ProvideCredentials", username: creds.user, password: creds.pass } : { response: "CancelAuth" } });
+  if (creds) window.setTimeout(() => authSeen.delete(key), 15000);  // a later challenge is a new attempt, not a loop
 }
 
 /** alert / confirm / prompt / beforeunload from the page. While you drive, a real dialog: confirm and beforeunload can be
@@ -500,6 +529,7 @@ export function installLive(stage: HTMLElement): () => void {
     lastBots = s.bots; lastFast = s.fast; lastSel = s.sel;
     const b = cur(); if (b) followPopups(b);
     linkSync();
+    syncFetch();
   });
 
   return () => {

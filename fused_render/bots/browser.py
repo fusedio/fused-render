@@ -1081,6 +1081,18 @@ class BrowserProcess:
                 if self.shared():
                     v._own = []
             write_json_atomic(self.session_path, sess)
+            # Headless Chrome has no permission prompt: every request is silently denied. Clipboard access is granted
+            # browser-wide so a page's own Copy buttons work (this Chrome's clipboard is private to it, measured, so a
+            # site reading it sees only what was copied inside the bot's browser). Geolocation, camera, microphone and
+            # notifications stay denied: granting those without a prompt would be a privacy decision made for the user.
+            try:
+                bws = WS(_http(port, "/json/version")["webSocketDebuggerUrl"], timeout=3)
+                try:
+                    bws.call("Browser.grantPermissions", permissions=["clipboardReadWrite", "clipboardSanitizedWrite"])
+                finally:
+                    bws.close()
+            except Exception:  # noqa: BLE001 — a Chrome without the permission names just keeps denying
+                log.debug("clipboard permission grant failed", exc_info=True)
             view = self.views[0] if self.views else None
             if view is not None and restore and restore != "about:blank":
                 try:

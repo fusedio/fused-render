@@ -7,12 +7,15 @@ import { settleConfirm, useConfirm } from "./ask";
 export function Confirm() {
   const c = useConfirm();
   const cancelRef = useRef<HTMLButtonElement>(null);
+  const userRef = useRef<HTMLInputElement>(null);
+  const passRef = useRef<HTMLInputElement>(null);
+  const creds = () => ({ user: userRef.current?.value ?? "", pass: passRef.current?.value ?? "" });
   useEffect(() => {
     if (!c) return;
-    cancelRef.current?.focus();
+    (c.onAuth ? userRef.current : cancelRef.current)?.focus();
     const key = (e: KeyboardEvent) => {
       if (e.key === "Escape") { e.stopPropagation(); settleConfirm(c.id, false); }
-      else if (e.key === "Enter") { e.stopPropagation(); e.preventDefault(); settleConfirm(c.id, true); }
+      else if (e.key === "Enter") { e.stopPropagation(); e.preventDefault(); settleConfirm(c.id, true, creds()); }
     };
     document.addEventListener("keydown", key, true);
     return () => document.removeEventListener("keydown", key, true);
@@ -23,9 +26,15 @@ export function Confirm() {
       <div className="box">
         <h3 id="cmtitle">{c?.title ?? "Delete?"}</h3>
         <p id="cmtext">{c?.text ?? ""}</p>
+        {c?.onAuth ? (
+          <div className="authfields">
+            <input ref={userRef} id="cmuser" type="text" placeholder="User name" autoComplete="username" autoCapitalize="off" spellCheck={false} />
+            <input ref={passRef} id="cmpass" type="password" placeholder="Password" autoComplete="current-password" />
+          </div>
+        ) : null}
         <div className="row">
           <button id="cmcancel" ref={cancelRef} onClick={() => c && settleConfirm(c.id, false)}>Cancel</button>
-          <button id="cmok" className={c && !c.danger ? "primary" : "danger"} onClick={() => c && settleConfirm(c.id, true)}>{c?.okLabel ?? "Delete"}</button>
+          <button id="cmok" className={c && !c.danger ? "primary" : "danger"} onClick={() => c && settleConfirm(c.id, true, creds())}>{c?.okLabel ?? "Delete"}</button>
         </div>
       </div>
     </div>

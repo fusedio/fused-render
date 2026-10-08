@@ -5,7 +5,12 @@ import { useSyncExternalStore } from "react";
 import type { Face } from "../lib/api";
 import { faceOf, type FaceDraft, type FaceSubject } from "../lib/face";
 
-export interface ConfirmReq { id: number; title: string; text: string; okLabel: string; danger: boolean; resolve: (v: boolean) => void }
+export interface Credentials { user: string; pass: string }
+export interface ConfirmReq {
+  id: number; title: string; text: string; okLabel: string; danger: boolean; resolve: (v: boolean) => void;
+  /** Set for askAuth: the dialog shows user name + password fields and hands them here (null on Cancel). */
+  onAuth?: (c: Credentials | null) => void;
+}
 export interface FacePickReq { id: number; draft: FaceDraft; onPick?: (f: Face) => void; resolve: (f: FaceDraft) => void }
 
 let confirms: ConfirmReq[] = [], pick: FacePickReq | null = null, seq = 0;
@@ -17,10 +22,17 @@ const subscribe = (l: () => void) => { listeners.add(l); return () => { listener
 export function askConfirm(title: string, text: string, okLabel = "Delete", danger = true): Promise<boolean> {
   return new Promise((resolve) => { confirms = [...confirms, { id: ++seq, title, text, okLabel, danger, resolve }]; emit(); });
 }
-/** Settle the confirm on screen. */
-export function settleConfirm(id: number, v: boolean): void {
+/** A confirm with user name + password fields (an HTTP auth challenge from the live view). Resolves null on Cancel. */
+export function askAuth(title: string, text: string): Promise<Credentials | null> {
+  return new Promise((resolve) => {
+    confirms = [...confirms, { id: ++seq, title, text, okLabel: "Sign in", danger: false, resolve: () => {}, onAuth: resolve }]; emit();
+  });
+}
+/** Settle the confirm on screen (`creds` only from the auth variant's fields). */
+export function settleConfirm(id: number, v: boolean, creds?: Credentials): void {
   const c = confirms.find((x) => x.id === id); if (!c) return;
-  confirms = confirms.filter((x) => x.id !== id); emit(); c.resolve(v);
+  confirms = confirms.filter((x) => x.id !== id); emit();
+  if (c.onAuth) c.onAuth(v && creds ? creds : null); else c.resolve(v);
 }
 export const useConfirm = (): ConfirmReq | null => useSyncExternalStore(subscribe, () => confirms[0] || null, () => confirms[0] || null);
 
