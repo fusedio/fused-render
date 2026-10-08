@@ -347,10 +347,11 @@ div.bots-page.stage .chat .msg time.when { display: none; }
 .bots-page .msg.done { align-self: flex-start; background: var(--card); box-shadow: inset 0 0 0 1px var(--line); }
 .bots-page .msg.question { align-self: flex-start; background: var(--card); }
 /* The one card still waiting on you keeps the stripe; answered ones lose it. */
-.bots-page .msg.question:not(.settled), .bots-page .msg.approval:not(.settled) { box-shadow: inset 3px 0 0 var(--warn); }
 .bots-page .msg.error { align-self: flex-start; background: var(--card); box-shadow: inset 3px 0 0 var(--err); color: var(--err); }
 /* A question with choices is a card: the prompt, then lettered rows you can click. */
 .bots-page .msg.question.card { box-shadow: none; width: min(48rem, 92%); padding: 14px 16px 16px; }
+/* The one card still waiting on you keeps the stripe (after .card, which clears it); answered ones lose it. */
+.bots-page .msg.question:not(.settled), .bots-page .msg.approval:not(.settled) { box-shadow: inset 3px 0 0 var(--warn); }
 .bots-page .msg.question .opts { display: flex; flex-direction: column; margin-top: 12px; background: var(--inset); border-radius: 12px; overflow: hidden; }
 .bots-page .msg.question .opt { display: flex; align-items: center; gap: 12px; width: 100%; text-align: left; background: transparent; border-radius: 0; padding: 10px 14px; font-size: 13px; font-weight: 300; color: var(--text); border-top: 1px solid var(--line); white-space: normal; }
 .bots-page .msg.question .opt:first-child { border-top: none; }
