@@ -23,8 +23,7 @@ DUAL_MLX_IDS = {"google/siglip2-base-patch16-384",
 # upstream safetensors, and `catalog.py`'s block header carries the reason: it is
 # where a single-format MLX build of a prose encoder exists.
 PROSE_MLX_IDS = {"mlx-community/nomicai-modernbert-embed-base-bf16"}
-UNIFIED_MLX_IDS = {"mlx-community/embeddinggemma-2-bf16"}
-MLX_IDS = DUAL_MLX_IDS | PROSE_MLX_IDS | UNIFIED_MLX_IDS
+MLX_IDS = DUAL_MLX_IDS | PROSE_MLX_IDS
 
 
 def test_the_withdrawn_torch_rows_are_gone_from_the_catalog():
@@ -73,7 +72,7 @@ def test_the_mlx_prose_row_leads_its_list_and_is_the_recommended_one():
     entries = catalog.SUGGESTIONS["mlx-embed"]
     assert entries[0]["id"] in PROSE_MLX_IDS
     assert entries[0]["recommended"] is True
-    assert {e["id"] for e in entries[1:]} == DUAL_MLX_IDS | UNIFIED_MLX_IDS
+    assert {e["id"] for e in entries[1:]} == DUAL_MLX_IDS
 
 
 def test_the_mlx_list_holds_safetensors_repos_and_the_onnx_list_does_not():
@@ -194,7 +193,7 @@ def test_every_curated_embedding_id_resolves_to_a_PROMPT_SCHEME():
     heuristic. A dual encoder correctly answers `"none"`: it has no query/passage
     convention, and that is what the route refuses `kind` on.
     """
-    prose = PROSE_ONNX_IDS | PROSE_MLX_IDS | UNIFIED_MLX_IDS
+    prose = PROSE_ONNX_IDS | PROSE_MLX_IDS
     for code in ("mlx-embed", "onnx-embed"):
         for entry in catalog.SUGGESTIONS[code]:
             scheme = formats.text_embed_scheme(entry["id"])
