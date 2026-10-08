@@ -177,7 +177,7 @@ export function AddWidgetPanel({
   );
   const folders = allFolders(loadBookmarks());
   const spec = SOURCES[source];
-  const full = !target && api.layout.widgets.length >= MAX_WIDGETS;
+  const full = (!target || target.kind === "fill") && api.layout.widgets.length >= MAX_WIDGETS;
   const chosenFolder = folders.find((f) => f.id === folderId) ?? folders[0] ?? null;
   const noFolders = source === "folder" && !folders.length;
 

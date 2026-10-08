@@ -5,7 +5,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { SourceIcon } from "./AddWidgetPanel";
 import { FormatPicks, SortChips } from "./Pickers";
-import { SOURCES, rectOf, sourceFits, type TileTarget, type WidgetSource } from "./layout";
+import { MAX_WIDGETS, SOURCES, rectOf, sourceFits, type TileTarget, type WidgetSource } from "./layout";
 import type { HomeLayoutApi } from "./useHomeLayout";
 
 const NEEDS_CHOICE = new Set<WidgetSource>(["folder", "app"]);
@@ -38,15 +38,18 @@ export function ChangeTile({
   const widget = target.kind === "swap" ? (layout.widgets.find((w) => w.id === target.widget.id) ?? target.widget) : null;
   const rect = target.kind === "swap" ? rectOf(widget ?? target.widget) : target.rect;
 
+  // Latest onClose, so the document listeners subscribe once.
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
   useEffect(() => {
     const down = (e: PointerEvent) => {
       const anchor = root.current?.parentElement;
-      if (!anchor?.contains(e.target as Node)) onClose();
+      if (!anchor?.contains(e.target as Node)) closeRef.current();
     };
     const key = (e: globalThis.KeyboardEvent) => {
       if (e.key === "Escape") {
         e.stopPropagation();
-        onClose();
+        closeRef.current();
         root.current?.parentElement?.querySelector<HTMLElement>("button")?.focus();
       }
     };
@@ -56,7 +59,7 @@ export function ChangeTile({
       document.removeEventListener("pointerdown", down, true);
       document.removeEventListener("keydown", key, true);
     };
-  }, [onClose]);
+  }, []);
 
   // Right-aligned under the anchor; one near the left edge would push the
   // 440px card off-screen, so flip it to grow rightwards there.
@@ -95,7 +98,9 @@ export function ChangeTile({
         {SOURCE_KEYS.map((s) => {
           const fit = sourceFits(layout, rect, s, widget?.id);
           const current = widget?.source === s;
-          const disabled = !fit.ok;
+          const homeFull = target.kind === "fill" && layout.widgets.length >= MAX_WIDGETS;
+          const disabled = !fit.ok || homeFull;
+          const why = homeFull ? "Home is full" : fit.ok ? null : fit.reason;
           const choice = NEEDS_CHOICE.has(s);
           return (
             <button
@@ -112,7 +117,7 @@ export function ChangeTile({
                   {SOURCES[s].label}
                   {choice ? "…" : ""}
                 </span>
-                {fit.ok ? null : <span className="hw-po-why">{fit.reason}</span>}
+                {why ? <span className="hw-po-why">{why}</span> : null}
               </span>
               {current ? <span className="hw-po-check" aria-hidden="true">✓</span> : null}
             </button>

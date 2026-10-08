@@ -784,7 +784,7 @@ function presetRows(id: PresetId, folderId?: string): PresetRow[] {
         { source: "index", x: 6, y: 1, size: "1x1" },
         folderId
           ? { source: "folder", x: 6, y: 3, size: "1x1", format: "list", folderId }
-          : { source: "sessions", x: 6, y: 3, size: "1x1", format: "list", custom: { cols: 2, rows: 2 } },
+          : { source: "bots", x: 6, y: 3, size: "1x1" },
         { source: "apps", x: 0, y: 5, size: "2x1" },
         { source: "tasks", x: 4, y: 5, size: "2x1" },
       ];
@@ -797,7 +797,7 @@ function presetRows(id: PresetId, folderId?: string): PresetRow[] {
 }
 
 /** A preset as a plain layout document with fresh ids. Files shows a bookmark
-    folder when it is given one, else recent Claude sessions in that slot. */
+    folder when it is given one, else bots in that slot. */
 export function presetLayout(id: PresetId, opts: { folderId?: string } = {}): HomeLayout {
   if (id === "workbench") {
     return { version: LAYOUT_VERSION, widgets: defaultLayout().widgets.map((w) => ({ ...w, id: newWidgetId() })) };
@@ -925,7 +925,9 @@ export function emptySlots(layout: HomeLayout): Rect[] {
       let rows = 1;
       while (y + rows < used && Array.from({ length: cols }, (_, i) => free(x + i, y + rows)).every(Boolean)) rows++;
       for (let j = 0; j < rows; j++) for (let i = 0; i < cols; i++) taken.add(`${x + i},${y + j}`);
-      if (cols >= CELL && rows >= CELL) out.push({ x, y, cols, rows });
+      if (cols < CELL || rows < CELL) continue;
+      // A hole taller than a tile can hold is offered as stacked slots.
+      for (let r = 0; r < rows; r += MAX_WIDGET_ROWS) out.push({ x, y: y + r, cols, rows: Math.min(MAX_WIDGET_ROWS, rows - r) });
     }
   }
   return out;

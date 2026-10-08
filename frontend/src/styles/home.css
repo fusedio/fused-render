@@ -1454,7 +1454,7 @@ a.hw-more:hover {
 }
 
 .hw-tb:focus-visible,
-.hw-swap button:focus-visible,
+.hw-swap > button:focus-visible,
 .hw-slot:focus-visible,
 .hw-po:focus-visible,
 .hw-sizechip:focus-visible,
@@ -1509,7 +1509,7 @@ a.hw-more:hover {
   gap: 6px;
 }
 
-.hw-swap button {
+.hw-swap > button {
   border: 1px solid var(--ctl-quiet-border);
   border-radius: 999px;
   background: var(--bg-popover);
@@ -1522,7 +1522,7 @@ a.hw-more:hover {
   cursor: pointer;
 }
 
-.hw-swap button:hover,
+.hw-swap > button:hover,
 .hw-swap-change.is-open {
   border-color: var(--accent);
 }

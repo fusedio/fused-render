@@ -215,3 +215,12 @@ The Change popover (`ChangeTile.tsx`) lists all eleven sources with the reason u
 Removed from the UI (the pure helpers `placeWidget`, `moveByArrow`, `resizeTo`, `resizeByArrow`, `compactLayout`, `setSize`, `allowedSizes` stay in layout.ts with their tests): dragging, edge resize handles and ghost, the size menu, the dashed cell lattice, Alt+arrow moves, Tidy up, Reset to default, the hint line. The hook lost `place`, `arrow`, `resizeTo`, `resizeArrow`, `tidy`, `resize`, `reset` and gained `applyPreset`, `swap`, `fill`, `restore`.
 
 Not verified without a browser: every visual (preset chips and thumbnails, the pill on every tile size, the bare tiles' overhanging x, slot look, popover placement and flip, the narrow chip row scrolling), Escape layering with the popover open.
+
+### Review fixes (edit mode v2)
+- `.hw-swap > button` so pill styles no longer leak into the Change popover.
+- Files preset without a folder falls back to bots (1x1); sessions has no size fitting 2x2 units. Tested for all presets with and without a folder.
+- Undo clears on any layout change after the preset commit (a `presetPending` ref marks the preset's own commit); leaving edit mode already cleared it.
+- Clicking the active preset is a no-op; `matchPreset` is computed once per layout.
+- ChangeTile holds `onClose` in a ref so document listeners subscribe once.
+- Fill target at MAX_WIDGETS disables every source ("Home is full"); swap targets unaffected.
+- `emptySlots` splits holes taller than MAX_WIDGET_ROWS into stacked slots.

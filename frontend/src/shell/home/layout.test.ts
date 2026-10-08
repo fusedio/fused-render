@@ -913,7 +913,25 @@ test("sourceFits: a source needs a size that fits the rect outright", () => {
 
 test("sourceFits: every preset widget fits its own rect", () => {
   for (const { id } of PRESETS) {
-    const l = presetLayout(id, { folderId: "f1" });
-    for (const w of l.widgets) expect(sourceFits(l, rectOf(w), w.source, w.id)).toEqual({ ok: true });
+    for (const folderId of ["f1", undefined]) {
+      const l = presetLayout(id, { folderId });
+      for (const w of l.widgets) expect(sourceFits(l, rectOf(w), w.source, w.id)).toEqual({ ok: true });
+    }
   }
+});
+
+test("emptySlots: a gap taller than a tile is split into stacked slots", () => {
+  const base = defaultLayout().widgets[0];
+  const l: HomeLayout = {
+    ...defaultLayout(),
+    widgets: [
+      { ...base, id: "a", x: 0, y: 0, cols: 8, rows: 1 },
+      { ...base, id: "b", x: 0, y: 11, cols: 8, rows: 1 },
+    ],
+  };
+  const slots = emptySlots(l);
+  expect(slots.length).toBeGreaterThan(1);
+  expect(slots.every((s) => s.rows <= MAX_WIDGET_ROWS && s.x === 0 && s.cols === 8)).toBe(true);
+  expect(slots.reduce((n, s) => n + s.rows, 0)).toBe(10);
+  expect(Math.min(...slots.map((s) => s.y))).toBe(1);
 });

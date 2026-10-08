@@ -9,7 +9,7 @@
 // (AppPreviewCard) with explorer cards and libs, which only the shell may
 // import together (scripts/check-boundaries.mjs). The widgets themselves are
 // in shell/home/.
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { SlidersHorizontal } from "lucide-react";
 import type { Config } from "@platform/lib/api";
 import { useRecentsVersion } from "@apps/explorer/lib/recents";
@@ -41,6 +41,18 @@ export default function Home({ config }: { config: Config }) {
   // The layout before the last preset click, for Undo.
   const prevLayout = useRef<HomeLayout | null>(null);
   const [canUndo, setCanUndo] = useState(false);
+  // True between a preset click and the layout change it produces; any later
+  // change is a further edit, which ends Undo (it would roll back past it).
+  const presetPending = useRef(false);
+  useEffect(() => {
+    if (presetPending.current) {
+      presetPending.current = false;
+      return;
+    }
+    prevLayout.current = null;
+    setCanUndo(false);
+  }, [layoutApi.layout]);
+  const active = useMemo(() => matchPreset(layoutApi.layout), [layoutApi.layout]);
   useEffect(() => {
     if (!edit) {
       setPanel(null);
@@ -77,7 +89,7 @@ export default function Home({ config }: { config: Config }) {
               <div className="hw-editbar">
                 <span className="hw-editbar-label">Layout</span>
                 <div className="hw-presets" role="radiogroup" aria-label="Layout">
-                  {matchPreset(layoutApi.layout) === null ? (
+                  {active === null ? (
                     <span className="hw-preset is-custom" aria-current="true">
                       Custom
                     </span>
@@ -87,11 +99,13 @@ export default function Home({ config }: { config: Config }) {
                       key={p.id}
                       type="button"
                       role="radio"
-                      aria-checked={matchPreset(layoutApi.layout) === p.id}
+                      aria-checked={active === p.id}
                       className="hw-preset"
                       title={p.blurb}
                       onClick={() => {
+                        if (p.id === active) return;
                         prevLayout.current = layoutApi.layout;
+                        presetPending.current = true;
                         setCanUndo(true);
                         layoutApi.applyPreset(p.id, { folderId: firstBookmarkFolderId() });
                       }}
