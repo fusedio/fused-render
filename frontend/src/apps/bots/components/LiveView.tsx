@@ -1,12 +1,12 @@
 // OpenBot's #full live view (live.js renderFullMirrors / renderTabs and the topbar + header controls), shown while
 // the store's `fast` flag is on. The socket, frames and input forwarding live in lib/cdp.ts; this renders the
 // chrome around them from the store and the link state.
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { api, type Bot } from "../lib/api";
+import { useEffect, useLayoutEffect, useRef } from "react";
+import type { Bot } from "../lib/api";
 import { gotoTyped, handBack, inFull, installLive, nav, tabstripClick, toggleCtl, useLinked } from "../lib/cdp";
 import { statusLabel } from "../lib/derive";
 import { showUrl } from "../lib/live";
-import { act, eventsOf, useBotsSelector } from "../state/store";
+import { eventsOf, useBotsSelector } from "../state/store";
 import { Toast } from "./Toast";
 
 // Tab strip: shown with more than one tab or while you are in control; switching follows the bot's own driven tab.
@@ -37,7 +37,6 @@ export function LiveView() {
   const isLinked = useLinked();
   const stageRef = useRef<HTMLDivElement>(null);
   const furlRef = useRef<HTMLInputElement>(null);
-  const [winBusy, setWinBusy] = useState<string | null>(null);  // the pop-out button's "Opening…" / "Docking…" while it works
 
   useEffect(() => (stageRef.current ? installLive(stageRef.current) : undefined), []);
 
@@ -49,7 +48,6 @@ export function LiveView() {
   }, [b, url]);
 
   const ctl = open && !!b?.control && isLinked;
-  const vis = !!b?.browser?.visible;
   // Status strip: while you drive it says so; otherwise the bot's state plus its latest thought, action or harness note.
   let fstat = "";
   if (b) {
@@ -61,14 +59,6 @@ export function LiveView() {
       : statusLabel(b) + (last && b.status === "running" ? " · " + last.text : "");
   }
 
-  // Same pop-out as the bot menu's "Open in a Chrome window": Chrome relaunches visible on the desktop (a few seconds); the live view keeps mirroring it.
-  const onWin = async () => {
-    if (!b || winBusy) return;
-    const was = vis, id = b.id;
-    setWinBusy(was ? "Docking…" : "Opening…");
-    try { await act(() => api.window(id, !was)); } finally { setWinBusy(null); }
-  };
-
   // .show = the view is open, .nolink = no frames yet (the copied thumbnail shows), .ctl = you drive (accent outline, nav enabled).
   const cls = [open && "show", open && !isLinked && "nolink", ctl && "ctl"].filter(Boolean).join(" ");
   return (
@@ -77,11 +67,6 @@ export function LiveView() {
         <button id="giveback2" className="backtxt" title="Back to chat; the bot continues" onClick={() => { void handBack(true); }}>Back</button>
         {b ? <Tabs b={b} /> : <div className="tabstrip" id="tabstrip" />}
         <span className="winacts">
-          <button id="fwin" className={winBusy ? "busy" : undefined} onClick={() => { void onWin(); }}
-            title={vis ? "Close the desktop window and drive it headless here again" : "Pop this bot's browser out as a real Chrome window on your desktop"}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2" /><path d="M8 20h8M12 16v4" /><path d="M12 13V7" /><path d="m9 10 3-3 3 3" /></svg>
-            <span className="lbl">{winBusy || (vis ? "Bring back here" : "Open in browser")}</span>
-          </button>
           <button id="ctl" className="primary" onClick={() => { void toggleCtl(); }}
             title={b?.control ? "Let the bot drive again" : "Pause the bot and drive this page yourself"}>
             <span className="lbl">{b?.control ? "Hand back" : "Take over"}</span>

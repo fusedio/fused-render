@@ -44,13 +44,12 @@ export function cdp(method: string, params: Record<string, unknown> = {}): void 
 }
 
 // ------------------------------------------------------------------ the socket ----
-/** Connect to the driven tab while the view is open; follow tab switches, relaunches and pop-outs by reconnecting when its socket URL changes. */
+/** Connect to the driven tab while the view is open; follow tab switches and relaunches by reconnecting when its socket URL changes. */
 export function linkSync(): void {
   const b = cur();
   const want = inFull() ? activeWs(b) : null;
-  const vis = !!b?.browser?.visible;
   if (link.url === want && link.ws && link.ws.readyState <= 1) {
-    if (linked() && !vis) cdp("Page.bringToFront");
+    if (linked()) cdp("Page.bringToFront");
     return;
   }
   linkClose();
@@ -59,7 +58,9 @@ export function linkSync(): void {
   const ws = new WebSocket(want); link.ws = ws;
   ws.onopen = () => {
     cdp("Page.enable");
-    if (!vis) { cdp("Page.bringToFront"); cdp("Emulation.setFocusEmulationEnabled", { enabled: true }); }
+    // Headless Chrome composites only a tab it treats as visible and focused; focus emulation is per CDP session, so this
+    // socket asks for it too (the bot's own sessions do the same in browser.py _foreground).
+    cdp("Page.bringToFront"); cdp("Emulation.setFocusEmulationEnabled", { enabled: true });
     cdp("Page.startScreencast", { format: "jpeg", ...CAST, everyNthFrame: 1 });
     publishLink();
   };
@@ -73,7 +74,7 @@ export function linkSync(): void {
       const furl = $<HTMLInputElement>("furl");
       if (furl && document.activeElement !== furl) furl.value = showUrl(p.frame?.url);
       void poll();  // title and tab strip
-    } else if (m.method === "Page.screencastVisibilityChanged" && p.visible === false && !vis) {
+    } else if (m.method === "Page.screencastVisibilityChanged" && p.visible === false) {
       cdp("Page.bringToFront"); cdp("Emulation.setFocusEmulationEnabled", { enabled: true });
     } else if (m.method === "Page.javascriptDialogOpening") {
       // A page dialog would freeze the tab; show it and accept it so the human (or the bot) can carry on.
@@ -135,11 +136,9 @@ export function openLive(id?: string): void {
   if (id && id !== getState().sel) select(id);
   openFull();
 }
-/** The thumbnail opens the live view to watch. A popped-out bot already has a real window on the desktop; opening the mirror on top of it just fights it for focus. */
+/** The thumbnail opens the live view to watch. */
 export function openFromThumb(): void {
-  const b = cur(); if (!b) return;
-  if (b.browser?.visible) { showToast({ text: "This bot's browser is open as a real window on your desktop.", ts: Date.now() / 1000 }); return; }
-  openFull();
+  if (cur()) openFull();
 }
 
 export async function takeOver(): Promise<void> {
