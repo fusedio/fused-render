@@ -94,18 +94,28 @@ function makeFetch() {
 }
 
 function makeTimers() {
-  const fns = new Map<number, () => void>();
+  const fns = new Map<number, { fn: () => void; at: number }>();
   let n = 0;
+  let now = 0;
   return {
-    setTimeout: (fn: () => void) => {
-      fns.set(++n, fn);
+    setTimeout: (fn: () => void, ms = 0) => {
+      fns.set(++n, { fn, at: now + ms });
       return n;
     },
     clearTimeout: (h: unknown) => void fns.delete(h as number),
     fireAll: () => {
-      for (const [k, f] of [...fns]) {
+      for (const [k, t] of [...fns]) {
         fns.delete(k);
-        f();
+        t.fn();
+      }
+    },
+    /** Move the fake clock forward, firing every timer that comes due. */
+    advance: (ms: number) => {
+      now += ms;
+      for (const [k, t] of [...fns].sort((x, y) => x[1].at - y[1].at)) {
+        if (t.at > now || !fns.has(k)) continue;
+        fns.delete(k);
+        t.fn();
       }
     },
     count: () => fns.size,
@@ -302,4 +312,66 @@ test("an already-aborted signal rejects at once", async () => {
   ctl.abort();
   await expect(d.fetch(URL1, { signal: ctl.signal })).rejects.toMatchObject({ name: "AbortError" });
   expect(w.upstream.calls).toHaveLength(0);
+});
+
+test("a follower re-sent to a new leader late in the window keeps its full timeout", async () => {
+  const w = world();
+  const [a, b, c] = [w.doc("a"), w.doc("b"), w.doc("c")];
+  a.fetch("/warm").catch(() => {}); // a is leader (lock 0)
+  await flush();
+  c.fetch("/warm").catch(() => {}); // c queues for the lock before b (lock 1)
+  await flush();
+  const rb = b.fetch(URL1); // b follows a (lock 2)
+  let outcome: unknown = "pending";
+  rb.then((r) => (outcome = r), (e: unknown) => (outcome = e));
+  await flush();
+  w.timers.advance(30_000);
+  a.dispose();
+  w.locks.release(0); // c takes over and b's request is re-sent to it
+  await flush();
+  await flush();
+  w.timers.advance(15_000); // 45 s in: past the original 40 s deadline
+  await flush();
+  expect(outcome).toBe("pending");
+  const live = w.upstream.calls.filter((x) => x.url === URL1 && !x.signal.aborted);
+  expect(live).toHaveLength(1);
+  live[0]!.respond(200, "late");
+  expect(await (await rb).text()).toBe("late");
+});
+
+test("a follower that becomes leader late in the window keeps its full timeout", async () => {
+  const w = world();
+  const [a, b] = [w.doc("a"), w.doc("b")];
+  a.fetch("/warm").catch(() => {}); // a is leader (lock 0)
+  await flush();
+  const rb = b.fetch(URL1); // b follows a (lock 1)
+  let outcome: unknown = "pending";
+  rb.then((r) => (outcome = r), (e: unknown) => (outcome = e));
+  await flush();
+  w.timers.advance(30_000);
+  a.dispose();
+  w.locks.release(0); // b becomes leader and serves its own request
+  await flush();
+  await flush();
+  w.timers.advance(15_000);
+  await flush();
+  expect(outcome).toBe("pending");
+  const live = w.upstream.calls.filter((x) => x.url === URL1 && !x.signal.aborted);
+  expect(live).toHaveLength(1);
+  live[0]!.respond(200, "mine");
+  expect(await (await rb).text()).toBe("mine");
+});
+
+test("with no leader ever answering, a follower rejects once FOLLOWER_TIMEOUT_MS has passed", async () => {
+  const w = world();
+  const [a, b] = [w.doc("a"), w.doc("b")];
+  a.fetch("/warm").catch(() => {});
+  await flush();
+  const rb = b.fetch(URL1);
+  await flush();
+  a.dispose();
+  w.timers.advance(FOLLOWER_TIMEOUT_MS - 1);
+  await flush();
+  w.timers.advance(1);
+  await expect(rb).rejects.toBeInstanceOf(TypeError);
 });

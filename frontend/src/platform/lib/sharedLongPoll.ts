@@ -67,6 +67,8 @@ interface Pending {
   resolve: (r: Response) => void;
   reject: (e: unknown) => void;
   timer: unknown;
+  /** Gives up on this request; the body of the follower timeout. */
+  onTimeout: () => void;
   /** The leader this request was sent to; null while local or not yet sent. */
   sentTo: string | null;
   detach: () => void;
@@ -165,6 +167,14 @@ export function createSharedLongPoll(env: SharedLongPollEnv): {
     }
   }
 
+  /** (Re)start a request's follower timeout. Every dispatch to an upstream
+   *  re-arms it: a failover must give the replacement poll its full window,
+   *  not what is left of the old one. */
+  function arm(p: Pending) {
+    env.clearTimeout(p.timer);
+    p.timer = env.setTimeout(p.onTimeout, FOLLOWER_TIMEOUT_MS);
+  }
+
   function becomeLeader() {
     if (disposed) return;
     isLeader = true;
@@ -172,6 +182,7 @@ export function createSharedLongPoll(env: SharedLongPollEnv): {
     post({ v: 1, t: "leader", id: myId });
     for (const [reqId, p] of pending) {
       p.sentTo = null;
+      arm(p);
       serve(reqId, p.url);
     }
   }
@@ -192,6 +203,7 @@ export function createSharedLongPoll(env: SharedLongPollEnv): {
         for (const [reqId, p] of pending) {
           if (p.sentTo === m.id) continue;
           p.sentTo = m.id;
+          arm(p);
           post({ v: 1, t: "req", id: reqId, to: m.id, url: p.url });
         }
         break;
@@ -261,14 +273,16 @@ export function createSharedLongPoll(env: SharedLongPollEnv): {
         resolve,
         reject,
         sentTo: null,
-        timer: env.setTimeout(() => {
+        timer: null,
+        onTimeout: () => {
           if (!pending.has(reqId)) return;
           forget();
           cancelUpstream();
           reject(new TypeError("shared long-poll: no answer"));
-        }, FOLLOWER_TIMEOUT_MS),
+        },
         detach: () => signal?.removeEventListener("abort", onAbort),
       };
+      arm(p);
       signal?.addEventListener("abort", onAbort, { once: true });
       pending.set(reqId, p);
       if (isLeader) serve(reqId, url);
