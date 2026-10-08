@@ -476,6 +476,11 @@ async def wait_async(since: int,
             return _generation, None
     while True:
         with _cond:
+            if since > _generation:
+                # Re-checked every round: `reset()` (a restart in tests) drops
+                # the generation under a parked waiter and wakes it — it must
+                # answer "reload", not re-park until the deadline.
+                return _generation, None
             if _generation > since:
                 return _generation, _keys_since(since)
             remaining = deadline - time.monotonic()

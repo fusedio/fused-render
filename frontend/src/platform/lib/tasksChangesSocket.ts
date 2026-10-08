@@ -218,7 +218,9 @@ export async function requestTasksChanges<T = Record<string, unknown>>(
     // Never opened. Before any reply ever landed that is "this document has
     // no socket" — HTTP for good, and this request goes there now. After, it
     // is a server that is down or restarting: reject, back off, retry.
-    if (transport === "unknown") {
+    // `!== "ws"`, not `=== "unknown"`: callers sharing one failed open must
+    // ALL fall back, and the first of them has already flipped it to "http".
+    if (transport !== "ws") {
       transport = "http";
       return http();
     }

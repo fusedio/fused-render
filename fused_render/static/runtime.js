@@ -2937,13 +2937,17 @@
       } catch (e) {
         return;
       }
-      const entry = data && s.pending.get(data.id);
-      if (!entry) return; // aborted client-side; the server ran it anyway
-      s.pending.delete(data.id);
+      if (!data || data.id === undefined) return;
+      // Any reply proves the transport, including one for a run the page has
+      // since aborted — else rapid supersession then a drop reads as "never
+      // answered" and pins the page to POST.
       s.replied = true;
       runProven = true;
       runRetryMs = 0;
       runRetryAt = 0;
+      const entry = s.pending.get(data.id);
+      if (!entry) return; // aborted client-side; the server ran it anyway
+      s.pending.delete(data.id);
       // Strip the envelope so the page sees the POST's body, byte for byte.
       delete data.id;
       delete data.status;
@@ -5988,8 +5992,10 @@
     } catch (e) {
       // Never opened: before any reply ever landed, this page has no socket —
       // HTTP for good, and this request goes there now. After, the server is
-      // down or restarting: reject, back off, retry.
-      if (w.transport === "unknown") {
+      // down or restarting: reject, back off, retry. `!== "ws"`, not
+      // `=== "unknown"`: callers sharing one failed open must ALL fall back,
+      // and the first of them has already flipped it to "http".
+      if (w.transport !== "ws") {
         w.transport = "http";
         return http();
       }
