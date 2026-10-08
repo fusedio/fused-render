@@ -2223,38 +2223,20 @@ a.hw-more:hover {
   padding-top: 18px;
 }
 
-.hw-search-ph {
-  width: 100%;
-  box-sizing: border-box;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 4px;
-  padding: 10px 14px;
-  color: var(--fg-muted);
-  font-size: 13px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: var(--bg);
-}
+/* Edit-mode stand-ins for the two bare widgets: the real bar's and composer's
+   own markup and classes, static, so they take the real control's shape and
+   height. They must NOT stretch with .hw-body (a stretched 999px pill was a
+   giant oval in a 2x1 cell), and the fake "input" text is a span, so it needs
+   the placeholder colour the real input gets from the UA. */
+.hw-ph { flex: 0 0 auto; width: 100%; box-sizing: border-box; margin-top: 4px; }
+.hw-ph .hw-ph-text { color: var(--fg-muted); }
+.hw-ph .files-search-input { padding: 12px 0; font-size: 14px; line-height: 1.4; min-width: 0; flex: 1 1 auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hw-ph .home-composer-input { min-height: 83px; padding: 14px 16px 6px; font-size: 14px; line-height: 1.5; }
+.hw-ph .home-composer-wrap { margin-bottom: 0; }
+.hw-ph .hw-ph-sel { display: inline-flex; align-items: center; gap: 3px; padding: 3px 2px; font-size: 12px; }
 
 .hw-widget.is-build { text-align: left; padding: 0; }
 .hw-widget.is-build .home-composer-wrap { margin-bottom: 0; }
-
-.hw-build-ph {
-  width: 100%;
-  box-sizing: border-box;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 4px;
-  padding: 10px 14px;
-  color: var(--fg-muted);
-  font-size: 13px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: var(--bg);
-}
 
 /* Add-sheet preview of the search bar: a rounded input, magnifier, placeholder bar. */
 .fp-search {

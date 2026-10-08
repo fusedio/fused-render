@@ -6624,3 +6624,8 @@ Home card and icon strips (`.hw-cards`, `.hw-icons.is-strip`) snap by proximity,
 ## 2026-10-08 — Home card strips do not snap at all
 
 The Home cards and icons strips (`.hw-cards`, `.hw-icons.is-strip`) no longer scroll-snap, not even by proximity: on 385px cards nearly every slow trackpad gesture ends short of the next snap point, and proximity snapping still pulled it back to the card it started on (CSS snapping has no speed threshold). Aligned paging stays on the ‹ › buttons, which use scrollBy.
+
+
+## 2026-10-08 — Edit-mode stand-ins reuse the real control
+
+Edit-mode stand-ins for the bare Home widgets (search, build) reuse the real control's markup and classes and do not stretch, because a flex-stretched 999px pill rendered as an oval and nothing like the control it stood for.

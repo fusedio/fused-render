@@ -39,9 +39,21 @@ export function SearchWidget({ edit, size }: { edit: boolean; size: WidgetSize }
     // Static stand-in while editing: the live box would autofocus and steal
     // typing from the edit controls.
     return (
-      <div className="hw-body hw-search-ph" aria-hidden="true">
-        <Search size={16} />
-        <span>Search files…</span>
+      <div className="hw-body hw-ph hw-search-ph" aria-hidden="true">
+        <div className="files-search-wrap">
+          <div className="files-search">
+            <span className="files-search-icon"><Search size={16} /></span>
+            <span className="files-search-input hw-ph-text">
+              {size === "1x1" ? "Search files…" : "Search your files — or paste a path like ~/Downloads"}
+            </span>
+            {size !== "1x1" && (
+              <span className="files-hero-cta files-search-allfiles">
+                All files
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14M13 6l6 6-6 6" /></svg>
+              </span>
+            )}
+          </div>
+        </div>
       </div>
     );
   }
