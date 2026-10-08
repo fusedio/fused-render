@@ -767,9 +767,10 @@
   min-width: 0;
 }
 
-/* Cards strip: one scrolling grid, `--hw-rows` tall. Cards are 330px until the
-   items overflow; then they shrink so n cards, n gaps and a peek of the next
-   card fill the row. The 56px peek must match PEEK_W in home/strip.ts. */
+/* Cards strip: one scrolling grid, `--hw-rows` tall. Cards are always 330px
+   wide. When the items overflow they shrink only as much as needed (never
+   below 240px) so n cards, n gaps and a peek of the next card fit; they never
+   grow past 330px. The 56px peek must match PEEK_W in home/strip.ts. */
 .hw-strip {
   position: relative;
   min-width: 0;
@@ -792,7 +793,7 @@
 }
 
 .hw-cards.is-overflowing {
-  grid-auto-columns: max(240px, calc((100% - 56px - var(--hw-n, 1) * 16px) / var(--hw-n, 1)));
+  grid-auto-columns: min(330px, max(240px, calc((100% - 56px - var(--hw-n, 1) * 16px) / var(--hw-n, 1))));
 }
 
 .hw-cards > * {
