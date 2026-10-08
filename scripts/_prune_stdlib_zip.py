@@ -41,26 +41,28 @@ def prune(zip_path):
 
     No match means no rewrite: the file is left untouched.
     """
-    with zipfile.ZipFile(zip_path) as zin:
-        infos = zin.infolist()
-        removed = sorted(i.filename for i in infos if _doomed(i.filename))
-        if not removed:
-            return []
-        fd, tmp = tempfile.mkstemp(
-            suffix=".tmp", dir=os.path.dirname(os.path.abspath(zip_path))
-        )
-        os.close(fd)
-        try:
+    tmp = None
+    try:
+        with zipfile.ZipFile(zip_path) as zin:
+            infos = zin.infolist()
+            removed = sorted(i.filename for i in infos if _doomed(i.filename))
+            if not removed:
+                return []
+            fd, tmp = tempfile.mkstemp(
+                suffix=".tmp", dir=os.path.dirname(os.path.abspath(zip_path))
+            )
+            os.close(fd)
             with zipfile.ZipFile(tmp, "w") as zout:
                 for info in infos:
                     if not _doomed(info.filename):
                         zout.writestr(info, zin.read(info))
-            os.chmod(tmp, stat.S_IMODE(os.stat(zip_path).st_mode))
-            os.replace(tmp, zip_path)
-        except BaseException:
-            if os.path.exists(tmp):
-                os.unlink(tmp)
-            raise
+        # The source zip is closed here: Windows refuses to replace an open file.
+        os.chmod(tmp, stat.S_IMODE(os.stat(zip_path).st_mode))
+        os.replace(tmp, zip_path)
+    except BaseException:
+        if tmp is not None and os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
     return removed
 
 
