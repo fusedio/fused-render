@@ -3,6 +3,8 @@
 // widget now measures its own body rather than one shared column.
 import { useCallback, useRef, useState } from "react";
 import { navigateUrl } from "@platform/lib/router";
+import { hrefFor, isBrowserHandledClick, openApp } from "@platform/lib/appEntry";
+import type { AppInfo } from "@platform/lib/api";
 
 // One row per section: the page measures its own width and renders exactly
 // as many full-size cards as fit — no wrapping, no clipping, no scrolling.
@@ -90,3 +92,17 @@ export function softNavigate(e: React.MouseEvent, href: string) {
   navigateUrl(href);
 }
 
+
+/** `href` and `onClick` for an anchor that opens an app: a plain left click
+    opens it in place, anything the browser owns (new tab, modifiers) falls
+    through to the href. */
+export function appLinkProps(app: AppInfo): { href: string; onClick: (e: React.MouseEvent) => void } {
+  return {
+    href: hrefFor(app),
+    onClick: (e) => {
+      if (e.defaultPrevented || isBrowserHandledClick(e)) return;
+      e.preventDefault();
+      openApp(app);
+    },
+  };
+}

@@ -1,13 +1,12 @@
 import { useState } from "react";
 import { appIconUrl } from "@platform/lib/api";
 import { isRasterIconUrl, useThemedIconSrc } from "@platform/lib/app-icon-src";
-import { hrefFor, isBrowserHandledClick, openApp } from "@platform/lib/appEntry";
 import { AppPreviewCard } from "@platform/ui/AppPreviewCard";
 import type { AppInfo } from "@platform/lib/api";
 import { fallbackTile } from "../../../dock/lib";
 import { CardStrip } from "../CardStrip";
 import { SkeletonRow } from "../skeleton";
-import { MAX_ROW, useStripCount } from "../strip";
+import { MAX_ROW, appLinkProps, useStripCount } from "../strip";
 import { usePagedApps, useHomeApps } from "../data";
 import { mergeApps } from "./mergeApps";
 import { CELL, dims, itemCapacity, type Widget } from "../layout";
@@ -38,13 +37,8 @@ function AppTile({ app }: { app: AppInfo }) {
   return (
     <a
       className="hw-tile"
-      href={hrefFor(app)}
+      {...appLinkProps(app)}
       title={name}
-      onClick={(e) => {
-        if (e.defaultPrevented || isBrowserHandledClick(e)) return;
-        e.preventDefault();
-        openApp(app);
-      }}
     >
       <AppGlyph app={app} />
       <span className="hw-tile-name">{name}</span>

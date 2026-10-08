@@ -4,12 +4,12 @@
 // ("App embed widget"): it would make a Claude chat inside the app read-only.
 import { useEffect, useState } from "react";
 import { getApps, statPath, type AppInfo, type HttpError } from "@platform/lib/api";
-import { hrefFor, isBrowserHandledClick, openApp, openTargetFor } from "@platform/lib/appEntry";
+import { openTargetFor } from "@platform/lib/appEntry";
 import { useNearViewport } from "@platform/lib/preview-start";
 import { embedUrlForFsPath, urlForFsPath } from "@platform/lib/router";
 import type { Widget } from "../layout";
 import { isWebUrl, pageTitle } from "../appPicker";
-import { softNavigate } from "../strip";
+import { appLinkProps, softNavigate } from "../strip";
 import { EmptyLine, ErrorLine } from "./bits";
 
 // One shared fetch for every app widget on a page and the frame's title lookup.
@@ -91,12 +91,7 @@ export function OpenAppLink({ app }: { app: AppInfo }) {
   return (
     <a
       className="home-sec-more"
-      href={hrefFor(app)}
-      onClick={(e) => {
-        if (e.defaultPrevented || isBrowserHandledClick(e)) return;
-        e.preventDefault();
-        openApp(app);
-      }}
+      {...appLinkProps(app)}
     >
       Open ↗
     </a>
