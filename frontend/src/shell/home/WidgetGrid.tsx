@@ -18,6 +18,7 @@ import type { HomeLayoutApi } from "./useHomeLayout";
 import {
   canPlace,
   dims,
+  emptyRows,
   moveByArrow,
   reflowToColumns,
   rectOf,
@@ -226,6 +227,13 @@ export function WidgetGrid({
     }
   }
 
+  const gaps: JSX.Element[] = [];
+  if (!edit && !searching) {
+    for (const y of emptyRows([...pos.values()])) {
+      gaps.push(<div key={`g${y}`} className="hw-row-gap" aria-hidden="true" style={placement({ x: 0, y, cols, rows: 1 })} />);
+    }
+  }
+
   const showAdd = edit && !searching;
 
   return (
@@ -245,6 +253,7 @@ export function WidgetGrid({
       onPointerCancel={endDrag}
     >
       {cells}
+      {gaps}
       {layout.widgets.map((w) => {
         // Keyed siblings: skipping the others keeps the search box mounted.
         if (searching && w.source !== "search") return null;

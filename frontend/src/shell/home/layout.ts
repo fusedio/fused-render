@@ -366,6 +366,20 @@ export function rowsUsed(widgets: Widget[]): number {
   return n;
 }
 
+/** Rows above the last occupied row that nothing covers: the gaps the user
+ *  left, which view mode must keep as tall as the edit canvas does. */
+export function emptyRows(rects: { y: number; rows: number }[]): number[] {
+  const covered = new Set<number>();
+  let end = 0;
+  for (const r of rects) {
+    for (let j = 0; j < r.rows; j++) covered.add(r.y + j);
+    end = Math.max(end, r.y + r.rows);
+  }
+  const gaps: number[] = [];
+  for (let y = 0; y < end; y++) if (!covered.has(y)) gaps.push(y);
+  return gaps;
+}
+
 /** Reading order (y, x); stable. */
 export function sortByPosition(widgets: Widget[]): Widget[] {
   return widgets.slice().sort((a, b) => a.y - b.y || a.x - b.x);

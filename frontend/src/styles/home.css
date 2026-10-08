@@ -1441,6 +1441,13 @@ a.hw-more:hover {
   pointer-events: auto;
 }
 
+/* View mode: a wholly empty row keeps the edit canvas's height, so a gap the
+   user left stays a gap instead of collapsing to the grid gap. */
+.hw-row-gap {
+  min-height: 120px;
+  pointer-events: none;
+}
+
 .hw-ghost {
   border-radius: 14px;
   pointer-events: none;

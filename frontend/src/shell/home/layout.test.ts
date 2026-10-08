@@ -8,6 +8,7 @@ import {
   canPlace,
   compactLayout,
   dims,
+  emptyRows,
   firstFreeSlot,
   itemCapacity,
   moveByArrow,
@@ -453,4 +454,13 @@ test("normalizeLayout v3 repair never places a widget beyond MAX_ROWS", () => {
   const out = normalizeLayout({ version: 3, widgets: [...full, w("dup", "apps", "1x1", "cards", 0, 0)] });
   expect(out.widgets.length).toBe(48);
   for (const o of out.widgets) expect(o.y + dims(o.size).rows).toBeLessThanOrEqual(MAX_ROWS);
+});
+
+test("emptyRows lists wholly uncovered rows above the last occupied row", () => {
+  const r = (y: number, rows = 1) => ({ y, rows });
+  expect(emptyRows([r(0), r(2)])).toEqual([1]);
+  expect(emptyRows([r(0), r(1), r(2)])).toEqual([]);
+  expect(emptyRows([r(0), r(1, 2)])).toEqual([]);
+  expect(emptyRows([r(0), r(3)])).toEqual([1, 2]);
+  expect(emptyRows([])).toEqual([]);
 });
