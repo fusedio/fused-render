@@ -80,6 +80,9 @@ export function linkSync(): void {
     cdp("Page.bringToFront"); cdp("Emulation.setFocusEmulationEnabled", { enabled: true });
     // Headless Chrome has no OS file dialog: a click on <input type=file> raises Page.fileChooserOpened here instead.
     cdp("Page.setInterceptFileChooserDialog", { enabled: true });
+    // HTML5 drag-and-drop never starts from synthetic mouse events (the OS drag loop is not there in headless): Chrome
+    // instead reports Input.dragIntercepted, and the live view replays the drag with Input.dispatchDragEvent (Puppeteer's mouse.drag).
+    cdp("Input.setInterceptDrags", { enabled: true });
     cdp("Page.startScreencast", { format: "jpeg", ...CAST, everyNthFrame: 1 });
     publishLink();
   };
@@ -100,6 +103,8 @@ export function linkSync(): void {
       void pageDialog(p as { type: string; message?: string; defaultPrompt?: string });
     } else if (m.method === "Page.fileChooserOpened") {
       void fileChooser(p as { backendNodeId?: number; mode?: string });
+    } else if (m.method === "Input.dragIntercepted") {
+      drag = { data: p.data as Record<string, unknown>, entered: false };
     }
   };
   ws.onclose = ws.onerror = () => { if (link.ws === ws) { link.ws = null; publishLink(); } };
@@ -126,6 +131,9 @@ async function fileChooser(p: { backendNodeId?: number; mode?: string }): Promis
   try { path = await pickFile({ title: "Choose a file for the page" }); } catch { path = null; }
   cdp("DOM.setFileInputFiles", { files: path ? [path] : [], backendNodeId: p.backendNodeId });
 }
+
+/** An intercepted HTML5 drag in flight: its DragData, replayed as dragEnter/dragOver on moves and drop on release. */
+let drag: { data: Record<string, unknown>; entered: boolean } | null = null;
 
 // ------------------------------------------------------------------ <select> menus ----
 // Headless Chrome paints no native popups: a <select>'s menu, a datalist's suggestions and the date picker open as
@@ -164,7 +172,7 @@ export function pickSelect(v: string | null): void {
 }
 
 export function linkClose(): void {
-  setSelMenu(null);
+  setSelMenu(null); drag = null;
   const ws = link.ws; link.ws = null; link.url = null; link.meta = null;
   if (ws) { try { if (ws.readyState === 1) ws.send(JSON.stringify({ id: ++link.id, method: "Page.stopScreencast" })); ws.close(); } catch { /* already gone */ } }
   publishLink();
@@ -284,19 +292,29 @@ const mouse = (type: string, p: { x: number; y: number }, e: MouseEvent, extra: 
  */
 export function installLive(stage: HTMLElement): () => void {
   let lastDown: LastDown = { t: 0, x: 0, y: 0, n: 0 };
+  // Our <select> menu lives inside the stage: its clicks are its own, never page input (the stage's mousedown would otherwise
+  // close the menu before the option's click could land).
+  const inMenu = (e: Event): boolean => !!(e.target as Element | null)?.closest?.(".selmenu");
   // Moves are coalesced to one per animation frame: hover menus stay responsive without flooding the socket.
   let pendingMove: { p: { x: number; y: number }; e: MouseEvent } | null = null;
   const onMove = (e: MouseEvent) => {
-    if (!inCtl()) return;
+    if (!inCtl() || inMenu(e)) return;
     const p = toPage(e); if (!p) return;
     const first = !pendingMove; pendingMove = { p, e };
-    if (first) requestAnimationFrame(() => { const m = pendingMove; pendingMove = null; if (m && inCtl()) mouse("mouseMoved", m.p, m.e); });
+    if (first) requestAnimationFrame(() => {
+      const m = pendingMove; pendingMove = null; if (!m || !inCtl()) return;
+      mouse("mouseMoved", m.p, m.e);
+      if (drag) {
+        cdp("Input.dispatchDragEvent", { type: drag.entered ? "dragOver" : "dragEnter", x: m.p.x, y: m.p.y, data: drag.data, modifiers: CDP_MODS(m.e) });
+        drag.entered = true;
+      }
+    });
   };
   // A left press first asks the page what is under it: a closed <select> opens our menu instead of Chrome's invisible one.
   // The press is sent once that answer is in, and the matching release waits for it, so the two never cross.
   let pressed: Promise<void> = Promise.resolve();
   const onDown = (e: MouseEvent) => {
-    if (!inCtl()) return; const p = toPage(e); if (!p) return;
+    if (!inCtl() || inMenu(e)) return; const p = toPage(e); if (!p) return;
     e.preventDefault(); ($("fkeys") || stage).focus();
     if (selMenu) setSelMenu(null);
     lastDown = nextDown(lastDown, performance.now(), p);
@@ -308,19 +326,24 @@ export function installLive(stage: HTMLElement): () => void {
   };
   let skipRelease = false;
   const onUp = (e: MouseEvent) => {
-    if (!inCtl()) return; const p = toPage(e) || { x: lastDown.x, y: lastDown.y };
+    if (!inCtl() || inMenu(e)) return; const p = toPage(e) || { x: lastDown.x, y: lastDown.y };
     const n = lastDown.n;
     void pressed.then(() => {
       if (skipRelease) { skipRelease = false; return; }
+      if (drag) {
+        if (!drag.entered) cdp("Input.dispatchDragEvent", { type: "dragEnter", x: p.x, y: p.y, data: drag.data, modifiers: CDP_MODS(e) });
+        cdp("Input.dispatchDragEvent", { type: "drop", x: p.x, y: p.y, data: drag.data, modifiers: CDP_MODS(e) });
+        drag = null;
+      }
       mouse("mouseReleased", p, e, { button: BTN[e.button] || "left", clickCount: n });
       setTimeout(poll, 700);  // a click may open a tab or change the title
     });
   };
-  const onCtx = (e: MouseEvent) => { if (inCtl()) e.preventDefault(); };
+  const onCtx = (e: MouseEvent) => { if (inCtl() && !inMenu(e)) e.preventDefault(); };
   // While the bot drives, a click on the page does nothing to it; offer to take over instead of silently ignoring the click.
   const onClick = async (e: MouseEvent) => {
     const b = cur();
-    if (!b || inCtl() || switching || !inFull() || !toPage(e)) return;
+    if (!b || inCtl() || switching || !inFull() || inMenu(e) || !toPage(e)) return;
     if (b.control || askedTakeover) { void takeOver(); return; }
     askedTakeover = true;
     if (await askConfirm("Take over?", "The bot pauses and you drive this page yourself. Hand back whenever you are done.", "Take over", false)) void takeOver();
@@ -332,7 +355,7 @@ export function installLive(stage: HTMLElement): () => void {
     e.preventDefault();
     cdp("Input.insertText", { text });
   };
-  const onWheel = (e: WheelEvent) => { if (!inCtl()) return; const p = toPage(e); if (!p) return; e.preventDefault(); mouse("mouseWheel", p, e, { deltaX: e.deltaX, deltaY: e.deltaY }); };
+  const onWheel = (e: WheelEvent) => { if (!inCtl() || inMenu(e)) return; const p = toPage(e); if (!p) return; e.preventDefault(); mouse("mouseWheel", p, e, { deltaX: e.deltaX, deltaY: e.deltaY }); };
   // Keys arrive through #fkeys, a hidden textarea inside the stage: only an editable element gets composition events, so
   // dead keys (⌥e e → é) and IMEs (日本) compose there and land in the page as one Input.insertText on compositionend. Plain
   // keys are forwarded as CDP key events (keyAction) and prevented from typing into the textarea; it is emptied after each.
