@@ -175,3 +175,55 @@ def test_new_window_after_mru_touch_does_not_land_on_newest():
     f = me.ns.frame()
     assert (f.origin.x, f.origin.y + f.size.height) != (120, 480)
     assert not me.manager.placed_at("n", f.origin.x, f.origin.y + f.size.height, me)
+
+
+# --- Dock click (`WindowManager.reopen`) -----------------------------------
+
+
+def _reopen_mgr(mw, windows, key=None, front=None):
+    opened = []
+    m = types.SimpleNamespace(
+        _windows=windows, home_url="http://127.0.0.1:1/", open=opened.append
+    )
+    m.key = lambda: key
+    m.front = lambda: front
+    m._pick = lambda c: mw.WindowManager._pick(m, c)
+    return m, opened
+
+
+def _shown_win(shown, name):
+    return types.SimpleNamespace(ns=object(), show=lambda: shown.append(name))
+
+
+def test_reopen_shows_the_only_window_and_opens_nothing():
+    mw = _mw()
+    shown = []
+    m, opened = _reopen_mgr(mw, [_shown_win(shown, "a")])
+    mw.WindowManager.reopen(m)
+    assert shown == ["a"] and opened == []
+
+
+def test_reopen_picks_the_key_window_among_several():
+    mw = _mw()
+    shown = []
+    a, b, c = (_shown_win(shown, n) for n in "abc")
+    m, opened = _reopen_mgr(mw, [a, b, c], key=b)
+    mw.WindowManager.reopen(m)
+    assert shown == ["b"] and opened == []
+
+
+def test_reopen_falls_back_to_most_recent_window():
+    mw = _mw()
+    shown = []
+    a, b = _shown_win(shown, "a"), _shown_win(shown, "b")
+    m, opened = _reopen_mgr(mw, [a, b])
+    mw.WindowManager.reopen(m)
+    assert shown == ["b"] and opened == []
+
+
+def test_reopen_opens_home_when_no_live_window():
+    mw = _mw()
+    closed = types.SimpleNamespace(ns=None, show=lambda: pytest.fail("closed window shown"))
+    m, opened = _reopen_mgr(mw, [closed])
+    mw.WindowManager.reopen(m)
+    assert opened == [m.home_url]

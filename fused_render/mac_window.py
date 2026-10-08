@@ -1170,12 +1170,16 @@ class WindowManager:
         return self.open(self.url_for_path(fs_path))
 
     def reopen(self) -> None:
-        """A macOS Dock-icon click on the running app: always a fresh Home
-        window, whatever is already open — the Dock is the "give me another
-        one" door, exactly like File → New Window. (It used to bring the
-        front window forward instead, which made a second window unreachable
-        from the Dock.)"""
-        self.open(self.home_url)
+        """A macOS Dock-icon click on the running app: raise the window the
+        user was last in (key, else front, else most recently used), like
+        other Mac apps; `show` restores it if minimized. Home opens only when
+        no window is open. A new window is File → New Window or the
+        launcher's Home row (`show_home`)."""
+        win = self._pick([w for w in self._windows if w.ns is not None])
+        if win is None:
+            self.open(self.home_url)
+        else:
+            win.show()
 
     def show_tasks(self) -> None:
         """Window → Tasks (⌘⇧T): a window already on the Tasks page comes to
@@ -1212,8 +1216,7 @@ class WindowManager:
 
     def show_home(self) -> None:
         """The launcher's last row / <modifier>+0: always a fresh Home window,
-        even if one is already open — same semantics as the Dock icon
-        (`reopen`). Apps keep focus-or-open (`focus_or_open_app`); Home is
+        even if one is already open — like File → New Window. Apps keep focus-or-open (`focus_or_open_app`); Home is
         the one row that always means "another one"."""
         self.open(self.home_url)
 
