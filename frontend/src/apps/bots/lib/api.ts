@@ -76,6 +76,8 @@ export interface BrowserState {
   running: boolean;
   url?: string;
   title?: string;
+  /** Popped out as a real Chrome window on the desktop (the explicit escape hatch for passkeys and password managers). */
+  headed?: boolean;
   sealed?: boolean;
   encrypt?: boolean;
   /** Another bot drives this browser too (the bot's `shared_with` is non-empty). */
@@ -331,6 +333,8 @@ export const api = {
   stop: (id: string) => post<Ok>(`${bid(id)}/stop`, {}, "stop"),
   takeover: (id: string) => post<Ok>(`${bid(id)}/takeover`, {}, "takeover"),
   giveback: (id: string) => post<Ok>(`${bid(id)}/giveback`, {}, "giveback"),
+  popout: (id: string) => post<Ok>(`${bid(id)}/popout`, {}, "popout"),
+  dock: (id: string) => post<Ok>(`${bid(id)}/dock`, {}, "dock"),
   wake: (id: string) => post<Ok>(`${bid(id)}/wake`, {}, "wake"),
   /** The user clicked this bot open (or deep-linked to it): Super Bot's first task starts from this, nothing else. */
   open: (id: string) => post<Ok & { setup?: "started" | "pending" | "none" }>(`${bid(id)}/open`, {}, "open"),

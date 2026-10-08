@@ -98,6 +98,18 @@ def _status_bot(b, shot_for: str, fast: bool, cursors: dict) -> dict:
     running = b.thread is not None and b.thread.is_alive()
     if shot_for == b.id:
         b.last_looked = time.time()  # a shared browser's idle sleep (bot._may_sleep) must not quit under the bot on screen
+    # A popped-out window the user closed -> back to headless, bot in control. Non-blocking: a poll mid-relaunch skips.
+    try:
+        if b.browser.headed() and b.meta.get("control") and b.browser.window_closed() and b.browser.lock.acquire(blocking=False):
+            try:
+                if b.browser.window_closed():
+                    b.dock(closed=True)
+            except Exception:  # noqa: BLE001
+                pass
+            finally:
+                b.browser.lock.release()
+    except Exception:  # noqa: BLE001
+        pass
     if b.idle_sleep_due(shot_for == b.id):
         # Quitting Chrome (and sealing for encrypted bots) takes seconds: off the poll
         # thread. The sleep thread takes the browser RLock itself (a lock taken here
@@ -404,13 +416,13 @@ def bot_send(bid: str, body: dict = Body(...), x_fused: str | None = Header(defa
 
 
 _CONTROL = {"pause": "pause", "resume": "resume", "stop": "stop", "takeover": "takeover",
-            "giveback": "giveback", "wake": "wake_browser", "open": "opened"}
+            "giveback": "giveback", "popout": "popout", "dock": "dock", "wake": "wake_browser", "open": "opened"}
 
 
 @router.post("/api/bots/{bid}/{op}")
 @_handled
 def bot_control(bid: str, op: str, body: dict = Body(default=None), x_fused: str | None = Header(default=None)):
-    """pause | resume | stop | takeover | giveback | wake | open (the user clicked the bot open: Super Bot's
+    """pause | resume | stop | takeover | giveback | popout | dock | wake | open (the user clicked the bot open: Super Bot's
     first task, docs §5), and the rest of the
     one-segment POSTs (goto, nav, tab, attach, react, flag, settings,
     profile, clone, routines, skills, reveal, tool)."""

@@ -201,7 +201,7 @@ POST   /api/bots/browsers/<bid>       {op: rename {name} | encrypt {on} | profil
 GET    /api/bots/usage                -> the usage summary
 GET    /api/bots/imessage             -> the bridge state
 POST   /api/bots/<id>/send            {text, reply_to?}                     -> {ok}      (also answers approvals/questions/offers)
-POST   /api/bots/<id>/pause | resume | stop | takeover | giveback | wake    -> {ok}
+POST   /api/bots/<id>/pause | resume | stop | takeover | giveback | popout | dock | wake    -> {ok}
 POST   /api/bots/<id>/goto            {url}                                 -> {ok, url}
 POST   /api/bots/<id>/nav             {op: back|forward|reload}             -> {ok, url}
 POST   /api/bots/<id>/tab             {tab: new|switch|close, url?, index?} -> {ok, url, tabs}
@@ -413,7 +413,12 @@ table plus macOS editing commands, with `Input.insertText` for IME and any
 character the table does not know). Relaunching the profile visible for a
 take-over (the old `window` route) is gone: every relaunch cost a new port,
 new target ids, a profile unlock and, on a shared browser, every other bot's
-window. Delete keeps a browser other
+window. One deliberate relaunch remains, `popout`/`dock` ("Real window" in the
+live view): the same profile as a real Chrome window for what no screencast
+carries (passkeys, the password manager, print), with a clean stop first
+(`Browser.close`, wait for the pid and `SingletonLock`) so ProcessSingleton
+never forwards the new launch to the dying process; a closed window docks
+itself on the next status poll. Delete keeps a browser other
 bots still use; the last bot takes it down. Settings' `browser_id` moves a bot
 (`bot.set_browser`): off a shared browser its tabs close, off a private one
 Chrome stops and the folder goes; refused mid-task. Clone shares by default.

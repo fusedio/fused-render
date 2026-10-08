@@ -1958,7 +1958,33 @@ class Bot:
         self.wake_browser()
         self.set_status("paused" if self.thread and self.thread.is_alive() else "idle", control=True)
 
+    def popout(self):
+        """Open this bot's browser as a real Chrome window on the desktop and hand it to
+        the user: the explicit escape hatch for what the live view cannot carry (passkeys,
+        the password manager, print). The only relaunch left; a shared browser pops out
+        for every bot on it, so it is refused while another of them is mid-task."""
+        busy = [o["name"] for o in self.shared_with() if (lambda b: b and b.thread and b.thread.is_alive() and not b.pause_flag.is_set())(_registry().get(o["id"]))]
+        if busy:
+            raise ValueError(f"{', '.join(busy)} is working in this shared browser; stop or pause that task first")
+        self.pause(note=False)
+        self.browser.popout()
+        self.set_status("paused" if self.thread and self.thread.is_alive() else "idle", control=True)
+        shared = (" Every bot sharing this browser is in that window too." if self.shared_with() else "")
+        self.emit("system", "Opened the browser as a real Chrome window on your desktop. Hand back (or close the window) when you are done." + shared)
+
+    def dock(self, closed=False):
+        """Back to headless after `popout`, with control returned to the bot."""
+        self.browser.dock()
+        self.meta["control"] = False
+        self.save()
+        self.emit("system", ("Window closed; the browser is back here, headless, and the bot has control again."
+                             if closed else "The browser is headless again; the live view is the only window."))
+        self.resume(note=False)
+
     def giveback(self):
+        if self.browser.headed():
+            self.dock()
+            return
         self.meta["control"] = False
         self.save()
         self.resume()

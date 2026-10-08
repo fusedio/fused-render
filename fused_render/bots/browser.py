@@ -1002,18 +1002,64 @@ class BrowserProcess:
             return False
 
     def start(self):
-        """Launch Chrome (headless, always) for this profile unless it is already up
-        with the live view's origin allowed; returns the session. Chrome is never
-        relaunched for a take-over: the user drives the same tab from the live view."""
+        """Launch headless Chrome for this profile unless it is already up with the
+        live view's origin allowed; returns the session. Chrome is never relaunched
+        for a take-over: the user drives the same tab from the live view. A profile
+        popped out as a real window (`popout`) is left as it is: `dock` ends that."""
         origin = page_origin()
         with self.lock:
             sess = self.session()
             restore = ""
             if self.alive(sess):
-                if sess.get("origin") == origin:
+                if sess.get("origin") == origin or sess.get("headed"):
                     return sess
                 restore = sess.get("url") or ""  # a relaunch just to pick up the flag keeps the page
                 self.stop(seal=False)
+            return self._launch(origin, False, restore)
+
+    def headed(self):
+        return bool((self.session() or {}).get("headed"))
+
+    def popout(self, url=""):
+        """The one deliberate relaunch left: the same profile as a real Chrome window
+        on the desktop, for what no screencast can carry (passkeys, the password
+        manager, print). Clean stop first, so ProcessSingleton never forwards the
+        new launch to the dying process. Returns the session; a no-op when headed."""
+        with self.lock:
+            sess = self.session()
+            if self.alive(sess) and sess.get("headed"):
+                return sess
+            url = url or (sess or {}).get("url") or ""
+            if self.alive(sess):
+                self.stop(seal=False)
+            return self._launch(page_origin(), True, url)
+
+    def dock(self, url=""):
+        """Back to headless after `popout` (the window may already be gone). Returns the session."""
+        with self.lock:
+            sess = self.session()
+            if sess and not sess.get("headed") and self.alive(sess):
+                return sess
+            url = url or (sess or {}).get("url") or ""
+            if sess:
+                self.stop(seal=False)
+            return self._launch(page_origin(), False, url)
+
+    def window_closed(self):
+        """A popped-out profile whose user closed the window: Chrome quit, or (macOS)
+        is still running with no page target left. False for a headless profile."""
+        sess = self.session()
+        if not sess or not sess.get("headed"):
+            return False
+        if not self.alive(sess):
+            return True
+        try:
+            return not any(t.get("type") == "page" for t in _http(sess["port"], "/json/list"))
+        except Exception:  # noqa: BLE001
+            return True
+
+    def _launch(self, origin, headed, restore):
+        with self.lock:
             self.unseal()
             os.makedirs(self.profile, exist_ok=True)
             os.makedirs(self.cache_dir, exist_ok=True)
@@ -1026,14 +1072,14 @@ class BrowserProcess:
             except FileNotFoundError:
                 pass
             chrome = find_chrome()
+            # Headless renders at LIVE_SCALE natively (crisp live view) instead of a per-session Emulation
+            # override: overrides die with the DevTools session that set them, so every screenshot connection
+            # closing made the viewport snap back to 1x and the live view flip size. A popped-out window is a
+            # plain Chrome; occluded windows must keep compositing or the live view's mirror of it freezes.
+            mode = ["--disable-backgrounding-occluded-windows", "--disable-renderer-backgrounding"] if headed else [
+                "--headless=new", f"--user-agent={_clean_user_agent(chrome)}", f"--force-device-scale-factor={LIVE_SCALE}"]
             args = [
-                chrome, "--headless=new",
-                f"--user-agent={_clean_user_agent(chrome)}",
-                # Headless renders at LIVE_SCALE natively (crisp live view) instead of
-                # a per-session Emulation override: overrides die with the DevTools
-                # session that set them, so every screenshot connection closing made
-                # the viewport snap back to 1x and the live view flip size.
-                f"--force-device-scale-factor={LIVE_SCALE}",
+                chrome, *mode,
                 "--remote-debugging-port=0",
                 f"--remote-allow-origins={origin}",  # lets the page's live view connect directly
                 f"--user-data-dir={self.profile}",
@@ -1043,12 +1089,12 @@ class BrowserProcess:
                 # dismissing the restore bubble resets; headless never can, so the bubble must never be asked for.
                 "--hide-crash-restore-bubble",
                 f"--window-size={VIEWPORT[0]},{VIEWPORT[1]}",
-                "about:blank",
+                _with_scheme(restore) if headed and restore and restore != "about:blank" else "about:blank",
             ]
             proc = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                     stderr=subprocess.DEVNULL, start_new_session=True, close_fds=False)
             self._proc = proc
-            sess = {"port": 0, "pid": proc.pid, "started": time.time(), "origin": origin}
+            sess = {"port": 0, "pid": proc.pid, "started": time.time(), "origin": origin, "headed": headed}
             for _ in range(100):
                 if not sess["port"]:
                     try:
@@ -1094,7 +1140,12 @@ class BrowserProcess:
             except Exception:  # noqa: BLE001 — a Chrome without the permission names just keeps denying
                 log.debug("clipboard permission grant failed", exc_info=True)
             view = self.views[0] if self.views else None
-            if view is not None and restore and restore != "about:blank":
+            if restore and restore != "about:blank":
+                # The page comes back (headed: Chrome opened on it; headless: navigated below, not awaited). Recorded now so
+                # status / the live view's URL bar show it before the first action rewrites the session.
+                sess["url"] = restore
+                write_json_atomic(self.session_path, sess)
+            if view is not None and restore and restore != "about:blank" and not headed:
                 try:
                     tab, _ = view._page_target(port)
                     ws = WS(tab["webSocketDebuggerUrl"])
@@ -1121,45 +1172,48 @@ class BrowserProcess:
                     info = _http(sess["port"], "/json/version")
                     ws = WS(info["webSocketDebuggerUrl"], timeout=3)
                     try:
-                        ws.call("Browser.close")
+                        # Fire and forget: Chrome tears the socket down while closing, so waiting for the
+                        # reply only burned the 3 s timeout on every stop (measured on pop-out / dock).
+                        ws.notify("Browser.close")
                     finally:
                         ws.close()
                 except Exception:
                     pass
-                try:
-                    os.kill(sess["pid"], signal.SIGTERM)
-                except Exception:
-                    pass
+                # Browser.close first and alone: Chrome then unlinks its Singleton* files on the way out, so the next
+                # launch is never forwarded to a dying pid (ProcessSingleton). SIGTERM only when that did not end it in
+                # 3 s (it would race the clean exit and leave stale lock files Chrome has to detect itself), then SIGKILL.
+                def gone():
+                    if proc is not None:
+                        return proc.poll() is not None
+                    return not self.alive(sess)  # not our Popen (server restarted): a pid probe would call the zombie alive
                 exited = False
-                if proc is not None:
-                    try:
-                        proc.wait(timeout=5)
-                        exited = True
-                    except subprocess.TimeoutExpired:
-                        exited = False
-                else:
-                    for _ in range(50):
+                for step, grace in (("close", 3.0), ("term", 3.0), ("kill", 2.0)):
+                    if step == "term":
                         try:
-                            os.kill(sess["pid"], 0)
-                        except OSError:
+                            os.kill(sess["pid"], signal.SIGTERM)
+                        except Exception:
+                            pass
+                    elif step == "kill":
+                        try:
+                            os.killpg(sess["pid"], signal.SIGKILL)
+                        except Exception:
+                            try:
+                                os.kill(sess["pid"], signal.SIGKILL)
+                            except Exception:
+                                pass
+                    end = time.time() + grace
+                    while time.time() < end:
+                        if gone():
                             exited = True
                             break
-                        time.sleep(0.1)
-                if not exited:
+                        time.sleep(0.05)
+                    if exited:
+                        break
+                if proc is not None:
                     try:
-                        os.killpg(sess["pid"], signal.SIGKILL)
+                        proc.wait(timeout=1)  # reap
                     except Exception:
-                        try:
-                            os.kill(sess["pid"], signal.SIGKILL)
-                        except Exception:
-                            pass
-                    if proc is not None:
-                        try:
-                            proc.wait(timeout=2)
-                        except Exception:
-                            pass
-                    else:
-                        time.sleep(0.5)
+                        pass
                 self._proc = None
                 try:
                     os.remove(self.session_path)
@@ -1247,6 +1301,20 @@ class Browser:
     def start(self):
         self.idle = False
         return self.proc.start()
+
+    def headed(self):
+        return self.proc.headed()
+
+    def popout(self):
+        self.idle = False
+        return self.proc.popout(url=self.last_url() if self.shared() else "")
+
+    def dock(self):
+        self.idle = False
+        return self.proc.dock(url=self.last_url() if self.shared() else "")
+
+    def window_closed(self):
+        return self.proc.window_closed()
 
     def stop(self, seal=None):
         """Quit the process. On a shared process this closes every bot's tabs;
@@ -1425,6 +1493,8 @@ class Browser:
             ws.call("Emulation.setFocusEmulationEnabled", enabled=True)
             # Popups open at the size the site asked for (Google's sign-in: 534x400). Give them the full
             # window so the live view is sharp and the bot's screenshots match the usual viewport.
+            if self.headed():
+                return  # the user's own window: never resize it under them
             w = ws.call("Browser.getWindowForTarget")
             b = w.get("bounds") or {}
             if b.get("windowState", "normal") == "normal" and (b.get("width", 0) < VIEWPORT[0] or b.get("height", 0) < VIEWPORT[1]):
@@ -2053,7 +2123,7 @@ class Browser:
             except Exception:
                 url = title = None
         return {"running": self.alive(sess) if probe else bool(sess.get("pid")), "url": url,
-                "title": title, "sealed": self.sealed(), "encrypt": self.encrypt}
+                "title": title, "headed": bool(sess.get("headed")), "sealed": self.sealed(), "encrypt": self.encrypt}
 
     def status(self):
         return self._status(True)

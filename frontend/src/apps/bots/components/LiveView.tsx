@@ -1,12 +1,12 @@
 // OpenBot's #full live view (live.js renderFullMirrors / renderTabs and the topbar + header controls), shown while
 // the store's `fast` flag is on. The socket, frames and input forwarding live in lib/cdp.ts; this renders the
 // chrome around them from the store and the link state.
-import { useEffect, useLayoutEffect, useRef } from "react";
-import type { Bot } from "../lib/api";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { api, type Bot } from "../lib/api";
 import { closeOverlay, gotoTyped, handBack, inFull, installLive, nav, pickerChange, pickSelect, runItem, tabstripClick, toggleCtl, useLinked, useOverlay } from "../lib/cdp";
 import { statusLabel } from "../lib/derive";
 import { showUrl } from "../lib/live";
-import { eventsOf, useBotsSelector } from "../state/store";
+import { act, eventsOf, useBotsSelector } from "../state/store";
 import { Toast } from "./Toast";
 
 // Tab strip: shown with more than one tab or while you are in control; switching follows the bot's own driven tab.
@@ -101,6 +101,16 @@ export function LiveView() {
   }, [b, url]);
 
   const ctl = open && !!b?.control && isLinked;
+  const headed = !!b?.browser?.headed;
+  const [winBusy, setWinBusy] = useState<string | null>(null);  // "Opening…" / "Docking…" while Chrome relaunches (a few seconds)
+  // The explicit escape hatch: the same profile as a real Chrome window, for what no screencast carries (passkeys, password
+  // manager, print). Chrome relaunches, so it takes a few seconds; the mirror here keeps streaming it meanwhile.
+  const onWin = async () => {
+    if (!b || winBusy) return;
+    const id = b.id;
+    setWinBusy(headed ? "Docking…" : "Opening…");
+    try { await act(() => headed ? api.dock(id) : api.popout(id)); } finally { setWinBusy(null); }
+  };
   // Status strip: while you drive it says so; otherwise the bot's state plus its latest thought, action or harness note.
   let fstat = "";
   if (b) {
@@ -120,6 +130,11 @@ export function LiveView() {
         <button id="giveback2" className="backtxt" title="Back to chat; the bot continues" onClick={() => { void handBack(true); }}>Back</button>
         {b ? <Tabs b={b} /> : <div className="tabstrip" id="tabstrip" />}
         <span className="winacts">
+          <button id="fwin" className={winBusy ? "busy" : undefined} onClick={() => { void onWin(); }}
+            title={headed ? "Close the desktop window and drive it here again" : "Open this browser as a real Chrome window on your desktop, for passkeys and password managers. Chrome relaunches (a few seconds)."}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2" /><path d="M8 20h8M12 16v4" /><path d="M12 13V7" /><path d="m9 10 3-3 3 3" /></svg>
+            <span className="lbl">{winBusy || (headed ? "Back here" : "Real window")}</span>
+          </button>
           <button id="ctl" className="primary" onClick={() => { void toggleCtl(); }}
             title={b?.control ? "Let the bot drive again" : "Pause the bot and drive this page yourself"}>
             <span className="lbl">{b?.control ? "Hand back" : "Take over"}</span>
