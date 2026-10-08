@@ -1216,8 +1216,8 @@ class WindowManager:
 
     def show_home(self) -> None:
         """The launcher's last row / <modifier>+0: always a fresh Home window,
-        even if one is already open — like File → New Window. Apps keep focus-or-open (`focus_or_open_app`); Home is
-        the one row that always means "another one"."""
+        even if one is already open — like File → New Window. Apps keep
+        focus-or-open (`focus_or_open_app`); Home is the one row that always means "another one"."""
         self.open(self.home_url)
 
     def _pick(self, candidates: list["_Window"]) -> "_Window | None":

@@ -1673,7 +1673,8 @@ def main() -> None:
     # app is already running. rumps's delegate doesn't implement it, so without
     # this patch a Dock click does nothing. The click focuses the most recent
     # window, opening Home only when none is open (a browser tab only when
-    # the window manager failed to build); if the server is still booting, queue the home URL on the same pending list the bootstrap
+    # the window manager failed to build); if the server is still
+    # booting, queue the home URL on the same pending list the bootstrap
     # flushes.
     # Must return a BOOL — returning None here breaks the pyobjc bridge.
     def applicationShouldHandleReopen_hasVisibleWindows_(self, _app, _flag):
