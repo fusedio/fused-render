@@ -1162,6 +1162,10 @@ class BrowserProcess:
             args = [
                 chrome, *mode,
                 "--remote-debugging-port=0",
+                # MEASURED (Chrome 155): `--remote-debugging-port=0` alone makes Chrome report navigator.webdriver
+                # = true (an explicit port does not), and Google's sign-in refuses such a browser ("this browser or
+                # app may not be secure"). This Blink switch turns that signal off; nothing else in the launch sets it.
+                "--disable-blink-features=AutomationControlled",
                 f"--remote-allow-origins={origin}",  # lets the page's live view connect directly
                 f"--user-data-dir={self.profile}",
                 "--no-first-run", "--no-default-browser-check",
