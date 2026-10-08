@@ -87,6 +87,8 @@ test("the Check button sits in the bar beside the chip, even collapsed; the popo
   expect(all).toContain("No update is waiting.");
   expect(all).toContain("Automatically download updates");
   expect(view(st({}), { phase: "current" }).root.findByProps({ className: "upd-check-btn is-current" }).props["data-hint"]).toBe("Up to date · v0.6.22");
+  expect(texts(view(st({}), { phase: "failed" }).toJSON()).join(" | ")).toContain("Couldn't check for updates");
+  expect(texts(view(st({}), { phase: "checking" }).toJSON()).join(" | ")).toContain("Checking…");
 });
 
 test("no updater: the version still shows, the Check button is there but disabled", () => {

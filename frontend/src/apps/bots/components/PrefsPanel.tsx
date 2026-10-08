@@ -10,6 +10,7 @@
 // too (same origin), since a key pressed in a focused field inside the page never reaches the parent document.
 import { ArrowLeftIcon } from "lucide-react";
 import { useEffect, useRef } from "react";
+import { MONITOR_FLAG_MESSAGE, publishMonitorEnabled } from "@platform/lib/monitor-flag";
 import { closePanel, useBotsSelector } from "../state/store";
 
 export const PREFS_EMBED_URL = "/preferences?embed=1";
@@ -23,6 +24,17 @@ export function PrefsPanel() {
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, [open]);
+  // The framed page's Monitor toggle (Preferences › Monitor) gates the System chip in THIS document's status bar:
+  // the flag module is per document, so the frame posts the change up and it is republished here.
+  useEffect(() => {
+    const onMessage = (e: MessageEvent) => {
+      if (e.origin !== location.origin || e.source !== frame.current?.contentWindow) return;
+      const d = e.data as { type?: unknown; enabled?: unknown } | null;
+      if (d && d.type === MONITOR_FLAG_MESSAGE && typeof d.enabled === "boolean") publishMonitorEnabled(d.enabled);
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, []);
   // Esc inside the frame: bind on each load (a navigation inside the frame replaces its document).
   const onFrameLoad = () => {
     const doc = frame.current?.contentDocument;

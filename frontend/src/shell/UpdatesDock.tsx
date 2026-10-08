@@ -221,7 +221,12 @@ export function UpdatesCardView({
               )}
             </div>
           ) : hasUpdater ? (
-            <div className="upd-state-detail">{phase === "current" ? "You have the latest version." : "No update is waiting."}</div>
+            <div className={"upd-state-detail" + (phase === "failed" ? " is-error" : "")}>
+              {phase === "checking" ? "Checking…"
+                : phase === "current" ? "You have the latest version."
+                : phase === "failed" ? "Couldn't check for updates — offline, or the update server didn't answer."
+                : "No update is waiting."}
+            </div>
           ) : (
             <div className="upd-state-detail upd-none">Updates aren&rsquo;t managed from inside the app on this build &mdash; a packaged Fused app updates itself; a dev run does not.</div>
           )}
