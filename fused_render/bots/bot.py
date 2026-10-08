@@ -1817,9 +1817,9 @@ class Bot:
                                      {"seq": uev.get("seq"), "text": text, "shown": shown, "via": via}]
                 self.save()
                 return
-        self._deliver(text, shown, via, uev)
+        self._deliver_message(text, shown, via, uev)
 
-    def _deliver(self, text, shown, via, uev):
+    def _deliver_message(self, text, shown, via, uev):
         """receive()'s second half: a written user line reaches the task (an instruction or an answer) or starts one."""
         with self.lock:
             running = self.thread is not None and self.thread.is_alive()
@@ -2058,7 +2058,7 @@ class Bot:
                     h, self.meta["held"] = held[0], held[1:]
                     self.save()
                 try:
-                    self._deliver(h.get("text") or "", h.get("shown") or "", h.get("via") or dict(chan.WEB), {"seq": h.get("seq")})
+                    self._deliver_message(h.get("text") or "", h.get("shown") or "", h.get("via") or dict(chan.WEB), {"seq": h.get("seq")})
                 except Exception:  # noqa: BLE001 — one bad message must not strand the rest
                     logger.warning("bot %s: queued message %s not delivered", self.id, h.get("seq"), exc_info=True)
         finally:
