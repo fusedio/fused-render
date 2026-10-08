@@ -161,7 +161,7 @@ APP_GUIDE = """APP GUIDE (Browser Bots, a local desktop app; every bot has its o
 - Live view: clicking your screenshot opens your browser full size with a tab strip, back/forward/reload and a URL bar. "Take over" pauses you and lets the user drive (solve a captcha, pass a popup); "Hand back" returns control and you continue; "Real window" opens the same browser as a real Chrome window for passkeys and password managers. Your `login` action hands the page over the same way and waits until the user replies "done" or clicks Hand back.
 - Inbox: everything you produce lands in the user's Inbox, a Finder folder at ~/Fused/bots/<your name>/ with one subfolder per task: `save` results, downloads that arrived during the task, and a README with the task and your final answer. The Inbox list under your screenshot shows the most recent items with "Open folder" to reveal them in Finder. Files the user attaches in the composer land in FILES instead, for `upload`. There is no other export path.
 - iMessage: only Super Bot takes tasks by text (from the phone number or Apple ID set in its Settings > Advanced) and texts its replies back; it can hand a browsing task to a bot like you, whose final answer goes back to it as the result. Other bots are not reachable by text. "Contacts the bot may text" (Settings > Advanced) is the allowlist your `text` action can message and `texts` can read replies from (shown to you as CONTACTS). You cannot add contacts yourself: tell the user where.
-- Builds (button under the bots list): Claude Code sessions that create fused-render apps. The user can start one there, and you can start one with `build` (say so, then `done` with the link it returns). Apps land under @APPS_ROOT@/<name>; the Builds panel tracks progress and holds Claude's chat for each build; a chat message (and a text, if iMessage is on) arrives when one is ready. Settings > Advanced > Builds picks "Scoped" (Claude asks the user before risky steps) or "Full access" (unattended).
+- Builds (button under the bots list): Claude Code sessions that create fused-render apps. The user can start one there, and you can start one with `build` (say so, then `done` with the link it returns). Apps land under @APPS_ROOT@/<name>; the Builds panel tracks progress and holds Claude's chat for each build; a chat message (and a text, if iMessage is on) arrives when one is ready, and a card when one is stuck (Claude waits for an OK or an answer, fails, or hits its usage limit) whose button opens it under Builds. Settings > Advanced > Builds picks "Scoped" (Claude asks the user before risky steps) or "Full access" (unattended).
 - Apps: every fused app under @APPS_ROOT@ is visible to every bot, whoever built it: the APPS section of your prompt lists them all (folder, name, description, link). `show` any of them as a card, `goto` its link to use it in the browser, or `build` with its exact name to update it. You also OFFER apps on your own (`offer`): an existing one that fits the task, or a new one worth building, as a card with "Use it" / "Build it" / "Not now". A yes starts the build with no further step (the yes is the approval), "Not now" keeps that app out of offers for a week, and an unanswered offer stays clickable in the chat after the task ends (a plain yes or no later settles it). When the user asks for an app in so many words you `build` it straight away and the approval card confirms it with one click.
 - App tools: local apps that expose MCP tools (an `mcp.toml` curated in fused-render's MCP panel) are available to you through the `tool` action; the APP TOOLS section of your prompt lists them by app. Reading tools run at once; tools that change something ask the user first. Cards in the Apps panel show a tools badge when an app exposes any. Nothing has to be attached: every app with a manifest is available to every bot.
 - App skills: an app that ships a SKILL.md (marked [py] in APPS) tells you what each of its .py files does and how to call it; the `py` action runs one (its main(**args), exactly as the app's page would run it). Skills load only when needed: apps you built this task and apps the task names are mounted under APP SKILLS; `py` with an app and no file loads any other. Apps you build get a SKILL.md as part of the build; an older app without one can get it from an update build. Your own builds run at once; other apps' files ask the user first, showing the file's line from its SKILL.md.
@@ -683,6 +683,8 @@ class Bot:
             elif role == "question" and ev.get("offer"):
                 o = ev["offer"]
                 label = f"YOU OFFERED TO {'USE' if o.get('kind') == 'use' else 'BUILD'} THE APP {o.get('name') or ''!r}"
+            elif ev.get("source") == "build" and role == "question":
+                label = "BUILD NOTICE (Claude Code, not you)"
             elif ev.get("source") == "handoff":
                 # Super Bot's hand-off cards: what another bot reported is data, never its own words or orders.
                 who = str((ev.get("handoff") or {}).get("target_name") or "A BOT").upper()
@@ -2270,10 +2272,7 @@ class Bot:
                 st = (row or {}).get("status") or ""
                 if st in ("in_progress", "queued", "needs_attention", "blocked"):
                     seen_running = True
-                if st in ("needs_attention", "blocked") and not bd.get("nudged"):
-                    bd["nudged"] = True
-                    self.emit("question", f"The build of \"{bd['name']}\" is waiting for you: answer Claude under Builds.",
-                              source="build", via=bd.get("via"))
+                self._surface_build_stall(bd, row or {}, st)
                 if st in ("done", "archived") and seen_running:
                     if stable != st:      # status can flicker for ~15 s after a turn: want it twice in a row
                         stable = st
@@ -2288,6 +2287,43 @@ class Bot:
                     return
                 stable = ""
         threading.Thread(target=run, name=f"build-{(bd.get('entry_id') or '')[:8]}", daemon=True).start()
+
+    def _surface_build_stall(self, bd, row, st):
+        """A build that stopped moving is told in the chat of the bot that asked
+        for it: what Claude wants (the row's `attention`: tool and one line, or the
+        question it asks), or that the run failed or hit the usage limit. One
+        notice per distinct stall: a later card in the same build gets its own,
+        and a build that is moving again re-arms it. The event carries `build`
+        (with the task key) so the chat renders a card whose button opens that
+        task under Builds, where Claude's own card is answered."""
+        reason = (row.get("blocked_reason") or "") if st in ("needs_attention", "blocked") else ""
+        if not reason:
+            if st in ("in_progress", "queued"):
+                bd.pop("stall", None)
+            return
+        att = row.get("attention") or {}
+        tool, summary = str(att.get("tool") or ""), " ".join(str(att.get("summary") or "").split())[:200]
+        stall = f"{reason}|{tool}|{summary}"
+        if bd.get("stall") == stall:
+            return
+        bd["stall"] = stall
+        name = bd["name"]
+        if reason == "question":
+            role, text = "question", f"The build of \"{name}\" has a question for you: {summary or 'see Builds'}"
+        elif reason == "permission":
+            what = " · ".join(x for x in (tool, summary) if x) or "a step"
+            role, text = "question", f"The build of \"{name}\" is waiting for your OK to run {what}"
+        elif reason == "usage_limit":
+            when = row.get("resumes_at") or 0
+            at = time.strftime("%H:%M", time.localtime(when)) if when else ""
+            role, text = "note", f"The build of \"{name}\" paused at Claude's usage limit" + (f"; it picks up at {at} by itself." if at else ".")
+        else:
+            role, text = "error", f"The build of \"{name}\" stopped: Claude's run failed. Retry it under Builds."
+        if role == "question":
+            text += ("" if text[-1:] in ".?!" else ".") + " Answer Claude under Builds."
+        ref = {"name": name, "dir": bd.get("dir") or "", "key": row.get("key") or bd.get("key") or "",
+               "entry_id": bd.get("entry_id") or "", "reason": reason, "tool": tool, "summary": summary}
+        self.emit(role, text, source="build", build=ref, via=bd.get("via"))
 
     # -- hand-offs: Super Bot gives a bot a task (docs §11) ---------------------
     # meta["handoffs"] on Super Bot: [{id, target, target_name, task, origin_via, created_at,

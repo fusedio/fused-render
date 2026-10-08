@@ -36,9 +36,10 @@ export const answerTo = (evs: BotEvent[], seq: number): BotEvent | undefined => 
  * idle or errored bot, where a leftover seq means a task that ended without its reset.
  * Without `waiting_on` (older backend), the live card is the last ask nobody has answered yet.
  * Hand-off questions ("<Bot> needs you at the laptop") are the other bot's ask, answered in its own thread: never live here.
+ * Build notices ("The build of … is waiting for your OK") are Claude's ask, answered under Builds: never live here either.
  */
 export function liveCards(all: BotEvent[], b: Pick<Bot, "status" | "pending_offer" | "waiting_on">): Set<number> {
-  const evs = all.some(isHandoff) ? all.filter((e) => !isHandoff(e)) : all;
+  const evs = all.some((e) => isHandoff(e) || e.source === "build") ? all.filter((e) => !isHandoff(e) && e.source !== "build") : all;
   if (typeof b.waiting_on === "number" && b.status !== "idle" && b.status !== "error") {
     const w = b.waiting_on;
     return new Set(evs.some((e) => e.seq === w && (e.role === "approval" || e.role === "question")) ? [w] : []);

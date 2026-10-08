@@ -9,6 +9,7 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type RefObject } from "react";
 import { AppCard } from "../apps/AppCard";
 import { appFromText, showAppBeside, useAppsRoot } from "../apps/apps";
+import { openBuilds, getBuildRows } from "../builds/builds";
 import { api, stepThumbUrl, type AppRef, type Bot, type BotEvent } from "../lib/api";
 import { esc, fmtDay, fmtTime, fmtWhen } from "../lib/format";
 import { md } from "../lib/md";
@@ -58,6 +59,8 @@ interface RowProps {
   hstate?: string;
   /** Hand-off card: the bot it went to still exists ("Open <Bot>'s chat" is live). */
   targetLive?: boolean;
+  /** Build notice (`e.build`): still the build's current stall (buildOpen). A prop for the same reason as linkLive. */
+  bopen?: boolean;
   /** "Sent to Super Bot" line: the bot its `link` points at still exists ("Read more" is live). A prop, not a store read:
    *  Row is memoized and would keep a stale answer. */
   linkLive?: boolean;
@@ -123,12 +126,45 @@ function HandoffCard({ e, state: rawState, targetLive }: { e: BotEvent; state: s
   );
 }
 
+/** A build that stopped moving (bot.py _surface_build_stall): what Claude waits on, and the door to that task under
+ *  Builds, where Claude's own card is answered. `open`: still the build's current stall; otherwise it reads resolved. */
+const BUILD_STALL: Record<string, { pill: string; cls: string }> = {
+  permission: { pill: "needs your OK", cls: "blocked" }, question: { pill: "question", cls: "blocked" },
+  failed: { pill: "failed", cls: "failed" }, usage_limit: { pill: "paused", cls: "cancelled" },
+};
+function BuildCard({ e, open }: { e: BotEvent; open: boolean }) {
+  const b = e.build!, st = BUILD_STALL[b.reason] || { pill: b.reason, cls: "blocked" };
+  const what = b.reason === "permission" && (b.tool || b.summary)
+    ? `Claude wants to run **${b.tool || "a tool"}**${b.summary ? `\n\n\`${b.summary.replace(/`/g, "'")}\`` : ""}`
+    : b.reason === "question" && b.summary ? `Claude asks: ${b.summary}` : e.text;
+  return (
+    <div className={`handoff-card build ${open ? st.cls : "settled"}`} data-seq={e.seq} title={fmtWhen(e.ts)}>
+      <div className="hd"><span className="ttl">Build · {b.name}</span><span className={`pill ${open ? st.cls : "cancelled"}`}>{open ? st.pill : "resolved"}</span></div>
+      <HtmlMsg className="msg md" title={fmtWhen(e.ts)} html={md(what)} />
+      <div className="ft">
+        <button className={open && st.cls === "blocked" ? "primary" : undefined} disabled={!b.key}
+          title={b.dir || undefined} onClick={() => openBuilds(b.key)}>{open && st.cls === "blocked" ? "Answer in Builds" : "Open in Builds"}</button>
+      </div>
+    </div>
+  );
+}
+
+/** Is this build notice still the build's current stall: the newest notice for that build, and (when the Builds feed has
+ *  the row) the task still waiting or blocked. Without the row (feed not loaded yet) the newest notice counts as open. */
+function buildOpen(evs: BotEvent[], e: BotEvent): boolean {
+  const b = e.build!, same = (x: BotEvent) => x.source === "build" && (b.entry_id ? x.build?.entry_id === b.entry_id || x.app?.dir === b.dir : x.build?.key === b.key);
+  if (evs.some((x) => x.seq > e.seq && same(x))) return false;
+  const row = getBuildRows().find((t) => (b.entry_id && t.entry_id === b.entry_id) || t.key === b.key);
+  return !row || row.status === "needs_attention" || row.status === "blocked";
+}
+
 /** Channel names in chips and "Texted" lines; a task Super Bot handed off reads "from Super Bot" (docs §11). */
 const chanLabel = (k: string) => (k === "imessage" ? "iMessage" : k === "handoff" ? "Super Bot" : k);
 
-function body({ e, botId, reaction, live, chosen, appsRoot, onBeside, hstate, targetLive, linkLive }: RowProps): JSX.Element {
+function body({ e, botId, reaction, live, chosen, appsRoot, onBeside, hstate, targetLive, linkLive, bopen }: RowProps): JSX.Element {
   const title = fmtWhen(e.ts);
   if (e.handoff && isHandoff(e)) return <HandoffCard e={e} state={hstate || e.handoff.state} targetLive={!!targetLive} />;
+  if (e.build && e.source === "build") return <BuildCard e={e} open={!!bopen} />;
   // The target bot's "Sent to Super Bot: …" (what went up): a quiet harness line.
   if (isHandoff(e) && e.role === "system") {
     const l = e.link;
@@ -468,7 +504,7 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
           reaction={!ho && ACTABLE.has(e.role) ? rxs[e.seq] || "" : ""} live={card && live.has(e.seq) && !held.has(e.seq)}
           chosen={card && e.role === "question" ? chosenOption(evs, e.seq) : null} appsRoot={appsRoot} onBeside={onBeside}
           hstate={ho ? (e.role === "system" ? hds.get(ho.id) : undefined) || ho.state : undefined} targetLive={ho ? botIds.has(ho.target) : undefined}
-          linkLive={e.link ? botIds.has(e.link.bot) : undefined} />
+          linkLive={e.link ? botIds.has(e.link.bot) : undefined} bopen={e.build ? buildOpen(evs, e) : undefined} />
       );
     });
   }

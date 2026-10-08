@@ -28,6 +28,8 @@ export interface Handoff {
   /** The bot's last few `note` progress lines (<= 5, <= 160 chars each). */
   notes?: string[];
 }
+/** The `build` stamp on a build watcher's "stuck" notice: the Claude task (its key opens it under Builds) and what it waits on. */
+export interface BuildRef { name: string; dir: string; key: string; entry_id: string; reason: "permission" | "question" | "failed" | "usage_limit" | string; tool?: string; summary?: string }
 /** The `handoff` stamp on Super Bot's hand-off lines ("Asked …", "… needs you at the laptop", the result). */
 export interface HandoffRef { id: string; target: string; target_name: string; task?: string; state: HandoffState; task_dir?: string }
 
@@ -54,6 +56,8 @@ export interface BotEvent {
    *  renders as a hand-off card; on the target bot it is the bare "Sent to Super Bot: …" line. */
   source?: "build" | "handoff" | (string & {});
   handoff?: HandoffRef;
+  /** source "build": the build that stopped moving (permission card, question, failure, usage limit); renders as a build card. */
+  build?: BuildRef;
   /** A "Sent to Super Bot" line: the card it became in Super Bot's chat ("Read more" opens that chat there). */
   link?: { bot: string; seq: number };
   /** done / question: the bot's own phone-sized version (D11); the router texts this instead of the cut message. */
