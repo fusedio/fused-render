@@ -164,6 +164,24 @@ const EXTRA_KEYWORDS: Record<string, string> = {
 // icons. Regional indicators carry no group at all.
 const COMPONENT_GROUP = 2;
 
+/** Does this platform's emoji font draw the sequence as ONE glyph? emojibase
+ *  carries every sequence Unicode defines, including ZWJ and modifier
+ *  sequences newer than the installed font; those fall apart into their parts
+ *  on screen — a bookmark saved with one showed two emoji in its single-glyph
+ *  slot (owner, 2026-10-08). Measured, not listed: the width of the sequence
+ *  against the width of one plain emoji at the same size. A split sequence is
+ *  ~2× as wide; a drawn one is the same width. No canvas (tests, SSR) → keep
+ *  everything. */
+function singleGlyphProbe(): (unicode: string) => boolean {
+  if (typeof document === "undefined") return () => true;
+  const ctx = document.createElement("canvas").getContext("2d");
+  if (!ctx) return () => true;
+  ctx.font = "32px system-ui, 'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', sans-serif";
+  const one = ctx.measureText("\u{1F600}").width;
+  if (!one) return () => true;
+  return (unicode) => ctx.measureText(unicode).width <= one * 1.5;
+}
+
 let emojiCache: Promise<Section[]> | null = null;
 function loadEmoji(): Promise<Section[]> {
   if (!emojiCache) {
@@ -172,8 +190,10 @@ function loadEmoji(): Promise<Section[]> {
       import("emojibase-data/en/messages.json"),
     ]).then(([compact, messages]) => {
       type Compact = { group?: number; label: string; order: number; tags?: string[]; unicode: string };
+      const drawsAsOne = singleGlyphProbe();
       const list = (compact.default as Compact[])
         .filter((e) => e.group !== undefined && e.group !== COMPONENT_GROUP)
+        .filter((e) => drawsAsOne(e.unicode))
         .sort((a, b) => a.order - b.order);
       const groups = (messages.default as { groups: { key: string; message: string; order: number }[] })
         .groups;
