@@ -786,7 +786,6 @@ test("matchPreset: each preset matches itself, custom is null", () => {
   }
   expect(matchPreset(defaultLayout())).toBe("workbench");
   const l = presetLayout("mission");
-  const bots = l.widgets.find((w) => w.source === "bots")!;
   const tasks = l.widgets.find((w) => w.source === "tasks")!;
   expect(matchPreset(swapSource(l, tasks.id, "playground"))).toBe(null);
   expect(matchPreset({ ...l, widgets: [] })).toBe(null);

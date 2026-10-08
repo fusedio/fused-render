@@ -1313,7 +1313,7 @@ a.hw-more:hover {
 /* Edit bar */
 .hw-editbar {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 8px;
   min-height: 30px;
@@ -1325,14 +1325,25 @@ a.hw-more:hover {
   color: var(--fg-muted);
 }
 
+.hw-editbar-label,
+.hw-editbar > .hw-tb {
+  flex: none;
+}
+
 .hw-editbar-sp {
-  flex: 1 1 auto;
+  flex: 0 0 0;
+}
+
+@media (max-width: 640px) {
+  .hw-editbar-label {
+    display: none;
+  }
 }
 
 /* Preset chips: one row that scrolls sideways at narrow widths (the page never does). */
 .hw-presets {
   display: flex;
-  flex: 0 1 auto;
+  flex: 1 1 auto;
   gap: 6px;
   min-width: 0;
   overflow-x: auto;
@@ -1570,8 +1581,11 @@ a.hw-more:hover {
   top: calc(100% + 6px);
   right: 0;
   z-index: 40;
-  width: 360px;
+  width: 440px;
   max-width: calc(100vw - 32px);
+  max-height: calc(100vh - 120px);
+  overflow-y: auto;
+  box-sizing: border-box;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -1588,6 +1602,11 @@ a.hw-more:hover {
   left: 0;
 }
 
+.hw-pop.is-up {
+  top: auto;
+  bottom: calc(100% + 6px);
+}
+
 .hw-slot-wrap .hw-pop {
   top: 12px;
   right: 12px;
@@ -1598,36 +1617,45 @@ a.hw-more:hover {
   left: 12px;
 }
 
-.hw-po-list {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
+.hw-slot-wrap .hw-pop.is-up {
+  top: auto;
+  bottom: 12px;
 }
 
-.hw-po {
+.hw-po-list {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2px 6px;
+}
+
+.hw-pop .hw-po {
   display: flex;
   align-items: center;
   gap: 10px;
+  box-sizing: border-box;
   width: 100%;
+  margin: 0;
   padding: 5px 8px;
   border: 0;
   border-radius: 8px;
   background: transparent;
-  color: var(--fg);
+  color: inherit;
+  font: inherit;
   font-size: 13px;
   text-align: left;
   cursor: pointer;
 }
 
-.hw-po:hover:not(:disabled) {
+.hw-pop .hw-po:hover:not(:disabled),
+.hw-pop .hw-po:focus-visible {
   background: var(--bg-alt);
 }
 
-.hw-po.is-on {
+.hw-pop .hw-po.is-on {
   background: rgba(var(--accent-rgb), 0.1);
 }
 
-.hw-po:disabled {
+.hw-pop .hw-po:disabled {
   color: var(--fg-faint);
   cursor: default;
 }
@@ -1706,6 +1734,12 @@ a.hw-more:hover {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.hw-pop .hw-picks {
+  box-sizing: border-box;
+  max-width: 100%;
+  padding: 2px;
 }
 
 .hw-pick {

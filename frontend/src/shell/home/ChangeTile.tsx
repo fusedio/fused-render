@@ -32,6 +32,7 @@ export function ChangeTile({
 }) {
   const root = useRef<HTMLDivElement>(null);
   const [alignLeft, setAlignLeft] = useState(anchorAlign === "left");
+  const [up, setUp] = useState(false);
   const { layout } = api;
   // Read the live tile so a format pick shows as chosen while the card stays open.
   const widget = target.kind === "swap" ? (layout.widgets.find((w) => w.id === target.widget.id) ?? target.widget) : null;
@@ -58,14 +59,17 @@ export function ChangeTile({
   }, [onClose]);
 
   // Right-aligned under the anchor; one near the left edge would push the
-  // 360px card off-screen, so flip it to grow rightwards there.
+  // 440px card off-screen, so flip it to grow rightwards there.
   useLayoutEffect(() => {
-    if (anchorAlign) {
-      setAlignLeft(anchorAlign === "left");
-      return;
-    }
     const anchor = root.current?.parentElement;
-    if (anchor) setAlignLeft(anchor.getBoundingClientRect().right - 360 < 8);
+    if (anchorAlign) setAlignLeft(anchorAlign === "left");
+    else if (anchor) setAlignLeft(anchor.getBoundingClientRect().right - 440 < 8);
+    const pop = root.current;
+    if (anchor && pop) {
+      const b = anchor.getBoundingClientRect();
+      const h = pop.offsetHeight;
+      setUp(b.bottom + h > window.innerHeight - 40 && b.top > window.innerHeight - b.bottom);
+    }
   }, [anchorAlign]);
 
   const pick = (s: WidgetSource) => {
@@ -82,7 +86,7 @@ export function ChangeTile({
   return (
     <div
       ref={root}
-      className={"hw-pop" + (alignLeft ? " is-left" : "")}
+      className={"hw-pop" + (alignLeft ? " is-left" : "") + (up ? " is-up" : "")}
       role="dialog"
       aria-label={`Change ${title}`}
     >
