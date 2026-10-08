@@ -84,7 +84,7 @@ div.bots-page:is(.rcol, .rfit) main { grid-template-columns: var(--lweff) 6px mi
 div.bots-page:is(.rcol, .rfit) .preview { visibility: hidden; transition: visibility 0s .3s; }  /* untabbable once shut; the delay keeps it visible while it slides away */
 div.bots-page:is(.rcol, .rfit) .gutter.r { background: var(--panel); pointer-events: none; }
 div.bots-page.rcol .gutter.r { pointer-events: auto; }
-.bots-page .gutter { cursor: col-resize; position: relative; }
+.bots-page .gutter { cursor: col-resize; position: relative; background: linear-gradient(var(--line), var(--line)) center / 1px 100% no-repeat; } /* the columns share one background, so the gutter carries the divider */
 .bots-page .gutter::after { content: ""; position: absolute; inset: 0 2px; border-radius: 2px; background: transparent; transition: background .15s; }
 .bots-page .gutter:hover::after, .bots-page .gutter.drag::after { background: var(--accent); }
 div.bots-page.dragging { cursor: col-resize; user-select: none; }
