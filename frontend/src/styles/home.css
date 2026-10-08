@@ -2518,7 +2518,8 @@ a.hw-more:hover {
 /* View mode: the composer is the page's hero, not a full-width cell. It sits
    centred at the old Home's width with a headline above, and its sample chips
    start at the composer's left edge instead of centring under the full grid. */
-.hw-widget.is-build:not(.is-edit) { padding: 12px 0 0; }
+/* Bottom padding keeps the sample chips from crowding the next grid row (19px to the next tile measured, vs ~55px above the headline). */
+.hw-widget.is-build:not(.is-edit) { padding: 12px 0 40px; }
 .hw-build-hero { width: 100%; max-width: 760px; margin: 0 auto; }
 .hw-build-headline {
   margin: 0 0 14px;
