@@ -8,6 +8,8 @@ import sys
 import zipfile
 from pathlib import Path
 
+import pytest
+
 SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "_prune_stdlib_zip.py"
 _spec = importlib.util.spec_from_file_location("_prune_stdlib_zip", SCRIPT)
 assert _spec is not None and _spec.loader is not None
@@ -51,6 +53,7 @@ def test_prune_removes_and_keeps(tmp_path):
             assert z.read(n) == data
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows chmod only toggles the read-only bit")
 def test_prune_keeps_file_mode(tmp_path):
     zp = tmp_path / "python312.zip"
     _make(zp)
