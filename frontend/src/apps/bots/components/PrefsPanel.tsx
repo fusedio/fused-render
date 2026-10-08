@@ -10,6 +10,7 @@
 // too (same origin), since a key pressed in a focused field inside the page never reaches the parent document.
 import { ArrowLeftIcon } from "lucide-react";
 import { useEffect, useRef } from "react";
+import { getPrefs } from "@platform/lib/api";
 import { MONITOR_FLAG_MESSAGE, publishMonitorEnabled } from "@platform/lib/monitor-flag";
 import { closePanel, useBotsSelector } from "../state/store";
 
@@ -35,6 +36,18 @@ export function PrefsPanel() {
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
   }, []);
+  // Belt and braces for the message (Bugbot, #1504): a toggle whose save is still in flight when Back is pressed
+  // unmounts the frame before its message can land. On every close the flag is re-read from the server, which
+  // already holds the value the frame saved; the flag module itself never polls.
+  const wasOpen = useRef(false);
+  useEffect(() => {
+    if (open) { wasOpen.current = true; return; }
+    if (!wasOpen.current) return;
+    wasOpen.current = false;
+    let cancelled = false;
+    void getPrefs().then((p) => { if (!cancelled) publishMonitorEnabled(p.monitor?.enabled === true); }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [open]);
   // Esc inside the frame: bind on each load (a navigation inside the frame replaces its document).
   const onFrameLoad = () => {
     const doc = frame.current?.contentDocument;
