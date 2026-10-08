@@ -533,8 +533,11 @@ class Bot:
             dirty = True
         # ...and a hand-over (a login wait, a take-over) with no task thread behind it: the page is the bot's again.
         if self.meta.get("control") or self.meta.get("control_by") or self.meta.get("control_since"):
-            self._control_off()
+            self._control_off(flush=False)
             dirty = True
+        # Messages queued while the user held the browser died with that hand-over: not sent, and the thread says so.
+        unsent = self.meta.pop("held", None) or []
+        dirty = dirty or bool(unsent)
         # Hand-offs still open when the server last stopped: their target's task died with it.
         interrupted = []
         for hd in self.meta.get("handoffs") or []:
@@ -552,6 +555,10 @@ class Bot:
                 dirty = True
         if dirty:
             self.save()
+        if unsent:
+            n = len(unsent)
+            self.emit("note", f"{n} message{'s' if n > 1 else ''} queued while you had the browser {'were' if n > 1 else 'was'} "
+                                "not sent: the server restarted. Send again if still needed.")
         for hd, text in interrupted:
             # The user was told they would hear: the result card says how it ended (texted back by the origin rule).
             try:
@@ -1779,17 +1786,6 @@ class Bot:
                 self.emit("system", "Texted while busy on a chat task; not applied.", via=None)
                 self.emit("error", "Busy with a task from the Mac; text again when it's done.", via=dict(via))
                 return
-        with self.lock:
-            held = bool(self.meta.get("control"))
-        if held:
-            # The user holds the browser: the bot is stopped and takes no instructions until it gets the page
-            # back (Done, hand back). The web send is refused (400 → the page's banner); a text gets the same answer.
-            msg = (f"You have {self.meta.get('name') or 'this bot'}'s browser. Hand it back (Done, hand back) "
-                   "before sending new instructions.")
-            if chan.is_web(via):
-                raise ValueError(msg)
-            self.emit("error", msg, via=dict(via))
-            return
         quoted = self.event_by_seq(int(reply_to)) if reply_to else None
         shown = text  # what the user typed; the transcript and status show this, the model reads the quoted form
         stamp = {} if chan.is_web(via) else {"via": via}
@@ -1800,6 +1796,18 @@ class Bot:
             text = f"Replying to {who}:\n> {snippet[:1200]}\n\n{text}"
         else:
             uev = self.emit("user", text, **stamp)
+        with self.lock:
+            if self.meta.get("control"):
+                # The user holds the browser: the bot stays stopped. The message is written (the page shows it
+                # queued) and delivered when the page goes back to the bot (_control_off → _flush_held).
+                self.meta["held"] = [*(self.meta.get("held") or []),
+                                     {"seq": uev.get("seq"), "text": text, "shown": shown, "via": via}]
+                self.save()
+                return
+        self._deliver(text, shown, via, uev)
+
+    def _deliver(self, text, shown, via, uev):
+        """receive()'s second half: a written user line reaches the task (an instruction or an answer) or starts one."""
         with self.lock:
             running = self.thread is not None and self.thread.is_alive()
             pending = self.meta.get("pending_offer")
@@ -1992,8 +2000,10 @@ class Bot:
                 return {"control_by": self.meta["control_by"], "control_since": self.meta.get("control_since") or time.time()}
             return {"control_by": by, "control_since": time.time()}
 
-    def _control_off(self, handback=False):
+    def _control_off(self, handback=False, flush=True):
         """The page goes back to the bot: control, control_by and control_since drop together.
+        Messages queued meanwhile (meta["held"]) are delivered in order from a short thread, once
+        the caller lets go of self.lock; `flush=False` leaves that to the caller (task end).
         `handback` (the hand-over is ending, not a fresh task overriding it): when the BOT had
         asked (control_by "bot") and is still waiting on that question, meta["handback"]
         records {seq, secs, shot} so the page settles that question card as "You handed it
@@ -2005,6 +2015,8 @@ class Bot:
             by = self.meta.pop("control_by", None)
             since = self.meta.pop("control_since", None)
             self.meta["control"] = False
+            if flush and self.meta.get("held"):
+                threading.Thread(target=self._flush_held, daemon=True, name=f"bot-held-{self.id}").start()
             qseq = self.meta.get("waiting_on")
             if not (handback and by == "bot" and since and qseq):
                 return None
@@ -2013,6 +2025,26 @@ class Bot:
             self.meta["handback"] = {"seq": qseq, "secs": int(max(0, time.time() - float(since))),
                                      "shot": f"/api/bots/{self.id}/steps/{name}" if name else None}
             return (name, data) if name else None
+
+    def _flush_held(self, after=None):
+        """Deliver the messages queued while the user held the browser, oldest first. `after`: a
+        task thread that is ending; wait for it, so the first message starts a fresh task instead
+        of landing in the inbox of one that is gone."""
+        if after is not None:
+            after.join()
+        while True:
+            with self.lock:
+                if self.meta.get("control"):
+                    return  # taken over again: the rest wait for the next hand back
+                held = self.meta.get("held") or []
+                if not held:
+                    return
+                h, self.meta["held"] = held[0], held[1:]
+                self.save()
+            try:
+                self._deliver(h.get("text") or "", h.get("shown") or "", h.get("via") or dict(chan.WEB), {"seq": h.get("seq")})
+            except Exception:  # noqa: BLE001 — one bad message must not strand the rest
+                logger.warning("bot %s: queued message %s not delivered", self.id, h.get("seq"), exc_info=True)
 
     HANDBACK_STILLS = 50
 
@@ -2961,8 +2993,12 @@ def _run_task(run, bot, task, label):
                 # A task that ends mid hand-over (stopped during a login wait, an engine error) never reaches
                 # the engine's set_status(control=False): the hand-over ends with the task.
                 if bot.meta.get("control"):
-                    bot._control_off()
+                    bot._control_off(flush=False)
                     bot.save()
+                    if bot.meta.get("held"):
+                        # Queued while you drove: delivered once this thread is gone, so they start a fresh task.
+                        threading.Thread(target=bot._flush_held, args=(threading.current_thread(),), daemon=True,
+                                         name=f"bot-held-{bot.id}").start()
 
 
 def bots_section(bot) -> str:

@@ -236,8 +236,6 @@ export function Composer({ b, reply, setReply, threadRef }: ComposerProps) {
     const t = ta.current; if (!t || !b) return;
     let text = t.value.trim();
     if (!text && !pendingRef.current.length) return;
-    // While you hold the browser the bot is stopped and takes no instructions (the server refuses them too); the text stays.
-    if (b.control) { showBanner(`You have ${b.name}'s browser. Hand it back (Done, hand back) before sending new instructions.`); return; }
     const files = pendingRef.current; setPending([]);
     const r = reply; setReply(null);
     t.value = ""; fitInput();
@@ -273,9 +271,9 @@ export function Composer({ b, reply, setReply, threadRef }: ComposerProps) {
   useEffect(() => { if (!running) return; const t = window.setInterval(() => tick((n) => n + 1), 1000); return () => window.clearInterval(t); }, [running]);
   const quiet = running && lastStepTs ? fmtAgo(lastStepTs) : "";
   const stat = !b || !running ? "" : b.status === "waiting" ? "Waiting for you · answer, sign in or approve above" : statusLabel(b) + (quiet && quiet !== "now" ? ` · last step ${quiet}` : "");
-  // While you hold the browser the bot takes no instructions: send warns instead, and the placeholder says so up front.
+  // While you hold the browser the bot stays stopped: what you send is queued (server meta.held) and goes when you hand back.
   const placeholder = !b ? "Message…" : mic.busy ? mic.note || "Transcribing…"
-    : b.control ? `Hand the browser back to send ${b.name} instructions`
+    : b.control ? `Message ${b.name}… (sent when you hand back)`
     : reply ? "Reply…"
     : noteLive ? `Anything ${b.name} should know? Optional.`
     : b.status === "waiting" ? "The bot asked you a question — answer here"

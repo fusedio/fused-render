@@ -309,6 +309,9 @@ div.bots-page.stage .chat .msg time.when { display: none; }
 .bots-page .chat:hover .thread::-webkit-scrollbar-thumb { background: var(--raised); }
 .bots-page .msg { flex: none; max-width: min(42rem, 78%); padding: 9px 16px; border-radius: 20px; line-height: 1.5; font-size: 13px; white-space: pre-wrap; word-break: break-word; animation: bots-msg-in .18s cubic-bezier(.22,1,.36,1); }
 .bots-page .msg.user { align-self: flex-end; background: var(--bubble-user); color: var(--bubble-user-ink); }
+/* Sent while you hold the browser (Bot.held): waits, greyed in a dashed outline, until you hand back. */
+.bots-page .msg.user.queued { background: transparent; color: var(--muted); border: 1px dashed var(--line); }
+.bots-page .msg.user.queued::after { content: "Sends when you hand back"; display: block; margin-top: 2px; font-size: 11px; color: var(--muted); }
 /* Rendered markdown: block elements do the spacing, so no pre-wrap here. */
 .bots-page .msg.md { white-space: normal; }
 .bots-page .msg.md > p, .bots-page .msg.md > ul, .bots-page .msg.md > ol, .bots-page .msg.md > pre, .bots-page .msg.md > blockquote, .bots-page .msg.md > h1, .bots-page .msg.md > h2, .bots-page .msg.md > h3, .bots-page .msg.md > h4, .bots-page .msg.md > h5, .bots-page .msg.md > h6 { margin: 0 0 .6em; }
