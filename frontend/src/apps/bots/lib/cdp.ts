@@ -8,10 +8,11 @@
 // showing": openFull() turns it on, handBack(true) turns it off.
 import { useSyncExternalStore } from "react";
 import { flushSync } from "react-dom";
+import { pickFile } from "@platform/lib/api";
 import { askConfirm } from "../dialogs/ask";
 import { act, cur, getState, poll, select, setFast, showBanner, showToast, subscribe as subscribeStore } from "../state/store";
 import { api, type Bot } from "./api";
-import { BTN, CAST, CDP_MODS, furlTarget, keyAction, nextDown, showUrl, toPageXY, type FrameMeta, type LastDown } from "./live";
+import { BTN, CAST, CDP_MODS, frameDims, furlTarget, keyAction, nextDown, showUrl, toPageXY, type FrameMeta, type LastDown } from "./live";
 
 const link: { ws: WebSocket | null; url: string | null; id: number; tabs: Set<string> | null; meta: FrameMeta | null } =
   { ws: null, url: null, id: 0, tabs: null, meta: null };  // meta: the last frame's viewport metadata from Chrome
@@ -42,6 +43,22 @@ export function cdp(method: string, params: Record<string, unknown> = {}): void 
   if (!linked()) return;
   link.ws!.send(JSON.stringify({ id: ++link.id, method, params }));
 }
+/** The few calls whose reply matters (what is under the pointer, what is focused). null when not linked or after 3 s. */
+const pending = new Map<number, (r: Record<string, unknown> | null) => void>();
+export function cdpCall(method: string, params: Record<string, unknown> = {}): Promise<Record<string, unknown> | null> {
+  if (!linked()) return Promise.resolve(null);
+  const id = ++link.id;
+  return new Promise((resolve) => {
+    const t = window.setTimeout(() => { pending.delete(id); resolve(null); }, 3000);
+    pending.set(id, (r) => { window.clearTimeout(t); resolve(r); });
+    link.ws!.send(JSON.stringify({ id, method, params }));
+  });
+}
+/** Run an expression in the driven page and return its value (undefined on error or when not linked). */
+async function evalIn<T = unknown>(expression: string): Promise<T | undefined> {
+  const r = await cdpCall("Runtime.evaluate", { expression, returnByValue: true });
+  return (r as { result?: { value?: T } } | null)?.result?.value;
+}
 
 // ------------------------------------------------------------------ the socket ----
 /** Connect to the driven tab while the view is open; follow tab switches and relaunches by reconnecting when its socket URL changes. */
@@ -61,11 +78,14 @@ export function linkSync(): void {
     // Headless Chrome composites only a tab it treats as visible and focused; focus emulation is per CDP session, so this
     // socket asks for it too (the bot's own sessions do the same in browser.py _foreground).
     cdp("Page.bringToFront"); cdp("Emulation.setFocusEmulationEnabled", { enabled: true });
+    // Headless Chrome has no OS file dialog: a click on <input type=file> raises Page.fileChooserOpened here instead.
+    cdp("Page.setInterceptFileChooserDialog", { enabled: true });
     cdp("Page.startScreencast", { format: "jpeg", ...CAST, everyNthFrame: 1 });
     publishLink();
   };
   ws.onmessage = (ev) => {
     const m = JSON.parse(String(ev.data)), p = m.params || {};
+    if (typeof m.id === "number" && pending.has(m.id)) { pending.get(m.id)!(m.result ?? null); pending.delete(m.id); return; }
     if (m.method === "Page.screencastFrame") {
       link.meta = p.metadata || link.meta;
       const img = $<HTMLImageElement>("fshot"); if (img) img.src = "data:image/jpeg;base64," + p.data;
@@ -77,15 +97,74 @@ export function linkSync(): void {
     } else if (m.method === "Page.screencastVisibilityChanged" && p.visible === false) {
       cdp("Page.bringToFront"); cdp("Emulation.setFocusEmulationEnabled", { enabled: true });
     } else if (m.method === "Page.javascriptDialogOpening") {
-      // A page dialog would freeze the tab; show it and accept it so the human (or the bot) can carry on.
-      showToast({ text: `${p.type}: ${p.message || ""}`, ts: Date.now() / 1000 });
-      cdp("Page.handleJavaScriptDialog", { accept: true, promptText: p.defaultPrompt || "" });
+      void pageDialog(p as { type: string; message?: string; defaultPrompt?: string });
+    } else if (m.method === "Page.fileChooserOpened") {
+      void fileChooser(p as { backendNodeId?: number; mode?: string });
     }
   };
   ws.onclose = ws.onerror = () => { if (link.ws === ws) { link.ws = null; publishLink(); } };
 }
 
+/** alert / confirm / prompt / beforeunload from the page. While you drive, a real dialog: confirm and beforeunload can be
+ *  refused, prompt accepts its default. While the bot drives, accept at once (the bot's own run does the same) and say so. */
+async function pageDialog(p: { type: string; message?: string; defaultPrompt?: string }): Promise<void> {
+  const msg = p.message || "";
+  if (!inCtl() || p.type === "alert") {
+    showToast({ text: `${p.type}: ${msg}`, ts: Date.now() / 1000 });
+    cdp("Page.handleJavaScriptDialog", { accept: true, promptText: p.defaultPrompt || "" });
+    return;
+  }
+  const title = p.type === "beforeunload" ? "Leave this page?" : p.type === "prompt" ? "The page asks for a value" : "The page asks";
+  const text = p.type === "prompt" ? `${msg}\n\nOK answers with "${p.defaultPrompt || ""}" (the page's default); Cancel answers nothing.` : msg;
+  const ok = await askConfirm(title, text, p.type === "beforeunload" ? "Leave" : "OK", false);
+  cdp("Page.handleJavaScriptDialog", { accept: ok, promptText: p.defaultPrompt || "" });
+}
+/** <input type=file> clicked in the page: the OS picker runs in the server process, the chosen path lands on the input. */
+async function fileChooser(p: { backendNodeId?: number; mode?: string }): Promise<void> {
+  if (!p.backendNodeId) return;
+  let path: string | null = null;
+  try { path = await pickFile({ title: "Choose a file for the page" }); } catch { path = null; }
+  cdp("DOM.setFileInputFiles", { files: path ? [path] : [], backendNodeId: p.backendNodeId });
+}
+
+// ------------------------------------------------------------------ <select> menus ----
+// Headless Chrome paints no native popups: a <select>'s menu, a datalist's suggestions and the date picker open as
+// widgets outside the page and never reach the screencast, while an invisibly open menu swallows the next clicks.
+// A click (or Space/Enter/arrows) on a closed single <select> therefore opens a menu of ours over the stage instead,
+// and picking sets the value in the page with input + change events. Datalist and date inputs keep working by typing.
+export interface SelectOpt { t: string; v: string; s: boolean; d: boolean }
+export interface SelectMenu { opts: SelectOpt[]; left: number; top: number; width: number }
+let selMenu: SelectMenu | null = null;
+const selListeners = new Set<() => void>();
+const subscribeSel = (l: () => void) => { selListeners.add(l); return () => { selListeners.delete(l); }; };
+function setSelMenu(m: SelectMenu | null): void { selMenu = m; for (const l of [...selListeners]) l(); }
+export const useSelectMenu = (): SelectMenu | null => useSyncExternalStore(subscribeSel, () => selMenu, () => selMenu);
+const SELECT_PROBE = (where: string) => `(() => { const el = ${where}; if (!el || el.tagName !== "SELECT" || el.multiple || el.size > 1 || el.disabled) return null;
+  window.__fusedSel = el; const r = el.getBoundingClientRect();
+  return { opts: [...el.options].map((o) => ({ t: o.text, v: o.value, s: o.selected, d: o.disabled })), r: [r.left, r.top, r.width, r.height] }; })()`;
+/** Open our menu for the <select> at page point p (or the focused one when p is null). True when one opened. */
+async function openSelectAt(p: { x: number; y: number } | null): Promise<boolean> {
+  const hit = await evalIn<{ opts: SelectOpt[]; r: [number, number, number, number] } | null>(
+    SELECT_PROBE(p ? `document.elementFromPoint(${p.x}, ${p.y})` : "document.activeElement"));
+  if (!hit) return false;
+  const img = $<HTMLImageElement>("fshot"), stage = $("stage");
+  if (!img || !stage) return false;
+  const ir = img.getBoundingClientRect(), sr = stage.getBoundingClientRect();
+  const [vw, vh] = frameDims(link.meta, cur()?.viewport, [img.naturalWidth, img.naturalHeight]);
+  const sx = ir.width / (vw || 1), sy = ir.height / (vh || 1);
+  setSelMenu({ opts: hit.opts, left: ir.left - sr.left + hit.r[0] * sx, top: ir.top - sr.top + (hit.r[1] + hit.r[3]) * sy, width: hit.r[2] * sx });
+  return true;
+}
+/** A row of our menu was picked (null: closed without picking). */
+export function pickSelect(v: string | null): void {
+  setSelMenu(null);
+  if (v !== null) cdp("Runtime.evaluate", { expression: `(() => { const el = window.__fusedSel; if (!el) return; el.value = ${JSON.stringify(v)};
+    el.dispatchEvent(new Event("input", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true })); el.focus(); })()` });
+  focusCtl();
+}
+
 export function linkClose(): void {
+  setSelMenu(null);
   const ws = link.ws; link.ws = null; link.url = null; link.meta = null;
   if (ws) { try { if (ws.readyState === 1) ws.send(JSON.stringify({ id: ++link.id, method: "Page.stopScreencast" })); ws.close(); } catch { /* already gone */ } }
   publishLink();
@@ -195,8 +274,9 @@ function toPage(e: MouseEvent): { x: number; y: number } | null {
   const img = $<HTMLImageElement>("fshot"); if (!img) return null;
   return toPageXY(e.clientX, e.clientY, img.getBoundingClientRect(), [img.naturalWidth, img.naturalHeight], link.meta, cur()?.viewport);
 }
+// `buttons` (the held-button bitmask, same encoding in DOM and CDP) is what lets Chrome see a drag and a right-button press.
 const mouse = (type: string, p: { x: number; y: number }, e: MouseEvent, extra: Record<string, unknown> = {}) =>
-  cdp("Input.dispatchMouseEvent", { type, x: p.x, y: p.y, modifiers: CDP_MODS(e), ...extra });
+  cdp("Input.dispatchMouseEvent", { type, x: p.x, y: p.y, modifiers: CDP_MODS(e), buttons: e.buttons, ...extra });
 
 /**
  * Wire the stage (pointer, wheel, paste, keys), the document-level Esc, and the per-poll mirrors (follow popups,
@@ -212,16 +292,29 @@ export function installLive(stage: HTMLElement): () => void {
     const first = !pendingMove; pendingMove = { p, e };
     if (first) requestAnimationFrame(() => { const m = pendingMove; pendingMove = null; if (m && inCtl()) mouse("mouseMoved", m.p, m.e); });
   };
+  // A left press first asks the page what is under it: a closed <select> opens our menu instead of Chrome's invisible one.
+  // The press is sent once that answer is in, and the matching release waits for it, so the two never cross.
+  let pressed: Promise<void> = Promise.resolve();
   const onDown = (e: MouseEvent) => {
     if (!inCtl()) return; const p = toPage(e); if (!p) return;
     e.preventDefault(); ($("fkeys") || stage).focus();
+    if (selMenu) setSelMenu(null);
     lastDown = nextDown(lastDown, performance.now(), p);
-    mouse("mousePressed", p, e, { button: BTN[e.button] || "left", clickCount: lastDown.n });
+    const n = lastDown.n;
+    pressed = (async () => {
+      if (e.button === 0 && n === 1 && await openSelectAt(p)) { skipRelease = true; return; }
+      mouse("mousePressed", p, e, { button: BTN[e.button] || "left", clickCount: n });
+    })();
   };
+  let skipRelease = false;
   const onUp = (e: MouseEvent) => {
     if (!inCtl()) return; const p = toPage(e) || { x: lastDown.x, y: lastDown.y };
-    mouse("mouseReleased", p, e, { button: BTN[e.button] || "left", clickCount: lastDown.n });
-    setTimeout(poll, 700);  // a click may open a tab or change the title
+    const n = lastDown.n;
+    void pressed.then(() => {
+      if (skipRelease) { skipRelease = false; return; }
+      mouse("mouseReleased", p, e, { button: BTN[e.button] || "left", clickCount: n });
+      setTimeout(poll, 700);  // a click may open a tab or change the title
+    });
   };
   const onCtx = (e: MouseEvent) => { if (inCtl()) e.preventDefault(); };
   // While the bot drives, a click on the page does nothing to it; offer to take over instead of silently ignoring the click.
@@ -251,10 +344,17 @@ export function installLive(stage: HTMLElement): () => void {
     if (!inCtl()) return;
     if ((e.metaKey || e.ctrlKey) && k === "v") return;  // the paste event carries the text
     if (e.isComposing || e.keyCode === 229 || e.key === "Dead" || e.key === "Process") return;  // compositionend forwards it
-    if (e.type === "keydown" && ((e.altKey && e.key === "ArrowLeft") || (e.metaKey && e.key === "["))) { e.preventDefault(); nav("back"); return; }
-    if (e.type === "keydown" && ((e.altKey && e.key === "ArrowRight") || (e.metaKey && e.key === "]"))) { e.preventDefault(); nav("forward"); return; }
+    // History only on ⌘[ / ⌘] (never ⌥←/⌥→: those are word moves on macOS and belong to the page).
+    if (e.type === "keydown" && e.metaKey && e.key === "[") { e.preventDefault(); nav("back"); return; }
+    if (e.type === "keydown" && e.metaKey && e.key === "]") { e.preventDefault(); nav("forward"); return; }
     if (e.type === "keydown" && e.metaKey && k === "r") { e.preventDefault(); nav("reload"); return; }
     e.preventDefault();
+    if (selMenu) { if (e.type === "keydown" && e.key === "Escape") setSelMenu(null); return; }  // the menu owns the keyboard
+    if (e.type === "keydown" && !e.metaKey && !e.ctrlKey && !e.altKey && (e.key === " " || e.key === "Enter" || e.key === "ArrowDown" || e.key === "ArrowUp")) {
+      // On a focused closed <select> these open Chrome's (invisible) menu: open ours instead, else forward as usual.
+      void openSelectAt(null).then((opened) => { if (!opened) { const a = keyAction(e); if (a?.kind === "key") cdp("Input.dispatchKeyEvent", a.params as unknown as Record<string, unknown>); } });
+      return;
+    }
     const a = keyAction(e);
     if (a?.kind === "key") cdp("Input.dispatchKeyEvent", a.params as unknown as Record<string, unknown>);
     else if (a?.kind === "insert") cdp("Input.insertText", { text: a.text });
