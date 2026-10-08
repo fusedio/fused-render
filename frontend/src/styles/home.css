@@ -2603,11 +2603,3 @@ a.hw-more:hover {
 }
 .hw-widget.is-app .hw-body { display: flex; flex-direction: column; min-height: 0; }
 .hw-widget.is-app .hw-app-iframe { border-radius: 0; }
-
-.hw-tile.is-more .hw-tile-icon {
-  border: 1px dashed color-mix(in srgb, var(--fg-faint) 55%, transparent);
-  border-radius: 10px;
-  color: var(--fg-muted);
-  font-size: 18px;
-}
-.hw-tile.is-more:hover .hw-tile-icon { color: var(--fg); border-color: var(--fg-faint); }

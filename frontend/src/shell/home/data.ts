@@ -3,6 +3,7 @@
 // `rows`: a 2x2 widget draws two rows, so it asks for twice the cards a row fits.
 import { useEffect, useState } from "react";
 import {
+  getAppsPage,
   getHomeApps,
   getHomeClaudeSessionFolders,
   getTasks,
@@ -15,6 +16,29 @@ import { useCurrentAppsChanged, TASKS_CHANGED_EVENT } from "@platform/lib/tasksC
 import { api as botsApi, type Bot } from "@apps/bots/lib/api";
 import type { AppsSort } from "./layout";
 import { MAX_ROW } from "./strip";
+
+/** The whole app catalog (recency-then-name order) for the icons strip, which
+    lists every app. Fetched only when `enabled`; a failure leaves `all` null so
+    the capped home list still renders. */
+export function useAllApps(enabled: boolean) {
+  const [all, setAll] = useState<AppInfo[] | null>(null);
+  const [nonce, setNonce] = useState(0);
+  useCurrentAppsChanged(() => setNonce((n) => n + 1));
+  useEffect(() => {
+    if (!enabled) return;
+    let alive = true;
+    getAppsPage({ offset: 0, limit: 500 }).then(
+      (r) => {
+        if (alive) setAll(r.apps);
+      },
+      () => {},
+    );
+    return () => {
+      alive = false;
+    };
+  }, [enabled, nonce]);
+  return { all };
+}
 
 /** Fused apps — hydrate the recent row first. The server only scans the full
     workspace when valid recents do not fill it, preserving discovery and the

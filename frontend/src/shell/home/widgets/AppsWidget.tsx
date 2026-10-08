@@ -7,8 +7,9 @@ import type { AppInfo } from "@platform/lib/api";
 import { fallbackTile } from "../../../dock/lib";
 import { CardStrip } from "../CardStrip";
 import { SkeletonRow } from "../skeleton";
-import { MAX_ROW, softNavigate, useStripCount } from "../strip";
-import { useHomeApps } from "../data";
+import { MAX_ROW, useStripCount } from "../strip";
+import { useAllApps, useHomeApps } from "../data";
+import { mergeApps } from "./mergeApps";
 import { CELL, dims, itemCapacity, type Widget } from "../layout";
 import { EmptyLine, ErrorLine, ListSkeleton } from "./bits";
 
@@ -59,6 +60,8 @@ export function AppsWidget({ widget }: { widget: Widget }) {
   // Cards ask for what the measured row can draw (the server's recents-first
   // fast path depends on it); icon tiles ask for their fixed capacity.
   const { apps, appsError, retry } = useHomeApps(cards ? limit : Math.min(cap * 2, MAX_ROW), 1, widget.sort ?? "opened");
+  const { all } = useAllApps(!cards);
+  const merged = cards ? [] : mergeApps((apps ?? []).slice(0, MAX_ROW), all ?? [], widget.sort ?? "opened");
   return (
     <div ref={ref} className="hw-body">
       {apps === null ? (
@@ -75,18 +78,10 @@ export function AppsWidget({ widget }: { widget: Widget }) {
             ))}
           </CardStrip>
         ) : (
-          <CardStrip variant="icons" count={count} rows={rows} total={apps.length}>
-            {apps.slice(0, MAX_ROW).map((app) => (
+          <CardStrip variant="icons" count={count} rows={rows} total={merged.length}>
+            {merged.map((app) => (
               <AppTile key={app.path} app={app} />
             ))}
-            {apps.length >= MAX_ROW && (
-              <a className="hw-tile is-more" href="/apps" onClick={(e) => softNavigate(e, "/apps")} aria-label="All apps">
-                <span className="hw-tile-icon" aria-hidden="true">
-                  <span className="hw-tile-glyph">›</span>
-                </span>
-                <span className="hw-tile-name">All apps</span>
-              </a>
-            )}
           </CardStrip>
         )
       ) : appsError ? (
