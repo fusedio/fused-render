@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
-  furlTarget, imessageStatus, isUrl, keyAction, modelChips, nextDown, rankUsage, routineLabel, showUrl, toPageXY, weighted, type KeyLike,
+  furlTarget, heldButton, imessageStatus, isUrl, keyAction, modelChips, nextDown, rankUsage, routineLabel, showUrl, toPageXY, toStageBox, typesText, weighted, wrapIndex, type KeyLike,
 } from "./live";
 
 const rect = { left: 100, top: 50, width: 640, height: 400 };
@@ -95,6 +95,25 @@ describe("keyParams", () => {
   });
   test("autoRepeat follows the event", () => {
     expect(keyParams(k("ArrowDown", { repeat: true }))).toMatchObject({ autoRepeat: true, windowsVirtualKeyCode: 40 });
+  });
+});
+
+describe("stage geometry and small predicates", () => {
+  test("toStageBox scales the page rect to the drawn frame and offsets by the image's place and the stage's scroll", () => {
+    // frame covers 1280x720 CSS px, drawn at 640x360 at (100, 50) inside a stage at (20, 10), stage scrolled 0/30
+    const img = { left: 100, top: 50, width: 640, height: 360 }, stage = { left: 20, top: 10, width: 800, height: 600 };
+    expect(toStageBox([200, 100, 400, 40], img, stage, [1280, 720], { x: 0, y: 30 })).toEqual({ left: 180, top: 120, width: 200, height: 20 });
+    expect(toStageBox([0, 0, 0, 0], img, stage, [1280, 720])).toEqual({ left: 80, top: 40, width: 0, height: 0 });
+  });
+  test("heldButton names the button Chrome needs on a move", () => {
+    expect(heldButton(0)).toBe("none"); expect(heldButton(1)).toBe("left"); expect(heldButton(2)).toBe("right"); expect(heldButton(4)).toBe("middle"); expect(heldButton(3)).toBe("left");
+  });
+  test("wrapIndex wraps both ways and survives an empty list", () => {
+    expect(wrapIndex(0, -1, 3)).toBe(2); expect(wrapIndex(2, 1, 3)).toBe(0); expect(wrapIndex(0, 1, 0)).toBe(0);
+  });
+  test("typesText: letters and Backspace refresh suggestions, chords and navigation do not", () => {
+    expect(typesText(k("a"))).toBe(true); expect(typesText(k("Backspace"))).toBe(true);
+    for (const e of [k("a", { metaKey: true }), k("ArrowDown"), k("Tab"), k("Enter"), k("F5"), k("Shift", { shiftKey: true })]) expect(typesText(e)).toBe(false);
   });
 });
 

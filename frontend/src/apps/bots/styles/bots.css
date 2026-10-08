@@ -545,14 +545,14 @@ div.bots-page.sideapp .preview :is(.shotwrap, .toast, .cap, .info) { display: no
 .bots-page #full header button svg, .bots-page #full .winacts button svg { width: 13px; height: 13px; }
 .bots-page #full header .navctl svg { width: 16px; height: 16px; }
 .bots-page #full .stage { position: relative; flex: 1; overflow: auto; background: #000; display: flex; align-items: flex-start; justify-content: center; }  /* relative: the overlays below position against it */
-.bots-page #full .stage img { max-width: 100%; display: block; }
+.bots-page #full .stage img { max-width: 100%; max-height: 100%; object-fit: contain; display: block; }  /* fit: the stage never scrolls, so pointer math needs no scroll offset */
 .bots-page #full .stage:focus, .bots-page #full .stage:focus-visible { outline: none; }
-/* #fkeys: the keyboard target while you drive (cdp.ts). Off-screen but focusable, 1x1 so iOS/macOS still attach an IME to it;
-   never visible, never scrolls the stage. */
+/* #fkeys: the keyboard target while you drive (live-input.ts). 1x1 and transparent so an IME still attaches to it; focused with
+   preventScroll so the stage never jumps to it. */
 .bots-page #full .stage #fkeys { position: absolute; left: 0; top: 0; width: 1px; height: 1px; padding: 0; border: 0; margin: 0; opacity: 0; resize: none; overflow: hidden; outline: none; pointer-events: none; }
 /* #cmodal field variants (dialogs/ask.ts askAuth, askPrompt): the inputs above the buttons. */
 .bots-page #cmodal .authfields { display: flex; flex-direction: column; gap: 8px; margin: 0 0 14px; }
-.bots-page #cmodal .authfields input { font: 13px -apple-system, system-ui, sans-serif; padding: 6px 8px; border: 1px solid var(--border, #999); border-radius: 4px; background: var(--panel, #fff); color: var(--text, #111); }
+.bots-page #cmodal .authfields input { font: 13px -apple-system, system-ui, sans-serif; padding: 6px 8px; border: 1px solid var(--border, #999); border-radius: 4px; background: var(--inset); color: var(--text); }  /* --inset/--text: .box re-points them, --panel it does not */
 /* .ghost: the drag image of an intercepted drag, a crop of the frame under the pointer; .dragging: the stage's cursor meanwhile. */
 .bots-page #full .stage .ghost { position: absolute; z-index: 6; opacity: .75; pointer-events: none; border-radius: 3px; box-shadow: 0 4px 14px rgba(0,0,0,.35); }
 .bots-page #full .stage .ghost[hidden] { display: none; }  /* the stage's `img { display: block }` would otherwise beat the hidden attribute */

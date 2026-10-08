@@ -5,7 +5,7 @@ import { useEffect, type MouseEvent } from "react";
 import { SideApp } from "../apps/SideApp";
 import { embedUrlForFsPath } from "@platform/lib/router";
 import { api, rawFileUrl, shotUrl, type Artifact, type Bot } from "../lib/api";
-import { mirrorThumb, openFromThumb } from "../lib/cdp";
+import { mirrorThumb, openFull } from "../lib/cdp";
 import { fmtAgo, fmtBytes, fmtWhenShort } from "../lib/format";
 import { closePreview } from "../lib/layout";
 import { act, closeMenu, getState, openDialog, openMenu, useBotsSelector } from "../state/store";
@@ -152,7 +152,7 @@ export function PreviewPane() {
       </header>
       {/* Side app: a built app running in this column instead of the browser view. The strip switches between the two; × unloads the app. */}
       <SideApp />
-      <div className={`shotwrap${asleep ? " asleep" : ""}`} id="shotwrap" onClick={openFromThumb}
+      <div className={`shotwrap${asleep ? " asleep" : ""}`} id="shotwrap" onClick={() => openFull()}
         title={asleep ? "Browser is asleep to save memory. Click to wake it." : "Click to watch this bot's browser"}>
         {/* One shared <img> whose src follows the selected bot's shot URL, so switching bots never leaves the old page up. */}
         <img id="shot" alt="" src={u || undefined} />

@@ -1,6 +1,7 @@
 // #cmodal (OpenBot dialogs.js askConfirm): renders the head of the confirm queue (dialogs/ask.ts). Enter = OK,
 // Escape / Cancel / the backdrop = no. The key listener runs in the capture phase and stops propagation so nothing
-// underneath (the bot dialog's Enter, the live view's Esc) also reacts. Cancel takes focus on open.
+// underneath (the bot dialog's Enter, the live view's Esc) also reacts. Cancel takes focus on open (the first field for
+// the auth / prompt variants).
 import { useEffect, useRef } from "react";
 import { settleConfirm, useConfirm } from "./ask";
 

@@ -3,7 +3,9 @@
 // chrome around them from the store and the link state.
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api, type Bot } from "../lib/api";
-import { closeOverlay, gotoTyped, handBack, inFull, installLive, nav, pickerChange, pickSelect, runItem, tabstripClick, toggleCtl, useLinked, useOverlay } from "../lib/cdp";
+import { gotoTyped, handBack, inFull, nav, tabstripClick, toggleCtl, useLinked } from "../lib/cdp";
+import { installLive } from "../lib/live-input";
+import { closeOverlay, pickerChange, pickSelect, runItem, useOverlay } from "../lib/live-overlays";
 import { statusLabel } from "../lib/derive";
 import { showUrl } from "../lib/live";
 import { act, eventsOf, useBotsSelector } from "../state/store";
@@ -46,7 +48,7 @@ function Overlays() {
     }
   }, [o]);
   if (!o) return null;
-  // Arrow keys walk the buttons; Escape closes; nothing leaks to the page (the stage listens on keydown too).
+  // Arrow keys walk the buttons; Escape closes. The stage's own key listener ignores keys from inside an overlay.
   const menuKeys = (e: React.KeyboardEvent) => {
     const items = [...(ref.current?.querySelectorAll<HTMLButtonElement>("button:not(:disabled)") || [])];
     const i = items.indexOf(document.activeElement as HTMLButtonElement);
@@ -58,7 +60,8 @@ function Overlays() {
   if (o.kind === "picker") {
     return <input ref={inRef} className="lvov pickov" type={o.type} defaultValue={o.value} aria-label="Pick a value for the page's field"
       style={{ left: o.left, top: o.top, width: o.width, height: o.height }}
-      onChange={(e) => pickerChange(e.currentTarget.value)} onBlur={() => closeOverlay()}
+      onChange={(e) => pickerChange(e.currentTarget.value)}
+      onBlur={() => { if (document.hasFocus()) closeOverlay(); }}  /* the OS colour panel or another window taking focus is not a dismissal */
       onKeyDown={(e) => { if (e.key === "Escape") closeOverlay(); e.stopPropagation(); }} />;
   }
   if (o.kind === "context") {

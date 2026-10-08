@@ -36,6 +36,27 @@ export function toPageXY(clientX: number, clientY: number, rect: RectLike, natur
   return { x: Math.round(x), y: Math.round(y) };
 }
 
+/** A page rect as [left, top, width, height] in CSS px (what the probes return). */
+export type Box = [number, number, number, number];
+/**
+ * A page rect -> the same box in stage coordinates: the frame's CSS px scale to the drawn image, offset by where the image
+ * sits in the stage, plus the stage's own scroll. `dims` is how many CSS px the frame covers (frameDims).
+ */
+export function toStageBox(r: Box, img: RectLike, stage: RectLike, dims: [number, number], scroll = { x: 0, y: 0 }): { left: number; top: number; width: number; height: number } {
+  const sx = img.width / (dims[0] || 1), sy = img.height / (dims[1] || 1);
+  return { left: img.left - stage.left + scroll.x + r[0] * sx, top: img.top - stage.top + scroll.y + r[1] * sy, width: r[2] * sx, height: r[3] * sy };
+}
+/** The CDP `button` for a held-button bitmask (DOM `buttons`): Chrome starts a drag only from moves that name it. */
+export const heldButton = (buttons: number): "left" | "right" | "middle" | "none" =>
+  buttons & 1 ? "left" : buttons & 2 ? "right" : buttons & 4 ? "middle" : "none";
+/** i moved by delta inside [0, n), wrapping. */
+export const wrapIndex = (i: number, delta: number, n: number): number => (n > 0 ? (((i + delta) % n) + n) % n : 0);
+/** A key that changes a field's text (so datalist suggestions should refresh): no ⌘/Ctrl chord, not a navigation or modifier key. */
+export const typesText = (e: KeyLike): boolean =>
+  !e.metaKey && !e.ctrlKey && !["Tab", "Escape", "Enter", "Shift", "Control", "Alt", "Meta", "CapsLock"].includes(e.key) && !e.key.startsWith("Arrow") && !/^F\d+$/.test(e.key);
+/** One HTTP auth challenge's identity (source | origin | realm): a repeat means the password was wrong. */
+export const authKey = (ch: { source?: string; origin?: string; realm?: string }): string => `${ch.source || ""}|${ch.origin || ""}|${ch.realm || ""}`;
+
 export interface LastDown { t: number; x: number; y: number; n: number }
 /** mousedown click counting: another press within 400 ms and 6 px of the last one is a double (triple, …) click. */
 export function nextDown(last: LastDown, t: number, p: { x: number; y: number }): LastDown {
