@@ -1919,6 +1919,81 @@
   left: var(--status-bar-start-gutter);
 }
 
+/* ---- Updates chip + popover (shell/UpdatesDock.tsx) --------------------
+   Left of System in `.status-bar-start`. The label is a version at rest
+   ("v0.6.22") and a short state word otherwise, never long enough to need
+   the 18ch cap lifted. The panel reuses the sidebar UpdateCard's button,
+   bar and spinner classes (styles/sidebar.css) so the two surfaces read as
+   one feature. */
+.upd-panel {
+  width: min(300px, calc(100vw - 32px));
+  padding: 8px 10px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.upd-head {
+  font-size: 12px;
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
+}
+
+.upd-state {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid rgba(var(--accent-rgb), 0.4);
+  border-radius: 8px;
+  background: rgba(var(--accent-rgb), 0.07);
+}
+
+.upd-state.is-error {
+  border-color: rgba(var(--error-rgb), 0.4);
+  background: rgba(var(--error-rgb), 0.07);
+}
+
+.upd-state-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.upd-state-detail {
+  font-size: 11.5px;
+  color: var(--fg-muted);
+  line-height: 1.4;
+}
+
+.upd-state-detail.is-error {
+  color: var(--error);
+}
+
+.upd-progress {
+  font-variant-numeric: tabular-nums;
+}
+
+.upd-check {
+  display: flex;
+}
+
+.upd-auto {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11.5px;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.upd-auto input {
+  margin: 0;
+}
+
 /* ---- System chip + popover (shell/SystemDock.tsx) ----------------------
    The chip's label is figures ("CPU 12% · 1.4 GB"), so it takes tabular
    digits and is not held to the 18ch name cap the other chips use — a cap

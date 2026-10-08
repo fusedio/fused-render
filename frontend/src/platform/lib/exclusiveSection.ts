@@ -34,7 +34,7 @@ import { useEffect, useRef } from "react";
  *  auto-opens, so it never takes part in a tie.
  *  Named rather than inferred so the tie-break cannot silently change if the
  *  bar's markup is reordered for visual reasons. */
-export const SECTION_ORDER = ["models", "activity", "notifications", "system"] as const;
+export const SECTION_ORDER = ["models", "activity", "notifications", "system", "updates"] as const;
 export type SectionKey = (typeof SECTION_ORDER)[number];
 
 interface Entry {

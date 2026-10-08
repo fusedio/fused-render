@@ -22,7 +22,7 @@ export interface BuildsChip { n: string; live: boolean; warn: boolean; fresh: bo
 export interface DialogReq { kind: "newBot" | "settings" | "routines" | "skills" | "usage" | (string & {}); id?: string | null; pick?: NewBotPick; [k: string]: unknown }
 /** The bot context menu (components/BotMenu.tsx): openMenu(id, x, y, full, live, alignRight) in OpenBot. */
 export interface MenuReq { id: string; x: number; y: number; full?: boolean; live?: boolean; alignRight?: boolean }
-export type PanelName = "builds" | "apps";
+export type PanelName = "builds" | "apps" | "prefs";
 
 export interface BotsState {
   bots: Bot[];
