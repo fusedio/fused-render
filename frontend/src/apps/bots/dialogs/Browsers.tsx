@@ -116,7 +116,7 @@ function BrowserCard({ r, profiles, run, confirm }: CardProps) {
   };
 
   return (
-    <section className="flex flex-col gap-3 rounded-xl border border-white/10 bg-white/[0.02] p-4" data-browser={r.id} aria-busy={pending || undefined}>
+    <section className="flex flex-col gap-3 rounded-xl border border-foreground/10 bg-foreground/[0.02] p-4" data-browser={r.id} aria-busy={pending || undefined}>
       <div className="flex min-w-0 flex-col gap-1.5">
         <div className="flex min-w-0 items-center gap-2">
           {editing ? (

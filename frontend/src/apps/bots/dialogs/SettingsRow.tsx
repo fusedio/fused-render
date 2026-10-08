@@ -5,7 +5,7 @@ import type { ReactNode } from "react";
 import { cn } from "@platform/lib/utils";
 
 export function Rows({ className, children }: { className?: string; children: ReactNode }) {
-  return <div className={cn("flex flex-col divide-y divide-white/10", className)}>{children}</div>;
+  return <div className={cn("flex flex-col divide-y divide-foreground/10", className)}>{children}</div>;
 }
 
 export function Row({ title, text, htmlFor, stack, children }: { title: ReactNode; text?: ReactNode; htmlFor?: string; stack?: boolean; children?: ReactNode }) {
