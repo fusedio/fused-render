@@ -20,9 +20,9 @@
 /* Browser Bots — all styles. Loaded by index.html through fused.rawUrl. */
 /* Tokens. Dark = brand: near-black canvas, lime accent. Same names in both blocks. */
 /* The page follows the shell's surfaces so it matches every other screen (aliased at :root, where the shell's names resolve). */
-:root { --bots-shell-bg: var(--bg); --bots-shell-bg-alt: var(--bg-alt); --bots-shell-panel: var(--bg-panel); --bots-shell-hover: var(--row-bg-hover); --bots-shell-selected: var(--row-bg-selected); --bots-shell-active: var(--row-bg-active); --bots-shell-fg: var(--fg); --bots-shell-muted: var(--fg-muted); --bots-shell-border: var(--border); }
+:root { --bots-shell-bg: var(--bg); --bots-shell-bg-alt: var(--bg-alt); --bots-shell-panel: var(--bg-panel); --bots-shell-hover: var(--row-bg-hover); --bots-shell-selected: var(--row-bg-selected); --bots-shell-fg: var(--fg); --bots-shell-muted: var(--fg-muted); --bots-shell-border: var(--border); }
 .bots-page       { color-scheme: dark;
-  --bg: var(--bots-shell-bg); --panel: var(--bots-shell-bg-alt); --panel2: var(--bots-shell-hover); --card: var(--bots-shell-bg-alt); --raised: var(--bots-shell-hover); --hover: var(--bots-shell-selected); --inset: var(--bots-shell-hover);
+  --bg: var(--bots-shell-bg); --panel: var(--bots-shell-bg); --panel2: var(--bots-shell-hover); --card: var(--bots-shell-bg-alt); --raised: var(--bots-shell-hover); --hover: var(--bots-shell-selected); --inset: var(--bots-shell-hover);
   --text: var(--bots-shell-fg); --muted: var(--bots-shell-muted); --line: var(--bots-shell-border);
   --accent: #eafe68; --accent-ink: #0d0d0f; --accent-text: #eafe68; --bubble-user: #3b4030; --bubble-user-ink: #ffffff;
   --ok: #38d591; --warn: #ffb020; --err: #ff5667; --shadow: 0 12px 40px rgba(0,0,0,.7); }
@@ -100,7 +100,7 @@ div.bots-page:is(.lcol, .lfit) .bots header #add { order: 2; width: 44px; height
 div.bots-page:is(.lcol, .lfit) .bots header #add svg { width: 24px; height: 24px; }
 /* Collapsed rows are 60px circles so the hover/selected fill sits concentric with the 44px avatar (min-width, not width: the row hugs the panel while it slides, so it never floats centered mid-way). */
 div.bots-page:is(.lcol, .lfit) .bot { grid-template-columns: 44px; justify-content: center; min-width: 60px; height: 60px; padding: 8px; margin: 0 auto 2px; border-radius: 50%; }
-div.bots-page:is(.lcol, .lfit) .bot.sel { background: var(--bots-shell-active); }  /* brighter than the expanded row's fill, which reads faint behind a lone avatar */
+div.bots-page:is(.lcol, .lfit) .bot.sel { background: var(--bots-shell-selected); }  /* matches the shell nav selection, neutral rather than accent-washed */
 /* Collapsed rail: no second badge on the circle. Unread turns the status dot itself solid yellow (no pulse), and shows it even on an idle bot. */
 div.bots-page:is(.lcol, .lfit) .bot .badge { display: none; }
 div.bots-page:is(.lcol, .lfit) .av .dot.unread { display: block; background: var(--accent); animation: none; }
@@ -208,7 +208,7 @@ div.bots-page.lanim .bots header #lcol, div.bots-page.lanim .bots header #add { 
 div.bots-page.lanim .bots header #add { width: 32px; height: 32px; border-radius: 999px; }
 div.bots-page.lanim .bots header #add svg { width: 20px; height: 20px; }
 .bots-page .bot:hover { background: var(--panel2); }
-.bots-page .bot.sel { background: var(--bots-shell-active); }
+.bots-page .bot.sel { background: var(--bots-shell-selected); }
 .bots-page .bot .av { grid-row: 1 / 3; }
 .bots-page .bot .av.settings { cursor: pointer; }  /* the selected row's avatar opens Settings, like the header avatar */
 .bots-page .bot .name { grid-column: 2; grid-row: 1; min-width: 0; font-weight: 400; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
