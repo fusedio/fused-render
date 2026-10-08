@@ -6644,3 +6644,7 @@ The two bare Home widgets have a fixed, content-derived height in units (search 
 ## 2026-10-08 — Bare widgets highlight their own border on hover in edit mode
 
 File search and Build an app show their edit-mode hover highlight on the control's own border (`.files-search`, `.home-composer`), not the widget frame, because the frame is transparent and larger than the control since layout v5.
+
+## 2026-10-08 — Build an app stand-in fills its edit-mode frame
+
+In edit mode the Build an app stand-in stretches to fill its 3-unit frame (input grows, picker bar pinned to the bottom) so the composer's box and hover border coincide with the widget footprint and the overlaid controls sit inside it.

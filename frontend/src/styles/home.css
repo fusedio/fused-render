@@ -2297,6 +2297,22 @@ a.hw-more:hover {
 .hw-widget.is-search.is-edit .files-search-allfiles { display: none; }
 .hw-widget.is-search.is-edit .files-search { padding-left: 38px; padding-right: 96px; }
 .hw-widget.is-build.is-edit .home-composer-input { padding-left: 40px; }
+/* The composer stand-in fills the 3-unit frame, so the box the user sees
+   (and its hover border) is the widget's own footprint and the overlaid
+   grip, Edit and × land inside it. The input takes the spare height; the
+   picker bar stays at the bottom, as in the real composer. */
+.hw-widget.is-build.is-edit { justify-content: flex-start; }
+.hw-widget.is-build.is-edit .hw-ph,
+.hw-widget.is-build.is-edit .home-composer-wrap,
+.hw-widget.is-build.is-edit .home-composer {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.hw-widget.is-build.is-edit .hw-ph { height: 100%; }
+.hw-widget.is-build.is-edit .home-composer-input { flex: 1 1 auto; min-height: 0; }
+.hw-widget.is-build.is-edit .home-composer-bar { flex: 0 0 auto; }
 /* Their hover highlight, which the transparent frame above suppresses, lands
    on the control's own border instead: a frame border would sit 4px outside
    the bar. While an edge is being dragged the grid holds the plain border,
