@@ -89,7 +89,7 @@ import { publishLivePreviewsEnabled } from "@platform/lib/live-previews-flag";
 import { publishMonitorEnabled } from "@platform/lib/monitor-flag";
 import { publishProjectQueueEnabled } from "@apps/claude/feature-flag";
 import type { CallsParamsMode, HfAuth, LanDevice, Prefs } from "@platform/lib/api";
-import { navigate, navigateUrl } from "@platform/lib/router";
+import { IS_QUERY_EMBED, navigate, navigateUrl } from "@platform/lib/router";
 import { displayName, isBot } from "@platform/lib/flavor";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { publishTaskNotifyTerminalSessions } from "./task-notify-terminal-flag";
@@ -1803,7 +1803,10 @@ export default function Preferences() {
     <div className="prefs-page">
       {/* Page names itself — the topbar that used to carry "Preferences" is
           gone (settings pages render chrome-free). */}
-      <h1 className="prefs-title">Preferences</h1>
+      {/* Framed inside the Bots page's Preferences panel (`?embed=1`,
+          apps/bots/components/PrefsPanel.tsx) the panel's own top bar
+          carries the title; a second heading here read as a repeat. */}
+      {!IS_QUERY_EMBED && <h1 className="prefs-title">Preferences</h1>}
       {error && <ErrorBanner>{error}</ErrorBanner>}
       {!prefs && !error && <SkeletonLines rows={4} label="Loading preferences" />}
       {prefs && (

@@ -25,10 +25,18 @@
 // `requestRestart` paths UpdateCard takes), and the auto-download toggle
 // Preferences also offers.
 //
+// THE CHECK BUTTON IS AN ICON ALONE, BEFORE THE VERSION (Akshil: "prefix icon only button, on
+// hover instant tooltip") — a refresh glyph with the instant `data-hint`
+// tooltip (platform/lib/hints.ts; a native `title` waits seconds on the
+// first hover). The press's answer has no words of its own to show, so the
+// glyph says it: spinning while checking, a tick for "Up to date", a cross
+// for "Couldn't check", each with the matching hint, for the few seconds the
+// phase holds.
+//
 // SPLIT INTO A PURE VIEW (`UpdatesCardView`) AND A STATEFUL WRAPPER, the
 // SystemDock/ModelsDock split, so the test renders the view with a fixed
 // status and no poll.
-import { AlertCircle, Download, Loader2, RotateCcw } from "lucide-react";
+import { AlertCircle, Check, Download, Loader2, RefreshCw, RotateCcw, X } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { getPrefs, putAutoDownloadUpdates, type UpdateStatus } from "@platform/lib/api";
@@ -38,6 +46,9 @@ import { useStatusChip, type StatusChipState } from "@platform/lib/statusChip";
 import { useManualUpdateCheck } from "@platform/lib/update-check";
 import { checkNowLabel, installUpdate, updateRelevant, useUpdateStatus, type ManualCheckPhase } from "@platform/lib/update-status";
 import StatusChip, { type ChipTone } from "@platform/ui/StatusChip";
+
+/** The disabled Check button's hint on a build with no updater. */
+export const NO_UPDATER_HINT = "Updates aren’t managed from inside the app on this build — a packaged Fused app updates itself; a dev run does not.";
 
 export interface UpdatesChip {
   label: string;
@@ -158,7 +169,26 @@ export function UpdatesCardView({
   // decision (download? restart?) — pressing it then could only contradict
   // the chip beside it with "Up to date".
   const showCheck = !updateRelevant(status);
+  // The Check button is a SIBLING of the chip's hover host, not a child:
+  // inside it, hovering the icon would open the popover under the tooltip.
+  // It comes FIRST — a prefix to the version (Akshil, 2026-10-08).
   return (
+    <>
+      {showCheck && (
+        <button
+          type="button"
+          className={"upd-check-btn" + (phase !== "rest" ? " is-" + phase : "")}
+          disabled={!hasUpdater || phase === "checking"}
+          data-hint={hasUpdater ? checkNowLabel(phase, version) : NO_UPDATER_HINT}
+          aria-label={checkNowLabel(phase, version)}
+          onClick={onCheck}
+        >
+          {phase === "checking" ? <Loader2 size={13} className="update-card-spin" aria-hidden />
+            : phase === "current" ? <Check size={13} aria-hidden />
+            : phase === "failed" ? <X size={13} aria-hidden />
+            : <RefreshCw size={13} aria-hidden />}
+        </button>
+      )}
     <div className="dl-host upd-chip" {...hostProps}>
       <StatusChip
         label={chip.label}
@@ -170,17 +200,6 @@ export function UpdatesCardView({
         ariaLabel={`Updates: ${chip.label}`}
         onClick={onToggle}
       />
-      {showCheck && (
-        <button
-          type="button"
-          className={"upd-check-btn" + (phase !== "rest" ? " is-" + phase : "")}
-          disabled={!hasUpdater || phase === "checking"}
-          title={hasUpdater ? "Look for a newer version now" : "Updates aren’t managed from inside the app on this build — a packaged Fused app updates itself; a dev run does not."}
-          onClick={onCheck}
-        >
-          {checkNowLabel(phase, hasUpdater ? null : version)}
-        </button>
-      )}
       {!collapsed && (
         <div className="dl-panel upd-panel" role="status">
           <div className="upd-head">{running}</div>
@@ -221,6 +240,7 @@ export function UpdatesCardView({
         </div>
       )}
     </div>
+    </>
   );
 }
 

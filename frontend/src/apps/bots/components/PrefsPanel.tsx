@@ -32,8 +32,9 @@ export function PrefsPanel() {
   return (
     <div id="ppanel" className={open ? "show" : ""}>
       <div className="topbar">
-        {/* Back alone: the page names itself with its own "Preferences" heading, a second one up here read as a repeat. */}
+        {/* The title lives up here like Builds/Apps; the framed page drops its own heading under embed=1 (shell/Preferences.tsx). */}
         <button id="pback" className="backtxt" aria-label="Back" title="Back to bots (Esc)" onClick={closePanel}><ArrowLeftIcon /></button>
+        <b className="ttl">Preferences</b>
       </div>
       {open ? <iframe id="pframe" ref={frame} src={PREFS_EMBED_URL} title="Preferences" onLoad={onFrameLoad} /> : null}
     </div>

@@ -79,30 +79,33 @@ function view(status: UpdateStatus | null, over: Partial<Parameters<typeof Updat
 }
 
 test("the Check button sits in the bar beside the chip, even collapsed; the popover has the version and the auto-download row", () => {
-  const closed = texts(view(st({}), { collapsed: true }).toJSON()).join(" | ");
-  expect(closed).toContain("v0.6.22");
-  expect(closed).toContain("Check for updates");
+  const closed = view(st({}), { collapsed: true });
+  expect(texts(closed.toJSON()).join(" | ")).toContain("v0.6.22");
+  expect(closed.root.findByProps({ className: "upd-check-btn" }).props["data-hint"]).toBe("Check for updates");
   const all = texts(view(st({})).toJSON()).join(" | ");
   expect(all).toContain("Running v0.6.22");
   expect(all).toContain("No update is waiting.");
   expect(all).toContain("Automatically download updates");
-  expect(texts(view(st({}), { phase: "current" }).toJSON()).join(" | ")).toContain("Up to date");
+  expect(view(st({}), { phase: "current" }).root.findByProps({ className: "upd-check-btn is-current" }).props["data-hint"]).toBe("Up to date · v0.6.22");
 });
 
 test("no updater: the version still shows, the Check button is there but disabled", () => {
   const r = view(null, { hasUpdater: false });
   const all = texts(r.toJSON()).join(" | ");
   expect(all).toContain("Running v0.6.22");
-  expect(all).toContain("Check for updates");
-  expect(r.root.findByProps({ className: "upd-check-btn" }).props.disabled).toBe(true);
+  const btn = r.root.findByProps({ className: "upd-check-btn" });
+  expect(btn.props.disabled).toBe(true);
+  expect(btn.props["data-hint"]).toContain("aren’t managed");
   expect(all).toContain("Updates aren’t managed from inside the app on this build");
   expect(all).not.toContain("Automatically download updates");
 });
 
 test("updater present but store not heard yet: no 'not managed' flash, the Check button stands", () => {
-  const all = texts(view(null, { hasUpdater: true }).toJSON()).join(" | ");
-  expect(all).toContain("Check for updates");
-  expect(all).not.toContain("managed from inside");
+  const r = view(null, { hasUpdater: true });
+  const btn = r.root.findByProps({ className: "upd-check-btn" });
+  expect(btn.props.disabled).toBe(false);
+  expect(btn.props["data-hint"]).toBe("Check for updates");
+  expect(texts(r.toJSON()).join(" | ")).not.toContain("managed from inside");
 });
 
 test("an update found replaces the Check button with the decision", () => {
@@ -116,7 +119,7 @@ test("an update found replaces the Check button with the decision", () => {
 test("collapsed: no panel; a pending update hides the Check button", () => {
   const all = texts(view(st({}), { collapsed: true }).toJSON()).join(" | ");
   expect(all).not.toContain("Running");
-  const pending = texts(view(st({ state: "available" }), { collapsed: true }).toJSON()).join(" | ");
-  expect(pending).toContain("Update available");
-  expect(pending).not.toContain("Check for updates");
+  const pending = view(st({ state: "available" }), { collapsed: true });
+  expect(texts(pending.toJSON()).join(" | ")).toContain("Update available");
+  expect(pending.root.findAllByProps({ className: "upd-check-btn" }).length).toBe(0);
 });
