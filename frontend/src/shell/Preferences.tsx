@@ -1134,6 +1134,11 @@ function MenubarSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs
 // global hotkey that drops the Search Apps panel, and the modifier that with
 // a digit opens the Nth recently opened app from anywhere. Rendered only when the server
 // says the launcher exists on this platform (`prefs.launcher.available`).
+// The copy follows the FLAVOR (isBot(), as the Menu bar section above): under
+// Fused Bot the panel searches bots, and these two are the `bot_launcher_*`
+// prefs — independent of Render's, defaults ⌥⇧Space / ⌥⇧ (Render: ⌥Space /
+// ⌥). The PUT wire keys stay `launcher_hotkey` / `launcher_row_modifier`
+// either way; the server stores them under the flavor's own keys.
 // The hotkey is RECORDED, not typed: click the keycap, press the combination,
 // and the browser's `KeyboardEvent.code` becomes the spec — what maps to a
 // Carbon keycode without caring about the keyboard layout. The bind happens
@@ -1224,15 +1229,16 @@ function ShortcutsSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Pre
     }
   };
 
+  const bot = isBot();
   const unbound = launcher.bound === false;
   const rowsUnbound = launcher.pinned_bound === false;
   return (
     <section className="prefs-section">
       <h2>Shortcuts</h2>
       <p className="deploy-muted">
-        The launcher is a search panel over every app on this machine, on a global shortcut. It
-        opens over any app; ↑↓ select, ↩ opens, esc closes. The same panel is in the View menu and
-        the menu-bar item as Search Apps.
+        {bot
+          ? "The launcher is a search panel over your bots, on a global shortcut. It opens over any app; ↑↓ select, ↩ opens, esc closes. The same panel is in the View menu and the menu-bar item as Search Bots."
+          : "The launcher is a search panel over every app on this machine, on a global shortcut. It opens over any app; ↑↓ select, ↩ opens, esc closes. The same panel is in the View menu and the menu-bar item as Search Apps."}
       </p>
       <div className="prefs-shortcuts">
         <div className="prefs-shortcut-row">
@@ -1259,11 +1265,13 @@ function ShortcutsSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Pre
         </div>
         <div className="prefs-shortcut-row">
           <div className="prefs-shortcut-label">
-            <b>Open the Nth app</b>
+            <b>{bot ? "Open the Nth bot" : "Open the Nth app"}</b>
             <span className={rowsUnbound ? "prefs-shortcut-warn" : undefined}>
               {rowsUnbound
                 ? `Some of ${launcher.row_modifier_display}1–9 could not be bound system-wide — another app may own them.`
-                : "Hold this and press 1–9 to open the Nth app in the search's list — your recently opened apps, newest first, then the sidebar's Projects — or, once you type, the Nth result. 0 opens the home window. ⌥ takes ¡™£… away from typing."}
+                : bot
+                  ? "Hold this and press 1–9 to open the Nth bot in the search's list — or, once you type, the Nth result. 0 opens the home window. ⌥ takes ¡™£… away from typing."
+                  : "Hold this and press 1–9 to open the Nth app in the search's list — your recently opened apps, newest first, then the sidebar's Projects — or, once you type, the Nth result. 0 opens the home window. ⌥ takes ¡™£… away from typing."}
             </span>
           </div>
           <div className="prefs-seg" role="radiogroup" aria-label="Row shortcut modifier">

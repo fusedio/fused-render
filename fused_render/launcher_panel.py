@@ -1,6 +1,7 @@
 """The launcher: a Spotlight-like search panel on a global shortcut (macOS).
 
-``static/launcher.html`` (served by the /static mount) inside a transparent
+The ``/launcher`` page (a Vite entry, frontend/launcher.html →
+shell-dist/launcher.html, served by routers/launcher.py) inside a transparent
 ``WKWebView`` on a borderless, non-activating ``NSPanel`` with native glass
 behind it (Liquid Glass on macOS 26, a flat surface before). Fixed width;
 the page reports its height after every render and the panel resizes
@@ -17,13 +18,21 @@ Dismissal: ⎋ in the page (a ``close`` message), the panel resigning key
 monitor: a non-activating panel gets no resignKey for clicks in the app
 that IS active), or the shortcut again (toggle).
 
-Row shortcuts: ``<rowModifier>+1`` … ``+9`` (⌥ by default) are global
-shortcuts too, opening the Nth app of the launcher's empty-query list
-(recently opened first, then the desk — `launcher.nth_pinned`) from
-anywhere; ``+0`` opens the shell home. Which app is resolved at press
-time, so an open or a desk change needs no rebind. They are suspended
-while the panel is up, so the same digits mean "the Nth row" there — the
-same list until the user types.
+Both flavors build it: Fused Render's rows are apps, Fused Bot's are bots
+(`launcher._bot_registry`), each on its own stored shortcut and default
+(⌥Space / ⌥⇧Space, `launcher.hotkey_key`) so the two apps side by side do
+not fight over one Carbon registration. A pick reaches the app as
+``open_row(kind, key)``: ``kind`` is the row's (``app``/``appfile``/
+``bot``), ``key`` its ``path`` (a folder or ``.fused`` path, or a bot id),
+and app.py routes a bot to the Bots window and anything else to the app's
+own window. The page posts ``{type: "open", kind, key}``.
+
+Row shortcuts: ``<rowModifier>+1`` … ``+9`` (⌥ by default, ⌥⇧ under Fused
+Bot) are global shortcuts too, opening the Nth row of the launcher's
+empty-query list (`launcher.nth_pinned`) from anywhere; ``+0`` opens the
+shell home. Which row is resolved at press time, so an open or a desk
+change needs no rebind. They are suspended while the panel is up, so the
+same digits mean "the Nth row" there — the same list until the user types.
 
 The shortcut is Carbon's ``RegisterEventHotKey`` (``hotkey.py``), bound
 after the server is up and rebound from ``PUT /api/prefs`` through
@@ -107,7 +116,12 @@ class _LauncherScriptHandler(NSObject):
         if kind == "size":
             self._c.resize_to(data.get("height"))
         elif kind == "open":
-            self._c.open_path(str(data.get("path") or ""))
+            # `{type: "open", kind, key}`; a bare `path` (the old page) is
+            # read as an app key, so a stale cached page still opens apps.
+            key = data.get("key")
+            if key is None:
+                key = data.get("path")
+            self._c.open_row(str(data.get("kind") or "app"), str(key or ""))
         elif kind == "home":
             self._c.open_home()
         elif kind == "close":
@@ -170,14 +184,15 @@ class _LauncherPanel(NSPanel):
 class LauncherController:
     """Owns the panel, its web view and the global shortcuts. Main thread only.
 
-    ``open_app(path)``: what Enter / a click does — the app-level callback
-    (focus-or-open in a window); the panel closes first. ``show_home``: the
-    last row / <modifier>+0.
+    ``open_row(kind, key)``: what Enter / a click / a row shortcut does —
+    the app-level callback, dispatching on the row's ``kind`` (a bot id to
+    the Bots window, an app path to its window); the panel closes first.
+    ``show_home``: the last row / <modifier>+0.
     """
 
-    def __init__(self, port: int, open_app, show_home) -> None:
+    def __init__(self, port: int, open_row, show_home) -> None:
         self._port = port
-        self._open_app = open_app
+        self._open_row = open_row
         self._show_home = show_home
         self._handler = _LauncherScriptHandler.alloc().initWithController_(self)
         self._web_delegate = _LauncherWebDelegate.alloc().initWithController_(self)
@@ -228,10 +243,10 @@ class LauncherController:
             self._panel.orderOut_(None)
         self._resume_pinned()
 
-    def open_path(self, path: str) -> None:
+    def open_row(self, kind: str, key: str) -> None:
         self.close()
-        if path:
-            self._open_app(path)
+        if key:
+            self._open_row(kind, key)
 
     def open_home(self) -> None:
         self.close()
@@ -317,9 +332,9 @@ class LauncherController:
         return self._pinned_bound
 
     def _open_pinned(self, n: int) -> None:
-        path = launcher.nth_pinned(n)
-        if path:
-            self._open_app(path)
+        row = launcher.nth_pinned(n)
+        if row and row.get("path"):
+            self._open_row(row.get("kind") or "app", row["path"])
         else:
             logger.info("row shortcut %d: no such row", n)
 
@@ -436,7 +451,7 @@ class LauncherController:
         self._panel = panel
 
     def _url(self) -> str:
-        return f"http://127.0.0.1:{self._port}/static/launcher.html"
+        return f"http://127.0.0.1:{self._port}/launcher"
 
     def _load(self) -> None:
         url = self._url()
