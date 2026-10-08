@@ -1,8 +1,8 @@
 // The three strips that existed before widgets — Playground, Claude Sessions,
 // Recent files — as widget bodies. Cards format is a horizontally scrolling
 // strip (CardStrip): the measured card count sizes the cards so the next one
-// peeks in at the right edge, and every item fetched is rendered; list format
-// shows rows.
+// peeks in at the right edge, and every item fetched is rendered. Cards are
+// always ONE row, whatever the tile height; list format shows rows.
 import { basename } from "@platform/lib/format";
 import { spaLinkProps } from "@platform/lib/router";
 import { loadRecents, recentFsPath, useRecentsVersion } from "@apps/explorer/lib/recents";
@@ -13,11 +13,10 @@ import { CardStrip } from "../CardStrip";
 import { SkeletonRow } from "../skeleton";
 import { MAX_ROW, useStripCount } from "../strip";
 import { useHomeSessions } from "../data";
-import { CELL, dims, itemCapacity, type Widget } from "../layout";
+import { itemCapacity, type Widget } from "../layout";
 import { EmptyLine, ItemList, ListSkeleton, type WidgetItem } from "./bits";
 
 export function PlaygroundWidget({ widget }: { widget: Widget }) {
-  const rows = dims(widget.size).rows / CELL; // dims() is in half-cell units
   const { ref, count } = useStripCount();
   if (widget.format === "list") {
     const items: WidgetItem[] = PLAYGROUND_GROUPS.map((g) => ({
@@ -34,7 +33,7 @@ export function PlaygroundWidget({ widget }: { widget: Widget }) {
   }
   return (
     <div ref={ref} className="hw-body">
-      <CardStrip count={count} rows={rows} total={PLAYGROUND_GROUPS.length}>
+      <CardStrip count={count} rows={1} total={PLAYGROUND_GROUPS.length}>
         {PLAYGROUND_GROUPS.map((group) => (
           <PlaygroundPreviewCard key={group.capability} group={group} />
         ))}
@@ -44,11 +43,10 @@ export function PlaygroundWidget({ widget }: { widget: Widget }) {
 }
 
 export function SessionsWidget({ widget }: { widget: Widget }) {
-  const rows = dims(widget.size).rows / CELL; // dims() is in half-cell units
   const cards = widget.format === "cards";
   const { ref, count, limit } = useStripCount();
-  const cap = cards ? (count ?? 0) * rows : itemCapacity(widget.size, "list");
-  const sessions = useHomeSessions(cards ? limit : Math.min(cap + 1, MAX_ROW), cards ? rows : 1);
+  const cap = cards ? (count ?? 0) : itemCapacity(widget.size, "list");
+  const sessions = useHomeSessions(cards ? limit : Math.min(cap + 1, MAX_ROW), 1);
   return (
     <div ref={ref} className="hw-body">
       {sessions === null ? (
@@ -60,7 +58,7 @@ export function SessionsWidget({ widget }: { widget: Widget }) {
       ) : !sessions.length ? (
         <EmptyLine>No Claude Code sessions found on this machine.</EmptyLine>
       ) : cards ? (
-        <CardStrip count={count} rows={rows} total={sessions.length}>
+        <CardStrip count={count} rows={1} total={sessions.length}>
           {sessions.map((f) => (
             <FolderPreviewCard key={f.path} path={f.path} />
           ))}
@@ -83,10 +81,9 @@ export function SessionsWidget({ widget }: { widget: Widget }) {
 
 export function RecentsWidget({ widget }: { widget: Widget }) {
   useRecentsVersion();
-  const rows = dims(widget.size).rows / CELL; // dims() is in half-cell units
   const cards = widget.format === "cards";
   const { ref, count } = useStripCount();
-  const cap = cards ? (count ?? 0) * rows : itemCapacity(widget.size, "list");
+  const cap = cards ? (count ?? 0) : itemCapacity(widget.size, "list");
   // Recents come from the same client cache the explorer home reads (raw MRU).
   const recents = loadRecents().entries.slice(0, MAX_ROW);
   return (
@@ -94,7 +91,7 @@ export function RecentsWidget({ widget }: { widget: Widget }) {
       {!recents.length ? (
         <EmptyLine>Nothing opened yet. Files you view will show up here.</EmptyLine>
       ) : cards ? (
-        <CardStrip count={count} rows={rows} total={recents.length}>
+        <CardStrip count={count} rows={1} total={recents.length}>
           {recents.map((r) => {
             const fsPath = recentFsPath(r.url);
             return (

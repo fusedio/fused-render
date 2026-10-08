@@ -45,10 +45,10 @@ export function AppsWidget({ widget }: { widget: Widget }) {
   const rows = dims(widget.size).rows / CELL; // dims() is in half-cell units
   const cards = widget.format === "cards";
   const { ref, count, limit } = useStripCount();
-  const cap = cards ? (count ?? 0) * rows : itemCapacity(widget.size, widget.format);
+  const cap = cards ? (count ?? 0) : itemCapacity(widget.size, widget.format);
   // Cards ask for what the measured row can draw (the server's recents-first
   // fast path depends on it); icon tiles ask for their fixed capacity.
-  const { apps, appsError, retry } = useHomeApps(cards ? limit : Math.min(cap * 2, MAX_ROW), cards ? rows : 1, widget.sort ?? "opened");
+  const { apps, appsError, retry } = useHomeApps(cards ? limit : Math.min(cap * 2, MAX_ROW), 1, widget.sort ?? "opened");
   return (
     <div ref={ref} className="hw-body">
       {apps === null ? (
@@ -59,7 +59,7 @@ export function AppsWidget({ widget }: { widget: Widget }) {
         )
       ) : apps.length ? (
         cards ? (
-          <CardStrip count={count} rows={rows} total={Math.min(apps.length, MAX_ROW)}>
+          <CardStrip count={count} rows={1} total={Math.min(apps.length, MAX_ROW)}>
             {apps.slice(0, MAX_ROW).map((app) => (
               <AppPreviewCard key={app.path} app={app} />
             ))}
