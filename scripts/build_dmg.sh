@@ -467,6 +467,22 @@ find "$APP_DIR/Contents/Resources/lib" -type d -name __pycache__ -prune \
 rm -rf "$PRUNE_PYLIB/pip" "$PRUNE_PYLIB/setuptools" "$PRUNE_PYLIB/wheel" \
        "$PRUNE_PYLIB/pkg_resources" "$PRUNE_PYLIB/PyObjCTest" \
        "$PRUNE_PYLIB/_distutils_hack" "$PRUNE_PYLIB/distutils-precedence.pth"
+# The prune above was only half the fix. py2app's frozen python312.zip carries
+# its own copies of `_distutils_hack`, setuptools' vendored tree and
+# `jaraco/__init__`, and that zip is on the base sys.path of every venv the app
+# builds, AHEAD of site-packages (via 4a-ter's Contents/lib symlink). Shipped
+# in 0.6.22: every source build died on `No module named 'jaraco.text'` (PR
+# #1499 only worked around it for mlx-embed). Dropping jaraco's __init__ makes
+# it a namespace package, so a venv's jaraco.text merges in while the zip's
+# jaraco.classes/context/functools still serve keyring.
+STDLIB_ZIP="$APP_DIR/Contents/Resources/lib/python312.zip"
+if [[ ! -f "$STDLIB_ZIP" ]]; then
+  echo "FATAL: $STDLIB_ZIP is missing — py2app's bundle layout changed, so the" >&2
+  echo "       frozen-stdlib prune (setuptools shim, jaraco init) has nothing to" >&2
+  echo "       act on and source builds would break again." >&2
+  exit 1
+fi
+"$BUILD_VENV/bin/python" "$REPO_ROOT/scripts/_prune_stdlib_zip.py" "$STDLIB_ZIP"
 # The copied Python.framework: stdlib test suite + developer-only modules +
 # C headers. The app's own stdlib lives here (Resources/lib holds packages),
 # so prune surgically, never wholesale.
@@ -800,6 +816,76 @@ for STDLIB_WHO in bundled venv; do
   echo "    $STDLIB_WHO: $(echo "$STDLIB_OUT" | head -1)"
 done
 rm -rf "$BUILD_DIR/stdlib-venv" "$STDLIB_CHECK"
+
+# ---------------------------------------------------------------------------
+# 4b-quater. Shadowing smoke: the frozen stdlib zip must not shadow a venv's
+#     own packages. Source builds import setuptools' shim and jaraco.text from
+#     their own site-packages; a leftover `_distutils_hack` or `jaraco/__init__`
+#     in python312.zip (4a) breaks every one of them, nowhere near this build.
+#     keyring's jaraco.* pieces must still import from the zip.
+# ---------------------------------------------------------------------------
+
+SHADOW_CHECK="$BUILD_DIR/shadow_check.py"
+cat > "$SHADOW_CHECK" <<'SHADOWEOF'
+import importlib
+import os
+import shutil
+import sys
+
+site = os.environ["SHADOW_SITE"]
+shutil.rmtree(site, ignore_errors=True)
+os.makedirs(os.path.join(site, "jaraco", "text"))
+with open(os.path.join(site, "jaraco", "text", "__init__.py"), "w") as fh:
+    fh.write("")
+sys.path.append(site)
+
+bad = []
+for name in ("_distutils_hack", "pkg_resources", "setuptools"):
+    try:
+        importlib.import_module(name)
+        bad.append("%s is importable" % name)
+    except ModuleNotFoundError:
+        pass
+try:
+    text = importlib.import_module("jaraco.text")
+    if not os.path.realpath(text.__file__).startswith(os.path.realpath(site)):
+        bad.append("jaraco.text resolved to %s" % text.__file__)
+except BaseException as exc:  # noqa: BLE001 - the report IS the product
+    bad.append("jaraco.text: %s: %s" % (exc.__class__.__name__, exc))
+for name in ("keyring", "jaraco.classes", "jaraco.context", "jaraco.functools"):
+    try:
+        importlib.import_module(name)
+    except BaseException as exc:  # noqa: BLE001
+        bad.append("%s: %s: %s" % (name, exc.__class__.__name__, exc))
+print("SHADOW-CHECK ok" if not bad else "SHADOW-CHECK FAIL: " + "; ".join(bad))
+SHADOWEOF
+
+for SHADOW_WHO in bundled venv; do
+  if [[ "$SHADOW_WHO" == "bundled" ]]; then
+    SHADOW_PY="$APP_DIR/Contents/MacOS/python"
+  else
+    rm -rf "$BUILD_DIR/shadow-venv"
+    if ! env -u PYTHONHOME -u PYTHONPATH -u VIRTUAL_ENV \
+        "$APP_DIR/Contents/MacOS/python" -B -m venv --without-pip \
+        "$BUILD_DIR/shadow-venv" >/dev/null 2>&1; then
+      echo "FATAL: the bundled interpreter cannot create a venv at all." >&2
+      exit 1
+    fi
+    SHADOW_PY="$BUILD_DIR/shadow-venv/bin/python"
+  fi
+  # -B: this smoke must not write bytecode into the bundle (codesign seal).
+  SHADOW_OUT="$(env -u PYTHONHOME -u PYTHONPATH -u VIRTUAL_ENV \
+    SHADOW_SITE="$BUILD_DIR/shadow-site" \
+    "$SHADOW_PY" -B "$SHADOW_CHECK" 2>&1 || true)"
+  if ! echo "$SHADOW_OUT" | grep -q "^SHADOW-CHECK ok"; then
+    echo "FATAL: the $SHADOW_WHO interpreter's frozen stdlib shadows a venv:" >&2
+    echo "$SHADOW_OUT" >&2
+    echo "       See the 4a prune of python312.zip (_prune_stdlib_zip.py)." >&2
+    exit 1
+  fi
+  echo "    $SHADOW_WHO: shadowing smoke ok"
+done
+rm -rf "$BUILD_DIR/shadow-venv" "$BUILD_DIR/shadow-site" "$SHADOW_CHECK"
 
 # ---------------------------------------------------------------------------
 # 4c. Bundled fused CLI (SPEC §19 DP-3): the `fused` package installed above
