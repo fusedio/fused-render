@@ -886,8 +886,8 @@
 
 .hw-li {
   min-width: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
 }
-.hw-li { border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent); }
 .hw-li:last-child { border-bottom: 0; }
 
 .hw-row {
@@ -906,7 +906,6 @@ a.hw-row:hover,
 button.hw-row:hover {
   background: var(--bg-alt);
 }
-a.hw-row:hover { background: var(--bg-alt); }
 
 .hw-row-icon {
   flex: none;
@@ -1111,28 +1110,35 @@ a.hw-more:hover {
   color: var(--error);
 }
 
-.hw-btn {
+.hw-btn,
+.hw-tb {
   border: 1px solid var(--border);
   background: transparent;
   color: var(--fg);
-  font-size: 11.5px;
-  padding: 3px 10px;
-  border-radius: 999px;
   cursor: pointer;
 }
 
-.hw-btn:hover:not(:disabled) {
+.hw-btn:hover:not(:disabled),
+.hw-tb:hover:not(:disabled) {
   background: var(--bg-alt);
 }
 
-.hw-btn:disabled {
+.hw-btn:disabled,
+.hw-tb:disabled {
   opacity: 0.45;
   cursor: default;
 }
 
-.hw-btn.is-danger {
+.hw-btn.is-danger,
+.hw-tb.is-danger {
   color: var(--error);
   border-color: rgba(var(--error-rgb), 0.5);
+}
+
+.hw-btn {
+  font-size: 11.5px;
+  padding: 3px 10px;
+  border-radius: 999px;
 }
 
 .hw-skel {
@@ -1259,8 +1265,7 @@ a.hw-more:hover {
 .fp-cards { width: 520px; }
 .fp-board { width: 420px; }
 .fp-icons,
-.fp-list,
-.fp-count { width: 360px; }
+.fp-list { width: 360px; }
 
 .fp-ln {
   display: block;
@@ -1432,6 +1437,7 @@ a.hw-more:hover {
 }
 
 .fp-count {
+  width: 360px;
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -1553,22 +1559,9 @@ a.hw-more:hover {
 }
 
 .hw-tb {
-  border: 1px solid var(--border);
-  background: transparent;
-  color: var(--fg);
   font-size: 12px;
   padding: 5px 12px;
   border-radius: 8px;
-  cursor: pointer;
-}
-
-.hw-tb:hover:not(:disabled) {
-  background: var(--bg-alt);
-}
-
-.hw-tb:disabled {
-  opacity: 0.45;
-  cursor: default;
 }
 
 .hw-tb.is-ghost {
@@ -1590,11 +1583,6 @@ a.hw-more:hover {
 .hw-tb.is-primary:hover:not(:disabled) {
   background: var(--accent);
   filter: brightness(1.08);
-}
-
-.hw-tb.is-danger {
-  color: var(--error);
-  border-color: rgba(var(--error-rgb), 0.5);
 }
 
 .hw-tb:focus-visible,
