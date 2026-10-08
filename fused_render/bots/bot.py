@@ -158,7 +158,7 @@ APP_GUIDE = """APP GUIDE (Browser Bots, a local desktop app; every bot has its o
 - Routines (same menu): scheduled tasks, "Every N minutes" (min 5), "Daily at HH:MM" on chosen weekdays, or "Once at" a date-time. Each can be enabled, disabled, run now or deleted. A run only starts when you are idle; a busy bot skips that slot. A routine pauses itself after 3 failed runs in a row. You cannot create routines yourself: tell the user how to add one.
 - Skills (same menu): the PLAYBOOKS. The user can write one by hand, click "Learn from last task" (the model condenses your last finished task), or you save one with `learn`. Up to 40 per bot; each mounts into your prompt only when one of its trigger words appears in the task.
 - Chat: the user can pause, resume or stop you at any time; a message sent while you work arrives as USER INSTRUCTION and overrides the task; they can reply to or react with an emoji on one of your messages (you see reactions in CONVERSATION SO FAR); they can search the thread; "Export" saves the whole transcript as Markdown. Attaching, pasting or dropping a file on the composer puts it in FILES so you can `upload` it.
-- Live view: clicking your screenshot opens your browser full size with a tab strip, back/forward/reload and a URL bar. "Take over" pauses you and lets the user drive (solve a captcha, pass a popup); "Hand back" returns control and you continue. Your `login` action hands the page over the same way and waits until the user replies "done" or clicks Hand back.
+- Live view: clicking your screenshot opens your browser full size with a tab strip, back/forward/reload and a URL bar. "Take over" pauses you and lets the user drive (solve a captcha, pass a popup); "Hand back" returns control and you continue; "Real window" opens the same browser as a real Chrome window for passkeys and password managers. Your `login` action hands the page over the same way and waits until the user replies "done" or clicks Hand back.
 - Inbox: everything you produce lands in the user's Inbox, a Finder folder at ~/Fused/bots/<your name>/ with one subfolder per task: `save` results, downloads that arrived during the task, and a README with the task and your final answer. The Inbox list under your screenshot shows the most recent items with "Open folder" to reveal them in Finder. Files the user attaches in the composer land in FILES instead, for `upload`. There is no other export path.
 - iMessage: only Super Bot takes tasks by text (from the phone number or Apple ID set in its Settings > Advanced) and texts its replies back; it can hand a browsing task to a bot like you, whose final answer goes back to it as the result. Other bots are not reachable by text. "Contacts the bot may text" (Settings > Advanced) is the allowlist your `text` action can message and `texts` can read replies from (shown to you as CONTACTS). You cannot add contacts yourself: tell the user where.
 - Builds (button under the bots list): Claude Code sessions that create fused-render apps. The user can start one there, and you can start one with `build` (say so, then `done` with the link it returns). Apps land under @APPS_ROOT@/<name>; the Builds panel tracks progress and holds Claude's chat for each build; a chat message (and a text, if iMessage is on) arrives when one is ready. Settings > Advanced > Builds picks "Scoped" (Claude asks the user before risky steps) or "Full access" (unattended).
@@ -1866,6 +1866,9 @@ class Bot:
             # "setup" is the app's own first task (SUPER_SETUP, _maybe_super_setup), never an outside sender.
             self.emit("system", f"Ignored a task from {origin}: Super Bot only takes tasks you type here.")
             return False
+        if self.browser.headed():
+            self.emit("system", f"Not started: the browser is open as a real window on your desktop. Click \"Back here\" (or close the window), then try again: {label or task}")
+            return False
         with self.lock:
             if self.deleted:
                 return False
@@ -1963,7 +1966,7 @@ class Bot:
         the user: the explicit escape hatch for what the live view cannot carry (passkeys,
         the password manager, print). The only relaunch left; a shared browser pops out
         for every bot on it, so it is refused while another of them is mid-task."""
-        busy = [o["name"] for o in self.shared_with() if (lambda b: b and b.thread and b.thread.is_alive() and not b.pause_flag.is_set())(_registry().get(o["id"]))]
+        busy = [o["name"] for o in self.shared_with() if self._working(_registry().get(o["id"]))]
         if busy:
             raise ValueError(f"{', '.join(busy)} is working in this shared browser; stop or pause that task first")
         self.pause(note=False)
@@ -1972,26 +1975,34 @@ class Bot:
         shared = (" Every bot sharing this browser is in that window too." if self.shared_with() else "")
         self.emit("system", "Opened the browser as a real Chrome window on your desktop. Hand back (or close the window) when you are done." + shared)
 
+    @staticmethod
+    def _working(b):
+        return bool(b and b.thread and b.thread.is_alive() and not b.pause_flag.is_set())
+
     def dock(self, closed=False):
-        """Back to headless after `popout`. The bot that held control gets it back and resumes;
-        a sibling on a shared browser (headed along for the ride) only sees the process flip."""
+        """Back to headless after `popout`, for every bot on the browser: whichever bot noticed
+        (the status poll runs per bot) releases the one that holds control, so the bot that popped
+        out resumes no matter who docked."""
         self.browser.dock()
-        had = bool(self.meta.get("control"))
-        if had:
-            self.meta["control"] = False
-            self.save()
-        self.emit("system", ("Window closed; the browser is back here, headless" + (", and the bot has control again." if had else "."))
-                  if closed else "The browser is headless again; the live view is the only window.")
-        if had:
-            self.resume(note=False)
+        owners = [o for o in [self] + [_registry().get(x["id"]) for x in self.shared_with()] if o and o.meta.get("control")]
+        for o in owners:
+            o._release(note=False)
+        msg = ("Window closed; the browser is back here, headless" + (" and the bot has control again." if owners else ".")
+               if closed else "The browser is headless again; the live view is the only window.")
+        for o in owners or [self]:
+            o.emit("system", msg)
+
+    def _release(self, note=True):
+        """Control back to this bot (the shared tail of giveback / dock)."""
+        self.meta["control"] = False
+        self.save()
+        self.resume(note=note)
 
     def giveback(self):
         if self.browser.headed():
             self.dock()
             return
-        self.meta["control"] = False
-        self.save()
-        self.resume()
+        self._release()
 
     def wake_browser(self):
         """Relaunch an asleep browser. A browser that is already up is left exactly as it is."""
@@ -2042,7 +2053,7 @@ class Bot:
             return False
         if time.time() - (self.meta.get("updated") or 0) < IDLE_SLEEP_S:
             return False
-        return self.browser.alive()
+        return self.browser.alive() and not self.browser.headed()  # never quit the user's own window under them
 
     def idle_sleep(self):
         try:

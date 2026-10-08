@@ -417,13 +417,13 @@ def bot_send(bid: str, body: dict = Body(...), x_fused: str | None = Header(defa
 
 
 _CONTROL = {"pause": "pause", "resume": "resume", "stop": "stop", "takeover": "takeover",
-            "giveback": "giveback", "popout": "popout", "dock": "dock", "wake": "wake_browser", "open": "opened"}
+            "giveback": "giveback", "popout": "popout", "wake": "wake_browser", "open": "opened"}
 
 
 @router.post("/api/bots/{bid}/{op}")
 @_handled
 def bot_control(bid: str, op: str, body: dict = Body(default=None), x_fused: str | None = Header(default=None)):
-    """pause | resume | stop | takeover | giveback | popout | dock | wake | open (the user clicked the bot open: Super Bot's
+    """pause | resume | stop | takeover | giveback | popout | wake | open (the user clicked the bot open: Super Bot's
     first task, docs §5), and the rest of the
     one-segment POSTs (goto, nav, tab, attach, react, flag, settings,
     profile, clone, routines, skills, reveal, tool)."""

@@ -92,7 +92,7 @@ fused_render/bots/            the backend package (in-process; no daemon, no fus
   store.py        bot dirs, bot.json (atomic write), events.jsonl, usage.jsonl ledger + summary
   browser.py      per-bot Chrome over CDP (port of OpenBot browser.py) + AX-tree snapshot + change report
   bot.py          class Bot: lifecycle, memory, skills, artifacts/inbox, routines, offers, builds, send/pause/resume/stop,
-                  takeover/giveback, file inbox (botsend), summary(); the engine-neutral half of agents.py
+                  takeover/giveback/popout/dock, file inbox (botsend), summary(); the engine-neutral half of agents.py
   steps_engine.py the OpenBot JSON-action loop (agents.py Bot._run/_prompt/_parse/_risk/_describe/_execute), via fused_ai
   agent_engine.py the Claude Code harness (section 6): one `claude -p` per task, tools over MCP
   tools.py        the tool table shared by both engines: names, schemas, descriptions, the risk rule, execution
@@ -162,7 +162,7 @@ Bot summary (`Bot.summary(light, detail)`): every key of `bot.json`
 title, note, updated, approval, build_access, trusted_apps, face, routines, pinned, hidden,
 reactions, encrypt, chrome_profile, browser_id, imessage, imessage_to, builds,
 pending_offer, offers_declined, artifacts_dir, control, dl_pct`) plus
-`seq`, `browser: {running, url, title, sealed, encrypt, shared, tabs?[{i,id,title,url,active,ws}], files?, artifacts?, artifacts_dir?}`,
+`seq`, `browser: {running, url, title, headed, sealed, encrypt, shared, tabs?[{i,id,title,url,active,ws}], files?, artifacts?, artifacts_dir?}`,
 `browser_name`, `shared_with: [{id, name}]` (the other bots on this bot's browser),
 `memory` (detail only), `skills` (detail only), `shot` (the shot URL,
 `/api/bots/<id>/shot`, or null), `shot_ts`, `viewport: [1280, 800]`, `events`
@@ -201,7 +201,7 @@ POST   /api/bots/browsers/<bid>       {op: rename {name} | encrypt {on} | profil
 GET    /api/bots/usage                -> the usage summary
 GET    /api/bots/imessage             -> the bridge state
 POST   /api/bots/<id>/send            {text, reply_to?}                     -> {ok}      (also answers approvals/questions/offers)
-POST   /api/bots/<id>/pause | resume | stop | takeover | giveback | popout | dock | wake    -> {ok}
+POST   /api/bots/<id>/pause | resume | stop | takeover | giveback | popout | wake    -> {ok}   (giveback docks a popped-out window)
 POST   /api/bots/<id>/goto            {url}                                 -> {ok, url}
 POST   /api/bots/<id>/nav             {op: back|forward|reload}             -> {ok, url}
 POST   /api/bots/<id>/tab             {tab: new|switch|close, url?, index?} -> {ok, url, tabs}
@@ -410,15 +410,16 @@ relaunched for a take-over: `takeover` pauses the bot and the user drives the
 same tab from the live view (screencast in, `Input.*` out over the tab's own
 DevTools socket; the key forwarder is `lib/live.ts keyAction`, the US-layout
 table plus macOS editing commands, with `Input.insertText` for IME and any
-character the table does not know). Relaunching the profile visible for a
-take-over (the old `window` route) is gone: every relaunch cost a new port,
-new target ids, a profile unlock and, on a shared browser, every other bot's
-window. One deliberate relaunch remains, `popout`/`dock` ("Real window" in the
-live view): the same profile as a real Chrome window for what no screencast
-carries (passkeys, the password manager, print), with a clean stop first
-(`Browser.close`, wait for the pid and `SingletonLock`) so ProcessSingleton
-never forwards the new launch to the dying process; a closed window docks
-itself on the next status poll. Delete keeps a browser other
+character the table does not know; what headless Chrome never paints or
+prompts — select/datalist/picker popups, dialogs, the file chooser, drags,
+HTTP auth — the live view substitutes itself, `lib/cdp.ts`). One deliberate
+relaunch remains, `popout`/`dock` ("Real window" in the live view): the same
+profile as a real Chrome window for what no screencast carries (passkeys, the
+password manager, print). The stop is `Browser.close` alone (Chrome then
+unlinks its Singleton* files, so ProcessSingleton never forwards the next
+launch to the dying process), SIGTERM after 3 s, SIGKILL after 3 more; a
+closed window docks itself on the next status poll, no task starts while the
+window is out, and idle sleep never quits it. Delete keeps a browser other
 bots still use; the last bot takes it down. Settings' `browser_id` moves a bot
 (`bot.set_browser`): off a shared browser its tabs close, off a private one
 Chrome stops and the folder goes; refused mid-task. Clone shares by default.
@@ -813,9 +814,9 @@ Control flow inside the tools (the harness's job, in the server process):
   instruction clears the `py`/`tool` one-run ledger as in OpenBot.
 - `ask(message, options?)`: emits a `question` event, status `waiting`,
   blocks until `send()` or Stop; returns `USER ANSWER: …` (plus the
-  take-over note when the user drove meanwhile). `login(message)`: `bot.takeover()`
-  (paused, control to the user in the live view), emits the question, waits
-  for a reply or hand-back, returns.
+  take-over note when the user drove meanwhile). `login(message)`: `bot.takeover(note=False)`
+  (paused without the "Paused" card, control to the user in the live view),
+  emits the question, waits for a reply or hand-back, returns.
 - Approval: `_risk(name, args, obs)` decides; when non-empty and approval is
   `ask`, emit `approval` (`About to <describe>. <why> Approve?`), wait;
   denied (an OpenBot `_NO` answer) → return `DENIED by the user: … Do not
