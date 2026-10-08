@@ -2,6 +2,7 @@
 from py2app's frozen python312.zip, keeping what keyring needs."""
 import importlib.util
 import os
+import stat
 import subprocess
 import sys
 import zipfile
@@ -9,6 +10,7 @@ from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "_prune_stdlib_zip.py"
 _spec = importlib.util.spec_from_file_location("_prune_stdlib_zip", SCRIPT)
+assert _spec is not None and _spec.loader is not None
 mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(mod)
 
@@ -47,6 +49,14 @@ def test_prune_removes_and_keeps(tmp_path):
         assert sorted(z.namelist()) == sorted(KEPT)
         for n, data in KEPT.items():
             assert z.read(n) == data
+
+
+def test_prune_keeps_file_mode(tmp_path):
+    zp = tmp_path / "python312.zip"
+    _make(zp)
+    os.chmod(zp, 0o644)
+    assert mod.prune(str(zp))
+    assert stat.S_IMODE(os.stat(zp).st_mode) == 0o644
 
 
 def test_second_run_is_noop(tmp_path):

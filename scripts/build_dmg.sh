@@ -829,17 +829,18 @@ SHADOW_CHECK="$BUILD_DIR/shadow_check.py"
 cat > "$SHADOW_CHECK" <<'SHADOWEOF'
 import importlib
 import os
+import shutil
 import sys
-import tempfile
 
-site = tempfile.mkdtemp()
+site = os.environ["SHADOW_SITE"]
+shutil.rmtree(site, ignore_errors=True)
 os.makedirs(os.path.join(site, "jaraco", "text"))
 with open(os.path.join(site, "jaraco", "text", "__init__.py"), "w") as fh:
     fh.write("")
 sys.path.append(site)
 
 bad = []
-for name in ("_distutils_hack", "pkg_resources"):
+for name in ("_distutils_hack", "pkg_resources", "setuptools"):
     try:
         importlib.import_module(name)
         bad.append("%s is importable" % name)
@@ -874,6 +875,7 @@ for SHADOW_WHO in bundled venv; do
   fi
   # -B: this smoke must not write bytecode into the bundle (codesign seal).
   SHADOW_OUT="$(env -u PYTHONHOME -u PYTHONPATH -u VIRTUAL_ENV \
+    SHADOW_SITE="$BUILD_DIR/shadow-site" \
     "$SHADOW_PY" -B "$SHADOW_CHECK" 2>&1 || true)"
   if ! echo "$SHADOW_OUT" | grep -q "^SHADOW-CHECK ok"; then
     echo "FATAL: the $SHADOW_WHO interpreter's frozen stdlib shadows a venv:" >&2
@@ -883,7 +885,7 @@ for SHADOW_WHO in bundled venv; do
   fi
   echo "    $SHADOW_WHO: shadowing smoke ok"
 done
-rm -rf "$BUILD_DIR/shadow-venv" "$SHADOW_CHECK"
+rm -rf "$BUILD_DIR/shadow-venv" "$BUILD_DIR/shadow-site" "$SHADOW_CHECK"
 
 # ---------------------------------------------------------------------------
 # 4c. Bundled fused CLI (SPEC §19 DP-3): the `fused` package installed above

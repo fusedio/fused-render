@@ -11,7 +11,9 @@ the app's python imported the frozen `_distutils_hack.override` and died on
 
 Stdlib only, no fused_render import: build_dmg.sh runs it with the build venv.
 """
+import collections
 import os
+import stat
 import sys
 import tempfile
 import zipfile
@@ -53,6 +55,7 @@ def prune(zip_path):
                 for info in infos:
                     if not _doomed(info.filename):
                         zout.writestr(info, zin.read(info))
+            os.chmod(tmp, stat.S_IMODE(os.stat(zip_path).st_mode))
             os.replace(tmp, zip_path)
         except BaseException:
             if os.path.exists(tmp):
@@ -71,9 +74,9 @@ def main(argv):
         return 1
     removed = prune(path)
     print("removed %d entries from %s" % (len(removed), path))
-    groups = sorted({n.split("/", 1)[0] for n in removed})
-    for g in groups:
-        print("    %s (%d)" % (g, sum(1 for n in removed if n.split("/", 1)[0] == g)))
+    groups = collections.Counter(n.split("/", 1)[0] for n in removed)
+    for g, count in sorted(groups.items()):
+        print("    %s (%d)" % (g, count))
     return 0
 
 
