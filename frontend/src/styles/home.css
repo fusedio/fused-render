@@ -734,7 +734,8 @@
   gap: 16px;
   overflow-x: auto;
   overscroll-behavior-x: contain;
-  scroll-snap-type: x mandatory;
+  /* proximity, not mandatory: a mandatory snap on ~385px cards fights every trackpad gesture that stops short of a card midpoint (same choice as .home-composer-sample-strip) */
+  scroll-snap-type: x proximity;
   scrollbar-width: none;
 }
 
@@ -909,7 +910,7 @@ a.hw-row:hover { background: var(--bg-alt); }
   align-content: center;
   overflow-x: auto;
   overscroll-behavior-x: contain;
-  scroll-snap-type: x mandatory;
+  scroll-snap-type: x proximity;
   scrollbar-width: none;
   padding-right: 56px; /* room for the peek fade */
 }

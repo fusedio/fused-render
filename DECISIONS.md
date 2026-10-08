@@ -6614,3 +6614,8 @@ Home grid units are half cells (layout v4): GRID_COLS 8, MAX_ROWS 128, dims() in
 ## 2026-10-08 — Home widgets resize by edge drag in half-cell steps
 
 Home widgets resize by edge drag in half-cell steps. A widget keeps `size` (the preset driving its content) and may carry an explicit `cols`/`rows` footprint in units (still layout v4, optional fields). A custom footprint derives `size` as the largest preset fitting inside it; a footprint that equals a preset stores only the preset; a size chip clears the override. Minimum per source = its smallest preset per axis; max 8 units tall. Server accepts the optional fields with the same bounds.
+
+
+## 2026-10-08 — Home card strips snap by proximity
+
+Home card and icon strips (`.hw-cards`, `.hw-icons.is-strip`) snap by proximity, not mandatorily: a mandatory x snap on ~385px cards makes trackpad scrolling janky (gestures short of a card midpoint get pulled back, inertia is snapped mid-flight). Same choice as `.home-composer-sample-strip`. The ‹ › buttons still page by scrollBy.
