@@ -112,8 +112,10 @@ t2=$!
 # sigaction() has no such restriction, so python3 resets SIGINT/SIGQUIT and
 # claims a fresh process group before taking over the launch; without
 # python3 the job runs as before (inherited ignore, shared process group).
+# -I (isolated) ignores PYTHONHOME/PYTHONPATH and the user site, so a poisoned
+# environment (the packaged app's bundle) cannot break this system python3.
 if launcher=$(command -v python3 2>/dev/null); then
-  "$launcher" -c '
+  "$launcher" -I -c '
 import os, signal, sys
 signal.signal(signal.SIGINT, signal.SIG_DFL)
 signal.signal(signal.SIGQUIT, signal.SIG_DFL)

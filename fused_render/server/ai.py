@@ -28,6 +28,7 @@ from fused_render.server.common import (
     AI_PROVIDERS, APPLE_MODELS, _require_fused, ai_result, ai_usage_tokens,
     apple_model_for, provider_of_model)
 from fused_render.shell.prefs import default_model
+from fused_render.supervisor.paths import STRIPPED_ENV_VARS
 
 router = APIRouter()
 
@@ -431,8 +432,10 @@ async def _ai_spawn(bin_path: str, model: str, system_prompt: str):
     _ai_reap can delete it when the process is reaped (the instance outlives
     any single request, so the file must too).
 
-    The env is os.environ untouched: effort/thinking are Claude Code's own
-    semantics now (the effortLevel flag setting), not env-var overrides."""
+    The env is os.environ minus the interpreter-identity vars (the packaged
+    app's PYTHONHOME would break the system python3 the CLI's hooks and shell
+    prefix run); effort/thinking are Claude Code's own semantics now (the
+    effortLevel flag setting), not env-var overrides."""
     sp_file = tempfile.NamedTemporaryFile(
         "w", encoding="utf-8", suffix=".txt",
         prefix="fused_render_ai_sp_", delete=False)
@@ -440,7 +443,9 @@ async def _ai_spawn(bin_path: str, model: str, system_prompt: str):
         sp_file.write(system_prompt)
         sp_file.close()
         proc = await _spawn_claude_stream(
-            _ai_cmd(bin_path, model, sp_file.name), dict(os.environ))
+            _ai_cmd(bin_path, model, sp_file.name),
+            {k: v for k, v in os.environ.items()
+             if k not in STRIPPED_ENV_VARS})
     except BaseException:
         try:
             os.unlink(sp_file.name)

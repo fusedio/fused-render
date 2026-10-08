@@ -4,6 +4,7 @@ Bash-tool command; for a Bash-tool-shaped string, same stdout/stderr/exit
 status as without it plus a per-command log."""
 import os
 import shlex
+import shutil
 import subprocess
 import tempfile
 import time
@@ -222,3 +223,19 @@ def test_exit_codes_and_stderr_are_exact(tmp_path):
         assert (r.stdout, r.stderr, r.returncode) == (b"", b"e\n", code)
     r = run(bash_tool_string("true", str(tmp_path / "e-cwd")), tmp_path / "log")
     assert (r.stdout, r.stderr, r.returncode) == (b"", b"", 0)
+
+
+@pytest.mark.skipif(shutil.which("python3") is None, reason="needs python3")
+def test_wrapper_survives_a_poisoned_python_environment(tmp_path):
+    # The packaged app's PYTHONHOME/PYTHONPATH point at a bundle the system
+    # python3 cannot use; the launcher must run isolated (-I) so a Bash-tool
+    # command still works.
+    empty = tmp_path / "nopython"
+    empty.mkdir()
+    logdir = tmp_path / "log"
+    logdir.mkdir()
+    cwdfile = tmp_path / "x-cwd"
+    r = run(bash_tool_string("echo hi", str(cwdfile)), logdir,
+            extra_env={"PYTHONHOME": str(empty), "PYTHONPATH": str(empty)})
+    assert r.returncode == 0, r.stderr
+    assert b"hi" in r.stdout

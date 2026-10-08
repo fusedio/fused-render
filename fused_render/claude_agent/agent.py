@@ -2637,6 +2637,12 @@ def _shell_prefix_path() -> str:
     return path
 
 
+# Same tuple as supervisor/paths.py STRIPPED_ENV_VARS (kept local: this module
+# is loaded with bare imports and must not depend on the supervisor package).
+_STRIPPED_PYTHON_ENV = ("PYTHONHOME", "PYTHONPATH", "PYTHONSTARTUP",
+                        "PYTHONUSERBASE", "PYTHONINSPECT")
+
+
 def _spawn_env(chat_id: str = "") -> dict:
     """`os.environ`, adjusted the same way for every `claude` spawn — the
     session host's own CLI Popen and (nothing else now, but kept as its own
@@ -2673,6 +2679,11 @@ def _spawn_env(chat_id: str = "") -> dict:
     way — it is ANDed into the same branch — so this cannot override it."""
     env = os.environ.copy()
     env.pop("FUSED_ENV", None)
+    # The claude CLI is node, and its hooks, MCP servers and the shell-prefix
+    # wrapper run the *system* python3, which dies on the packaged app's
+    # PYTHONHOME ("No module named 'encodings'") and fails every Bash command.
+    for name in _STRIPPED_PYTHON_ENV:
+        env.pop(name, None)
     env.setdefault("CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING", "1")
     # Mirror this chat's Bash-tool commands into a log the drawer's "Claude" tab
     # reads (D1327). The CLI runs EVERYTHING it spawns (hooks, MCP servers, the
