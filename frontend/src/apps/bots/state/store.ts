@@ -149,7 +149,10 @@ export const needsYou = (b: Bot | undefined): boolean => !!b && !!b.control && b
 /** Open Stage for the selected bot `id` unless it is already open or the pref is off; with a dialog / menu up, later
  *  (closeDialog / closeMenu). Unsent composer text keeps its focus: the page does not take the keyboard then. */
 function requestStage(id: string): void {
-  if (!autoStage() || S.fast || id !== S.sel) return;
+  if (!autoStage() || id !== S.sel) return;
+  // Stage is already up (opened for another bot's hand-over, or by hand): it now serves this bot, so this bot's hand
+  // back closes it, not the first one's.
+  if (S.fast) { if (autoOpened) autoOpened = id; return; }
   if (S.ui.dialog || S.ui.menu) { pendingStage = id; return; }
   pendingStage = null;
   // Deferred: this runs inside a poll's or select()'s batch, and openFull's flushSync needs the store published first.
@@ -427,6 +430,9 @@ export function startStore(): () => void {
   const gen = Math.abs(loopGen) + 1;
   loopGen = gen;
   void loop(gen);
+  // The store outlives the route: coming back to /bots with the selected bot still mid-hand-over reopens Stage (the
+  // poll diff only fires on the flip, which happened while you were away).
+  if (needsYou(cur())) requestStage(S.sel!);
   return () => {
     if (loopGen === gen) loopGen = -gen;  // stops this loop; a newer mount has already moved loopGen on
     if (loopTimer) clearTimeout(loopTimer);
