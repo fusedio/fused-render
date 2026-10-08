@@ -188,16 +188,15 @@
   .item.bot .tile::after { content: none; }
   .item.bot:focus-visible .tile { box-shadow: 0 0 0 2px var(--focus); }
   .item.bot .tile svg { width: 100%; height: 100%; display: block; flex: none; }
-  /* Home, Fused Bot: the app's own icon (assets/fusedbot-icon-1024.png, whose
-     dark squircle sits on the macOS grid: 824 of 1024, 22.5 % corners).
-     Scaled by 1024/824 and centred (an overflowing flex item centres both
-     ways), the squircle fills the tile and the tile's radius clips the rest. */
-  .item.util.home.squircle .tile { background: transparent; -webkit-backdrop-filter: none; backdrop-filter: none; }
-  .item.util.home.squircle .tile img { width: 124.3%; height: 124.3%; flex: none; max-width: none; }
-  /* Home, Fused Render: the white logo mark on the util plate, like the
-     sidebar's brand row (a dark plate keeps it readable on any wallpaper). */
-  .item.util.home.mark .tile { background: #1c1c1e; }
-  .item.util.home.mark .tile img { width: 64%; height: 64%; object-fit: contain; }
+  /* Home: the app's own icon (the flavor's 1024px artwork, a dark rounded
+     card inside a transparent margin). Scaled by --home-scale (the script
+     sets it per icon: 1024/824 for FusedBot's macOS-grid squircle, 1/0.88
+     for Fused Render's 6 % margin) and centred (an overflowing flex item
+     centres both ways), the card fills the tile and the tile's radius clips
+     the rest. */
+  .item.util.home { --home-scale: 113.7%; }
+  .item.util.home .tile { background: transparent; -webkit-backdrop-filter: none; backdrop-filter: none; }
+  .item.util.home .tile img { width: var(--home-scale); height: var(--home-scale); flex: none; max-width: none; }
 
   .dot { /* running badge: green dot overlaid on the tile's upper-left corner */
     /* inset from the corner so it sits inside the tile radius, like a status badge */

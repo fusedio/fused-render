@@ -9,7 +9,7 @@ import {
   type DockPayload, type Row,
 } from "./lib";
 import botHomeImg from "@assets/fusedbot-icon-1024.png";
-import renderHomeImg from "@assets/logo-white-bg-transparent.png";
+import renderHomeImg from "@assets/fusedrender-icon-1024.png";
 
 declare global {
   interface Window {
@@ -152,9 +152,11 @@ function utilItem(label: string, html: string, onClick: () => void): Item {
   b.addEventListener("click", onClick);
   return b;
 }
-// Home wears the app's own mark. Fused Bot: the 1024px FusedBot artwork (the dark squircle on the macOS grid,
-// 100 px margin in 1024), which the CSS scales so the squircle fills the tile. Fused Render: the white logo mark on
-// the util tile's dark plate. Which one is the payload's `kind` (the server knows the flavor; the page does not).
+// Home wears the app's own icon, the one in /Applications: Fused Bot's 1024px artwork (the dark squircle on the
+// macOS grid, 100 px margin in 1024 → scale 1024/824) or Fused Render's sparkle card (assets/fusedrender-icon-1024.png,
+// the build_dmg.sh render: 6 % margin → scale 1/0.88). The CSS scales the image by --home-scale so the card fills the
+// tile and the tile's radius clips the transparent margin. Which one is the payload's `kind` (the server knows the
+// flavor; the page does not).
 const homeBtn = utilItem("Home", "", async () => {
   bump(homeBtn);
   try { const r = await post("/api/dock/home"); if (!r.ok || r.native === false) location.href = r.view || "/"; }
@@ -170,8 +172,7 @@ function setHome(kind: "apps" | "bots") {
   const im = document.createElement("img"); im.alt = ""; im.draggable = false;
   im.src = kind === "bots" ? botHomeImg : renderHomeImg;
   tile.replaceChildren(im);
-  homeBtn.classList.toggle("squircle", kind === "bots");
-  homeBtn.classList.toggle("mark", kind === "apps");
+  homeBtn.style.setProperty("--home-scale", kind === "bots" ? "124.3%" : "113.7%");
   hint.textContent = kind === "bots" ? "Bots you use appear here" : "Apps you use appear here";
 }
 setHome("apps");
