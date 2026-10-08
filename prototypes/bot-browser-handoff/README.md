@@ -4,9 +4,9 @@ Throwaway prototypes and raw evidence behind the report "Bot Browser Hand-off"
 (https://claude.ai/artifact/TXi1FKSbq4erJhEEKEpfrB; same page as `report/bot-browser-handoff.html`).
 
 Question: why is the bots' Chrome take-over / hand-back flaky, and what should replace it.
-Answer: every hand-off today is a Chrome process relaunch. Pick approach A: one headed Chrome per
-profile, launched once and never relaunched; bot windows parked off-screen with
-`Emulation.setFocusEmulationEnabled(true)`; take-over moves the window on screen, hand-back parks it.
+Answer: every hand-off today is a Chrome process relaunch. First draft picked A (headed, never relaunch); the owner then ruled that bot Chrome windows must not appear in Mission Control, and the only Mission-Control-invisible states (minimized, app-hidden) kill any page the bot navigates to while hidden (`lib/hidden_app.py`). FINAL pick: approach B, one headless Chrome per
+profile, launched once and never relaunched; the human takes over inside the app through the live view with the corrected key forwarder;
+`Emulation.setFocusEmulationEnabled(true)` on every bot tab; take-over and hand-back are a driver flag.
 
 - `HARNESS.md` — the eight tests every prototype ran (T1..T8).
 - `results/research.md` — prior art (Browserbase, Steel, Cloudflare, browser-use, Nanobrowser,
