@@ -123,9 +123,9 @@ SOCIAL_PRESETS = ("linkedin", "youtube", "x", "reddit", "instagram", "facebook",
 SUPER_SETUP = ("Open https://accounts.google.com/. If it asks you to sign in, use login so I can sign in to Google in your "
                "browser; wait until I'm signed in (the account page loads). If I'm already signed in, say so. "
                "Then offer me the social bots: ask (one `ask` with `multi: true` and these as `options`) which ones I want to start with: "
-               "@SOCIAL@. I may name several, or none. For each one I pick, call `bot_create` once with `preset` set to its "
-               "key, `name` set to its site name, and `logins_from` set to \"Super Bot\" so it shares your browser and my "
-               "Google sign-in; your browser is already signed in to Google, so bots on it are too. "
+               "@SOCIAL@. I may name several, or none. Make all the ones I pick in ONE `bot_create` call (one approval for "
+               "all of them): one entry in `bots` per pick, with `preset` set to its key, `name` set to its site name, "
+               "and `logins_from` set to \"Super Bot\" so it shares your browser and my Google sign-in; your browser is already signed in to Google, so bots on it are too. "
                "Finish with one line saying which bots exist now and that each will ask for its own site's sign-in once.")
 
 
@@ -2975,7 +2975,7 @@ def bots_section(bot) -> str:
         lines.append(f"- {name} ({m.get('preset') or 'custom'}; {m.get('status') or 'idle'}; "
                      f"{m.get('model') or DEFAULT_MODEL}/{m.get('effort') or DEFAULT_EFFORT}; face {face_words(m.get('face'))}): "
                      f"{instr}".rstrip(": "))
-    return ("\n\nBOTS (the browser bots on this Mac; `handoff` gives one a task, `bot_settings` changes one, `bot_create` adds one):\n"
+    return ("\n\nBOTS (the browser bots on this Mac; `handoff` gives one a task, `bot_settings` changes one, `bot_create` adds bots):\n"
             + ("\n".join(lines) if lines else "none yet"))
 
 
@@ -3044,6 +3044,17 @@ def _name_taken(name, except_id=None) -> bool:
     return False
 
 
+def _logins_source(name):
+    """`logins_from` against what exists: an existing bot's name, else a browser's own
+    name (Settings > Browsers) → (display name, browser id); None when neither."""
+    bots = _registry().all()
+    src = next((b for b in bots if (b.meta.get("name") or "").lower() == name.lower()), None)
+    if src is not None:
+        return src.meta.get("name") or name, src.browser_id
+    row = next((r for r in browsers.listing(bots) if r["name"].lower() == name.lower()), None)
+    return (row["name"], row["id"]) if row is not None else None
+
+
 def manage_create_check(bot, args):
     """Validate a `bot_create` call before anything is written: (clean fields, "") or
     (None, "error: …"). Shared by the approval preview and the run, so a refused call
@@ -3070,39 +3081,97 @@ def manage_create_check(bot, args):
         return None, f"error: {e}"
     extra = sorted(k for k in args if k not in CREATE_FIELDS and k != "preset")
     if extra:
-        return None, f"error: `bot_create` takes {', '.join(CREATE_FIELDS)} and preset; {', '.join(extra)} stay the user's own"
+        return None, f"error: a bot takes {', '.join(CREATE_FIELDS)} and preset; {', '.join(extra)} stay the user's own"
     logins_from, browser = str(args.get("logins_from") or "").strip(), ""
     if logins_from:
-        bots = _registry().all()
-        src = next((b for b in bots if (b.meta.get("name") or "").lower() == logins_from.lower()), None)
-        if src is not None:
-            logins_from, browser = src.meta.get("name") or logins_from, src.browser_id
-        else:  # a browser's own name (Settings > Browsers)
-            row = next((r for r in browsers.listing(bots) if r["name"].lower() == logins_from.lower()), None)
-            if row is None:
-                return None, f"error: no bot or browser named {logins_from!r} to share logins with"
-            logins_from, browser = row["name"], row["id"]
+        hit = _logins_source(logins_from)
+        if hit is None:
+            return None, f"error: no bot or browser named {logins_from!r} to share logins with"
+        logins_from, browser = hit
     return {"name": name, "instructions": str(args.get("instructions") or "").strip(), "model": model or DEFAULT_MODEL,
             "effort": effort or DEFAULT_EFFORT, "preset": preset, "face": face, "logins_from": logins_from, "browser": browser}, ""
 
 
+def manage_create_batch_check(bot, args):
+    """Validate a whole `bot_create` call: ([clean fields…], "") or (None, "error: …").
+    The call carries `bots`, a list of entries; a call naming one bot at the top level
+    (the pre-batch shape) is read as a list of one. All or nothing: one bad entry, or
+    two entries sharing a name, refuses the call, so the card never shows a create
+    that will not happen."""
+    from fused_render.bots.tools import CREATE_BATCH_CAP
+    args = args or {}
+    if "bots" not in args:
+        items = [args]
+    elif len(args) > 1 or not isinstance(args["bots"], list):
+        return None, "error: `bot_create` takes `bots`, a list of {name, instructions, model, effort, preset, face, logins_from}"
+    else:
+        items = args["bots"]
+    if not items:
+        return None, "error: `bots` is empty; give at least one bot"
+    if len(items) > CREATE_BATCH_CAP:
+        return None, f"error: at most {CREATE_BATCH_CAP} bots per `bot_create`; make the rest in another call"
+    names = [" ".join(str(x.get("name") or "").split()).lower() for x in items if isinstance(x, dict)]
+    out, seen = [], {}
+    for item in items:
+        if not isinstance(item, dict):
+            return None, "error: each entry in `bots` is an object with at least a `name`"
+        who = " ".join(str(item.get("name") or "").split())
+        # `logins_from` resolves against what exists first (an existing bot or browser keeps the
+        # pre-batch meaning; a new bot can never share an existing bot's name, but a browser can).
+        # Only a name nothing on this Mac carries falls to an EARLIER entry of this call: that bot
+        # does not exist yet, so manage_create puts this one on the browser the earlier entry gets.
+        src = " ".join(str(item.get("logins_from") or "").split())
+        new_src = bool(src) and _logins_source(src) is None
+        sibling = seen.get(src.lower()) if new_src else None
+        if new_src and sibling is None and src.lower() in names and src.lower() != who.lower():
+            return None, f"error: bot {who!r} shares {src!r}'s logins, so list {src!r} before it in `bots`"
+        f, err = manage_create_check(bot, {k: v for k, v in item.items() if k != "logins_from"} if sibling else item)
+        if err:
+            return None, err.replace("error: ", f"error: bot {who!r}: ", 1) if who and len(items) > 1 else err
+        if f["name"].lower() in seen:
+            return None, f"error: {f['name']!r} appears twice in `bots`; each bot needs its own name"
+        if sibling:
+            f.update(logins_from=sibling, browser="", sibling=sibling)
+        seen[f["name"].lower()] = f["name"]
+        out.append(f)
+    return out, ""
+
+
 def manage_create(bot, args):
-    """Super Bot's `bot_create` (docs §12): a new ORDINARY bot. Returns (label, result);
-    the result is the sentence the model reads. Never runs unapproved (tools.ALWAYS_ASK)."""
-    f, err = manage_create_check(bot, args)
+    """Super Bot's `bot_create` (docs §12): one or more new ORDINARY bots behind one card.
+    Returns (label, result); the result is the sentence the model reads. Never runs
+    unapproved (tools.ALWAYS_ASK)."""
+    fields, err = manage_create_batch_check(bot, args)
     if err:
         return "bot_create", err
-    b = create(f["name"], f["model"], f["effort"], f["instructions"], preset=f["preset"], kind="bot", browser=f.get("browser") or "")
-    if f["face"]:
-        with b.lock:
-            b.meta["face"] = f["face"]
-            b.save()
-    b.emit("system", f"Created by {bot.meta.get('name') or SUPER_NAME}.", source="manage")
-    return (f"create bot \"{f['name']}\"",
-            f"created bot {f['name']!r} (id {b.id}, model {b.meta.get('model')}, effort {b.meta.get('effort')}"
-            + (f", preset {f['preset']}" if f["preset"] else "") + f", face {face_words(b.meta.get('face'))}"
-            + (f", sharing {f['logins_from']}'s logins" if f.get("logins_from") else "") + "). "
-            "It is in the bots list now; `handoff` gives it a task.")
+    made, lines, by_name = [], [], {}
+    for f in fields:
+        try:
+            browser = f.get("browser") or ""
+            if f.get("sibling"):  # an earlier entry of this call: its browser.json is written on first use, so now
+                src = by_name[f["sibling"].lower()]
+                browsers.ensure(src.browser_id, src.meta.get("name") or "")
+                browser = src.browser_id
+            b = create(f["name"], f["model"], f["effort"], f["instructions"], preset=f["preset"], kind="bot",
+                       browser=browser)
+        except Exception as e:  # noqa: BLE001 — say which were made before the failure
+            lines.append(f"error: could not create {f['name']!r} ({e}); the bots after it were not created.")
+            break
+        if f["face"]:
+            with b.lock:
+                b.meta["face"] = f["face"]
+                b.save()
+        b.emit("system", f"Created by {bot.meta.get('name') or SUPER_NAME}.", source="manage")
+        made.append(f["name"])
+        by_name[f["name"].lower()] = b
+        lines.append(f"created bot {f['name']!r} (id {b.id}, model {b.meta.get('model')}, effort {b.meta.get('effort')}"
+                     + (f", preset {f['preset']}" if f["preset"] else "") + f", face {face_words(b.meta.get('face'))}"
+                     + (f", sharing {f['logins_from']}'s logins" if f.get("logins_from") else "") + ").")
+    if not made:
+        return "bot_create", lines[-1]
+    label = f"create bot \"{made[0]}\"" if len(made) == 1 else f"create {len(made)} bots: " + ", ".join(made)
+    return label, " ".join(lines) + (" It is" if len(made) == 1 else " They are") + \
+        " in the bots list now; `handoff` gives a bot a task."
 
 
 def manage_changes(bot, target_name, args):
