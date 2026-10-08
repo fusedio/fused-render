@@ -799,6 +799,11 @@
   gap: 16px;
   overflow-x: auto;
   overscroll-behavior-x: contain;
+  /* overflow-x: auto also clips vertically; room above and below lets a
+     hovered card's lift and shadow show, and the negative margins keep the
+     strip's footprint unchanged. */
+  padding-block: 4px 16px;
+  margin-block: -4px -16px;
   /* no scroll snap: on 385px cards even a proximity snap pulls a slow trackpad gesture back to the card it started on; the ‹ › buttons page by scrollBy instead */
   scrollbar-width: none;
 }
