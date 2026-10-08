@@ -3,6 +3,7 @@
 // reason underneath. Folder and page picks need a choice, so they hand off to
 // the add sheet (onPick) instead of swapping directly.
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useDismissOnOutside } from "@platform/lib/dismissOnOutside";
 import { SourceIcon } from "./AddWidgetPanel";
 import { FormatPicks, SortChips } from "./Pickers";
 import { MAX_WIDGETS, SOURCES, rectOf, sourceFits, type TileTarget, type WidgetSource } from "./layout";
@@ -38,14 +39,19 @@ export function ChangeTile({
   const widget = target.kind === "swap" ? (layout.widgets.find((w) => w.id === target.widget.id) ?? target.widget) : null;
   const rect = target.kind === "swap" ? rectOf(widget ?? target.widget) : target.rect;
 
-  // Latest onClose, so the document listeners subscribe once.
+  // The anchor (the popover's parent) counts as "inside" for outside-click
+  // dismissal, so the anchor button's own click is not a dismissal.
+  const anchorRef = useRef<HTMLElement | null>(null);
+  useLayoutEffect(() => {
+    anchorRef.current = root.current?.parentElement ?? null;
+  }, []);
+  useDismissOnOutside(anchorRef, true, onClose);
+
+  // Latest onClose, so the Esc listener subscribes once. The hook does not
+  // stop propagation or restore focus, so Esc stays local.
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
   useEffect(() => {
-    const down = (e: PointerEvent) => {
-      const anchor = root.current?.parentElement;
-      if (!anchor?.contains(e.target as Node)) closeRef.current();
-    };
     const key = (e: globalThis.KeyboardEvent) => {
       if (e.key === "Escape") {
         e.stopPropagation();
@@ -53,12 +59,8 @@ export function ChangeTile({
         root.current?.parentElement?.querySelector<HTMLElement>("button")?.focus();
       }
     };
-    document.addEventListener("pointerdown", down, true);
     document.addEventListener("keydown", key, true);
-    return () => {
-      document.removeEventListener("pointerdown", down, true);
-      document.removeEventListener("keydown", key, true);
-    };
+    return () => document.removeEventListener("keydown", key, true);
   }, []);
 
   // Right-aligned under the anchor; one near the left edge would push the
