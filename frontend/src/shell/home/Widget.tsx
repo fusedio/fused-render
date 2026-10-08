@@ -14,7 +14,7 @@ import {
 } from "react";
 import { tabHref } from "@apps/ai_models/routes";
 import { softNavigate } from "./strip";
-import { SOURCES, allowedSizes, type AppsSort, type HomeLayout, type Widget as WidgetModel, type WidgetFormat, type WidgetSize } from "./layout";
+import { FIXED_ROWS, SOURCES, allowedSizes, type AppsSort, type HomeLayout, type Widget as WidgetModel, type WidgetFormat, type WidgetSize } from "./layout";
 import { AppsWidget } from "./widgets/AppsWidget";
 import { PlaygroundWidget, RecentsWidget, SessionsWidget } from "./widgets/StripWidgets";
 import { TasksWidget } from "./widgets/TasksWidget";
@@ -203,14 +203,16 @@ export function WidgetFrame(p: WidgetFrameProps): ReactNode {
   const seeAll = SEE_ALL[widget.source];
   // The search and build widgets ARE their box: no header in view mode.
   const bare = (widget.source === "search" || widget.source === "build") && !edit;
+  // Search and build have a content-sized height: only their width resizes.
+  const fixedHeight = FIXED_ROWS[widget.source] !== undefined;
   return (
     <section
       id={p.anchorId}
       className={
         "hw-widget" +
         ` hw-size-${widget.size}` +
-        (bare && widget.source === "search" ? " is-search" : "") +
-        (bare && widget.source === "build" ? " is-build" : "") +
+        (widget.source === "search" ? " is-search" : "") +
+        (widget.source === "build" ? " is-build" : "") +
         (edit ? " is-edit" : "") +
         (widget.source === "app" ? " is-app" : "") +
         (p.dragging ? " is-dragging" : "")
@@ -218,7 +220,7 @@ export function WidgetFrame(p: WidgetFrameProps): ReactNode {
       style={p.style}
       data-wid={widget.id}
       tabIndex={edit ? 0 : undefined}
-      aria-label={edit ? `${title} widget. Alt plus arrow keys to move, Alt plus Shift plus arrow keys to resize.` : undefined}
+      aria-label={edit ? `${title} widget. Alt plus arrow keys to move, ${fixedHeight ? "Alt plus Shift plus Left or Right to resize" : "Alt plus Shift plus arrow keys to resize"}.` : undefined}
       onPointerDown={edit ? p.onPointerDown : undefined}
       onKeyDown={edit ? p.onKeyDown : undefined}
     >
@@ -261,8 +263,12 @@ export function WidgetFrame(p: WidgetFrameProps): ReactNode {
       {edit ? (
         <>
           <span className="hw-resize hw-resize-e" aria-hidden="true" onPointerDown={(e) => p.onResizeStart(e, "e")} />
-          <span className="hw-resize hw-resize-s" aria-hidden="true" onPointerDown={(e) => p.onResizeStart(e, "s")} />
-          <span className="hw-resize hw-resize-se" aria-hidden="true" title="Drag to resize" onPointerDown={(e) => p.onResizeStart(e, "se")} />
+          {fixedHeight ? null : (
+            <>
+              <span className="hw-resize hw-resize-s" aria-hidden="true" onPointerDown={(e) => p.onResizeStart(e, "s")} />
+              <span className="hw-resize hw-resize-se" aria-hidden="true" title="Drag to resize" onPointerDown={(e) => p.onResizeStart(e, "se")} />
+            </>
+          )}
         </>
       ) : null}
     </section>

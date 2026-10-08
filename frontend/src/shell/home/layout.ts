@@ -3,6 +3,8 @@
 // validates the same vocabulary); every widget owns explicit cells (x, y) and
 // array order is reading order (y, x). A widget may also carry an explicit
 // `cols`/`rows` footprint (an edge-dragged size); without it dims(size) applies.
+// The two bare sources (search, build) are the exception: their height is fixed
+// in units (FIXED_ROWS) and the size presets only choose their width.
 
 export type WidgetSource =
   | "search"
@@ -59,8 +61,9 @@ export interface HomeLayout {
 /** Current document version. 1 predates the search widget: a version-1 layout
     gets a search widget prepended on load (normalizeLayout). 1 and 2 have no
     coordinates; they are packed densely on load. 3 stores whole-cell
-    coordinates and is doubled on load; 4 stores half-cell units. */
-export const LAYOUT_VERSION = 4;
+    coordinates and is doubled on load; 4 stores half-cell units; 5 is 4 plus
+    the fixed rows of the two bare sources (FIXED_ROWS). */
+export const LAYOUT_VERSION = 5;
 
 /** Units per whole cell: the grid's unit is half a cell. */
 export const CELL = 2;
@@ -187,10 +190,10 @@ export const DEFAULT_LAYOUT: HomeLayout = {
   version: LAYOUT_VERSION,
   widgets: [
     makeWidget("search", 0, 0, { id: "default-search" }),
-    makeWidget("apps", 0, 2, { id: "default-apps" }),
-    makeWidget("playground", 0, 4, { id: "default-playground" }),
-    makeWidget("sessions", 0, 6, { id: "default-sessions" }),
-    makeWidget("recents", 0, 8, { id: "default-recents" }),
+    makeWidget("apps", 0, 1, { id: "default-apps" }),
+    makeWidget("playground", 0, 3, { id: "default-playground" }),
+    makeWidget("sessions", 0, 5, { id: "default-sessions" }),
+    makeWidget("recents", 0, 7, { id: "default-recents" }),
   ],
 };
 
@@ -201,20 +204,22 @@ export function defaultLayout(): HomeLayout {
 }
 
 /** Whatever came off the wire -> a layout the grid can render. Anything that
-    is not a version-1/2/3/4 document with a widgets array yields the default;
+    is not a version-1/2/3/4/5 document with a widgets array yields the default;
     an empty array is kept (the user removed everything on purpose). A version-1
     document predates the search widget, so one is prepended. Versions 1 and 2
     carry no coordinates and are packed the way CSS `row dense` placed them;
-    version 3 doubles its cell coordinates into units and version 4 keeps its
-    unit coordinates (and may carry an explicit `cols`/`rows` footprint),
-    re-placing any that are missing, out of bounds or overlapping. The result is stamped current. At most one search
-    widget. */
+    version 3 doubles its cell coordinates into units and versions 4 and 5 keep
+    their unit coordinates (and may carry an explicit `cols`/`rows` footprint),
+    re-placing any that are missing, out of bounds or overlapping. A fixed-row
+    source (search, build) always gets its fixed rows; a version-4 document
+    also loses the unit rows that shrink vacated (collapseShrunkRows). The
+    result is stamped current. At most one search widget. */
 export function normalizeLayout(raw: unknown): HomeLayout {
   const r = raw as { version?: unknown; widgets?: unknown } | null;
   if (
     !r ||
     typeof r !== "object" ||
-    (r.version !== 1 && r.version !== 2 && r.version !== 3 && r.version !== LAYOUT_VERSION) ||
+    (r.version !== 1 && r.version !== 2 && r.version !== 3 && r.version !== 4 && r.version !== LAYOUT_VERSION) ||
     !Array.isArray(r.widgets)
   ) {
     return defaultLayout();
@@ -255,17 +260,25 @@ export function normalizeLayout(raw: unknown): HomeLayout {
     if (cleaned.length > MAX_WIDGETS) cleaned.length = MAX_WIDGETS;
   }
   let widgets: Widget[];
-  if (r.version === 3 || r.version === LAYOUT_VERSION) {
+  // id -> rows a fixed-row widget used to span (version 4 only), for the collapse.
+  const oldRows = new Map<string, number>();
+  if (r.version === 3 || r.version === 4 || r.version === LAYOUT_VERSION) {
     const k = r.version === 3 ? CELL : 1;
     widgets = [];
     for (const { w: w0, rx, ry, rc, rr } of cleaned) {
       let w = w0;
       let x = Number.isInteger(rx) ? (rx as number) * k : NaN;
       let y = Number.isInteger(ry) ? (ry as number) * k : NaN;
-      if (r.version === LAYOUT_VERSION && Number.isInteger(rc) && Number.isInteger(rr)) {
+      const fixed = FIXED_ROWS[w.source];
+      const stored = Number.isInteger(rc) && Number.isInteger(rr);
+      if (r.version === 4 && fixed !== undefined) {
+        oldRows.set(w.id, stored ? (rr as number) : dims(w.size).rows);
+      }
+      if ((r.version === 4 || r.version === LAYOUT_VERSION) && stored) {
         const min = minFootprint(w.source);
         const c = rc as number;
-        const rw = rr as number;
+        // A fixed-row source takes its rows from FIXED_ROWS, whatever was stored.
+        const rw = fixed ?? (rr as number);
         if (
           c >= min.cols && c <= GRID_COLS && rw >= min.rows && rw <= MAX_WIDGET_ROWS &&
           Number.isInteger(x) && x + c <= GRID_COLS
@@ -276,16 +289,39 @@ export function normalizeLayout(raw: unknown): HomeLayout {
       }
       const { cols, rows } = dimsOf(w);
       if (!Number.isInteger(x) || !Number.isInteger(y) || !canPlace(widgets, { x, y, cols, rows })) {
-        ({ x, y } = firstFreeSlot(widgets, w.size));
+        ({ x, y } = firstFreeSlot(widgets, w.size, GRID_COLS, undefined, w.source));
         // Same bound addWidget enforces: a repaired slot past MAX_ROWS drops the widget.
         if (y + dimsOf(w).rows > MAX_ROWS) continue;
       }
       widgets.push({ ...w, x, y });
     }
+    if (r.version === 4) {
+      // Unit rows a shrunk search/build used to span and nothing covers now.
+      const vacated = new Set<number>();
+      for (const wd of widgets) {
+        const was = oldRows.get(wd.id);
+        if (was === undefined) continue;
+        for (let y = wd.y + dimsOf(wd).rows; y < wd.y + was; y++) vacated.add(y);
+      }
+      widgets = collapseShrunkRows(widgets, vacated);
+    }
   } else {
     widgets = packDense(cleaned.map((c) => c.w));
   }
   return { version: LAYOUT_VERSION, widgets: sortByPosition(widgets) };
+}
+
+/** Delete the `vacated` unit rows no widget covers: every widget below one
+    moves up by one, highest row first so the remaining indexes stay valid.
+    Rows left empty on purpose are not in `vacated` and stay. */
+export function collapseShrunkRows(widgets: Widget[], vacated: Set<number>): Widget[] {
+  let out = widgets;
+  for (const y of [...vacated].sort((a, b) => b - a)) {
+    const covered = out.some((w) => w.y <= y && y < w.y + dimsOf(w).rows);
+    if (covered) continue;
+    out = out.map((w) => (w.y > y ? { ...w, y: w.y - 1 } : w));
+  }
+  return out;
 }
 
 /** True when the layout already has a search widget (only one is allowed). */
@@ -301,7 +337,7 @@ export function addWidget(
   if (layout.widgets.length >= MAX_WIDGETS) return layout;
   if (source === "search" && hasSearch(layout)) return layout;
   const probe = makeWidget(source, 0, 0, opts);
-  const { x, y } = firstFreeSlot(layout.widgets, probe.size);
+  const { x, y } = firstFreeSlot(layout.widgets, probe.size, GRID_COLS, undefined, source);
   if (y + dimsOf(probe).rows > MAX_ROWS) return layout;
   return { ...layout, widgets: sortByPosition([...layout.widgets, { ...probe, x, y }]) };
 }
@@ -326,7 +362,7 @@ function patch(layout: HomeLayout, id: string, fn: (w: Widget) => Widget | null)
 export function setSize(layout: HomeLayout, id: string, size: WidgetSize): HomeLayout {
   const w = layout.widgets.find((x) => x.id === id);
   if (!w || (w.size === size && w.cols === undefined) || !SOURCES[w.source].sizes.includes(size)) return layout;
-  const { cols, rows } = dims(size);
+  const { cols, rows } = dimsFor(w.source, size);
   const x = Math.min(w.x, GRID_COLS - cols);
   if (!canPlace(layout.widgets, { x, y: w.y, cols, rows }, id)) return layout;
   const widgets = layout.widgets.map((o) => {
@@ -344,7 +380,7 @@ export function allowedSizes(layout: HomeLayout, id: string): WidgetSize[] {
   const occ = occupancy(layout.widgets, id);
   return SOURCES[w.source].sizes.filter((s) => {
     if (s === w.size) return true;
-    const { cols, rows } = dims(s);
+    const { cols, rows } = dimsFor(w.source, s);
     return canPlace(layout.widgets, { x: Math.min(w.x, GRID_COLS - cols), y: w.y, cols, rows }, id, GRID_COLS, occ);
   });
 }
@@ -367,36 +403,53 @@ export function dims(size: WidgetSize): { cols: number; rows: number } {
   return { cols: Number(c) * CELL, rows: Number(r) * CELL };
 }
 
-/** The widget's footprint in units: its explicit cols/rows, else its preset's dims. */
-export function dimsOf(w: Pick<Widget, "size" | "cols" | "rows">): { cols: number; rows: number } {
-  return w.cols !== undefined && w.rows !== undefined ? { cols: w.cols, rows: w.rows } : dims(w.size);
+/** Sources whose height is their content's, in units, whatever the preset or an edge drag says. */
+export const FIXED_ROWS: Partial<Record<WidgetSource, number>> = { search: 1, build: 3 };
+
+/** dims() for a source's preset: a fixed-row source keeps its fixed height. */
+export function dimsFor(source: WidgetSource, size: WidgetSize): { cols: number; rows: number } {
+  const d = dims(size);
+  const fixed = FIXED_ROWS[source];
+  return fixed === undefined ? d : { cols: d.cols, rows: fixed };
+}
+
+/** The widget's footprint in units: its explicit cols/rows, else its preset's dims
+    (a fixed-row source always has its fixed rows). */
+export function dimsOf(w: Pick<Widget, "source" | "size" | "cols" | "rows">): { cols: number; rows: number } {
+  return w.cols !== undefined && w.rows !== undefined
+    ? { cols: w.cols, rows: FIXED_ROWS[w.source] ?? w.rows }
+    : dimsFor(w.source, w.size);
 }
 
 /** Smallest footprint a source allows: its smallest preset on each axis. */
 export function minFootprint(source: WidgetSource): { cols: number; rows: number } {
   const ds = SOURCES[source].sizes.map(dims);
-  return { cols: Math.min(...ds.map((d) => d.cols)), rows: Math.min(...ds.map((d) => d.rows)) };
+  return { cols: Math.min(...ds.map((d) => d.cols)), rows: FIXED_ROWS[source] ?? Math.min(...ds.map((d) => d.rows)) };
 }
 
-/** The source's preset whose dims equal (cols, rows) exactly, else null. */
+/** The source's preset whose dims equal (cols, rows) exactly, else null; a
+    fixed-row source matches on cols only. */
 export function presetFor(source: WidgetSource, cols: number, rows: number): WidgetSize | null {
-  return SOURCES[source].sizes.find((s) => dims(s).cols === cols && dims(s).rows === rows) ?? null;
+  const fixed = FIXED_ROWS[source] !== undefined;
+  return SOURCES[source].sizes.find((s) => dims(s).cols === cols && (fixed || dims(s).rows === rows)) ?? null;
 }
 
 /** The preset that drives a custom footprint's content: the largest (by area,
     ties -> more columns) that fits inside it. */
 export function contentSizeFor(source: WidgetSource, cols: number, rows: number): WidgetSize {
   let best: WidgetSize | null = null;
+  const fixed = FIXED_ROWS[source] !== undefined;
   for (const s of SOURCES[source].sizes) {
     const d = dims(s);
-    if (d.cols > cols || d.rows > rows) continue;
+    if (d.cols > cols || (!fixed && d.rows > rows)) continue;
     if (!best) {
       best = s;
       continue;
     }
     const b = dims(best);
-    const a1 = d.cols * d.rows;
-    const a2 = b.cols * b.rows;
+    // A fixed-row source's presets differ in width only: the widest fitting one.
+    const a1 = fixed ? d.cols : d.cols * d.rows;
+    const a2 = fixed ? b.cols : b.cols * b.rows;
     if (a1 > a2 || (a1 === a2 && d.cols > b.cols)) best = s;
   }
   return best ?? SOURCES[source].sizes[0];
@@ -406,7 +459,8 @@ export function contentSizeFor(source: WidgetSource, cols: number, rows: number)
     "+N more". Fixed per size: the grid's row height is fixed, so this needs no
     measuring. A full-row list runs in two columns. */
 export function itemCapacity(size: WidgetSize, format: WidgetFormat): number {
-  // dims() is in units; capacity counts whole cells.
+  // Only list/icon widgets are counted here, never the fixed-row search/build,
+  // so plain dims() (in units; capacity counts whole cells) is right.
   const d = dims(size);
   const cols = d.cols / CELL;
   const rows = d.rows / CELL;
@@ -538,8 +592,9 @@ export function firstFreeSlot(
   size: WidgetSize,
   cols = GRID_COLS,
   except?: string,
+  source?: WidgetSource,
 ): { x: number; y: number } {
-  const { cols: c, rows } = dims(size);
+  const { cols: c, rows } = source ? dimsFor(source, size) : dims(size);
   return firstFreeRect(widgets.filter((w) => w.id !== except).map(rectOf), c, rows, cols);
 }
 
@@ -547,7 +602,7 @@ export function firstFreeSlot(
     auto-placed: each item restarts at (0,0) and takes the first free spot,
     columns left to right then rows top to bottom. Callers clamp widths to
     `cols` first. */
-export function packDense<T extends Pick<Widget, "size" | "cols" | "rows">>(items: T[], cols = GRID_COLS): (T & { x: number; y: number })[] {
+export function packDense<T extends Pick<Widget, "source" | "size" | "cols" | "rows">>(items: T[], cols = GRID_COLS): (T & { x: number; y: number })[] {
   const placed: Rect[] = [];
   return items.map((it) => {
     const { cols: c, rows } = dimsOf(it);
@@ -614,6 +669,9 @@ export function moveByArrow(layout: HomeLayout, id: string, key: string): HomeLa
 export function resizeTo(layout: HomeLayout, id: string, cols: number, rows: number): HomeLayout {
   const w = layout.widgets.find((o) => o.id === id);
   if (!w || !Number.isInteger(cols) || !Number.isInteger(rows)) return layout;
+  // A fixed-row source cannot change height: any asked-for rows are its own.
+  const fixed = FIXED_ROWS[w.source];
+  if (fixed !== undefined) rows = fixed;
   const min = minFootprint(w.source);
   if (cols < min.cols || rows < min.rows || w.x + cols > GRID_COLS || rows > MAX_WIDGET_ROWS) return layout;
   if (!canPlace(layout.widgets, { x: w.x, y: w.y, cols, rows }, id)) return layout;

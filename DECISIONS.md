@@ -6634,3 +6634,8 @@ Edit-mode stand-ins for the bare Home widgets (search, build) reuse the real con
 ## 2026-10-08 — Fused Apps widget sort; Add sheet options column
 
 The Fused Apps widget carries a `sort` (opened, the default; updated; name), a third special-cased widget field beside folderId and appPath rather than a generic options bag: two sources with one setting each is not yet a pattern. `opened` keeps the recents fast path on GET /api/apps/home; `updated` and `name` cannot be answered by the recents stores, so they read the hub's catalog snapshot (`_discovery_rows`) and hydrate only the slice. The Add sheet's options (Show as, Size, Sort by) moved into a fixed 230px column beside the preview stage, because a third group no longer fit a wrapping row under a stage that took the pane's height; a narrow sheet stacks them again.
+
+
+## 2026-10-08 — Search and Build widgets have a fixed, content-derived height (layout v5)
+
+The two bare Home widgets have a fixed, content-derived height in units (search 1, build 3) that neither the size preset nor an edge drag can change: their content never grows with the footprint, so any extra height was dead space in edit mode and collapsed inconsistently in view mode. Size presets now mean width only. Layout v5 marks documents that carry this; the v4 to v5 migration shrinks the two widgets and collapses only the unit rows the shrink vacated, so rows the user left empty on purpose stay.

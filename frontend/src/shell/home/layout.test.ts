@@ -8,8 +8,10 @@ import {
   addWidget,
   allowedSizes,
   canPlace,
+  collapseShrunkRows,
   compactLayout,
   contentSizeFor,
+  defaultLayout,
   dims,
   dimsOf,
   emptyRows,
@@ -21,6 +23,7 @@ import {
   occupancy,
   packDense,
   placeWidget,
+  presetFor,
   rectOf,
   reflowToColumns,
   removeWidget,
@@ -44,21 +47,28 @@ const w = (id: string, source: any = "apps", size: any = "4x1", format: any = "c
   y,
 });
 // x / y are half-cell units (a 1x1 is 2 x 2 units).
-const lay = (...widgets: any[]): HomeLayout => ({ version: 4, widgets });
+const lay = (...widgets: any[]): HomeLayout => ({ version: 5, widgets });
 const ids = (l: HomeLayout) => l.widgets.map((x) => x.id);
 const at = (l: HomeLayout) => l.widgets.map((x) => [x.x, x.y]);
 // A v2 document (no coordinates) in the shape the packDense test uses.
 const v2 = (sizes: string[]) => sizes.map((s, i) => ({ id: `w${i}`, source: "folder", folderId: "f", size: s, format: "list" }));
 
-test("default layout stacks five full rows at x=0, y=0,2,4,6,8 (units), version 4", () => {
-  expect(DEFAULT_LAYOUT.version).toBe(4);
+test("default layout stacks five full rows at x=0, y=0,1,3,5,7 (units), version 5", () => {
+  expect(DEFAULT_LAYOUT.version).toBe(5);
   expect(DEFAULT_LAYOUT.widgets.map((x) => [x.source, x.size, x.format, x.x, x.y])).toEqual([
     ["search", "4x1", "bar", 0, 0],
-    ["apps", "4x1", "cards", 0, 2],
-    ["playground", "4x1", "cards", 0, 4],
-    ["sessions", "4x1", "cards", 0, 6],
-    ["recents", "4x1", "cards", 0, 8],
+    ["apps", "4x1", "cards", 0, 1],
+    ["playground", "4x1", "cards", 0, 3],
+    ["sessions", "4x1", "cards", 0, 5],
+    ["recents", "4x1", "cards", 0, 7],
   ]);
+});
+
+test("defaultLayout has no overlaps and no empty rows", () => {
+  const l = defaultLayout();
+  const rects = l.widgets.map(rectOf);
+  expect(emptyRows(rects)).toEqual([]);
+  expect(l.widgets.every((x) => canPlace(l.widgets, rectOf(x), x.id))).toBe(true);
 });
 
 test("every source declares sizes and formats; spec defaults hold", () => {
@@ -75,7 +85,7 @@ test("every source declares sizes and formats; spec defaults hold", () => {
 
 test("normalizeLayout falls back to default on garbage", () => {
   expect(normalizeLayout(null)).toEqual(DEFAULT_LAYOUT);
-  expect(normalizeLayout({ version: 5, widgets: [] })).toEqual(DEFAULT_LAYOUT);
+  expect(normalizeLayout({ version: 6, widgets: [] })).toEqual(DEFAULT_LAYOUT);
   expect(normalizeLayout({ version: 2, widgets: "x" })).toEqual(DEFAULT_LAYOUT);
 });
 
@@ -114,7 +124,7 @@ test("normalizeLayout gives duplicate/missing ids fresh unique ids", () => {
 });
 
 test("packDense mirrors CSS row-dense on 8 units", () => {
-  const sz = (...s: any[]) => s.map((size) => ({ size }));
+  const sz = (...s: any[]) => s.map((size) => ({ source: "bots" as const, size }));
   const pos = (items: { x: number; y: number }[]) => items.map((i) => [i.x, i.y]);
   expect(pos(packDense(sz("4x1", "2x2", "1x1", "1x1", "1x1", "4x1")))).toEqual([
     [0, 0],
@@ -132,7 +142,7 @@ test("packDense mirrors CSS row-dense on 8 units", () => {
 });
 
 test("packDense on 4 units clamps nothing; 4x1 input must be pre-clamped", () => {
-  const out = packDense([{ size: "2x1" as const }, { size: "1x1" as const }, { size: "1x1" as const }], 4);
+  const out = packDense([{ source: "bots" as const, size: "2x1" as const }, { source: "bots" as const, size: "1x1" as const }, { source: "bots" as const, size: "1x1" as const }], 4);
   expect(out.map((i) => [i.x, i.y])).toEqual([
     [0, 0],
     [0, 2],
@@ -140,11 +150,11 @@ test("packDense on 4 units clamps nothing; 4x1 input must be pre-clamped", () =>
   ]);
   // Contract: an 8-unit item cannot fit 4 units; the scan never finds a slot
   // and opens a row at x = 0 (overflowing). Callers clamp widths first.
-  const wide = packDense([{ size: "4x1" as const }], 4);
+  const wide = packDense([{ source: "bots" as const, size: "4x1" as const }], 4);
   expect([wide[0].x, wide[0].y]).toEqual([0, 0]);
 });
 
-test("normalizeLayout migrates a v2 document with packDense and stamps 4", () => {
+test("normalizeLayout migrates a v2 document with packDense and stamps 5", () => {
   const sizes = ["4x1", "2x2", "1x1", "1x1", "1x1", "4x1"];
   const want = [
     [0, 0],
@@ -157,7 +167,7 @@ test("normalizeLayout migrates a v2 document with packDense and stamps 4", () =>
   for (const version of [2, 1]) {
     const doc = version === 1 ? { version, widgets: v2(sizes) } : { version, widgets: v2(sizes) };
     const out = normalizeLayout(doc);
-    expect(out.version).toBe(4);
+    expect(out.version).toBe(5);
     if (version === 2) {
       expect(at(out)).toEqual(want);
     } else {
@@ -178,7 +188,7 @@ test("normalizeLayout v3 doubles cell coords to units, re-places overlapping or 
       w("d", "apps", "2x1", "cards", 2, 1), // overlaps a
     ],
   });
-  expect(out.version).toBe(4);
+  expect(out.version).toBe(5);
   const by = Object.fromEntries(out.widgets.map((x) => [x.id, [x.x, x.y]]));
   expect(by.a).toEqual([4, 2]);
   expect(by.b).toEqual([0, 0]);
@@ -192,16 +202,16 @@ test("normalizeLayout v3 doubles cell coords to units, re-places overlapping or 
   ]);
 });
 
-test("a v3 1x1 at cell x=1 migrates to unit x=2 at version 4", () => {
+test("a v3 1x1 at cell x=1 migrates to unit x=2 at version 5", () => {
   const out = normalizeLayout({ version: 3, widgets: [w("a", "bots", "1x1", "list", 1, 0)] });
-  expect(out.version).toBe(4);
+  expect(out.version).toBe(5);
   expect(at(out)).toEqual([[2, 0]]);
 });
 
 test("a v4 1x1 half a cell in (x=1) round-trips through normalizeLayout unchanged", () => {
   const doc = { version: 4, widgets: [w("a", "bots", "1x1", "list", 1, 0)] };
   const out = normalizeLayout(doc);
-  expect(out.version).toBe(4);
+  expect(out.version).toBe(5);
   expect(out.widgets).toEqual(doc.widgets);
 });
 
@@ -456,10 +466,10 @@ test("addWidget stores appPath for app widgets", () => {
 
 test("a version-1 layout gets search prepended and is stamped current", () => {
   const out = normalizeLayout({ version: 1, widgets: [w("a")] });
-  expect(out.version).toBe(4);
+  expect(out.version).toBe(5);
   expect(out.widgets.map((x) => x.source)).toEqual(["search", "apps"]);
   expect(out.widgets[0]).toMatchObject({ size: "4x1", format: "bar", x: 0, y: 0 });
-  expect(out.widgets[1]).toMatchObject({ x: 0, y: 2 });
+  expect(out.widgets[1]).toMatchObject({ x: 0, y: 1 });
   expect(normalizeLayout({ version: 1, widgets: [] }).widgets.map((x) => x.source)).toEqual(["search"]);
 });
 
@@ -550,13 +560,78 @@ const solo = (extra: any = {}, source: any = "bots", size: any = "1x1") =>
 const only = (l: HomeLayout) => l.widgets.find((x) => x.id === "a")!;
 
 test("dimsOf falls back to dims(size) and honours cols/rows", () => {
-  expect(dimsOf({ size: "2x1" })).toEqual({ cols: 4, rows: 2 });
-  expect(dimsOf({ size: "1x1", cols: 3, rows: 2 })).toEqual({ cols: 3, rows: 2 });
+  expect(dimsOf({ source: "bots", size: "2x1" })).toEqual({ cols: 4, rows: 2 });
+  expect(dimsOf({ source: "bots", size: "1x1", cols: 3, rows: 2 })).toEqual({ cols: 3, rows: 2 });
 });
 
-test("minFootprint is the smallest preset per axis", () => {
-  expect(minFootprint("build")).toEqual({ cols: 4, rows: 2 });
+test("search and build have a fixed height; presets mean width only", () => {
+  expect(dimsOf({ source: "search", size: "4x1" })).toEqual({ cols: 8, rows: 1 });
+  expect(dimsOf({ source: "search", size: "4x1", cols: 4, rows: 2 })).toEqual({ cols: 4, rows: 1 });
+  expect(dimsOf({ source: "build", size: "2x1" })).toEqual({ cols: 4, rows: 3 });
+  expect(minFootprint("search")).toEqual({ cols: 2, rows: 1 });
+  expect(minFootprint("build")).toEqual({ cols: 4, rows: 3 });
   expect(minFootprint("apps")).toEqual({ cols: 2, rows: 2 });
+});
+
+test("resizeTo and resizeByArrow cannot change a fixed-row widget's height", () => {
+  const l = lay(w("s", "search", "4x1", "bar", 0, 0), w("b", "build", "4x1", "bar", 0, 2));
+  expect(resizeTo(l, "s", 8, 4)).toBe(l);
+  expect(resizeByArrow(l, "b", "ArrowDown")).toBe(l);
+  expect(resizeByArrow(l, "b", "ArrowUp")).toBe(l);
+  const narrower = resizeByArrow(l, "b", "ArrowLeft");
+  expect(narrower).not.toBe(l);
+  expect(dimsOf(narrower.widgets.find((x) => x.id === "b")!)).toEqual({ cols: 7, rows: 3 });
+  expect(resizeTo(l, "s", 4, 7).widgets.find((x) => x.id === "s")).toMatchObject({ size: "2x1" });
+});
+
+test("presetFor and allowedSizes treat search width only", () => {
+  expect(presetFor("search", 4, 1)).toBe("2x1");
+  expect(presetFor("search", 8, 3)).toBe("4x1");
+  const l = lay(w("s", "search", "1x1", "bar", 0, 0), w("a", "apps", "4x1", "cards", 0, 1));
+  expect(allowedSizes(l, "s")).toEqual(["4x1", "2x1", "1x1"]);
+});
+
+test("normalizeLayout v4 -> v5 shrinks search/build and collapses only the vacated rows", () => {
+  const out = normalizeLayout({
+    version: 4,
+    widgets: [w("s", "search", "4x1", "bar", 0, 0), w("a", "apps", "4x1", "cards", 0, 2)],
+  });
+  expect(out.version).toBe(5);
+  expect(dimsOf(out.widgets[0]).rows).toBe(1);
+  expect(out.widgets[1]).toMatchObject({ id: "a", y: 1 });
+
+  // A row left empty on purpose between two cards stays.
+  const gap = normalizeLayout({
+    version: 4,
+    widgets: [w("a", "apps", "4x1", "cards", 0, 0), w("b", "apps", "4x1", "cards", 0, 3)],
+  });
+  expect(gap.widgets.map((x) => x.y)).toEqual([0, 3]);
+
+  // An edge-dragged build (8 x 5 units) at y 4, apps at y 9.
+  const build = normalizeLayout({
+    version: 4,
+    widgets: [{ ...w("b", "build", "4x1", "bar", 0, 4), cols: 8, rows: 5 }, w("a", "apps", "4x1", "cards", 0, 9)],
+  });
+  expect(build.widgets.find((x) => x.id === "b")).toMatchObject({ y: 4 });
+  expect(dimsOf(build.widgets.find((x) => x.id === "b")!).rows).toBe(3);
+  expect(build.widgets.find((x) => x.id === "a")!.y).toBe(7);
+
+  // A search with a v4 `rows: 2` is not rejected.
+  const stored = normalizeLayout({ version: 4, widgets: [{ ...w("s", "search", "4x1", "bar", 0, 0), cols: 8, rows: 2 }] });
+  expect(dimsOf(stored.widgets[0])).toEqual({ cols: 8, rows: 1 });
+});
+
+test("a v5 document is not collapsed", () => {
+  const out = normalizeLayout({
+    version: 5,
+    widgets: [w("s", "search", "4x1", "bar", 0, 0), w("a", "apps", "4x1", "cards", 0, 2)],
+  });
+  expect(out.widgets.map((x) => x.y)).toEqual([0, 2]);
+});
+
+test("collapseShrunkRows leaves a vacated row another widget still covers", () => {
+  const ws = [w("s", "search", "1x1", "bar", 0, 0), w("c", "bots", "1x1", "list", 2, 0), w("a", "apps", "4x1", "cards", 0, 2)] as any[];
+  expect(collapseShrunkRows(ws, new Set([1])).map((x) => x.y)).toEqual([0, 0, 2]);
 });
 
 test("contentSizeFor picks the largest preset inside the footprint", () => {

@@ -2210,9 +2210,9 @@ a.hw-more:hover {
 
 /* ---- Search widget ----------------------------------------------------------- */
 /* View mode: the widget is the bar itself — no card, no header, minimal padding,
-   like the hero it replaced. Edit mode keeps the normal card and chrome. */
-.hw-widget.is-search,
-.hw-widget.is-build {
+   like the hero it replaced. Edit mode has its own rules below the .hw-ph block. */
+.hw-widget.is-search:not(.is-edit),
+.hw-widget.is-build:not(.is-edit) {
   min-height: 0;
   align-self: stretch;
   width: 100%;
@@ -2232,7 +2232,7 @@ a.hw-more:hover {
 }
 
 /* The bar spans the whole widget, whatever its size. */
-.hw-widget.is-search > *,
+.hw-widget.is-search:not(.is-edit) > *,
 .hw-widget.is-search .files-search-wrap {
   width: 100%;
   max-width: none;
@@ -2263,6 +2263,40 @@ a.hw-more:hover {
 .hw-ph .hw-ph-sel { display: inline-flex; align-items: center; gap: 3px; padding: 3px 2px; font-size: 12px; }
 
 .hw-widget.is-build { text-align: left; padding: 0; }
+
+/* Edit mode: the two bare widgets are their footprint (1 unit for search, 3
+   for build). No card chrome; the head overlays the stand-in: grip at the
+   left where the real icon sits, Edit and × at the right. The title is kept
+   invisible so the flex row still pushes the controls to the ends. */
+.hw-widget.is-search.is-edit,
+.hw-widget.is-build.is-edit {
+  min-height: 0;
+  padding: 0;
+  justify-content: center;
+  background: none;
+  border-color: transparent;
+}
+.hw-widget.is-search.is-edit .hw-head,
+.hw-widget.is-build.is-edit .hw-head {
+  position: absolute;
+  left: 12px;
+  right: 10px;
+  margin: 0;
+  z-index: 2;
+  pointer-events: none;
+}
+.hw-widget.is-search.is-edit .hw-head > *,
+.hw-widget.is-build.is-edit .hw-head > * { pointer-events: auto; }
+.hw-widget.is-search.is-edit .hw-title,
+.hw-widget.is-build.is-edit .hw-title { visibility: hidden; }
+.hw-widget.is-search.is-edit .hw-head { top: 50%; transform: translateY(-50%); }
+.hw-widget.is-build.is-edit .hw-head { top: 10px; }
+.hw-widget.is-search.is-edit .hw-ph,
+.hw-widget.is-build.is-edit .hw-ph { margin-top: 0; }
+.hw-widget.is-search.is-edit .files-search-icon,
+.hw-widget.is-search.is-edit .files-search-allfiles { display: none; }
+.hw-widget.is-search.is-edit .files-search { padding-left: 38px; padding-right: 96px; }
+.hw-widget.is-build.is-edit .home-composer-input { padding-left: 40px; }
 .hw-widget.is-build .home-composer-wrap { margin-bottom: 0; }
 
 /* Add-sheet preview of the search bar: a rounded input, magnifier, placeholder bar. */

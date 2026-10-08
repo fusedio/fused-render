@@ -49,7 +49,7 @@ def test_put_invalid_is_400(tmp_path, monkeypatch):
     client, _ = _client(tmp_path, monkeypatch)
     w = {"id": "a", "source": "apps", "size": "4x1", "format": "cards"}
     bad = [
-        {"version": 5, "widgets": []},
+        {"version": 6, "widgets": []},
         {"version": 0, "widgets": []},
         {"version": 1, "widgets": "x"},
         {"version": 1, "widgets": [1]},
@@ -305,3 +305,58 @@ def test_v4_cols_without_rows_is_dropped(tmp_path, monkeypatch):
     assert client.put("/api/home/layout", json=lay, headers=FUSED).status_code == 200
     w = client.get("/api/home/layout").json()["layout"]["widgets"][0]
     assert "cols" not in w and "rows" not in w
+
+
+def _v5(*items):
+    """(id, source, size, x, y) items; format "bar" for the bare sources."""
+    return {
+        "version": 5,
+        "widgets": [
+            {"id": i, "source": src, "size": size, "format": "bar" if src in ("search", "build") else "cards", "x": x, "y": y}
+            for i, src, size, x, y in items
+        ],
+    }
+
+
+def test_versions_1_to_5_are_accepted(tmp_path, monkeypatch):
+    client, _ = _client(tmp_path, monkeypatch)
+    for v in (1, 2, 3, 4, 5):
+        lay = {"version": v, "widgets": []}
+        assert client.put("/api/home/layout", json=lay, headers=FUSED).status_code == 200, v
+
+
+def test_v5_fixed_rows_override_stored_rows(tmp_path, monkeypatch):
+    client, _ = _client(tmp_path, monkeypatch)
+    lay = _v5(("s", "search", "4x1", 0, 0), ("b", "build", "4x1", 0, 1))
+    lay["widgets"][0].update(cols=8, rows=2)
+    lay["widgets"][1].update(cols=8, rows=5)
+    assert client.put("/api/home/layout", json=lay, headers=FUSED).status_code == 200
+    got = client.get("/api/home/layout").json()["layout"]["widgets"]
+    assert (got[0]["cols"], got[0]["rows"]) == (8, 1)
+    assert (got[1]["cols"], got[1]["rows"]) == (8, 3)
+
+
+def test_v5_search_is_one_unit_tall_build_is_three(tmp_path, monkeypatch):
+    client, _ = _client(tmp_path, monkeypatch)
+    ok = _v5(("s", "search", "4x1", 0, 0), ("a", "apps", "4x1", 0, 1))
+    assert client.put("/api/home/layout", json=ok, headers=FUSED).status_code == 200
+    bad = _v5(("b", "build", "4x1", 0, 0), ("a", "apps", "4x1", 0, 2))
+    assert client.put("/api/home/layout", json=bad, headers=FUSED).status_code == 400
+    ok = _v5(("b", "build", "4x1", 0, 0), ("a", "apps", "4x1", 0, 3))
+    assert client.put("/api/home/layout", json=ok, headers=FUSED).status_code == 200
+
+
+def test_v5_card_widget_still_needs_two_unit_rows(tmp_path, monkeypatch):
+    client, _ = _client(tmp_path, monkeypatch)
+    lay = _v5(("a", "apps", "4x1", 0, 0))
+    lay["widgets"][0].update(cols=4, rows=1)
+    assert client.put("/api/home/layout", json=lay, headers=FUSED).status_code == 400
+
+
+def test_v4_search_with_two_rows_is_kept_as_stored(tmp_path, monkeypatch):
+    client, _ = _client(tmp_path, monkeypatch)
+    lay = _v5(("s", "search", "4x1", 0, 0))
+    lay["version"] = 4
+    lay["widgets"][0].update(cols=8, rows=2)
+    assert client.put("/api/home/layout", json=lay, headers=FUSED).status_code == 200
+    assert client.get("/api/home/layout").json()["layout"] == lay
