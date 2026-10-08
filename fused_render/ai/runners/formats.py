@@ -1731,6 +1731,9 @@ DECISIVE = ("faster-whisper", "mlx-whisper", "mflux-image", "ltx-video",
             # `weights.npz` does.
             "laya-mlx",
             "mlx-audio-tts",
+            # The Mimi codec file beside Moshi's weights (`MOSHI_MIMI_FILE`):
+            # a speech-to-speech checkpoint and nothing else.
+            "moshi-mlx",
             "diffusers-image",
             # Every hardware variant of the diffusers runner, because membership
             # here is a statement about the FORMAT — a `model_index.json` is a
@@ -1926,6 +1929,38 @@ _SPEECH_MODE_RULES = {
 def is_qwen3_tts_snapshot(config: dict, dirnames) -> bool:
     return (config.get("model_type") == QWEN3_TTS_MODEL_TYPE
             and QWEN3_TTS_TOKENIZER_DIR in dirnames)
+
+
+#: Moshi (Kyutai) MLX repos — `kyutai/moshik{o,a}-mlx-{q4,q8,bf16}` — ship no
+#: `config.json` and no `pipeline_tag`. What they DO ship, every one of them,
+#: is the Mimi codec checkpoint under this exact name beside the text
+#: tokenizer, and that pair is the format marker: no other layout carries it.
+MOSHI_MIMI_FILE = "tokenizer-e351c8d8-checkpoint125.safetensors"
+MOSHI_TOKENIZER_FILE = "tokenizer_spm_32k_3.model"
+#: Weight file -> quantization bits. The filename IS the quantization record
+#: (there is no config to read it from), and the loader must quantize the
+#: freshly built model to the same bits before `load_weights(strict=True)`.
+MOSHI_WEIGHT_BITS = {"model.safetensors": None, "model.q4.safetensors": 4,
+                     "model.q8.safetensors": 8}
+
+
+def moshi_weight_file(names) -> str | None:
+    found = [name for name in MOSHI_WEIGHT_BITS if name in names]
+    return found[0] if len(found) == 1 else None
+
+
+def is_moshi_snapshot(names) -> bool:
+    names = set(names)
+    return (MOSHI_MIMI_FILE in names and MOSHI_TOKENIZER_FILE in names
+            and moshi_weight_file(names) is not None)
+
+
+def moshi_quant_bits(names) -> int | None:
+    """4, 8 or None (bf16) for a Moshi snapshot; raises for anything else."""
+    weight = moshi_weight_file(names)
+    if weight is None:
+        raise ValueError("not a Moshi MLX snapshot")
+    return MOSHI_WEIGHT_BITS[weight]
 
 
 def speech_traits(config: dict) -> dict | None:
@@ -2132,6 +2167,12 @@ def loaders(*, repo_id: str, names, dirnames, config: dict, torch_weights: bool,
         return tuple(found)
     if is_qwen3_tts_snapshot(config, dirnames):
         found.append("mlx-audio-tts")
+        return tuple(found)
+    if is_moshi_snapshot(names):
+        found.append("moshi-mlx")
+        # …and NOTHING else: the weights are one `model*.safetensors` at the
+        # root, so the fallthrough below would also offer a speech-to-speech
+        # model as a chat model.
         return tuple(found)
     if has_ltx_split_layout(names):
         found.append("ltx-video")

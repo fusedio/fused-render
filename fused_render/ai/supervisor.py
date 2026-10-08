@@ -3056,6 +3056,150 @@ def generate_speech(model: str, request: dict, job: str) -> dict:
                                 timeout=GENERATE_TIMEOUT_S, noun="speech")
 
 
+# ---------------------------------------------------------------- voice chat
+
+#: How long a page gets to attach its WebSocket after `start_voice` answers.
+#: The worker's own accept timeout (`moshi_voice.ACCEPT_TIMEOUT_S`) is the
+#: hard stop; this is how long a finished session stays listed for a late
+#: status read before it is forgotten.
+VOICE_SESSION_LINGER_S = 60.0
+VOICE_START_TIMEOUT_S = 30.0
+
+
+@dataclass
+class VoiceSession:
+    """One Moshi conversation (`VOICE_CHAT`, SPEC AI-33). Created by
+    `start_voice`, driven by `_voice_pump` on its own thread, attached to by
+    the WebSocket proxy in `routers/ai_runtime.py`, which is the only reader
+    of `port`/`worker_token`."""
+    sid: str
+    token: str
+    model: str
+    max_seconds: float
+    port: int | None = None
+    worker_token: str = ""
+    sample_rate: int = 24000
+    frame: int = 1920
+    ready: threading.Event = field(default_factory=threading.Event)
+    done: threading.Event = field(default_factory=threading.Event)
+    error: str = ""
+    result: dict | None = None
+    attached: bool = False
+    finished_at: float | None = None
+
+    def public(self) -> dict:
+        return {"sessionId": self.sid, "model": self.model, "maxSeconds": self.max_seconds,
+                "sampleRate": self.sample_rate, "frame": self.frame,
+                "state": "done" if self.done.is_set() else ("open" if self.ready.is_set() else "starting"),
+                "error": self.error or None, "result": self.result}
+
+
+_voice_sessions: dict[str, VoiceSession] = {}
+
+
+def start_voice(model: str, request: dict) -> VoiceSession:
+    """Open a Moshi session on the resident `VOICE_CHAT` worker.
+
+    The same fail-fast shape as `generate_text`: a cold model starts loading
+    and `ModelNotReady` carries the job id; a ready one gets its `/generate`
+    held open on a thread for the session's whole life (`_voice_pump`), and
+    this returns once the worker has named the loopback socket the proxy
+    will attach to. Blocking only for that first chunk, which is immediate
+    on a warm worker.
+    """
+    worker = ready_worker(registry.VOICE_CHAT, model)
+    if worker is None:
+        with _lock:
+            current = _workers.get(registry.VOICE_CHAT)
+        if current is not None and current.model == model:
+            raise ModelNotReady(
+                f"{model} is still loading ({current.state})", job_id_for(model))
+        started = load(model, registry.VOICE_CHAT)
+        raise ModelNotReady(f"{model} is loading now", started["jobId"])
+    _prune_voice_sessions()
+    session = VoiceSession(sid=secrets.token_hex(8), token=secrets.token_hex(16),
+                           model=model, max_seconds=float(request.get("maxSeconds") or 300))
+    with _lock:
+        _voice_sessions[session.sid] = session
+    threading.Thread(target=_voice_pump, args=(worker, session, request),
+                     name="ai-voice", daemon=True).start()
+    if not session.ready.wait(VOICE_START_TIMEOUT_S):
+        if session.error:
+            raise SupervisorError(session.error)
+        raise SupervisorError("the voice model did not open a session in time")
+    if session.error:
+        raise SupervisorError(session.error)
+    return session
+
+
+def _voice_pump(worker: Worker, session: VoiceSession, request: dict) -> None:
+    """Hold the worker's `/generate` open and read its NDJSON until `done`.
+
+    Inside `_in_use` for the whole conversation, so the idle reaper leaves
+    the model alone mid-sentence; every keepalive re-stamps the worker the
+    way `generate_text` does per chunk.
+    """
+    try:
+        with _in_use(worker):
+            try:
+                response = _worker_request(worker, "/generate", body=request,
+                                           timeout=GENERATE_TIMEOUT_S)
+            except (OSError, ValueError) as e:
+                raise SupervisorError(f"the voice process did not answer: {e}") from e
+            with response:
+                for line in response:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        event = json.loads(line.decode())
+                    except ValueError:
+                        continue
+                    _touch(worker)
+                    kind = event.get("type")
+                    if kind == "chunk" and isinstance(event.get("port"), int):
+                        session.port = event["port"]
+                        session.worker_token = str(event.get("token") or "")
+                        session.sample_rate = int(event.get("sampleRate") or session.sample_rate)
+                        session.frame = int(event.get("frame") or session.frame)
+                        session.max_seconds = float(event.get("maxSeconds") or session.max_seconds)
+                        session.ready.set()
+                    elif kind == "done":
+                        if event.get("ok"):
+                            session.result = event.get("result") or {}
+                        else:
+                            session.error = str(event.get("error") or "the voice session failed")
+                        break
+    except Exception as e:  # noqa: BLE001 - the page reads this
+        session.error = session.error or f"{e.__class__.__name__}: {e}".rstrip(": ")
+    finally:
+        if not session.ready.is_set() and not session.error:
+            session.error = "the voice process ended before opening a session"
+        session.finished_at = time.monotonic()
+        session.done.set()
+        session.ready.set()
+
+
+def voice_session(sid: str, token: str | None = None) -> VoiceSession | None:
+    """A session by id — and by token when the caller is the WebSocket
+    proxy, which cannot send `X-Fused`."""
+    with _lock:
+        session = _voice_sessions.get(sid)
+    if session is None:
+        return None
+    if token is not None and not secrets.compare_digest(session.token, token):
+        return None
+    return session
+
+
+def _prune_voice_sessions() -> None:
+    now = time.monotonic()
+    with _lock:
+        for sid, session in list(_voice_sessions.items()):
+            if session.finished_at is not None and now - session.finished_at > VOICE_SESSION_LINGER_S:
+                del _voice_sessions[sid]
+
+
 def _await_turn(job: str, title: str, model: str = "", page: str = "") -> None:
     """Take `_TRANSCRIBE_LOCK`, saying so on `job` for as long as it takes.
 

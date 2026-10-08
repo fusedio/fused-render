@@ -145,6 +145,20 @@ VIDEO_GENERATION = "text-to-video"
 #:   how HS-0 ("everything on this tab is runnable here") keeps holding.
 DECISIONS = "text-classification"
 TEXT_TO_SPEECH = "text-to-speech"
+#: Speech in, speech out, at the same time: a full-duplex conversation with
+#: Moshi (Kyutai). The eighth capability, and the first whose shape is a
+#: SESSION rather than a request — the worker's `/generate` stays open for
+#: the whole conversation and the audio rides a loopback socket beside it
+#: (`runners/moshi_voice/worker.py`, SPEC AI-33).
+#:
+#: A plain-English name like `EMBEDDINGS`, not a Hub tag: the Moshi repos
+#: carry no `pipeline_tag` at all, so no tag could be the constant, and
+#: `audio-to-audio` (the nearest one) is worn by denoisers and source
+#: separators. Detection is by FORMAT alone — the Mimi codec file beside the
+#: weights (`formats.is_moshi_snapshot`) — which also means Hub SEARCH never
+#: lists these repos (a hit with no tag has no capability); the catalog's
+#: curated rows and cached-snapshot detection are the two ways in.
+VOICE_CHAT = "voice-to-voice"
 
 # --------------------------------------------------------------- SPEC AI-28
 #: Orthogonal TAGS, not capabilities — `tool-use` and `vision` describe a
@@ -1922,6 +1936,21 @@ _RUNNERS: tuple[Runner, ...] = (
         family_label="MLX Audio",
         note="Reads text aloud with Qwen3-TTS. 2.5 to 4.5 GB per model.",
         hub_filter_tags=("qwen3_tts",),
+        _available=_apple_silicon,
+    ),
+    # Moshi: a 7B speech-text model plus the Mimi codec, through `moshi_mlx`
+    # in its own venv (its mlx pin is older than the other runners'). Not a
+    # request/reply worker — see `VOICE_CHAT`.
+    Runner(
+        code="moshi-mlx",
+        capability=VOICE_CHAT,
+        folder=os.path.join(RUNNERS_DIR, "moshi_voice"),
+        label="Moshi (Apple Silicon)",
+        short_label="Moshi",
+        family_label="Moshi",
+        note="Talks with you live, listening while it speaks. English only. "
+             "About 6 GB of RAM for the 4-bit model.",
+        hub_filter_tags=("moshi",),
         _available=_apple_silicon,
     ),
 )

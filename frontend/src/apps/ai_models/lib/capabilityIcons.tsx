@@ -91,6 +91,14 @@ const ICONS: Record<string, ReactNode> = {
       <path d="M17.5 7a7 7 0 0 1 0 10" />
     </svg>
   ),
+  // Voice chat (Moshi): two speech bubbles facing each other, both open —
+  // a conversation, not a reading.
+  "voice-to-voice": (
+    <svg {...base}>
+      <path d="M3 6.5A1.5 1.5 0 0 1 4.5 5h7A1.5 1.5 0 0 1 13 6.5v4a1.5 1.5 0 0 1-1.5 1.5H8l-3 2.5V12H4.5A1.5 1.5 0 0 1 3 10.5z" />
+      <path d="M21 12.5a1.5 1.5 0 0 0-1.5-1.5h-7a1.5 1.5 0 0 0-1.5 1.5v4a1.5 1.5 0 0 0 1.5 1.5H16l3 2.5V18h.5a1.5 1.5 0 0 0 1.5-1.5z" />
+    </svg>
+  ),
   // Decisions (Laya): a fork — one input line splitting into two branches,
   // with a dot marking the branch that was picked.
   "text-classification": (

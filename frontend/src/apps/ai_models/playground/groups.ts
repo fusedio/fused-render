@@ -56,6 +56,11 @@ export const PLAYGROUND_GROUPS: PlaygroundGroup[] = [
     label: capabilityLabel("text-to-speech"),
     blurb: "Turn written words into speech.",
   },
+  {
+    capability: "voice-to-voice",
+    label: capabilityLabel("voice-to-voice"),
+    blurb: "Talk with a model, live.",
+  },
   // Third from last: Apple Silicon only, with no fallback anywhere else — the
   // one card here that can be genuinely unusable on the machine looking at
   // it, which is a reason to let a narrow window drop it before the three

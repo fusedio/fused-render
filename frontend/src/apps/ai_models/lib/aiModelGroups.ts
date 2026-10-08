@@ -76,6 +76,7 @@ export const CAPABILITY_ORDER = [
   "text-to-image",
   "automatic-speech-recognition",
   "text-to-speech",
+  "voice-to-voice",
   "embeddings",
   // Decisions (Laya, `text-classification`) sits after embeddings: like
   // embeddings it is a sub-second encoder call rather than a generator, and

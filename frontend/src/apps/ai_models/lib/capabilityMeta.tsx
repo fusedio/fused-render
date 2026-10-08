@@ -82,6 +82,12 @@ const CAPABILITY_META: Record<string, CapabilityMeta> = {
     searchNoun: "speech models",
     icon: capabilityIcon("text-to-speech"),
   },
+  "voice-to-voice": {
+    plain: capabilityLabel("voice-to-voice"),
+    blurb: "Have a spoken conversation. It listens and answers at the same time, out loud, on this Mac.",
+    searchNoun: "voice chat models",
+    icon: capabilityIcon("voice-to-voice"),
+  },
   embeddings: {
     plain: capabilityLabel("embeddings"),
     blurb: "Find things by meaning rather than by exact words — across notes, documents or photos.",

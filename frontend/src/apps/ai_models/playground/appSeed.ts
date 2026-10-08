@@ -127,6 +127,16 @@ function buildAppSeedDetail(model: AiCatalogModel, capability: string): string {
         modeLine +
         (extra ? " The options above are the settings I tuned in the Playground." : ""),
     );
+  } else if (capability === "voice-to-voice") {
+    const cap = readParam("cap");
+    lines.push(
+      "It holds a spoken conversation, live: the page opens the microphone and plays the " +
+        `answer as it talks. Call it with await fused.ai.voice({ model: ${JSON.stringify(model.id)}` +
+        `${cap ? `, maxSeconds: ${cap}` : ""}, onText, abortSignal }) — onText(piece) streams the ` +
+        "words it says; the promise resolves with { text, durationInSeconds } when the call ends " +
+        "(abortSignal hangs up). One call at a time; start it from a click so the browser allows " +
+        "the microphone. Apple Silicon only; check fused.ai.models.catalog() first.",
+    );
   } else if (capability === "embeddings") {
     // **The prose is SPLIT by what this model declares, and the reason is that
     // the route refuses the other half** (SPEC §40). A seeded session that was

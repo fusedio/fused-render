@@ -26,7 +26,9 @@ import type { AiCatalogCapability, AiCatalogModel } from "@platform/lib/api";
 
 /** `registry.VIDEO_GENERATION` and `registry.DECISIONS`. Left out of the
  *  step — see the header. */
-const EXCLUDED_CAPABILITIES = new Set(["text-to-video", "text-classification", "text-to-speech"]);
+const EXCLUDED_CAPABILITIES = new Set([
+  "text-to-video", "text-classification", "text-to-speech", "voice-to-voice",
+]);
 
 export interface ModelPick {
   capability: string;
@@ -72,6 +74,8 @@ function capabilityLabel(capability: string): string {
       return "Speech to text";
     case "text-to-speech":
       return "Text to speech";
+    case "voice-to-voice":
+      return "Voice chat";
     case "embeddings":
       return "Search and similarity";
     case "text-classification":

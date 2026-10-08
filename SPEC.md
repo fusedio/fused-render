@@ -10192,6 +10192,42 @@ an AI Models page that could say what was on disk but not what was *running*.
   default is `Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16` (2.50 GB); each row has
   `voiceMode`, and a downloaded row adds `voices`/`languages`. Onboarding and
   the benchmark leave it out.
+- **AI-33** **`voice-to-voice` capability and `fused.ai.voice({...})` verb: a
+  live spoken conversation with Moshi (Kyutai) through `moshi_mlx` (D1318).**
+  One LOCAL runner, `moshi-mlx` (Apple Silicon, own venv — `moshi-mlx` pins an
+  older mlx than the other runners, which the per-runner venv absorbs). The
+  capability is a plain-English constant like `embeddings`: the Moshi repos
+  carry no `pipeline_tag` and no `config.json`, so detection is by FORMAT —
+  the Mimi codec file `tokenizer-e351c8d8-checkpoint125.safetensors` beside
+  `tokenizer_spm_32k_3.model` and exactly one of `model.safetensors`,
+  `model.q4.safetensors`, `model.q8.safetensors` (`formats.is_moshi_snapshot`);
+  the weight filename is the quantization record, and the loader quantizes the
+  freshly built model to the same bits before `load_weights`. Hub SEARCH never
+  lists these repos (a hit with no tag has no capability); the catalog's two
+  curated 4-bit rows (`kyutai/moshiko-mlx-q4` default, `kyutai/moshika-mlx-q4`)
+  and cached-snapshot detection are the ways in. Not on the mirror.
+  **The shape is a SESSION, the first capability with one.** The worker's
+  streaming `/generate` is held open for the whole conversation — which is what
+  keeps `GENERATE_LOCK`, the heartbeat, `/cancel` and the idle-release timer
+  working unchanged — and its first chunk names a per-session loopback TCP
+  port and token; keepalive chunks follow every 10 s. `POST /api/ai/voice
+  {model, maxSeconds}` opens the session (`model_loading` 409 on a cold model,
+  like `/api/ai`) and answers `{sessionId, token}`; `WS /api/ai/voice/{sid}/
+  stream?token=` proxies the browser onto the worker's socket, guarded by
+  `ws_origin_ok` and the token because a handshake cannot carry `X-Fused`.
+  The page never learns a worker port. Frames both ways: `kind:u8 · len:u32 ·
+  payload`, raw Int16 PCM at 24 kHz, 1920 samples (80 ms, one Mimi frame, one
+  LM step); kinds 0 mic in, 1 Moshi out, 2 text piece out, 3 end (the
+  worker's end carries `{text, steps, seconds, finishReason, droppedFrames}`).
+  The step loop runs on the worker's generate thread with a fresh `LmGen` per
+  session; mic frames queued beyond 2 s are dropped (oldest first) so the
+  model stays at real time; silence is fed when the mic is quiet so Moshi can
+  open the conversation. `maxSeconds` 10..600, default 300, ends the call with
+  `finishReason: "length"`. `fused.ai.voice` owns the microphone and the
+  speaker (AudioWorklets, `echoCancellation: true`), must be called from a
+  click, streams `onText(piece)`, and resolves `{text, durationInSeconds}`
+  when the call ends. No Python client. Onboarding and the benchmark leave the
+  capability out.
 
 ## 41. Scheduled Messages — Sending Claude a Message Later (D289, D290, D291)
 

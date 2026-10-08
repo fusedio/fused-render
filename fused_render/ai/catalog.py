@@ -1568,6 +1568,33 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "note": "Clones a voice with the highest likeness.",
         },
     ],
+    # Moshi (Kyutai), `moshi-mlx`. Two FINE-TUNES, not one model with a
+    # voice option: Moshiko speaks with a male voice, Moshika with a female
+    # one. The 4-bit exports only (owner, 2026-10-08): the 8-bit pair is
+    # 8.55 GB each and the bf16 pair 15.8 GB, for the same conversation.
+    # Not on the mirror (owner: not required) — these download from the Hub.
+    "moshi-mlx": [
+        {
+            "id": "kyutai/moshiko-mlx-q4",
+            "recommended": True,
+            "params": "7B",
+            "quantization": "MLX 4-bit",
+            "label": "Moshiko (MLX 4-bit)",
+            "nickname": "Moshi · male voice",
+            "size_gb": 5.19,
+            "note": "Kyutai's Moshi with its male voice. English, "
+                    "answers while you are still talking.",
+        },
+        {
+            "id": "kyutai/moshika-mlx-q4",
+            "params": "7B",
+            "quantization": "MLX 4-bit",
+            "label": "Moshika (MLX 4-bit)",
+            "nickname": "Moshi · female voice",
+            "size_gb": 5.19,
+            "note": "The same model with its female voice.",
+        },
+    ],
 }
 
 #: Hardware variant -> the runner whose list it SHARES. Resolved by `for_runner`

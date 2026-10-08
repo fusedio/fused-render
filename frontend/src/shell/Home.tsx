@@ -320,6 +320,7 @@ const PLAYGROUND_FLOWS: Record<string, [PlaygroundMedia, PlaygroundMedia]> = {
   "text-to-video": ["chat", "video"],
   "automatic-speech-recognition": ["speech", "chat"],
   "text-to-speech": ["chat", "voice"],
+  "voice-to-voice": ["speech", "voice"],
   embeddings: ["chat", "meaning"],
   "text-classification": ["chat", "decision"],
 };
@@ -332,6 +333,7 @@ const PLAYGROUND_HEADS: Record<string, PlaygroundMedia> = {
   "text-to-video": "video",
   "automatic-speech-recognition": "speech",
   "text-to-speech": "voice",
+  "voice-to-voice": "speech",
   embeddings: "meaning",
   "text-classification": "decision",
 };
