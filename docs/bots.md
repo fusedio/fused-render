@@ -1421,7 +1421,10 @@ approval makes them all. `bot.manage_create_batch_check` is all or nothing:
 an empty list, more than `tools.CREATE_BATCH_CAP` (10), one entry failing
 `manage_create_check`, or two entries sharing a name refuses the whole call
 with no card. A top-level single-bot call (the pre-batch shape) still reads
-as a list of one. An entry's `logins_from` may name an EARLIER entry of the
+as a list of one. An entry's `logins_from` resolves against what exists first
+(`bot._logins_source`: an existing bot, then a browser's own name, the
+pre-batch meaning; a new bot cannot reuse a bot's name but can reuse a
+browser's). Only a name nothing carries may name an EARLIER entry of the
 same list (a later one is refused with "list X before it"): that bot does
 not exist at check time, so the check skips the lookup and `manage_create`
 puts the entry on the browser the earlier entry just got (`browsers.ensure`

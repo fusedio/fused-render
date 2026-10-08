@@ -3044,6 +3044,17 @@ def _name_taken(name, except_id=None) -> bool:
     return False
 
 
+def _logins_source(name):
+    """`logins_from` against what exists: an existing bot's name, else a browser's own
+    name (Settings > Browsers) → (display name, browser id); None when neither."""
+    bots = _registry().all()
+    src = next((b for b in bots if (b.meta.get("name") or "").lower() == name.lower()), None)
+    if src is not None:
+        return src.meta.get("name") or name, src.browser_id
+    row = next((r for r in browsers.listing(bots) if r["name"].lower() == name.lower()), None)
+    return (row["name"], row["id"]) if row is not None else None
+
+
 def manage_create_check(bot, args):
     """Validate a `bot_create` call before anything is written: (clean fields, "") or
     (None, "error: …"). Shared by the approval preview and the run, so a refused call
@@ -3073,15 +3084,10 @@ def manage_create_check(bot, args):
         return None, f"error: a bot takes {', '.join(CREATE_FIELDS)} and preset; {', '.join(extra)} stay the user's own"
     logins_from, browser = str(args.get("logins_from") or "").strip(), ""
     if logins_from:
-        bots = _registry().all()
-        src = next((b for b in bots if (b.meta.get("name") or "").lower() == logins_from.lower()), None)
-        if src is not None:
-            logins_from, browser = src.meta.get("name") or logins_from, src.browser_id
-        else:  # a browser's own name (Settings > Browsers)
-            row = next((r for r in browsers.listing(bots) if r["name"].lower() == logins_from.lower()), None)
-            if row is None:
-                return None, f"error: no bot or browser named {logins_from!r} to share logins with"
-            logins_from, browser = row["name"], row["id"]
+        hit = _logins_source(logins_from)
+        if hit is None:
+            return None, f"error: no bot or browser named {logins_from!r} to share logins with"
+        logins_from, browser = hit
     return {"name": name, "instructions": str(args.get("instructions") or "").strip(), "model": model or DEFAULT_MODEL,
             "effort": effort or DEFAULT_EFFORT, "preset": preset, "face": face, "logins_from": logins_from, "browser": browser}, ""
 
@@ -3110,11 +3116,14 @@ def manage_create_batch_check(bot, args):
         if not isinstance(item, dict):
             return None, "error: each entry in `bots` is an object with at least a `name`"
         who = " ".join(str(item.get("name") or "").split())
-        # `logins_from` naming another entry of this call: that bot does not exist yet, so it is
-        # resolved at create time (manage_create) onto the browser the earlier entry gets.
+        # `logins_from` resolves against what exists first (an existing bot or browser keeps the
+        # pre-batch meaning; a new bot can never share an existing bot's name, but a browser can).
+        # Only a name nothing on this Mac carries falls to an EARLIER entry of this call: that bot
+        # does not exist yet, so manage_create puts this one on the browser the earlier entry gets.
         src = " ".join(str(item.get("logins_from") or "").split())
-        sibling = seen.get(src.lower()) if src else None
-        if src and sibling is None and src.lower() in names and src.lower() != who.lower():
+        new_src = bool(src) and _logins_source(src) is None
+        sibling = seen.get(src.lower()) if new_src else None
+        if new_src and sibling is None and src.lower() in names and src.lower() != who.lower():
             return None, f"error: bot {who!r} shares {src!r}'s logins, so list {src!r} before it in `bots`"
         f, err = manage_create_check(bot, {k: v for k, v in item.items() if k != "logins_from"} if sibling else item)
         if err:
