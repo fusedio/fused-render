@@ -25,6 +25,7 @@ import {
 } from "lucide-react";
 import { createPortal } from "react-dom";
 import { useBookmarksVersion } from "@platform/lib/hooks";
+import { isTopmost, popModal, pushModal } from "@platform/ui/modal/esc-stack";
 import { isFolder, loadBookmarks, type BookmarkFolder, type BookmarkItem } from "@platform/lib/bookmarks";
 import { FormatPreview } from "./FormatPreview";
 import { FormatPicks, SizeChips, SortChips, stageZoom } from "./Pickers";
@@ -196,9 +197,17 @@ export function AddWidgetPanel({
     return () => opener?.focus?.();
   }, []);
 
+  // Join the shared modal Esc stack so a modal opened over this sheet gets the
+  // press first instead of both closing at once.
+  const escToken = useRef({});
+  useEffect(() => {
+    const token = escToken.current;
+    pushModal(token);
+    return () => popModal(token);
+  }, []);
   useEffect(() => {
     const key = (e: globalThis.KeyboardEvent) => {
-      if (e.key !== "Escape") return;
+      if (e.key !== "Escape" || !isTopmost(escToken.current)) return;
       e.stopPropagation();
       onClose();
     };
