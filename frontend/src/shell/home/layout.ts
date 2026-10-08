@@ -553,11 +553,14 @@ export function sortByPosition(widgets: Widget[]): Widget[] {
   return widgets.slice().sort((a, b) => a.y - b.y || a.x - b.x);
 }
 
+/** Calls `fn` with the "x,y" key of every cell a rect covers. */
+function eachCell(r: Rect, fn: (key: string) => void): void {
+  for (let j = 0; j < r.rows; j++) for (let i = 0; i < r.cols; i++) fn(`${r.x + i},${r.y + j}`);
+}
+
 function cellsOf(rects: Rect[]): Set<string> {
   const taken = new Set<string>();
-  for (const r of rects) {
-    for (let j = 0; j < r.rows; j++) for (let i = 0; i < r.cols; i++) taken.add(`${r.x + i},${r.y + j}`);
-  }
+  for (const r of rects) eachCell(r, (k) => taken.add(k));
   return taken;
 }
 
@@ -566,8 +569,7 @@ export function occupancy(widgets: Widget[], except?: string): Map<string, strin
   const m = new Map<string, string>();
   for (const w of widgets) {
     if (w.id === except) continue;
-    const r = rectOf(w);
-    for (let j = 0; j < r.rows; j++) for (let i = 0; i < r.cols; i++) m.set(`${r.x + i},${r.y + j}`, w.id);
+    eachCell(rectOf(w), (k) => m.set(k, w.id));
   }
   return m;
 }
