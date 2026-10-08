@@ -1652,16 +1652,17 @@ class Bot:
         with self.lock:
             if not manual and not self._spacing_ok(r):
                 return
-            busy = self.thread is not None and self.thread.is_alive()
+            # While the user holds the browser the bot stays stopped: the slot is skipped like a busy one.
+            held = bool(self.meta.get("control"))
+            busy = held or (self.thread is not None and self.thread.is_alive())
             prev_last = r.get("last")
             r["last"] = time.time()
             if busy:
-                r["last_result"] = "skipped: bot was busy"
-                self.emit("system", f"Routine \"{r['task'][:60]}\" skipped: bot busy")
+                r["last_result"] = "skipped: you had the browser" if held else "skipped: bot was busy"
+                self.emit("system", f"Routine \"{r['task'][:60]}\" skipped: {'you had the browser' if held else 'bot busy'}")
             else:
                 r["last_result"] = "started"
                 self.emit("system", f"Routine {'run now' if manual else 'fired'}: {r['task']}")
-                self._control_off()
             r["next"] = self._next_run(r, time.time()) if r.get("enabled") else None
             if r["kind"] == "once" and not busy:
                 r["enabled"] = False
@@ -1778,6 +1779,17 @@ class Bot:
                 self.emit("system", "Texted while busy on a chat task; not applied.", via=None)
                 self.emit("error", "Busy with a task from the Mac; text again when it's done.", via=dict(via))
                 return
+        with self.lock:
+            held = bool(self.meta.get("control"))
+        if held:
+            # The user holds the browser: the bot is stopped and takes no instructions until it gets the page
+            # back (Done, hand back). The web send is refused (400 → the page's banner); a text gets the same answer.
+            msg = (f"You have {self.meta.get('name') or 'this bot'}'s browser. Hand it back (Done, hand back) "
+                   "before sending new instructions.")
+            if chan.is_web(via):
+                raise ValueError(msg)
+            self.emit("error", msg, via=dict(via))
+            return
         quoted = self.event_by_seq(int(reply_to)) if reply_to else None
         shown = text  # what the user typed; the transcript and status show this, the model reads the quoted form
         stamp = {} if chan.is_web(via) else {"via": via}
@@ -1790,8 +1802,6 @@ class Bot:
             uev = self.emit("user", text, **stamp)
         with self.lock:
             running = self.thread is not None and self.thread.is_alive()
-            if not running and self.meta.get("control"):
-                self._control_off()  # a fresh task means the bot drives again
             pending = self.meta.get("pending_offer")
         texted = via.get("kind") == "imessage"
         # A yes or no to an app offer that outlived its task (see _offer) is settled here, without a model call.
@@ -2472,7 +2482,7 @@ class Bot:
             elif q:
                 return False
             if t.meta.get("control"):
-                t._control_off()  # a fresh task means the bot drives again (as receive() does)
+                return False  # the user holds its browser: it stays queued until the hand back (as receive() refuses)
             if t.deleted:
                 return False
             if not t.start_task(hd["task"], origin=chan.HANDOFF_KIND, via=hv):

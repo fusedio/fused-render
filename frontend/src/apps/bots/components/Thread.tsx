@@ -17,6 +17,7 @@ import { botsRoot } from "../lib/root";
 import { chosenOption, firstNewIndex, isHandoff, isNoise, liveCards, optionKey, rowKeys, searchCountText, searchHit, sessionBreak } from "../lib/thread";
 import { act, clearScrollSeq, cur, eventsOf, getState, jumpTo, markSeen, openDialog, select, setNewCount, setScrollToEnd, showBanner, unviewed, useBots, viewedSet } from "../state/store";
 import { END_GAP, clearSearchHighlight, gapOf, evBox, highlightSearch, pinToEnd, restoreAnchor, topVisible, updateToBottom, type Anchor } from "./threadDom";
+import { HandBackRow, HandoverNote } from "./HandoverCard";
 import { SetupLines } from "./SetupLines";
 
 const EMPTY: BotEvent[] = [];
@@ -54,6 +55,8 @@ interface RowProps {
   /** The question a hand back settled (Bot.handback): how long you drove, and the step still of the page as you left it. */
   hbSecs?: number;
   hbShot?: string | null;
+  /** The live hand-over question while you hold the browser (Bot.control): the bot, for the hand-back row it ends with. */
+  hbBot?: Bot;
   /** Answered question: your answer, normalized (optionKey); null otherwise. */
   chosen: string | null;
   /** The apps root (appFromText needs it; "" until loaded). */
@@ -165,7 +168,7 @@ function buildOpen(evs: BotEvent[], e: BotEvent): boolean {
 /** Channel names in chips and "Texted" lines; a task Super Bot handed off reads "from Super Bot" (docs §11). */
 const chanLabel = (k: string) => (k === "imessage" ? "iMessage" : k === "handoff" ? "Super Bot" : k);
 
-function body({ e, botId, reaction, live, chosen, appsRoot, onBeside, hstate, targetLive, linkLive, hbSecs, hbShot, bopen }: RowProps): JSX.Element {
+function body({ e, botId, reaction, live, chosen, appsRoot, onBeside, hstate, targetLive, linkLive, hbSecs, hbShot, hbBot, bopen }: RowProps): JSX.Element {
   const title = fmtWhen(e.ts);
   if (e.handoff && isHandoff(e)) return <HandoffCard e={e} state={hstate || e.handoff.state} targetLive={!!targetLive} />;
   if (e.build && e.source === "build") return <BuildCard e={e} open={!!bopen} />;
@@ -235,6 +238,7 @@ function body({ e, botId, reaction, live, chosen, appsRoot, onBeside, hstate, ta
             ))}
           </div>
         ) : null}
+        {hbBot ? <HandBackRow b={hbBot} /> : null}
       </div>
     );
   }
@@ -512,6 +516,10 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
     const hds = new Map((b.handoffs || []).map((h) => [h.id, h.state]));
     const botIds = new Set(S.bots.map((x) => x.id));
     const hb = b.handback || null;
+    // While you hold the browser, the hand-back row ends the bot's live hand-over question; failing that (a take-over of
+    // yours, or the question is not loaded), a note at the end of the thread carries it.
+    const hoSeq = b.control && b.control_by === "bot"
+      && evs.some((e) => e.seq === b.waiting_on && e.role === "question" && !e.offer && !(e.multi && e.options?.length)) ? b.waiting_on : null;
     content = evs.map((e, i) => {
       const ho = e.handoff && isHandoff(e) ? e.handoff : null;
       const card = !ho && (e.role === "approval" || e.role === "question");
@@ -522,9 +530,11 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
           hstate={ho ? (e.role === "system" ? hds.get(ho.id) : undefined) || ho.state : undefined} targetLive={ho ? botIds.has(ho.target) : undefined}
           linkLive={e.link ? botIds.has(e.link.bot) : undefined} bopen={e.build ? buildOpen(evs, e) : undefined}
           hbSecs={hb && e.seq === hb.seq && e.role === "question" ? hb.secs : undefined}
-          hbShot={hb && e.seq === hb.seq && e.role === "question" ? hb.shot : undefined} />
+          hbShot={hb && e.seq === hb.seq && e.role === "question" ? hb.shot : undefined}
+          hbBot={hoSeq != null && e.seq === hoSeq ? b : undefined} />
       );
     });
+    if (b.control && hoSeq == null) content.push(<HandoverNote key="handover" b={b} />);
   }
 
   return (
