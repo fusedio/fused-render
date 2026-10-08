@@ -11,7 +11,7 @@ import { flushSync } from "react-dom";
 import { askConfirm } from "../dialogs/ask";
 import { act, cur, getState, poll, select, setFast, showBanner, showToast, subscribe as subscribeStore } from "../state/store";
 import { api, type Bot } from "./api";
-import { BTN, CAST, CDP_MODS, furlTarget, keyParams, nextDown, showUrl, toPageXY, type FrameMeta, type LastDown } from "./live";
+import { BTN, CAST, CDP_MODS, furlTarget, keyAction, nextDown, showUrl, toPageXY, type FrameMeta, type LastDown } from "./live";
 
 const link: { ws: WebSocket | null; url: string | null; id: number; tabs: Set<string> | null; meta: FrameMeta | null } =
   { ws: null, url: null, id: 0, tabs: null, meta: null };  // meta: the last frame's viewport metadata from Chrome
@@ -109,9 +109,10 @@ export function mirrorThumb(u: string): void {
 // ------------------------------------------------------------------ open / take over / hand back ----
 let switching = false, askedTakeover = false;
 
-/** An empty page has nothing to type into, so focus lands in the URL bar instead of on the stage. */
+/** Keyboard focus while you drive: #fkeys, the hidden textarea in the stage (installLive forwards from it). An empty page has
+ *  nothing to type into, so focus lands in the URL bar instead. */
 export function focusCtl(): void {
-  if (showUrl(cur()?.browser?.url)) $("stage")?.focus();
+  if (showUrl(cur()?.browser?.url)) ($("fkeys") || $("stage"))?.focus();
   else { const f = $<HTMLInputElement>("furl"); if (f) { f.value = ""; f.focus(); } }
 }
 
@@ -214,7 +215,7 @@ export function installLive(stage: HTMLElement): () => void {
   };
   const onDown = (e: MouseEvent) => {
     if (!inCtl()) return; const p = toPage(e); if (!p) return;
-    e.preventDefault(); stage.focus();
+    e.preventDefault(); ($("fkeys") || stage).focus();
     lastDown = nextDown(lastDown, performance.now(), p);
     mouse("mousePressed", p, e, { button: BTN[e.button] || "left", clickCount: lastDown.n });
   };
@@ -240,18 +241,30 @@ export function installLive(stage: HTMLElement): () => void {
     cdp("Input.insertText", { text });
   };
   const onWheel = (e: WheelEvent) => { if (!inCtl()) return; const p = toPage(e); if (!p) return; e.preventDefault(); mouse("mouseWheel", p, e, { deltaX: e.deltaX, deltaY: e.deltaY }); };
+  // Keys arrive through #fkeys, a hidden textarea inside the stage: only an editable element gets composition events, so
+  // dead keys (⌥e e → é) and IMEs (日本) compose there and land in the page as one Input.insertText on compositionend. Plain
+  // keys are forwarded as CDP key events (keyAction) and prevented from typing into the textarea; it is emptied after each.
+  const keys = $<HTMLTextAreaElement>("fkeys");
   const keyEv = (e: KeyboardEvent) => {
     if (!inFull() || document.activeElement === $("furl")) return;
     const k = e.key.toLowerCase();
     if (e.metaKey && ["w", "t", "q", "n", "l"].includes(k)) return;
     if (!inCtl()) return;
     if ((e.metaKey || e.ctrlKey) && k === "v") return;  // the paste event carries the text
+    if (e.isComposing || e.keyCode === 229 || e.key === "Dead" || e.key === "Process") return;  // compositionend forwards it
     if (e.type === "keydown" && ((e.altKey && e.key === "ArrowLeft") || (e.metaKey && e.key === "["))) { e.preventDefault(); nav("back"); return; }
     if (e.type === "keydown" && ((e.altKey && e.key === "ArrowRight") || (e.metaKey && e.key === "]"))) { e.preventDefault(); nav("forward"); return; }
     if (e.type === "keydown" && e.metaKey && k === "r") { e.preventDefault(); nav("reload"); return; }
     e.preventDefault();
-    cdp("Input.dispatchKeyEvent", keyParams(e) as unknown as Record<string, unknown>);
+    const a = keyAction(e);
+    if (a?.kind === "key") cdp("Input.dispatchKeyEvent", a.params as unknown as Record<string, unknown>);
+    else if (a?.kind === "insert") cdp("Input.insertText", { text: a.text });
+    if (keys) keys.value = "";
     if (e.type === "keydown" && e.key === "Enter") setTimeout(poll, 700);
+  };
+  const onCompose = (e: CompositionEvent) => {
+    if (inCtl() && e.data) cdp("Input.insertText", { text: e.data });
+    if (keys) keys.value = "";
   };
   const onDocKey = (e: KeyboardEvent) => { if (e.key === "Escape" && !inCtl() && inFull()) void handBack(true); };
 
@@ -264,6 +277,7 @@ export function installLive(stage: HTMLElement): () => void {
   stage.addEventListener("wheel", onWheel, { passive: false });
   stage.addEventListener("keydown", keyEv);
   stage.addEventListener("keyup", keyEv);
+  keys?.addEventListener("compositionend", onCompose);
   document.addEventListener("keydown", onDocKey);
 
   // OpenBot ran renderFullMirrors() from every render(): follow popups and keep the socket on the driven tab after each poll.
@@ -287,6 +301,7 @@ export function installLive(stage: HTMLElement): () => void {
     stage.removeEventListener("wheel", onWheel);
     stage.removeEventListener("keydown", keyEv);
     stage.removeEventListener("keyup", keyEv);
+    keys?.removeEventListener("compositionend", onCompose);
     document.removeEventListener("keydown", onDocKey);
     linkClose();
   };

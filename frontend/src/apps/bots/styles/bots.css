@@ -548,6 +548,10 @@ div.bots-page.sideapp .preview :is(.shotwrap, .toast, .cap, .info) { display: no
 .bots-page #full .stage { flex: 1; overflow: auto; background: #000; display: flex; align-items: flex-start; justify-content: center; }
 .bots-page #full .stage img { max-width: 100%; display: block; }
 .bots-page #full .stage:focus, .bots-page #full .stage:focus-visible { outline: none; }
+/* #fkeys: the keyboard target while you drive (cdp.ts). Off-screen but focusable, 1x1 so iOS/macOS still attach an IME to it;
+   never visible, never scrolls the stage. */
+.bots-page #full .stage #fkeys { position: absolute; left: 0; top: 0; width: 1px; height: 1px; padding: 0; border: 0; margin: 0; opacity: 0; resize: none; overflow: hidden; outline: none; pointer-events: none; }
+.bots-page #full .stage { position: relative; }
 .bots-page #full:not(.ctl) header .navctl { opacity: .45; pointer-events: none; }
 /* Chrome-style: tab strip sits on the dark band above the toolbar; the active tab shares the toolbar color so they fuse. */
 .bots-page #full .topbar { display: flex; align-items: flex-end; background: var(--bg); padding-right: 8px; }

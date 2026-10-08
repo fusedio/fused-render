@@ -110,6 +110,9 @@ export function LiveView() {
       </header>
       <div className="stage" id="stage" tabIndex={0} ref={stageRef}>
         <img id="fshot" alt="" draggable={false} />
+        {/* Keyboard target while you drive (lib/cdp.ts installLive): a hidden textarea, because only an editable element composes
+            dead keys and IME input; plain keys are forwarded and never land in it. */}
+        <textarea id="fkeys" aria-label="Type into the bot's page" autoComplete="off" autoCapitalize="off" autoCorrect="off" spellCheck={false} tabIndex={-1} />
         <Toast id="ftoast" />
       </div>
     </div>

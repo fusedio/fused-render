@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
-  furlTarget, imessageStatus, isUrl, keyParams, modelChips, nextDown, rankUsage, routineLabel, showUrl, toPageXY, weighted, type KeyLike,
+  furlTarget, imessageStatus, isUrl, keyAction, keyParams, modelChips, nextDown, rankUsage, routineLabel, showUrl, toPageXY, weighted, type KeyLike,
 } from "./live";
 
 const rect = { left: 100, top: 50, width: 640, height: 400 };
@@ -36,18 +36,18 @@ describe("nextDown", () => {
   });
 });
 
-const k = (key: string, mods: Partial<KeyLike> = {}, type = "keydown"): KeyLike =>
-  ({ type, key, code: "", altKey: false, ctrlKey: false, metaKey: false, shiftKey: false, ...mods });
+const k = (key: string, mods: Partial<KeyLike> = {}, type = "keydown", code = ""): KeyLike =>
+  ({ type, key, code, altKey: false, ctrlKey: false, metaKey: false, shiftKey: false, ...mods });
 
 describe("keyParams", () => {
   test("printable keys carry text and a virtual key code", () => {
-    const p = keyParams(k("a"));
+    const p = keyParams(k("a"))!;
     expect(p).toMatchObject({ type: "keyDown", key: "a", text: "a", unmodifiedText: "a", windowsVirtualKeyCode: 65, modifiers: 0 });
     expect(p.commands).toBeUndefined();
     expect(keyParams(k("A", { shiftKey: true }))).toMatchObject({ text: "A", modifiers: 8 });
   });
   test("keyup carries no text", () => {
-    const p = keyParams(k("a", {}, "keyup"));
+    const p = keyParams(k("a", {}, "keyup"))!;
     expect(p.type).toBe("keyUp");
     expect(p.text).toBeUndefined();
   });
@@ -55,14 +55,40 @@ describe("keyParams", () => {
     expect(keyParams(k("Enter"))).toMatchObject({ text: "\r", windowsVirtualKeyCode: 13 });
   });
   test("editing commands", () => {
-    expect(keyParams(k("a", { metaKey: true })).commands).toEqual(["SelectAll"]);
-    expect(keyParams(k("a", { metaKey: true })).text).toBeUndefined();
-    expect(keyParams(k("z", { metaKey: true })).commands).toEqual(["Undo"]);
-    expect(keyParams(k("z", { metaKey: true, shiftKey: true })).commands).toEqual(["Redo"]);
-    expect(keyParams(k("c", { ctrlKey: true })).commands).toEqual(["Copy"]);
-    expect(keyParams(k("ArrowLeft", { metaKey: true })).commands).toEqual(["MoveToBeginningOfLine"]);
-    expect(keyParams(k("Backspace", { metaKey: true })).commands).toEqual(["DeleteToBeginningOfLine"]);
-    expect(keyParams(k("ArrowLeft", { ctrlKey: true })).commands).toBeUndefined();
+    expect(keyParams(k("a", { metaKey: true }))!.commands).toEqual(["SelectAll"]);
+    expect(keyParams(k("a", { metaKey: true }))!.text).toBeUndefined();
+    expect(keyParams(k("a", { metaKey: true }))!.type).toBe("rawKeyDown");
+    expect(keyParams(k("z", { metaKey: true }))!.commands).toEqual(["Undo"]);
+    expect(keyParams(k("z", { metaKey: true, shiftKey: true }))!.commands).toEqual(["Redo"]);
+    expect(keyParams(k("c", { ctrlKey: true }))!.commands).toEqual(["Copy"]);
+    expect(keyParams(k("ArrowLeft", { metaKey: true }))!.commands).toEqual(["MoveToBeginningOfLine"]);
+    expect(keyParams(k("ArrowLeft", { metaKey: true, shiftKey: true }))!.commands).toEqual(["MoveToBeginningOfLineAndModifySelection"]);
+    expect(keyParams(k("ArrowLeft", { altKey: true }))!.commands).toEqual(["MoveWordLeft"]);
+    expect(keyParams(k("Backspace", { metaKey: true }))!.commands).toEqual(["DeleteToBeginningOfLine"]);
+    expect(keyParams(k("Home"))!.commands).toEqual(["MoveToBeginningOfLine"]);
+  });
+  test("punctuation gets the US-layout virtual key, never the character code", () => {
+    // ord(".") is 46 = VK_DELETE: the old forwarder deleted the next character instead of typing a dot.
+    expect(keyParams(k(".", {}, "keydown", "Period"))).toMatchObject({ text: ".", windowsVirtualKeyCode: 190 });
+    expect(keyParams(k("'", {}, "keydown", "Quote"))).toMatchObject({ text: "'", windowsVirtualKeyCode: 222 });
+    expect(keyParams(k(">", { shiftKey: true }, "keydown", "Period"))).toMatchObject({ text: ">", windowsVirtualKeyCode: 190 });
+    expect(keyParams(k("-"))).toMatchObject({ text: "-", windowsVirtualKeyCode: 189 });  // code missing: found by character
+    expect(keyParams(k("1"))).toMatchObject({ text: "1", windowsVirtualKeyCode: 49 });
+  });
+  test("the viewer's own keyCode wins for named keys", () => {
+    expect(keyParams(k("Enter", { keyCode: 13 }))!.windowsVirtualKeyCode).toBe(13);
+    expect(keyParams(k("F5", { keyCode: 116 }))!.windowsVirtualKeyCode).toBe(116);
+  });
+  test("characters outside the US table are inserted as text, their keyup dropped", () => {
+    expect(keyAction(k("é", {}, "keydown", "KeyE"))).toEqual({ kind: "insert", text: "é" });
+    expect(keyAction(k("日", {}, "keydown", ""))).toEqual({ kind: "insert", text: "日" });
+    expect(keyAction(k("🙂", {}, "keydown", ""))).toEqual({ kind: "insert", text: "🙂" });
+    expect(keyAction(k("é", {}, "keyup", "KeyE"))).toBeNull();
+  });
+  test("never sets nativeVirtualKeyCode (it hides the tab on macOS)", () => {
+    for (const e of [k("a"), k("Shift", { shiftKey: true, keyCode: 16 }), k(".", {}, "keydown", "Period")]) {
+      expect("nativeVirtualKeyCode" in (keyParams(e) as object)).toBe(false);
+    }
   });
   test("autoRepeat follows the event", () => {
     expect(keyParams(k("ArrowDown", { repeat: true }))).toMatchObject({ autoRepeat: true, windowsVirtualKeyCode: 40 });

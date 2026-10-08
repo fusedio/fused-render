@@ -76,10 +76,30 @@ MAX_ELEMENTS = 160
 # AX candidates resolved per frame at most: bounds the snapshot's cost on
 # pages with thousands of links (the DOM scan still covers the viewport).
 MAX_AX_CANDIDATES = 2000
-# Windows virtual-key codes for the non-printable keys the bot's press action sends.
-_VK = {"Enter": 13, "Backspace": 8, "Tab": 9, "Escape": 27, " ": 32, "ArrowLeft": 37, "ArrowUp": 38,
-       "ArrowRight": 39, "ArrowDown": 40, "Delete": 46, "Home": 36, "End": 35, "PageUp": 33, "PageDown": 34,
-       "Shift": 16, "Control": 17, "Alt": 18, "Meta": 91, "CapsLock": 20}
+# US-layout key table for Input.dispatchKeyEvent (Puppeteer's USKeyboardLayout): code -> (Windows virtual-key
+# code, unshifted char, shifted char). The VK must come from this table, never from ord(char): Blink maps the VK to
+# an editing command BEFORE it reads `text`, and ord(".") is 46 = VK_DELETE (the "." deleted the next character
+# instead of typing), ord("'") is 39 = VK_RIGHT, ord("-") 45 = VK_INSERT. Verified against Chrome 155.
+_KEYS = {f"Digit{i}": (48 + i, str(i), s) for i, s in enumerate(")!@#$%^&*(")}
+_KEYS.update({f"Key{c}": (ord(c), c.lower(), c) for c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"})
+_KEYS.update({"Minus": (189, "-", "_"), "Equal": (187, "=", "+"), "BracketLeft": (219, "[", "{"), "BracketRight": (221, "]", "}"),
+              "Backslash": (220, "\\", "|"), "Semicolon": (186, ";", ":"), "Quote": (222, "'", '"'), "Backquote": (192, "`", "~"),
+              "Comma": (188, ",", "<"), "Period": (190, ".", ">"), "Slash": (191, "/", "?"), "Space": (32, " ", " ")})
+_CHAR_CODE = {}
+for _c, (_vk, _a, _b) in _KEYS.items():
+    _CHAR_CODE.setdefault(_a, _c)
+    _CHAR_CODE.setdefault(_b, _c)
+# Non-printable keys: Windows virtual-key codes.
+_NAMED_VK = {"Enter": 13, "Tab": 9, "Backspace": 8, "Delete": 46, "Escape": 27, "ArrowLeft": 37, "ArrowUp": 38, "ArrowRight": 39,
+             "ArrowDown": 40, "Home": 36, "End": 35, "PageUp": 33, "PageDown": 34, "Insert": 45, "Shift": 16, "Control": 17,
+             "Alt": 18, "Meta": 91, "CapsLock": 20}
+# macOS editing commands (Playwright's macEditingCommands). CDP key events bypass Cocoa key bindings, so without
+# `commands` Cmd+A/C/V/X/Z and Cmd/Option+arrow do nothing in a Chrome on macOS.
+_CMD_LETTER = {"a": "SelectAll", "c": "Copy", "x": "Cut", "v": "Paste", "z": "Undo"}
+_CMD_ARROW = {"ArrowLeft": "MoveToBeginningOfLine", "ArrowRight": "MoveToEndOfLine",
+              "ArrowUp": "MoveToBeginningOfDocument", "ArrowDown": "MoveToEndOfDocument"}
+_WORD_ARROW = {"ArrowLeft": "MoveWordLeft", "ArrowRight": "MoveWordRight",
+               "ArrowUp": "MoveToBeginningOfParagraph", "ArrowDown": "MoveToEndOfParagraph"}
 # URL schemes `goto` passes through as-is (OpenBot prefixed https:// to any
 # url without "://", which broke data:/about: urls).
 _PASS_SCHEMES = ("about:", "data:", "file:", "blob:", "chrome:", "javascript:")
@@ -149,24 +169,50 @@ def _http(port, path, method="GET"):
         return json.loads(r.read().decode() or "null")
 
 
-def _key_params(key, code, mods, down):
-    """Input.dispatchKeyEvent params for one key stroke (CDP modifiers:
-    Alt=1 Ctrl=2 Meta=4 Shift=8). Printable keys carry text on keyDown unless
-    alt/ctrl/meta is held; ctrl/cmd letters also map to editing commands."""
-    params = {"type": "keyDown" if down else "keyUp", "key": key, "code": code, "modifiers": mods}
-    vk = _VK.get(key) or (ord(key.upper()) if len(key) == 1 else 0)
-    if vk:
-        params["windowsVirtualKeyCode"] = vk
-    if down:
-        if len(key) == 1 and not (mods & ~8):
-            params["text"] = params["unmodifiedText"] = key
-        elif key == "Enter":
-            params["text"] = params["unmodifiedText"] = "\r"
-        if mods & 6 and len(key) == 1:
-            cmd = {"a": "SelectAll", "c": "Copy", "v": "Paste", "x": "Cut", "z": "Undo"}.get(key.lower())
-            if cmd:
-                params["commands"] = [cmd]
-    return params
+def key_events(key, code="", mods=0):
+    """One key stroke as Input.dispatchKeyEvent params: `(down, up)`, or
+    `("insert", text)` for a printable character the US table does not know
+    (é, 日, emoji, a non-US layout): those go through Input.insertText, where no
+    virtual key has to be guessed. CDP modifiers: Alt=1 Ctrl=2 Meta=4 Shift=8.
+    Same logic as the live view's `keyParams` (frontend lib/live.ts). Never sets
+    `nativeVirtualKeyCode`: on macOS that flips the tab hidden and the screencast stops."""
+    shift, ctrl, alt, meta = bool(mods & 8), bool(mods & 2), bool(mods & 1), bool(mods & 4)
+    sel = "AndModifySelection" if shift else ""
+
+    def mk(vk, text=None, commands=()):
+        base = {"key": key, "code": code, "modifiers": mods}
+        if vk:
+            base["windowsVirtualKeyCode"] = vk
+        down = dict(base, type="keyDown" if text else "rawKeyDown")
+        if text:
+            down["text"] = down["unmodifiedText"] = text
+        if commands:
+            down["commands"] = list(commands)
+        return down, dict(base, type="keyUp")
+
+    if len(key) > 1 and key.isascii():  # a named key (Enter, ArrowLeft, F5); a non-ASCII string is text to insert
+        cmds = ()
+        if key in _CMD_ARROW and meta:
+            cmds = (_CMD_ARROW[key] + sel,)
+        elif key in _WORD_ARROW and alt:
+            cmds = (_WORD_ARROW[key] + sel,)
+        elif key == "Backspace" and meta:
+            cmds = ("DeleteToBeginningOfLine",)
+        elif key == "Backspace" and alt:
+            cmds = ("DeleteWordBackward",)
+        elif key == "Delete" and alt:
+            cmds = ("DeleteWordForward",)
+        elif key in ("Home", "End"):
+            cmds = (("MoveToBeginningOfLine" if key == "Home" else "MoveToEndOfLine") + sel,)
+        return mk(_NAMED_VK.get(key, 0), "\r" if key == "Enter" else None, cmds)
+    c = code if code in _KEYS else _CHAR_CODE.get(key, "")
+    if (ctrl or meta) and not (ctrl and alt):  # a chord: no text, a command where macOS needs one
+        cmd = _CMD_LETTER.get(key.lower())
+        cmds = (("Redo" if key.lower() == "z" and shift else cmd),) if cmd and not alt else ()
+        return mk(_KEYS[c][0] if c else 0, None, cmds)
+    if c and key in _KEYS[c][1:]:
+        return mk(_KEYS[c][0], key)
+    return "insert", key
 
 
 def _sips(src, dst, *args):
@@ -1938,12 +1984,16 @@ class Browser:
                    "pageup": "PageUp", "pagedown": "PageDown", "backspace": "Backspace", "tab": "Tab", "enter": "Enter",
                    "escape": "Escape", "home": "Home", "end": "End", "delete": "Delete"}
         k = aliases.get(k.lower(), k) if len(k) > 1 else k
-        code = {"Enter": "Enter", " ": "Space", "Escape": "Escape", "Tab": "Tab", "Backspace": "Backspace"}.get(k, k if len(k) > 1 else ("Key" + k.upper() if k.isalpha() else "Digit" + k if k.isdigit() else ""))
+        code = k if len(k) > 1 else _CHAR_CODE.get(k, "")
+        events = key_events(k, code, mods)
         def f(ws):
             if ref or text or backend is not None:
                 self._on_element(ws, _FOCUS_FN, (), "", ref, text, x, y, backend)
-            for down in (True, False):
-                ws.call("Input.dispatchKeyEvent", **_key_params(k, code, mods, down))
+            if events[0] == "insert":
+                ws.call("Input.insertText", text=events[1])
+            else:
+                for params in events:
+                    ws.call("Input.dispatchKeyEvent", **params)
             ws.wait_event("Page.loadEventFired", 3 if k == "Enter" else 0.5)
             time.sleep(0.4)
         return self._run(f)[1]
