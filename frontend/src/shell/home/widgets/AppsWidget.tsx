@@ -1,9 +1,10 @@
+import { useState } from "react";
 import { appIconUrl } from "@platform/lib/api";
 import { isRasterIconUrl, useThemedIconSrc } from "@platform/lib/app-icon-src";
 import { hrefFor, isBrowserHandledClick, openApp } from "@platform/lib/appEntry";
 import { AppPreviewCard } from "@platform/ui/AppPreviewCard";
-import { AppStar } from "@platform/ui/AppStar";
 import type { AppInfo } from "@platform/lib/api";
+import { fallbackTile } from "../../../dock/lib";
 import { CardStrip } from "../CardStrip";
 import { SkeletonRow } from "../skeleton";
 import { MAX_ROW, softNavigate, useStripCount } from "../strip";
@@ -11,13 +12,22 @@ import { useHomeApps } from "../data";
 import { CELL, dims, itemCapacity, type Widget } from "../layout";
 import { EmptyLine, ErrorLine, ListSkeleton } from "./bits";
 
-/** An app's icon in the shared tile square (the brand's AppStar when it has none — the same mark the Apps page's cards and the sidebar fall back to). */
+/** An app's icon as the dock draws it: a squircle tile, the icon cover-filling it. No icon (or one that fails to load) gets the dock's solid palette tile with the app's first letter. */
 export function AppGlyph({ app }: { app: AppInfo }) {
   const iconUrl = app.icon ? appIconUrl(app.icon, app.icon_mtime) : null;
   const src = useThemedIconSrc(iconUrl);
+  const [failed, setFailed] = useState<string | null>(null);
+  if (!src || failed === src) {
+    const { color, letter } = fallbackTile(app.title || app.name);
+    return (
+      <span className="hw-tile-icon is-fallback" style={{ background: color }} aria-hidden="true">
+        <span className="hw-tile-mono">{letter}</span>
+      </span>
+    );
+  }
   return (
     <span className="hw-tile-icon" aria-hidden="true">
-      {src ? <img src={src} alt="" className={isRasterIconUrl(iconUrl) ? "is-raster" : undefined} /> : <AppStar className="hw-tile-star" />}
+      <img src={src} alt="" className={isRasterIconUrl(iconUrl) ? "is-raster" : undefined} onError={() => setFailed(src)} />
     </span>
   );
 }

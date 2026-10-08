@@ -992,32 +992,51 @@ a.hw-row:hover { background: var(--bg-alt); }
 }
 
 .hw-tile-icon {
+  position: relative;
+  width: 48px;
+  height: 48px;
+  border-radius: 23%;
   overflow: hidden;
+  transition: transform 150ms ease;
 }
 
-/* An author's svg can declare any intrinsic size; contain keeps a wide or tall
-   one inside the square instead of stretching it. */
-.hw-tile-icon img {
+/* The icon fills the squircle; an svg carries its own plate and a raster is
+   clipped to the rounded shape by the overflow. */
+.hw-tile-icon img,
+.hw-tile-icon img.is-raster {
   display: block;
   width: 100%;
   height: 100%;
-  object-fit: contain;
-}
-
-.hw-tile-icon img.is-raster {
   object-fit: cover;
-  border-radius: 8px;
 }
 
-/* The generic mark for an app with no icon.svg: the brand star (AppStar),
-   inset a little so it does not outweigh the authored icons beside it, on
-   the muted tone like the Apps page's cards. */
-.hw-tile-star {
-  width: 26px;
-  height: 26px;
-  color: var(--fg-muted);
+/* Glass edge, as on the dock's tiles. */
+.hw-tile-icon::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  box-shadow:
+    inset 0 0 0 1px rgba(var(--tint), 0.18),
+    inset 0 1px 0 rgba(var(--tint), 0.25);
 }
-.hw-tile:hover .hw-tile-star { color: var(--fg); }
+
+.hw-tile-mono {
+  color: var(--tile-fg);
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1;
+}
+
+.hw-tile:hover .hw-tile-icon {
+  transform: translateY(-2px) scale(1.06);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hw-tile-icon { transition: none; }
+}
 
 .hw-tile-name {
   max-width: 100%;
@@ -2302,6 +2321,7 @@ a.hw-more:hover {
   width: 22px;
   height: 22px;
 }
+.hw-appopt .hw-tile-mono { font-size: 10px; }
 
 .hw-appopt-text {
   display: flex;
