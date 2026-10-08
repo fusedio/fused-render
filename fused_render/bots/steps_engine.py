@@ -312,7 +312,7 @@ def run(bot, task, label=None):
                 continue
             if act == "login":
                 q = decision.get("message") or "This page needs you to sign in."
-                bot.takeover()  # the user signs in from the live view; the bot waits paused on this same tab
+                bot.takeover(note=False)  # the user signs in from the live view; the bot waits paused on this same tab
                 ev = bot.emit("question", channels.login_text(bot, q))
                 bot.set_status("waiting", waiting_on=ev["seq"])
                 bot.asking = True

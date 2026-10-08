@@ -15,6 +15,7 @@ import { Input } from "@platform/shadcn/ui/input";
 import { NativeSelect, NativeSelectOption } from "@platform/shadcn/ui/native-select";
 import { Switch } from "@platform/shadcn/ui/switch";
 import { api, type BrowserOpBody, type BrowserRow, type ChromeProfile } from "../lib/api";
+import { openLive } from "../lib/cdp";
 import { act } from "../state/store";
 import { askConfirm } from "./ask";
 import { DIALOG_CLASS, FOOTER_CLASS } from "./BotSettings";
@@ -41,7 +42,12 @@ export function BrowsersDialog({ onClose }: { onClose: () => void }) {
   }, []);
 
   /** One op, then the fresh list. */
-  const run = async (id: string, body: BrowserOpBody) => { await act(() => api.browserOp(id, body)); await reload(); };
+  const run = async (id: string, body: BrowserOpBody) => {
+    const r = await act(() => api.browserOp(id, body));
+    // Sign in… pauses one of the browser's bots with control handed to you: show that bot's live view, or the click did nothing visible.
+    if (body.op === "signin" && r?.bot) { onClose(); openLive(r.bot); return; }
+    await reload();
+  };
   /** askConfirm with the dialog held open while it is up. */
   const confirm = async (title: string, text: string, ok: string, danger: boolean) => {
     busy.current = true;

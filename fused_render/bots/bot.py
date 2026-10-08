@@ -1950,10 +1950,11 @@ class Bot:
         except Exception:  # noqa: BLE001 — the flag alone still ends the task at its next wait
             logger.warning("bot %s: agent engine stop failed", self.id, exc_info=True)
 
-    def takeover(self):
+    def takeover(self, note=True):
         """Hand the page to the user inside the live view: the bot pauses and the
-        page drives the tab over its own DevTools socket. No relaunch."""
-        self.pause()
+        page drives the tab over its own DevTools socket. No relaunch. `note=False`
+        (the login tool) skips the "Paused" card: its own question card says why."""
+        self.pause(note=note)
         self.wake_browser()
         self.set_status("paused" if self.thread and self.thread.is_alive() else "idle", control=True)
 

@@ -181,7 +181,7 @@ class FakeBot:
         self.emit("system", "Stop requested")
         agent_engine.stop(self)
 
-    def takeover(self):
+    def takeover(self, note=True):
         self.pause_flag.set()
         self.meta["control"] = True
 

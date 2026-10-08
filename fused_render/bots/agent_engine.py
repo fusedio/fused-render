@@ -1502,7 +1502,7 @@ def _ask_builtin(bot, sess: Turn, args: dict):
 
 def _login(bot, sess: Turn, args: dict):
     q = (args.get("message") or "").strip() or "This page needs you to sign in."
-    bot.takeover()  # the user signs in from the live view; the bot waits paused on this same tab
+    bot.takeover(note=False)  # the user signs in from the live view; the bot waits paused on this same tab
     ev = bot.emit("question", channels.login_text(bot, q))
     bot.set_status("waiting", waiting_on=_seq(ev))
     bot.asking = True

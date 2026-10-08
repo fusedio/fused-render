@@ -265,6 +265,8 @@ export function installLive(stage: HTMLElement): () => void {
     if (inCtl() && e.data) cdp("Input.insertText", { text: e.data });
     if (keys) keys.value = "";
   };
+  // Whatever still reaches the textarea outside a composition (a key while the bot drives, autocorrect) is dropped at once.
+  const onKeysInput = (e: Event) => { if (keys && !(e as InputEvent).isComposing) keys.value = ""; };
   const onDocKey = (e: KeyboardEvent) => { if (e.key === "Escape" && !inCtl() && inFull()) void handBack(true); };
 
   stage.addEventListener("mousemove", onMove);
@@ -277,6 +279,7 @@ export function installLive(stage: HTMLElement): () => void {
   stage.addEventListener("keydown", keyEv);
   stage.addEventListener("keyup", keyEv);
   keys?.addEventListener("compositionend", onCompose);
+  keys?.addEventListener("input", onKeysInput);
   document.addEventListener("keydown", onDocKey);
 
   // OpenBot ran renderFullMirrors() from every render(): follow popups and keep the socket on the driven tab after each poll.
@@ -301,6 +304,7 @@ export function installLive(stage: HTMLElement): () => void {
     stage.removeEventListener("keydown", keyEv);
     stage.removeEventListener("keyup", keyEv);
     keys?.removeEventListener("compositionend", onCompose);
+    keys?.removeEventListener("input", onKeysInput);
     document.removeEventListener("keydown", onDocKey);
     linkClose();
   };
