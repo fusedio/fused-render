@@ -15,9 +15,11 @@ import { useFaceAnimator } from "./components/faceAnim";
 import { LiveView } from "./components/LiveView";
 import { PreviewPane } from "./components/PreviewPane";
 import { Dialogs } from "./dialogs/Dialogs";
+import { PrefsPanel } from "./components/PrefsPanel";
 import { useLayout } from "./hooks/useLayout";
 import { installNotify } from "./lib/notify";
 import { detachPortalHost, portalHost, setBotsRoot } from "./lib/root";
+import { isBot } from "@platform/lib/flavor";
 import { getState, hideBanner, openDialog, openMenu, openPanel, poll, startStore, subscribe, useBotsSelector } from "./state/store";
 
 function Banner() {
@@ -73,6 +75,7 @@ export function Bots() {
           onOpenBrowsers={() => openDialog({ kind: "browsers" })}
           onOpenBuilds={() => openPanel("builds")}
           onOpenApps={() => openPanel("apps")}
+          onOpenPrefs={isBot() ? () => openPanel("prefs") : undefined}
           onContextMenu={(id, x, y) => openMenu({ id, x, y })}
         />
         <div className="gutter l" title="Drag to resize · double-click to reset" {...gutter("l")} />
@@ -83,6 +86,7 @@ export function Bots() {
       <LiveView />
       <BuildsPanel />
       <AppsPanel />
+      <PrefsPanel />
       <Dialogs />
       <BotMenu />
     </div>

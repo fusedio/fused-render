@@ -1,5 +1,6 @@
 // Left column (OpenBot index.html section.bots + chat.js render()'s list half): header (usage meter, +, collapse),
-// search, the list (pinned → waiting-unread → your last message), the hidden group, and the Builds / Apps footer.
+// search, the list (pinned → waiting-unread → your last message), the hidden group, and the Builds / Apps footer
+// (plus a Preferences gear at its right edge under Fused Bot, which has no shell sidebar to carry one).
 // Rows that change slot glide (FLIP, lib/layout glideRows); new rows fade in. Right-click hands off to the menu.
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { Bot, BotEvent } from "../lib/api";
@@ -21,6 +22,8 @@ export interface BotListProps {
   onOpenBuilds: () => void;
   /** #apps: the Apps gallery. */
   onOpenApps: () => void;
+  /** #prefs: the Preferences panel (bot flavor only — Render's sidebar has its own gear). Absent: no gear. */
+  onOpenPrefs?: () => void;
   /** Right-click on a row, at the pointer (OpenBot openMenu(id, x, y)). */
   onContextMenu: (id: string, x: number, y: number) => void;
 }
@@ -60,7 +63,7 @@ function Row({ b, S, onContextMenu }: { b: Bot; S: BotsState; onContextMenu: Bot
   );
 }
 
-export function BotList({ onAddBot, onOpenUsage, onOpenBrowsers, onOpenBuilds, onOpenApps, onContextMenu }: BotListProps) {
+export function BotList({ onAddBot, onOpenUsage, onOpenBrowsers, onOpenBuilds, onOpenApps, onOpenPrefs, onContextMenu }: BotListProps) {
   const S = useBots();
   const [q, setQ] = useState("");
   const listRef = useRef<HTMLDivElement>(null);
@@ -145,6 +148,11 @@ export function BotList({ onAddBot, onOpenUsage, onOpenBrowsers, onOpenBuilds, o
         <button id="apps" className="ptog" title="Apps · everything the builds have made" onClick={onOpenApps}>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5" /><rect x="14" y="3" width="7" height="7" rx="1.5" /><rect x="3" y="14" width="7" height="7" rx="1.5" /><rect x="14" y="14" width="7" height="7" rx="1.5" /></svg>
         </button>
+        {onOpenPrefs && (
+          <button id="prefs" className="ptog" title="Preferences" aria-label="Preferences" onClick={onOpenPrefs}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z" /></svg>
+          </button>
+        )}
       </footer>
     </section>
   );
