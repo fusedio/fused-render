@@ -1150,6 +1150,11 @@ const ROW_MODIFIERS: { spec: string; label: string; title: string }[] = [
   { spec: "ctrl", label: "⌃", title: "Control" },
   { spec: "alt+cmd", label: "⌥⌘", title: "Option-Command" },
   { spec: "ctrl+alt", label: "⌃⌥", title: "Control-Option" },
+  // Fused Bot's default (launcher.BOT_DEFAULT_ROW_MODIFIER): one modifier more
+  // than Render's ⌥ so the two apps' row shortcuts both bind side by side. In
+  // the list so the control marks it and can restore it; canonical spelling
+  // (hotkey.MODIFIER_ORDER: ctrl, alt, shift, cmd) or it never reads as "on".
+  { spec: "alt+shift", label: "⌥⇧", title: "Option-Shift" },
 ];
 const MODIFIER_KEYS = new Set(["Shift", "Control", "Alt", "Meta", "CapsLock", "Fn"]);
 const REBIND_REREAD_MS = 400;
