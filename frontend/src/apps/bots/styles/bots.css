@@ -280,7 +280,7 @@ div.bots-page.stage .chat header { padding: 6px 12px; min-height: 44px; }
 div.bots-page.stage .chat header .title small, div.bots-page.stage .chat header #rcol { display: none; }
 div.bots-page.stage .chat .msg { max-width: 100%; }
 div.bots-page.stage .chat .msg time.when { display: none; }
-.bots-page .handover { flex: none; display: flex; flex-direction: column; gap: 8px; margin: 10px 12px 0; padding: 10px 12px; border-radius: 12px; background: var(--card); box-shadow: inset 3px 0 0 var(--warn); }
+.bots-page .handover { flex: none; display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 12px 20px; background: var(--panel); border-bottom: 1px solid var(--line); }  /* a panel attached to the top of the thread, not a floating card */
 .bots-page .handover .hd { display: flex; gap: 8px; align-items: flex-start; }
 .bots-page .handover .ttl { flex: 1; min-width: 0; font-size: 13px; line-height: 1.45; }
 .bots-page .handover.byuser .ttl { color: var(--muted); }
