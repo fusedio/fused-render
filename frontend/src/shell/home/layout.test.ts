@@ -970,6 +970,13 @@ test("preset card-strip tiles narrower than a full row are not cards", () => {
   }
 });
 
+test("Builder preset shows Bots at 0,5 and no recent files", () => {
+  const ws = presetLayout("builder").widgets;
+  expect(ws.some((w) => w.source === "recents")).toBe(false);
+  const bots = ws.find((w) => w.source === "bots")!;
+  expect([bots.x, bots.y]).toEqual([0, 5]);
+});
+
 test("only the Legacy preset has a playground tile", () => {
   for (const p of PRESETS) {
     const has = presetLayout(p.id).widgets.some((w) => w.source === "playground");

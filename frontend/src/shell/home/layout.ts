@@ -782,7 +782,7 @@ function presetRows(id: PresetId, folderId?: string): PresetRow[] {
         { source: "search", x: 0, y: 0, size: "4x1" },
         { source: "build", x: 0, y: 1, size: "2x1" },
         { source: "apps", x: 4, y: 1, size: "2x2", format: "icons" },
-        { source: "recents", x: 0, y: 5, size: "2x2", format: "list" },
+        { source: "bots", x: 0, y: 5, size: "2x2", format: "list" },
         { source: "sessions", x: 4, y: 5, size: "2x2", format: "list" },
       ];
     case "mission":
