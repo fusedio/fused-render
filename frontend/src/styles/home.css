@@ -704,6 +704,11 @@
   align-self: stretch;
   box-sizing: border-box;
 }
+/* The search bar matches the Build composer width and centres above it. */
+.files-home.is-focus .hw-grid > .is-search {
+  max-width: 760px;
+  margin-inline: auto;
+}
 .files-home.is-focus .hw-grid > .is-build {
   margin-block: auto;
 }
