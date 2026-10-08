@@ -20,7 +20,13 @@ Pins:
   with a declared entry page or a `.fused` file. `shell.storage.home_dir()`,
   so a branch build keeps its own pins and both flavors (one tree, owner's
   call) read the same file. A pinned path that is gone is skipped, never
-  pruned — the row is the user's to remove.
+  pruned — the row is the user's to remove. Paths are stored in the
+  LISTING'S SPELLING (`canonical_fs_path` of the folder, as `app_dir_for`
+  hands it back), not the real path: a window is keyed on the path the shell
+  opened it with (window_policy.window_key_of), and in a symlinked workspace
+  a real path would never match it, so a Dock click would open a second
+  window instead of raising the one there. Real paths are used only to
+  COMPARE (one pin per folder however it is spelled).
 * Bots pin where the bots page's own pin already lives (bot.json `pinned`,
   written through the registry's Bot under its lock exactly as the sidebar's
   flag route does), so one pin means the same thing in both places.
@@ -104,14 +110,15 @@ def _stored_pins() -> list[str]:
 
 
 def _norm(path: str) -> str:
-    """One spelling per pin: the real path. The listings spell an app as the
+    """The comparison key: the real path. The listings spell an app as the
     user linked or walked it; a symlinked workspace spells the same folder
-    two ways, and a pin must match both."""
+    two ways, and a pin must match both — but the SPELLING kept is the
+    listing's (see the module docstring)."""
     return os.path.realpath(path)
 
 
 def pinned_paths() -> list[str]:
-    """The pinned app paths (real paths, tray order) that still exist."""
+    """The pinned app paths (as stored, tray order) that still exist."""
     return [p for p in _stored_pins() if os.path.exists(p)]
 
 
@@ -133,18 +140,19 @@ def app_folder(path: str) -> str | None:
 
 
 def resolve_pinnable(path) -> str:
-    """``path`` as the real path of something the Dock can hold — an app
-    folder with a declared entry page, or a `.fused` file — else ValueError.
-    A file inside an app pins the app."""
+    """``path`` as something the Dock can hold — an app folder with a
+    declared entry page (in the listing's spelling, `app_dir_for`'s), or a
+    `.fused` file (absolute) — else ValueError. A file inside an app pins
+    the app."""
     if not isinstance(path, str) or not path or not os.path.isabs(path):
         raise ValueError("path must be an absolute path")
-    real = _norm(path)
-    if is_appfile(real):
-        return real
-    folder = app_folder(real)
+    path = os.path.abspath(path)
+    if is_appfile(path):
+        return path
+    folder = app_folder(path)
     if folder is None:
         raise ValueError(f"not an app: {path}")
-    return _norm(folder)
+    return folder
 
 
 def set_pinned(path, pinned: bool) -> list[str]:
@@ -152,17 +160,18 @@ def set_pinned(path, pinned: bool) -> list[str]:
     an existing app; unpinning a path that is already gone is allowed (it
     only tidies dock.json)."""
     if pinned:
-        real = resolve_pinnable(path)
+        target = resolve_pinnable(path)
     else:
         if not isinstance(path, str) or not os.path.isabs(path):
             raise ValueError("path must be an absolute path")
-        real = _norm(path)
-        folder = app_folder(real) if not is_appfile(real) else None
+        target = os.path.abspath(path)
+        folder = app_folder(target) if not is_appfile(target) else None
         if folder is not None:
-            real = _norm(folder)
-    pins = [p for p in _stored_pins() if p != real]
+            target = folder
+    key = _norm(target)
+    pins = [p for p in _stored_pins() if _norm(p) != key]
     if pinned:
-        pins.append(real)
+        pins.append(target)
     _write("pinned", pins)
     _invalidate_launcher()
     return pinned_paths()
@@ -177,12 +186,12 @@ def set_order(paths) -> list[str]:
     if not isinstance(paths, list) or not all(isinstance(p, str) for p in paths):
         raise ValueError("paths must be a list of app paths")
     pins = _stored_pins()
-    pinned = set(pins)
+    by_key = {_norm(p): p for p in pins}  # any spelling of a pin → the stored one
     ordered: list[str] = []
     for p in paths:
-        real = _norm(p) if os.path.isabs(p) else ""
-        if real in pinned and real not in ordered:
-            ordered.append(real)
+        stored = by_key.get(_norm(p)) if os.path.isabs(p) else None
+        if stored is not None and stored not in ordered:
+            ordered.append(stored)
     ordered += [p for p in pins if p not in ordered]
     _write("pinned", ordered)
     return pinned_paths()
@@ -301,30 +310,31 @@ def _bot_entries() -> dict:
 
 # ------------------------------------------------------------------- apps ---
 
-def _pinned_app_row(real: str) -> dict | None:
-    """One pinned path as a tray row, or None when it is no longer an app."""
+def _pinned_app_row(path: str) -> dict | None:
+    """One pinned path (as stored) as a tray row, or None when it is no
+    longer an app."""
     from fused_render import app_listing, launcher
 
-    if is_appfile(real):
+    if is_appfile(path):
         from fused_render import exported_apps
 
         try:
-            row = exported_apps._row(real, os.path.getmtime(real), None)  # noqa: SLF001 — the listing's own shape
+            row = exported_apps._row(path, os.path.getmtime(path), None)  # noqa: SLF001 — the listing's own shape
         except OSError:
             return None
         return launcher._appfile_row(row)  # noqa: SLF001
     try:
-        entry = app_listing.app_entry(real)
+        entry = app_listing.app_entry(path)
     except OSError:
         return None
     if not entry:
         return None
     icon = None
     try:
-        icon = app_listing.app_icon(real)
+        icon = app_listing.app_icon(path)
     except OSError:
         pass
-    a = {"path": real, "name": os.path.basename(real), "title": app_listing.entry_title(entry),
+    a = {"path": path, "name": os.path.basename(path), "title": app_listing.entry_title(entry),
          "icon": icon["icon"] if icon else None, "icon_mtime": icon["mtime"] if icon else None}
     return launcher._folder_row(a, pinned=True)  # noqa: SLF001
 
@@ -334,11 +344,11 @@ def _app_entries() -> dict:
 
     pins = pinned_paths()
     pinned_rows = []
-    for real in pins:
-        row = _pinned_app_row(real)
+    for p in pins:
+        row = _pinned_app_row(p)
         if row is not None:
             pinned_rows.append({**row, "pinned": True, "recent": False})
-    pinned_set = set(pins)
+    pinned_set = {_norm(p) for p in pins}
     recent_rows = []
     try:
         candidates = launcher.recent_rows(RECENT_CAP + len(pins))
@@ -369,12 +379,13 @@ def entries() -> dict:
 def row_for_path(path) -> dict | None:
     """The app row the Dock would show for ``path`` (any spelling), or None
     when it is not an app this machine knows: used to validate an open or a
-    reveal without trusting the wire."""
+    reveal without trusting the wire. The row's `path` is the listing's
+    spelling, which is what a window of the app is keyed on."""
     try:
-        real = resolve_pinnable(path)
+        target = resolve_pinnable(path)
     except ValueError:
         return None
-    return _pinned_app_row(real)
+    return _pinned_app_row(target)
 
 
 def _open_reveal(path: str) -> None:
@@ -383,7 +394,7 @@ def _open_reveal(path: str) -> None:
 
 def reveal(path) -> str:
     """Show an app in Finder (`open -R`); apps only (ValueError otherwise).
-    Returns the real path revealed."""
-    real = resolve_pinnable(path)
-    _open_reveal(real)
-    return real
+    Returns the path revealed."""
+    target = resolve_pinnable(path)
+    _open_reveal(target)
+    return target

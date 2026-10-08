@@ -76,8 +76,8 @@ def dock_open(body: dict = Body(default=None), x_fused: str | None = Header(defa
         row = dock.row_for_path(body.get("path"))
         if row is None:
             return _error("not an app this machine knows", 400)
-        # The real path, so a window already showing the app (keyed on the
-        # path the shell opened it with) is found and raised, not doubled.
+        # The listing's spelling (dock.row_for_path), the one a window of the
+        # app is keyed on — so an open window is raised, not doubled.
         kind, key, view = row["kind"], row["path"], row["url"]
     else:
         return _error('kind must be "bot", "app" or "appfile"', 400)

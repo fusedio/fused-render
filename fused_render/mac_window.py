@@ -1217,25 +1217,26 @@ class WindowManager:
 
     def show_bot(self, bid: str) -> None:
         """The menu-bar Dock's bot tiles: select bot ``bid`` in a Bots-page
-        window. An open one (the key/front one if several) is pointed at the
-        bot in place — ``?bot=`` rewritten and the page's own
-        ``fused:urlchange`` listener (apps/bots/state/store.ts) follows it, no
-        reload — else a new window opens on ``/bots?bot=<id>``, which the page
-        reads at boot. Main thread."""
+        window. An open one (the key/front one if several) is told in place
+        through the page's ``fused:bots-open`` event (apps/bots/state/store.ts
+        `onOpenEvent` → `openBot`: the full select — reply quote and toast
+        cleared, the open call sent — exactly as a row click; it writes
+        ``?bot=`` itself, keeping `history.state`), no reload — else a new
+        window opens on ``/bots?bot=<id>``, which the page reads at boot.
+        Main thread."""
         import json
 
         from fused_render import dock
 
-        view = dock.bot_view_path(bid)
         bots = [w for w in self._windows if w.ns is not None
                 and urllib.parse.urlsplit(w.current_url() or "").path.rstrip("/") == "/bots"]
         win = self._pick(bots)
         if win is None:
-            self.open(f"http://127.0.0.1:{self.port}{view}")
+            self.open(f"http://127.0.0.1:{self.port}{dock.bot_view_path(bid)}")
             return
         win.webview.evaluateJavaScript_completionHandler_(
-            "history.replaceState(null, '', %s);"
-            "window.dispatchEvent(new Event('fused:urlchange'));" % json.dumps(view), None)
+            "window.dispatchEvent(new CustomEvent('fused:bots-open', {detail: {id: %s}}));"
+            % json.dumps(bid), None)
         win.show()
 
     def snapshot_urls(self) -> list[str]:
