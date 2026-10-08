@@ -135,44 +135,117 @@ async function fileChooser(p: { backendNodeId?: number; mode?: string }): Promis
 /** An intercepted HTML5 drag in flight: its DragData, replayed as dragEnter/dragOver on moves and drop on release. */
 let drag: { data: Record<string, unknown>; entered: boolean } | null = null;
 
-// ------------------------------------------------------------------ <select> menus ----
-// Headless Chrome paints no native popups: a <select>'s menu, a datalist's suggestions and the date picker open as
-// widgets outside the page and never reach the screencast, while an invisibly open menu swallows the next clicks.
-// A click (or Space/Enter/arrows) on a closed single <select> therefore opens a menu of ours over the stage instead,
-// and picking sets the value in the page with input + change events. Datalist and date inputs keep working by typing.
+// ------------------------------------------------------------------ overlays over the stage ----
+// Headless Chrome paints no native popups: a <select>'s menu, a datalist's suggestions, the date/time/color pickers and
+// the context menu open as widgets outside the page and never reach the screencast (an invisibly open menu even swallows
+// the next clicks). The live view draws its own over the stage instead and writes the result into the page:
+//   select   a click / Space / Enter / arrows on a closed single <select> -> a menu of its options
+//   list     typing in an <input list=…> -> the matching datalist suggestions under the field
+//   picker   a click on a date/time/month/week/datetime-local/color input -> the VIEWER browser's own input of that type,
+//            laid over the field, so its native picker and typing both work; the value syncs on change
+//   context  a right-click -> Back / Forward / Reload, Open link in new tab / Copy link when over a link, Copy / Paste
 export interface SelectOpt { t: string; v: string; s: boolean; d: boolean }
-export interface SelectMenu { opts: SelectOpt[]; left: number; top: number; width: number }
-let selMenu: SelectMenu | null = null;
-const selListeners = new Set<() => void>();
-const subscribeSel = (l: () => void) => { selListeners.add(l); return () => { selListeners.delete(l); }; };
-function setSelMenu(m: SelectMenu | null): void { selMenu = m; for (const l of [...selListeners]) l(); }
-export const useSelectMenu = (): SelectMenu | null => useSyncExternalStore(subscribeSel, () => selMenu, () => selMenu);
-const SELECT_PROBE = (where: string) => `(() => { const el = ${where}; if (!el || el.tagName !== "SELECT" || el.multiple || el.size > 1 || el.disabled) return null;
-  window.__fusedSel = el; const r = el.getBoundingClientRect();
-  return { opts: [...el.options].map((o) => ({ t: o.text, v: o.value, s: o.selected, d: o.disabled })), r: [r.left, r.top, r.width, r.height] }; })()`;
-/** Open our menu for the <select> at page point p (or the focused one when p is null). True when one opened. */
-async function openSelectAt(p: { x: number; y: number } | null): Promise<boolean> {
-  const hit = await evalIn<{ opts: SelectOpt[]; r: [number, number, number, number] } | null>(
-    SELECT_PROBE(p ? `document.elementFromPoint(${p.x}, ${p.y})` : "document.activeElement"));
-  if (!hit) return false;
+export interface CtxItem { label: string; run: () => void }
+export type Overlay =
+  | { kind: "select"; opts: SelectOpt[]; left: number; top: number; width: number }
+  | { kind: "list"; opts: SelectOpt[]; hi: number; left: number; top: number; width: number }
+  | { kind: "picker"; type: string; value: string; left: number; top: number; width: number; height: number }
+  | { kind: "context"; items: CtxItem[]; left: number; top: number };
+let overlay: Overlay | null = null;
+const ovListeners = new Set<() => void>();
+const subscribeOv = (l: () => void) => { ovListeners.add(l); return () => { ovListeners.delete(l); }; };
+function setOverlay(o: Overlay | null): void { overlay = o; for (const l of [...ovListeners]) l(); }
+export const useOverlay = (): Overlay | null => useSyncExternalStore(subscribeOv, () => overlay, () => overlay);
+export function closeOverlay(): void { if (overlay) { setOverlay(null); focusCtl(); } }
+
+/** A page rect [left, top, width, height] in CSS px -> the same box in stage coordinates. */
+function toStage(r: [number, number, number, number]): { left: number; top: number; width: number; height: number } | null {
   const img = $<HTMLImageElement>("fshot"), stage = $("stage");
-  if (!img || !stage) return false;
+  if (!img || !stage) return null;
   const ir = img.getBoundingClientRect(), sr = stage.getBoundingClientRect();
   const [vw, vh] = frameDims(link.meta, cur()?.viewport, [img.naturalWidth, img.naturalHeight]);
   const sx = ir.width / (vw || 1), sy = ir.height / (vh || 1);
-  setSelMenu({ opts: hit.opts, left: ir.left - sr.left + hit.r[0] * sx, top: ir.top - sr.top + (hit.r[1] + hit.r[3]) * sy, width: hit.r[2] * sx });
+  return { left: ir.left - sr.left + r[0] * sx, top: ir.top - sr.top + r[1] * sy, width: r[2] * sx, height: r[3] * sy };
+}
+const PICKERS = ["date", "time", "datetime-local", "month", "week", "color"];
+// What is under a point (or focused): a closed single <select>, a picker-type input, or nothing. One round trip per click.
+const HIT_PROBE = (where: string) => `(() => { const el = ${where}; if (!el) return null; const r = el.getBoundingClientRect(); const box = [r.left, r.top, r.width, r.height];
+  if (el.tagName === "SELECT" && !el.multiple && !(el.size > 1) && !el.disabled) { window.__fusedSel = el;
+    return { kind: "select", opts: [...el.options].map((o) => ({ t: o.text, v: o.value, s: o.selected, d: o.disabled })), r: box }; }
+  if (el.tagName === "INPUT" && ${JSON.stringify(PICKERS)}.includes(el.type) && !el.disabled && !el.readOnly) { window.__fusedSel = el; return { kind: "picker", type: el.type, value: el.value, r: box }; }
+  return null; })()`;
+type Hit = { kind: "select"; opts: SelectOpt[]; r: [number, number, number, number] } | { kind: "picker"; type: string; value: string; r: [number, number, number, number] } | null;
+/** Open our select menu or picker for what is at page point p (or focused when p is null, selects only). True when one opened. */
+async function openOverlayAt(p: { x: number; y: number } | null): Promise<boolean> {
+  const hit = await evalIn<Hit>(HIT_PROBE(p ? `document.elementFromPoint(${p.x}, ${p.y})` : "document.activeElement"));
+  if (!hit || (!p && hit.kind !== "select")) return false;
+  const box = toStage(hit.r); if (!box) return false;
+  if (hit.kind === "select") setOverlay({ kind: "select", opts: hit.opts, left: box.left, top: box.top + box.height, width: box.width });
+  else setOverlay({ kind: "picker", type: hit.type, value: hit.value, ...box });
   return true;
 }
-/** A row of our menu was picked (null: closed without picking). */
+// Datalist suggestions for the focused input, filtered the way Chrome does (substring of value or label), 12 at most.
+const LIST_PROBE = `(() => { const a = document.activeElement; if (!a || a.tagName !== "INPUT" || !a.list) return null; const v = a.value.toLowerCase();
+  const opts = [...a.list.options].map((o) => ({ t: o.label || o.value, v: o.value, s: false, d: false }))
+    .filter((o) => !v || o.v.toLowerCase().includes(v) || o.t.toLowerCase().includes(v)).slice(0, 12);
+  if (!opts.length) return null; window.__fusedSel = a; const r = a.getBoundingClientRect(); return { opts, r: [r.left, r.top, r.width, r.height] }; })()`;
+let suggestTimer = 0;
+function scheduleSuggest(): void {
+  window.clearTimeout(suggestTimer);
+  suggestTimer = window.setTimeout(async () => {
+    const hit = await evalIn<{ opts: SelectOpt[]; r: [number, number, number, number] } | null>(LIST_PROBE);
+    if (!inCtl()) return;
+    if (!hit) { if (overlay?.kind === "list") setOverlay(null); return; }
+    const box = toStage(hit.r); if (!box) return;
+    setOverlay({ kind: "list", opts: hit.opts, hi: 0, left: box.left, top: box.top + box.height, width: box.width });
+  }, 60);
+}
+/** Write a value into the element the probe remembered (window.__fusedSel), with the events a real pick fires. */
+const setPageValue = (v: string, focus: boolean) => cdp("Runtime.evaluate", { expression: `(() => { const el = window.__fusedSel; if (!el) return; el.value = ${JSON.stringify(v)};
+  el.dispatchEvent(new Event("input", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true })); ${focus ? "el.focus();" : ""} })()` });
+/** A row of the select / datalist menu was picked (null: closed without picking). */
 export function pickSelect(v: string | null): void {
-  setSelMenu(null);
-  if (v !== null) cdp("Runtime.evaluate", { expression: `(() => { const el = window.__fusedSel; if (!el) return; el.value = ${JSON.stringify(v)};
-    el.dispatchEvent(new Event("input", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true })); el.focus(); })()` });
+  setOverlay(null);
+  if (v !== null) setPageValue(v, true);
   focusCtl();
+}
+/** The picker overlay changed: mirror its value into the page field (the overlay stays until it loses focus). */
+export function pickerChange(v: string): void { setPageValue(v, false); }
+export function runItem(it: CtxItem): void { setOverlay(null); it.run(); focusCtl(); }
+function copyText(text: string): void {
+  navigator.clipboard?.writeText(text).catch(() => showToast({ text: "Could not write to your clipboard", ts: Date.now() / 1000 }));
+}
+// Selected text in the page: an input/textarea's selection, else the document selection. ⌘C/⌘X copy it to YOUR clipboard
+// (measured: headless Chrome's clipboard is private to it, ⌘C there never reaches the macOS pasteboard).
+const SEL_TEXT_PROBE = `(() => { const a = document.activeElement; if (a && (a.tagName === "TEXTAREA" || a.tagName === "INPUT") && a.selectionStart != null && a.selectionEnd > a.selectionStart) return a.value.slice(a.selectionStart, a.selectionEnd); return String(getSelection() || ""); })()`;
+async function copyOut(e: KeyboardEvent): Promise<void> {
+  const text = await evalIn<string>(SEL_TEXT_PROBE);  // before the key: a cut removes the selection
+  const a = keyAction(e);
+  if (a?.kind === "key") cdp("Input.dispatchKeyEvent", a.params as unknown as Record<string, unknown>);
+  if (text) copyText(text);
+}
+const CTX_PROBE = (p: { x: number; y: number }) => `(() => { const el = document.elementFromPoint(${p.x}, ${p.y}); const a = el && el.closest("a[href]"); const act = document.activeElement;
+  const edit = !!act && (act.isContentEditable || act.tagName === "INPUT" || act.tagName === "TEXTAREA");
+  return { href: a ? a.href : null, sel: String(getSelection() || ""), edit }; })()`;
+async function contextAt(p: { x: number; y: number }, e: MouseEvent): Promise<void> {
+  const info = await evalIn<{ href: string | null; sel: string; edit: boolean }>(CTX_PROBE(p));
+  const id = getState().sel, stage = $("stage");
+  if (!id || !stage || !inCtl()) return;
+  const items: CtxItem[] = [{ label: "Back", run: () => nav("back") }, { label: "Forward", run: () => nav("forward") }, { label: "Reload", run: () => nav("reload") }];
+  if (info?.href) {
+    const href = info.href;
+    items.push({ label: "Open link in new tab", run: () => { void act(() => api.tab(id, { tab: "new", url: href }), true); } },
+               { label: "Copy link address", run: () => copyText(href) });
+  }
+  if (info?.sel) items.push({ label: "Copy", run: () => copyText(info.sel) });
+  if (info?.edit) items.push({ label: "Paste", run: () => { navigator.clipboard?.readText().then((t) => { if (t) cdp("Input.insertText", { text: t }); })
+    .catch(() => showToast({ text: "Your browser refused to share the clipboard; use ⌘V instead", ts: Date.now() / 1000 })); } });
+  const sr = stage.getBoundingClientRect();
+  setOverlay({ kind: "context", items, left: e.clientX - sr.left, top: e.clientY - sr.top });
 }
 
 export function linkClose(): void {
-  setSelMenu(null); drag = null;
+  setOverlay(null); drag = null;
   const ws = link.ws; link.ws = null; link.url = null; link.meta = null;
   if (ws) { try { if (ws.readyState === 1) ws.send(JSON.stringify({ id: ++link.id, method: "Page.stopScreencast" })); ws.close(); } catch { /* already gone */ } }
   publishLink();
@@ -292,9 +365,9 @@ const mouse = (type: string, p: { x: number; y: number }, e: MouseEvent, extra: 
  */
 export function installLive(stage: HTMLElement): () => void {
   let lastDown: LastDown = { t: 0, x: 0, y: 0, n: 0 };
-  // Our <select> menu lives inside the stage: its clicks are its own, never page input (the stage's mousedown would otherwise
-  // close the menu before the option's click could land).
-  const inMenu = (e: Event): boolean => !!(e.target as Element | null)?.closest?.(".selmenu");
+  // Our overlays live inside the stage: their clicks are their own, never page input (the stage's mousedown would otherwise
+  // close a menu before the option's click could land).
+  const inMenu = (e: Event): boolean => !!(e.target as Element | null)?.closest?.(".lvov");
   // Moves are coalesced to one per animation frame: hover menus stay responsive without flooding the socket.
   let pendingMove: { p: { x: number; y: number }; e: MouseEvent } | null = null;
   const onMove = (e: MouseEvent) => {
@@ -316,11 +389,16 @@ export function installLive(stage: HTMLElement): () => void {
   const onDown = (e: MouseEvent) => {
     if (!inCtl() || inMenu(e)) return; const p = toPage(e); if (!p) return;
     e.preventDefault(); ($("fkeys") || stage).focus();
-    if (selMenu) setSelMenu(null);
+    if (overlay) setOverlay(null);
     lastDown = nextDown(lastDown, performance.now(), p);
     const n = lastDown.n;
     pressed = (async () => {
-      if (e.button === 0 && n === 1 && await openSelectAt(p)) { skipRelease = true; return; }
+      if (e.button === 2) {  // the page gets its right-click (custom menus), and ours opens over it
+        mouse("mousePressed", p, e, { button: "right", clickCount: n });
+        void contextAt(p, e);
+        return;
+      }
+      if (e.button === 0 && n === 1 && await openOverlayAt(p)) { skipRelease = true; return; }
       mouse("mousePressed", p, e, { button: BTN[e.button] || "left", clickCount: n });
     })();
   };
@@ -372,17 +450,26 @@ export function installLive(stage: HTMLElement): () => void {
     if (e.type === "keydown" && e.metaKey && e.key === "]") { e.preventDefault(); nav("forward"); return; }
     if (e.type === "keydown" && e.metaKey && k === "r") { e.preventDefault(); nav("reload"); return; }
     e.preventDefault();
-    if (selMenu) { if (e.type === "keydown" && e.key === "Escape") setSelMenu(null); return; }  // the menu owns the keyboard
-    if (e.type === "keydown" && !e.metaKey && !e.ctrlKey && !e.altKey && (e.key === " " || e.key === "Enter" || e.key === "ArrowDown" || e.key === "ArrowUp")) {
+    const down = e.type === "keydown";
+    if (overlay && overlay.kind !== "list") { if (down && e.key === "Escape") closeOverlay(); return; }  // the menu / picker owns the keyboard
+    if (overlay?.kind === "list") {  // suggestions: arrows and Enter are ours, everything else types on and refreshes them
+      const nav4 = ["ArrowDown", "ArrowUp", "Enter", "Escape"].includes(e.key);
+      if (nav4 && !down) return;
+      if (down && (e.key === "ArrowDown" || e.key === "ArrowUp")) { const n = overlay.opts.length; setOverlay({ ...overlay, hi: (overlay.hi + (e.key === "ArrowDown" ? 1 : n - 1)) % n }); return; }
+      if (down && e.key === "Enter") { pickSelect(overlay.opts[overlay.hi]?.v ?? null); return; }
+      if (down && e.key === "Escape") { closeOverlay(); return; }
+    } else if (down && !e.metaKey && !e.ctrlKey && !e.altKey && (e.key === " " || e.key === "Enter" || e.key === "ArrowDown" || e.key === "ArrowUp")) {
       // On a focused closed <select> these open Chrome's (invisible) menu: open ours instead, else forward as usual.
-      void openSelectAt(null).then((opened) => { if (!opened) { const a = keyAction(e); if (a?.kind === "key") cdp("Input.dispatchKeyEvent", a.params as unknown as Record<string, unknown>); } });
+      void openOverlayAt(null).then((opened) => { if (!opened) { const a = keyAction(e); if (a?.kind === "key") cdp("Input.dispatchKeyEvent", a.params as unknown as Record<string, unknown>); } });
       return;
     }
+    if (down && (e.metaKey || e.ctrlKey) && !e.altKey && (k === "c" || k === "x")) { void copyOut(e); return; }
     const a = keyAction(e);
     if (a?.kind === "key") cdp("Input.dispatchKeyEvent", a.params as unknown as Record<string, unknown>);
     else if (a?.kind === "insert") cdp("Input.insertText", { text: a.text });
     if (keys) keys.value = "";
-    if (e.type === "keydown" && e.key === "Enter") setTimeout(poll, 700);
+    if (down && e.key === "Enter") setTimeout(poll, 700);
+    if (down && !e.metaKey && !e.ctrlKey && !["Tab", "Escape", "Enter", "Shift", "Control", "Alt", "Meta", "CapsLock"].includes(e.key) && !e.key.startsWith("Arrow")) scheduleSuggest();
   };
   const onCompose = (e: CompositionEvent) => {
     if (inCtl() && e.data) cdp("Input.insertText", { text: e.data });

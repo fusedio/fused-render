@@ -3,7 +3,7 @@
 // chrome around them from the store and the link state.
 import { useEffect, useLayoutEffect, useRef } from "react";
 import type { Bot } from "../lib/api";
-import { gotoTyped, handBack, inFull, installLive, nav, pickSelect, tabstripClick, toggleCtl, useLinked, useSelectMenu } from "../lib/cdp";
+import { closeOverlay, gotoTyped, handBack, inFull, installLive, nav, pickerChange, pickSelect, runItem, tabstripClick, toggleCtl, useLinked, useOverlay } from "../lib/cdp";
 import { statusLabel } from "../lib/derive";
 import { showUrl } from "../lib/live";
 import { eventsOf, useBotsSelector } from "../state/store";
@@ -30,26 +30,55 @@ function Tabs({ b }: { b: Bot }) {
   );
 }
 
-// Our stand-in for a <select>'s native menu, which headless Chrome never paints (lib/cdp.ts openSelectAt).
-function SelectMenu() {
-  const m = useSelectMenu();
+// Our stand-ins for what headless Chrome never paints (lib/cdp.ts overlays): select menu, datalist suggestions, native
+// pickers (the viewer's own input of the same type laid over the field) and the context menu.
+function Overlays() {
+  const o = useOverlay();
   const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => { if (m) ref.current?.querySelector<HTMLButtonElement>("button[data-sel]")?.focus(); }, [m]);
-  if (!m) return null;
+  const inRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (!o) return;
+    if (o.kind === "select" || o.kind === "context") ref.current?.querySelector<HTMLButtonElement>(o.kind === "select" ? "button[data-sel]" : "button")?.focus();
+    if (o.kind === "picker") {
+      const el = inRef.current; if (!el) return;
+      el.focus();
+      try { (el as HTMLInputElement & { showPicker?: () => void }).showPicker?.(); } catch { /* needs a fresh user gesture; the field still takes typing */ }
+    }
+  }, [o]);
+  if (!o) return null;
+  // Arrow keys walk the buttons; Escape closes; nothing leaks to the page (the stage listens on keydown too).
+  const menuKeys = (e: React.KeyboardEvent) => {
+    const items = [...(ref.current?.querySelectorAll<HTMLButtonElement>("button:not(:disabled)") || [])];
+    const i = items.indexOf(document.activeElement as HTMLButtonElement);
+    if (e.key === "ArrowDown") { e.preventDefault(); items[Math.min(i + 1, items.length - 1)]?.focus(); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); items[Math.max(i - 1, 0)]?.focus(); }
+    else if (e.key === "Escape") { e.preventDefault(); closeOverlay(); }
+    e.stopPropagation();
+  };
+  if (o.kind === "picker") {
+    return <input ref={inRef} className="lvov pickov" type={o.type} defaultValue={o.value} aria-label="Pick a value for the page's field"
+      style={{ left: o.left, top: o.top, width: o.width, height: o.height }}
+      onChange={(e) => pickerChange(e.currentTarget.value)} onBlur={() => closeOverlay()}
+      onKeyDown={(e) => { if (e.key === "Escape") closeOverlay(); e.stopPropagation(); }} />;
+  }
+  if (o.kind === "context") {
+    return (
+      <div ref={ref} className="lvov selmenu" role="menu" style={{ left: o.left, top: o.top }} onKeyDown={menuKeys}>
+        {o.items.map((it) => <button key={it.label} type="button" role="menuitem" onClick={() => runItem(it)}>{it.label}</button>)}
+      </div>
+    );
+  }
+  const list = o.kind === "list";
   return (
-    <div ref={ref} className="selmenu" role="listbox" style={{ left: m.left, top: m.top, minWidth: Math.max(m.width, 120) }}
-      onKeyDown={(e) => {
-        const items = [...(ref.current?.querySelectorAll<HTMLButtonElement>("button:not(:disabled)") || [])];
-        const i = items.indexOf(document.activeElement as HTMLButtonElement);
-        if (e.key === "ArrowDown") { e.preventDefault(); items[Math.min(i + 1, items.length - 1)]?.focus(); }
-        else if (e.key === "ArrowUp") { e.preventDefault(); items[Math.max(i - 1, 0)]?.focus(); }
-        else if (e.key === "Escape") { e.preventDefault(); pickSelect(null); }
-        e.stopPropagation();
-      }}>
-      {m.opts.map((o, i) => (
-        <button key={i} type="button" role="option" aria-selected={o.s} disabled={o.d} data-sel={o.s ? "1" : undefined}
-          className={o.s ? "sel" : undefined} onClick={() => pickSelect(o.v)}>{o.t || "\u00a0"}</button>
-      ))}
+    <div ref={ref} className="lvov selmenu" role="listbox" style={{ left: o.left, top: o.top, minWidth: Math.max(o.width, 120) }}
+      onKeyDown={list ? undefined : menuKeys} onMouseDown={list ? (e) => e.preventDefault() : undefined /* suggestions: keep typing where you were */}>
+      {o.opts.map((opt, i) => {
+        const hi = list ? i === o.hi : opt.s;
+        return (
+          <button key={i} type="button" role="option" aria-selected={hi} disabled={opt.d} data-sel={hi ? "1" : undefined}
+            className={hi ? "sel" : undefined} onClick={() => pickSelect(opt.v)}>{opt.t || "\u00a0"}</button>
+        );
+      })}
     </div>
   );
 }
@@ -122,7 +151,7 @@ export function LiveView() {
         {/* Keyboard target while you drive (lib/cdp.ts installLive): a hidden textarea, because only an editable element composes
             dead keys and IME input; plain keys are forwarded and never land in it. */}
         <textarea id="fkeys" aria-label="Type into the bot's page" autoComplete="off" autoCapitalize="off" autoCorrect="off" spellCheck={false} tabIndex={-1} />
-        <SelectMenu />
+        <Overlays />
         <Toast id="ftoast" />
       </div>
     </div>
