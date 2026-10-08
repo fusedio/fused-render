@@ -417,9 +417,12 @@ export function FilesSearch({
   indexScan,
   onActiveChange,
   onScanRequested,
+  compact,
 }: {
   home: string;
   initialQuery: string;
+  /** Shorter placeholder for a one-column widget. */
+  compact?: boolean;
   /** The shared index poll (see FilesHome) — this box adds no poller of its own. */
   indexScan: IndexStatus | null;
   onActiveChange: (active: boolean) => void;
@@ -1157,7 +1160,7 @@ export function FilesSearch({
           ref={inputEl}
           type="search"
           className="files-search-input"
-          placeholder="Search your files — or paste a path like ~/Downloads"
+          placeholder={compact ? "Search files…" : "Search your files — or paste a path like ~/Downloads"}
           aria-label="Search your files"
           role="combobox"
           aria-expanded={active && !showingAi && (searchable || showOpenRow)}

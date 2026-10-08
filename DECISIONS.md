@@ -6616,3 +6616,56 @@ Rejected: deleting `jaraco` from the zip entirely (keyring needs `jaraco.classes
 ## D1337 — Dock click focuses the most recent window (2026-10-08, dock-click-focuses-window)
 
 A Dock-icon click on the running app (`WindowManager.reopen`) used to open a fresh Home window every time, on the theory that the Dock is a "new window" door. That is not how Mac apps behave, and it piled up windows on every click. It now raises the window the user was last in (key, else front, else most recently used; a minimized one is restored by `_Window.show`) and opens Home only when no window is open. A new window is still one gesture away: File → New Window and the launcher's Home row (`show_home`). Reverses the earlier "Dock is a new-window door" choice; SPEC DM-5 already described the focus behavior.
+
+## 2026-10-08 — Home grid units are half cells (layout v4)
+
+Home grid units are half cells (layout v4): GRID_COLS 8, MAX_ROWS 128, dims() in units, v3 doubles on read; CSS gets 8 tracks with the same 16px gap so a cell is 2 tracks + 16px and old layouts render identically. Drag snaps to the nearest half inside the hovered whole cell; Alt+Arrow steps one unit; Tidy up repacks on whole cells.
+
+
+## 2026-10-08 — Home widgets resize by edge drag in half-cell steps
+
+Home widgets resize by edge drag in half-cell steps. A widget keeps `size` (the preset driving its content) and may carry an explicit `cols`/`rows` footprint in units (still layout v4, optional fields). A custom footprint derives `size` as the largest preset fitting inside it; a footprint that equals a preset stores only the preset; a size chip clears the override. Minimum per source = its smallest preset per axis; max 8 units tall. Server accepts the optional fields with the same bounds.
+
+
+## 2026-10-08 — Home card strips snap by proximity
+
+Home card and icon strips (`.hw-cards`, `.hw-icons.is-strip`) snap by proximity, not mandatorily: a mandatory x snap on ~385px cards makes trackpad scrolling janky (gestures short of a card midpoint get pulled back, inertia is snapped mid-flight). Same choice as `.home-composer-sample-strip`. The ‹ › buttons still page by scrollBy.
+
+
+## 2026-10-08 — Home card strips do not snap at all
+
+The Home cards and icons strips (`.hw-cards`, `.hw-icons.is-strip`) no longer scroll-snap, not even by proximity: on 385px cards nearly every slow trackpad gesture ends short of the next snap point, and proximity snapping still pulled it back to the card it started on (CSS snapping has no speed threshold). Aligned paging stays on the ‹ › buttons, which use scrollBy.
+
+
+## 2026-10-08 — Edit-mode stand-ins reuse the real control
+
+Edit-mode stand-ins for the bare Home widgets (search, build) reuse the real control's markup and classes and do not stretch, because a flex-stretched 999px pill rendered as an oval and nothing like the control it stood for.
+
+
+## 2026-10-08 — Fused Apps widget sort; Add sheet options column
+
+The Fused Apps widget carries a `sort` (opened, the default; updated; name), a third special-cased widget field beside folderId and appPath rather than a generic options bag: two sources with one setting each is not yet a pattern. `opened` keeps the recents fast path on GET /api/apps/home; `updated` and `name` cannot be answered by the recents stores, so they read the hub's catalog snapshot (`_discovery_rows`) and hydrate only the slice. The Add sheet's options (Show as, Size, Sort by) moved into a fixed 230px column beside the preview stage, because a third group no longer fit a wrapping row under a stage that took the pane's height; a narrow sheet stacks them again.
+
+
+## 2026-10-08 — Search and Build widgets have a fixed, content-derived height (layout v5)
+
+The two bare Home widgets have a fixed, content-derived height in units (search 1, build 3) that neither the size preset nor an edge drag can change: their content never grows with the footprint, so any extra height was dead space in edit mode and collapsed inconsistently in view mode. Size presets now mean width only. Layout v5 marks documents that carry this; the v4 to v5 migration shrinks the two widgets and collapses only the unit rows the shrink vacated, so rows the user left empty on purpose stay.
+
+
+## 2026-10-08 — Bare widgets highlight their own border on hover in edit mode
+
+File search and Build an app show their edit-mode hover highlight on the control's own border (`.files-search`, `.home-composer`), not the widget frame, because the frame is transparent and larger than the control since layout v5.
+
+## 2026-10-08 — Build an app stand-in fills its edit-mode frame
+
+In edit mode the Build an app stand-in stretches to fill its 3-unit frame (input grows, picker bar pinned to the bottom) so the composer's box and hover border coincide with the widget footprint and the overlaid controls sit inside it.
+
+## 2026-10-08 — Home adopts the "Workbench" layout
+
+View mode no longer renders spacers for empty rows (they made 84px voids that split the page into bands); the Build composer renders as a 760px centred hero with a headline and left-aligned samples; DEFAULT_LAYOUT is search, build, a bots/index/tasks row, apps, recents. Saved layouts are not migrated.
+
+## 2026-10-08 — Build an app takes 4 unit rows and is the same block in both modes
+
+Build an app takes 4 unit rows (was 3) and renders the same block in both modes: headline, a 760px centred composer and the chips row. The edit stand-in sits in a full-width card outline, like the other widgets. Stored v5 layouts grow the build in place and push the widgets below it down a row (`growFixedRows`), so no version bump is needed.
+The Build an app headline is centred explicitly (`text-align: center` on `.hw-build-headline`) so edit mode matches view mode and clears the overlaid drag grip.
+

@@ -60,6 +60,7 @@ import shutil
 import threading
 import time
 from datetime import datetime, timezone
+from typing import Literal
 
 from fastapi import APIRouter, Body, File, Form, Header, UploadFile
 from fastapi.responses import JSONResponse
@@ -326,17 +327,34 @@ def recent_apps(limit: int) -> list[dict]:
     return recent[:limit]
 
 
-@router.get("/api/apps/home")
-def api_home_apps(limit: int = HOME_APPS_LIMIT):
-    """Recent-first app cards for Home, with exhaustive discovery as fallback.
+HomeSort = Literal["opened", "updated", "name"]
 
+
+@router.get("/api/apps/home")
+def api_home_apps(limit: int = HOME_APPS_LIMIT, sort: HomeSort = "opened"):
+    """App cards for Home, ordered by ``sort``.
+
+    ``opened`` (default): recent-first, with exhaustive discovery as fallback.
     A warm Home visit touches only explicit paths from the recents stores
     (`recent_apps`). When those do not fill its single row, the ordinary
     workspace listing runs once and fills the holes; because showcase is an
     ordinary workspace tag, that fallback preserves unopened showcase cards
     as well as new local apps.
+
+    ``updated``: the hub's catalog (the discovery snapshot), most recently
+    edited first.
+
+    ``name``: the hub's catalog, case-folded by name, then tag.
     """
     limit = max(1, min(limit, HOME_APPS_LIMIT))
+    if sort != "opened":
+        rows = list(_discovery_rows(fresh=False))
+        if sort == "updated":
+            rows.sort(key=lambda a: (-(a.get("updated_at") or 0), a["name"].casefold()))
+        else:
+            rows.sort(key=lambda a: (a["name"].casefold(), a["tag"].casefold()))
+        # Hydrate only the slice, on copies: the snapshot's rows are shared.
+        return {"apps": [app_listing.hydrate_app(dict(r)) for r in rows[:limit]]}
     recent = recent_apps(limit)
     if len(recent) >= limit:
         return {"apps": recent}

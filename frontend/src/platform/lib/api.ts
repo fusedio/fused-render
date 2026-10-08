@@ -1213,6 +1213,22 @@ export function putBookmarks(bookmarks: unknown[]): Promise<void> {
   return putJson<unknown>("/api/bookmarks", bookmarks).then(() => undefined);
 }
 
+// Home's widget-grid layout (fused_render/shell/home_layout.py). The layout is
+// typed in shell/home/layout.ts; unknown here so api.ts stays a leaf. `exists`
+// is false until the first save — the caller falls back to its default layout.
+export interface HomeLayoutResult {
+  exists: boolean;
+  layout: unknown | null;
+}
+
+export function getHomeLayout(): Promise<HomeLayoutResult> {
+  return getJson<HomeLayoutResult>("/api/home/layout");
+}
+
+export function putHomeLayout(layout: unknown): Promise<void> {
+  return putJson<unknown>("/api/home/layout", layout).then(() => undefined);
+}
+
 // Recently opened files (fused_render/shell/recents.py). `url` is the shell
 // /view/ url verbatim including its query string (D20 posture); entries whose
 // file has since been deleted are already filtered out server-side.
@@ -2450,9 +2466,12 @@ export function getAppsPage(p: AppsPageParams, signal?: AbortSignal): Promise<Ap
 // Home needs one recent row, not the exhaustive /apps catalog. The backend
 // hydrates stored recents first and only falls back to workspace discovery when
 // those do not fill the requested row.
-export function getHomeApps(limit: number): Promise<{ apps: AppInfo[] }> {
+export function getHomeApps(
+  limit: number,
+  sort: "opened" | "updated" | "name" = "opened",
+): Promise<{ apps: AppInfo[] }> {
   return getJson<{ apps: AppInfo[] }>(
-    `/api/apps/home?limit=${encodeURIComponent(String(limit))}`,
+    `/api/apps/home?limit=${encodeURIComponent(String(limit))}${sort !== "opened" ? `&sort=${sort}` : ""}`,
   );
 }
 

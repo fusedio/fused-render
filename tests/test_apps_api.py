@@ -824,6 +824,50 @@ def test_home_falls_back_when_stale_recents_do_not_fill_the_row(
     assert [a["path"] for a in apps] == [str(discovered)]
 
 
+def test_home_sort_name_orders_the_whole_catalog(client, workspace, recents_home):
+    apps_mod._reset_snapshot()
+    for n in ("bravo", "alpha", "Charlie"):
+        _app_dir(workspace, n)
+    apps = client.get("/api/apps/home", params={"sort": "name", "limit": 12}).json()["apps"]
+    assert [a["name"] for a in apps] == ["alpha", "bravo", "Charlie"]
+
+
+def _two_apps_old_and_new(workspace):
+    old = _app_dir(workspace, "old")
+    new = _app_dir(workspace, "new")
+    now = time.time()
+    os.utime(old / "index.html", (now - 100000, now - 100000))
+    os.utime(old, (now - 100000, now - 100000))
+    os.utime(new / "index.html", (now + 1000, now + 1000))
+    return old, new
+
+
+def test_home_sort_updated_orders_by_last_edit(client, workspace, recents_home):
+    apps_mod._reset_snapshot()
+    old, new = _two_apps_old_and_new(workspace)
+    apps = client.get("/api/apps/home", params={"sort": "updated", "limit": 12}).json()["apps"]
+    assert [a["path"] for a in apps] == [str(new), str(old)]
+
+
+def test_home_sort_updated_ignores_opens(client, workspace, recents_home):
+    apps_mod._reset_snapshot()
+    old, new = _two_apps_old_and_new(workspace)
+    assert client.post(
+        "/api/apps/recents/open", json={"path": str(old)},
+        headers={"X-Fused": "1"},
+    ).json() == {"recorded": True}
+    apps_mod._reset_snapshot()
+    updated = client.get("/api/apps/home", params={"sort": "updated", "limit": 12}).json()["apps"]
+    assert [a["path"] for a in updated] == [str(new), str(old)]
+    for params in ({"sort": "opened", "limit": 12}, {"limit": 12}):
+        opened = client.get("/api/apps/home", params=params).json()["apps"]
+        assert opened[0]["path"] == str(old)
+
+
+def test_home_sort_rejects_unknown_values(client, workspace, recents_home):
+    assert client.get("/api/apps/home", params={"sort": "zzz"}).status_code == 422
+
+
 # ---------------------------------------------------- the in-process spawn seam
 
 class _StartAgent:

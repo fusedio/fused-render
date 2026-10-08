@@ -621,3 +621,1993 @@
 .home-composer-name-cancel:hover {
   color: var(--fg);
 }
+
+/* ---- Home widget grid ------------------------------------------------------ */
+/* Four columns; the container query drops to two on a narrow page. Rows grow
+   to fit their content, because a cards widget is taller than any fixed row. */
+.hw-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  min-height: 28px;
+  margin: 0 0 8px;
+}
+
+.hw-customize {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  background: transparent;
+  color: var(--fg-muted);
+  font-size: 12px;
+  padding: 4px 8px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.hw-customize:hover:not(:disabled) { color: var(--fg); background: var(--ctl-quiet-bg-hover); }
+.hw-customize.is-on { color: var(--accent); }
+.hw-customize:disabled { opacity: 0.5; cursor: default; }
+
+.hw-stage {
+  container-type: inline-size;
+}
+
+.hw-stage-main {
+  min-width: 0;
+}
+
+.hw-grid {
+  display: grid;
+  /* WidgetGrid sets --hw-cols in half-cell units (8, or 4 at phone width); the 16px gap makes a whole cell = 2 tracks + 16px, the same width the old 4-track grid gave. WidgetGrid places every item
+     explicitly with inline grid-column/grid-row. */
+  grid-template-columns: repeat(var(--hw-cols, 8), minmax(0, 1fr));
+  grid-auto-rows: auto;
+  gap: 16px;
+}
+
+/* The edit canvas shows empty rows; they keep a height. View mode stays auto
+   so the bare search/build rows are not padded to 120px. */
+.hw-grid.is-edit {
+  /* a unit row; two units + the gap = the 120px cell */
+  grid-auto-rows: minmax(52px, auto);
+}
+
+/* Focus preset, view mode: the search bar stays on top and the Build composer
+   centres in the rest of the window. The grid's inline placements are ignored
+   by the flex column; edit mode never gets this class. */
+.files-home.is-focus .files-home-inner {
+  min-height: 100%;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+}
+.files-home.is-focus .home-strips,
+.files-home.is-focus .hw-stage,
+.files-home.is-focus .hw-stage-main,
+.files-home.is-focus .hw-grid {
+  flex: 1 0 auto;
+  display: flex;
+  flex-direction: column;
+}
+/* The toolbar and health strips keep their natural height. */
+.files-home.is-focus .home-strips > :not(.hw-stage) {
+  flex: none;
+}
+/* Flex-column children with auto inline margins or intrinsic sizing do not
+   stretch, so pin them to the full width. */
+.files-home.is-focus .home-strips,
+.files-home.is-focus .hw-stage,
+.files-home.is-focus .hw-stage-main,
+.files-home.is-focus .hw-grid,
+.files-home.is-focus .hw-grid > * {
+  width: 100%;
+  align-self: stretch;
+  box-sizing: border-box;
+}
+/* The search bar matches the Build composer width and centres above it. */
+.files-home.is-focus .hw-grid > .is-search {
+  max-width: 760px;
+  margin-inline: auto;
+}
+.files-home.is-focus .hw-grid > .is-build {
+  margin-block: auto;
+}
+
+.hw-widget {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 120px;
+  padding: 12px 14px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  overflow: hidden;
+}
+
+/* View mode: a full-width section widget sits on the page with no frame; its
+   cards carry the borders. Narrower bento tiles keep the outline so they read
+   as tiles. Edit mode keeps the outline on every tile, and a pinned page
+   (is-app) keeps its frame around the live iframe. */
+.hw-widget.is-full:not(.is-edit):not(.is-app) {
+  border-color: transparent;
+  padding-inline: 0;
+}
+
+.hw-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin: 0 0 10px;
+}
+
+.hw-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hw-title-link {
+  color: inherit;
+  text-decoration: none;
+}
+
+.hw-title-link:hover {
+  text-decoration: underline;
+}
+
+.hw-body {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* A list fills the height its tile really has; ItemList measures it and shows
+   extra rows past the nominal capacity. */
+.hw-body:has(> .hw-list-wrap) {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.hw-body > .hw-list-wrap {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Cards strip: one scrolling grid, `--hw-rows` tall. Cards are always 330px
+   wide. When the items overflow they shrink only as much as needed (never
+   below 240px) so n cards, n gaps and a peek of the next card fit; they never
+   grow past 330px. The 56px peek must match PEEK_W in home/strip.ts. */
+.hw-strip {
+  position: relative;
+  min-width: 0;
+}
+
+.hw-cards {
+  display: grid;
+  grid-auto-flow: column;
+  grid-template-rows: repeat(var(--hw-rows, 1), auto);
+  grid-auto-columns: 330px;
+  gap: 16px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  /* overflow-x: auto also clips vertically; room above and below lets a
+     hovered card's lift and shadow show, and the negative margins keep the
+     strip's footprint unchanged. */
+  padding-block: 4px 16px;
+  margin-block: -4px -16px;
+  /* no scroll snap: on 385px cards even a proximity snap pulls a slow trackpad gesture back to the card it started on; the ‹ › buttons page by scrollBy instead */
+  scrollbar-width: none;
+}
+
+.hw-cards::-webkit-scrollbar {
+  display: none;
+}
+
+.hw-cards.is-overflowing {
+  grid-auto-columns: min(330px, max(240px, calc((100% - 56px - var(--hw-n, 1) * 16px) / var(--hw-n, 1))));
+}
+
+.hw-cards > * {
+  min-width: 0;
+  width: auto;
+  max-width: none;
+}
+
+/* Fade the peeking card into the widget background. */
+.hw-strip.has-more::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 56px;
+  pointer-events: none;
+  background: linear-gradient(to right, transparent, var(--bg));
+}
+
+.hw-strip-nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease, background-color 0.12s ease;
+}
+
+.hw-strip-nav.is-prev { left: 4px; }
+.hw-strip-nav.is-next { right: 4px; }
+
+.hw-strip:hover .hw-strip-nav,
+.hw-strip:focus-within .hw-strip-nav {
+  opacity: 1;
+}
+
+.hw-strip-nav:hover {
+  background: var(--bg-alt);
+}
+
+@media (hover: none) {
+  .hw-strip-nav { opacity: 1; }
+}
+
+/* Lists */
+.hw-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0;
+}
+
+.hw-list-wrap.is-wide .hw-list {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: 16px;
+}
+
+.hw-li {
+  min-width: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+}
+.hw-li:last-child { border-bottom: 0; }
+
+.hw-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 10px 8px;
+  border-radius: 6px;
+  color: var(--fg);
+  text-decoration: none;
+  font-size: 12.5px;
+}
+
+a.hw-row:hover,
+button.hw-row:hover {
+  background: var(--bg-alt);
+}
+
+.hw-row-icon {
+  flex: none;
+  display: inline-flex;
+  color: var(--fg-muted);
+}
+
+.hw-row-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.hw-row-name {
+  font-size: 13px;
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hw-row-sub {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-top: 2px;
+  font-size: 11.5px;
+  color: var(--fg-muted);
+}
+
+.hw-list-wrap.is-tall .hw-row { padding: 12px 8px; gap: 12px; }
+.hw-list-wrap.is-tall .hw-row-icon { width: 32px; height: 32px; color: inherit; }
+.hw-list-wrap.is-tall .hw-row-icon svg { width: 100%; height: 100%; display: block; }
+.hw-list-wrap.is-tall .hw-row-icon .eye { fill: var(--face-eye); }
+
+.hw-pill {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  color: var(--fg-muted);
+}
+.hw-pill::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: none;
+}
+.hw-pill.is-ok { color: var(--success); }
+.hw-pill.is-warn { color: var(--warning); }
+.hw-pill.is-err { color: var(--error); }
+.hw-pill.is-idle { color: var(--fg-muted); }
+
+/* Icons */
+.hw-icons {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(76px, 1fr));
+  gap: 8px;
+  height: 100%;
+  align-content: center;
+}
+
+.hw-icons.is-strip {
+  grid-template-columns: none;
+  grid-auto-flow: column;
+  grid-auto-columns: 76px;
+  grid-template-rows: repeat(var(--hw-rows, 1), auto);
+  align-content: center;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+  padding-right: 56px; /* room for the peek fade */
+}
+.hw-icons.is-strip::-webkit-scrollbar { display: none; }
+
+.hw-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  padding: 8px 4px;
+  border-radius: 10px;
+  color: var(--fg);
+  text-decoration: none;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+
+.hw-tile:hover {
+  background: var(--bg-alt);
+}
+
+.hw-tile-glyph,
+.hw-tile-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  color: var(--fg-muted);
+}
+
+.hw-tile-icon {
+  position: relative;
+  width: 48px;
+  height: 48px;
+  border-radius: 23%;
+  overflow: hidden;
+  transition: transform 150ms ease;
+}
+
+/* The icon fills the squircle; an svg carries its own plate and a raster is
+   clipped to the rounded shape by the overflow. */
+.hw-tile-icon img,
+.hw-tile-icon img.is-raster {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* Glass edge, as on the dock's tiles. */
+.hw-tile-icon::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  box-shadow:
+    inset 0 0 0 1px rgba(var(--tint), 0.18),
+    inset 0 1px 0 rgba(var(--tint), 0.25);
+}
+
+.hw-tile-mono {
+  color: var(--tile-fg);
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1;
+}
+
+.hw-tile:hover .hw-tile-icon {
+  transform: translateY(-2px) scale(1.06);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hw-tile-icon { transition: none; }
+}
+
+.hw-tile-name {
+  max-width: 100%;
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hw-more {
+  display: block;
+  margin: 0;
+  padding: 7px 8px;
+  font-size: 11.5px;
+  color: var(--fg-muted);
+  text-decoration: none;
+}
+
+a.hw-more:hover {
+  color: var(--fg);
+}
+
+.hw-body:has(> .hw-empty) {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.hw-empty {
+  text-align: center;
+  padding: 8px 0;
+}
+
+.hw-empty,
+.hw-error {
+  margin: 0;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.hw-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--error);
+}
+
+.hw-btn,
+.hw-tb {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--fg);
+  cursor: pointer;
+}
+
+.hw-btn:hover:not(:disabled),
+.hw-tb:hover:not(:disabled) {
+  background: var(--bg-alt);
+}
+
+.hw-btn:disabled,
+.hw-tb:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.hw-btn.is-danger,
+.hw-tb.is-danger {
+  color: var(--error);
+  border-color: rgba(var(--error-rgb), 0.5);
+}
+
+.hw-btn {
+  font-size: 11.5px;
+  padding: 3px 10px;
+  border-radius: 999px;
+}
+
+.hw-skel {
+  height: 28px;
+  margin: 2px 0;
+  border-radius: 8px;
+  background: var(--bg-alt);
+}
+
+/* Count */
+.hw-count {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  color: var(--fg);
+  text-decoration: none;
+}
+
+.hw-count-num {
+  font-size: 34px;
+  font-weight: 600;
+  line-height: 1.1;
+}
+
+.hw-count-accent .hw-count-num {
+  color: var(--accent);
+}
+
+.hw-count-cap {
+  font-size: 11.5px;
+  color: var(--fg-muted);
+}
+
+/* Board */
+.hw-board {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+  align-items: start;
+}
+
+.hw-lane {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border-radius: 10px;
+  background: rgba(var(--tint), 0.03);
+}
+
+.hw-lane-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 2px 2px;
+}
+
+.hw-lane-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--fg-muted);
+}
+.hw-lane.is-you .hw-lane-dot { background: var(--warning); }
+.hw-lane.is-running .hw-lane-dot { background: var(--success); }
+
+.hw-lane-label {
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--fg-muted);
+}
+
+.hw-lane-n {
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  color: var(--fg-muted);
+  background: rgba(var(--tint), 0.08);
+}
+
+.hw-lane-card {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  padding: 8px 10px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--fg);
+  text-decoration: none;
+}
+.hw-lane-card:hover { border-color: rgba(var(--accent-rgb), 0.5); text-decoration: none; }
+
+.hw-lane-title,
+.hw-lane-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.hw-lane-title { font-size: 12.5px; }
+.hw-lane-meta { font-size: 11px; color: var(--fg-muted); }
+
+.hw-lane-empty {
+  padding: 10px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  font-size: 11.5px;
+  color: var(--fg-muted);
+  text-align: center;
+}
+
+/* Format previews: static illustrations drawn at natural width. Callers scale
+   them with zoom on a wrapper. Placeholder bars only, no real text. */
+.fp {
+  min-width: 0;
+  color: var(--fg);
+  font-size: 12px;
+  line-height: 1.2;
+}
+
+.fp-cards { width: 520px; }
+.fp-board { width: 420px; }
+.fp-icons,
+.fp-list { width: 360px; }
+
+.fp-ln {
+  display: block;
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(var(--tint), 0.16);
+}
+
+.fp-ln.is-s { width: 40%; }
+.fp-ln.is-m { width: 60%; }
+.fp-ln.is-l { width: 80%; }
+
+.fp-sq {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  background: rgba(var(--accent-rgb), 0.28);
+}
+
+.fp-sq.is-lg {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+}
+
+.fp-strip {
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.fp-card {
+  flex: 0 0 150px;
+  height: 96px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--bg-alt);
+}
+
+.fp-card.is-peek {
+  opacity: 0.4;
+}
+
+.fp-card-head {
+  height: 22px;
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+}
+
+.fp-card-head .fp-ln { width: 60%; }
+
+.fp-card-well {
+  flex: 1;
+  min-height: 0;
+  margin: 0 6px 6px;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  background: rgba(var(--tint), 0.05);
+}
+
+.fp-pair {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--fg-muted);
+}
+
+.fp-stack {
+  width: 75%;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.fp-stack .fp-ln { height: 5px; }
+
+.fp-icons {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.fp-ico {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.fp-ico .fp-sq {
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+}
+
+.fp-ico .fp-ln { width: 70%; }
+
+.fp-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.fp-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 20px;
+}
+
+.fp-row .fp-ln { flex: 1 1 auto; max-width: 70%; }
+
+.fp-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: rgba(var(--accent-rgb), 0.5);
+}
+
+.fp-pill {
+  flex: none;
+  margin-left: auto;
+  width: 38px;
+  height: 14px;
+  border-radius: 999px;
+  background: rgba(var(--tint), 0.08);
+}
+
+.fp-board {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.fp-lane {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.fp-lane-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
+.fp-lane-head .fp-ln { flex: 1 1 auto; width: auto; max-width: 70%; }
+.fp-lane-head span:last-child { margin-left: auto; }
+
+.fp-tk {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg-alt);
+}
+
+.fp-count {
+  width: 360px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.fp-num {
+  font-size: 38px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.fp-sub {
+  color: var(--fg-muted);
+}
+
+.fp-sub b {
+  color: var(--warning);
+  font-weight: 600;
+}
+
+/* Edit bar */
+.hw-editbar {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  margin: 0 0 12px;
+}
+
+.hw-editbar-label {
+  font-size: 12.5px;
+  color: var(--fg-muted);
+}
+
+.hw-editbar-label,
+.hw-editbar > .hw-tb {
+  flex: none;
+}
+
+.hw-editbar-sp {
+  flex: 0 0 0;
+}
+
+@media (max-width: 640px) {
+  .hw-editbar-label {
+    display: none;
+  }
+}
+
+/* Preset chips: one row that scrolls sideways at narrow widths (the page never does). */
+.hw-presets {
+  display: flex;
+  flex: 1 1 auto;
+  gap: 6px;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.hw-presets::-webkit-scrollbar {
+  display: none;
+}
+
+.hw-preset {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px 5px 6px;
+  border: 1px solid var(--ctl-quiet-border);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--fg);
+  font-size: 13px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.hw-preset:hover {
+  border-color: var(--accent);
+}
+
+.hw-preset[aria-checked="true"],
+.hw-preset.is-custom {
+  border-color: var(--accent);
+  background: rgba(var(--accent-rgb), 0.08);
+}
+
+.hw-preset.is-custom {
+  padding-left: 12px;
+  cursor: default;
+}
+
+.hw-preset:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.hw-preset-thumb {
+  display: grid;
+  width: 44px;
+  gap: 1px;
+  aspect-ratio: 8 / 5;
+  /* gridTemplate* come inline: 8 columns, one row per unit the preset uses */
+}
+
+.hw-preset-thumb i {
+  border-radius: 1.5px;
+  background: var(--fg-faint);
+  opacity: 0.45;
+}
+
+.hw-preset-thumb i.is-hero {
+  background: var(--accent);
+  opacity: 0.7;
+}
+
+.hw-tb {
+  font-size: 12px;
+  padding: 5px 12px;
+  border-radius: 8px;
+}
+
+.hw-tb.is-ghost {
+  border-color: transparent;
+  color: var(--fg-muted);
+}
+
+.hw-tb.is-ghost:hover:not(:disabled) {
+  color: var(--fg);
+}
+
+.hw-tb.is-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+  font-weight: 600;
+}
+
+.hw-tb.is-primary:hover:not(:disabled) {
+  background: var(--accent);
+  filter: brightness(1.08);
+}
+
+.hw-tb:focus-visible,
+.hw-swap > button:focus-visible,
+.hw-slot:focus-visible,
+.hw-po:focus-visible,
+.hw-sizechip:focus-visible,
+.hw-pick:focus-visible,
+.hw-src:focus-visible,
+.hw-folder:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* Edit mode */
+.hw-widget.is-edit {
+  position: relative;
+  overflow: visible;
+  border-color: var(--border);
+  box-shadow: 0 0 0 1px transparent;
+  transition: border-color 0.12s, box-shadow 0.12s;
+}
+
+.hw-widget.is-edit:hover {
+  border-color: rgba(var(--accent-rgb), 0.5);
+}
+
+.hw-widget.is-edit:has(.hw-pop) {
+  z-index: 30;
+}
+
+.hw-widget.is-edit .hw-body {
+  pointer-events: none;
+  opacity: 0.55;
+  overflow: hidden;
+}
+
+/* Titles never sit under the Change / × pill. */
+.hw-widget.is-edit .hw-head,
+.hw-widget.is-app.is-edit .hw-head {
+  padding-right: 124px;
+}
+
+.hw-widget.is-edit.is-compact .hw-head,
+.hw-widget.is-app.is-edit.is-compact .hw-head {
+  padding-right: 76px;
+}
+
+/* Change and remove: one segmented control, always visible in edit mode, over the tile's top-right corner. */
+.hw-swap {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: stretch;
+  height: 26px;
+  border: 1px solid var(--ctl-quiet-border);
+  border-radius: 8px;
+  background: var(--bg-popover);
+  box-shadow: 0 2px 8px var(--shadow-lg);
+  overflow: visible;
+  transition: border-color 0.12s;
+}
+
+.hw-swap > button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 0;
+  background: transparent;
+  color: var(--fg-muted);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1;
+  padding: 0 9px;
+  cursor: pointer;
+  transition: color 0.12s, background 0.12s;
+}
+
+.hw-swap > button:first-of-type {
+  border-radius: 7px 0 0 7px;
+}
+
+.hw-swap > button:last-of-type {
+  border-radius: 0 7px 7px 0;
+}
+
+.hw-swap > button:only-of-type {
+  border-radius: 7px;
+}
+
+.hw-swap > button:focus-visible {
+  outline-offset: -2px;
+}
+
+.hw-swap-change + .hw-swap-x {
+  border-left: 1px solid var(--ctl-quiet-border);
+}
+
+.hw-swap-change:hover,
+.hw-swap-change.is-open {
+  color: var(--fg);
+  background: rgba(var(--accent-rgb), 0.12);
+}
+
+.hw-swap-change.is-open {
+  color: var(--accent);
+}
+
+.hw-swap > .hw-swap-x {
+  padding: 0 7px;
+}
+
+.hw-swap > .hw-swap-x:hover {
+  color: var(--error);
+  background: rgba(var(--error-rgb), 0.12);
+}
+
+.hw-swap:has(.hw-swap-change.is-open),
+.hw-swap:hover {
+  border-color: rgba(var(--accent-rgb), 0.6);
+}
+
+/* The bare tiles (search, build) have no header to hold the control: x hangs off the corner. */
+.hw-swap.is-bare {
+  top: -10px;
+  right: -10px;
+  height: 24px;
+  border-radius: 999px;
+}
+
+.hw-swap.is-bare > button {
+  padding: 0 6px;
+  border-radius: 999px;
+}
+
+/* An empty hole in the layout: choose what goes there. */
+.hw-slot-wrap {
+  position: relative;
+  display: flex;
+  min-width: 0;
+}
+
+.hw-slot-wrap.is-open {
+  z-index: 30;
+}
+
+.hw-slot {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  padding: 8px;
+  border: 1px dashed color-mix(in srgb, var(--fg-faint) 55%, transparent);
+  border-radius: 14px;
+  background: transparent;
+  color: var(--fg-muted);
+  font-size: 13px;
+  text-align: center;
+  cursor: pointer;
+}
+
+.hw-slot:hover,
+.hw-slot[aria-expanded="true"] {
+  border-color: var(--accent);
+  color: var(--fg);
+  background: rgba(var(--accent-rgb), 0.06);
+}
+
+.hw-pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 40;
+  width: 440px;
+  max-width: calc(100vw - 32px);
+  max-height: calc(100vh - 120px);
+  overflow-y: auto;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 10px 30px var(--shadow-md);
+  cursor: default;
+}
+
+.hw-pop.is-left {
+  right: auto;
+  left: 0;
+}
+
+.hw-pop.is-up {
+  top: auto;
+  bottom: calc(100% + 6px);
+}
+
+.hw-slot-wrap .hw-pop {
+  top: 12px;
+  right: 12px;
+}
+
+.hw-slot-wrap .hw-pop.is-left {
+  right: auto;
+  left: 12px;
+}
+
+.hw-slot-wrap .hw-pop.is-up {
+  top: auto;
+  bottom: 12px;
+}
+
+.hw-po-list {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2px 6px;
+}
+
+.hw-pop .hw-po {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  box-sizing: border-box;
+  width: 100%;
+  margin: 0;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.hw-pop .hw-po:hover:not(:disabled),
+.hw-pop .hw-po:focus-visible {
+  background: var(--bg-alt);
+}
+
+.hw-pop .hw-po.is-on {
+  background: rgba(var(--accent-rgb), 0.1);
+}
+
+.hw-pop .hw-po:disabled {
+  color: var(--fg-faint);
+  cursor: default;
+}
+
+.hw-po:disabled .hw-src-sq {
+  opacity: 0.5;
+}
+
+.hw-po-text {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.hw-po-why {
+  font-size: 11px;
+  color: var(--fg-faint);
+}
+
+.hw-po-check {
+  flex: none;
+  color: var(--accent-soft);
+}
+
+.hw-pop-divider {
+  height: 1px;
+  margin: 4px 0;
+  background: var(--border);
+}
+
+.hw-label {
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-muted);
+}
+
+/* Size chips and format picks (popover and add sheet) */
+.hw-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.hw-sizechip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--fg-muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.hw-sizechip:hover {
+  color: var(--fg);
+}
+
+.hw-sizechip:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.hw-sizechip.is-on {
+  color: var(--fg);
+  border-color: var(--accent);
+  background: rgba(var(--accent-rgb), 0.1);
+}
+
+.hw-picks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.hw-pop .hw-picks {
+  box-sizing: border-box;
+  max-width: 100%;
+  padding: 2px;
+}
+
+.hw-pick {
+  flex: 1 1 0;
+  min-width: 0;
+  max-width: 140px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--fg-muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.hw-thumb {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 66px;
+  min-width: 0;
+  padding: 6px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+}
+
+.hw-thumb-in {
+  display: block;
+  flex: none;
+}
+
+.hw-pick:hover .hw-thumb {
+  border-color: var(--fg-faint);
+}
+
+.hw-pick.is-on .hw-thumb {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(var(--accent-rgb), 0.35);
+}
+
+.hw-pick-cap {
+  text-align: center;
+}
+
+.hw-pick.is-on .hw-pick-cap {
+  color: var(--fg);
+}
+
+/* Trailing add tile */
+.hw-add-tile {
+  min-height: 120px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  border: 1px dashed color-mix(in srgb, var(--fg-faint) 55%, transparent);
+  border-radius: 16px;
+  background: transparent;
+  color: var(--fg-muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.hw-add-tile:hover {
+  border-color: var(--accent);
+  color: var(--fg);
+  background: rgba(var(--accent-rgb), 0.06);
+}
+
+.hw-add-plus {
+  font-size: 22px;
+  line-height: 1;
+}
+
+/* Add sheet */
+.hw-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: var(--scrim);
+}
+
+.hw-sheet {
+  container-type: inline-size;
+  width: 900px;
+  max-width: calc(100% - 32px);
+  height: 560px;
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  box-shadow: 0 24px 60px var(--shadow-ink-deep), 0 0 0 1px var(--glass-highlight);
+  color: var(--fg);
+}
+
+.hw-sheet:focus {
+  outline: none;
+}
+
+.hw-sheet-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+}
+
+.hw-sheet-side {
+  flex: none;
+  width: 220px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px;
+  overflow-y: auto;
+  background: var(--bg-alt);
+}
+
+.hw-src {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--fg-muted);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.hw-src:hover {
+  color: var(--fg);
+}
+
+.hw-src.is-on {
+  color: var(--fg);
+  background: rgba(var(--accent-rgb), 0.14);
+}
+
+.hw-src-sq {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  background: var(--bg-panel);
+  color: var(--fg-muted);
+}
+
+.hw-src.is-on .hw-src-sq,
+.hw-src:hover .hw-src-sq {
+  background: rgba(var(--accent-rgb), 0.14);
+  color: var(--accent);
+}
+
+.hw-src-sq.is-lg {
+  background: rgba(var(--accent-rgb), 0.14);
+  color: var(--accent);
+  width: 44px;
+  height: 44px;
+  border-radius: 11px;
+}
+
+.hw-sheet-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 20px 22px 12px;
+  overflow-y: auto;
+}
+
+.hw-sheet-cfg {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  gap: 18px;
+}
+
+.hw-sheet-cfg > .hw-stage-box {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.hw-sheet-title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.hw-sheet-desc {
+  margin: 2px 0 0;
+  font-size: 12.5px;
+  color: var(--fg-muted);
+}
+
+.hw-sheet-note {
+  margin: 0;
+  font-size: 12px;
+  color: var(--warning);
+}
+
+.hw-stage-box {
+  flex: 1 1 auto;
+  min-height: 140px;
+  display: grid;
+  place-items: center;
+  padding: 20px 24px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--bg) 70%, var(--bg-panel));
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+.hw-stage-in {
+  display: block;
+  max-width: 100%;
+}
+
+.hw-stage-card { width: min(100%, 540px); display: flex; flex-direction: column; gap: 10px; padding: 12px 14px; background: var(--bg-panel); border: 1px solid var(--border); border-radius: 16px; overflow: hidden; }
+.hw-stage-card-head { display: flex; align-items: center; justify-content: space-between; font-size: 13px; font-weight: 600; color: var(--fg); }
+.hw-stage-card-head span { font-size: 12px; font-weight: 400; color: var(--fg-muted); }
+.hw-stage-card .hw-stage-in { width: 100%; }
+.hw-stage-card .fp-strip { mask-image: linear-gradient(90deg, black 82%, transparent); -webkit-mask-image: linear-gradient(90deg, black 82%, transparent); }
+
+.hw-stage-box.is-folders {
+  place-items: stretch;
+  align-content: start;
+  overflow-y: auto;
+}
+
+.hw-folders {
+  display: flex;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  gap: 8px;
+}
+
+.hw-folder {
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--fg-muted);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.hw-folder.is-on {
+  color: var(--fg);
+  border-color: var(--accent);
+  background: rgba(var(--accent-rgb), 0.1);
+}
+
+.hw-nofolders {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 100%;
+  text-align: center;
+  font-size: 12.5px;
+  color: var(--fg-muted);
+}
+
+.hw-nofolders b {
+  color: var(--fg);
+  font-size: 14px;
+}
+
+.hw-opts {
+  flex: none;
+  width: 230px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  overflow-y: auto;
+}
+
+.hw-opt {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.hw-opts .hw-pick {
+  flex: 1 1 0;
+  max-width: none;
+}
+
+.hw-sheet-foot {
+  flex: none;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 18px;
+  border-top: 1px solid var(--border);
+}
+
+/* Narrow sheet: sources become a scrolling row above the right column. */
+@container (max-width: 640px) {
+  .hw-sheet-body {
+    flex-direction: column;
+  }
+
+  .hw-sheet-side {
+    width: auto;
+    flex-direction: row;
+    gap: 4px;
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+
+  .hw-src {
+    flex: none;
+    white-space: nowrap;
+  }
+
+  .hw-sheet-main {
+    padding: 14px 16px 8px;
+  }
+
+  .hw-sheet-cfg {
+    flex-direction: column;
+  }
+
+  .hw-opts {
+    width: auto;
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 16px 28px;
+    overflow: visible;
+  }
+}
+
+/* App embed widget: the iframe fills the body; the skeleton sits under it until
+   it loads. Unit rows are minmax(52px, auto), so a 1x1 widget's two rows plus the gap give 120px; this min-height sets the height. */
+.hw-app-body {
+  display: flex;
+  flex-direction: column;
+  min-height: 320px;
+}
+
+.hw-widget.hw-size-2x2:has(.hw-app-body),
+.hw-widget.hw-size-1x2:has(.hw-app-body) {
+  min-height: 420px;
+}
+
+.hw-widget.hw-size-2x2 .hw-app-body,
+.hw-widget.hw-size-1x2 .hw-app-body {
+  min-height: 360px;
+}
+
+.hw-app-frame {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+}
+
+.hw-app-iframe {
+  flex: 1 1 auto;
+  width: 100%;
+  border: 0;
+  border-radius: 10px;
+  background: var(--bg);
+  opacity: 0;
+  transition: opacity 0.18s ease;
+}
+
+.hw-app-iframe.is-loaded {
+  opacity: 1;
+}
+
+.hw-app-skel {
+  position: absolute;
+  inset: 0;
+  width: auto;
+  height: auto;
+  border-radius: 10px;
+}
+
+.hw-stage-box > .hw-app-skel {
+  position: static;
+  width: 100%;
+  min-height: 120px;
+}
+
+.hw-app-shield {
+  position: absolute;
+  inset: 0;
+  background: transparent;
+}
+
+/* Add sheet app picker. */
+.hw-appsearch {
+  width: 100%;
+  margin: 0 0 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-panel);
+  color: var(--fg);
+  font-size: 12.5px;
+}
+
+.hw-apppick {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.hw-filepick { display: flex; flex-direction: column; min-height: 0; gap: 6px; }
+.hw-filepick-crumb { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--fg-muted); min-width: 0; }
+.hw-filepick-crumb span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hw-filepick-up { border: 0; background: transparent; color: var(--fg-muted); font: inherit; cursor: pointer; padding: 2px 6px; border-radius: 6px; }
+.hw-filepick-up:hover { background: var(--ctl-quiet-bg-hover); color: var(--fg); }
+.hw-filepick-list { overflow-y: auto; min-height: 0; max-height: 260px; display: flex; flex-direction: column; gap: 2px; }
+.hw-filepick-status { font-size: 11px; color: var(--fg-muted); padding: 2px 4px; }
+.hw-filepick-status.is-err { color: var(--error); }
+.hw-filepick-status.is-ok { color: var(--success); }
+
+.hw-appopt {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 8px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--fg-muted);
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.hw-appopt:hover {
+  color: var(--fg);
+}
+
+.hw-appopt.is-on {
+  color: var(--fg);
+  border-color: var(--accent);
+  background: rgba(var(--accent-rgb), 0.1);
+}
+
+.hw-appopt .hw-tile-icon {
+  width: 22px;
+  height: 22px;
+}
+.hw-appopt .hw-tile-mono { font-size: 10px; }
+
+.hw-appopt-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 1px;
+}
+
+.hw-appopt-dir {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--fg-muted);
+  opacity: 0.75;
+}
+
+.hw-appopt-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Format preview: a mini browser frame. */
+.fp-app { width: 360px; }
+
+.fp-win {
+  border: 1px solid rgba(var(--tint), 0.2);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.fp-win-bar {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 7px 9px;
+  border-bottom: 1px solid rgba(var(--tint), 0.14);
+  background: rgba(var(--tint), 0.06);
+}
+
+.fp-win-bar .fp-dot { background: rgba(var(--tint), 0.3); }
+.fp-win-bar .fp-ln { margin-left: 6px; }
+
+.fp-win-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+}
+
+.fp-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  height: 56px;
+}
+
+.fp-bars span {
+  flex: 1 1 0;
+  border-radius: 3px 3px 0 0;
+  background: rgba(var(--accent-rgb), 0.35);
+}
+
+/* ---- Search widget ----------------------------------------------------------- */
+/* View mode: the widget is the bar itself — no card, no header, minimal padding,
+   like the hero it replaced. Edit mode has its own rules below the .hw-ph block. */
+.hw-widget.is-search:not(.is-edit),
+.hw-widget.is-build:not(.is-edit) {
+  min-height: 0;
+  align-self: stretch;
+  width: 100%;
+  padding: 4px 0 12px;
+  background: none;
+  border-color: transparent;
+  border-radius: 0;
+  overflow: visible;
+  text-align: center;
+}
+
+/* A live query takes over: only the search widget renders, across every column. */
+.hw-grid.is-searching .hw-widget {
+  grid-column: 1 / -1;
+  grid-row: auto;
+  align-self: start;
+}
+
+/* The bar spans the whole widget, whatever its size. */
+.hw-widget.is-search:not(.is-edit) > *,
+.hw-widget.is-search .files-search-wrap {
+  width: 100%;
+  max-width: none;
+  box-sizing: border-box;
+}
+
+/* One column is too narrow for the CTA and the long placeholder; the bar
+   alone still searches and the All files link lives in the sidebar. */
+.hw-widget.is-search.hw-size-1x1 .files-search-allfiles {
+  display: none;
+}
+
+/* Takeover: the old hero's breathing room above the bar. */
+.hw-grid.is-searching .hw-widget.is-search {
+  padding-top: 18px;
+}
+
+/* Edit-mode stand-ins for the two bare widgets: the real bar's and composer's
+   own markup and classes, static, so they take the real control's shape and
+   height. They must NOT stretch with .hw-body (a stretched 999px pill was a
+   giant oval in a 2x1 cell), and the fake "input" text is a span, so it needs
+   the placeholder colour the real input gets from the UA. */
+.hw-ph { flex: 0 0 auto; width: 100%; box-sizing: border-box; margin-top: 4px; }
+.hw-ph .hw-ph-text { color: var(--fg-muted); }
+.hw-ph .files-search-input { padding: 12px 0; font-size: 14px; line-height: 1.4; min-width: 0; flex: 1 1 auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hw-ph .home-composer-input { min-height: 83px; padding: 14px 16px 6px; font-size: 14px; line-height: 1.5; }
+.hw-ph .home-composer-wrap { margin-bottom: 0; }
+.hw-ph .hw-ph-sel { display: inline-flex; align-items: center; gap: 3px; padding: 3px 2px; font-size: 12px; }
+
+.hw-widget.is-build { text-align: left; padding: 0; }
+
+/* View mode: the composer is the page's hero, not a full-width cell. It sits
+   centred at the old Home's width with a headline above, and its sample chips
+   start at the composer's left edge instead of centring under the full grid. */
+/* Bottom padding keeps the sample chips from crowding the next grid row (19px to the next tile measured, vs ~55px above the headline). */
+.hw-widget.is-build:not(.is-edit) { padding: 12px 0 40px; }
+.hw-build-hero { width: 100%; max-width: 760px; margin: 0 auto; }
+.hw-build-headline {
+  margin: 0 0 14px;
+  font-size: 22px; font-weight: 500; letter-spacing: -0.02em;
+  color: var(--fg-muted);
+  text-align: center;
+}
+.hw-build-headline em { font-style: normal; color: var(--fg); }
+.hw-build-hero .home-composer-samples { justify-content: flex-start; }
+.hw-build-hero .home-composer-input { min-height: 112px; }
+
+/* Edit mode: the two bare widgets are their footprint (1 unit for search, 4
+   for build). No card chrome; the × pill hangs off the corner (.hw-swap.is-bare). */
+.hw-widget.is-search.is-edit,
+.hw-widget.is-build.is-edit {
+  min-height: 0;
+  padding: 0;
+  justify-content: center;
+  background: none;
+  border-color: transparent;
+}
+.hw-widget.is-search.is-edit .hw-ph,
+.hw-widget.is-build.is-edit .hw-ph { margin-top: 0; }
+.hw-widget.is-search.is-edit .files-search-icon,
+.hw-widget.is-search.is-edit .files-search-allfiles { display: none; }
+/* The build frame is a full-width card outline like the other widgets (the
+   shared rule above clears it for the search bar), and the stand-in inside is
+   the view-mode hero: headline, 760px composer, chips, from the top of the
+   4-unit frame. */
+.hw-widget.is-build.is-edit {
+  justify-content: flex-start;
+  border-color: var(--border);
+}
+.hw-widget.is-build.is-edit:hover { border-color: rgba(var(--accent-rgb), 0.5); }
+.hw-widget.is-build.is-edit .hw-ph {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  padding-top: 12px;
+  box-sizing: border-box;
+}
+/* The search bar's hover highlight, which the transparent frame above
+   suppresses, lands on the control's own border instead: a frame border would
+   sit 4px outside the bar. */
+.hw-widget.is-search.is-edit:hover .files-search {
+  border-color: rgba(var(--accent-rgb), 0.5);
+}
+.hw-widget.is-build .home-composer-wrap { margin-bottom: 0; }
+
+/* Add-sheet preview of the search bar: a rounded input, magnifier, placeholder bar. */
+.fp-search {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 360px;
+  padding: 10px 14px;
+  color: var(--fg-muted);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg);
+}
+
+.fp-search svg { flex: none; }
+.fp-search .fp-ln { flex: 1 1 auto; width: auto; max-width: 70%; }
+
+.fp-prompt {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 360px;
+  padding: 14px 16px 30px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--bg);
+}
+.fp-prompt .fp-ln { width: auto; }
+.fp-prompt .fp-ln.is-l { max-width: 80%; }
+.fp-prompt .fp-ln.is-m { max-width: 45%; }
+.fp-prompt-send {
+  position: absolute;
+  right: 10px;
+  bottom: 8px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.hw-widget.is-app { padding: 0; }
+.hw-widget.is-app .hw-head {
+  margin: 0;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.hw-widget.is-app .hw-body { display: flex; flex-direction: column; min-height: 0; }
+.hw-widget.is-app .hw-app-iframe { border-radius: 0; }

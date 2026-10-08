@@ -52,6 +52,7 @@
    * value is the same in each palette — a token so the no-literals rule holds,
    * not because it varies. */
   --qr-paper: #fff;
+  --tile-fg: #fff; /* letter on a solid fallback app tile, same in both themes */
   /* The spinner drawn ON that paper: black at two strengths, the same in both
    * themes for the same reason the paper is. Tokens so the no-literals rule
    * holds (tests/test_theme.py), not because they vary. */
@@ -375,6 +376,7 @@
      light photo half the time. Named tokens rather than literals so the rule
      "every colour comes from the palette" stays a rule with no exceptions to
      remember (they are what test_theme.py checks for). */
+  --face-eye: #0f172a; /* bot faces are fixed bright marks in both themes; their eyes stay this dark */
   --scrim-fg: #ffffff;
   --scrim-bg: rgba(0, 0, 0, 0.55);
   --scrim-bg-hover: rgba(0, 0, 0, 0.75);
@@ -420,6 +422,7 @@
   --success: #1a7f37;
   --warning: #8f6a10;
   --qr-paper: #fff; /* same in both themes — see the dark palette's note */
+  --tile-fg: #fff;
   --qr-ink-soft: rgb(0 0 0 / 12%);
   --qr-ink: rgb(0 0 0 / 45%);
 
@@ -585,6 +588,7 @@
   --task-c7: #6d28d9;
   /* Identical to the dark palette on purpose — see the scrim set above. The
      surface under these is a photograph, not the page. */
+  --face-eye: #0f172a; /* bot faces are fixed bright marks in both themes; their eyes stay this dark */
   --scrim-fg: #ffffff;
   --scrim-bg: rgba(0, 0, 0, 0.55);
   --scrim-bg-hover: rgba(0, 0, 0, 0.75);

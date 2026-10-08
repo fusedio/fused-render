@@ -203,7 +203,7 @@ const ICON_X = (
 // "high") instead of spelling their own axis out. Drawn in the composer's own weight (13px,
 // 2px stroke) rather than borrowed from MenuIcons, which is tuned 1.5px for menu
 // rows — a menu glyph beside these chips reads thin and unrelated.
-const PICK_GLYPHS = {
+export const PICK_GLYPHS = {
   // Model — the sparkle MenuIcons uses for "new", the app's existing mark for
   // the AI doing something on your behalf.
   model: (

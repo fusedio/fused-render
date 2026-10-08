@@ -1,379 +1,31 @@
-// The app's front door (/home): the explorer's search hero over three
-// recency-sorted strips — Fused Apps, Claude Sessions, Recent files — each
-// capped at one row with a "See all" that lands on the full surface it
-// previews (/apps, or the explorer home pinned to the matching tab).
+// The app's front door (/home): a configurable 4-column widget grid whose
+// first widget is the file search. The default layout is the search bar plus
+// the four strips this page used to hard-code — Fused Apps, AI Playground, Claude Sessions, Recent files —
+// each a one-row "See all" strip; "Customize" turns on edit mode (pick a layout
+// preset, change what a tile shows, add or remove widgets) and the layout is
+// saved on the server (GET/PUT /api/home/layout).
 //
 // Lives in the shell layer on purpose: it composes builder cards
 // (AppPreviewCard) with explorer cards and libs, which only the shell may
-// import together (scripts/check-boundaries.mjs).
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { navigateUrl } from "@platform/lib/router";
-import { basename } from "@platform/lib/format";
-import {
-  getHomeApps,
-  getHomeClaudeSessionFolders,
-  type AppInfo,
-  type ClaudeSessionFolder,
-  type Config,
-} from "@platform/lib/api";
-import { useIndexStatus } from "@platform/lib/index-status";
-import { runCommunity } from "@platform/lib/community";
-import { loadRecents, recentFsPath, useRecentsVersion } from "@apps/explorer/lib/recents";
-import { useCurrentAppsChanged } from "@platform/lib/tasksChanged";
-import { FilesSearch } from "@apps/explorer/FilesHome";
-import { FolderPreviewCard, RecentPreviewCard } from "@apps/explorer/BookmarkCards";
-import { AppPreviewCard } from "@platform/ui/AppPreviewCard";
+// import together (scripts/check-boundaries.mjs). The widgets themselves are
+// in shell/home/.
+import { useEffect, useMemo, useRef, useState } from "react";
+import { SlidersHorizontal } from "lucide-react";
+import type { Config } from "@platform/lib/api";
+import { useRecentsVersion } from "@apps/explorer/lib/recents";
 import { ClaudeHealthStrip } from "@platform/ui/ClaudeHealthStrip";
 import { FdaStrip } from "@platform/ui/FdaStrip";
-import { PLAYGROUND_GROUPS, type PlaygroundGroup } from "@apps/ai_models/playground/groups";
-import { tabHref } from "@apps/ai_models/routes";
+import { loadBookmarks } from "@platform/lib/bookmarks";
+import { AddWidgetPanel, allFolders } from "./home/AddWidgetPanel";
+import { PRESETS, matchPreset, type HomeLayout, type TileTarget, type WidgetSource } from "./home/layout";
+import { PresetThumb } from "./home/PresetThumb";
+import { WidgetGrid } from "./home/WidgetGrid";
+import { useHomeLayout } from "./home/useHomeLayout";
+import { SearchHostContext, useSearchHost } from "./home/widgets/SearchWidget";
 
-// One row per section: the page measures its own width and renders exactly
-// as many full-size cards as fit — no wrapping, no clipping, no scrolling.
-// The full lists live behind "See all".
-// Card width + gap must match the .home-row CSS.
-const CARD_W = 330;
-const CARD_GAP = 16;
-// The ceiling on what a section may fetch/keep — enough for a very wide
-// window, and the same cap the two endpoints apply to `limit` themselves
-// (HOME_APPS_LIMIT / HOME_SESSION_LIMIT). NOT the number either one asks for:
-// see useStripCount.
-const MAX_ROW = 12;
-
-// How many cards fit across the sections' shared container right now, plus the
-// most that have ever fit — the number the fetches ask for.
-// One ResizeObserver on the wrapper, one count for all three strips.
-//
-// The two numbers are not the same, and the difference is load-bearing. Asking
-// for MAX_ROW when the row draws three cards is what made the server's
-// recents-first fast path unreachable: /api/apps/home skips its exhaustive
-// workspace walk only once the recents FILL the request (routers/apps.py), so a
-// request for twelve walked the whole workspace on every visit for anyone with
-// fewer than twelve opened apps — which is nearly everyone. A row that asks for
-// what it can draw puts that walk back to being the fallback it is documented
-// as, and the session row's per-directory transcript reads (its endpoint stops
-// as soon as `limit` folders land) shrink with it.
-//
-// `count` is null until the wrapper has actually been MEASURED, and both
-// fetches wait for it. A guess would be a request for cards the row cannot
-// show, which is the same bug in smaller print. Nothing flashes for it: a
-// callback ref runs in the commit phase, so the measured value is in before the
-// browser paints.
-//
-// `limit` is the PEAK count, never the current one — widening the window needs
-// cards the first fetch did not ask for, while narrowing it already holds
-// enough, so a drag that shrinks the row refetches nothing.
-//
-// A CALLBACK ref, not useRef+useEffect: the measured wrapper UNMOUNTS while a
-// search is live (`searching ? null : <div ref=…>`), and a mount-once effect
-// only ever saw the first element — on unmount the observer fired against the
-// detached node (clientWidth 0 → count 1) and the remounted wrapper was never
-// observed again, so clearing a search left every strip at one card per row.
-// The callback re-runs on each mount/unmount: it tears the old observer down
-// and measures the element actually on screen.
-function useStripCount() {
-  // One state, not two: `limit` is derived from the same measurement as
-  // `count`, and splitting them would let a render see a count the limit had
-  // not accounted for yet.
-  const [size, setSize] = useState<{ count: number | null; limit: number | null }>({
-    count: null,
-    limit: null,
-  });
-  const roRef = useRef<ResizeObserver | null>(null);
-  const ref = useCallback((el: HTMLDivElement | null) => {
-    roRef.current?.disconnect();
-    roRef.current = null;
-    if (!el) return;
-    const measure = () => {
-      const fits = Math.max(
-        1,
-        Math.floor((el.clientWidth + CARD_GAP) / (CARD_W + CARD_GAP)),
-      );
-      // Same object back when the count is unchanged: a ResizeObserver fires
-      // for every pixel of a window drag, and only a changed card count is a
-      // reason to re-render (or, via `limit`, to fetch).
-      setSize((prev) =>
-        prev.count === fits
-          ? prev
-          : { count: fits, limit: Math.max(prev.limit ?? 0, fits) },
-      );
-    };
-    measure();
-    const ro = new ResizeObserver(measure);
-    ro.observe(el);
-    roRef.current = ro;
-  }, []);
-  return { ref, count: size.count, limit: size.limit };
-}
-
-// Section chrome: title row with the "See all" action on the right edge.
-// Both title and "See all" are <a>s so cmd/ctrl-click opens the full page in
-// a new tab like any link.
-function softNavigate(e: React.MouseEvent, href: string) {
-  if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
-  e.preventDefault();
-  navigateUrl(href);
-}
-
-function Section({
-  id,
-  title,
-  seeAllHref,
-  children,
-}: {
-  /** Stable anchor for the welcome tour (platform/lib/tours/home.ts) — the
-      section's own classes are shared by all four strips. */
-  id?: string;
-  title: string;
-  seeAllHref: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <section id={id} className="fh-section home-section">
-      <div className="home-sec-head">
-        <h2 className="home-sec-title">
-          <a className="home-sec-title-link" href={seeAllHref} onClick={(e) => softNavigate(e, seeAllHref)}>
-            {title}
-          </a>
-        </h2>
-        <a className="home-sec-more" href={seeAllHref} onClick={(e) => softNavigate(e, seeAllHref)}>
-          See all
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <path d="M9 6l6 6-6 6" />
-          </svg>
-        </a>
-      </div>
-      {children}
-    </section>
-  );
-}
-
-// Skeleton for one card while a strip's fetch is in flight. Two variants,
-// because Home's two async strips draw two DIFFERENT real cards and a single
-// shared shape would be wrong for one of them:
-//   - "app"    mirrors AppPreviewCard/`.app-pcard` (apps.css) — title + a meta
-//     row (tag pill, timestamp) OVER a full-bleed thumb, with a 32px mark in
-//     the head's icon column. This variant DOES shimmer that square, unlike
-//     the folder one below: which mark the real card draws (the app's own
-//     `icon.svg`, or the generic star) arrives with the fetch, so a shimmer
-//     there claims exactly what is true — and without it the skeleton's text
-//     would start 42px left of where the real card's does and jump sideways
-//     on the swap.
-//   - "folder" mirrors FolderPreviewCard/`.fhb-card` (preferences.css) — a
-//     head row over an inset thumb well. The real card's head DOES carry an
-//     icon, but it's a static decorative folder glyph, identical on every
-//     card and independent of the fetch — shimmering it (or even placing an
-//     inert placeholder for it) would claim something is loading that isn't,
-//     so both variants render NO icon.
-// Built by reusing the real card's own classes rather than a bespoke shimmer
-// shape with hand-measured dimensions: the browser lays both variants out
-// with the exact same box model (padding, border, font metrics) the real
-// card gets, so the skeleton's height tracks the real card's automatically —
-// including through a CSS change neither this file nor a hand-derived
-// constant would notice. Pure decoration — `aria-hidden`, with the row
-// wrapper (below) carrying the one `role="status"` announcement for the
-// whole strip, the way the old "Loading apps" line (a single ~18px
-// paragraph) used to speak for the row rather than each line in it.
-function SkeletonCard({ variant }: { variant: "app" | "folder" }) {
-  if (variant === "app") {
-    return (
-      <span className="app-pcard home-skel-card" aria-hidden="true">
-        <span className="app-pcard-body">
-          <span className="skel-bar app-pcard-icon-skel" />
-          {/* The lines wrapper, not bars straight in the body: the body is a
-              ROW since the icon column landed beside them (apps.css), so bars
-              placed directly in it would sit side by side. */}
-          <span className="app-pcard-lines">
-            <span className="skel-bar" style={{ width: "58%" }} />
-            <span className="app-pcard-meta">
-              <span className="skel-bar" style={{ width: "110px" }} />
-            </span>
-          </span>
-        </span>
-        <span className="app-pcard-thumb home-skel-body" />
-      </span>
-    );
-  }
-  return (
-    <span className="fhb-card home-skel-card" aria-hidden="true">
-      <span className="fhb-card-head">
-        {/* `.fh-card-text` is a shrink-to-fit flex item everywhere else (its
-            real content — the name/path text — decides its width, and here
-            it's the head row's ONLY child, since the icon is deliberately
-            gone); a percentage-width `.skel-bar` inside it has nothing to
-            shrink-to-fit against, so `home-skel-text` grows it to fill the
-            head row like the real text effectively does once it's long
-            enough to need the ellipsis. */}
-        <span className="fh-card-text home-skel-text">
-          {/* Wider bar on top: a name reads longer than the path underneath it
-              on every real card head, and matching that keeps the skeleton
-              from looking like a title-less placeholder. */}
-          <span className="skel-bar" style={{ width: "72%" }} />
-          <span className="skel-bar" style={{ width: "48%" }} />
-        </span>
-      </span>
-      <span className="fhb-thumb home-skel-body" />
-    </span>
-  );
-}
-
-// A skeleton row is sized by `shown`, not by a guess or the section's peak
-// `limit` — the same number of cards the real row will draw once the fetch
-// lands (Home.tsx slices every strip to `shown`), so the swap from skeleton to
-// content never changes the row's card count or width. Floored at 1: `shown`
-// is 0 before the wrapper has been measured (see useStripCount), and a row of
-// zero skeleton cards would render as nothing at all rather than as "loading".
-function SkeletonRow({
-  count,
-  label,
-  variant,
-}: {
-  count: number;
-  label: string;
-  variant: "app" | "folder";
-}) {
-  return (
-    <div className="home-row" role="status" aria-busy="true" aria-label={label}>
-      {Array.from({ length: Math.max(1, count) }, (_, i) => (
-        <SkeletonCard key={i} variant={variant} />
-      ))}
-    </div>
-  );
-}
-
-// The AI Playground strip's glyph vocabulary — plain strokes on the current
-// color, so the tinted body well colours them for free. Keyed by the THING a
-// task reads or writes rather than by the capability, because the card body
-// draws each task as the pair it maps between (see PLAYGROUND_FLOWS).
-const MEDIA_GLYPHS = {
-  // Material's `message` — a squared bubble with a corner tail and three lines
-  // of writing — and the SAME geometry the playground rail's Text generation
-  // section wears (apps/ai_models/playground/capabilityIcons.tsx). These two
-  // surfaces are one click apart and the card is a picture of where the click
-  // lands, so a different bubble on each end reads as two different features.
-  // It replaces a rounded balloon whose only marks were two short lines: at
-  // the 18px this draws at, that read as a speech balloon — someone talking —
-  // where every use of this glyph here is about WRITTEN text.
-  chat: (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M5 4h14a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H7l-4 4V6a2 2 0 0 1 2-2Z" />
-      <path d="M7 7.5h10M7 10.5h10M7 13.5h6" />
-    </svg>
-  ),
-  image: (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <rect x="3" y="4" width="18" height="16" rx="2.5" />
-      <circle cx="9" cy="10" r="2" />
-      <path d="M3 17.5 8.5 13l4 3.5 3.5-3 5 4.5" />
-    </svg>
-  ),
-  speech: (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <rect x="9" y="3" width="6" height="11" rx="3" />
-      <path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M8.5 21h7" />
-    </svg>
-  ),
-  voice: (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M4 9.5h3l4-3.5v12l-4-3.5H4z" />
-      <path d="M15 9.5a3.5 3.5 0 0 1 0 5" />
-      <path d="M17.5 7a7 7 0 0 1 0 10" />
-    </svg>
-  ),
-  meaning: (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <circle cx="10.5" cy="10.5" r="7" />
-      <path d="M20.5 20.5 15.6 15.6" />
-      <circle cx="8" cy="9" r="0.4" />
-      <circle cx="12.8" cy="8.2" r="0.4" />
-      <circle cx="10.2" cy="13" r="0.4" />
-    </svg>
-  ),
-  video: (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <rect x="3" y="5.5" width="13" height="13" rx="2.5" />
-      <path d="M16 10.5 21 7.5v9L16 13.5z" />
-    </svg>
-  ),
-  // A decision: one line forking into two, the taken branch marked. Same
-  // figure as `capabilityIcons.tsx`'s text-classification glyph, redrawn at
-  // this set's stroke so the card row stays one weight.
-  decision: (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M4 12h6" />
-      <path d="M10 12c3 0 3-5 6-5h4" />
-      <path d="M10 12c3 0 3 5 6 5h4" />
-      <circle cx="20" cy="7" r="1.6" fill="currentColor" stroke="none" />
-    </svg>
-  ),
-} satisfies Record<string, ReactNode>;
-
-type PlaygroundMedia = keyof typeof MEDIA_GLYPHS;
-
-// What each task takes in and hands back. The body renders it literally —
-// in-glyph, arrow, out-glyph — so the card shows "speech becomes text" without
-// leaning on the blurb, and chat → chat still reads as a mapping (rewriting)
-// rather than a doubled icon.
-const PLAYGROUND_FLOWS: Record<string, [PlaygroundMedia, PlaygroundMedia]> = {
-  "text-generation": ["chat", "chat"],
-  "text-to-image": ["chat", "image"],
-  "text-to-video": ["chat", "video"],
-  "automatic-speech-recognition": ["speech", "chat"],
-  "text-to-speech": ["chat", "voice"],
-  embeddings: ["chat", "meaning"],
-  "text-classification": ["chat", "decision"],
-};
-
-// The header's single glyph names the task itself, which is not always the
-// flow's output — Transcription is filed under the mic, not under text.
-const PLAYGROUND_HEADS: Record<string, PlaygroundMedia> = {
-  "text-generation": "chat",
-  "text-to-image": "image",
-  "text-to-video": "video",
-  "automatic-speech-recognition": "speech",
-  "text-to-speech": "voice",
-  embeddings: "meaning",
-  "text-classification": "decision",
-};
-
-const FLOW_ARROW = (
-  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-    <path d="M4 12h15M13.5 6.5 20 12l-6.5 5.5" />
-  </svg>
-);
-
-// One card per playground task: the header names it, the body says what it
-// does. Static on purpose — the strip advertises the SURFACE, not this
-// machine's downloads, so it costs Home no catalog fetch. The link carries
-// only the capability (`?cap=`); the playground itself resolves that to its
-// vetted default model, so the choice lives in one place.
-function PlaygroundPreviewCard({ group }: { group: PlaygroundGroup }) {
-  const href = tabHref("playground", `?cap=${encodeURIComponent(group.capability)}`);
-  // A group added without a flow still renders (Home must not crash on a
-  // vocabulary edit): it falls back to the header glyph on both sides.
-  const head = PLAYGROUND_HEADS[group.capability] ?? "chat";
-  const flow = PLAYGROUND_FLOWS[group.capability] ?? [head, head];
-  return (
-    <a className="fhb-card home-pg-card" href={href} onClick={(e) => softNavigate(e, href)}>
-      <span className="fhb-card-head">
-        <span className="fh-card-icon home-pg-icon" aria-hidden="true">
-          {MEDIA_GLYPHS[head]}
-        </span>
-        <span className="fh-card-text">
-          <span className="fh-card-name">{group.label}</span>
-          <span className="fh-card-path">Runs on this machine</span>
-        </span>
-      </span>
-      <span className="home-pg-body" aria-hidden="true">
-        <span className="home-pg-flow">
-          <span className="home-pg-glyph">{MEDIA_GLYPHS[flow[0]]}</span>
-          <span className="home-pg-arrow">{FLOW_ARROW}</span>
-          <span className="home-pg-glyph">{MEDIA_GLYPHS[flow[1]]}</span>
-        </span>
-        <span className="home-pg-blurb">{group.blurb}</span>
-      </span>
-    </a>
-  );
+/** Files shows a bookmark folder when there is one to show. */
+function firstBookmarkFolderId(): string | undefined {
+  return allFolders(loadBookmarks())[0]?.id;
 }
 
 export default function Home({ config }: { config: Config }) {
@@ -381,212 +33,143 @@ export default function Home({ config }: { config: Config }) {
   const home = config.home.replace(/\\/g, "/");
   useRecentsVersion();
 
-  // Ahead of the two fetches below, which size their request by it.
-  const { ref: stripRef, count, limit } = useStripCount();
-  // Slice width while the wrapper is still unmeasured. Pre-paint only — see
-  // useStripCount — so an empty row is never actually seen.
-  const shown = count ?? 0;
-
-  // Fused apps — hydrate the recent row first. The server only scans the full
-  // workspace when valid recents do not fill it, preserving discovery and the
-  // showcase fallback without charging returning visits for an exhaustive walk.
-  const [apps, setApps] = useState<AppInfo[] | null>(null);
-  const [appsError, setAppsError] = useState<string | null>(null);
-  // Bumped on the desk-changed announcement (an icon picked from the sidebar
-  // while this row is on screen) so the cards redraw with the new icon.svg —
-  // the row's AppInfo carries the icon path + mtime, and nothing else here
-  // would ever refresh it. Refetch in place: `apps` is not cleared, so the
-  // row never flashes back to skeletons.
-  const [appsNonce, setAppsNonce] = useState(0);
-  useCurrentAppsChanged(() => setAppsNonce((n) => n + 1));
+  const layoutApi = useHomeLayout();
+  const [edit, setEdit] = useState(false);
+  // The add sheet: bare ("+ Add widget"), or aimed at one tile or slot (a
+  // folder or page picked from a Change popover).
+  const [panel, setPanel] = useState<null | { target?: TileTarget; initialSource?: WidgetSource }>(null);
+  // The layout before the last preset click, for Undo.
+  const prevLayout = useRef<HomeLayout | null>(null);
+  const [canUndo, setCanUndo] = useState(false);
+  // True between a preset click and the layout change it produces; any later
+  // change is a further edit, which ends Undo (it would roll back past it).
+  const presetPending = useRef(false);
   useEffect(() => {
-    if (limit === null) return;
-    let alive = true;
-    getHomeApps(Math.min(limit, MAX_ROW)).then(
-      async (r) => {
-        if (!alive) return;
-        if (r.apps.length > 0) {
-          setApps(r.apps.slice(0, MAX_ROW));
-          return;
-        }
-        // Empty on a brand-new install usually isn't "no apps" — it's this
-        // fetch landing before the startup showcase clone (into
-        // <workspace>/showcase, kicked off in the background at server start)
-        // has finished. Apps.tsx already escalates the same "no-cache" catalog
-        // status into a wait-for-clone-then-refetch; Home is the first page a
-        // new user sees, so it needs the same escalation instead of settling
-        // on "No apps yet" forever.
-        try {
-          const local = await runCommunity<{ status?: string }>({ action: "catalog" });
-          if (!alive) return;
-          // A "no-cache" status means the clone is still missing — wait for
-          // it. But the clone can just as easily land in the gap between the
-          // first empty getHomeApps and this very check, which reports it
-          // "ok" already: that walk never re-ran, so its emptiness is just as
-          // stale. Either way, one more walk is needed before the row really
-          // is empty — retry unconditionally, only waiting on refresh first
-          // when the clone genuinely hasn't landed yet.
-          if (local.status === "no-cache") {
-            await runCommunity({ action: "refresh" });
-            if (!alive) return;
-          }
-          const retry = await getHomeApps(Math.min(limit, MAX_ROW));
-          if (!alive) return;
-          setApps(retry.apps.slice(0, MAX_ROW));
-          return;
-        } catch (e) {
-          // The clone refused (no usable git, network, a foreign folder at
-          // <workspace>/showcase). On a brand-new install this row is empty
-          // BECAUSE of that, so the reason belongs in the empty state — the
-          // bare "No apps yet" reads as a normal fresh workspace and leaves
-          // the user waiting on a download that will never arrive. The
-          // backend composes the whole sentence; it renders verbatim below.
-          if (!alive) return;
-          setAppsError((e as Error).message);
-        }
-        setApps([]);
-      },
-      (e: Error) => {
-        if (!alive) return;
-        setApps([]);
-        setAppsError(e.message);
-      },
-    );
-    return () => {
-      alive = false;
-    };
-  }, [limit, appsNonce]);
-
-  // Claude session folders — Home's endpoint orders transcript mtimes first,
-  // then opens only enough newest JSONL files to fill this one row.
-  const [sessions, setSessions] = useState<ClaudeSessionFolder[] | null>(null);
+    if (presetPending.current) {
+      presetPending.current = false;
+      return;
+    }
+    prevLayout.current = null;
+    setCanUndo(false);
+  }, [layoutApi.layout]);
+  const active = useMemo(() => matchPreset(layoutApi.layout), [layoutApi.layout]);
   useEffect(() => {
-    if (limit === null) return;
-    let alive = true;
-    getHomeClaudeSessionFolders(Math.min(limit, MAX_ROW)).then(
-      (r) => alive && setSessions(r.folders.slice(0, MAX_ROW)),
-      () => alive && setSessions([]),
-    );
-    return () => {
-      alive = false;
+    if (!edit) {
+      setPanel(null);
+      prevLayout.current = null;
+      setCanUndo(false);
+      return;
+    }
+    const key = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setEdit(false);
     };
-  }, [limit]);
+    document.addEventListener("keydown", key);
+    return () => document.removeEventListener("keydown", key);
+  }, [edit]);
 
-  // Recents come from the same client cache the explorer home reads (raw MRU).
-  const recents = loadRecents().entries.slice(0, MAX_ROW);
-
-  // Search takes over the page body while a query is live — the same posture
-  // as the explorer home. The index poll only runs while the box needs its
-  // "indexing…" caveat.
-  const [searching, setSearching] = useState(false);
-  // Bumped when the box starts a scan, so the poll looks again immediately
-  // instead of on its next idle beat (see FilesSearch's `onScanRequested`).
-  const [indexNonce, setIndexNonce] = useState(0);
-  const indexScan = useIndexStatus(searching, indexNonce);
-  const initialQuery = useRef(new URLSearchParams(location.search).get("q") || "").current;
+  // Search is a widget, but a live query takes over the page body — the same
+  // posture as the explorer home. The state lives here so the takeover can hide
+  // everything else; the widget draws the box (home/widgets/SearchWidget.tsx).
+  const search = useSearchHost(home);
+  const searching = search.searching;
+  const focusView = !edit && !searching && active === "focus";
 
   return (
-    <div className="files-home">
+    <div className={"files-home" + (focusView ? " is-focus" : "")}>
       <div className="files-home-inner home-wide">
-        <header className="home-hero files-hero">
-          <FilesSearch
-            home={home}
-            initialQuery={initialQuery}
-            indexScan={indexScan}
-            onActiveChange={setSearching}
-            onScanRequested={() => setIndexNonce((n) => n + 1)}
-          />
-        </header>
-
-        {searching ? null : (
-          // Outer div is the full-width measuring element; the inner column is
-          // exactly as wide as the cards that fit and centered, so the section
-          // titles and "See all" stay flush with the cards' edges.
-          <div ref={stripRef}>
-            <div
-              className="home-strips"
-              style={
-                count === null
-                  ? undefined
-                  : { width: count * (CARD_W + CARD_GAP) - CARD_GAP }
-              }
-            >
-            {/* Above the strips, because on a machine where Claude Code is not
+        <SearchHostContext.Provider value={search}>
+          <div className="home-strips">
+            {/* Above the grid, because on a machine where Claude Code is not
                 set up this is the only thing on the page the user can act on —
                 and it renders nothing at all once there is nothing to say.
-                Inside the measured column so it lines up with the cards rather
-                than spanning the window. Hidden while a search is live for the
-                same reason the strips are: the search result IS the page then. */}
-            <ClaudeHealthStrip />
-            <FdaStrip />
-            <Section id="home-sec-apps" title="Fused Apps" seeAllHref="/apps">
-              {apps === null ? (
-                <SkeletonRow count={shown} label="Loading apps" variant="app" />
-              ) : apps.length ? (
-                <div className="home-row">
-                  {apps.slice(0, shown).map((app) => (
-                    <AppPreviewCard key={app.path} app={app} />
+                Hidden while a search is live for the same reason the grid is:
+                the search result IS the page then. */}
+            {searching ? null : <ClaudeHealthStrip />}
+            {searching ? null : <FdaStrip />}
+            {searching ? null : edit ? (
+              <div className="hw-editbar">
+                <span className="hw-editbar-label">Layout</span>
+                <div className="hw-presets" role="radiogroup" aria-label="Layout">
+                  {active === null ? (
+                    <span className="hw-preset is-custom" aria-current="true">
+                      Custom
+                    </span>
+                  ) : null}
+                  {PRESETS.map((p) => (
+                    <button
+                      key={p.id}
+                      type="button"
+                      role="radio"
+                      aria-checked={active === p.id}
+                      className="hw-preset"
+                      title={p.blurb}
+                      onClick={() => {
+                        if (p.id === active) return;
+                        prevLayout.current = layoutApi.layout;
+                        presetPending.current = true;
+                        setCanUndo(true);
+                        layoutApi.applyPreset(p.id, { folderId: firstBookmarkFolderId() });
+                      }}
+                    >
+                      <PresetThumb id={p.id} />
+                      {p.name}
+                    </button>
                   ))}
                 </div>
-              ) : (
-                <p className="fh-empty">
-                  {appsError ?? "No apps yet. Build one and it'll show up here."}
-                </p>
-              )}
-            </Section>
-
-            <Section
-              id="home-sec-playground"
-              title="AI Playground"
-              seeAllHref={tabHref("playground", "")}
-            >
-              <div className="home-row">
-                {PLAYGROUND_GROUPS.slice(0, shown).map((group) => (
-                  <PlaygroundPreviewCard key={group.capability} group={group} />
-                ))}
+                {canUndo ? (
+                  <button
+                    type="button"
+                    className="hw-tb is-ghost"
+                    onClick={() => {
+                      if (prevLayout.current) layoutApi.restore(prevLayout.current);
+                      prevLayout.current = null;
+                      setCanUndo(false);
+                    }}
+                  >
+                    Undo
+                  </button>
+                ) : null}
+                <span className="hw-editbar-sp" />
+                <button
+                  type="button"
+                  className="hw-tb is-primary"
+                  aria-pressed={edit}
+                  onClick={() => setEdit(false)}
+                >
+                  Done
+                </button>
               </div>
-            </Section>
-
-            <Section
-              id="home-sec-sessions"
-              title="Claude Sessions"
-              seeAllHref="/explorer?tab=sessions"
-            >
-              {sessions === null ? (
-                <SkeletonRow count={shown} label="Loading Claude sessions" variant="folder" />
-              ) : sessions.length ? (
-                <div className="home-row">
-                  {sessions.slice(0, shown).map((f) => (
-                    <FolderPreviewCard key={f.path} path={f.path} />
-                  ))}
+            ) : (
+              <div className="hw-toolbar">
+                <button
+                  type="button"
+                  className="hw-customize"
+                  disabled={!layoutApi.loaded}
+                  aria-pressed={false}
+                  onClick={() => setEdit(true)}
+                >
+                  <SlidersHorizontal size={13} aria-hidden="true" />
+                  Customize
+                </button>
+              </div>
+            )}
+            <div className="hw-stage">
+              {layoutApi.loaded ? (
+                <div className="hw-stage-main">
+                  <WidgetGrid api={layoutApi} edit={edit} searching={searching} onAdd={() => setPanel({})}
+                    onRequestPanel={(target, initialSource) => setPanel({ target, initialSource })}
+                  />
+                  {!layoutApi.layout.widgets.length && !edit && !searching ? (
+                    <p className="fh-empty">Your Home is empty. Choose Customize to add widgets.</p>
+                  ) : null}
                 </div>
-              ) : (
-                <p className="fh-empty">No Claude Code sessions found on this machine.</p>
-              )}
-            </Section>
-
-            <Section title="Recent files" seeAllHref="/explorer?tab=recents">
-              {recents.length ? (
-                <div className="home-row">
-                  {recents.slice(0, shown).map((r) => {
-                    const fsPath = recentFsPath(r.url);
-                    return (
-                      <RecentPreviewCard
-                        key={fsPath}
-                        url={r.url}
-                        path={fsPath}
-                        name={r.title || basename(fsPath)}
-                      />
-                    );
-                  })}
-                </div>
-              ) : (
-                <p className="fh-empty">Nothing opened yet. Files you view will show up here.</p>
-              )}
-            </Section>
+              ) : null}
+              {edit && panel && !searching ? (
+                <AddWidgetPanel api={layoutApi} target={panel.target} initialSource={panel.initialSource} onClose={() => setPanel(null)} />
+              ) : null}
             </div>
           </div>
-        )}
+        </SearchHostContext.Provider>
       </div>
     </div>
   );

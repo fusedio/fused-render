@@ -34,16 +34,18 @@ test("shared explorer previews enter the scheduler only near the viewport", () =
   expect(cards).toContain("usePreviewStart(liveAllowed === true && nearViewport)");
 });
 
+// The "+ 1" is the card the strip peeks at its right edge; it is still sized by
+// the measured count, never a constant.
 test("Home requests the recent-first app row instead of the exhaustive catalog", () => {
-  const home = readFileSync(join(import.meta.dir, "Home.tsx"), "utf8");
-  expect(home).toContain("getHomeApps(Math.min(limit, MAX_ROW))");
+  const home = [readFileSync(join(import.meta.dir, "home/data.ts"), "utf8")].join("\n");
+  expect(home).toContain("getHomeApps(Math.min(limit * rows + 1, MAX_ROW), sort)");
   expect(home).not.toContain("getApps()");
   expect(home).not.toContain("sortApps(");
 });
 
 test("Home requests the early-stopping Claude session row", () => {
-  const home = readFileSync(join(import.meta.dir, "Home.tsx"), "utf8");
-  expect(home).toContain("getHomeClaudeSessionFolders(Math.min(limit, MAX_ROW))");
+  const home = [readFileSync(join(import.meta.dir, "home/data.ts"), "utf8")].join("\n");
+  expect(home).toContain("getHomeClaudeSessionFolders(Math.min(limit * rows + 1, MAX_ROW))");
   expect(home).not.toContain("getClaudeSessionFolders()");
 });
 
@@ -54,14 +56,14 @@ test("Home requests the early-stopping Claude session row", () => {
 // fewer than twelve opened apps. Pinned as source structure rather than
 // behaviour because mounting Home would need a DOM with a real clientWidth.
 test("Home sizes both row requests by the measured card count, never a constant", () => {
-  const home = readFileSync(join(import.meta.dir, "Home.tsx"), "utf8");
+  const home = [readFileSync(join(import.meta.dir, "home/data.ts"), "utf8"), readFileSync(join(import.meta.dir, "home/strip.ts"), "utf8")].join("\n");
   // Unmeasured means UNKNOWN, not a guess: a fetch before the wrapper has a
   // width would ask for cards the row cannot show.
   expect(home).toContain("count: null");
   expect(home.match(/if \(limit === null\) return;/g)?.length).toBe(2);
   // Both effects hang off `limit`; the apps strip also re-fetches on the
   // icon picker's nonce (#1062), so the dep list may carry a second name.
-  expect(home.match(/\}, \[limit(?:, \w+)?\]\);/g)?.length).toBe(2);
+  expect(home.match(/\}, \[limit(?:, \w+)*\]\);/g)?.length).toBe(2);
   // Grow-only, so narrowing the window refetches nothing.
   expect(home).toContain("limit: Math.max(prev.limit ?? 0, fits)");
   expect(home).not.toContain("useState(3)");
@@ -73,11 +75,11 @@ test("Home sizes both row requests by the measured card count, never a constant"
 // if it resolved empty. A skeleton row of the same card shape holds that
 // height from first paint instead.
 test("Home's async sections render a skeleton row, not a bare loading line", () => {
-  const home = readFileSync(join(import.meta.dir, "Home.tsx"), "utf8");
+  const home = [readFileSync(join(import.meta.dir, "home/widgets/AppsWidget.tsx"), "utf8"), readFileSync(join(import.meta.dir, "home/widgets/StripWidgets.tsx"), "utf8")].join("\n");
   expect(home).not.toContain("Loading apps…");
   expect(home).not.toContain("Looking for sessions…");
-  expect(home.match(/apps === null \? \(\s*<SkeletonRow/)).not.toBeNull();
-  expect(home.match(/sessions === null \? \(\s*<SkeletonRow/)).not.toBeNull();
+  expect(home.match(/apps === null \? \(\s*cards \? \(\s*<SkeletonRow/)).not.toBeNull();
+  expect(home.match(/sessions === null \? \(\s*cards \? \(\s*<SkeletonRow/)).not.toBeNull();
 });
 
 // Pixel-identical to the row it is replaced by: a skeleton sized by a
@@ -85,8 +87,8 @@ test("Home's async sections render a skeleton row, not a bare loading line", () 
 // cards than the row that lands once the fetch resolves, which is exactly the
 // shift this feature exists to remove.
 test("the skeleton row draws exactly as many cards as the real row", () => {
-  const home = readFileSync(join(import.meta.dir, "Home.tsx"), "utf8");
-  expect(home.match(/<SkeletonRow count={shown}/g)?.length).toBe(2);
+  const home = [readFileSync(join(import.meta.dir, "home/widgets/AppsWidget.tsx"), "utf8"), readFileSync(join(import.meta.dir, "home/widgets/StripWidgets.tsx"), "utf8")].join("\n");
+  expect(home.match(/<SkeletonRow count={cap}/g)?.length).toBe(2);
 });
 
 // Home's two async strips draw two DIFFERENT real cards (AppPreviewCard's
@@ -95,7 +97,7 @@ test("the skeleton row draws exactly as many cards as the real row", () => {
 // wrong for whichever one it didn't match, so the row it was supposed to
 // stop shifting still shifted. Each strip gets its own variant.
 test("the skeleton row matches each strip's own real card shape", () => {
-  const home = readFileSync(join(import.meta.dir, "Home.tsx"), "utf8");
+  const home = [readFileSync(join(import.meta.dir, "home/widgets/AppsWidget.tsx"), "utf8"), readFileSync(join(import.meta.dir, "home/widgets/StripWidgets.tsx"), "utf8")].join("\n");
   expect(home).toContain('variant="app"');
   expect(home).toContain('variant="folder"');
 });
@@ -106,7 +108,7 @@ test("the skeleton row matches each strip's own real card shape", () => {
 // not something that "loads". Neither skeleton variant gets an icon
 // placeholder, shimmering or otherwise.
 test("the skeleton card has no icon placeholder", () => {
-  const home = readFileSync(join(import.meta.dir, "Home.tsx"), "utf8");
+  const home = [readFileSync(join(import.meta.dir, "home/skeleton.tsx"), "utf8")].join("\n");
   expect(home).not.toContain("home-skel-icon");
 });
 

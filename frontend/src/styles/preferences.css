@@ -346,6 +346,11 @@
   padding-top: 8px;
 }
 
+/* Wide windows: roomier side gutters than the explorer's 28px. */
+@media (min-width: 1280px) {
+  .files-home-inner.home-wide { padding-inline: 64px; }
+}
+
 .home-wide .files-search-wrap {
   max-width: 1120px;
   margin: 0 auto;
