@@ -128,10 +128,25 @@ export function versionFactsFrom(body: {
  * none, and the reducers read that as "no claim"). ONLY a 404: a 5xx is the
  * server saying it is broken, and a refused/aborted request is nothing
  * answering — neither may be softened into "healthy".
+ *
+ * THE PROBE GOES TO THE OTHER LOOPBACK NAME. WebKit allows 6 connections per
+ * host:port, shared by every window of the app, and each document holds a 25 s
+ * long-poll; four windows fill the pool, so a same-origin probe queues behind
+ * them, its 4 s timer runs out before it gets a socket, and a healthy server
+ * reads as down. `localhost:<p>` and `127.0.0.1:<p>` are different hosts and
+ * so different pools, which no long-poll touches (the server lets exactly that
+ * paired origin read /api/health). A timeout there is a real silence. Any
+ * other failure (an older server without the CORS header, ATS blocking
+ * `localhost`) falls through to the same-origin probe, and if THAT is healthy
+ * the paired origin is switched off for the rest of the page's life.
  */
 export async function probeHealth(
   fetchFn: (url: string, init?: RequestInit) => Promise<Response> = (url, init) => fetch(url, init),
+  paired: string | null | undefined = undefined,
 ): Promise<ProbeResult> {
+  if (paired === undefined) {
+    paired = typeof location === "undefined" || pairedDisabled ? null : pairedLoopbackOrigin(location);
+  }
   const t0 = performance.now();
   const latency = () => Math.round(performance.now() - t0);
   const statusKind = (status: number): ProbeFailKind => (status >= 500 ? "http-5xx" : "http-other");
@@ -166,22 +181,55 @@ export async function probeHealth(
     }
   }
 
+  const healthy = (body: Record<string, unknown>): ProbeResult => ({
+    ok: true,
+    bootId: typeof body.boot_id === "string" ? body.boot_id : undefined,
+    latencyMs: latency(),
+  });
+
+  let pairedFailed = false;
+  if (paired) {
+    const p = await getJson(paired + "/api/health");
+    if (!("ok" in p) && p.body) return healthy(p.body);
+    // Nothing queues on the paired pool, so a timeout there is the server not answering.
+    if ("ok" in p && p.kind === "timeout") return p;
+    pairedFailed = true;
+  }
+
   const health = await getJson("/api/health");
   if ("ok" in health) return health;
   if (health.body) {
-    return {
-      ok: true,
-      bootId: typeof health.body.boot_id === "string" ? health.body.boot_id : undefined,
-      latencyMs: latency(),
-    };
+    if (pairedFailed) pairedDisabled = true;
+    return healthy(health.body);
   }
   if (health.status !== 404) return { ok: false, kind: statusKind(health.status) };
 
   const config = await getJson("/api/config");
   if ("ok" in config) return config;
   if (!config.body) return { ok: false, kind: statusKind(config.status) };
+  if (pairedFailed) pairedDisabled = true;
   return { ok: true, latencyMs: latency(), ...versionFactsFrom(config.body) };
 }
+
+/** The other loopback name for this page's server, or null. */
+export function pairedLoopbackOrigin(loc: {
+  protocol: string;
+  hostname: string;
+  port: string;
+}): string | null {
+  if (loc.protocol !== "http:" || !loc.port) return null;
+  if (loc.hostname === "127.0.0.1") return `http://localhost:${loc.port}`;
+  if (loc.hostname === "localhost") return `http://127.0.0.1:${loc.port}`;
+  return null;
+}
+
+/** Set once the paired origin failed while the same-origin probe was healthy:
+ *  it is broken here, the server is fine, so stop paying for it. */
+let pairedDisabled = false;
+export const pairedProbeDisabled = () => pairedDisabled;
+export const resetPairedProbeForTest = () => {
+  pairedDisabled = false;
+};
 
 /** Three, not two: two 4 s timeouts in a row are a busy server more often
  *  than a dead one, and the first misses now draw the quieter "slow" line

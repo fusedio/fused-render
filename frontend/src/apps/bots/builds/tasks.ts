@@ -2,7 +2,8 @@
 // /render and called fused.tasks.*; this page has no runtime, so the pieces Builds needs live here:
 //   list / watch   GET /api/tasks and the GET /api/tasks/changes long poll (generation cursor), ONE shared loop per
 //                  scope key, refcounted, with runtime.js's rules: a full listing first, deltas folded in, `full`
-//                  answered by a re-read, a 20 s floor re-read, hidden tabs sitting the poll out.
+//                  answered by a re-read, a 20 s floor re-read, hidden tabs sitting the poll out. The long poll
+//                  rides the tasks-changes WebSocket; its HTTP fallback goes through sharedLongPoll (ONE shared long-poll app-wide).
 //   create         POST /api/tasks/create → a handle {entryId, key (getter: pending:<entry> → session id), done}
 //   markRead       POST /api/tasks/read {key, all: true}
 //   ui             GET /api/tasks/ui?view=&task=&scope= → the /tasks?embed=1… iframe src
@@ -50,19 +51,21 @@ const SETTLED = new Set(["done", "archived"]);
 /** A first quiet row is re-read after this long (runtime.js TASKS_CONFIRM_MS, the server's running-mark TTL). */
 const CONFIRM_MS = 15000;
 
+import { sharedLongPollFetch } from "@platform/lib/sharedLongPoll";
+
 // ------------------------------------------------------------------ fetch ----
 export class TaskError extends Error {
   status: number;
   constructor(message: string, status: number) { super(message); this.status = status; }
 }
 
-async function taskFetch<T = Record<string, unknown>>(method: "GET" | "POST", url: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+async function taskFetch<T = Record<string, unknown>>(method: "GET" | "POST", url: string, body?: unknown, signal?: AbortSignal, fetcher: (url: string, init: RequestInit) => Promise<Response> = (u, i) => fetch(u, i)): Promise<T> {
   const init: RequestInit = { method, signal, cache: "no-store" };
   if (method === "POST") {
     init.headers = { "Content-Type": "application/json", "X-Fused": "1" };
     init.body = JSON.stringify(body || {});
   }
-  const res = await fetch(url, init);
+  const res = await fetcher(url, init);
   // A non-JSON body (proxy error, HTML page) reads as {} so the status still makes an Error.
   const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
   if (!res.ok) {
@@ -157,7 +160,7 @@ async function feedWatch(f: Feed, run: number) {
       const since = f.gen, scopeQ = new URLSearchParams(f.scope);
       r = await requestTasksChanges<typeof r>(
         { since, wait: CHANGES_WAIT_S, under: scopeQ.get("under") || undefined, scope: scopeQ.get("scope") || undefined },
-        () => taskFetch<typeof r>("GET", "/api/tasks/changes" + query(f.scope, { since: String(since), wait: String(CHANGES_WAIT_S) }), undefined, ctl.signal),
+        () => taskFetch<typeof r>("GET", "/api/tasks/changes" + query(f.scope, { since: String(since), wait: String(CHANGES_WAIT_S) }), undefined, ctl.signal, (u, i) => sharedLongPollFetch(u, { signal: i.signal ?? undefined })),
         ctl.signal,
       );
     } catch {

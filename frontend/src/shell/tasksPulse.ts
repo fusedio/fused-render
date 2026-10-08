@@ -27,6 +27,7 @@
 import { useEffect, useState } from "react";
 import { queueEnabled } from "@apps/claude/feature-flag";
 import { getTasks, getTasksPulse } from "@platform/lib/api";
+import { sharedLongPollFetch } from "@platform/lib/sharedLongPoll";
 import type { Task, TaskPulseTask } from "@platform/lib/api";
 import {
   EMPTY_TASKS_PULSE,
@@ -467,8 +468,10 @@ export function useTasksPulseRows(enabled = true): TaskPulseTask[] {
 
 // ── THE LISTING FEED ────────────────────────────────────────────────────────
 //
-// ONE `GET /api/tasks` AND ONE `/api/tasks/changes` LONG-POLL PER DOCUMENT,
-// however many surfaces want the rows.
+// ONE `GET /api/tasks` AND ONE `/api/tasks/changes` LOOP PER DOCUMENT,
+// however many surfaces want the rows. The loop's long-poll itself rides one
+// app-wide socket (sharedLongPoll.ts): every window and same-origin iframe
+// shares it, so N documents no longer hold N of the browser's six sockets.
 //
 // Every reader of the full listing used to run the pair itself: the Tasks page
 // (its own 20s poll plus its own change loop), and `apps/claude/protocol/
@@ -665,7 +668,8 @@ function emitListing(ev: ListingEvent) {
 
 function browserListingEnv(): ListingEnv {
   return {
-    fetch: (url, init) => fetch(url, init),
+    // The long-poll is shared across every document of this origin, see sharedLongPoll.ts.
+    fetch: (url, init) => sharedLongPollFetch(url, init),
     hidden: () => document.hidden,
     whenVisible: () => {
       let fire: () => void = () => {};
