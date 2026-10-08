@@ -410,11 +410,11 @@ test("itemCapacity grows with size", () => {
   expect(dims("1x1")).toEqual({ cols: 2, rows: 2 });
   expect(dims("4x1")).toEqual({ cols: 8, rows: 2 });
   expect(itemCapacity("2x1", "list")).toBe(2);
-  expect(itemCapacity("2x2", "list")).toBe(6);
+  expect(itemCapacity("2x2", "list")).toBe(5);
   expect(itemCapacity("4x1", "list")).toBe(4);
   expect(itemCapacity("2x1", "icons")).toBe(6);
   expect(itemCapacity("4x1", "icons")).toBe(12);
-  expect(itemCapacity("1x2", "list")).toBe(6);
+  expect(itemCapacity("1x2", "list")).toBe(5);
   expect(itemCapacity("1x2", "icons")).toBe(6);
 });
 

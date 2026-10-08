@@ -489,8 +489,8 @@ export function itemCapacity(size: WidgetSize, format: WidgetFormat): number {
   const cols = d.cols / CELL;
   const rows = d.rows / CELL;
   if (format === "icons") return cols * 3 * rows;
-  // 1x2 (cols 1, rows 2) is covered: list 6, icons 6.
-  const perColumn = rows === 1 ? 2 : 6;
+  // 1x2 (cols 1, rows 2) is covered: list 5, icons 6.
+  const perColumn = rows === 1 ? 2 : 5;
   return perColumn * (cols >= 4 ? 2 : 1);
 }
 

@@ -28,11 +28,11 @@ function ItemLink({ item, className, children }: { item: WidgetItem; className: 
   );
 }
 
-export function ItemList({ items, cap, moreHref }: { items: WidgetItem[]; cap: number; moreHref?: string }) {
+export function ItemList({ items, cap, moreHref, variant }: { items: WidgetItem[]; cap: number; moreHref?: string; variant?: "tall" }) {
   const shown = items.slice(0, cap);
   const more = items.length - shown.length;
   return (
-    <div className="hw-list-wrap">
+    <div className={variant === "tall" ? "hw-list-wrap is-tall" : "hw-list-wrap"}>
       <ul className="hw-list">
         {shown.map((it) => (
           <li key={it.key} className="hw-li">

@@ -1,4 +1,5 @@
 import type { Bot } from "@apps/bots/lib/api";
+import { Face } from "@apps/bots/components/Face";
 import { useBots } from "../data";
 import { itemCapacity, type Widget } from "../layout";
 import { BigCount, EmptyLine, ErrorLine, ItemList, ListSkeleton, type WidgetItem } from "./bits";
@@ -13,14 +14,23 @@ const TONE: Record<string, "ok" | "warn" | "err" | "idle"> = {
   idle: "idle",
 };
 
-function toItem(b: Bot): WidgetItem {
+const STATUS_PHRASE: Record<string, string> = {
+  running: "Working",
+  waiting: "Waiting on you",
+  error: "Something went wrong",
+  paused: "Paused",
+  idle: "Idle",
+};
+
+export function toItem(b: Bot): WidgetItem {
   const step = b.step && b.step_cap ? `step ${b.step}/${b.step_cap}` : "";
   const what = b.title || b.note || "";
   return {
     key: b.id,
     name: b.name,
-    sub: [step, what].filter(Boolean).join(" · ") || undefined,
-    href: BOTS_HREF,
+    icon: <Face b={b} />,
+    sub: [step, what].filter(Boolean).join(" · ") || STATUS_PHRASE[b.status] || undefined,
+    href: `${BOTS_HREF}?bot=${encodeURIComponent(b.id)}`,
     pill: { label: b.status, tone: TONE[b.status] ?? "idle" },
   };
 }
@@ -51,7 +61,7 @@ export function BotsWidget({ widget }: { widget: Widget }) {
   }
   return (
     <div className="hw-body">
-      <ItemList items={data.map(toItem)} cap={itemCapacity(widget.size, "list")} moreHref={BOTS_HREF} />
+      <ItemList items={data.map(toItem)} cap={itemCapacity(widget.size, "list")} moreHref={BOTS_HREF} variant="tall" />
     </div>
   );
 }

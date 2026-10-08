@@ -377,6 +377,7 @@
      light photo half the time. Named tokens rather than literals so the rule
      "every colour comes from the palette" stays a rule with no exceptions to
      remember (they are what test_theme.py checks for). */
+  --face-eye: #0f172a; /* bot faces are fixed bright marks in both themes; their eyes stay this dark */
   --scrim-fg: #ffffff;
   --scrim-bg: rgba(0, 0, 0, 0.55);
   --scrim-bg-hover: rgba(0, 0, 0, 0.75);
@@ -589,6 +590,7 @@
   --task-c7: #6d28d9;
   /* Identical to the dark palette on purpose — see the scrim set above. The
      surface under these is a photograph, not the page. */
+  --face-eye: #0f172a; /* bot faces are fixed bright marks in both themes; their eyes stay this dark */
   --scrim-fg: #ffffff;
   --scrim-bg: rgba(0, 0, 0, 0.55);
   --scrim-bg-hover: rgba(0, 0, 0, 0.75);

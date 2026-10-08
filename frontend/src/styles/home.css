@@ -876,7 +876,7 @@
   align-items: center;
   gap: 10px;
   min-width: 0;
-  padding: 7px 8px;
+  padding: 10px 8px;
   border-radius: 6px;
   color: var(--fg);
   text-decoration: none;
@@ -903,6 +903,7 @@ a.hw-row:hover { background: var(--bg-alt); }
 }
 
 .hw-row-name {
+  font-size: 13px;
   line-height: 1.25;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -913,10 +914,15 @@ a.hw-row:hover { background: var(--bg-alt); }
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  margin-top: 1px;
-  font-size: 11px;
+  margin-top: 2px;
+  font-size: 11.5px;
   color: var(--fg-muted);
 }
+
+.hw-list-wrap.is-tall .hw-row { padding: 12px 8px; gap: 12px; }
+.hw-list-wrap.is-tall .hw-row-icon { width: 32px; height: 32px; color: inherit; }
+.hw-list-wrap.is-tall .hw-row-icon svg { width: 100%; height: 100%; display: block; }
+.hw-list-wrap.is-tall .hw-row-icon .eye { fill: var(--face-eye); }
 
 .hw-pill {
   flex: none;
