@@ -46,8 +46,7 @@ export function nextDown(last: LastDown, t: number, p: { x: number; y: number })
 // US-layout key table (Puppeteer's USKeyboardLayout): code -> [Windows virtual-key code, unshifted char, shifted char].
 // The VK has to come from the viewer's own `event.keyCode` (what DevTools' screencast forwards) or from this table,
 // never from the character: Blink maps the VK to an editing command BEFORE it reads `text`, and ord(".") is 46 =
-// VK_DELETE, so the old `key.toUpperCase().charCodeAt(0)` deleted the next character instead of typing a dot
-// (ord("'") = 39 = ArrowRight moved the caret). Verified against Chrome 155.
+// VK_DELETE (deletes forward instead of typing a dot), ord("'") = 39 = ArrowRight (moves the caret). Verified against Chrome 155.
 export const KEYS: Record<string, [number, string, string]> = {};
 ")!@#$%^&*(".split("").forEach((s, i) => { KEYS["Digit" + i] = [48 + i, String(i), s]; });
 for (let i = 0; i < 26; i++) KEYS["Key" + String.fromCharCode(65 + i)] = [65 + i, String.fromCharCode(97 + i), String.fromCharCode(65 + i)];
@@ -60,6 +59,7 @@ Object.assign(KEYS, {
 export const CHAR_CODE: Record<string, string> = {};
 for (const [c, [, a, b]] of Object.entries(KEYS)) { CHAR_CODE[a] ??= c; CHAR_CODE[b] ??= c; }
 export const NAMED_VK: Record<string, number> = { Enter: 13, Tab: 9, Backspace: 8, Delete: 46, Escape: 27, ArrowLeft: 37, ArrowUp: 38, ArrowRight: 39, ArrowDown: 40, Home: 36, End: 35, PageUp: 33, PageDown: 34, Insert: 45, Shift: 16, Control: 17, Alt: 18, Meta: 91, CapsLock: 20 };
+for (let n = 1; n <= 12; n++) NAMED_VK["F" + n] = 111 + n;
 // macOS editing commands (Playwright's macEditingCommands): CDP key events bypass Cocoa key bindings, so without
 // `commands` ⌘A/⌘C/⌘X/⌘V/⌘Z and ⌘/⌥+arrow do nothing in the bot's Chrome. Ctrl is read like ⌘ so a non-Mac keyboard works too.
 export const EDIT_CMDS: Record<string, string> = { a: "SelectAll", c: "Copy", x: "Cut", v: "Paste", z: "Undo" };
@@ -85,7 +85,7 @@ export function keyAction(e: KeyLike): KeyAction {
     if (down && commands?.length) p.commands = commands;
     return { kind: "key", params: p };
   };
-  if ([...key].length > 1) {  // a named key
+  if ([...key].length > 1 && /^[\x00-\x7f]+$/.test(key)) {  // a named key (Enter, ArrowLeft, F5); a multi-code-point emoji is text
     let cmds: string[] | undefined;
     if (CMD_ARROW[key] && prim) cmds = [CMD_ARROW[key] + sel];
     else if (WORD_ARROW[key] && word) cmds = [WORD_ARROW[key] + sel];
@@ -103,8 +103,7 @@ export function keyAction(e: KeyLike): KeyAction {
   if (code && (key === KEYS[code][1] || key === KEYS[code][2])) return mk(KEYS[code][0], key);
   return down ? { kind: "insert", text: key } : null;
 }
-/** The dispatchKeyEvent params for an event that is one (the common case; tests). */
-export const keyParams = (e: KeyLike): KeyParams | undefined => { const a = keyAction(e); return a?.kind === "key" ? a.params : undefined; };
+
 
 /** The URL bar shows nothing for a blank page. */
 export const showUrl = (u: string | null | undefined): string => (!u || u === "about:blank" ? "" : u);

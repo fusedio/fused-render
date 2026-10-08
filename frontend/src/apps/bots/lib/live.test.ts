@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
-  furlTarget, imessageStatus, isUrl, keyAction, keyParams, modelChips, nextDown, rankUsage, routineLabel, showUrl, toPageXY, weighted, type KeyLike,
+  furlTarget, imessageStatus, isUrl, keyAction, modelChips, nextDown, rankUsage, routineLabel, showUrl, toPageXY, weighted, type KeyLike,
 } from "./live";
 
 const rect = { left: 100, top: 50, width: 640, height: 400 };
@@ -38,6 +38,8 @@ describe("nextDown", () => {
 
 const k = (key: string, mods: Partial<KeyLike> = {}, type = "keydown", code = ""): KeyLike =>
   ({ type, key, code, altKey: false, ctrlKey: false, metaKey: false, shiftKey: false, ...mods });
+/** The dispatchKeyEvent params of an event that is one. */
+const keyParams = (e: KeyLike) => { const a = keyAction(e); return a?.kind === "key" ? a.params : undefined; };
 
 describe("keyParams", () => {
   test("printable keys carry text and a virtual key code", () => {
@@ -68,7 +70,7 @@ describe("keyParams", () => {
     expect(keyParams(k("Home"))!.commands).toEqual(["MoveToBeginningOfLine"]);
   });
   test("punctuation gets the US-layout virtual key, never the character code", () => {
-    // ord(".") is 46 = VK_DELETE: the old forwarder deleted the next character instead of typing a dot.
+    // ord(".") is 46 = VK_DELETE: a forwarder that sends it deletes the next character instead of typing a dot.
     expect(keyParams(k(".", {}, "keydown", "Period"))).toMatchObject({ text: ".", windowsVirtualKeyCode: 190 });
     expect(keyParams(k("'", {}, "keydown", "Quote"))).toMatchObject({ text: "'", windowsVirtualKeyCode: 222 });
     expect(keyParams(k(">", { shiftKey: true }, "keydown", "Period"))).toMatchObject({ text: ">", windowsVirtualKeyCode: 190 });
@@ -83,6 +85,7 @@ describe("keyParams", () => {
     expect(keyAction(k("é", {}, "keydown", "KeyE"))).toEqual({ kind: "insert", text: "é" });
     expect(keyAction(k("日", {}, "keydown", ""))).toEqual({ kind: "insert", text: "日" });
     expect(keyAction(k("🙂", {}, "keydown", ""))).toEqual({ kind: "insert", text: "🙂" });
+    expect(keyAction(k("👨‍👩‍👧", {}, "keydown", ""))).toEqual({ kind: "insert", text: "👨‍👩‍👧" });  // a sequence, not a named key
     expect(keyAction(k("é", {}, "keyup", "KeyE"))).toBeNull();
   });
   test("never sets nativeVirtualKeyCode (it hides the tab on macOS)", () => {

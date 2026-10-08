@@ -28,7 +28,7 @@ export const MI: Record<MenuIcon, ReactNode> = {
 export type MenuAction = "live" | "settings" | "routines" | "skills" | "export" | "clone" | "cloneCopy" | "pin" | "hide" | "read" | "delete";
 export type MenuItem = { a: MenuAction; label: string; icon: ReactNode; danger?: boolean } | "hr";
 
-/** openMenu's rows, in order. full: the header ☰ menu (routines, skills, export, window); live: lead with "Open live view". */
+/** openMenu's rows, in order. full: the header ☰ menu (routines, skills, export); live: lead with "Open live view". */
 export function menuItems(b: Bot, opts: { full?: boolean; live?: boolean } = {}): MenuItem[] {
   const { full, live } = opts, out: MenuItem[] = [], ea = b.kind === "super";
   if (live) out.push({ a: "live", label: "Open live view", icon: MI.live }, "hr");

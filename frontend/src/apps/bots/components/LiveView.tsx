@@ -109,7 +109,7 @@ export function LiveView() {
     if (!b || winBusy) return;
     const id = b.id;
     setWinBusy(headed ? "Docking…" : "Opening…");
-    try { await act(() => headed ? api.dock(id) : api.popout(id)); } finally { setWinBusy(null); }
+    try { await act(() => headed ? api.giveback(id) : api.popout(id)); } finally { setWinBusy(null); }
   };
   // Status strip: while you drive it says so; otherwise the bot's state plus its latest thought, action or harness note.
   let fstat = "";
