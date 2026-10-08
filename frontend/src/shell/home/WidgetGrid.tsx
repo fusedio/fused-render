@@ -114,6 +114,7 @@ export function WidgetGrid({
             style={style}
             api={api}
             cols={rect?.cols ?? dimsOf(w).cols}
+            full={(rect?.cols ?? dimsOf(w).cols) >= cols}
             onRemove={() => api.remove(w.id)}
             onRequestPanel={onRequestPanel}
           />

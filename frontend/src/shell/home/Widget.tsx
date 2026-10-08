@@ -63,6 +63,8 @@ export interface WidgetFrameProps {
   api: HomeLayoutApi;
   /** Rendered width in units (the narrow reflow clamps it). */
   cols: number;
+  /** Spans the whole grid row (in the current reflow). */
+  full: boolean;
   onRemove: () => void;
   /** Open the add sheet for a folder or page pick that targets this tile. */
   onRequestPanel: (target: TileTarget, source: WidgetSource) => void;
@@ -99,7 +101,8 @@ export function WidgetFrame(p: WidgetFrameProps): ReactNode {
         (widget.source === "build" ? " is-build" : "") +
         (edit ? " is-edit" : "") +
         (edit && compact ? " is-compact" : "") +
-        (widget.source === "app" ? " is-app" : "")
+        (widget.source === "app" ? " is-app" : "") +
+        (p.full ? " is-full" : "")
       }
       style={p.style}
       data-wid={widget.id}
