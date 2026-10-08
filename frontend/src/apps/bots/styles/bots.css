@@ -751,8 +751,8 @@ div.bots-page:is(.lcol, .lfit, .stage) .bots .botfoot { justify-content: center;
 /* The Preferences gear (bot flavor only) hugs the footer's right edge; in the collapsed rail the three icons wrap. */
 .bots-page .bots .botfoot #prefs { margin-left: auto; }
 /* The rail stacks the footer in one column (Akshil, 2026-10-08): three icons across 72px wrapped into two-plus-one. */
-div.bots-page:is(.lcol, .lfit) .bots .botfoot { flex-direction: column; gap: 6px; }
-div.bots-page:is(.lcol, .lfit) .bots .botfoot #prefs { margin-left: 0; }
+div.bots-page:is(.lcol, .lfit, .stage) .bots .botfoot { flex-direction: column; gap: 6px; }
+div.bots-page:is(.lcol, .lfit, .stage) .bots .botfoot #prefs { margin-left: 0; }
 /* #ppanel: Preferences in an iframe, the Builds panel's own chrome (components/PrefsPanel.tsx). */
 .bots-page #ppanel { position: absolute; inset: 0; background: var(--bg); display: none; flex-direction: column; z-index: 20; }
 .bots-page #ppanel.show { display: flex; }
