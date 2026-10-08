@@ -30,8 +30,8 @@ import { Row, Rows } from "./SettingsRow";
 export type SettingsTab = "general" | "permissions" | "browser" | "memory" | "phone";
 
 /** The dialog's look, shared with CreateBot: black, stock shadcn everything else. */
-export const DIALOG_CLASS = "gap-0 overflow-hidden p-0 bg-neutral-950 text-neutral-50 ring-white/10";
-export const FOOTER_CLASS = "mx-0 mb-0 rounded-b-xl border-t border-white/10 bg-white/[0.03] px-6 py-4";
+export const DIALOG_CLASS = "gap-0 overflow-hidden p-0";  // theme-aware: the shadcn dialog's own popover surface + ring
+export const FOOTER_CLASS = "mx-0 mb-0 rounded-b-xl border-t border-foreground/10 bg-foreground/[0.03] px-6 py-4";
 
 export interface BotSettingsProps {
   bot: Bot;
@@ -134,7 +134,7 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
             {tabs.map(([t, l]) => (
               <button key={t} type="button" aria-current={tab === t ? "page" : undefined} onClick={() => setTab(t)}
                 className={cn("flex h-8 w-full cursor-pointer appearance-none items-center rounded-md border-0 bg-transparent px-2.5 text-sm outline-none transition-colors focus-visible:ring-3 focus-visible:ring-ring/50",
-                  tab === t ? "bg-white/[0.08] font-medium text-foreground" : "text-muted-foreground hover:bg-white/[0.04] hover:text-foreground")}>
+                  tab === t ? "bg-foreground/[0.08] font-medium text-foreground" : "text-muted-foreground hover:bg-foreground/[0.04] hover:text-foreground")}>
                 {l}
                 {t === "phone" && imessageEnabled && imessage ? <span className="ml-auto size-1.5 rounded-full bg-emerald-400" aria-label="connected" /> : null}
               </button>
@@ -201,11 +201,11 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
                 ) : null}
                 {appRows.length ? (
                   <Row title="Apps it may use without asking" text="A ticked app's tools and scripts run at once. Everything else keeps the rule above." stack>
-                    <div className="max-h-48 divide-y divide-white/5 overflow-y-auto rounded-lg border border-input" id="bmtrusted">
+                    <div className="max-h-48 divide-y divide-foreground/5 overflow-y-auto rounded-lg border border-input" id="bmtrusted">
                       {appRows.map((a) => {
                         const on = trustedApps.includes(normApp(a.folder));
                         return (
-                          <label key={a.folder} className="flex cursor-pointer items-center gap-2.5 px-3 py-2 text-sm hover:bg-white/[0.04]">
+                          <label key={a.folder} className="flex cursor-pointer items-center gap-2.5 px-3 py-2 text-sm hover:bg-foreground/[0.04]">
                             <Checkbox checked={on} onCheckedChange={(c) => toggleTrusted(a.folder, !!c)} />
                             <span>{a.name || a.folder}</span>
                             {a.name && a.name !== a.folder ? <span className="ml-auto text-xs text-muted-foreground">{a.folder}</span> : null}

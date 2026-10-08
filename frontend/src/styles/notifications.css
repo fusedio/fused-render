@@ -1944,8 +1944,10 @@
   height: 20px;
   border: 0;
   border-radius: 5px;
+  /* Flat like every other status-bar item (VS Code style: no boxes in the
+     bar); the glyph is full ink, hover fills. Akshil, 2026-10-08. */
   background: transparent;
-  color: var(--fg-muted);
+  color: var(--fg);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1953,13 +1955,14 @@
 }
 
 .upd-check-btn:hover:not(:disabled) {
-  color: var(--fg);
-  background: color-mix(in srgb, var(--fg) 8%, transparent);
+  background: var(--status-item-hover);
 }
 
+/* No updater (a dev run): a crossed-out refresh glyph, not a faded one —
+   faded read as broken text. */
 .upd-check-btn:disabled {
   cursor: default;
-  opacity: 0.45;
+  color: var(--fg-muted);
 }
 
 .upd-check-btn.is-current {
@@ -1967,6 +1970,18 @@
 }
 
 .upd-check-btn.is-failed {
+  color: var(--error);
+}
+
+/* THE CHIP WHILE SOMETHING IS PENDING ("Update available", "Downloading",
+   "Restart to update"): accent ink, not just darker ink — in light mode the
+   ink step alone (muted → fg) was the whole signal and it vanished. Failure
+   takes the error colour. Flat, like the rest of the bar. */
+.upd-chip .dl-toggle:not(.is-idle) {
+  color: var(--accent);
+}
+
+.upd-chip .dl-toggle.is-failure {
   color: var(--error);
 }
 
