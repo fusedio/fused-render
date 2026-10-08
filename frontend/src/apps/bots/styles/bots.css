@@ -26,12 +26,12 @@
   --text: var(--bots-shell-fg); --muted: var(--bots-shell-muted); --line: var(--bots-shell-border);
   --accent: var(--bots-shell-accent); --accent-ink: var(--bots-shell-on-accent); --accent-text: var(--bots-shell-accent-text); --bubble-user: #3b4030; --bubble-user-ink: #ffffff;
   --ok: #38d591; --warn: #ffb020; --err: #ff5667; --shadow: 0 12px 40px rgba(0,0,0,.7);
-  --you: #e8913a; --you-soft: rgba(232,145,58,.14); --bot: #3fc1bb; }
+  --you: #e8913a; --you-soft: rgba(232,145,58,.14); }
 [data-theme="light"] .bots-page
             { color-scheme: light;
   --bubble-user: #1b1d21; --bubble-user-ink: #fcfcfc;
   --ok: #1f9d5a; --warn: #b7791a; --err: #d13b3b; --shadow: 0 12px 40px rgba(0,0,0,.18);
-  --you: #c7791a; --you-soft: rgba(199,121,26,.12); --bot: #0f8a86; }
+  --you: #c7791a; --you-soft: rgba(199,121,26,.12); }
 .bots-page, .bots-page * { box-sizing: border-box; }
 div.bots-page { flex: 1 1 auto; min-width: 0; min-height: 0; position: relative; }
 div.bots-page { margin: 0; display: flex; flex-direction: column; font-family: "Inter", -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
@@ -616,9 +616,8 @@ div.bots-page.stage.sfull #full { position: fixed; inset: 0; z-index: 25; }
    The ring is an outline, not an inset shadow: the stage scrolls, and a shadow would scroll away with the content. */
 .bots-page #full #ctl { background: var(--panel2); color: var(--text); }
 .bots-page #full.ctl #ctl { background: var(--you); color: #fff; }
-/* Who is driving, as a frame on the page: amber while you do (.ctl), teal while the bot does. */
+/* Your frame on the page while you drive (.ctl): amber. The bot driving has no frame. */
 .bots-page #full.ctl .stage, .bots-page #full.ctl .stage:focus, .bots-page #full.ctl .stage:focus-visible { outline: 2px solid var(--you); outline-offset: -2px; }
-.bots-page #full.show:not(.ctl):not(.nolink) .stage { outline: 2px solid var(--bot); outline-offset: -2px; }
 .bots-page #full .tabstrip { display: none; flex: 1; min-width: 0; align-items: flex-end; gap: 0; padding: 6px 8px 0; background: var(--bg); overflow-x: auto; }
 .bots-page #full .tabstrip.show { display: flex; }
 .bots-page #full .tabstrip .tab { display: flex; align-items: center; gap: 8px; flex: 0 1 200px; min-width: 0; padding: 8px 12px; border-radius: 8px 8px 0 0; font-size: 11px; color: var(--muted); cursor: pointer; white-space: nowrap; }
