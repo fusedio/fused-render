@@ -72,9 +72,10 @@ export default function Home({ config }: { config: Config }) {
   // everything else; the widget draws the box (home/widgets/SearchWidget.tsx).
   const search = useSearchHost(home);
   const searching = search.searching;
+  const focusView = !edit && !searching && active === "focus";
 
   return (
-    <div className="files-home">
+    <div className={"files-home" + (focusView ? " is-focus" : "")}>
       <div className="files-home-inner home-wide">
         <SearchHostContext.Provider value={search}>
           <div className="home-strips">

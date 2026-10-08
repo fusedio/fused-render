@@ -672,6 +672,26 @@
   grid-auto-rows: minmax(52px, auto);
 }
 
+/* Focus preset, view mode: the search bar stays on top and the Build composer
+   centres in the rest of the window. The grid's inline placements are ignored
+   by the flex column; edit mode never gets this class. */
+.files-home.is-focus .files-home-inner {
+  min-height: 100%;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+}
+.files-home.is-focus .hw-stage,
+.files-home.is-focus .hw-stage-main,
+.files-home.is-focus .hw-grid {
+  flex: 1 0 auto;
+  display: flex;
+  flex-direction: column;
+}
+.files-home.is-focus .hw-grid > .is-build {
+  margin-block: auto;
+}
+
 .hw-widget {
   display: flex;
   flex-direction: column;
