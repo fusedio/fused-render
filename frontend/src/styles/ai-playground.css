@@ -2139,6 +2139,51 @@
   height: 40px;
 }
 
+/* Voice chat (VoiceStage): the call row borrows the recording row's button
+   and meter; `live` paints the border like a recording in progress. */
+.pg-voice-call {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 18px;
+  border: 1.5px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-alt);
+}
+
+.pg-voice-call.live {
+  border-color: var(--error);
+}
+
+.pg-voice-meter {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pg-voice-meter-label {
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.pg-voice-words {
+  min-height: 72px;
+  max-height: 240px;
+  overflow-y: auto;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-alt);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+}
+
+.pg-voice-outcome {
+  font-weight: 400;
+  color: var(--fg-muted);
+}
+
 .pg-segments {
   position: relative;
   display: flex;

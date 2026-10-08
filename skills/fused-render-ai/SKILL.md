@@ -1,6 +1,6 @@
 ---
 name: fused-render-ai
-description: Use when page or .py calls fused.ai (text/image/video/speech/transcribe/embed/decide), picks model/provider, or AI call rejects.
+description: Use when page or .py calls fused.ai (text/image/video/speech/voice/transcribe/embed/decide), picks model/provider, or AI call rejects.
 ---
 
 # fused.ai
@@ -18,6 +18,7 @@ Result frame, every verb: `{<payload>, provider, finishReason, warnings, usage, 
 | `transcribe({path})` | path | `text`, `segments: [{text, startSecond, endSecond, speaker?, words?}]`, `language`, `durationInSeconds` |
 | `embed({texts})` | texts or paths | `embeddings: number[][]` (unit-length → cosine = dot) |
 | `decide({state, questions})` | state, questions | `answers: {[id]: {type, confidence, ...}}` (probabilities, zero output tokens) |
+| `voice({})` | — (a click) | `text`, `durationInSeconds` — resolves when the live call ends |
 
 Universal rules:
 
@@ -63,6 +64,10 @@ Resolves `videos: [{path, url, mediaType: "video/mp4"}]`, `usage: {videosGenerat
 Qwen3-TTS, Apple Silicon only; check the `text-to-speech` row's `available`. Options depend on the model's `voiceMode`: `preset` = `voice` (from `voices`; default and echo = first listed) + optional `instruct` style; `clone` = `refAudio` (page-relative or absolute, 10-30 s) + `refText` (its words), both required; `design` = `instruct` describing the voice, required. Wrong option → `bad_request`. `language`: Qwen names (`english`, `chinese`, ...), not ISO codes; default `"auto"`. Also `model`, `provider`, `onProgress`, `abortSignal`.
 
 Resolves `audio: [{path, url, mediaType: "audio/wav"}]`, `usage: {audioGenerated: 1}`, `response.id` = job id, `providerMetadata.local: {text, language, voice?, instruct?, refAudio?, refText?}`. Long text is made in parts (paragraphs at blank lines, at most 600 characters each); `onProgress` `done/total` counts parts. Switching between models reloads, so group lines by model.
+
+## Voice chat: `fused.ai.voice({...})`
+
+Moshi (Kyutai), Apple Silicon only, English only; check the `voice-to-voice` row's `available`. A live full-duplex CONVERSATION, not a request: it listens while it talks. The bridge opens the microphone and plays the answer itself — **call it from a click handler** (browsers refuse a mic otherwise) and run one call at a time. Options: `model`, `provider` (local only), `maxSeconds` (10..600, default 300 — the call ends on its own there), `onText(piece)` (the words it says, streamed a beat ahead of the audio), `onLevel({mic, speaker})` (per 80 ms, for meters), `abortSignal` (hangs up; the promise still resolves, `finishReason: "stop"`). Resolves `{text, durationInSeconds}`, `usage: {steps}`, `providerMetadata.local: {sessionId, maxSeconds, droppedFrames}`. Rejects `model_loading` (+ `.jobId`) on a cold model, `mic_denied`, `unavailable`. Tell users headphones avoid it hearing itself. No Python client (no microphone in `fused_ai`).
 
 ## Transcribe, embed and decide
 

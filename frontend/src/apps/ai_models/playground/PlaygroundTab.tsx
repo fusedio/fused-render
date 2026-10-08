@@ -31,6 +31,7 @@ import { ImageStage } from "./ImageStage";
 import { VideoStage } from "./VideoStage";
 import { TranscribeStage } from "./TranscribeStage";
 import { SpeechStage } from "./SpeechStage";
+import { VoiceStage } from "./VoiceStage";
 import { EmbedStage } from "./EmbedStage";
 import { DecideStage } from "./DecideStage";
 import { modelSizeHint, modelSizeLabel } from "@apps/ai_models/shared/modelSize";
@@ -1038,6 +1039,8 @@ export default function PlaygroundTab() {
                   row.capability === "automatic-speech-recognition" && row.available
                 )?.models.find((model) => model.downloaded || model.loaded)?.id}
               />
+            ) : selected.row.capability === "voice-to-voice" ? (
+              <VoiceStage key={selected.model.id} model={selected.model.id} entry={selected.model} />
             ) : selected.row.capability === "embeddings" ? (
               <EmbedStage
                 key={selected.model.id}

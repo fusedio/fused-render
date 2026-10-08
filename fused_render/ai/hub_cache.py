@@ -670,6 +670,10 @@ def _format_task(repo_id: str, names, dirnames, config: dict) -> tuple[str, str]
         return _ai_registry.DECISIONS, "its Laya decision-head config"
     if formats.is_qwen3_tts_snapshot(config, dirnames):
         return _ai_registry.TEXT_TO_SPEECH, "its Qwen3-TTS speech tokenizer"
+    if formats.is_moshi_snapshot(names):
+        # The only way a Moshi card gets its label: the repos carry no
+        # `pipeline_tag` and no config, so the Mimi codec file is the evidence.
+        return _ai_registry.VOICE_CHAT, "its Mimi codec weights"
     return None
 
 

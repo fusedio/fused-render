@@ -42,6 +42,7 @@ from fused_render.ai.registry import (
     SPEECH_TO_TEXT,
     TEXT_GENERATION,
     TEXT_TO_SPEECH,
+    VOICE_CHAT,
     VIDEO_GENERATION,
 )
 
@@ -307,6 +308,13 @@ _TASKS: tuple[Task, ...] = (
     _t("text-to-speech", "text to speech", "audio", TEXT_TO_SPEECH,
        "Reads text aloud as audio.",
        format_gated=True),
+    # NOT a Hub tag — the one row here that is not. `VOICE_CHAT` is reached by
+    # format only (the Moshi repos carry no `pipeline_tag`), and this row
+    # exists so the capability has a label and a help line, and so a search
+    # scoped to it (`tags_for_capability`) answers an empty list rather than
+    # the 400 a capability with no tags gets. The Hub returns nothing for it.
+    _t("voice-to-voice", "voice chat", "audio", VOICE_CHAT,
+       "Talks with you out loud, listening while it speaks."),
     _t("text-to-audio", "audio generation", "audio", None,
        "Generates sound — speech, music, effects.",
        "No audio-generation runner ships yet."),

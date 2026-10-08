@@ -184,8 +184,10 @@ _EMBED_TEXTS = (
 #: question, so a meaningful workload is a fixed batch of typed questions over a
 #: fixed state, and which questions — and whether the tab measures q/s or
 #: per-question latency — is the same product decision as above.
+#: `VOICE_CHAT` has no workload for a plainer reason: a conversation has no
+#: fixed input to time.
 NO_WORKLOAD_YET = frozenset({registry.VIDEO_GENERATION, registry.DECISIONS,
-                             registry.TEXT_TO_SPEECH})
+                             registry.TEXT_TO_SPEECH, registry.VOICE_CHAT})
 
 #: One entry per capability constant in `registry`, `NO_WORKLOAD_YET` excepted.
 #: A capability with neither an entry here nor an exemption above would render

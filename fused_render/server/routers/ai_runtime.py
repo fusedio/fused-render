@@ -40,7 +40,9 @@ import struct
 import time
 from urllib.parse import unquote
 
-from fastapi import APIRouter, Body, Header
+import asyncio
+
+from fastapi import APIRouter, Body, Header, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 
 from fused_render._view_url_codec import canonical_fs_path
@@ -55,7 +57,7 @@ from fused_render.ai import catalog, fit, footprints, hw_detect, registry, speed
 from fused_render.ai.runners import diarize, embed_common, engine_options, formats, partial, preview
 from fused_render.server.common import (
     AI_PROVIDERS, APPLE_MODELS, _error, _require_fused, ai_result, ai_usage_tokens,
-    apple_model_for, provider_of_model)
+    apple_model_for, provider_of_model, ws_origin_ok)
 # The AI Models page's reading of the local cache, imported rather than
 # re-derived: see `_inferred_capability` and `_catalog_with_downloads`. It imports
 # nothing from here.
@@ -293,6 +295,7 @@ _APPLE_VERB_CAPABILITY = {
     "transcribe": registry.SPEECH_TO_TEXT,
     "embed": registry.EMBEDDINGS,
     "decide": registry.DECISIONS,
+    "voice": registry.VOICE_CHAT,
 }
 #: The verbs the apple tier serves in THIS build. `embed` has a pinned id
 #: (`afm-embedding`) but no path yet — it answers `unavailable` until its
@@ -308,6 +311,8 @@ _APPLE_VERB_REFUSALS = {
               "is reserved for it); use a local model"),
     "decide": ("provider 'apple' does not serve decide: Apple ships no typed-decision "
                "model; use a local model"),
+    "voice": ("provider 'apple' does not serve voice: Apple ships no speech-to-speech "
+              "model; use a local model"),
 }
 
 
@@ -2367,6 +2372,136 @@ def api_ai_speech(body: dict = Body(...), x_fused: str | None = Header(default=N
         fields["refAudio"] = canonical_fs_path(fields["refAudio"])
     return {"jobId": job, "path": canonical_fs_path(path), "model": model,
             "provider": "local", "warnings": [], "text": request["text"], **fields}
+
+
+#: `fused.ai.voice({model, provider, maxSeconds})` — the whole envelope. The
+#: mic and the speaker are the page's; the server only brokers the session.
+_VOICE_OPTIONS = frozenset({"model", "provider", "maxSeconds"})
+_VOICE_MAX_SECONDS = 600
+
+
+@router.post("/api/ai/voice")
+def api_ai_voice(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    """Open a Moshi conversation (`VOICE_CHAT`, SPEC AI-33).
+
+    Not job-backed and not a reply: the answer is a SESSION — `sessionId`
+    plus a one-use `token` for `WS /api/ai/voice/{sid}/stream`, where the
+    audio goes both ways. The same fail-fast load shape as `/api/ai` on a
+    cold local model: a 409 `model_loading` with the load's job id, which
+    the page watches and then asks again.
+    """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    rejection = _reject_unknown(body, _VOICE_OPTIONS, "/api/ai/voice")
+    if rejection is not None:
+        return rejection
+    tier = _provider_rejection(body, "voice")
+    if tier is not None:
+        return _embed_error(tier[0], tier[1], tier[2])
+    max_seconds = body.get("maxSeconds", 300)
+    if not isinstance(max_seconds, (int, float)) or isinstance(max_seconds, bool) \
+            or not 10 <= max_seconds <= _VOICE_MAX_SECONDS:
+        return _embed_error("bad_request",
+                            f"'maxSeconds' must be a number from 10 to {_VOICE_MAX_SECONDS}", 400)
+    model = _model_of(body) or catalog.default_for(registry.VOICE_CHAT)
+    if not model:
+        return _embed_error("unavailable", registry.unavailable_reason(registry.VOICE_CHAT)
+                            or "no voice model is configured", 409)
+    try:
+        session = supervisor.start_voice(model, {"maxSeconds": float(max_seconds)})
+    except supervisor.ModelNotReady as e:
+        return _embed_error("model_loading", str(e), 409, job_id=e.job_id)
+    except supervisor.SupervisorError as e:
+        return _embed_error("ai_error", str(e), 502)
+    return {"ok": True, **session.public(), "token": session.token,
+            "provider": "local", "warnings": []}
+
+
+@router.get("/api/ai/voice/{sid}")
+def api_ai_voice_status(sid: str, x_fused: str | None = Header(default=None)):
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    session = supervisor.voice_session(sid)
+    if session is None:
+        return _error("no such voice session", status=404)
+    return {"ok": True, **session.public()}
+
+
+@router.websocket("/api/ai/voice/{sid}/stream")
+async def api_ai_voice_stream(sid: str, ws: WebSocket):
+    """The audio of one session, proxied byte for byte onto the worker's
+    loopback socket. Binary messages carry the worker's own frames
+    (`moshi_voice/worker.py`: kind, length, payload) in both directions.
+
+    Guarded like `capture.py`'s chunk feed: `Origin` must be this server and
+    the per-session token must match, because a browser cannot put `X-Fused`
+    on a handshake. The worker's port never reaches the page — this proxy is
+    the one door, and closing it is how the page hangs up.
+    """
+    if not ws_origin_ok(ws):
+        await ws.close(code=1008)
+        return
+    session = supervisor.voice_session(sid, ws.query_params.get("token") or "")
+    if session is None or session.port is None or session.done.is_set():
+        await ws.close(code=1008, reason="no open voice session")
+        return
+    if session.attached:
+        await ws.close(code=1008, reason="this voice session already has a listener")
+        return
+    session.attached = True
+    await ws.accept()
+    try:
+        reader, writer = await asyncio.open_connection("127.0.0.1", session.port)
+    except OSError as e:
+        await ws.close(code=1011, reason=f"voice process unreachable: {e}"[:120])
+        return
+    writer.write(session.worker_token.encode() + b"\n")
+    await writer.drain()
+
+    async def to_worker():
+        try:
+            while True:
+                message = await ws.receive()
+                if message["type"] == "websocket.disconnect":
+                    break
+                chunk = message.get("bytes")
+                if chunk:
+                    writer.write(chunk)
+                    await writer.drain()
+        except (WebSocketDisconnect, RuntimeError):
+            pass
+        finally:
+            try:
+                writer.close()
+            except OSError:
+                pass
+
+    async def to_page():
+        try:
+            while True:
+                header = await reader.readexactly(5)
+                length = int.from_bytes(header[1:5], "big")
+                payload = await reader.readexactly(length) if length else b""
+                await ws.send_bytes(header + payload)
+                if header[0] == 3:
+                    break
+        except (asyncio.IncompleteReadError, OSError, RuntimeError):
+            pass
+
+    try:
+        await asyncio.wait({asyncio.ensure_future(to_worker()), asyncio.ensure_future(to_page())},
+                           return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        try:
+            writer.close()
+        except OSError:
+            pass
+        try:
+            await ws.close()
+        except RuntimeError:
+            pass
 
 
 #: Whisper's two directions. One flag to the model, so leaving `translate` out

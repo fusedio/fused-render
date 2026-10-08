@@ -1,0 +1,17 @@
+[project]
+name = "fused-render-runner-moshi-voice"
+version = "0.1.0"
+requires-python = ">=3.10"
+# `moshi-mlx` pins mlx 0.26 and huggingface-hub 0.28 — both older than every
+# other MLX runner's. Fine: each runner is its own venv (SPEC §40), and the
+# pins were checked on an M5 / macOS 27 (matmul, model build, Mimi all ran).
+# `rustymimi` (the Mimi codec, Rust) and `sentencepiece` ride in with it.
+dependencies = [
+    "moshi-mlx>=0.3,<0.4",
+    "numpy>=2.1,<2.3",
+    "huggingface_hub",
+    "psutil",
+]
+
+[tool.uv]
+package = false

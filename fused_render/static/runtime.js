@@ -297,6 +297,19 @@
  *     (a malformed question, named by id) | "model_loading" (.jobId is the
  *     load this call started — watch it and retry) | "ai_error" |
  *     "unavailable" (no decision runner on this machine: Apple Silicon only).
+ *   fused.ai.voice({model, provider, maxSeconds, onText, onLevel, abortSignal})
+ *     -> Promise<{text, durationInSeconds, ...frame}>  usage: {steps}
+ *     providerMetadata.local: {sessionId, maxSeconds, droppedFrames}.
+ *     A live spoken CONVERSATION with Moshi (Kyutai), full duplex: it
+ *     listens while it talks. This bridge opens the microphone and plays the
+ *     answer itself — call it from a click. `onText(piece)` streams the words
+ *     it says; `onLevel({mic, speaker})` fires per 80 ms frame for meters.
+ *     The promise resolves when the call ends: `abortSignal` hangs up
+ *     (finishReason "stop"), the cap `maxSeconds` (10..600, default 300)
+ *     ends it ("length"), `fused.ai.cancel("voice-to-voice")` ("cancelled").
+ *     Rejects .type "bad_request" | "model_loading" (.jobId — watch it and
+ *     call again) | "unavailable" (no voice runner here: Apple Silicon only)
+ *     | "mic_denied" | "ai_error". English only.
  *   fused.capture.* -> record the screen, record the mic, grab a still
  *     screen({display, rect, audio, device, cursor, path, maxSeconds, title})
  *     -> Promise<handle> and audio({source, path, maxSeconds, title})
@@ -5344,12 +5357,224 @@
   // now throws "fused.ai is not a function" — a hard break taken on purpose
   // over `ai.text = ai` (D631): an alias keeps the old reading alive in every
   // page written from now on.
+  // fused.ai.voice({model, provider, maxSeconds, onText, onLevel, abortSignal})
+  //   -> Promise<{text, durationInSeconds, ...frame}>
+  //
+  // A CONVERSATION, not a request (SPEC AI-33): Moshi listens and talks at
+  // the same time. This bridge owns the microphone and the speaker for the
+  // call — `getUserMedia` with echo cancellation, an AudioWorklet that cuts
+  // the mic into the worker's 80 ms frames, a WebSocket to the server's
+  // proxy, and a second worklet that plays the answer — so a page writes one
+  // line and starts it from a click (the browser will not open a mic
+  // otherwise). `onText(piece)` streams what Moshi says, a beat before it
+  // says it. The promise resolves when the call ends — the page's
+  // `abortSignal` hangs up, the worker's cap (`maxSeconds`, 10..600, default
+  // 300) ends it with finishReason "length", `fused.ai.cancel("voice-to-
+  // voice")` with "cancelled". Rejects .type "bad_request" | "model_loading"
+  // (.jobId — watch it and call again) | "unavailable" | "ai_error" |
+  // "mic_denied".
+  function aiVoice(opts) {
+    opts = opts || {};
+    const voiceKeys = ["model", "provider", "maxSeconds"];
+    const unknownErr = rejectUnknownOptions(opts, voiceKeys, ["onText", "onLevel", "abortSignal"], "fused.ai.voice");
+    if (unknownErr) return Promise.reject(unknownErr);
+    const onText = typeof opts.onText === "function" ? opts.onText : null;
+    const onLevel = typeof opts.onLevel === "function" ? opts.onLevel : null;
+    const body = {};
+    for (const key of voiceKeys) {
+      if (opts[key] !== undefined) body[key] = opts[key];
+    }
+    const signal = abortSignalOf(opts);
+    if (signal && signal.aborted) return Promise.reject(cancelledError("the voice call"));
+    if (!navigator.mediaDevices || !window.AudioWorkletNode) {
+      const err = new Error("fused.ai.voice needs a microphone and AudioWorklet support in this browser");
+      err.type = "unavailable";
+      return Promise.reject(err);
+    }
+    return fetch("/api/ai/voice", {
+      method: "POST",
+      headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" }),
+      body: JSON.stringify(body),
+    })
+      .then((res) => res.json().catch(() => ({})).then((data) => ({ res, data })))
+      .then(({ res, data }) => {
+        if (!res.ok || !data.ok) {
+          const error = data.error || {};
+          const err = new Error(error.message || res.statusText || "the voice call could not start");
+          err.type = error.type || (res.status === 409 ? "unavailable" : "ai_error");
+          if (error.jobId) err.jobId = error.jobId;
+          throw err;
+        }
+        return data;
+      })
+      .then((started) => voiceCall(started, { signal, onText, onLevel }));
+  }
+
+  // The live half of fused.ai.voice — the same wire the Playground's own
+  // stage speaks (frontend/src/apps/ai_models/playground/voice.ts): frames of
+  // `kind:u8 · len:u32 · payload`, Int16 PCM, 24 kHz, 1920 samples; kinds 0
+  // mic in, 1 Moshi out, 2 text out, 3 end (the worker's end carries the
+  // result JSON).
+  const VOICE_WORKLET = `
+class MicFrames extends AudioWorkletProcessor {
+  constructor(o) { super(); this.size = o.processorOptions.frame; this.buf = new Float32Array(this.size); this.fill = 0; }
+  process(inputs) {
+    const input = inputs[0] && inputs[0][0];
+    if (!input) return true;
+    for (let i = 0; i < input.length; i++) {
+      this.buf[this.fill++] = input[i];
+      if (this.fill === this.size) {
+        const pcm = new Int16Array(this.size); let sum = 0;
+        for (let j = 0; j < this.size; j++) { const v = Math.max(-1, Math.min(1, this.buf[j])); pcm[j] = v < 0 ? v * 32768 : v * 32767; sum += v * v; }
+        this.port.postMessage({ pcm, rms: Math.sqrt(sum / this.size) }, [pcm.buffer]);
+        this.fill = 0;
+      }
+    }
+    return true;
+  }
+}
+class SpeakerFrames extends AudioWorkletProcessor {
+  constructor() { super(); this.queue = []; this.offset = 0; this.port.onmessage = (e) => { this.queue.push(e.data); }; }
+  process(_i, outputs) {
+    const out = outputs[0] && outputs[0][0];
+    if (!out) return true;
+    let i = 0;
+    while (i < out.length && this.queue.length) {
+      const head = this.queue[0]; const n = Math.min(out.length - i, head.length - this.offset);
+      out.set(head.subarray(this.offset, this.offset + n), i); i += n; this.offset += n;
+      if (this.offset >= head.length) { this.queue.shift(); this.offset = 0; }
+    }
+    for (; i < out.length; i++) out[i] = 0;
+    return true;
+  }
+}
+registerProcessor("fused-voice-mic", MicFrames);
+registerProcessor("fused-voice-speaker", SpeakerFrames);
+`;
+  let voiceWorkletUrl = null;
+  function voicePack(kind, payload) {
+    const out = new Uint8Array(5 + payload.length);
+    out[0] = kind;
+    new DataView(out.buffer).setUint32(1, payload.length, false);
+    out.set(payload, 5);
+    return out.buffer;
+  }
+  async function voiceCall(started, hooks) {
+    const rate = started.sampleRate || 24000;
+    const frame = started.frame || 1920;
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      });
+    } catch (e) {
+      const err = new Error("the microphone was refused: " + (e && e.message ? e.message : e));
+      err.type = "mic_denied";
+      throw err;
+    }
+    const ctx = new AudioContext({ sampleRate: rate });
+    if (!voiceWorkletUrl) {
+      voiceWorkletUrl = URL.createObjectURL(new Blob([VOICE_WORKLET], { type: "application/javascript" }));
+    }
+    await ctx.audioWorklet.addModule(voiceWorkletUrl);
+    const proto = location.protocol === "https:" ? "wss://" : "ws://";
+    const ws = new WebSocket(proto + location.host + "/api/ai/voice/"
+      + encodeURIComponent(started.sessionId) + "/stream?token=" + encodeURIComponent(started.token));
+    ws.binaryType = "arraybuffer";
+    const source = ctx.createMediaStreamSource(stream);
+    const mic = new AudioWorkletNode(ctx, "fused-voice-mic", { processorOptions: { frame } });
+    const speaker = new AudioWorkletNode(ctx, "fused-voice-speaker");
+    source.connect(mic);
+    speaker.connect(ctx.destination);
+    const decoder = new TextDecoder();
+    const pieces = [];
+    let speakerLevel = 0;
+    let settled = false;
+    const startedAt = Date.now();
+    return new Promise((resolve, reject) => {
+      const finish = (result, failure) => {
+        if (settled) return;
+        settled = true;
+        try { ws.close(); } catch (e) { /* closed */ }
+        stream.getTracks().forEach((t) => t.stop());
+        ctx.close().catch(() => {});
+        if (failure) { reject(failure); return; }
+        const r = result || {};
+        resolve(resultFrame(
+          { text: typeof r.text === "string" ? r.text : pieces.join("").trim(),
+            durationInSeconds: typeof r.seconds === "number" ? r.seconds : (Date.now() - startedAt) / 1000 },
+          { provider: started.provider || "local", modelId: started.model, id: started.sessionId,
+            finishReason: r.finishReason || "stop", warnings: started.warnings,
+            usage: { steps: r.steps || 0 },
+            metadata: { sessionId: started.sessionId, maxSeconds: started.maxSeconds,
+                        droppedFrames: r.droppedFrames } }));
+      };
+      mic.port.onmessage = (e) => {
+        if (ws.readyState !== WebSocket.OPEN) return;
+        ws.send(voicePack(0, new Uint8Array(e.data.pcm.buffer)));
+        if (hooks.onLevel) hooks.onLevel({ mic: Math.min(1, e.data.rms * 3), speaker: speakerLevel });
+        speakerLevel *= 0.6;
+      };
+      ws.onmessage = (event) => {
+        const data = event.data;
+        if (!(data instanceof ArrayBuffer) || data.byteLength < 5) return;
+        const view = new DataView(data);
+        const kind = view.getUint8(0);
+        const length = view.getUint32(1, false);
+        const payload = new Uint8Array(data, 5, Math.min(length, data.byteLength - 5));
+        if (kind === 1) {
+          const pcm = new Int16Array(payload.buffer, payload.byteOffset, payload.byteLength >> 1);
+          const floats = new Float32Array(pcm.length);
+          let sum = 0;
+          for (let i = 0; i < pcm.length; i++) { const v = pcm[i] / 32768; floats[i] = v; sum += v * v; }
+          speakerLevel = Math.min(1, Math.sqrt(sum / (pcm.length || 1)) * 3);
+          speaker.port.postMessage(floats, [floats.buffer]);
+        } else if (kind === 2) {
+          const piece = decoder.decode(payload);
+          pieces.push(piece);
+          if (hooks.onText) hooks.onText(piece);
+        } else if (kind === 3) {
+          let result = null;
+          try { result = JSON.parse(decoder.decode(payload)); } catch (e) { result = null; }
+          finish(result);
+        }
+      };
+      ws.onerror = () => {
+        const err = new Error("the voice connection failed");
+        err.type = "ai_error";
+        finish(null, err);
+      };
+      ws.onclose = (event) => {
+        if (settled) return;
+        if (event.reason) {
+          const err = new Error(event.reason);
+          err.type = "ai_error";
+          finish(null, err);
+        } else {
+          finish(null);
+        }
+      };
+      ws.onopen = () => {
+        if (ctx.state === "suspended") ctx.resume().catch(() => {});
+      };
+      if (hooks.signal) {
+        hooks.signal.addEventListener("abort", () => {
+          if (ws.readyState === WebSocket.OPEN) {
+            try { ws.send(voicePack(3, new Uint8Array(0))); } catch (e) { /* closing */ }
+          }
+          finish(null);
+        }, { once: true });
+      }
+    });
+  }
+
   const ai = {
     text: aiText,
     models: aiModels,
     image: aiImage,
     video: aiVideo,
     speech: aiSpeech,
+    voice: aiVoice,
     transcribe: aiTranscribe,
     embed: aiEmbed,
     decide: aiDecide,

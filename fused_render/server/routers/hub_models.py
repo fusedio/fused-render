@@ -1297,13 +1297,15 @@ def _file_format(raw: dict) -> str | None:
 #: say for itself when it is not already a curated id. The runner code is the
 #: key because the gate is about ONE runner's format (`registry.DECISIONS`'s
 #: docstring); a second format-gated runner adds a row here, not a branch.
-_FORMAT_GATE_FAMILY_TAGS = {"laya-mlx": ("laya",), "mlx-audio-tts": ("qwen3_tts",)}
+_FORMAT_GATE_FAMILY_TAGS = {"laya-mlx": ("laya",), "mlx-audio-tts": ("qwen3_tts",),
+                            "moshi-mlx": ("moshi",)}
 #: The family tag alone is not enough: upstream's bundle repo
 #: (`convaiinnovations/laya`, `library_name: transformers`) wears `laya` too,
 #: and a Download there pulls three checkpoints plus eval PNGs into a runner
 #: that wants ONE pre-converted MLX export. So the tag branch also asks the
 #: card's `library_name` to be the runner's own framework.
-_FORMAT_GATE_FAMILY_LIBRARY = {"laya-mlx": "mlx", "mlx-audio-tts": "mlx-audio"}
+_FORMAT_GATE_FAMILY_LIBRARY = {"laya-mlx": "mlx", "mlx-audio-tts": "mlx-audio",
+                               "moshi-mlx": "moshi"}
 
 
 def _passes_format_gate(reading, model_id: str, raw: dict) -> bool:
