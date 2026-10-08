@@ -13,6 +13,7 @@ import {
 import { runCommunity } from "@platform/lib/community";
 import { useCurrentAppsChanged, TASKS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
 import { api as botsApi, type Bot } from "@apps/bots/lib/api";
+import type { AppsSort } from "./layout";
 import { MAX_ROW } from "./strip";
 
 /** Fused apps — hydrate the recent row first. The server only scans the full
@@ -21,7 +22,7 @@ import { MAX_ROW } from "./strip";
     Both row fetches ask for `limit * rows + 1`: one extra item so the cards
     strip has a next card to peek in at its right edge. Never a fixed MAX_ROW —
     that reintroduces the exhaustive workspace walk documented in strip.ts. */
-export function useHomeApps(limit: number | null, rows: number) {
+export function useHomeApps(limit: number | null, rows: number, sort: AppsSort = "opened") {
   const [apps, setApps] = useState<AppInfo[] | null>(null);
   const [appsError, setAppsError] = useState<string | null>(null);
   // Bumped on the desk-changed announcement (an icon picked from the sidebar
@@ -35,7 +36,7 @@ export function useHomeApps(limit: number | null, rows: number) {
   useEffect(() => {
     if (limit === null) return;
     let alive = true;
-    getHomeApps(Math.min(limit * rows + 1, MAX_ROW)).then(
+    getHomeApps(Math.min(limit * rows + 1, MAX_ROW), sort).then(
       async (r) => {
         if (!alive) return;
         if (r.apps.length > 0) {
@@ -60,7 +61,7 @@ export function useHomeApps(limit: number | null, rows: number) {
             await runCommunity({ action: "refresh" });
             if (!alive) return;
           }
-          const again = await getHomeApps(Math.min(limit * rows + 1, MAX_ROW));
+          const again = await getHomeApps(Math.min(limit * rows + 1, MAX_ROW), sort);
           if (!alive) return;
           setApps(again.apps.slice(0, MAX_ROW));
           return;
@@ -82,7 +83,7 @@ export function useHomeApps(limit: number | null, rows: number) {
     return () => {
       alive = false;
     };
-  }, [limit, rows, appsNonce, retry]);
+  }, [limit, rows, sort, appsNonce, retry]);
   return { apps, appsError, retry: () => (setApps(null), setAppsError(null), setRetry((n) => n + 1)) };
 }
 

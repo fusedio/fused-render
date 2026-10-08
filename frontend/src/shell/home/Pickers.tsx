@@ -1,8 +1,21 @@
 // The two pickers the edit popover and the add sheet share: size chips (layout
 // glyph + label) and format picks (scaled preview thumbnail + caption).
 import { FormatPreview, previewKind } from "./FormatPreview";
-import { FORMAT_LABELS, SIZE_LABELS, type WidgetFormat, type WidgetSize, type WidgetSource } from "./layout";
+import { APPS_SORTS, FORMAT_LABELS, SIZE_LABELS, type AppsSort, type WidgetFormat, type WidgetSize, type WidgetSource } from "./layout";
 import { SizeGlyph } from "./SizeGlyph";
+
+export function SortChips({ value, onChange }: { value: AppsSort; onChange: (s: AppsSort) => void }) {
+  return (
+    <div className="hw-chips" role="radiogroup" aria-label="Sort by">
+      {APPS_SORTS.map((s) => (
+        <button key={s.value} type="button" role="radio" aria-checked={s.value === value}
+          className={"hw-sizechip" + (s.value === value ? " is-on" : "")} onClick={() => onChange(s.value)}>
+          {s.label}
+        </button>
+      ))}
+    </div>
+  );
+}
 
 const SIZE_ORDER: WidgetSize[] = ["1x1", "2x1", "1x2", "2x2", "4x1"];
 

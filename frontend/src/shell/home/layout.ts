@@ -19,6 +19,18 @@ export type WidgetSource =
 export type WidgetSize = "1x1" | "2x1" | "1x2" | "2x2" | "4x1"; // cols x rows
 export type WidgetFormat = "cards" | "list" | "icons" | "board" | "count" | "live" | "bar";
 
+export type AppsSort = "opened" | "updated" | "name";
+
+export const APPS_SORTS: { value: AppsSort; label: string }[] = [
+  { value: "opened", label: "Recently opened" },
+  { value: "updated", label: "Recently updated" },
+  { value: "name", label: "Name" },
+];
+
+function isAppsSort(v: unknown): v is AppsSort {
+  return APPS_SORTS.some((s) => s.value === v);
+}
+
 export interface Widget {
   id: string;
   source: WidgetSource;
@@ -35,6 +47,8 @@ export interface Widget {
   folderId?: string;
   /** source === "app": an app folder (AppInfo.path), any fs path the explorer renders, or an http(s) URL. */
   appPath?: string;
+  /** source === "apps": card order; absent = "opened". */
+  sort?: AppsSort;
 }
 
 export interface HomeLayout {
@@ -86,7 +100,7 @@ export const SOURCES: Record<WidgetSource, SourceSpec> = {
   },
   apps: {
     label: "Fused Apps",
-    description: "Your most recently used apps.",
+    description: "Your apps, by recent use, last edit, or name.",
     sizes: ["4x1", "2x1", "1x2", "2x2"],
     formats: ["cards", "icons"],
   },
@@ -152,7 +166,7 @@ function makeWidget(
   source: WidgetSource,
   x: number,
   y: number,
-  opts: { id?: string; folderId?: string; appPath?: string; format?: WidgetFormat; size?: WidgetSize } = {},
+  opts: { id?: string; folderId?: string; appPath?: string; format?: WidgetFormat; size?: WidgetSize; sort?: AppsSort } = {},
 ): Widget {
   const spec = SOURCES[source];
   const w: Widget = {
@@ -165,6 +179,7 @@ function makeWidget(
   };
   if (opts.folderId) w.folderId = opts.folderId;
   if (source === "app" && opts.appPath) w.appPath = opts.appPath;
+  if (source === "apps" && isAppsSort(opts.sort)) w.sort = opts.sort;
   return w;
 }
 
@@ -232,6 +247,7 @@ export function normalizeLayout(raw: unknown): HomeLayout {
     };
     if (source === "folder") w.folderId = folderId;
     if (source === "app") w.appPath = appPath;
+    if (source === "apps" && isAppsSort(x.sort)) w.sort = x.sort;
     cleaned.push({ w, rx: x.x, ry: x.y, rc: x.cols, rr: x.rows });
   }
   if (r.version === 1 && !cleaned.some((c) => c.w.source === "search")) {
@@ -280,7 +296,7 @@ export function hasSearch(layout: HomeLayout): boolean {
 export function addWidget(
   layout: HomeLayout,
   source: WidgetSource,
-  opts: { id?: string; folderId?: string; appPath?: string; format?: WidgetFormat; size?: WidgetSize } = {},
+  opts: { id?: string; folderId?: string; appPath?: string; format?: WidgetFormat; size?: WidgetSize; sort?: AppsSort } = {},
 ): HomeLayout {
   if (layout.widgets.length >= MAX_WIDGETS) return layout;
   if (source === "search" && hasSearch(layout)) return layout;
@@ -336,6 +352,12 @@ export function allowedSizes(layout: HomeLayout, id: string): WidgetSize[] {
 export function setFormat(layout: HomeLayout, id: string, format: WidgetFormat): HomeLayout {
   return patch(layout, id, (w) =>
     SOURCES[w.source].formats.includes(format) && w.format !== format ? { ...w, format } : null,
+  );
+}
+
+export function setSort(layout: HomeLayout, id: string, sort: AppsSort): HomeLayout {
+  return patch(layout, id, (w) =>
+    w.source === "apps" && (w.sort ?? "opened") !== sort ? { ...w, sort } : null,
   );
 }
 

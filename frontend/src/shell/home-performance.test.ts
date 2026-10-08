@@ -38,7 +38,7 @@ test("shared explorer previews enter the scheduler only near the viewport", () =
 // the measured count, never a constant.
 test("Home requests the recent-first app row instead of the exhaustive catalog", () => {
   const home = [readFileSync(join(import.meta.dir, "home/data.ts"), "utf8")].join("\n");
-  expect(home).toContain("getHomeApps(Math.min(limit * rows + 1, MAX_ROW))");
+  expect(home).toContain("getHomeApps(Math.min(limit * rows + 1, MAX_ROW), sort)");
   expect(home).not.toContain("getApps()");
   expect(home).not.toContain("sortApps(");
 });

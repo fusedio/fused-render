@@ -378,6 +378,7 @@ export function WidgetGrid({
             layout={layout}
             onResize={(s) => api.resize(w.id, s)}
             onReformat={(f) => api.reformat(w.id, f)}
+            onResort={(s) => api.resort(w.id, s)}
             onRemove={() => api.remove(w.id)}
             onPointerDown={(e) => onWidgetPointerDown(w, e)}
             onResizeStart={(e, axis) => onResizeStart(w, e, axis)}

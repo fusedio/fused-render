@@ -28,6 +28,7 @@ import {
   resizeTo,
   rowsUsed,
   setFormat,
+  setSort,
   setSize,
   sortByPosition,
   type HomeLayout,
@@ -403,6 +404,35 @@ test("setFormat", () => {
   expect(setFormat(l, "b", "board").widgets[1].format).toBe("board");
   expect(setFormat(l, "b", "cards")).toBe(l);
   expect(setFormat(l, "zzz", "board")).toBe(l);
+});
+
+test("setSort", () => {
+  const l = lay(w("a", "apps"), w("t", "tasks", "2x2", "list", 0, 1));
+  expect(setSort(l, "a", "name").widgets[0].sort).toBe("name");
+  const named = setSort(l, "a", "name");
+  expect(setSort(named, "a", "name")).toBe(named);
+  expect(setSort(l, "a", "opened")).toBe(l);
+  expect(setSort(l, "zzz", "name")).toBe(l);
+  expect(setSort(l, "t", "name")).toBe(l);
+});
+
+test("normalizeLayout keeps sort on apps widgets only", () => {
+  const out = normalizeLayout({
+    version: 2,
+    widgets: [
+      { ...w("a", "apps"), sort: "name" },
+      { ...w("b", "recents"), sort: "name" },
+      { ...w("c", "apps"), sort: "zzz" },
+    ],
+  });
+  expect(out.widgets.find((x) => x.id === "a")?.sort).toBe("name");
+  expect(out.widgets.find((x) => x.id === "b")?.sort).toBeUndefined();
+  expect(out.widgets.find((x) => x.id === "c")?.sort).toBeUndefined();
+});
+
+test("addWidget stores sort for apps widgets only", () => {
+  expect(addWidget(lay(), "apps", { id: "a", sort: "updated" }).widgets[0].sort).toBe("updated");
+  expect(addWidget(lay(), "recents", { id: "r", sort: "updated" }).widgets[0].sort).toBeUndefined();
 });
 
 test("app widgets need an appPath and keep it; other sources drop it", () => {

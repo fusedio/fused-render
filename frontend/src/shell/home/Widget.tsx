@@ -14,7 +14,7 @@ import {
 } from "react";
 import { tabHref } from "@apps/ai_models/routes";
 import { softNavigate } from "./strip";
-import { SOURCES, allowedSizes, type HomeLayout, type Widget as WidgetModel, type WidgetFormat, type WidgetSize } from "./layout";
+import { SOURCES, allowedSizes, type AppsSort, type HomeLayout, type Widget as WidgetModel, type WidgetFormat, type WidgetSize } from "./layout";
 import { AppsWidget } from "./widgets/AppsWidget";
 import { PlaygroundWidget, RecentsWidget, SessionsWidget } from "./widgets/StripWidgets";
 import { TasksWidget } from "./widgets/TasksWidget";
@@ -24,7 +24,7 @@ import { SearchWidget } from "./widgets/SearchWidget";
 import { BuildWidget } from "./widgets/BuildWidget";
 import { IndexWidget } from "./widgets/IndexWidget";
 import { AppEmbedWidget, OpenAppLink, OpenPageLink, appName, pageTitle, useWidgetApp } from "./widgets/AppEmbedWidget";
-import { FormatPicks, SizeChips } from "./Pickers";
+import { FormatPicks, SizeChips, SortChips } from "./Pickers";
 
 const SEE_ALL: Partial<Record<WidgetModel["source"], string>> = {
   apps: "/apps",
@@ -68,6 +68,7 @@ function EditPopover({
   layout,
   onResize,
   onReformat,
+  onResort,
   onRemove,
 }: {
   widget: WidgetModel;
@@ -75,6 +76,7 @@ function EditPopover({
   layout: HomeLayout;
   onResize: (size: WidgetSize) => void;
   onReformat: (format: WidgetFormat) => void;
+  onResort: (sort: AppsSort) => void;
   onRemove: () => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -141,6 +143,12 @@ function EditPopover({
               <FormatPicks source={widget.source} formats={spec.formats} value={widget.format} onChange={onReformat} />
             </>
           ) : null}
+          {widget.source === "apps" ? (
+            <>
+              <div className="hw-label">Sort by</div>
+              <SortChips value={widget.sort ?? "opened"} onChange={onResort} />
+            </>
+          ) : null}
           <div className="hw-pop-divider" />
           <button
             type="button"
@@ -170,6 +178,7 @@ export interface WidgetFrameProps {
   layout: HomeLayout;
   onResize: (size: WidgetSize) => void;
   onReformat: (format: WidgetFormat) => void;
+  onResort: (sort: AppsSort) => void;
   onRemove: () => void;
   onPointerDown: (e: ReactPointerEvent<HTMLElement>) => void;
   onResizeStart: (e: ReactPointerEvent<HTMLElement>, axis: "e" | "s" | "se") => void;
@@ -230,7 +239,7 @@ export function WidgetFrame(p: WidgetFrameProps): ReactNode {
         </h2>
         {edit ? (
           <>
-            <EditPopover widget={widget} title={title} layout={p.layout} onResize={p.onResize} onReformat={p.onReformat} onRemove={p.onRemove} />
+            <EditPopover widget={widget} title={title} layout={p.layout} onResize={p.onResize} onReformat={p.onReformat} onResort={p.onResort} onRemove={p.onRemove} />
             <button type="button" className="hw-remove" aria-label={`Remove ${title}`} onClick={p.onRemove}>
               ×
             </button>

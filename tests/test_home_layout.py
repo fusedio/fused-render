@@ -135,6 +135,34 @@ def test_app_path_dropped_on_other_sources_and_when_oversized(tmp_path, monkeypa
     assert [x["id"] for x in got] == ["a", "b", "c"]
 
 
+def test_apps_widget_roundtrips_sort(tmp_path, monkeypatch):
+    client, _ = _client(tmp_path, monkeypatch)
+    lay = {
+        "version": 1,
+        "widgets": [
+            {"id": "a", "source": "apps", "size": "4x1", "format": "cards", "sort": "updated"},
+        ],
+    }
+    assert client.put("/api/home/layout", json=lay, headers=FUSED).status_code == 200
+    got = client.get("/api/home/layout").json()["layout"]["widgets"]
+    assert got[0]["sort"] == "updated"
+
+
+def test_sort_dropped_on_other_sources_and_unknown_values(tmp_path, monkeypatch):
+    client, _ = _client(tmp_path, monkeypatch)
+    lay = {
+        "version": 1,
+        "widgets": [
+            {"id": "r", "source": "recents", "size": "2x1", "format": "list", "sort": "name"},
+            {"id": "a", "source": "apps", "size": "4x1", "format": "cards", "sort": "zzz"},
+        ],
+    }
+    assert client.put("/api/home/layout", json=lay, headers=FUSED).status_code == 200
+    got = client.get("/api/home/layout").json()["layout"]["widgets"]
+    assert [x["id"] for x in got] == ["r", "a"]
+    assert all("sort" not in x for x in got)
+
+
 def test_old_version_document_is_kept_as_is(tmp_path, monkeypatch):
     # The server does not migrate: the client prepends the search widget to a
     # version-1 document and stamps 2 on its next write.

@@ -48,7 +48,7 @@ export function AppsWidget({ widget }: { widget: Widget }) {
   const cap = cards ? (count ?? 0) * rows : itemCapacity(widget.size, widget.format);
   // Cards ask for what the measured row can draw (the server's recents-first
   // fast path depends on it); icon tiles ask for their fixed capacity.
-  const { apps, appsError, retry } = useHomeApps(cards ? limit : Math.min(cap * 2, MAX_ROW), cards ? rows : 1);
+  const { apps, appsError, retry } = useHomeApps(cards ? limit : Math.min(cap * 2, MAX_ROW), cards ? rows : 1, widget.sort ?? "opened");
   return (
     <div ref={ref} className="hw-body">
       {apps === null ? (

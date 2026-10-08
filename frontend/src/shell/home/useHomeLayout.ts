@@ -15,7 +15,9 @@ import {
   resizeByArrow,
   resizeTo,
   setFormat,
+  setSort,
   setSize,
+  type AppsSort,
   type HomeLayout,
   type WidgetFormat,
   type WidgetSize,
@@ -37,10 +39,11 @@ export interface HomeLayoutApi {
   resizeArrow: (id: string, key: string) => void;
   /** Pack everything densely in reading order. */
   tidy: () => void;
-  add: (source: WidgetSource, opts?: { folderId?: string; appPath?: string; format?: WidgetFormat; size?: WidgetSize }) => void;
+  add: (source: WidgetSource, opts?: { folderId?: string; appPath?: string; format?: WidgetFormat; size?: WidgetSize; sort?: AppsSort }) => void;
   remove: (id: string) => void;
   resize: (id: string, size: WidgetSize) => void;
   reformat: (id: string, format: WidgetFormat) => void;
+  resort: (id: string, sort: AppsSort) => void;
   reset: () => void;
 }
 
@@ -98,6 +101,7 @@ export function useHomeLayout(): HomeLayoutApi {
     remove: useCallback((id) => commit(removeWidget(ref.current, id)), [commit]),
     resize: useCallback((id, size) => commit(setSize(ref.current, id, size)), [commit]),
     reformat: useCallback((id, format) => commit(setFormat(ref.current, id, format)), [commit]),
+    resort: useCallback((id, sort) => commit(setSort(ref.current, id, sort)), [commit]),
     reset: useCallback(() => commit(defaultLayout()), [commit]),
   };
 }

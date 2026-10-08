@@ -2423,9 +2423,12 @@ export function getAppsPage(p: AppsPageParams, signal?: AbortSignal): Promise<Ap
 // Home needs one recent row, not the exhaustive /apps catalog. The backend
 // hydrates stored recents first and only falls back to workspace discovery when
 // those do not fill the requested row.
-export function getHomeApps(limit: number): Promise<{ apps: AppInfo[] }> {
+export function getHomeApps(
+  limit: number,
+  sort: "opened" | "updated" | "name" = "opened",
+): Promise<{ apps: AppInfo[] }> {
   return getJson<{ apps: AppInfo[] }>(
-    `/api/apps/home?limit=${encodeURIComponent(String(limit))}`,
+    `/api/apps/home?limit=${encodeURIComponent(String(limit))}${sort !== "opened" ? `&sort=${sort}` : ""}`,
   );
 }
 

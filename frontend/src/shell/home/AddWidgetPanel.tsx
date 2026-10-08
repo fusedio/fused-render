@@ -25,8 +25,8 @@ import { createPortal } from "react-dom";
 import { useBookmarksVersion } from "@platform/lib/hooks";
 import { isFolder, loadBookmarks, type BookmarkFolder, type BookmarkItem } from "@platform/lib/bookmarks";
 import { FormatPreview } from "./FormatPreview";
-import { FormatPicks, SizeChips, stageZoom } from "./Pickers";
-import { MAX_WIDGETS, SOURCES, hasSearch, type WidgetFormat, type WidgetSize, type WidgetSource } from "./layout";
+import { FormatPicks, SizeChips, SortChips, stageZoom } from "./Pickers";
+import { MAX_WIDGETS, SOURCES, hasSearch, type AppsSort, type WidgetFormat, type WidgetSize, type WidgetSource } from "./layout";
 import type { HomeLayoutApi } from "./useHomeLayout";
 import { AppGlyph } from "./widgets/AppsWidget";
 import { appName, useAllApps } from "./widgets/AppEmbedWidget";
@@ -79,6 +79,7 @@ export function AddWidgetPanel({ api, onClose }: { api: HomeLayoutApi; onClose: 
   const [source, setSource] = useState<WidgetSource>(SOURCE_KEYS[0]);
   const [format, setFormat] = useState<WidgetFormat>(SOURCES[SOURCE_KEYS[0]].formats[0]);
   const [size, setSize] = useState<WidgetSize>(SOURCES[SOURCE_KEYS[0]].sizes[0]);
+  const [sort, setSort] = useState<AppsSort>("opened");
   const [folderId, setFolderId] = useState<string | null>(null);
   const [appPath, setAppPath] = useState<string | null>(null);
   const [appQuery, setAppQuery] = useState("");
@@ -169,6 +170,7 @@ export function AddWidgetPanel({ api, onClose }: { api: HomeLayoutApi; onClose: 
     setSource(s);
     setFormat(SOURCES[s].formats[0]);
     setSize(SOURCES[s].sizes[0]);
+    setSort("opened");
   };
 
   // Focus the dialog on open; hand focus back to whatever opened it on close.
@@ -225,7 +227,9 @@ export function AddWidgetPanel({ api, onClose }: { api: HomeLayoutApi; onClose: 
         ? { folderId: chosenFolder?.id, format, size }
         : source === "app"
           ? { appPath: urlMode ? url! : fileMode ? filePath : chosenApp?.path, format, size }
-          : { format, size },
+          : source === "apps"
+            ? { format, size, sort }
+            : { format, size },
     );
     onClose();
     // The new widget is the last one in the grid; wait a beat for it to mount.
@@ -475,6 +479,12 @@ export function AddWidgetPanel({ api, onClose }: { api: HomeLayoutApi; onClose: 
                 <span className="hw-label">Size</span>
                 <SizeChips sizes={spec.sizes} value={size} onChange={setSize} />
               </div>
+              {source === "apps" ? (
+                <div className="hw-opt">
+                  <span className="hw-label">Sort by</span>
+                  <SortChips value={sort} onChange={setSort} />
+                </div>
+              ) : null}
             </div>
           </div>
         </div>
