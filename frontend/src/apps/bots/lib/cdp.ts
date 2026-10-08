@@ -399,22 +399,28 @@ export function installLive(stage: HTMLElement): () => void {
   const inMenu = (e: Event): boolean => !!(e.target as Element | null)?.closest?.(".lvov");
   // Moves are coalesced to one per animation frame: hover menus stay responsive without flooding the socket.
   let pendingMove: { p: { x: number; y: number }; e: MouseEvent } | null = null;
+  let pressed: Promise<void> = Promise.resolve();  // the press in flight (see onDown); moves and the release queue behind it
   const onMove = (e: MouseEvent) => {
     if (!inCtl() || inMenu(e)) return;
     const p = toPage(e); if (!p) return;
     const first = !pendingMove; pendingMove = { p, e };
     if (first) requestAnimationFrame(() => {
       const m = pendingMove; pendingMove = null; if (!m || !inCtl()) return;
-      mouse("mouseMoved", m.p, m.e);
-      if (drag) {
-        cdp("Input.dispatchDragEvent", { type: drag.entered ? "dragOver" : "dragEnter", x: m.p.x, y: m.p.y, data: drag.data, modifiers: CDP_MODS(m.e) });
-        drag.entered = true;
-      }
+      // Moves queue behind a press still waiting on its hit probe, so Chrome never sees a held-button move before the press.
+      void pressed.then(() => {
+        if (!inCtl()) return;
+        // Chrome starts a drag only from moves that name the held button (measured: `buttons: 1` alone never fires dragIntercepted).
+        const held = m.e.buttons & 1 ? "left" : m.e.buttons & 2 ? "right" : m.e.buttons & 4 ? "middle" : "none";
+        mouse("mouseMoved", m.p, m.e, { button: held });
+        if (drag) {
+          cdp("Input.dispatchDragEvent", { type: drag.entered ? "dragOver" : "dragEnter", x: m.p.x, y: m.p.y, data: drag.data, modifiers: CDP_MODS(m.e) });
+          drag.entered = true;
+        }
+      });
     });
   };
   // A left press first asks the page what is under it: a closed <select> opens our menu instead of Chrome's invisible one.
   // The press is sent once that answer is in, and the matching release waits for it, so the two never cross.
-  let pressed: Promise<void> = Promise.resolve();
   const onDown = (e: MouseEvent) => {
     if (!inCtl() || inMenu(e)) return; const p = toPage(e); if (!p) return;
     e.preventDefault(); ($("fkeys") || stage).focus();
