@@ -346,6 +346,8 @@ div.bots-page.stage .chat .msg time.when { display: none; }
 .bots-page .msg.note .readmore:disabled { opacity: .5; cursor: default; }
 .bots-page .msg.done { align-self: flex-start; background: var(--card); box-shadow: inset 0 0 0 1px var(--line); }
 .bots-page .msg.question { align-self: flex-start; background: var(--card); }
+/* The one card still waiting on you keeps the stripe; answered ones lose it. */
+.bots-page .msg.question:not(.settled), .bots-page .msg.approval:not(.settled) { box-shadow: inset 3px 0 0 var(--warn); }
 .bots-page .msg.error { align-self: flex-start; background: var(--card); box-shadow: inset 3px 0 0 var(--err); color: var(--err); }
 /* A question with choices is a card: the prompt, then lettered rows you can click. */
 .bots-page .msg.question.card { box-shadow: none; width: min(48rem, 92%); padding: 14px 16px 16px; }
