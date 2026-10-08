@@ -508,7 +508,8 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
       </div>
     );
   } else if (!evs.length) {
-    content = <div className="empty">Say hello: give this bot a task.</div>;
+    // No events (none yet, or not loaded) while you hold the browser: the note still carries the hand back.
+    content = b.control ? [<HandoverNote key="handover" b={b} />] : <div className="empty">Say hello: give this bot a task.</div>;
   } else {
     const keys = rowKeys(evs, botId);
     // D12: delivery rows join the bubble they refer to (`ref`); they render nothing of their own (isNoise).

@@ -557,6 +557,11 @@ class Bot:
         if dirty:
             self.save()
         if unsent:
+            # The user lines are already written: mark each ignored so past_conversation leaves it out (an unsent
+            # line is not something the user asked, and "send again" would read twice).
+            for h in unsent:
+                if h.get("seq") is not None:
+                    self.emit("system", "Queued while you had the browser; not sent (restart).", ignored_seq=h["seq"])
             n = len(unsent)
             self.emit("note", f"{n} message{'s' if n > 1 else ''} queued while you had the browser {'were' if n > 1 else 'was'} "
                                 "not sent: the server restarted. Send again if still needed.")
@@ -1671,7 +1676,14 @@ class Bot:
             else:
                 r["last_result"] = "started"
                 self.emit("system", f"Routine {'run now' if manual else 'fired'}: {r['task']}")
-            r["next"] = self._next_run(r, time.time()) if r.get("enabled") else None
+            if busy and r["kind"] == "once":
+                # A one-shot is not a slot to lose: a `last` would end it for good (_next_run), so it is not
+                # stamped. A due one retries in a minute until the bot is free and you have handed back; a
+                # skipped Run now keeps its own time.
+                r["last"] = prev_last
+                r["next"] = self._next_run(r, time.time()) if manual else time.time() + 60
+            else:
+                r["next"] = self._next_run(r, time.time()) if r.get("enabled") else None
             if r["kind"] == "once" and not busy:
                 r["enabled"] = False
             self.save()
