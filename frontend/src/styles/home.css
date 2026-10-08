@@ -734,8 +734,7 @@
   gap: 16px;
   overflow-x: auto;
   overscroll-behavior-x: contain;
-  /* proximity, not mandatory: a mandatory snap on ~385px cards fights every trackpad gesture that stops short of a card midpoint (same choice as .home-composer-sample-strip) */
-  scroll-snap-type: x proximity;
+  /* no scroll snap: on 385px cards even a proximity snap pulls a slow trackpad gesture back to the card it started on; the ‹ › buttons page by scrollBy instead */
   scrollbar-width: none;
 }
 
@@ -748,7 +747,6 @@
 }
 
 .hw-cards > * {
-  scroll-snap-align: start;
   min-width: 0;
   width: auto;
   max-width: none;
@@ -910,12 +908,10 @@ a.hw-row:hover { background: var(--bg-alt); }
   align-content: center;
   overflow-x: auto;
   overscroll-behavior-x: contain;
-  scroll-snap-type: x proximity;
   scrollbar-width: none;
   padding-right: 56px; /* room for the peek fade */
 }
 .hw-icons.is-strip::-webkit-scrollbar { display: none; }
-.hw-icons.is-strip > * { scroll-snap-align: start; }
 
 .hw-tile {
   display: flex;

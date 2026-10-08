@@ -6619,3 +6619,8 @@ Home widgets resize by edge drag in half-cell steps. A widget keeps `size` (the 
 ## 2026-10-08 — Home card strips snap by proximity
 
 Home card and icon strips (`.hw-cards`, `.hw-icons.is-strip`) snap by proximity, not mandatorily: a mandatory x snap on ~385px cards makes trackpad scrolling janky (gestures short of a card midpoint get pulled back, inertia is snapped mid-flight). Same choice as `.home-composer-sample-strip`. The ‹ › buttons still page by scrollBy.
+
+
+## 2026-10-08 — Home card strips do not snap at all
+
+The Home cards and icons strips (`.hw-cards`, `.hw-icons.is-strip`) no longer scroll-snap, not even by proximity: on 385px cards nearly every slow trackpad gesture ends short of the next snap point, and proximity snapping still pulled it back to the card it started on (CSS snapping has no speed threshold). Aligned paging stays on the ‹ › buttons, which use scrollBy.
