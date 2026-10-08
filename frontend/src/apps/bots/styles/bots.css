@@ -18,17 +18,17 @@
 
 /* ==================================================================== OpenBot app.css (verbatim) ==== */
 /* Browser Bots — all styles. Loaded by index.html through fused.rawUrl. */
-/* Tokens. Dark = brand: near-black canvas, lime accent. Same names in both blocks. */
+/* Tokens. Surfaces, text and accent alias the shell tokens, so every preset and mode carries through. */
 /* The page follows the shell's surfaces so it matches every other screen (aliased at :root, where the shell's names resolve). */
-:root { --bots-shell-bg: var(--bg); --bots-shell-bg-alt: var(--bg-alt); --bots-shell-panel: var(--bg-panel); --bots-shell-hover: var(--row-bg-hover); --bots-shell-selected: var(--row-bg-selected); --bots-shell-fg: var(--fg); --bots-shell-muted: var(--fg-muted); --bots-shell-border: var(--border); }
+:root { --bots-shell-bg: var(--bg); --bots-shell-bg-alt: var(--bg-alt); --bots-shell-panel: var(--bg-panel); --bots-shell-hover: var(--row-bg-hover); --bots-shell-selected: var(--row-bg-selected); --bots-shell-fg: var(--fg); --bots-shell-muted: var(--fg-muted); --bots-shell-border: var(--border); --bots-shell-accent: var(--accent); --bots-shell-accent-text: var(--accent-soft); --bots-shell-on-accent: var(--on-accent); }
 .bots-page       { color-scheme: dark;
   --bg: var(--bots-shell-bg); --panel: var(--bots-shell-bg); --panel2: var(--bots-shell-hover); --card: var(--bots-shell-bg-alt); --raised: var(--bots-shell-hover); --hover: var(--bots-shell-selected); --inset: var(--bots-shell-hover);
   --text: var(--bots-shell-fg); --muted: var(--bots-shell-muted); --line: var(--bots-shell-border);
-  --accent: #eafe68; --accent-ink: #0d0d0f; --accent-text: #eafe68; --bubble-user: #3b4030; --bubble-user-ink: #ffffff;
+  --accent: var(--bots-shell-accent); --accent-ink: var(--bots-shell-on-accent); --accent-text: var(--bots-shell-accent-text); --bubble-user: #3b4030; --bubble-user-ink: #ffffff;
   --ok: #38d591; --warn: #ffb020; --err: #ff5667; --shadow: 0 12px 40px rgba(0,0,0,.7); }
 [data-theme="light"] .bots-page
             { color-scheme: light;
-  --accent: #d9f036; --accent-ink: #1b1d21; --accent-text: #66740c; --bubble-user: #1b1d21; --bubble-user-ink: #fcfcfc;
+  --bubble-user: #1b1d21; --bubble-user-ink: #fcfcfc;
   --ok: #1f9d5a; --warn: #b7791a; --err: #d13b3b; --shadow: 0 12px 40px rgba(0,0,0,.18); }
 .bots-page, .bots-page * { box-sizing: border-box; }
 div.bots-page { flex: 1 1 auto; min-width: 0; min-height: 0; position: relative; }
