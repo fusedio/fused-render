@@ -42,6 +42,7 @@ registry file, a vanished transcript all produce no keys and no exception. The
 """
 from __future__ import annotations
 
+import asyncio
 import collections
 import json
 import logging
@@ -75,6 +76,12 @@ RUNNING_STATUSES = frozenset({"busy", "shell"})
 _cond = threading.Condition()
 _generation = 0
 _changed: collections.deque = collections.deque(maxlen=RING)  # (gen, frozenset)
+# `wait_async`'s parked long-polls: (loop, future) per waiter, appended and
+# removed under `_cond`. A `threading.Condition` cannot wake a coroutine, and a
+# coroutine that blocked on it would freeze the whole event loop — so the async
+# side parks a future instead and `_bump` resolves it across threads with
+# `call_soon_threadsafe` (the watcher ticks on its own daemon thread).
+_async_waiters: list = []
 _registry: dict[str, dict] = {}   # session_id -> parsed sessions/<pid>.json
 # session_id -> epoch when its registry row went away (process exited or died).
 # A departed session is KNOWN idle: without this, a `claude -p` that ran for
@@ -418,19 +425,87 @@ def wait(since: int, timeout: float = MAX_WAIT_SEC) -> tuple[int, frozenset | No
             if remaining <= 0:
                 return _generation, frozenset()
             _cond.wait(remaining)
-        if _changed and _changed[0][0] > since + 1:
+        return _generation, _keys_since(since)
+
+
+def _keys_since(since: int) -> frozenset | None:
+    """The union of every key changed in generations ``since+1 .. now``, or
+    None when the window is not one the ring can answer. The caller holds
+    `_cond` and has already seen the generation pass `since` — shared by
+    `wait` and `wait_async` so the two can never disagree about a window."""
+    if _changed and _changed[0][0] > since + 1:
+        return None
+    keys: set[str] = set()
+    for gen, changed in _changed:
+        if gen <= since:
+            continue
+        # A generation that could not name its rows (`notify_all`) makes
+        # the whole window a reload: rows the ring never listed are not
+        # rows a union can carry.
+        if changed is None:
+            return None
+        keys |= changed
+    return frozenset(keys)
+
+
+async def wait_async(since: int,
+                     timeout: float = MAX_WAIT_SEC) -> tuple[int, frozenset | None]:
+    """`wait`, for a coroutine: same arguments, same answer, same fast paths —
+    but parked on an asyncio future instead of a thread.
+
+    WHY IT EXISTS (2026-10-08). `/api/tasks/changes` was a sync route, so every
+    long-poll pinned one of anyio's 40 worker threads for up to 25 s inside
+    `wait`; every shell document holds one, and so did every embed pane. A
+    coroutine waiting on a future costs nothing but the future, and a client
+    that goes away (the WebSocket feed cancels its in-flight requests on
+    disconnect) takes its waiter with it instead of leaving a thread to sit the
+    timeout out.
+
+    The future is registered UNDER `_cond`, in the same critical section that
+    read the generation, and `_bump` takes `_cond` to move it — so a bump can
+    never land between "the generation is still `since`" and "I am listed",
+    which is the one window a lost wakeup could hide in. A fresh future per
+    round: one already resolved cannot be awaited again."""
+    deadline = time.monotonic() + max(0.0, min(timeout, MAX_WAIT_SEC))
+    loop = asyncio.get_running_loop()
+    with _cond:
+        if since < 0:
+            return _generation, frozenset()
+        if since > _generation:
+            # The client is ahead of us — see `wait` (bugbot #892).
             return _generation, None
-        keys: set[str] = set()
-        for gen, changed in _changed:
-            if gen <= since:
-                continue
-            # A generation that could not name its rows (`notify_all`) makes
-            # the whole window a reload: rows the ring never listed are not
-            # rows a union can carry.
-            if changed is None:
+    while True:
+        with _cond:
+            if since > _generation:
+                # Re-checked every round: `reset()` (a restart in tests) drops
+                # the generation under a parked waiter and wakes it — it must
+                # answer "reload", not re-park until the deadline.
                 return _generation, None
-            keys |= changed
-        return _generation, frozenset(keys)
+            if _generation > since:
+                return _generation, _keys_since(since)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return _generation, frozenset()
+            waiter = (loop, loop.create_future())
+            _async_waiters.append(waiter)
+        try:
+            await asyncio.wait_for(waiter[1], remaining)
+        except asyncio.TimeoutError:
+            pass
+        finally:
+            with _cond:
+                try:
+                    _async_waiters.remove(waiter)
+                except ValueError:
+                    pass  # `_bump` already took it off the list
+
+
+def _wake(fut) -> None:
+    # Runs ON the waiter's own loop (via call_soon_threadsafe): a future may
+    # only be resolved from its loop's thread, and a waiter that timed out or
+    # was cancelled in the meantime is already done.
+    if not fut.done():
+        fut.set_result(None)
 
 
 # ----------------------------------------------------------------- the writes
@@ -441,6 +516,16 @@ def _bump(keys: set[str] | None) -> None:
         _generation += 1
         _changed.append((_generation, None if keys is None else frozenset(keys)))
         _cond.notify_all()
+        # The coroutine side of the same wakeup (`wait_async`). Taken off the
+        # list here: each waiter re-registers per round, so a second bump
+        # before it has run must not queue a second wake for it.
+        waiters = list(_async_waiters)
+        _async_waiters.clear()
+    for loop, fut in waiters:
+        try:
+            loop.call_soon_threadsafe(_wake, fut)
+        except RuntimeError:
+            pass  # that loop has closed (shutdown, a finished TestClient)
 
 
 def notify(keys: set[str] | None = None) -> None:
@@ -1223,6 +1308,15 @@ def reset() -> None:
         _mark_turns.clear()
         _mark_busy_seen.clear()
         _last_idle_turn.clear()
+        # Wake, not just drop: a parked wait_async would otherwise sleep out
+        # its full deadline against a generation that just went back to 0.
+        waiters = list(_async_waiters)
+        _async_waiters.clear()
+    for loop, fut in waiters:
+        try:
+            loop.call_soon_threadsafe(_wake, fut)
+        except RuntimeError:
+            pass  # that loop has closed (shutdown, a finished TestClient)
     _primed = False
     _sess_mtimes.clear()
     _sess_sids.clear()
