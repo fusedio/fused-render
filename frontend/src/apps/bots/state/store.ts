@@ -239,6 +239,17 @@ function onUrlChange() {
   if (id && id !== S.sel && S.bots.find((b) => b.id === id)) commit({ sel: id, scrollThread: S.scrollThread + 1 });
 }
 
+/** The menu-bar Dock's bot tile (fused_render/mac_window.py `show_bot`) lands here: a user gesture from outside
+ *  the page, so it is a full `openBot` — the select() resets (reply quote, toast) and the open call — not the quiet
+ *  URL follow above. */
+export const OPEN_EVENT = "fused:bots-open";
+function onOpenEvent(e: Event) {
+  const id = (e as CustomEvent<{ id?: unknown }>).detail?.id;
+  if (typeof id !== "string" || !id) return;
+  e.preventDefault();  // "handled": the sender falls back to rewriting ?bot= when nobody is mounted to hear this
+  openBot(id);
+}
+
 // ------------------------------------------------------------------ ui slots ----
 export const openDialog = (req: DialogReq): void => commit({ ui: { ...S.ui, dialog: req, menu: null } });
 export const closeDialog = (): void => { if (S.ui.dialog) commit({ ui: { ...S.ui, dialog: null } }); };
@@ -331,6 +342,7 @@ export function startStore(): () => void {
   apiHooks.onSlow = (rec) => { const slow = [...S.slow, rec]; if (slow.length > 30) slow.shift(); commit({ slow }); };
   window.addEventListener("popstate", onUrlChange);
   window.addEventListener("fused:urlchange", onUrlChange);
+  window.addEventListener(OPEN_EVENT, onOpenEvent);
   const urlBot = initialSel();
   if (urlBot && urlBot !== S.sel) commit({ sel: urlBot, scrollThread: S.scrollThread + 1 });
   else if (!urlBot && S.sel) writeUrlBot(S.sel);
@@ -343,5 +355,6 @@ export function startStore(): () => void {
     if (S.ui.dialog || S.ui.panel || S.ui.menu) commit({ ui: { dialog: null, panel: null, menu: null } });  // a route change closes them
     window.removeEventListener("popstate", onUrlChange);
     window.removeEventListener("fused:urlchange", onUrlChange);
+    window.removeEventListener(OPEN_EVENT, onOpenEvent);
   };
 }

@@ -1377,6 +1377,11 @@ export interface Prefs {
   // `available` is false off macOS and under `fused-render serve`, where the
   // section is not rendered. OPTIONAL like `launcher`.
   native_windows?: { enabled: boolean; available: boolean };
+  // macOS status item: the menu-bar Dock (fused_render/menubar_dock.py, the
+  // default) or the pinned-file popover (menubar_pin.py; `pin_enabled`,
+  // opt-in). `available` is false off macOS and under `fused-render serve`,
+  // where the section is not rendered. OPTIONAL like `launcher`.
+  menubar?: { pin_enabled: boolean; available: boolean };
   // Desktop app: apps open inside the Home window's explorer instead of a
   // window each (`apps_open_in_home`, opt-in). OPTIONAL like `launcher`.
   apps_open_in_home?: { enabled: boolean };
@@ -1590,6 +1595,12 @@ export function putNativeWindowsEnabled(enabled: boolean): Promise<Prefs> {
 
 export function putAppsOpenInHome(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { apps_open_in_home: enabled });
+}
+
+/** The macOS status item's surface: `true` = the pinned-file popover, `false` (the default) = the menu-bar Dock.
+ *  Applied live by the running app (the status item is re-pointed; nothing restarts). */
+export function putMenubarPinEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { menubar_pin_enabled: enabled });
 }
 
 export function putAppSharingEnabled(enabled: boolean): Promise<Prefs> {

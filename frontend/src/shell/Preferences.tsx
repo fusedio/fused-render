@@ -61,6 +61,7 @@ import {
   putLivePreviewsEnabled,
   putMonitorEnabled,
   putAppsOpenInHome,
+  putMenubarPinEnabled,
   putNativeWindowsEnabled,
   putGitAutoSyncEnabled,
   putAutoDownloadUpdates,
@@ -1078,6 +1079,57 @@ function NativeWindowsSection({ prefs, onChange }: { prefs: Prefs; onChange: (p:
   );
 }
 
+// Menu bar (macOS): what a click on the status item shows. The menu-bar Dock
+// (fused_render/menubar_dock.py: a tray of your apps — bots in Fused Bot —
+// with Dock-style pins) is the default; the older pinned-file popover
+// (menubar_pin.py) stays behind this one checkbox. Applied live: the running
+// app re-points the status item, nothing restarts. Rendered only where the
+// running app installed the hook (`prefs.menubar.available`).
+function MenubarSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const mb = prefs.menubar;
+  if (!mb || !mb.available) return null;
+  const pin = mb.pin_enabled;
+
+  const toggle = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      onChange(await putMenubarPinEnabled(!pin));
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="prefs-section">
+      <h2>Menu bar</h2>
+      <p className="deploy-muted">
+        Clicking the {displayName()} icon in the menu bar drops a Dock of your{" "}
+        {isBot() ? "bots" : "apps"}: the ones you keep there, then the ones you used
+        last. Right-click a tile to keep it, drag the separator to resize. Right-click the icon for
+        the app menu.
+      </p>
+      <label className="prefs-radio">
+        <input type="checkbox" checked={pin} disabled={busy} onChange={toggle} />
+        <span>
+          <b>Show a pinned file instead</b>
+          <br />
+          <span className="deploy-muted">
+            The older menu-bar view: one file of your choice, rendered live in a popover, with the
+            app actions in a bar beneath it.
+          </span>
+        </span>
+      </label>
+      {error && <ErrorBanner>{error}</ErrorBanner>}
+    </section>
+  );
+}
+
 // Shortcuts: the macOS launcher (fused_render/launcher_panel.py) — the
 // global hotkey that drops the Search Apps panel, and the modifier that with
 // a digit opens the Nth recently opened app from anywhere. Rendered only when the server
@@ -1934,6 +1986,7 @@ export default function Preferences() {
               <>
                 <AppearanceSection />
                 <NativeWindowsSection prefs={prefs} onChange={setPrefs} />
+                <MenubarSection prefs={prefs} onChange={setPrefs} />
                 <ShortcutsSection prefs={prefs} onChange={setPrefs} />
                 <UpdatesSection prefs={prefs} onChange={setPrefs} />
                 <CallLogSection prefs={prefs} onChange={setPrefs} />

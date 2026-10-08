@@ -1193,6 +1193,67 @@ class WindowManager:
         the one row that always means "another one"."""
         self.open(self.home_url)
 
+    def _pick(self, candidates: list["_Window"]) -> "_Window | None":
+        """The key window among ``candidates``, else the front one, else the
+        most recently used (``_windows`` is MRU, newest last)."""
+        if not candidates:
+            return None
+        for w in reversed(candidates):
+            if w is self.key() or w is self.front():
+                return w
+        return candidates[-1]
+
+    def focus_or_open_home(self) -> None:
+        """The menu-bar Dock's Home tile and utility menu: a Home window
+        already open (the key/front one if several) comes forward, else one
+        opens. Unlike `show_home` — the launcher's "another one" row — the
+        Dock, like the macOS Dock's own icons, raises what is there. Main
+        thread."""
+        win = self._pick([w for w in self._windows if w.ns is not None and self._is_home(w)])
+        if win is None:
+            self.open(self.home_url)
+        else:
+            win.show()
+
+    def show_bot(self, bid: str) -> None:
+        """The menu-bar Dock's bot tiles: select bot ``bid`` in a Bots-page
+        window. An open one (the key/front one if several) is told in place
+        through the page's ``fused:bots-open`` event (apps/bots/state/store.ts
+        `onOpenEvent` → `openBot`: the full select — reply quote and toast
+        cleared, the open call sent — exactly as a row click; it writes
+        ``?bot=`` itself, keeping `history.state`), no reload — else a new
+        window opens on ``/bots?bot=<id>``, which the page reads at boot.
+
+        The event is heard only while the store is mounted; the listener
+        marks it handled with `preventDefault`. A page still loading, mid
+        remount or torn down leaves it unhandled, and then the URL itself
+        carries the bot: ``?bot=`` is rewritten (keeping `history.state`,
+        which holds the shell's nav hints) and ``fused:urlchange`` fired, so
+        the store reads it on mount (`initialSel`) or follows it
+        (`onUrlChange`) — never a raised window on the wrong chat. Main
+        thread."""
+        import json
+
+        from fused_render import dock
+
+        view = dock.bot_view_path(bid)
+        bots = [w for w in self._windows if w.ns is not None
+                and urllib.parse.urlsplit(w.current_url() or "").path.rstrip("/") == "/bots"]
+        win = self._pick(bots)
+        if win is None:
+            self.open(f"http://127.0.0.1:{self.port}{view}")
+            return
+        win.webview.evaluateJavaScript_completionHandler_(
+            "(function(){"
+            " var handled = !window.dispatchEvent(new CustomEvent('fused:bots-open',"
+            "   {detail: {id: %s}, cancelable: true}));"
+            " if (!handled) {"
+            "   history.replaceState(history.state, '', %s);"
+            "   window.dispatchEvent(new Event('fused:urlchange'));"
+            " }"
+            "})();" % (json.dumps(bid), json.dumps(view)), None)
+        win.show()
+
     def snapshot_urls(self) -> list[str]:
         """What every open window shows now, in ``_windows`` order (MRU, newest
         last — so reopening them in this order rebuilds the same stacking).
