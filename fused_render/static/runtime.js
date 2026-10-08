@@ -2873,14 +2873,33 @@
   // The POST stays as the fallback, chosen per PAGE, not per call: if the
   // socket never opens (a LAN peer — LanApp refuses it — a sandboxed preview
   // whose Origin is "null", an older server), or opens but closes before
-  // ever answering, `runTransport` flips to "http" for the page's lifetime.
+  // ever answering — and no socket on this page has EVER answered — then
+  // `runTransport` flips to "http" for the page's lifetime.
   // Only a run that was never SENT is re-routed; a run in flight when the
   // socket drops may already have executed, so it rejects (a TypeError, the
   // shape a failed fetch rejects with) and is never silently run twice. A
   // socket that drops after having worked is just reopened on the next call.
+  //
+  // "Worked" is page-level (`runProven`), not per-socket: once any socket has
+  // answered, a later one that fails to open or closes before replying is a
+  // server restart/blip, not a page that cannot have sockets — so it never
+  // demotes the page to POST. Instead the dead socket is forgotten and the
+  // next call redials after a doubling backoff (as the tasks socket does,
+  // tasksWsBackoff); calls made inside the backoff window take the POST,
+  // which is safe because nothing was sent over the socket.
   let runTransport = "ws";
   let runSock = null;
   let runSeq = 0;
+  let runProven = false;
+  let runRetryAt = 0;
+  let runRetryMs = 0;
+  const RUN_WS_RETRY_MIN_MS = 1000;
+  const RUN_WS_RETRY_MAX_MS = 30000;
+
+  function runWsBackoff() {
+    runRetryMs = Math.min(RUN_WS_RETRY_MAX_MS, runRetryMs ? runRetryMs * 2 : RUN_WS_RETRY_MIN_MS);
+    runRetryAt = Date.now() + runRetryMs;
+  }
   // uvicorn caps INBOUND socket messages at ws_max_size (16 MiB, in bytes);
   // a UTF-16 code unit is at most 3 UTF-8 bytes, so 5 Mi chars stays under it.
   // A larger request (huge params) takes the POST, which has no such cap —
@@ -2903,7 +2922,8 @@
       const proto = window.location.protocol === "https:" ? "wss://" : "ws://";
       s.ws = new WebSocket(proto + window.location.host + "/api/run/ws");
     } catch (e) {
-      runTransport = "http";
+      if (runProven) runWsBackoff();
+      else runTransport = "http";
       return null;
     }
     s.ws.onopen = () => {
@@ -2921,6 +2941,9 @@
       if (!entry) return; // aborted client-side; the server ran it anyway
       s.pending.delete(data.id);
       s.replied = true;
+      runProven = true;
+      runRetryMs = 0;
+      runRetryAt = 0;
       // Strip the envelope so the page sees the POST's body, byte for byte.
       delete data.id;
       delete data.status;
@@ -2929,9 +2952,15 @@
     // `error` is always followed by `close`; everything is decided there.
     s.ws.onclose = () => {
       if (runSock === s) runSock = null;
-      // Never opened, or never answered anything: this page cannot use the
-      // socket (refused handshake, a proxy that eats frames) — POST from now on.
-      if (!s.opened || !s.replied) runTransport = "http";
+      // Never opened, or never answered anything, on a page where no socket
+      // ever has: this page cannot use the socket (refused handshake, a proxy
+      // that eats frames) — POST from now on. Once proven, any close is a
+      // restart/blip: back off, and the next call after it redials.
+      if (!runProven) {
+        if (!s.opened || !s.replied) runTransport = "http";
+      } else {
+        runWsBackoff();
+      }
       settleReady(false);
       const lost = Array.from(s.pending.values());
       s.pending.clear();
@@ -2954,9 +2983,23 @@
   // WebSocket cannot set any (calls.py reads the same names off either).
   function runViaSocket(body, headers, signal) {
     if (runTransport === "http") return Promise.resolve(null);
+    // Reconnecting after a proven socket dropped: POST until the backoff ends.
+    if (!runSock && Date.now() < runRetryAt) return Promise.resolve(null);
     const s = openRunSocket();
     if (!s) return Promise.resolve(null);
-    return s.ready.then((ok) => {
+    if (signal.aborted) return Promise.reject(abortError());
+    // Race the open against the abort: a socket still CONNECTING would
+    // otherwise hold an aborted call until the handshake settles. Rejecting
+    // here means nothing is sent afterwards (the .then below never runs).
+    const ready = new Promise((resolve, reject) => {
+      const onAbort = () => reject(abortError());
+      signal.addEventListener("abort", onAbort, { once: true });
+      s.ready.then((ok) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(ok);
+      });
+    });
+    return ready.then((ok) => {
       if (!ok) return null;
       if (signal.aborted) throw abortError();
       // Closing/closed between opening and now: forget it (its `close` may not
@@ -5987,6 +6030,17 @@
             s.send(JSON.stringify({ cancel: id }));
           } catch (e) {
             /* already closed */
+          }
+          // No reply past its own wait + grace: the socket is half-open.
+          // Leaving it current would time out every later request too, so
+          // close it — onclose then settles the rest and backs off, and the
+          // next request redials.
+          if (w.sock === s) {
+            try {
+              s.close();
+            } catch (e) {
+              /* already closing */
+            }
           }
           reject(new Error("tasks changes socket: no reply"));
         }, TASKS_CHANGES_WAIT_S * 1000 + TASKS_WS_GRACE_MS),

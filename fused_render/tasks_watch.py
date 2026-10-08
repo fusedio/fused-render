@@ -1303,7 +1303,15 @@ def reset() -> None:
         _mark_turns.clear()
         _mark_busy_seen.clear()
         _last_idle_turn.clear()
+        # Wake, not just drop: a parked wait_async would otherwise sleep out
+        # its full deadline against a generation that just went back to 0.
+        waiters = list(_async_waiters)
         _async_waiters.clear()
+    for loop, fut in waiters:
+        try:
+            loop.call_soon_threadsafe(_wake, fut)
+        except RuntimeError:
+            pass  # that loop has closed (shutdown, a finished TestClient)
     _primed = False
     _sess_mtimes.clear()
     _sess_sids.clear()

@@ -255,6 +255,17 @@ export async function requestTasksChanges<T = Record<string, unknown>>(
         } catch {
           /* already closed */
         }
+        // No reply past its own wait + grace: the socket is half-open.
+        // Leaving it current would time out every later request too, so
+        // close it — onclose then settles the rest and backs off, and the
+        // next request redials.
+        if (sock === s) {
+          try {
+            s.close();
+          } catch {
+            /* already closing */
+          }
+        }
         reject(new Error("tasks changes socket: no reply"));
       }, Math.max(0, params.wait) * 1000 + REPLY_GRACE_MS),
       unabort: () => signal?.removeEventListener("abort", onAbort),

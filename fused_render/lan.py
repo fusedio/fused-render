@@ -643,7 +643,7 @@ class LanApp:
             # runtime falls back to the POST when this socket never opens, and
             # the 6-connection WebKit cap it exists for is a loopback-windows
             # problem, not a phone's.
-            query =parse_qs(scope.get("query_string", b"").decode("utf-8", "replace"),
+            query = parse_qs(scope.get("query_string", b"").decode("utf-8", "replace"),
                              keep_blank_values=True)
             if (_host_ok(scope) and _paired(scope) and scope["path"] == "/api/fs/events"
                     and query.get("path") and _args_in_scope(query)):

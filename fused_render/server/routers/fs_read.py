@@ -42,7 +42,7 @@ from fused_render.server import git_status
 # pre-reload cache.
 from fused_render.shell import fda as shell_fda
 from fused_render.server.fs_stat import _fs_stat
-from fused_render.server.proxy import _harden_raw
+from fused_render.server.proxy import _harden_raw, _is_document_load
 from fused_render.server import templates as _server_templates
 from fused_render.server.templates import (
     _conditions_payload,
@@ -352,6 +352,7 @@ async def _api_fs_raw_read(path: str, request: Request, base: str | None,
             "content-type": media_type or "application/octet-stream",
             "accept-ranges": "bytes",
             "last-modified": email.utils.formatdate(st.st_mtime, usegmt=True),
+            "vary": _RAW_VARY,  # same keying as the GET below
         })
     # Hand FileResponse the stat we already took: it then sets its ETag /
     # Last-Modified from it (no second stat), and the validators we compare
@@ -365,12 +366,30 @@ async def _api_fs_raw_read(path: str, request: Request, base: str | None,
     # Every native window shares WebKit's 6-connection HTTP/1.1 pool per
     # host:port (measured 2026-10-08), so a short 304 frees a slot sooner.
     # If-None-Match wins over If-Modified-Since (RFC 9110 §13.2.2).
-    if _not_modified(request, resp.headers.get("etag"), st.st_mtime):
+    #
+    # Vary on the fetch destination so a cache entry stored for one dest (an
+    # <img> at an .svg, served as image/svg+xml) is never reused for another
+    # (an iframe/navigation, which _harden_raw would have downgraded to
+    # text/plain). And never 304 a document load at all: _harden_raw passes
+    # 3xx through untouched, so a 304 would let the browser render whatever
+    # body it cached — possibly the un-downgraded svg/html — as a first-party
+    # document, the exact hole _harden_raw closes. Document loads always get
+    # the full, hardened 200.
+    resp.headers["vary"] = _RAW_VARY
+    if (not _is_document_load(request)
+            and _not_modified(request, resp.headers.get("etag"), st.st_mtime)):
         return Response(status_code=304, headers={
             "etag": resp.headers["etag"],
             "last-modified": resp.headers["last-modified"],
+            "vary": _RAW_VARY,
+            # _harden_raw skips 3xx, so set it here: the 304's headers merge
+            # into the cached entry and must not drop nosniff.
+            "x-content-type-options": "nosniff",
         })
     return resp
+
+
+_RAW_VARY = "Sec-Fetch-Dest, Sec-Fetch-Mode"
 
 
 def _not_modified(request: Request, etag: str | None, mtime: float) -> bool:

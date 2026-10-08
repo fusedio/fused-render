@@ -10,6 +10,15 @@ _SCRIPTABLE_MEDIA = frozenset((
 _DOCUMENT_DESTS = frozenset(("document", "iframe", "frame", "embed", "object"))
 
 
+def _is_document_load(request: Request) -> bool:
+    """True when this request loads the response as a document (see
+    _harden_raw). Shared with /api/fs/raw's 304 path, which must never let a
+    document load revalidate a cache entry stored under another destination."""
+    dest = request.headers.get("sec-fetch-dest", "").lower()
+    mode = request.headers.get("sec-fetch-mode", "").lower()
+    return dest in _DOCUMENT_DESTS or mode == "navigate"
+
+
 def _harden_raw(resp, request: Request):
     """Stop /api/fs/raw from handing a page the app's own origin.
 
@@ -42,9 +51,7 @@ def _harden_raw(resp, request: Request):
     if 300 <= resp.status_code < 400:
         return resp
     resp.headers["x-content-type-options"] = "nosniff"
-    dest = request.headers.get("sec-fetch-dest", "").lower()
-    mode = request.headers.get("sec-fetch-mode", "").lower()
-    if dest in _DOCUMENT_DESTS or mode == "navigate":
+    if _is_document_load(request):
         media = resp.headers.get("content-type", "").split(";")[0].strip().lower()
         if media in _SCRIPTABLE_MEDIA:
             # Keep serving the bytes — a download still saves the real file
