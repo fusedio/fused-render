@@ -218,6 +218,19 @@ def bots_enabled() -> bool:
     return read_prefs().get("bots_enabled") is True
 
 
+def menubar_pin_enabled() -> bool:
+    """Whether the macOS status item shows the PINNED-FILE popover
+    (menubar_pin.py) instead of the menu-bar Dock (menubar_dock.py).
+
+    The Dock is the default (owner's call, 2026-10-08): a stored `true` is
+    the only way back to the pin, same idiom as `canvases_enabled`. Read at
+    launch (app.py `_kickoff`) and applied live by `PUT /api/prefs` through
+    `window_policy.native_hooks["menubar_apply"]` when the running app has
+    installed it.
+    """
+    return read_prefs().get("menubar_pin_enabled") is True
+
+
 def native_windows_enabled() -> bool:
     """Whether the macOS app shows the shell in its own native windows
     (mac_window.py) instead of browser tabs (default ON — opt-out).
@@ -685,6 +698,11 @@ def _prefs_response() -> dict:
         # `fused-render serve` or another platform has no windows to offer, so
         # the Preferences section stays hidden there.
         "native_windows": _native_windows_state(),
+        # Which surface the macOS status item shows: the menu-bar Dock
+        # (default) or the pinned-file popover (`menubar_pin_enabled`, opt-in).
+        # `available` is the same test as the windows above: this process is
+        # the macOS app (the hook is installed), not a `fused-render serve`.
+        "menubar": _menubar_state(),
         # Apps open inside the Home window's explorer instead of per-app
         # native windows (desktop app only; opt-in, default off).
         "apps_open_in_home": {"enabled": apps_open_in_home()},
@@ -773,6 +791,13 @@ def _native_windows_state() -> dict:
     # default `lambda: True` keeps that platform's behavior exactly as before.
     available = "apply" in hooks and hooks.get("usable", lambda: True)()
     return {"enabled": native_windows_enabled(), "available": available}
+
+
+def _menubar_state() -> dict:
+    from fused_render import window_policy
+
+    return {"pin_enabled": menubar_pin_enabled(),
+            "available": "menubar_apply" in window_policy.native_hooks}
 
 
 def _launcher_state() -> dict:
@@ -969,6 +994,21 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                     {"error": "the window host refused the native-windows preference; try again"},
                     status_code=409,
                 )
+            changed = True
+        if "menubar_pin_enabled" in body:
+            value = body.get("menubar_pin_enabled")
+            if not isinstance(value, bool):
+                return JSONResponse({"error": "'menubar_pin_enabled' must be a boolean"}, status_code=400)
+            prefs["menubar_pin_enabled"] = value
+            storage.write_json(_path(), prefs)
+            # Live, like the windows: the app re-points the status item at
+            # the other surface (app.py `_apply_menubar`). Returns None
+            # (queues main-thread work); nothing to roll back.
+            from fused_render import window_policy
+
+            apply_menubar = window_policy.native_hooks.get("menubar_apply")
+            if apply_menubar is not None:
+                apply_menubar(value)
             changed = True
         if "apps_open_in_home" in body:
             value = body.get("apps_open_in_home")

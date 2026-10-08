@@ -80,6 +80,7 @@ from fused_render.server.routers.shell import router as shell_router
 from fused_render.server.routers.current_apps import router as current_apps_router
 from fused_render.server.routers.launcher import router as launcher_router
 from fused_render.server.routers.windows import router as windows_router
+from fused_render.server.routers.dock import router as dock_router
 from fused_render.server.routers.drafts import router as drafts_router
 from fused_render.server.routers.queue_events import router as queue_events_router
 from fused_render.server.routers.tasks import router as tasks_router
@@ -863,6 +864,9 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # The Home view's apps backend (routers/apps.py): list workspace app
     # folders + scaffold new ones from the app starter kit.
     app.include_router(apps_router)
+    # The menu-bar Dock (routers/dock.py): the tray page at /dock and the
+    # /api/dock* pins + opens it and the shell read and write.
+    app.include_router(dock_router)
     # The app page's API tab (routers/app_api.py): every .py in one app folder
     # described by the api template's inspector, one request per folder.
     app.include_router(app_api_router)

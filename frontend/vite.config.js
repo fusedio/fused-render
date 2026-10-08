@@ -35,13 +35,16 @@ export default defineConfig({
     outDir: "../fused_render/static/shell-dist",
     emptyOutDir: true,
     rollupOptions: {
-      // Two pages from one build: the shell, and the phone grid the
+      // Three pages from one build: the shell; the phone grid the
       // local-network listener serves at its `/` (fused_render/lan.py reads
-      // shell-dist/lan.html). Same Tailwind + tokens, its own tiny entry, so
-      // a phone never downloads the shell.
+      // shell-dist/lan.html) — same Tailwind + tokens, its own tiny entry, so
+      // a phone never downloads the shell; and the menu-bar Dock tray
+      // (dock.html → src/dock/dock.ts), served at `/dock` to the native panel
+      // (fused_render/menubar_dock.py): no React, no Tailwind, its own styles.
       input: {
         main: fileURLToPath(new URL("./index.html", import.meta.url)),
         lan: fileURLToPath(new URL("./lan.html", import.meta.url)),
+        dock: fileURLToPath(new URL("./dock.html", import.meta.url)),
       },
       output: {
         // Third-party deps change far less often than the app itself — their

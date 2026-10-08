@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Dock</title>
+<!-- The menu-bar Dock tray (src/dock/dock.ts): Render App's dock.html as FusedBot ported it, its tiles now the
+     user's apps (Fused Render) or bots (Fused Bot) — fused_render/dock.py decides. Served at /dock by the in-process
+     server (routers/dock.py) and hosted in a transparent panel under the status item (menubar_dock.py); a plain
+     browser tab works too (dev backdrop, HTML context menu). The tray follows the OS appearance, like the Dock. -->
+<style>
+  :root {
+    color-scheme: light dark;
+    --tray-bg: rgba(255,255,255,.35);
+    --tray-line: rgba(0,0,0,.14);
+    --tray-line-inner: rgba(255,255,255,.55);
+    --sep: rgba(0,0,0,.22);
+    --dot: #34c759;
+    --util-bg: rgba(60,60,66,.55);
+    --util-fg: rgba(255,255,255,.9);
+    --hint: rgba(40,40,44,.55);
+    --menu-bg: rgba(246,246,248,.82);
+    --menu-fg: #1c1c1e;
+    --menu-line: rgba(0,0,0,.12);
+    --menu-hover: #2f6fed;
+    --focus: rgba(47,111,237,.85);
+    --tile-shadow: 0 1px 2px rgba(0,0,0,.18), 0 3px 8px rgba(0,0,0,.14);
+    --headroom: 6px;
+    /* --tile is the Dock's "tilesize": set by the script from the stored
+       value (drag the separator to change it); every other metric derives
+       from it so the tray scales as one piece, like the Dock. */
+    --tile: 52px;
+    --item-w: var(--tile);
+    /* hangs from the menu bar: magnified tile (+tile/2) + name bubble grow DOWN */
+    --footroom: calc(var(--tile) * 0.5 + 40px);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --tray-bg: rgba(30,30,32,.45);
+      --tray-line: rgba(255,255,255,.18);
+      --tray-line-inner: rgba(255,255,255,.06);
+      --sep: rgba(255,255,255,.25);
+      --dot: #30d158;
+      --util-bg: rgba(70,70,76,.6);
+      --util-fg: rgba(240,240,245,.82);
+      --hint: rgba(240,240,245,.5);
+      --menu-bg: rgba(44,44,48,.86);
+      --menu-fg: #f2f2f5;
+      --menu-line: rgba(255,255,255,.14);
+      --tile-shadow: 0 1px 2px rgba(0,0,0,.4), 0 3px 8px rgba(0,0,0,.3);
+    }
+  }
+
+  html, body { margin: 0; padding: 0; background: transparent; }
+  body {
+    font: 13px/1.3 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Helvetica, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    user-select: none; -webkit-user-select: none;
+    overflow: hidden;
+    display: inline-block;
+  }
+  /* Dev-only soft backdrop so the vibrancy tray is visible in a plain tab. */
+  body.dev {
+    display: block; min-height: 100vh; box-sizing: border-box; padding: 40px;
+    background:
+      radial-gradient(1200px 500px at 20% 0%, #cfe7d7 0%, transparent 60%),
+      radial-gradient(900px 500px at 90% 100%, #b7c9dd 0%, transparent 60%),
+      linear-gradient(160deg, #e8efe6, #d5dde8);
+  }
+  @media (prefers-color-scheme: dark) {
+    body.dev {
+      background:
+        radial-gradient(1200px 500px at 20% 0%, #23402f 0%, transparent 60%),
+        radial-gradient(900px 500px at 90% 100%, #1f2c40 0%, transparent 60%),
+        linear-gradient(160deg, #1a1f1c, #12161d);
+    }
+  }
+
+  #wrap {
+    display: inline-block;
+    /* --slack: room for the widest wave, so the native panel never resizes mid-hover */
+    --slack: calc(var(--tile) * 1.1);
+    padding: var(--headroom) var(--slack) var(--footroom);
+    text-align: center;
+    box-sizing: border-box;
+    vertical-align: top;
+  }
+  #tray {
+    display: inline-flex; align-items: flex-start; gap: 8px;
+    padding: 8px 10px;
+    height: calc(var(--tile) + 8px + 8px); box-sizing: border-box; /* fixed: magnified tiles overflow below the glass */
+    border-radius: 18px;
+    background: var(--tray-bg);
+    -webkit-backdrop-filter: blur(24px) saturate(160%);
+    backdrop-filter: blur(24px) saturate(160%);
+    box-shadow: 0 0 0 1px var(--tray-line), inset 0 0 0 1px var(--tray-line-inner), 0 8px 24px rgba(0,0,0,.14);
+    position: relative;
+  }
+  /* In the app the glass is native (an NSVisualEffectView sized to the tray
+     rect the page reports): the page draws no box of its own — the tray
+     floats, like the Dock. */
+  /* In the app the page is a fixed 1400×520 canvas (the native CANVAS)
+     pinned under the status item; the native panel frames just #wrap. The
+     script places #wrap where the tray should rest (centred under the icon,
+     kept on screen) and reports its rect. */
+  body.inapp #wrap { position: absolute; top: 0; left: 0; }
+  body.inapp #tray {
+    background: transparent;
+    -webkit-backdrop-filter: none; backdrop-filter: none;
+    box-shadow: inset 0 0 0 1px var(--tray-line-inner);
+  }
+  /* Drop shadows on a transparent WKWebView composite as dark slabs — and
+     Dock icons have none anyway. */
+  body.inapp .tile, body.inapp .item.util .tile { box-shadow: none; }
+  body.inapp .item:focus-visible .tile { box-shadow: 0 0 0 2px var(--focus); }
+
+  /* The separator is also the resize handle (drag it, like the Dock's): a
+     9px hit zone with the 1px line painted down its middle, so the rest
+     layout (SEP_W in the script) is unchanged. Dragging down (away from the
+     menu bar) grows the tiles, up shrinks them; ⌥ snaps to 16/32/64/128. */
+  .sep {
+    width: 9px; height: var(--tile); margin: 0;
+    background: linear-gradient(var(--sep), var(--sep)) 4px 0 / 1px 100% no-repeat;
+    align-self: flex-start; flex: none;
+    cursor: ns-resize; touch-action: none;
+  }
+  body.resizing, body.resizing * { cursor: ns-resize !important; }
+
+  .item {
+    position: relative;
+    width: var(--item-w); flex: none;
+    display: flex; flex-direction: column; align-items: center;
+    padding: 0; border: 0; margin: 0;
+    background: transparent; cursor: default;
+    -webkit-appearance: none; appearance: none;
+    transition: opacity 200ms ease;
+    outline: none;
+    color: inherit; font: inherit;
+  }
+  /* Fisheye: --s is eased per item toward a pointer-distance target every
+     frame (see the "fisheye" block in the script). Sized in flow, so the
+     tray widens like the real Dock; no transforms. */
+  .item { --s: 1; width: calc(var(--tile) * var(--s)); }
+  .item .tile { width: calc(var(--tile) * var(--s)); height: calc(var(--tile) * var(--s)); }
+  .item .tile .mono { font-size: calc(var(--tile) * 0.385 * var(--s)); }
+  .item.util svg { width: calc(var(--tile) * 0.5 * var(--s)); height: calc(var(--tile) * 0.5 * var(--s)); }
+  .item:focus-visible .tile { box-shadow: var(--tile-shadow), 0 0 0 2px var(--focus); }
+  .item.dragging { opacity: .6; }
+  .item.bounce { animation: bounce 600ms ease-in-out; }
+  .item.shake  { animation: shake 320ms ease-in-out; }
+  @keyframes bounce {
+    0%,50%,100% { translate: 0 0; }
+    25%,75% { translate: 0 10px; } /* hangs from the menu bar: bounce DOWN */
+  }
+  @keyframes shake {
+    0%,100% { translate: 0 0; } 20% { translate: -4px 0; } 40% { translate: 4px 0; }
+    60% { translate: -3px 0; } 80% { translate: 3px 0; }
+  }
+  .tile {
+    width: var(--tile); height: var(--tile); border-radius: calc(var(--tile) * 0.23); overflow: hidden;
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: var(--tile-shadow);
+    transition: opacity 200ms ease;
+    pointer-events: none;
+    position: relative;
+  }
+  /* An svg icon carries its own plate; an icon.png fallback is a plain square
+     that the tile's overflow:hidden + radius clip into the rounded shape. */
+  .tile img { width: 100%; height: 100%; display: block; object-fit: cover; }
+  .tile.fallback .mono { color: #fff; font-size: calc(var(--tile) * 0.46); }
+  .item .tile.fallback .mono { font-size: calc(var(--tile) * 0.46 * var(--s)); }
+  .tile .mono {
+    color: var(--util-fg); font-weight: 600; font-size: calc(var(--tile) * 0.385); letter-spacing: -.02em;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", sans-serif;
+  }
+  .tile::after { /* glass edge like real Dock icons */
+    content: ""; position: absolute; inset: 0; border-radius: inherit;
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,.18), inset 0 1px 0 rgba(255,255,255,.25);
+  }
+  .item.util .tile { background: var(--util-bg); -webkit-backdrop-filter: blur(14px) saturate(140%); backdrop-filter: blur(14px) saturate(140%); box-shadow: 0 1px 2px rgba(0,0,0,.08); }
+  .item.util .tile::after { box-shadow: inset 0 0 0 1px rgba(255,255,255,.18), inset 0 1px 0 rgba(255,255,255,.22); }
+  .item.util svg { color: var(--util-fg); }
+  /* A bot is just its face (the bots page's avatar, lib.faceSvg) filling
+     the tile: no plate, no glass edge, no shadow, so a blob floats like the
+     sidebar avatars and never reads as Home's dark squircle. The drawing
+     keeps its own margin; brand faces are already discs. */
+  .item.bot .tile { background: transparent; box-shadow: none; overflow: visible; }
+  .item.bot .tile::after { content: none; }
+  .item.bot:focus-visible .tile { box-shadow: 0 0 0 2px var(--focus); }
+  .item.bot .tile svg { width: 100%; height: 100%; display: block; flex: none; }
+  /* Home, Fused Bot: the app's own icon (assets/fusedbot-icon-1024.png, whose
+     dark squircle sits on the macOS grid: 824 of 1024, 22.5 % corners).
+     Scaled by 1024/824 and centred (an overflowing flex item centres both
+     ways), the squircle fills the tile and the tile's radius clips the rest. */
+  .item.util.home.squircle .tile { background: transparent; -webkit-backdrop-filter: none; backdrop-filter: none; }
+  .item.util.home.squircle .tile img { width: 124.3%; height: 124.3%; flex: none; max-width: none; }
+  /* Home, Fused Render: the white logo mark on the util plate, like the
+     sidebar's brand row (a dark plate keeps it readable on any wallpaper). */
+  .item.util.home.mark .tile { background: #1c1c1e; }
+  .item.util.home.mark .tile img { width: 64%; height: 64%; object-fit: contain; }
+
+  .dot { /* running badge: green dot overlaid on the tile's upper-left corner */
+    /* inset from the corner so it sits inside the tile radius, like a status badge */
+    position: absolute; left: calc(var(--tile) * 0.115); top: calc(var(--tile) * 0.115);
+    width: clamp(6px, calc(var(--tile) * 0.17), 14px); height: clamp(6px, calc(var(--tile) * 0.17), 14px); z-index: 2;
+    border-radius: 50%;
+    background: radial-gradient(circle at 35% 30%, rgba(255,255,255,.55) 0, rgba(255,255,255,0) 45%), var(--dot);
+    box-shadow: 0 0 0 2px rgba(255,255,255,.95), 0 1px 3px rgba(0,0,0,.4);
+    opacity: 0; transition: opacity 150ms ease; pointer-events: none;
+  }
+  .item.running .dot { opacity: 1; }
+
+  .hint { color: var(--hint); font-size: 12px; align-self: center; padding: 0 6px 0 4px; white-space: nowrap; }
+
+
+  /* name bubble */
+  #bubble {
+    position: fixed; left: 0; top: 0; z-index: 20;
+    transform: translate(-50%, 0);
+    padding: 4px 11px; border-radius: 10px;
+    background: rgba(56,56,60,.92); color: #fff;
+    font-size: 13px; font-weight: 500; white-space: nowrap;
+    box-shadow: 0 1px 3px rgba(0,0,0,.25);
+    opacity: 0; pointer-events: none; transition: opacity 90ms ease;
+  }
+  #bubble::after { /* arrow on top: the bubble sits under the tile */
+    content: ""; position: absolute; left: 50%; top: -5px; margin-left: -6px;
+    border: 6px solid transparent; border-bottom-color: rgba(56,56,60,.92); border-top: 0;
+  }
+  #bubble.on { opacity: 1; }
+
+  /* context menu */
+  #menu {
+    position: fixed; z-index: 30; min-width: 176px;
+    padding: 5px; border-radius: 6px;
+    background: var(--menu-bg); color: var(--menu-fg);
+    -webkit-backdrop-filter: blur(30px) saturate(180%); backdrop-filter: blur(30px) saturate(180%);
+    box-shadow: 0 0 0 1px var(--menu-line), 0 6px 20px rgba(0,0,0,.25);
+    font-size: 13px; display: none; margin: 0; list-style: none;
+  }
+  #menu.on { display: block; }
+  #menu li { padding: 3px 9px; border-radius: 4px; cursor: default; white-space: nowrap; }
+  #menu li:hover, #menu li.focus { background: var(--menu-hover); color: #fff; }
+  #menu li.hr { height: 1px; padding: 0; margin: 4px 8px; background: var(--menu-line); }
+  #menu li.hr:hover { background: var(--menu-line); }
+  #menu a { color: inherit; text-decoration: none; display: block; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .item, .tile, #bubble { transition: none; }
+    .item.bounce, .item.shake { animation: none; }
+  }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="tray" role="toolbar" aria-label="Dock"></div>
+</div>
+<div id="bubble" role="tooltip"></div>
+<ul id="menu" role="menu"></ul>
+<script type="module" src="/src/dock/dock.ts"></script>
+</body>
+</html>
