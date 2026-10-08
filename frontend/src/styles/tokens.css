@@ -106,7 +106,6 @@
      pickers (--bg-panel), the tour popover (--bg-popover). */
   --bg-panel: #202329;
   --bg-popover: #1c1e24;
-  --scrim: rgba(0, 0, 0, 0.55); /* modal backdrop */
   /* Opaque row fills, pre-composited: a stretched-link row can't stack a
      translucent wash over its own background, so the flat result is a token. */
   --row-bg-hover: #26282c; /* --bg-alt under the neutral 0.06 wash */
@@ -459,7 +458,6 @@
      way to --bg; their existing borders + shadow carry the separation. */
   --bg-panel: #ffffff;
   --bg-popover: #ffffff;
-  --scrim: rgba(20, 22, 26, 0.35); /* modal backdrop */
   --row-bg-hover: #e5e6e8; /* --bg-alt under the neutral 0.06 wash */
   --row-bg-active: #e1e4d7; /* --bg-alt under the accent 0.13 wash */
   /* The dark palette's argument, mirrored: the neutral here is BLACK over
