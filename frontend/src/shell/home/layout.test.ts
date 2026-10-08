@@ -53,14 +53,16 @@ const at = (l: HomeLayout) => l.widgets.map((x) => [x.x, x.y]);
 // A v2 document (no coordinates) in the shape the packDense test uses.
 const v2 = (sizes: string[]) => sizes.map((s, i) => ({ id: `w${i}`, source: "folder", folderId: "f", size: s, format: "list" }));
 
-test("default layout stacks five full rows at x=0, y=0,1,3,5,7 (units), version 5", () => {
+test("default layout is the Workbench: search, build, a status row, apps, recents (units), version 5", () => {
   expect(DEFAULT_LAYOUT.version).toBe(5);
-  expect(DEFAULT_LAYOUT.widgets.map((x) => [x.source, x.size, x.format, x.x, x.y])).toEqual([
-    ["search", "4x1", "bar", 0, 0],
-    ["apps", "4x1", "cards", 0, 1],
-    ["playground", "4x1", "cards", 0, 3],
-    ["sessions", "4x1", "cards", 0, 5],
-    ["recents", "4x1", "cards", 0, 7],
+  expect(DEFAULT_LAYOUT.widgets.map((x) => [x.source, x.size, x.x, x.y])).toEqual([
+    ["search", "4x1", 0, 0],
+    ["build", "4x1", 0, 1],
+    ["bots", "1x1", 0, 4],
+    ["index", "1x1", 2, 4],
+    ["tasks", "2x1", 4, 4],
+    ["apps", "4x1", 0, 6],
+    ["recents", "4x1", 0, 8],
   ]);
 });
 

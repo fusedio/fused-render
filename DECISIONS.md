@@ -6648,3 +6648,7 @@ File search and Build an app show their edit-mode hover highlight on the control
 ## 2026-10-08 — Build an app stand-in fills its edit-mode frame
 
 In edit mode the Build an app stand-in stretches to fill its 3-unit frame (input grows, picker bar pinned to the bottom) so the composer's box and hover border coincide with the widget footprint and the overlaid controls sit inside it.
+
+## 2026-10-08 — Home adopts the "Workbench" layout
+
+View mode no longer renders spacers for empty rows (they made 84px voids that split the page into bands); the Build composer renders as a 760px centred hero with a headline and left-aligned samples; DEFAULT_LAYOUT is search, build, a bots/index/tasks row, apps, recents. Saved layouts are not migrated.

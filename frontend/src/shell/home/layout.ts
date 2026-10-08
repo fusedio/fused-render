@@ -190,10 +190,12 @@ export const DEFAULT_LAYOUT: HomeLayout = {
   version: LAYOUT_VERSION,
   widgets: [
     makeWidget("search", 0, 0, { id: "default-search" }),
-    makeWidget("apps", 0, 1, { id: "default-apps" }),
-    makeWidget("playground", 0, 3, { id: "default-playground" }),
-    makeWidget("sessions", 0, 5, { id: "default-sessions" }),
-    makeWidget("recents", 0, 7, { id: "default-recents" }),
+    makeWidget("build", 0, 1, { id: "default-build" }),
+    makeWidget("bots", 0, 4, { id: "default-bots", size: "1x1" }),
+    makeWidget("index", 2, 4, { id: "default-index", size: "1x1" }),
+    makeWidget("tasks", 4, 4, { id: "default-tasks", size: "2x1" }),
+    makeWidget("apps", 0, 6, { id: "default-apps", size: "4x1" }),
+    makeWidget("recents", 0, 8, { id: "default-recents", size: "4x1" }),
   ],
 };
 

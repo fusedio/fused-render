@@ -1439,14 +1439,6 @@ a.hw-more:hover {
   pointer-events: auto;
 }
 
-/* View mode: a wholly empty row keeps the edit canvas's height, so a gap the
-   user left stays a gap instead of collapsing to the grid gap. One spacer per
-   empty unit row (52px); two stacked plus the gap make the 120px cell. */
-.hw-row-gap {
-  min-height: 52px;
-  pointer-events: none;
-}
-
 .hw-ghost {
   border-radius: 14px;
   pointer-events: none;
@@ -2263,6 +2255,20 @@ a.hw-more:hover {
 .hw-ph .hw-ph-sel { display: inline-flex; align-items: center; gap: 3px; padding: 3px 2px; font-size: 12px; }
 
 .hw-widget.is-build { text-align: left; padding: 0; }
+
+/* View mode: the composer is the page's hero, not a full-width cell. It sits
+   centred at the old Home's width with a headline above, and its sample chips
+   start at the composer's left edge instead of centring under the full grid. */
+.hw-widget.is-build:not(.is-edit) { padding: 20px 0 8px; }
+.hw-build-hero { width: 100%; max-width: 760px; margin: 0 auto; }
+.hw-build-headline {
+  margin: 0 0 14px;
+  font-size: 22px; font-weight: 500; letter-spacing: -0.02em;
+  color: var(--fg-muted);
+}
+.hw-build-headline em { font-style: normal; color: var(--fg); }
+.hw-build-hero .home-composer-samples { justify-content: flex-start; }
+.hw-build-hero .home-composer-input { min-height: 112px; }
 
 /* Edit mode: the two bare widgets are their footprint (1 unit for search, 3
    for build). No card chrome; the head overlays the stand-in: grip at the

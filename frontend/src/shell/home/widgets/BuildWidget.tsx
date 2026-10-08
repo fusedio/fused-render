@@ -37,5 +37,10 @@ export function BuildWidget({ edit }: { edit: boolean }) {
       </div>
     );
   }
-  return <HeroComposer onCreated={() => {}} />;
+  return (
+    <div className="hw-build-hero">
+      <p className="hw-build-headline">What do you want to <em>build</em>?</p>
+      <HeroComposer onCreated={() => {}} />
+    </div>
+  );
 }
