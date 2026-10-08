@@ -145,10 +145,12 @@ let pendingStage: string | null = null;
 /** The bot whose hand-over opened the current Stage by itself; the poll closes it again when that hand-over ends.
  *  null for a Stage you opened by hand (watch mode), which only you close. Cleared whenever Stage closes (setFast). */
 let autoOpened: string | null = null;
-/** The bot asked for you in its browser and that hand-over is still live: not after the task ended, and not while the
- *  browser is popped out as a real window (nothing to stream; the same checks that close an auto-opened Stage). */
-export const needsYou = (b: Bot | undefined): boolean =>
-  !!b && !!b.control && b.control_by === "bot" && b.status !== "idle" && b.status !== "error" && !b.browser?.headed;
+/** The bot asked for you in its browser (the list dot, the title prefix, the composer hint, the one-time alert). Stays
+ *  true through a pop-out to a real window: that is the same hand-over, not a new one. */
+export const needsYou = (b: Bot | undefined): boolean => !!b && !!b.control && b.control_by === "bot";
+/** ...and Stage can show it: the task has not ended and the browser is not popped out (nothing to stream). The same
+ *  checks that close an auto-opened Stage, so a remount never flashes one open for a poll. */
+const stageable = (b: Bot | undefined): boolean => needsYou(b) && b!.status !== "idle" && b!.status !== "error" && !b!.browser?.headed;
 /** Open Stage for the selected bot `id` unless it is already open or the pref is off; with a dialog / menu up, later
  *  (closeDialog / closeMenu). Unsent composer text keeps its focus: the page does not take the keyboard then. */
 function requestStage(id: string): void {
@@ -161,7 +163,7 @@ function requestStage(id: string): void {
   // Deferred: this runs inside a poll's or select()'s batch, and openFull's flushSync needs the store published first.
   // botsMounted: a notification click or a late timer after the route unmounted must not open Stage on nothing.
   setTimeout(() => {
-    if (!botsMounted() || S.fast || S.sel !== id || !needsYou(cur()) || !handoverHook) return;
+    if (!botsMounted() || S.fast || S.sel !== id || !stageable(cur()) || !handoverHook) return;
     // A dialog opened meanwhile (the ?new=1 chooser lands in the same flush as a remount): wait for it, as above.
     if (S.ui.dialog || S.ui.menu) { pendingStage = id; return; }
     const input = document.getElementById("input") as HTMLTextAreaElement | null;
@@ -171,7 +173,7 @@ function requestStage(id: string): void {
 }
 function flushPendingStage(): void {
   const id = pendingStage; pendingStage = null;
-  if (id && needsYou(botById(id))) requestStage(id);
+  if (id && stageable(botById(id))) requestStage(id);
 }
 
 // ------------------------------------------------------------------ banner ----
@@ -281,7 +283,7 @@ export function select(id: string | null): void {
     writeUrlBot(id);
     const b = cur(); if (b) { setNewMark(b); markSeen(b.id, b.seq); }
     // A bot waiting for you in its browser opens Stage the moment you pick it.
-    if (b && needsYou(b)) requestStage(b.id);
+    if (b && stageable(b)) requestStage(b.id);
   });
 }
 
@@ -437,7 +439,7 @@ export function startStore(): () => void {
   void loop(gen);
   // The store outlives the route: coming back to /bots with the selected bot still mid-hand-over reopens Stage (the
   // poll diff only fires on the flip, which happened while you were away).
-  if (needsYou(cur())) requestStage(S.sel!);
+  if (stageable(cur())) requestStage(S.sel!);
   return () => {
     if (loopGen === gen) loopGen = -gen;  // stops this loop; a newer mount has already moved loopGen on
     if (loopTimer) clearTimeout(loopTimer);
