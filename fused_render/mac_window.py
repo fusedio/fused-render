@@ -680,6 +680,9 @@ class _Window:
         # navigation, but a window must never jump or resize because the page
         # inside it navigated. The frame belongs to the window as opened.
         self.frame_name: str | None = None
+        # The autosave name this window was PLACED under, owner or not (only
+        # one window per name gets ``frame_name``), so siblings can find it.
+        self.place_name: str | None = None
         self._popup = not load
         style = (NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
                  | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable)
@@ -799,16 +802,18 @@ class _Window:
         Every app (and Home) has its own saved frame — the size and place
         the user last left a window of it — so reopening an app puts it
         back exactly there. A second window of the same app cascades from
-        the one already open instead of stacking on it, and only the first
+        the NEWEST open window of that app instead of stacking on it, so a
+        third and fourth keep stepping rather than landing on the second, and only the first
         owns the saved frame (AppKit gives an autosave name to one window
         at a time). Nothing saved yet: centre if it is the only window,
         else cascade from the front one. Popups (`window.open`) cascade and
         are never saved — they would otherwise overwrite Home's frame.
         """
         name = None if self._popup else window_policy.frame_autosave_name(key, view)
+        self.place_name = name
         owner = self.manager.frame_owner(name) if name else None
         if owner is not None:
-            self._cascade_from(owner)
+            self._cascade_from(self.manager.newest_placed(name) or owner)
             return
         if name and self.ns.setFrameUsingName_(name):
             pass  # AppKit keeps a restored frame on a visible screen
@@ -1352,6 +1357,7 @@ class WindowManager:
             win.ns.setFrameAutosaveName_("")
             win.ns.setFrameUsingName_(name)
             win.frame_name = name if win.ns.setFrameAutosaveName_(name) else None
+            win.place_name = name
         win.load(url)
         win.show()
         return win
@@ -1376,6 +1382,7 @@ class WindowManager:
             win.ns.setFrameAutosaveName_("")
             win.ns.setFrameUsingName_(name)
             win.frame_name = name if win.ns.setFrameAutosaveName_(name) else None
+            win.place_name = name
         win.load(url)
         return win
 
@@ -1396,6 +1403,15 @@ class WindowManager:
         so a sibling window can cascade from it instead of stacking."""
         for w in self._windows:
             if w.frame_name == name and w.ns is not None:
+                return w
+        return None
+
+    def newest_placed(self, name: str) -> _Window | None:
+        """The most recently opened window placed under autosave ``name``
+        (owner or sibling), so each new sibling steps from the last one
+        rather than every sibling stacking one step off the owner."""
+        for w in reversed(self._windows):
+            if w.place_name == name and w.ns is not None:
                 return w
         return None
 
