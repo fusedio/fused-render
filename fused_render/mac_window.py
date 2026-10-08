@@ -803,7 +803,10 @@ class _Window:
         the user last left a window of it — so reopening an app puts it
         back exactly there. A second window of the same app cascades from
         the NEWEST open window of that app instead of stacking on it, so a
-        third and fourth keep stepping rather than landing on the second, and only the first
+        third and fourth keep stepping rather than landing on the second
+        (the newest sibling is the most recently USED one, since `_touch`
+        reorders, so the window then steps past any sibling it would land
+        exactly on), and only the first
         owns the saved frame (AppKit gives an autosave name to one window
         at a time). Nothing saved yet: centre if it is the only window,
         else cascade from the front one. Popups (`window.open`) cascade and
@@ -814,6 +817,7 @@ class _Window:
         owner = self.manager.frame_owner(name) if name else None
         if owner is not None:
             self._cascade_from(self.manager.newest_placed(name) or owner)
+            self._step_off_siblings(name)
             return
         if name and self.ns.setFrameUsingName_(name):
             pass  # AppKit keeps a restored frame on a visible screen
@@ -839,6 +843,21 @@ class _Window:
         self.ns.setFrame_display_(frame, False)
         top_left = NSMakePoint(frame.origin.x, frame.origin.y + frame.size.height)
         self.ns.cascadeTopLeftFromPoint_(self.ns.cascadeTopLeftFromPoint_(top_left))
+
+    def _step_off_siblings(self, name: str) -> None:
+        # Step one cascade further while another window of ``name`` shares
+        # this top-left. Same two-call idiom as `_cascade_from`: the first
+        # call places us at the point, the second at the next one.
+        for _ in range(len(self.manager._windows) + 1):
+            f = self.ns.frame()
+            x, top = f.origin.x, f.origin.y + f.size.height
+            if not self.manager.placed_at(name, x, top, self):
+                return
+            nxt = self.ns.cascadeTopLeftFromPoint_(NSMakePoint(x, top))
+            self.ns.cascadeTopLeftFromPoint_(nxt)
+            g = self.ns.frame()
+            if (g.origin.x, g.origin.y + g.size.height) == (x, top):
+                return  # pinned at a screen edge; avoid spinning
 
     def save_frame(self) -> None:
         """Persist the frame now. Autosave writes on move/resize; a window
@@ -1414,6 +1433,18 @@ class WindowManager:
             if w.place_name == name and w.ns is not None:
                 return w
         return None
+
+    def placed_at(self, name: str, x: float, top: float, exclude: "_Window") -> bool:
+        """Is another open window placed under ``name`` with its top-left at
+        (``x``, ``top``) (within 1 pt)? Used to step a new sibling past the
+        ones it would otherwise land exactly on."""
+        for w in self._windows:
+            if w is exclude or w.ns is None or w.place_name != name:
+                continue
+            f = w.ns.frame()
+            if abs(f.origin.x - x) <= 1 and abs(f.origin.y + f.size.height - top) <= 1:
+                return True
+        return False
 
     def key(self) -> _Window | None:
         kw = NSApp.keyWindow()
