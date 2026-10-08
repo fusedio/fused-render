@@ -1223,20 +1223,35 @@ class WindowManager:
         cleared, the open call sent — exactly as a row click; it writes
         ``?bot=`` itself, keeping `history.state`), no reload — else a new
         window opens on ``/bots?bot=<id>``, which the page reads at boot.
-        Main thread."""
+
+        The event is heard only while the store is mounted; the listener
+        marks it handled with `preventDefault`. A page still loading, mid
+        remount or torn down leaves it unhandled, and then the URL itself
+        carries the bot: ``?bot=`` is rewritten (keeping `history.state`,
+        which holds the shell's nav hints) and ``fused:urlchange`` fired, so
+        the store reads it on mount (`initialSel`) or follows it
+        (`onUrlChange`) — never a raised window on the wrong chat. Main
+        thread."""
         import json
 
         from fused_render import dock
 
+        view = dock.bot_view_path(bid)
         bots = [w for w in self._windows if w.ns is not None
                 and urllib.parse.urlsplit(w.current_url() or "").path.rstrip("/") == "/bots"]
         win = self._pick(bots)
         if win is None:
-            self.open(f"http://127.0.0.1:{self.port}{dock.bot_view_path(bid)}")
+            self.open(f"http://127.0.0.1:{self.port}{view}")
             return
         win.webview.evaluateJavaScript_completionHandler_(
-            "window.dispatchEvent(new CustomEvent('fused:bots-open', {detail: {id: %s}}));"
-            % json.dumps(bid), None)
+            "(function(){"
+            " var handled = !window.dispatchEvent(new CustomEvent('fused:bots-open',"
+            "   {detail: {id: %s}, cancelable: true}));"
+            " if (!handled) {"
+            "   history.replaceState(history.state, '', %s);"
+            "   window.dispatchEvent(new Event('fused:urlchange'));"
+            " }"
+            "})();" % (json.dumps(bid), json.dumps(view)), None)
         win.show()
 
     def snapshot_urls(self) -> list[str]:

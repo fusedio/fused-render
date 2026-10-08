@@ -245,7 +245,9 @@ function onUrlChange() {
 export const OPEN_EVENT = "fused:bots-open";
 function onOpenEvent(e: Event) {
   const id = (e as CustomEvent<{ id?: unknown }>).detail?.id;
-  if (typeof id === "string" && id) openBot(id);
+  if (typeof id !== "string" || !id) return;
+  e.preventDefault();  // "handled": the sender falls back to rewriting ?bot= when nobody is mounted to hear this
+  openBot(id);
 }
 
 // ------------------------------------------------------------------ ui slots ----
