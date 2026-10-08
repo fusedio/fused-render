@@ -23,9 +23,9 @@ export interface Widget {
   source: WidgetSource;
   size: WidgetSize;
   format: WidgetFormat;
-  /** Column of the top-left cell, 0..3. */
+  /** Column of the top-left unit, 0..7 (half-cell units). */
   x: number;
-  /** Row of the top-left cell. */
+  /** Row of the top-left unit (half-cell units). */
   y: number;
   /** source === "folder": a BookmarkFolder id (platform/lib/bookmarks.ts). */
   folderId?: string;
@@ -40,14 +40,18 @@ export interface HomeLayout {
 
 /** Current document version. 1 predates the search widget: a version-1 layout
     gets a search widget prepended on load (normalizeLayout). 1 and 2 have no
-    coordinates; they are packed densely on load and stamped 3. */
-export const LAYOUT_VERSION = 3;
+    coordinates; they are packed densely on load. 3 stores whole-cell
+    coordinates and is doubled on load; 4 stores half-cell units. */
+export const LAYOUT_VERSION = 4;
 
-/** Storage coordinate space is always this wide. */
-export const GRID_COLS = 4;
+/** Units per whole cell: the grid's unit is half a cell. */
+export const CELL = 2;
 
-/** Sanity bound for y + rows (rows are otherwise unbounded). */
-export const MAX_ROWS = 64;
+/** Storage coordinate space is always this wide (half-cell units: a 1x1 widget is 2 units wide). */
+export const GRID_COLS = 8;
+
+/** Sanity bound for y + rows, in units (rows are otherwise unbounded). */
+export const MAX_ROWS = 128;
 
 /** Same ceiling the server enforces on PUT. */
 export const MAX_WIDGETS = 48;
@@ -161,10 +165,10 @@ export const DEFAULT_LAYOUT: HomeLayout = {
   version: LAYOUT_VERSION,
   widgets: [
     makeWidget("search", 0, 0, { id: "default-search" }),
-    makeWidget("apps", 0, 1, { id: "default-apps" }),
-    makeWidget("playground", 0, 2, { id: "default-playground" }),
-    makeWidget("sessions", 0, 3, { id: "default-sessions" }),
-    makeWidget("recents", 0, 4, { id: "default-recents" }),
+    makeWidget("apps", 0, 2, { id: "default-apps" }),
+    makeWidget("playground", 0, 4, { id: "default-playground" }),
+    makeWidget("sessions", 0, 6, { id: "default-sessions" }),
+    makeWidget("recents", 0, 8, { id: "default-recents" }),
   ],
 };
 
@@ -175,19 +179,20 @@ export function defaultLayout(): HomeLayout {
 }
 
 /** Whatever came off the wire -> a layout the grid can render. Anything that
-    is not a version-1/2/3 document with a widgets array yields the default;
+    is not a version-1/2/3/4 document with a widgets array yields the default;
     an empty array is kept (the user removed everything on purpose). A version-1
     document predates the search widget, so one is prepended. Versions 1 and 2
     carry no coordinates and are packed the way CSS `row dense` placed them;
-    version 3 keeps its coordinates, re-placing any that are missing, out of
-    bounds or overlapping. The result is stamped current. At most one search
+    version 3 doubles its cell coordinates into units and version 4 keeps its
+    unit coordinates, re-placing any that are missing, out of bounds or
+    overlapping. The result is stamped current. At most one search
     widget. */
 export function normalizeLayout(raw: unknown): HomeLayout {
   const r = raw as { version?: unknown; widgets?: unknown } | null;
   if (
     !r ||
     typeof r !== "object" ||
-    (r.version !== 1 && r.version !== 2 && r.version !== LAYOUT_VERSION) ||
+    (r.version !== 1 && r.version !== 2 && r.version !== 3 && r.version !== LAYOUT_VERSION) ||
     !Array.isArray(r.widgets)
   ) {
     return defaultLayout();
@@ -227,12 +232,13 @@ export function normalizeLayout(raw: unknown): HomeLayout {
     if (cleaned.length > MAX_WIDGETS) cleaned.length = MAX_WIDGETS;
   }
   let widgets: Widget[];
-  if (r.version === LAYOUT_VERSION) {
+  if (r.version === 3 || r.version === LAYOUT_VERSION) {
+    const k = r.version === 3 ? CELL : 1;
     widgets = [];
     for (const { w, rx, ry } of cleaned) {
       const { cols, rows } = dims(w.size);
-      let x = rx as number;
-      let y = ry as number;
+      let x = Number.isInteger(rx) ? (rx as number) * k : NaN;
+      let y = Number.isInteger(ry) ? (ry as number) * k : NaN;
       if (!Number.isInteger(x) || !Number.isInteger(y) || !canPlace(widgets, { x, y, cols, rows })) {
         ({ x, y } = firstFreeSlot(widgets, w.size));
         // Same bound addWidget enforces: a repaired slot past MAX_ROWS drops the widget.
@@ -309,17 +315,20 @@ export function setFormat(layout: HomeLayout, id: string, format: WidgetFormat):
   );
 }
 
-/** Columns and rows a size spans. */
+/** Columns and rows a size spans, in half-cell units (a 1x1 is 2 x 2). */
 export function dims(size: WidgetSize): { cols: number; rows: number } {
   const [c, r] = size.split("x");
-  return { cols: Number(c), rows: Number(r) };
+  return { cols: Number(c) * CELL, rows: Number(r) * CELL };
 }
 
 /** How many list rows / icon tiles a widget of this size draws before it says
     "+N more". Fixed per size: the grid's row height is fixed, so this needs no
     measuring. A full-row list runs in two columns. */
 export function itemCapacity(size: WidgetSize, format: WidgetFormat): number {
-  const { cols, rows } = dims(size);
+  // dims() is in units; capacity counts whole cells.
+  const d = dims(size);
+  const cols = d.cols / CELL;
+  const rows = d.rows / CELL;
   if (format === "icons") return cols * 3 * rows;
   // 1x2 (cols 1, rows 2) is covered: list 6, icons 6.
   const perColumn = rows === 1 ? 2 : 6;
@@ -467,7 +476,7 @@ export function packDense<T extends { size: WidgetSize }>(items: T[], cols = GRI
   });
 }
 
-/** Narrow-screen projection of the 4-column coordinates: reading order, widths
+/** Narrow-screen projection of the 8-unit coordinates (4 units = 2 cells): reading order, widths
     clamped to `cols`, packed densely. Derived, never stored. */
 export function reflowToColumns(layout: HomeLayout, cols: number): Map<string, Rect> {
   const placed: Rect[] = [];
@@ -494,7 +503,7 @@ export function placeWidget(layout: HomeLayout, id: string, x: number, y: number
   return { ...layout, widgets: sortByPosition(widgets) };
 }
 
-/** Alt+Arrow: step one cell, then keep stepping past blocked cells until a
+/** Alt+Arrow: step half a cell (one unit), then keep stepping past blocked cells until a
     free slot or the bound. Same object when nothing is possible. */
 export function moveByArrow(layout: HomeLayout, id: string, key: string): HomeLayout {
   const w = layout.widgets.find((o) => o.id === id);

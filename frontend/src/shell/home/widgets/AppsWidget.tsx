@@ -8,7 +8,7 @@ import { CardStrip } from "../CardStrip";
 import { SkeletonRow } from "../skeleton";
 import { MAX_ROW, softNavigate, useStripCount } from "../strip";
 import { useHomeApps } from "../data";
-import { dims, itemCapacity, type Widget } from "../layout";
+import { CELL, dims, itemCapacity, type Widget } from "../layout";
 import { EmptyLine, ErrorLine, ListSkeleton } from "./bits";
 
 /** An app's icon in the shared tile square (the brand's AppStar when it has none — the same mark the Apps page's cards and the sidebar fall back to). */
@@ -42,7 +42,7 @@ function AppTile({ app }: { app: AppInfo }) {
 }
 
 export function AppsWidget({ widget }: { widget: Widget }) {
-  const { rows } = dims(widget.size);
+  const rows = dims(widget.size).rows / CELL; // dims() is in half-cell units
   const cards = widget.format === "cards";
   const { ref, count, limit } = useStripCount();
   const cap = cards ? (count ?? 0) * rows : itemCapacity(widget.size, widget.format);

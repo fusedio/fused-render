@@ -13,11 +13,11 @@ import { CardStrip } from "../CardStrip";
 import { SkeletonRow } from "../skeleton";
 import { MAX_ROW, useStripCount } from "../strip";
 import { useHomeSessions } from "../data";
-import { dims, itemCapacity, type Widget } from "../layout";
+import { CELL, dims, itemCapacity, type Widget } from "../layout";
 import { EmptyLine, ItemList, ListSkeleton, type WidgetItem } from "./bits";
 
 export function PlaygroundWidget({ widget }: { widget: Widget }) {
-  const { rows } = dims(widget.size);
+  const rows = dims(widget.size).rows / CELL; // dims() is in half-cell units
   const { ref, count } = useStripCount();
   if (widget.format === "list") {
     const items: WidgetItem[] = PLAYGROUND_GROUPS.map((g) => ({
@@ -44,7 +44,7 @@ export function PlaygroundWidget({ widget }: { widget: Widget }) {
 }
 
 export function SessionsWidget({ widget }: { widget: Widget }) {
-  const { rows } = dims(widget.size);
+  const rows = dims(widget.size).rows / CELL; // dims() is in half-cell units
   const cards = widget.format === "cards";
   const { ref, count, limit } = useStripCount();
   const cap = cards ? (count ?? 0) * rows : itemCapacity(widget.size, "list");
@@ -83,7 +83,7 @@ export function SessionsWidget({ widget }: { widget: Widget }) {
 
 export function RecentsWidget({ widget }: { widget: Widget }) {
   useRecentsVersion();
-  const { rows } = dims(widget.size);
+  const rows = dims(widget.size).rows / CELL; // dims() is in half-cell units
   const cards = widget.format === "cards";
   const { ref, count } = useStripCount();
   const cap = cards ? (count ?? 0) * rows : itemCapacity(widget.size, "list");

@@ -1,12 +1,15 @@
 // Miniature 4x2 grid with the widget's footprint filled, used by the size menu.
-import { dims, type WidgetSize } from "./layout";
+import { CELL, dims, type WidgetSize } from "./layout";
 
 const COLS = 4;
 const ROWS = 2;
 
 /** Row-major flags for the 4x2 grid: true where the widget covers the cell. */
 export function footprintCells(size: WidgetSize): boolean[] {
-  const { cols, rows } = dims(size);
+  const d = dims(size);
+  // dims() is in half-cell units; the glyph draws whole cells.
+  const cols = d.cols / CELL;
+  const rows = d.rows / CELL;
   const cells: boolean[] = [];
   for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) cells.push(c < cols && r < rows);
   return cells;

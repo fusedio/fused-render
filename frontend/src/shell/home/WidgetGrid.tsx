@@ -1,7 +1,7 @@
-// The widget grid. Every widget owns explicit cells (x, y) on a 4-column grid;
+// The widget grid. Every widget owns explicit half-cell units (x, y) on an 8-unit grid;
 // edit mode adds a cell canvas, pointer-event drag with a snapped ghost,
 // Alt+Arrow moves, and the trailing "+ Add widget" tile. Under NARROW_MAX the
-// grid shows a 2-column reflow of the same coordinates (derived, never stored)
+// grid shows a 4-unit reflow of the same coordinates (derived, never stored)
 // and moving is disabled.
 import {
   useEffect,
@@ -16,6 +16,8 @@ import {
 import { WidgetFrame } from "./Widget";
 import type { HomeLayoutApi } from "./useHomeLayout";
 import {
+  CELL,
+  GRID_COLS,
   canPlace,
   dims,
   emptyRows,
@@ -68,7 +70,7 @@ export function WidgetGrid({
   onAdd: () => void;
 }) {
   const { layout } = api;
-  const [cols, setCols] = useState<4 | 2>(4);
+  const [cols, setCols] = useState<number>(GRID_COLS);
   const [dragId, setDragId] = useState<string | null>(null);
   const [target, setTarget] = useState<Target | null>(null);
   const drag = useRef<DragState | null>(null);
@@ -90,7 +92,7 @@ export function WidgetGrid({
     if (!el || typeof ResizeObserver === "undefined") return;
     const ro = new ResizeObserver((entries) => {
       const width = entries[0]?.contentRect.width ?? el.clientWidth;
-      setCols(width <= NARROW_MAX ? 2 : 4);
+      setCols(width <= NARROW_MAX ? GRID_COLS / 2 : GRID_COLS);
     });
     ro.observe(el);
     return () => ro.disconnect();
@@ -98,13 +100,13 @@ export function WidgetGrid({
 
   const pos = useMemo(
     () =>
-      cols === 4
+      cols === GRID_COLS
         ? new Map<string, Rect>(layout.widgets.map((w) => [w.id, rectOf(w)]))
-        : reflowToColumns(layout, 2),
+        : reflowToColumns(layout, GRID_COLS / 2),
     [layout, cols],
   );
 
-  const canDrag = edit && !searching && cols === 4;
+  const canDrag = edit && !searching && cols === GRID_COLS;
 
   // A release anywhere clears an armed press, so a pointerup outside the grid
   // before DRAG_SLOP cannot leave a stuck drag behind.
@@ -181,8 +183,12 @@ export function WidgetGrid({
     const cell = document.elementFromPoint(e.clientX, e.clientY)?.closest<HTMLElement>("[data-x]");
     let next: Target | null = null;
     if (cell) {
-      const x = Number(cell.dataset.x) - d.grab.dx;
-      const y = Number(cell.dataset.y) - d.grab.dy;
+      // Nearest half cell: the pointer's offset inside the hovered whole cell rounds to 0, 1 or 2 units.
+      const cr = cell.getBoundingClientRect();
+      const hx = Math.min(CELL, Math.max(0, Math.round((e.clientX - cr.left) / (cr.width / CELL))));
+      const hy = Math.min(CELL, Math.max(0, Math.round((e.clientY - cr.top) / (cr.height / CELL))));
+      const x = Number(cell.dataset.x) + hx - d.grab.dx;
+      const y = Number(cell.dataset.y) + hy - d.grab.dy;
       const { cols: c, rows: r } = dims(w.size);
       next = { x, y, valid: canPlace(layout.widgets, { x, y, cols: c, rows: r }, d.id) };
     }
@@ -206,20 +212,22 @@ export function WidgetGrid({
 
   let used = 0;
   for (const r of pos.values()) used = Math.max(used, r.y + r.rows);
-  const canvasRows = used + (draggedDims ? draggedDims.rows : 1);
+  // Canvas and add tile sit on whole cells.
+  const usedCells = Math.ceil(used / CELL) * CELL;
+  const canvasRows = Math.ceil((used + (draggedDims ? draggedDims.rows : CELL)) / CELL) * CELL;
 
   const seen = new Set<string>();
   const cells: JSX.Element[] = [];
   if (edit && !searching) {
-    for (let y = 0; y < canvasRows; y++) {
-      for (let x = 0; x < cols; x++) {
+    for (let y = 0; y < canvasRows; y += CELL) {
+      for (let x = 0; x < cols; x += CELL) {
         cells.push(
           <div
             key={`c${x},${y}`}
             className="hw-cell"
             data-x={x}
             data-y={y}
-            style={placement({ x, y, cols: 1, rows: 1 })}
+            style={placement({ x, y, cols: CELL, rows: CELL })}
             aria-hidden="true"
           />,
         );
@@ -244,7 +252,7 @@ export function WidgetGrid({
         (searching ? " is-searching" : "") +
         (dragId ? " is-dragging" : "") +
         (canDrag ? " can-drag" : "") +
-        (cols === 2 ? " is-narrow" : "")
+        (cols === GRID_COLS / 2 ? " is-narrow" : "")
       }
       style={{ "--hw-cols": cols } as CSSProperties}
       ref={gridRef}
@@ -276,7 +284,7 @@ export function WidgetGrid({
             onRemove={() => api.remove(w.id)}
             onPointerDown={(e) => onWidgetPointerDown(w, e)}
             onKeyDown={(e: KeyboardEvent) => {
-              if (!e.altKey || e.target !== e.currentTarget || cols !== 4) return;
+              if (!e.altKey || e.target !== e.currentTarget || cols !== GRID_COLS) return;
               const next = moveByArrow(layout, w.id, e.key);
               if (next === layout) return;
               e.preventDefault();
@@ -297,7 +305,7 @@ export function WidgetGrid({
         <button
           type="button"
           className="hw-add-tile"
-          style={placement({ x: 0, y: used, cols: 1, rows: 1 })}
+          style={placement({ x: 0, y: usedCells, cols: CELL, rows: CELL })}
           onClick={onAdd}
         >
           <span className="hw-add-plus" aria-hidden="true">+</span>

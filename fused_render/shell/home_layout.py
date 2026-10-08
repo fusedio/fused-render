@@ -17,13 +17,17 @@ MAX_WIDGETS = 48
 MAX_APP_PATH = 4096
 # Version 1 predates the search widget; the client prepends one when it loads a
 # version-1 document. Versions 1 and 2 carry no coordinates; version 3 gives
-# every widget an explicit top-left cell (x, y) on a 4-column grid. The client
-# migrates older documents and writes 3 on its next change; the server keeps
-# whichever version it was given and never migrates.
-VERSIONS = {1, 2, 3}
+# every widget an explicit top-left cell (x, y) on a 4-column grid; version 4
+# is the same with half-cell units (an 8-unit grid, a 1x1 is 2 x 2 units). The
+# client migrates older documents (3 doubles) and writes 4 on its next change;
+# the server keeps whichever version it was given and never migrates.
+VERSIONS = {1, 2, 3, 4}
 GRID_COLS = 4
 MAX_ROWS = 64
+GRID_UNITS = 8
+MAX_UNIT_ROWS = 128
 _DIMS = {"1x1": (1, 1), "2x1": (2, 1), "1x2": (1, 2), "2x2": (2, 2), "4x1": (4, 1)}
+_UNIT_DIMS = {k: (c * 2, r * 2) for k, (c, r) in _DIMS.items()}
 SOURCES = {"search", "build", "apps", "playground", "sessions", "recents", "tasks", "bots", "folder", "index", "app"}
 SIZES = {"1x1", "2x1", "1x2", "2x2", "4x1"}
 FORMATS = {"cards", "list", "icons", "board", "count", "live", "bar"}
@@ -46,7 +50,7 @@ def _is_int(v) -> bool:
 
 def _clean(doc) -> dict | None:
     """Structurally cleaned copy of `doc` (unknown keys, sources, sizes, formats,
-    version), or None if invalid. Version-3 x/y pass through when both are
+    version), or None if invalid. Version-3/4 x/y pass through when both are
     integers and are dropped otherwise; placement is _placement_ok's job."""
     if not isinstance(doc, dict) or doc.get("version") not in VERSIONS:
         return None
@@ -64,7 +68,7 @@ def _clean(doc) -> dict | None:
         if w.get("size") not in SIZES or w.get("format") not in FORMATS:
             return None
         item = {k: w[k] for k in ("id", "source", "size", "format")}
-        if doc["version"] == 3 and _is_int(w.get("x")) and _is_int(w.get("y")):
+        if doc["version"] in (3, 4) and _is_int(w.get("x")) and _is_int(w.get("y")):
             item["x"], item["y"] = w["x"], w["y"]
         fid = w.get("folderId")
         if isinstance(fid, str):
@@ -77,17 +81,22 @@ def _clean(doc) -> dict | None:
 
 
 def _placement_ok(clean: dict) -> bool:
-    """Version-3 widgets all carry in-bounds, non-overlapping cells. PUT only:
-    GET hands a stored document to the client, which repairs it on load."""
-    if clean["version"] != 3:
+    """Version-3/4 widgets all carry in-bounds, non-overlapping cells (version 3
+    in cells, version 4 in half-cell units). PUT only: GET hands a stored
+    document to the client, which repairs it on load."""
+    if clean["version"] == 3:
+        dims, cols, max_rows = _DIMS, GRID_COLS, MAX_ROWS
+    elif clean["version"] == 4:
+        dims, cols, max_rows = _UNIT_DIMS, GRID_UNITS, MAX_UNIT_ROWS
+    else:
         return True
     taken: set[tuple[int, int]] = set()
     for w in clean["widgets"]:
         if "x" not in w:
             return False
         x, y = w["x"], w["y"]
-        c, r = _DIMS[w["size"]]
-        if x < 0 or x + c > GRID_COLS or y < 0 or y + r > MAX_ROWS:
+        c, r = dims[w["size"]]
+        if x < 0 or x + c > cols or y < 0 or y + r > max_rows:
             return False
         cells = {(x + i, y + j) for i in range(c) for j in range(r)}
         if cells & taken:

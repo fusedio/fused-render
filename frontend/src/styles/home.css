@@ -658,9 +658,9 @@
 
 .hw-grid {
   display: grid;
-  /* WidgetGrid sets --hw-cols (4, or 2 at phone width) and places every item
+  /* WidgetGrid sets --hw-cols in half-cell units (8, or 4 at phone width); the 16px gap makes a whole cell = 2 tracks + 16px, the same width the old 4-track grid gave. WidgetGrid places every item
      explicitly with inline grid-column/grid-row. */
-  grid-template-columns: repeat(var(--hw-cols, 4), minmax(0, 1fr));
+  grid-template-columns: repeat(var(--hw-cols, 8), minmax(0, 1fr));
   grid-auto-rows: auto;
   gap: 16px;
 }
@@ -668,7 +668,8 @@
 /* The edit canvas shows empty rows; they keep a height. View mode stays auto
    so the bare search/build rows are not padded to 120px. */
 .hw-grid.is-edit {
-  grid-auto-rows: minmax(120px, auto);
+  /* a unit row; two units + the gap = the 120px cell */
+  grid-auto-rows: minmax(52px, auto);
 }
 
 .hw-widget {
@@ -1442,9 +1443,10 @@ a.hw-more:hover {
 }
 
 /* View mode: a wholly empty row keeps the edit canvas's height, so a gap the
-   user left stays a gap instead of collapsing to the grid gap. */
+   user left stays a gap instead of collapsing to the grid gap. One spacer per
+   empty unit row (52px); two stacked plus the gap make the 120px cell. */
 .hw-row-gap {
-  min-height: 120px;
+  min-height: 52px;
   pointer-events: none;
 }
 
@@ -1973,7 +1975,7 @@ a.hw-more:hover {
 }
 
 /* App embed widget: the iframe fills the body; the skeleton sits under it until
-   it loads. Rows are minmax(120px, auto), so this min-height sets the height. */
+   it loads. Unit rows are minmax(52px, auto), so a 1x1 widget's two rows plus the gap give 120px; this min-height sets the height. */
 .hw-app-body {
   display: flex;
   flex-direction: column;

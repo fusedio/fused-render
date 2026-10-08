@@ -49,7 +49,7 @@ def test_put_invalid_is_400(tmp_path, monkeypatch):
     client, _ = _client(tmp_path, monkeypatch)
     w = {"id": "a", "source": "apps", "size": "4x1", "format": "cards"}
     bad = [
-        {"version": 4, "widgets": []},
+        {"version": 5, "widgets": []},
         {"version": 0, "widgets": []},
         {"version": 1, "widgets": "x"},
         {"version": 1, "widgets": [1]},
@@ -208,3 +208,39 @@ def test_get_drops_non_integer_v3_coords(tmp_path, monkeypatch):
     (home / "home_layout.json").write_text(json.dumps(lay), encoding="utf-8")
     w = client.get("/api/home/layout").json()["layout"]["widgets"][0]
     assert "x" not in w and "y" not in w
+
+
+def _v4(*items):
+    lay = _v3(*items)
+    lay["version"] = 4
+    return lay
+
+
+def test_v4_half_cell_roundtrip(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    lay = _v4(("a", "1x1", 1, 0), ("b", "2x2", 4, 3), ("c", "4x1", 0, 126))
+    assert client.put("/api/home/layout", json=lay, headers=FUSED).status_code == 200
+    assert json.loads((home / "home_layout.json").read_text("utf-8")) == lay
+    assert client.get("/api/home/layout").json() == {"exists": True, "layout": lay}
+
+
+def test_v4_rejects_out_of_bounds(tmp_path, monkeypatch):
+    client, _ = _client(tmp_path, monkeypatch)
+    for item in (("a", "1x1", 7, 0), ("a", "1x1", 0, 127), ("a", "4x1", 1, 0), ("a", "1x1", -1, 0), ("a", "1x1", 0, -1)):
+        assert client.put("/api/home/layout", json=_v4(item), headers=FUSED).status_code == 400
+    # y=126 fits a 1x1's 2 unit rows exactly.
+    assert client.put("/api/home/layout", json=_v4(("a", "1x1", 0, 126)), headers=FUSED).status_code == 200
+
+
+def test_v4_rejects_half_cell_overlap(tmp_path, monkeypatch):
+    client, _ = _client(tmp_path, monkeypatch)
+    lay = _v4(("a", "1x1", 1, 0), ("b", "1x1", 2, 0))  # units 1-2 vs 2-3
+    assert client.put("/api/home/layout", json=lay, headers=FUSED).status_code == 400
+    ok = _v4(("a", "1x1", 1, 0), ("b", "1x1", 3, 0))
+    assert client.put("/api/home/layout", json=ok, headers=FUSED).status_code == 200
+
+
+def test_v3_cell_bounds_still_apply(tmp_path, monkeypatch):
+    client, _ = _client(tmp_path, monkeypatch)
+    # x=7 is legal in v4 units but out of the 4-column v3 grid.
+    assert client.put("/api/home/layout", json=_v3(("a", "1x1", 7, 0)), headers=FUSED).status_code == 400
