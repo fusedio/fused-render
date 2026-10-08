@@ -970,6 +970,14 @@ test("preset card-strip tiles narrower than half a row are not cards", () => {
   }
 });
 
+test("Mission control lists Claude Sessions and shows Recent files as cards; Files shows recents as cards", () => {
+  const m = presetLayout("mission").widgets;
+  expect(m.find((w) => w.source === "sessions")!.format).toBe("list");
+  expect(m.find((w) => w.source === "recents")!.format).toBe("cards");
+  const f = presetLayout("files").widgets;
+  expect(f.find((w) => w.source === "recents")!.format).toBe("cards");
+});
+
 test("Builder preset shows Bots at 0,5 and no recent files", () => {
   const ws = presetLayout("builder").widgets;
   expect(ws.some((w) => w.source === "recents")).toBe(false);
