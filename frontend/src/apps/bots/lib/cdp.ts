@@ -197,6 +197,8 @@ export async function handBack(close: boolean): Promise<void> {
   if (switching) return;
   switching = true;
   const b = cur();
+  // The viewport emulation goes first, so the bot re-observes the page at its own 1280x800 (live-page.ts fitViewport).
+  if (b?.control) cdp("Emulation.clearDeviceMetricsOverride");
   try { if (b?.control) await act(() => api.giveback(b.id), true); } finally { switching = false; }
   if (close) { setFast(false); linkClose(); }
 }

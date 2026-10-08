@@ -11,7 +11,7 @@
 import { cur, getState, poll, subscribe as subscribeStore } from "../state/store";
 import { $, askTakeOver, cdp, evalIn, frameMeta, handBack, inCtl, inFull, isSwitching, linkClose, linkSync, nav, onEvent, onReset, takeOver, followPopups } from "./cdp";
 import { BTN, CDP_MODS, frameDims, heldButton, keyAction, nextDown, toPageXY, typesText, wrapIndex, type Box, type KeyAction, type LastDown } from "./live";
-import { syncDriving } from "./live-page";
+import { fitViewportSoon, syncDriving } from "./live-page";
 import { SEL_TEXT_PROBE, cancelSuggest, closeOverlay, copyText, getOverlay, openContextAt, openOverlayAt, pickSelect, scheduleSuggest, setOverlay, stageXY, toStage } from "./live-overlays";
 
 // Map to CSS viewport pixels (what CDP expects): the frame's own metadata, else the bot's viewport.
@@ -247,8 +247,13 @@ export function installLive(stage: HTMLElement): () => void {
     if (!inCtl()) endDriving();
   });
 
+  // The stage's size is the driven viewport's (live-page.ts fitViewport): refit on every resize while you drive.
+  const ro = new ResizeObserver(fitViewportSoon);
+  ro.observe(stage);
+
   return () => {
     unsub();
+    ro.disconnect();
     stage.removeEventListener("mousemove", onMove);
     stage.removeEventListener("mousedown", onDown);
     window.removeEventListener("mouseup", onUp);

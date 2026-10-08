@@ -13,9 +13,33 @@ const toast = (text: string) => showToast({ text, ts: Date.now() / 1000 });
 
 let fetchOn = false, interceptsOn = false;
 const authSeen = new Set<string>();
+
+// Viewport fit. The bot's Chrome is a fixed 1280x800 window (browser.py VIEWPORT): the bot's coordinates and screenshots
+// assume it, so while you only watch the frame keeps that shape (letterboxed in the stage). While you drive, the page is
+// emulated at the stage's own size so it fills it, and the emulation is cleared again before the bot gets the page back.
+// Per session like the other switches: a new socket re-applies it, a dropped one forgets it.
+let fitted: string | null = null;  // "WxH" currently emulated, null when cleared
+export function fitViewport(): void {
+  if (!linked()) return;
+  const stage = document.getElementById("stage");
+  const want = inCtl() && stage ? `${Math.max(640, Math.round(stage.clientWidth))}x${Math.max(480, Math.round(stage.clientHeight))}` : null;
+  if (want === fitted) return;
+  fitted = want;
+  if (!want) { cdp("Emulation.clearDeviceMetricsOverride"); return; }
+  const [w, h] = want.split("x").map(Number);
+  cdp("Emulation.setDeviceMetricsOverride", { width: w, height: h, deviceScaleFactor: 0, mobile: false });
+}
+let fitTimer: ReturnType<typeof setTimeout> | null = null;
+/** The stage was resized (gutter drag, window): refit while you drive, debounced so a drag sends one override at the end. */
+export function fitViewportSoon(): void {
+  if (fitTimer) clearTimeout(fitTimer);
+  fitTimer = setTimeout(() => { fitTimer = null; fitViewport(); }, 150);
+}
+
 /** Bring the session's switches in line with whether you drive. Cheap; called on open and on every store change. */
 export function syncDriving(): void {
   if (!linked()) return;
+  fitViewport();
   const want = inCtl();
   if (want !== fetchOn) {
     fetchOn = want;
@@ -29,7 +53,7 @@ export function syncDriving(): void {
   }
 }
 onOpen.push(syncDriving);
-onReset.push(() => { fetchOn = false; interceptsOn = false; authSeen.clear(); authAsking.clear(); });
+onReset.push(() => { fetchOn = false; interceptsOn = false; fitted = null; authSeen.clear(); authAsking.clear(); });
 
 // alert / confirm / prompt / beforeunload. While you drive they are real dialogs (confirm and beforeunload can be refused,
 // prompt has its text field). While you only watch they are accepted at once, as the bot's own run would (a dialog left
