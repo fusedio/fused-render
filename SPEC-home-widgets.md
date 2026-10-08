@@ -191,3 +191,27 @@ Search as a widget: source `search`, format `bar`, sizes 4x1 (default) / 2x1, at
 - Takeover: `Home` owns the search state (`useSearchHost`, provided by `SearchHostContext`); while a query is live `WidgetGrid` renders only the search widget (others are skipped in the same keyed list, so the box stays mounted and keeps its query), the grid class `is-searching` makes it full width, and the health strips, Customize/edit bar, empty message and add sheet are hidden. The widget has no header or card in view mode (`.hw-widget.is-search`); edit mode shows the normal chrome with a static placeholder bar (the live box would autofocus and swallow typing). The grid waits for the layout GET, so the box mounts slightly later than the old hero. `?q=` is only read by a mounted search widget, so without one it is ignored.
 - Tour/shortcuts: the Home tour's first step now targets `#home-sec-search` (the grid anchors the first search widget like apps/playground/sessions), and `presentSteps` drops it when search was removed. The type-anywhere-to-focus shortcut and autofocus live inside `FilesSearch`, so they vanish with the widget and need no guard. `home-performance.test.ts` and `new-task-form.test.ts` needed no change (they pin data.ts/strip.ts/widgets, not the search); `registry.test.ts` was updated for the tour selector.
 - Not verified without a browser: bar look in view mode (no card, padding, 120px min grid row around a 4x1 bar), takeover layout and restore, 2x1 bar width, edit-mode placeholder, sheet preview and icon, the tour step highlight, keyboard focus when search is the first widget.
+
+## Edit mode v2: presets + swap
+
+Users found the free-grid edit mode (drag, edge resize, size menu, cell lattice, Alt+arrows, Tidy up, Reset) overwhelming and asked for layout presets; they liked the bento look. Edit mode is now a row of presets plus one action per tile: Change (swap what the tile shows), and ×. The stored document (HomeLayout v5) and the server are unchanged: a preset is just a HomeLayout.
+
+Presets (`PRESETS`, `presetLayout(id, { folderId? })` in `shell/home/layout.ts`; units are half cells, the grid is 8 wide; fresh widget ids each time):
+
+| Preset | Tiles (x,y; size in cells; custom = explicit cols x rows in units) |
+| --- | --- |
+| Workbench | exactly `defaultLayout()` |
+| Builder | search 4x1 (0,0); build (0,1) 4x4; apps 2x2 (4,1); playground 2x2 (0,5); sessions 2x2 (4,5) |
+| Mission control | search (0,0); tasks board custom 6x4 (0,1); index 1x1 (6,1); bots 1x1 (6,3); sessions 2x1 (0,5); recents 2x1 (4,5) |
+| Files | search (0,0); recents list custom 6x4 (0,1); index 1x1 (6,1); bookmark folder 1x1 list (6,3), or sessions list custom 2x2 when no folder exists; apps 2x1 (0,5); tasks 2x1 (4,5) |
+| Focus | search (0,0); build 4x1 (0,1) |
+
+Every preset is hole-free over its used rows and survives `normalizeLayout` unchanged. `matchPreset(layout)` compares the multiset of (source, x, y, cols, rows, format) with each preset (ids, sort, folder and page choices ignored; Files also matches its no-folder variant) and returns null for a custom layout; the edit bar shows a checked "Custom" chip then. Clicking a preset replaces the layout and offers Undo (`api.restore`) until the next preset click or until edit mode closes. The Files folder is the first bookmark folder, if any.
+
+Swapping: `sourceFits(layout, rect, source, replacingId?)` decides what a tile or empty slot may show, in order: search needs a one-row strip at least 2 units wide and refuses with "Already on Home" if another search exists; build needs exactly 4 rows and 4+ columns; any other source refuses a one-row rect ("Needs a taller tile") or one under its `minFootprint` ("Needs a bigger tile"); more than `MAX_WIDGET_ROWS` rows is "Too tall". `swapSource` keeps the widget's id and rectangle, takes a size preset when one matches the footprint and an explicit cols/rows otherwise, and keeps folderId/appPath/sort only where they belong; a failed fit or an unchanged result returns the same object. `emptySlots(layout)` finds holes of at least one cell square inside the used rows, shown as "+ Choose what goes here" slots; `fillSlot` adds a tile on exactly that rectangle. Removing a tile (x) leaves such a slot.
+
+The Change popover (`ChangeTile.tsx`) lists all eleven sources with the reason under the disabled ones; folder and page rows end in "..." and open the add sheet aimed at the tile (`AddWidgetPanel` `target`, no size chips, "Put in this tile"). Swap mode also offers "Show as" and, for apps, "Sort by".
+
+Removed from the UI (the pure helpers `placeWidget`, `moveByArrow`, `resizeTo`, `resizeByArrow`, `compactLayout`, `setSize`, `allowedSizes` stay in layout.ts with their tests): dragging, edge resize handles and ghost, the size menu, the dashed cell lattice, Alt+arrow moves, Tidy up, Reset to default, the hint line. The hook lost `place`, `arrow`, `resizeTo`, `resizeArrow`, `tidy`, `resize`, `reset` and gained `applyPreset`, `swap`, `fill`, `restore`.
+
+Not verified without a browser: every visual (preset chips and thumbnails, the pill on every tile size, the bare tiles' overhanging x, slot look, popover placement and flip, the narrow chip row scrolling), Escape layering with the popover open.

@@ -1,20 +1,11 @@
-// One grid cell: the frame (title, "See all", and in edit mode the toolbar)
-// around a body chosen by source.
-import { ChevronDown } from "lucide-react";
-import {
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-  type CSSProperties,
-  type KeyboardEvent,
-  type PointerEvent as ReactPointerEvent,
-  type ReactNode,
-} from "react";
+// One grid cell: the frame (title, "See all", and in edit mode the Change / ×
+// pill) around a body chosen by source.
+import { useState, type CSSProperties, type ReactNode } from "react";
 import { tabHref } from "@apps/ai_models/routes";
 import { softNavigate } from "./strip";
-import { FIXED_ROWS, SOURCES, allowedSizes, type AppsSort, type HomeLayout, type Widget as WidgetModel, type WidgetFormat, type WidgetSize } from "./layout";
+import { SOURCES, type TileTarget, type WidgetSource, type Widget as WidgetModel } from "./layout";
+import type { HomeLayoutApi } from "./useHomeLayout";
+import { ChangeTile } from "./ChangeTile";
 import { AppsWidget } from "./widgets/AppsWidget";
 import { PlaygroundWidget, RecentsWidget, SessionsWidget } from "./widgets/StripWidgets";
 import { TasksWidget } from "./widgets/TasksWidget";
@@ -24,7 +15,6 @@ import { SearchWidget } from "./widgets/SearchWidget";
 import { BuildWidget } from "./widgets/BuildWidget";
 import { IndexWidget } from "./widgets/IndexWidget";
 import { AppEmbedWidget, OpenAppLink, OpenPageLink, appName, pageTitle, useWidgetApp } from "./widgets/AppEmbedWidget";
-import { FormatPicks, SizeChips, SortChips } from "./Pickers";
 
 const SEE_ALL: Partial<Record<WidgetModel["source"], string>> = {
   apps: "/apps",
@@ -62,131 +52,24 @@ function Body({ widget, edit, onRemove }: { widget: WidgetModel; edit: boolean; 
   }
 }
 
-function EditPopover({
-  widget,
-  title,
-  layout,
-  onResize,
-  onReformat,
-  onResort,
-  onRemove,
-}: {
-  widget: WidgetModel;
-  title: string;
-  layout: HomeLayout;
-  onResize: (size: WidgetSize) => void;
-  onReformat: (format: WidgetFormat) => void;
-  onResort: (sort: AppsSort) => void;
-  onRemove: () => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const [alignLeft, setAlignLeft] = useState(false);
-  const root = useRef<HTMLSpanElement>(null);
-  const button = useRef<HTMLButtonElement>(null);
-  useEffect(() => {
-    if (!open) return;
-    const down = (e: PointerEvent) => {
-      if (!root.current?.contains(e.target as Node)) setOpen(false);
-    };
-    const key = (e: globalThis.KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.stopPropagation();
-        setOpen(false);
-        button.current?.focus();
-      }
-    };
-    document.addEventListener("pointerdown", down, true);
-    document.addEventListener("keydown", key, true);
-    return () => {
-      document.removeEventListener("pointerdown", down, true);
-      document.removeEventListener("keydown", key, true);
-    };
-  }, [open]);
-  // Right-aligned under the button; a widget near the left edge would push the
-  // 360px card off-screen, so flip it to grow rightwards there. Re-measured
-  // after a size pick, which moves the button.
-  useLayoutEffect(() => {
-    if (!open || !button.current) return;
-    setAlignLeft(button.current.getBoundingClientRect().right - 360 < 8);
-  }, [open, widget.size, widget.cols, widget.rows]);
-  const custom = widget.cols !== undefined;
-  const spec = SOURCES[widget.source];
-  // Sizes whose footprint is free right now; computed only while the popover is open.
-  const allowed = useMemo(
-    () => (open ? allowedSizes(layout, widget.id) : []),
-    [open, layout, widget.id],
-  );
-  return (
-    <span className="hw-menu-wrap" ref={root}>
-      <button
-        ref={button}
-        type="button"
-        className={"hw-editbtn" + (open ? " is-open" : "")}
-        aria-haspopup="dialog"
-        aria-expanded={open}
-        onClick={() => setOpen((o) => !o)}
-      >
-        Edit
-        <ChevronDown aria-hidden="true" />
-      </button>
-      {open ? (
-        <div
-          className={"hw-pop" + (alignLeft ? " is-left" : "")}
-          role="dialog"
-          aria-label={`Edit ${title}`}
-        >
-          <div className="hw-label">Size</div>
-          <SizeChips sizes={spec.sizes} value={custom ? undefined : widget.size} onChange={onResize} allowed={allowed} />
-          {spec.formats.length > 1 ? (
-            <>
-              <div className="hw-label">Show as</div>
-              <FormatPicks source={widget.source} formats={spec.formats} value={widget.format} onChange={onReformat} />
-            </>
-          ) : null}
-          {widget.source === "apps" ? (
-            <>
-              <div className="hw-label">Sort by</div>
-              <SortChips value={widget.sort ?? "opened"} onChange={onResort} />
-            </>
-          ) : null}
-          <div className="hw-pop-divider" />
-          <button
-            type="button"
-            className="hw-pop-remove"
-            onClick={() => {
-              setOpen(false);
-              onRemove();
-            }}
-          >
-            Remove widget
-          </button>
-        </div>
-      ) : null}
-    </span>
-  );
-}
-
 export interface WidgetFrameProps {
   widget: WidgetModel;
   edit: boolean;
   /** Anchor id for the welcome tour on the first widget of a source. */
   anchorId?: string;
-  dragging: boolean;
-  /** Inline grid placement (and the drag transform). Data, not state. */
+  /** Inline grid placement. Data, not state. */
   style?: CSSProperties;
-  /** The whole layout; the edit popover derives which sizes still fit. */
-  layout: HomeLayout;
-  onResize: (size: WidgetSize) => void;
-  onReformat: (format: WidgetFormat) => void;
-  onResort: (sort: AppsSort) => void;
+  api: HomeLayoutApi;
+  /** Rendered width in units (the narrow reflow clamps it). */
+  cols: number;
   onRemove: () => void;
-  onPointerDown: (e: ReactPointerEvent<HTMLElement>) => void;
-  onResizeStart: (e: ReactPointerEvent<HTMLElement>, axis: "e" | "s" | "se") => void;
-  onKeyDown: (e: KeyboardEvent) => void;
+  /** Open the add sheet for a folder or page pick that targets this tile. */
+  onRequestPanel: (target: TileTarget, source: WidgetSource) => void;
 }
 
 export function WidgetFrame(p: WidgetFrameProps): ReactNode {
   const { widget, edit } = p;
+  const [changeOpen, setChangeOpen] = useState(false);
   const spec = SOURCES[widget.source];
   const folder = useWidgetFolder(widget);
   const embedded = useWidgetApp(widget);
@@ -201,10 +84,10 @@ export function WidgetFrame(p: WidgetFrameProps): ReactNode {
             : spec.label
         : spec.label;
   const seeAll = SEE_ALL[widget.source];
-  // The search and build widgets ARE their box: no header in view mode.
-  const bare = (widget.source === "search" || widget.source === "build") && !edit;
-  // Search and build have a content-sized height: only their width resizes.
-  const fixedHeight = FIXED_ROWS[widget.source] !== undefined;
+  // The search and build widgets ARE their box: no header, in edit mode too.
+  const bare = widget.source === "search" || widget.source === "build";
+  // Too narrow for the "Change" label: the pill shrinks to its icon.
+  const compact = p.cols <= 2;
   return (
     <section
       id={p.anchorId}
@@ -214,22 +97,14 @@ export function WidgetFrame(p: WidgetFrameProps): ReactNode {
         (widget.source === "search" ? " is-search" : "") +
         (widget.source === "build" ? " is-build" : "") +
         (edit ? " is-edit" : "") +
-        (widget.source === "app" ? " is-app" : "") +
-        (p.dragging ? " is-dragging" : "")
+        (edit && compact ? " is-compact" : "") +
+        (widget.source === "app" ? " is-app" : "")
       }
       style={p.style}
       data-wid={widget.id}
-      tabIndex={edit ? 0 : undefined}
-      aria-label={edit ? `${title} widget. Alt plus arrow keys to move, ${fixedHeight ? "Alt plus Shift plus Left or Right to resize" : "Alt plus Shift plus arrow keys to resize"}.` : undefined}
-      onPointerDown={edit ? p.onPointerDown : undefined}
-      onKeyDown={edit ? p.onKeyDown : undefined}
+      aria-label={edit ? `${title} widget` : undefined}
     >
       {bare ? null : <div className="hw-head">
-        {edit ? (
-          <span className="hw-grip" aria-hidden="true" title="Drag to move">
-            <svg viewBox="0 0 10 14" fill="currentColor" aria-hidden="true"><circle cx="3" cy="2.5" r="1.4"/><circle cx="7" cy="2.5" r="1.4"/><circle cx="3" cy="7" r="1.4"/><circle cx="7" cy="7" r="1.4"/><circle cx="3" cy="11.5" r="1.4"/><circle cx="7" cy="11.5" r="1.4"/></svg>
-          </span>
-        ) : null}
         <h2 className="hw-title">
           {seeAll && !edit ? (
             <a className="hw-title-link" href={seeAll} onClick={(e) => softNavigate(e, seeAll)}>
@@ -239,14 +114,7 @@ export function WidgetFrame(p: WidgetFrameProps): ReactNode {
             title
           )}
         </h2>
-        {edit ? (
-          <>
-            <EditPopover widget={widget} title={title} layout={p.layout} onResize={p.onResize} onReformat={p.onReformat} onResort={p.onResort} onRemove={p.onRemove} />
-            <button type="button" className="hw-remove" aria-label={`Remove ${title}`} onClick={p.onRemove}>
-              ×
-            </button>
-          </>
-        ) : embedded ? (
+        {edit ? null : embedded ? (
           <OpenAppLink app={embedded} />
         ) : widget.source === "app" && widget.appPath ? (
           <OpenPageLink path={widget.appPath} />
@@ -261,15 +129,35 @@ export function WidgetFrame(p: WidgetFrameProps): ReactNode {
       </div>}
       <Body widget={widget} edit={edit} onRemove={p.onRemove} />
       {edit ? (
-        <>
-          <span className="hw-resize hw-resize-e" aria-hidden="true" onPointerDown={(e) => p.onResizeStart(e, "e")} />
-          {fixedHeight ? null : (
-            <>
-              <span className="hw-resize hw-resize-s" aria-hidden="true" onPointerDown={(e) => p.onResizeStart(e, "s")} />
-              <span className="hw-resize hw-resize-se" aria-hidden="true" title="Drag to resize" onPointerDown={(e) => p.onResizeStart(e, "se")} />
-            </>
+        <span className={"hw-swap" + (bare ? " is-bare" : "")}>
+          {bare ? null : (
+            <button
+              type="button"
+              className={"hw-swap-change" + (changeOpen ? " is-open" : "")}
+              aria-haspopup="dialog"
+              aria-expanded={changeOpen}
+              aria-label={compact ? `Change ${title}` : undefined}
+              onClick={() => setChangeOpen((o) => !o)}
+            >
+              {compact ? "⇄" : "⇄ Change"}
+            </button>
           )}
-        </>
+          <button type="button" className="hw-swap-x" aria-label={`Remove ${title}`} onClick={p.onRemove}>
+            ×
+          </button>
+          {changeOpen ? (
+            <ChangeTile
+              api={p.api}
+              target={{ kind: "swap", widget }}
+              title={title}
+              onClose={() => setChangeOpen(false)}
+              onPick={(source) => {
+                setChangeOpen(false);
+                p.onRequestPanel({ kind: "swap", widget }, source);
+              }}
+            />
+          ) : null}
+        </span>
       ) : null}
     </section>
   );

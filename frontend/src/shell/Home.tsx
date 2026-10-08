@@ -1,24 +1,32 @@
 // The app's front door (/home): a configurable 4-column widget grid whose
 // first widget is the file search. The default layout is the search bar plus
 // the four strips this page used to hard-code — Fused Apps, AI Playground, Claude Sessions, Recent files —
-// each a one-row "See all" strip; "Customize" turns on edit mode (drag to
-// reorder, resize, change format, add or remove widgets) and the layout is
+// each a one-row "See all" strip; "Customize" turns on edit mode (pick a layout
+// preset, change what a tile shows, add or remove widgets) and the layout is
 // saved on the server (GET/PUT /api/home/layout).
 //
 // Lives in the shell layer on purpose: it composes builder cards
 // (AppPreviewCard) with explorer cards and libs, which only the shell may
 // import together (scripts/check-boundaries.mjs). The widgets themselves are
 // in shell/home/.
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { SlidersHorizontal } from "lucide-react";
 import type { Config } from "@platform/lib/api";
 import { useRecentsVersion } from "@apps/explorer/lib/recents";
 import { ClaudeHealthStrip } from "@platform/ui/ClaudeHealthStrip";
 import { FdaStrip } from "@platform/ui/FdaStrip";
-import { AddWidgetPanel } from "./home/AddWidgetPanel";
+import { loadBookmarks } from "@platform/lib/bookmarks";
+import { AddWidgetPanel, allFolders } from "./home/AddWidgetPanel";
+import { PRESETS, matchPreset, type HomeLayout, type TileTarget, type WidgetSource } from "./home/layout";
+import { PresetThumb } from "./home/PresetThumb";
 import { WidgetGrid } from "./home/WidgetGrid";
 import { useHomeLayout } from "./home/useHomeLayout";
 import { SearchHostContext, useSearchHost } from "./home/widgets/SearchWidget";
+
+/** Files shows a bookmark folder when there is one to show. */
+function firstBookmarkFolderId(): string | undefined {
+  return allFolders(loadBookmarks())[0]?.id;
+}
 
 export default function Home({ config }: { config: Config }) {
   // Same normalization every other config.home consumer applies.
@@ -27,12 +35,17 @@ export default function Home({ config }: { config: Config }) {
 
   const layoutApi = useHomeLayout();
   const [edit, setEdit] = useState(false);
-  const [panelOpen, setPanelOpen] = useState(false);
-  const [confirmReset, setConfirmReset] = useState(false);
+  // The add sheet: bare ("+ Add widget"), or aimed at one tile or slot (a
+  // folder or page picked from a Change popover).
+  const [panel, setPanel] = useState<null | { target?: TileTarget; initialSource?: WidgetSource }>(null);
+  // The layout before the last preset click, for Undo.
+  const prevLayout = useRef<HomeLayout | null>(null);
+  const [canUndo, setCanUndo] = useState(false);
   useEffect(() => {
     if (!edit) {
-      setPanelOpen(false);
-      setConfirmReset(false);
+      setPanel(null);
+      prevLayout.current = null;
+      setCanUndo(false);
       return;
     }
     const key = (e: KeyboardEvent) => {
@@ -62,35 +75,46 @@ export default function Home({ config }: { config: Config }) {
             {searching ? null : <FdaStrip />}
             {searching ? null : edit ? (
               <div className="hw-editbar">
-                <span className="hw-editbar-hint">Drag widgets anywhere · Alt+arrows moves the focused one · empty cells stay empty</span>
-                <button type="button" className="hw-tb is-ghost" onClick={() => layoutApi.tidy()}>
-                  Tidy up
-                </button>
-                {confirmReset ? (
-                  <span className="hw-confirm">
-                    Replace your layout with the default?
+                <span className="hw-editbar-label">Layout</span>
+                <div className="hw-presets" role="radiogroup" aria-label="Layout">
+                  {matchPreset(layoutApi.layout) === null ? (
+                    <span className="hw-preset is-custom" aria-current="true">
+                      Custom
+                    </span>
+                  ) : null}
+                  {PRESETS.map((p) => (
                     <button
+                      key={p.id}
                       type="button"
-                      className="hw-tb is-danger"
+                      role="radio"
+                      aria-checked={matchPreset(layoutApi.layout) === p.id}
+                      className="hw-preset"
+                      title={p.blurb}
                       onClick={() => {
-                        layoutApi.reset();
-                        setConfirmReset(false);
+                        prevLayout.current = layoutApi.layout;
+                        setCanUndo(true);
+                        layoutApi.applyPreset(p.id, { folderId: firstBookmarkFolderId() });
                       }}
                     >
-                      Reset
+                      <PresetThumb id={p.id} />
+                      {p.name}
                     </button>
-                    <button type="button" className="hw-tb is-ghost" onClick={() => setConfirmReset(false)}>
-                      Cancel
-                    </button>
-                  </span>
-                ) : (
-                  <button type="button" className="hw-tb is-ghost" onClick={() => setConfirmReset(true)}>
-                    Reset to default
+                  ))}
+                </div>
+                {canUndo ? (
+                  <button
+                    type="button"
+                    className="hw-tb is-ghost"
+                    onClick={() => {
+                      if (prevLayout.current) layoutApi.restore(prevLayout.current);
+                      prevLayout.current = null;
+                      setCanUndo(false);
+                    }}
+                  >
+                    Undo
                   </button>
-                )}
-                <button type="button" className="hw-tb" onClick={() => setPanelOpen(true)}>
-                  + Add widget
-                </button>
+                ) : null}
+                <span className="hw-editbar-sp" />
                 <button
                   type="button"
                   className="hw-tb is-primary"
@@ -117,13 +141,17 @@ export default function Home({ config }: { config: Config }) {
             <div className="hw-stage">
               {layoutApi.loaded ? (
                 <div className="hw-stage-main">
-                  <WidgetGrid api={layoutApi} edit={edit} searching={searching} onAdd={() => setPanelOpen(true)} />
+                  <WidgetGrid api={layoutApi} edit={edit} searching={searching} onAdd={() => setPanel({})}
+                    onRequestPanel={(target, initialSource) => setPanel({ target, initialSource })}
+                  />
                   {!layoutApi.layout.widgets.length && !edit && !searching ? (
                     <p className="fh-empty">Your Home is empty. Choose Customize to add widgets.</p>
                   ) : null}
                 </div>
               ) : null}
-              {edit && panelOpen && !searching ? <AddWidgetPanel api={layoutApi} onClose={() => setPanelOpen(false)} /> : null}
+              {edit && panel && !searching ? (
+                <AddWidgetPanel api={layoutApi} target={panel.target} initialSource={panel.initialSource} onClose={() => setPanel(null)} />
+              ) : null}
             </div>
           </div>
         </SearchHostContext.Provider>

@@ -728,7 +728,7 @@ export function resizeByArrow(layout: HomeLayout, id: string, key: string): Home
   }
 }
 
-/** "Tidy up": pack everything densely in reading order. Never automatic. */
+/** Pack everything densely in reading order. Never automatic. */
 export function compactLayout(layout: HomeLayout): HomeLayout {
   return { ...layout, widgets: sortByPosition(packDense(sortByPosition(layout.widgets))) };
 }
@@ -856,6 +856,9 @@ export function sourceFits(
   if (rect.rows > MAX_WIDGET_ROWS) return no("Too tall");
   return { ok: true };
 }
+
+/** Where a Change pick lands: an existing tile, or an empty slot. */
+export type TileTarget = { kind: "swap"; widget: Widget } | { kind: "fill"; rect: Rect };
 
 export type TileOpts = { folderId?: string; appPath?: string; format?: WidgetFormat; sort?: AppsSort };
 

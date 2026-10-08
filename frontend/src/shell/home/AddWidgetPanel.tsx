@@ -1,6 +1,8 @@
 // The "Add a widget" sheet: a centred modal with the sources on the left and,
 // on the right, a large preview of the chosen look plus the format and size
-// picks. "Add to Home" appends with the chosen format and size.
+// picks. "Add to Home" appends with the chosen format and size. Opened from a
+// tile's Change popover (`target`) it configures one folder or page for that
+// tile instead: no size, and "Put in this tile" swaps or fills it.
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { contractHome, useHome } from "../../apps/explorer/listing/home-path";
 import { listDir, statPath, type FsEntry } from "@platform/lib/api";
@@ -26,7 +28,7 @@ import { useBookmarksVersion } from "@platform/lib/hooks";
 import { isFolder, loadBookmarks, type BookmarkFolder, type BookmarkItem } from "@platform/lib/bookmarks";
 import { FormatPreview } from "./FormatPreview";
 import { FormatPicks, SizeChips, SortChips, stageZoom } from "./Pickers";
-import { MAX_WIDGETS, SOURCES, hasSearch, type AppsSort, type WidgetFormat, type WidgetSize, type WidgetSource } from "./layout";
+import { MAX_WIDGETS, SOURCES, hasSearch, type AppsSort, type TileTarget, type WidgetFormat, type WidgetSize, type WidgetSource } from "./layout";
 import type { HomeLayoutApi } from "./useHomeLayout";
 import { AppGlyph } from "./widgets/AppsWidget";
 import { appName, useAllApps } from "./widgets/AppEmbedWidget";
@@ -46,7 +48,7 @@ const SOURCE_ICONS: Record<WidgetSource, LucideIcon> = {
 };
 
 /** The source's mark: a lucide glyph on an accent-tinted rounded square. */
-function SourceIcon({ source, large }: { source: WidgetSource; large?: boolean }) {
+export function SourceIcon({ source, large }: { source: WidgetSource; large?: boolean }) {
   const Icon = SOURCE_ICONS[source];
   return (
     <span className={"hw-src-sq" + (large ? " is-lg" : "")} aria-hidden="true">
@@ -55,7 +57,7 @@ function SourceIcon({ source, large }: { source: WidgetSource; large?: boolean }
   );
 }
 
-function allFolders(items: BookmarkItem[], out: BookmarkFolder[] = []): BookmarkFolder[] {
+export function allFolders(items: BookmarkItem[], out: BookmarkFolder[] = []): BookmarkFolder[] {
   for (const it of items) {
     if (isFolder(it)) {
       out.push(it);
@@ -70,12 +72,25 @@ const parentDir = (dir: string) => dir.replace(/[\\/]+$/, "").replace(/[^\\/]*$/
 
 const ALL_SOURCE_KEYS = Object.keys(SOURCES) as WidgetSource[];
 
-export function AddWidgetPanel({ api, onClose }: { api: HomeLayoutApi; onClose: () => void }) {
+export function AddWidgetPanel({
+  api,
+  onClose,
+  target,
+  initialSource,
+}: {
+  api: HomeLayoutApi;
+  onClose: () => void;
+  /** Set when opened from a tile's Change popover. */
+  target?: TileTarget;
+  initialSource?: WidgetSource;
+}) {
   useBookmarksVersion();
   const dialog = useRef<HTMLDivElement>(null);
   const list = useRef<HTMLDivElement>(null);
   // One search box per Home: its source is not offered once it is there.
-  const SOURCE_KEYS = ALL_SOURCE_KEYS.filter((s) => s !== "search" || !hasSearch(api.layout));
+  const SOURCE_KEYS = target
+    ? [initialSource ?? "folder"]
+    : ALL_SOURCE_KEYS.filter((s) => s !== "search" || !hasSearch(api.layout));
   const [source, setSource] = useState<WidgetSource>(SOURCE_KEYS[0]);
   const [format, setFormat] = useState<WidgetFormat>(SOURCES[SOURCE_KEYS[0]].formats[0]);
   const [size, setSize] = useState<WidgetSize>(SOURCES[SOURCE_KEYS[0]].sizes[0]);
@@ -162,7 +177,7 @@ export function AddWidgetPanel({ api, onClose }: { api: HomeLayoutApi; onClose: 
   );
   const folders = allFolders(loadBookmarks());
   const spec = SOURCES[source];
-  const full = api.layout.widgets.length >= MAX_WIDGETS;
+  const full = !target && api.layout.widgets.length >= MAX_WIDGETS;
   const chosenFolder = folders.find((f) => f.id === folderId) ?? folders[0] ?? null;
   const noFolders = source === "folder" && !folders.length;
 
@@ -221,16 +236,22 @@ export function AddWidgetPanel({ api, onClose }: { api: HomeLayoutApi; onClose: 
 
   const add = () => {
     if (full || noFolders || noApps || (source === "app" && (urlMode ? !url : fileMode ? !fileOk : !chosenApp))) return;
-    api.add(
-      source,
+    const opts =
       source === "folder"
         ? { folderId: chosenFolder?.id, format, size }
         : source === "app"
           ? { appPath: urlMode ? url! : fileMode ? filePath : chosenApp?.path, format, size }
           : source === "apps"
             ? { format, size, sort }
-            : { format, size },
-    );
+            : { format, size };
+    if (target) {
+      const { size: _size, ...tileOpts } = opts;
+      if (target.kind === "swap") api.swap(target.widget.id, source, tileOpts);
+      else api.fill(target.rect, source, tileOpts);
+      onClose();
+      return;
+    }
+    api.add(source, opts);
     onClose();
     // The new widget is the last one in the grid; wait a beat for it to mount.
     setTimeout(() => {
@@ -476,10 +497,12 @@ export function AddWidgetPanel({ api, onClose }: { api: HomeLayoutApi; onClose: 
                   <FormatPicks source={source} formats={spec.formats} value={format} onChange={setFormat} />
                 </div>
               ) : null}
-              <div className="hw-opt">
-                <span className="hw-label">Size</span>
-                <SizeChips sizes={spec.sizes} value={size} onChange={setSize} />
-              </div>
+              {target ? null : (
+                <div className="hw-opt">
+                  <span className="hw-label">Size</span>
+                  <SizeChips sizes={spec.sizes} value={size} onChange={setSize} />
+                </div>
+              )}
               {source === "apps" ? (
                 <div className="hw-opt">
                   <span className="hw-label">Sort by</span>
@@ -495,7 +518,7 @@ export function AddWidgetPanel({ api, onClose }: { api: HomeLayoutApi; onClose: 
             Cancel
           </button>
           <button type="button" className="hw-tb is-primary" disabled={full || noFolders || noApps || (source === "app" && (urlMode ? !url : fileMode ? !fileOk : !chosenApp))} onClick={add}>
-            Add to Home
+            {target ? "Put in this tile" : "Add to Home"}
           </button>
         </div>
       </div>

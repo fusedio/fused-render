@@ -6,19 +6,19 @@ import { getHomeLayout, putHomeLayout } from "@platform/lib/api";
 import { notify } from "@platform/lib/notifications";
 import {
   addWidget,
-  compactLayout,
-  defaultLayout,
-  moveByArrow,
+  fillSlot,
   normalizeLayout,
-  placeWidget,
+  presetLayout,
   removeWidget,
-  resizeByArrow,
-  resizeTo,
   setFormat,
   setSort,
-  setSize,
+  swapSource,
+  defaultLayout,
   type AppsSort,
   type HomeLayout,
+  type PresetId,
+  type Rect,
+  type TileOpts,
   type WidgetFormat,
   type WidgetSize,
   type WidgetSource,
@@ -29,22 +29,18 @@ export interface HomeLayoutApi {
   /** False until the first GET settles — the grid waits so a saved layout never
       flashes the default one. */
   loaded: boolean;
-  /** Move to cell (x, y); a refused (occupied / out of bounds) move is a no-op. */
-  place: (id: string, x: number, y: number) => void;
-  /** Alt+Arrow step. */
-  arrow: (id: string, key: string) => void;
-  /** Edge drag: explicit footprint in units. */
-  resizeTo: (id: string, cols: number, rows: number) => void;
-  /** Alt+Shift+Arrow step. */
-  resizeArrow: (id: string, key: string) => void;
-  /** Pack everything densely in reading order. */
-  tidy: () => void;
+  /** Replace the whole layout with a preset (fresh ids). */
+  applyPreset: (id: PresetId, opts?: { folderId?: string }) => void;
+  /** Put the given layout back (undo of a preset). */
+  restore: (layout: HomeLayout) => void;
+  /** Show another source in a tile, keeping its rectangle. */
+  swap: (id: string, source: WidgetSource, opts?: TileOpts) => void;
+  /** Put a new tile of `source` on exactly `rect`, an empty slot. */
+  fill: (rect: Rect, source: WidgetSource, opts?: TileOpts) => void;
   add: (source: WidgetSource, opts?: { folderId?: string; appPath?: string; format?: WidgetFormat; size?: WidgetSize; sort?: AppsSort }) => void;
   remove: (id: string) => void;
-  resize: (id: string, size: WidgetSize) => void;
   reformat: (id: string, format: WidgetFormat) => void;
   resort: (id: string, sort: AppsSort) => void;
-  reset: () => void;
 }
 
 export function useHomeLayout(): HomeLayoutApi {
@@ -92,16 +88,13 @@ export function useHomeLayout(): HomeLayoutApi {
   return {
     layout,
     loaded,
-    place: useCallback((id, x, y) => commit(placeWidget(ref.current, id, x, y)), [commit]),
-    arrow: useCallback((id, key) => commit(moveByArrow(ref.current, id, key)), [commit]),
-    resizeTo: useCallback((id, cols, rows) => commit(resizeTo(ref.current, id, cols, rows)), [commit]),
-    resizeArrow: useCallback((id, key) => commit(resizeByArrow(ref.current, id, key)), [commit]),
-    tidy: useCallback(() => commit(compactLayout(ref.current)), [commit]),
+    applyPreset: useCallback((id, opts) => commit(presetLayout(id, opts)), [commit]),
+    restore: useCallback((l) => commit(normalizeLayout(l)), [commit]),
+    swap: useCallback((id, source, opts) => commit(swapSource(ref.current, id, source, opts)), [commit]),
+    fill: useCallback((rect, source, opts) => commit(fillSlot(ref.current, rect, source, opts)), [commit]),
     add: useCallback((source, opts) => commit(addWidget(ref.current, source, opts)), [commit]),
     remove: useCallback((id) => commit(removeWidget(ref.current, id)), [commit]),
-    resize: useCallback((id, size) => commit(setSize(ref.current, id, size)), [commit]),
     reformat: useCallback((id, format) => commit(setFormat(ref.current, id, format)), [commit]),
     resort: useCallback((id, sort) => commit(setSort(ref.current, id, sort)), [commit]),
-    reset: useCallback(() => commit(defaultLayout()), [commit]),
   };
 }
