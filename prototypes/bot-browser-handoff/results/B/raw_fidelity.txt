@@ -1,0 +1,11 @@
+RESULT F1 contenteditable: PASS 'Hello, World! it\'s a "test" (1+1=2) {x} [y] <z> a.b;c-d/e 日本 é\nlin'
+RESULT F1b contenteditable cmd-A + Delete: PASS 
+RESULT F2 login form: type, Tab, password, Enter submits: PASS ["alice+test@example.com","P@ss w0rd!#\\'\"é","p"]
+RESULT F2b click submit button via forwarded mouse: PASS 
+RESULT F3a local autocomplete (input events fire per key): PASS suggestions=3 keys=12
+ddg loaded: True https://duckduckgo.com/
+RESULT F3b DuckDuckGo: typed value + autocomplete dropdown: PASS value='fused render' suggestion_nodes=1
+RESULT F3c DuckDuckGo: ArrowDown x2 + Enter navigates to results: PASS https://duckduckgo.com/?ia=web&origin=funnel_home_website&t=h_&q=fused+render
+RESULT F4 non-US chars (é 日 本 ñ alt-€) via human keydown: PASS 'é日本ñ€'
+page-visible events for '.' then "'": d:./Period/190 u:./Period/190 d:'/Quote/222 u:'/Quote/222
+RESULT F5 page sees correct keyCode for . and ' (190, 222; no Delete/ArrowRight): PASS d:./Period/190 u:./Period/190 d:'/Quote/222 u:'/Quote/222

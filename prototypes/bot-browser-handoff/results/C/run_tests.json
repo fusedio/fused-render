@@ -1,0 +1,120 @@
+{
+ "setup": {
+  "port": 54377,
+  "pid": 46731,
+  "ext_id": "lpneomfjnbemncahpbhajioopgehojip",
+  "bridge_connected": true,
+  "launch_to_bridge_s": 0.4,
+  "hello": {
+   "type": "hello",
+   "ext": "lpneomfjnbemncahpbhajioopgehojip",
+   "attached": [],
+   "tabs": [
+    {
+     "id": 2065723373,
+     "url": "about:blank",
+     "windowId": 2065723372,
+     "active": true
+    }
+   ]
+  }
+ },
+ "T1": {
+  "pass": true,
+  "v1": "a.b,c-d/e;f'g[h]i Hello World! (x) {y} <z> ~!@#$%^&*_+=|:\"?\n",
+  "v1_exact": true,
+  "v2": "a.b,c-d/e;f'g[h]i Hello World! (x) {y} <z> ~!@#$%^&*_+=|\"?\n",
+  "v2_ok": true,
+  "v3": "q",
+  "type_s": 0.03
+ },
+ "T2": {
+  "pass": true,
+  "attached_val": "qhuman.text's,here",
+  "detached_val": "qhuman.text's,herehuman.text's,here",
+  "human_osa": [
+   {
+    "path": "cdp-port-fallback",
+    "osascript_result": {
+     "typed": true,
+     "frontmost": "46731",
+     "osa": [
+      "",
+      "36:65: execution error: System Events got an error: osascript is not allowed to send keystrokes. (1002)"
+     ]
+    }
+   },
+   {
+    "path": "cdp-port-fallback",
+    "osascript_result": {
+     "typed": true,
+     "frontmost": "46731",
+     "osa": [
+      "",
+      "36:65: execution error: System Events got an error: osascript is not allowed to send keystrokes. (1002)"
+     ]
+    }
+   }
+  ],
+  "detach+activate_s": 0.002
+ },
+ "T3": {
+  "pass": true,
+  "val": "qhuman.text's,herehuman.text's,here-bot",
+  "tabId": 2065723393,
+  "targetId_before": "8EF5A0DD0FFD985983B73D53023B0459",
+  "targetId_after": "8EF5A0DD0FFD985983B73D53023B0459",
+  "chrome_pid_alive_same": true
+ },
+ "T4": {
+  "pass": true,
+  "fails": [],
+  "take_over": {
+   "p50_ms": 2.2,
+   "p95_ms": 6.7
+  },
+  "hand_back": {
+   "p50_ms": 102.6,
+   "p95_ms": 104.4
+  },
+  "val_still": "s,here-bot",
+  "targetId_same": true
+ },
+ "T5": {
+  "pass": false,
+  "err": "Traceback (most recent call last):\n  File \"/private/tmp/claude-501/-Users-vasu-Documents-fused-dev-fused-render/acb7c266-9bd8-4dc6-a57d-56112293155a/scratchpad/proto-c/run_tests.py\", line 93, in <module>\n    t0 = time.time(); s = relay.cdp(B, \"Page.captureScreenshot\", format=\"png\")[\"data\"]; shots.append((png_stats(s), round(time.time() - t0, 3)))\n                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/private/tmp/claude-501/-Users-vasu-Documents-fused-dev-fused-render/acb7c266-9bd8-4dc6-a57d-56112293155a/scratchpad/proto-c/relay.py\", line 99, in cdp\n    return self.call(\"cdp\", tabId=tabId, method=method, params=params)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/private/tmp/claude-501/-Users-vasu-Documents-fused-dev-fused-render/acb7c266-9bd8-4dc6-a57d-56112293155a/scratchpad/proto-c/relay.py\", line 93, in call\n    if not slot[\"ev\"].wait(timeout): raise TimeoutError(cmd)\n                                     ^^^^^^^^^^^^^^^^^^^^^^^\nTimeoutError: cdp\n"
+ },
+ "T7_offscreen_note": "windowState: Invalid value for bounds. Bounds must be at least 50% within visible screen space.",
+ "T7": {
+  "pass": false,
+  "minimized_window": {
+   "shot_err": "cdp",
+   "frames_3s": 0,
+   "visibility": "hidden"
+  },
+  "background_tab": {
+   "shot": [
+    1800,
+    1126,
+    186
+   ],
+   "shot_s": 0.096,
+   "frames_3s": 0,
+   "visibility": "hidden"
+  },
+  "occluded_window": {
+   "shot": [
+    1400,
+    714,
+    206
+   ],
+   "shot_s": 0.01,
+   "frames_3s": 60,
+   "visibility": "visible"
+  }
+ },
+ "T6": {
+  "pass": false,
+  "err": "Traceback (most recent call last):\n  File \"/private/tmp/claude-501/-Users-vasu-Documents-fused-dev-fused-render/acb7c266-9bd8-4dc6-a57d-56112293155a/scratchpad/proto-c/run_tests.py\", line 154, in <module>\n    relay.call(\"detach\", tabId=A); relay.call(\"activate\", tabId=A); time.sleep(0.6)\n    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/private/tmp/claude-501/-Users-vasu-Documents-fused-dev-fused-render/acb7c266-9bd8-4dc6-a57d-56112293155a/scratchpad/proto-c/relay.py\", line 95, in call\n    if \"error\" in m: raise RuntimeError(f\"{cmd}: {m['error']}\")\n                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nRuntimeError: detach: Debugger is not attached to the tab with id: 2065723393.\n"
+ }
+}

@@ -1,0 +1,12 @@
+case1 vis visible raf 1.0
+case1 min + emu-before-nav {"ERR": "TimeoutError('timed out')", "ms": 6001}
+case2 vis hidden
+case2 min, no emu, nav {"ERR": "TimeoutError('timed out')", "ms": 6001}
+case3 vis visible
+case3 min, emu set twice (before+after nav) {"ERR": "TimeoutError('timed out')", "ms": 6001}
+case4 vis visible
+case4 other window front, min+emu, nav {"ERR": "TimeoutError('timed out')", "ms": 6001}
+case5 other window front, min+emu, NO nav {"w": 1800, "h": 1026, "nonwhite": 0.841, "red": 0.835, "blue": 0.0, "ms": 413}
+case6 vis visible https://example.com/
+case6 min+emu, nav to https://example.com {"ERR": "TimeoutError('timed out')", "ms": 6001}
+killed

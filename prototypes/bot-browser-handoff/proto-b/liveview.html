@@ -1,0 +1,58 @@
+<!doctype html><meta charset=utf-8><title>live view</title>
+<style>body{margin:0;background:#222}canvas{display:block;width:960px;height:600px;outline:2px solid #888}canvas.on{outline-color:#4c4}
+#cap{position:fixed;left:-1000px;top:0;opacity:0}</style>
+<canvas id=c width=1280 height=800></canvas><textarea id=cap></textarea>
+<script src=keys.js></script>
+<script>
+const q = new URLSearchParams(location.search);
+const MAC = q.get("mac") !== "0";            // human's keyboard; real app: navigator.platform
+const c = document.getElementById("c"), g = c.getContext("2d"), cap = document.getElementById("cap");
+window.__input = false;                       // take-over flag: the ONLY thing a flip changes
+window.__stats = {frames: 0, log: [], errors: []};
+const ws = new WebSocket(q.get("ws"));
+let nid = 0; const pend = {};
+function call(method, params) { const id = ++nid; ws.send(JSON.stringify({id, method, params: params || {}})); return new Promise(r => (pend[id] = r)); }
+let meta = {deviceWidth: 1280, deviceHeight: 800, offsetTop: 0};
+ws.onopen = () => { window.__open = true; call("Page.startScreencast", {format: "jpeg", quality: 70, maxWidth: 1280, maxHeight: 800, everyNthFrame: 1}); };
+ws.onclose = () => (window.__closed = true);
+ws.onmessage = ev => {
+  const m = JSON.parse(ev.data); window.__stats.msgs = (window.__stats.msgs || 0) + 1; if (m.method) window.__stats.lastEv = m.method; if (m.method === "Page.screencastVisibilityChanged") { (window.__stats.vis = window.__stats.vis || []).push(m.params.visible); }
+  if (m.id) { if (pend[m.id]) pend[m.id](m); return; }
+  if (m.method === "Page.screencastFrame") {
+    const p = m.params; meta = p.metadata;
+    call("Page.screencastFrameAck", {sessionId: p.sessionId});
+    const img = new Image();
+    img.onload = () => { g.drawImage(img, 0, 0, c.width, c.height); window.__stats.frames++; window.__stats.last = performance.now();
+      window.__stats.log.push([performance.now(), meta.timestamp * 1000]); if (window.__stats.log.length > 400) window.__stats.log.shift(); };
+    img.src = "data:image/jpeg;base64," + p.data;
+  }
+};
+const send = (method, params) => { if (window.__input) call(method, params); };
+const mods = e => (e.altKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.metaKey ? 4 : 0) | (e.shiftKey ? 8 : 0);
+function pt(e) { const r = c.getBoundingClientRect(); return {x: (e.clientX - r.left) * meta.deviceWidth / r.width, y: (e.clientY - r.top) * meta.deviceHeight / r.height}; }
+let btnDown = 0;
+c.addEventListener("mousedown", e => { cap.focus(); btnDown = 1; send("Input.dispatchMouseEvent", Object.assign({type: "mousePressed", button: ["left","middle","right"][e.button], buttons: 1, clickCount: e.detail || 1, modifiers: mods(e)}, pt(e))); e.preventDefault(); });
+c.addEventListener("mouseup", e => { btnDown = 0; send("Input.dispatchMouseEvent", Object.assign({type: "mouseReleased", button: ["left","middle","right"][e.button], clickCount: e.detail || 1, modifiers: mods(e)}, pt(e))); });
+c.addEventListener("mousemove", e => send("Input.dispatchMouseEvent", Object.assign({type: "mouseMoved", button: btnDown ? "left" : "none", buttons: btnDown, modifiers: mods(e)}, pt(e))));
+c.addEventListener("wheel", e => { send("Input.dispatchMouseEvent", Object.assign({type: "mouseWheel", deltaX: e.deltaX, deltaY: e.deltaY, modifiers: mods(e)}, pt(e))); e.preventDefault(); }, {passive: false});
+const opts = e => ({shift: e.shiftKey, ctrl: e.ctrlKey, alt: e.altKey, meta: e.metaKey, mac: MAC, keyCode: e.keyCode});
+cap.addEventListener("keydown", e => {
+  if (!window.__input) return;
+  if (e.isComposing || e.keyCode === 229 || e.key === "Dead") return;       // IME / dead key: result arrives via compositionend / input
+  const prim = MAC ? e.metaKey : e.ctrlKey;
+  if (prim && e.key.toLowerCase() === "v") return;                          // let the browser fire 'paste' on the hidden textarea
+  e.preventDefault();
+  const kp = keyparams(e.key, e.code, opts(e));
+  if (kp.insert) call("Input.insertText", {text: kp.insert});
+  else call("Input.dispatchKeyEvent", Object.assign({autoRepeat: e.repeat}, kp.down));
+  if (prim && e.key.toLowerCase() === "c") copySel();
+});
+cap.addEventListener("keyup", e => { if (!window.__input || e.isComposing || e.key === "Dead") return; const kp = keyparams(e.key, e.code, opts(e)); if (!kp.insert) call("Input.dispatchKeyEvent", kp.up); });
+cap.addEventListener("paste", e => { if (!window.__input) return; e.preventDefault(); const t = e.clipboardData.getData("text/plain"); if (t) call("Input.insertText", {text: t}); });
+cap.addEventListener("compositionend", e => { if (window.__input && e.data) call("Input.insertText", {text: e.data}); cap.value = ""; });
+cap.addEventListener("input", e => { if (!e.isComposing) cap.value = ""; });
+async function copySel() { const r = await call("Runtime.evaluate", {expression: "getSelection().toString()||(document.activeElement&&document.activeElement.value!=null?document.activeElement.value.substring(document.activeElement.selectionStart,document.activeElement.selectionEnd):'')", returnByValue: true});
+  window.__copied = r.result && r.result.result && r.result.result.value; try { await navigator.clipboard.writeText(window.__copied); } catch (err) { window.__stats.errors.push("clip:" + err.message); } }
+c.addEventListener("click", () => cap.focus());
+window.__call = call;
+</script>

@@ -1,0 +1,4 @@
+state minimized
+pw shot FAIL TimeoutError
+frames 0
+typing while minimized exact: True

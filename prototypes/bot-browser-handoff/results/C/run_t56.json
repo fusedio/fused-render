@@ -1,0 +1,109 @@
+{
+ "T5": {
+  "pass": true,
+  "B_shots(md5,(w,h,uniq))": [
+   [
+    "cfc81ff6",
+    [
+     1800,
+     1014,
+     187
+    ]
+   ],
+   [
+    "4a04433a",
+    [
+     1800,
+     1014,
+     175
+    ]
+   ],
+   [
+    "53d5bb14",
+    [
+     1800,
+     1014,
+     171
+    ]
+   ],
+   [
+    "32753f22",
+    [
+     1800,
+     1014,
+     188
+    ]
+   ],
+   [
+    "65e99575",
+    [
+     1800,
+     1014,
+     168
+    ]
+   ]
+  ],
+  "B_vals": [
+   "b0.'",
+   "b1.'",
+   "b2.'",
+   "b3.'",
+   "b4.'"
+  ],
+  "B_visibility": "visible",
+  "A_val": "human-in-A",
+  "human": {
+   "path": "cdp-port-fallback",
+   "osascript_result": {
+    "typed": true,
+    "frontmost": "54341",
+    "osa": [
+     "",
+     "36:58: execution error: System Events got an error: osascript is not allowed to send keystrokes. (1002)"
+    ]
+   }
+  },
+  "A_target_same": true
+ },
+ "T6": {
+  "close_detached": {
+   "path": "cdp Target.closeTarget fallback (osascript TCC-denied)",
+   "osascript_err": "36:68: execution error: System Events got an error: osascript is not allowed to send keystrokes. (1002)",
+   "r": {
+    "success": true
+   }
+  },
+  "events_detached": [
+   {
+    "type": "tabRemoved",
+    "tabId": 2072621304,
+    "t": 1791405265.304446
+   }
+  ],
+  "close_attached": {
+   "path": "cdp Target.closeTarget fallback (osascript TCC-denied)",
+   "osascript_err": "36:68: execution error: System Events got an error: osascript is not allowed to send keystrokes. (1002)",
+   "r": {
+    "success": true
+   }
+  },
+  "events_attached": [
+   {
+    "type": "tabRemoved",
+    "tabId": 2072621305,
+    "t": 1791405267.108628
+   },
+   {
+    "type": "detached",
+    "tabId": 2072621305,
+    "reason": "target_closed",
+    "t": 1791405267.109333
+   }
+  ],
+  "cdp_after_close": "cdp: No tab with given id 2072621305.",
+  "recover_val": "recovered.'",
+  "recover_s": 0.68,
+  "chrome_same_pid": true,
+  "pass": true
+ }
+}

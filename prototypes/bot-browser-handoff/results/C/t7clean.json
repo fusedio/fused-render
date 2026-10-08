@@ -1,0 +1,123 @@
+{
+ "visible_front(control)": {
+  "vis": "visible",
+  "shot_red": [
+   "422429f1",
+   [
+    1800,
+    1014,
+    5
+   ],
+   0.02
+  ],
+  "shot_blue": [
+   "6c1a2378",
+   [
+    1800,
+    1014,
+    3
+   ],
+   0.03
+  ],
+  "fresh": true,
+  "frames_3s": 60,
+  "pass": true
+ },
+ "minimized_after_paint": {
+  "vis": "hidden",
+  "shot_err": "TimeoutError('cdp')",
+  "frames_3s": 0,
+  "pass": false
+ },
+ "minimized_after_paint+focusEmu": {
+  "vis": "visible",
+  "shot_err": "TimeoutError('cdp')",
+  "frames_3s": 0,
+  "pass": false
+ },
+ "born_minimized": {
+  "err": "RuntimeError('createWindow: Invalid value for state')"
+ },
+ "born_minimized+focusEmu": {
+  "err": "RuntimeError('createWindow: Invalid value for state')"
+ },
+ "background_tab": {
+  "vis": "hidden",
+  "shot_red": [
+   "422429f1",
+   [
+    1800,
+    1014,
+    5
+   ],
+   0.04
+  ],
+  "shot_blue": [
+   "6c1a2378",
+   [
+    1800,
+    1014,
+    3
+   ],
+   0.04
+  ],
+  "fresh": true,
+  "frames_3s": 0,
+  "pass": false
+ },
+ "background_tab+focusEmu": {
+  "vis": "visible",
+  "shot_red": [
+   "4ab9b6ea",
+   [
+    1800,
+    1014,
+    5
+   ],
+   0.03
+  ],
+  "shot_blue": [
+   "ca6ac468",
+   [
+    1800,
+    1014,
+    3
+   ],
+   0.01
+  ],
+  "fresh": true,
+  "frames_3s": 36,
+  "pass": true
+ },
+ "offscreen_clamped": {
+  "bounds": {
+   "left": -860,
+   "top": 39,
+   "width": 900,
+   "height": 650,
+   "windowState": "normal"
+  },
+  "vis": "visible",
+  "shot_red": [
+   "422429f1",
+   [
+    1800,
+    1014,
+    5
+   ],
+   0.02
+  ],
+  "shot_blue": [
+   "6c1a2378",
+   [
+    1800,
+    1014,
+    3
+   ],
+   0.03
+  ],
+  "fresh": true,
+  "frames_3s": 60,
+  "pass": true
+ }
+}

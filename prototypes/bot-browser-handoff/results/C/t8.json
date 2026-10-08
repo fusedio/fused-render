@@ -1,0 +1,47 @@
+{
+ "first": {
+  "tag": "o1",
+  "hello": true,
+  "hello_s": 0.78,
+  "tab_in_hello": true,
+  "ext_reports_attached": [
+   2072621309
+  ],
+  "still_attached": true,
+  "target_same": true,
+  "val": "recovered.'+o1",
+  "chrome_pid_same": true
+ },
+ "after_kill_2s": {
+  "tag": "o2",
+  "hello": true,
+  "hello_s": 0.48,
+  "tab_in_hello": true,
+  "ext_reports_attached": [
+   2072621309
+  ],
+  "still_attached": true,
+  "target_same": true,
+  "val": "recovered.'+o1+o2",
+  "chrome_pid_same": true
+ },
+ "after_kill_70s": {
+  "tag": "o3",
+  "hello": true,
+  "hello_s": 0.33,
+  "tab_in_hello": true,
+  "ext_reports_attached": [
+   2072621309
+  ],
+  "still_attached": true,
+  "target_same": true,
+  "val": "recovered.'+o1+o2+o3",
+  "chrome_pid_same": true,
+  "idle_bridge_down": [],
+  "after_idle_ping": {
+   "pong": 1791405433688
+  },
+  "reconnects_during_idle": 0
+ },
+ "pass": true
+}

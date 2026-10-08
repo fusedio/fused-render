@@ -1,0 +1,20 @@
+LAUNCH ARGV (cwd=scratchpad; profile path is relative):
+  /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --disable-backgrounding-occluded-windows --disable-renderer-backgrounding --remote-debugging-port=57517 --user-data-dir=profiles/A-repro --no-first-run --no-default-browser-check --disable-sync --disable-background-networking --window-size=900,600 --no-startup-window
+Chrome: Google Chrome 155.0.8059.40
+V0 control: minimized, NO focus emulation
+  state: minimized
+  V0: vis=hidden shot={'w': 1800, 'h': 1026, 'nonwhite': 0.847, 'red': 0.0, 'blue': 0.841, 'ms': 378, 'fresh': True} screencast_frames_3s=1
+V1 emu BEFORE minimize, same session (Page.enable on)
+  state: minimized
+  V1: vis=visible shot={'w': 1800, 'h': 1026, 'nonwhite': 0.841, 'red': 0.0, 'blue': 0.834, 'ms': 419, 'fresh': True} screencast_frames_3s=295
+V2 emu AFTER minimize, same session
+  state: minimized
+  V2: vis=visible shot={'w': 1800, 'h': 1026, 'nonwhite': 0.841, 'red': 0.0, 'blue': 0.834, 'ms': 412, 'fresh': True} screencast_frames_3s=295
+V3 emu on SEPARATE session A, shot/screencast on session B
+  state: minimized
+  V3 (shots on B, emu on A): vis=visible shot={'w': 1800, 'h': 1026, 'nonwhite': 0.841, 'red': 0.0, 'blue': 0.834, 'ms': 402, 'fresh': True} screencast_frames_3s=294
+  V3 (shots on A, the emu session): vis=visible shot={'w': 1800, 'h': 1026, 'nonwhite': 0.841, 'red': 0.0, 'blue': 0.834, 'ms': 417, 'fresh': True} screencast_frames_3s=274
+V4 = V1 then Page.navigate while minimized
+  V4: vis=visible shot={'ERR': "TimeoutError('timed out')"}  (skipping screencast; session now unusable)
+V5 window created then minimized BEFORE the page loads (about:blank -> navigate)
+  V5: vis=visible shot={'ERR': "TimeoutError('timed out')"}  (skipping screencast; session now unusable)

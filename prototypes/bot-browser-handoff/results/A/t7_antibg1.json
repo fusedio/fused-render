@@ -1,0 +1,206 @@
+{
+ "visible": {
+  "bounds": {
+   "left": 100,
+   "top": 100,
+   "width": 900,
+   "height": 600,
+   "windowState": "normal"
+  },
+  "vis": "visible",
+  "hasFocus": false,
+  "raf_per_s": 121.0,
+  "shot": {
+   "w": 1800,
+   "h": 1026,
+   "nonwhite": 0.847,
+   "red": 0.84,
+   "blue": 0.0,
+   "ms": 47
+  },
+  "shot_after_dom_change": {
+   "w": 1800,
+   "h": 1026,
+   "nonwhite": 0.847,
+   "red": 0.0,
+   "blue": 0.841,
+   "ms": 44
+  },
+  "ticks_per_s": 10.0,
+  "cast": {
+   "frames": 269,
+   "min_b64": 5328
+  },
+  "typed": "x.y'z"
+ },
+ "minimized": {
+  "bounds": {
+   "left": 100,
+   "top": 100,
+   "width": 900,
+   "height": 600,
+   "windowState": "minimized"
+  },
+  "vis": "hidden",
+  "hasFocus": true,
+  "raf_per_s": 0.0,
+  "shot": {
+   "w": 1800,
+   "h": 1026,
+   "nonwhite": 0.841,
+   "red": 0.834,
+   "blue": 0.0,
+   "ms": 38
+  },
+  "shot_after_dom_change": {
+   "w": 1800,
+   "h": 1026,
+   "nonwhite": 0.841,
+   "red": 0.0,
+   "blue": 0.834,
+   "ms": 25
+  },
+  "ticks_per_s": 1.0,
+  "cast": {
+   "frames": 1,
+   "min_b64": 6424
+  },
+  "typed": "x.y'z"
+ },
+ "offscreen": {
+  "bounds": {
+   "left": 1760,
+   "top": 1128,
+   "width": 900,
+   "height": 600,
+   "windowState": "normal"
+  },
+  "vis": "visible",
+  "hasFocus": false,
+  "raf_per_s": 121.0,
+  "shot": {
+   "w": 1800,
+   "h": 1026,
+   "nonwhite": 0.847,
+   "red": 0.84,
+   "blue": 0.0,
+   "ms": 40
+  },
+  "shot_after_dom_change": {
+   "w": 1800,
+   "h": 1026,
+   "nonwhite": 0.847,
+   "red": 0.0,
+   "blue": 0.84,
+   "ms": 32
+  },
+  "ticks_per_s": 10.0,
+  "cast": {
+   "frames": 294,
+   "min_b64": 5796
+  },
+  "typed": "x.y'z"
+ },
+ "occluded": {
+  "bounds": {
+   "left": 100,
+   "top": 100,
+   "width": 900,
+   "height": 600,
+   "windowState": "normal"
+  },
+  "vis": "visible",
+  "hasFocus": true,
+  "raf_per_s": 121.0,
+  "shot": {
+   "w": 1800,
+   "h": 1026,
+   "nonwhite": 0.84,
+   "red": 0.833,
+   "blue": 0.0,
+   "ms": 37
+  },
+  "shot_after_dom_change": {
+   "w": 1800,
+   "h": 1026,
+   "nonwhite": 0.84,
+   "red": 0.0,
+   "blue": 0.833,
+   "ms": 36
+  },
+  "ticks_per_s": 10.0,
+  "cast": {
+   "frames": 293,
+   "min_b64": 6348
+  },
+  "typed": "x.y'z"
+ },
+ "background_tab": {
+  "bounds": {
+   "left": 100,
+   "top": 100,
+   "width": 900,
+   "height": 600,
+   "windowState": "normal"
+  },
+  "vis": "hidden",
+  "hasFocus": false,
+  "raf_per_s": 0.0,
+  "shot": {
+   "w": 1800,
+   "h": 1026,
+   "nonwhite": 0.846,
+   "red": 0.839,
+   "blue": 0.0,
+   "ms": 42
+  },
+  "shot_after_dom_change": {
+   "w": 1800,
+   "h": 1026,
+   "nonwhite": 0.846,
+   "red": 0.0,
+   "blue": 0.839,
+   "ms": 31
+  },
+  "ticks_per_s": 1.0,
+  "cast": {
+   "frames": 0,
+   "min_b64": 0
+  },
+  "typed": "x.y'z"
+ },
+ "background_tab_minimized": {
+  "bounds": {
+   "left": 100,
+   "top": 100,
+   "width": 900,
+   "height": 600,
+   "windowState": "minimized"
+  },
+  "vis": "hidden",
+  "hasFocus": true,
+  "raf_per_s": 0.0,
+  "shot": {
+   "w": 1800,
+   "h": 1026,
+   "nonwhite": 0.84,
+   "red": 0.833,
+   "blue": 0.0,
+   "ms": 40
+  },
+  "shot_after_dom_change": {
+   "w": 1800,
+   "h": 1026,
+   "nonwhite": 0.84,
+   "red": 0.0,
+   "blue": 0.833,
+   "ms": 28
+  },
+  "ticks_per_s": 1.0,
+  "cast": {
+   "frames": 0,
+   "min_b64": 0
+  },
+  "typed": "x.y'z"
+ }
+}

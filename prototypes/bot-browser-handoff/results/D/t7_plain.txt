@@ -1,0 +1,9 @@
+plain
+normal {'pw_shot': (5609, 26), 'cdp_shot': (16799, 27), 'frames': 30}
+offscreen bounds {'bounds': {'left': -1242, 'top': 39, 'width': 1282, 'height': 846, 'windowState': 'normal'}}
+offscreen {'pw_shot': (5715, 25), 'cdp_shot': (16806, 27), 'frames': 30}
+background_tab {'pw_shot': (5715, 19), 'cdp_shot': (16806, 29), 'frames': 30}
+minimized pw shot: TimeoutError Page.screenshot: Timeout 5000ms exceeded.
+Call log:
+  - taking page screenshot
+  - waiting for fonts

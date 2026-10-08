@@ -1,0 +1,40 @@
+{
+ "b4_branded_port_noflag": {
+  "hello": true,
+  "ext_id": "lpneomfjnbemncahpbhajioopgehojip",
+  "ext_targets": [
+   "chrome-extension://nkeimhogjdpnpccoofpliimaahmaaome/background.html",
+   "chrome-extension://fignfifoniblkonapihmkfakmlgkbkcf/service_worker.js",
+   "chrome-extension://lpneomfjnbemncahpbhajioopgehojip/sw.js"
+  ],
+  "loadUnpacked": {
+   "id": "lpneomfjnbemncahpbhajioopgehojip"
+  },
+  "version": "Chrome/155.0.8059.39"
+ },
+ "b5_first_launch": {
+  "hello": true,
+  "ext_id": "lpneomfjnbemncahpbhajioopgehojip",
+  "ext_targets": [
+   "chrome-extension://nkeimhogjdpnpccoofpliimaahmaaome/background.html",
+   "chrome-extension://fignfifoniblkonapihmkfakmlgkbkcf/service_worker.js",
+   "chrome-extension://lpneomfjnbemncahpbhajioopgehojip/sw.js"
+  ],
+  "loadUnpacked": {
+   "id": "lpneomfjnbemncahpbhajioopgehojip"
+  },
+  "version": "Chrome/155.0.8059.39"
+ },
+ "b5_relaunch_plain_with_port": {
+  "hello": false,
+  "ext_id": null,
+  "ext_targets": [],
+  "version": "Chrome/155.0.8059.39"
+ },
+ "b5_relaunch_no_port": {
+  "hello": false,
+  "ext_id": null,
+  "ext_targets": null,
+  "version": null
+ }
+}

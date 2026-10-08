@@ -1,0 +1,15 @@
+W1 captureBeyondViewport=True {"ERR": "TimeoutError('timed out')", "ms": 6003}
+W2 fromSurface=False {"w": 1800, "h": 1026, "nonwhite": 0.842, "red": 0.835, "blue": 0.0, "ms": 4086}
+W3 setDeviceMetricsOverride {"ERR": "TimeoutError('timed out')", "ms": 6001}
+W3 raf 1.0
+hide app (0, '', '')
+W4 vis visible raf 1.0
+W4 app hidden, nav {"ERR": "TimeoutError('timed out')", "ms": 6001}
+W4 cast {'frames': 0, 'min_b64': 0}
+W4b app hidden, nav https {"ERR": "TimeoutError('timed out')", "ms": 6002}
+unhide (0, '', '')
+W5 after normal {"w": 1800, "h": 1026, "nonwhite": 0.843, "red": 0.0, "blue": 0.836, "ms": 942}
+W5 unminimize+shot+minimize total ms 1531
+W5b nav AGAIN while minimized (after one unminimize) {"ERR": "TimeoutError('timed out')", "ms": 6002}
+W6 screencast after nav while minimized {'frames': 0, 'min_b64': 0}
+killed

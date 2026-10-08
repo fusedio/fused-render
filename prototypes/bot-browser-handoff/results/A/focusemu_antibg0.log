@@ -1,0 +1,10 @@
+minimized_plain {"state": "minimized", "vis": "hidden", "raf": 0.0, "shot": {"w": 1800, "h": 1026, "nonwhite": 0.849, "red": 0.0, "blue": 0.842, "ms": 180}, "cast": {"frames": 1, "min_b64": 5292}}
+minimized_focusemu {"state": "minimized", "vis": "visible", "raf": 120.0, "shot": {"w": 1800, "h": 1026, "nonwhite": 0.841, "red": 0.0, "blue": 0.834, "ms": 33}, "cast": {"frames": 286, "min_b64": 5792}}
+minimized_after_reconnect_no_emu {"state": "minimized", "vis": "hidden", "raf": 0.0, "shot": {"w": 1800, "h": 1026, "nonwhite": 0.847, "red": 0.0, "blue": 0.841, "ms": 29}, "cast": {"frames": 1, "min_b64": 5640}}
+minimized_focusemu_again {"state": "minimized", "vis": "visible", "raf": 121.0, "shot": {"w": 1800, "h": 1026, "nonwhite": 0.841, "red": 0.0, "blue": 0.834, "ms": 55}, "cast": {"frames": 279, "min_b64": 5904}}
+minimized_focusemu_off {"state": "minimized", "vis": "hidden", "raf": 0.0, "shot": {"w": 1800, "h": 1026, "nonwhite": 0.847, "red": 0.0, "blue": 0.84, "ms": 53}, "cast": {"frames": 1, "min_b64": 6036}}
+occluded_plain {"state": "normal", "vis": "visible", "raf": 121.0, "shot": {"w": 1800, "h": 1026, "nonwhite": 0.847, "red": 0.0, "blue": 0.84, "ms": 46}, "cast": {"frames": 285, "min_b64": 5452}}
+occluded_focusemu {"state": "normal", "vis": "visible", "raf": 121.0, "shot": {"w": 1800, "h": 1026, "nonwhite": 0.84, "red": 0.0, "blue": 0.833, "ms": 50}, "cast": {"frames": 286, "min_b64": 6152}}
+bgtab_plain {"state": "normal", "vis": "hidden", "raf": 0.0, "shot": {"w": 1800, "h": 1026, "nonwhite": 0.846, "red": 0.0, "blue": 0.839, "ms": 30}, "cast": {"frames": 0, "min_b64": 0}}
+bgtab_focusemu {"state": "normal", "vis": "visible", "raf": 121.0, "shot": {"w": 1800, "h": 1026, "nonwhite": 0.84, "red": 0.0, "blue": 0.833, "ms": 38}, "cast": {"frames": 291, "min_b64": 6116}}
+killed

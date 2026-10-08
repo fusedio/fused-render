@@ -1,0 +1,5 @@
+T8 reattach ms 22 pages ['data:text/html,<textarea ']
+same target id: True
+T8 value before 'new-m2a' after 'new-m2aa.b,c-d/e;'
+chrome pid alive: True
+after br.close(): chrome still up: Chrome/155.0.8059.40

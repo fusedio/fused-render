@@ -1,0 +1,6 @@
+child1 attach port 57270 pid alive: True
+child1 found tab: True reattach ms 7 vis before re-enabling focus emu: visible
+child1 value z.w-t8a
+child2 attach port 57270 pid alive: True
+child2 found tab: True reattach ms 8 vis before re-enabling focus emu: visible
+child2 value z.w-t8a-t8b pid alive True same window True shot {"w": 1800, "h": 1026, "nonwhite": 0.841, "red": 0.0, "blue": 0.834, "ms": 50} PASS True

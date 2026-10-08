@@ -1,0 +1,10 @@
+flags
+normal {'pw_shot': (5609, 34), 'cdp_shot': (16799, 31), 'frames': 31}
+offscreen bounds {'bounds': {'left': -1242, 'top': 39, 'width': 1282, 'height': 846, 'windowState': 'normal'}}
+offscreen {'pw_shot': (5715, 25), 'cdp_shot': (16806, 28), 'frames': 30}
+background_tab {'pw_shot': (5715, 25), 'cdp_shot': (16806, 28), 'frames': 30}
+minimized pw shot: TimeoutError Page.screenshot: Timeout 5000ms exceeded.
+Call log:
+  - taking page screenshot
+  - waiting for fonts
+minimized raw cdp shot err CDPSession.send: Connection closed while reading from the driver

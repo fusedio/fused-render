@@ -1,0 +1,19 @@
+== launch --no-startup-window (url=None) ; frontmost before: Google Chrome, 41434
+up in ms 215 pages: []
+frontmost after launch: Google Chrome, 41434
+windows via osascript: (1, '', '40:44: execution error: System Events got an error: osascript is not allowed assistive access. (-25211)')
+createTarget(newWindow,background) ms 57
+frontmost after createTarget: Google Chrome, 41434
+frontmost after minimize: Google Chrome, 41434
+create+minimize total ms (window visible this long, plus genie anim): 610
+minimized: captureScreenshot jpeg polling = 34.0 fps
+minimized raf/s: 0.0
+Emulation.setFocusEmulationEnabled -> vis visible raf/s 120.0 cast {'frames': 280, 'min_b64': 5760}
+Page.setWebLifecycleState active -> vis visible raf/s 121.0 cast {'frames': 288, 'min_b64': 5944}
+normal: vis visible raf 120.0
+hide app: (0, '', '')
+app hidden: bounds {'left': 22, 'top': 61, 'width': 900, 'height': 600, 'windowState': 'normal'} vis visible raf 119.0 shot {'w': 1800, 'h': 1026, 'nonwhite': 0.84, 'red': 0.834, 'blue': 0.0, 'ms': 47} cast {'frames': 300, 'min_b64': 5976}
+typed while hidden -> q
+unhide app: (0, '', '') 143 ms
+frontmost after unhide: Google Chrome, 41434
+killed

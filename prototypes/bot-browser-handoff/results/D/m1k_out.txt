@@ -1,0 +1,5 @@
+webdriver default: True
+webdriver w/ ignore_default_args: True
+CHILDPID 48255
+chrome procs while python alive: 7
+chrome procs after SIGKILL of python: 0

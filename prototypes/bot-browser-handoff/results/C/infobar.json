@@ -1,0 +1,34 @@
+{
+ "default": {
+  "before_attach": 563,
+  "attached": 507,
+  "detached": 507,
+  "reattached": 507,
+  "debugger_attach_chrome_url": "attach: Cannot access a chrome:// URL",
+  "chrome_ext_page_devPrivate": "object",
+  "devmode_toggle": true,
+  "ext_list_via_page": [
+   [
+    "lpneomfjnbemncahpbhajioopgehojip",
+    "UNPACKED",
+    "ENABLED"
+   ]
+  ]
+ },
+ "silent_flag": {
+  "before_attach": 563,
+  "attached": 563,
+  "detached": 563,
+  "reattached": 563,
+  "debugger_attach_chrome_url": "attach: Cannot access a chrome:// URL",
+  "chrome_ext_page_devPrivate": "object",
+  "devmode_toggle": true,
+  "ext_list_via_page": [
+   [
+    "lpneomfjnbemncahpbhajioopgehojip",
+    "UNPACKED",
+    "ENABLED"
+   ]
+  ]
+ }
+}

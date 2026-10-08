@@ -1,0 +1,246 @@
+<title>Bot Browser Hand-off</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Serif:wght@500;600&display=swap">
+<style>
+/* Layout: one 760px reading column; tables and figures may widen to 1100px and scroll inside their own box. */
+:root{
+  --bg:#f7f8f6; --surface:#ffffff; --fg:#1d2126; --muted:#5b6670; --line:#d9ded8;
+  --accent:#0f766e; --accent-soft:#d7efe9; --warn:#b45309; --warn-soft:#fdebd0; --bad:#b91c1c; --bad-soft:#fde2e2;
+  --code-bg:#eef1ec;
+  --serif:"IBM Plex Serif",Georgia,serif; --sans:"IBM Plex Sans",system-ui,sans-serif; --mono:"IBM Plex Mono",ui-monospace,Menlo,monospace;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#15181c; --surface:#1c2025; --fg:#e6e9e4; --muted:#9aa5ad; --line:#2d343b;
+  --accent:#4fd1c5; --accent-soft:#143d39; --warn:#f3b05a; --warn-soft:#3f2a10; --bad:#f08080; --bad-soft:#3f1818;
+  --code-bg:#23282e; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#15181c; --surface:#1c2025; --fg:#e6e9e4; --muted:#9aa5ad; --line:#2d343b;
+  --accent:#4fd1c5; --accent-soft:#143d39; --warn:#f3b05a; --warn-soft:#3f2a10; --bad:#f08080; --bad-soft:#3f1818;
+  --code-bg:#23282e; color-scheme:dark}
+body{background:var(--bg);color:var(--fg);font:15px/1.55 var(--sans);margin:0}
+main{max-width:1100px;margin:0 auto;padding-block:40px 80px;padding-inline:16px}
+.col{max-width:760px}
+h1{font:600 34px/1.15 var(--serif);margin:0 0 6px;text-wrap:balance}
+h2{font:600 22px/1.2 var(--serif);margin:48px 0 12px;text-wrap:balance}
+h3{font:600 16px/1.3 var(--sans);margin:28px 0 8px}
+.sub{color:var(--muted);margin:0 0 28px}
+p{margin:0 0 12px}
+ul,ol{margin:0 0 12px;padding-left:22px} li{margin-bottom:4px}
+code,kbd{font:13px var(--mono);background:var(--code-bg);padding:1px 5px;border-radius:3px}
+pre{font:12.5px/1.5 var(--mono);background:var(--code-bg);padding:12px 14px;border-radius:6px;overflow-x:auto;margin:0 0 14px}
+pre code{background:none;padding:0}
+.verdict{background:var(--accent-soft);border-left:4px solid var(--accent);padding:16px 18px;border-radius:0 6px 6px 0;margin:0 0 20px}
+.verdict h2{margin:0 0 8px;font-size:19px}
+.note{background:var(--warn-soft);border-left:4px solid var(--warn);padding:10px 14px;border-radius:0 6px 6px 0;margin:12px 0}
+.tbl{overflow-x:auto;margin:0 0 16px}
+table{border-collapse:collapse;width:100%;font-size:13.5px}
+th,td{border-top:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{font-weight:600;color:var(--muted);font-size:12px;letter-spacing:.04em;text-transform:uppercase;border-top:none}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
+.pill{display:inline-block;font:500 11.5px var(--mono);padding:1px 7px;border-radius:10px;border:1px solid var(--line)}
+.pass{background:var(--accent-soft);color:var(--accent);border-color:transparent}
+.part{background:var(--warn-soft);color:var(--warn);border-color:transparent}
+.fail{background:var(--bad-soft);color:var(--bad);border-color:transparent}
+.sel td{background:var(--accent-soft)}
+figure{margin:20px 0 24px}
+figure svg{max-width:100%;height:auto;display:block}
+figcaption{color:var(--muted);font-size:13px;margin-top:8px;max-width:760px}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px;margin:0 0 16px}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:14px 16px;min-width:0}
+.card h3{margin:0 0 6px}
+.card .k{font:500 11.5px var(--mono);color:var(--muted);letter-spacing:.04em;text-transform:uppercase}
+.src{color:var(--muted);font-size:12.5px}
+a{color:var(--accent)}
+.toc{font-size:13.5px;color:var(--muted);margin:0 0 30px;display:flex;flex-wrap:wrap;gap:6px 18px}
+.toc a{color:var(--muted);text-decoration:none;border-bottom:1px solid var(--line)}
+@media (prefers-reduced-motion: reduce){*{transition:none!important}}
+</style>
+
+<main>
+<div class="col">
+<h1>Bot Browser Hand-off</h1>
+<p class="sub">Overnight research, 2026-10-08. Why the bots' Chrome control is flaky, what everyone else does, four approaches prototyped against one harness, and one pick.</p>
+
+<nav class="toc">
+<a href="#verdict">Verdict</a><a href="#why">Why it is flaky</a><a href="#dot">The "." bug</a><a href="#prior">Prior art</a><a href="#approaches">Four approaches</a><a href="#results">Harness results</a><a href="#facts">Measured facts</a><a href="#plan">Plan</a><a href="#appendix">Appendix</a>
+</nav>
+
+<section id="verdict" class="verdict">
+<h2>Verdict: launch each profile's Chrome once, headed, and never relaunch it</h2>
+<p><strong>This is not the windows path that already failed.</strong> That path popped a window by killing headless Chrome and relaunching the profile visible, then killed it again to hand back: two process boundaries per hand-off. A launches each profile's Chrome once and never relaunches it. The window the human sees is the same; the process boundary is gone.</p>
+<p><strong>Pick A.</strong> One headed Chrome per profile, kept alive for the life of the server. A bot's window is parked off-screen when hidden (macOS leaves a 40-point corner on screen) and its tab stays live through <code>Emulation.setFocusEmulationEnabled</code>. Take-over is one CDP call that moves the window on screen and focuses it; hand-back is one call that parks it again. Minimizing is not the hidden state: a minimized window hangs <code>captureScreenshot</code> after any navigation, which three of the four prototype agents hit independently. The human drives a real Chrome window: real keyboard, IME, clipboard, password manager, passkeys, file pickers. The bot resumes on the same tab, same target id, same process.</p>
+<p><strong>Keep B's work.</strong> The in-app live view stays as the monitor, with the corrected key forwarder, and can remain an optional interactive path. Its input bug is a one-line class of error (<code>windowsVirtualKeyCode = ord(key)</code>), proven and fixed in the prototype.</p>
+<p><strong>Why A over B</strong>, since both passed every harness test: the tie-breaker is human-side fidelity. A's cost is desktop footprint (a Chrome in the Dock and Cmd-Tab, a visible window corner, a watchdog for users who minimize it); B's cost is a permanent input ceiling. Footprint is a wart; the ceiling is the class of bug this report was commissioned over. The in-app view can never give the human more than synthesized input, and the past year of "typing a dot does not work" chasing is exactly that ceiling. The window route gets fidelity from the OS for free. Playwright (D) and the extension (C) also pass, but each adds a layer without removing a failure mode.</p>
+</section>
+
+<h2 id="why">Why it is flaky today</h2>
+<p>Every take-over and hand-back is a <strong>Chrome process boundary</strong>. <code>BrowserProcess.set_visible</code> in <code>fused_render/bots/browser.py</code> kills the headless Chrome and relaunches the same profile as a visible window, then does it again in reverse. Each flip means a new debugging port, new target ids, a profile unlock and re-seal, dead screencast and input sessions, and, on a shared profile, the visibility of every bot's window coupled to one bot's hand-off. PRs #1492 and #1494 patched that coupling; they could not remove it.</p>
+<p>The Chromium source names the mechanisms that bite on each relaunch:</p>
+<ul>
+<li><strong>ProcessSingleton forwarding.</strong> If the old Chrome pid is still alive when the new one starts, the new process hands its command line to the old one and exits. Its <code>--headless</code>, port and window flags are discarded. If the old one does not answer it waits up to 20 s, then kills it. Symptoms: "relaunched but no port appears", "window opened in the dying instance", 20 s hangs. <span class="src">process_singleton_posix.cc</span></li>
+<li><strong>Sticky <code>exit_type = "Crashed"</code>.</strong> Chrome writes it on every start and clears it only on clean shutdown or a human acknowledging the restore bubble. A headless run never acknowledges, so every later visible launch shows "Restore pages?". <span class="src">exit_type_service.cc</span></li>
+<li><strong>Port race.</strong> Picking a free port, then passing it, is a time-of-check race. Puppeteer passes <code>--remote-debugging-port=0</code> and reads <code>DevToolsActivePort</code>.</li>
+<li><strong>Everything is re-keyed.</strong> Target ids, session ids, execution contexts, screencast sessions and the per-session focus emulation all die with the process. The bot has to find "its" tab again.</li>
+<li><strong>Fingerprint drift.</strong> Headless and headed runs of one profile differ in UA, window size and GPU, so some sites treat the bot as a new device after the human logs in.</li>
+</ul>
+<p>All five disappear if the process is never relaunched for a hand-off. The in-app live view never needed a relaunch; it failed on input fidelity alone.</p>
+</div>
+
+<figure>
+<svg viewBox="0 0 1040 300" role="img" aria-label="Today a take-over kills and relaunches Chrome twice; approach A keeps one process and only changes window state; approach B keeps one headless process and flips a flag." style="font-family:var(--sans);font-size:12px">
+<defs><marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="currentColor"/></marker></defs>
+<g fill="currentColor">
+<text x="0" y="22" font-weight="600">Today</text>
+<text x="0" y="120" font-weight="600">A · headed, never relaunch</text>
+<text x="0" y="218" font-weight="600">B · headless, in-app view</text>
+<text x="230" y="290" fill="var(--muted)">bot drives</text><text x="560" y="290" fill="var(--muted)">human drives</text><text x="860" y="290" fill="var(--muted)">bot drives</text>
+</g>
+<!-- Today -->
+<rect x="200" y="30" width="200" height="38" rx="4" fill="none" stroke="currentColor" stroke-width="1.5"/>
+<text x="300" y="53" text-anchor="middle" fill="currentColor">headless Chrome · pid 1</text>
+<path d="M400 49 L470 49" stroke="var(--bad)" stroke-width="2" marker-end="url(#ar)" fill="none" style="color:var(--bad)"/>
+<text x="435" y="40" text-anchor="middle" fill="var(--bad)" font-size="11">kill + relaunch</text>
+<rect x="470" y="30" width="230" height="38" rx="4" fill="none" stroke="currentColor" stroke-width="1.5"/>
+<text x="585" y="53" text-anchor="middle" fill="currentColor">visible Chrome · pid 2</text>
+<path d="M700 49 L770 49" stroke="var(--bad)" stroke-width="2" marker-end="url(#ar)" fill="none" style="color:var(--bad)"/>
+<text x="735" y="40" text-anchor="middle" fill="var(--bad)" font-size="11">kill + relaunch</text>
+<rect x="770" y="30" width="200" height="38" rx="4" fill="none" stroke="currentColor" stroke-width="1.5"/>
+<text x="870" y="53" text-anchor="middle" fill="currentColor">headless Chrome · pid 3</text>
+<text x="585" y="86" text-anchor="middle" fill="var(--muted)" font-size="11">new port · new target ids · profile unlock · exit_type Crashed · ProcessSingleton 20 s · screencast dead</text>
+<!-- A -->
+<rect x="200" y="128" width="770" height="38" rx="4" fill="var(--accent-soft)" stroke="var(--accent)" stroke-width="1.5"/>
+<text x="585" y="151" text-anchor="middle" fill="currentColor">one headed Chrome · pid 1 · same tab · same target id</text>
+<line x1="470" y1="128" x2="470" y2="166" stroke="var(--accent)" stroke-width="2"/>
+<line x1="700" y1="128" x2="700" y2="166" stroke="var(--accent)" stroke-width="2"/>
+<text x="300" y="186" text-anchor="middle" fill="var(--muted)" font-size="11">window parked off-screen + focus emulation</text>
+<text x="585" y="186" text-anchor="middle" fill="var(--muted)" font-size="11">setWindowBounds on-screen + activateTarget</text>
+<text x="870" y="186" text-anchor="middle" fill="var(--muted)" font-size="11">parked again, bot re-observes</text>
+<!-- B -->
+<rect x="200" y="226" width="770" height="38" rx="4" fill="none" stroke="currentColor" stroke-width="1.5"/>
+<text x="585" y="249" text-anchor="middle" fill="currentColor">one headless Chrome · pid 1 · same tab · same target id</text>
+<line x1="470" y1="226" x2="470" y2="264" stroke="currentColor" stroke-width="2"/>
+<line x1="700" y1="226" x2="700" y2="264" stroke="currentColor" stroke-width="2"/>
+<text x="585" y="280" text-anchor="middle" fill="var(--muted)" font-size="11">driver flag = human; live view forwards keys/mouse over CDP</text>
+</svg>
+<figcaption>What a take-over costs in each model. Today it costs two process boundaries. In A and B the process, tab and target id survive; only a window state or a flag changes. A and B differ in where the human's keystrokes come from: the OS, or a forwarder.</figcaption>
+</figure>
+
+<div class="col">
+<h2 id="dot">The "." bug, proven</h2>
+<p>Both key forwarders compute the Windows virtual-key code as <code>ord(key.upper())</code>: <code>keyParams</code> in <code>frontend/src/apps/bots/lib/live.ts:59</code> and <code>_key_params</code> in <code>fused_render/bots/browser.py:152</code>. That is right only for A–Z and 0–9. For "." it yields 46, which is <code>VK_DELETE</code>. Blink maps the virtual key to an editing command before it reads <code>text</code>, so the keystroke deletes the next character and types nothing. The bot's own <code>type</code> tool uses <code>Input.insertText</code> and was immune; the human in the live view and the bot's <code>press</code> tool were not.</p>
+<div class="tbl"><table>
+<tr><th>Key</th><th class="num">ord() VK</th><th>Chrome reads it as</th><th>Typed into "a|b"</th><th class="num">Correct VK</th><th>Typed</th></tr>
+<tr><td><code>.</code></td><td class="num">46</td><td>Delete</td><td><span class="pill fail">a</span> deletes forward</td><td class="num">190</td><td><span class="pill pass">a.b</span></td></tr>
+<tr><td><code>'</code></td><td class="num">39</td><td>ArrowRight</td><td><span class="pill fail">ab</span> cursor moves</td><td class="num">222</td><td><span class="pill pass">a'b</span></td></tr>
+<tr><td><code>-</code></td><td class="num">45</td><td>Insert</td><td><span class="pill pass">a-b</span> survives</td><td class="num">189</td><td><span class="pill pass">a-b</span></td></tr>
+<tr><td><code>,</code> <code>/</code> <code>;</code> <code>[</code></td><td class="num">44 47 59 91</td><td>PrintScreen, Help, none, LWin</td><td><span class="pill pass">survive</span></td><td class="num">188 191 186 219</td><td><span class="pill pass">ok</span></td></tr>
+</table></div>
+<p>Shifted characters collide too: <code>(</code> is 40 = ArrowDown, <code>%</code> 37 = ArrowLeft, <code>&amp;</code> 38 = ArrowUp, <code>$</code> 36 = Home, <code>#</code> 35 = End, <code>!</code> 33 = PageUp, <code>"</code> 34 = PageDown. Cmd+A over CDP does nothing on macOS unless <code>commands: ["selectAll"]</code> is sent, because CDP key events bypass Cocoa key bindings. Two more traps found while fixing it:</p>
+<ul>
+<li>Sending <code>nativeVirtualKeyCode</code> on macOS flips the tab to <code>visibilityState: hidden</code> and silently stops the screencast. Never send it.</li>
+<li>DevTools' own screencast forwards <code>event.keyCode</code> straight from the viewer browser, which already did the layout mapping. That is the simplest correct fix. Puppeteer's <code>USKeyboardLayout</code> table plus Playwright's <code>macEditingCommands</code> is the complete one; the prototype ports both and the Python and JS copies agree on 3776 key/modifier vectors.</li>
+</ul>
+
+<h2 id="prior">Prior art: nobody relaunches, nobody auto-detects the human</h2>
+<p>Ten products in the table below, twelve looked at, primary sources fetched where they exist. Two families: cloud vendors run one headful Chrome and show the human a live view of it; local tools drive the user's real headed tab and the human just clicks in it. Every one of them gates the agent with an explicit control (pause flag, Stop overlay, Done button, "new run on the same session"). None detect "the human started typing".</p>
+</div>
+<div class="tbl"><table>
+<tr><th>Project</th><th>Process model</th><th>Human sees</th><th>Human drives</th><th>Pause / resume</th><th>Relaunch</th></tr>
+<tr><td>Browserbase</td><td>Cloud, one headful Chrome per session</td><td>iframe of a per-tab debugger URL</td><td>Same iframe, <code>pointer-events</code> toggled</td><td>None built in; integrator's job</td><td>No</td></tr>
+<tr><td>Steel.dev</td><td>Cloud, headful by default</td><td>WebRTC H.264 OS-level capture, 25 fps</td><td><code>interactive=true</code></td><td>"Click inside to take control"</td><td>No</td></tr>
+<tr><td>Cloudflare Browser Run</td><td>Cloud, CDP</td><td>Live view URL</td><td>Live view + Done/Failed button</td><td><code>Cloudflare.handoff</code> → <code>handoffComplete</code> event</td><td>No</td></tr>
+<tr><td>browser-use (library)</td><td>Local headed Chrome via CDP</td><td>The real window</td><td>Clicks in the real window</td><td><code>pause()</code>/<code>resume()</code> checked at step boundary</td><td>No</td></tr>
+<tr><td>Browser Use Cloud</td><td>Cloud session reused across runs</td><td>Live view URL</td><td>Live view</td><td>Run stops; new run with same <code>session_id</code></td><td>No</td></tr>
+<tr><td>Nanobrowser</td><td>Extension, puppeteer over <code>chrome.debugger</code></td><td>User's own tab</td><td>User's own tab</td><td><code>paused</code> flag, 200 ms poll</td><td>No</td></tr>
+<tr><td>Claude in Chrome</td><td>Extension, <code>chrome.debugger</code>, own tab group</td><td>User's own tabs</td><td>User's own tabs</td><td>Approval prompts + injected Stop overlay</td><td>No</td></tr>
+<tr><td>Playwright MCP <code>--extension</code>, DevTools MCP</td><td>User's Chrome via relay or Chrome 144+ approval mode</td><td>User's own tab</td><td>User's own tab</td><td>None; consent dialog per connection</td><td>No</td></tr>
+<tr><td>OpenAI Operator</td><td>Cloud VM browser</td><td>Streamed in ChatGPT</td><td>"Take control" mode</td><td>Model asks user to take over (internals unverified)</td><td>No</td></tr>
+<tr><td>Kernel</td><td>Headful Chromium in container</td><td>Live view, WebRTC option</td><td>Live view, read-only option</td><td>Not documented</td><td>No</td></tr>
+<tr><td><strong>fused-render today</strong></td><td>Local headless per profile</td><td>Relaunched window, or screencast</td><td>Relaunched window, or buggy forwarder</td><td>Relaunch</td><td><strong>Yes, every hand-off</strong></td></tr>
+</table></div>
+<div class="col">
+<p>Two details worth copying. Steel made headful the default and streams OS-level video over WebRTC, with headless screencast streams "to be phased out over time" (their docs state the move, not the motive). Anchor Browser and Skyvern run the same headful-plus-live-view shape. browser-use ships a flag set for sharing a window with a human: <code>--disable-focus-on-load --disable-window-activation --disable-backgrounding-occluded-windows --disable-renderer-backgrounding --disable-background-timer-throttling --hide-crash-restore-bubble</code>, and it strips <code>--enable-automation</code>, which alone causes the "controlled by automated test software" bar.</p>
+
+<h2 id="approaches">Four approaches, one harness</h2>
+<p>Each prototype is throwaway code in the session scratchpad, run against the same eight tests: T1 bot types a punctuation string byte-exact; T2 human takes over and types; T3 bot resumes on the same target id and pid; T4 twenty take-over/hand-back cycles; T5 two bots on one profile, one taken over; T6 user closes the tab; T7 screenshot and screencast while the bot's tab is hidden; T8 the orchestrator restarts and re-attaches to the running Chrome.</p>
+</div>
+<div class="grid2">
+<div class="card"><div class="k">A · selected</div><h3>Always-headed Chrome, never relaunch</h3><p>One headed Chrome per profile, own <code>--user-data-dir</code>, port read from <code>DevToolsActivePort</code>. Bot windows parked off-screen (<code>Browser.setWindowBounds</code> left/top 99999, clamped by macOS) with focus emulation on each bot tab. Take-over: move on-screen + <code>Target.activateTarget</code>, 4 ms CDP, 160 ms with app activation. Hand-back: park again.</p><p class="src">Human gets a real window; no automation bar. Costs: a 40-point window corner stays visible, Chrome shows in Dock, Cmd-Tab and Mission Control, the user can drag or minimize it (needs a watchdog), and a long-running Chrome will meet "relaunch to update".</p></div>
+<div class="card"><div class="k">B · keep as monitor</div><h3>Headless + in-app live view, input fixed</h3><p>Current architecture with the forwarder rewritten (Puppeteer table, mac <code>commands</code>, <code>insertText</code> fallback, hidden textarea for IME and paste). Take-over is a server-side driver flag; flip measured at 0.2 ms.</p><p class="src">Zero desktop footprint. Ceiling: synthesized input only. No native IME, passkeys, password managers, file pickers, OS dialogs; some sites fingerprint headless.</p></div>
+<div class="card"><div class="k">C</div><h3>MV3 extension over <code>chrome.debugger</code></h3><p>Headed Chrome loads a relay extension via CDP <code>Extensions.loadUnpacked</code> (branded Chrome 137+ ignores <code>--load-extension</code>). Python ↔ WebSocket ↔ service worker ↔ <code>chrome.debugger</code>. Take-over = detach + activate.</p><p class="src">The loaded extension is ephemeral (never persisted), so it still needs the debugging port every launch: a layer on top, not a replacement. Cannot attach to <code>chrome://</code> tabs; refuses <code>data:</code> navigations; minimized windows stay dead even with focus emulation under this session type. Only wins if the goal becomes "drive the user's everyday Chrome".</p></div>
+<div class="card"><div class="k">D</div><h3>Playwright (Python) as the CDP client</h3><p>Works only as <code>connect_over_cdp</code> to a Chrome we launch ourselves; <code>launch_persistent_context</code> dies with the Python process. Typing is byte-exact out of the box.</p><p class="src">135 MB installed (116 MB bundled node), sync-vs-asyncio boundary, and it auto-dismisses JS dialogs when no listener is attached, so the human would lose alert/confirm/beforeunload during take-over. The hand-rolled WebSocket client was never the root cause.</p></div>
+</div>
+
+<div class="col"><h2 id="results">Harness results</h2>
+<p>All four passed the mechanics once the relaunch was gone. The differences are in the caveats.</p></div>
+<div class="tbl"><table>
+<tr><th>Test</th><th>A · headed</th><th>B · headless + view</th><th>C · extension</th><th>D · Playwright</th></tr>
+<tr><td>T1 bot types punctuation byte-exact</td><td id="a-t1"><span class="pill pass">PASS</span></td><td><span class="pill pass">PASS</span></td><td><span class="pill pass">PASS</span></td><td><span class="pill pass">PASS</span></td></tr>
+<tr><td>T2 human takes over and types</td><td id="a-t2"><span class="pill part">PARTIAL</span> CDP-as-human only; real window on screen</td><td><span class="pill pass">PASS</span> real KeyboardEvents into the live view</td><td><span class="pill part">PARTIAL</span> CDP-as-human only</td><td><span class="pill part">PARTIAL</span> CDP-as-human only</td></tr>
+<tr><td>T3 bot resumes, same target id and pid</td><td id="a-t3"><span class="pill pass">PASS</span></td><td><span class="pill pass">PASS</span></td><td><span class="pill pass">PASS</span></td><td><span class="pill pass">PASS</span></td></tr>
+<tr><td>T4 20 cycles, failures / flip latency</td><td id="a-t4"><span class="pill pass">0 fail</span> 4 ms CDP, 160 ms with activation</td><td><span class="pill pass">0 fail</span> 0.2 ms p50</td><td><span class="pill pass">0 fail</span> 0.9 ms p50</td><td><span class="pill pass">0 fail</span> 2–4 ms p50</td></tr>
+<tr><td>T5 shared profile, other bot keeps working</td><td id="a-t5"><span class="pill pass">PASS</span> off-screen; minimized B hung 30 s</td><td><span class="pill pass">PASS</span></td><td><span class="pill pass">PASS</span> needs focus emulation on B's tab</td><td><span class="pill pass">PASS</span></td></tr>
+<tr><td>T6 user closes the tab</td><td id="a-t6"><span class="pill pass">PASS</span> <code>targetDestroyed</code> 15 ms; Chrome survives zero windows</td><td><span class="pill pass">PASS</span> seen in 6 ms, new tab 630 ms</td><td><span class="pill pass">PASS</span> <code>tabRemoved</code>, new tab 680 ms</td><td><span class="pill pass">PASS</span> <code>TargetClosedError</code>; <code>is_closed()</code> lags</td></tr>
+<tr><td>T7 screenshot + screencast while hidden</td><td id="a-t7"><span class="pill pass">PASS</span> off-screen 60 fps; minimized fails after navigation</td><td><span class="pill pass">PASS</span> 60 fps animated</td><td><span class="pill part">PARTIAL</span> background tab + focus emulation 12 fps; minimized dead</td><td><span class="pill pass">PASS</span> minimized works with raw-session focus emulation</td></tr>
+<tr><td>T8 orchestrator restart, re-attach</td><td id="a-t8"><span class="pill pass">PASS</span> 8 ms</td><td><span class="pill pass">PASS</span> 6 ms</td><td><span class="pill pass">PASS</span> 0.3–0.8 s</td><td><span class="pill pass">PASS</span> connect mode only</td></tr>
+<tr><td>Human input fidelity ceiling</td><td>OS-native</td><td>Synthesized; IME, passkeys, pickers, real clipboard out of reach</td><td>OS-native</td><td>OS-native</td></tr>
+<tr><td>New dependency</td><td>none</td><td>none</td><td>extension + relay server, port per profile</td><td>135 MB Playwright</td></tr>
+<tr><td>Estimated cost to productionize</td><td id="a-cost">2–3 days; relaunch code deleted</td><td>moderate: ~150-line view, backpressure, DPR, clipboard</td><td>~3 days</td><td>1–2 days</td></tr>
+</table></div>
+<div class="col">
+<div class="note">Real OS keystrokes into a headed window were not exercised by any prototype: <code>osascript</code> keystrokes are blocked by TCC on this machine (error 1002), so every "human" in T2 was a second CDP client. This is low risk for A, C and D, where the human uses an ordinary Chrome window, and is the one thing to confirm by hand on the first build.</div>
+
+<h2 id="facts">Measured facts the design rests on</h2>
+<p>Chrome 155.0.8059 on macOS 27.0.1, headed, own profile, page animating via <code>requestAnimationFrame</code>. Four agents and a reconcile run; the minimized rows took three rounds to agree because a stale cached frame returns in 30 ms and looks healthy.</p>
+</div>
+<div class="tbl"><table>
+<tr><th>Bot window state</th><th>visibilityState</th><th class="num">screencast frames / 3 s</th><th>captureScreenshot</th><th>Notes</th></tr>
+<tr><td>Normal, front</td><td>visible</td><td class="num">~290</td><td>fresh</td><td>control</td></tr>
+<tr><td>Minimized</td><td>hidden</td><td class="num">1</td><td>fresh only if the page painted while visible; hangs after any navigation</td><td>the anti-backgrounding flags do not help here</td></tr>
+<tr><td>Minimized + <code>Emulation.setFocusEmulationEnabled(true)</code></td><td>visible</td><td class="num">292–295</td><td>fresh, ~30 ms, <strong>only if the page painted while visible</strong></td><td>any navigation after minimizing, or loading into an already-minimized window, hangs <code>captureScreenshot</code> (A V4/V5, D's first run, C). Unusable for a bot that navigates.</td></tr>
+<tr><td>Occluded by another window</td><td>hidden → visible with flags</td><td class="num">0 → ~100</td><td>fresh</td><td>fixed by <code>--disable-backgrounding-occluded-windows</code></td></tr>
+<tr class="sel"><td>Parked off-screen + focus emulation</td><td>visible</td><td class="num">~190 / 2 s</td><td>fresh across navigations</td><td>macOS clamps the window so a 40-point corner stays on screen; the recommended hidden state. Cmd-H and user-minimize break it the same way minimizing does.</td></tr>
+<tr><td>Background tab, headless</td><td>hidden → visible with focus emulation</td><td class="num">0 → 180</td><td>fresh</td><td>this is the symptom <code>browser.py:1488</code> works around with one window per bot</td></tr>
+</table></div>
+<div class="col">
+<ul>
+<li><strong>Focus emulation is per CDP session.</strong> It dies on detach or reconnect and must be re-enabled for every bot tab. It also makes <code>document.hasFocus()</code> true, so visibility-gated analytics and autoplay behave as if the user is looking.</li>
+<li><strong>Only <code>--enable-automation</code> causes the infobar.</strong> Puppeteer and Playwright add it by default; we do not pass it. <code>--disable-infobars</code> is dead. Under the extension path, <code>--silent-debugger-extension-api</code> removes the "started debugging" bar, whose Cancel button would otherwise detach every bot at once.</li>
+<li><strong><code>Input.setIgnoreInputEvents</code> blocks CDP input too</strong>, so it cannot lock the human out while the bot types. Nobody surveyed locks the human out; they gate the bot.</li>
+<li><strong>Chrome 136+</strong> silently refuses remote debugging on the default profile directory in branded builds; <strong>Chrome 137+</strong> ignores <code>--load-extension</code>; Chrome 144+ adds a user-toggled approval-mode debugging server for the everyday profile, with a consent dialog per connection.</li>
+<li><strong>Pipe vs port.</strong> <code>--remote-debugging-pipe</code> is private and race-free but Chrome dies with its parent, which breaks T8 and any server restart. Keep the port; take it from <code>DevToolsActivePort</code> after launch rather than choosing it first.</li>
+</ul>
+
+<h2 id="plan">Plan for A inside <code>fused_render/bots/browser.py</code></h2>
+<ol>
+<li><strong>Ship the one-line fixes first</strong>, independent of the rest: replace <code>ord(key.upper())</code> in <code>live.ts:59</code> with <code>e.keyCode</code> from the viewer's KeyboardEvent, and in <code>browser.py:152</code> with the Puppeteer table; send mac <code>commands</code> for Cmd chords; never send <code>nativeVirtualKeyCode</code>.</li>
+<li><strong><code>BrowserProcess.start</code> launches headed once</strong> per profile with the browser-use flag set above plus <code>--no-startup-window</code>, <code>--remote-debugging-port=0</code>, and reads <code>&lt;profile&gt;/DevToolsActivePort</code>. The <code>visible</code> argument and the headless/visible relaunch in <code>set_visible</code> go away. <code>stop</code> keeps <code>Browser.close</code> → wait for pid and <code>SingletonLock</code> → SIGTERM → SIGKILL the process group, and is used only for idle sleep, seal, crash, or update.</li>
+<li><strong>Each bot gets a window</strong> via <code>Target.createTarget {newWindow: true, focus: false}</code>, parked off-screen at once, with <code>Emulation.setFocusEmulationEnabled(true)</code> on the bot's page session and re-applied inside <code>_connect</code> on every reconnect. One window per bot keeps other bots out of the human's tab strip during a take-over; the park/unpark is per window, so #1492's "last bot hands back" coupling disappears.</li>
+<li><strong>Take-over</strong> (<code>Bot.window(True)</code>): set <code>meta.control</code>, pause the bot, <code>Browser.setWindowBounds</code> to an on-screen position, <code>Target.activateTarget</code>, and activate the app (160 ms end to end). Every bot input call checks the control flag and refuses while the human drives (B's harness asserted this each cycle). <strong>Hand-back</strong>: park off-screen, re-enable focus emulation, clear the flag, bot re-observes before its next step. No product surveyed tries to reconcile what the human did; neither should we.</li>
+<li><strong>Watchdog.</strong> If the user minimizes the window, hides Chrome with Cmd-H, or a monitor change undoes the clamp, <code>document.visibilityState</code> goes hidden and the next screenshot after a navigation hangs. Poll the window state or visibility on the bot's session and re-park the window. Also plan a scheduled restart path: Chrome self-updated from .39 to .40 during the overnight run, and an always-running Chrome will ask to relaunch.</li>
+<li><strong>Window closed by the user</strong> (<code>window_closed</code> today relaunches): treat <code>Target.targetDestroyed</code> for the bot's tab as "hand back and open a fresh minimized window on the next step", same process.</li>
+<li><strong>Live view</strong> keeps streaming the same target in the app as the monitor during bot and human phases, read-only by default, interactive behind the corrected forwarder as an option for users who prefer not to leave the app.</li>
+<li><strong>Cmd-Q is the new failure mode.</strong> During a take-over the bots' Chrome has OS focus and appears in the Dock and Cmd-Tab as a second "Google Chrome" beside the user's own. One reflexive Cmd-Q quits every bot on that profile and forces the relaunch path this design retires. Set <code>browser.confirm_to_quit</code> (Chrome's "Warn Before Quitting") in each bot profile's Preferences, and treat a quit as a crash recovery, not a hand-back.</li>
+<li><strong>Encryption at rest changes shape.</strong> Today the profile re-seals on every hand-off because Chrome stops. Under A it stays unsealed for Chrome's lifetime and seals on idle sleep, so <code>encrypt</code> means "sealed while asleep", not "sealed between actions".</li>
+<li><strong>macOS only, so far.</strong> Chrome on macOS stays alive with zero windows; on Windows and Linux closing the last window exits Chrome, which breaks "user closed the tab, bot opens a fresh one in the same process". Verify <code>--keep-alive-for-test</code> or keep one hidden window there before enabling this on those platforms.</li>
+<li><strong>Verify by hand on the first build</strong>: real keyboard into the restored window, IME, password manager autofill, Mac sleep/lock, whether the automation bar ever appears, and above all several parked bot windows in one process over hours. Window-per-bot is the recommended shape and that long-run case has the thinnest evidence (A's T5 only).</li>
+</ol>
+
+<h2 id="appendix">Appendix</h2>
+<h3>Where the evidence is</h3>
+<p>Copied into the repo under <code>prototypes/bot-browser-handoff/</code> (branch <code>bot-browser-handoff-research</code>, draft PR): <code>HARNESS.md</code> (the eight tests), <code>results/research.md</code> (334 lines, sources inline), <code>results/{A,B,C,D}.md</code> with raw outputs and screenshots under <code>results/&lt;letter&gt;/</code>, prototypes under <code>proto-{a,b,c,d}/</code>, <code>lib/vk_test.py</code> (the "." proof) and <code>lib/min_reconcile.py</code> (the minimized-window reconcile run).</p>
+<h3>Harness hazards worth remembering</h3>
+<ul>
+<li>A cleanup helper that <code>pgrep</code>'d the shared scratchpad tag killed sibling prototypes' Chromes mid-run; it was changed to match only the caller's profile prefix. Any production cleanup must match <code>--user-data-dir=&lt;our profile&gt;</code>, never "Chrome".</li>
+<li>A <code>data:</code> test page containing <code>%</code> or <code>#</code> is percent-decoded or truncated; one reconcile run reported a false negative because its animation never ran.</li>
+<li>Chrome may open a stray <code>chrome://settings/help</code> tab on first launch of a fresh profile; always address tabs by target id, never by position.</li>
+<li>Screenshot freshness must be checked by content, not by a quick return: a minimized window returns a stale cached frame in 30 ms and looks healthy.</li>
+</ul>
+<h3>Unverified</h3>
+<ul>
+<li>Real OS keystrokes into a headed window during take-over (TCC blocked the simulation).</li>
+<li>Many minimized bot windows in one process over hours; behaviour across Mac sleep and screen lock.</li>
+<li>Operator's and Skyvern's internal hand-off mechanics; Browserbase's forwarder source.</li>
+<li>Whether sites that fingerprint headless Chrome behave differently once bots run headed (expected improvement, not measured).</li>
+</ul>
+</div>
+</main>

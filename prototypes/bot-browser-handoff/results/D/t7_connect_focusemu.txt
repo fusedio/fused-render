@@ -1,0 +1,5 @@
+state minimized
+raw shot bytes 13959 24 ms
+raw frames in 3s 61
+pw shot bytes 13961 42 ms
+pw typing 2

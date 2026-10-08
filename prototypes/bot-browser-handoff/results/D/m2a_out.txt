@@ -1,0 +1,25 @@
+chrome pid 47039 port 54459
+connect ms 30 contexts 1 pages ['about:blank']
+T1 exact True
+dialog auto-handled? confirm returned: False (false = auto-dismissed by Playwright; undefined = still open)
+after human navigate bot types -> 'after-nav' url data:text/html,<textarea id=t>
+after 35s idle: 'after-nav+idle35'
+T6 is_closed False ctx.pages 1
+T6 exc TargetClosedError Keyboard.type: Target page, context or browser has been closed
+T6 new page in same ctx: new
+chrome pid unchanged: True
+window bounds {'windowId': 539779916, 'bounds': {'left': 22, 'top': 61, 'width': 900, 'height': 700, 'windowState': 'normal'}}
+python exiting WITHOUT closing chrome; pids alive: Chrome/155.0.8059.40
+-56112293155a/scratchpad/proto-d/.venv/lib/python3.12/site-packages/playwright/sync_api/_generated.py", line 1575, in type
+    self._sync(self._impl_obj.type(text=text, delay=delay))
+  File "/private/tmp/claude-501/-Users-vasu-Documents-fused-dev-fused-render/acb7c266-9bd8-4dc6-a57d-56112293155a/scratchpad/proto-d/.venv/lib/python3.12/site-packages/playwright/_impl/_sync_base.py", line 115, in _sync
+    return task.result()
+           ^^^^^^^^^^^^^
+  File "/private/tmp/claude-501/-Users-vasu-Documents-fused-dev-fused-render/acb7c266-9bd8-4dc6-a57d-56112293155a/scratchpad/proto-d/.venv/lib/python3.12/site-packages/playwright/_impl/_input.py", line 35, in type
+    await self._channel.send("keyboardType", None, locals_to_params(locals()))
+  File "/private/tmp/claude-501/-Users-vasu-Documents-fused-dev-fused-render/acb7c266-9bd8-4dc6-a57d-56112293155a/scratchpad/proto-d/.venv/lib/python3.12/site-packages/playwright/_impl/_connection.py", line 76, in send
+    return await self._connection.wrap_api_call(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/private/tmp/claude-501/-Users-vasu-Documents-fused-dev-fused-render/acb7c266-9bd8-4dc6-a57d-56112293155a/scratchpad/proto-d/.venv/lib/python3.12/site-packages/playwright/_impl/_connection.py", line 632, in wrap_api_call
+    raise rewrite_error(error, f"{parsed_st['apiName']}: {error}") from None
+Exception: Keyboard.type: Connection closed while reading from the driver

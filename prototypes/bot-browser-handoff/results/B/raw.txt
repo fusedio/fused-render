@@ -1,0 +1,29 @@
+bot pid 54562 port 55503 tid 5295E46FDDB83FABA4992C9B4DC72898
+RESULT T1 bot-types (exact + arrows/bksp + cmd-A replace): PASS exact=True arrows_bksp=True selectall=True
+RESULT T2 take-over human types: PASS "bot:human.text's,here"
+RESULT T3 hand-back: PASS "bot:human.text's,here-bot" same_tid=True same_pid(no relaunch)=True flip_us=701/481
+edit-keys: ['Z', 'Z bar', '<Z bar', '<Z bar>', 'Z bar>', 'Z bar', '', 'Z bar', '"Z bar\\n"u/t']
+RESULT T-edit cmd-A replace: PASS 'Z'
+RESULT T-edit alt-Left / alt-shift-Left select word / Backspace: PASS 'Z bar'
+RESULT T-edit cmd-Left/Right: PASS '<Z bar' '<Z bar>'
+RESULT T-edit Home/Delete/End/Backspace: PASS 'Z bar>' 'Z bar'
+RESULT T-edit cmd-X then cmd-Z: PASS '' 'Z bar'
+RESULT T-edit Enter/Tab: PASS "Z bar\n"u/t
+RESULT T-edit paste (clipboardData->insertText): PASS 'pasted ünï 日本\tTAB\nline2'
+RESULT T-unicode layout-direct keydown key=é/日/本/😀: PASS 'é日本😀'
+RESULT T-unicode IME composition (imeSetComposition + commit): PASS during composition bot value='', after commit='日本'
+pre-T7 stats [18,null,[],"visible",false]
+post-nav stats [90,null,[]]
+RESULT T7 hidden(headless) screencast 3s animated: PASS frames=181 -> 60.3 fps
+static page frames in 3s (screencast emits on change): 0
+RESULT T7 captureScreenshot non-blank: PASS b64 len=8752
+frame latency ms: [44, 15, 18, 10, 23, 16, 9, 14, 9, 15, 10, 32]
+RESULT T7 frame latency (bot paint -> live view canvas): PASS p50=15ms p95=32ms (includes ~driver poll+CDP evaluate overhead)
+RESULT T4 churn 20 cycles: PASS failures=0 value='hbhbhbhbhbhbhbhbhbhbhbhbhbhbhbhbhbhbhbhb'
+flip take_over p50=0.22ms p95=4.01ms; hand_back p50=0.16ms p95=0.37ms
+human keypress -> visible in bot tab p50=1ms p95=4ms
+RESULT T5 shared Chrome: A human-driven, B bot works: PASS A=True B_all_ok=True shot_b64_lens=[10416, 10300, 10388, 10380, 10356]
+RESULT T5 A hand-back: PASS 
+RESULT T6 close tab during take-over; bot opens new tab, same Chrome: PASS detected_in=6ms liveview_ws_closed=True bot ws error: ConnectionError: ws closed; recover(new tab+type)=627ms pid_same=True
+RESULT T6 new live view on new tab works: PASS 'carry.onagain'
+session written

@@ -1,0 +1,125 @@
+{
+ "normal_front": {
+  "shot": [
+   1800,
+   1014,
+   173
+  ],
+  "shot_s": 0.04,
+  "frames": 60,
+  "vis": "visible"
+ },
+ "minimized": {
+  "shot": [
+   1800,
+   1014,
+   166
+  ],
+  "shot_s": 0.03,
+  "frames": 1,
+  "vis": "hidden"
+ },
+ "minimized+focusEmulation": {
+  "shot": [
+   1800,
+   1014,
+   159
+  ],
+  "shot_s": 0.04,
+  "frames": 19,
+  "vis": "visible"
+ },
+ "restored_after_min": {
+  "shot": [
+   1800,
+   1014,
+   163
+  ],
+  "shot_s": 0.03,
+  "frames": 62,
+  "vis": "visible"
+ },
+ "offscreen_-690_100": {
+  "asked": [
+   -690,
+   100
+  ],
+  "got": {
+   "left": -690,
+   "top": 100,
+   "width": 700,
+   "height": 500,
+   "windowState": "normal"
+  },
+  "shot": [
+   1400,
+   714,
+   244
+  ],
+  "shot_s": 0.02,
+  "frames": 62,
+  "vis": "visible"
+ },
+ "offscreen_3000_2000": {
+  "asked": [
+   3000,
+   2000
+  ],
+  "got": {
+   "left": 1760,
+   "top": 1128,
+   "width": 700,
+   "height": 500,
+   "windowState": "normal"
+  },
+  "shot": [
+   1400,
+   714,
+   238
+  ],
+  "shot_s": 0.03,
+  "frames": 63,
+  "vis": "visible"
+ },
+ "offscreen_-10000_-10000": {
+  "asked": [
+   -10000,
+   -10000
+  ],
+  "got": {
+   "left": -660,
+   "top": 39,
+   "width": 700,
+   "height": 500,
+   "windowState": "normal"
+  },
+  "shot": [
+   1400,
+   714,
+   249
+  ],
+  "shot_s": 0.02,
+  "frames": 62,
+  "vis": "visible"
+ },
+ "background_tab": {
+  "shot": [
+   1400,
+   714,
+   249
+  ],
+  "shot_s": 0.04,
+  "frames": 18,
+  "vis": "visible"
+ },
+ "background_tab+focusEmulation": {
+  "shot": [
+   1400,
+   714,
+   242
+  ],
+  "shot_s": 0.02,
+  "frames": 30,
+  "vis": "visible"
+ }
+}
