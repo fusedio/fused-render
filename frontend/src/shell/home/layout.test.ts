@@ -969,3 +969,10 @@ test("preset card-strip tiles narrower than a full row are not cards", () => {
     }
   }
 });
+
+test("only the Legacy preset has a playground tile", () => {
+  for (const p of PRESETS) {
+    const has = presetLayout(p.id).widgets.some((w) => w.source === "playground");
+    expect(has).toBe(p.id === "legacy");
+  }
+});
