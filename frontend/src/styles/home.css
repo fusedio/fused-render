@@ -725,6 +725,14 @@
   overflow: hidden;
 }
 
+/* View mode: section widgets sit on the page with no frame; their cards carry
+   the borders. Edit mode keeps the outline so each tile reads as a slot, and a
+   pinned page (is-app) keeps its frame around the live iframe. */
+.hw-widget:not(.is-edit):not(.is-app) {
+  border-color: transparent;
+  padding-inline: 0;
+}
+
 .hw-head {
   display: flex;
   align-items: center;
