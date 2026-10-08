@@ -2297,6 +2297,18 @@ a.hw-more:hover {
 .hw-widget.is-search.is-edit .files-search-allfiles { display: none; }
 .hw-widget.is-search.is-edit .files-search { padding-left: 38px; padding-right: 96px; }
 .hw-widget.is-build.is-edit .home-composer-input { padding-left: 40px; }
+/* Their hover highlight, which the transparent frame above suppresses, lands
+   on the control's own border instead: a frame border would sit 4px outside
+   the bar. While an edge is being dragged the grid holds the plain border,
+   as it does for the card widgets. */
+.hw-widget.is-search.is-edit:hover .files-search,
+.hw-widget.is-build.is-edit:hover .home-composer {
+  border-color: rgba(var(--accent-rgb), 0.5);
+}
+.hw-grid.is-resizing .hw-widget.is-search.is-edit:hover .files-search,
+.hw-grid.is-resizing .hw-widget.is-build.is-edit:hover .home-composer {
+  border-color: var(--border);
+}
 .hw-widget.is-build .home-composer-wrap { margin-bottom: 0; }
 
 /* Add-sheet preview of the search bar: a rounded input, magnifier, placeholder bar. */

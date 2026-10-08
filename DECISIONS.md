@@ -6639,3 +6639,8 @@ The Fused Apps widget carries a `sort` (opened, the default; updated; name), a t
 ## 2026-10-08 — Search and Build widgets have a fixed, content-derived height (layout v5)
 
 The two bare Home widgets have a fixed, content-derived height in units (search 1, build 3) that neither the size preset nor an edge drag can change: their content never grows with the footprint, so any extra height was dead space in edit mode and collapsed inconsistently in view mode. Size presets now mean width only. Layout v5 marks documents that carry this; the v4 to v5 migration shrinks the two widgets and collapses only the unit rows the shrink vacated, so rows the user left empty on purpose stay.
+
+
+## 2026-10-08 — Bare widgets highlight their own border on hover in edit mode
+
+File search and Build an app show their edit-mode hover highlight on the control's own border (`.files-search`, `.home-composer`), not the widget frame, because the frame is transparent and larger than the control since layout v5.
