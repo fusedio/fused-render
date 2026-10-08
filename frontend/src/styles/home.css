@@ -1507,6 +1507,35 @@ a.hw-more:hover {
   height: 14px;
 }
 
+/* Edge-resize handles: shown only where dragging is enabled; a drag snaps the
+   footprint one half-cell unit at a time (WidgetGrid). The corner carries a
+   visible mark; the edges are invisible 10px strips. */
+.hw-resize {
+  position: absolute;
+  display: none;
+  z-index: 5;
+  touch-action: none;
+}
+.hw-grid.can-drag .hw-widget.is-edit .hw-resize { display: block; }
+.hw-resize-e { top: 14px; bottom: 14px; right: -5px; width: 10px; cursor: ew-resize; }
+.hw-resize-s { left: 14px; right: 14px; bottom: -5px; height: 10px; cursor: ns-resize; }
+.hw-resize-se { right: -5px; bottom: -5px; width: 18px; height: 18px; cursor: nwse-resize; }
+.hw-resize-se::after {
+  content: "";
+  position: absolute;
+  right: 7px;
+  bottom: 7px;
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid var(--fg-faint);
+  border-bottom: 2px solid var(--fg-faint);
+  border-bottom-right-radius: 3px;
+}
+.hw-widget.is-edit:hover .hw-resize-se::after,
+.hw-grid.is-resizing .hw-resize-se::after { border-color: var(--accent); }
+.hw-grid.is-resizing, .hw-grid.is-resizing .hw-widget { cursor: inherit; }
+.hw-grid.is-resizing .hw-widget.is-edit:hover { border-color: var(--border); }
+
 .hw-remove {
   width: 22px;
   height: 22px;

@@ -3,22 +3,30 @@ import {
   DEFAULT_LAYOUT,
   GRID_COLS,
   MAX_ROWS,
+  MAX_WIDGET_ROWS,
   SOURCES,
   addWidget,
   allowedSizes,
   canPlace,
   compactLayout,
+  contentSizeFor,
   dims,
+  dimsOf,
   emptyRows,
   firstFreeSlot,
   itemCapacity,
+  minFootprint,
   moveByArrow,
   normalizeLayout,
   occupancy,
   packDense,
   placeWidget,
+  rectOf,
   reflowToColumns,
   removeWidget,
+  resizeByArrow,
+  resizeTo,
+  rowsUsed,
   setFormat,
   setSize,
   sortByPosition,
@@ -503,4 +511,91 @@ test("emptyRows lists wholly uncovered rows above the last occupied row", () => 
   expect(emptyRows([])).toEqual([]);
   // Two 1x1s (2 unit rows each) at y=0 and y=3 leave unit row 2 uncovered.
   expect(emptyRows([r(0, 2), r(3, 2)])).toEqual([2]);
+});
+
+// ---- Edge resize (explicit cols/rows footprint) -----------------------------
+
+const solo = (extra: any = {}, source: any = "bots", size: any = "1x1") =>
+  lay({ ...w("a", source, size, "cards", 0, 0), ...extra });
+const only = (l: HomeLayout) => l.widgets.find((x) => x.id === "a")!;
+
+test("dimsOf falls back to dims(size) and honours cols/rows", () => {
+  expect(dimsOf({ size: "2x1" })).toEqual({ cols: 4, rows: 2 });
+  expect(dimsOf({ size: "1x1", cols: 3, rows: 2 })).toEqual({ cols: 3, rows: 2 });
+});
+
+test("minFootprint is the smallest preset per axis", () => {
+  expect(minFootprint("build")).toEqual({ cols: 4, rows: 2 });
+  expect(minFootprint("apps")).toEqual({ cols: 2, rows: 2 });
+});
+
+test("contentSizeFor picks the largest preset inside the footprint", () => {
+  expect(contentSizeFor("apps", 6, 2)).toBe("2x1");
+  expect(contentSizeFor("apps", 6, 4)).toBe("2x2");
+  expect(contentSizeFor("tasks", 2, 2)).toBe(SOURCES.tasks.sizes[0]);
+});
+
+test("resizeTo stores a custom footprint and keeps the content preset", () => {
+  const l = resizeTo(solo(), "a", 3, 2);
+  expect(only(l).size).toBe("1x1");
+  expect(only(l).cols).toBe(3);
+  expect(only(l).rows).toBe(2);
+});
+
+test("resizeTo onto a preset footprint stores only the preset", () => {
+  const l = resizeTo(solo(), "a", 4, 2);
+  expect(only(l).size).toBe("2x1");
+  expect("cols" in only(l)).toBe(false);
+  expect("rows" in only(l)).toBe(false);
+  const wide = resizeTo(solo(), "a", 6, 2);
+  expect(only(wide).size).toBe("2x1");
+  expect(only(wide).cols).toBe(6);
+});
+
+test("resizeTo is refused (same object) when blocked or out of bounds", () => {
+  const blocked = lay(w("a", "bots", "1x1", "cards", 0, 0), w("n", "bots", "1x1", "cards", 4, 0));
+  expect(resizeTo(blocked, "a", 6, 2)).toBe(blocked);
+  const s = solo();
+  expect(resizeTo(s, "a", GRID_COLS + 1, 2)).toBe(s);
+  expect(resizeTo(s, "a", 2, MAX_WIDGET_ROWS + 1)).toBe(s);
+  const b = solo({}, "build", "4x1");
+  expect(resizeTo(b, "a", 2, 2)).toBe(b);
+});
+
+test("setSize on a custom widget clears the override even when the chip equals its content size", () => {
+  const custom = resizeTo(solo(), "a", 3, 2);
+  const l = setSize(custom, "a", "1x1");
+  expect(l).not.toBe(custom);
+  expect("cols" in only(l)).toBe(false);
+  expect(only(l).size).toBe("1x1");
+});
+
+test("resizeByArrow steps one unit; Up at the minimum is refused", () => {
+  const s = solo();
+  expect(only(resizeByArrow(s, "a", "ArrowRight")).cols).toBe(3);
+  expect(resizeByArrow(s, "a", "ArrowUp")).toBe(s);
+  expect(resizeByArrow(s, "a", "Enter")).toBe(s);
+});
+
+test("normalizeLayout keeps a valid v4 footprint, corrects size, and drops invalid ones", () => {
+  const ok = normalizeLayout({ version: 4, widgets: [{ ...w("a", "bots", "2x2", "cards", 0, 0), cols: 3, rows: 2 }] });
+  expect(only(ok).cols).toBe(3);
+  expect(only(ok).rows).toBe(2);
+  expect(only(ok).size).toBe("1x1");
+  for (const bad of [{ cols: 9, rows: 2 }, { cols: 1, rows: 2 }, { cols: 3 }]) {
+    const l = normalizeLayout({ version: 4, widgets: [{ ...w("a", "bots", "1x1", "cards", 0, 0), ...bad }] });
+    expect("cols" in only(l)).toBe(false);
+    expect("rows" in only(l)).toBe(false);
+  }
+});
+
+test("rectOf / rowsUsed / compactLayout / canPlace / occupancy honour the override", () => {
+  const l = solo({ cols: 3, rows: 4 });
+  expect(rectOf(only(l))).toEqual({ x: 0, y: 0, cols: 3, rows: 4 });
+  expect(rowsUsed(l.widgets)).toBe(4);
+  const c = compactLayout(l);
+  expect(dimsOf(only(c))).toEqual({ cols: 3, rows: 4 });
+  expect(occupancy(l.widgets).get("2,0")).toBe("a");
+  expect(canPlace(l.widgets, { x: 2, y: 0, cols: 2, rows: 2 })).toBe(false);
+  expect(canPlace(l.widgets, { x: 3, y: 0, cols: 2, rows: 2 })).toBe(true);
 });

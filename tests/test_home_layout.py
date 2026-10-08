@@ -244,3 +244,36 @@ def test_v3_cell_bounds_still_apply(tmp_path, monkeypatch):
     client, _ = _client(tmp_path, monkeypatch)
     # x=7 is legal in v4 units but out of the 4-column v3 grid.
     assert client.put("/api/home/layout", json=_v3(("a", "1x1", 7, 0)), headers=FUSED).status_code == 400
+
+
+def test_v4_explicit_footprint_roundtrips(tmp_path, monkeypatch):
+    client, _ = _client(tmp_path, monkeypatch)
+    lay = _v4(("a", "1x1", 0, 0))
+    lay["widgets"][0].update(cols=3, rows=2)
+    assert client.put("/api/home/layout", json=lay, headers=FUSED).status_code == 200
+    assert client.get("/api/home/layout").json() == {"exists": True, "layout": lay}
+
+
+def test_v4_explicit_footprint_bounds(tmp_path, monkeypatch):
+    client, _ = _client(tmp_path, monkeypatch)
+    for cols, rows in ((9, 2), (1, 2), (3, 9), (3, 1)):
+        lay = _v4(("a", "1x1", 0, 0))
+        lay["widgets"][0].update(cols=cols, rows=rows)
+        assert client.put("/api/home/layout", json=lay, headers=FUSED).status_code == 400
+
+
+def test_v4_overlap_only_because_of_explicit_cols(tmp_path, monkeypatch):
+    client, _ = _client(tmp_path, monkeypatch)
+    lay = _v4(("a", "1x1", 0, 0), ("b", "1x1", 4, 0))
+    assert client.put("/api/home/layout", json=lay, headers=FUSED).status_code == 200
+    lay["widgets"][0].update(cols=6, rows=2)
+    assert client.put("/api/home/layout", json=lay, headers=FUSED).status_code == 400
+
+
+def test_v4_cols_without_rows_is_dropped(tmp_path, monkeypatch):
+    client, _ = _client(tmp_path, monkeypatch)
+    lay = _v4(("a", "1x1", 0, 0))
+    lay["widgets"][0]["cols"] = 3
+    assert client.put("/api/home/layout", json=lay, headers=FUSED).status_code == 200
+    w = client.get("/api/home/layout").json()["layout"]["widgets"][0]
+    assert "cols" not in w and "rows" not in w

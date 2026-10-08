@@ -106,7 +106,8 @@ function EditPopover({
   useLayoutEffect(() => {
     if (!open || !button.current) return;
     setAlignLeft(button.current.getBoundingClientRect().right - 360 < 8);
-  }, [open, widget.size]);
+  }, [open, widget.size, widget.cols, widget.rows]);
+  const custom = widget.cols !== undefined;
   const spec = SOURCES[widget.source];
   // Sizes whose footprint is free right now; computed only while the popover is open.
   const allowed = useMemo(
@@ -133,7 +134,7 @@ function EditPopover({
           aria-label={`Edit ${title}`}
         >
           <div className="hw-label">Size</div>
-          <SizeChips sizes={spec.sizes} value={widget.size} onChange={onResize} allowed={allowed} />
+          <SizeChips sizes={spec.sizes} value={custom ? undefined : widget.size} onChange={onResize} allowed={allowed} />
           {spec.formats.length > 1 ? (
             <>
               <div className="hw-label">Show as</div>
@@ -171,6 +172,7 @@ export interface WidgetFrameProps {
   onReformat: (format: WidgetFormat) => void;
   onRemove: () => void;
   onPointerDown: (e: ReactPointerEvent<HTMLElement>) => void;
+  onResizeStart: (e: ReactPointerEvent<HTMLElement>, axis: "e" | "s" | "se") => void;
   onKeyDown: (e: KeyboardEvent) => void;
 }
 
@@ -207,7 +209,7 @@ export function WidgetFrame(p: WidgetFrameProps): ReactNode {
       style={p.style}
       data-wid={widget.id}
       tabIndex={edit ? 0 : undefined}
-      aria-label={edit ? `${title} widget. Alt plus arrow keys to move.` : undefined}
+      aria-label={edit ? `${title} widget. Alt plus arrow keys to move, Alt plus Shift plus arrow keys to resize.` : undefined}
       onPointerDown={edit ? p.onPointerDown : undefined}
       onKeyDown={edit ? p.onKeyDown : undefined}
     >
@@ -247,6 +249,13 @@ export function WidgetFrame(p: WidgetFrameProps): ReactNode {
         ) : null}
       </div>}
       <Body widget={widget} edit={edit} onRemove={p.onRemove} />
+      {edit ? (
+        <>
+          <span className="hw-resize hw-resize-e" aria-hidden="true" onPointerDown={(e) => p.onResizeStart(e, "e")} />
+          <span className="hw-resize hw-resize-s" aria-hidden="true" onPointerDown={(e) => p.onResizeStart(e, "s")} />
+          <span className="hw-resize hw-resize-se" aria-hidden="true" title="Drag to resize" onPointerDown={(e) => p.onResizeStart(e, "se")} />
+        </>
+      ) : null}
     </section>
   );
 }

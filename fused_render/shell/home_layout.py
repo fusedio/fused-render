@@ -20,8 +20,12 @@ MAX_APP_PATH = 4096
 # every widget an explicit top-left cell (x, y) on a 4-column grid; version 4
 # is the same with half-cell units (an 8-unit grid, a 1x1 is 2 x 2 units). The
 # client migrates older documents (3 doubles) and writes 4 on its next change;
-# the server keeps whichever version it was given and never migrates.
+# the server keeps whichever version it was given and never migrates. Version 4
+# may carry an explicit `cols`/`rows` footprint in units (an edge-dragged size);
+# without them the size's own dims apply.
 VERSIONS = {1, 2, 3, 4}
+MIN_UNITS = 2
+MAX_WIDGET_UNIT_ROWS = 8
 GRID_COLS = 4
 MAX_ROWS = 64
 GRID_UNITS = 8
@@ -70,6 +74,8 @@ def _clean(doc) -> dict | None:
         item = {k: w[k] for k in ("id", "source", "size", "format")}
         if doc["version"] in (3, 4) and _is_int(w.get("x")) and _is_int(w.get("y")):
             item["x"], item["y"] = w["x"], w["y"]
+        if doc["version"] == 4 and _is_int(w.get("cols")) and _is_int(w.get("rows")):
+            item["cols"], item["rows"] = w["cols"], w["rows"]
         fid = w.get("folderId")
         if isinstance(fid, str):
             item["folderId"] = fid
@@ -96,6 +102,10 @@ def _placement_ok(clean: dict) -> bool:
             return False
         x, y = w["x"], w["y"]
         c, r = dims[w["size"]]
+        if clean["version"] == 4 and "cols" in w:
+            c, r = w["cols"], w["rows"]
+            if not (MIN_UNITS <= c <= GRID_UNITS and MIN_UNITS <= r <= MAX_WIDGET_UNIT_ROWS):
+                return False
         if x < 0 or x + c > cols or y < 0 or y + r > max_rows:
             return False
         cells = {(x + i, y + j) for i in range(c) for j in range(r)}

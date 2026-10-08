@@ -6609,3 +6609,8 @@ Midnight now uses a golden accent (#facc15 dark, #a16207 light) instead of the b
 ## 2026-10-08 — Home grid units are half cells (layout v4)
 
 Home grid units are half cells (layout v4): GRID_COLS 8, MAX_ROWS 128, dims() in units, v3 doubles on read; CSS gets 8 tracks with the same 16px gap so a cell is 2 tracks + 16px and old layouts render identically. Drag snaps to the nearest half inside the hovered whole cell; Alt+Arrow steps one unit; Tidy up repacks on whole cells.
+
+
+## 2026-10-08 — Home widgets resize by edge drag in half-cell steps
+
+Home widgets resize by edge drag in half-cell steps. A widget keeps `size` (the preset driving its content) and may carry an explicit `cols`/`rows` footprint in units (still layout v4, optional fields). A custom footprint derives `size` as the largest preset fitting inside it; a footprint that equals a preset stores only the preset; a size chip clears the override. Minimum per source = its smallest preset per axis; max 8 units tall. Server accepts the optional fields with the same bounds.

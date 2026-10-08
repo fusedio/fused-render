@@ -12,6 +12,8 @@ import {
   normalizeLayout,
   placeWidget,
   removeWidget,
+  resizeByArrow,
+  resizeTo,
   setFormat,
   setSize,
   type HomeLayout,
@@ -29,6 +31,10 @@ export interface HomeLayoutApi {
   place: (id: string, x: number, y: number) => void;
   /** Alt+Arrow step. */
   arrow: (id: string, key: string) => void;
+  /** Edge drag: explicit footprint in units. */
+  resizeTo: (id: string, cols: number, rows: number) => void;
+  /** Alt+Shift+Arrow step. */
+  resizeArrow: (id: string, key: string) => void;
   /** Pack everything densely in reading order. */
   tidy: () => void;
   add: (source: WidgetSource, opts?: { folderId?: string; appPath?: string; format?: WidgetFormat; size?: WidgetSize }) => void;
@@ -85,6 +91,8 @@ export function useHomeLayout(): HomeLayoutApi {
     loaded,
     place: useCallback((id, x, y) => commit(placeWidget(ref.current, id, x, y)), [commit]),
     arrow: useCallback((id, key) => commit(moveByArrow(ref.current, id, key)), [commit]),
+    resizeTo: useCallback((id, cols, rows) => commit(resizeTo(ref.current, id, cols, rows)), [commit]),
+    resizeArrow: useCallback((id, key) => commit(resizeByArrow(ref.current, id, key)), [commit]),
     tidy: useCallback(() => commit(compactLayout(ref.current)), [commit]),
     add: useCallback((source, opts) => commit(addWidget(ref.current, source, opts)), [commit]),
     remove: useCallback((id) => commit(removeWidget(ref.current, id)), [commit]),

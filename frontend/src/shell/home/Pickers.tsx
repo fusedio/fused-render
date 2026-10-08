@@ -20,7 +20,7 @@ export function SizeChips({
   allowed,
 }: {
   sizes: WidgetSize[];
-  value: WidgetSize;
+  value?: WidgetSize;
   onChange: (s: WidgetSize) => void;
   label?: string;
   /** Sizes that currently fit; the rest render disabled. Omit to allow all. */
