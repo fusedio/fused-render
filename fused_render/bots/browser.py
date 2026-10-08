@@ -114,14 +114,6 @@ def find_chrome():
     raise RuntimeError("No Chrome/Chromium found in /Applications")
 
 
-def _free_port():
-    s = socket.socket()
-    s.bind(("127.0.0.1", 0))
-    port = s.getsockname()[1]
-    s.close()
-    return port
-
-
 def write_json_atomic(path, obj):
     """Write to a temp file beside `path` and rename it into place. The temp name
     carries pid + thread id: a shared "<path>.tmp" let two writers (a bot's task
@@ -1025,7 +1017,14 @@ class BrowserProcess:
             self.unseal()
             os.makedirs(self.profile, exist_ok=True)
             os.makedirs(self.cache_dir, exist_ok=True)
-            port = _free_port()
+            # Chrome picks the port (--remote-debugging-port=0) and writes it to <profile>/DevToolsActivePort
+            # (line 1 the port, line 2 the browser socket path). Choosing a free port first and passing it
+            # was a race: another process could take it between the check and Chrome binding it.
+            active = os.path.join(self.profile, "DevToolsActivePort")
+            try:
+                os.remove(active)  # a stale file from the previous run would read as "up" too early
+            except FileNotFoundError:
+                pass
             chrome = find_chrome()
             args = [
                 chrome, "--headless=new",
@@ -1035,7 +1034,7 @@ class BrowserProcess:
                 # session that set them, so every screenshot connection closing made
                 # the viewport snap back to 1x and the live view flip size.
                 f"--force-device-scale-factor={LIVE_SCALE}",
-                f"--remote-debugging-port={port}",
+                "--remote-debugging-port=0",
                 f"--remote-allow-origins={origin}",  # lets the page's live view connect directly
                 f"--user-data-dir={self.profile}",
                 "--no-first-run", "--no-default-browser-check",
@@ -1049,13 +1048,22 @@ class BrowserProcess:
             proc = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                     stderr=subprocess.DEVNULL, start_new_session=True, close_fds=False)
             self._proc = proc
-            sess = {"port": port, "pid": proc.pid, "started": time.time(), "origin": origin}
+            sess = {"port": 0, "pid": proc.pid, "started": time.time(), "origin": origin}
             for _ in range(100):
-                if self.alive(sess):
+                if not sess["port"]:
+                    try:
+                        with open(active, encoding="utf-8") as f:
+                            sess["port"] = int(f.readline().strip() or 0)
+                    except (OSError, ValueError):
+                        pass
+                if sess["port"] and self.alive(sess):
                     break
+                if proc.poll() is not None:
+                    raise RuntimeError(f"Chrome exited at launch (code {proc.returncode})")
                 time.sleep(0.1)
             else:
                 raise RuntimeError("Chrome did not come up")
+            port = sess["port"]
             # The window Chrome opened on launch: the first view to act adopts it
             # (_page_target). The page appears a beat after DevTools answers.
             sess["launch_tab"] = ""
