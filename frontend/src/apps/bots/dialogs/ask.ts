@@ -10,6 +10,9 @@ export interface ConfirmReq {
   id: number; title: string; text: string; okLabel: string; danger: boolean; resolve: (v: boolean) => void;
   /** Set for askAuth: the dialog shows user name + password fields and hands them here (null on Cancel). */
   onAuth?: (c: Credentials | null) => void;
+  /** Set for askPrompt: one text field (window.prompt's shape), prefilled with `defaultValue`; null on Cancel. */
+  onPrompt?: (v: string | null) => void;
+  defaultValue?: string;
 }
 export interface FacePickReq { id: number; draft: FaceDraft; onPick?: (f: Face) => void; resolve: (f: FaceDraft) => void }
 
@@ -28,11 +31,19 @@ export function askAuth(title: string, text: string): Promise<Credentials | null
     confirms = [...confirms, { id: ++seq, title, text, okLabel: "Sign in", danger: false, resolve: () => {}, onAuth: resolve }]; emit();
   });
 }
-/** Settle the confirm on screen (`creds` only from the auth variant's fields). */
-export function settleConfirm(id: number, v: boolean, creds?: Credentials): void {
+/** window.prompt's shape: a title, the page's message, one text field. Resolves the text on OK, null on Cancel. */
+export function askPrompt(title: string, text: string, defaultValue = ""): Promise<string | null> {
+  return new Promise((resolve) => {
+    confirms = [...confirms, { id: ++seq, title, text, okLabel: "OK", danger: false, resolve: () => {}, onPrompt: resolve, defaultValue }]; emit();
+  });
+}
+/** Settle the confirm on screen (`vals` only from the auth / prompt variants' fields). */
+export function settleConfirm(id: number, v: boolean, vals?: Partial<Credentials> & { text?: string }): void {
   const c = confirms.find((x) => x.id === id); if (!c) return;
   confirms = confirms.filter((x) => x.id !== id); emit();
-  if (c.onAuth) c.onAuth(v && creds ? creds : null); else c.resolve(v);
+  if (c.onAuth) c.onAuth(v && vals ? { user: vals.user ?? "", pass: vals.pass ?? "" } : null);
+  else if (c.onPrompt) c.onPrompt(v ? vals?.text ?? "" : null);
+  else c.resolve(v);
 }
 export const useConfirm = (): ConfirmReq | null => useSyncExternalStore(subscribe, () => confirms[0] || null, () => confirms[0] || null);
 

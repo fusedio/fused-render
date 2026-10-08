@@ -553,6 +553,9 @@ div.bots-page.sideapp .preview :is(.shotwrap, .toast, .cap, .info) { display: no
 /* #cmodal auth variant (dialogs/ask.ts askAuth): two fields above the buttons. */
 .bots-page #cmodal .authfields { display: flex; flex-direction: column; gap: 8px; margin: 0 0 14px; }
 .bots-page #cmodal .authfields input { font: 13px -apple-system, system-ui, sans-serif; padding: 6px 8px; border: 1px solid var(--border, #999); border-radius: 4px; background: var(--panel, #fff); color: var(--text, #111); }
+/* .ghost: the drag image of an intercepted drag, a crop of the frame under the pointer; .dragging: the stage's cursor meanwhile. */
+.bots-page #full .stage .ghost { position: absolute; z-index: 6; opacity: .75; pointer-events: none; border-radius: 3px; box-shadow: 0 4px 14px rgba(0,0,0,.35); }
+.bots-page #full .stage.dragging { cursor: grabbing; }
 /* .lvov: our stand-ins for what headless Chrome never paints — .selmenu (select options, datalist suggestions, context menu) under the control,
    .pickov the viewer's own date/time/color input laid exactly over the page's field. Stage coordinates. */
 .bots-page #full .stage .pickov { position: absolute; z-index: 5; box-sizing: border-box; font: 13px -apple-system, system-ui, sans-serif; border: 2px solid var(--accent); border-radius: 4px; padding: 0 6px; background: var(--panel, #fff); color: var(--text, #111); }

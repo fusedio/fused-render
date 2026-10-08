@@ -9,10 +9,12 @@ export function Confirm() {
   const cancelRef = useRef<HTMLButtonElement>(null);
   const userRef = useRef<HTMLInputElement>(null);
   const passRef = useRef<HTMLInputElement>(null);
-  const creds = () => ({ user: userRef.current?.value ?? "", pass: passRef.current?.value ?? "" });
+  const textRef = useRef<HTMLInputElement>(null);
+  const creds = () => ({ user: userRef.current?.value ?? "", pass: passRef.current?.value ?? "", text: textRef.current?.value ?? "" });
   useEffect(() => {
     if (!c) return;
-    (c.onAuth ? userRef.current : cancelRef.current)?.focus();
+    if (c.onPrompt && textRef.current) { textRef.current.value = c.defaultValue ?? ""; textRef.current.focus(); textRef.current.select(); }
+    else (c.onAuth ? userRef.current : cancelRef.current)?.focus();
     const key = (e: KeyboardEvent) => {
       if (e.key === "Escape") { e.stopPropagation(); settleConfirm(c.id, false); }
       else if (e.key === "Enter") { e.stopPropagation(); e.preventDefault(); settleConfirm(c.id, true, creds()); }
@@ -26,6 +28,11 @@ export function Confirm() {
       <div className="box">
         <h3 id="cmtitle">{c?.title ?? "Delete?"}</h3>
         <p id="cmtext">{c?.text ?? ""}</p>
+        {c?.onPrompt ? (
+          <div className="authfields">
+            <input ref={textRef} id="cmtext-in" type="text" aria-label="Your answer" autoComplete="off" autoCapitalize="off" spellCheck={false} />
+          </div>
+        ) : null}
         {c?.onAuth ? (
           <div className="authfields">
             <input ref={userRef} id="cmuser" type="text" placeholder="User name" autoComplete="username" autoCapitalize="off" spellCheck={false} />

@@ -167,6 +167,8 @@ export function LiveView() {
             dead keys and IME input; plain keys are forwarded and never land in it. */}
         <textarea id="fkeys" aria-label="Type into the bot's page" autoComplete="off" autoCapitalize="off" autoCorrect="off" spellCheck={false} tabIndex={-1} />
         <Overlays />
+        {/* The drag image for an intercepted HTML5 drag (lib/cdp.ts showGhost): a crop of the frame that follows the pointer. */}
+        <img id="fghost" className="lvov ghost" alt="" hidden draggable={false} />
         <Toast id="ftoast" />
       </div>
     </div>

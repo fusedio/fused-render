@@ -9,7 +9,7 @@
 import { useSyncExternalStore } from "react";
 import { flushSync } from "react-dom";
 import { pickFile } from "@platform/lib/api";
-import { askAuth, askConfirm } from "../dialogs/ask";
+import { askAuth, askConfirm, askPrompt } from "../dialogs/ask";
 import { act, cur, getState, poll, select, setFast, showBanner, showToast, subscribe as subscribeStore } from "../state/store";
 import { api, type Bot } from "./api";
 import { BTN, CAST, CDP_MODS, frameDims, furlTarget, keyAction, nextDown, showUrl, toPageXY, type FrameMeta, type LastDown } from "./live";
@@ -106,6 +106,7 @@ export function linkSync(): void {
       void fileChooser(p as { backendNodeId?: number; mode?: string });
     } else if (m.method === "Input.dragIntercepted") {
       drag = { data: p.data as Record<string, unknown>, entered: false };
+      void showGhost();
     } else if (m.method === "Fetch.requestPaused") {
       cdp("Fetch.continueRequest", { requestId: p.requestId });  // only here for the auth challenges; every request goes on at once
     } else if (m.method === "Fetch.authRequired") {
@@ -140,7 +141,7 @@ async function authChallenge(p: { requestId: string; request?: { url?: string };
 }
 
 /** alert / confirm / prompt / beforeunload from the page. While you drive, a real dialog: confirm and beforeunload can be
- *  refused, prompt accepts its default. While the bot drives, accept at once (the bot's own run does the same) and say so. */
+ *  refused, prompt has its text field. While the bot drives, accept at once (the bot's own run does the same) and say so. */
 async function pageDialog(p: { type: string; message?: string; defaultPrompt?: string }): Promise<void> {
   const msg = p.message || "";
   if (!inCtl() || p.type === "alert") {
@@ -148,10 +149,13 @@ async function pageDialog(p: { type: string; message?: string; defaultPrompt?: s
     cdp("Page.handleJavaScriptDialog", { accept: true, promptText: p.defaultPrompt || "" });
     return;
   }
-  const title = p.type === "beforeunload" ? "Leave this page?" : p.type === "prompt" ? "The page asks for a value" : "The page asks";
-  const text = p.type === "prompt" ? `${msg}\n\nOK answers with "${p.defaultPrompt || ""}" (the page's default); Cancel answers nothing.` : msg;
-  const ok = await askConfirm(title, text, p.type === "beforeunload" ? "Leave" : "OK", false);
-  cdp("Page.handleJavaScriptDialog", { accept: ok, promptText: p.defaultPrompt || "" });
+  if (p.type === "prompt") {
+    const v = await askPrompt("The page asks", msg, p.defaultPrompt || "");
+    cdp("Page.handleJavaScriptDialog", { accept: v !== null, promptText: v ?? "" });
+    return;
+  }
+  const ok = await askConfirm(p.type === "beforeunload" ? "Leave this page?" : "The page asks", msg, p.type === "beforeunload" ? "Leave" : "OK", false);
+  cdp("Page.handleJavaScriptDialog", { accept: ok });
 }
 /** <input type=file> clicked in the page: the OS picker runs in the server process, the chosen path lands on the input. */
 async function fileChooser(p: { backendNodeId?: number; mode?: string }): Promise<void> {
@@ -163,6 +167,41 @@ async function fileChooser(p: { backendNodeId?: number; mode?: string }): Promis
 
 /** An intercepted HTML5 drag in flight: its DragData, replayed as dragEnter/dragOver on moves and drop on release. */
 let drag: { data: Record<string, unknown>; entered: boolean } | null = null;
+// The drag image. Chrome's OS drag loop would draw one; an intercepted drag has none, so the live view cuts the dragged
+// element out of the current frame (#fghost) and floats it under the pointer until the drop. Positioned by hand, not
+// through React: one style write per move.
+let ghost: { dx: number; dy: number } | null = null;
+let lastClient = { x: 0, y: 0 };  // the pointer's last stage-relative position (onDown / onMove)
+async function showGhost(): Promise<void> {
+  const start = { x: lastDownPage.x, y: lastDownPage.y };
+  const rect = await evalIn<[number, number, number, number] | null>(`(() => { const el = document.elementFromPoint(${start.x}, ${start.y}); if (!el) return null;
+    const d = el.closest("[draggable=true], a[href], img") || el; const r = d.getBoundingClientRect(); return [r.left, r.top, r.width, r.height]; })()`);
+  const g = $<HTMLImageElement>("fghost"), img = $<HTMLImageElement>("fshot"), stage = $("stage");
+  if (!rect || !g || !img || !stage || !drag) return;
+  const box = toStage(rect); if (!box || box.width < 2 || box.height < 2) return;
+  // Crop the element out of the frame at the frame's own pixel density.
+  const [vw, vh] = frameDims(link.meta, cur()?.viewport, [img.naturalWidth, img.naturalHeight]);
+  const kx = img.naturalWidth / (vw || 1), ky = img.naturalHeight / (vh || 1);
+  const c = document.createElement("canvas");
+  c.width = Math.max(1, Math.round(rect[2] * kx)); c.height = Math.max(1, Math.round(rect[3] * ky));
+  try { c.getContext("2d")?.drawImage(img, rect[0] * kx, rect[1] * ky, rect[2] * kx, rect[3] * ky, 0, 0, c.width, c.height); g.src = c.toDataURL("image/png"); }
+  catch { return; }  // a tainted frame cannot be read back; drag on without an image
+  g.style.width = `${box.width}px`; g.style.height = `${box.height}px`;
+  const downStage = toStage([start.x, start.y, 0, 0])!;
+  ghost = { dx: downStage.left - box.left, dy: downStage.top - box.top };
+  g.style.left = `${lastClient.x - ghost.dx}px`; g.style.top = `${lastClient.y - ghost.dy}px`;
+  g.hidden = false; stage.classList.add("dragging");
+}
+function moveGhost(): void {
+  const g = $<HTMLImageElement>("fghost");
+  if (g && ghost) { g.style.left = `${lastClient.x - ghost.dx}px`; g.style.top = `${lastClient.y - ghost.dy}px`; }
+}
+function hideGhost(): void {
+  ghost = null;
+  const g = $<HTMLImageElement>("fghost"); if (g) { g.hidden = true; g.removeAttribute("src"); }
+  $("stage")?.classList.remove("dragging");
+}
+let lastDownPage = { x: 0, y: 0 };
 
 // ------------------------------------------------------------------ overlays over the stage ----
 // Headless Chrome paints no native popups: a <select>'s menu, a datalist's suggestions, the date/time/color pickers and
@@ -274,7 +313,7 @@ async function contextAt(p: { x: number; y: number }, e: MouseEvent): Promise<vo
 }
 
 export function linkClose(): void {
-  setOverlay(null); drag = null;
+  setOverlay(null); drag = null; hideGhost();
   const ws = link.ws; link.ws = null; link.url = null; link.meta = null;
   if (ws) { try { if (ws.readyState === 1) ws.send(JSON.stringify({ id: ++link.id, method: "Page.stopScreencast" })); ws.close(); } catch { /* already gone */ } }
   publishLink();
@@ -403,6 +442,8 @@ export function installLive(stage: HTMLElement): () => void {
   const onMove = (e: MouseEvent) => {
     if (!inCtl() || inMenu(e)) return;
     const p = toPage(e); if (!p) return;
+    const sr = stage.getBoundingClientRect(); lastClient = { x: e.clientX - sr.left, y: e.clientY - sr.top };
+    if (ghost) moveGhost();
     const first = !pendingMove; pendingMove = { p, e };
     if (first) requestAnimationFrame(() => {
       const m = pendingMove; pendingMove = null; if (!m || !inCtl()) return;
@@ -425,6 +466,7 @@ export function installLive(stage: HTMLElement): () => void {
     if (!inCtl() || inMenu(e)) return; const p = toPage(e); if (!p) return;
     e.preventDefault(); ($("fkeys") || stage).focus();
     if (overlay) setOverlay(null);
+    const sr = stage.getBoundingClientRect(); lastClient = { x: e.clientX - sr.left, y: e.clientY - sr.top }; lastDownPage = p;
     lastDown = nextDown(lastDown, performance.now(), p);
     const n = lastDown.n;
     pressed = (async () => {
@@ -448,6 +490,7 @@ export function installLive(stage: HTMLElement): () => void {
         cdp("Input.dispatchDragEvent", { type: "drop", x: p.x, y: p.y, data: drag.data, modifiers: CDP_MODS(e) });
         drag = null;
       }
+      hideGhost();
       mouse("mouseReleased", p, e, { button: BTN[e.button] || "left", clickCount: n });
       setTimeout(poll, 700);  // a click may open a tab or change the title
     });
