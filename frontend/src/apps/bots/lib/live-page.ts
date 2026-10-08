@@ -29,15 +29,15 @@ export function syncDriving(): void {
   }
 }
 onOpen.push(syncDriving);
-onReset.push(() => { fetchOn = false; interceptsOn = false; authSeen.clear(); });
+onReset.push(() => { fetchOn = false; interceptsOn = false; authSeen.clear(); authAsking.clear(); });
 
 // alert / confirm / prompt / beforeunload. While you drive they are real dialogs (confirm and beforeunload can be refused,
-// prompt has its text field). While the bot drives they are the bot's: its own run accepts them and reads the message
-// (browser.py _settle_dialog), so here only a toast says what happened.
+// prompt has its text field). While you only watch they are accepted at once, as the bot's own run would (a dialog left
+// open blocks the page, and the bot's next action still reports it: browser.py _settle_dialog), with a toast here.
 onEvent("Page.javascriptDialogOpening", (p) => { void pageDialog(p as { type: string; message?: string; defaultPrompt?: string }); });
 async function pageDialog(p: { type: string; message?: string; defaultPrompt?: string }): Promise<void> {
   const msg = p.message || "";
-  if (!inCtl()) { toast(`${p.type}: ${msg}`); return; }
+  if (!inCtl()) { toast(`${p.type}: ${msg}`); cdp("Page.handleJavaScriptDialog", { accept: true, promptText: p.defaultPrompt || "" }); return; }
   if (p.type === "alert") { toast(msg); cdp("Page.handleJavaScriptDialog", { accept: true }); return; }
   if (p.type === "prompt") {
     const v = await askPrompt("The page asks", msg, p.defaultPrompt || "");
@@ -60,19 +60,29 @@ async function fileChooser(p: { backendNodeId?: number }): Promise<void> {
 }
 
 // HTTP auth (401/407). With the Fetch domain on, Chrome asks us instead of failing the request. Every paused request is
-// continued at once; only the challenge gets a dialog. A second challenge for the same origin+realm while the first
-// answer is fresh means the password was wrong: cancelled, never looped. Cancel also clears the key, so a reload may retry.
+// continued at once; only the challenge gets a dialog. Parallel challenges for one origin+realm (a page and its images)
+// share that dialog's answer; a challenge arriving right after an answer for the same realm is the wrong-password loop
+// and is cancelled. Cancel leaves nothing behind, so a reload asks again.
 type Challenge = { requestId: string; request?: { url?: string }; authChallenge?: { source?: string; origin?: string; realm?: string } };
+type Creds = { user: string; pass: string } | null;
+const authAsking = new Map<string, Promise<Creds>>();  // a dialog up for this realm
 onEvent("Fetch.requestPaused", (p) => cdp("Fetch.continueRequest", { requestId: p.requestId }));
 onEvent("Fetch.authRequired", (p) => { void authChallenge(p as Challenge); });
 async function authChallenge(p: Challenge): Promise<void> {
   const ch = p.authChallenge || {}, key = authKey(ch);
-  if (authSeen.has(key) || !inCtl()) { cdp("Fetch.continueWithAuth", { requestId: p.requestId, authChallengeResponse: { response: "CancelAuth" } }); return; }
-  authSeen.add(key);
-  const who = ch.source === "Proxy" ? `The proxy ${ch.origin || ""}` : ch.origin || p.request?.url || "The site";
-  const creds = await askAuth("Sign in required", `${who} asks for a user name and password${ch.realm ? ` (${ch.realm})` : ""}.`);
-  cdp("Fetch.continueWithAuth", { requestId: p.requestId, authChallengeResponse: creds
+  const answer = (creds: Creds) => cdp("Fetch.continueWithAuth", { requestId: p.requestId, authChallengeResponse: creds
     ? { response: "ProvideCredentials", username: creds.user, password: creds.pass } : { response: "CancelAuth" } });
-  if (creds) window.setTimeout(() => authSeen.delete(key), 15000); else authSeen.delete(key);
-  focusCtl();
+  if (authSeen.has(key) || !inCtl()) { answer(null); return; }
+  let ask = authAsking.get(key);
+  if (!ask) {
+    const who = ch.source === "Proxy" ? `The proxy ${ch.origin || ""}` : ch.origin || p.request?.url || "The site";
+    ask = askAuth("Sign in required", `${who} asks for a user name and password${ch.realm ? ` (${ch.realm})` : ""}.`).then((creds) => {
+      authAsking.delete(key);
+      if (creds) { authSeen.add(key); window.setTimeout(() => authSeen.delete(key), 15000); }
+      focusCtl();
+      return creds;
+    });
+    authAsking.set(key, ask);
+  }
+  answer(await ask);
 }

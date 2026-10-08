@@ -1787,6 +1787,9 @@ class Browser:
         ws.sock.settimeout(3)
         try:
             ws.call("Runtime.evaluate", expression="1", returnByValue=True)
+            if ws.dialog:  # it opened during the action and the live view (watching) already accepted it: still worth telling
+                d, ws.dialog = ws.dialog, None
+                return f"{d.get('type', 'dialog')}: {d.get('message', '')}".strip()
             return None
         except socket.timeout:
             pass

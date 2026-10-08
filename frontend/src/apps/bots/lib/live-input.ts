@@ -9,7 +9,7 @@
 // probe. Nothing reaches the page out of order, and a release is always matched to our own press, never to where the
 // pointer happens to be when the button comes up.
 import { cur, getState, poll, subscribe as subscribeStore } from "../state/store";
-import { $, askTakeOver, cdp, evalIn, frameMeta, handBack, inCtl, inFull, isSwitching, linkSync, nav, onEvent, onReset, takeOver, followPopups } from "./cdp";
+import { $, askTakeOver, cdp, evalIn, frameMeta, handBack, inCtl, inFull, isSwitching, linkClose, linkSync, nav, onEvent, onReset, takeOver, followPopups } from "./cdp";
 import { BTN, CDP_MODS, frameDims, heldButton, keyAction, nextDown, toPageXY, typesText, wrapIndex, type Box, type KeyAction, type LastDown } from "./live";
 import { syncDriving } from "./live-page";
 import { SEL_TEXT_PROBE, cancelSuggest, closeOverlay, copyText, getOverlay, openContextAt, openOverlayAt, pickSelect, scheduleSuggest, setOverlay, stageXY, toStage } from "./live-overlays";
@@ -34,6 +34,7 @@ let drag: { data: object; entered: boolean } | null = null;
 // current frame (#fghost) and floats it under the pointer until the drop. Positioned by hand, one style write per move.
 let ghost: { dx: number; dy: number } | null = null;
 let lastStage = { x: 0, y: 0 };      // the pointer's last stage-relative position
+let lastPage = { x: 0, y: 0 };       // the pointer's last position inside the frame, in page CSS px
 let lastDownPage = { x: 0, y: 0 };   // where the current press landed in the page
 async function showGhost(): Promise<void> {
   const start = lastDownPage;
@@ -84,15 +85,18 @@ export function installLive(stage: HTMLElement): () => void {
   const onMove = (e: MouseEvent) => {
     if (!inCtl() || inMenu(e)) return;
     const p = toPage(e); if (!p) return;
-    lastStage = stageXY(e);
+    lastStage = stageXY(e); lastPage = p;
     if (ghost) moveGhost();
     const first = !pendingMove; pendingMove = { p, e };
     if (first) requestAnimationFrame(() => {
       const m = pendingMove; pendingMove = null; if (!m) return;
       void pressQ.then(() => {
         if (!inCtl()) return;
-        // Chrome starts a drag only from moves that name the held button (measured: `buttons: 1` alone never fires dragIntercepted).
-        mouse("mouseMoved", m.p, m.e, { button: heldButton(m.e.buttons) });
+        // Chrome starts a drag only from moves that name the held button (measured: `buttons: 1` alone never fires
+        // dragIntercepted). A move that was still queued when the button came up carries no button: press, release, then
+        // a "held" move is exactly the sequence that would start a drag after the fact.
+        const held = press ? m.e.buttons : 0;
+        mouse("mouseMoved", m.p, m.e, { button: heldButton(held), buttons: held });
         if (drag) {
           cdp("Input.dispatchDragEvent", { type: drag.entered ? "dragOver" : "dragEnter", x: m.p.x, y: m.p.y, data: drag.data, modifiers: CDP_MODS(m.e) });
           drag.entered = true;
@@ -105,7 +109,7 @@ export function installLive(stage: HTMLElement): () => void {
     const p = toPage(e); if (!p) return;
     e.preventDefault(); keys?.focus({ preventScroll: true });
     setOverlay(null); cancelSuggest();
-    lastStage = stageXY(e); lastDownPage = p;
+    lastStage = stageXY(e); lastPage = p; lastDownPage = p;
     lastDown = nextDown(lastDown, performance.now(), p);
     const rec = { forwarded: false, button: BTN[e.button] || "left", n: lastDown.n };
     press = rec;
@@ -124,7 +128,7 @@ export function installLive(stage: HTMLElement): () => void {
   const onUp = (e: MouseEvent) => {
     const rec = press; if (!rec) return;
     press = null;
-    const p = toPage(e) || { x: lastDown.x, y: lastDown.y };
+    const p = toPage(e) || lastPage;  // released outside the frame: where the pointer last was inside it
     void pressQ.then(() => {
       if (!rec.forwarded || !inCtl()) { endDrag(); return; }
       if (drag) {
@@ -168,6 +172,7 @@ export function installLive(stage: HTMLElement): () => void {
     if (!inCtl()) { if (keys) keys.value = ""; return; }
     if ((e.metaKey || e.ctrlKey) && k === "v") return;  // the paste event carries the text
     if (e.isComposing || e.keyCode === 229 || e.key === "Dead" || e.key === "Process") return;  // compositionend forwards it
+    if (e.key === composed.text && performance.now() - composed.t < 100) { e.preventDefault(); if (keys) keys.value = ""; return; }  // the echo of a composition
     // History only on ⌘[ / ⌘] (never ⌥←/⌥→: those are word moves on macOS and belong to the page).
     if (down && e.metaKey && e.key === "[") { e.preventDefault(); nav("back"); return; }
     if (down && e.metaKey && e.key === "]") { e.preventDefault(); nav("forward"); return; }
@@ -199,8 +204,11 @@ export function installLive(stage: HTMLElement): () => void {
     if (down && e.key === "Enter") setTimeout(poll, 700);
     if (down && typesText(e)) scheduleSuggest();
   };
+  // A composed glyph (⌥e e → é, an IME commit) is inserted once, from compositionend. Some engines follow it with a plain
+  // keydown of the same character; that echo is dropped.
+  let composed = { text: "", t: 0 };
   const onCompose = (e: CompositionEvent) => {
-    if (inCtl() && e.data) queue(() => cdp("Input.insertText", { text: e.data }));
+    if (inCtl() && e.data) { composed = { text: e.data, t: performance.now() }; queue(() => cdp("Input.insertText", { text: e.data })); }
     if (keys) keys.value = "";
   };
   // Whatever still reaches the textarea outside a composition (autocorrect) is dropped at once.
@@ -248,5 +256,6 @@ export function installLive(stage: HTMLElement): () => void {
     keys?.removeEventListener("input", onKeysInput);
     document.removeEventListener("keydown", onDocKey);
     endDriving();
+    linkClose();  // leaving the page: no socket, no screencast left running in Chrome
   };
 }

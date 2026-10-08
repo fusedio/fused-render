@@ -1979,16 +1979,20 @@ class Bot:
     def _working(b):
         return bool(b and b.thread and b.thread.is_alive() and not b.pause_flag.is_set())
 
-    def dock(self, closed=False):
-        """Back to headless after `popout`, for every bot on the browser: whichever bot noticed
-        (the status poll runs per bot) releases the one that holds control, so the bot that popped
-        out resumes no matter who docked."""
+    def dock(self, closed=False, release=False):
+        """Back to headless after `popout`. "Back here" keeps your take-over (you go on driving in the
+        live view; Hand back when done); `release` (Hand back, or the window the user closed) returns
+        control to every bot on the browser that held it, so the bot that popped out resumes no
+        matter which bot's status poll noticed."""
         self.browser.dock()
         owners = [o for o in [self] + [_registry().get(x["id"]) for x in self.shared_with()] if o and o.meta.get("control")]
-        for o in owners:
-            o._release(note=False)
-        msg = ("Window closed; the browser is back here, headless" + (" and the bot has control again." if owners else ".")
-               if closed else "The browser is headless again; the live view is the only window.")
+        if closed or release:
+            for o in owners:
+                o._release(note=False)
+            msg = ("Window closed; the browser is back here, headless" + (" and the bot has control again." if owners else ".")
+                   if closed else "The browser is headless again and the bot has control.")
+        else:
+            msg = "The browser is headless again; you still have control in the live view."
         for o in owners or [self]:
             o.emit("system", msg)
 
@@ -2000,7 +2004,7 @@ class Bot:
 
     def giveback(self):
         if self.browser.headed():
-            self.dock()
+            self.dock(release=True)
             return
         self._release()
 

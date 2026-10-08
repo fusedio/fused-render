@@ -333,8 +333,9 @@ export const api = {
   stop: (id: string) => post<Ok>(`${bid(id)}/stop`, {}, "stop"),
   takeover: (id: string) => post<Ok>(`${bid(id)}/takeover`, {}, "takeover"),
   giveback: (id: string) => post<Ok>(`${bid(id)}/giveback`, {}, "giveback"),
-  /** The same profile as a real Chrome window (passkeys, password manager); giveback docks it again. */
+  /** The same profile as a real Chrome window (passkeys, password manager). dock brings it back headless with your take-over kept; giveback docks and hands back. */
   popout: (id: string) => post<Ok>(`${bid(id)}/popout`, {}, "popout"),
+  dock: (id: string) => post<Ok>(`${bid(id)}/dock`, {}, "dock"),
   wake: (id: string) => post<Ok>(`${bid(id)}/wake`, {}, "wake"),
   /** The user clicked this bot open (or deep-linked to it): Super Bot's first task starts from this, nothing else. */
   open: (id: string) => post<Ok & { setup?: "started" | "pending" | "none" }>(`${bid(id)}/open`, {}, "open"),

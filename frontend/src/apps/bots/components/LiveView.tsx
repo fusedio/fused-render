@@ -112,7 +112,7 @@ export function LiveView() {
     if (!b || winBusy) return;
     const id = b.id;
     setWinBusy(headed ? "Docking…" : "Opening…");
-    try { await act(() => headed ? api.giveback(id) : api.popout(id)); } finally { setWinBusy(null); }
+    try { await act(() => headed ? api.dock(id) : api.popout(id)); } finally { setWinBusy(null); }
   };
   // Status strip: while you drive it says so; otherwise the bot's state plus its latest thought, action or harness note.
   let fstat = "";
@@ -134,7 +134,7 @@ export function LiveView() {
         {b ? <Tabs b={b} /> : <div className="tabstrip" id="tabstrip" />}
         <span className="winacts">
           <button id="fwin" className={winBusy ? "busy" : undefined} onClick={() => { void onWin(); }}
-            title={headed ? "Close the desktop window and drive it here again" : "Open this browser as a real Chrome window on your desktop, for passkeys and password managers. Chrome relaunches (a few seconds)."}>
+            title={headed ? "Close the desktop window and keep driving it here; Hand back when you are done" : "Open this browser as a real Chrome window on your desktop, for passkeys and password managers. Chrome relaunches (a few seconds)."}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2" /><path d="M8 20h8M12 16v4" /><path d="M12 13V7" /><path d="m9 10 3-3 3 3" /></svg>
             <span className="lbl">{winBusy || (headed ? "Back here" : "Real window")}</span>
           </button>

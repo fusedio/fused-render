@@ -201,7 +201,7 @@ POST   /api/bots/browsers/<bid>       {op: rename {name} | encrypt {on} | profil
 GET    /api/bots/usage                -> the usage summary
 GET    /api/bots/imessage             -> the bridge state
 POST   /api/bots/<id>/send            {text, reply_to?}                     -> {ok}      (also answers approvals/questions/offers)
-POST   /api/bots/<id>/pause | resume | stop | takeover | giveback | popout | wake    -> {ok}   (giveback docks a popped-out window)
+POST   /api/bots/<id>/pause | resume | stop | takeover | giveback | popout | dock | wake  -> {ok}   (dock keeps your take-over; giveback docks and hands back)
 POST   /api/bots/<id>/goto            {url}                                 -> {ok, url}
 POST   /api/bots/<id>/nav             {op: back|forward|reload}             -> {ok, url}
 POST   /api/bots/<id>/tab             {tab: new|switch|close, url?, index?} -> {ok, url, tabs}
