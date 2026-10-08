@@ -26,7 +26,7 @@ MAX_APP_PATH = 4096
 # version 4 plus the fixed rows of the two bare sources (FIXED_ROWS): their
 # height is their content's, whatever the size or footprint says.
 VERSIONS = {1, 2, 3, 4, 5}
-FIXED_ROWS = {"search": 1, "build": 3}
+FIXED_ROWS = {"search": 1, "build": 4}
 MIN_UNITS = 2
 MAX_WIDGET_UNIT_ROWS = 8
 GRID_COLS = 4

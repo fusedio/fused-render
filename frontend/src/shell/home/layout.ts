@@ -191,11 +191,11 @@ export const DEFAULT_LAYOUT: HomeLayout = {
   widgets: [
     makeWidget("search", 0, 0, { id: "default-search" }),
     makeWidget("build", 0, 1, { id: "default-build" }),
-    makeWidget("bots", 0, 4, { id: "default-bots", size: "1x1" }),
-    makeWidget("index", 2, 4, { id: "default-index", size: "1x1" }),
-    makeWidget("tasks", 4, 4, { id: "default-tasks", size: "2x1" }),
-    makeWidget("apps", 0, 6, { id: "default-apps", size: "4x1" }),
-    makeWidget("recents", 0, 8, { id: "default-recents", size: "4x1" }),
+    makeWidget("bots", 0, 5, { id: "default-bots", size: "1x1" }),
+    makeWidget("index", 2, 5, { id: "default-index", size: "1x1" }),
+    makeWidget("tasks", 4, 5, { id: "default-tasks", size: "2x1" }),
+    makeWidget("apps", 0, 7, { id: "default-apps", size: "4x1" }),
+    makeWidget("recents", 0, 9, { id: "default-recents", size: "4x1" }),
   ],
 };
 
@@ -267,6 +267,7 @@ export function normalizeLayout(raw: unknown): HomeLayout {
   if (r.version === 3 || r.version === 4 || r.version === LAYOUT_VERSION) {
     const k = r.version === 3 ? CELL : 1;
     widgets = [];
+    if (r.version === LAYOUT_VERSION) growFixedRows(cleaned);
     for (const { w: w0, rx, ry, rc, rr } of cleaned) {
       let w = w0;
       let x = Number.isInteger(rx) ? (rx as number) * k : NaN;
@@ -311,6 +312,27 @@ export function normalizeLayout(raw: unknown): HomeLayout {
     widgets = packDense(cleaned.map((c) => c.w));
   }
   return { version: LAYOUT_VERSION, widgets: sortByPosition(widgets) };
+}
+
+/** The mirror image of collapseShrunkRows: a v5 build stored at 3 rows grows
+    to 4; everything at or below its old bottom row moves down so nothing
+    overlaps. Edits `entries` in place: each entry's `ry` shifts by the rows
+    inserted at or above it by OTHER entries, all from the original `ry`s. */
+export function growFixedRows(entries: { w: Widget; ry?: unknown; rr?: unknown }[]): void {
+  const inserts: { entry: object; row: number; n: number }[] = [];
+  for (const e of entries) {
+    const fixed = FIXED_ROWS[e.w.source];
+    if (fixed === undefined || !Number.isInteger(e.ry) || !Number.isInteger(e.rr)) continue;
+    const rr = e.rr as number;
+    if (rr < fixed) inserts.push({ entry: e, row: (e.ry as number) + rr, n: fixed - rr });
+  }
+  if (inserts.length === 0) return;
+  const shifts = entries.map((e) =>
+    Number.isInteger(e.ry) ? inserts.reduce((s, i) => (i.entry !== e && i.row <= (e.ry as number) ? s + i.n : s), 0) : 0,
+  );
+  entries.forEach((e, i) => {
+    if (shifts[i]) e.ry = (e.ry as number) + shifts[i];
+  });
 }
 
 /** Delete the `vacated` unit rows no widget covers: every widget below one
@@ -406,7 +428,7 @@ export function dims(size: WidgetSize): { cols: number; rows: number } {
 }
 
 /** Sources whose height is their content's, in units, whatever the preset or an edge drag says. */
-export const FIXED_ROWS: Partial<Record<WidgetSource, number>> = { search: 1, build: 3 };
+export const FIXED_ROWS: Partial<Record<WidgetSource, number>> = { search: 1, build: 4 };
 
 /** dims() for a source's preset: a fixed-row source keeps its fixed height. */
 export function dimsFor(source: WidgetSource, size: WidgetSize): { cols: number; rows: number } {

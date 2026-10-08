@@ -2259,7 +2259,7 @@ a.hw-more:hover {
 /* View mode: the composer is the page's hero, not a full-width cell. It sits
    centred at the old Home's width with a headline above, and its sample chips
    start at the composer's left edge instead of centring under the full grid. */
-.hw-widget.is-build:not(.is-edit) { padding: 20px 0 8px; }
+.hw-widget.is-build:not(.is-edit) { padding: 12px 0 0; }
 .hw-build-hero { width: 100%; max-width: 760px; margin: 0 auto; }
 .hw-build-headline {
   margin: 0 0 14px;
@@ -2270,7 +2270,7 @@ a.hw-more:hover {
 .hw-build-hero .home-composer-samples { justify-content: flex-start; }
 .hw-build-hero .home-composer-input { min-height: 112px; }
 
-/* Edit mode: the two bare widgets are their footprint (1 unit for search, 3
+/* Edit mode: the two bare widgets are their footprint (1 unit for search, 4
    for build). No card chrome; the head overlays the stand-in: grip at the
    left where the real icon sits, Edit and × at the right. The title is kept
    invisible so the flex row still pushes the controls to the ends. */
@@ -2302,33 +2302,32 @@ a.hw-more:hover {
 .hw-widget.is-search.is-edit .files-search-icon,
 .hw-widget.is-search.is-edit .files-search-allfiles { display: none; }
 .hw-widget.is-search.is-edit .files-search { padding-left: 38px; padding-right: 96px; }
-.hw-widget.is-build.is-edit .home-composer-input { padding-left: 40px; }
-/* The composer stand-in fills the 3-unit frame, so the box the user sees
-   (and its hover border) is the widget's own footprint and the overlaid
-   grip, Edit and × land inside it. The input takes the spare height; the
-   picker bar stays at the bottom, as in the real composer. */
-.hw-widget.is-build.is-edit { justify-content: flex-start; }
-.hw-widget.is-build.is-edit .hw-ph,
-.hw-widget.is-build.is-edit .home-composer-wrap,
-.hw-widget.is-build.is-edit .home-composer {
-  flex: 1 1 auto;
+/* The build frame is a full-width card outline like the other widgets (the
+   shared rule above clears it for the search bar), and the stand-in inside is
+   the view-mode hero: headline, 760px composer, chips, from the top of the
+   4-unit frame. */
+.hw-widget.is-build.is-edit {
+  justify-content: flex-start;
+  border-color: var(--border);
+}
+.hw-widget.is-build.is-edit:hover { border-color: rgba(var(--accent-rgb), 0.5); }
+.hw-grid.is-resizing .hw-widget.is-build.is-edit:hover { border-color: var(--border); }
+.hw-widget.is-build.is-edit .hw-ph {
+  height: 100%;
   display: flex;
   flex-direction: column;
-  min-height: 0;
+  justify-content: flex-start;
+  padding-top: 12px;
+  box-sizing: border-box;
 }
-.hw-widget.is-build.is-edit .hw-ph { height: 100%; }
-.hw-widget.is-build.is-edit .home-composer-input { flex: 1 1 auto; min-height: 0; }
-.hw-widget.is-build.is-edit .home-composer-bar { flex: 0 0 auto; }
-/* Their hover highlight, which the transparent frame above suppresses, lands
-   on the control's own border instead: a frame border would sit 4px outside
-   the bar. While an edge is being dragged the grid holds the plain border,
-   as it does for the card widgets. */
-.hw-widget.is-search.is-edit:hover .files-search,
-.hw-widget.is-build.is-edit:hover .home-composer {
+/* The search bar's hover highlight, which the transparent frame above
+   suppresses, lands on the control's own border instead: a frame border would
+   sit 4px outside the bar. While an edge is being dragged the grid holds the
+   plain border, as it does for the card widgets. */
+.hw-widget.is-search.is-edit:hover .files-search {
   border-color: rgba(var(--accent-rgb), 0.5);
 }
-.hw-grid.is-resizing .hw-widget.is-search.is-edit:hover .files-search,
-.hw-grid.is-resizing .hw-widget.is-build.is-edit:hover .home-composer {
+.hw-grid.is-resizing .hw-widget.is-search.is-edit:hover .files-search {
   border-color: var(--border);
 }
 .hw-widget.is-build .home-composer-wrap { margin-bottom: 0; }

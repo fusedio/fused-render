@@ -333,16 +333,16 @@ def test_v5_fixed_rows_override_stored_rows(tmp_path, monkeypatch):
     assert client.put("/api/home/layout", json=lay, headers=FUSED).status_code == 200
     got = client.get("/api/home/layout").json()["layout"]["widgets"]
     assert (got[0]["cols"], got[0]["rows"]) == (8, 1)
-    assert (got[1]["cols"], got[1]["rows"]) == (8, 3)
+    assert (got[1]["cols"], got[1]["rows"]) == (8, 4)
 
 
-def test_v5_search_is_one_unit_tall_build_is_three(tmp_path, monkeypatch):
+def test_v5_search_is_one_unit_tall_build_is_four(tmp_path, monkeypatch):
     client, _ = _client(tmp_path, monkeypatch)
     ok = _v5(("s", "search", "4x1", 0, 0), ("a", "apps", "4x1", 0, 1))
     assert client.put("/api/home/layout", json=ok, headers=FUSED).status_code == 200
-    bad = _v5(("b", "build", "4x1", 0, 0), ("a", "apps", "4x1", 0, 2))
+    bad = _v5(("b", "build", "4x1", 0, 0), ("a", "apps", "4x1", 0, 3))
     assert client.put("/api/home/layout", json=bad, headers=FUSED).status_code == 400
-    ok = _v5(("b", "build", "4x1", 0, 0), ("a", "apps", "4x1", 0, 3))
+    ok = _v5(("b", "build", "4x1", 0, 0), ("a", "apps", "4x1", 0, 4))
     assert client.put("/api/home/layout", json=ok, headers=FUSED).status_code == 200
 
 

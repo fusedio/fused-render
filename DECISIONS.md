@@ -6652,3 +6652,7 @@ In edit mode the Build an app stand-in stretches to fill its 3-unit frame (input
 ## 2026-10-08 — Home adopts the "Workbench" layout
 
 View mode no longer renders spacers for empty rows (they made 84px voids that split the page into bands); the Build composer renders as a 760px centred hero with a headline and left-aligned samples; DEFAULT_LAYOUT is search, build, a bots/index/tasks row, apps, recents. Saved layouts are not migrated.
+
+## 2026-10-08 — Build an app takes 4 unit rows and is the same block in both modes
+
+Build an app takes 4 unit rows (was 3) and renders the same block in both modes: headline, a 760px centred composer and the chips row. The edit stand-in sits in a full-width card outline, like the other widgets. Stored v5 layouts grow the build in place and push the widgets below it down a row (`growFixedRows`), so no version bump is needed.

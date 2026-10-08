@@ -58,11 +58,11 @@ test("default layout is the Workbench: search, build, a status row, apps, recent
   expect(DEFAULT_LAYOUT.widgets.map((x) => [x.source, x.size, x.x, x.y])).toEqual([
     ["search", "4x1", 0, 0],
     ["build", "4x1", 0, 1],
-    ["bots", "1x1", 0, 4],
-    ["index", "1x1", 2, 4],
-    ["tasks", "2x1", 4, 4],
-    ["apps", "4x1", 0, 6],
-    ["recents", "4x1", 0, 8],
+    ["bots", "1x1", 0, 5],
+    ["index", "1x1", 2, 5],
+    ["tasks", "2x1", 4, 5],
+    ["apps", "4x1", 0, 7],
+    ["recents", "4x1", 0, 9],
   ]);
 });
 
@@ -569,9 +569,9 @@ test("dimsOf falls back to dims(size) and honours cols/rows", () => {
 test("search and build have a fixed height; presets mean width only", () => {
   expect(dimsOf({ source: "search", size: "4x1" })).toEqual({ cols: 8, rows: 1 });
   expect(dimsOf({ source: "search", size: "4x1", cols: 4, rows: 2 })).toEqual({ cols: 4, rows: 1 });
-  expect(dimsOf({ source: "build", size: "2x1" })).toEqual({ cols: 4, rows: 3 });
+  expect(dimsOf({ source: "build", size: "2x1" })).toEqual({ cols: 4, rows: 4 });
   expect(minFootprint("search")).toEqual({ cols: 2, rows: 1 });
-  expect(minFootprint("build")).toEqual({ cols: 4, rows: 3 });
+  expect(minFootprint("build")).toEqual({ cols: 4, rows: 4 });
   expect(minFootprint("apps")).toEqual({ cols: 2, rows: 2 });
 });
 
@@ -582,7 +582,7 @@ test("resizeTo and resizeByArrow cannot change a fixed-row widget's height", () 
   expect(resizeByArrow(l, "b", "ArrowUp")).toBe(l);
   const narrower = resizeByArrow(l, "b", "ArrowLeft");
   expect(narrower).not.toBe(l);
-  expect(dimsOf(narrower.widgets.find((x) => x.id === "b")!)).toEqual({ cols: 7, rows: 3 });
+  expect(dimsOf(narrower.widgets.find((x) => x.id === "b")!)).toEqual({ cols: 7, rows: 4 });
   expect(resizeTo(l, "s", 4, 7).widgets.find((x) => x.id === "s")).toMatchObject({ size: "2x1" });
 });
 
@@ -591,6 +591,21 @@ test("presetFor and allowedSizes treat search width only", () => {
   expect(presetFor("search", 8, 3)).toBe("4x1");
   const l = lay(w("s", "search", "1x1", "bar", 0, 0), w("a", "apps", "4x1", "cards", 0, 1));
   expect(allowedSizes(l, "s")).toEqual(["4x1", "2x1", "1x1"]);
+});
+
+test("normalizeLayout grows a v5 build stored at 3 rows to 4 and pushes what sits below it down", () => {
+  const out = normalizeLayout({
+    version: 5,
+    widgets: [
+      w("s", "search", "4x1", "bar", 0, 0),
+      { ...w("b", "build", "4x1", "bar", 0, 1), cols: 8, rows: 3 },
+      w("a", "apps", "4x1", "cards", 0, 4),
+    ],
+  });
+  const b = out.widgets.find((x) => x.id === "b")!;
+  expect(b.y).toBe(1);
+  expect(dimsOf(b).rows).toBe(4);
+  expect(out.widgets.find((x) => x.id === "a")!.y).toBe(5);
 });
 
 test("normalizeLayout v4 -> v5 shrinks search/build and collapses only the vacated rows", () => {
@@ -615,8 +630,8 @@ test("normalizeLayout v4 -> v5 shrinks search/build and collapses only the vacat
     widgets: [{ ...w("b", "build", "4x1", "bar", 0, 4), cols: 8, rows: 5 }, w("a", "apps", "4x1", "cards", 0, 9)],
   });
   expect(build.widgets.find((x) => x.id === "b")).toMatchObject({ y: 4 });
-  expect(dimsOf(build.widgets.find((x) => x.id === "b")!).rows).toBe(3);
-  expect(build.widgets.find((x) => x.id === "a")!.y).toBe(7);
+  expect(dimsOf(build.widgets.find((x) => x.id === "b")!).rows).toBe(4);
+  expect(build.widgets.find((x) => x.id === "a")!.y).toBe(8);
 
   // A search with a v4 `rows: 2` is not rejected.
   const stored = normalizeLayout({ version: 4, widgets: [{ ...w("s", "search", "4x1", "bar", 0, 0), cols: 8, rows: 2 }] });
