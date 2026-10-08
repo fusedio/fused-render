@@ -9,11 +9,11 @@ export const SIDEBAR_DEFAULT_WIDTH = 232;
 
 // What the sidebar occupies while COLLAPSED — the icon rail, and not zero: the
 // panel is still on screen, wearing a narrower shape. Duplicated as a literal in
-// `#sidebar.sidebar-collapsed` (styles/sidebar.css, where the 44 is argued); it
+// `#sidebar.sidebar-collapsed` (styles/sidebar.css, where the 48 is argued); it
 // is here as well because the reopen drag measures its pull from the rail's outer
 // edge, and reading a width back out of a stylesheet to do arithmetic on it is
 // worse than one number written down twice with a note at each end.
-export const SIDEBAR_RAIL_WIDTH = 44;
+export const SIDEBAR_RAIL_WIDTH = 48;
 
 export interface SidebarState {
   width: number;

@@ -56,7 +56,7 @@ export const homeTour: Tour = {
       // and reads as pointing at nothing.
       element: ".sidebar-bookmarks .sidebar-heading",
       popover: {
-        title: "Bookmarks",
+        title: "Favourites",
         description: "Save any view here for one-click return.",
       },
     },

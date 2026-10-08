@@ -201,7 +201,7 @@ export function SidebarFrame({
   const { width: sidebarWidth, collapsed: sidebarCollapsed } = useSidebarState();
   // THE TUCK. Collapsing used to CLIP: the rail and the expanded panel are two
   // different subtrees (see the collapsed branch below), swapped the instant
-  // the flag flips, so the 200ms the nav spends narrowing to 44px showed the
+  // the flag flips, so the 200ms the nav spends narrowing to 48px showed the
   // RAIL already in place with `overflow-x: hidden` cutting it — a width
   // animation with nothing animating inside it.
   //
@@ -267,7 +267,7 @@ export function SidebarFrame({
   // `startEdge` and `restoreWidth` are TWO NUMBERS because they are two facts, and
   // one field holding both was a bug. `startEdge` is where the panel's outer edge
   // physically STOOD at pointerdown, which the implied width is measured from —
-  // and on the collapsed rail that is 44px, not the width the panel remembers.
+  // and on the collapsed rail that is 48px, not the width the panel remembers.
   // `restoreWidth` is the width the panel gets BACK if this drag shuts it.
   //
   // Conflated, a reopen drag measured its pull from the remembered width (≥180 by
@@ -325,7 +325,7 @@ export function SidebarFrame({
     if (Math.abs(e.clientX - drag.startX) >= 5) lastHandlePressRef.current = null;
     // IMPLIED WIDTH — how wide the pointer is asking this panel to be, which for a
     // LEFT-hand panel grows with clientX. Measured from where the panel's outer
-    // edge stood when the drag began (the rail's 44px when it began collapsed), so
+    // edge stood when the drag began (the rail's 48px when it began collapsed), so
     // the seam stays under the cursor rather than jumping to it.
     const implied = drag.startEdge + (e.clientX - drag.startX);
     const next = drag.fromCollapsed
@@ -452,7 +452,7 @@ export function SidebarFrame({
         would lag the cursor. `sidebar-no-transition` is that suppression.
 
         MID-TUCK the nav is already `sidebar-collapsed` — it is narrowing to the
-        rail's 44px — while still holding these expanded children, which is the
+        rail's 48px — while still holding these expanded children, which is the
         whole trick (see `tucking` above). The inline width must go with it, or
         it would outrank the class and the panel would not narrow at all. */}
     <nav

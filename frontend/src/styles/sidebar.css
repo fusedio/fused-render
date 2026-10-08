@@ -162,13 +162,20 @@ body:has(.sidebar-resize-handle.resizing) {
 /* Collapsed sidebar = an icon rail: the reopen control on top (the SAME one
    on every route — an explorer-only topbar button briefly competed with it,
    so which control you reached for depended on where you were), then the
-   owner's section icons (SidebarRailItem). 44px holds a centred column of the
+   owner's section icons (SidebarRailItem). 48px holds a centred column of the
    28px controls the bars use, self-contained — no tab protruding over
-   #content like the old 20px strip needed. */
+   #content like the old 20px strip needed. 48 and not 44 (owner, 2026-10-08:
+   "keep the icon almost the same position when open and close"): a 28px
+   button centred in 48 puts its glyph's centre on x=24, which is where the
+   expanded Projects and Favourites glyphs sit (8 + 4 + 12; the nav rows' are
+   2px further in). In 44 the rail's column stood 2–4px left of every expanded
+   icon, so each collapse nudged the whole column sideways. */
 #sidebar.sidebar-collapsed {
-  flex: 0 0 44px;
-  width: 44px;
+  flex: 0 0 48px;
+  width: 48px;
   align-items: center;
+  /* The rail's dividers (.sidebar-rail-sep, where it is argued). */
+  --rail-sep: color-mix(in srgb, var(--fg) 22%, transparent);
   /* Puts the expand control's centre on 24px — the line the sidebar header,
      #breadcrumb and the app header all stand on — so the control keeps its
      position across collapse and expand, on every route. */
@@ -227,7 +234,7 @@ a.sidebar-rail-btn {
   gap: 4px;
   margin-top: 8px;
   padding-top: 8px;
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--rail-sep);
   flex: 1 1 auto;
   min-height: 0;
 }
@@ -254,17 +261,33 @@ a.sidebar-rail-btn {
   display: none;
 }
 
-/* Rail doors into the Projects and Bookmarks sections (GlobalSidebar). */
+/* Rail doors into the Projects and Favourites sections (GlobalSidebar). THE
+   EXPANDED ROW'S SIZES, exactly (.current-app-icon, .bookmark-glyph below):
+   24px svg, 22px raster, 15px glyph / 19px custom emoji. They were 16/14 —
+   the nav icons' size — so every app icon shrank by a third on collapse and
+   grew back on expand (owner, 2026-10-08: "make the icon size the same when
+   open and close"). The nav icons ARE 16px at both widths and stay so. */
 .sidebar-rail-app-icon {
-  width: 16px;
-  height: 16px;
+  width: 24px;
+  height: 24px;
   display: block;
+  object-fit: cover;
+  border-radius: 4px;
 }
 .sidebar-rail-app-icon.is-raster {
-  border-radius: 4px;
-  object-fit: cover;
+  width: 22px;
+  height: 22px;
 }
 .sidebar-rail-bm-glyph {
+  font-size: 15px;
+  line-height: 1;
+}
+.sidebar-rail-bm-glyph.custom-icon {
+  font-size: 19px;
+}
+/* The Projects section's "+ New app" row, on the rail: the row's own glyph
+   (.current-app-new .current-app-glyph), 14px. */
+.sidebar-rail-new-glyph {
   font-size: 14px;
   line-height: 1;
 }
@@ -300,13 +323,21 @@ a.sidebar-rail-btn {
 }
 
 /* Group boundary inside the rail — stands in for the expanded sidebar's
-   uppercase headings. */
+   uppercase headings. Its own colour, not --border: against --bg-alt the
+   panel border is ~1.3:1 and the line vanished (owner, 2026-10-08: "the
+   separator doesn't have enough contrast"). The foreground at 22% lands
+   ~2.2:1 in both themes — a rule you can see, still quieter than any glyph
+   beside it. The rail's top divider (.sidebar-rail-items) wears the same. */
 .sidebar-rail-sep {
   width: 28px;
   height: 1px;
   flex-shrink: 0;
-  margin: 4px 0;
-  background: var(--border);
+  /* 24px each side, not 4: the margin + heading it stands in for are ~48px
+     tall (20 + 28), so the rail's "+" and app icons land on the same y the
+     expanded "+ New app" and app rows hold (measured: 218/250/282 against
+     218/248/278). */
+  margin: 24px 0;
+  background: var(--rail-sep);
 }
 
 /* The flexible gap before a pinBottom cluster. */

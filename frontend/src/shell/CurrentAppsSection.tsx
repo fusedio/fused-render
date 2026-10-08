@@ -944,25 +944,32 @@ export default function CurrentAppsSection() {
           onClose={() => setIconPicker(null)}
         />
       )}
-      {composing && (
-        // The SAME composer /apps and /home show (apps/builder/HomeHero.tsx):
-        // it names, scaffolds and navigates into the new app's chat itself,
-        // and that navigation remounts the sidebar (App.tsx), which is what
-        // unmounts this modal. `onCreated` closes it for the case where the
-        // composer stays put (no chat run started).
-        <Modal
-          title="New app"
-          onClose={() => setComposing(false)}
-          width={640}
-          dialogClassName="current-apps-compose"
-          // The composer arrives with its own skin (chips, pickers, the round
-          // send button); the chassis' form vocabulary would re-style every
-          // button in it. Owner: "we should not be redesigning anything".
-          plainBody
-        >
-          <HeroComposer onCreated={() => setComposing(false)} />
-        </Modal>
-      )}
+      {composing && <NewAppModal onClose={() => setComposing(false)} />}
     </div>
+  );
+}
+
+/** The "New app" composer, in a modal. Opened by the "+ New app" row above
+ *  and by the collapsed rail's "+" (GlobalSidebar) — the rail swaps this
+ *  section out, so the modal cannot live only here. */
+export function NewAppModal({ onClose }: { onClose: () => void }) {
+  // The SAME composer /apps and /home show (apps/builder/HomeHero.tsx):
+  // it names, scaffolds and navigates into the new app's chat itself,
+  // and that navigation remounts the sidebar (App.tsx), which is what
+  // unmounts this modal. `onCreated` closes it for the case where the
+  // composer stays put (no chat run started).
+  return (
+    <Modal
+      title="New app"
+      onClose={onClose}
+      width={640}
+      dialogClassName="current-apps-compose"
+      // The composer arrives with its own skin (chips, pickers, the round
+      // send button); the chassis' form vocabulary would re-style every
+      // button in it. Owner: "we should not be redesigning anything".
+      plainBody
+    >
+      <HeroComposer onCreated={onClose} />
+    </Modal>
   );
 }

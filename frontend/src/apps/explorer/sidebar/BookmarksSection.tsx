@@ -1016,10 +1016,10 @@ export default function BookmarksSection() {
         <div className="sidebar-bookmarks-head" ref={headRef}>
           <div
             className={"sidebar-heading recents-heading" + (sectionCollapsed ? " collapsed" : "")}
-            title={sectionCollapsed ? "Show bookmarks" : "Hide bookmarks"}
+            title={sectionCollapsed ? "Show favourites" : "Hide favourites"}
             onClick={toggleSectionCollapsed}
           >
-            Bookmarks
+            Favourites
             <span className="sidebar-heading-chevron" aria-hidden="true" />
             {/* `.sidebar-count-chip` is the shared skin every count in this sidebar
                 wears — the folder rows' nested count and the Tasks entry's unread
@@ -1034,7 +1034,7 @@ export default function BookmarksSection() {
         </div>
         {!sectionCollapsed &&
           (items.length === 0 ? (
-            <div className="sidebar-empty">No bookmarks yet</div>
+            <div className="sidebar-empty">No favourites yet</div>
           ) : (
             renderItems(treeItems, null)
           ))}
