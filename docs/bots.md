@@ -435,8 +435,8 @@ one bot's window), encrypt, Chrome-profile import and delete. Super Bot's
 browser is named "Super Bot" and is the default choice in New bot: the seeded
 Super Bot carries `meta["setup"]` (SUPER_SETUP) until Claude is linked
 (`Bot._maybe_super_setup` on the routines tick), then signs its browser in to
-Google and offers the social presets (SOCIAL_PRESETS), creating each chosen
-one with `bot_create logins_from "Super Bot"` so one Google sign-in serves
+Google and offers the social presets (SOCIAL_PRESETS), creating every chosen
+one in a single `bot_create` (one entry each, `logins_from "Super Bot"`) so one Google sign-in serves
 them all. `logins_from` takes a bot's name or a browser's name.
 
 Everything in `agents.py` that is not the model loop: create/clone/delete,
@@ -1412,9 +1412,17 @@ user approval always". Built on the §11 hand-off mold (roster, refusal in
 
 **Tools** (`tools.MANAGE_TOOLS`, in `SUPER_TOOLS` with the hand-off pair:
 Super Bot's roster only, `execute()` refuses them on any other bot).
-`bot_create {name, instructions?, model?, effort?, preset?, face?}` makes
-an ORDINARY bot (`kind` is never a parameter; a second Super Bot is
-impossible here). `bot_settings {bot, name?, instructions?, model?,
+`bot_create {bots: [{name, instructions?, model?, effort?, preset?, face?,
+logins_from?}, …]}` makes one or more ORDINARY bots behind ONE card (`kind`
+is never a parameter; a second Super Bot is impossible here). Batched
+because "make me a LinkedIn bot and an X bot" used to raise two cards in a
+row; now one card lists every bot (`• create bot …` per line) and one
+approval makes them all. `bot.manage_create_batch_check` is all or nothing:
+an empty list, more than `tools.CREATE_BATCH_CAP` (10), one entry failing
+`manage_create_check`, or two entries sharing a name refuses the whole call
+with no card. A top-level single-bot call (the pre-batch shape) still reads
+as a list of one. Creates run in order; should `bot.create` raise mid-list,
+the result names the ones made and says the rest were not. `bot_settings {bot, name?, instructions?, model?,
 effort?, face?}` changes one of the BOTS; `bot` is its current name,
 resolved exactly like a hand-off target (exact, then unique prefix; Super
 Bot's own name is refused with "your own settings are the user's"). `face`
