@@ -961,11 +961,11 @@ test("swapSource into a 4-unit tile opens card strips as a list", () => {
   expect(w.format).toBe("list");
 });
 
-test("preset card-strip tiles narrower than a full row are not cards", () => {
+test("preset card-strip tiles narrower than half a row are not cards", () => {
   for (const p of PRESETS) {
     for (const w of presetLayout(p.id).widgets) {
       if (!["apps", "playground", "sessions", "recents"].includes(w.source)) continue;
-      if (rectOf(w).cols < GRID_COLS) expect(w.format).not.toBe("cards");
+      if (rectOf(w).cols < GRID_COLS / 2) expect(w.format).not.toBe("cards");
     }
   }
 });

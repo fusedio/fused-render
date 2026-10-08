@@ -791,8 +791,8 @@ function presetRows(id: PresetId, folderId?: string): PresetRow[] {
         { source: "tasks", x: 0, y: 1, size: "2x2", format: "board", custom: { cols: 6, rows: 4 } },
         { source: "index", x: 6, y: 1, size: "1x1" },
         { source: "bots", x: 6, y: 3, size: "1x1" },
-        { source: "sessions", x: 0, y: 5, size: "2x1", format: "list" },
-        { source: "recents", x: 4, y: 5, size: "2x1", format: "list" },
+        { source: "sessions", x: 0, y: 5, size: "2x1", format: "cards" },
+        { source: "recents", x: 4, y: 5, size: "2x1", format: "cards" },
       ];
     case "files":
       return [
