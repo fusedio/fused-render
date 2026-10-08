@@ -3,7 +3,7 @@ import { basename } from "@platform/lib/format";
 import { softNavigate } from "../strip";
 import { taskHref } from "../../tasks-lib";
 import { useOpenTasks } from "../data";
-import { itemCapacity, type Widget } from "../layout";
+import { dimsOf, itemCapacity, type Widget } from "../layout";
 import { BigCount, EmptyLine, ErrorLine, ItemList, ListSkeleton, MoreLine, type WidgetItem } from "./bits";
 
 const TASKS_HREF = "/tasks";
@@ -18,10 +18,10 @@ export function laneOf(t: Pick<Task, "status">): Lane {
   return "queued";
 }
 
-const LANES: { id: Lane; label: string }[] = [
-  { id: "queued", label: "Queued" },
-  { id: "running", label: "In progress" },
-  { id: "you", label: "Needs you" },
+const LANES: { id: Lane; label: string; empty: string }[] = [
+  { id: "queued", label: "Queued", empty: "Nothing queued" },
+  { id: "running", label: "In progress", empty: "Nothing running" },
+  { id: "you", label: "Needs you", empty: "All clear" },
 ];
 
 function toItem(t: Task): WidgetItem {
@@ -59,7 +59,7 @@ export function TasksWidget({ widget }: { widget: Widget }) {
     );
   }
   if (widget.format === "board") {
-    const cap = widget.size === "2x2" ? 4 : 2;
+    const cap = widget.size === "2x2" || dimsOf(widget).rows >= 4 ? 4 : 2;
     return (
       <div className="hw-body">
         <div className="hw-board">
@@ -67,16 +67,19 @@ export function TasksWidget({ widget }: { widget: Widget }) {
             const rows = data.filter((t) => laneOf(t) === lane.id);
             const shown = rows.slice(0, cap);
             return (
-              <div key={lane.id} className="hw-lane">
+              <div key={lane.id} className={`hw-lane is-${lane.id}`}>
                 <div className="hw-lane-head">
-                  <span>{lane.label}</span>
+                  <span className="hw-lane-dot" aria-hidden="true" />
+                  <span className="hw-lane-label">{lane.label}</span>
                   <span className="hw-lane-n">{rows.length}</span>
                 </div>
+                {shown.length === 0 && <div className="hw-lane-empty">{lane.empty}</div>}
                 {shown.map((t) => {
-                  const href = taskHref(t) ?? TASKS_HREF;
+                  const { href, name, sub } = toItem(t);
                   return (
-                    <a key={t.key} className="hw-lane-card" href={href} title={t.title} onClick={(e) => softNavigate(e, href)}>
-                      {t.title || t.task_id}
+                    <a key={t.key} className="hw-lane-card" href={href} title={name} onClick={(e) => softNavigate(e, href!)}>
+                      <span className="hw-lane-title">{name}</span>
+                      <span className="hw-lane-meta">{sub}</span>
                     </a>
                   );
                 })}

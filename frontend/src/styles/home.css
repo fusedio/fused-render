@@ -1142,33 +1142,82 @@ a.hw-more:hover {
 /* Board */
 .hw-board {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+  align-items: start;
 }
 
 .hw-lane {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
+  padding: 8px;
+  border-radius: 10px;
+  background: rgba(var(--tint), 0.03);
 }
 
 .hw-lane-head {
   display: flex;
-  justify-content: space-between;
-  font-size: 11px;
+  align-items: center;
+  gap: 6px;
+  padding: 0 2px 2px;
+}
+
+.hw-lane-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--fg-muted);
+}
+.hw-lane.is-you .hw-lane-dot { background: var(--warning); }
+.hw-lane.is-running .hw-lane-dot { background: var(--success); }
+
+.hw-lane-label {
+  font-size: 11.5px;
+  font-weight: 500;
   color: var(--fg-muted);
 }
 
+.hw-lane-n {
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  color: var(--fg-muted);
+  background: rgba(var(--tint), 0.08);
+}
+
 .hw-lane-card {
-  padding: 5px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  padding: 8px 10px;
+  background: var(--bg-panel);
   border: 1px solid var(--border);
   border-radius: 8px;
-  font-size: 11.5px;
   color: var(--fg);
+  text-decoration: none;
+}
+.hw-lane-card:hover { border-color: rgba(var(--accent-rgb), 0.5); text-decoration: none; }
+
+.hw-lane-title,
+.hw-lane-meta {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.hw-lane-title { font-size: 12.5px; }
+.hw-lane-meta { font-size: 11px; color: var(--fg-muted); }
+
+.hw-lane-empty {
+  padding: 10px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  font-size: 11.5px;
+  color: var(--fg-muted);
+  text-align: center;
 }
 
 /* Format previews: static illustrations drawn at natural width. Callers scale
