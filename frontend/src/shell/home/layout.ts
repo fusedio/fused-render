@@ -186,16 +186,16 @@ function makeWidget(
   return w;
 }
 
+/** The Legacy preset: the Home page as it was before widgets — search, then
+    four full-width one-row strips. */
 export const DEFAULT_LAYOUT: HomeLayout = {
   version: LAYOUT_VERSION,
   widgets: [
     makeWidget("search", 0, 0, { id: "default-search" }),
-    makeWidget("build", 0, 1, { id: "default-build" }),
-    makeWidget("bots", 0, 5, { id: "default-bots", size: "1x1" }),
-    makeWidget("index", 2, 5, { id: "default-index", size: "1x1" }),
-    makeWidget("tasks", 4, 5, { id: "default-tasks", size: "2x1" }),
-    makeWidget("apps", 0, 7, { id: "default-apps", size: "4x1" }),
-    makeWidget("recents", 0, 9, { id: "default-recents", size: "4x1" }),
+    makeWidget("apps", 0, 1, { id: "default-apps", size: "4x1" }),
+    makeWidget("playground", 0, 3, { id: "default-playground", size: "4x1" }),
+    makeWidget("sessions", 0, 5, { id: "default-sessions", size: "4x1" }),
+    makeWidget("recents", 0, 7, { id: "default-recents", size: "4x1" }),
   ],
 };
 
@@ -735,9 +735,10 @@ export function compactLayout(layout: HomeLayout): HomeLayout {
 
 // ---- Presets and tile swap -------------------------------------------------
 
-export type PresetId = "workbench" | "builder" | "mission" | "files" | "focus";
+export type PresetId = "legacy" | "workbench" | "builder" | "mission" | "files" | "focus";
 
 export const PRESETS: { id: PresetId; name: string; blurb: string }[] = [
+  { id: "legacy", name: "Legacy", blurb: "Search, then your apps, playground, sessions and recent files." },
   { id: "workbench", name: "Workbench", blurb: "Search, the build box, and what's running." },
   { id: "builder", name: "Builder", blurb: "A big prompt box with your apps beside it." },
   { id: "mission", name: "Mission control", blurb: "Tasks board first, bots and the index at a glance." },
@@ -758,8 +759,24 @@ type PresetRow = {
 
 function presetRows(id: PresetId, folderId?: string): PresetRow[] {
   switch (id) {
+    case "legacy":
+      return [
+        { source: "search", x: 0, y: 0, size: "4x1" },
+        { source: "apps", x: 0, y: 1, size: "4x1" },
+        { source: "playground", x: 0, y: 3, size: "4x1" },
+        { source: "sessions", x: 0, y: 5, size: "4x1" },
+        { source: "recents", x: 0, y: 7, size: "4x1" },
+      ];
     case "workbench":
-      return [];
+      return [
+        { source: "search", x: 0, y: 0, size: "4x1" },
+        { source: "build", x: 0, y: 1, size: "4x1" },
+        { source: "bots", x: 0, y: 5, size: "1x1" },
+        { source: "index", x: 2, y: 5, size: "1x1" },
+        { source: "tasks", x: 4, y: 5, size: "2x1" },
+        { source: "apps", x: 0, y: 7, size: "4x1" },
+        { source: "recents", x: 0, y: 9, size: "4x1" },
+      ];
     case "builder":
       return [
         { source: "search", x: 0, y: 0, size: "4x1" },
@@ -799,9 +816,6 @@ function presetRows(id: PresetId, folderId?: string): PresetRow[] {
 /** A preset as a plain layout document with fresh ids. Files shows a bookmark
     folder when it is given one, else bots in that slot. */
 export function presetLayout(id: PresetId, opts: { folderId?: string } = {}): HomeLayout {
-  if (id === "workbench") {
-    return { version: LAYOUT_VERSION, widgets: defaultLayout().widgets.map((w) => ({ ...w, id: newWidgetId() })) };
-  }
   const widgets = presetRows(id, opts.folderId).map((r) => {
     const w = makeWidget(r.source, r.x, r.y, { size: r.size, format: r.format, folderId: r.folderId });
     if (r.custom) {
