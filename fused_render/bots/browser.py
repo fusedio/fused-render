@@ -275,12 +275,13 @@ class WS:
             raise RuntimeError("websocket upgrade refused")
         self.timeout = timeout
         self._id = 0
-        self.dialog = None  # Page.javascriptDialogOpening params, if one popped up
+        self.dialog = None       # Page.javascriptDialogOpening params while one is open
+        self.dialog_seen = None  # the last one that opened on this connection, kept past its close (the action's report)
         self.dom_enabled = False
 
     def _note(self, msg):
         if msg.get("method") == "Page.javascriptDialogOpening":
-            self.dialog = msg.get("params") or {}
+            self.dialog = self.dialog_seen = msg.get("params") or {}
         elif msg.get("method") == "Page.javascriptDialogClosed":
             self.dialog = None
 
@@ -1787,8 +1788,8 @@ class Browser:
         ws.sock.settimeout(3)
         try:
             ws.call("Runtime.evaluate", expression="1", returnByValue=True)
-            if ws.dialog:  # it opened during the action and the live view (watching) already accepted it: still worth telling
-                d, ws.dialog = ws.dialog, None
+            if ws.dialog_seen:  # it opened during the action and the live view (watching) already accepted it: still worth telling
+                d, ws.dialog_seen = ws.dialog_seen, None
                 return f"{d.get('type', 'dialog')}: {d.get('message', '')}".strip()
             return None
         except socket.timeout:
@@ -1800,7 +1801,7 @@ class Browser:
             ws.call("Page.handleJavaScriptDialog", accept=True)
         except Exception:
             return None
-        ws.dialog = None
+        ws.dialog = ws.dialog_seen = None
         return f"{d.get('type', 'dialog')}: {d.get('message', '')}".strip()
 
     @staticmethod
