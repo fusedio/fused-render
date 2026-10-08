@@ -768,6 +768,20 @@
   min-width: 0;
 }
 
+/* A list fills the height its tile really has; ItemList measures it and shows
+   extra rows past the nominal capacity. */
+.hw-body:has(> .hw-list-wrap) {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.hw-body > .hw-list-wrap {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
 /* Cards strip: one scrolling grid, `--hw-rows` tall. Cards are always 330px
    wide. When the items overflow they shrink only as much as needed (never
    below 240px) so n cards, n gaps and a peek of the next card fit; they never

@@ -1,6 +1,6 @@
 // Small pieces every widget body shares: list rows, icon tiles, the "+N more"
 // line, and the error / empty states.
-import type { ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { softNavigate } from "../strip";
 
 export interface WidgetItem {
@@ -28,11 +28,62 @@ function ItemLink({ item, className, children }: { item: WidgetItem; className: 
   );
 }
 
+/** Fallback row height when no row has rendered yet. */
+const ROW_FALLBACK = 44;
+
+/**
+ * Whole rows (times `cols` items per row) that `free` px of spare height buys,
+ * given rows `rowH` px tall. Negative when the content overflows by a row or
+ * more, so callers can shrink back.
+ */
+export function fitExtra(free: number, rowH: number, cols = 1): number {
+  if (!(rowH > 0) || !Number.isFinite(free)) return 0;
+  const lines = Math.floor(free / rowH);
+  return lines === 0 ? 0 : lines * Math.max(1, cols);
+}
+
+/**
+ * How many rows beyond `cap` the list wrapper's real height has room for. A
+ * tile often renders taller than its nominal size (a neighbour stretches the
+ * grid row), so `cap` is only the minimum. Extra rows only consume spare
+ * height, so they never grow the tile.
+ */
+function useFitRows(total: number, cap: number) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [extra, setExtra] = useState(0);
+  const measure = () => {
+    const wrap = ref.current;
+    if (!wrap) return;
+    const ul = wrap.querySelector<HTMLElement>(".hw-list");
+    if (!ul) return;
+    const li = ul.querySelector<HTMLElement>(".hw-li");
+    const more = wrap.querySelector<HTMLElement>(".hw-more");
+    const rowH = (li?.offsetHeight || 0) || ROW_FALLBACK;
+    const cols = Math.max(1, getComputedStyle(ul).gridTemplateColumns.split(" ").filter(Boolean).length);
+    const free = wrap.clientHeight - ul.offsetHeight - (more ? more.offsetHeight : 0);
+    const room = Math.max(0, total - cap);
+    setExtra((prev) => {
+      const next = Math.min(room, Math.max(0, prev + fitExtra(free, rowH, cols)));
+      return next === prev ? prev : next;
+    });
+  };
+  useLayoutEffect(measure);
+  useEffect(() => {
+    const wrap = ref.current;
+    if (!wrap || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(wrap);
+    return () => ro.disconnect();
+  });
+  return { ref, extra };
+}
+
 export function ItemList({ items, cap, moreHref, variant }: { items: WidgetItem[]; cap: number; moreHref?: string; variant?: "tall" }) {
-  const shown = items.slice(0, cap);
+  const { ref, extra } = useFitRows(items.length, cap);
+  const shown = items.slice(0, cap + extra);
   const more = items.length - shown.length;
   return (
-    <div className={variant === "tall" ? "hw-list-wrap is-tall" : "hw-list-wrap"}>
+    <div ref={ref} className={variant === "tall" ? "hw-list-wrap is-tall" : "hw-list-wrap"}>
       <ul className="hw-list">
         {shown.map((it) => (
           <li key={it.key} className="hw-li">

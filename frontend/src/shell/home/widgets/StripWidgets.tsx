@@ -46,7 +46,7 @@ export function SessionsWidget({ widget }: { widget: Widget }) {
   const cards = widget.format === "cards";
   const { ref, count, limit } = useStripCount();
   const cap = cards ? (count ?? 0) : itemCapacity(widget.size, "list");
-  const sessions = useHomeSessions(cards ? limit : Math.min(cap + 1, MAX_ROW), 1);
+  const sessions = useHomeSessions(cards ? limit : MAX_ROW, 1);
   return (
     <div ref={ref} className="hw-body">
       {sessions === null ? (
