@@ -637,7 +637,13 @@ class LanApp:
             # arbitrary Python for any client that reaches the loopback
             # server), so the omission is intentional, not an oversight the
             # next socket added here should "fix".
-            query = parse_qs(scope.get("query_string", b"").decode("utf-8", "replace"),
+            # /api/run/ws is refused too: POST /api/run is scoped per request
+            # from its body (`_route`), and the socket would need the same
+            # check per MESSAGE (a frame-inspecting receive wrapper). The
+            # runtime falls back to the POST when this socket never opens, and
+            # the 6-connection WebKit cap it exists for is a loopback-windows
+            # problem, not a phone's.
+            query =parse_qs(scope.get("query_string", b"").decode("utf-8", "replace"),
                              keep_blank_values=True)
             if (_host_ok(scope) and _paired(scope) and scope["path"] == "/api/fs/events"
                     and query.get("path") and _args_in_scope(query)):

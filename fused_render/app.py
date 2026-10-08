@@ -341,8 +341,11 @@ def _start_server_thread(port: int) -> "tuple[uvicorn.Server, threading.Thread]"
     # ASGI application", lifespan failures) to the app log instead of the
     # default stderr handler with propagate=False — stderr is /dev/null under
     # a Finder launch (SPEC §50, logs.uvicorn_log_config docstring).
+    # Loopback WebSockets carry runPython results (/api/run/ws): uvicorn's default
+    # permessage-deflate would compress multi-MB replies ON the event loop for
+    # zero gain over loopback, so it is off.
     config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning",
-                            log_config=uvicorn_log_config())
+                            log_config=uvicorn_log_config(), ws_per_message_deflate=False)
     server = uvicorn.Server(config)
     # Named so a crashlog/threading.excepthook line and the D6 watchdog's
     # "server thread died" line both say WHICH thread it was.

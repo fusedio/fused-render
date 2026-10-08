@@ -664,10 +664,20 @@ function onSepDown(e: PointerEvent) {
 
 // ---------- lifecycle ----------
 let timer: ReturnType<typeof setInterval> | null = null;
+// The interval tick skips while a previous poll is still in flight: a slow /api/dock (the server busy, or the request
+// queued behind the 6-connection-per-host:port pool every WebKit window shares — measured 2026-10-08) would
+// otherwise stack a new request every 1.5 s on top of the stalled one. Explicit refresh() calls (after an action,
+// dockShown) are not gated — they must see the change, and newest-poll-wins already settles the overlap.
+let polling = false;
+function pollTick() {
+  if (polling) return;
+  polling = true;
+  void refresh().finally(() => { polling = false; });
+}
 function schedule() {
   if (timer) clearInterval(timer);
   timer = null;
-  if (document.visibilityState === "visible") timer = setInterval(refresh, 1500);
+  if (document.visibilityState === "visible") timer = setInterval(pollTick, 1500);
 }
 document.addEventListener("visibilitychange", () => { schedule(); if (document.visibilityState === "visible") refresh(); });
 window.dockShown = () => { hideMenu(); pointerGone(); refresh(); };

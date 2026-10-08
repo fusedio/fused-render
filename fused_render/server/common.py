@@ -4,7 +4,7 @@ import os
 import time
 import traceback
 import uuid
-from urllib.parse import unquote
+from urllib.parse import unquote, urlsplit
 from fastapi import Request
 from fastapi.responses import (
     JSONResponse,
@@ -209,6 +209,32 @@ def _require_fused(x_fused: str | None) -> JSONResponse | None:
     return None
 
 
+def ws_origin_ok(ws) -> bool:
+    # `_require_fused`'s guard for a WebSocket. A socket has NO CORS preflight:
+    # any website the user visits can `new WebSocket("ws://127.0.0.1:<port>/…")`
+    # and the browser opens it — cross-site WebSocket hijacking. What the
+    # browser DOES do is stamp the opening page's Origin on the handshake, and
+    # a page cannot forge it. So: the Origin must be exactly this server —
+    # scheme + host + port of the Host header the socket arrived on. Another
+    # localhost port is a different site (a dev server, another app) and is
+    # refused; a missing Origin (non-browser client) or the opaque "null"
+    # (sandboxed iframe, file://) never equals it, so both fail closed. Not
+    # authentication (D3 stands), same as X-Fused.
+    # The Host must also be a loopback name: Origin == Host alone passes a
+    # DNS-rebinding page (evil.example re-resolved to 127.0.0.1 sends a
+    # matching Origin and Host). The LAN listener refuses sockets outright
+    # (lan.py), so loopback is every legitimate caller.
+    origin = ws.headers.get("origin")
+    host = ws.headers.get("host")
+    if not origin or not host:
+        return False
+    hostname = urlsplit("//" + host).hostname or ""
+    if hostname not in ("127.0.0.1", "localhost", "::1") and not hostname.endswith(".localhost"):
+        return False
+    scheme = "https" if ws.url.scheme == "wss" else "http"
+    return origin.lower() == f"{scheme}://{host}".lower()
+
+
 async def unhandled_exception(request, exc):
     # A bare "Internal Server Error" with an empty body is undebuggable on
     # a DMG install: Finder-launched apps have no visible stderr, so the
@@ -260,6 +286,17 @@ async def unhandled_exception(request, exc):
 # reload still records as `ok`.
 
 _LOG_SKIP_PREFIXES = ("/static/", "/template-assets/", "/template-shared/")
+
+# The one exemption from no-cache below: Vite's build output under
+# shell-dist/assets/ is content-hashed (`[name]-[hash].js|css|png`, the
+# rollup default vite.config.js keeps; base `/static/shell-dist/`), so a
+# changed file is a NEW URL and the old one can never go stale. Serving them
+# immutable stops every native window from revalidating each chunk on open —
+# those all share WebKit's 6-connection HTTP/1.1 pool per host:port (measured
+# 2026-10-08), so a burst of 304 round-trips queues real API calls behind it.
+# shell-dist/index.html, runtime.js and /template-assets are NOT hashed and
+# keep no-cache (the stale-half-old-UI reason above still holds for them).
+_IMMUTABLE_PREFIX = "/static/shell-dist/assets/"
 
 async def no_cache_and_log(request, call_next):
     # The app call log's single write point (calls.py, design §4.5). begin()
@@ -337,7 +374,12 @@ async def _no_cache_and_log_inner(request, call_next, call, path, logged, start)
             elapsed_ms=(time.monotonic() - start) * 1000,
             content_length=response.headers.get("content-length"),
         )
-    response.headers["Cache-Control"] = "no-cache"
+    # 304 too: a browser refreshes a cached entry's headers from a 304, so an
+    # asset cached back when it was no-cache gets upgraded on its next look.
+    if path.startswith(_IMMUTABLE_PREFIX) and response.status_code in (200, 304):
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    else:
+        response.headers["Cache-Control"] = "no-cache"
     return response
 
 

@@ -410,15 +410,38 @@ export function setFast(on: boolean): void {
   if (S.fast === on) return;
   if (!on) autoOpened = null;
   commit({ fast: on });
+  // The pending tick may be an idle 3 s one; the live view wants its 400 ms cadence now.
+  if (on) kickLoop();
 }
 
-// Poll faster while the live view is open (tab strip, URL bar, popups), else every 1.5 s; frames come over the live view socket.
+// Poll faster while the live view is open (tab strip, URL bar, popups), else slower (loopDelay); frames come over the live view socket.
 // `loopGen` ties a loop to one startStore(): the route can unmount and remount while a poll is in flight, and the
 // old loop must not re-arm beside the new one (two loops = twice the polls).
 let loopGen = 0, loopTimer: ReturnType<typeof setTimeout> | null = null;
 export async function loop(gen = loopGen): Promise<void> {
   await poll();
-  if (gen > 0 && gen === loopGen) loopTimer = setTimeout(() => void loop(gen), S.fast ? 400 : 1500);
+  if (gen > 0 && gen === loopGen) loopTimer = setTimeout(() => { loopTimer = null; void loop(gen); }, loopDelay());
+}
+// How long until the next /api/bots poll. This poll was ~40% of every request in a live log (2026-10-08), and every
+// native window shares WebKit's 6-connection HTTP/1.1 pool per host:port — so the idle cadence is a real tax on
+// every other window's calls. Live view open: 400 ms (tab strip, URL bar, popups). A bot RUNNING: 1.5 s, the old
+// rate, so steps and replies stream. Nothing running (idle / waiting on you / paused / error): 3 s — nothing moves
+// server-side without a run, and your own actions poll at once through act(). Hidden window: 5 s, NOT paused —
+// this poll is what raises the OS notification / chime for a question, approval or hand-over (notify.ts fires them
+// precisely when the tab is hidden), so stopping it would silence the alarm for the window you are away from; the
+// visibilitychange hook in startStore catches up the moment the window shows again.
+function loopDelay(): number {
+  if (typeof document !== "undefined" && document.hidden) return 5000;
+  if (S.fast) return 400;
+  return S.bots.some((b) => b.status === "running") ? 1500 : 3000;
+}
+// Poll now instead of waiting out the pending delay. Only when a timer is PENDING — mid-poll the chain re-arms on
+// its own (with the new delay), and starting another loop here would run two side by side.
+function kickLoop(): void {
+  if (loopGen <= 0 || !loopTimer) return;
+  clearTimeout(loopTimer);
+  loopTimer = null;
+  void loop(loopGen);
 }
 
 /** Boot: wire the api hooks and URL listeners, start the loop. Returns the teardown. Call once per mount (App).
@@ -437,12 +460,16 @@ export function startStore(): () => void {
   const gen = Math.abs(loopGen) + 1;
   loopGen = gen;
   void loop(gen);
+  // Shown again: poll now rather than waiting out the (up to 5 s) hidden-window delay.
+  const onVisible = () => { if (!document.hidden && loopGen === gen) kickLoop(); };
+  document.addEventListener("visibilitychange", onVisible);
   // The store outlives the route: coming back to /bots with the selected bot still mid-hand-over reopens Stage (the
   // poll diff only fires on the flip, which happened while you were away).
   if (stageable(cur())) requestStage(S.sel!);
   return () => {
     if (loopGen === gen) loopGen = -gen;  // stops this loop; a newer mount has already moved loopGen on
-    if (loopTimer) clearTimeout(loopTimer);
+    if (loopTimer) { clearTimeout(loopTimer); loopTimer = null; }  // null: kickLoop reads a non-null timer as "pending"
+    document.removeEventListener("visibilitychange", onVisible);
     if (S.ui.dialog || S.ui.panel || S.ui.menu) commit({ ui: { dialog: null, panel: null, menu: null } });  // a route change closes them
     pendingStage = null; if (S.fast) closeStage();  // Stage does not outlive the route (and a queued auto-open must not fire into it)
     window.removeEventListener("popstate", onUrlChange);

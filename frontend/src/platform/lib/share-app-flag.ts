@@ -26,7 +26,7 @@
 // pref's own default, so the worst a click inside the first read's window can
 // do is behave like a machine that never turned the feature on.
 import { useEffect, useState } from "react";
-import { getPrefs } from "@platform/lib/api";
+import { getPrefsShared } from "@platform/lib/api";
 
 /** The last answer, or `null` while nobody has asked yet. Null renders as OFF:
  *  the flag defaults off, so showing Export until the answer lands never
@@ -45,7 +45,7 @@ function set(next: boolean) {
 function read(): Promise<void> {
   if (reading) return reading;
   const departed = generation;
-  reading = getPrefs()
+  reading = getPrefsShared() // single-flight across flag modules (api.ts)
     .then((p) => {
       // `=== true`: opt-in, so a server that predates the field reads as off.
       if (generation === departed) set(p.app_sharing?.enabled === true);

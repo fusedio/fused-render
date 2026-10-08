@@ -14,6 +14,8 @@
 // X-Fused-Page, so "app" scope is not available here. A handle rides the same unscoped feed (runtime.js used an
 // `under=<dir>` feed per handle only because it had no shared unscoped one).
 
+import { requestTasksChanges } from "@platform/lib/tasksChangesSocket";
+
 /** A row of GET /api/tasks (routes/tasks.py `_row`): the fields Builds reads. */
 export interface TaskRow {
   key: string;
@@ -150,7 +152,14 @@ async function feedWatch(f: Feed, run: number) {
     let r: { generation?: number; full?: boolean; rows?: TaskRow[]; gone?: string[] };
     try {
       // `since` is the listing's own generation, so nothing slips between "listed at N" and "changes since N".
-      r = await taskFetch("GET", "/api/tasks/changes" + query(f.scope, { since: String(f.gen), wait: String(CHANGES_WAIT_S) }), undefined, ctl.signal);
+      // Over the document's tasks-changes WebSocket, the GET only where none can be had: native windows share WebKit's
+      // six HTTP/1.1 connections per host, and parked long-polls filled them (measured 2026-10-08; tasksChangesSocket).
+      const since = f.gen, scopeQ = new URLSearchParams(f.scope);
+      r = await requestTasksChanges<typeof r>(
+        { since, wait: CHANGES_WAIT_S, under: scopeQ.get("under") || undefined, scope: scopeQ.get("scope") || undefined },
+        () => taskFetch<typeof r>("GET", "/api/tasks/changes" + query(f.scope, { since: String(since), wait: String(CHANGES_WAIT_S) }), undefined, ctl.signal),
+        ctl.signal,
+      );
     } catch {
       if (ctl.signal.aborted || !live()) return;
       await sleep(BACKOFF_MS);

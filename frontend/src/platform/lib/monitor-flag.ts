@@ -14,7 +14,7 @@
 // counter is load-bearing for the same reason: a pre-toggle GET landing after
 // the publish must not write the old value back over the fresh one.
 import { useEffect, useState } from "react";
-import { getPrefs } from "@platform/lib/api";
+import { getPrefsShared } from "@platform/lib/api";
 
 /** The last answer, or `null` while nobody has asked yet. The chip treats
  *  null as OFF (the default, so nothing flashes in before the answer lands);
@@ -37,7 +37,7 @@ function set(next: boolean) {
 function read(): Promise<void> {
   if (reading) return reading;
   const departed = generation;
-  reading = getPrefs()
+  reading = getPrefsShared() // single-flight across flag modules (api.ts)
     .then((p) => {
       // `=== true`: opt-in, so a server that predates the field reads as off.
       if (generation === departed) set(p.monitor?.enabled === true);

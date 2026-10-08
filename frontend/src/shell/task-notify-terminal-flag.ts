@@ -18,7 +18,7 @@
 // only answers "is the preference on", the same narrow job every other flag
 // module in this directory does.
 import { useEffect, useState } from "react";
-import { getPrefs } from "@platform/lib/api";
+import { getPrefs, getPrefsShared } from "@platform/lib/api";
 
 let enabled: boolean | null = null;
 let reading: Promise<void> | null = null;
@@ -34,7 +34,7 @@ function set(next: boolean | null) {
 function read(): Promise<void> {
   if (reading) return reading;
   const departed = generation;
-  reading = getPrefs()
+  reading = getPrefsShared() // single-flight across flag modules (api.ts)
     // One bounded retry, then a real answer either way — a prefs GET that fails
     // is usually a single dropped request (a reload racing the server's start).
     .catch(() => getPrefs())

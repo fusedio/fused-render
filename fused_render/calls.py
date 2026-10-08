@@ -1126,10 +1126,25 @@ def begin(request: Request) -> dict | None:
     anything else hitting the API are excluded by construction rather than by
     an endpoint blocklist that would drift.
     """
-    path = request.url.path
+    return begin_from(
+        request.url.path, request.method, request.headers,
+        request.query_params.get("path") if request.method == "GET" else None,
+    )
+
+
+def begin_from(path: str, method: str, headers, touched: str | None = None) -> dict | None:
+    """`begin` without a Starlette Request: the record from its parts.
+
+    The `/api/run/ws` socket needs this (server/routers/run.py): a websocket
+    scope never passes through the HTTP middleware, and its per-run
+    "headers" ride inside each JSON message rather than on a request — the
+    browser WebSocket API cannot set handshake headers. ``headers`` is any
+    mapping with case-insensitive or lower-cased keys (``.get`` only);
+    ``method`` lands in ``http_method`` verbatim (``"WS"`` for the socket).
+    """
     if path.startswith(SKIP_PREFIXES):
         return None
-    page = _header_path(request.headers.get(PAGE_HEADER))
+    page = _header_path(headers.get(PAGE_HEADER))
     if not page:
         return None
     if not enabled():
@@ -1138,7 +1153,7 @@ def begin(request: Request) -> dict | None:
     # and that other call's record can be written at any moment. Taking the mark
     # here — the earliest point the server sees this request — is what makes the
     # header path beat the POST it replaced.
-    abandoned = request.headers.get(SUPERSEDES_HEADER)
+    abandoned = headers.get(SUPERSEDES_HEADER)
     if abandoned:
         mark_superseded([i for i in abandoned.split(",") if i][:64])
     # A read route names the file it touched in its `path` query param
@@ -1146,18 +1161,18 @@ def begin(request: Request) -> dict | None:
     # per-target rollup can say "this page stat'd that file 400 times" instead
     # of collapsing every read into one "/api/fs/stat" row — which is the shape
     # the stat-in-a-loop bug actually shows up in. /api/run and /api/fs/write
-    # overwrite it with their resolved target when they enrich.
-    touched = request.query_params.get("path") if request.method == "GET" else None
+    # overwrite it with their resolved target when they enrich. (`touched` is
+    # computed by `begin` — GET only — and handed in here.)
     return {
         "version": RECORD_VERSION,
-        "call_id": request.headers.get(CALL_HEADER) or uuid.uuid4().hex,
+        "call_id": headers.get(CALL_HEADER) or uuid.uuid4().hex,
         "kind": "call",
         "occurred_at": _now_iso(),
         "page": page,
-        "target_file": _header_path(request.headers.get(TARGET_HEADER)),
+        "target_file": _header_path(headers.get(TARGET_HEADER)),
         "first_party": is_first_party(page),
         "route": path,
-        "http_method": request.method,
+        "http_method": method,
         "status": None,
         "entrypoint": touched,
         "entrypoint_name": os.path.basename(touched) if touched else None,

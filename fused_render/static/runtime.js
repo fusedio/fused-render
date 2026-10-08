@@ -2860,6 +2860,141 @@
     );
   }
 
+  // ---- runPython transport: one WebSocket per page (/api/run/ws) -----------
+  // WebKit allows 6 HTTP/1.1 connections per host:port, and that pool is
+  // shared by EVERY native WKWebView window of the app (measured 2026-10-08).
+  // A POST /api/run holds a slot for the whole run — up to 60 s — so a couple
+  // of slow scripts plus the long-polls stalled every window. WebSockets do
+  // not count toward that cap (the same reason /api/fs/events is one, D74),
+  // so runs ride one lazily opened socket per page, id-matched so concurrent
+  // runPythons stay concurrent. The server answers each message with exactly
+  // the body the POST would (server/routers/run.py, api_run_ws).
+  //
+  // The POST stays as the fallback, chosen per PAGE, not per call: if the
+  // socket never opens (a LAN peer — LanApp refuses it — a sandboxed preview
+  // whose Origin is "null", an older server), or opens but closes before
+  // ever answering, `runTransport` flips to "http" for the page's lifetime.
+  // Only a run that was never SENT is re-routed; a run in flight when the
+  // socket drops may already have executed, so it rejects (a TypeError, the
+  // shape a failed fetch rejects with) and is never silently run twice. A
+  // socket that drops after having worked is just reopened on the next call.
+  let runTransport = "ws";
+  let runSock = null;
+  let runSeq = 0;
+  // uvicorn caps INBOUND socket messages at ws_max_size (16 MiB, in bytes);
+  // a UTF-16 code unit is at most 3 UTF-8 bytes, so 5 Mi chars stays under it.
+  // A larger request (huge params) takes the POST, which has no such cap —
+  // decided BEFORE sending, never by retrying. Replies are uncapped.
+  const RUN_WS_MAX_CHARS = 5 * 1024 * 1024;
+
+  function abortError() {
+    // What fetch rejects an aborted request with.
+    return new DOMException("The operation was aborted.", "AbortError");
+  }
+
+  function openRunSocket() {
+    if (runSock) return runSock;
+    const s = { ws: null, pending: new Map(), opened: false, replied: false, ready: null };
+    let settleReady;
+    s.ready = new Promise((resolve) => {
+      settleReady = resolve;
+    });
+    try {
+      const proto = window.location.protocol === "https:" ? "wss://" : "ws://";
+      s.ws = new WebSocket(proto + window.location.host + "/api/run/ws");
+    } catch (e) {
+      runTransport = "http";
+      return null;
+    }
+    s.ws.onopen = () => {
+      s.opened = true;
+      settleReady(true);
+    };
+    s.ws.onmessage = (ev) => {
+      let data;
+      try {
+        data = JSON.parse(ev.data);
+      } catch (e) {
+        return;
+      }
+      const entry = data && s.pending.get(data.id);
+      if (!entry) return; // aborted client-side; the server ran it anyway
+      s.pending.delete(data.id);
+      s.replied = true;
+      // Strip the envelope so the page sees the POST's body, byte for byte.
+      delete data.id;
+      delete data.status;
+      entry.resolve(data);
+    };
+    // `error` is always followed by `close`; everything is decided there.
+    s.ws.onclose = () => {
+      if (runSock === s) runSock = null;
+      // Never opened, or never answered anything: this page cannot use the
+      // socket (refused handshake, a proxy that eats frames) — POST from now on.
+      if (!s.opened || !s.replied) runTransport = "http";
+      settleReady(false);
+      const lost = Array.from(s.pending.values());
+      s.pending.clear();
+      for (const entry of lost) {
+        entry.reject(
+          new TypeError(
+            "runPython: the connection to fused-render closed while the script " +
+              "was running — it may or may not have completed, and was not re-run"
+          )
+        );
+      }
+    };
+    runSock = s;
+    return s;
+  }
+
+  // Resolve with the run's body, or with null to mean "use the POST" (decided
+  // before anything was sent). `body` is the POST's JSON body string;
+  // `headers` the POST's headers, carried in the message because a browser
+  // WebSocket cannot set any (calls.py reads the same names off either).
+  function runViaSocket(body, headers, signal) {
+    if (runTransport === "http") return Promise.resolve(null);
+    const s = openRunSocket();
+    if (!s) return Promise.resolve(null);
+    return s.ready.then((ok) => {
+      if (!ok) return null;
+      if (signal.aborted) throw abortError();
+      // Closing/closed between opening and now: forget it (its `close` may not
+      // have fired yet — without this the retry would get the same socket
+      // back) and reopen, or fall back, via the top.
+      if (s.ws.readyState !== WebSocket.OPEN) {
+        if (runSock === s) runSock = null;
+        return runViaSocket(body, headers, signal);
+      }
+      const id = ++runSeq;
+      // Splice rather than re-stringify: `body` already holds the params.
+      const msg = '{"id":' + id + ',"headers":' + JSON.stringify(headers) + "," + body.slice(1);
+      if (msg.length > RUN_WS_MAX_CHARS) return null;
+      return new Promise((resolve, reject) => {
+        // An abort (supersession or the caller's own signal) only drops the
+        // id here; the server finishes the run, exactly as with an aborted
+        // fetch, and the supersession reaches the call log the usual way.
+        const onAbort = () => {
+          s.pending.delete(id);
+          reject(abortError());
+        };
+        signal.addEventListener("abort", onAbort, { once: true });
+        const done = (fn) => (value) => {
+          signal.removeEventListener("abort", onAbort);
+          fn(value);
+        };
+        s.pending.set(id, { resolve: done(resolve), reject: done(reject) });
+        try {
+          s.ws.send(msg);
+        } catch (e) {
+          s.pending.delete(id);
+          signal.removeEventListener("abort", onAbort);
+          reject(e);
+        }
+      });
+    });
+  }
+
   // A `.py` READER IS NO LONGER THE EXCEPTION. This used to be a KNOWN GAP:
   // the read helpers above resolved a revision (readFile/rawUrl/stat) while a
   // reader script's `main()` still received the LIVE absolute path and
@@ -2928,17 +3063,25 @@
         if (params) {
           for (const key of Object.keys(params)) rewrittenParams[key] = rewritePath(params[key]);
         }
-        return fetch("/api/run", {
-          method: "POST",
-          // X-Fused forces a CORS preflight so a foreign page can't fire this
-          // execute endpoint blind (see server.py _require_fused).
-          headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" },
-                               controller._callId),
-          body: JSON.stringify({ py: pyPath, html: ownPath, params: rewrittenParams }),
-          signal: controller.signal,
-        });
+        // Built ONCE per attempt, whichever transport carries it: callHeaders
+        // drains the pending supersessions, which must ride this request.
+        // X-Fused forces a CORS preflight so a foreign page can't fire the
+        // execute endpoint blind (see server.py _require_fused); the socket's
+        // equivalent is the server's Origin check (ws_origin_ok).
+        const headers = callHeaders({ "Content-Type": "application/json", "X-Fused": "1" },
+                                    controller._callId);
+        const body = JSON.stringify({ py: pyPath, html: ownPath, params: rewrittenParams });
+        return runViaSocket(body, headers, controller.signal).then((data) =>
+          data !== null
+            ? data
+            : fetch("/api/run", {
+                method: "POST",
+                headers: headers,
+                body: body,
+                signal: controller.signal,
+              }).then((res) => res.json())
+        );
       })
-        .then((res) => res.json())
         .then((data) => {
           // A script that ran may have written anything, anywhere — and unlike
           // writeFile below there is no way to know what, so the shell is told
@@ -5642,6 +5785,228 @@
     }
   }
 
+  // THE LONG-POLL'S TRANSPORT: `/api/tasks/changes` over ONE WebSocket per
+  // page (routers/tasks.py `api_tasks_changes_ws`), the GET as the fallback.
+  // A plain-JS copy of the shell's platform/lib/tasksChangesSocket.ts — a page
+  // has no bundler — so keep the two in step.
+  //
+  // Why (measured 2026-10-08): the native app's WKWebView windows share one
+  // data store, and WebKit allows six HTTP/1.1 connections per host:port
+  // across all of them. Parked 25 s GETs — the shell's, every embed's, and a
+  // page's `fused.tasks.watch` — filled those six alone, and this page's own
+  // runPython then queued browser-side behind them. WebSockets are not counted
+  // against that cap (the same reason /api/fs/events is one, D74).
+  //
+  // Requests ride the socket by id; the answer is the GET's JSON exactly, and
+  // a refusal the GET would have answered with a status rejects with the same
+  // taskError, so feedWatch's backoff and abort handling cover both. A socket
+  // that fails to open, or closes before ANY reply, means this page cannot
+  // have one (a LAN peer, a sandboxed `Origin: null` frame): HTTP for the
+  // page's lifetime, and the request that found out is re-asked over its GET.
+  // One that answered and then dropped is a server restart: in-flight
+  // requests reject, and the next one reconnects after a doubling backoff.
+  //
+  // The socket cannot carry headers, so `page` is the X-Fused-Page value
+  // (percent-encoded, as callHeaders sends it) — what `scope=app` resolves
+  // against. Not in the app call log, which only sees HTTP requests.
+  const TASKS_WS = {
+    transport: "unknown", // "unknown" | "ws" | "http"
+    sock: null,
+    opening: null,
+    nextId: 0,
+    pending: new Map(),
+    retryAt: 0,
+    retryMs: 0,
+  };
+  const TASKS_WS_RETRY_MIN_MS = 1000;
+  const TASKS_WS_RETRY_MAX_MS = 30000;
+  // How long past its own `wait` a request may go unanswered: a half-open
+  // socket would otherwise park the loop for good, where a GET would error.
+  const TASKS_WS_GRACE_MS = 15000;
+
+  function tasksWsBackoff() {
+    const w = TASKS_WS;
+    w.retryMs = Math.min(TASKS_WS_RETRY_MAX_MS, w.retryMs ? w.retryMs * 2 : TASKS_WS_RETRY_MIN_MS);
+    w.retryAt = Date.now() + w.retryMs;
+  }
+
+  // Settle every request still waiting on socket `s`: re-asked over its GET
+  // (`fallback`) when the socket never worked, else rejected for the backoff.
+  function tasksWsSettle(s, fallback) {
+    TASKS_WS.pending.forEach((p, id) => {
+      if (p.sock !== s) return;
+      TASKS_WS.pending.delete(id);
+      clearTimeout(p.timer);
+      p.unabort();
+      if (fallback) p.fallback();
+      else p.reject(new Error("tasks changes socket closed"));
+    });
+  }
+
+  function tasksWsConnect() {
+    const w = TASKS_WS;
+    if (w.sock && w.sock.readyState === WebSocket.OPEN) return Promise.resolve(w.sock);
+    if (w.opening) return w.opening;
+    const attempt = new Promise((resolve, reject) => {
+      let s;
+      try {
+        const proto = window.location.protocol === "https:" ? "wss://" : "ws://";
+        s = new WebSocket(proto + window.location.host + "/api/tasks/changes/ws");
+      } catch (e) {
+        reject(e);
+        return;
+      }
+      let opened = false;
+      s.onopen = () => {
+        opened = true;
+        w.sock = s;
+        resolve(s);
+      };
+      s.onmessage = (ev) => {
+        let msg;
+        try {
+          msg = JSON.parse(ev.data);
+        } catch (e) {
+          return;
+        }
+        if (!msg || typeof msg !== "object") return;
+        // The first reply proves the transport for this page.
+        w.transport = "ws";
+        w.retryMs = 0;
+        w.retryAt = 0;
+        const p = typeof msg.id === "number" ? w.pending.get(msg.id) : null;
+        if (!p) return; // aborted or timed out while the server answered
+        w.pending.delete(msg.id);
+        clearTimeout(p.timer);
+        p.unabort();
+        if (typeof msg.error === "string") {
+          p.reject(taskError(typeof msg.status === "number" ? msg.status : 500, msg.error));
+          return;
+        }
+        delete msg.id;
+        p.resolve(msg);
+      };
+      // `error` is always followed by `close`, which does the bookkeeping.
+      s.onerror = () => {};
+      s.onclose = () => {
+        if (w.sock === s) w.sock = null;
+        if (!opened) {
+          reject(new Error("tasks changes socket did not open"));
+          return;
+        }
+        if (w.transport === "unknown") {
+          w.transport = "http";
+          tasksWsSettle(s, true);
+        } else {
+          tasksWsBackoff();
+          tasksWsSettle(s, false);
+        }
+      };
+    });
+    w.opening = attempt;
+    const clear = () => {
+      if (w.opening === attempt) w.opening = null;
+    };
+    attempt.then(clear, clear);
+    return attempt;
+  }
+
+  function tasksAbortError() {
+    try {
+      return new DOMException("The operation was aborted.", "AbortError");
+    } catch (e) {
+      const err = new Error("The operation was aborted.");
+      err.name = "AbortError";
+      return err;
+    }
+  }
+
+  // One `/api/tasks/changes` question for `scopeKey` (a feed's query string).
+  async function tasksChanges(scopeKey, since, signal) {
+    const w = TASKS_WS;
+    const http = () =>
+      taskFetch(
+        "GET",
+        "/api/tasks/changes" +
+          tasksQuery(scopeKey, { since: String(since), wait: String(TASKS_CHANGES_WAIT_S) }),
+        null,
+        signal
+      );
+    if (w.transport === "http" || typeof WebSocket !== "function" || !window.location.host) {
+      return http();
+    }
+    if (signal && signal.aborted) throw tasksAbortError();
+    if (w.transport === "ws" && !(w.sock && w.sock.readyState === WebSocket.OPEN) && Date.now() < w.retryAt) {
+      throw new Error("tasks changes socket reconnecting");
+    }
+    let s;
+    try {
+      s = await tasksWsConnect();
+    } catch (e) {
+      // Never opened: before any reply ever landed, this page has no socket —
+      // HTTP for good, and this request goes there now. After, the server is
+      // down or restarting: reject, back off, retry.
+      if (w.transport === "unknown") {
+        w.transport = "http";
+        return http();
+      }
+      tasksWsBackoff();
+      throw e;
+    }
+    if (signal && signal.aborted) throw tasksAbortError();
+    const id = ++w.nextId;
+    const q = new URLSearchParams(scopeKey || "");
+    const msg = { id: id, since: since, wait: TASKS_CHANGES_WAIT_S };
+    if (q.get("under")) msg.under = q.get("under");
+    if (q.get("scope")) msg.scope = q.get("scope");
+    const page = ownQuery("path");
+    if (page) msg.page = encodeURIComponent(page);
+    return new Promise((resolve, reject) => {
+      const onAbort = () => {
+        if (!w.pending.delete(id)) return;
+        clearTimeout(entry.timer);
+        // Tell the server too, so its waiter goes now rather than in 25 s.
+        try {
+          if (s.readyState === WebSocket.OPEN) s.send(JSON.stringify({ cancel: id }));
+        } catch (e) {
+          /* the socket is going anyway */
+        }
+        reject(tasksAbortError());
+      };
+      const entry = {
+        sock: s,
+        resolve: resolve,
+        reject: reject,
+        fallback: () => {
+          http().then(resolve, reject);
+        },
+        timer: setTimeout(() => {
+          if (!w.pending.delete(id)) return;
+          entry.unabort();
+          try {
+            s.send(JSON.stringify({ cancel: id }));
+          } catch (e) {
+            /* already closed */
+          }
+          reject(new Error("tasks changes socket: no reply"));
+        }, TASKS_CHANGES_WAIT_S * 1000 + TASKS_WS_GRACE_MS),
+        unabort: () => {
+          if (signal) signal.removeEventListener("abort", onAbort);
+        },
+      };
+      w.pending.set(id, entry);
+      if (signal) signal.addEventListener("abort", onAbort);
+      try {
+        s.send(JSON.stringify(msg));
+      } catch (e) {
+        w.pending.delete(id);
+        clearTimeout(entry.timer);
+        entry.unabort();
+        reject(e);
+      }
+    });
+  }
+
   function feedFold(feed, rows, gone) {
     const next = new Map();
     // Rows that moved had activity: they go to the front, newest first like
@@ -5674,14 +6039,9 @@
       try {
         // `since` is the listing's own generation when it sent one, so
         // nothing slips between "listed at N" and "changes since N"; else -1,
-        // a handshake that only learns the generation.
-        r = await taskFetch(
-          "GET",
-          "/api/tasks/changes" +
-            tasksQuery(feed.scope, { since: String(feed.gen), wait: String(TASKS_CHANGES_WAIT_S) }),
-          null,
-          ctl.signal
-        );
+        // a handshake that only learns the generation. Over the page's socket
+        // where it has one, the GET otherwise (tasksChanges, above).
+        r = await tasksChanges(feed.scope, feed.gen, ctl.signal);
       } catch (e) {
         if (ctl.signal.aborted || !live()) return;
         await taskSleep(TASKS_BACKOFF_MS);

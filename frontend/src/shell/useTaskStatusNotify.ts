@@ -80,8 +80,19 @@ import { taskColumn } from "@shell/tasks-lib";
 import { notificationForTransition } from "@shell/task-status-notify";
 import { useTaskNotifyTerminalSessions } from "@shell/task-notify-terminal-flag";
 
+// NOT EVEN SUBSCRIBED IN AN EMBED PANE (2026-10-08). The effect guard below
+// stopped an embed from RAISING, but `useTasksPulseRows()` above it still
+// counted the pane as a reader — and a reader with nobody feeding it opens the
+// document's listing feed, i.e. a `/api/tasks/changes` long-poll per embed
+// iframe. In the native app every window shares WebKit's six HTTP/1.1
+// connections per host, and those long-polls alone filled them (measured
+// 2026-10-08). The rows are thrown away in an embed anyway, so the pane now
+// asks for none. A TOP embed is a whole window and keeps both its rows and
+// its notices, as above (its feed rides the socket now and costs no slot).
+const READS_TASK_ROWS = !(IS_EMBED && !IS_TOP_EMBED);
+
 export function useTaskStatusNotify(): void {
-  const tasks = useTasksPulseRows();
+  const tasks = useTasksPulseRows(READS_TASK_ROWS);
   const previous = useRef<Map<string, string>>(new Map());
   const watchStartS = useRef<number | null>(null);
   // The Preferences toggle (default off — see task-notify-terminal-flag.ts's

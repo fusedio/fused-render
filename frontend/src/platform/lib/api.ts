@@ -260,7 +260,11 @@ export async function mutateJson<T>(
   return data as T;
 }
 
-const putJson = <T>(url: string, body: unknown) => mutateJson<T>("PUT", url, body);
+const putJson = <T>(url: string, body: unknown) => {
+  // See getPrefsShared: a write orphans the shared pre-write read.
+  if (url === "/api/prefs") prefsInFlight = null;
+  return mutateJson<T>("PUT", url, body);
+};
 export const postJson = <T>(
   url: string,
   body: unknown,
@@ -1555,6 +1559,31 @@ export function hfLogout(): Promise<HfAuth> {
 
 export function getPrefs(): Promise<Prefs> {
   return getJson<Prefs>("/api/prefs");
+}
+
+// Single-flight prefs GET for the feature-flag modules' first reads. Each
+// flag module (bots, canvases, claude queue, share, live previews, monitor,
+// task peek, …) does its own one read on first subscribe, and they all
+// subscribe in the same mount commit — five-plus identical GETs per window
+// open. Every native window shares WebKit's 6-connection HTTP/1.1 pool per
+// host:port (measured 2026-10-08), so those duplicates queued real calls.
+// Callers that start while a GET is IN FLIGHT share it; once it settles the
+// next call fetches afresh — no resolved value is ever held, so a later
+// explicit re-read (claude's rereadFlags on visibility) still sees the
+// server. A prefs PUT drops the in-flight GET so a read begun after a write
+// can never be answered by a request sent before it (the modules' own
+// generation counters already cover the reverse race).
+let prefsInFlight: Promise<Prefs> | null = null;
+
+export function getPrefsShared(): Promise<Prefs> {
+  if (prefsInFlight) return prefsInFlight;
+  const p = getPrefs();
+  prefsInFlight = p;
+  const clear = () => {
+    if (prefsInFlight === p) prefsInFlight = null;
+  };
+  p.then(clear, clear);
+  return p;
 }
 
 export function putEnginePref(engine: "builtin" | "fused"): Promise<Prefs> {

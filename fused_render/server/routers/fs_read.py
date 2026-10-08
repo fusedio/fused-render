@@ -353,7 +353,45 @@ async def _api_fs_raw_read(path: str, request: Request, base: str | None,
             "accept-ranges": "bytes",
             "last-modified": email.utils.formatdate(st.st_mtime, usegmt=True),
         })
-    return FileResponse(path, media_type=media_type or "application/octet-stream")
+    # Hand FileResponse the stat we already took: it then sets its ETag /
+    # Last-Modified from it (no second stat), and the validators we compare
+    # below are byte-for-byte the ones it would send — whatever Starlette's
+    # own etag recipe is in this version, we never re-derive it.
+    resp = FileResponse(path, media_type=media_type or "application/octet-stream",
+                        stat_result=st)
+    # Conditional GET. FileResponse sends validators but never answers 304
+    # itself, so the browser's revalidation of a cached raw file (images,
+    # data files a page re-reads) re-downloaded the whole body every time.
+    # Every native window shares WebKit's 6-connection HTTP/1.1 pool per
+    # host:port (measured 2026-10-08), so a short 304 frees a slot sooner.
+    # If-None-Match wins over If-Modified-Since (RFC 9110 §13.2.2).
+    if _not_modified(request, resp.headers.get("etag"), st.st_mtime):
+        return Response(status_code=304, headers={
+            "etag": resp.headers["etag"],
+            "last-modified": resp.headers["last-modified"],
+        })
+    return resp
+
+
+def _not_modified(request: Request, etag: str | None, mtime: float) -> bool:
+    inm = request.headers.get("if-none-match")
+    if inm is not None:
+        if not etag:
+            return False
+        # Weak comparison (RFC 9110 §13.1.2): a W/ prefix on either side is
+        # ignored for a GET's If-None-Match.
+        strip = lambda t: t.strip().removeprefix("W/")
+        tags = {strip(t) for t in inm.split(",")}
+        return "*" in tags or strip(etag) in tags
+    ims = request.headers.get("if-modified-since")
+    if ims:
+        try:
+            since = email.utils.parsedate_to_datetime(ims).timestamp()
+        except (TypeError, ValueError, IndexError, OverflowError):
+            return False
+        # HTTP dates have whole-second resolution; Last-Modified truncates.
+        return int(mtime) <= since
+    return False
 
 @router.websocket("/api/fs/events")
 async def api_fs_events(ws: WebSocket):

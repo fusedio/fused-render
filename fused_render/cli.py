@@ -288,8 +288,12 @@ def _run_serve(args: argparse.Namespace) -> None:
     # `log_config`: uvicorn's default dictConfig points its loggers at stderr
     # (invisible in the packaged app) and would otherwise be the only record
     # of a bind failure or a dying worker; this routes them into the log file.
+    # Loopback WebSockets carry runPython results (/api/run/ws): uvicorn's default
+    # permessage-deflate would compress multi-MB replies ON the event loop for
+    # zero gain over loopback, so it is off.
     server = uvicorn.Server(uvicorn.Config(
-        app, host=_HOST, port=port, log_config=uvicorn_log_config()))
+        app, host=_HOST, port=port, log_config=uvicorn_log_config(),
+        ws_per_message_deflate=False))
     app.state.uvicorn_server = server
     # Local-network sharing of ~/Fused/local (lan.py): a second listener the
     # `lan_enabled` preference controls; this loopback bind is not touched.
@@ -455,7 +459,8 @@ def _run_open(args: argparse.Namespace) -> None:
 
         threading.Thread(target=_open_when_ready, daemon=True, name="fused-open-browser").start()
 
-    server = uvicorn.Server(uvicorn.Config(app, host=_HOST, port=port))
+    server = uvicorn.Server(uvicorn.Config(app, host=_HOST, port=port,
+                                           ws_per_message_deflate=False))
     app.state.uvicorn_server = server
     server.run()
 
