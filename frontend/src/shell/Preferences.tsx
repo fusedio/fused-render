@@ -1110,7 +1110,7 @@ function MenubarSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs
       <h2>Menu bar</h2>
       <p className="deploy-muted">
         Clicking the {displayName()} icon in the menu bar drops a Dock of your{" "}
-        {prefs.bots?.enabled ? "bots" : "apps"}: the ones you keep there, then the ones you used
+        {isBot() ? "bots" : "apps"}: the ones you keep there, then the ones you used
         last. Right-click a tile to keep it, drag the separator to resize. Right-click the icon for
         the app menu.
       </p>
