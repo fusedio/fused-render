@@ -98,9 +98,10 @@ def _status_bot(b, shot_for: str, fast: bool, cursors: dict) -> dict:
     running = b.thread is not None and b.thread.is_alive()
     if shot_for == b.id:
         b.last_looked = time.time()  # a shared browser's idle sleep (bot._may_sleep) must not quit under the bot on screen
-    # A popped-out window the user closed -> back to headless, bot in control. Non-blocking: a poll mid-relaunch skips.
+    # A popped-out window the user closed -> back to headless. Any bot on the (possibly shared) process may notice: the
+    # one that popped out gets control back, the others just carry on. Non-blocking: a poll mid-relaunch skips.
     try:
-        if b.browser.headed() and b.meta.get("control") and b.browser.window_closed() and b.browser.lock.acquire(blocking=False):
+        if b.browser.headed() and b.browser.window_closed() and b.browser.lock.acquire(blocking=False):
             try:
                 if b.browser.window_closed():
                     b.dock(closed=True)

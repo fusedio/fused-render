@@ -1973,13 +1973,17 @@ class Bot:
         self.emit("system", "Opened the browser as a real Chrome window on your desktop. Hand back (or close the window) when you are done." + shared)
 
     def dock(self, closed=False):
-        """Back to headless after `popout`, with control returned to the bot."""
+        """Back to headless after `popout`. The bot that held control gets it back and resumes;
+        a sibling on a shared browser (headed along for the ride) only sees the process flip."""
         self.browser.dock()
-        self.meta["control"] = False
-        self.save()
-        self.emit("system", ("Window closed; the browser is back here, headless, and the bot has control again."
-                             if closed else "The browser is headless again; the live view is the only window."))
-        self.resume(note=False)
+        had = bool(self.meta.get("control"))
+        if had:
+            self.meta["control"] = False
+            self.save()
+        self.emit("system", ("Window closed; the browser is back here, headless" + (", and the bot has control again." if had else "."))
+                  if closed else "The browser is headless again; the live view is the only window.")
+        if had:
+            self.resume(note=False)
 
     def giveback(self):
         if self.browser.headed():
