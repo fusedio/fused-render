@@ -213,7 +213,13 @@ export function installLive(stage: HTMLElement): () => void {
   };
   // Whatever still reaches the textarea outside a composition (autocorrect) is dropped at once.
   const onKeysInput = (e: Event) => { if (keys && !(e as InputEvent).isComposing) keys.value = ""; };
-  const onDocKey = (e: KeyboardEvent) => { if (e.key === "Escape" && !inCtl() && inFull()) void handBack(true); };
+  // Escape leaves a watch-mode Stage, but only from inside it (#full, or the stage holding focus): Escape in the composer,
+  // a dialog or the chat rail is theirs. Never while you hold the browser: Done, hand back is the one exit there.
+  const onDocKey = (e: KeyboardEvent) => {
+    if (e.key !== "Escape" || inCtl() || !inFull() || cur()?.control) return;
+    const t = e.target as Node | null, full = $("full");
+    if ((full && t && full.contains(t)) || document.activeElement === stage) void handBack(true);
+  };
 
   stage.addEventListener("mousemove", onMove);
   stage.addEventListener("mousedown", onDown);

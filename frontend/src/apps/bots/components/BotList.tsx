@@ -7,7 +7,7 @@ import { activeHandoff, lastBotMsg, lastTs, lastUserTs, routineGlyph, routineNot
 import { fmtAgo, fmtWhen } from "../lib/format";
 import { glideRows, rowOffsets, toggleLeft } from "../lib/layout";
 import { waitingUnread } from "../lib/unread";
-import { openBot, openDialog, setShowHidden, unreadCount, useBots, type BotsState } from "../state/store";
+import { needsYou, openBot, openDialog, setShowHidden, unreadCount, useBots, type BotsState } from "../state/store";
 import { Face } from "./Face";
 
 export interface BotListProps {
@@ -39,7 +39,10 @@ function Row({ b, S, onContextMenu }: { b: Bot; S: BotsState; onContextMenu: Bot
       {/* The selected row's avatar opens Settings, like the header avatar; on any other row it just selects. */}
       <span className={`av${sel ? " settings" : ""}`} title={sel ? "Settings" : undefined}
         onClick={sel ? (e) => { e.stopPropagation(); openDialog({ kind: "settings", id: b.id }); } : undefined}>
-        <Face b={b} svgId={sel ? "lface" : undefined} /><span className={`dot ${b.status}${n ? " unread" : ""}`} /></span>
+        <Face b={b} svgId={sel ? "lface" : undefined} />
+        {/* Amber "needs you in the browser" (a bot-initiated hand-over) replaces the status colour; red stays "needs an answer". */}
+        {needsYou(b) ? <span className="dot needsyou" title="Needs you in the browser" />
+          : <span className={`dot ${b.status}${n ? " unread" : ""}`} />}</span>
       <div className="name">
         {b.pinned ? <span className="pin">📌</span> : null}{b.name}
         {b.kind === "super" ? <span className="super" title="Super Bot: Claude Code's own tools on this Mac">SUPER</span> : null}

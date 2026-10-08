@@ -10,7 +10,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, type M
 import { AppCard } from "../apps/AppCard";
 import { appFromText, showAppBeside, useAppsRoot } from "../apps/apps";
 import { api, stepThumbUrl, type AppRef, type Bot, type BotEvent } from "../lib/api";
-import { esc, fmtDay, fmtTime, fmtWhen } from "../lib/format";
+import { esc, fmtDay, fmtSecs, fmtTime, fmtWhen } from "../lib/format";
 import { md } from "../lib/md";
 import { chosenOption, firstNewIndex, isHandoff, isNoise, liveCards, optionKey, rowKeys, searchCountText, searchHit, sessionBreak } from "../lib/thread";
 import { act, clearScrollSeq, cur, eventsOf, getState, jumpTo, markSeen, openDialog, select, setNewCount, setScrollToEnd, showBanner, unviewed, useBots, viewedSet } from "../state/store";
@@ -49,6 +49,9 @@ interface RowProps {
   texted?: BotEvent[];
   /** Approval / question card: the bot waits on this one. */
   live: boolean;
+  /** The question a hand back settled (Bot.handback): how long you drove, and the step still of the page as you left it. */
+  hbSecs?: number;
+  hbShot?: string | null;
   /** Answered question: your answer, normalized (optionKey); null otherwise. */
   chosen: string | null;
   /** The apps root (appFromText needs it; "" until loaded). */
@@ -126,7 +129,7 @@ function HandoffCard({ e, state: rawState, targetLive }: { e: BotEvent; state: s
 /** Channel names in chips and "Texted" lines; a task Super Bot handed off reads "from Super Bot" (docs §11). */
 const chanLabel = (k: string) => (k === "imessage" ? "iMessage" : k === "handoff" ? "Super Bot" : k);
 
-function body({ e, botId, reaction, live, chosen, appsRoot, onBeside, hstate, targetLive, linkLive }: RowProps): JSX.Element {
+function body({ e, botId, reaction, live, chosen, appsRoot, onBeside, hstate, targetLive, linkLive, hbSecs, hbShot }: RowProps): JSX.Element {
   const title = fmtWhen(e.ts);
   if (e.handoff && isHandoff(e)) return <HandoffCard e={e} state={hstate || e.handoff.state} targetLive={!!targetLive} />;
   // The target bot's "Sent to Super Bot: …" (what went up): a quiet harness line.
@@ -173,6 +176,16 @@ function body({ e, botId, reaction, live, chosen, appsRoot, onBeside, hstate, ta
       return <><HtmlMsg className={cls} title={title} seq={e.seq} html={md(e.text) + proposed + (opts ? `<div class="opts">${opts}</div>` : "")} />{offerCard}</>;
     }
     if (e.multi && options.length) return <MultiQuestion e={e} botId={botId} cls={cls} title={title} live={live} chosen={chosen} />;
+    // A hand-over you handed back: settled like an answered question, plus how long you drove and the page as you left it.
+    if (hbSecs != null && !live) {
+      return (
+        <div className={`${cls} settled handedback`} data-seq={e.seq} title={title}>
+          {e.text}
+          <div className="hbfoot">You handed it back · {fmtSecs(hbSecs)}</div>
+          {hbShot ? <img className="hbshot" loading="lazy" src={stepThumbUrl(botId, hbShot)} alt="The page as you left it" /> : null}
+        </div>
+      );
+    }
     return (
       <div className={cls} data-seq={e.seq} title={title}>
         {e.text}
@@ -460,6 +473,7 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
     // Hand-off cards: the "Asked <Bot>" card follows its hand-off's state live; the waiting / result cards keep their own.
     const hds = new Map((b.handoffs || []).map((h) => [h.id, h.state]));
     const botIds = new Set(S.bots.map((x) => x.id));
+    const hb = b.handback || null;
     content = evs.map((e, i) => {
       const ho = e.handoff && isHandoff(e) ? e.handoff : null;
       const card = !ho && (e.role === "approval" || e.role === "question");
@@ -468,7 +482,9 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
           reaction={!ho && ACTABLE.has(e.role) ? rxs[e.seq] || "" : ""} live={card && live.has(e.seq) && !held.has(e.seq)}
           chosen={card && e.role === "question" ? chosenOption(evs, e.seq) : null} appsRoot={appsRoot} onBeside={onBeside}
           hstate={ho ? (e.role === "system" ? hds.get(ho.id) : undefined) || ho.state : undefined} targetLive={ho ? botIds.has(ho.target) : undefined}
-          linkLive={e.link ? botIds.has(e.link.bot) : undefined} />
+          linkLive={e.link ? botIds.has(e.link.bot) : undefined}
+          hbSecs={hb && e.seq === hb.seq && e.role === "question" ? hb.secs : undefined}
+          hbShot={hb && e.seq === hb.seq && e.role === "question" ? hb.shot : undefined} />
       );
     });
   }

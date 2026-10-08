@@ -9,8 +9,10 @@ import { searchQuery } from "../lib/thread";
 import { cur, onSelectChange, openDialog, useBots } from "../state/store";
 import { Composer, type ReplyTo } from "./Composer";
 import { Face } from "./Face";
+import { HandoverCard } from "./HandoverCard";
 import { ReactionPicker, type ReactionReq } from "./ReactionPicker";
 import { Thread } from "./Thread";
+import { Toast } from "./Toast";
 import { ThreadSearch } from "./ThreadSearch";
 import { ToBottom } from "./ToBottom";
 
@@ -52,6 +54,8 @@ export function ChatPane() {
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2" /><path d="M8 20h8M12 16v4" /></svg>
         </button>
       </header>
+      {b?.control ? <HandoverCard b={b} /> : null}
+      <Toast id="ctoast" />
       <div className="tw">
         <Thread b={b} threadRef={threadRef} searchQ={search.open ? searchQuery(search.q) : ""} onSearchCount={setSearchN}
           onReact={(anchor, seq) => setPick({ anchor, seq })} onReply={setReply} />

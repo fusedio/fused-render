@@ -181,9 +181,15 @@ class FakeBot:
         self.emit("system", "Stop requested")
         agent_engine.stop(self)
 
-    def takeover(self, note=True):
+    def takeover(self, note=True, by="user"):
         self.pause_flag.set()
         self.meta["control"] = True
+        self.meta["control_by"] = by
+
+    def _control_off(self, handback=False):
+        self.meta.pop("control_by", None)
+        self.meta.pop("control_since", None)
+        self.meta["control"] = False
 
     def _recover_popup(self):
         pass

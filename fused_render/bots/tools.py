@@ -189,7 +189,7 @@ TOOL_SPECS: dict[str, dict] = {
                               multi={"type": "boolean", "description": "Several options may be picked at once."},
                               summary={"type": "string", "description": "When CHANNEL is present: the question in one short plain sentence, for the text message."})},
     "login": {"description": "The page needs a sign-in, 2FA or captcha: pauses you and hands your page to the user in the live "
-                             "view, where they sign in with their own keyboard, waits until they reply 'done' or click Hand back, "
+                             "view, where they sign in with their own keyboard, waits until they click Done (a chat reply also hands back), "
                              "then returns. `message` says why, in one sentence.",
               "inputSchema": _s(message=REQ)},
     "text": {"description": "Send an iMessage from this Mac to someone in CONTACTS (by name or handle). Only listed contacts. "

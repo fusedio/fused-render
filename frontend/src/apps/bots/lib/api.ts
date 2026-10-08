@@ -166,6 +166,12 @@ export interface Bot {
   offers_declined?: unknown;
   artifacts_dir?: string;
   control?: boolean;
+  /** Who started the current hand-over: the bot's login tool ("bot") or your take-over ("user"); null/absent when the bot drives. */
+  control_by?: "bot" | "user" | null;
+  /** When control was handed over (server timestamp, same clock as the event `ts`), for the rail card's elapsed-time pill. */
+  control_since?: number | null;
+  /** The last hand back: the question event it settled (`seq`), how long you drove (`secs`) and a still of the page as you left it. */
+  handback?: { seq: number; secs: number; shot: string | null } | null;
   dl_pct?: number | null;
   engine?: "auto" | "steps" | "agent";
   seq: number;

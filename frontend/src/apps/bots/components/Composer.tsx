@@ -9,7 +9,7 @@ import { api, rawFileUrl, request, type Bot } from "../lib/api";
 import { jobNote } from "../lib/dictation";
 import { statusLabel } from "../lib/derive";
 import { fmtAgo, fmtBytes, fmtSecs } from "../lib/format";
-import { act, errMsg, eventsOf, markSeen, setBase, setScrollToEnd, showBanner, useBotsSelector } from "../state/store";
+import { act, errMsg, eventsOf, markSeen, needsYou, setBase, setScrollToEnd, showBanner, useBotsSelector } from "../state/store";
 
 export interface ReplyTo { seq: number; text: string }
 
@@ -143,6 +143,19 @@ export function Composer({ b, reply, setReply, threadRef }: ComposerProps) {
   }, []);
   // A reply quote focuses the box.
   useEffect(() => { if (reply) ta.current?.focus(); }, [reply]);
+  // Just handed the browser back (store noteFor, from the poll): a one-shot, optional "anything to add?" for 15 s. The box
+  // takes focus once when it arrives; the placeholder only shows while the box is empty anyway.
+  const noteFor = useBotsSelector((s) => s.noteFor);
+  const [noteLive, setNoteLive] = useState(false);
+  const noteFocused = useRef(0);  // the `until` already focused for: one focus per hand back, not per re-render / bot switch
+  useEffect(() => {
+    const left = noteFor && b && noteFor.id === b.id ? noteFor.until - Date.now() : 0;
+    if (left <= 0) { setNoteLive(false); return; }
+    setNoteLive(true);
+    if (noteFocused.current !== noteFor!.until) { noteFocused.current = noteFor!.until; ta.current?.focus(); }
+    const t = window.setTimeout(() => setNoteLive(false), left);
+    return () => window.clearTimeout(t);
+  }, [noteFor, b?.id]);  // eslint-disable-line react-hooks/exhaustive-deps
 
   // ---- attachments ----
   const addFiles = (files: Iterable<File> | ArrayLike<File>) => {
@@ -254,7 +267,13 @@ export function Composer({ b, reply, setReply, threadRef }: ComposerProps) {
   useEffect(() => { if (!running) return; const t = window.setInterval(() => tick((n) => n + 1), 1000); return () => window.clearInterval(t); }, [running]);
   const quiet = running && lastStepTs ? fmtAgo(lastStepTs) : "";
   const stat = !b || !running ? "" : b.status === "waiting" ? "Waiting for you · answer, sign in or approve above" : statusLabel(b) + (quiet && quiet !== "now" ? ` · last step ${quiet}` : "");
-  const placeholder = !b ? "Message…" : mic.busy ? mic.note || "Transcribing…" : reply ? "Reply…" : b.status === "waiting" ? "The bot asked you a question — answer here"
+  // While you hold the browser, sending is also the hand back (server behaviour); the small print says so.
+  const placeholder = !b ? "Message…" : mic.busy ? mic.note || "Transcribing…" : reply ? "Reply…"
+    // Sending hands back only where the bot sits in a wait (its login hand-over, or idle / waiting); a running bot you
+    // took over just queues the message and you keep the browser.
+    : b.control ? (needsYou(b) || b.status === "idle" || b.status === "waiting" ? `Tell ${b.name} something… (sending hands back)` : `Message ${b.name}…`)
+    : noteLive ? `Anything ${b.name} should know? Optional.`
+    : b.status === "waiting" ? "The bot asked you a question — answer here"
     : running ? "Add an instruction mid-task…" : `Message ${b.name}`;
   const ctl = (fn: (id: string) => Promise<unknown>) => () => { if (b) void act(() => fn(b.id)); };
 

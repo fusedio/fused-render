@@ -14,7 +14,7 @@
 import { useSyncExternalStore } from "react";
 import { flushSync } from "react-dom";
 import { askConfirm } from "../dialogs/ask";
-import { act, cur, getState, poll, select, setFast, showBanner } from "../state/store";
+import { act, cur, getState, onHandover, poll, select, setFast, showBanner } from "../state/store";
 import { api, type Bot } from "./api";
 import { CAST, furlTarget, showUrl, type FrameMeta } from "./live";
 
@@ -163,12 +163,13 @@ export function focusCtl(): void {
 }
 
 /** Open the live view on the selected bot (the thumbnail, the bot menu, the Browsers dialog's Sign in…). */
-export function openFull(): void {
+/** `focus: false` (a hand-over landing while the composer holds unsent text) opens Stage without taking the keyboard. */
+export function openFull({ focus = true }: { focus?: boolean } = {}): void {
   const b = cur(); if (!b) return;
   flushSync(() => setFast(true));  // #full must be showing before anything in it can take focus
   const shot = $<HTMLImageElement>("shot"), fshot = $<HTMLImageElement>("fshot");
   if (fshot) { const s = shot?.getAttribute("src"); if (s) fshot.src = s; else fshot.removeAttribute("src"); }
-  if (b.control) focusCtl();
+  if (b.control && focus) focusCtl();
   link.tabs = null;
   askedTakeover = false;
   // An asleep browser has nothing to stream: wake it whenever it is not running, not only when the thumbnail wore the "asleep"
@@ -177,6 +178,8 @@ export function openFull(): void {
   void poll().then(linkSync);  // status carries the driven tab's socket URL
   linkSync();
 }
+// The store's poll opens Stage through this on a bot-initiated hand-over (state/store.ts requestStage).
+onHandover((o) => openFull(o), () => { setFast(false); linkClose(); });
 /** The bot menu's "Open live view" (selects the bot first when the menu belongs to another one). */
 export function openLive(id?: string): void {
   if (id && id !== getState().sel) select(id);

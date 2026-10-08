@@ -21,7 +21,7 @@ import { Face } from "../components/Face";
 import { api, type AppRow, type Bot, type ChromeProfile, type Face as FaceT } from "../lib/api";
 import { EFFORTS, loginGroups, loginHint, loginLabel, loginValue, modelsFor, normApp } from "../lib/botform";
 import { faceOf } from "../lib/face";
-import { act, getState } from "../state/store";
+import { act, autoStage, getState, setAutoStage, setSounds, soundsOn } from "../state/store";
 import type { BotDialogValue } from "./actions";
 import { askConfirm, pickFace } from "./ask";
 import { PhoneSection } from "./PhoneSection";
@@ -61,6 +61,9 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
   const [buildAccess, setBuildAccess] = useState<string>(init.buildAccess);
   const [superAccess, setSuperAccess] = useState<string>(init.superAccess);
   const [encrypt, setEncrypt] = useState(init.encrypt);
+  // Page-wide prefs (localStorage, every bot): they apply at once, not on Save.
+  const [autoOpen, setAutoOpen] = useState(autoStage);
+  const [sounds, setSoundsState] = useState(soundsOn);
   const [imessage, setImessage] = useState(init.imessage);
   const [imessageEnabled, setImessageEnabled] = useState(init.imessageEnabled);
   const [imessageTo, setImessageTo] = useState(init.imessageTo);
@@ -233,6 +236,12 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
                 </Row>
                 <Row title="Encrypt the browser profile at rest" text={"While the browser is closed the profile is one AES-256 file; the key lives in your macOS Keychain. Lose the Keychain item and saved logins are gone." + appliesToAll} htmlFor="bmencrypt">
                   <Switch id="bmencrypt" checked={encrypt} onCheckedChange={(c) => setEncrypt(!!c)} />
+                </Row>
+                <Row title="Open the browser when a bot needs me" text="When a bot asks you to sign in, its live page opens beside the chat by itself. Applies to every bot on this page." htmlFor="bmautostage">
+                  <span title="Page-wide: applies to every bot, saved at once"><Switch id="bmautostage" checked={autoOpen} onCheckedChange={(c) => { setAutoStage(!!c); setAutoOpen(!!c); }} /></span>
+                </Row>
+                <Row title="Sounds" text="A short chime when a bot hands you its browser. Applies to every bot on this page." htmlFor="bmsounds">
+                  <span title="Page-wide: applies to every bot, saved at once"><Switch id="bmsounds" checked={sounds} onCheckedChange={(c) => { setSounds(!!c); setSoundsState(!!c); }} /></span>
                 </Row>
               </Rows>
             ) : null}

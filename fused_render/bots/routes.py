@@ -669,11 +669,13 @@ def bot_shot(bid: str):
 @router.get("/api/bots/{bid}/steps/{name}")
 @_handled
 def bot_step_thumb(bid: str, name: str):
-    """One step thumbnail, `<seq>.jpg`, from cache/<id>/steps/."""
+    """One step thumbnail, `<seq>.jpg`, or a hand-back still, `hb-<seq>.jpg`, from cache/<id>/steps/."""
     stem = name[:-4] if name.endswith(".jpg") else ""
+    pre = "hb-" if stem.startswith("hb-") else ""
+    stem = stem[len(pre):]
     if not stem.isdigit():
         return _error("not found", 404)
-    p = os.path.join(_bot(bid).steps_dir, f"{int(stem)}.jpg")
+    p = os.path.join(_bot(bid).steps_dir, f"{pre}{int(stem)}.jpg")
     try:
         with open(p, "rb") as f:
             data = f.read()

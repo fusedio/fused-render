@@ -9,6 +9,15 @@ export const lastSeqOf = (evs: BotEvent[], role: BotEvent["role"]): number => {
   return -1;
 };
 
+/** A bot-initiated hand-over's ask, rewritten for the rail card / notification: the live question event (`waiting_on`)
+ *  without a hand-off's "<Bot> needs you at the laptop:" lead or the login tool's "I've paused…" tail
+ *  (channels.login_text). "" when there is no such event (a take-over of yours, or the event is not loaded). */
+export const handoverAsk = (b: Bot, evs: BotEvent[]): string => {
+  if (b.waiting_on == null) return "";
+  const e = evs.find((x) => x.seq === b.waiting_on && x.role === "question");
+  return e ? e.text.replace(/^.+? needs you at the laptop:\s*/, "").replace(/\s*I've paused (and opened my browser|with my browser handed) .*$/s, "").trim() : "";
+};
+
 // Routines run while you look elsewhere; the sidebar has to say so.
 export const activeRoutines = (b: Bot): Routine[] => (b.routines || []).filter((r) => r.enabled);
 export const routineFailing = (b: Bot): boolean => activeRoutines(b).some((r) => (r.fails || 0) > 0 || r.last_result === "error");

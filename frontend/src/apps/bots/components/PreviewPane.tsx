@@ -1,6 +1,7 @@
 // The right column (OpenBot index.html section.preview + chat.js render()'s preview half): header (hide, ☰ menu),
 // the side app strip, the screenshot (click → live view), the status toast, the caption and the info sections
-// (model download, task, Inbox, attached files, routines, usage).
+// (model download, task, Inbox, attached files, routines, usage). In Stage (root .stage) all of that but the header steps
+// aside and the live view (#full, always mounted here) fills the column.
 import { useEffect, type MouseEvent } from "react";
 import { SideApp } from "../apps/SideApp";
 import { embedUrlForFsPath } from "@platform/lib/router";
@@ -8,6 +9,7 @@ import { api, rawFileUrl, shotUrl, type Artifact, type Bot } from "../lib/api";
 import { mirrorThumb, openFull } from "../lib/cdp";
 import { fmtAgo, fmtBytes, fmtWhenShort } from "../lib/format";
 import { closePreview } from "../lib/layout";
+import { LiveView } from "./LiveView";
 import { act, closeMenu, getState, openDialog, openMenu, useBotsSelector } from "../state/store";
 import { Toast } from "./Toast";
 
@@ -171,6 +173,7 @@ export function PreviewPane() {
         <span className="url" id="purl" title={purl}>{purl}</span>
       </div>
       {b ? <Info b={b} /> : <div className="info" id="info" />}
+      <LiveView />
     </section>
   );
 }
