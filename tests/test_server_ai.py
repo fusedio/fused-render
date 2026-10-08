@@ -1820,3 +1820,19 @@ def test_shutdown_closes_the_shutting_down_apps_own_session(monkeypatch):
 
     asyncio.run(_server_ai.shutdown_ai_session(app_b))
     assert closed == [session_a, session_b]
+
+
+def test_ai_spawn_strips_bundle_python_vars(monkeypatch):
+    for name in ("PYTHONHOME", "PYTHONPATH", "PYTHONSTARTUP",
+                 "PYTHONUSERBASE", "PYTHONINSPECT"):
+        monkeypatch.setenv(name, "/Applications/FusedRender.app/Contents/Resources")
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    fake = _FakeSpawn()
+    monkeypatch.setattr(_server_ai, "_spawn_claude_stream", fake)
+    proc = asyncio.run(_server_ai._ai_spawn("/bin/claude", "sonnet", "sys"))
+    os.unlink(proc._fused_ai_sp_file)
+    env = fake.calls[0][1]
+    for name in ("PYTHONHOME", "PYTHONPATH", "PYTHONSTARTUP",
+                 "PYTHONUSERBASE", "PYTHONINSPECT"):
+        assert name not in env
+    assert env["PATH"] == "/usr/bin:/bin"
