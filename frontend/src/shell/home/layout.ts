@@ -732,3 +732,203 @@ export function resizeByArrow(layout: HomeLayout, id: string, key: string): Home
 export function compactLayout(layout: HomeLayout): HomeLayout {
   return { ...layout, widgets: sortByPosition(packDense(sortByPosition(layout.widgets))) };
 }
+
+// ---- Presets and tile swap -------------------------------------------------
+
+export type PresetId = "workbench" | "builder" | "mission" | "files" | "focus";
+
+export const PRESETS: { id: PresetId; name: string; blurb: string }[] = [
+  { id: "workbench", name: "Workbench", blurb: "Search, the build box, and what's running." },
+  { id: "builder", name: "Builder", blurb: "A big prompt box with your apps beside it." },
+  { id: "mission", name: "Mission control", blurb: "Tasks board first, bots and the index at a glance." },
+  { id: "files", name: "Files", blurb: "Search and recent files lead; bookmarks beside them." },
+  { id: "focus", name: "Focus", blurb: "Just search and the build box." },
+];
+
+type PresetRow = {
+  source: WidgetSource;
+  x: number;
+  y: number;
+  size: WidgetSize;
+  format?: WidgetFormat;
+  /** Explicit footprint in units, for tiles no size preset describes. */
+  custom?: { cols: number; rows: number };
+  folderId?: string;
+};
+
+function presetRows(id: PresetId, folderId?: string): PresetRow[] {
+  switch (id) {
+    case "workbench":
+      return [];
+    case "builder":
+      return [
+        { source: "search", x: 0, y: 0, size: "4x1" },
+        { source: "build", x: 0, y: 1, size: "2x1" },
+        { source: "apps", x: 4, y: 1, size: "2x2" },
+        { source: "playground", x: 0, y: 5, size: "2x2" },
+        { source: "sessions", x: 4, y: 5, size: "2x2" },
+      ];
+    case "mission":
+      return [
+        { source: "search", x: 0, y: 0, size: "4x1" },
+        { source: "tasks", x: 0, y: 1, size: "2x2", format: "board", custom: { cols: 6, rows: 4 } },
+        { source: "index", x: 6, y: 1, size: "1x1" },
+        { source: "bots", x: 6, y: 3, size: "1x1" },
+        { source: "sessions", x: 0, y: 5, size: "2x1" },
+        { source: "recents", x: 4, y: 5, size: "2x1" },
+      ];
+    case "files":
+      return [
+        { source: "search", x: 0, y: 0, size: "4x1" },
+        { source: "recents", x: 0, y: 1, size: "2x2", format: "list", custom: { cols: 6, rows: 4 } },
+        { source: "index", x: 6, y: 1, size: "1x1" },
+        folderId
+          ? { source: "folder", x: 6, y: 3, size: "1x1", format: "list", folderId }
+          : { source: "sessions", x: 6, y: 3, size: "1x1", format: "list", custom: { cols: 2, rows: 2 } },
+        { source: "apps", x: 0, y: 5, size: "2x1" },
+        { source: "tasks", x: 4, y: 5, size: "2x1" },
+      ];
+    case "focus":
+      return [
+        { source: "search", x: 0, y: 0, size: "4x1" },
+        { source: "build", x: 0, y: 1, size: "4x1" },
+      ];
+  }
+}
+
+/** A preset as a plain layout document with fresh ids. Files shows a bookmark
+    folder when it is given one, else recent Claude sessions in that slot. */
+export function presetLayout(id: PresetId, opts: { folderId?: string } = {}): HomeLayout {
+  if (id === "workbench") {
+    return { version: LAYOUT_VERSION, widgets: defaultLayout().widgets.map((w) => ({ ...w, id: newWidgetId() })) };
+  }
+  const widgets = presetRows(id, opts.folderId).map((r) => {
+    const w = makeWidget(r.source, r.x, r.y, { size: r.size, format: r.format, folderId: r.folderId });
+    if (r.custom) {
+      w.size = contentSizeFor(r.source, r.custom.cols, r.custom.rows);
+      w.cols = r.custom.cols;
+      w.rows = r.custom.rows;
+    }
+    return w;
+  });
+  return { version: LAYOUT_VERSION, widgets: sortByPosition(widgets) };
+}
+
+function shapeOf(layout: HomeLayout): string {
+  return layout.widgets
+    .map((w) => {
+      const d = dimsOf(w);
+      return `${w.source}|${w.x}|${w.y}|${d.cols}|${d.rows}|${w.format}`;
+    })
+    .sort()
+    .join("\n");
+}
+
+/** The preset whose tiles (source, position, footprint, format) this layout has
+    exactly; ids, sort, folder and page choices do not matter. Null = custom. */
+export function matchPreset(layout: HomeLayout): PresetId | null {
+  const mine = shapeOf(layout);
+  for (const { id } of PRESETS) {
+    if (shapeOf(presetLayout(id, { folderId: "x" })) === mine) return id;
+    if (id === "files" && shapeOf(presetLayout(id)) === mine) return id;
+  }
+  return null;
+}
+
+/** Whether `source` can fill `rect` as a tile; `replacingId` is the tile being swapped out. */
+export function sourceFits(
+  layout: HomeLayout,
+  rect: Rect,
+  source: WidgetSource,
+  replacingId?: string,
+): { ok: true } | { ok: false; reason: string } {
+  const no = (reason: string) => ({ ok: false as const, reason });
+  const min = minFootprint(source);
+  if (source === "search") {
+    if (layout.widgets.some((w) => w.source === "search" && w.id !== replacingId)) return no("Already on Home");
+    return rect.rows === 1 && rect.cols >= min.cols ? { ok: true } : no("Needs a one-row strip");
+  }
+  if (source === "build") {
+    return rect.rows === FIXED_ROWS.build && rect.cols >= 4 ? { ok: true } : no("Needs a bigger tile");
+  }
+  if (rect.rows === 1) return no("Needs a taller tile");
+  if (rect.cols < min.cols || rect.rows < min.rows) return no("Needs a bigger tile");
+  if (rect.rows > MAX_WIDGET_ROWS) return no("Too tall");
+  return { ok: true };
+}
+
+export type TileOpts = { folderId?: string; appPath?: string; format?: WidgetFormat; sort?: AppsSort };
+
+/** A widget of `source` covering exactly `rect`: a matching size preset when
+    there is one, else an explicit footprint. Null when the source's required
+    field (folder / page) is missing. */
+function tileFor(id: string, source: WidgetSource, rect: Rect, opts: TileOpts, format?: WidgetFormat): Widget | null {
+  if (source === "folder" && !opts.folderId) return null;
+  if (source === "app" && !opts.appPath) return null;
+  const spec = SOURCES[source];
+  const f = opts.format ?? format;
+  const w: Widget = {
+    id,
+    source,
+    size: spec.sizes[0],
+    format: f && spec.formats.includes(f) ? f : spec.formats[0],
+    x: rect.x,
+    y: rect.y,
+  };
+  const preset = presetFor(source, rect.cols, rect.rows);
+  if (preset) w.size = preset;
+  else {
+    w.size = contentSizeFor(source, rect.cols, rect.rows);
+    w.cols = rect.cols;
+    w.rows = rect.rows;
+  }
+  if (source === "folder") w.folderId = opts.folderId;
+  if (source === "app") w.appPath = opts.appPath;
+  if (source === "apps" && isAppsSort(opts.sort)) w.sort = opts.sort;
+  return w;
+}
+
+/** Show `source` in the tile `id`, keeping its id and rectangle. The same
+    object when it does not fit or nothing would change. */
+export function swapSource(layout: HomeLayout, id: string, source: WidgetSource, opts: TileOpts = {}): HomeLayout {
+  const old = layout.widgets.find((w) => w.id === id);
+  if (!old) return layout;
+  const rect = rectOf(old);
+  if (!sourceFits(layout, rect, source, id).ok) return layout;
+  const next = tileFor(id, source, rect, opts, old.source === source ? old.format : undefined);
+  if (!next) return layout;
+  const keys = new Set([...Object.keys(old), ...Object.keys(next)]) as Set<keyof Widget>;
+  if ([...keys].every((k) => old[k] === next[k])) return layout;
+  return { ...layout, widgets: layout.widgets.map((w) => (w.id === id ? next : w)) };
+}
+
+/** Holes inside the used rows that could hold a tile (at least one cell
+    square), as the largest rectangles found scanning in reading order. */
+export function emptySlots(layout: HomeLayout): Rect[] {
+  const used = rowsUsed(layout.widgets);
+  const taken = new Set(occupancy(layout.widgets).keys());
+  const free = (x: number, y: number) => !taken.has(`${x},${y}`);
+  const out: Rect[] = [];
+  for (let y = 0; y < used; y++) {
+    for (let x = 0; x < GRID_COLS; x++) {
+      if (!free(x, y)) continue;
+      let cols = 1;
+      while (x + cols < GRID_COLS && free(x + cols, y)) cols++;
+      let rows = 1;
+      while (y + rows < used && Array.from({ length: cols }, (_, i) => free(x + i, y + rows)).every(Boolean)) rows++;
+      for (let j = 0; j < rows; j++) for (let i = 0; i < cols; i++) taken.add(`${x + i},${y + j}`);
+      if (cols >= CELL && rows >= CELL) out.push({ x, y, cols, rows });
+    }
+  }
+  return out;
+}
+
+/** Add a tile of `source` covering exactly `rect`. The same object when it does
+    not fit, the footprint is not free, or the layout is full. */
+export function fillSlot(layout: HomeLayout, rect: Rect, source: WidgetSource, opts: TileOpts = {}): HomeLayout {
+  if (layout.widgets.length >= MAX_WIDGETS) return layout;
+  if (!sourceFits(layout, rect, source).ok || !canPlace(layout.widgets, rect)) return layout;
+  const next = tileFor(newWidgetId(), source, rect, opts);
+  if (!next) return layout;
+  return { ...layout, widgets: sortByPosition([...layout.widgets, next]) };
+}

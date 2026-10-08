@@ -1,9 +1,11 @@
 import { expect, test } from "bun:test";
 import {
   DEFAULT_LAYOUT,
+  FIXED_ROWS,
   GRID_COLS,
   MAX_ROWS,
   MAX_WIDGET_ROWS,
+  PRESETS,
   SOURCES,
   addWidget,
   allowedSizes,
@@ -15,13 +17,17 @@ import {
   dims,
   dimsOf,
   emptyRows,
+  emptySlots,
+  fillSlot,
   firstFreeSlot,
   itemCapacity,
+  matchPreset,
   minFootprint,
   moveByArrow,
   normalizeLayout,
   occupancy,
   packDense,
+  presetLayout,
   placeWidget,
   presetFor,
   rectOf,
@@ -34,6 +40,8 @@ import {
   setSort,
   setSize,
   sortByPosition,
+  sourceFits,
+  swapSource,
   type HomeLayout,
 } from "./layout";
 import { isWebUrl, normalizeWebUrl, pageTitle } from "./appPicker";
@@ -720,4 +728,177 @@ test("rectOf / rowsUsed / compactLayout / canPlace / occupancy honour the overri
   expect(occupancy(l.widgets).get("2,0")).toBe("a");
   expect(canPlace(l.widgets, { x: 2, y: 0, cols: 2, rows: 2 })).toBe(false);
   expect(canPlace(l.widgets, { x: 3, y: 0, cols: 2, rows: 2 })).toBe(true);
+});
+
+// ---- Presets and tile swap ---------------------------------------------------
+
+const IDS = PRESETS.map((p) => p.id);
+
+test("presets: no overlaps, in bounds, no holes", () => {
+  for (const id of IDS) {
+    for (const folderId of [undefined, "f1"]) {
+      const l = presetLayout(id, { folderId });
+      expect(l.version).toBe(5);
+      const rows = rowsUsed(l.widgets);
+      const seen = new Set<string>();
+      for (const w of l.widgets) {
+        const r = rectOf(w);
+        expect(r.x >= 0 && r.x + r.cols <= GRID_COLS).toBe(true);
+        for (let j = 0; j < r.rows; j++) {
+          for (let i = 0; i < r.cols; i++) {
+            const k = `${r.x + i},${r.y + j}`;
+            expect(seen.has(k)).toBe(false);
+            seen.add(k);
+          }
+        }
+      }
+      expect(seen.size).toBe(rows * GRID_COLS);
+      expect(emptySlots(l)).toEqual([]);
+    }
+  }
+});
+
+test("presets: normalizeLayout keeps every tile where it is", () => {
+  for (const id of IDS) {
+    const l = presetLayout(id, { folderId: "f1" });
+    const n = normalizeLayout(l);
+    expect(n.widgets.map((w) => [w.source, w.x, w.y, dimsOf(w)])).toEqual(
+      l.widgets.map((w) => [w.source, w.x, w.y, dimsOf(w)]),
+    );
+  }
+  const files = presetLayout("files");
+  expect(normalizeLayout(files).widgets.length).toBe(files.widgets.length);
+});
+
+test("presets: workbench is the default and files falls back without a folder", () => {
+  const strip = (l: HomeLayout) => l.widgets.map(({ id: _i, ...w }) => w);
+  expect(strip(presetLayout("workbench"))).toEqual(strip(defaultLayout()));
+  expect(presetLayout("workbench").widgets[0].id).not.toBe("default-search");
+  expect(presetLayout("files").widgets.some((w) => w.source === "folder")).toBe(false);
+  const f = presetLayout("files", { folderId: "f1" }).widgets.find((w) => w.source === "folder");
+  expect(f?.folderId).toBe("f1");
+});
+
+test("matchPreset: each preset matches itself, custom is null", () => {
+  for (const id of IDS) {
+    expect(matchPreset(presetLayout(id, { folderId: "f1" }))).toBe(id);
+    expect(matchPreset(presetLayout(id))).toBe(id);
+  }
+  expect(matchPreset(defaultLayout())).toBe("workbench");
+  const l = presetLayout("mission");
+  const bots = l.widgets.find((w) => w.source === "bots")!;
+  expect(matchPreset(swapSource(l, bots.id, "playground"))).toBe(null);
+  expect(matchPreset({ ...l, widgets: [] })).toBe(null);
+});
+
+test("sourceFits: search", () => {
+  const l = presetLayout("focus");
+  const search = l.widgets[0];
+  expect(sourceFits(l, { x: 0, y: 0, cols: 4, rows: 1 }, "search", search.id)).toEqual({ ok: true });
+  expect(sourceFits(l, { x: 0, y: 2, cols: 4, rows: 1 }, "search")).toEqual({ ok: false, reason: "Already on Home" });
+  const none = removeWidget(l, search.id);
+  expect(sourceFits(none, { x: 0, y: 0, cols: 4, rows: 2 }, "search")).toEqual({ ok: false, reason: "Needs a one-row strip" });
+  expect(sourceFits(none, { x: 0, y: 0, cols: 1, rows: 1 }, "search")).toEqual({ ok: false, reason: "Needs a one-row strip" });
+  expect(sourceFits(none, { x: 0, y: 0, cols: 2, rows: 1 }, "search")).toEqual({ ok: true });
+});
+
+test("sourceFits: build needs a 4-row, 4-col tile", () => {
+  const l = { version: 5 as const, widgets: [] };
+  expect(sourceFits(l, { x: 0, y: 0, cols: 4, rows: FIXED_ROWS.build! }, "build")).toEqual({ ok: true });
+  expect(sourceFits(l, { x: 0, y: 0, cols: 6, rows: 4 }, "build")).toEqual({ ok: true });
+  expect(sourceFits(l, { x: 0, y: 0, cols: 2, rows: 4 }, "build")).toEqual({ ok: false, reason: "Needs a bigger tile" });
+  expect(sourceFits(l, { x: 0, y: 0, cols: 4, rows: 2 }, "build")).toEqual({ ok: false, reason: "Needs a bigger tile" });
+});
+
+test("sourceFits: other sources", () => {
+  const l = { version: 5 as const, widgets: [] };
+  expect(sourceFits(l, { x: 0, y: 0, cols: 4, rows: 1 }, "apps")).toEqual({ ok: false, reason: "Needs a taller tile" });
+  expect(sourceFits(l, { x: 0, y: 0, cols: 2, rows: 2 }, "tasks")).toEqual({ ok: true });
+  expect(sourceFits(l, { x: 0, y: 0, cols: 2, rows: 2 }, "apps")).toEqual({ ok: true });
+  expect(sourceFits(l, { x: 0, y: 0, cols: 2, rows: 2 }, "app")).toEqual({ ok: true });
+  expect(sourceFits(l, { x: 0, y: 0, cols: 2, rows: 4 }, "recents")).toEqual({ ok: true });
+  expect(sourceFits(l, { x: 0, y: 0, cols: 2, rows: MAX_WIDGET_ROWS + 1 }, "apps")).toEqual({ ok: false, reason: "Too tall" });
+});
+
+test("swapSource keeps id and rectangle", () => {
+  const l = presetLayout("mission");
+  const tasks = l.widgets.find((w) => w.source === "tasks")!;
+  const next = swapSource(l, tasks.id, "recents");
+  const w = next.widgets.find((x) => x.id === tasks.id)!;
+  expect(w.source).toBe("recents");
+  expect(rectOf(w)).toEqual(rectOf(tasks));
+  expect(w.format).toBe("cards");
+  expect(next.widgets.length).toBe(l.widgets.length);
+  expect(normalizeLayout(next).widgets.find((x) => x.id === tasks.id)).toEqual(w);
+  const idx = l.widgets.find((x) => x.source === "index")!;
+  const small = swapSource(l, idx.id, "bots");
+  expect(small.widgets.find((x) => x.id === idx.id)).toMatchObject({ source: "bots", size: "1x1" });
+  expect(small.widgets.find((x) => x.id === idx.id)?.cols).toBeUndefined();
+});
+
+test("swapSource: a footprint no preset matches is stored explicitly", () => {
+  const l = presetLayout("mission");
+  const tasks = l.widgets.find((w) => w.source === "tasks")!;
+  const w = swapSource(l, tasks.id, "apps").widgets.find((x) => x.id === tasks.id)!;
+  expect(w).toMatchObject({ source: "apps", cols: 6, rows: 4 });
+});
+
+test("swapSource: no-op cases return the same object", () => {
+  const l = presetLayout("mission");
+  const bots = l.widgets.find((w) => w.source === "bots")!;
+  const search = l.widgets.find((w) => w.source === "search")!;
+  expect(swapSource(l, bots.id, "build")).toBe(l);
+  expect(swapSource(l, bots.id, "search")).toBe(l);
+  expect(swapSource(l, bots.id, "bots")).toBe(l);
+  expect(swapSource(l, bots.id, "folder")).toBe(l);
+  expect(swapSource(l, search.id, "apps")).toBe(l);
+  expect(swapSource(l, "nope", "apps")).toBe(l);
+});
+
+test("swapSource: folder and app carry their fields, leaving drops them", () => {
+  const l = presetLayout("mission");
+  const bots = l.widgets.find((w) => w.source === "bots")!;
+  const f = swapSource(l, bots.id, "folder", { folderId: "f1", format: "icons" });
+  expect(f.widgets.find((x) => x.id === bots.id)).toMatchObject({ source: "folder", folderId: "f1", format: "icons" });
+  const a = swapSource(f, bots.id, "app", { appPath: "/x/app" });
+  const aw = a.widgets.find((x) => x.id === bots.id)!;
+  expect(aw).toMatchObject({ source: "app", appPath: "/x/app", format: "live" });
+  expect(aw.folderId).toBeUndefined();
+  const back = swapSource(a, bots.id, "index").widgets.find((x) => x.id === bots.id)!;
+  expect(back.appPath).toBeUndefined();
+  expect(back.folderId).toBeUndefined();
+  const apps = swapSource(l, bots.id, "apps", { sort: "name" }).widgets.find((x) => x.id === bots.id)!;
+  expect(apps.sort).toBe("name");
+});
+
+test("emptySlots: preset layouts have none, a removed tile leaves its rectangle", () => {
+  expect(emptySlots({ version: 5, widgets: [] })).toEqual([]);
+  const l = presetLayout("mission");
+  const tasks = l.widgets.find((w) => w.source === "tasks")!;
+  expect(emptySlots(removeWidget(l, tasks.id))).toEqual([rectOf(tasks)]);
+  const idx = l.widgets.find((w) => w.source === "index")!;
+  expect(emptySlots(removeWidget(l, idx.id))).toEqual([rectOf(idx)]);
+  const search = l.widgets.find((w) => w.source === "search")!;
+  expect(emptySlots(removeWidget(l, search.id))).toEqual([]);
+});
+
+test("fillSlot: adds exactly the rectangle; refuses what does not fit", () => {
+  const l = presetLayout("mission");
+  const tasks = l.widgets.find((w) => w.source === "tasks")!;
+  const hole = removeWidget(l, tasks.id);
+  const [slot] = emptySlots(hole);
+  const next = fillSlot(hole, slot, "apps");
+  expect(next.widgets.length).toBe(l.widgets.length);
+  const w = next.widgets.find((x) => x.source === "apps")!;
+  expect(rectOf(w)).toEqual(slot);
+  expect(emptySlots(next)).toEqual([]);
+  expect(fillSlot(hole, slot, "build")).not.toBe(hole);
+  const idx = l.widgets.find((w) => w.source === "index")!;
+  const small = removeWidget(l, idx.id);
+  expect(fillSlot(small, rectOf(idx), "build")).toBe(small);
+  expect(fillSlot(hole, slot, "search")).toBe(hole);
+  expect(fillSlot(hole, slot, "folder")).toBe(hole);
+  expect(fillSlot(l, slot, "apps")).toBe(l);
+  const full = { ...hole, widgets: [...hole.widgets, ...Array.from({ length: 48 }, (_, i) => ({ ...hole.widgets[1], id: `z${i}`, x: 0, y: 100 + i }))].slice(0, 48) };
+  expect(fillSlot(full, slot, "apps")).toBe(full);
 });
