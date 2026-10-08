@@ -5391,23 +5391,28 @@
       err.type = "unavailable";
       return Promise.reject(err);
     }
-    return fetch("/api/ai/voice", {
-      method: "POST",
-      headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" }),
-      body: JSON.stringify(body),
-    })
-      .then((res) => res.json().catch(() => ({})).then((data) => ({ res, data })))
-      .then(({ res, data }) => {
-        if (!res.ok || !data.ok) {
-          const error = data.error || {};
-          const err = new Error(error.message || res.statusText || "the voice call could not start");
-          err.type = error.type || (res.status === 409 ? "unavailable" : "ai_error");
-          if (error.jobId) err.jobId = error.jobId;
-          throw err;
-        }
-        return data;
+    // The microphone and the audio graph FIRST, while the click that called
+    // this is still fresh: WebKit ties an AudioContext's right to run to a
+    // recent gesture, and a cold model's load (minutes) would outlive it.
+    return voiceAudio().then((audio) =>
+      fetch("/api/ai/voice", {
+        method: "POST",
+        headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" }),
+        body: JSON.stringify(body),
       })
-      .then((started) => voiceCall(started, { signal, onText, onLevel }));
+        .then((res) => res.json().catch(() => ({})).then((data) => ({ res, data })))
+        .then(({ res, data }) => {
+          if (!res.ok || !data.ok) {
+            const error = data.error || {};
+            const err = new Error(error.message || res.statusText || "the voice call could not start");
+            err.type = error.type || (res.status === 409 ? "unavailable" : "ai_error");
+            if (error.jobId) err.jobId = error.jobId;
+            throw err;
+          }
+          return data;
+        })
+        .then((started) => voiceCall(audio, started, { signal, onText, onLevel }),
+              (e) => { audio.close(); throw e; }));
   }
 
   // The live half of fused.ai.voice — the same wire the Playground's own
@@ -5459,9 +5464,9 @@ registerProcessor("fused-voice-speaker", SpeakerFrames);
     out.set(payload, 5);
     return out.buffer;
   }
-  async function voiceCall(started, hooks) {
-    const rate = started.sampleRate || 24000;
-    const frame = started.frame || 1920;
+  // The microphone plus a 24 kHz AudioContext with both worklets loaded —
+  // `{ctx, stream, close()}` — opened while the user's click is still fresh.
+  async function voiceAudio() {
     let stream;
     try {
       stream = await navigator.mediaDevices.getUserMedia({
@@ -5472,16 +5477,31 @@ registerProcessor("fused-voice-speaker", SpeakerFrames);
       err.type = "mic_denied";
       throw err;
     }
-    const ctx = new AudioContext({ sampleRate: rate });
-    if (!voiceWorkletUrl) {
-      voiceWorkletUrl = URL.createObjectURL(new Blob([VOICE_WORKLET], { type: "application/javascript" }));
+    const ctx = new AudioContext({ sampleRate: 24000 });
+    const close = () => {
+      stream.getTracks().forEach((t) => t.stop());
+      ctx.close().catch(() => {});
+    };
+    try {
+      if (!voiceWorkletUrl) {
+        voiceWorkletUrl = URL.createObjectURL(new Blob([VOICE_WORKLET], { type: "application/javascript" }));
+      }
+      await ctx.audioWorklet.addModule(voiceWorkletUrl);
+      if (ctx.state === "suspended") await ctx.resume();
+    } catch (e) {
+      close();
+      throw e;
     }
-    await ctx.audioWorklet.addModule(voiceWorkletUrl);
+    return { ctx, stream, close };
+  }
+  async function voiceCall(audio, started, hooks) {
+    const frame = started.frame || 1920;
+    const ctx = audio.ctx;
     const proto = location.protocol === "https:" ? "wss://" : "ws://";
     const ws = new WebSocket(proto + location.host + "/api/ai/voice/"
       + encodeURIComponent(started.sessionId) + "/stream?token=" + encodeURIComponent(started.token));
     ws.binaryType = "arraybuffer";
-    const source = ctx.createMediaStreamSource(stream);
+    const source = ctx.createMediaStreamSource(audio.stream);
     const mic = new AudioWorkletNode(ctx, "fused-voice-mic", { processorOptions: { frame } });
     const speaker = new AudioWorkletNode(ctx, "fused-voice-speaker");
     source.connect(mic);
@@ -5496,8 +5516,7 @@ registerProcessor("fused-voice-speaker", SpeakerFrames);
         if (settled) return;
         settled = true;
         try { ws.close(); } catch (e) { /* closed */ }
-        stream.getTracks().forEach((t) => t.stop());
-        ctx.close().catch(() => {});
+        audio.close();
         if (failure) { reject(failure); return; }
         const r = result || {};
         resolve(resultFrame(
@@ -5523,7 +5542,9 @@ registerProcessor("fused-voice-speaker", SpeakerFrames);
         const length = view.getUint32(1, false);
         const payload = new Uint8Array(data, 5, Math.min(length, data.byteLength - 5));
         if (kind === 1) {
-          const pcm = new Int16Array(payload.buffer, payload.byteOffset, payload.byteLength >> 1);
+          // A copy: the payload starts at byte 5 and an Int16 view needs an
+          // even offset.
+          const pcm = new Int16Array(payload.slice().buffer);
           const floats = new Float32Array(pcm.length);
           let sum = 0;
           for (let i = 0; i < pcm.length; i++) { const v = pcm[i] / 32768; floats[i] = v; sum += v * v; }

@@ -13,7 +13,7 @@ import type { AiCatalogModel } from "@platform/lib/api";
 import { withModelReady } from "./client";
 import { ConfigPanel, useConfigOpen, RailField, RailSelect, StageHeader } from "./controls";
 import { readParam, writeParams } from "@apps/ai_models/lib/params";
-import { startVoice, VoiceCall, type VoiceResult, type VoiceStarted } from "./voice";
+import { startVoice, VoiceAudio, VoiceCall, type VoiceResult, type VoiceStarted } from "./voice";
 
 const CAPS = [
   { value: "120", label: "2 minutes" },
@@ -95,14 +95,27 @@ export function VoiceStage({ model, entry }: { model: string; entry: AiCatalogMo
     setPhase({ step: "starting" });
     const controller = new AbortController();
     abortRef.current = controller;
+    // The microphone FIRST, inside the click, before the model is asked for:
+    // a cold load takes minutes, and an AudioContext opened after that wait
+    // starts suspended in WebKit (see `VoiceAudio`).
+    let audio: VoiceAudio | null = null;
     try {
+      setStatus("Opening the microphone…");
+      audio = await VoiceAudio.open();
+      if (!aliveRef.current || controller.signal.aborted) {
+        audio.close();
+        return;
+      }
+      setStatus(null);
       const started = await withModelReady(
         () => startVoice({ model, maxSeconds: Number(cap) }),
         { signal: controller.signal, downloaded: entry.downloaded, onStatus: setStatus },
       );
-      if (!aliveRef.current || controller.signal.aborted) return;
-      setStatus("Opening the microphone…");
-      const call = await VoiceCall.open(started, {
+      if (!aliveRef.current || controller.signal.aborted) {
+        audio.close();
+        return;
+      }
+      const call = await VoiceCall.connect(audio, started, {
         onText: (piece) => {
           if (aliveRef.current) setWords((w) => w + piece);
         },
@@ -124,6 +137,7 @@ export function VoiceStage({ model, entry }: { model: string; entry: AiCatalogMo
       callRef.current = call;
       setPhase({ step: "live", started });
     } catch (e) {
+      audio?.close();
       if (!aliveRef.current) return;
       if ((e as Error).name === "AbortError") {
         setPhase({ step: "idle" });

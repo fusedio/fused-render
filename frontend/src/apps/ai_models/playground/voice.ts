@@ -158,37 +158,59 @@ export interface VoiceHandlers {
   onEnd: (result: VoiceResult | null, error?: string) => void;
 }
 
-/** A live conversation. `open` resolves once the microphone is running and
- *  the socket is up; `hangUp` sends the end frame and tears everything down.
- *  `onEnd` fires exactly once, whichever side ends it. */
-export class VoiceCall {
-  private ended = false;
+/** The microphone, the audio graph and the worklets — everything that needs
+ *  a user gesture — opened BEFORE the model is asked for. A cold model takes
+ *  minutes to load, and WebKit ties an AudioContext's right to run to a
+ *  recent click: open the mic after that wait and the context stays
+ *  suspended, silent both ways. So the stage calls `openAudio` inside the
+ *  click, waits for the model with the mic already live, then `connect`s. */
+export class VoiceAudio {
   private constructor(
-    private readonly ws: WebSocket,
-    private readonly ctx: AudioContext,
-    private readonly stream: MediaStream,
-    private readonly handlers: VoiceHandlers,
+    readonly ctx: AudioContext,
+    readonly stream: MediaStream,
   ) {}
 
-  static async open(started: VoiceStarted, handlers: VoiceHandlers): Promise<VoiceCall> {
-    const rate = started.sampleRate || VOICE_SAMPLE_RATE;
-    const frame = started.frame || VOICE_FRAME;
+  static async open(sampleRate = VOICE_SAMPLE_RATE): Promise<VoiceAudio> {
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
     });
-    const ctx = new AudioContext({ sampleRate: rate });
+    const ctx = new AudioContext({ sampleRate });
     try {
       await ctx.audioWorklet.addModule(workletModule());
+      if (ctx.state === "suspended") await ctx.resume();
     } catch (e) {
       stream.getTracks().forEach((t) => t.stop());
       void ctx.close();
       throw e;
     }
+    return new VoiceAudio(ctx, stream);
+  }
+
+  close(): void {
+    this.stream.getTracks().forEach((t) => t.stop());
+    void this.ctx.close().catch(() => {});
+  }
+}
+
+/** A live conversation. `connect` resolves once the socket is up; `hangUp`
+ *  sends the end frame and tears everything down, the audio included.
+ *  `onEnd` fires exactly once, whichever side ends it. */
+export class VoiceCall {
+  private ended = false;
+  private constructor(
+    private readonly ws: WebSocket,
+    private readonly audio: VoiceAudio,
+    private readonly handlers: VoiceHandlers,
+  ) {}
+
+  static async connect(audio: VoiceAudio, started: VoiceStarted, handlers: VoiceHandlers): Promise<VoiceCall> {
+    const frame = started.frame || VOICE_FRAME;
+    const ctx = audio.ctx;
     const ws = new WebSocket(voiceSocketUrl(started));
     ws.binaryType = "arraybuffer";
-    const call = new VoiceCall(ws, ctx, stream, handlers);
+    const call = new VoiceCall(ws, audio, handlers);
 
-    const source = ctx.createMediaStreamSource(stream);
+    const source = ctx.createMediaStreamSource(audio.stream);
     const mic = new AudioWorkletNode(ctx, "fused-voice-mic", { processorOptions: { frame } });
     const speaker = new AudioWorkletNode(ctx, "fused-voice-speaker");
     source.connect(mic);
@@ -206,7 +228,9 @@ export class VoiceCall {
       const frameIn = unpackFrame(event.data);
       if (!frameIn) return;
       if (frameIn.kind === KIND_OUT) {
-        const pcm = new Int16Array(frameIn.payload.buffer, frameIn.payload.byteOffset, frameIn.payload.byteLength / 2);
+        // A COPY: the payload sits at byte offset 5 of the message, and an
+        // Int16 view must start on an even byte.
+        const pcm = new Int16Array(frameIn.payload.slice().buffer);
         const floats = new Float32Array(pcm.length);
         let sum = 0;
         for (let i = 0; i < pcm.length; i++) {
@@ -235,7 +259,7 @@ export class VoiceCall {
       ws.addEventListener("open", () => resolve(), { once: true });
       ws.addEventListener("close", (event) => reject(new Error(event.reason || "the voice session refused the connection")), { once: true });
     });
-    if (ctx.state === "suspended") await ctx.resume();
+    if (ctx.state === "suspended") await ctx.resume().catch(() => {});
     return call;
   }
 
@@ -258,8 +282,7 @@ export class VoiceCall {
     } catch {
       // already closed
     }
-    this.stream.getTracks().forEach((t) => t.stop());
-    void this.ctx.close().catch(() => {});
+    this.audio.close();
     this.handlers.onEnd(result, error);
   }
 }

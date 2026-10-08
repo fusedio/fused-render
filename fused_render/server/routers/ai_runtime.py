@@ -2490,9 +2490,11 @@ async def api_ai_voice_stream(sid: str, ws: WebSocket):
         except (asyncio.IncompleteReadError, OSError, RuntimeError):
             pass
 
+    pumps = {asyncio.ensure_future(to_worker()), asyncio.ensure_future(to_page())}
     try:
-        await asyncio.wait({asyncio.ensure_future(to_worker()), asyncio.ensure_future(to_page())},
-                           return_when=asyncio.FIRST_COMPLETED)
+        _done, pending = await asyncio.wait(pumps, return_when=asyncio.FIRST_COMPLETED)
+        for task in pending:
+            task.cancel()
     finally:
         try:
             writer.close()

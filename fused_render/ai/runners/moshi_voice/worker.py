@@ -114,14 +114,17 @@ def load(model_id, path):
     if bits:
         nn.quantize(model, bits=bits, group_size=32 if bits == 4 else 64)
     model.load_weights(os.path.join(path, formats.moshi_weight_file(names)), strict=True)
-    model.warmup()
     mimi = rustymimi.StreamTokenizer(os.path.join(path, formats.MOSHI_MIMI_FILE))
     tokenizer = sentencepiece.SentencePieceProcessor(
         model_file=os.path.join(path, formats.MOSHI_TOKENIZER_FILE))
     _loaded.clear()
     _loaded.update(model=model, mimi=mimi, tokenizer=tokenizer, model_id=model_id,
                    bits=bits, utils=utils, models=models)
-    _warm_up()
+    # The warm-up runs real generation steps, so it goes to the process's ONE
+    # MLX thread (`run_on_generate_thread`), never to this bring-up thread:
+    # the compiled-graph cache MLX keeps per thread must be built on the
+    # thread that will use it, and this one exits as soon as load returns.
+    worker_base.run_on_generate_thread(_warm_up)
     worker_base.set_state(device="mps")
 
 
@@ -172,6 +175,8 @@ def _warm_up():
     the first real step of a session is not also the first Metal compile."""
     import numpy as np
 
+    _pin_stream()
+    _loaded["model"].warmup()
     gen = _new_gen(16)
     zeros = np.zeros(FRAME, dtype=np.float32)
     for _ in range(4):
