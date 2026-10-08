@@ -280,7 +280,7 @@ div.bots-page.stage .chat header { padding: 6px 12px; min-height: 44px; }
 div.bots-page.stage .chat header .title small, div.bots-page.stage .chat header #rcol { display: none; }
 div.bots-page.stage .chat .msg { max-width: 100%; }
 div.bots-page.stage .chat .msg time.when { display: none; }
-.bots-page .handover { flex: none; display: flex; flex-direction: column; gap: 8px; margin: 10px 12px 0; padding: 10px 12px; border-radius: 12px; background: var(--card); box-shadow: inset 3px 0 0 var(--you); }
+.bots-page .handover { flex: none; display: flex; flex-direction: column; gap: 8px; margin: 10px 12px 0; padding: 10px 12px; border-radius: 12px; background: var(--card); }
 .bots-page .handover .hd { display: flex; gap: 8px; align-items: flex-start; }
 .bots-page .handover .ttl { flex: 1; min-width: 0; font-size: 13px; line-height: 1.45; }
 .bots-page .handover.byuser .ttl { color: var(--muted); }
@@ -345,7 +345,7 @@ div.bots-page.stage .chat .msg time.when { display: none; }
 .bots-page .msg.note .readmore:hover:not(:disabled) { background: var(--hover); }
 .bots-page .msg.note .readmore:disabled { opacity: .5; cursor: default; }
 .bots-page .msg.done { align-self: flex-start; background: var(--card); box-shadow: inset 0 0 0 1px var(--line); }
-.bots-page .msg.question { align-self: flex-start; background: var(--card); box-shadow: inset 3px 0 0 var(--warn); }
+.bots-page .msg.question { align-self: flex-start; background: var(--card); }
 .bots-page .msg.error { align-self: flex-start; background: var(--card); box-shadow: inset 3px 0 0 var(--err); color: var(--err); }
 /* A question with choices is a card: the prompt, then lettered rows you can click. */
 .bots-page .msg.question.card { box-shadow: none; width: min(48rem, 92%); padding: 14px 16px 16px; }
@@ -452,7 +452,6 @@ div.bots-page.stage .chat .msg time.when { display: none; }
 .bots-page .handoff-card .msg { max-width: none; background: none; border-radius: 0; box-shadow: none; padding: 0 12px 10px; animation: none; }
 .bots-page .handoff-card .ft { display: flex; justify-content: flex-end; padding: 7px 12px; border-top: 1px solid var(--line); }
 .bots-page .handoff-card .ft button { font-size: 11.5px; padding: 4px 9px; }
-.bots-page .handoff-card.blocked { box-shadow: inset 3px 0 0 var(--warn); }
 .bots-page .handoff-card.failed { box-shadow: inset 3px 0 0 var(--err); }
 /* Side app in the preview column: body.hasapp shows the Browser | App strip, body.sideapp swaps the browser view for the app frame. */
 .bots-page .sabar { display: none; align-items: center; gap: 4px; padding: 0 10px 8px 14px; border-bottom: 1px solid var(--line); }
@@ -468,7 +467,7 @@ div.bots-page:not(.sideapp) #satabb, div.bots-page.sideapp #sataba { background:
 .bots-page #saframe { display: none; flex: 1; min-height: 0; width: 100%; border: 0; background: var(--bg); }
 div.bots-page.sideapp #saframe { display: block; }
 div.bots-page.sideapp .preview > :is(.shotwrap, .toast, .cap, .info) { display: none; }
-.bots-page .msg.approval { align-self: flex-start; background: var(--card); box-shadow: inset 3px 0 0 var(--warn); max-width: min(48rem, 90%); }
+.bots-page .msg.approval { align-self: flex-start; background: var(--card); max-width: min(48rem, 90%); }
 .bots-page .msg.approval .btns { display: flex; gap: 8px; margin-top: 10px; }
 .bots-page .msg.approval.settled .btns { display: none; }
 .bots-page .composer { padding: 6px var(--chatgut) 18px; display: flex; flex-direction: column; gap: 8px; }
