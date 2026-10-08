@@ -9,6 +9,7 @@
 import { useSyncExternalStore } from "react";
 
 import { getConfig, updateCheck, updateInstall, type UpdateStatus } from "@platform/lib/api";
+import { pauseWhileHidden } from "@platform/lib/pause-while-hidden";
 
 const POLL_IDLE_MS = 60_000;
 const POLL_BUSY_MS = 2_000;
@@ -96,7 +97,28 @@ async function poll(): Promise<void> {
   // dependent" signature this was caught as.
   if (mine !== generation) return;
   set(next);
-  timer = setTimeout(poll, pollDelay(next));
+  arm(next);
+}
+
+// Schedule the next poll. A HIDDEN window skips its idle/warm ticks and polls
+// once when it shows again (pause-while-hidden.ts: every native window shares
+// WebKit's 6-connection pool per host:port, measured 2026-10-08) — the badge
+// it would refresh is not on screen, and the return trigger below re-asks on
+// the way back anyway. The BUSY cadence ("installing"/"checking") keeps
+// running hidden: the install button lives in whichever window was pressed,
+// and a person who hit Update and cmd-tabbed away must still see the
+// installing → installed/error flip land without waiting on a return. Busy is
+// bounded by the install itself, so this costs a few 2 s ticks, not a session.
+// Each arm carries its generation: a tick parked while hidden that a later
+// poke/push superseded does nothing when it finally runs, so a parked
+// catch-up can never start a second chain beside the re-armed one.
+function arm(next: UpdateStatus | null): void {
+  const mine = generation;
+  const tick = () => {
+    if (mine === generation) void poll();
+  };
+  const busy = next?.state === "installing" || next?.state === "checking";
+  timer = setTimeout(busy ? tick : pauseWhileHidden(tick), pollDelay(next));
 }
 
 // How long until the next look. Busy while an install runs; WARM while the
@@ -147,7 +169,7 @@ export function setUpdateStatus(next: UpdateStatus | null): void {
   if (started) {
     clearTimeout(timer);
     generation += 1;
-    timer = setTimeout(poll, pollDelay(next));
+    arm(next);
   }
 }
 

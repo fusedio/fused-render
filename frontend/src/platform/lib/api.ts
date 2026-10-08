@@ -260,7 +260,11 @@ export async function mutateJson<T>(
   return data as T;
 }
 
-const putJson = <T>(url: string, body: unknown) => mutateJson<T>("PUT", url, body);
+const putJson = <T>(url: string, body: unknown) => {
+  // See getPrefsShared: a write orphans the shared pre-write read.
+  if (url === "/api/prefs") prefsInFlight = null;
+  return mutateJson<T>("PUT", url, body);
+};
 export const postJson = <T>(
   url: string,
   body: unknown,
@@ -1393,6 +1397,11 @@ export interface Prefs {
   // `available` is false off macOS and under `fused-render serve`, where the
   // section is not rendered. OPTIONAL like `launcher`.
   native_windows?: { enabled: boolean; available: boolean };
+  // macOS status item: the menu-bar Dock (fused_render/menubar_dock.py, the
+  // default) or the pinned-file popover (menubar_pin.py; `pin_enabled`,
+  // opt-in). `available` is false off macOS and under `fused-render serve`,
+  // where the section is not rendered. OPTIONAL like `launcher`.
+  menubar?: { pin_enabled: boolean; available: boolean };
   // Desktop app: apps open inside the Home window's explorer instead of a
   // window each (`apps_open_in_home`, opt-in). OPTIONAL like `launcher`.
   apps_open_in_home?: { enabled: boolean };
@@ -1400,6 +1409,9 @@ export interface Prefs {
 
 export interface LauncherPrefs {
   available: boolean;
+  // What the panel's rows are, by flavor: "apps" under Fused Render, "bots"
+  // under Fused Bot (whose hotkey/modifier are the separate bot_launcher_* prefs).
+  kind?: "apps" | "bots";
   hotkey: string;
   display: string;
   row_modifier: string;
@@ -1565,6 +1577,31 @@ export function getPrefs(): Promise<Prefs> {
   return getJson<Prefs>("/api/prefs");
 }
 
+// Single-flight prefs GET for the feature-flag modules' first reads. Each
+// flag module (bots, canvases, claude queue, share, live previews, monitor,
+// task peek, …) does its own one read on first subscribe, and they all
+// subscribe in the same mount commit — five-plus identical GETs per window
+// open. Every native window shares WebKit's 6-connection HTTP/1.1 pool per
+// host:port (measured 2026-10-08), so those duplicates queued real calls.
+// Callers that start while a GET is IN FLIGHT share it; once it settles the
+// next call fetches afresh — no resolved value is ever held, so a later
+// explicit re-read (claude's rereadFlags on visibility) still sees the
+// server. A prefs PUT drops the in-flight GET so a read begun after a write
+// can never be answered by a request sent before it (the modules' own
+// generation counters already cover the reverse race).
+let prefsInFlight: Promise<Prefs> | null = null;
+
+export function getPrefsShared(): Promise<Prefs> {
+  if (prefsInFlight) return prefsInFlight;
+  const p = getPrefs();
+  prefsInFlight = p;
+  const clear = () => {
+    if (prefsInFlight === p) prefsInFlight = null;
+  };
+  p.then(clear, clear);
+  return p;
+}
+
 export function putEnginePref(engine: "builtin" | "fused"): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { engine });
 }
@@ -1606,6 +1643,12 @@ export function putNativeWindowsEnabled(enabled: boolean): Promise<Prefs> {
 
 export function putAppsOpenInHome(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { apps_open_in_home: enabled });
+}
+
+/** The macOS status item's surface: `true` = the pinned-file popover, `false` (the default) = the menu-bar Dock.
+ *  Applied live by the running app (the status item is re-pointed; nothing restarts). */
+export function putMenubarPinEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { menubar_pin_enabled: enabled });
 }
 
 export function putAppSharingEnabled(enabled: boolean): Promise<Prefs> {

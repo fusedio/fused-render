@@ -4,7 +4,7 @@
 // version newer than the bundled one is fixed by a page refresh, while an
 // installed-on-disk version newer than the served one needs an app restart —
 // prompting "refresh" there would be a lie.
-import { expect, test } from "bun:test";
+import { beforeEach, expect, test } from "bun:test";
 
 import {
   bannerSurface,
@@ -17,6 +17,9 @@ import {
   updateDialogPreview,
   pendingOutage,
   probeHealth,
+  pairedLoopbackOrigin,
+  pairedProbeDisabled,
+  resetPairedProbeForTest,
   type ProbeFailKind,
   type ProbeResult,
   type StatusState,
@@ -503,4 +506,68 @@ test("a 404 whose fallback is also broken is not healthy", async () => {
   expect(await probeHealth(bad.fn)).toEqual({ ok: false, kind: "http-5xx" });
   const notJson = fakeFetch({ "/api/config": () => new Response("<html>", { status: 200 }) });
   expect(await probeHealth(notJson.fn)).toEqual({ ok: false, kind: "parse" });
+});
+
+// ---- probeHealth: the paired loopback origin --------------------------------
+// WebKit caps connections per host:port at 6 and every window's long-polls
+// fill it, so a same-origin probe queues and times out. The probe goes to the
+// OTHER loopback name instead, which is a separate pool.
+
+beforeEach(() => resetPairedProbeForTest());
+
+const PAIRED = "http://localhost:1";
+const PAIRED_URL = PAIRED + "/api/health";
+
+test("pairedLoopbackOrigin swaps 127.0.0.1 and localhost, nothing else", () => {
+  const loc = (protocol: string, hostname: string, port: string) => ({ protocol, hostname, port });
+  expect(pairedLoopbackOrigin(loc("http:", "127.0.0.1", "8123"))).toBe("http://localhost:8123");
+  expect(pairedLoopbackOrigin(loc("http:", "localhost", "8123"))).toBe("http://127.0.0.1:8123");
+  expect(pairedLoopbackOrigin(loc("https:", "localhost", "8123"))).toBeNull();
+  expect(pairedLoopbackOrigin(loc("http:", "192.168.1.5", "8123"))).toBeNull();
+  expect(pairedLoopbackOrigin(loc("http:", "[::1]", "8123"))).toBeNull();
+  expect(pairedLoopbackOrigin(loc("http:", "127.0.0.1", ""))).toBeNull();
+});
+
+test("a healthy paired origin is one request, to the paired URL", async () => {
+  const { fn, calls } = fakeFetch({ [PAIRED_URL]: () => json({ boot_id: "b1" }) });
+  const probe = await probeHealth(fn, PAIRED);
+  expect(calls).toEqual([PAIRED_URL]);
+  expect(probe).toMatchObject({ ok: true, bootId: "b1" });
+  expect(pairedProbeDisabled()).toBe(false);
+});
+
+test("a paired timeout is the answer: no same-origin retry", async () => {
+  const abort = new Error("aborted");
+  abort.name = "AbortError";
+  const { fn, calls } = fakeFetch({ [PAIRED_URL]: () => abort });
+  expect(await probeHealth(fn, PAIRED)).toEqual({ ok: false, kind: "timeout" });
+  expect(calls).toEqual([PAIRED_URL]);
+});
+
+test("a refused paired origin falls back to same-origin and is disabled once that is healthy", async () => {
+  const { fn, calls } = fakeFetch({
+    [PAIRED_URL]: () => new TypeError("Failed to fetch"),
+    "/api/health": () => json({ boot_id: "b2" }),
+  });
+  expect(await probeHealth(fn, PAIRED)).toMatchObject({ ok: true, bootId: "b2" });
+  expect(calls).toEqual([PAIRED_URL, "/api/health"]);
+  expect(pairedProbeDisabled()).toBe(true);
+});
+
+test("the paired origin stays enabled when the same-origin probe fails too", async () => {
+  const { fn } = fakeFetch({
+    [PAIRED_URL]: () => new TypeError("Failed to fetch"),
+    "/api/health": () => new TypeError("Failed to fetch"),
+  });
+  expect(await probeHealth(fn, PAIRED)).toEqual({ ok: false, kind: "refused" });
+  expect(pairedProbeDisabled()).toBe(false);
+});
+
+test("a paired 404 falls back to the same-origin path, including its /api/config fallback", async () => {
+  const { fn, calls } = fakeFetch({
+    "/api/config": () => json({ version: "0.6.2", installed_version: null, dev: false }),
+  });
+  const probe = await probeHealth(fn, PAIRED);
+  expect(calls).toEqual([PAIRED_URL, "/api/health", "/api/config"]);
+  expect(probe).toMatchObject({ ok: true, version: "0.6.2" });
 });

@@ -48,7 +48,7 @@ import { markTasksSeen, useTasksPulse } from "@shell/tasksPulse";
 import { attentionLabel, pulseTitle, runningLabel } from "@shell/tasks-lib";
 import { formatSize } from "@platform/lib/format";
 import BookmarksSection from "@apps/explorer/sidebar/BookmarksSection";
-import CurrentAppsSection, { useDeskAppsOrdered } from "@shell/CurrentAppsSection";
+import CurrentAppsSection, { NewAppModal, useDeskAppsOrdered } from "@shell/CurrentAppsSection";
 import UpdateCard, { updateCardActive } from "@shell/UpdateCard";
 import { useRestartFlow } from "@platform/lib/restart-store";
 import { useUpdateStatus } from "@platform/lib/update-status";
@@ -777,19 +777,44 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   const extras = railExtras({ apps: deskApps, pins: pinnedBookmarks(loadBookmarks()), bot });
   const onAppPath = appPathFromPath(pathname);
   const here = pathname + location.search;
-  const railApps: SidebarRailItem[] = extras.apps.map((app, i) => ({
+  // The Projects section's "+ New app" row, on the rail: same composer, same
+  // place (the head of the apps group). Under Fused Bot the section is gone
+  // and so is this door.
+  const [railComposing, setRailComposing] = useState(false);
+  const railNewApp: SidebarRailItem[] = bot
+    ? []
+    : [
+        {
+          key: "new-app",
+          label: "New app",
+          icon: (
+            <span className="sidebar-rail-new-glyph" aria-hidden="true">
+              +
+            </span>
+          ),
+          href: "/apps",
+          active: false,
+          dividerBefore: true,
+          scrolls: true,
+          onClick: () => setRailComposing(true),
+        },
+      ];
+  const railApps: SidebarRailItem[] = extras.apps.map((app) => ({
     key: "app:" + app.path,
     label: app.name,
     icon: <RailAppIcon app={app} />,
     href: appPageUrl(app.path),
     active: onAppPath === app.path,
-    dividerBefore: i === 0,
     scrolls: true,
   }));
   const railPins: SidebarRailItem[] = extras.pins.map((b, i) => ({
     key: "pin:" + b.id,
     label: b.name,
-    icon: <span className="sidebar-rail-bm-glyph">{b.icon ?? "★"}</span>,
+    icon: (
+      <span className={"sidebar-rail-bm-glyph" + (b.icon ? " custom-icon" : "")}>
+        {b.icon ?? "★"}
+      </span>
+    ),
     href: b.url,
     active: b.url === here,
     dividerBefore: i === 0,
@@ -839,6 +864,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
             badge: residentDot,
           },
         ]),
+    ...railNewApp,
     ...railApps,
     ...railPins,
     // Same gate and same place as the expanded row: the rail is the whole
@@ -873,6 +899,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
 
   return (
     <>
+      {railComposing && <NewAppModal onClose={() => setRailComposing(false)} />}
       {/* `tuckOnCollapse` is the task side peek's motion (it collapses this
           panel on the reader's behalf), so it rides that feature's flag —
           shell/task-peek-flag.ts. Off, the collapse is the one this sidebar has

@@ -1,7 +1,9 @@
 """Menu-bar entry point for the packaged macOS app (SPEC DM-3/DM-5/DM-7).
 
 Wraps the existing `create_app()` server with a `rumps` NSStatusItem whose
-single surface is the pinned-view popover (menubar_pin.py, SPEC §25 D98):
+surface is the menu-bar Dock (menubar_dock.py: a tray of the user's apps —
+bots under Fused Bot — in a floating panel) or, with `menubar_pin_enabled`
+on, the pinned-view popover (menubar_pin.py, SPEC §25 D98):
 header row of app actions + a WKWebView of the pinned file. The rumps menu is
 only a fallback if the popover controller fails (PV-8). The CLI (`cli.py`,
 `fused-render`) is unaffected and remains the dev entry point.
@@ -339,8 +341,11 @@ def _start_server_thread(port: int) -> "tuple[uvicorn.Server, threading.Thread]"
     # ASGI application", lifespan failures) to the app log instead of the
     # default stderr handler with propagate=False — stderr is /dev/null under
     # a Finder launch (SPEC §50, logs.uvicorn_log_config docstring).
+    # Loopback WebSockets carry runPython results (/api/run/ws): uvicorn's default
+    # permessage-deflate would compress multi-MB replies ON the event loop for
+    # zero gain over loopback, so it is off.
     config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning",
-                            log_config=uvicorn_log_config())
+                            log_config=uvicorn_log_config(), ws_per_message_deflate=False)
     server = uvicorn.Server(config)
     # Named so a crashlog/threading.excepthook line and the D6 watchdog's
     # "server thread died" line both say WHICH thread it was.
@@ -1545,7 +1550,8 @@ def main() -> None:
         "server_thread": None,  # its thread, so quit can drain it (bounded)
         "quitting": False,   # a teardown is in flight; later Quits join it
         "quit_ready": threading.Event(),  # teardown done/deadline hit: die now
-        "pin": None,         # menubar_pin.PinController, built after run loop start
+        "pin": None,         # menubar_pin.PinController, built when the pin pref is on
+        "dock": None,        # menubar_dock.DockController, the default status-item surface
         "windows": None,     # mac_window.WindowManager, built after run loop start
         "launcher": None,    # launcher_panel.LauncherController, after the windows
         "restored": [],      # relaunch placeholders [(url, window)] awaiting the server
@@ -1790,11 +1796,14 @@ def main() -> None:
             mac_update.start()
         except Exception:
             logger.exception("update manager failed to start")
-        if state["pin"] is not None:
-            # AppKit is main-thread-only; this bootstrap runs on a worker.
-            from PyObjCTools import AppHelper
+        for surface in (state["pin"], state["dock"]):
+            if surface is not None:
+                # AppKit is main-thread-only; this bootstrap runs on a worker.
+                # Both menu-bar surfaces may exist (the preference swaps them
+                # live); each loads its page off the live server now.
+                from PyObjCTools import AppHelper
 
-            AppHelper.callAfter(state["pin"].server_ready)
+                AppHelper.callAfter(surface.server_ready)
         if state["launcher"] is not None:
             # The panel loads its page off the live server, and the global
             # shortcuts bind now — Carbon and the page live on the main thread.
@@ -2013,119 +2022,257 @@ def main() -> None:
             else:
                 manager.open(target)
 
+        def _open_app_native(fs_path: str) -> None:
+            """An app picked in the launcher or clicked in the menu-bar Dock:
+            its own run window, focused if already open — the path every
+            native "open this app" goes through, so the per-app saved window
+            frame (`window_policy.frame_autosave_name`) applies to all of
+            them. Main thread."""
+            manager = state["windows"]
+            # `enabled`, not just a manager: it outlives the preference
+            # being switched off, and off must be the browser tab on the
+            # app page exactly as before — never the run window's embed.
+            if manager is None or not manager.enabled:
+                webbrowser.open(url.rstrip("/") + window_policy.shell_path_for(fs_path))
+                return
+            from AppKit import NSApp
+
+            # Dock semantics; the panel is non-activating, so bring
+            # this app forward or the window opens behind the caller.
+            # An app lands in its own run window, as a shell click does.
+            NSApp.activateIgnoringOtherApps_(True)
+            if prefs_mod.apps_open_in_home():
+                manager.open_app_in_home(fs_path)
+                return
+            manager.focus_or_open_app(fs_path)
+
+        def _open_bot_native(bid: str) -> None:
+            """A bot picked in the launcher or clicked in the menu-bar Dock:
+            selected in a Bots window (`WindowManager.show_bot`) — the one
+            door every native "open this bot" goes through, as apps go
+            through `_open_app_native`. A browser tab on the bots page with
+            the windows off. Main thread."""
+            from fused_render import dock as dock_mod
+
+            manager = state["windows"]
+            if manager is None or not manager.enabled:
+                webbrowser.open(url.rstrip("/") + dock_mod.bot_view_path(bid))
+                return
+            from AppKit import NSApp
+
+            NSApp.activateIgnoringOtherApps_(True)
+            manager.show_bot(bid)
+
         # The launcher (launcher_panel.py): a Spotlight-like panel on a
-        # global shortcut (⌥Space by default) that opens any known app. NOT
-        # behind the windows preference: with native windows on its pick
+        # global shortcut that opens any known app (Fused Render, ⌥Space by
+        # default) or any bot (Fused Bot, ⌥⇧Space by default: the two apps
+        # run side by side and share prefs.json, so each flavor stores its
+        # own shortcut under its own key and defaults to a combination the
+        # other does not register — `launcher.hotkey_key`). NOT behind the
+        # windows preference: with native windows on its pick
         # focuses-or-opens a window, off it opens a browser tab at the same
-        # address (`window_policy.shell_path_for`). Guarded — no launcher is
-        # a lesser outcome than no app.
-        #
-        # Not built at all under Fused Bot (owner call): no ⌥Space panel, no
-        # global hotkey registered. `state["launcher"]` stays None, which is
-        # what the ready path, the popover's "Search Apps…" key and
-        # /api/launcher's `available` already key off.
-        if _flavor.is_bot():
-            logger.info("launcher not built: bot flavor")
-        else:
-            try:
-                from AppKit import NSApp
-
-                from fused_render import launcher as launcher_mod
-                from fused_render.launcher_panel import LauncherController
-
-                def _open_from_launcher(fs_path: str) -> None:
-                    manager = state["windows"]
-                    # `enabled`, not just a manager: it outlives the preference
-                    # being switched off, and off must be the browser tab on the
-                    # app page exactly as before — never the run window's embed.
-                    if manager is None or not manager.enabled:
-                        webbrowser.open(url.rstrip("/") + window_policy.shell_path_for(fs_path))
-                        return
-                    # Dock semantics; the panel is non-activating, so bring
-                    # this app forward or the window opens behind the caller.
-                    # An app lands in its own run window, as a shell click does.
-                    NSApp.activateIgnoringOtherApps_(True)
-                    if prefs_mod.apps_open_in_home():
-                        manager.open_app_in_home(fs_path)
-                        return
-                    manager.focus_or_open_app(fs_path)
-
-                def _home_from_launcher() -> None:
-                    manager = state["windows"]
-                    if manager is None:
-                        webbrowser.open(url)
-                        return
-                    NSApp.activateIgnoringOtherApps_(True)
-                    manager.show_home()
-
-                def _open_keys() -> set[str]:
-                    # Read live: the manager comes and goes with the preference.
-                    manager = state["windows"]
-                    return manager.open_keys() if manager is not None else set()
-
-                launcher_ctl = LauncherController(port, _open_from_launcher, _home_from_launcher)
-                state["launcher"] = launcher_ctl
-
-                # What the uvicorn thread may call (PUT /api/prefs, GET
-                # /api/launcher): rebinding hops to the main thread; the
-                # bound flags and the open-window set are plain attribute
-                # reads, safe from any thread.
-                def _rebind(spec) -> None:
-                    if spec:
-                        AppHelper.callAfter(launcher_ctl.bind_hotkey, spec)
-                    else:  # the row modifier changed; rebind those, tell the page
-                        AppHelper.callAfter(launcher_ctl.push_settings)
-
-                def _suspend(on: bool) -> None:
-                    AppHelper.callAfter(launcher_ctl.suspend_shortcuts, on)
-
-                launcher_mod.native_hooks.update({
-                    "rebind": _rebind,
-                    "suspend": _suspend,
-                    "hotkey_bound": launcher_ctl.hotkey_bound,
-                    "pinned_bound": launcher_ctl.pinned_bound,
-                    "open_keys": _open_keys,
-                })
-                if os.environ.get("FUSED_RENDER_LAUNCHER_SHOW"):
-                    # Dev only: SIGUSR2 toggles the launcher, so a script can
-                    # screenshot it without Accessibility access to press the
-                    # shortcut. Python signal handlers run only between
-                    # bytecodes; an idle AppKit run loop executes none, so a
-                    # no-op tick keeps the interpreter breathing.
-                    import signal
-
-                    signal.signal(signal.SIGUSR2, lambda *_: AppHelper.callAfter(
-                        launcher_ctl.toggle))
-                    status_app.launcher_dev_tick = rumps.Timer(lambda _t: None, 0.5)
-                    status_app.launcher_dev_tick.start()
-            except Exception:
-                logger.exception("launcher unavailable")
-                state["launcher"] = None
-
+        # address. A row opens through `open_row(kind, key)`: a bot to
+        # `_open_bot_native`, anything else to `_open_app_native`, the same
+        # doors the Dock uses. Guarded — no launcher is a lesser outcome than
+        # no app; `state["launcher"]` then stays None, which is what the
+        # ready path, the "Search …" menu key and /api/launcher's
+        # `available` key off.
         try:
-            # Lazy + guarded: pyobjc-framework-WebKit may be missing in an
-            # older [app] env; on failure the rumps menu stays attached and
-            # the app runs menu-only (PV-8).
+            from AppKit import NSApp
+
+            from fused_render import launcher as launcher_mod
+            from fused_render.launcher_panel import LauncherController
+
+            def _open_from_launcher(kind: str, key: str) -> None:
+                # Main thread (the panel's script handler / a row hotkey).
+                if kind == "bot":
+                    _open_bot_native(key)
+                else:
+                    _open_app_native(key)
+
+            def _home_from_launcher() -> None:
+                manager = state["windows"]
+                if manager is None:
+                    webbrowser.open(url)
+                    return
+                NSApp.activateIgnoringOtherApps_(True)
+                manager.show_home()
+
+            def _open_keys() -> set[str]:
+                # Read live: the manager comes and goes with the preference.
+                manager = state["windows"]
+                return manager.open_keys() if manager is not None else set()
+
+            launcher_ctl = LauncherController(port, _open_from_launcher, _home_from_launcher)
+            state["launcher"] = launcher_ctl
+
+            # What the uvicorn thread may call (PUT /api/prefs, GET
+            # /api/launcher): rebinding hops to the main thread; the
+            # bound flags and the open-window set are plain attribute
+            # reads, safe from any thread.
+            def _rebind(spec) -> None:
+                if spec:
+                    AppHelper.callAfter(launcher_ctl.bind_hotkey, spec)
+                else:  # the row modifier changed; rebind those, tell the page
+                    AppHelper.callAfter(launcher_ctl.push_settings)
+
+            def _suspend(on: bool) -> None:
+                AppHelper.callAfter(launcher_ctl.suspend_shortcuts, on)
+
+            launcher_mod.native_hooks.update({
+                "rebind": _rebind,
+                "suspend": _suspend,
+                "hotkey_bound": launcher_ctl.hotkey_bound,
+                "pinned_bound": launcher_ctl.pinned_bound,
+                "open_keys": _open_keys,
+            })
+            if os.environ.get("FUSED_RENDER_LAUNCHER_SHOW"):
+                # Dev only: SIGUSR2 toggles the launcher, so a script can
+                # screenshot it without Accessibility access to press the
+                # shortcut. Python signal handlers run only between
+                # bytecodes; an idle AppKit run loop executes none, so a
+                # no-op tick keeps the interpreter breathing.
+                import signal
+
+                signal.signal(signal.SIGUSR2, lambda *_: AppHelper.callAfter(
+                    launcher_ctl.toggle))
+                status_app.launcher_dev_tick = rumps.Timer(lambda _t: None, 0.5)
+                status_app.launcher_dev_tick.start()
+        except Exception:
+            logger.exception("launcher unavailable")
+            state["launcher"] = None
+
+        # ---- the status item's surface: Dock (default) or pinned-file popover ----
+        # Both controllers take the status item over the same way
+        # (`_take_over_status_item`: rumps' menu off, button → their target),
+        # so the preference swaps them LIVE by re-pointing the button: the
+        # other surface is closed and kept (its page stays loaded; the next
+        # swap back is instant). `menubar_pin_enabled` (shell/prefs.py,
+        # default off → the Dock) is read here at launch and applied again
+        # through `window_policy.native_hooks["menubar_apply"]` on a PUT.
+        # Lazy + guarded, like the windows: pyobjc-framework-WebKit may be
+        # missing in an older [app] env; on failure the rumps menu stays
+        # attached and the app runs menu-only (PV-8).
+        menubar_actions = {
+            "open_browser": _open_browser,
+            "copy_url": _copy_url,
+            "open_logs": _open_logs,
+            "save_diagnostics": save_diagnostics_async,
+            "quit": _do_quit,
+            "open_window": _open_window,
+            # Present only when the launcher was built: both surfaces show
+            # "Search Apps…" ("Search Bots…" under Fused Bot) off this key.
+            **({"show_launcher": _show_launcher} if state["launcher"] is not None else {}),
+        }
+
+        def _show_home_native() -> None:
+            # The Dock's Home tile / "Open <app>": raise an open Home window,
+            # else open one; a browser tab with the windows off.
+            manager = state["windows"]
+            if manager is None or not manager.enabled:
+                webbrowser.open(url)
+                return
+            from AppKit import NSApp
+
+            NSApp.activateIgnoringOtherApps_(True)
+            manager.focus_or_open_home()
+
+        def _show_tasks_native() -> None:
+            manager = state["windows"]
+            if manager is None or not manager.enabled:
+                webbrowser.open(url.rstrip("/") + "/tasks")
+                return
+            from AppKit import NSApp
+
+            NSApp.activateIgnoringOtherApps_(True)
+            manager.show_tasks()
+
+        def _build_pin():
             from fused_render.menubar_pin import PinController
 
-            state["pin"] = PinController(
-                status_app._nsapp.nsstatusitem,
-                port,
-                APP_SUPPORT_DIR,
-                actions={
-                    "open_browser": _open_browser,
-                    "copy_url": _copy_url,
-                    "open_logs": _open_logs,
-                    "save_diagnostics": save_diagnostics_async,
-                    "quit": _do_quit,
-                    "open_window": _open_window,
-                    # Present only when the launcher was built: the popover
-                    # shows "Search Apps…" off this key.
-                    **({"show_launcher": _show_launcher} if state["launcher"] is not None else {}),
-                },
-            )
-        except Exception:
-            logger.exception("popover unavailable; falling back to the status-item menu")
+            return PinController(status_app._nsapp.nsstatusitem, port, APP_SUPPORT_DIR,
+                                 actions=menubar_actions)
+
+        def _build_dock():
+            from fused_render.menubar_dock import DockController
+
+            return DockController(status_app._nsapp.nsstatusitem, port, actions={
+                **menubar_actions,
+                "show_home": _show_home_native,
+                "show_tasks": _show_tasks_native,
+            })
+
+        def _apply_menubar(pin: bool) -> None:
+            # Main thread. Build the wanted surface if it does not exist yet,
+            # close the other, hand the status item to the wanted one.
+            want, other = ("pin", "dock") if pin else ("dock", "pin")
+            builders = {"pin": _build_pin, "dock": _build_dock}
+            if state[want] is None:
+                try:
+                    state[want] = builders[want]()
+                    if state["ready"]:
+                        state[want].server_ready()
+                except Exception:
+                    logger.exception("%s surface unavailable", want)
+                    if state[other] is None:
+                        logger.warning("falling back to the status-item menu")
+                        return
+                    # Keep whatever surface already owns the status item.
+                    state[other]._take_over_status_item()
+                    return
+            if state[other] is not None:
+                try:
+                    if other == "pin":
+                        state[other]._popover.close()
+                    else:
+                        state[other].close()
+                except Exception:
+                    logger.debug("closing the %s surface failed", other, exc_info=True)
+            state[want]._take_over_status_item()
+            logger.info("status item surface: %s", want)
+
+        def _dock_open(kind: str, key: str) -> None:
+            # A tile clicked in the Dock (its own menu or POST /api/dock/open),
+            # from any thread. Apps go through `_open_app_native` — the same
+            # door as the launcher, so a window already running the app is
+            # raised and the app's saved frame applies; a bot goes through
+            # `_open_bot_native`, the launcher's bot door, selected in a Bots
+            # window (`WindowManager.show_bot`).
+            def run():
+                dock = state["dock"]
+                if dock is not None:
+                    dock.close_popover()
+                if kind == "bot":
+                    _open_bot_native(key)
+                else:
+                    _open_app_native(key)
+
+            AppHelper.callAfter(run)
+
+        def _dock_home() -> None:
+            def run():
+                dock = state["dock"]
+                if dock is not None:
+                    dock.close_popover()
+                _show_home_native()
+
+            AppHelper.callAfter(run)
+
+        _apply_menubar(prefs_mod.menubar_pin_enabled())
+        window_policy.native_hooks["menubar_apply"] = lambda pin: AppHelper.callAfter(_apply_menubar, pin)
+        window_policy.native_hooks["dock_open"] = _dock_open
+        window_policy.native_hooks["show_home"] = _dock_home
+        if os.environ.get("FUSED_RENDER_DOCK_SHOW"):
+            # Dev only: SIGUSR1 toggles the Dock tray, so a script can
+            # screenshot it without clicking the status item. Same no-op
+            # tick as the launcher's: an idle AppKit run loop runs no Python
+            # between bytecodes, so a signal handler never fires without it.
+            import signal
+
+            signal.signal(signal.SIGUSR1, lambda *_: AppHelper.callAfter(
+                lambda: state["dock"] is not None and state["dock"].toggle_popover()))
+            status_app.dock_dev_tick = rumps.Timer(lambda _t: None, 0.5)
+            status_app.dock_dev_tick.start()
         # A relaunch's windows come back NOW, before the server is up (see
         # reopen_windows_early). With no snapshot this is a no-op.
         try:

@@ -117,6 +117,7 @@ import DownloadManager from "@platform/ui/DownloadManager";
 
 export default function StatusBar({
   terminalDock,
+  updates,
   system,
   models,
   activity,
@@ -128,8 +129,12 @@ export default function StatusBar({
    *  Optional so a caller/test with no terminal feature wired up (or a
    *  Windows build, where the chip is hidden) renders nothing here. */
   terminalDock?: ReactNode;
-  /** fused-render's own CPU and memory (`shell/SystemDock.tsx`): alone at the
-   *  bar's LEFT edge, everything else stays packed right. */
+  /** The self-update chip (`shell/UpdatesDock.tsx`): version, Check for
+   *  updates and the download/restart story, at the bar's LEFT edge before
+   *  System (Akshil, 2026-10-08: "left side of where we show cpu and memory"). */
+  updates?: ReactNode;
+  /** fused-render's own CPU and memory (`shell/SystemDock.tsx`): at the bar's
+   *  LEFT edge after Updates, everything else stays packed right. */
   system?: ReactNode;
   models?: ReactNode;
   activity?: ReactNode;
@@ -137,7 +142,12 @@ export default function StatusBar({
 }) {
   return (
     <div className="status-bar">
-      {system && <div className="status-bar-start">{system}</div>}
+      {(updates || system) && (
+        <div className="status-bar-start">
+          {updates}
+          {system}
+        </div>
+      )}
       {terminalDock}
       {models}
       {activity ?? <DownloadManager />}

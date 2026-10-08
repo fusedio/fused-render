@@ -3,7 +3,9 @@
 import { fmtTime } from "../lib/format";
 import { armToast, holdToast, useBotsSelector } from "../state/store";
 
-export function Toast({ id }: { id: "toast" | "ftoast" }) {
+/** #ctoast: the chat column's copy, shown only while the preview column is hidden (bots.css), so a "needs you" pill
+ *  still lands somewhere in chat-primary with .rcol / .rfit. */
+export function Toast({ id }: { id: "toast" | "ftoast" | "ctoast" }) {
   const toasts = useBotsSelector((s) => s.toasts);
   return (
     <div className="toast" id={id} aria-live="polite">

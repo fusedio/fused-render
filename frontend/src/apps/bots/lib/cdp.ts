@@ -3,21 +3,28 @@
 // out: no worker hop, no file, no polling. Chrome only accepts a browser-origin handshake when launched with
 // --remote-allow-origins (browser.py adds it).
 //
+// This module is the socket and the link state plus the open / take over / hand back actions. What rides on the
+// socket lives beside it: live-page.ts (dialogs, file chooser, HTTP auth, what is intercepted while you drive),
+// live-overlays.ts (the menus headless Chrome never paints), live-input.ts (mouse, keys, drag). Those register
+// here through `onEvent` / `onOpen` / `onReset`, so nothing imports back into this file.
+//
 // Frames go straight into #fshot (never through React state); whether the socket is up is a tiny external store
 // (useLinked) so #full's .nolink / .ctl classes and the status strip re-render with it. `state.fast` is "#full is
 // showing": openFull() turns it on, handBack(true) turns it off.
 import { useSyncExternalStore } from "react";
 import { flushSync } from "react-dom";
 import { askConfirm } from "../dialogs/ask";
-import { act, cur, getState, poll, select, setFast, showBanner, showToast, subscribe as subscribeStore } from "../state/store";
+import { act, cur, getState, onHandover, poll, select, setFast, showBanner } from "../state/store";
 import { api, type Bot } from "./api";
-import { BTN, CAST, CDP_MODS, furlTarget, keyParams, nextDown, showUrl, toPageXY, type FrameMeta, type LastDown } from "./live";
+import { CAST, furlTarget, showUrl, type FrameMeta } from "./live";
 
-const link: { ws: WebSocket | null; url: string | null; id: number; tabs: Set<string> | null; meta: FrameMeta | null } =
-  { ws: null, url: null, id: 0, tabs: null, meta: null };  // meta: the last frame's viewport metadata from Chrome
-
-const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T | null;
+export const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T | null;
 const activeWs = (b: Bot | undefined): string | null => (b?.browser?.tabs || []).find((t) => t.active)?.ws || null;
+
+const link: { ws: WebSocket | null; url: string | null; id: number; tabs: Set<string> | null; meta: FrameMeta | null; retryAt: number } =
+  { ws: null, url: null, id: 0, tabs: null, meta: null, retryAt: 0 };
+/** The last frame's viewport metadata from Chrome (CSS px the frame covers), for pointer and overlay geometry. */
+export const frameMeta = (): FrameMeta | null => link.meta;
 
 // ------------------------------------------------------------------ link state (for React) ----
 let linkedSnap = false;
@@ -37,56 +44,95 @@ export const inFull = (): boolean => getState().fast;
 /** You drive: the view is open, you hold control and the socket is up. */
 export const inCtl = (): boolean => inFull() && !!cur()?.control && linked();
 
+// ------------------------------------------------------------------ hooks for the modules riding on the socket ----
+type Handler = (p: Record<string, unknown>) => void;
+const handlers = new Map<string, Handler>();
+/** Handle one CDP event method (the last registration wins). */
+export function onEvent(method: string, fn: Handler): void { handlers.set(method, fn); }
+/** Run after each socket opens (the session is fresh: re-apply per-session state). */
+export const onOpen: Array<() => void> = [];
+/** Run when the socket goes away, however it went (forget per-session state). */
+export const onReset: Array<() => void> = [];
+
+// ------------------------------------------------------------------ calls ----
 /** Fire-and-forget: Chrome's replies are not needed for frames or input. */
-export function cdp(method: string, params: Record<string, unknown> = {}): void {
+export function cdp(method: string, params: object = {}): void {
   if (!linked()) return;
   link.ws!.send(JSON.stringify({ id: ++link.id, method, params }));
 }
+/** The few calls whose reply matters. null when not linked, after 3 s, or if the socket closes meanwhile. */
+const pending = new Map<number, (r: Record<string, unknown> | null) => void>();
+function cdpCall(method: string, params: object = {}): Promise<Record<string, unknown> | null> {
+  if (!linked()) return Promise.resolve(null);
+  const id = ++link.id;
+  return new Promise((resolve) => {
+    const t = window.setTimeout(() => { pending.delete(id); resolve(null); }, 3000);
+    pending.set(id, (r) => { window.clearTimeout(t); resolve(r); });
+    link.ws!.send(JSON.stringify({ id, method, params }));
+  });
+}
+/** Run an expression in the driven page and return its value (undefined on error or when not linked). */
+export async function evalIn<T = unknown>(expression: string): Promise<T | undefined> {
+  const r = await cdpCall("Runtime.evaluate", { expression, returnByValue: true });
+  return (r as { result?: { value?: T } } | null)?.result?.value;
+}
 
 // ------------------------------------------------------------------ the socket ----
-/** Connect to the driven tab while the view is open; follow tab switches, relaunches and pop-outs by reconnecting when its socket URL changes. */
+/** Connect to the driven tab while the view is open; follow tab switches and relaunches by reconnecting when its socket
+ *  URL changes. A failed handshake is retried no sooner than a second later (the store polls every 400 ms). */
 export function linkSync(): void {
-  const b = cur();
-  const want = inFull() ? activeWs(b) : null;
-  const vis = !!b?.browser?.visible;
-  if (link.url === want && link.ws && link.ws.readyState <= 1) {
-    if (linked() && !vis) cdp("Page.bringToFront");
-    return;
-  }
+  const want = inFull() ? activeWs(cur()) : null;
+  if (link.url === want && link.ws && link.ws.readyState <= 1) return;
+  if (link.url === want && want && !link.ws && Date.now() < link.retryAt) return;
   linkClose();
   if (!want) return;
   link.url = want;
   const ws = new WebSocket(want); link.ws = ws;
   ws.onopen = () => {
+    if (link.ws !== ws) return;
     cdp("Page.enable");
-    if (!vis) { cdp("Page.bringToFront"); cdp("Emulation.setFocusEmulationEnabled", { enabled: true }); }
+    // Headless Chrome composites only a tab it treats as visible and focused; focus emulation is per CDP session, so this
+    // socket asks for it too (the bot's own sessions do the same in browser.py _foreground).
+    cdp("Page.bringToFront"); cdp("Emulation.setFocusEmulationEnabled", { enabled: true });
     cdp("Page.startScreencast", { format: "jpeg", ...CAST, everyNthFrame: 1 });
     publishLink();
+    for (const f of onOpen) f();
   };
   ws.onmessage = (ev) => {
-    const m = JSON.parse(String(ev.data)), p = m.params || {};
+    if (link.ws !== ws) return;  // a late message from a tab we left
+    const m = JSON.parse(String(ev.data)), p = (m.params || {}) as Record<string, unknown>;
+    if (typeof m.id === "number" && pending.has(m.id)) { pending.get(m.id)!(m.result ?? null); pending.delete(m.id); return; }
     if (m.method === "Page.screencastFrame") {
-      link.meta = p.metadata || link.meta;
+      link.meta = (p.metadata as FrameMeta) || link.meta;
       const img = $<HTMLImageElement>("fshot"); if (img) img.src = "data:image/jpeg;base64," + p.data;
       cdp("Page.screencastFrameAck", { sessionId: p.sessionId });
-    } else if (m.method === "Page.frameNavigated" && !p.frame?.parentId) {
+    } else if (m.method === "Page.frameNavigated" && !(p.frame as { parentId?: string } | undefined)?.parentId) {
       const furl = $<HTMLInputElement>("furl");
-      if (furl && document.activeElement !== furl) furl.value = showUrl(p.frame?.url);
+      if (furl && document.activeElement !== furl) furl.value = showUrl((p.frame as { url?: string }).url);
       void poll();  // title and tab strip
-    } else if (m.method === "Page.screencastVisibilityChanged" && p.visible === false && !vis) {
+    } else if (m.method === "Page.screencastVisibilityChanged" && p.visible === false) {
       cdp("Page.bringToFront"); cdp("Emulation.setFocusEmulationEnabled", { enabled: true });
-    } else if (m.method === "Page.javascriptDialogOpening") {
-      // A page dialog would freeze the tab; show it and accept it so the human (or the bot) can carry on.
-      showToast({ text: `${p.type}: ${p.message || ""}`, ts: Date.now() / 1000 });
-      cdp("Page.handleJavaScriptDialog", { accept: true, promptText: p.defaultPrompt || "" });
+    } else {
+      handlers.get(m.method)?.(p);
     }
   };
-  ws.onclose = ws.onerror = () => { if (link.ws === ws) { link.ws = null; publishLink(); } };
+  ws.onclose = ws.onerror = () => {
+    if (link.ws !== ws) return;
+    link.ws = null; link.retryAt = Date.now() + 1000;
+    settleAll(); publishLink();
+    for (const f of onReset) f();
+  };
 }
+function settleAll() { for (const r of [...pending.values()]) r(null); pending.clear(); }
 
 export function linkClose(): void {
   const ws = link.ws; link.ws = null; link.url = null; link.meta = null;
-  if (ws) { try { if (ws.readyState === 1) ws.send(JSON.stringify({ id: ++link.id, method: "Page.stopScreencast" })); ws.close(); } catch { /* already gone */ } }
+  if (ws) {
+    ws.onclose = ws.onerror = null;  // this close is ours: reset once, below, not again from the handler
+    try { if (ws.readyState === 1) ws.send(JSON.stringify({ id: ++link.id, method: "Page.stopScreencast" })); ws.close(); } catch { /* already gone */ }
+    settleAll();
+    for (const f of onReset) f();
+  }
   publishLink();
 }
 
@@ -109,18 +155,21 @@ export function mirrorThumb(u: string): void {
 // ------------------------------------------------------------------ open / take over / hand back ----
 let switching = false, askedTakeover = false;
 
-/** An empty page has nothing to type into, so focus lands in the URL bar instead of on the stage. */
+/** Keyboard focus while you drive: #fkeys, the hidden textarea in the stage (live-input.ts forwards from it). An empty
+ *  page has nothing to type into, so focus lands in the URL bar instead. preventScroll: #fkeys sits at the stage's top. */
 export function focusCtl(): void {
-  if (showUrl(cur()?.browser?.url)) $("stage")?.focus();
+  if (showUrl(cur()?.browser?.url)) $("fkeys")?.focus({ preventScroll: true });
   else { const f = $<HTMLInputElement>("furl"); if (f) { f.value = ""; f.focus(); } }
 }
 
-export function openFull(): void {
+/** Open the live view on the selected bot (the thumbnail, the bot menu, the Browsers dialog's Sign in…). */
+/** `focus: false` (a hand-over landing while the composer holds unsent text) opens Stage without taking the keyboard. */
+export function openFull({ focus = true }: { focus?: boolean } = {}): void {
   const b = cur(); if (!b) return;
   flushSync(() => setFast(true));  // #full must be showing before anything in it can take focus
   const shot = $<HTMLImageElement>("shot"), fshot = $<HTMLImageElement>("fshot");
   if (fshot) { const s = shot?.getAttribute("src"); if (s) fshot.src = s; else fshot.removeAttribute("src"); }
-  if (b.control) focusCtl();
+  if (b.control && focus) focusCtl();
   link.tabs = null;
   askedTakeover = false;
   // An asleep browser has nothing to stream: wake it whenever it is not running, not only when the thumbnail wore the "asleep"
@@ -129,15 +178,11 @@ export function openFull(): void {
   void poll().then(linkSync);  // status carries the driven tab's socket URL
   linkSync();
 }
+// The store's poll opens Stage through this on a bot-initiated hand-over (state/store.ts requestStage).
+onHandover((o) => openFull(o), () => { setFast(false); linkClose(); });
 /** The bot menu's "Open live view" (selects the bot first when the menu belongs to another one). */
 export function openLive(id?: string): void {
   if (id && id !== getState().sel) select(id);
-  openFull();
-}
-/** The thumbnail opens the live view to watch. A popped-out bot already has a real window on the desktop; opening the mirror on top of it just fights it for focus. */
-export function openFromThumb(): void {
-  const b = cur(); if (!b) return;
-  if (b.browser?.visible) { showToast({ text: "This bot's browser is open as a real window on your desktop.", ts: Date.now() / 1000 }); return; }
   openFull();
 }
 
@@ -156,6 +201,8 @@ export async function handBack(close: boolean): Promise<void> {
   if (close) { setFast(false); linkClose(); }
 }
 export const toggleCtl = (): Promise<void> => (cur()?.control ? handBack(false) : takeOver());
+/** A take-over is in flight (clicks meanwhile are ignored). */
+export const isSwitching = (): boolean => switching;
 
 export function nav(op: "back" | "forward" | "reload"): void {
   const id = getState().sel;
@@ -168,6 +215,13 @@ export async function gotoTyped(value: string): Promise<void> {
   await act(() => api.goto(id, furlTarget(u)));
 }
 
+/** The first click on the page or the tab strip while the bot drives asks once per opening; later ones take over at once. */
+export async function askTakeOver(text: string): Promise<boolean> {
+  if (askedTakeover) return true;
+  askedTakeover = true;
+  return askConfirm("Take over?", text, "Take over", false);
+}
+
 /** Tab strip clicks: close (×), new (+) or switch; while the bot drives, the first one asks to take over. */
 export async function tabstripClick(target: Element): Promise<void> {
   const b = cur();
@@ -176,9 +230,7 @@ export async function tabstripClick(target: Element): Promise<void> {
   const sw = !!t && !t.classList.contains("active");
   if (!x && !n && !sw) return;
   if (!b.control) {
-    const asked = askedTakeover;
-    askedTakeover = true;
-    if (!asked && !(await askConfirm("Take over?", "Switching tabs pauses the bot and you drive this page yourself. Hand back whenever you are done.", "Take over", false))) return;
+    if (!(await askTakeOver("Switching tabs pauses the bot and you drive this page yourself. Hand back whenever you are done."))) return;
     await takeOver();
     if (!cur()?.control) return;
   }
@@ -187,107 +239,4 @@ export async function tabstripClick(target: Element): Promise<void> {
   // A fresh or blank tab drops focus into the URL bar so typing starts at once; a loaded one focuses the page.
   if (n) { await act(() => api.tab(id, { tab: "new" }), true); focusCtl(); return; }
   if (sw && t) { await act(() => api.tab(id, { tab: "switch", index: Number(t.dataset.i) }), true); focusCtl(); }
-}
-
-// ------------------------------------------------------------------ input forwarding ----
-// Map to CSS viewport pixels (what CDP expects): the frame's own metadata, else the bot's viewport.
-function toPage(e: MouseEvent): { x: number; y: number } | null {
-  const img = $<HTMLImageElement>("fshot"); if (!img) return null;
-  return toPageXY(e.clientX, e.clientY, img.getBoundingClientRect(), [img.naturalWidth, img.naturalHeight], link.meta, cur()?.viewport);
-}
-const mouse = (type: string, p: { x: number; y: number }, e: MouseEvent, extra: Record<string, unknown> = {}) =>
-  cdp("Input.dispatchMouseEvent", { type, x: p.x, y: p.y, modifiers: CDP_MODS(e), ...extra });
-
-/**
- * Wire the stage (pointer, wheel, paste, keys), the document-level Esc, and the per-poll mirrors (follow popups,
- * keep the socket on the driven tab). Mount once (LiveView). Returns the teardown.
- */
-export function installLive(stage: HTMLElement): () => void {
-  let lastDown: LastDown = { t: 0, x: 0, y: 0, n: 0 };
-  // Moves are coalesced to one per animation frame: hover menus stay responsive without flooding the socket.
-  let pendingMove: { p: { x: number; y: number }; e: MouseEvent } | null = null;
-  const onMove = (e: MouseEvent) => {
-    if (!inCtl()) return;
-    const p = toPage(e); if (!p) return;
-    const first = !pendingMove; pendingMove = { p, e };
-    if (first) requestAnimationFrame(() => { const m = pendingMove; pendingMove = null; if (m && inCtl()) mouse("mouseMoved", m.p, m.e); });
-  };
-  const onDown = (e: MouseEvent) => {
-    if (!inCtl()) return; const p = toPage(e); if (!p) return;
-    e.preventDefault(); stage.focus();
-    lastDown = nextDown(lastDown, performance.now(), p);
-    mouse("mousePressed", p, e, { button: BTN[e.button] || "left", clickCount: lastDown.n });
-  };
-  const onUp = (e: MouseEvent) => {
-    if (!inCtl()) return; const p = toPage(e) || { x: lastDown.x, y: lastDown.y };
-    mouse("mouseReleased", p, e, { button: BTN[e.button] || "left", clickCount: lastDown.n });
-    setTimeout(poll, 700);  // a click may open a tab or change the title
-  };
-  const onCtx = (e: MouseEvent) => { if (inCtl()) e.preventDefault(); };
-  // While the bot drives, a click on the page does nothing to it; offer to take over instead of silently ignoring the click.
-  const onClick = async (e: MouseEvent) => {
-    const b = cur();
-    if (!b || inCtl() || switching || !inFull() || !toPage(e)) return;
-    if (b.control || askedTakeover) { void takeOver(); return; }
-    askedTakeover = true;
-    if (await askConfirm("Take over?", "The bot pauses and you drive this page yourself. Hand back whenever you are done.", "Take over", false)) void takeOver();
-  };
-  const onPaste = (e: ClipboardEvent) => {
-    if (!inCtl()) return;
-    const text = e.clipboardData && e.clipboardData.getData("text/plain");
-    if (!text) return;
-    e.preventDefault();
-    cdp("Input.insertText", { text });
-  };
-  const onWheel = (e: WheelEvent) => { if (!inCtl()) return; const p = toPage(e); if (!p) return; e.preventDefault(); mouse("mouseWheel", p, e, { deltaX: e.deltaX, deltaY: e.deltaY }); };
-  const keyEv = (e: KeyboardEvent) => {
-    if (!inFull() || document.activeElement === $("furl")) return;
-    const k = e.key.toLowerCase();
-    if (e.metaKey && ["w", "t", "q", "n", "l"].includes(k)) return;
-    if (!inCtl()) return;
-    if ((e.metaKey || e.ctrlKey) && k === "v") return;  // the paste event carries the text
-    if (e.type === "keydown" && ((e.altKey && e.key === "ArrowLeft") || (e.metaKey && e.key === "["))) { e.preventDefault(); nav("back"); return; }
-    if (e.type === "keydown" && ((e.altKey && e.key === "ArrowRight") || (e.metaKey && e.key === "]"))) { e.preventDefault(); nav("forward"); return; }
-    if (e.type === "keydown" && e.metaKey && k === "r") { e.preventDefault(); nav("reload"); return; }
-    e.preventDefault();
-    cdp("Input.dispatchKeyEvent", keyParams(e) as unknown as Record<string, unknown>);
-    if (e.type === "keydown" && e.key === "Enter") setTimeout(poll, 700);
-  };
-  const onDocKey = (e: KeyboardEvent) => { if (e.key === "Escape" && !inCtl() && inFull()) void handBack(true); };
-
-  stage.addEventListener("mousemove", onMove);
-  stage.addEventListener("mousedown", onDown);
-  stage.addEventListener("mouseup", onUp);
-  stage.addEventListener("contextmenu", onCtx);
-  stage.addEventListener("click", onClick);
-  stage.addEventListener("paste", onPaste);
-  stage.addEventListener("wheel", onWheel, { passive: false });
-  stage.addEventListener("keydown", keyEv);
-  stage.addEventListener("keyup", keyEv);
-  document.addEventListener("keydown", onDocKey);
-
-  // OpenBot ran renderFullMirrors() from every render(): follow popups and keep the socket on the driven tab after each poll.
-  let lastBots = getState().bots, lastFast = getState().fast, lastSel = getState().sel;
-  const unsub = subscribeStore(() => {
-    const s = getState();
-    if (s.bots === lastBots && s.fast === lastFast && s.sel === lastSel) return;  // a ?bot= change while open must follow too
-    lastBots = s.bots; lastFast = s.fast; lastSel = s.sel;
-    const b = cur(); if (b) followPopups(b);
-    linkSync();
-  });
-
-  return () => {
-    unsub();
-    stage.removeEventListener("mousemove", onMove);
-    stage.removeEventListener("mousedown", onDown);
-    stage.removeEventListener("mouseup", onUp);
-    stage.removeEventListener("contextmenu", onCtx);
-    stage.removeEventListener("click", onClick);
-    stage.removeEventListener("paste", onPaste);
-    stage.removeEventListener("wheel", onWheel);
-    stage.removeEventListener("keydown", keyEv);
-    stage.removeEventListener("keyup", keyEv);
-    document.removeEventListener("keydown", onDocKey);
-    linkClose();
-  };
 }

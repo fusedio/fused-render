@@ -1159,9 +1159,9 @@ describe("the sidebar, and the only thing that moves it", () => {
     // Ours, and not written to the reader's preference.
     expect(sidebar.loadSidebarState().collapsed).toBe(false);
     // …and the split is re-derived against the area it actually got:
-    // 900 − 44 = 856, a 400 panel, 456 for the list.
+    // 900 − 48 (the rail) = 852, a 400 panel, 452 for the list.
     expect(currentRoom().peekWidth).toBe(PEEK_MIN_WIDTH);
-    expect(currentRoom().frameAfter).toBe(900 - 44 - PEEK_MIN_WIDTH);
+    expect(currentRoom().frameAfter).toBe(900 - SIDEBAR_RAIL - PEEK_MIN_WIDTH);
   });
 
   it("…and leaves a LAPTOP's sidebar alone: a floored list is not a reason", () => {

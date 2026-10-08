@@ -46,6 +46,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import type { ReactNode } from "react";
 import { shortTaskId } from "@platform/lib/task-id";
 import { stageClaudeAsk } from "@platform/lib/pending-claude-ask";
+import { pauseWhileHidden } from "@platform/lib/pause-while-hidden";
 import { dismissLanPairing, getJson, getLanPairings, postJson } from "@platform/lib/api";
 import type { LanPairingEvent } from "@platform/lib/api";
 import { navigate, navigateToJobPage, navigateUrl, viewUrlForFsPath } from "@platform/lib/router";
@@ -242,13 +243,19 @@ export function useRepoUpdates(scope?: { forApp: string | null }) {
         // leaves the last snapshot standing rather than clearing the rows.
       }
       // Exactly ONE chain survives — whichever invocation is newest.
-      if (!disposed && mine === generation) timer = window.setTimeout(poll, POLL_MS);
+      if (!disposed && mine === generation) timer = window.setTimeout(gated, POLL_MS);
     };
+    // Hidden window: the scheduled tick parks and runs once on return
+    // (pause-while-hidden.ts — the shared 6-connection WebKit pool). Covers
+    // NativeAppSyncNotices too (same hook). A pull that landed meanwhile
+    // still pops on return: `announcedPulls` diffs ids, not ticks.
+    const gated = pauseWhileHidden(() => void poll());
     pollRef.current = poll;
     poll();
     return () => {
       disposed = true;
       window.clearTimeout(timer);
+      gated.cancel();
     };
   }, []);
 

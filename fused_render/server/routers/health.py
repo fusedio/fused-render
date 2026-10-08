@@ -41,7 +41,7 @@ _NO_STORE = {"Cache-Control": "no-store"}
 
 
 @router.get("/api/health")
-async def api_health():
+async def api_health(request: Request):
     """Boot id, pid, uptime, version, server clock — nothing else.
 
     `async def` on purpose: a sync route runs on Starlette's 40-thread pool,
@@ -55,8 +55,26 @@ async def api_health():
     the update manager's RLock and can fork for the Full Disk Access check, so
     its latency measures those, not liveness. `health.snapshot()` takes no
     locks and touches no disk.
+
+    The paired loopback origin may read the response cross-origin: the shell
+    probes the OTHER loopback name (a window on `127.0.0.1:<p>` probes
+    `localhost:<p>` and vice versa), because WebKit caps connections per host
+    and every window's long-polls fill the page's own pool, so a probe on the
+    same host queues behind them and reads as "server down". Only that exact
+    pair (same scheme, same port the request arrived on) is allowed, since the
+    body carries pid and version. No preflight route: the probe is a plain GET
+    with no custom headers.
     """
-    return JSONResponse(health.snapshot(), headers=_NO_STORE)
+    headers = dict(_NO_STORE)
+    origin = request.headers.get("origin")
+    port = request.url.port
+    if origin is not None and port is not None and origin in (
+        f"http://127.0.0.1:{port}",
+        f"http://localhost:{port}",
+    ):
+        headers["Access-Control-Allow-Origin"] = origin
+        headers["Vary"] = "Origin"
+    return JSONResponse(health.snapshot(), headers=headers)
 
 
 @router.post("/api/health/outage")

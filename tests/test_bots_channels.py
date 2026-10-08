@@ -86,14 +86,15 @@ def test_prompt_section_and_login_text():
         task_via = {"kind": "imessage", "addr": "+1"}
         task_origin = "imessage"
     assert channels.prompt_for(B()).startswith("CHANNEL: the user sent this task from iMessage")
-    assert "come sign in there" in channels.login_text(B(), "Needs sign-in.")
+    assert "on the Mac" in channels.login_text(B(), "Needs sign-in.")
+    assert channels.login_text(B(), "Needs sign-in.").endswith("then click Done. I'll wait.")
     assert channels.origin_label(B()).startswith("iMessage")
 
     class W:
         task_via = dict(base.WEB)
         task_origin = "manual"
     assert channels.prompt_for(W()) == "" and channels.origin_label(W()) == "chat"
-    assert "click Hand back" in channels.login_text(W(), "Needs sign-in.")
+    assert channels.login_text(W(), "Needs sign-in.") == "Needs sign-in. I've paused and opened my browser for you. Sign in there, then click Done."
 
 
 # ---- router policy ------------------------------------------------------------------

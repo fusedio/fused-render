@@ -14,7 +14,7 @@
 // counter is load-bearing for the same reason: a pre-toggle GET landing after
 // the publish must not write the old value back over the fresh one.
 import { useEffect, useState } from "react";
-import { getPrefs } from "@platform/lib/api";
+import { getPrefsShared } from "@platform/lib/api";
 
 /** The last answer, or `null` while nobody has asked yet. The chip treats
  *  null as OFF (the default, so nothing flashes in before the answer lands);
@@ -37,7 +37,7 @@ function set(next: boolean) {
 function read(): Promise<void> {
   if (reading) return reading;
   const departed = generation;
-  reading = getPrefs()
+  reading = getPrefsShared() // single-flight across flag modules (api.ts)
     .then((p) => {
       // `=== true`: opt-in, so a server that predates the field reads as off.
       if (generation === departed) set(p.monitor?.enabled === true);
@@ -59,11 +59,25 @@ function read(): Promise<void> {
 
 /** Hand over a known-fresh answer — the prefs payload a PUT returned. Called
  *  by the Preferences page's toggle. */
+/** The postMessage a framed Preferences page sends its parent on toggle. */
+export const MONITOR_FLAG_MESSAGE = "fused-render:monitor-enabled";
+
 export function publishMonitorEnabled(next: boolean) {
   // Bump FIRST so a read already in flight drops its (stale) answer.
   generation += 1;
   reading = Promise.resolve();
   set(next);
+  // FRAMED PREFERENCES (the Bots page's panel, `/preferences?embed=1`): this
+  // module is per document, so the parent's status bar — where the System
+  // chip this flag gates actually lives — would never hear the toggle. Tell
+  // it; the panel (apps/bots/components/PrefsPanel.tsx) republishes there.
+  if (window.parent !== window) {
+    try {
+      window.parent.postMessage({ type: MONITOR_FLAG_MESSAGE, enabled: next }, location.origin);
+    } catch {
+      /* a cross-origin parent is not ours to tell */
+    }
+  }
 }
 
 /** Subscribe. `null` until the one shared read lands, `true`/`false` after.

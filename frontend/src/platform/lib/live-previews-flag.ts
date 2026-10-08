@@ -20,7 +20,7 @@
 // placeholder→iframe swap for a reader who opted IN, one local round-trip
 // after mount and shorter than the preview scheduler's idle wait anyway.
 import { useEffect, useState } from "react";
-import { getPrefs } from "@platform/lib/api";
+import { getPrefsShared } from "@platform/lib/api";
 
 /** The last answer, or `null` while nobody has asked yet. */
 let enabled: boolean | null = null;
@@ -37,7 +37,7 @@ function set(next: boolean) {
 function read(): Promise<void> {
   if (reading) return reading;
   const departed = generation;
-  reading = getPrefs()
+  reading = getPrefsShared() // single-flight across flag modules (api.ts)
     .then((p) => {
       // `=== true`: opt-in, so a server that predates the field reads as
       // off — the same rule the server applies to a prefs file without the key.

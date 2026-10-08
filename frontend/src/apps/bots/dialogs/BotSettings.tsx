@@ -21,7 +21,7 @@ import { Face } from "../components/Face";
 import { api, type AppRow, type Bot, type ChromeProfile, type Face as FaceT } from "../lib/api";
 import { EFFORTS, loginGroups, loginHint, loginLabel, loginValue, modelsFor, normApp } from "../lib/botform";
 import { faceOf } from "../lib/face";
-import { act, getState } from "../state/store";
+import { act, autoStage, getState, setAutoStage, setSounds, soundsOn } from "../state/store";
 import type { BotDialogValue } from "./actions";
 import { askConfirm, pickFace } from "./ask";
 import { PhoneSection } from "./PhoneSection";
@@ -30,8 +30,8 @@ import { Row, Rows } from "./SettingsRow";
 export type SettingsTab = "general" | "permissions" | "browser" | "memory" | "phone";
 
 /** The dialog's look, shared with CreateBot: black, stock shadcn everything else. */
-export const DIALOG_CLASS = "gap-0 overflow-hidden p-0 bg-neutral-950 text-neutral-50 ring-white/10";
-export const FOOTER_CLASS = "mx-0 mb-0 rounded-b-xl border-t border-white/10 bg-white/[0.03] px-6 py-4";
+export const DIALOG_CLASS = "bots-dialog gap-0 overflow-hidden p-0";  // surface per theme in bots.css (.bots-dialog); ring from the shadcn dialog
+export const FOOTER_CLASS = "mx-0 mb-0 rounded-b-xl border-t border-foreground/10 bg-foreground/[0.03] px-6 py-4";
 
 export interface BotSettingsProps {
   bot: Bot;
@@ -61,6 +61,9 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
   const [buildAccess, setBuildAccess] = useState<string>(init.buildAccess);
   const [superAccess, setSuperAccess] = useState<string>(init.superAccess);
   const [encrypt, setEncrypt] = useState(init.encrypt);
+  // Page-wide prefs (localStorage, every bot): they apply at once, not on Save.
+  const [autoOpen, setAutoOpen] = useState(autoStage);
+  const [sounds, setSoundsState] = useState(soundsOn);
   const [imessage, setImessage] = useState(init.imessage);
   const [imessageEnabled, setImessageEnabled] = useState(init.imessageEnabled);
   const [imessageTo, setImessageTo] = useState(init.imessageTo);
@@ -131,7 +134,7 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
             {tabs.map(([t, l]) => (
               <button key={t} type="button" aria-current={tab === t ? "page" : undefined} onClick={() => setTab(t)}
                 className={cn("flex h-8 w-full cursor-pointer appearance-none items-center rounded-md border-0 bg-transparent px-2.5 text-sm outline-none transition-colors focus-visible:ring-3 focus-visible:ring-ring/50",
-                  tab === t ? "bg-white/[0.08] font-medium text-foreground" : "text-muted-foreground hover:bg-white/[0.04] hover:text-foreground")}>
+                  tab === t ? "bg-foreground/[0.08] font-medium text-foreground" : "text-muted-foreground hover:bg-foreground/[0.04] hover:text-foreground")}>
                 {l}
                 {t === "phone" && imessageEnabled && imessage ? <span className="ml-auto size-1.5 rounded-full bg-emerald-400" aria-label="connected" /> : null}
               </button>
@@ -198,11 +201,11 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
                 ) : null}
                 {appRows.length ? (
                   <Row title="Apps it may use without asking" text="A ticked app's tools and scripts run at once. Everything else keeps the rule above." stack>
-                    <div className="max-h-48 divide-y divide-white/5 overflow-y-auto rounded-lg border border-input" id="bmtrusted">
+                    <div className="max-h-48 divide-y divide-foreground/5 overflow-y-auto rounded-lg border border-input" id="bmtrusted">
                       {appRows.map((a) => {
                         const on = trustedApps.includes(normApp(a.folder));
                         return (
-                          <label key={a.folder} className="flex cursor-pointer items-center gap-2.5 px-3 py-2 text-sm hover:bg-white/[0.04]">
+                          <label key={a.folder} className="flex cursor-pointer items-center gap-2.5 px-3 py-2 text-sm hover:bg-foreground/[0.04]">
                             <Checkbox checked={on} onCheckedChange={(c) => toggleTrusted(a.folder, !!c)} />
                             <span>{a.name || a.folder}</span>
                             {a.name && a.name !== a.folder ? <span className="ml-auto text-xs text-muted-foreground">{a.folder}</span> : null}
@@ -233,6 +236,12 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
                 </Row>
                 <Row title="Encrypt the browser profile at rest" text={"While the browser is closed the profile is one AES-256 file; the key lives in your macOS Keychain. Lose the Keychain item and saved logins are gone." + appliesToAll} htmlFor="bmencrypt">
                   <Switch id="bmencrypt" checked={encrypt} onCheckedChange={(c) => setEncrypt(!!c)} />
+                </Row>
+                <Row title="Open the browser when a bot needs me" text="When a bot asks you to sign in, its live page opens beside the chat by itself. Applies to every bot on this page." htmlFor="bmautostage">
+                  <span title="Page-wide: applies to every bot, saved at once"><Switch id="bmautostage" checked={autoOpen} onCheckedChange={(c) => { setAutoStage(!!c); setAutoOpen(!!c); }} /></span>
+                </Row>
+                <Row title="Sounds" text="A short chime when a bot hands you its browser. Applies to every bot on this page." htmlFor="bmsounds">
+                  <span title="Page-wide: applies to every bot, saved at once"><Switch id="bmsounds" checked={sounds} onCheckedChange={(c) => { setSounds(!!c); setSoundsState(!!c); }} /></span>
                 </Row>
               </Rows>
             ) : null}

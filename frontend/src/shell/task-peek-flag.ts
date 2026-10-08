@@ -16,7 +16,7 @@
 // The peek's own STORE is separate (`task-peek-store.ts`): this answers whether
 // the feature exists at all, that one answers what it is doing.
 import { useEffect, useState } from "react";
-import { getPrefs } from "@platform/lib/api";
+import { getPrefs, getPrefsShared } from "@platform/lib/api";
 
 let enabled: boolean | null = null;
 let reading: Promise<void> | null = null;
@@ -32,7 +32,7 @@ function set(next: boolean | null) {
 function read(): Promise<void> {
   if (reading) return reading;
   const departed = generation;
-  reading = getPrefs()
+  reading = getPrefsShared() // single-flight across flag modules (api.ts)
     // One bounded retry, then a real answer either way — a prefs GET that fails
     // is usually a single dropped request (a reload racing the server's start).
     .catch(() => getPrefs())

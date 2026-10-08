@@ -5,7 +5,15 @@ import { useSyncExternalStore } from "react";
 import type { Face } from "../lib/api";
 import { faceOf, type FaceDraft, type FaceSubject } from "../lib/face";
 
-export interface ConfirmReq { id: number; title: string; text: string; okLabel: string; danger: boolean; resolve: (v: boolean) => void }
+export interface Credentials { user: string; pass: string }
+/** What the dialog collected besides the button: the auth fields, or the prompt's text. */
+export interface ConfirmVals { user?: string; pass?: string; text?: string }
+export interface ConfirmReq {
+  id: number; title: string; text: string; okLabel: string; danger: boolean;
+  /** `fields`: none (a plain confirm), "auth" (user name + password) or "prompt" (one text field, prefilled with `defaultValue`). */
+  fields?: "auth" | "prompt"; defaultValue?: string;
+  resolve: (ok: boolean, vals?: ConfirmVals) => void;
+}
 export interface FacePickReq { id: number; draft: FaceDraft; onPick?: (f: Face) => void; resolve: (f: FaceDraft) => void }
 
 let confirms: ConfirmReq[] = [], pick: FacePickReq | null = null, seq = 0;
@@ -17,10 +25,24 @@ const subscribe = (l: () => void) => { listeners.add(l); return () => { listener
 export function askConfirm(title: string, text: string, okLabel = "Delete", danger = true): Promise<boolean> {
   return new Promise((resolve) => { confirms = [...confirms, { id: ++seq, title, text, okLabel, danger, resolve }]; emit(); });
 }
-/** Settle the confirm on screen. */
-export function settleConfirm(id: number, v: boolean): void {
+/** A confirm with user name + password fields (an HTTP auth challenge from the live view). Resolves null on Cancel. */
+export function askAuth(title: string, text: string): Promise<Credentials | null> {
+  return new Promise((resolve) => {
+    confirms = [...confirms, { id: ++seq, title, text, okLabel: "Sign in", danger: false, fields: "auth",
+      resolve: (ok, v) => resolve(ok ? { user: v?.user ?? "", pass: v?.pass ?? "" } : null) }]; emit();
+  });
+}
+/** window.prompt's shape: a title, the page's message, one text field. Resolves the text on OK, null on Cancel. */
+export function askPrompt(title: string, text: string, defaultValue = ""): Promise<string | null> {
+  return new Promise((resolve) => {
+    confirms = [...confirms, { id: ++seq, title, text, okLabel: "OK", danger: false, fields: "prompt", defaultValue,
+      resolve: (ok, v) => resolve(ok ? v?.text ?? "" : null) }]; emit();
+  });
+}
+/** Settle the confirm on screen (`vals` from the auth / prompt fields). */
+export function settleConfirm(id: number, ok: boolean, vals?: ConfirmVals): void {
   const c = confirms.find((x) => x.id === id); if (!c) return;
-  confirms = confirms.filter((x) => x.id !== id); emit(); c.resolve(v);
+  confirms = confirms.filter((x) => x.id !== id); emit(); c.resolve(ok, vals);
 }
 export const useConfirm = (): ConfirmReq | null => useSyncExternalStore(subscribe, () => confirms[0] || null, () => confirms[0] || null);
 

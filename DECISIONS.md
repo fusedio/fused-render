@@ -6605,6 +6605,13 @@ In-progress/running status colour (`--status-progress`) is now the accent (was `
 Midnight now uses a golden accent (#facc15 dark, #a16207 light) instead of the brand lime; the running status follows via `--accent`, so it is still one yellow per theme.
 - D1335 follow-up (review fixes): annotation layer (ann/layer.ts) stays literal because it injects into the app's own document (token leak); presets now override task/playground/am-surface tokens; High contrast derives accent roles (--accent-soft/--icon-html/--app-icon-yellow) from --accent; --c-card-border is an fg-muted mix; bootstrap preset ids pinned by tests/test_theme.py; lan.html now carries the preset bootstrap.
 
+## D1336 — Prune the frozen stdlib zip too: the zip half of D266(d) (2026-10-08, fix/dmg-prune-stdlib-zip)
+
+D266(d) pruned `_distutils_hack`, `setuptools` and `pkg_resources` from `Contents/Resources/lib/python3.12/` but not from py2app's `Contents/Resources/lib/python312.zip`, which carried its own copies: `_distutils_hack/`, `setuptools/_distutils` and `setuptools/_vendor`, and `jaraco/__init__.pyc`. That zip sits on the base `sys.path` of every venv built from the app's interpreter (`Contents/lib` is a symlink to `Resources/lib`), ahead of the venv's site-packages. 0.6.22 shipped with every uv source build (setuptools backend) dying on `No module named 'jaraco.text'` via `_distutils_hack.override`: the frozen `jaraco/__init__.pyc` made `jaraco` a regular package, so the venv's `jaraco.text` could never be found.
+
+Fix: `scripts/_prune_stdlib_zip.py`, run from build_dmg.sh step 4a before codesign, rewrites the zip without `_distutils_hack/`, `setuptools/`, `pkg_resources/`, `distutils-precedence.pth` and `jaraco/__init__.py[c]`. Removing the init turns `jaraco` into a PEP 420 namespace package: the venv's `jaraco.text` merges in, while the zip's `jaraco.classes`/`context`/`functools` still serve keyring. Smoke 4b-quater asserts exactly that on the bundled interpreter and on a venv built from it.
+
+Rejected: deleting `jaraco` from the zip entirely (keyring needs `jaraco.classes`/`context`/`functools` at runtime); excluding `jaraco` in setup_py2app (same reason, keyring is force-listed). PR #1499 had worked around the symptom for mlx-embed only.
 
 ## 2026-10-08 — Home grid units are half cells (layout v4)
 
@@ -6657,3 +6664,4 @@ View mode no longer renders spacers for empty rows (they made 84px voids that sp
 
 Build an app takes 4 unit rows (was 3) and renders the same block in both modes: headline, a 760px centred composer and the chips row. The edit stand-in sits in a full-width card outline, like the other widgets. Stored v5 layouts grow the build in place and push the widgets below it down a row (`growFixedRows`), so no version bump is needed.
 The Build an app headline is centred explicitly (`text-align: center` on `.hw-build-headline`) so edit mode matches view mode and clears the overlaid drag grip.
+

@@ -51,6 +51,7 @@ import {
 } from "@platform/lib/jobs";
 import { notify } from "@platform/lib/notifications";
 import { snapshotIsOpenAnywhere } from "@platform/lib/presence";
+import { pauseWhileHidden } from "@platform/lib/pause-while-hidden";
 import DownloadManager, { engineLabel } from "@platform/ui/DownloadManager";
 
 import { noteProgressMayHaveMoved } from "./onboarding/progress";
@@ -159,13 +160,19 @@ function useRunningEngines(): {
       } catch {
         // Best-effort: a failed read leaves the last snapshot standing.
       }
-      if (!disposed && mine === generation) timer = window.setTimeout(poll, ENGINES_POLL_MS);
+      if (!disposed && mine === generation) timer = window.setTimeout(gated, ENGINES_POLL_MS);
     };
+    // Hidden window: the scheduled tick parks and runs once on return
+    // (pause-while-hidden.ts — the shared 6-connection WebKit pool). The
+    // retired-engine toast still fires then: it diffs snapshots, not ticks.
+    // An explicit refresh() (pollRef) is not gated.
+    const gated = pauseWhileHidden(() => void poll());
     pollRef.current = poll;
     poll();
     return () => {
       disposed = true;
       window.clearTimeout(timer);
+      gated.cancel();
     };
   }, []);
 

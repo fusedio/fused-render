@@ -680,6 +680,9 @@ class _Window:
         # navigation, but a window must never jump or resize because the page
         # inside it navigated. The frame belongs to the window as opened.
         self.frame_name: str | None = None
+        # The autosave name this window was PLACED under, owner or not (only
+        # one window per name gets ``frame_name``), so siblings can find it.
+        self.place_name: str | None = None
         self._popup = not load
         style = (NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
                  | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable)
@@ -799,16 +802,22 @@ class _Window:
         Every app (and Home) has its own saved frame — the size and place
         the user last left a window of it — so reopening an app puts it
         back exactly there. A second window of the same app cascades from
-        the one already open instead of stacking on it, and only the first
+        the NEWEST open window of that app instead of stacking on it, so a
+        third and fourth keep stepping rather than landing on the second
+        (the newest sibling is the most recently USED one, since `_touch`
+        reorders, so the window then steps past any sibling it would land
+        exactly on), and only the first
         owns the saved frame (AppKit gives an autosave name to one window
         at a time). Nothing saved yet: centre if it is the only window,
         else cascade from the front one. Popups (`window.open`) cascade and
         are never saved — they would otherwise overwrite Home's frame.
         """
         name = None if self._popup else window_policy.frame_autosave_name(key, view)
+        self.place_name = name
         owner = self.manager.frame_owner(name) if name else None
         if owner is not None:
-            self._cascade_from(owner)
+            self._cascade_from(self.manager.newest_placed(name) or owner)
+            self._step_off_siblings(name)
             return
         if name and self.ns.setFrameUsingName_(name):
             pass  # AppKit keeps a restored frame on a visible screen
@@ -834,6 +843,21 @@ class _Window:
         self.ns.setFrame_display_(frame, False)
         top_left = NSMakePoint(frame.origin.x, frame.origin.y + frame.size.height)
         self.ns.cascadeTopLeftFromPoint_(self.ns.cascadeTopLeftFromPoint_(top_left))
+
+    def _step_off_siblings(self, name: str) -> None:
+        # Step one cascade further while another window of ``name`` shares
+        # this top-left. Same two-call idiom as `_cascade_from`: the first
+        # call places us at the point, the second at the next one.
+        for _ in range(len(self.manager._windows) + 1):
+            f = self.ns.frame()
+            x, top = f.origin.x, f.origin.y + f.size.height
+            if not self.manager.placed_at(name, x, top, self):
+                return
+            nxt = self.ns.cascadeTopLeftFromPoint_(NSMakePoint(x, top))
+            self.ns.cascadeTopLeftFromPoint_(nxt)
+            g = self.ns.frame()
+            if (g.origin.x, g.origin.y + g.size.height) == (x, top):
+                return  # pinned at a screen edge; avoid spinning
 
     def save_frame(self) -> None:
         """Persist the frame now. Autosave writes on move/resize; a window
@@ -1193,6 +1217,67 @@ class WindowManager:
         the one row that always means "another one"."""
         self.open(self.home_url)
 
+    def _pick(self, candidates: list["_Window"]) -> "_Window | None":
+        """The key window among ``candidates``, else the front one, else the
+        most recently used (``_windows`` is MRU, newest last)."""
+        if not candidates:
+            return None
+        for w in reversed(candidates):
+            if w is self.key() or w is self.front():
+                return w
+        return candidates[-1]
+
+    def focus_or_open_home(self) -> None:
+        """The menu-bar Dock's Home tile and utility menu: a Home window
+        already open (the key/front one if several) comes forward, else one
+        opens. Unlike `show_home` — the launcher's "another one" row — the
+        Dock, like the macOS Dock's own icons, raises what is there. Main
+        thread."""
+        win = self._pick([w for w in self._windows if w.ns is not None and self._is_home(w)])
+        if win is None:
+            self.open(self.home_url)
+        else:
+            win.show()
+
+    def show_bot(self, bid: str) -> None:
+        """The menu-bar Dock's bot tiles: select bot ``bid`` in a Bots-page
+        window. An open one (the key/front one if several) is told in place
+        through the page's ``fused:bots-open`` event (apps/bots/state/store.ts
+        `onOpenEvent` → `openBot`: the full select — reply quote and toast
+        cleared, the open call sent — exactly as a row click; it writes
+        ``?bot=`` itself, keeping `history.state`), no reload — else a new
+        window opens on ``/bots?bot=<id>``, which the page reads at boot.
+
+        The event is heard only while the store is mounted; the listener
+        marks it handled with `preventDefault`. A page still loading, mid
+        remount or torn down leaves it unhandled, and then the URL itself
+        carries the bot: ``?bot=`` is rewritten (keeping `history.state`,
+        which holds the shell's nav hints) and ``fused:urlchange`` fired, so
+        the store reads it on mount (`initialSel`) or follows it
+        (`onUrlChange`) — never a raised window on the wrong chat. Main
+        thread."""
+        import json
+
+        from fused_render import dock
+
+        view = dock.bot_view_path(bid)
+        bots = [w for w in self._windows if w.ns is not None
+                and urllib.parse.urlsplit(w.current_url() or "").path.rstrip("/") == "/bots"]
+        win = self._pick(bots)
+        if win is None:
+            self.open(f"http://127.0.0.1:{self.port}{view}")
+            return
+        win.webview.evaluateJavaScript_completionHandler_(
+            "(function(){"
+            " var handled = !window.dispatchEvent(new CustomEvent('fused:bots-open',"
+            "   {detail: {id: %s}, cancelable: true}));"
+            " if (!handled) {"
+            "   history.replaceState(history.state, '', %s);"
+            "   window.dispatchEvent(new Event('fused:urlchange'));"
+            " }"
+            "})();" % (json.dumps(bid), json.dumps(view)), None)
+        win.show()
+
     def snapshot_urls(self) -> list[str]:
         """What every open window shows now, in ``_windows`` order (MRU, newest
         last — so reopening them in this order rebuilds the same stacking).
@@ -1291,6 +1376,7 @@ class WindowManager:
             win.ns.setFrameAutosaveName_("")
             win.ns.setFrameUsingName_(name)
             win.frame_name = name if win.ns.setFrameAutosaveName_(name) else None
+            win.place_name = name
         win.load(url)
         win.show()
         return win
@@ -1315,6 +1401,7 @@ class WindowManager:
             win.ns.setFrameAutosaveName_("")
             win.ns.setFrameUsingName_(name)
             win.frame_name = name if win.ns.setFrameAutosaveName_(name) else None
+            win.place_name = name
         win.load(url)
         return win
 
@@ -1337,6 +1424,27 @@ class WindowManager:
             if w.frame_name == name and w.ns is not None:
                 return w
         return None
+
+    def newest_placed(self, name: str) -> _Window | None:
+        """The most recently opened window placed under autosave ``name``
+        (owner or sibling), so each new sibling steps from the last one
+        rather than every sibling stacking one step off the owner."""
+        for w in reversed(self._windows):
+            if w.place_name == name and w.ns is not None:
+                return w
+        return None
+
+    def placed_at(self, name: str, x: float, top: float, exclude: "_Window") -> bool:
+        """Is another open window placed under ``name`` with its top-left at
+        (``x``, ``top``) (within 1 pt)? Used to step a new sibling past the
+        ones it would otherwise land exactly on."""
+        for w in self._windows:
+            if w is exclude or w.ns is None or w.place_name != name:
+                continue
+            f = w.ns.frame()
+            if abs(f.origin.x - x) <= 1 and abs(f.origin.y + f.size.height - top) <= 1:
+                return True
+        return False
 
     def key(self) -> _Window | None:
         kw = NSApp.keyWindow()
@@ -1433,9 +1541,9 @@ def _build_main_menu(target) -> NSMenu:
         item("Select All", b"selectAll:", "a", tgt=None),
     ], main)
 
-    # Fused Bot has no explorer to edit in and no launcher to search with
-    # (app.py builds neither), so those two rows are not offered; Home stays —
-    # it goes to the front door, which is the Bots page there.
+    # Fused Bot has no explorer to edit in, so Edit App is not offered; its
+    # launcher lists bots, so the search row says so. Home stays — it goes
+    # to the front door, which is the Bots page there.
     submenu("View", [
         item("Reload Page", b"reload:", "r"),
         item("Back", b"goBack:", "["),
@@ -1443,7 +1551,8 @@ def _build_main_menu(target) -> NSMenu:
         item("Home", b"goHome:", "H", CMD | _SHIFT),
         *([] if bot else [item("Edit App", b"editApp:", "E", CMD | _SHIFT)]),
         sep(),
-        *([] if bot else [item("Search Apps…", b"showLauncher:"), sep()]),
+        item("Search Bots…" if bot else "Search Apps…", b"showLauncher:"),
+        sep(),
         item("Open in Browser", b"openInBrowser:", "L", CMD | _SHIFT),
         item("Copy URL", b"copyUrl:", "C", CMD | _SHIFT),
         sep(),

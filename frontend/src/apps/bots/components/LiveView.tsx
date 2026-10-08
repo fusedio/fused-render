@@ -1,9 +1,12 @@
 // OpenBot's #full live view (live.js renderFullMirrors / renderTabs and the topbar + header controls), shown while
-// the store's `fast` flag is on. The socket, frames and input forwarding live in lib/cdp.ts; this renders the
+// the store's `fast` flag is on. It sits in the preview column (PreviewPane), always mounted, and fills it in Stage
+// (root .stage, lib/layout.ts setStage); a window too narrow for Stage (.sfull) turns it full-window in CSS. The socket, frames and input forwarding live in lib/cdp.ts; this renders the
 // chrome around them from the store and the link state.
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api, type Bot } from "../lib/api";
-import { gotoTyped, handBack, inFull, installLive, nav, tabstripClick, toggleCtl, useLinked } from "../lib/cdp";
+import { gotoTyped, handBack, inFull, nav, tabstripClick, takeOver, useLinked } from "../lib/cdp";
+import { installLive } from "../lib/live-input";
+import { closeOverlay, pickerChange, pickSelect, runItem, useOverlay } from "../lib/live-overlays";
 import { statusLabel } from "../lib/derive";
 import { showUrl } from "../lib/live";
 import { act, eventsOf, useBotsSelector } from "../state/store";
@@ -30,6 +33,60 @@ function Tabs({ b }: { b: Bot }) {
   );
 }
 
+// Our stand-ins for what headless Chrome never paints (lib/cdp.ts overlays): select menu, datalist suggestions, native
+// pickers (the viewer's own input of the same type laid over the field) and the context menu.
+function Overlays() {
+  const o = useOverlay();
+  const ref = useRef<HTMLDivElement>(null);
+  const inRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (!o) return;
+    if (o.kind === "select" || o.kind === "context") ref.current?.querySelector<HTMLButtonElement>(o.kind === "select" ? "button[data-sel]" : "button")?.focus();
+    if (o.kind === "picker") {
+      const el = inRef.current; if (!el) return;
+      el.focus();
+      try { (el as HTMLInputElement & { showPicker?: () => void }).showPicker?.(); } catch { /* needs a fresh user gesture; the field still takes typing */ }
+    }
+  }, [o]);
+  if (!o) return null;
+  // Arrow keys walk the buttons; Escape closes. The stage's own key listener ignores keys from inside an overlay.
+  const menuKeys = (e: React.KeyboardEvent) => {
+    const items = [...(ref.current?.querySelectorAll<HTMLButtonElement>("button:not(:disabled)") || [])];
+    const i = items.indexOf(document.activeElement as HTMLButtonElement);
+    if (e.key === "ArrowDown") { e.preventDefault(); items[Math.min(i + 1, items.length - 1)]?.focus(); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); items[Math.max(i - 1, 0)]?.focus(); }
+    else if (e.key === "Escape") { e.preventDefault(); closeOverlay(); }
+    e.stopPropagation();
+  };
+  if (o.kind === "picker") {
+    return <input ref={inRef} className="lvov pickov" type={o.type} defaultValue={o.value} aria-label="Pick a value for the page's field"
+      style={{ left: o.left, top: o.top, width: o.width, height: o.height }}
+      onChange={(e) => pickerChange(e.currentTarget.value)}
+      onBlur={() => { if (document.hasFocus()) closeOverlay(); }}  /* the OS colour panel or another window taking focus is not a dismissal */
+      onKeyDown={(e) => { if (e.key === "Escape") closeOverlay(); e.stopPropagation(); }} />;
+  }
+  if (o.kind === "context") {
+    return (
+      <div ref={ref} className="lvov selmenu" role="menu" style={{ left: o.left, top: o.top }} onKeyDown={menuKeys}>
+        {o.items.map((it) => <button key={it.label} type="button" role="menuitem" onClick={() => runItem(it)}>{it.label}</button>)}
+      </div>
+    );
+  }
+  const list = o.kind === "list";
+  return (
+    <div ref={ref} className="lvov selmenu" role="listbox" style={{ left: o.left, top: o.top, minWidth: Math.max(o.width, 120) }}
+      onKeyDown={list ? undefined : menuKeys} onMouseDown={list ? (e) => e.preventDefault() : undefined /* suggestions: keep typing where you were */}>
+      {o.opts.map((opt, i) => {
+        const hi = list ? i === o.hi : opt.s;
+        return (
+          <button key={i} type="button" role="option" aria-selected={hi} disabled={opt.d} data-sel={hi ? "1" : undefined}
+            className={hi ? "sel" : undefined} onClick={() => pickSelect(opt.v)}>{opt.t || "\u00a0"}</button>
+        );
+      })}
+    </div>
+  );
+}
+
 export function LiveView() {
   const open = useBotsSelector((s) => s.fast);
   const b = useBotsSelector((s) => s.bots.find((x) => x.id === s.sel));
@@ -37,7 +94,6 @@ export function LiveView() {
   const isLinked = useLinked();
   const stageRef = useRef<HTMLDivElement>(null);
   const furlRef = useRef<HTMLInputElement>(null);
-  const [winBusy, setWinBusy] = useState<string | null>(null);  // the pop-out button's "Opening…" / "Docking…" while it works
 
   useEffect(() => (stageRef.current ? installLive(stageRef.current) : undefined), []);
 
@@ -49,7 +105,16 @@ export function LiveView() {
   }, [b, url]);
 
   const ctl = open && !!b?.control && isLinked;
-  const vis = !!b?.browser?.visible;
+  const headed = !!b?.browser?.headed;
+  const [winBusy, setWinBusy] = useState<string | null>(null);  // "Opening…" / "Docking…" while Chrome relaunches (a few seconds)
+  // The explicit escape hatch: the same profile as a real Chrome window, for what no screencast carries (passkeys, password
+  // manager, print). Chrome relaunches, so it takes a few seconds; the mirror here keeps streaming it meanwhile.
+  const onWin = async () => {
+    if (!b || winBusy) return;
+    const id = b.id;
+    setWinBusy(headed ? "Docking…" : "Opening…");
+    try { await act(() => headed ? api.dock(id) : api.popout(id)); } finally { setWinBusy(null); }
+  };
   // Status strip: while you drive it says so; otherwise the bot's state plus its latest thought, action or harness note.
   let fstat = "";
   if (b) {
@@ -57,37 +122,27 @@ export function LiveView() {
     for (let i = evs.length - 1; i >= 0; i--) if (evs[i].role === "thought" || evs[i].role === "action" || evs[i].role === "note") { last = evs[i]; break; }
     fstat = !isLinked && open
       ? (b.browser?.running ? "Connecting to the browser…" : "Browser is asleep · waking it…")
-      : b.control ? "You're driving · bot paused"
+      : b.control ? `You're driving · ${b.name} paused`
       : statusLabel(b) + (last && b.status === "running" ? " · " + last.text : "");
   }
-
-  // Same pop-out as the bot menu's "Open in a Chrome window": Chrome relaunches visible on the desktop (a few seconds); the live view keeps mirroring it.
-  const onWin = async () => {
-    if (!b || winBusy) return;
-    const was = vis, id = b.id;
-    setWinBusy(was ? "Docking…" : "Opening…");
-    try { await act(() => api.window(id, !was)); } finally { setWinBusy(null); }
-  };
 
   // .show = the view is open, .nolink = no frames yet (the copied thumbnail shows), .ctl = you drive (accent outline, nav enabled).
   const cls = [open && "show", open && !isLinked && "nolink", ctl && "ctl"].filter(Boolean).join(" ");
   return (
     <div id="full" className={cls}>
       <div className="topbar">
-        <button id="giveback2" className="backtxt" title="Back to chat; the bot continues" onClick={() => { void handBack(true); }}>Back</button>
+        {/* Back is watch mode's exit (the bot is untouched); while you drive, the one exit is #ctl's "Done, hand back". */}
+        {b?.control ? null : <button id="giveback2" className="backtxt" title="Back to chat; the bot continues" onClick={() => { void handBack(true); }}>Back</button>}
         {b ? <Tabs b={b} /> : <div className="tabstrip" id="tabstrip" />}
         <span className="winacts">
           <button id="fwin" className={winBusy ? "busy" : undefined} onClick={() => { void onWin(); }}
-            title={vis ? "Close the desktop window and drive it headless here again" : "Pop this bot's browser out as a real Chrome window on your desktop"}>
+            title={headed ? "Close the desktop window and keep driving it here; Hand back when you are done" : "Open this browser as a real Chrome window on your desktop, for passkeys and password managers. Chrome relaunches (a few seconds)."}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2" /><path d="M8 20h8M12 16v4" /><path d="M12 13V7" /><path d="m9 10 3-3 3 3" /></svg>
-            <span className="lbl">{winBusy || (vis ? "Bring back here" : "Open in browser")}</span>
+            <span className="lbl">{winBusy || (headed ? "Back here" : "Real window")}</span>
           </button>
-          <button id="ctl" className="primary" onClick={() => { void toggleCtl(); }}
-            title={b?.control ? "Let the bot drive again" : "Pause the bot and drive this page yourself"}>
-            <span className="lbl">{b?.control ? "Hand back" : "Take over"}</span>
-          </button>
-          <button id="giveback" title="Back to chat; the bot continues" onClick={() => { void handBack(true); }}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M20 4l-6 6M20 10h-6V4" /><path d="M4 20l6-6M4 14h6v6" /></svg>
+          <button id="ctl" className="primary" onClick={() => { void (b?.control ? handBack(true) : takeOver()); }}
+            title={b?.control ? "Let the bot drive again and go back to the chat" : "Pause the bot and drive this page yourself"}>
+            <span className="lbl">{b?.control ? "Done, hand back" : "Take over"}</span>
           </button>
         </span>
       </div>
@@ -110,6 +165,12 @@ export function LiveView() {
       </header>
       <div className="stage" id="stage" tabIndex={0} ref={stageRef}>
         <img id="fshot" alt="" draggable={false} />
+        {/* Keyboard target while you drive (lib/cdp.ts installLive): a hidden textarea, because only an editable element composes
+            dead keys and IME input; plain keys are forwarded and never land in it. */}
+        <textarea id="fkeys" aria-label="Type into the bot's page" autoComplete="off" autoCapitalize="off" autoCorrect="off" spellCheck={false} tabIndex={-1} />
+        <Overlays />
+        {/* The drag image for an intercepted HTML5 drag (lib/cdp.ts showGhost): a crop of the frame that follows the pointer. */}
+        <img id="fghost" className="lvov ghost" alt="" hidden draggable={false} />
         <Toast id="ftoast" />
       </div>
     </div>
