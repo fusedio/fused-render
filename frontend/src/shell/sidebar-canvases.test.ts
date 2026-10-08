@@ -71,7 +71,7 @@ describe("the sidebar's Canvases entry", () => {
     // page of this app, and that page hands the new value over so the row
     // appears with the checkbox instead of on the next navigation.
     expect(FLAG).toMatch(/export function publishCanvasesEnabled/);
-    expect(FLAG).toMatch(/getPrefs\(\)/);
+    expect(FLAG).toMatch(/getPrefs(Shared)?\(\)/);
     expect(FLAG).not.toMatch(/setTimeout|setInterval/);
     expect(PREFS_PAGE).toMatch(/publishCanvasesEnabled\(next\.canvases\.enabled\)/);
     // And a publish OUTRANKS a read already in flight — the same generation
@@ -115,7 +115,7 @@ describe("the sidebar's Canvases entry", () => {
     // slow poll only exists to catch a login that happened elsewhere.
     expect(STORE).toMatch(/export function publishLoggedIn/);
     expect(PAGE).toMatch(/publishLoggedIn\(status\)/);
-    expect(STORE).toMatch(/window\.setTimeout\(poll, POLL_MS\)/);
+    expect(STORE).toMatch(/window\.setTimeout\(gatedPoll, POLL_MS\)/);
     // A failed read is not a sign-out — the row survives a server restart.
     expect(STORE).toMatch(/catch \{\n\s*\/\/ A failed read is not a sign-out/);
   });

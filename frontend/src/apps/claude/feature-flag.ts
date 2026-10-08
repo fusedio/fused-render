@@ -12,7 +12,7 @@
 // and a host reading the flag through it would pull the chat's mount into its
 // bundle for one boolean.
 import { useEffect, useState } from "react";
-import { getPrefs } from "@platform/lib/api";
+import { getPrefs, getPrefsShared } from "@platform/lib/api";
 import { GATE_FALLBACK_MS } from "@platform/lib/clock";
 
 let reading: Promise<void> | null = null;
@@ -109,7 +109,7 @@ function read(): Promise<void> {
   // eight-second window, and a read that is merely slow is never given up on in
   // favour of asking again.
   reading = withDeadline(
-    getPrefs().catch(() => getPrefs()),
+    getPrefsShared().catch(() => getPrefs()),
     prefsDeadlineMs,
   )
     .then((p) => {

@@ -22,7 +22,7 @@
 // moment the checkbox settles. A hand-edited prefs.json is picked up on the
 // next load, which is the same deal every other pref on that page offers.
 import { useEffect, useState } from "react";
-import { getPrefs } from "@platform/lib/api";
+import { getPrefsShared } from "@platform/lib/api";
 
 /** The last answer, or `null` while nobody has asked yet. Null renders as OFF:
  *  the flag defaults off, so hiding until the answer lands never flashes an
@@ -50,7 +50,7 @@ function set(next: boolean) {
 function read(): Promise<void> {
   if (reading) return reading;
   const departed = generation;
-  reading = getPrefs()
+  reading = getPrefsShared() // single-flight across flag modules (api.ts)
     .then((p) => {
       if (generation === departed) set(p.canvases.enabled);
     })

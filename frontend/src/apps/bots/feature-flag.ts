@@ -14,7 +14,7 @@
 // carries the flag and App.tsx seeds this module from it, then asks
 // `botsFrontDoor()` with no await.
 import { useEffect, useState } from "react";
-import { getPrefs } from "@platform/lib/api";
+import { getPrefsShared } from "@platform/lib/api";
 
 let enabled: boolean | null = null;
 let reading: Promise<void> | null = null;
@@ -30,7 +30,7 @@ function set(next: boolean) {
 function read(): Promise<void> {
   if (reading) return reading;
   const departed = generation;
-  reading = getPrefs()
+  reading = getPrefsShared() // single-flight across flag modules (api.ts)
     .then((p) => {
       if (generation === departed) set(p.bots.enabled);
     })

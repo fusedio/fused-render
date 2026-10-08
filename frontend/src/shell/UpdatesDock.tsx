@@ -36,7 +36,7 @@
 // SPLIT INTO A PURE VIEW (`UpdatesCardView`) AND A STATEFUL WRAPPER, the
 // SystemDock/ModelsDock split, so the test renders the view with a fixed
 // status and no poll.
-import { AlertCircle, Check, Download, Loader2, RefreshCw, RotateCcw, X } from "lucide-react";
+import { AlertCircle, Check, Download, Loader2, RefreshCw, RefreshCwOff, RotateCcw, X } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { getPrefs, putAutoDownloadUpdates, type UpdateStatus } from "@platform/lib/api";
@@ -186,7 +186,8 @@ export function UpdatesCardView({
           {phase === "checking" ? <Loader2 size={13} className="update-card-spin" aria-hidden />
             : phase === "current" ? <Check size={13} aria-hidden />
             : phase === "failed" ? <X size={13} aria-hidden />
-            : <RefreshCw size={13} aria-hidden />}
+            : hasUpdater ? <RefreshCw size={13} aria-hidden />
+            : <RefreshCwOff size={13} aria-hidden />}
         </button>
       )}
     <div className="dl-host upd-chip" {...hostProps}>

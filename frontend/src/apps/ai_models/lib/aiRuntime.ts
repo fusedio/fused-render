@@ -15,6 +15,7 @@
 // 10 seconds.
 import { useEffect, useState } from "react";
 import { getAiRuntime, type AiRuntime } from "@platform/lib/api";
+import { pauseWhileHidden } from "@platform/lib/pause-while-hidden";
 
 const ACTIVE_MS = 1000;
 const IDLE_MS = 10_000;
@@ -73,13 +74,19 @@ async function poll() {
   }
 }
 
+// A hidden window's tick parks and runs once on return (pause-while-hidden.ts:
+// every window shares WebKit's 6-connection pool). Explicit refreshes and the
+// mount read call poll() directly and are not gated.
+const gatedPoll = pauseWhileHidden(() => void poll());
+
 function schedule() {
   if (timer !== null) window.clearTimeout(timer);
   if (listeners.size === 0) {
     timer = null;
+    gatedPoll.cancel();
     return;
   }
-  timer = window.setTimeout(poll, isBusy(current) ? ACTIVE_MS : IDLE_MS);
+  timer = window.setTimeout(gatedPoll, isBusy(current) ? ACTIVE_MS : IDLE_MS);
 }
 
 /** Subscribe to the runtime. Polling starts with the first reader and stops

@@ -128,7 +128,11 @@ export function Composer({ b, reply, setReply, threadRef }: ComposerProps) {
   // Grow with the text (up to the CSS max), and reveal the send arrow when there is something to send.
   const fitInput = () => {
     const t = ta.current; if (!t) return;
+    // Collapsing to 0 to measure briefly makes the thread above taller, and the browser clamps its scrollTop to fit;
+    // putting the height back does not undo the clamp, so the messages jumped on every keystroke. Restore it.
+    const th = threadRef.current, top = th ? th.scrollTop : 0;
     t.style.height = "0"; t.style.height = Math.max(36, t.scrollHeight) + "px";
+    if (th && th.scrollTop !== top) th.scrollTop = top;
     setHas(t.value.trim().length > 0 || pendingRef.current.length > 0);
   };
   useLayoutEffect(fitInput, [pending]);
@@ -143,6 +147,19 @@ export function Composer({ b, reply, setReply, threadRef }: ComposerProps) {
   }, []);
   // A reply quote focuses the box.
   useEffect(() => { if (reply) ta.current?.focus(); }, [reply]);
+  // Just handed the browser back (store noteFor, from the poll): a one-shot, optional "anything to add?" for 15 s. The box
+  // takes focus once when it arrives; the placeholder only shows while the box is empty anyway.
+  const noteFor = useBotsSelector((s) => s.noteFor);
+  const [noteLive, setNoteLive] = useState(false);
+  const noteFocused = useRef(0);  // the `until` already focused for: one focus per hand back, not per re-render / bot switch
+  useEffect(() => {
+    const left = noteFor && b && noteFor.id === b.id ? noteFor.until - Date.now() : 0;
+    if (left <= 0) { setNoteLive(false); return; }
+    setNoteLive(true);
+    if (noteFocused.current !== noteFor!.until) { noteFocused.current = noteFor!.until; ta.current?.focus(); }
+    const t = window.setTimeout(() => setNoteLive(false), left);
+    return () => window.clearTimeout(t);
+  }, [noteFor, b?.id]);  // eslint-disable-line react-hooks/exhaustive-deps
 
   // ---- attachments ----
   const addFiles = (files: Iterable<File> | ArrayLike<File>) => {
@@ -254,7 +271,12 @@ export function Composer({ b, reply, setReply, threadRef }: ComposerProps) {
   useEffect(() => { if (!running) return; const t = window.setInterval(() => tick((n) => n + 1), 1000); return () => window.clearInterval(t); }, [running]);
   const quiet = running && lastStepTs ? fmtAgo(lastStepTs) : "";
   const stat = !b || !running ? "" : b.status === "waiting" ? "Waiting for you · answer, sign in or approve above" : statusLabel(b) + (quiet && quiet !== "now" ? ` · last step ${quiet}` : "");
-  const placeholder = !b ? "Message…" : mic.busy ? mic.note || "Transcribing…" : reply ? "Reply…" : b.status === "waiting" ? "The bot asked you a question — answer here"
+  // While you hold the browser the bot stays stopped: what you send is queued (server meta.held) and goes when you hand back.
+  const placeholder = !b ? "Message…" : mic.busy ? mic.note || "Transcribing…"
+    : b.control ? `Message ${b.name}… (sent when you hand back)`
+    : reply ? "Reply…"
+    : noteLive ? `Anything ${b.name} should know? Optional.`
+    : b.status === "waiting" ? "The bot asked you a question — answer here"
     : running ? "Add an instruction mid-task…" : `Message ${b.name}`;
   const ctl = (fn: (id: string) => Promise<unknown>) => () => { if (b) void act(() => fn(b.id)); };
 

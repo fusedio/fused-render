@@ -3,7 +3,7 @@
 //   list / watch   GET /api/tasks and the GET /api/tasks/changes long poll (generation cursor), ONE shared loop per
 //                  scope key, refcounted, with runtime.js's rules: a full listing first, deltas folded in, `full`
 //                  answered by a re-read, a 20 s floor re-read, hidden tabs sitting the poll out. The long poll
-//                  itself rides sharedLongPoll, so every window and iframe shares ONE socket for it.
+//                  rides the tasks-changes WebSocket; its HTTP fallback goes through sharedLongPoll (ONE shared long-poll app-wide).
 //   create         POST /api/tasks/create → a handle {entryId, key (getter: pending:<entry> → session id), done}
 //   markRead       POST /api/tasks/read {key, all: true}
 //   ui             GET /api/tasks/ui?view=&task=&scope= → the /tasks?embed=1… iframe src
@@ -14,6 +14,8 @@
 // as in runtime.js it is the bare, unfiltered listing. Only /api/tasks/ui takes scope=all. The page has no
 // X-Fused-Page, so "app" scope is not available here. A handle rides the same unscoped feed (runtime.js used an
 // `under=<dir>` feed per handle only because it had no shared unscoped one).
+
+import { requestTasksChanges } from "@platform/lib/tasksChangesSocket";
 
 /** A row of GET /api/tasks (routes/tasks.py `_row`): the fields Builds reads. */
 export interface TaskRow {
@@ -153,7 +155,14 @@ async function feedWatch(f: Feed, run: number) {
     let r: { generation?: number; full?: boolean; rows?: TaskRow[]; gone?: string[] };
     try {
       // `since` is the listing's own generation, so nothing slips between "listed at N" and "changes since N".
-      r = await taskFetch("GET", "/api/tasks/changes" + query(f.scope, { since: String(f.gen), wait: String(CHANGES_WAIT_S) }), undefined, ctl.signal, (u, i) => sharedLongPollFetch(u, { signal: i.signal ?? undefined }));
+      // Over the document's tasks-changes WebSocket, the GET only where none can be had: native windows share WebKit's
+      // six HTTP/1.1 connections per host, and parked long-polls filled them (measured 2026-10-08; tasksChangesSocket).
+      const since = f.gen, scopeQ = new URLSearchParams(f.scope);
+      r = await requestTasksChanges<typeof r>(
+        { since, wait: CHANGES_WAIT_S, under: scopeQ.get("under") || undefined, scope: scopeQ.get("scope") || undefined },
+        () => taskFetch<typeof r>("GET", "/api/tasks/changes" + query(f.scope, { since: String(since), wait: String(CHANGES_WAIT_S) }), undefined, ctl.signal, (u, i) => sharedLongPollFetch(u, { signal: i.signal ?? undefined })),
+        ctl.signal,
+      );
     } catch {
       if (ctl.signal.aborted || !live()) return;
       await sleep(BACKOFF_MS);

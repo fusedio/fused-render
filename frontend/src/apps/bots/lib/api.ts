@@ -28,6 +28,8 @@ export interface Handoff {
   /** The bot's last few `note` progress lines (<= 5, <= 160 chars each). */
   notes?: string[];
 }
+/** The `build` stamp on a build watcher's "stuck" notice: the Claude task (its key opens it under Builds) and what it waits on. */
+export interface BuildRef { name: string; dir: string; key: string; entry_id: string; reason: "permission" | "question" | "failed" | "usage_limit" | string; tool?: string; summary?: string }
 /** The `handoff` stamp on Super Bot's hand-off lines ("Asked …", "… needs you at the laptop", the result). */
 export interface HandoffRef { id: string; target: string; target_name: string; task?: string; state: HandoffState; task_dir?: string }
 
@@ -54,6 +56,8 @@ export interface BotEvent {
    *  renders as a hand-off card; on the target bot it is the bare "Sent to Super Bot: …" line. */
   source?: "build" | "handoff" | (string & {});
   handoff?: HandoffRef;
+  /** source "build": the build that stopped moving (permission card, question, failure, usage limit); renders as a build card. */
+  build?: BuildRef;
   /** A "Sent to Super Bot" line: the card it became in Super Bot's chat ("Read more" opens that chat there). */
   link?: { bot: string; seq: number };
   /** done / question: the bot's own phone-sized version (D11); the router texts this instead of the cut message. */
@@ -166,6 +170,14 @@ export interface Bot {
   offers_declined?: unknown;
   artifacts_dir?: string;
   control?: boolean;
+  /** Who started the current hand-over: the bot's login tool ("bot") or your take-over ("user"); null/absent when the bot drives. */
+  control_by?: "bot" | "user" | null;
+  /** When control was handed over (server timestamp, same clock as the event `ts`), for the rail card's elapsed-time pill. */
+  control_since?: number | null;
+  /** The last hand back: the question event it settled (`seq`), how long you drove (`secs`) and a still of the page as you left it. */
+  handback?: { seq: number; secs: number; shot: string | null } | null;
+  /** Your messages queued while you hold the browser (by user-event `seq`), delivered in order when you hand back. */
+  held?: { seq: number }[] | null;
   dl_pct?: number | null;
   engine?: "auto" | "steps" | "agent";
   seq: number;
@@ -337,6 +349,8 @@ export const api = {
   popout: (id: string) => post<Ok>(`${bid(id)}/popout`, {}, "popout"),
   dock: (id: string) => post<Ok>(`${bid(id)}/dock`, {}, "dock"),
   wake: (id: string) => post<Ok>(`${bid(id)}/wake`, {}, "wake"),
+  /** The bot's Chrome window follows the live view's stage size (browser.py set_viewport). */
+  viewport: (id: string, w: number, h: number) => post<Ok & { viewport: [number, number] }>(`${bid(id)}/viewport`, { w, h }, "viewport"),
   /** The user clicked this bot open (or deep-linked to it): Super Bot's first task starts from this, nothing else. */
   open: (id: string) => post<Ok & { setup?: "started" | "pending" | "none" }>(`${bid(id)}/open`, {}, "open"),
   goto: (id: string, url: string) => post<{ ok: true; url: string }>(`${bid(id)}/goto`, { url }, "goto"),

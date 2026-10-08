@@ -123,9 +123,9 @@ SOCIAL_PRESETS = ("linkedin", "youtube", "x", "reddit", "instagram", "facebook",
 SUPER_SETUP = ("Open https://accounts.google.com/. If it asks you to sign in, use login so I can sign in to Google in your "
                "browser; wait until I'm signed in (the account page loads). If I'm already signed in, say so. "
                "Then offer me the social bots: ask (one `ask` with `multi: true` and these as `options`) which ones I want to start with: "
-               "@SOCIAL@. I may name several, or none. For each one I pick, call `bot_create` once with `preset` set to its "
-               "key, `name` set to its site name, and `logins_from` set to \"Super Bot\" so it shares your browser and my "
-               "Google sign-in; your browser is already signed in to Google, so bots on it are too. "
+               "@SOCIAL@. I may name several, or none. Make all the ones I pick in ONE `bot_create` call (one approval for "
+               "all of them): one entry in `bots` per pick, with `preset` set to its key, `name` set to its site name, "
+               "and `logins_from` set to \"Super Bot\" so it shares your browser and my Google sign-in; your browser is already signed in to Google, so bots on it are too. "
                "Finish with one line saying which bots exist now and that each will ask for its own site's sign-in once.")
 
 
@@ -158,10 +158,10 @@ APP_GUIDE = """APP GUIDE (Browser Bots, a local desktop app; every bot has its o
 - Routines (same menu): scheduled tasks, "Every N minutes" (min 5), "Daily at HH:MM" on chosen weekdays, or "Once at" a date-time. Each can be enabled, disabled, run now or deleted. A run only starts when you are idle; a busy bot skips that slot. A routine pauses itself after 3 failed runs in a row. You cannot create routines yourself: tell the user how to add one.
 - Skills (same menu): the PLAYBOOKS. The user can write one by hand, click "Learn from last task" (the model condenses your last finished task), or you save one with `learn`. Up to 40 per bot; each mounts into your prompt only when one of its trigger words appears in the task.
 - Chat: the user can pause, resume or stop you at any time; a message sent while you work arrives as USER INSTRUCTION and overrides the task; they can reply to or react with an emoji on one of your messages (you see reactions in CONVERSATION SO FAR); they can search the thread; "Export" saves the whole transcript as Markdown. Attaching, pasting or dropping a file on the composer puts it in FILES so you can `upload` it.
-- Live view: clicking your screenshot opens your browser full size with a tab strip, back/forward/reload and a URL bar. "Take over" pauses you and lets the user drive (solve a captcha, pass a popup); "Hand back" returns control and you continue; "Real window" opens the same browser as a real Chrome window for passkeys and password managers. Your `login` action hands the page over the same way and waits until the user replies "done" or clicks Hand back.
+- Live view: clicking your screenshot widens your browser into the page (the chat becomes a side rail) with a tab strip, back/forward/reload and a URL bar. "Take over" pauses you and lets the user drive (solve a captcha, pass a popup); "Done, hand back" returns control and you continue; "Real window" opens the same browser as a real Chrome window for passkeys and password managers. Your `login` action hands the page over the same way and waits until the user clicks Done (or replies in chat).
 - Inbox: everything you produce lands in the user's Inbox, a Finder folder at ~/Fused/bots/<your name>/ with one subfolder per task: `save` results, downloads that arrived during the task, and a README with the task and your final answer. The Inbox list under your screenshot shows the most recent items with "Open folder" to reveal them in Finder. Files the user attaches in the composer land in FILES instead, for `upload`. There is no other export path.
 - iMessage: only Super Bot takes tasks by text (from the phone number or Apple ID set in its Settings > Advanced) and texts its replies back; it can hand a browsing task to a bot like you, whose final answer goes back to it as the result. Other bots are not reachable by text. "Contacts the bot may text" (Settings > Advanced) is the allowlist your `text` action can message and `texts` can read replies from (shown to you as CONTACTS). You cannot add contacts yourself: tell the user where.
-- Builds (button under the bots list): Claude Code sessions that create fused-render apps. The user can start one there, and you can start one with `build` (say so, then `done` with the link it returns). Apps land under @APPS_ROOT@/<name>; the Builds panel tracks progress and holds Claude's chat for each build; a chat message (and a text, if iMessage is on) arrives when one is ready. Settings > Advanced > Builds picks "Scoped" (Claude asks the user before risky steps) or "Full access" (unattended).
+- Builds (button under the bots list): Claude Code sessions that create fused-render apps. The user can start one there, and you can start one with `build` (say so, then `done` with the link it returns). Apps land under @APPS_ROOT@/<name>; the Builds panel tracks progress and holds Claude's chat for each build; a chat message (and a text, if iMessage is on) arrives when one is ready, and a card when one is stuck (Claude waits for an OK or an answer, fails, or hits its usage limit) whose button opens it under Builds. Settings > Advanced > Builds picks "Scoped" (Claude asks the user before risky steps) or "Full access" (unattended).
 - Apps: every fused app under @APPS_ROOT@ is visible to every bot, whoever built it: the APPS section of your prompt lists them all (folder, name, description, link). `show` any of them as a card, `goto` its link to use it in the browser, or `build` with its exact name to update it. You also OFFER apps on your own (`offer`): an existing one that fits the task, or a new one worth building, as a card with "Use it" / "Build it" / "Not now". A yes starts the build with no further step (the yes is the approval), "Not now" keeps that app out of offers for a week, and an unanswered offer stays clickable in the chat after the task ends (a plain yes or no later settles it). When the user asks for an app in so many words you `build` it straight away and the approval card confirms it with one click.
 - App tools: local apps that expose MCP tools (an `mcp.toml` curated in fused-render's MCP panel) are available to you through the `tool` action; the APP TOOLS section of your prompt lists them by app. Reading tools run at once; tools that change something ask the user first. Cards in the Apps panel show a tools badge when an app exposes any. Nothing has to be attached: every app with a manifest is available to every bot.
 - App skills: an app that ships a SKILL.md (marked [py] in APPS) tells you what each of its .py files does and how to call it; the `py` action runs one (its main(**args), exactly as the app's page would run it). Skills load only when needed: apps you built this task and apps the task names are mounted under APP SKILLS; `py` with an app and no file loads any other. Apps you build get a SKILL.md as part of the build; an older app without one can get it from an update build. Your own builds run at once; other apps' files ask the user first, showing the file's line from its SKILL.md.
@@ -512,6 +512,7 @@ class Bot:
         self._tool_apps = set()
         self._skills_loaded = []
         self._handoff_queue = []  # hand-offs waiting for this bot to go idle: [(super bot id, hand-off id)], FIFO
+        self._held_lock = threading.Lock()  # one _flush_held at a time: one hand back can release control twice
         dirty = False
         if self.meta.pop("channel_forwards", None) is not None:
             dirty = True  # per-bot forwards are gone (docs §10): only a task's origin hears back
@@ -531,6 +532,13 @@ class Bot:
             self.meta["status"] = "idle"
             self.meta["note"] = "interrupted by worker restart"
             dirty = True
+        # ...and a hand-over (a login wait, a take-over) with no task thread behind it: the page is the bot's again.
+        if self.meta.get("control") or self.meta.get("control_by") or self.meta.get("control_since"):
+            self._control_off(flush=False)
+            dirty = True
+        # Messages queued while the user held the browser died with that hand-over: not sent, and the thread says so.
+        unsent = self.meta.pop("held", None) or []
+        dirty = dirty or bool(unsent)
         # Hand-offs still open when the server last stopped: their target's task died with it.
         interrupted = []
         for hd in self.meta.get("handoffs") or []:
@@ -548,6 +556,15 @@ class Bot:
                 dirty = True
         if dirty:
             self.save()
+        if unsent:
+            # The user lines are already written: mark each ignored so past_conversation leaves it out (an unsent
+            # line is not something the user asked, and "send again" would read twice).
+            for h in unsent:
+                if h.get("seq") is not None:
+                    self.emit("system", "Queued while you had the browser; not sent (restart).", ignored_seq=h["seq"])
+            n = len(unsent)
+            self.emit("note", f"{n} message{'s' if n > 1 else ''} queued while you had the browser {'were' if n > 1 else 'was'} "
+                                "not sent: the server restarted. Send again if still needed.")
         for hd, text in interrupted:
             # The user was told they would hear: the result card says how it ended (texted back by the origin rule).
             try:
@@ -642,7 +659,7 @@ class Bot:
             with open(p + ".tmp", "wb") as f:
                 f.write(data)
             os.replace(p + ".tmp", p)
-            names = sorted((n for n in os.listdir(d) if n.endswith(".jpg")), key=lambda n: int(n[:-4]) if n[:-4].isdigit() else 0)
+            names = sorted((n for n in os.listdir(d) if n.endswith(".jpg") and n[:-4].isdigit()), key=lambda n: int(n[:-4]))  # hb-<seq>.jpg: _write_still
             for n in names[:-self.STEP_THUMBS]:
                 try:
                     os.remove(os.path.join(d, n))
@@ -683,6 +700,8 @@ class Bot:
             elif role == "question" and ev.get("offer"):
                 o = ev["offer"]
                 label = f"YOU OFFERED TO {'USE' if o.get('kind') == 'use' else 'BUILD'} THE APP {o.get('name') or ''!r}"
+            elif ev.get("source") == "build" and role == "question":
+                label = "BUILD NOTICE (Claude Code, not you)"
             elif ev.get("source") == "handoff":
                 # Super Bot's hand-off cards: what another bot reported is data, never its own words or orders.
                 who = str((ev.get("handoff") or {}).get("target_name") or "A BOT").upper()
@@ -1525,11 +1544,15 @@ class Bot:
         return out
 
     def set_status(self, status, **kw):
+        still = None
         with self.lock:
+            if "control" in kw and not kw["control"]:
+                still = self._control_off(handback=True)  # control_by / control_since go with it (before waiting_on changes)
             self.meta["status"] = status
             self.meta.update(kw)
             self.meta["updated"] = time.time()
             self.save()
+        self._write_still(still)
 
     @property
     def browser_id(self):
@@ -1565,7 +1588,8 @@ class Bot:
                 "memory": self.memory() if detail else None,
                 "skills": self.skills() if detail else None,
                 "shot": f"/api/bots/{self.id}/shot" if shot_ts else None,
-                "shot_ts": shot_ts, "viewport": list(getattr(browser_mod, "VIEWPORT", (1280, 800)))}
+                "shot_ts": shot_ts, "viewport": list(vp if isinstance(vp := getattr(self.browser, "viewport", None), (tuple, list))
+                                 else getattr(browser_mod, "VIEWPORT", (1280, 800)))}
 
     # -- routines ------------------------------------------------------------
     # meta["routines"]: [{id, task, kind: interval|daily|once, minutes, time "HH:MM",
@@ -1641,17 +1665,25 @@ class Bot:
         with self.lock:
             if not manual and not self._spacing_ok(r):
                 return
-            busy = self.thread is not None and self.thread.is_alive()
+            # While the user holds the browser the bot stays stopped: the slot is skipped like a busy one.
+            held = bool(self.meta.get("control"))
+            busy = held or (self.thread is not None and self.thread.is_alive())
             prev_last = r.get("last")
             r["last"] = time.time()
             if busy:
-                r["last_result"] = "skipped: bot was busy"
-                self.emit("system", f"Routine \"{r['task'][:60]}\" skipped: bot busy")
+                r["last_result"] = "skipped: you had the browser" if held else "skipped: bot was busy"
+                self.emit("system", f"Routine \"{r['task'][:60]}\" skipped: {'you had the browser' if held else 'bot busy'}")
             else:
                 r["last_result"] = "started"
                 self.emit("system", f"Routine {'run now' if manual else 'fired'}: {r['task']}")
-                self.meta["control"] = False
-            r["next"] = self._next_run(r, time.time()) if r.get("enabled") else None
+            if busy and r["kind"] == "once":
+                # A one-shot is not a slot to lose: a `last` would end it for good (_next_run), so it is not
+                # stamped. A due one retries in a minute until the bot is free and you have handed back; a
+                # skipped Run now keeps its own time.
+                r["last"] = prev_last
+                r["next"] = self._next_run(r, time.time()) if manual else time.time() + 60
+            else:
+                r["next"] = self._next_run(r, time.time()) if r.get("enabled") else None
             if r["kind"] == "once" and not busy:
                 r["enabled"] = False
             self.save()
@@ -1778,9 +1810,19 @@ class Bot:
         else:
             uev = self.emit("user", text, **stamp)
         with self.lock:
+            if self.meta.get("control"):
+                # The user holds the browser: the bot stays stopped. The message is written (the page shows it
+                # queued) and delivered when the page goes back to the bot (_control_off → _flush_held).
+                self.meta["held"] = [*(self.meta.get("held") or []),
+                                     {"seq": uev.get("seq"), "text": text, "shown": shown, "via": via}]
+                self.save()
+                return
+        self._deliver(text, shown, via, uev)
+
+    def _deliver(self, text, shown, via, uev):
+        """receive()'s second half: a written user line reaches the task (an instruction or an answer) or starts one."""
+        with self.lock:
             running = self.thread is not None and self.thread.is_alive()
-            if not running and self.meta.get("control"):
-                self.meta["control"] = False  # a fresh task means the bot drives again
             pending = self.meta.get("pending_offer")
         texted = via.get("kind") == "imessage"
         # A yes or no to an app offer that outlived its task (see _offer) is settled here, without a model call.
@@ -1953,13 +1995,96 @@ class Bot:
         except Exception:  # noqa: BLE001 — the flag alone still ends the task at its next wait
             logger.warning("bot %s: agent engine stop failed", self.id, exc_info=True)
 
-    def takeover(self, note=True):
+    def takeover(self, note=True, by="user"):
         """Hand the page to the user inside the live view: the bot pauses and the
         page drives the tab over its own DevTools socket. No relaunch. `note=False`
-        (the login tool) skips the "Paused" card: its own question card says why."""
+        (the login tool) skips the "Paused" card: its own question card says why.
+        `by` lands in meta["control_by"]: "bot" when the bot asked (login), "user" when
+        the user took the page. A take-over while the user already holds the page keeps
+        the first hand-over's control_by / control_since."""
         self.pause(note=note)
         self.wake_browser()
-        self.set_status("paused" if self.thread and self.thread.is_alive() else "idle", control=True)
+        self.set_status("paused" if self.thread and self.thread.is_alive() else "idle", control=True, **self._control_owner(by))
+
+    def _control_owner(self, by):
+        """control_by / control_since for a hand-over starting now, or the ones already held."""
+        with self.lock:
+            if self.meta.get("control") and self.meta.get("control_by"):
+                return {"control_by": self.meta["control_by"], "control_since": self.meta.get("control_since") or time.time()}
+            return {"control_by": by, "control_since": time.time()}
+
+    def _control_off(self, handback=False, flush=True):
+        """The page goes back to the bot: control, control_by and control_since drop together.
+        Messages queued meanwhile (meta["held"]) are delivered in order from a short thread, once
+        the caller lets go of self.lock; `flush=False` leaves that to the caller (task end).
+        `handback` (the hand-over is ending, not a fresh task overriding it): when the BOT had
+        asked (control_by "bot") and is still waiting on that question, meta["handback"]
+        records {seq, secs, shot} so the page settles that question card as "You handed it
+        back · m:ss" with a still of the page as you left it.
+
+        Returns the still to write, (name, jpeg bytes), or None: the caller writes it
+        with `_write_still` AFTER letting go of self.lock (no disk write under the lock)."""
+        with self.lock:
+            by = self.meta.pop("control_by", None)
+            since = self.meta.pop("control_since", None)
+            self.meta["control"] = False
+            if flush and self.meta.get("held"):
+                threading.Thread(target=self._flush_held, daemon=True, name=f"bot-held-{self.id}").start()
+            qseq = self.meta.get("waiting_on")
+            if not (handback and by == "bot" and since and qseq):
+                return None
+            data = getattr(self.browser, "thumb_bytes", None)
+            name = f"hb-{int(qseq)}.jpg" if data else None
+            self.meta["handback"] = {"seq": qseq, "secs": int(max(0, time.time() - float(since))),
+                                     "shot": f"/api/bots/{self.id}/steps/{name}" if name else None}
+            return (name, data) if name else None
+
+    def _flush_held(self, after=None):
+        """Deliver the messages queued while the user held the browser, oldest first. `after`: a
+        task thread that is ending; wait for it, so the first message starts a fresh task instead
+        of landing in the inbox of one that is gone."""
+        if after is not None:
+            after.join()
+        if not self._held_lock.acquire(blocking=False):
+            return  # another flusher is delivering; it drains the queue in order
+        try:
+            while True:
+                with self.lock:
+                    if self.meta.get("control"):
+                        return  # taken over again: the rest wait for the next hand back
+                    held = self.meta.get("held") or []
+                    if not held:
+                        return
+                    h, self.meta["held"] = held[0], held[1:]
+                    self.save()
+                try:
+                    self._deliver(h.get("text") or "", h.get("shown") or "", h.get("via") or dict(chan.WEB), {"seq": h.get("seq")})
+                except Exception:  # noqa: BLE001 — one bad message must not strand the rest
+                    logger.warning("bot %s: queued message %s not delivered", self.id, h.get("seq"), exc_info=True)
+        finally:
+            self._held_lock.release()
+
+    HANDBACK_STILLS = 50
+
+    def _write_still(self, still):
+        """Write a hand-back still from `_control_off` as steps/hb-<seq>.jpg. The hb- prefix keeps
+        it out of `_step_thumb`'s keep-last-200 prune (digit names only); stills keep their own last 50."""
+        if not still:
+            return
+        name, data = still
+        d = self.steps_dir
+        try:
+            os.makedirs(d, exist_ok=True)
+            p = os.path.join(d, name)
+            with open(p + ".tmp", "wb") as f:
+                f.write(data)
+            os.replace(p + ".tmp", p)
+            hb = sorted((n for n in os.listdir(d) if n.startswith("hb-") and n.endswith(".jpg") and n[3:-4].isdigit()),
+                        key=lambda n: int(n[3:-4]))
+            for n in hb[:-self.HANDBACK_STILLS]:
+                os.remove(os.path.join(d, n))
+        except OSError:
+            logger.debug("bot %s: hand-back still not written", self.id, exc_info=True)
 
     def popout(self):
         """Open this bot's browser as a real Chrome window on the desktop and hand it to
@@ -1971,7 +2096,9 @@ class Bot:
             raise ValueError(f"{', '.join(busy)} is working in this shared browser; stop or pause that task first")
         self.pause(note=False)
         self.browser.popout()
-        self.set_status("paused" if self.thread and self.thread.is_alive() else "idle", control=True)
+        # control_by "user", unless a bot-asked hand-over (login) is already on: popping out to sign in with a
+        # passkey still ends that question, so its card settles on hand back.
+        self.set_status("paused" if self.thread and self.thread.is_alive() else "idle", control=True, **self._control_owner("user"))
         shared = (" Every bot sharing this browser is in that window too." if self.shared_with() else "")
         self.emit("system", "Opened the browser as a real Chrome window on your desktop. Hand back (or close the window) when you are done." + shared)
 
@@ -1998,15 +2125,25 @@ class Bot:
 
     def _release(self, note=True):
         """Control back to this bot (the shared tail of giveback / dock)."""
-        self.meta["control"] = False
-        self.save()
+        with self.lock:
+            still = self._control_off(handback=bool(self.thread and self.thread.is_alive()))
+            self.save()
+        self._write_still(still)
         self.resume(note=note)
 
     def giveback(self):
         if self.browser.headed():
             self.dock(release=True)
             return
+        # Done hands back THIS bot only. On a shared browser another bot may still be mid-login on the same tab
+        # (both asked); it keeps its hand-over and its own Done. Known limit: this bot resumes on that tab now.
+        # Holding it paused instead would not stick: its login wait ends as soon as control drops and the engine
+        # clears pause_flag itself.
+        waiting = [o["name"] or "Another bot" for o in self.shared_with()
+                   if (b := _registry().get(o["id"])) and b.meta.get("control") and b.meta.get("control_by") == "bot"]
         self._release()
+        if waiting:
+            self.emit("system", f"{', '.join(waiting)} still {'needs' if len(waiting) == 1 else 'need'} you in this browser.")
 
     def wake_browser(self):
         """Relaunch an asleep browser. A browser that is already up is left exactly as it is."""
@@ -2270,10 +2407,7 @@ class Bot:
                 st = (row or {}).get("status") or ""
                 if st in ("in_progress", "queued", "needs_attention", "blocked"):
                     seen_running = True
-                if st in ("needs_attention", "blocked") and not bd.get("nudged"):
-                    bd["nudged"] = True
-                    self.emit("question", f"The build of \"{bd['name']}\" is waiting for you: answer Claude under Builds.",
-                              source="build", via=bd.get("via"))
+                self._surface_build_stall(bd, row or {}, st)
                 if st in ("done", "archived") and seen_running:
                     if stable != st:      # status can flicker for ~15 s after a turn: want it twice in a row
                         stable = st
@@ -2288,6 +2422,43 @@ class Bot:
                     return
                 stable = ""
         threading.Thread(target=run, name=f"build-{(bd.get('entry_id') or '')[:8]}", daemon=True).start()
+
+    def _surface_build_stall(self, bd, row, st):
+        """A build that stopped moving is told in the chat of the bot that asked
+        for it: what Claude wants (the row's `attention`: tool and one line, or the
+        question it asks), or that the run failed or hit the usage limit. One
+        notice per distinct stall: a later card in the same build gets its own,
+        and a build that is moving again re-arms it. The event carries `build`
+        (with the task key) so the chat renders a card whose button opens that
+        task under Builds, where Claude's own card is answered."""
+        reason = (row.get("blocked_reason") or "") if st in ("needs_attention", "blocked") else ""
+        if not reason:
+            if st in ("in_progress", "queued"):
+                bd.pop("stall", None)
+            return
+        att = row.get("attention") or {}
+        tool, summary = str(att.get("tool") or ""), " ".join(str(att.get("summary") or "").split())[:200]
+        stall = f"{reason}|{tool}|{summary}"
+        if bd.get("stall") == stall:
+            return
+        bd["stall"] = stall
+        name = bd["name"]
+        if reason == "question":
+            role, text = "question", f"The build of \"{name}\" has a question for you: {summary or 'see Builds'}"
+        elif reason == "permission":
+            what = " · ".join(x for x in (tool, summary) if x) or "a step"
+            role, text = "question", f"The build of \"{name}\" is waiting for your OK to run {what}"
+        elif reason == "usage_limit":
+            when = row.get("resumes_at") or 0
+            at = time.strftime("%H:%M", time.localtime(when)) if when else ""
+            role, text = "note", f"The build of \"{name}\" paused at Claude's usage limit" + (f"; it picks up at {at} by itself." if at else ".")
+        else:
+            role, text = "error", f"The build of \"{name}\" stopped: Claude's run failed. Retry it under Builds."
+        if role == "question":
+            text += ("" if text[-1:] in ".?!" else ".") + " Answer Claude under Builds."
+        ref = {"name": name, "dir": bd.get("dir") or "", "key": row.get("key") or bd.get("key") or "",
+               "entry_id": bd.get("entry_id") or "", "reason": reason, "tool": tool, "summary": summary}
+        self.emit(role, text, source="build", build=ref, via=bd.get("via"))
 
     # -- hand-offs: Super Bot gives a bot a task (docs §11) ---------------------
     # meta["handoffs"] on Super Bot: [{id, target, target_name, task, origin_via, created_at,
@@ -2361,7 +2532,7 @@ class Bot:
             elif q:
                 return False
             if t.meta.get("control"):
-                t.meta["control"] = False  # a fresh task means the bot drives again (as receive() does)
+                return False  # the user holds its browser: it stays queued until the hand back (as receive() refuses)
             if t.deleted:
                 return False
             if not t.start_task(hd["task"], origin=chan.HANDOFF_KIND, via=hv):
@@ -2837,6 +3008,15 @@ def _run_task(run, bot, task, label):
         with bot.lock:
             if bot.thread is threading.current_thread():
                 bot.task_via = dict(chan.WEB)
+                # A task that ends mid hand-over (stopped during a login wait, an engine error) never reaches
+                # the engine's set_status(control=False): the hand-over ends with the task.
+                if bot.meta.get("control"):
+                    bot._control_off(flush=False)
+                    bot.save()
+                    if bot.meta.get("held"):
+                        # Queued while you drove: delivered once this thread is gone, so they start a fresh task.
+                        threading.Thread(target=bot._flush_held, args=(threading.current_thread(),), daemon=True,
+                                         name=f"bot-held-{bot.id}").start()
 
 
 def bots_section(bot) -> str:
@@ -2859,7 +3039,7 @@ def bots_section(bot) -> str:
         lines.append(f"- {name} ({m.get('preset') or 'custom'}; {m.get('status') or 'idle'}; "
                      f"{m.get('model') or DEFAULT_MODEL}/{m.get('effort') or DEFAULT_EFFORT}; face {face_words(m.get('face'))}): "
                      f"{instr}".rstrip(": "))
-    return ("\n\nBOTS (the browser bots on this Mac; `handoff` gives one a task, `bot_settings` changes one, `bot_create` adds one):\n"
+    return ("\n\nBOTS (the browser bots on this Mac; `handoff` gives one a task, `bot_settings` changes one, `bot_create` adds bots):\n"
             + ("\n".join(lines) if lines else "none yet"))
 
 
@@ -2928,6 +3108,17 @@ def _name_taken(name, except_id=None) -> bool:
     return False
 
 
+def _logins_source(name):
+    """`logins_from` against what exists: an existing bot's name, else a browser's own
+    name (Settings > Browsers) → (display name, browser id); None when neither."""
+    bots = _registry().all()
+    src = next((b for b in bots if (b.meta.get("name") or "").lower() == name.lower()), None)
+    if src is not None:
+        return src.meta.get("name") or name, src.browser_id
+    row = next((r for r in browsers.listing(bots) if r["name"].lower() == name.lower()), None)
+    return (row["name"], row["id"]) if row is not None else None
+
+
 def manage_create_check(bot, args):
     """Validate a `bot_create` call before anything is written: (clean fields, "") or
     (None, "error: …"). Shared by the approval preview and the run, so a refused call
@@ -2954,39 +3145,97 @@ def manage_create_check(bot, args):
         return None, f"error: {e}"
     extra = sorted(k for k in args if k not in CREATE_FIELDS and k != "preset")
     if extra:
-        return None, f"error: `bot_create` takes {', '.join(CREATE_FIELDS)} and preset; {', '.join(extra)} stay the user's own"
+        return None, f"error: a bot takes {', '.join(CREATE_FIELDS)} and preset; {', '.join(extra)} stay the user's own"
     logins_from, browser = str(args.get("logins_from") or "").strip(), ""
     if logins_from:
-        bots = _registry().all()
-        src = next((b for b in bots if (b.meta.get("name") or "").lower() == logins_from.lower()), None)
-        if src is not None:
-            logins_from, browser = src.meta.get("name") or logins_from, src.browser_id
-        else:  # a browser's own name (Settings > Browsers)
-            row = next((r for r in browsers.listing(bots) if r["name"].lower() == logins_from.lower()), None)
-            if row is None:
-                return None, f"error: no bot or browser named {logins_from!r} to share logins with"
-            logins_from, browser = row["name"], row["id"]
+        hit = _logins_source(logins_from)
+        if hit is None:
+            return None, f"error: no bot or browser named {logins_from!r} to share logins with"
+        logins_from, browser = hit
     return {"name": name, "instructions": str(args.get("instructions") or "").strip(), "model": model or DEFAULT_MODEL,
             "effort": effort or DEFAULT_EFFORT, "preset": preset, "face": face, "logins_from": logins_from, "browser": browser}, ""
 
 
+def manage_create_batch_check(bot, args):
+    """Validate a whole `bot_create` call: ([clean fields…], "") or (None, "error: …").
+    The call carries `bots`, a list of entries; a call naming one bot at the top level
+    (the pre-batch shape) is read as a list of one. All or nothing: one bad entry, or
+    two entries sharing a name, refuses the call, so the card never shows a create
+    that will not happen."""
+    from fused_render.bots.tools import CREATE_BATCH_CAP
+    args = args or {}
+    if "bots" not in args:
+        items = [args]
+    elif len(args) > 1 or not isinstance(args["bots"], list):
+        return None, "error: `bot_create` takes `bots`, a list of {name, instructions, model, effort, preset, face, logins_from}"
+    else:
+        items = args["bots"]
+    if not items:
+        return None, "error: `bots` is empty; give at least one bot"
+    if len(items) > CREATE_BATCH_CAP:
+        return None, f"error: at most {CREATE_BATCH_CAP} bots per `bot_create`; make the rest in another call"
+    names = [" ".join(str(x.get("name") or "").split()).lower() for x in items if isinstance(x, dict)]
+    out, seen = [], {}
+    for item in items:
+        if not isinstance(item, dict):
+            return None, "error: each entry in `bots` is an object with at least a `name`"
+        who = " ".join(str(item.get("name") or "").split())
+        # `logins_from` resolves against what exists first (an existing bot or browser keeps the
+        # pre-batch meaning; a new bot can never share an existing bot's name, but a browser can).
+        # Only a name nothing on this Mac carries falls to an EARLIER entry of this call: that bot
+        # does not exist yet, so manage_create puts this one on the browser the earlier entry gets.
+        src = " ".join(str(item.get("logins_from") or "").split())
+        new_src = bool(src) and _logins_source(src) is None
+        sibling = seen.get(src.lower()) if new_src else None
+        if new_src and sibling is None and src.lower() in names and src.lower() != who.lower():
+            return None, f"error: bot {who!r} shares {src!r}'s logins, so list {src!r} before it in `bots`"
+        f, err = manage_create_check(bot, {k: v for k, v in item.items() if k != "logins_from"} if sibling else item)
+        if err:
+            return None, err.replace("error: ", f"error: bot {who!r}: ", 1) if who and len(items) > 1 else err
+        if f["name"].lower() in seen:
+            return None, f"error: {f['name']!r} appears twice in `bots`; each bot needs its own name"
+        if sibling:
+            f.update(logins_from=sibling, browser="", sibling=sibling)
+        seen[f["name"].lower()] = f["name"]
+        out.append(f)
+    return out, ""
+
+
 def manage_create(bot, args):
-    """Super Bot's `bot_create` (docs §12): a new ORDINARY bot. Returns (label, result);
-    the result is the sentence the model reads. Never runs unapproved (tools.ALWAYS_ASK)."""
-    f, err = manage_create_check(bot, args)
+    """Super Bot's `bot_create` (docs §12): one or more new ORDINARY bots behind one card.
+    Returns (label, result); the result is the sentence the model reads. Never runs
+    unapproved (tools.ALWAYS_ASK)."""
+    fields, err = manage_create_batch_check(bot, args)
     if err:
         return "bot_create", err
-    b = create(f["name"], f["model"], f["effort"], f["instructions"], preset=f["preset"], kind="bot", browser=f.get("browser") or "")
-    if f["face"]:
-        with b.lock:
-            b.meta["face"] = f["face"]
-            b.save()
-    b.emit("system", f"Created by {bot.meta.get('name') or SUPER_NAME}.", source="manage")
-    return (f"create bot \"{f['name']}\"",
-            f"created bot {f['name']!r} (id {b.id}, model {b.meta.get('model')}, effort {b.meta.get('effort')}"
-            + (f", preset {f['preset']}" if f["preset"] else "") + f", face {face_words(b.meta.get('face'))}"
-            + (f", sharing {f['logins_from']}'s logins" if f.get("logins_from") else "") + "). "
-            "It is in the bots list now; `handoff` gives it a task.")
+    made, lines, by_name = [], [], {}
+    for f in fields:
+        try:
+            browser = f.get("browser") or ""
+            if f.get("sibling"):  # an earlier entry of this call: its browser.json is written on first use, so now
+                src = by_name[f["sibling"].lower()]
+                browsers.ensure(src.browser_id, src.meta.get("name") or "")
+                browser = src.browser_id
+            b = create(f["name"], f["model"], f["effort"], f["instructions"], preset=f["preset"], kind="bot",
+                       browser=browser)
+        except Exception as e:  # noqa: BLE001 — say which were made before the failure
+            lines.append(f"error: could not create {f['name']!r} ({e}); the bots after it were not created.")
+            break
+        if f["face"]:
+            with b.lock:
+                b.meta["face"] = f["face"]
+                b.save()
+        b.emit("system", f"Created by {bot.meta.get('name') or SUPER_NAME}.", source="manage")
+        made.append(f["name"])
+        by_name[f["name"].lower()] = b
+        lines.append(f"created bot {f['name']!r} (id {b.id}, model {b.meta.get('model')}, effort {b.meta.get('effort')}"
+                     + (f", preset {f['preset']}" if f["preset"] else "") + f", face {face_words(b.meta.get('face'))}"
+                     + (f", sharing {f['logins_from']}'s logins" if f.get("logins_from") else "") + ").")
+    if not made:
+        return "bot_create", lines[-1]
+    label = f"create bot \"{made[0]}\"" if len(made) == 1 else f"create {len(made)} bots: " + ", ".join(made)
+    return label, " ".join(lines) + (" It is" if len(made) == 1 else " They are") + \
+        " in the bots list now; `handoff` gives a bot a task."
 
 
 def manage_changes(bot, target_name, args):

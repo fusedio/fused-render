@@ -9,12 +9,15 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type RefObject } from "react";
 import { AppCard } from "../apps/AppCard";
 import { appFromText, showAppBeside, useAppsRoot } from "../apps/apps";
+import { openBuilds, getBuildRows } from "../builds/builds";
 import { api, stepThumbUrl, type AppRef, type Bot, type BotEvent } from "../lib/api";
-import { esc, fmtDay, fmtTime, fmtWhen } from "../lib/format";
+import { esc, fmtDay, fmtSecs, fmtTime, fmtWhen } from "../lib/format";
 import { md } from "../lib/md";
+import { botsRoot } from "../lib/root";
 import { chosenOption, firstNewIndex, isHandoff, isNoise, liveCards, optionKey, rowKeys, searchCountText, searchHit, sessionBreak } from "../lib/thread";
 import { act, clearScrollSeq, cur, eventsOf, getState, jumpTo, markSeen, openDialog, select, setNewCount, setScrollToEnd, showBanner, unviewed, useBots, viewedSet } from "../state/store";
 import { END_GAP, clearSearchHighlight, gapOf, evBox, highlightSearch, pinToEnd, restoreAnchor, topVisible, updateToBottom, type Anchor } from "./threadDom";
+import { HandBackRow, HandoverNote } from "./HandoverCard";
 import { SetupLines } from "./SetupLines";
 
 const EMPTY: BotEvent[] = [];
@@ -49,6 +52,13 @@ interface RowProps {
   texted?: BotEvent[];
   /** Approval / question card: the bot waits on this one. */
   live: boolean;
+  /** The question a hand back settled (Bot.handback): how long you drove, and the step still of the page as you left it. */
+  hbSecs?: number;
+  hbShot?: string | null;
+  /** The live hand-over question while you hold the browser (Bot.control): the bot, for the hand-back row it ends with. */
+  hbBot?: Bot;
+  /** Your message queued while you hold the browser (Bot.held): greyed, dashed, sent when you hand back. */
+  queued?: boolean;
   /** Answered question: your answer, normalized (optionKey); null otherwise. */
   chosen: string | null;
   /** The apps root (appFromText needs it; "" until loaded). */
@@ -58,6 +68,8 @@ interface RowProps {
   hstate?: string;
   /** Hand-off card: the bot it went to still exists ("Open <Bot>'s chat" is live). */
   targetLive?: boolean;
+  /** Build notice (`e.build`): still the build's current stall (buildOpen). A prop for the same reason as linkLive. */
+  bopen?: boolean;
   /** "Sent to Super Bot" line: the bot its `link` points at still exists ("Read more" is live). A prop, not a store read:
    *  Row is memoized and would keep a stale answer. */
   linkLive?: boolean;
@@ -123,12 +135,45 @@ function HandoffCard({ e, state: rawState, targetLive }: { e: BotEvent; state: s
   );
 }
 
+/** A build that stopped moving (bot.py _surface_build_stall): what Claude waits on, and the door to that task under
+ *  Builds, where Claude's own card is answered. `open`: still the build's current stall; otherwise it reads resolved. */
+const BUILD_STALL: Record<string, { pill: string; cls: string }> = {
+  permission: { pill: "needs your OK", cls: "blocked" }, question: { pill: "question", cls: "blocked" },
+  failed: { pill: "failed", cls: "failed" }, usage_limit: { pill: "paused", cls: "cancelled" },
+};
+function BuildCard({ e, open }: { e: BotEvent; open: boolean }) {
+  const b = e.build!, st = BUILD_STALL[b.reason] || { pill: b.reason, cls: "blocked" };
+  const what = b.reason === "permission" && (b.tool || b.summary)
+    ? `Claude wants to run **${b.tool || "a tool"}**${b.summary ? `\n\n\`${b.summary.replace(/`/g, "'")}\`` : ""}`
+    : b.reason === "question" && b.summary ? `Claude asks: ${b.summary}` : e.text;
+  return (
+    <div className={`handoff-card build ${open ? st.cls : "settled"}`} data-seq={e.seq} title={fmtWhen(e.ts)}>
+      <div className="hd"><span className="ttl">Build · {b.name}</span><span className={`pill ${open ? st.cls : "cancelled"}`}>{open ? st.pill : "resolved"}</span></div>
+      <HtmlMsg className="msg md" title={fmtWhen(e.ts)} html={md(what)} />
+      <div className="ft">
+        <button className={open && st.cls === "blocked" ? "primary" : undefined} disabled={!b.key}
+          title={b.dir || undefined} onClick={() => openBuilds(b.key)}>{open && st.cls === "blocked" ? "Answer in Builds" : "Open in Builds"}</button>
+      </div>
+    </div>
+  );
+}
+
+/** Is this build notice still the build's current stall: the newest notice for that build, and (when the Builds feed has
+ *  the row) the task still waiting or blocked. Without the row (feed not loaded yet) the newest notice counts as open. */
+function buildOpen(evs: BotEvent[], e: BotEvent): boolean {
+  const b = e.build!, same = (x: BotEvent) => x.source === "build" && (b.entry_id ? x.build?.entry_id === b.entry_id || x.app?.dir === b.dir : x.build?.key === b.key);
+  if (evs.some((x) => x.seq > e.seq && same(x))) return false;
+  const row = getBuildRows().find((t) => (b.entry_id && t.entry_id === b.entry_id) || t.key === b.key);
+  return !row || row.status === "needs_attention" || row.status === "blocked";
+}
+
 /** Channel names in chips and "Texted" lines; a task Super Bot handed off reads "from Super Bot" (docs §11). */
 const chanLabel = (k: string) => (k === "imessage" ? "iMessage" : k === "handoff" ? "Super Bot" : k);
 
-function body({ e, botId, reaction, live, chosen, appsRoot, onBeside, hstate, targetLive, linkLive }: RowProps): JSX.Element {
+function body({ e, botId, reaction, live, chosen, appsRoot, onBeside, hstate, targetLive, linkLive, hbSecs, hbShot, hbBot, queued, bopen }: RowProps): JSX.Element {
   const title = fmtWhen(e.ts);
   if (e.handoff && isHandoff(e)) return <HandoffCard e={e} state={hstate || e.handoff.state} targetLive={!!targetLive} />;
+  if (e.build && e.source === "build") return <BuildCard e={e} open={!!bopen} />;
   // The target bot's "Sent to Super Bot: …" (what went up): a quiet harness line.
   if (isHandoff(e) && e.role === "system") {
     const l = e.link;
@@ -173,6 +218,16 @@ function body({ e, botId, reaction, live, chosen, appsRoot, onBeside, hstate, ta
       return <><HtmlMsg className={cls} title={title} seq={e.seq} html={md(e.text) + proposed + (opts ? `<div class="opts">${opts}</div>` : "")} />{offerCard}</>;
     }
     if (e.multi && options.length) return <MultiQuestion e={e} botId={botId} cls={cls} title={title} live={live} chosen={chosen} />;
+    // A hand-over you handed back: settled like an answered question, plus how long you drove and the page as you left it.
+    if (hbSecs != null && !live) {
+      return (
+        <div className={`${cls} settled handedback`} data-seq={e.seq} title={title}>
+          {e.text}
+          <div className="hbfoot">You handed it back · {fmtSecs(hbSecs)}</div>
+          {hbShot ? <img className="hbshot" loading="lazy" src={stepThumbUrl(botId, hbShot)} alt="The page as you left it" /> : null}
+        </div>
+      );
+    }
     return (
       <div className={cls} data-seq={e.seq} title={title}>
         {e.text}
@@ -185,6 +240,7 @@ function body({ e, botId, reaction, live, chosen, appsRoot, onBeside, hstate, ta
             ))}
           </div>
         ) : null}
+        {hbBot ? <HandBackRow b={hbBot} /> : null}
       </div>
     );
   }
@@ -203,8 +259,8 @@ function body({ e, botId, reaction, live, chosen, appsRoot, onBeside, hstate, ta
   const html = (actable ? actsHtml(e.seq) + `<time class="when">${esc(fmtTime(e.ts))}</time>` : "")
     + (e.role === "user" ? esc(e.text) : md(e.text)) + seedBtn + viaChip
     + (actable ? `<span class="rx" data-react="${e.seq}" title="Change reaction">${esc(reaction)}</span>` : "");
-  const cls = `msg ${e.role}${e.role === "user" ? "" : " md"}${actable && reaction ? " has-rx" : ""}`;
-  const bubble = <HtmlMsg className={cls} title={title} seq={actable ? e.seq : undefined} html={html} />;
+  const cls = `msg ${e.role}${e.role === "user" ? "" : " md"}${actable && reaction ? " has-rx" : ""}${queued ? " queued" : ""}`;
+  const bubble = <HtmlMsg className={cls} title={queued ? "Queued: sent when you hand the browser back" : title} seq={actable ? e.seq : undefined} html={html} />;
   // An app card follows the bubble when the event carries `app` (finished build, `show` action) or when the text links a
   // built app — a bot's older message, or a "Copy state" link the user pasted, which reopens the app at that state.
   const app = e.app?.dir ? e.app : appFromText(e.text, appsRoot);
@@ -386,9 +442,10 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
     if (c) setNewCount(unviewed(c, eventsOf(c.id)).length);
     updateToBottom(th);
     // Sitting at the end with the tab visible means you are following along: keep "seen" current so a reload or re-open
-    // does not draw a New line above messages you already watched arrive. Not while the live view covers the thread.
+    // does not draw a New line above messages you already watched arrive. In Stage the thread stays beside the page,
+    // except in the narrow fallback (.sfull), where the live view covers it: nothing is seen then.
     const s2 = getState();
-    if (c && !document.hidden && s2.pinned && !s2.fast) markSeen(c.id, c.seq);
+    if (c && !document.hidden && s2.pinned && !(s2.fast && botsRoot().classList.contains("sfull"))) markSeen(c.id, c.seq);
   });
 
   // The observer (threshold .4, rooted at the thread) and the ResizeObserver that keeps a pinned thread pinned when its
@@ -451,7 +508,8 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
       </div>
     );
   } else if (!evs.length) {
-    content = <div className="empty">Say hello: give this bot a task.</div>;
+    // No events (none yet, or not loaded) while you hold the browser: the note still carries the hand back.
+    content = b.control ? [<HandoverNote key="handover" b={b} />] : <div className="empty">Say hello: give this bot a task.</div>;
   } else {
     const keys = rowKeys(evs, botId);
     // D12: delivery rows join the bubble they refer to (`ref`); they render nothing of their own (isNoise).
@@ -460,6 +518,12 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
     // Hand-off cards: the "Asked <Bot>" card follows its hand-off's state live; the waiting / result cards keep their own.
     const hds = new Map((b.handoffs || []).map((h) => [h.id, h.state]));
     const botIds = new Set(S.bots.map((x) => x.id));
+    const hb = b.handback || null;
+    // While you hold the browser, the hand-back row ends the bot's live hand-over question; failing that (a take-over of
+    // yours, or the question is not loaded), a note at the end of the thread carries it.
+    const hoSeq = b.control && b.control_by === "bot"
+      && evs.some((e) => e.seq === b.waiting_on && e.role === "question" && !e.offer && !(e.multi && e.options?.length)) ? b.waiting_on : null;
+    const heldSeqs = new Set((b.held || []).map((h) => h.seq));
     content = evs.map((e, i) => {
       const ho = e.handoff && isHandoff(e) ? e.handoff : null;
       const card = !ho && (e.role === "approval" || e.role === "question");
@@ -468,9 +532,13 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
           reaction={!ho && ACTABLE.has(e.role) ? rxs[e.seq] || "" : ""} live={card && live.has(e.seq) && !held.has(e.seq)}
           chosen={card && e.role === "question" ? chosenOption(evs, e.seq) : null} appsRoot={appsRoot} onBeside={onBeside}
           hstate={ho ? (e.role === "system" ? hds.get(ho.id) : undefined) || ho.state : undefined} targetLive={ho ? botIds.has(ho.target) : undefined}
-          linkLive={e.link ? botIds.has(e.link.bot) : undefined} />
+          linkLive={e.link ? botIds.has(e.link.bot) : undefined} bopen={e.build ? buildOpen(evs, e) : undefined}
+          hbSecs={hb && e.seq === hb.seq && e.role === "question" ? hb.secs : undefined}
+          hbShot={hb && e.seq === hb.seq && e.role === "question" ? hb.shot : undefined}
+          hbBot={hoSeq != null && e.seq === hoSeq ? b : undefined} queued={e.role === "user" && heldSeqs.has(e.seq)} />
       );
     });
+    if (b.control && hoSeq == null) content.push(<HandoverNote key="handover" b={b} />);
   }
 
   return (

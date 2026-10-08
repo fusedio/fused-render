@@ -17,6 +17,7 @@
 // rest of the session.
 import { useEffect, useState } from "react";
 import { getCanvasesStatus, type CanvasesStatus } from "./api";
+import { pauseWhileHidden } from "@platform/lib/pause-while-hidden";
 
 // Nothing here is urgent — the poll exists to catch a login that happened
 // somewhere else (another window, a `fused login` in a terminal). A login
@@ -84,11 +85,18 @@ async function poll() {
   }
 }
 
+// A hidden window's tick parks and runs once on return (pause-while-hidden.ts:
+// every window shares WebKit's 6-connection pool). The mount read is ungated.
+const gatedPoll = pauseWhileHidden(() => void poll());
+
 function schedule() {
   if (timer !== null) window.clearTimeout(timer);
   timer = null;
-  if (listeners.size === 0) return;
-  timer = window.setTimeout(poll, POLL_MS);
+  if (listeners.size === 0) {
+    gatedPoll.cancel();
+    return;
+  }
+  timer = window.setTimeout(gatedPoll, POLL_MS);
 }
 
 /**

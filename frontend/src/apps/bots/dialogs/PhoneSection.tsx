@@ -145,9 +145,9 @@ export function PhoneSection({ botId, handle, setHandle, enabled, setEnabled, co
       </Rows>
 
       {!enabled ? (
-        <p className="m-0 border-t border-white/10 pt-4 text-[13px] text-muted-foreground">{nh ? `Off. Your number (${nh}) is remembered; turn the switch on to use it again.` : "Off. Turn it on to set your number up."}</p>
+        <p className="m-0 border-t border-foreground/10 pt-4 text-[13px] text-muted-foreground">{nh ? `Off. Your number (${nh}) is remembered; turn the switch on to use it again.` : "Off. Turn it on to set your number up."}</p>
       ) : connected ? (
-        <Rows className="border-t border-white/10 pt-4">
+        <Rows className="border-t border-foreground/10 pt-4">
           <Row title="Status" text={imessageStatus(nh, st)}>
             <Button type="button" variant="outline" size="sm" disabled={testing} onClick={() => { void sendTest(); }}>{testing ? "Sending…" : "Send a test text"}</Button>
           </Row>
@@ -162,7 +162,7 @@ export function PhoneSection({ botId, handle, setHandle, enabled, setEnabled, co
           </Row>
         </Rows>
       ) : (
-        <ol className="m-0 list-none divide-y divide-white/10 border-t border-white/10 p-0 [&>li:first-child]:pt-4">
+        <ol className="m-0 list-none divide-y divide-foreground/10 border-t border-foreground/10 p-0 [&>li:first-child]:pt-4">
           <Step s={step1} n={1} title="Full Disk Access"
             text={step1 === "ok" ? "Granted. It lets Super Bot read Messages."
               : fdaPending ? fdaCopy().pending

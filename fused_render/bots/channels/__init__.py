@@ -57,7 +57,6 @@ def login_text(bot, q: str) -> str:
     """The question shown for a `login`: the web user is already looking at the
     live view and has control; a phone user has to come to the Mac."""
     if caps_for(getattr(bot, "task_via", None)).can_login:
-        return (f"{q} I've paused and handed you my browser: open the live view and sign in there, "
-                "then reply 'done' or click Hand back when you're finished.")
+        return f"{q} I've paused and opened my browser for you. Sign in there, then click Done."
     return (f"{q} I've paused with my browser handed to you: on the Mac, open this bot in fused-render, "
-            "sign in from the live view, then reply 'done'. I'll wait.")
+            "sign in there, then click Done. I'll wait.")

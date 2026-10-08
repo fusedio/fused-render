@@ -110,6 +110,7 @@ REQ = ({"type": "string"}, True)
 FACE_DESC = ("avatar: shape circle|oval|square|pill|triangle|hexagon|cloud|drop; color one of the picker's "
              "#eafe68 #ffffff #7a5230 #d33b3b #f0762a #f2a232 #2f8f58 #2a9a86 #2f7ae5 #8a4fe0 #d33f8e #767676 "
              "(any #rrggbb only together with an icon); icon a preset key (github, gmail, …) or empty")
+CREATE_BATCH_CAP = 10  # bots one `bot_create` may make: one card the user can still read whole
 REF = {"type": "string", "description": "an element ref from the element list, e.g. sb12"}
 REF_REQ = (REF, True)
 
@@ -189,7 +190,7 @@ TOOL_SPECS: dict[str, dict] = {
                               multi={"type": "boolean", "description": "Several options may be picked at once."},
                               summary={"type": "string", "description": "When CHANNEL is present: the question in one short plain sentence, for the text message."})},
     "login": {"description": "The page needs a sign-in, 2FA or captcha: pauses you and hands your page to the user in the live "
-                             "view, where they sign in with their own keyboard, waits until they reply 'done' or click Hand back, "
+                             "view, where they sign in with their own keyboard, waits until they click Done, "
                              "then returns. `message` says why, in one sentence.",
               "inputSchema": _s(message=REQ)},
     "text": {"description": "Send an iMessage from this Mac to someone in CONTACTS (by name or handle). Only listed contacts. "
@@ -239,15 +240,21 @@ TOOL_SPECS: dict[str, dict] = {
     "note": {"description": "One short progress line for the user (and, on a hand-off, for Super Bot's board). Not a "
                             "result; no more than one every few steps.",
              "inputSchema": _s(text=REQ)},
-    "bot_create": {"description": "Create a new browser bot (one more line in BOTS) when the user asks for one. `name` is required "
-                                  "and must be new; `instructions` are its standing rules (what it does for the user, which site, "
-                                  "what never to do); `model` haiku|sonnet|opus|fable|local-4b|local-9b; `effort` low|medium|high|"
-                                  "xhigh; `preset` a preset key (github, gmail, linkedin, …) gives it that site's playbooks, mark "
-                                  "and default rules; `face` {shape, color, icon} is its avatar; `logins_from` (a bot's name from BOTS, or a browser's name from Settings > Browsers) "
-                                  "puts it on that browser so they share logins (log in once, both stay in), otherwise it "
-                                  "starts logged out. The user approves the card before anything is created, every time.",
-                   "inputSchema": _s(name=REQ, instructions=STR, model=STR, effort=STR, preset=STR, logins_from=STR,
-                                     face={"type": "object", "description": FACE_DESC})},
+    "bot_create": {"description": "Create new browser bots (each one more line in BOTS) when the user asks for them. `bots` "
+                                  "lists every bot to make: put ALL of them in this one call (one approval card covers them all), "
+                                  f"up to {CREATE_BATCH_CAP}. Per bot: `name` is required and must be new; `instructions` are its "
+                                  "standing rules (what it does for the user, which site, what never to do); `model` haiku|sonnet|"
+                                  "opus|fable|local-4b|local-9b; `effort` low|medium|high|xhigh; `preset` a preset key (github, "
+                                  "gmail, linkedin, …) gives it that site's playbooks, mark and default rules; `face` {shape, "
+                                  "color, icon} is its avatar; `logins_from` (a bot's name from BOTS, or a browser's name from "
+                                  "Settings > Browsers, or an earlier entry of this same list) puts it on that browser so they "
+                                  "share logins (log in once, both stay in), "
+                                  "otherwise it starts logged out. The user approves the card before anything is created, every "
+                                  "time; one bad entry refuses the whole call.",
+                   "inputSchema": _s(bots=({"type": "array", "minItems": 1, "maxItems": CREATE_BATCH_CAP,
+                                           "items": _s(name=REQ, instructions=STR, model=STR, effort=STR, preset=STR,
+                                                       logins_from=STR, face={"type": "object", "description": FACE_DESC})},
+                                          True))},
     "bot_settings": {"description": "Read or change one of the BOTS' settings. With only `bot` it returns the bot's current "
                                     "settings and its WHOLE instructions text (no approval needed): do that first when editing "
                                     "instructions, BOTS shows an excerpt. With change fields it changes its name, instructions "
@@ -735,6 +742,23 @@ def describe(bot, act: str, d: dict, obs: dict) -> str:
 MANAGE_TEXT_CAP = 600   # instructions on the card: the user approves the prompt they can read, so cap late
 
 
+def _create_line(botmod, f: dict, cut) -> str:
+    """One bot of a `bot_create` card: name, model, effort, preset, face, logins, instructions."""
+    bits = [f"model {f['model']}", f"effort {f['effort']}"]
+    if f["preset"]:
+        bits.append(f"preset {f['preset']}")
+    if f["face"]:
+        bits.append(f"face {botmod.face_words(f['face'])}")
+    if f.get("logins_from"):
+        bits.append(f"same logins as {f['logins_from']}")
+    out = f"create bot \"{f['name']}\" ({', '.join(bits)})"
+    if f["instructions"]:
+        out += f" with instructions: \"{cut(f['instructions'])}\""
+    elif f["preset"]:
+        out += f" with the {f['preset']} preset's instructions"
+    return out
+
+
 def _manage_preview(bot, act: str, d: dict) -> str:
     """The approval card for `bot_create` / `bot_settings`: every field that will
     be written, old → new for a change, instructions nearly whole. On an error
@@ -742,22 +766,13 @@ def _manage_preview(bot, act: str, d: dict) -> str:
     from fused_render.bots import bot as botmod
     cut = lambda t: (t[:MANAGE_TEXT_CAP] + "…") if len(t) > MANAGE_TEXT_CAP else t  # noqa: E731
     if act == "bot_create":
-        f, err = botmod.manage_create_check(bot, d)
+        fields, err = botmod.manage_create_batch_check(bot, d)
         if err:
-            return f"create bot \"{' '.join(str(d.get('name') or '').split())[:60]}\" ({err})"
-        bits = [f"model {f['model']}", f"effort {f['effort']}"]
-        if f["preset"]:
-            bits.append(f"preset {f['preset']}")
-        if f["face"]:
-            bits.append(f"face {botmod.face_words(f['face'])}")
-        if f.get("logins_from"):
-            bits.append(f"same logins as {f['logins_from']}")
-        out = f"create bot \"{f['name']}\" ({', '.join(bits)})"
-        if f["instructions"]:
-            out += f" with instructions: \"{cut(f['instructions'])}\""
-        elif f["preset"]:
-            out += f" with the {f['preset']} preset's instructions"
-        return out
+            names = [str(x.get("name") or "") for x in d["bots"] if isinstance(x, dict)] \
+                if isinstance(d.get("bots"), list) else [str(d.get("name") or "")]
+            return f"create bot \"{' '.join(', '.join(names).split())[:60]}\" ({err})"
+        one = [_create_line(botmod, f, cut) for f in fields]
+        return one[0] if len(one) == 1 else f"create {len(one)} bots:\n" + "\n".join(f"• {x}" for x in one)
     t, changes, err = botmod.manage_changes(bot, d.get("bot") or "", {k: v for k, v in d.items() if k != "bot"})
     who = t.meta.get("name") if t is not None else (d.get("bot") or "?")
     if err:
@@ -788,8 +803,13 @@ def risk(bot, act: str, d: dict, obs: dict) -> str:
         # A call that will fail validation gets no card: execute() returns the error to the model.
         from fused_render.bots import bot as botmod
         if act == "bot_create":
-            _, err = botmod.manage_create_check(bot, d)
-            return "" if err else "It creates a new bot on this Mac with the settings above; you can edit or delete it later from the bots list."
+            fields, err = botmod.manage_create_batch_check(bot, d)
+            if err:
+                return ""
+            if len(fields) == 1:
+                return "It creates a new bot on this Mac with the settings above; you can edit or delete it later from the bots list."
+            return (f"It creates these {len(fields)} bots on this Mac with the settings above; you can edit or delete "
+                    "them later from the bots list.")
         t, changes, err = botmod.manage_changes(bot, d.get("bot") or "", {k: v for k, v in d.items() if k != "bot"})
         if err or not changes:
             return ""

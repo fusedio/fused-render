@@ -41,6 +41,8 @@ import {
 } from "./tasks-lib";
 import type { TasksPulse, TasksSeen } from "./tasks-lib";
 import { TASKS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
+import { requestTasksChanges } from "@platform/lib/tasksChangesSocket";
+import type { TasksChangesParams } from "@platform/lib/tasksChangesSocket";
 
 /** While something is running. Faster than the page's own 20s poll on purpose:
  *  this is the interval a "it finished" mark waits out. */
@@ -442,10 +444,16 @@ export function useTasksPulse(): TasksPulse {
 /** Subscribe to the compact rows themselves — `key`, `status`, `project`,
  *  `last_active` — for a reader that groups tasks rather than counts them (the
  *  sidebar's Current apps section, D487). Same store, same poll, same feeder
- *  contract as useTasksPulse: this is NOT a second /api/tasks poller. */
-export function useTasksPulseRows(): TaskPulseTask[] {
+ *  contract as useTasksPulse: this is NOT a second /api/tasks poller.
+ *
+ *  `enabled: false` is a reader that does not count — no listener, so no poll
+ *  and no listing feed on its behalf. A hook cannot be called conditionally,
+ *  so a caller that must not subscribe in some documents (an embed pane:
+ *  useTaskStatusNotify) says so here instead. */
+export function useTasksPulseRows(enabled = true): TaskPulseTask[] {
   const [rows, setRows] = useState<TaskPulseTask[]>(tasks);
   useEffect(() => {
+    if (!enabled) return;
     rowListeners.add(setRows);
     setRows(tasks);
     if (!fedElsewhere()) void poll();
@@ -454,7 +462,7 @@ export function useTasksPulseRows(): TaskPulseTask[] {
       rowListeners.delete(setRows);
       schedule();
     };
-  }, []);
+  }, [enabled]);
   return rows;
 }
 
@@ -589,6 +597,20 @@ export interface ListingEnv {
    * not find this one among them.
    */
   every?(ms: number, fn: () => void): () => void;
+  /**
+   * The long-poll's TRANSPORT: asks `/api/tasks/changes` over the document's
+   * WebSocket (`platform/lib/tasksChangesSocket`) and falls back to `http` —
+   * the GET through `fetch` above — where no socket can be had. The browser
+   * env supplies it; a test env that leaves it out drives the GET it mocks,
+   * exactly as before. Why a socket at all: WebKit's six-connection pool,
+   * shared by every native window and filled by these long-polls alone
+   * (measured 2026-10-08) — see that module's header.
+   */
+  changes?(
+    params: TasksChangesParams,
+    http: () => Promise<ChangesResponse>,
+    signal: AbortSignal,
+  ): Promise<ChangesResponse>;
 }
 
 /** The change answer a listing event folded in — RAW, exactly as the server
@@ -664,6 +686,7 @@ function browserListingEnv(): ListingEnv {
       };
     },
     sleep: (ms) => new Promise<void>((r) => setTimeout(r, ms)),
+    changes: (params, http, signal) => requestTasksChanges(params, http, signal),
     every: (ms, fn) => {
       const id = setInterval(fn, ms);
       return () => clearInterval(id);
@@ -751,11 +774,20 @@ function startFeed(env: ListingEnv) {
       abort = ctl;
       let r: ChangesResponse;
       try {
-        const res = await env.fetch(`/api/tasks/changes?since=${gen}&wait=${CHANGES_WAIT_S}`, {
-          signal: ctl.signal,
-        });
-        if (!res.ok) throw new Error(String(res.status));
-        r = (await res.json()) as ChangesResponse;
+        const since = gen;
+        const viaGet = async () => {
+          const res = await env.fetch(`/api/tasks/changes?since=${since}&wait=${CHANGES_WAIT_S}`, {
+            signal: ctl.signal,
+          });
+          if (!res.ok) throw new Error(String(res.status));
+          return (await res.json()) as ChangesResponse;
+        };
+        // Over the document's socket where it has one (`env.changes`), so this
+        // wait stops holding one of WebKit's six per-host connections; the GET
+        // otherwise. Either rejects into the same backoff below.
+        r = env.changes
+          ? await env.changes({ since, wait: CHANGES_WAIT_S }, viaGet, ctl.signal)
+          : await viaGet();
       } catch {
         if (ctl.signal.aborted) return;
         await env.sleep(CHANGES_BACKOFF_MS);
