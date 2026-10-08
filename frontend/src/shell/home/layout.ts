@@ -852,7 +852,12 @@ export function sourceFits(
     return rect.rows === FIXED_ROWS.build && rect.cols >= 4 ? { ok: true } : no("Needs a bigger tile");
   }
   if (rect.rows === 1) return no("Needs a taller tile");
-  if (rect.cols < min.cols || rect.rows < min.rows) return no("Needs a bigger tile");
+  // Rows are content-sized, so a source must have a size that fits the rect outright.
+  const some = SOURCES[source].sizes.some((sz) => {
+    const d = dims(sz);
+    return d.cols <= rect.cols && d.rows <= rect.rows;
+  });
+  if (!some) return no("Needs a bigger tile");
   if (rect.rows > MAX_WIDGET_ROWS) return no("Too tall");
   return { ok: true };
 }

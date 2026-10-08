@@ -787,7 +787,8 @@ test("matchPreset: each preset matches itself, custom is null", () => {
   expect(matchPreset(defaultLayout())).toBe("workbench");
   const l = presetLayout("mission");
   const bots = l.widgets.find((w) => w.source === "bots")!;
-  expect(matchPreset(swapSource(l, bots.id, "playground"))).toBe(null);
+  const tasks = l.widgets.find((w) => w.source === "tasks")!;
+  expect(matchPreset(swapSource(l, tasks.id, "playground"))).toBe(null);
   expect(matchPreset({ ...l, widgets: [] })).toBe(null);
 });
 
@@ -813,7 +814,7 @@ test("sourceFits: build needs a 4-row, 4-col tile", () => {
 test("sourceFits: other sources", () => {
   const l = { version: 5 as const, widgets: [] };
   expect(sourceFits(l, { x: 0, y: 0, cols: 4, rows: 1 }, "apps")).toEqual({ ok: false, reason: "Needs a taller tile" });
-  expect(sourceFits(l, { x: 0, y: 0, cols: 2, rows: 2 }, "tasks")).toEqual({ ok: true });
+  expect(sourceFits(l, { x: 0, y: 0, cols: 4, rows: 4 }, "tasks")).toEqual({ ok: true });
   expect(sourceFits(l, { x: 0, y: 0, cols: 2, rows: 2 }, "apps")).toEqual({ ok: true });
   expect(sourceFits(l, { x: 0, y: 0, cols: 2, rows: 2 }, "app")).toEqual({ ok: true });
   expect(sourceFits(l, { x: 0, y: 0, cols: 2, rows: 4 }, "recents")).toEqual({ ok: true });
@@ -857,7 +858,7 @@ test("swapSource: no-op cases return the same object", () => {
 
 test("swapSource: folder and app carry their fields, leaving drops them", () => {
   const l = presetLayout("mission");
-  const bots = l.widgets.find((w) => w.source === "bots")!;
+  const bots = l.widgets.find((w) => w.source === "tasks")!;
   const f = swapSource(l, bots.id, "folder", { folderId: "f1", format: "icons" });
   expect(f.widgets.find((x) => x.id === bots.id)).toMatchObject({ source: "folder", folderId: "f1", format: "icons" });
   const a = swapSource(f, bots.id, "app", { appPath: "/x/app" });
@@ -901,4 +902,19 @@ test("fillSlot: adds exactly the rectangle; refuses what does not fit", () => {
   expect(fillSlot(l, slot, "apps")).toBe(l);
   const full = { ...hole, widgets: [...hole.widgets, ...Array.from({ length: 48 }, (_, i) => ({ ...hole.widgets[1], id: `z${i}`, x: 0, y: 100 + i }))].slice(0, 48) };
   expect(fillSlot(full, slot, "apps")).toBe(full);
+});
+
+test("sourceFits: a source needs a size that fits the rect outright", () => {
+  const l = { version: 5 as const, widgets: [] };
+  const r = { x: 0, y: 0, cols: 2, rows: 2 };
+  expect(sourceFits(l, r, "tasks")).toEqual({ ok: false, reason: "Needs a bigger tile" });
+  expect(sourceFits(l, r, "bots")).toEqual({ ok: true });
+  expect(sourceFits(l, r, "index")).toEqual({ ok: true });
+});
+
+test("sourceFits: every preset widget fits its own rect", () => {
+  for (const { id } of PRESETS) {
+    const l = presetLayout(id, { folderId: "f1" });
+    for (const w of l.widgets) expect(sourceFits(l, rectOf(w), w.source, w.id)).toEqual({ ok: true });
+  }
 });
