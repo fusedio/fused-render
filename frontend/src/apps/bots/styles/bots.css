@@ -22,7 +22,7 @@
 /* The page follows the shell's surfaces so it matches every other screen (aliased at :root, where the shell's names resolve). */
 :root { --bots-shell-bg: var(--bg); --bots-shell-bg-alt: var(--bg-alt); --bots-shell-panel: var(--bg-panel); --bots-shell-hover: var(--row-bg-hover); --bots-shell-selected: var(--row-bg-selected); --bots-shell-fg: var(--fg); --bots-shell-muted: var(--fg-muted); --bots-shell-border: var(--border); --bots-shell-accent: var(--accent); --bots-shell-accent-text: var(--accent-soft); --bots-shell-on-accent: var(--on-accent); }
 .bots-page       { color-scheme: dark;
-  --bg: var(--bots-shell-bg); --panel: var(--bots-shell-bg); --panel2: var(--bots-shell-hover); --card: var(--bots-shell-bg-alt); --raised: var(--bots-shell-hover); --hover: var(--bots-shell-selected); --inset: var(--bots-shell-hover);
+  --bg: var(--bots-shell-bg); --panel: var(--bots-shell-bg); --panel2: var(--bots-shell-hover); --card: var(--bots-shell-bg-alt); --raised: var(--bots-shell-hover); --hover: var(--bots-shell-selected); --inset: var(--bots-shell-panel);
   --text: var(--bots-shell-fg); --muted: var(--bots-shell-muted); --line: var(--bots-shell-border);
   --accent: var(--bots-shell-accent); --accent-ink: var(--bots-shell-on-accent); --accent-text: var(--bots-shell-accent-text); --bubble-user: #3b4030; --bubble-user-ink: #ffffff;
   --ok: #38d591; --warn: #ffb020; --err: #ff5667; --shadow: 0 12px 40px rgba(0,0,0,.7); }
@@ -584,6 +584,8 @@ div.bots-page.sideapp .preview :is(.shotwrap, .toast, .cap, .info) { display: no
    like those; the surface tokens are re-pointed inside so inputs, cards and lines stay coherent in the light theme. */
 .bots-page .modal .box { --card: #0a0a0a; --inset: rgba(255,255,255,.06); --hover: rgba(255,255,255,.09); --raised: rgba(255,255,255,.12); --text: #fafafa; --muted: #a1a1aa; --line: rgba(255,255,255,.1);
   background: #0a0a0a; color: #fafafa; border-radius: 12px; padding: 20px 24px; width: 380px; box-shadow: 0 0 0 1px rgba(255,255,255,.1), 0 24px 60px rgba(0,0,0,.5); }
+/* The dialog box stays dark in light mode, so it keeps the shell's dark accent: the light olive would vanish on #0a0a0a. */
+[data-theme="light"] .bots-page .modal .box { --accent: #E5FF44; --accent-ink: #10131a; --accent-text: #c9d95e; --primary: #E5FF44; --primary-foreground: #10131a; --on-accent: #10131a; }
 .bots-page .modal .box > .row:last-child { margin: 18px -24px -20px; padding: 14px 24px; border-top: 1px solid rgba(255,255,255,.1); background: rgba(255,255,255,.03); border-radius: 0 0 12px 12px; }
 /* The face picker's box is a flex column with its own 16px gap: no extra top margin on the footer. A scrolling box
    (routines) cannot bleed a negative bottom margin: its bottom padding goes and the footer sits flush instead. */
