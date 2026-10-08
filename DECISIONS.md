@@ -6612,3 +6612,7 @@ D266(d) pruned `_distutils_hack`, `setuptools` and `pkg_resources` from `Content
 Fix: `scripts/_prune_stdlib_zip.py`, run from build_dmg.sh step 4a before codesign, rewrites the zip without `_distutils_hack/`, `setuptools/`, `pkg_resources/`, `distutils-precedence.pth` and `jaraco/__init__.py[c]`. Removing the init turns `jaraco` into a PEP 420 namespace package: the venv's `jaraco.text` merges in, while the zip's `jaraco.classes`/`context`/`functools` still serve keyring. Smoke 4b-quater asserts exactly that on the bundled interpreter and on a venv built from it.
 
 Rejected: deleting `jaraco` from the zip entirely (keyring needs `jaraco.classes`/`context`/`functools` at runtime); excluding `jaraco` in setup_py2app (same reason, keyring is force-listed). PR #1499 had worked around the symptom for mlx-embed only.
+
+## D1337 — Dock click focuses the most recent window (2026-10-08, dock-click-focuses-window)
+
+A Dock-icon click on the running app (`WindowManager.reopen`) used to open a fresh Home window every time, on the theory that the Dock is a "new window" door. That is not how Mac apps behave, and it piled up windows on every click. It now raises the window the user was last in (key, else front, else most recently used; a minimized one is restored by `_Window.show`) and opens Home only when no window is open. A new window is still one gesture away: File → New Window and the launcher's Home row (`show_home`). Reverses the earlier "Dock is a new-window door" choice; SPEC DM-5 already described the focus behavior.
