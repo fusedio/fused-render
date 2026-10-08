@@ -35,16 +35,21 @@ export default defineConfig({
     outDir: "../fused_render/static/shell-dist",
     emptyOutDir: true,
     rollupOptions: {
-      // Three pages from one build: the shell; the phone grid the
+      // Four pages from one build: the shell; the phone grid the
       // local-network listener serves at its `/` (fused_render/lan.py reads
       // shell-dist/lan.html) — same Tailwind + tokens, its own tiny entry, so
       // a phone never downloads the shell; and the menu-bar Dock tray
       // (dock.html → src/dock/dock.ts), served at `/dock` to the native panel
-      // (fused_render/menubar_dock.py): no React, no Tailwind, its own styles.
+      // (fused_render/menubar_dock.py): no React, no Tailwind, its own styles;
+      // and the ⌥Space launcher (launcher.html → src/launcher/launcher.ts),
+      // served at `/launcher` to its native panel (fused_render/launcher_panel.py),
+      // likewise plain DOM — an entry rather than a static page so a bot row
+      // draws its face from src/dock/lib.ts, the Dock's one copy.
       input: {
         main: fileURLToPath(new URL("./index.html", import.meta.url)),
         lan: fileURLToPath(new URL("./lan.html", import.meta.url)),
         dock: fileURLToPath(new URL("./dock.html", import.meta.url)),
+        launcher: fileURLToPath(new URL("./launcher.html", import.meta.url)),
       },
       output: {
         // Third-party deps change far less often than the app itself — their

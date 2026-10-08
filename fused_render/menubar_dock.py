@@ -663,7 +663,7 @@ class DockController:
         if self.actions.get("copy_url"):
             item("Copy URL", b"copyUrl:")
         if self.actions.get("show_launcher"):
-            item("Search Apps…", b"showLauncher:")
+            item("Search Bots…" if _flavor.is_bot() else "Search Apps…", b"showLauncher:")
         menu.addItem_(NSMenuItem.separatorItem())
         item("Open App Logs", b"openLogs:")
         if self.actions.get("save_diagnostics"):

@@ -23,7 +23,7 @@ export interface BuildsChip { n: string; live: boolean; warn: boolean; fresh: bo
 export interface DialogReq { kind: "newBot" | "settings" | "routines" | "skills" | "usage" | (string & {}); id?: string | null; pick?: NewBotPick; [k: string]: unknown }
 /** The bot context menu (components/BotMenu.tsx): openMenu(id, x, y, full, live, alignRight) in OpenBot. */
 export interface MenuReq { id: string; x: number; y: number; full?: boolean; live?: boolean; alignRight?: boolean }
-export type PanelName = "builds" | "apps";
+export type PanelName = "builds" | "apps" | "prefs";
 
 export interface BotsState {
   bots: Bot[];
@@ -48,12 +48,11 @@ export interface BotsState {
   pinned: boolean;
   showHidden: boolean;
   /** A poll landed while the live view was open; the thread pins to the end when it closes. */
-  renderDirty: boolean;
   /** Calls slower than SLOW_MS (last 30). */
   slow: SlowCall[];
   /** The live view is open: polls every 400 ms and ask for `fast` status. */
   fast: boolean;
-  /** Bumped by select() (and on leaving the live view after renderDirty): OpenBot's render(true), "scroll the thread to the end on a new bot". */
+  /** Bumped by select(): OpenBot's render(true), "scroll the thread to the end on a new bot". */
   scrollThread: number;
   /** jumpTo(): the message the thread scrolls to once it renders that bot (null once done). */
   scrollSeq: { bot: string; seq: number } | null;
@@ -78,7 +77,7 @@ let S: BotsState = {
   bots: [], events: {}, cursors: {}, sel: typeof location === "undefined" ? null : initialSel(),
   usage: null, imessage: null,
   seen: typeof localStorage === "undefined" ? {} : loadSeen(), base: {}, viewed: {}, newMark: null, newCount: 0, pinned: true,
-  showHidden: false, renderDirty: false, slow: [], fast: false, scrollThread: 0, scrollToEnd: false, scrollSeq: null,
+  showHidden: false, slow: [], fast: false, scrollThread: 0, scrollToEnd: false, scrollSeq: null,
   banner: { show: false, text: "" }, toasts: [],
   buildsChip: { n: "", live: false, warn: false, fresh: false, title: "Tasks · Claude tasks that create fused apps", hidden: false },
   ui: { dialog: null, panel: null, menu: null },
@@ -346,7 +345,6 @@ export async function pollOnce(): Promise<void> {
       commit({
         bots: r.bots, events, cursors,
         ...(r.usage ? { usage: r.usage } : {}), ...(r.imessage ? { imessage: r.imessage } : {}),
-        ...(S.fast ? { renderDirty: true } : {}),
       });
       if (toast) showToast(toast);
       // Hand-overs: the bot asked for you in its browser (control_by flipped to "bot"; a take-over of yours is "user" and
@@ -397,12 +395,11 @@ export async function act<T>(call: () => Promise<T>, silent = false): Promise<T 
   catch (e) { if (!silent) showBanner(errMsg(e)); return undefined; }
 }
 
-/** The live view opened/closed: poll every 400 ms while open; on close the thread re-pins if polls landed meanwhile. */
+/** The live view (Stage) opened/closed: poll every 400 ms while open. The thread stays beside the page, so nothing re-pins. */
 export function setFast(on: boolean): void {
   if (S.fast === on) return;
   if (!on) autoOpened = null;
-  if (!on && S.renderDirty) commit({ fast: false, renderDirty: false, scrollThread: S.scrollThread + 1 });
-  else commit({ fast: on });
+  commit({ fast: on });
 }
 
 // Poll faster while the live view is open (tab strip, URL bar, popups), else every 1.5 s; frames come over the live view socket.

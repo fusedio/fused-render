@@ -41,7 +41,7 @@
 // The active tab lives in the URL (`?tab=indexing`), same pattern as
 // Templates' bindings/library tabs.
 // Template bindings live in the dedicated /view/_templates view.
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   buildDiagnostics,
   fetchDiagnosticsPlan,
@@ -79,7 +79,7 @@ import {
   putReaderEnabled,
   startHfLogin,
 } from "@platform/lib/api";
-import type { DiagnosticsPlan, DiagnosticsResult, UpdateStatus } from "@platform/lib/api";
+import type { DiagnosticsPlan, DiagnosticsResult } from "@platform/lib/api";
 import { copyToClipboard } from "@platform/lib/clipboard";
 import { formatBytes } from "@platform/lib/sysmon";
 import qrcode from "qrcode-generator";
@@ -90,7 +90,7 @@ import { publishLivePreviewsEnabled } from "@platform/lib/live-previews-flag";
 import { publishMonitorEnabled } from "@platform/lib/monitor-flag";
 import { publishProjectQueueEnabled } from "@apps/claude/feature-flag";
 import type { CallsParamsMode, HfAuth, LanDevice, Prefs } from "@platform/lib/api";
-import { navigate, navigateUrl } from "@platform/lib/router";
+import { IS_QUERY_EMBED, navigate, navigateUrl } from "@platform/lib/router";
 import { displayName, isBot } from "@platform/lib/flavor";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { publishTaskNotifyTerminalSessions } from "./task-notify-terminal-flag";
@@ -98,15 +98,8 @@ import { SkeletonLines } from "@platform/ui/Skeleton";
 import { THEME_PRESETS, useThemePref, useThemePreset } from "@platform/lib/theme";
 import { IndexingPanel } from "@shell/Indexing";
 import { FusedAccountSection } from "@shell/FusedAccountSection";
-import {
-  CHECK_RESULT_HOLD_MS,
-  checkForUpdates,
-  checkNowLabel,
-  updateLabel,
-  updateRelevant,
-  useUpdateStatus,
-  type ManualCheckPhase,
-} from "@platform/lib/update-status";
+import { checkNowLabel, updateLabel, updateRelevant, useUpdateStatus } from "@platform/lib/update-status";
+import { useManualUpdateCheck } from "@platform/lib/update-check";
 
 type PrefsTab = "render" | "ai" | "indexing" | "lan" | "account";
 
@@ -209,20 +202,10 @@ function UpdatesSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs
     }
   };
   const [version, setVersion] = useState<string | null>(null);
-  // This row's own phase — local, not the shared store: it is about THIS
-  // press ("Checking…", then the answer for a few seconds), same split
-  // `UpdateBadge` used between its own phase and the durable store state.
-  const [phase, setPhase] = useState<ManualCheckPhase>("rest");
-  const holdTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  useEffect(() => () => clearTimeout(holdTimer.current), []);
-  // WHEN THE SERVER WAS ALREADY LOOKING (bugbot, PR #1097, carried over
-  // verbatim from the deleted `UpdateBadge.tsx:108-129` per the spec's Files
-  // section — "that is a real bug fix, not decoration"). A non-forced
-  // check() that lands while the auto tick's own fetch is already out
-  // returns at once with "checking" — a promise of an answer, not the answer
-  // — and without this flag the row would misread that arrival as "Up to
-  // date" the instant it landed rather than waiting for the real result.
-  const awaiting = useRef(false);
+  // The press itself — phase and the carried-over settle rules — is the
+  // shared hook (platform/lib/update-check.ts), the same one the status bar's
+  // Updates chip (shell/UpdatesDock.tsx) runs.
+  const { phase, check } = useManualUpdateCheck(status);
 
   useEffect(() => {
     let cancelled = false;
@@ -233,52 +216,6 @@ function UpdatesSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs
       cancelled = true;
     };
   }, []);
-
-  const settle = useCallback((result: UpdateStatus) => {
-    // `updateRelevant` gates "current" the same way the deleted `UpdateBadge`
-    // gated the whole row (finding #2, code review): that component only
-    // ever rendered this button INSIDE `if (!updateRelevant(status))`, so
-    // "Up to date" could never appear over an `available`/`installing`/
-    // `installed`/`error` status. Porting `settle` onto this section's own
-    // local `phase` state dropped that gate — the check's own answer (this
-    // press found nothing NEW beyond what the store already knew, e.g. a
-    // "checking" that resolved back to "idle") does not mean the OVERALL
-    // status is irrelevant, so a check that lands while the store is already
-    // sitting on `available` must not claim "Up to date" over the "Update
-    // available" notification popping at the same instant. `rest` (silently
-    // fall back to the render's own `updateRelevant(status)` gate below,
-    // which then shows the real state) rather than "failed" — nothing here
-    // actually failed.
-    setPhase(result.check_error ? "failed" : updateRelevant(result) ? "rest" : "current");
-    clearTimeout(holdTimer.current);
-    holdTimer.current = setTimeout(() => setPhase("rest"), CHECK_RESULT_HOLD_MS);
-  }, []);
-
-  useEffect(() => {
-    if (!awaiting.current || !status || status.state === "checking") return;
-    awaiting.current = false;
-    settle(status);
-  }, [status, settle]);
-
-  const check = async () => {
-    if (phase === "checking") return;
-    clearTimeout(holdTimer.current);
-    setPhase("checking");
-    try {
-      const result = await checkForUpdates();
-      if (result.state === "checking") {
-        // Not an answer yet — see `awaiting` above.
-        awaiting.current = true;
-        return;
-      }
-      settle(result);
-    } catch {
-      // 404 (no updater), offline, server down — say so briefly; the poll
-      // that drives `UpdateNotifier` owns the durable story.
-      setPhase("failed");
-      holdTimer.current = setTimeout(() => setPhase("rest"), CHECK_RESULT_HOLD_MS);
-    }
-  };
 
   // `status === null` means one of two different things (finding #6, code
   // review), and the old code could not tell them apart:
@@ -1134,6 +1071,11 @@ function MenubarSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs
 // global hotkey that drops the Search Apps panel, and the modifier that with
 // a digit opens the Nth recently opened app from anywhere. Rendered only when the server
 // says the launcher exists on this platform (`prefs.launcher.available`).
+// The copy follows the FLAVOR (isBot(), as the Menu bar section above): under
+// Fused Bot the panel searches bots, and these two are the `bot_launcher_*`
+// prefs — independent of Render's, defaults ⌥⇧Space / ⌥⇧ (Render: ⌥Space /
+// ⌥). The PUT wire keys stay `launcher_hotkey` / `launcher_row_modifier`
+// either way; the server stores them under the flavor's own keys.
 // The hotkey is RECORDED, not typed: click the keycap, press the combination,
 // and the browser's `KeyboardEvent.code` becomes the spec — what maps to a
 // Carbon keycode without caring about the keyboard layout. The bind happens
@@ -1145,6 +1087,11 @@ const ROW_MODIFIERS: { spec: string; label: string; title: string }[] = [
   { spec: "ctrl", label: "⌃", title: "Control" },
   { spec: "alt+cmd", label: "⌥⌘", title: "Option-Command" },
   { spec: "ctrl+alt", label: "⌃⌥", title: "Control-Option" },
+  // Fused Bot's default (launcher.BOT_DEFAULT_ROW_MODIFIER): one modifier more
+  // than Render's ⌥ so the two apps' row shortcuts both bind side by side. In
+  // the list so the control marks it and can restore it; canonical spelling
+  // (hotkey.MODIFIER_ORDER: ctrl, alt, shift, cmd) or it never reads as "on".
+  { spec: "alt+shift", label: "⌥⇧", title: "Option-Shift" },
 ];
 const MODIFIER_KEYS = new Set(["Shift", "Control", "Alt", "Meta", "CapsLock", "Fn"]);
 const REBIND_REREAD_MS = 400;
@@ -1224,15 +1171,16 @@ function ShortcutsSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Pre
     }
   };
 
+  const bot = isBot();
   const unbound = launcher.bound === false;
   const rowsUnbound = launcher.pinned_bound === false;
   return (
     <section className="prefs-section">
       <h2>Shortcuts</h2>
       <p className="deploy-muted">
-        The launcher is a search panel over every app on this machine, on a global shortcut. It
-        opens over any app; ↑↓ select, ↩ opens, esc closes. The same panel is in the View menu and
-        the menu-bar item as Search Apps.
+        {bot
+          ? "The launcher is a search panel over your bots, on a global shortcut. It opens over any app; ↑↓ select, ↩ opens, esc closes. The same panel is in the View menu and the menu-bar item as Search Bots."
+          : "The launcher is a search panel over every app on this machine, on a global shortcut. It opens over any app; ↑↓ select, ↩ opens, esc closes. The same panel is in the View menu and the menu-bar item as Search Apps."}
       </p>
       <div className="prefs-shortcuts">
         <div className="prefs-shortcut-row">
@@ -1259,11 +1207,13 @@ function ShortcutsSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Pre
         </div>
         <div className="prefs-shortcut-row">
           <div className="prefs-shortcut-label">
-            <b>Open the Nth app</b>
+            <b>{bot ? "Open the Nth bot" : "Open the Nth app"}</b>
             <span className={rowsUnbound ? "prefs-shortcut-warn" : undefined}>
               {rowsUnbound
                 ? `Some of ${launcher.row_modifier_display}1–9 could not be bound system-wide — another app may own them.`
-                : "Hold this and press 1–9 to open the Nth app in the search's list — your recently opened apps, newest first, then the sidebar's Projects — or, once you type, the Nth result. 0 opens the home window. ⌥ takes ¡™£… away from typing."}
+                : bot
+                  ? "Hold this and press 1–9 to open the Nth bot in the search's list — or, once you type, the Nth result. 0 opens the home window. ⌥ takes ¡™£… away from typing."
+                  : "Hold this and press 1–9 to open the Nth app in the search's list — your recently opened apps, newest first, then the sidebar's Projects — or, once you type, the Nth result. 0 opens the home window. ⌥ takes ¡™£… away from typing."}
             </span>
           </div>
           <div className="prefs-seg" role="radiogroup" aria-label="Row shortcut modifier">
@@ -1918,7 +1868,10 @@ export default function Preferences() {
     <div className="prefs-page">
       {/* Page names itself — the topbar that used to carry "Preferences" is
           gone (settings pages render chrome-free). */}
-      <h1 className="prefs-title">Preferences</h1>
+      {/* Framed inside the Bots page's Preferences panel (`?embed=1`,
+          apps/bots/components/PrefsPanel.tsx) the panel's own top bar
+          carries the title; a second heading here read as a repeat. */}
+      {!IS_QUERY_EMBED && <h1 className="prefs-title">Preferences</h1>}
       {error && <ErrorBanner>{error}</ErrorBanner>}
       {!prefs && !error && <SkeletonLines rows={4} label="Loading preferences" />}
       {prefs && (
@@ -1992,17 +1945,19 @@ export default function Preferences() {
                 <CallLogSection prefs={prefs} onChange={setPrefs} />
                 <AccessibilitySection prefs={prefs} onChange={setPrefs} />
                 {/* Render-only features: Fused Bot has no canvases, no app
-                    sharing, no app git, no live previews, no process monitor —
-                    and its Bots switch is forced on by the server, so a toggle
-                    here would be a lie. Tasks DO exist in bot, so the queue and
-                    terminal-notify switches stay. */}
+                    sharing, no app git, no live previews — and its Bots switch
+                    is forced on by the server, so a toggle here would be a lie.
+                    Tasks DO exist in bot, so the queue and terminal-notify
+                    switches stay; so does the process Monitor (2026-10-08): the
+                    status bar's System chip renders under Fused Bot too, and
+                    this is the only switch for it. */}
                 {!bot && <CanvasesSection prefs={prefs} onChange={setPrefs} />}
                 {!bot && <AppSharingSection prefs={prefs} onChange={setPrefs} />}
                 <ProjectQueueSection prefs={prefs} onChange={setPrefs} />
                 {!bot && <GitAutoSyncSection prefs={prefs} onChange={setPrefs} />}
                 <TaskNotifyTerminalSection prefs={prefs} onChange={setPrefs} />
                 {!bot && <LivePreviewsSection prefs={prefs} onChange={setPrefs} />}
-                {!bot && <MonitorSection prefs={prefs} onChange={setPrefs} />}
+                <MonitorSection prefs={prefs} onChange={setPrefs} />
                 {!bot && <BotsSection prefs={prefs} onChange={setPrefs} />}
                 {(bot || prefs.bots.enabled) && <PhoneSection />}
                 <DiagnosticsSection />

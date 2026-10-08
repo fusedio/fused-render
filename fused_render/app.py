@@ -2043,79 +2043,101 @@ def main() -> None:
                 return
             manager.focus_or_open_app(fs_path)
 
+        def _open_bot_native(bid: str) -> None:
+            """A bot picked in the launcher or clicked in the menu-bar Dock:
+            selected in a Bots window (`WindowManager.show_bot`) — the one
+            door every native "open this bot" goes through, as apps go
+            through `_open_app_native`. A browser tab on the bots page with
+            the windows off. Main thread."""
+            from fused_render import dock as dock_mod
+
+            manager = state["windows"]
+            if manager is None or not manager.enabled:
+                webbrowser.open(url.rstrip("/") + dock_mod.bot_view_path(bid))
+                return
+            from AppKit import NSApp
+
+            NSApp.activateIgnoringOtherApps_(True)
+            manager.show_bot(bid)
+
         # The launcher (launcher_panel.py): a Spotlight-like panel on a
-        # global shortcut (⌥Space by default) that opens any known app. NOT
-        # behind the windows preference: with native windows on its pick
+        # global shortcut that opens any known app (Fused Render, ⌥Space by
+        # default) or any bot (Fused Bot, ⌥⇧Space by default: the two apps
+        # run side by side and share prefs.json, so each flavor stores its
+        # own shortcut under its own key and defaults to a combination the
+        # other does not register — `launcher.hotkey_key`). NOT behind the
+        # windows preference: with native windows on its pick
         # focuses-or-opens a window, off it opens a browser tab at the same
-        # address (`window_policy.shell_path_for`). Guarded — no launcher is
-        # a lesser outcome than no app.
-        #
-        # Not built at all under Fused Bot (owner call): no ⌥Space panel, no
-        # global hotkey registered. `state["launcher"]` stays None, which is
-        # what the ready path, the popover's "Search Apps…" key and
-        # /api/launcher's `available` already key off.
-        if _flavor.is_bot():
-            logger.info("launcher not built: bot flavor")
-        else:
-            try:
-                from AppKit import NSApp
+        # address. A row opens through `open_row(kind, key)`: a bot to
+        # `_open_bot_native`, anything else to `_open_app_native`, the same
+        # doors the Dock uses. Guarded — no launcher is a lesser outcome than
+        # no app; `state["launcher"]` then stays None, which is what the
+        # ready path, the "Search …" menu key and /api/launcher's
+        # `available` key off.
+        try:
+            from AppKit import NSApp
 
-                from fused_render import launcher as launcher_mod
-                from fused_render.launcher_panel import LauncherController
+            from fused_render import launcher as launcher_mod
+            from fused_render.launcher_panel import LauncherController
 
-                _open_from_launcher = _open_app_native
+            def _open_from_launcher(kind: str, key: str) -> None:
+                # Main thread (the panel's script handler / a row hotkey).
+                if kind == "bot":
+                    _open_bot_native(key)
+                else:
+                    _open_app_native(key)
 
-                def _home_from_launcher() -> None:
-                    manager = state["windows"]
-                    if manager is None:
-                        webbrowser.open(url)
-                        return
-                    NSApp.activateIgnoringOtherApps_(True)
-                    manager.show_home()
+            def _home_from_launcher() -> None:
+                manager = state["windows"]
+                if manager is None:
+                    webbrowser.open(url)
+                    return
+                NSApp.activateIgnoringOtherApps_(True)
+                manager.show_home()
 
-                def _open_keys() -> set[str]:
-                    # Read live: the manager comes and goes with the preference.
-                    manager = state["windows"]
-                    return manager.open_keys() if manager is not None else set()
+            def _open_keys() -> set[str]:
+                # Read live: the manager comes and goes with the preference.
+                manager = state["windows"]
+                return manager.open_keys() if manager is not None else set()
 
-                launcher_ctl = LauncherController(port, _open_from_launcher, _home_from_launcher)
-                state["launcher"] = launcher_ctl
+            launcher_ctl = LauncherController(port, _open_from_launcher, _home_from_launcher)
+            state["launcher"] = launcher_ctl
 
-                # What the uvicorn thread may call (PUT /api/prefs, GET
-                # /api/launcher): rebinding hops to the main thread; the
-                # bound flags and the open-window set are plain attribute
-                # reads, safe from any thread.
-                def _rebind(spec) -> None:
-                    if spec:
-                        AppHelper.callAfter(launcher_ctl.bind_hotkey, spec)
-                    else:  # the row modifier changed; rebind those, tell the page
-                        AppHelper.callAfter(launcher_ctl.push_settings)
+            # What the uvicorn thread may call (PUT /api/prefs, GET
+            # /api/launcher): rebinding hops to the main thread; the
+            # bound flags and the open-window set are plain attribute
+            # reads, safe from any thread.
+            def _rebind(spec) -> None:
+                if spec:
+                    AppHelper.callAfter(launcher_ctl.bind_hotkey, spec)
+                else:  # the row modifier changed; rebind those, tell the page
+                    AppHelper.callAfter(launcher_ctl.push_settings)
 
-                def _suspend(on: bool) -> None:
-                    AppHelper.callAfter(launcher_ctl.suspend_shortcuts, on)
+            def _suspend(on: bool) -> None:
+                AppHelper.callAfter(launcher_ctl.suspend_shortcuts, on)
 
-                launcher_mod.native_hooks.update({
-                    "rebind": _rebind,
-                    "suspend": _suspend,
-                    "hotkey_bound": launcher_ctl.hotkey_bound,
-                    "pinned_bound": launcher_ctl.pinned_bound,
-                    "open_keys": _open_keys,
-                })
-                if os.environ.get("FUSED_RENDER_LAUNCHER_SHOW"):
-                    # Dev only: SIGUSR2 toggles the launcher, so a script can
-                    # screenshot it without Accessibility access to press the
-                    # shortcut. Python signal handlers run only between
-                    # bytecodes; an idle AppKit run loop executes none, so a
-                    # no-op tick keeps the interpreter breathing.
-                    import signal
+            launcher_mod.native_hooks.update({
+                "rebind": _rebind,
+                "suspend": _suspend,
+                "hotkey_bound": launcher_ctl.hotkey_bound,
+                "pinned_bound": launcher_ctl.pinned_bound,
+                "open_keys": _open_keys,
+            })
+            if os.environ.get("FUSED_RENDER_LAUNCHER_SHOW"):
+                # Dev only: SIGUSR2 toggles the launcher, so a script can
+                # screenshot it without Accessibility access to press the
+                # shortcut. Python signal handlers run only between
+                # bytecodes; an idle AppKit run loop executes none, so a
+                # no-op tick keeps the interpreter breathing.
+                import signal
 
-                    signal.signal(signal.SIGUSR2, lambda *_: AppHelper.callAfter(
-                        launcher_ctl.toggle))
-                    status_app.launcher_dev_tick = rumps.Timer(lambda _t: None, 0.5)
-                    status_app.launcher_dev_tick.start()
-            except Exception:
-                logger.exception("launcher unavailable")
-                state["launcher"] = None
+                signal.signal(signal.SIGUSR2, lambda *_: AppHelper.callAfter(
+                    launcher_ctl.toggle))
+                status_app.launcher_dev_tick = rumps.Timer(lambda _t: None, 0.5)
+                status_app.launcher_dev_tick.start()
+        except Exception:
+            logger.exception("launcher unavailable")
+            state["launcher"] = None
 
         # ---- the status item's surface: Dock (default) or pinned-file popover ----
         # Both controllers take the status item over the same way
@@ -2136,7 +2158,7 @@ def main() -> None:
             "quit": _do_quit,
             "open_window": _open_window,
             # Present only when the launcher was built: both surfaces show
-            # "Search Apps…" off this key.
+            # "Search Apps…" ("Search Bots…" under Fused Bot) off this key.
             **({"show_launcher": _show_launcher} if state["launcher"] is not None else {}),
         }
 
@@ -2210,23 +2232,15 @@ def main() -> None:
             # A tile clicked in the Dock (its own menu or POST /api/dock/open),
             # from any thread. Apps go through `_open_app_native` — the same
             # door as the launcher, so a window already running the app is
-            # raised and the app's saved frame applies; a bot is selected in a
-            # Bots window (`WindowManager.show_bot`).
+            # raised and the app's saved frame applies; a bot goes through
+            # `_open_bot_native`, the launcher's bot door, selected in a Bots
+            # window (`WindowManager.show_bot`).
             def run():
                 dock = state["dock"]
                 if dock is not None:
                     dock.close_popover()
                 if kind == "bot":
-                    from fused_render import dock as dock_mod
-
-                    manager = state["windows"]
-                    if manager is None or not manager.enabled:
-                        webbrowser.open(url.rstrip("/") + dock_mod.bot_view_path(key))
-                        return
-                    from AppKit import NSApp
-
-                    NSApp.activateIgnoringOtherApps_(True)
-                    manager.show_bot(key)
+                    _open_bot_native(key)
                 else:
                     _open_app_native(key)
 

@@ -167,7 +167,8 @@ def test_registry_desk_first_newest_first_then_workspace(home, tmp_path):
     assert len(paths) == len(set(paths))
     gamma = [r for r in reg if r["name"] == "gamma"]
     assert gamma and not gamma[0]["pinned"] and gamma[0]["title"] == "Gamma"
-    assert launcher.nth_pinned(1) == b and launcher.nth_pinned(2) == a
+    assert launcher.nth_pinned(1)["path"] == b and launcher.nth_pinned(2)["path"] == a
+    assert launcher.nth_pinned(1)["kind"] == "app"
     assert launcher.nth_pinned(3) is None and launcher.nth_pinned(0) is None
 
 
@@ -192,7 +193,12 @@ def test_launcher_search_route(home, tmp_path):
     assert [x["name"] for x in body["apps"]] == ["zeta", "Fused Render"]
     body = client.get("/api/launcher?q=qqqq").json()
     assert [x.get("home") for x in body["apps"]] == [True]
-    assert client.get("/static/launcher.html").status_code == 200
+    # The page is a Vite entry (shell-dist/launcher.html): served when built,
+    # an explicit 503 when the frontend has not been built in this checkout.
+    page = client.get("/launcher")
+    assert page.status_code in (200, 503)
+    if page.status_code == 503:
+        assert "launcher page not built" in page.text
 
 
 def test_prefs_launcher_keys(home, tmp_path):
@@ -220,3 +226,89 @@ def test_prefs_launcher_keys(home, tmp_path):
     stored = json.loads((home / "prefs.json").read_text())
     assert stored["launcher_hotkey"] == "shift+cmd+l" and stored["launcher_row_modifier"] == "alt+cmd"
     assert os.path.isfile(home / "prefs.json")
+
+
+# ---- Fused Bot flavor --------------------------------------------------------
+
+
+@pytest.fixture
+def bot(monkeypatch):
+    from fused_render import _flavor
+
+    monkeypatch.setattr(_flavor, "_CACHED", "bot")
+
+
+def _prefs_file(home):
+    return home / "prefs.json"
+
+
+def _bot(bid, name, *, pinned=False, updated=0.0, status="idle"):
+    return {"kind": "bot", "id": bid, "name": name, "face": {"emoji": "x"}, "status": status,
+            "running": status != "idle", "updated": updated, "pinned": pinned}
+
+
+def test_bot_flavor_keys_and_defaults(home, bot):
+    assert launcher.hotkey_key() == "bot_launcher_hotkey"
+    assert launcher.row_modifier_key() == "bot_launcher_row_modifier"
+    assert launcher.default_hotkey() == "alt+shift+space" and launcher.default_row_modifier() == "alt+shift"
+    home.mkdir(parents=True, exist_ok=True)
+    _prefs_file(home).write_text(json.dumps({"launcher_hotkey": "cmd+shift+KeyL",
+                                             "launcher_row_modifier": "cmd"}))
+    s = launcher.settings()
+    assert s["kind"] == "bots" and s["hotkey"] == "alt+shift+space" and s["row_modifier"] == "alt+shift"
+    _prefs_file(home).write_text(json.dumps({"bot_launcher_hotkey": "cmd+shift+KeyL",
+                                             "bot_launcher_row_modifier": "cmd"}))
+    s = launcher.settings()
+    assert s["hotkey"] == "shift+cmd+l" and s["row_modifier"] == "cmd"
+
+
+def test_render_flavor_ignores_bot_keys(home):
+    assert launcher.hotkey_key() == "launcher_hotkey" and launcher.row_modifier_key() == "launcher_row_modifier"
+    home.mkdir(parents=True, exist_ok=True)
+    _prefs_file(home).write_text(json.dumps({"bot_launcher_hotkey": "cmd+shift+KeyL",
+                                             "bot_launcher_row_modifier": "cmd"}))
+    s = launcher.settings()
+    assert s["kind"] == "apps" and s["hotkey"] == hotkey.DEFAULT_SPEC and s["row_modifier"] == "alt"
+
+
+def test_bot_registry_orders_pinned_then_recent(home, bot, monkeypatch):
+    from fused_render import dock
+
+    monkeypatch.setattr(dock, "_bot_rows", lambda: [
+        _bot("old", "Old", updated=1), _bot("zed", "zed", pinned=True),
+        _bot("new", "New", updated=9, status="busy"), _bot("alp", "Alpha", pinned=True)])
+    launcher.invalidate()
+    reg = launcher.registry()
+    assert [r["id"] for r in reg] == ["alp", "zed", "new", "old"]  # pinned by name casefold, then updated desc
+    assert [r["pinned"] for r in reg] == [True, True, False, False]
+    assert [r["recent"] for r in reg] == [False, False, True, True]
+    new = reg[2]
+    assert new["kind"] == "bot" and new["path"] == "new" and new["url"] == "/bots?bot=new"
+    assert new["name"] == new["title"] == "New" and new["icon"] is None
+    assert new["face"] == {"emoji": "x"} and new["status"] == "busy" and new["running"] is True
+    assert [r["id"] for r in launcher.search("", reg)] == ["alp", "zed", "new", "old"]
+    assert launcher.nth_pinned(1)["id"] == "alp" and launcher.nth_pinned(3)["id"] == "new"
+    assert launcher.nth_pinned(5) is None
+
+
+def test_prefs_launcher_keys_store_per_flavor(home, tmp_path, bot):
+    home.mkdir(parents=True, exist_ok=True)
+    _prefs_file(home).write_text(json.dumps({"launcher_hotkey": "alt+space"}))
+    client = _client(tmp_path)
+    r = client.put("/api/prefs", json={"launcher_hotkey": "cmd+shift+KeyL",
+                                       "launcher_row_modifier": "cmd"}, headers=FUSED)
+    assert r.status_code == 200
+    stored = json.loads(_prefs_file(home).read_text())
+    assert stored["bot_launcher_hotkey"] == "shift+cmd+l" and stored["bot_launcher_row_modifier"] == "cmd"
+    assert stored["launcher_hotkey"] == "alt+space" and "launcher_row_modifier" not in stored
+    assert r.json()["launcher"]["hotkey"] == "shift+cmd+l"
+
+
+def test_api_launcher_bot_has_no_files(home, tmp_path, bot, monkeypatch):
+    from fused_render import dock
+
+    monkeypatch.setattr(dock, "_bot_rows", lambda: [_bot("a", "Alpha", pinned=True)])
+    launcher.invalidate()
+    body = _client(tmp_path).get("/api/launcher?q=alp").json()
+    assert body["files"] == [] and body["files_reason"] == ""
+    assert [x["id"] for x in body["apps"] if x.get("kind") == "bot"] == ["a"]

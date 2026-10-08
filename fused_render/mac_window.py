@@ -1494,9 +1494,9 @@ def _build_main_menu(target) -> NSMenu:
         item("Select All", b"selectAll:", "a", tgt=None),
     ], main)
 
-    # Fused Bot has no explorer to edit in and no launcher to search with
-    # (app.py builds neither), so those two rows are not offered; Home stays —
-    # it goes to the front door, which is the Bots page there.
+    # Fused Bot has no explorer to edit in, so Edit App is not offered; its
+    # launcher lists bots, so the search row says so. Home stays — it goes
+    # to the front door, which is the Bots page there.
     submenu("View", [
         item("Reload Page", b"reload:", "r"),
         item("Back", b"goBack:", "["),
@@ -1504,7 +1504,8 @@ def _build_main_menu(target) -> NSMenu:
         item("Home", b"goHome:", "H", CMD | _SHIFT),
         *([] if bot else [item("Edit App", b"editApp:", "E", CMD | _SHIFT)]),
         sep(),
-        *([] if bot else [item("Search Apps…", b"showLauncher:"), sep()]),
+        item("Search Bots…" if bot else "Search Apps…", b"showLauncher:"),
+        sep(),
         item("Open in Browser", b"openInBrowser:", "L", CMD | _SHIFT),
         item("Copy URL", b"copyUrl:", "C", CMD | _SHIFT),
         sep(),

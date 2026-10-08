@@ -66,6 +66,7 @@ import { botsFrontDoor, seedBotsEnabled } from "@apps/bots/feature-flag";
 import StatusBar from "@platform/ui/StatusBar";
 import ModelsDock from "@shell/ModelsDock";
 import SystemDock from "@shell/SystemDock";
+import UpdatesDock from "@shell/UpdatesDock";
 import { useMonitorFeature } from "@platform/lib/monitor-flag";
 import ActivityDock from "@shell/ActivityDock";
 import RepoUpdatesDock from "@shell/RepoUpdatesDock";
@@ -1154,6 +1155,7 @@ export default function App({ config }: { config: Config }) {
         {!IS_EMBED && (
           <StatusBar
             terminalDock={!isWindows && <TerminalDock />}
+            updates={<UpdatesDock version={config.version} hasUpdater={config.update != null} />}
             system={monitorOn === true && <SystemDock />}
             models={<ModelsDock />}
             /* D586/D662: every terminal job is re-routed from Activity to

@@ -17,10 +17,12 @@ import { PreviewPane } from "./components/PreviewPane";
 import { Dialogs } from "./dialogs/Dialogs";
 import { closeView } from "./apps/apps";
 import { getSideApp, sideAppBrowser, sideAppShow } from "./apps/side";
+import { PrefsPanel } from "./components/PrefsPanel";
 import { useLayout } from "./hooks/useLayout";
 import { setStage } from "./lib/layout";
 import { installNotify } from "./lib/notify";
 import { botsRoot, detachPortalHost, portalHost, setBotsRoot } from "./lib/root";
+import { isBot } from "@platform/lib/flavor";
 import { closePanel, getState, hideBanner, openDialog, openMenu, openPanel, poll, startStore, subscribe, useBotsSelector } from "./state/store";
 
 /** Stage follows the store's `fast` (the live view is open). A store listener, not an effect: it runs inside the commit, so
@@ -103,6 +105,7 @@ export function Bots() {
           onOpenBrowsers={() => openDialog({ kind: "browsers" })}
           onOpenBuilds={() => openPanel("builds")}
           onOpenApps={() => openPanel("apps")}
+          onOpenPrefs={isBot() ? () => openPanel("prefs") : undefined}
           onContextMenu={(id, x, y) => openMenu({ id, x, y })}
         />
         <div className="gutter l" title="Drag to resize · double-click to reset" {...gutter("l")} />
@@ -112,6 +115,7 @@ export function Bots() {
       </main>
       <BuildsPanel />
       <AppsPanel />
+      <PrefsPanel />
       <Dialogs />
       <BotMenu />
     </div>

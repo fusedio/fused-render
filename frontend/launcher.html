@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Search</title>
+<!-- The ⌥Space launcher (src/launcher/launcher.ts): served at /launcher by the in-process server and hosted in a
+     WKWebView panel by fused_render/launcher_panel.py (bridge: window.webkit.messageHandlers.launcher); a plain browser
+     tab works too (dev backdrop, opens navigate). Under Fused Render the rows are apps, files and folders; under
+     Fused Bot they are bots wearing their faces (src/dock/lib.ts faceSvg, shared with the menu-bar Dock). A Vite entry
+     rather than a static page so the face drawing has one copy. -->
+<style>
+  :root {
+    color-scheme: light dark;
+    --fg: #1c1c1e;
+    --fg-dim: rgba(28,28,30,.55);
+    --fg-faint: rgba(28,28,30,.38);
+    --sel-bg: rgba(0,0,0,.08);
+    --sel-fg: #1c1c1e;
+    --line: rgba(0,0,0,.10);
+    --kbd-bg: rgba(0,0,0,.07);
+    --width: 680px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --fg: #f2f2f5;
+      --fg-dim: rgba(242,242,245,.6);
+      --fg-faint: rgba(242,242,245,.4);
+      --sel-bg: rgba(255,255,255,.14);
+      --sel-fg: #fff;
+      --line: rgba(255,255,255,.12);
+      --kbd-bg: rgba(255,255,255,.12);
+    }
+  }
+  html, body { margin: 0; padding: 0; background: transparent; }
+  body {
+    font: 13px/1.3 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Helvetica, sans-serif;
+    color: var(--fg);
+    -webkit-font-smoothing: antialiased;
+    user-select: none; -webkit-user-select: none;
+    overflow: hidden;
+  }
+  /* Dev-only: a plain tab has no native glass behind the page. */
+  body.dev {
+    min-height: 100vh; box-sizing: border-box; padding: 60px 0;
+    background:
+      radial-gradient(1200px 500px at 20% 0%, #cfe7d7 0%, transparent 60%),
+      radial-gradient(900px 500px at 90% 100%, #b7c9dd 0%, transparent 60%),
+      linear-gradient(160deg, #e8efe6, #d5dde8);
+  }
+  @media (prefers-color-scheme: dark) {
+    body.dev {
+      background:
+        radial-gradient(1200px 500px at 20% 0%, #23402f 0%, transparent 60%),
+        radial-gradient(900px 500px at 90% 100%, #2a3444 0%, transparent 60%),
+        linear-gradient(160deg, #1c2220, #1b2028);
+    }
+  }
+  body.dev #panel {
+    margin: 0 auto;
+    background: rgba(246,246,248,.86); border-radius: 18px;
+    box-shadow: 0 12px 40px rgba(0,0,0,.25);
+  }
+  @media (prefers-color-scheme: dark) { body.dev #panel { background: rgba(40,40,44,.9); } }
+
+  #panel { width: var(--width); box-sizing: border-box; padding: 10px 12px 8px; }
+
+  #field {
+    display: flex; align-items: center; gap: 12px;
+    padding: 8px 10px 12px; border-bottom: 1px solid var(--line);
+  }
+  #q {
+    flex: 1; min-width: 0;
+    font: 400 22px/1.35 -apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", Helvetica, sans-serif;
+    color: var(--fg); background: transparent; border: 0; outline: 0; padding: 2px 0;
+    -webkit-user-select: text; user-select: text;
+  }
+  #q::placeholder { color: var(--fg-faint); }
+  #mark {
+    width: 20px; height: 20px; flex: none; opacity: .5;
+    display: flex; align-items: center; justify-content: center;
+  }
+  #mark svg { width: 17px; height: 17px; }
+
+  #list { list-style: none; margin: 10px 0 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+  #list:empty { margin: 0; }
+  .row {
+    display: flex; align-items: center; gap: 14px; height: 48px; box-sizing: border-box;
+    padding: 0 14px; border-radius: 10px; cursor: default;
+  }
+  .row.sel { background: var(--sel-bg); color: var(--sel-fg); }
+  .icon {
+    position: relative; width: 32px; height: 32px; flex: none;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .icon img, .icon .mono { border-radius: 8px; }
+  /* running badge: green dot on the icon's upper-left corner, like the Dock's */
+  .icon .dot {
+    position: absolute; left: -3px; top: -3px; width: 8px; height: 8px; border-radius: 50%; z-index: 2;
+    background: radial-gradient(circle at 35% 30%, rgba(255,255,255,.55) 0, rgba(255,255,255,0) 45%), #34c759;
+    box-shadow: 0 0 0 2px rgba(255,255,255,.95), 0 1px 3px rgba(0,0,0,.4); pointer-events: none;
+  }
+  @media (prefers-color-scheme: dark) { .icon .dot { box-shadow: 0 0 0 2px rgba(28,28,30,.95), 0 1px 3px rgba(0,0,0,.4); } }
+  .icon img { width: 100%; height: 100%; object-fit: contain; display: block; }
+  /* A bot is its face (the bots page's avatar), no plate: the drawing keeps its own margin. */
+  .row.bot .icon > svg { width: 100%; height: 100%; display: block; }
+  /* Home: the flavor's app icon (a dark card in a transparent margin), scaled by --home-scale (the script sets it,
+     as the Dock does) and centred, so the card fills the box and the radius clips the margin. */
+  .icon.home { overflow: hidden; border-radius: 8px; }
+  .icon.home img { width: var(--home-scale); height: var(--home-scale); flex: none; max-width: none; border-radius: 0; object-fit: cover; }
+  .icon .mono {
+    width: 100%; height: 100%; display: flex; align-items: center; justify-content: center;
+    font: 600 14px/1 -apple-system, BlinkMacSystemFont, sans-serif; color: #fff; letter-spacing: .5px;
+  }
+  .text { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 10px; white-space: nowrap; overflow: hidden; }
+  .name { font-size: 15px; flex: none; }
+  .sub { font-size: 13px; color: var(--fg-dim); min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .hint { flex: none; font-size: 13px; color: var(--fg-faint); min-width: 30px; text-align: right; font-variant-numeric: tabular-nums; }
+  .row.sel .hint { color: var(--fg-dim); }
+
+  .sect {
+    padding: 10px 14px 4px; font-size: 11px; font-weight: 600; letter-spacing: .4px;
+    text-transform: uppercase; color: var(--fg-faint);
+  }
+  .icon .glyph {
+    width: 100%; height: 100%; display: flex; align-items: center; justify-content: center;
+    color: var(--fg-dim);
+  }
+  .icon .glyph svg { width: 22px; height: 22px; }
+  .row.file .name { font-size: 14px; }
+  #empty { padding: 18px 12px 8px; text-align: center; color: var(--fg-dim); font-size: 13px; }
+  #empty:empty { display: none; }
+  #empty .tip { display: block; margin-top: 6px; color: var(--fg-faint); font-size: 12.5px; }
+
+  #foot {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    margin-top: 10px; padding: 9px 12px 2px; border-top: 1px solid var(--line);
+    font-size: 12px; color: var(--fg-faint);
+  }
+  #foot .keys { display: flex; gap: 12px; }
+  kbd {
+    font: inherit; font-size: 11px; padding: 1px 6px; border-radius: 5px;
+    background: var(--kbd-bg); color: var(--fg-dim); margin-right: 4px;
+  }
+  #shortcut {
+    background: none; border: 0; padding: 2px 6px; border-radius: 6px; cursor: pointer;
+    color: var(--fg-dim); font: inherit; font-size: 12px;
+  }
+  #shortcut:hover { background: var(--kbd-bg); }
+  #shortcut.rec { color: #2f6fed; outline: 1.5px solid rgba(47,111,237,.6); }
+  #shortcut.bad { color: #d0342c; }
+</style>
+</head>
+<body>
+<div id="panel">
+  <div id="field">
+    <input id="q" type="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="Search apps and files…" />
+    <div id="mark" aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.2-4.2"/>
+      </svg>
+    </div>
+  </div>
+  <div id="empty"></div>
+  <ul id="list" role="listbox"></ul>
+  <div id="foot">
+    <div class="keys"><span><kbd>↑↓</kbd>select</span><span><kbd>↩</kbd>open</span></div>
+    <button id="shortcut" type="button" title="Click, then press the new shortcut">⌥Space</button>
+  </div>
+</div>
+<script type="module" src="/src/launcher/launcher.ts"></script>
+</body>
+</html>

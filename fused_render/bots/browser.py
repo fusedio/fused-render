@@ -928,36 +928,55 @@ class BrowserProcess:
         with self.lock:
             if size == self.viewport:
                 return size
+            sess = self.session()
+        if sess and not sess.get("headed") and self.alive(sess):
+            # Resize first, remember after: a failed resize raises, so the caller (the live view) tries again
+            # instead of believing a size Chrome never took.
+            self._resize_windows(sess["port"], size)
+        with self.lock:
             self.viewport = size
             try:
                 write_json_atomic(self.viewport_path, {"viewport": list(size)})
             except OSError:
                 log.warning("viewport not saved", exc_info=True)
-            sess = self.session()
-        if not sess or sess.get("headed") or not self.alive(sess):
-            return size
-        try:
-            port = sess["port"]
-            bws = WS(_http(port, "/json/version")["webSocketDebuggerUrl"], timeout=3)
-            try:
-                seen = set()
-                for t in _http(port, "/json/list"):
-                    if t.get("type") != "page":
-                        continue
-                    try:
-                        wid = bws.call("Browser.getWindowForTarget", targetId=t["id"])["windowId"]
-                        if wid in seen:
-                            continue
-                        seen.add(wid)
-                        bws.call("Browser.setWindowBounds", windowId=wid,
-                                 bounds={"width": size[0], "height": size[1], "windowState": "normal"})
-                    except Exception:  # noqa: BLE001 — a tab closing mid-loop; the others still resize
-                        log.warning("resizing a bot window failed", exc_info=True)
-            finally:
-                bws.close()
-        except Exception:  # noqa: BLE001
-            log.warning("resizing the bot browser failed", exc_info=True)
         return size
+
+    @staticmethod
+    def _resize_windows(port, size):
+        """Every page window to `size`, as a CSS viewport: the window is set, the viewport measured
+        (Page.getLayoutMetrics), and any UI strip Chrome keeps between the two is added once. Raises
+        when no window could be resized."""
+        bws = WS(_http(port, "/json/version")["webSocketDebuggerUrl"], timeout=3)
+        done = 0
+        try:
+            seen = set()
+            for t in _http(port, "/json/list"):
+                if t.get("type") != "page":
+                    continue
+                try:
+                    wid = bws.call("Browser.getWindowForTarget", targetId=t["id"])["windowId"]
+                    if wid in seen:
+                        continue
+                    seen.add(wid)
+                    want = {"width": size[0], "height": size[1]}
+                    bws.call("Browser.setWindowBounds", windowId=wid, bounds={**want, "windowState": "normal"})
+                    pws = WS(t["webSocketDebuggerUrl"], timeout=3)
+                    try:
+                        vp = (pws.call("Page.getLayoutMetrics").get("cssLayoutViewport") or {})
+                    finally:
+                        pws.close()
+                    dw = size[0] - int(vp.get("clientWidth") or size[0])
+                    dh = size[1] - int(vp.get("clientHeight") or size[1])
+                    if 0 < dw < 200 or 0 < dh < 200:
+                        bws.call("Browser.setWindowBounds", windowId=wid,
+                                 bounds={"width": size[0] + max(0, dw), "height": size[1] + max(0, dh)})
+                    done += 1
+                except Exception:  # noqa: BLE001 — a tab closing mid-loop; the others still resize
+                    log.warning("resizing a bot window failed", exc_info=True)
+        finally:
+            bws.close()
+        if not done:
+            raise RuntimeError("no bot window could be resized")
 
     def attach(self, view):
         """Add a view. When the first view gets company, every tab open now is

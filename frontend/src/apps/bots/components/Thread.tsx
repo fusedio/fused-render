@@ -399,9 +399,9 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
     if (c) setNewCount(unviewed(c, eventsOf(c.id)).length);
     updateToBottom(th);
     // Sitting at the end with the tab visible means you are following along: keep "seen" current so a reload or re-open
-    // does not draw a New line above messages you already watched arrive. Not while the live view covers the thread.
+    // does not draw a New line above messages you already watched arrive. (In Stage the thread stays beside the page.)
     const s2 = getState();
-    if (c && !document.hidden && s2.pinned && !s2.fast) markSeen(c.id, c.seq);
+    if (c && !document.hidden && s2.pinned) markSeen(c.id, c.seq);
   });
 
   // The observer (threshold .4, rooted at the thread) and the ResizeObserver that keeps a pinned thread pinned when its

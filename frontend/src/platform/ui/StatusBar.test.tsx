@@ -69,6 +69,19 @@ test("the System chip renders first, alone in the left-hugging start slot", () =
   ]);
 });
 
+test("the Updates chip sits in the start slot before System", () => {
+  const tree = create(
+    <StatusBar
+      updates={<div className="fake-upd">v</div>}
+      system={<div className="fake-system">s</div>}
+      activity={<div className="fake-activity">a</div>}
+    />,
+  ).toJSON();
+  const kids = (tree as ReactTestRendererJSON).children as unknown as ReactTestRendererJSON[];
+  expect(classesOf(kids)).toEqual(["status-bar-start", "fake-activity"]);
+  expect(classesOf(kids[0].children as unknown as ReactTestRendererJSON[])).toEqual(["fake-upd", "fake-system"]);
+});
+
 test("no System chip, no start slot: the right-packed run is untouched", () => {
   const tree = create(
     <StatusBar

@@ -721,6 +721,19 @@ div.bots-page:is(.lcol, .lfit, .stage) .bots .botfoot { justify-content: center;
 .bots-page #bdmodal .where code { font-size: 11px; color: var(--text); word-break: break-all; }
 .bots-page #bdmodal textarea { width: 100%; box-sizing: border-box; }
 .bots-page .bots .botfoot { gap: 4px; }
+/* The Preferences gear (bot flavor only) hugs the footer's right edge; in the collapsed rail the three icons wrap. */
+.bots-page .bots .botfoot #prefs { margin-left: auto; }
+div.bots-page:is(.lcol, .lfit) .bots .botfoot { flex-wrap: wrap; }
+div.bots-page:is(.lcol, .lfit) .bots .botfoot #prefs { margin-left: 0; }
+/* #ppanel: Preferences in an iframe, the Builds panel's own chrome (components/PrefsPanel.tsx). */
+.bots-page #ppanel { position: absolute; inset: 0; background: var(--bg); display: none; flex-direction: column; z-index: 20; }
+.bots-page #ppanel.show { display: flex; }
+.bots-page #ppanel .topbar { display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: var(--panel); border-bottom: 1px solid var(--line); }
+.bots-page #ppanel .topbar .ttl { font-size: 13px; font-weight: 400; }
+.bots-page #ppanel .topbar button { display: inline-flex; align-items: center; gap: 5px; }
+.bots-page #ppanel .topbar button svg { width: 13px; height: 13px; flex: none; }
+.bots-page #ppanel .topbar .backtxt { padding: 4px 6px; }
+.bots-page #ppanel iframe { flex: 1; width: 100%; border: 0; background: var(--bg); }
 .bots-page #apanel { position: absolute; inset: 0; background: var(--bg); display: none; flex-direction: column; z-index: 20; }
 .bots-page #apanel.show { display: flex; }
 .bots-page #apanel .topbar { display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: var(--panel); border-bottom: 1px solid var(--line); }
