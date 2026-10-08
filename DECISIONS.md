@@ -6629,3 +6629,8 @@ The Home cards and icons strips (`.hw-cards`, `.hw-icons.is-strip`) no longer sc
 ## 2026-10-08 — Edit-mode stand-ins reuse the real control
 
 Edit-mode stand-ins for the bare Home widgets (search, build) reuse the real control's markup and classes and do not stretch, because a flex-stretched 999px pill rendered as an oval and nothing like the control it stood for.
+
+
+## 2026-10-08 — Fused Apps widget sort; Add sheet options column
+
+The Fused Apps widget carries a `sort` (opened, the default; updated; name), a third special-cased widget field beside folderId and appPath rather than a generic options bag: two sources with one setting each is not yet a pattern. `opened` keeps the recents fast path on GET /api/apps/home; `updated` and `name` cannot be answered by the recents stores, so they read the hub's catalog snapshot (`_discovery_rows`) and hydrate only the slice. The Add sheet's options (Show as, Size, Sort by) moved into a fixed 230px column beside the preview stage, because a third group no longer fit a wrapping row under a stage that took the pane's height; a narrow sheet stacks them again.

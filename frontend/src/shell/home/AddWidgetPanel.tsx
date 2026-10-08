@@ -274,6 +274,7 @@ export function AddWidgetPanel({ api, onClose }: { api: HomeLayoutApi; onClose: 
               <p className="hw-sheet-desc">{spec.description}</p>
             </div>
             {full ? <p className="hw-sheet-note">Home is full ({MAX_WIDGETS} widgets). Remove one to add another.</p> : null}
+            <div className="hw-sheet-cfg">
             {source === "folder" ? (
               <div className="hw-stage-box is-folders">
                 {folders.length ? (
@@ -485,6 +486,7 @@ export function AddWidgetPanel({ api, onClose }: { api: HomeLayoutApi; onClose: 
                   <SortChips value={sort} onChange={setSort} />
                 </div>
               ) : null}
+            </div>
             </div>
           </div>
         </div>

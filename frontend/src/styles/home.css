@@ -1768,7 +1768,7 @@ a.hw-more:hover {
 
 .hw-sheet {
   container-type: inline-size;
-  width: 820px;
+  width: 900px;
   max-width: calc(100% - 32px);
   height: 560px;
   max-height: 100%;
@@ -1862,6 +1862,18 @@ a.hw-more:hover {
   overflow-y: auto;
 }
 
+.hw-sheet-cfg {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  gap: 18px;
+}
+
+.hw-sheet-cfg > .hw-stage-box {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
 .hw-sheet-title {
   margin: 0;
   font-size: 17px;
@@ -1951,9 +1963,11 @@ a.hw-more:hover {
 
 .hw-opts {
   flex: none;
+  width: 230px;
   display: flex;
-  flex-wrap: wrap;
-  gap: 16px 28px;
+  flex-direction: column;
+  gap: 16px;
+  overflow-y: auto;
 }
 
 .hw-opt {
@@ -1964,7 +1978,8 @@ a.hw-more:hover {
 }
 
 .hw-opts .hw-pick {
-  flex: 0 0 118px;
+  flex: 1 1 0;
+  max-width: none;
 }
 
 .hw-sheet-foot {
@@ -1997,6 +2012,18 @@ a.hw-more:hover {
 
   .hw-sheet-main {
     padding: 14px 16px 8px;
+  }
+
+  .hw-sheet-cfg {
+    flex-direction: column;
+  }
+
+  .hw-opts {
+    width: auto;
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 16px 28px;
+    overflow: visible;
   }
 }
 
