@@ -6,6 +6,7 @@ import {
   MAX_ROWS,
   MAX_WIDGET_ROWS,
   PRESETS,
+  defaultFormat,
   SOURCES,
   addWidget,
   allowedSizes,
@@ -835,7 +836,7 @@ test("swapSource keeps id and rectangle", () => {
   const w = next.widgets.find((x) => x.id === tasks.id)!;
   expect(w.source).toBe("recents");
   expect(rectOf(w)).toEqual(rectOf(tasks));
-  expect(w.format).toBe("cards");
+  expect(w.format).toBe("list");
   expect(next.widgets.length).toBe(l.widgets.length);
   expect(normalizeLayout(next).widgets.find((x) => x.id === tasks.id)).toEqual(w);
   const idx = l.widgets.find((x) => x.source === "index")!;
@@ -942,4 +943,29 @@ test("emptySlots: a gap taller than a tile is split into stacked slots", () => {
   expect(slots.every((s) => s.rows <= MAX_WIDGET_ROWS && s.x === 0 && s.cols === 8)).toBe(true);
   expect(slots.reduce((n, s) => n + s.rows, 0)).toBe(10);
   expect(Math.min(...slots.map((s) => s.y))).toBe(1);
+});
+
+test("defaultFormat: card strips narrower than a full row use their compact format", () => {
+  expect(defaultFormat("sessions", 4)).toBe("list");
+  expect(defaultFormat("sessions", 8)).toBe("cards");
+  expect(defaultFormat("apps", 4)).toBe("icons");
+  expect(defaultFormat("tasks", 4)).toBe("list");
+});
+
+test("swapSource into a 4-unit tile opens card strips as a list", () => {
+  const l = presetLayout("mission");
+  const rec = l.widgets.find((w) => w.source === "recents")!;
+  expect(rectOf(rec).cols).toBe(4);
+  const w = swapSource(l, rec.id, "sessions").widgets.find((x) => x.id === rec.id)!;
+  expect(w.source).toBe("sessions");
+  expect(w.format).toBe("list");
+});
+
+test("preset card-strip tiles narrower than a full row are not cards", () => {
+  for (const p of PRESETS) {
+    for (const w of presetLayout(p.id).widgets) {
+      if (!["apps", "playground", "sessions", "recents"].includes(w.source)) continue;
+      if (rectOf(w).cols < GRID_COLS) expect(w.format).not.toBe("cards");
+    }
+  }
 });

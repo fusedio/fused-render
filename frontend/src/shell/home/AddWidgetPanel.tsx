@@ -28,7 +28,7 @@ import { useBookmarksVersion } from "@platform/lib/hooks";
 import { isFolder, loadBookmarks, type BookmarkFolder, type BookmarkItem } from "@platform/lib/bookmarks";
 import { FormatPreview } from "./FormatPreview";
 import { FormatPicks, SizeChips, SortChips, stageZoom } from "./Pickers";
-import { MAX_WIDGETS, SOURCES, hasSearch, type AppsSort, type TileTarget, type WidgetFormat, type WidgetSize, type WidgetSource } from "./layout";
+import { GRID_COLS, MAX_WIDGETS, SOURCES, defaultFormat, dimsOf, hasSearch, type AppsSort, type TileTarget, type WidgetFormat, type WidgetSize, type WidgetSource } from "./layout";
 import type { HomeLayoutApi } from "./useHomeLayout";
 import { AppGlyph } from "./widgets/AppsWidget";
 import { appName, useAllApps } from "./widgets/AppEmbedWidget";
@@ -91,8 +91,9 @@ export function AddWidgetPanel({
   const SOURCE_KEYS = target
     ? [initialSource ?? "folder"]
     : ALL_SOURCE_KEYS.filter((s) => s !== "search" || !hasSearch(api.layout));
+  const tileCols = target ? (target.kind === "swap" ? dimsOf(target.widget).cols : target.rect.cols) : GRID_COLS;
   const [source, setSource] = useState<WidgetSource>(SOURCE_KEYS[0]);
-  const [format, setFormat] = useState<WidgetFormat>(SOURCES[SOURCE_KEYS[0]].formats[0]);
+  const [format, setFormat] = useState<WidgetFormat>(defaultFormat(SOURCE_KEYS[0], tileCols));
   const [size, setSize] = useState<WidgetSize>(SOURCES[SOURCE_KEYS[0]].sizes[0]);
   const [sort, setSort] = useState<AppsSort>("opened");
   const [folderId, setFolderId] = useState<string | null>(null);
@@ -183,7 +184,7 @@ export function AddWidgetPanel({
 
   const pick = (s: WidgetSource) => {
     setSource(s);
-    setFormat(SOURCES[s].formats[0]);
+    setFormat(defaultFormat(s, tileCols));
     setSize(SOURCES[s].sizes[0]);
     setSort("opened");
   };
