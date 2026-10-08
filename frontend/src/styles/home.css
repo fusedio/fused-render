@@ -681,12 +681,17 @@
   display: flex;
   flex-direction: column;
 }
+.files-home.is-focus .home-strips,
 .files-home.is-focus .hw-stage,
 .files-home.is-focus .hw-stage-main,
 .files-home.is-focus .hw-grid {
   flex: 1 0 auto;
   display: flex;
   flex-direction: column;
+}
+/* The toolbar and health strips keep their natural height. */
+.files-home.is-focus .home-strips > :not(.hw-stage) {
+  flex: none;
 }
 /* Flex-column children with auto inline margins or intrinsic sizing do not
    stretch, so pin them to the full width. */
