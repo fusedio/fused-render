@@ -62,7 +62,7 @@ from Foundation import NSURL, NSURLRequest
 from PyObjCTools import AppHelper
 from WebKit import WKWebView, WKWebViewConfiguration
 
-from fused_render import pin_store
+from fused_render import _flavor, pin_store
 
 logger = logging.getLogger("fused_render")
 
@@ -518,7 +518,7 @@ class PinController:
             add("Change Pinned File…", b"pinFile:")
         menu.addItem_(NSMenuItem.separatorItem())
         if self._actions.get("show_launcher") is not None:
-            add("Search Apps…", b"showLauncher:")
+            add("Search Bots…" if _flavor.is_bot() else "Search Apps…", b"showLauncher:")
         add("Open app logs", b"openLogs:")
         if self._actions.get("save_diagnostics") is not None:
             add("Save Diagnostics…", b"saveDiagnostics:")

@@ -909,8 +909,9 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # The Current apps desk (fused_render/current_apps.py): GET the table,
     # DELETE one app (archiving its tasks). Fed by the tasks listing above.
     app.include_router(current_apps_router)
-    # The macOS launcher panel's search (fused_render/launcher.py): the desk,
-    # the workspace, linked and exported apps, ranked by a query.
+    # The macOS launcher panel's page at /launcher and its search
+    # (fused_render/launcher.py): the desk, the workspace, linked and exported
+    # apps ranked by a query; bots under Fused Bot.
     app.include_router(launcher_router)
     # An app clicked inside a macOS native window opens in its own window.
     app.include_router(windows_router)

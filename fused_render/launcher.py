@@ -1,6 +1,6 @@
 """The launcher's data: what it can open, how a query ranks it, its settings.
 
-The launcher (``static/launcher.html`` in ``launcher_panel.py``) is a
+The launcher (the ``/launcher`` page in ``launcher_panel.py``) is a
 Spotlight-like panel on a global shortcut (⌥Space by default): an empty
 query lists the RECENTLY OPENED apps (``routers.apps.recent_apps`` — the
 clock Home's strip reads, stamped whenever an app page renders, D301),
@@ -13,18 +13,40 @@ which covers the ``showcase`` and ``local`` tags), the linked folders
 and folders from the file index (``file_results``): the home search box's
 engine, a handful of rows, opened in the explorer.
 
-Settings live in ``prefs.json`` (shell/prefs.py), two keys::
+Under Fused Bot (``_flavor.is_bot()``) the same panel lists BOTS instead:
+the bots page's list, read through ``dock._bot_rows`` (the menu-bar Dock's
+reader, so bot.json is read one way only), pinned bots first by name, then
+the rest most recently updated first, every one in the empty-query list. No
+workspace walk, no desk, no recents store, no files: a bot is not a folder,
+and the Bot app has no explorer to open a file in. A pick selects the bot in
+a Bots window (``app.py``'s ``_open_bot_native``, the Dock's door too).
 
-    {"launcher_hotkey": "alt+space", "launcher_row_modifier": "alt"}
+Settings live in ``prefs.json`` (shell/prefs.py), two keys per flavor::
 
-``launcher_hotkey`` opens the launcher (``hotkey.py`` spec syntax).
-``launcher_row_modifier`` is the modifier (or ``+``-joined modifiers) that,
+    Fused Render  {"launcher_hotkey": "alt+space",
+                   "launcher_row_modifier": "alt"}
+    Fused Bot     {"bot_launcher_hotkey": "alt+shift+space",
+                   "bot_launcher_row_modifier": "alt+shift"}
+
+Both apps share ONE prefs.json (one tree, owner's call) and run side by
+side, so the bot launcher stores under its own keys (``hotkey_key()`` /
+``row_modifier_key()``) and defaults to combinations Render does not hold:
+Carbon's ``RegisterEventHotKey`` refuses a combo another process already
+registered, so equal defaults would leave whichever app started second with
+no shortcut. The WIRE names on ``PUT /api/prefs`` stay ``launcher_hotkey`` /
+``launcher_row_modifier`` in both apps (the page never knows the flavor);
+the server maps them to the flavor's key, so the bot keys are stored but
+never surfaced under Render.
+
+The hotkey opens the launcher (``hotkey.py`` spec syntax). The row
+modifier is the modifier (or ``+``-joined modifiers) that,
 with a digit 1–9, opens the Nth app of the empty-query list (nine global
 shortcuts, resolved at press time — the Nth recently opened app, the desk
 behind them); while the launcher is up, the Nth row shown. The SAME list
 when the query is empty, by design (owner, 2026-10-03). ``<modifier>+0``
 opens the shell home. One knob from the user's point of view. Missing or
-corrupt → the defaults.
+corrupt → the flavor's defaults (``default_hotkey()`` /
+``default_row_modifier()``).
 
 ``search`` is pure and ranks by match quality then by registry order: a
 name that starts with the query, then a word inside the name that does,
@@ -57,8 +79,10 @@ logger = logging.getLogger(__name__)
 
 MAX_RESULTS = 9  # one <modifier>-digit each
 DEFAULT_ROW_MODIFIER = "alt"
-HOTKEY_KEY = "launcher_hotkey"
-ROW_MODIFIER_KEY = "launcher_row_modifier"
+#: The bot flavor's defaults: one modifier more than Render's, so both apps'
+#: shortcuts bind when they run side by side (see the module docstring).
+BOT_DEFAULT_HOTKEY = "alt+shift+space"
+BOT_DEFAULT_ROW_MODIFIER = "alt+shift"
 
 #: Filled by app.py on macOS once the panel exists. See the module docstring.
 native_hooks: dict = {}
@@ -72,13 +96,31 @@ def _read_prefs() -> dict:
     return read_prefs()
 
 
+def hotkey_key() -> str:
+    """The prefs.json key THIS flavor's launcher hotkey is stored under."""
+    return "bot_launcher_hotkey" if _flavor.is_bot() else "launcher_hotkey"
+
+
+def row_modifier_key() -> str:
+    """The prefs.json key THIS flavor's row modifier is stored under."""
+    return "bot_launcher_row_modifier" if _flavor.is_bot() else "launcher_row_modifier"
+
+
+def default_hotkey() -> str:
+    return BOT_DEFAULT_HOTKEY if _flavor.is_bot() else hotkey.DEFAULT_SPEC
+
+
+def default_row_modifier() -> str:
+    return BOT_DEFAULT_ROW_MODIFIER if _flavor.is_bot() else DEFAULT_ROW_MODIFIER
+
+
 def get_hotkey() -> str:
     """The stored shortcut spec, canonical; the default when absent or invalid."""
-    raw = _read_prefs().get(HOTKEY_KEY)
+    raw = _read_prefs().get(hotkey_key())
     try:
-        return hotkey.canonical(raw) if isinstance(raw, str) else hotkey.DEFAULT_SPEC
+        return hotkey.canonical(raw) if isinstance(raw, str) else default_hotkey()
     except hotkey.SpecError:
-        return hotkey.DEFAULT_SPEC
+        return default_hotkey()
 
 
 def canonical_hotkey(spec) -> str:
@@ -101,11 +143,11 @@ def canonical_modifiers(spec) -> str:
 
 
 def get_row_modifier() -> str:
-    raw = _read_prefs().get(ROW_MODIFIER_KEY)
+    raw = _read_prefs().get(row_modifier_key())
     try:
-        return canonical_modifiers(raw) if isinstance(raw, str) else DEFAULT_ROW_MODIFIER
+        return canonical_modifiers(raw) if isinstance(raw, str) else default_row_modifier()
     except hotkey.SpecError:
-        return DEFAULT_ROW_MODIFIER
+        return default_row_modifier()
 
 
 def pinned_specs(modifier: str) -> list[str]:
@@ -128,13 +170,16 @@ def settings() -> dict:
     """What the pages read: both shortcuts with display forms, whether the
     panel exists in THIS process (the packaged macOS app installs the
     hooks; a `fused-render serve` on a Mac has no panel, so the Preferences
-    section stays hidden there), and whether the system accepted the
-    bindings (None = nothing has tried)."""
+    section stays hidden there), whether the system accepted the
+    bindings (None = nothing has tried), and ``kind``, what the rows are
+    (``"bots"`` under Fused Bot, else ``"apps"``), so the pages word
+    themselves without knowing the flavor."""
     spec, row = get_hotkey(), get_row_modifier()
     bound = native_hooks.get("hotkey_bound")
     pinned = native_hooks.get("pinned_bound")
     return {
         "available": sys.platform == "darwin" and "rebind" in native_hooks,
+        "kind": "bots" if _flavor.is_bot() else "apps",
         "hotkey": spec,
         "display": hotkey.display(spec),
         "row_modifier": row,
@@ -253,7 +298,36 @@ def desk_rows() -> list[dict]:
     return rows
 
 
+def _bot_registry() -> list[dict]:
+    """The bot flavor's rows: every listed bot (``dock._bot_rows``, the one
+    bot.json reader the Dock uses too), pinned first by name (casefold, the
+    Dock's order), then the rest most recently updated first, marked
+    ``recent`` so the empty query lists them all (`search`'s one-list rule,
+    so ``nth_pinned`` and the panel agree). ``path`` is the bot id: the key
+    the open callback receives. Never raises: a bots store that cannot be
+    read is zero rows."""
+    from fused_render import dock
+
+    try:
+        bots = dock._bot_rows()  # noqa: SLF001 — the Dock's reader, deliberately shared
+    except Exception:  # noqa: BLE001 — see docstring
+        logger.debug("bot rows failed", exc_info=True)
+        return []
+    pinned = sorted((b for b in bots if b["pinned"]), key=lambda b: (b["name"].casefold(), b["id"]))
+    rest = sorted((b for b in bots if not b["pinned"]), key=lambda b: -b["updated"])
+
+    def row(b: dict, *, pinned: bool) -> dict:
+        return {"kind": "bot", "id": b["id"], "path": b["id"], "url": dock.bot_view_path(b["id"]),
+                "name": b["name"], "title": b["name"], "icon": None, "face": b["face"],
+                "status": b["status"], "running": b["running"], "pinned": pinned,
+                "recent": not pinned}
+
+    return [row(b, pinned=True) for b in pinned] + [row(b, pinned=False) for b in rest]
+
+
 def _registry_uncached() -> list[dict]:
+    if _flavor.is_bot():
+        return _bot_registry()
     from fused_render import app_listing, exported_apps, registered_apps
     from fused_render.shell.seed import fused_dir
 
@@ -310,6 +384,9 @@ def registry(running=frozenset()) -> list[dict]:
     never-opened one with the same match.
 
     Rows: ``{path, url, name, title, kind, pinned, recent, running, icon}``.
+    Under Fused Bot the rows are bots (`_bot_registry`, plus ``id``,
+    ``face``, ``status``); their ``running`` is the bot's own status, not a
+    window, so ``running`` (window paths) is not applied to them.
     """
     global _cache
     now = time.monotonic()
@@ -320,7 +397,8 @@ def registry(running=frozenset()) -> list[dict]:
             rows = _registry_uncached()
             _cache = (now, rows)
     running_abs = {os.path.realpath(p) for p in running}
-    return [{**r, "running": os.path.realpath(r["path"]) in running_abs} for r in rows]
+    return [r if r.get("kind") == "bot"
+            else {**r, "running": os.path.realpath(r["path"]) in running_abs} for r in rows]
 
 
 def invalidate() -> None:
@@ -330,14 +408,15 @@ def invalidate() -> None:
         _cache = None
 
 
-def nth_pinned(n: int) -> str | None:
-    """The path the global ``<modifier>+n`` opens (1-based): the ``n``-th row
+def nth_pinned(n: int) -> dict | None:
+    """The ROW the global ``<modifier>+n`` opens (1-based): the ``n``-th row
     of the empty-query list — exactly what the panel shows before any typing,
-    so the digit means the same app whether or not the panel is up. Through
-    `registry`, so the per-keystroke cache serves a press too. None past the
-    end."""
+    so the digit means the same app (or bot) whether or not the panel is up.
+    A row rather than a path because the caller dispatches on ``kind`` (an
+    app path vs a bot id). Through `registry`, so the per-keystroke cache
+    serves a press too. None past the end."""
     rows = search("", registry())
-    return rows[n - 1]["path"] if 1 <= n <= len(rows) else None
+    return rows[n - 1] if 1 <= n <= len(rows) else None
 
 
 # ---- search ----------------------------------------------------------------------------

@@ -1389,6 +1389,9 @@ export interface Prefs {
 
 export interface LauncherPrefs {
   available: boolean;
+  // What the panel's rows are, by flavor: "apps" under Fused Render, "bots"
+  // under Fused Bot (whose hotkey/modifier are the separate bot_launcher_* prefs).
+  kind?: "apps" | "bots";
   hotkey: string;
   display: string;
   row_modifier: string;
