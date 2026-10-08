@@ -128,7 +128,11 @@ export function Composer({ b, reply, setReply, threadRef }: ComposerProps) {
   // Grow with the text (up to the CSS max), and reveal the send arrow when there is something to send.
   const fitInput = () => {
     const t = ta.current; if (!t) return;
+    // Collapsing to 0 to measure briefly makes the thread above taller, and the browser clamps its scrollTop to fit;
+    // putting the height back does not undo the clamp, so the messages jumped on every keystroke. Restore it.
+    const th = threadRef.current, top = th ? th.scrollTop : 0;
     t.style.height = "0"; t.style.height = Math.max(36, t.scrollHeight) + "px";
+    if (th && th.scrollTop !== top) th.scrollTop = top;
     setHas(t.value.trim().length > 0 || pendingRef.current.length > 0);
   };
   useLayoutEffect(fitInput, [pending]);
