@@ -78,7 +78,7 @@ export function AppsWidget({ widget }: { widget: Widget }) {
             ))}
           </CardStrip>
         ) : (
-          <CardStrip variant="icons" onNearEnd={loadMore} count={count} rows={rows} total={merged.length}>
+          <CardStrip variant="icons" count={count} rows={rows} onNearEnd={loadMore} total={merged.length}>
             {merged.map((app) => (
               <AppTile key={app.path} app={app} />
             ))}
