@@ -176,6 +176,8 @@ export interface Bot {
   control_since?: number | null;
   /** The last hand back: the question event it settled (`seq`), how long you drove (`secs`) and a still of the page as you left it. */
   handback?: { seq: number; secs: number; shot: string | null } | null;
+  /** Your messages queued while you hold the browser (by user-event `seq`), delivered in order when you hand back. */
+  held?: { seq: number }[] | null;
   dl_pct?: number | null;
   engine?: "auto" | "steps" | "agent";
   seq: number;

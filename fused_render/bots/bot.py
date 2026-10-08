@@ -512,6 +512,7 @@ class Bot:
         self._tool_apps = set()
         self._skills_loaded = []
         self._handoff_queue = []  # hand-offs waiting for this bot to go idle: [(super bot id, hand-off id)], FIFO
+        self._held_lock = threading.Lock()  # one _flush_held at a time: one hand back can release control twice
         dirty = False
         if self.meta.pop("channel_forwards", None) is not None:
             dirty = True  # per-bot forwards are gone (docs §10): only a task's origin hears back
@@ -533,8 +534,11 @@ class Bot:
             dirty = True
         # ...and a hand-over (a login wait, a take-over) with no task thread behind it: the page is the bot's again.
         if self.meta.get("control") or self.meta.get("control_by") or self.meta.get("control_since"):
-            self._control_off()
+            self._control_off(flush=False)
             dirty = True
+        # Messages queued while the user held the browser died with that hand-over: not sent, and the thread says so.
+        unsent = self.meta.pop("held", None) or []
+        dirty = dirty or bool(unsent)
         # Hand-offs still open when the server last stopped: their target's task died with it.
         interrupted = []
         for hd in self.meta.get("handoffs") or []:
@@ -552,6 +556,15 @@ class Bot:
                 dirty = True
         if dirty:
             self.save()
+        if unsent:
+            # The user lines are already written: mark each ignored so past_conversation leaves it out (an unsent
+            # line is not something the user asked, and "send again" would read twice).
+            for h in unsent:
+                if h.get("seq") is not None:
+                    self.emit("system", "Queued while you had the browser; not sent (restart).", ignored_seq=h["seq"])
+            n = len(unsent)
+            self.emit("note", f"{n} message{'s' if n > 1 else ''} queued while you had the browser {'were' if n > 1 else 'was'} "
+                                "not sent: the server restarted. Send again if still needed.")
         for hd, text in interrupted:
             # The user was told they would hear: the result card says how it ended (texted back by the origin rule).
             try:
@@ -1652,17 +1665,25 @@ class Bot:
         with self.lock:
             if not manual and not self._spacing_ok(r):
                 return
-            busy = self.thread is not None and self.thread.is_alive()
+            # While the user holds the browser the bot stays stopped: the slot is skipped like a busy one.
+            held = bool(self.meta.get("control"))
+            busy = held or (self.thread is not None and self.thread.is_alive())
             prev_last = r.get("last")
             r["last"] = time.time()
             if busy:
-                r["last_result"] = "skipped: bot was busy"
-                self.emit("system", f"Routine \"{r['task'][:60]}\" skipped: bot busy")
+                r["last_result"] = "skipped: you had the browser" if held else "skipped: bot was busy"
+                self.emit("system", f"Routine \"{r['task'][:60]}\" skipped: {'you had the browser' if held else 'bot busy'}")
             else:
                 r["last_result"] = "started"
                 self.emit("system", f"Routine {'run now' if manual else 'fired'}: {r['task']}")
-                self._control_off()
-            r["next"] = self._next_run(r, time.time()) if r.get("enabled") else None
+            if busy and r["kind"] == "once":
+                # A one-shot is not a slot to lose: a `last` would end it for good (_next_run), so it is not
+                # stamped. A due one retries in a minute until the bot is free and you have handed back; a
+                # skipped Run now keeps its own time.
+                r["last"] = prev_last
+                r["next"] = self._next_run(r, time.time()) if manual else time.time() + 60
+            else:
+                r["next"] = self._next_run(r, time.time()) if r.get("enabled") else None
             if r["kind"] == "once" and not busy:
                 r["enabled"] = False
             self.save()
@@ -1789,9 +1810,19 @@ class Bot:
         else:
             uev = self.emit("user", text, **stamp)
         with self.lock:
+            if self.meta.get("control"):
+                # The user holds the browser: the bot stays stopped. The message is written (the page shows it
+                # queued) and delivered when the page goes back to the bot (_control_off → _flush_held).
+                self.meta["held"] = [*(self.meta.get("held") or []),
+                                     {"seq": uev.get("seq"), "text": text, "shown": shown, "via": via}]
+                self.save()
+                return
+        self._deliver(text, shown, via, uev)
+
+    def _deliver(self, text, shown, via, uev):
+        """receive()'s second half: a written user line reaches the task (an instruction or an answer) or starts one."""
+        with self.lock:
             running = self.thread is not None and self.thread.is_alive()
-            if not running and self.meta.get("control"):
-                self._control_off()  # a fresh task means the bot drives again
             pending = self.meta.get("pending_offer")
         texted = via.get("kind") == "imessage"
         # A yes or no to an app offer that outlived its task (see _offer) is settled here, without a model call.
@@ -1982,8 +2013,10 @@ class Bot:
                 return {"control_by": self.meta["control_by"], "control_since": self.meta.get("control_since") or time.time()}
             return {"control_by": by, "control_since": time.time()}
 
-    def _control_off(self, handback=False):
+    def _control_off(self, handback=False, flush=True):
         """The page goes back to the bot: control, control_by and control_since drop together.
+        Messages queued meanwhile (meta["held"]) are delivered in order from a short thread, once
+        the caller lets go of self.lock; `flush=False` leaves that to the caller (task end).
         `handback` (the hand-over is ending, not a fresh task overriding it): when the BOT had
         asked (control_by "bot") and is still waiting on that question, meta["handback"]
         records {seq, secs, shot} so the page settles that question card as "You handed it
@@ -1995,6 +2028,8 @@ class Bot:
             by = self.meta.pop("control_by", None)
             since = self.meta.pop("control_since", None)
             self.meta["control"] = False
+            if flush and self.meta.get("held"):
+                threading.Thread(target=self._flush_held, daemon=True, name=f"bot-held-{self.id}").start()
             qseq = self.meta.get("waiting_on")
             if not (handback and by == "bot" and since and qseq):
                 return None
@@ -2003,6 +2038,31 @@ class Bot:
             self.meta["handback"] = {"seq": qseq, "secs": int(max(0, time.time() - float(since))),
                                      "shot": f"/api/bots/{self.id}/steps/{name}" if name else None}
             return (name, data) if name else None
+
+    def _flush_held(self, after=None):
+        """Deliver the messages queued while the user held the browser, oldest first. `after`: a
+        task thread that is ending; wait for it, so the first message starts a fresh task instead
+        of landing in the inbox of one that is gone."""
+        if after is not None:
+            after.join()
+        if not self._held_lock.acquire(blocking=False):
+            return  # another flusher is delivering; it drains the queue in order
+        try:
+            while True:
+                with self.lock:
+                    if self.meta.get("control"):
+                        return  # taken over again: the rest wait for the next hand back
+                    held = self.meta.get("held") or []
+                    if not held:
+                        return
+                    h, self.meta["held"] = held[0], held[1:]
+                    self.save()
+                try:
+                    self._deliver(h.get("text") or "", h.get("shown") or "", h.get("via") or dict(chan.WEB), {"seq": h.get("seq")})
+                except Exception:  # noqa: BLE001 — one bad message must not strand the rest
+                    logger.warning("bot %s: queued message %s not delivered", self.id, h.get("seq"), exc_info=True)
+        finally:
+            self._held_lock.release()
 
     HANDBACK_STILLS = 50
 
@@ -2472,7 +2532,7 @@ class Bot:
             elif q:
                 return False
             if t.meta.get("control"):
-                t._control_off()  # a fresh task means the bot drives again (as receive() does)
+                return False  # the user holds its browser: it stays queued until the hand back (as receive() refuses)
             if t.deleted:
                 return False
             if not t.start_task(hd["task"], origin=chan.HANDOFF_KIND, via=hv):
@@ -2951,8 +3011,12 @@ def _run_task(run, bot, task, label):
                 # A task that ends mid hand-over (stopped during a login wait, an engine error) never reaches
                 # the engine's set_status(control=False): the hand-over ends with the task.
                 if bot.meta.get("control"):
-                    bot._control_off()
+                    bot._control_off(flush=False)
                     bot.save()
+                    if bot.meta.get("held"):
+                        # Queued while you drove: delivered once this thread is gone, so they start a fresh task.
+                        threading.Thread(target=bot._flush_held, args=(threading.current_thread(),), daemon=True,
+                                         name=f"bot-held-{bot.id}").start()
 
 
 def bots_section(bot) -> str:

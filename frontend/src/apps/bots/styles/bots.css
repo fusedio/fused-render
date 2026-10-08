@@ -278,7 +278,7 @@ div.bots-page.lanim .bots header #add svg { width: 20px; height: 20px; }
 .bots-page .chat header .title small { color: var(--muted); font-size: 11px; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bots-page .chat header .title small:empty { display: none; }
 /* The rail: Stage is on (root .stage), chat is a narrow --chatw column beside the live page. Compact header (face + name),
-   full-width bubbles, no timestamps. The pinned hand-over card (components/HandoverCard.tsx) sits between header and thread. */
+   full-width bubbles, no timestamps. */
 div.bots-page.stage .chat { --chatgut: 12px; }
 /* The chat's toast slot (#ctoast) only while the preview, which carries #toast, is hidden and Stage is off (#ftoast covers Stage). */
 .bots-page .chat > #ctoast { display: none; }
@@ -289,13 +289,11 @@ div.bots-page.stage .chat header { padding: 6px 12px; min-height: 44px; }
 div.bots-page.stage .chat header .title small, div.bots-page.stage .chat header #rcol { display: none; }
 div.bots-page.stage .chat .msg { max-width: 100%; }
 div.bots-page.stage .chat .msg time.when { display: none; }
-.bots-page .handover { flex: none; display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 12px 20px; background: var(--panel); border-bottom: 1px solid var(--line); }  /* a panel attached to the top of the thread, not a floating card */
-.bots-page .handover .hd { display: flex; gap: 8px; align-items: flex-start; }
-.bots-page .handover .ttl { flex: 1; min-width: 0; font-size: 13px; line-height: 1.45; }
-.bots-page .handover.byuser .ttl { color: var(--muted); }
-.bots-page .handover .pill { flex: none; font-size: 11px; font-variant-numeric: tabular-nums; padding: 1px 8px; border-radius: 999px; background: var(--you-soft); color: var(--you); }
-.bots-page .handover .pill.late { background: color-mix(in srgb, var(--err) 14%, transparent); color: var(--err); }
-.bots-page .handover button { align-self: flex-start; }
+/* While you hold the browser: the hand-back row closing the bot's live hand-over question, or the "You're driving" note
+   at the end of the thread (components/HandoverCard.tsx). */
+.bots-page .msg .hbrow { display: flex; gap: 8px; align-items: center; margin-top: 10px; }
+.bots-page .msg .hbrow .pill { font-size: 11px; font-variant-numeric: tabular-nums; padding: 1px 8px; border-radius: 999px; background: var(--you-soft); color: var(--you); }
+.bots-page .msg .hbrow .pill.late { background: color-mix(in srgb, var(--err) 14%, transparent); color: var(--err); }
 /* A settled hand-over question (Bot.handback): how long you drove, and the page as you left it. */
 .bots-page .msg.question.handedback .hbfoot { margin-top: 6px; font-size: 11px; color: var(--muted); }
 .bots-page .msg.question.handedback .hbshot { display: block; margin-top: 6px; max-height: 120px; max-width: 100%; border-radius: 8px; }
@@ -311,6 +309,9 @@ div.bots-page.stage .chat .msg time.when { display: none; }
 .bots-page .chat:hover .thread::-webkit-scrollbar-thumb { background: var(--raised); }
 .bots-page .msg { flex: none; max-width: min(42rem, 78%); padding: 9px 16px; border-radius: 20px; line-height: 1.5; font-size: 13px; white-space: pre-wrap; word-break: break-word; animation: bots-msg-in .18s cubic-bezier(.22,1,.36,1); }
 .bots-page .msg.user { align-self: flex-end; background: var(--bubble-user); color: var(--bubble-user-ink); }
+/* Sent while you hold the browser (Bot.held): waits, greyed in a dashed outline, until you hand back. */
+.bots-page .msg.user.queued { background: transparent; color: var(--muted); border: 1px dashed var(--line); }
+.bots-page .msg.user.queued::after { content: "Sends when you hand back"; display: block; margin-top: 2px; font-size: 11px; color: var(--muted); }
 /* Rendered markdown: block elements do the spacing, so no pre-wrap here. */
 .bots-page .msg.md { white-space: normal; }
 .bots-page .msg.md > p, .bots-page .msg.md > ul, .bots-page .msg.md > ol, .bots-page .msg.md > pre, .bots-page .msg.md > blockquote, .bots-page .msg.md > h1, .bots-page .msg.md > h2, .bots-page .msg.md > h3, .bots-page .msg.md > h4, .bots-page .msg.md > h5, .bots-page .msg.md > h6 { margin: 0 0 .6em; }

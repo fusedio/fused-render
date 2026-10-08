@@ -9,7 +9,7 @@ import { api, rawFileUrl, request, type Bot } from "../lib/api";
 import { jobNote } from "../lib/dictation";
 import { statusLabel } from "../lib/derive";
 import { fmtAgo, fmtBytes, fmtSecs } from "../lib/format";
-import { act, errMsg, eventsOf, markSeen, needsYou, setBase, setScrollToEnd, showBanner, useBotsSelector } from "../state/store";
+import { act, errMsg, eventsOf, markSeen, setBase, setScrollToEnd, showBanner, useBotsSelector } from "../state/store";
 
 export interface ReplyTo { seq: number; text: string }
 
@@ -271,11 +271,10 @@ export function Composer({ b, reply, setReply, threadRef }: ComposerProps) {
   useEffect(() => { if (!running) return; const t = window.setInterval(() => tick((n) => n + 1), 1000); return () => window.clearInterval(t); }, [running]);
   const quiet = running && lastStepTs ? fmtAgo(lastStepTs) : "";
   const stat = !b || !running ? "" : b.status === "waiting" ? "Waiting for you · answer, sign in or approve above" : statusLabel(b) + (quiet && quiet !== "now" ? ` · last step ${quiet}` : "");
-  // While you hold the browser, sending is also the hand back (server behaviour); the small print says so.
-  const placeholder = !b ? "Message…" : mic.busy ? mic.note || "Transcribing…" : reply ? "Reply…"
-    // Sending hands back only where the bot sits in a wait (its login hand-over, or idle / waiting); a running bot you
-    // took over just queues the message and you keep the browser.
-    : b.control ? (needsYou(b) || b.status === "idle" || b.status === "waiting" ? `Tell ${b.name} something… (sending hands back)` : `Message ${b.name}…`)
+  // While you hold the browser the bot stays stopped: what you send is queued (server meta.held) and goes when you hand back.
+  const placeholder = !b ? "Message…" : mic.busy ? mic.note || "Transcribing…"
+    : b.control ? `Message ${b.name}… (sent when you hand back)`
+    : reply ? "Reply…"
     : noteLive ? `Anything ${b.name} should know? Optional.`
     : b.status === "waiting" ? "The bot asked you a question — answer here"
     : running ? "Add an instruction mid-task…" : `Message ${b.name}`;
