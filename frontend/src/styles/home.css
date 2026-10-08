@@ -2265,6 +2265,7 @@ a.hw-more:hover {
   margin: 0 0 14px;
   font-size: 22px; font-weight: 500; letter-spacing: -0.02em;
   color: var(--fg-muted);
+  text-align: center;
 }
 .hw-build-headline em { font-style: normal; color: var(--fg); }
 .hw-build-hero .home-composer-samples { justify-content: flex-start; }

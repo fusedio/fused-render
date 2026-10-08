@@ -6656,3 +6656,4 @@ View mode no longer renders spacers for empty rows (they made 84px voids that sp
 ## 2026-10-08 — Build an app takes 4 unit rows and is the same block in both modes
 
 Build an app takes 4 unit rows (was 3) and renders the same block in both modes: headline, a 760px centred composer and the chips row. The edit stand-in sits in a full-width card outline, like the other widgets. Stored v5 layouts grow the build in place and push the widgets below it down a row (`growFixedRows`), so no version bump is needed.
+The Build an app headline is centred explicitly (`text-align: center` on `.hw-build-headline`) so edit mode matches view mode and clears the overlaid drag grip.
