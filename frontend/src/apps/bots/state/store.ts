@@ -9,8 +9,9 @@
 import { useSyncExternalStore } from "react";
 import { api, apiHooks, type Bot, type BotEvent, type ImessageState, type SlowCall, type UsageSummary } from "../lib/api";
 import { loadSeen, newMarkFor, saveSeen, unreadOf, unviewedOf } from "../lib/unread";
-import { notifyEvents, updateTitle } from "../lib/notify";
+import { chime, notifyEvents, notifyHandover, updateTitle } from "../lib/notify";
 import type { NewBotPick } from "../lib/presets";
+import { botsMounted } from "../lib/root";
 
 export { SLOW_MS, STALL_MS } from "../lib/api";
 
@@ -47,12 +48,11 @@ export interface BotsState {
   pinned: boolean;
   showHidden: boolean;
   /** A poll landed while the live view was open; the thread pins to the end when it closes. */
-  renderDirty: boolean;
   /** Calls slower than SLOW_MS (last 30). */
   slow: SlowCall[];
   /** The live view is open: polls every 400 ms and ask for `fast` status. */
   fast: boolean;
-  /** Bumped by select() (and on leaving the live view after renderDirty): OpenBot's render(true), "scroll the thread to the end on a new bot". */
+  /** Bumped by select(): OpenBot's render(true), "scroll the thread to the end on a new bot". */
   scrollThread: number;
   /** jumpTo(): the message the thread scrolls to once it renders that bot (null once done). */
   scrollSeq: { bot: string; seq: number } | null;
@@ -62,6 +62,8 @@ export interface BotsState {
   toasts: Toast[];
   buildsChip: BuildsChip;
   ui: { dialog: DialogReq | null; panel: PanelName | null; menu: MenuReq | null };
+  /** One-shot after a hand back (the bot's `handback.seq` moved): the composer of bot `id` offers "Anything <name> should know?" until `until`. */
+  noteFor: { id: string; until: number } | null;
 }
 
 export const EVENT_CAP = 600;
@@ -75,10 +77,11 @@ let S: BotsState = {
   bots: [], events: {}, cursors: {}, sel: typeof location === "undefined" ? null : initialSel(),
   usage: null, imessage: null,
   seen: typeof localStorage === "undefined" ? {} : loadSeen(), base: {}, viewed: {}, newMark: null, newCount: 0, pinned: true,
-  showHidden: false, renderDirty: false, slow: [], fast: false, scrollThread: 0, scrollToEnd: false, scrollSeq: null,
+  showHidden: false, slow: [], fast: false, scrollThread: 0, scrollToEnd: false, scrollSeq: null,
   banner: { show: false, text: "" }, toasts: [],
   buildsChip: { n: "", live: false, warn: false, fresh: false, title: "Tasks · Claude tasks that create fused apps", hidden: false },
   ui: { dialog: null, panel: null, menu: null },
+  noteFor: null,
 };
 
 // ------------------------------------------------------------------ plumbing ----
@@ -116,6 +119,62 @@ export const botById = (id: string | null | undefined): Bot | undefined => (id ?
 /** A bot's merged events (a stable empty array when none). */
 export const eventsOf = (id: string | null | undefined): BotEvent[] => (id && S.events[id]) || EMPTY;
 export const errMsg = (e: unknown): string => String((e as { message?: unknown })?.message || e);
+
+// ------------------------------------------------------------------ prefs ----
+// Boolean page prefs in localStorage ("1" / "0"); a missing key or no storage reads as the default (on).
+const readFlag = (k: string, dflt = true): boolean => { try { const v = localStorage.getItem(k); return v === null ? dflt : v === "1"; } catch { return dflt; } };
+const writeFlag = (k: string, on: boolean): void => { try { localStorage.setItem(k, on ? "1" : "0"); } catch { /* no storage */ } };
+export const AUTOSTAGE_KEY = "browser-bot.autostage", SOUNDS_KEY = "browser-bot.sounds";
+/** "Open the browser when a bot needs me": a bot-initiated hand-over on the selected bot opens Stage by itself. */
+export const autoStage = (): boolean => readFlag(AUTOSTAGE_KEY);
+export const setAutoStage = (on: boolean): void => writeFlag(AUTOSTAGE_KEY, on);
+/** The hand-over chime (lib/notify.ts chime). */
+export const soundsOn = (): boolean => readFlag(SOUNDS_KEY);
+export const setSounds = (on: boolean): void => writeFlag(SOUNDS_KEY, on);
+
+// ------------------------------------------------------------------ hand-over ----
+// The bot asked for you in its browser (control_by flipped to "bot"): open Stage. lib/cdp.ts registers openFull here
+// (it imports this module, so importing it back would be a cycle).
+type HandoverHook = (opts: { focus: boolean }) => void;
+let handoverHook: HandoverHook | null = null, closeHook: (() => void) | null = null;
+/** cdp.ts: `open` = openFull, `close` = leave Stage and drop the live socket (handBack(true) minus the giveback). */
+export function onHandover(open: HandoverHook, close: () => void): void { handoverHook = open; closeHook = close; }
+const closeStage = (): void => { if (closeHook) closeHook(); else setFast(false); };
+/** Waiting for an open dialog / menu to close before Stage opens for this bot. */
+let pendingStage: string | null = null;
+/** The bot whose hand-over opened the current Stage by itself; the poll closes it again when that hand-over ends.
+ *  null for a Stage you opened by hand (watch mode), which only you close. Cleared whenever Stage closes (setFast). */
+let autoOpened: string | null = null;
+/** The bot asked for you in its browser (the list dot, the title prefix, the composer hint, the one-time alert). Stays
+ *  true through a pop-out to a real window: that is the same hand-over, not a new one. */
+export const needsYou = (b: Bot | undefined): boolean => !!b && !!b.control && b.control_by === "bot";
+/** ...and Stage can show it: the task has not ended and the browser is not popped out (nothing to stream). The same
+ *  checks that close an auto-opened Stage, so a remount never flashes one open for a poll. */
+const stageable = (b: Bot | undefined): boolean => needsYou(b) && b!.status !== "idle" && b!.status !== "error" && !b!.browser?.headed;
+/** Open Stage for the selected bot `id` unless it is already open or the pref is off; with a dialog / menu up, later
+ *  (closeDialog / closeMenu). Unsent composer text keeps its focus: the page does not take the keyboard then. */
+function requestStage(id: string): void {
+  if (!autoStage() || id !== S.sel) return;
+  // Stage is already up (opened for another bot's hand-over, or by hand): it now serves this bot, so this bot's hand
+  // back closes it, not the first one's.
+  if (S.fast) { if (autoOpened) autoOpened = id; return; }
+  if (S.ui.dialog || S.ui.menu) { pendingStage = id; return; }
+  pendingStage = null;
+  // Deferred: this runs inside a poll's or select()'s batch, and openFull's flushSync needs the store published first.
+  // botsMounted: a notification click or a late timer after the route unmounted must not open Stage on nothing.
+  setTimeout(() => {
+    if (!botsMounted() || S.fast || S.sel !== id || !stageable(cur()) || !handoverHook) return;
+    // A dialog opened meanwhile (the ?new=1 chooser lands in the same flush as a remount): wait for it, as above.
+    if (S.ui.dialog || S.ui.menu) { pendingStage = id; return; }
+    const input = document.getElementById("input") as HTMLTextAreaElement | null;
+    handoverHook({ focus: !input?.value.trim() });
+    if (S.fast) autoOpened = id;
+  }, 0);
+}
+function flushPendingStage(): void {
+  const id = pendingStage; pendingStage = null;
+  if (id && stageable(botById(id))) requestStage(id);
+}
 
 // ------------------------------------------------------------------ banner ----
 export function showBanner(msg: string): void { commit({ banner: { show: true, text: msg } }); }
@@ -223,6 +282,8 @@ export function select(id: string | null): void {
     commit({ sel: id, scrollThread: S.scrollThread + 1 });
     writeUrlBot(id);
     const b = cur(); if (b) { setNewMark(b); markSeen(b.id, b.seq); }
+    // A bot waiting for you in its browser opens Stage the moment you pick it.
+    if (b && stageable(b)) requestStage(b.id);
   });
 }
 
@@ -252,11 +313,11 @@ function onOpenEvent(e: Event) {
 
 // ------------------------------------------------------------------ ui slots ----
 export const openDialog = (req: DialogReq): void => commit({ ui: { ...S.ui, dialog: req, menu: null } });
-export const closeDialog = (): void => { if (S.ui.dialog) commit({ ui: { ...S.ui, dialog: null } }); };
+export const closeDialog = (): void => { if (S.ui.dialog) { commit({ ui: { ...S.ui, dialog: null } }); flushPendingStage(); } };
 export const openPanel = (panel: PanelName): void => commit({ ui: { ...S.ui, panel, menu: null } });
 export const closePanel = (): void => { if (S.ui.panel) commit({ ui: { ...S.ui, panel: null } }); };
 export const openMenu = (req: MenuReq): void => commit({ ui: { ...S.ui, menu: req } });
-export const closeMenu = (): void => { if (S.ui.menu) commit({ ui: { ...S.ui, menu: null } }); };
+export const closeMenu = (): void => { if (S.ui.menu) { commit({ ui: { ...S.ui, menu: null } }); flushPendingStage(); } };
 /** builds/ owns the numbers; the list footer renders them. */
 export const setBuildsChip = (patch: Partial<BuildsChip>): void => commit({ buildsChip: { ...S.buildsChip, ...patch } });
 
@@ -274,6 +335,7 @@ export async function pollOnce(): Promise<void> {
     batch(() => {
       hideBanner();
       const first = !S.bots.length;
+      const prev = new Map(S.bots.map((b) => [b.id, b]));
       const events = { ...S.events }, cursors = { ...S.cursors };
       let toast: BotEvent | undefined;
       for (const b of r.bots) {
@@ -293,9 +355,35 @@ export async function pollOnce(): Promise<void> {
       commit({
         bots: r.bots, events, cursors,
         ...(r.usage ? { usage: r.usage } : {}), ...(r.imessage ? { imessage: r.imessage } : {}),
-        ...(S.fast ? { renderDirty: true } : {}),
       });
       if (toast) showToast(toast);
+      // Hand-overs: the bot asked for you in its browser (control_by flipped to "bot"; a take-over of yours is "user" and
+      // stays quiet). The selected bot opens Stage, any other one gets a toast; chime + OS notification either way. On
+      // first load only the selected bot reacts, silently. A hand back the server settled (handback.seq moved) arms the
+      // composer's one-shot "anything to add?" placeholder.
+      // One chime per poll however many bots flipped together. No note when you handed back BY replying (a message of
+      // yours after the question): you already said what you had to say.
+      let ring = false;
+      for (const b of r.bots) {
+        const was = prev.get(b.id);
+        if (needsYou(b) && (first ? b.id === S.sel : !needsYou(was))) {
+          if (b.id === S.sel) requestStage(b.id);
+          else showToast({ text: `${b.name} needs you in the browser`, ts: Date.now() / 1000 });
+          if (!first) { ring = true; notifyHandover(b); }
+        }
+        if (!first && b.handback && b.handback.seq !== was?.handback?.seq) {
+          const hb = b.handback.seq, replied = (events[b.id] || []).some((e) => e.role === "user" && e.seq > hb);
+          if (!replied) commit({ noteFor: { id: b.id, until: Date.now() + 15_000 } });
+        }
+      }
+      if (ring) chime();
+      // Spec §4: a Stage the hand-over opened by itself closes when that hand-over ends: control dropped (a chat reply
+      // handed back), the bot finished or failed, or it popped out to a real window (nothing left to stream). A Stage
+      // you opened by hand stays.
+      if (S.fast && autoOpened && autoOpened === S.sel) {
+        const b = cur();
+        if (!b || !b.control || b.status === "idle" || b.status === "error" || b.browser?.headed) closeStage();
+      }
       // A bot picked from the URL skips select(): place its "New" rule and clear its dot once, on first load. Later polls leave "seen" alone so the dot lights while you watch.
       if (first && S.sel && !document.hidden) { const c = cur(); if (c) { setNewMark(c); markSeen(c.id, c.seq); } }
       // Nothing selected yet: Super Bot (seeded on first run, registry.seed_super) is the chat a new user should land in.
@@ -317,11 +405,11 @@ export async function act<T>(call: () => Promise<T>, silent = false): Promise<T 
   catch (e) { if (!silent) showBanner(errMsg(e)); return undefined; }
 }
 
-/** The live view opened/closed: poll every 400 ms while open; on close the thread re-pins if polls landed meanwhile. */
+/** The live view (Stage) opened/closed: poll every 400 ms while open. The thread stays beside the page, so nothing re-pins. */
 export function setFast(on: boolean): void {
   if (S.fast === on) return;
-  if (!on && S.renderDirty) commit({ fast: false, renderDirty: false, scrollThread: S.scrollThread + 1 });
-  else commit({ fast: on });
+  if (!on) autoOpened = null;
+  commit({ fast: on });
 }
 
 // Poll faster while the live view is open (tab strip, URL bar, popups), else every 1.5 s; frames come over the live view socket.
@@ -349,10 +437,14 @@ export function startStore(): () => void {
   const gen = Math.abs(loopGen) + 1;
   loopGen = gen;
   void loop(gen);
+  // The store outlives the route: coming back to /bots with the selected bot still mid-hand-over reopens Stage (the
+  // poll diff only fires on the flip, which happened while you were away).
+  if (stageable(cur())) requestStage(S.sel!);
   return () => {
     if (loopGen === gen) loopGen = -gen;  // stops this loop; a newer mount has already moved loopGen on
     if (loopTimer) clearTimeout(loopTimer);
     if (S.ui.dialog || S.ui.panel || S.ui.menu) commit({ ui: { dialog: null, panel: null, menu: null } });  // a route change closes them
+    pendingStage = null; if (S.fast) closeStage();  // Stage does not outlive the route (and a queued auto-open must not fire into it)
     window.removeEventListener("popstate", onUrlChange);
     window.removeEventListener("fused:urlchange", onUrlChange);
     window.removeEventListener(OPEN_EVENT, onOpenEvent);

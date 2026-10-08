@@ -25,11 +25,13 @@
   --bg: var(--bots-shell-bg); --panel: var(--bots-shell-bg); --panel2: var(--bots-shell-hover); --card: var(--bots-shell-bg-alt); --raised: var(--bots-shell-hover); --hover: var(--bots-shell-selected); --inset: var(--bots-shell-panel);
   --text: var(--bots-shell-fg); --muted: var(--bots-shell-muted); --line: var(--bots-shell-border);
   --accent: var(--bots-shell-accent); --accent-ink: var(--bots-shell-on-accent); --accent-text: var(--bots-shell-accent-text); --bubble-user: #3b4030; --bubble-user-ink: #ffffff;
-  --ok: #38d591; --warn: #ffb020; --err: #ff5667; --shadow: 0 12px 40px rgba(0,0,0,.7); }
+  --ok: #38d591; --warn: #ffb020; --err: #ff5667; --shadow: 0 12px 40px rgba(0,0,0,.7);
+  --you: #e8913a; --you-soft: rgba(232,145,58,.14); }
 [data-theme="light"] .bots-page
             { color-scheme: light;
   --bubble-user: #1b1d21; --bubble-user-ink: #fcfcfc;
-  --ok: #1f9d5a; --warn: #b7791a; --err: #d13b3b; --shadow: 0 12px 40px rgba(0,0,0,.18); }
+  --ok: #1f9d5a; --warn: #b7791a; --err: #d13b3b; --shadow: 0 12px 40px rgba(0,0,0,.18);
+  --you: #c7791a; --you-soft: rgba(199,121,26,.12); }
 .bots-page, .bots-page * { box-sizing: border-box; }
 div.bots-page { flex: 1 1 auto; min-width: 0; min-height: 0; position: relative; }
 div.bots-page { margin: 0; display: flex; flex-direction: column; font-family: "Inter", -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
@@ -55,6 +57,8 @@ div.bots-page { margin: 0; display: flex; flex-direction: column; font-family: "
 .bots-page .dot.waiting { background: var(--err); animation: bots-pulse 1.4s infinite; }
 .bots-page .dot.paused  { background: var(--warn); }
 .bots-page .dot.error   { background: var(--err); }
+/* Amber = a bot asked for you in its browser (control_by "bot"); --warn is taken by "paused". Steady, no pulse. */
+.bots-page .dot.needsyou { background: var(--you); width: 10px; height: 10px; box-shadow: 0 0 0 2px var(--you-soft); }
 .bots-page .av .dot.idle { display: none; }
 @keyframes bots-pulse { 50% { opacity: .3; } }
 @keyframes bots-msg-in { from { opacity: 0; transform: translateY(6px); } }
@@ -68,13 +72,14 @@ div.bots-page { margin: 0; display: flex; flex-direction: column; font-family: "
 /* Columns: --lw/--rw are panel widths (set by the resize handles), --mid the thread's floor, --rmin the preview's; the middle is minmax(0,1fr) so content never pushes the preview off-screen. */
 div.bots-page { --lw: 280px; --rw: 400px; --mid: 450px; --rmin: 280px; --lweff: min(var(--lw), 40%); }
 /* .lcol = user collapsed the sidebar; .lfit = the window is too narrow for it, so it collapses itself (before the preview hides). */
-div.bots-page:is(.lcol, .lfit) { --lweff: 72px; }
+div.bots-page:is(.lcol, .lfit, .stage) { --lweff: 72px; }
 .bots-page main { flex: 1; display: grid; grid-template-columns: var(--lweff) 6px minmax(0, 1fr) 6px min(var(--rw), 50%, max(var(--rmin), calc(100% - var(--lweff) - 12px - var(--mid)))); min-height: 0; }
 /* Panels slide open/shut: the tracks animate, so both states keep five of them (the hidden preview is a 0px track, clipped, not display:none). */
 .bots-page main { transition: grid-template-columns .3s cubic-bezier(.22,1,.36,1); }
 div.bots-page.dragging main { transition: none; }  /* a drag must track the pointer exactly... */
 div.bots-page.dragging.lanim main { transition: grid-template-columns .3s cubic-bezier(.22,1,.36,1); }  /* ...except when it snaps the sidebar shut or open: same slide as the button */
 div.bots-page.lfast main, div.bots-page.dragging.lfast main, div.bots-page.lfast.lanim .bot { transition-duration: .1s; }  /* closing the sidebar: quick slide, then the slow icon adjustment */
+div.bots-page.stage.lfast main, div.bots-page.stage.lfast.lanim .bot { transition-duration: .3s; }  /* entering Stage folds the sidebar too, but the column swap keeps the full slide */
 /* .rcol = user hid the preview; .rfit = the window is too narrow for sidebar + thread floor + preview floor, so it hides itself. */
 div.bots-page:is(.rcol, .rfit) main { grid-template-columns: var(--lweff) 6px minmax(0, 1fr) 6px 0px; }
 /* The preview slides, it does not reflow: while it opens or closes, --rwlock (set by lockPreview) pins the section to its open width, so it
@@ -84,33 +89,43 @@ div.bots-page:is(.rcol, .rfit) main { grid-template-columns: var(--lweff) 6px mi
 div.bots-page:is(.rcol, .rfit) .preview { visibility: hidden; transition: visibility 0s .3s; }  /* untabbable once shut; the delay keeps it visible while it slides away */
 div.bots-page:is(.rcol, .rfit) .gutter.r { background: var(--panel); pointer-events: none; }
 div.bots-page.rcol .gutter.r { pointer-events: auto; }
+/* .stage = the live view is open in the preview column (lib/layout.ts setStage, from the store's `fast`): the sidebar folds to icons (the
+   :is(.lcol, .lfit, .stage) rules), chat becomes a --chatw rail and the preview column, now the live page, takes the rest. Wins over
+   .rcol / .rfit (the preview IS the stage), so these come after them. Same track types as the default grid (length · fr · length) so the
+   columns interpolate: chat's 1fr resolves to exactly --chatw once the last track takes everything else. */
+div.bots-page { --chatw: 340px; }
+div.bots-page.stage main, div.bots-page.stage:is(.rcol, .rfit) main { grid-template-columns: var(--lweff) 6px minmax(0, 1fr) 6px max(0px, calc(100% - var(--lweff) - 12px - var(--chatw))); }
+div.bots-page.stage .preview { visibility: visible; transition: none; }
+div.bots-page.stage .gutter.r { background: none; pointer-events: auto; }
+/* The thumbnail, caption, info, toast, side-app strip and frame step aside for the live view (child combinator: #full's own .toast stays). */
+div.bots-page.stage .preview > :is(header, .shotwrap, .toast, .cap, .info, .sabar, #saframe) { display: none; }
 .bots-page .gutter { cursor: col-resize; position: relative; background: linear-gradient(var(--line), var(--line)) center / 1px 100% no-repeat; } /* the columns share one background, so the gutter carries the divider */
 .bots-page .gutter::after { content: ""; position: absolute; inset: 0 2px; border-radius: 2px; background: transparent; transition: background .15s; }
 .bots-page .gutter:hover::after, .bots-page .gutter.drag::after { background: var(--accent); }
 div.bots-page.dragging { cursor: col-resize; user-select: none; }
 div.bots-page.dragging img { pointer-events: none; }
 /* Icons-only sidebar (collapsed, or forced on very narrow windows). */
-div.bots-page:is(.lcol, .lfit) .bots header h1, div.bots-page:is(.lcol, .lfit) .bot > div, div.bots-page:is(.lcol, .lfit) .bot .meta .time { display: none; }
+div.bots-page:is(.lcol, .lfit, .stage) .bots header h1, div.bots-page:is(.lcol, .lfit, .stage) .bot > div, div.bots-page:is(.lcol, .lfit, .stage) .bot .meta .time { display: none; }
 /* .meta stays in the grid (zero-size) so the unread badge can still sit on the circle's top-right corner. */
-div.bots-page:is(.lcol, .lfit) .bot .meta { display: contents; }
-div.bots-page:is(.lcol, .lfit) .bots header { flex-direction: column; gap: 6px; padding: 10px 0 4px; }
+div.bots-page:is(.lcol, .lfit, .stage) .bot .meta { display: contents; }
+div.bots-page:is(.lcol, .lfit, .stage) .bots header { flex-direction: column; gap: 6px; padding: 10px 0 4px; }
 /* Collapsed: expand toggle on top, then a + sized exactly like a bot avatar so it stacks over the list. */
-div.bots-page:is(.lcol, .lfit) .bots header #lcol { order: 1; }
-div.bots-page:is(.lcol, .lfit) .bots header #add { order: 2; width: 44px; height: 44px; border-radius: 50%; }
-div.bots-page:is(.lcol, .lfit) .bots header #add svg { width: 24px; height: 24px; }
+div.bots-page:is(.lcol, .lfit, .stage) .bots header #lcol { order: 1; }
+div.bots-page:is(.lcol, .lfit, .stage) .bots header #add { order: 2; width: 44px; height: 44px; border-radius: 50%; }
+div.bots-page:is(.lcol, .lfit, .stage) .bots header #add svg { width: 24px; height: 24px; }
 /* Collapsed rows are 60px circles so the hover/selected fill sits concentric with the 44px avatar (min-width, not width: the row hugs the panel while it slides, so it never floats centered mid-way). */
-div.bots-page:is(.lcol, .lfit) .bot { grid-template-columns: 44px; justify-content: center; min-width: 60px; height: 60px; padding: 8px; margin: 0 auto 2px; border-radius: 50%; }
-div.bots-page:is(.lcol, .lfit) .bot.sel { background: var(--bots-shell-selected); }  /* matches the shell nav selection, neutral rather than accent-washed */
+div.bots-page:is(.lcol, .lfit, .stage) .bot { grid-template-columns: 44px; justify-content: center; min-width: 60px; height: 60px; padding: 8px; margin: 0 auto 2px; border-radius: 50%; }
+div.bots-page:is(.lcol, .lfit, .stage) .bot.sel { background: var(--bots-shell-selected); }  /* matches the shell nav selection, neutral rather than accent-washed */
 /* Collapsed rail: no second badge on the circle. Unread turns the status dot itself solid yellow (no pulse), and shows it even on an idle bot. */
-div.bots-page:is(.lcol, .lfit) .bot .badge { display: none; }
-div.bots-page:is(.lcol, .lfit) .av .dot.unread { display: block; background: var(--accent); animation: none; }
-div.bots-page:is(.lcol, .lfit) .bots .group { font-size: 0; padding: 6px; }
-div.bots-page:is(.lcol, .lfit) .bots .empty { display: none; }  /* "No bots yet" / "No bot matches" cannot fit the 72px rail */
+div.bots-page:is(.lcol, .lfit, .stage) .bot .badge { display: none; }
+div.bots-page:is(.lcol, .lfit, .stage) .av .dot.unread { display: block; background: var(--accent); animation: none; }
+div.bots-page:is(.lcol, .lfit, .stage) .bots .group { font-size: 0; padding: 6px; }
+div.bots-page:is(.lcol, .lfit, .stage) .bots .empty { display: none; }  /* "No bots yet" / "No bot matches" cannot fit the 72px rail */
 .bots-page .ptog { width: 32px; height: 32px; padding: 0; background: transparent; color: var(--muted); display: inline-flex; align-items: center; justify-content: center; flex: none; }
 .bots-page .ptog:hover { background: var(--raised); color: var(--text); }
 .bots-page .ptog svg { width: 18px; height: 18px; }
 .bots-page .ptog .pane { fill: currentColor; opacity: .35; transition: opacity .15s; }
-div.bots-page:is(.lcol, .lfit) #lcol .pane, div.bots-page:is(.rcol, .rfit) #rcol .pane { opacity: 0; }
+div.bots-page:is(.lcol, .lfit, .stage) #lcol .pane, div.bots-page:is(.rcol, .rfit) #rcol .pane { opacity: 0; }
 /* The preview closes from its own chevron; the chat-header toggle only appears while the preview is hidden, to bring it back. */
 div.bots-page:not(.rcol) #rcol { display: none; }
 .bots-page main > section { min-width: 0; }
@@ -140,8 +155,8 @@ div.bots-page:not(.rcol) #rcol { display: none; }
 
 /* ---- left: bot list ---- */
 .bots-page .bots { background: var(--panel); display: flex; flex-direction: column; min-height: 0; container-type: inline-size; }
-.bots-page .bots header, .bots-page .chat header, .bots-page .preview header { display: flex; gap: 8px; align-items: center; padding: 10px 14px; min-height: 56px; }
-.bots-page .chat header, .bots-page .preview header { border-bottom: 1px solid var(--line); }
+.bots-page .bots header, .bots-page .chat header, .bots-page .preview > header { display: flex; gap: 8px; align-items: center; padding: 10px 14px; min-height: 56px; }
+.bots-page .chat header, .bots-page .preview > header { border-bottom: 1px solid var(--line); }
 .bots-page .bots header h1 { font-size: 0; margin: 0; flex: 1; }  /* label kept for a11y; the panel reads as a list, not a titled pane */
 .bots-page .bots header button { width: 32px; height: 32px; padding: 0; flex: none; }
 /* The header must never overflow the sidebar (it can be dragged to 180px): the usage pill gives way first, then hides. */
@@ -150,7 +165,7 @@ div.bots-page:not(.rcol) #rcol { display: none; }
 /* usage meter: the always-visible answer to "are the bots doing something?" */
 .bots-page .bots header #usage { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; width: auto; height: 26px; padding: 0 10px; border-radius: 13px; font-size: 11.5px; font-weight: 500; background: var(--inset); color: var(--muted); white-space: nowrap; }
 .bots-page .bots header #usage:hover { color: var(--text); }
-div.bots-page:is(.lcol, .lfit) .bots header #usage, div.bots-page:is(.lcol, .lfit) .bots header #browsers { display: none; }
+div.bots-page:is(.lcol, .lfit, .stage) .bots header #usage, div.bots-page:is(.lcol, .lfit, .stage) .bots header #browsers { display: none; }
 .bots-page .ustats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 6px; }
 .bots-page .ustats div { background: var(--inset); border-radius: 12px; padding: 8px 10px; }
 .bots-page .ustats b { display: block; font-size: 20px; font-weight: 500; }
@@ -179,7 +194,7 @@ div.bots-page:is(.lcol, .lfit) .bots header #usage, div.bots-page:is(.lcol, .lfi
 .bots-page .bots .search input { width: 100%; background: var(--panel2); border: none; border-radius: 12px; padding: 9px 12px 9px 34px; font-size: 13px; }
 .bots-page .bots .search input::placeholder { color: var(--muted); }
 .bots-page .bots .search svg { position: absolute; left: 11px; top: 50%; transform: translateY(-50%); width: 16px; height: 16px; color: var(--muted); pointer-events: none; }
-div.bots-page:is(.lcol, .lfit) .bots .search { display: none; }
+div.bots-page:is(.lcol, .lfit, .stage) .bots .search { display: none; }
 
 .bots-page .listwrap { flex: 1; min-height: 0; position: relative; display: flex; flex-direction: column; }
 .bots-page .botlist { flex: 1; overflow-x: hidden; overflow-y: auto; padding: 4px 8px 8px; scrollbar-width: none; }  /* never scroll sideways: the rail circles may be wider than the list's inner width */
@@ -253,6 +268,28 @@ div.bots-page.lanim .bots header #add svg { width: 20px; height: 20px; }
 .bots-page .chat header .title b { display: block; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bots-page .chat header .title small { color: var(--muted); font-size: 11px; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bots-page .chat header .title small:empty { display: none; }
+/* The rail: Stage is on (root .stage), chat is a narrow --chatw column beside the live page. Compact header (face + name),
+   full-width bubbles, no timestamps. The pinned hand-over card (components/HandoverCard.tsx) sits between header and thread. */
+div.bots-page.stage .chat { --chatgut: 12px; }
+/* The chat's toast slot (#ctoast) only while the preview, which carries #toast, is hidden and Stage is off (#ftoast covers Stage). */
+.bots-page .chat > #ctoast { display: none; }
+div.bots-page:is(.rcol, .rfit):not(.stage) .chat > #ctoast { display: flex; }
+/* Stage folds the sidebar to icons by itself; the collapse toggle would flip layout.lcol unseen, so it steps aside. */
+div.bots-page.stage .bots header #lcol { display: none; }
+div.bots-page.stage .chat header { padding: 6px 12px; min-height: 44px; }
+div.bots-page.stage .chat header .title small, div.bots-page.stage .chat header #rcol { display: none; }
+div.bots-page.stage .chat .msg { max-width: 100%; }
+div.bots-page.stage .chat .msg time.when { display: none; }
+.bots-page .handover { flex: none; display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 12px 20px; background: var(--panel); border-bottom: 1px solid var(--line); }  /* a panel attached to the top of the thread, not a floating card */
+.bots-page .handover .hd { display: flex; gap: 8px; align-items: flex-start; }
+.bots-page .handover .ttl { flex: 1; min-width: 0; font-size: 13px; line-height: 1.45; }
+.bots-page .handover.byuser .ttl { color: var(--muted); }
+.bots-page .handover .pill { flex: none; font-size: 11px; font-variant-numeric: tabular-nums; padding: 1px 8px; border-radius: 999px; background: var(--you-soft); color: var(--you); }
+.bots-page .handover .pill.late { background: color-mix(in srgb, var(--err) 14%, transparent); color: var(--err); }
+.bots-page .handover button { align-self: flex-start; }
+/* A settled hand-over question (Bot.handback): how long you drove, and the page as you left it. */
+.bots-page .msg.question.handedback .hbfoot { margin-top: 6px; font-size: 11px; color: var(--muted); }
+.bots-page .msg.question.handedback .hbshot { display: block; margin-top: 6px; max-height: 120px; max-width: 100%; border-radius: 8px; }
 .bots-page .tw { flex: 1; min-height: 0; display: flex; flex-direction: column; position: relative; }
 /* Round "back to latest" button, bottom center of the thread, shown whenever you are scrolled up. */
 .bots-page .tobottom { position: absolute; bottom: 2px; left: 50%; translate: -50% 0; z-index: 5; display: none; align-items: center; justify-content: center; gap: 6px; width: 29px; height: 29px; padding: 0; border-radius: 999px; background: var(--raised); color: var(--text); box-shadow: var(--shadow); animation: bots-msg-in .18s cubic-bezier(.22,1,.36,1); }
@@ -280,7 +317,7 @@ div.bots-page.lanim .bots header #add svg { width: 20px; height: 20px; }
 .bots-page .msg.md blockquote { border-left: 3px solid var(--line); margin-left: 0; padding-left: 10px; color: var(--muted); }
 .bots-page .msg.md hr { border: 0; border-top: 1px solid var(--line); margin: .6em 0; }
 .bots-page .msg.md a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
-.bots-page .msg.thought { align-self: flex-start; background: var(--card); box-shadow: inset 0 0 0 1px var(--line); }
+.bots-page .msg.thought { align-self: flex-start; background: var(--card); }
 /* Action step with its screenshot thumbnail: small strip by default, full width when open. */
 .bots-page .step { flex: none; align-self: flex-start; display: flex; flex-direction: column; gap: 4px; max-width: min(42rem, 78%); }
 .bots-page .step .thumb { display: block; height: 64px; width: auto; max-width: 100%; border-radius: 8px; border: 1px solid var(--line, rgba(127,127,127,.25)); cursor: zoom-in; object-fit: cover; }
@@ -307,11 +344,14 @@ div.bots-page.lanim .bots header #add svg { width: 20px; height: 20px; }
 .bots-page .msg.note .readmore { margin-left: 6px; padding: 1px 8px; font-size: 11px; border-radius: 999px; background: var(--inset); color: var(--text); }
 .bots-page .msg.note .readmore:hover:not(:disabled) { background: var(--hover); }
 .bots-page .msg.note .readmore:disabled { opacity: .5; cursor: default; }
-.bots-page .msg.done { align-self: flex-start; background: var(--card); box-shadow: inset 0 0 0 1px var(--line); }
-.bots-page .msg.question { align-self: flex-start; background: var(--card); box-shadow: inset 3px 0 0 var(--warn); }
+.bots-page .msg.done { align-self: flex-start; background: var(--card); }
+.bots-page .msg.question { align-self: flex-start; background: var(--card); }
+/* The one card still waiting on you keeps the stripe; answered ones lose it. */
 .bots-page .msg.error { align-self: flex-start; background: var(--card); box-shadow: inset 3px 0 0 var(--err); color: var(--err); }
 /* A question with choices is a card: the prompt, then lettered rows you can click. */
 .bots-page .msg.question.card { box-shadow: none; width: min(48rem, 92%); padding: 14px 16px 16px; }
+/* The one card still waiting on you keeps the stripe (after .card, which clears it); answered ones lose it. */
+.bots-page .msg.question:not(.settled), .bots-page .msg.approval:not(.settled) { box-shadow: inset 3px 0 0 var(--warn); }
 .bots-page .msg.question .opts { display: flex; flex-direction: column; margin-top: 12px; background: var(--inset); border-radius: 12px; overflow: hidden; }
 .bots-page .msg.question .opt { display: flex; align-items: center; gap: 12px; width: 100%; text-align: left; background: transparent; border-radius: 0; padding: 10px 14px; font-size: 13px; font-weight: 300; color: var(--text); border-top: 1px solid var(--line); white-space: normal; }
 .bots-page .msg.question .opt:first-child { border-top: none; }
@@ -415,7 +455,6 @@ div.bots-page.lanim .bots header #add svg { width: 20px; height: 20px; }
 .bots-page .handoff-card .msg { max-width: none; background: none; border-radius: 0; box-shadow: none; padding: 0 12px 10px; animation: none; }
 .bots-page .handoff-card .ft { display: flex; justify-content: flex-end; padding: 7px 12px; border-top: 1px solid var(--line); }
 .bots-page .handoff-card .ft button { font-size: 11.5px; padding: 4px 9px; }
-.bots-page .handoff-card.blocked { box-shadow: inset 3px 0 0 var(--warn); }
 .bots-page .handoff-card.failed { box-shadow: inset 3px 0 0 var(--err); }
 /* Side app in the preview column: body.hasapp shows the Browser | App strip, body.sideapp swaps the browser view for the app frame. */
 .bots-page .sabar { display: none; align-items: center; gap: 4px; padding: 0 10px 8px 14px; border-bottom: 1px solid var(--line); }
@@ -430,8 +469,8 @@ div.bots-page:not(.sideapp) #satabb, div.bots-page.sideapp #sataba { background:
 .bots-page .sabar .winacts .btnlink:hover { color: inherit; text-decoration: underline; }
 .bots-page #saframe { display: none; flex: 1; min-height: 0; width: 100%; border: 0; background: var(--bg); }
 div.bots-page.sideapp #saframe { display: block; }
-div.bots-page.sideapp .preview :is(.shotwrap, .toast, .cap, .info) { display: none; }
-.bots-page .msg.approval { align-self: flex-start; background: var(--card); box-shadow: inset 3px 0 0 var(--warn); max-width: min(48rem, 90%); }
+div.bots-page.sideapp .preview > :is(.shotwrap, .toast, .cap, .info) { display: none; }
+.bots-page .msg.approval { align-self: flex-start; background: var(--card); max-width: min(48rem, 90%); }
 .bots-page .msg.approval .btns { display: flex; gap: 8px; margin-top: 10px; }
 .bots-page .msg.approval.settled .btns { display: none; }
 .bots-page .composer { padding: 6px var(--chatgut) 18px; display: flex; flex-direction: column; gap: 8px; }
@@ -482,7 +521,7 @@ div.bots-page.sideapp .preview :is(.shotwrap, .toast, .cap, .info) { display: no
 
 /* ---- right: preview ---- */
 .bots-page .preview { background: var(--panel); display: flex; flex-direction: column; min-height: 0; }
-.bots-page .preview header { border-bottom: none; }
+.bots-page .preview > header { border-bottom: none; }
 .bots-page .preview .cap { text-align: center; padding: 10px 18px 0; color: var(--muted); font-size: 12px; display: flex; flex-direction: column; gap: 2px; }
 .bots-page .preview .cap .url { font-size: 10.5px; opacity: .7; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bots-page .shotwrap { position: relative; margin: 0 14px; border-radius: 14px; background: #000; aspect-ratio: 16 / 10; cursor: pointer; overflow: hidden; box-shadow: 0 1px 0 var(--line); }
@@ -508,7 +547,7 @@ div.bots-page.sideapp .preview :is(.shotwrap, .toast, .cap, .info) { display: no
 .bots-page #full .toast .pill { background: rgba(0,0,0,.7); color: #fff; box-shadow: none; -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); }
 .bots-page #full .toast .pill time { color: rgba(255,255,255,.6); }
 /* Below the screen: a few quiet sections, each a small heading and its lines. */
-.bots-page .info { margin: 18px 14px 14px; padding: 0 4px; color: var(--muted); font-size: 12px; line-height: 1.55; overflow: auto; display: flex; flex-direction: column; gap: 18px; }
+.bots-page .info { margin: 18px 14px 14px; padding: 0 4px; color: var(--muted); font-size: 12px; line-height: 1.55; overflow: hidden auto;  /* the inbox rows bleed 4px into the side padding on purpose; that must never become a horizontal scrollbar (which then forces a vertical one) */ display: flex; flex-direction: column; gap: 18px; }
 .bots-page .info h4 { margin: 0 0 4px; font-size: 10px; font-weight: 400; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); opacity: .8; }
 .bots-page .info .task { white-space: pre-wrap; color: var(--text); }
 .bots-page .info .note { text-align: center; padding: 28px 12px 8px; font-size: 13px; line-height: 1.5; }
@@ -538,13 +577,16 @@ div.bots-page.sideapp .preview :is(.shotwrap, .toast, .cap, .info) { display: no
 .bots-page .info .dlfill { height: 100%; background: var(--accent); border-radius: inherit; transition: width .25s ease; }
 
 /* ---- fullscreen ---- */
-.bots-page #full { position: fixed; inset: 0; background: var(--bg); display: none; flex-direction: column; z-index: 25; }  /* above the (absolute, z 20-21) Builds / Apps / viewer panels */
+/* #full lives in the preview column (PreviewPane) and fills it while Stage is on. Too narrow for Stage (.sfull): the same element goes
+   full-window, above the (absolute, z 20-21) Builds / Apps / viewer panels; CSS only, so the live link never remounts. */
+.bots-page #full { flex: 1; min-height: 0; background: var(--bg); display: none; flex-direction: column; }
+div.bots-page.stage.sfull #full { position: fixed; inset: 0; z-index: 25; }
 .bots-page #full.show { display: flex; }
 .bots-page #full header { display: flex; gap: 8px; align-items: center; padding: 8px 12px; background: var(--panel); }
 .bots-page #full header button, .bots-page #full .winacts button { font-size: 11.5px; display: inline-flex; align-items: center; gap: 5px; }
 .bots-page #full header button svg, .bots-page #full .winacts button svg { width: 13px; height: 13px; }
 .bots-page #full header .navctl svg { width: 16px; height: 16px; }
-.bots-page #full .stage { position: relative; flex: 1; overflow: auto; background: #000; display: flex; align-items: flex-start; justify-content: center; }  /* relative: the overlays below position against it */
+.bots-page #full .stage { position: relative; flex: 1; overflow: auto; background: #000; display: flex; align-items: center; justify-content: center; }  /* relative: the overlays below position against it; centred: while you watch, the bot's fixed 1280x800 frame is letterboxed */
 .bots-page #full .stage img { max-width: 100%; max-height: 100%; object-fit: contain; display: block; }  /* fit: the stage never scrolls, so pointer math needs no scroll offset */
 .bots-page #full .stage:focus, .bots-page #full .stage:focus-visible { outline: none; }
 /* #fkeys: the keyboard target while you drive (live-input.ts). 1x1 and transparent so an IME still attaches to it; focused with
@@ -575,8 +617,9 @@ div.bots-page.sideapp .preview :is(.shotwrap, .toast, .cap, .info) { display: no
 /* Take over is a plain button; once you are driving it becomes the accent "Hand back", and the stage gets an accent ring.
    The ring is an outline, not an inset shadow: the stage scrolls, and a shadow would scroll away with the content. */
 .bots-page #full #ctl { background: var(--panel2); color: var(--text); }
-.bots-page #full.ctl #ctl { background: var(--accent); color: var(--accent-ink); }
-.bots-page #full.ctl .stage, .bots-page #full.ctl .stage:focus, .bots-page #full.ctl .stage:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.bots-page #full.ctl #ctl { background: var(--you); color: #fff; }
+/* Your frame on the page while you drive (.ctl): amber. The bot driving has no frame. */
+.bots-page #full.ctl .stage, .bots-page #full.ctl .stage:focus, .bots-page #full.ctl .stage:focus-visible { outline: 2px solid var(--you); outline-offset: -2px; }
 .bots-page #full .tabstrip { display: none; flex: 1; min-width: 0; align-items: flex-end; gap: 0; padding: 6px 8px 0; background: var(--bg); overflow-x: auto; }
 .bots-page #full .tabstrip.show { display: flex; }
 .bots-page #full .tabstrip .tab { display: flex; align-items: center; gap: 8px; flex: 0 1 200px; min-width: 0; padding: 8px 12px; border-radius: 8px 8px 0 0; font-size: 11px; color: var(--muted); cursor: pointer; white-space: nowrap; }
@@ -660,7 +703,7 @@ div.bots-page.sideapp .preview :is(.shotwrap, .toast, .cap, .info) { display: no
 .bots-page .bots #builds.warn .n { background: var(--warn, #f0a030); color: #1b1d21; }
 .bots-page .bots #builds.fresh { color: var(--accent-text); }
 .bots-page .bots .botfoot { display: flex; align-items: center; padding: 8px 14px 12px; flex: none; }
-div.bots-page:is(.lcol, .lfit) .bots .botfoot { justify-content: center; padding: 8px 0 12px; }
+div.bots-page:is(.lcol, .lfit, .stage) .bots .botfoot { justify-content: center; padding: 8px 0 12px; }
 /* Builds / Apps / the app viewer cover the bots page, not the window (absolute in div.bots-page, which is position:
    relative): the shell's sidebar stays where it is. Fixed came from the standalone FusedBot app, which had no sidebar. */
 .bots-page #bpanel { position: absolute; inset: 0; background: var(--bg); display: none; flex-direction: column; z-index: 20; }

@@ -170,6 +170,12 @@ export interface Bot {
   offers_declined?: unknown;
   artifacts_dir?: string;
   control?: boolean;
+  /** Who started the current hand-over: the bot's login tool ("bot") or your take-over ("user"); null/absent when the bot drives. */
+  control_by?: "bot" | "user" | null;
+  /** When control was handed over (server timestamp, same clock as the event `ts`), for the rail card's elapsed-time pill. */
+  control_since?: number | null;
+  /** The last hand back: the question event it settled (`seq`), how long you drove (`secs`) and a still of the page as you left it. */
+  handback?: { seq: number; secs: number; shot: string | null } | null;
   dl_pct?: number | null;
   engine?: "auto" | "steps" | "agent";
   seq: number;
@@ -341,6 +347,8 @@ export const api = {
   popout: (id: string) => post<Ok>(`${bid(id)}/popout`, {}, "popout"),
   dock: (id: string) => post<Ok>(`${bid(id)}/dock`, {}, "dock"),
   wake: (id: string) => post<Ok>(`${bid(id)}/wake`, {}, "wake"),
+  /** The bot's Chrome window follows the live view's stage size (browser.py set_viewport). */
+  viewport: (id: string, w: number, h: number) => post<Ok & { viewport: [number, number] }>(`${bid(id)}/viewport`, { w, h }, "viewport"),
   /** The user clicked this bot open (or deep-linked to it): Super Bot's first task starts from this, nothing else. */
   open: (id: string) => post<Ok & { setup?: "started" | "pending" | "none" }>(`${bid(id)}/open`, {}, "open"),
   goto: (id: string, url: string) => post<{ ok: true; url: string }>(`${bid(id)}/goto`, { url }, "goto"),

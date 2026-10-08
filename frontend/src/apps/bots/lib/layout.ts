@@ -5,20 +5,25 @@
 //   body.lfit / .rfit  the window is too narrow, so it collapsed / hid itself (with hysteresis)
 //   body.lanim / .lfast  the rail is mid-slide (rows morph and glide) / closing (quick slide)
 //   root.dragging      a gutter drag is in progress
+//   root.stage         the live view is open in the preview column (Stage: icon sidebar, chat rail --chatw, the page takes the rest)
+//   root.sfull         Stage, but the window is too narrow for it: the live view falls back to a fixed overlay (CSS only)
 // This module touches the DOM directly (main, .preview, #botlist, #lcol, #add, the root): it is the plumbing the
 // React tree sits on, exactly as in OpenBot. The fit is measured on the page's own <main> (ResizeObserver), never
 // window.innerWidth: the shell's sidebar takes width the page cannot use.
 import { botsRoot } from "./root";
 
 export const LAYOUT_KEY = "browser-bot.layout";
-export interface Layout { lw: number; rw: number; lcol: boolean; rcol: boolean }
-export const LAYOUT_DEF: Layout = { lw: 280, rw: 400, lcol: false, rcol: false };
+export interface Layout { lw: number; rw: number; cw: number; lcol: boolean; rcol: boolean }
+export const LAYOUT_DEF: Layout = { lw: 280, rw: 400, cw: 340, lcol: false, rcol: false };
 // Thread (middle column) floor and preview floor; keep in step with --mid / --rmin in the CSS.
 export const MID_MIN = 450, R_MIN = 280;
+// Stage: the chat rail's floor and the live page's floor; below 72 + 12 + C_MIN + STAGE_MIN the live view goes full-window (sfull).
+export const C_MIN = 300, STAGE_MIN = 480;
 // Widths below snap collapse the panel; neither handle pushes the thread below MID_MIN, except the preview drag may collapse the sidebar to make room.
-export const LIM = { l: { min: 180, max: 560, snap: 130, shut: 72 }, r: { min: R_MIN, max: 900, snap: 150, shut: 0 } } as const;
+// `c` is the chat rail in Stage (the right gutter resizes it there); it never collapses.
+export const LIM = { l: { min: 180, max: 560, snap: 130, shut: 72 }, r: { min: R_MIN, max: 900, snap: 150, shut: 0 }, c: { min: C_MIN, max: 520, snap: 0, shut: 0 } } as const;
 export const FIT_HYST = 24;
-export type Side = "l" | "r";
+export type Side = "l" | "r" | "c";
 
 function loadLayout(): Layout {
   try { return { ...LAYOUT_DEF, ...JSON.parse(localStorage.getItem(LAYOUT_KEY) || "{}") }; } catch { return { ...LAYOUT_DEF }; }
@@ -30,16 +35,18 @@ export const getLayout = (): Layout => layout;
 /** Narrow-window flag with hysteresis: on below 0 px to spare, off from FIT_HYST px, else unchanged. */
 export const hyst = (was: boolean, spare: number): boolean => (spare < 0 ? true : spare >= FIT_HYST ? false : was);
 
-/** fitPreview's arithmetic: first the sidebar collapses to icons (lfit), then the preview hides (rfit). */
-export function fitFlags(w: number, l: Layout, was: { lfit: boolean; rfit: boolean }): { lfit: boolean; rfit: boolean } {
+/** fitPreview's arithmetic: first the sidebar collapses to icons (lfit), then the preview hides (rfit).
+ *  sfull: too narrow for Stage (icon sidebar + chat rail floor + live page floor), so the live view goes full-window. */
+export function fitFlags(w: number, l: Layout, was: { lfit: boolean; rfit: boolean; sfull?: boolean }): { lfit: boolean; rfit: boolean; sfull: boolean } {
   const need = 12 + MID_MIN + (l.rcol ? 0 : R_MIN);
   const lfit = !l.lcol && hyst(was.lfit, w - Math.min(l.lw, w * 0.4) - need);
   const sidebar = l.lcol || lfit ? 72 : Math.min(l.lw, w * 0.4);
-  return { lfit, rfit: hyst(was.rfit, w - sidebar - 12 - MID_MIN - R_MIN) };
+  return { lfit, rfit: hyst(was.rfit, w - sidebar - 12 - MID_MIN - R_MIN), sfull: hyst(!!was.sfull, w - 72 - 12 - C_MIN - STAGE_MIN) };
 }
 
 /** A gutter drag step: the new layout for a raw width (px) on `side`, given the room left for it. */
 export function dragStep(l: Layout, side: Side, raw: number, room: number): Layout {
+  if (side === "c") return { ...l, cw: Math.max(LIM.c.min, Math.min(LIM.c.max, raw, room)) };
   const L = LIM[side], key = side === "l" ? "lw" : "rw", col = side === "l" ? "lcol" : "rcol";
   const next = { ...l, [col]: raw < L.snap };
   if (!next[col]) next[key] = Math.max(L.min, Math.min(L.max, raw, room));
@@ -56,8 +63,11 @@ const railBtns = (): HTMLElement[] => ["#lcol", "#add"].map((id) => body().query
 
 /** Toggle a root class (the side app uses hasapp / sideapp the same way). */
 export const bodyClass = (name: string, on: boolean): void => { body().classList.toggle(name, on); };
-export const railShut = (): boolean => body().classList.contains("lcol") || body().classList.contains("lfit");
-export const previewShown = (): boolean => !body().classList.contains("rcol") && !body().classList.contains("rfit");
+const staged = (): boolean => body().classList.contains("stage");
+export const railShut = (): boolean => body().classList.contains("lcol") || body().classList.contains("lfit") || staged();
+export const previewShown = (): boolean => staged() || (!body().classList.contains("rcol") && !body().classList.contains("rfit"));
+// In Stage the right gutter sits between the chat rail and the live page: it resizes the rail (`c`), not the preview.
+const effSide = (side: Side): Side => (side === "r" && staged() ? "c" : side);
 
 /** Each `.bot` row's offsetTop by data-id (the "before" of a FLIP). */
 export function rowOffsets(list: Element | null): Record<string, number> {
@@ -138,15 +148,24 @@ export function withRailGlide(fn: () => void): void {
 // Narrow windows: first the sidebar collapses to icons (lfit), then the preview hides (rfit); each undoes itself with FIT_HYST px to spare so nothing flaps.
 export function fitPreview(): void {
   const main = mainEl(); if (!main) return;
-  const cl = body().classList, f = fitFlags(main.clientWidth, layout, { lfit: cl.contains("lfit"), rfit: cl.contains("rfit") });
+  const cl = body().classList, f = fitFlags(main.clientWidth, layout, { lfit: cl.contains("lfit"), rfit: cl.contains("rfit"), sfull: cl.contains("sfull") });
   cl.toggle("lfit", f.lfit);
   cl.toggle("rfit", f.rfit);
+  cl.toggle("sfull", f.sfull);
+}
+
+/** Stage on/off (the store's `fast`): the sidebar folds to icons with the same row glide as a collapse, the preview column widens into the live view. */
+export function setStage(on: boolean): void {
+  if (staged() === on) return;
+  // No lockPreview: leaving Stage with the preview hidden would pin --rwlock at the stage's full width for the next open.
+  withRailGlide(() => bodyClass("stage", on));
 }
 
 export function applyLayout(save: boolean): void {
   withRailGlide(() => lockPreview(() => {
     body().style.setProperty("--lw", layout.lw + "px");
     body().style.setProperty("--rw", layout.rw + "px");
+    body().style.setProperty("--chatw", layout.cw + "px");
     body().classList.toggle("lcol", !!layout.lcol);
     body().classList.toggle("rcol", !!layout.rcol);
     fitPreview();
@@ -173,6 +192,8 @@ export function toggleRight(): void { layout = { ...layout, rcol: !layout.rcol }
 export function closePreview(): void { layout = { ...layout, rcol: true }; applyLayout(true); }
 /** Gutter double-click: that side back to its default width, expanded. */
 export function resetSide(side: Side): void {
+  side = effSide(side);
+  if (side === "c") { layout = { ...layout, cw: LAYOUT_DEF.cw }; applyLayout(true); return; }
   const key = side === "l" ? "lw" : "rw", col = side === "l" ? "lcol" : "rcol";
   layout = { ...layout, [key]: LAYOUT_DEF[key], [col]: false }; applyLayout(true);
 }
@@ -180,6 +201,8 @@ export function resetSide(side: Side): void {
 /** Gutter pointerdown: track the pointer until release (pointer capture on the gutter itself). */
 export function startGutterDrag(side: Side, g: HTMLElement, e: PointerEvent): void {
   const main = mainEl(); if (!main) return;
+  side = effSide(side);
+  if (side === "c") { startRailDrag(main, g, e); return; }
   const key = side === "l" ? "lw" : "rw", col = side === "l" ? "lcol" : "rcol", L = LIM[side];
   const other = side === "l" ? main.querySelector(".preview") : main.querySelector(".bots");
   // Width the far panel takes; for the sidebar, computed from layout so it can be asked "what if it were collapsed?".
@@ -197,6 +220,16 @@ export function startGutterDrag(side: Side, g: HTMLElement, e: PointerEvent): vo
     layout = dragStep(layout, side, raw, roomFor());
     applyLayout(false);
   };
+  const up = () => { g.removeEventListener("pointermove", move); g.classList.remove("drag"); body().classList.remove("dragging"); applyLayout(true); };
+  g.addEventListener("pointermove", move);
+  g.addEventListener("pointerup", up, { once: true }); g.addEventListener("pointercancel", up, { once: true });
+}
+
+/** Stage's right gutter: drag right widens the chat rail; the live page keeps at least STAGE_MIN. */
+function startRailDrag(main: HTMLElement, g: HTMLElement, e: PointerEvent): void {
+  e.preventDefault(); g.setPointerCapture(e.pointerId); g.classList.add("drag"); body().classList.add("dragging");
+  const x0 = e.clientX, w0 = layout.cw;
+  const move = (ev: PointerEvent) => { layout = dragStep(layout, "c", w0 + ev.clientX - x0, main.clientWidth - 72 - 12 - STAGE_MIN); applyLayout(false); };
   const up = () => { g.removeEventListener("pointermove", move); g.classList.remove("drag"); body().classList.remove("dragging"); applyLayout(true); };
   g.addEventListener("pointermove", move);
   g.addEventListener("pointerup", up, { once: true }); g.addEventListener("pointercancel", up, { once: true });

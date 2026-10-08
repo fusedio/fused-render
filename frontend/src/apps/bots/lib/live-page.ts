@@ -5,16 +5,45 @@
 // Everything here is per CDP session: re-applied on every socket (onOpen) and forgotten with it (onReset).
 import { pickFile } from "@platform/lib/api";
 import { askAuth, askConfirm, askPrompt } from "../dialogs/ask";
-import { showToast } from "../state/store";
-import { cdp, focusCtl, inCtl, linked, onEvent, onOpen, onReset } from "./cdp";
+import { cur, showToast } from "../state/store";
+import { api } from "./api";
+import { cdp, focusCtl, inCtl, inFull, linked, onEvent, onOpen, onReset } from "./cdp";
 import { authKey } from "./live";
 
 const toast = (text: string) => showToast({ text, ts: Date.now() / 1000 });
 
 let fetchOn = false, interceptsOn = false;
 const authSeen = new Set<string>();
+
+// Viewport fit. The bot's Chrome window follows the stage's size (browser.py set_viewport resizes the window; the bot
+// addresses elements by ref and scales its screenshots, so any size suits it). Sent while the live view is open, whoever
+// drives, so the frame fills the stage; the size sticks for the bot afterwards. Per bot: the last size sent is remembered
+// so a poll or a store change does not repeat it.
+let fitted: { id: string; size: string } | null = null;
+let fitting = false, refit = false;  // one resize in flight at a time (each takes Chrome up to seconds on a heavy page); the newest size follows
+export function fitViewport(): void {
+  const b = cur(); const stage = document.getElementById("stage");
+  if (!b || !stage || !inFull() || !stage.clientWidth || !stage.clientHeight) return;
+  const size = `${Math.round(stage.clientWidth)}x${Math.round(stage.clientHeight)}`;
+  if (fitted && fitted.id === b.id && fitted.size === size) return;
+  if (fitting) { refit = true; return; }
+  fitted = { id: b.id, size }; fitting = true;
+  const [w, h] = size.split("x").map(Number);
+  api.viewport(b.id, w, h).catch(() => { fitted = null; }).finally(() => {
+    fitting = false;
+    if (refit) { refit = false; fitViewportSoon(); }
+  });
+}
+let fitTimer: ReturnType<typeof setTimeout> | null = null;
+/** The stage was resized (gutter drag, window, Stage opening): refit, debounced so a drag sends one resize at the end. */
+export function fitViewportSoon(): void {
+  if (fitTimer) clearTimeout(fitTimer);
+  fitTimer = setTimeout(() => { fitTimer = null; fitViewport(); }, 200);
+}
+
 /** Bring the session's switches in line with whether you drive. Cheap; called on open and on every store change. */
 export function syncDriving(): void {
+  fitViewportSoon();
   if (!linked()) return;
   const want = inCtl();
   if (want !== fetchOn) {

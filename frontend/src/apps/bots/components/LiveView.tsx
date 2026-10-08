@@ -1,9 +1,10 @@
 // OpenBot's #full live view (live.js renderFullMirrors / renderTabs and the topbar + header controls), shown while
-// the store's `fast` flag is on. The socket, frames and input forwarding live in lib/cdp.ts; this renders the
+// the store's `fast` flag is on. It sits in the preview column (PreviewPane), always mounted, and fills it in Stage
+// (root .stage, lib/layout.ts setStage); a window too narrow for Stage (.sfull) turns it full-window in CSS. The socket, frames and input forwarding live in lib/cdp.ts; this renders the
 // chrome around them from the store and the link state.
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api, type Bot } from "../lib/api";
-import { gotoTyped, handBack, inFull, nav, tabstripClick, toggleCtl, useLinked } from "../lib/cdp";
+import { gotoTyped, handBack, inFull, nav, tabstripClick, takeOver, useLinked } from "../lib/cdp";
 import { installLive } from "../lib/live-input";
 import { closeOverlay, pickerChange, pickSelect, runItem, useOverlay } from "../lib/live-overlays";
 import { statusLabel } from "../lib/derive";
@@ -121,7 +122,7 @@ export function LiveView() {
     for (let i = evs.length - 1; i >= 0; i--) if (evs[i].role === "thought" || evs[i].role === "action" || evs[i].role === "note") { last = evs[i]; break; }
     fstat = !isLinked && open
       ? (b.browser?.running ? "Connecting to the browser…" : "Browser is asleep · waking it…")
-      : b.control ? "You're driving · bot paused"
+      : b.control ? `You're driving · ${b.name} paused`
       : statusLabel(b) + (last && b.status === "running" ? " · " + last.text : "");
   }
 
@@ -130,7 +131,8 @@ export function LiveView() {
   return (
     <div id="full" className={cls}>
       <div className="topbar">
-        <button id="giveback2" className="backtxt" title="Back to chat; the bot continues" onClick={() => { void handBack(true); }}>Back</button>
+        {/* Back is watch mode's exit (the bot is untouched); while you drive, the one exit is #ctl's "Done, hand back". */}
+        {b?.control ? null : <button id="giveback2" className="backtxt" title="Back to chat; the bot continues" onClick={() => { void handBack(true); }}>Back</button>}
         {b ? <Tabs b={b} /> : <div className="tabstrip" id="tabstrip" />}
         <span className="winacts">
           <button id="fwin" className={winBusy ? "busy" : undefined} onClick={() => { void onWin(); }}
@@ -138,12 +140,9 @@ export function LiveView() {
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2" /><path d="M8 20h8M12 16v4" /><path d="M12 13V7" /><path d="m9 10 3-3 3 3" /></svg>
             <span className="lbl">{winBusy || (headed ? "Back here" : "Real window")}</span>
           </button>
-          <button id="ctl" className="primary" onClick={() => { void toggleCtl(); }}
-            title={b?.control ? "Let the bot drive again" : "Pause the bot and drive this page yourself"}>
-            <span className="lbl">{b?.control ? "Hand back" : "Take over"}</span>
-          </button>
-          <button id="giveback" title="Back to chat; the bot continues" onClick={() => { void handBack(true); }}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M20 4l-6 6M20 10h-6V4" /><path d="M4 20l6-6M4 14h6v6" /></svg>
+          <button id="ctl" className="primary" onClick={() => { void (b?.control ? handBack(true) : takeOver()); }}
+            title={b?.control ? "Let the bot drive again and go back to the chat" : "Pause the bot and drive this page yourself"}>
+            <span className="lbl">{b?.control ? "Done, hand back" : "Take over"}</span>
           </button>
         </span>
       </div>

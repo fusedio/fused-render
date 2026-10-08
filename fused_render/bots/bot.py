@@ -158,7 +158,7 @@ APP_GUIDE = """APP GUIDE (Browser Bots, a local desktop app; every bot has its o
 - Routines (same menu): scheduled tasks, "Every N minutes" (min 5), "Daily at HH:MM" on chosen weekdays, or "Once at" a date-time. Each can be enabled, disabled, run now or deleted. A run only starts when you are idle; a busy bot skips that slot. A routine pauses itself after 3 failed runs in a row. You cannot create routines yourself: tell the user how to add one.
 - Skills (same menu): the PLAYBOOKS. The user can write one by hand, click "Learn from last task" (the model condenses your last finished task), or you save one with `learn`. Up to 40 per bot; each mounts into your prompt only when one of its trigger words appears in the task.
 - Chat: the user can pause, resume or stop you at any time; a message sent while you work arrives as USER INSTRUCTION and overrides the task; they can reply to or react with an emoji on one of your messages (you see reactions in CONVERSATION SO FAR); they can search the thread; "Export" saves the whole transcript as Markdown. Attaching, pasting or dropping a file on the composer puts it in FILES so you can `upload` it.
-- Live view: clicking your screenshot opens your browser full size with a tab strip, back/forward/reload and a URL bar. "Take over" pauses you and lets the user drive (solve a captcha, pass a popup); "Hand back" returns control and you continue; "Real window" opens the same browser as a real Chrome window for passkeys and password managers. Your `login` action hands the page over the same way and waits until the user replies "done" or clicks Hand back.
+- Live view: clicking your screenshot widens your browser into the page (the chat becomes a side rail) with a tab strip, back/forward/reload and a URL bar. "Take over" pauses you and lets the user drive (solve a captcha, pass a popup); "Done, hand back" returns control and you continue; "Real window" opens the same browser as a real Chrome window for passkeys and password managers. Your `login` action hands the page over the same way and waits until the user clicks Done (or replies in chat).
 - Inbox: everything you produce lands in the user's Inbox, a Finder folder at ~/Fused/bots/<your name>/ with one subfolder per task: `save` results, downloads that arrived during the task, and a README with the task and your final answer. The Inbox list under your screenshot shows the most recent items with "Open folder" to reveal them in Finder. Files the user attaches in the composer land in FILES instead, for `upload`. There is no other export path.
 - iMessage: only Super Bot takes tasks by text (from the phone number or Apple ID set in its Settings > Advanced) and texts its replies back; it can hand a browsing task to a bot like you, whose final answer goes back to it as the result. Other bots are not reachable by text. "Contacts the bot may text" (Settings > Advanced) is the allowlist your `text` action can message and `texts` can read replies from (shown to you as CONTACTS). You cannot add contacts yourself: tell the user where.
 - Builds (button under the bots list): Claude Code sessions that create fused-render apps. The user can start one there, and you can start one with `build` (say so, then `done` with the link it returns). Apps land under @APPS_ROOT@/<name>; the Builds panel tracks progress and holds Claude's chat for each build; a chat message (and a text, if iMessage is on) arrives when one is ready, and a card when one is stuck (Claude waits for an OK or an answer, fails, or hits its usage limit) whose button opens it under Builds. Settings > Advanced > Builds picks "Scoped" (Claude asks the user before risky steps) or "Full access" (unattended).
@@ -531,6 +531,10 @@ class Bot:
             self.meta["status"] = "idle"
             self.meta["note"] = "interrupted by worker restart"
             dirty = True
+        # ...and a hand-over (a login wait, a take-over) with no task thread behind it: the page is the bot's again.
+        if self.meta.get("control") or self.meta.get("control_by") or self.meta.get("control_since"):
+            self._control_off()
+            dirty = True
         # Hand-offs still open when the server last stopped: their target's task died with it.
         interrupted = []
         for hd in self.meta.get("handoffs") or []:
@@ -642,7 +646,7 @@ class Bot:
             with open(p + ".tmp", "wb") as f:
                 f.write(data)
             os.replace(p + ".tmp", p)
-            names = sorted((n for n in os.listdir(d) if n.endswith(".jpg")), key=lambda n: int(n[:-4]) if n[:-4].isdigit() else 0)
+            names = sorted((n for n in os.listdir(d) if n.endswith(".jpg") and n[:-4].isdigit()), key=lambda n: int(n[:-4]))  # hb-<seq>.jpg: _write_still
             for n in names[:-self.STEP_THUMBS]:
                 try:
                     os.remove(os.path.join(d, n))
@@ -1527,11 +1531,15 @@ class Bot:
         return out
 
     def set_status(self, status, **kw):
+        still = None
         with self.lock:
+            if "control" in kw and not kw["control"]:
+                still = self._control_off(handback=True)  # control_by / control_since go with it (before waiting_on changes)
             self.meta["status"] = status
             self.meta.update(kw)
             self.meta["updated"] = time.time()
             self.save()
+        self._write_still(still)
 
     @property
     def browser_id(self):
@@ -1567,7 +1575,8 @@ class Bot:
                 "memory": self.memory() if detail else None,
                 "skills": self.skills() if detail else None,
                 "shot": f"/api/bots/{self.id}/shot" if shot_ts else None,
-                "shot_ts": shot_ts, "viewport": list(getattr(browser_mod, "VIEWPORT", (1280, 800)))}
+                "shot_ts": shot_ts, "viewport": list(vp if isinstance(vp := getattr(self.browser, "viewport", None), (tuple, list))
+                                 else getattr(browser_mod, "VIEWPORT", (1280, 800)))}
 
     # -- routines ------------------------------------------------------------
     # meta["routines"]: [{id, task, kind: interval|daily|once, minutes, time "HH:MM",
@@ -1652,7 +1661,7 @@ class Bot:
             else:
                 r["last_result"] = "started"
                 self.emit("system", f"Routine {'run now' if manual else 'fired'}: {r['task']}")
-                self.meta["control"] = False
+                self._control_off()
             r["next"] = self._next_run(r, time.time()) if r.get("enabled") else None
             if r["kind"] == "once" and not busy:
                 r["enabled"] = False
@@ -1782,7 +1791,7 @@ class Bot:
         with self.lock:
             running = self.thread is not None and self.thread.is_alive()
             if not running and self.meta.get("control"):
-                self.meta["control"] = False  # a fresh task means the bot drives again
+                self._control_off()  # a fresh task means the bot drives again
             pending = self.meta.get("pending_offer")
         texted = via.get("kind") == "imessage"
         # A yes or no to an app offer that outlived its task (see _offer) is settled here, without a model call.
@@ -1955,13 +1964,67 @@ class Bot:
         except Exception:  # noqa: BLE001 — the flag alone still ends the task at its next wait
             logger.warning("bot %s: agent engine stop failed", self.id, exc_info=True)
 
-    def takeover(self, note=True):
+    def takeover(self, note=True, by="user"):
         """Hand the page to the user inside the live view: the bot pauses and the
         page drives the tab over its own DevTools socket. No relaunch. `note=False`
-        (the login tool) skips the "Paused" card: its own question card says why."""
+        (the login tool) skips the "Paused" card: its own question card says why.
+        `by` lands in meta["control_by"]: "bot" when the bot asked (login), "user" when
+        the user took the page. A take-over while the user already holds the page keeps
+        the first hand-over's control_by / control_since."""
         self.pause(note=note)
         self.wake_browser()
-        self.set_status("paused" if self.thread and self.thread.is_alive() else "idle", control=True)
+        self.set_status("paused" if self.thread and self.thread.is_alive() else "idle", control=True, **self._control_owner(by))
+
+    def _control_owner(self, by):
+        """control_by / control_since for a hand-over starting now, or the ones already held."""
+        with self.lock:
+            if self.meta.get("control") and self.meta.get("control_by"):
+                return {"control_by": self.meta["control_by"], "control_since": self.meta.get("control_since") or time.time()}
+            return {"control_by": by, "control_since": time.time()}
+
+    def _control_off(self, handback=False):
+        """The page goes back to the bot: control, control_by and control_since drop together.
+        `handback` (the hand-over is ending, not a fresh task overriding it): when the BOT had
+        asked (control_by "bot") and is still waiting on that question, meta["handback"]
+        records {seq, secs, shot} so the page settles that question card as "You handed it
+        back · m:ss" with a still of the page as you left it.
+
+        Returns the still to write, (name, jpeg bytes), or None: the caller writes it
+        with `_write_still` AFTER letting go of self.lock (no disk write under the lock)."""
+        with self.lock:
+            by = self.meta.pop("control_by", None)
+            since = self.meta.pop("control_since", None)
+            self.meta["control"] = False
+            qseq = self.meta.get("waiting_on")
+            if not (handback and by == "bot" and since and qseq):
+                return None
+            data = getattr(self.browser, "thumb_bytes", None)
+            name = f"hb-{int(qseq)}.jpg" if data else None
+            self.meta["handback"] = {"seq": qseq, "secs": int(max(0, time.time() - float(since))),
+                                     "shot": f"/api/bots/{self.id}/steps/{name}" if name else None}
+            return (name, data) if name else None
+
+    HANDBACK_STILLS = 50
+
+    def _write_still(self, still):
+        """Write a hand-back still from `_control_off` as steps/hb-<seq>.jpg. The hb- prefix keeps
+        it out of `_step_thumb`'s keep-last-200 prune (digit names only); stills keep their own last 50."""
+        if not still:
+            return
+        name, data = still
+        d = self.steps_dir
+        try:
+            os.makedirs(d, exist_ok=True)
+            p = os.path.join(d, name)
+            with open(p + ".tmp", "wb") as f:
+                f.write(data)
+            os.replace(p + ".tmp", p)
+            hb = sorted((n for n in os.listdir(d) if n.startswith("hb-") and n.endswith(".jpg") and n[3:-4].isdigit()),
+                        key=lambda n: int(n[3:-4]))
+            for n in hb[:-self.HANDBACK_STILLS]:
+                os.remove(os.path.join(d, n))
+        except OSError:
+            logger.debug("bot %s: hand-back still not written", self.id, exc_info=True)
 
     def popout(self):
         """Open this bot's browser as a real Chrome window on the desktop and hand it to
@@ -1973,7 +2036,9 @@ class Bot:
             raise ValueError(f"{', '.join(busy)} is working in this shared browser; stop or pause that task first")
         self.pause(note=False)
         self.browser.popout()
-        self.set_status("paused" if self.thread and self.thread.is_alive() else "idle", control=True)
+        # control_by "user", unless a bot-asked hand-over (login) is already on: popping out to sign in with a
+        # passkey still ends that question, so its card settles on hand back.
+        self.set_status("paused" if self.thread and self.thread.is_alive() else "idle", control=True, **self._control_owner("user"))
         shared = (" Every bot sharing this browser is in that window too." if self.shared_with() else "")
         self.emit("system", "Opened the browser as a real Chrome window on your desktop. Hand back (or close the window) when you are done." + shared)
 
@@ -2000,15 +2065,25 @@ class Bot:
 
     def _release(self, note=True):
         """Control back to this bot (the shared tail of giveback / dock)."""
-        self.meta["control"] = False
-        self.save()
+        with self.lock:
+            still = self._control_off(handback=bool(self.thread and self.thread.is_alive()))
+            self.save()
+        self._write_still(still)
         self.resume(note=note)
 
     def giveback(self):
         if self.browser.headed():
             self.dock(release=True)
             return
+        # Done hands back THIS bot only. On a shared browser another bot may still be mid-login on the same tab
+        # (both asked); it keeps its hand-over and its own Done. Known limit: this bot resumes on that tab now.
+        # Holding it paused instead would not stick: its login wait ends as soon as control drops and the engine
+        # clears pause_flag itself.
+        waiting = [o["name"] or "Another bot" for o in self.shared_with()
+                   if (b := _registry().get(o["id"])) and b.meta.get("control") and b.meta.get("control_by") == "bot"]
         self._release()
+        if waiting:
+            self.emit("system", f"{', '.join(waiting)} still {'needs' if len(waiting) == 1 else 'need'} you in this browser.")
 
     def wake_browser(self):
         """Relaunch an asleep browser. A browser that is already up is left exactly as it is."""
@@ -2397,7 +2472,7 @@ class Bot:
             elif q:
                 return False
             if t.meta.get("control"):
-                t.meta["control"] = False  # a fresh task means the bot drives again (as receive() does)
+                t._control_off()  # a fresh task means the bot drives again (as receive() does)
             if t.deleted:
                 return False
             if not t.start_task(hd["task"], origin=chan.HANDOFF_KIND, via=hv):
@@ -2873,6 +2948,11 @@ def _run_task(run, bot, task, label):
         with bot.lock:
             if bot.thread is threading.current_thread():
                 bot.task_via = dict(chan.WEB)
+                # A task that ends mid hand-over (stopped during a login wait, an engine error) never reaches
+                # the engine's set_status(control=False): the hand-over ends with the task.
+                if bot.meta.get("control"):
+                    bot._control_off()
+                    bot.save()
 
 
 def bots_section(bot) -> str:

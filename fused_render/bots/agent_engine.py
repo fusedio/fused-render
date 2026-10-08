@@ -130,7 +130,7 @@ Rules:
 - Use `type` with submit=true to search (it presses Enter). Prefer the site's own search or Google.
 - Only use refs from the latest element list you were given. If the target is not visible, `scroll` first or `observe` for the full list.
 - Navigation items with no href (e.g. "Products", "Resources") are dropdown menus: `hover` them, then click one of the links that appear.
-- Logins: NEVER ask for passwords or codes. If a page needs a sign-in, 2FA or captcha, call `login` with a short message (e.g. "This site needs you to sign in"). It pauses you and hands your page to the user in the live view: they sign in there with their own keyboard, then reply "done" or click Hand back, and you continue where they left off. Never use `ask` for this.
+- Logins: NEVER ask for passwords or codes. If a page needs a sign-in, 2FA or captcha, call `login` with a short message (e.g. "This site needs you to sign in"). It pauses you and hands your page to the user in the live view: they sign in there with their own keyboard, then click Done, and you continue where they left off. Never use `ask` for this.
 - Your tools are the truth about what you can do, even if an earlier message of yours said otherwise (e.g. with CONTACTS present you CAN read iMessage replies with `texts`; "did she answer?" means: run `texts` and report).
 - Use `ask` when you truly need the user for something else (a decision, a choice between options). Never invent logins. When the answer is a choice, pass the choices as `options` (short labels, 2-5 of them); the user can still type something else.
 - Payments, purchases and MFA codes: never complete these yourself. Stop and use `login` (or `ask` the user to take over) for that step.
@@ -1407,7 +1407,7 @@ def _ask_wait(bot, sess: Turn, q: str, opts: list, summary: str = "", multi: boo
     lines = []
     if drove:
         bot.pause_flag.clear()
-        bot.meta["control"] = False
+        bot._control_off()
         lines.append("The user took over your browser in the live view meanwhile and handed it back: the page, the "
                      "login state and which tab is in front may all have changed. Do not assume anything from "
                      "before; act on the page below.")
@@ -1502,7 +1502,7 @@ def _ask_builtin(bot, sess: Turn, args: dict):
 
 def _login(bot, sess: Turn, args: dict):
     q = (args.get("message") or "").strip() or "This page needs you to sign in."
-    bot.takeover(note=False)  # the user signs in from the live view; the bot waits paused on this same tab
+    bot.takeover(note=False, by="bot")  # the user signs in from the live view; the bot waits paused on this same tab
     ev = bot.emit("question", channels.login_text(bot, q))
     bot.set_status("waiting", waiting_on=_seq(ev))
     bot.asking = True

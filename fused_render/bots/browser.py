@@ -895,9 +895,88 @@ class BrowserProcess:
         self.lock = threading.RLock()
         self._proc = None
         self.views = []  # Browser views attached; len > 1 = shared
+        # The window size, following the live view's stage (set_viewport). Its own file: session.json is
+        # rewritten on every launch and removed on stop, and the size has to outlive both.
+        self.viewport_path = os.path.join(cache_dir, "viewport.json")
+        self.viewport = self._read_viewport()
 
     def shared(self):
         return len(self.views) > 1
+
+    # -- viewport --------------------------------------------------------------
+    VIEWPORT_W = (640, 3840)
+    VIEWPORT_H = (480, 2400)
+
+    @classmethod
+    def _clamp_viewport(cls, w, h):
+        return (max(cls.VIEWPORT_W[0], min(cls.VIEWPORT_W[1], int(w))),
+                max(cls.VIEWPORT_H[0], min(cls.VIEWPORT_H[1], int(h))))
+
+    def _read_viewport(self):
+        try:
+            with open(self.viewport_path, encoding="utf-8") as f:
+                w, h = json.load(f)["viewport"]
+            return self._clamp_viewport(w, h)
+        except Exception:  # noqa: BLE001 — none saved yet (or unreadable): the default
+            return tuple(VIEWPORT)
+
+    def set_viewport(self, w, h):
+        """Size this Chrome's windows to (w, h), clamped, and remember it for the next launch.
+        A popped-out (headed) window is the user's and is never resized; the size still applies
+        once it docks back (relaunch). Returns the stored size."""
+        size = self._clamp_viewport(w, h)
+        with self.lock:
+            if size == self.viewport:
+                return size
+            sess = self.session()
+        if sess and not sess.get("headed") and self.alive(sess):
+            # Resize first, remember after: a failed resize raises, so the caller (the live view) tries again
+            # instead of believing a size Chrome never took.
+            self._resize_windows(sess["port"], size)
+        with self.lock:
+            self.viewport = size
+            try:
+                write_json_atomic(self.viewport_path, {"viewport": list(size)})
+            except OSError:
+                log.warning("viewport not saved", exc_info=True)
+        return size
+
+    @staticmethod
+    def _resize_windows(port, size):
+        """Every page window to `size`, as a CSS viewport: the window is set, the viewport measured
+        (Page.getLayoutMetrics), and any UI strip Chrome keeps between the two is added once. Raises
+        when no window could be resized."""
+        bws = WS(_http(port, "/json/version")["webSocketDebuggerUrl"], timeout=3)
+        done = 0
+        try:
+            seen = set()
+            for t in _http(port, "/json/list"):
+                if t.get("type") != "page":
+                    continue
+                try:
+                    wid = bws.call("Browser.getWindowForTarget", targetId=t["id"])["windowId"]
+                    if wid in seen:
+                        continue
+                    seen.add(wid)
+                    want = {"width": size[0], "height": size[1]}
+                    bws.call("Browser.setWindowBounds", windowId=wid, bounds={**want, "windowState": "normal"})
+                    pws = WS(t["webSocketDebuggerUrl"], timeout=3)
+                    try:
+                        vp = (pws.call("Page.getLayoutMetrics").get("cssLayoutViewport") or {})
+                    finally:
+                        pws.close()
+                    dw = size[0] - int(vp.get("clientWidth") or size[0])
+                    dh = size[1] - int(vp.get("clientHeight") or size[1])
+                    if 0 < dw < 200 or 0 < dh < 200:
+                        bws.call("Browser.setWindowBounds", windowId=wid,
+                                 bounds={"width": size[0] + max(0, dw), "height": size[1] + max(0, dh)})
+                    done += 1
+                except Exception:  # noqa: BLE001 — a tab closing mid-loop; the others still resize
+                    log.warning("resizing a bot window failed", exc_info=True)
+        finally:
+            bws.close()
+        if not done:
+            raise RuntimeError("no bot window could be resized")
 
     def attach(self, view):
         """Add a view. When the first view gets company, every tab open now is
@@ -1083,6 +1162,10 @@ class BrowserProcess:
             args = [
                 chrome, *mode,
                 "--remote-debugging-port=0",
+                # MEASURED (Chrome 155): `--remote-debugging-port=0` alone makes Chrome report navigator.webdriver
+                # = true (an explicit port does not), and Google's sign-in refuses such a browser ("this browser or
+                # app may not be secure"). This Blink switch turns that signal off; nothing else in the launch sets it.
+                "--disable-blink-features=AutomationControlled",
                 f"--remote-allow-origins={origin}",  # lets the page's live view connect directly
                 f"--user-data-dir={self.profile}",
                 "--no-first-run", "--no-default-browser-check",
@@ -1090,7 +1173,7 @@ class BrowserProcess:
                 # A crash (SIGKILL, power loss) leaves exit_type "Crashed" in the profile, which only a human
                 # dismissing the restore bubble resets; headless never can, so the bubble must never be asked for.
                 "--hide-crash-restore-bubble",
-                f"--window-size={VIEWPORT[0]},{VIEWPORT[1]}",
+                f"--window-size={self.viewport[0]},{self.viewport[1]}",
                 _with_scheme(restore) if headed and restore else "about:blank",
             ]
             proc = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
@@ -1322,6 +1405,13 @@ class Browser:
     def headed(self):
         return self.proc.headed()
 
+    @property
+    def viewport(self):
+        return self.proc.viewport
+
+    def set_viewport(self, w, h):
+        return self.proc.set_viewport(w, h)
+
     def popout(self):
         self.idle = False
         return self.proc.popout(url=self.last_url() if self.shared() else "", view=self)
@@ -1515,8 +1605,9 @@ class Browser:
             # window so the live view is sharp and the bot's screenshots match the usual viewport.
             w = ws.call("Browser.getWindowForTarget")
             b = w.get("bounds") or {}
-            if b.get("windowState", "normal") == "normal" and (b.get("width", 0) < VIEWPORT[0] or b.get("height", 0) < VIEWPORT[1]):
-                ws.call("Browser.setWindowBounds", windowId=w["windowId"], bounds={"width": VIEWPORT[0], "height": VIEWPORT[1]})
+            vw, vh = self.proc.viewport
+            if b.get("windowState", "normal") == "normal" and (b.get("width", 0) < vw or b.get("height", 0) < vh):
+                ws.call("Browser.setWindowBounds", windowId=w["windowId"], bounds={"width": vw, "height": vh})
         except Exception:
             pass
 
@@ -1891,8 +1982,9 @@ class Browser:
                 time.sleep(0.4)
                 return
             before = self._eval(ws, probe) or 0
-            ws.call("Input.dispatchMouseEvent", type="mouseMoved", x=VIEWPORT[0] // 2, y=VIEWPORT[1] // 2)
-            ws.notify("Input.dispatchMouseEvent", type="mouseWheel", x=VIEWPORT[0] // 2, y=VIEWPORT[1] // 2, deltaX=0, deltaY=dy)
+            cx, cy = self.proc.viewport[0] // 2, self.proc.viewport[1] // 2
+            ws.call("Input.dispatchMouseEvent", type="mouseMoved", x=cx, y=cy)
+            ws.notify("Input.dispatchMouseEvent", type="mouseWheel", x=cx, y=cy, deltaX=0, deltaY=dy)
             time.sleep(0.4)
             if (self._eval(ws, probe) or 0) != before:
                 return
