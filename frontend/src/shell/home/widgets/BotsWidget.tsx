@@ -1,6 +1,6 @@
 import type { Bot } from "@apps/bots/lib/api";
 import { Face } from "@apps/bots/components/Face";
-import { useBots } from "../data";
+import { useHomeBots } from "../data";
 import { itemCapacity, type Widget } from "../layout";
 import { BigCount, EmptyLine, ErrorLine, ItemList, ListSkeleton, type WidgetItem } from "./bits";
 
@@ -36,7 +36,7 @@ export function toItem(b: Bot): WidgetItem {
 }
 
 export function BotsWidget({ widget }: { widget: Widget }) {
-  const { data, error, retry } = useBots();
+  const { data, error, retry } = useHomeBots();
   if (error && !data) {
     return (
       <div className="hw-body">

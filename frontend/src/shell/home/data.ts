@@ -163,36 +163,42 @@ export interface AsyncState<T> {
   retry: () => void;
 }
 
-/** Open tasks (everything but done/archived) — refetched when anything
-    announces a task change, and on a slow beat so a run finishing in the
-    background shows up. */
-export function useOpenTasks(): AsyncState<Task[]> {
-  const [data, setData] = useState<Task[] | null>(null);
+/** Fetch on mount, refetch every `pollMs` and on the optional window `event`.
+    A failed fetch sets `error`, keeps the data already shown and keeps polling.
+    `retry` clears both, then refetches. */
+function useAsyncResource<T>(
+  load: () => Promise<T>,
+  opts: { pollMs: number; event?: string; errorText: string },
+): AsyncState<T> {
+  const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [nonce, setNonce] = useState(0);
+  const loadRef = useRef(load);
+  loadRef.current = load;
+  const { pollMs, event, errorText } = opts;
   useEffect(() => {
     const bump = () => setNonce((n) => n + 1);
-    window.addEventListener(TASKS_CHANGED_EVENT, bump);
-    const t = setInterval(bump, 15000);
+    if (event) window.addEventListener(event, bump);
+    const t = setInterval(bump, pollMs);
     return () => {
-      window.removeEventListener(TASKS_CHANGED_EVENT, bump);
+      if (event) window.removeEventListener(event, bump);
       clearInterval(t);
     };
-  }, []);
+  }, [pollMs, event]);
   useEffect(() => {
     let alive = true;
-    getTasks().then(
+    loadRef.current().then(
       (r) => {
         if (!alive) return;
         setError(null);
-        setData(r.tasks.filter((t) => t.status !== "done" && t.status !== "archived" && t.kind !== "draft"));
+        setData(r);
       },
-      (e: Error) => alive && setError(e.message || "Couldn't load tasks."),
+      (e: Error) => alive && setError(e.message || errorText),
     );
     return () => {
       alive = false;
     };
-  }, [nonce]);
+  }, [nonce, errorText]);
   return {
     data,
     error,
@@ -204,41 +210,22 @@ export function useOpenTasks(): AsyncState<Task[]> {
   };
 }
 
+const loadOpenTasks = () =>
+  getTasks().then((r) => r.tasks.filter((t) => t.status !== "done" && t.status !== "archived" && t.kind !== "draft"));
+const loadHomeBots = () => botsApi.status({ cursors: {}, shot_for: "", fast: true }).then((r) => r.bots ?? []);
+
+/** Open tasks (everything but done/archived) — refetched when anything
+    announces a task change, and on a slow beat so a run finishing in the
+    background shows up. */
+export function useOpenTasks(): AsyncState<Task[]> {
+  return useAsyncResource(loadOpenTasks, {
+    pollMs: 15000,
+    event: TASKS_CHANGED_EVENT,
+    errorText: "Couldn't load tasks.",
+  });
+}
+
 /** Bots from the bots status endpoint, polled gently while mounted. */
-export function useBots(): AsyncState<Bot[]> {
-  const [data, setData] = useState<Bot[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [nonce, setNonce] = useState(0);
-  useEffect(() => {
-    let alive = true;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const tick = () => {
-      botsApi.status({ cursors: {}, shot_for: "", fast: true }).then(
-        (r) => {
-          if (!alive) return;
-          setError(null);
-          setData(r.bots ?? []);
-          timer = setTimeout(tick, 10000);
-        },
-        (e: Error) => {
-          if (!alive) return;
-          setError(e.message || "Couldn't reach bots.");
-        },
-      );
-    };
-    tick();
-    return () => {
-      alive = false;
-      if (timer) clearTimeout(timer);
-    };
-  }, [nonce]);
-  return {
-    data,
-    error,
-    retry: () => {
-      setData(null);
-      setError(null);
-      setNonce((n) => n + 1);
-    },
-  };
+export function useHomeBots(): AsyncState<Bot[]> {
+  return useAsyncResource(loadHomeBots, { pollMs: 10000, errorText: "Couldn't reach bots." });
 }
