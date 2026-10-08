@@ -30,7 +30,7 @@ import { Row, Rows } from "./SettingsRow";
 export type SettingsTab = "general" | "permissions" | "browser" | "memory" | "phone";
 
 /** The dialog's look, shared with CreateBot: black, stock shadcn everything else. */
-export const DIALOG_CLASS = "gap-0 overflow-hidden p-0";  // theme-aware: the shadcn dialog's own popover surface + ring
+export const DIALOG_CLASS = "bots-dialog gap-0 overflow-hidden p-0";  // surface per theme in bots.css (.bots-dialog); ring from the shadcn dialog
 export const FOOTER_CLASS = "mx-0 mb-0 rounded-b-xl border-t border-foreground/10 bg-foreground/[0.03] px-6 py-4";
 
 export interface BotSettingsProps {

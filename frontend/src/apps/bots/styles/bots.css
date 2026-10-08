@@ -125,8 +125,8 @@ div.bots-page:is(.lcol, .lfit, .stage) .bots .group { font-size: 0; padding: 6px
 div.bots-page:is(.lcol, .lfit, .stage) .bots .empty { display: none; }  /* "No bots yet" / "No bot matches" cannot fit the 72px rail */
 /* ONE SECONDARY SKIN (Akshil, 2026-10-08: "some buttons have fill some have outline", "I can barely see they are
    buttons"): every icon button is the PAGE colour with a hairline ring, one surface step away from whatever grey it
-   sits on — the same rule the composer's + and mic follow inside their grey row. Hover lifts to --raised. Primary
-   (#add) keeps its solid --raised fill. */
+   sits on — the same rule the composer's + and mic follow inside their grey row. Hover lifts to --raised. #add is
+   the same skin with a heavier glyph. */
 .bots-page .ptog { width: 32px; height: 32px; padding: 0; background: var(--bg); color: var(--text); box-shadow: 0 0 0 1px var(--raised); display: inline-flex; align-items: center; justify-content: center; flex: none; }
 .bots-page .ptog:hover { background: var(--raised); color: var(--text); }
 .bots-page .ptog svg { width: 18px; height: 18px; }
@@ -170,7 +170,6 @@ div.bots-page:not(.rcol) #rcol { display: none; }
 /* #add wears the same page-colour + ring skin as its neighbours (Akshil, 2026-10-08, option "a": one skin per row);
    its primacy is the heavier glyph, not a different fill. Hover lifts like the rest. */
 .bots-page .bots header #add { background: var(--bg); color: var(--text); box-shadow: 0 0 0 1px var(--raised); display: inline-flex; align-items: center; justify-content: center; transition: width .3s, height .3s; transition-timing-function: cubic-bezier(.22,1,.36,1); }  /* grows into the rail's 44px circle in step with flipEls */
-.bots-page .bots header #add:hover { background: var(--raised); }
 .bots-page .bots header #add svg { stroke-width: 2.4; }
 /* usage meter: the always-visible answer to "are the bots doing something?" */
 .bots-page .bots header #usage { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; width: auto; height: 26px; padding: 0 10px; border-radius: 13px; font-size: 11.5px; font-weight: 500; background: var(--bg); box-shadow: 0 0 0 1px var(--raised); color: var(--muted); white-space: nowrap; }
@@ -199,7 +198,7 @@ div.bots-page:is(.lcol, .lfit, .stage) .bots header #usage, div.bots-page:is(.lc
 .bots-page .ustrip { display: flex; flex-wrap: wrap; gap: 6px 14px; color: var(--text); } .bots-page .ustrip .warn { color: var(--err); }
 .bots-page .ulist .u .n { text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
 .bots-page .bots header #add svg { width: 20px; height: 20px; }
-.bots-page .bots header #add:hover { background: var(--hover); box-shadow: inset 0 0 0 1px var(--muted); }
+.bots-page .bots header #add:hover { background: var(--raised); }
 .bots-page .bots .search { display: block; position: relative; margin: 0 12px 10px; }
 .bots-page .bots .search input { width: 100%; background: var(--panel2); border: none; border-radius: 12px; padding: 9px 12px 9px 34px; font-size: 13px; }
 .bots-page .bots .search input::placeholder { color: var(--muted); }
@@ -507,8 +506,7 @@ div.bots-page.sideapp .preview > :is(.shotwrap, .toast, .cap, .info) { display: 
    "I can barely see they are buttons"). Same rule, one surface step away from the container: the page colour, ringed
    like the row itself. Hover lifts to --raised. */
 .bots-page .composer #attachbtn { width: 40px; height: 40px; padding: 0; border-radius: 50%; flex: none; background: var(--bg); color: var(--text); box-shadow: 0 0 0 1px var(--raised); display: inline-flex; align-items: center; justify-content: center; }
-.bots-page .composer #attachbtn:hover { background: var(--raised); }
-.bots-page .composer #attachbtn:hover { color: var(--text); }
+.bots-page .composer #attachbtn:hover { background: var(--raised); color: var(--text); }
 .bots-page .composer #attachbtn svg { width: 24px; height: 24px; display: block; }
 .bots-page .composer #micbtn { height: 40px; min-width: 40px; padding: 0 8px; border-radius: 20px; flex: none; background: var(--bg); color: var(--text); box-shadow: 0 0 0 1px var(--raised); display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
 .bots-page .composer #micbtn:hover { background: var(--raised); }
@@ -631,6 +629,7 @@ div.bots-page.stage.sfull #full { position: fixed; inset: 0; z-index: 25; }
 /* Take over is a plain button; once you are driving it becomes the accent "Hand back", and the stage gets an accent ring.
    The ring is an outline, not an inset shadow: the stage scrolls, and a shadow would scroll away with the content. */
 .bots-page #full #ctl { background: var(--bg); color: var(--text); box-shadow: 0 0 0 1px var(--raised); }
+.bots-page #full #ctl:hover { background: var(--raised); }
 .bots-page #full.ctl #ctl { background: var(--you); color: #fff; box-shadow: none; }
 /* Your frame on the page while you drive (.ctl): amber. The bot driving has no frame. */
 .bots-page #full.ctl .stage, .bots-page #full.ctl .stage:focus, .bots-page #full.ctl .stage:focus-visible { outline: 2px solid var(--you); outline-offset: -2px; }
@@ -662,7 +661,8 @@ div.bots-page.stage.sfull #full { position: fixed; inset: 0; z-index: 25; }
   background: #0a0a0a; color: #fafafa; border-radius: 12px; padding: 20px 24px; width: 380px; box-shadow: 0 0 0 1px rgba(255,255,255,.1), 0 24px 60px rgba(0,0,0,.5); }
 [data-theme="light"] .bots-page .modal .box { --card: #ffffff; --inset: rgba(0,0,0,.045); --hover: rgba(0,0,0,.07); --raised: rgba(0,0,0,.1); --text: #1b1d21; --muted: #5d6270; --line: rgba(0,0,0,.1);
   background: #ffffff; color: #1b1d21; box-shadow: 0 0 0 1px rgba(0,0,0,.1), 0 24px 60px rgba(0,0,0,.18); }
-.bots-page .modal .box > .row:last-child { margin: 18px -24px -20px; padding: 14px 24px; border-top: 1px solid var(--line); background: var(--inset); border-radius: 0 0 12px 12px; }
+.bots-page .modal .box > .row:last-child { margin: 18px -24px -20px; padding: 14px 24px; border-top: 1px solid var(--line); background: rgba(255,255,255,.03); border-radius: 0 0 12px 12px; }
+[data-theme="light"] .bots-page .modal .box > .row:last-child { background: rgba(0,0,0,.025); }
 /* The face picker's box is a flex column with its own 16px gap: no extra top margin on the footer. A scrolling box
    (routines) cannot bleed a negative bottom margin: its bottom padding goes and the footer sits flush instead. */
 .bots-page #fmodal .box > .row:last-child { margin-top: 0; align-self: stretch; }
@@ -739,6 +739,8 @@ div.bots-page:is(.lcol, .lfit, .stage) .bots .botfoot { justify-content: center;
    window actions — is the same secondary skin: page colour + ring, hover fills. */
 .bots-page :is(#bpanel, #apanel, #vpanel, #ppanel, #full) .topbar .backtxt, .bots-page .winacts button, .bots-page .winacts .btnlink { background: var(--bg); color: var(--text); box-shadow: 0 0 0 1px var(--raised); }
 .bots-page :is(#bpanel, #apanel, #vpanel, #ppanel, #full) .topbar .backtxt:hover, .bots-page .winacts button:hover, .bots-page .winacts .btnlink:hover { background: var(--raised); }
+.bots-page .winacts .btnlink { border-radius: 999px; padding: 4px 8px; }
+.bots-page .winacts .btnlink:hover { color: var(--text); text-decoration: none; }
 .bots-page #bpanel iframe { flex: 1; width: 100%; border: 0; background: var(--bg); }
 .bots-page #bdmodal .box { width: 460px; }
 .bots-page #bdmodal .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
@@ -891,6 +893,11 @@ div.bots-page:is(.lcol, .lfit) .bots .botfoot #prefs { margin-left: 0; }
   --shadow-ink: rgba(0,0,0,.45); --shadow-ink-soft: rgba(0,0,0,.3); --shadow-ink-deep: rgba(0,0,0,.7);
 }
 [data-theme="light"] .bots-page { --shadow-ink: rgba(0,0,0,.12); --shadow-ink-soft: rgba(0,0,0,.08); --shadow-ink-deep: rgba(0,0,0,.25); }
+
+/* The shadcn dialogs portal onto <body>, outside .bots-page, so their surface is pinned here per theme rather than
+   left to the shell's --popover (dark grey): near-black in dark, white in light. */
+.bots-dialog { background: #0a0a0a; color: #fafafa; }
+[data-theme="light"] .bots-dialog { background: #ffffff; color: #1b1d21; }
 
 /* shadcn roots in OpenBot's look: pill buttons (12px / 300), 10px fields, 20px dialog cards, the frosted menu. */
 .bots-page button[data-slot] { border-radius: 999px; font-size: 12px; font-weight: 300; }
