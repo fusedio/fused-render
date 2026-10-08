@@ -1421,7 +1421,12 @@ approval makes them all. `bot.manage_create_batch_check` is all or nothing:
 an empty list, more than `tools.CREATE_BATCH_CAP` (10), one entry failing
 `manage_create_check`, or two entries sharing a name refuses the whole call
 with no card. A top-level single-bot call (the pre-batch shape) still reads
-as a list of one. Creates run in order; should `bot.create` raise mid-list,
+as a list of one. An entry's `logins_from` may name an EARLIER entry of the
+same list (a later one is refused with "list X before it"): that bot does
+not exist at check time, so the check skips the lookup and `manage_create`
+puts the entry on the browser the earlier entry just got (`browsers.ensure`
+first, since a browser.json is otherwise written on first launch). Creates
+run in order; should `bot.create` raise mid-list,
 the result names the ones made and says the rest were not. `bot_settings {bot, name?, instructions?, model?,
 effort?, face?}` changes one of the BOTS; `bot` is its current name,
 resolved exactly like a hand-off target (exact, then unique prefix; Super

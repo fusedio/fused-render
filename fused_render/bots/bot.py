@@ -3104,17 +3104,26 @@ def manage_create_batch_check(bot, args):
         return None, "error: `bots` is empty; give at least one bot"
     if len(items) > CREATE_BATCH_CAP:
         return None, f"error: at most {CREATE_BATCH_CAP} bots per `bot_create`; make the rest in another call"
-    out, seen = [], set()
+    names = [" ".join(str(x.get("name") or "").split()).lower() for x in items if isinstance(x, dict)]
+    out, seen = [], {}
     for item in items:
         if not isinstance(item, dict):
             return None, "error: each entry in `bots` is an object with at least a `name`"
-        f, err = manage_create_check(bot, item)
+        who = " ".join(str(item.get("name") or "").split())
+        # `logins_from` naming another entry of this call: that bot does not exist yet, so it is
+        # resolved at create time (manage_create) onto the browser the earlier entry gets.
+        src = " ".join(str(item.get("logins_from") or "").split())
+        sibling = seen.get(src.lower()) if src else None
+        if src and sibling is None and src.lower() in names and src.lower() != who.lower():
+            return None, f"error: bot {who!r} shares {src!r}'s logins, so list {src!r} before it in `bots`"
+        f, err = manage_create_check(bot, {k: v for k, v in item.items() if k != "logins_from"} if sibling else item)
         if err:
-            who = " ".join(str(item.get("name") or "").split())
             return None, err.replace("error: ", f"error: bot {who!r}: ", 1) if who and len(items) > 1 else err
         if f["name"].lower() in seen:
             return None, f"error: {f['name']!r} appears twice in `bots`; each bot needs its own name"
-        seen.add(f["name"].lower())
+        if sibling:
+            f.update(logins_from=sibling, browser="", sibling=sibling)
+        seen[f["name"].lower()] = f["name"]
         out.append(f)
     return out, ""
 
@@ -3126,11 +3135,16 @@ def manage_create(bot, args):
     fields, err = manage_create_batch_check(bot, args)
     if err:
         return "bot_create", err
-    made, lines = [], []
+    made, lines, by_name = [], [], {}
     for f in fields:
         try:
+            browser = f.get("browser") or ""
+            if f.get("sibling"):  # an earlier entry of this call: its browser.json is written on first use, so now
+                src = by_name[f["sibling"].lower()]
+                browsers.ensure(src.browser_id, src.meta.get("name") or "")
+                browser = src.browser_id
             b = create(f["name"], f["model"], f["effort"], f["instructions"], preset=f["preset"], kind="bot",
-                       browser=f.get("browser") or "")
+                       browser=browser)
         except Exception as e:  # noqa: BLE001 — say which were made before the failure
             lines.append(f"error: could not create {f['name']!r} ({e}); the bots after it were not created.")
             break
@@ -3140,6 +3154,7 @@ def manage_create(bot, args):
                 b.save()
         b.emit("system", f"Created by {bot.meta.get('name') or SUPER_NAME}.", source="manage")
         made.append(f["name"])
+        by_name[f["name"].lower()] = b
         lines.append(f"created bot {f['name']!r} (id {b.id}, model {b.meta.get('model')}, effort {b.meta.get('effort')}"
                      + (f", preset {f['preset']}" if f["preset"] else "") + f", face {face_words(b.meta.get('face'))}"
                      + (f", sharing {f['logins_from']}'s logins" if f.get("logins_from") else "") + ").")

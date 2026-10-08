@@ -247,7 +247,8 @@ TOOL_SPECS: dict[str, dict] = {
                                   "opus|fable|local-4b|local-9b; `effort` low|medium|high|xhigh; `preset` a preset key (github, "
                                   "gmail, linkedin, …) gives it that site's playbooks, mark and default rules; `face` {shape, "
                                   "color, icon} is its avatar; `logins_from` (a bot's name from BOTS, or a browser's name from "
-                                  "Settings > Browsers) puts it on that browser so they share logins (log in once, both stay in), "
+                                  "Settings > Browsers, or an earlier entry of this same list) puts it on that browser so they "
+                                  "share logins (log in once, both stay in), "
                                   "otherwise it starts logged out. The user approves the card before anything is created, every "
                                   "time; one bad entry refuses the whole call.",
                    "inputSchema": _s(bots=({"type": "array", "minItems": 1, "maxItems": CREATE_BATCH_CAP,
