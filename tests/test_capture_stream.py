@@ -451,7 +451,7 @@ RUNTIME = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
                        "fused_render", "static", "runtime.js")
 
 
-def _probe():
+def _run_bridge():
     """Run `runtime.js`'s capture bridge against a DOM/media stub, via node."""
     import json
     import shutil
@@ -481,7 +481,7 @@ def test_the_streamed_start_does_things_in_the_only_safe_order():
       * `eos` answered BEFORE the stop request, which travels on another
         connection and would otherwise close the file ahead of the tail.
     """
-    order = [step for step in _probe()["order"] if step != "fetch GET /api/capture"]
+    order = [step for step in _run_bridge()["order"] if step != "fetch GET /api/capture"]
     assert order == [
         "picker",
         "fetch POST /api/capture/start",
@@ -500,14 +500,14 @@ def test_chunks_reach_the_socket_in_the_order_they_were_produced():
     """`Blob.arrayBuffer()` is async, so two chunks read in parallel can be sent
     out of order — and two swapped clusters are a corrupt container, not a
     glitch. The probe's blobs are 3 bytes then 1."""
-    assert _probe()["chunks"] == [3, 1]
+    assert _run_bridge()["chunks"] == [3, 1]
 
 
 def test_the_handle_a_page_gets_names_no_backend():
     """CP-8, on the surface a page actually touches. `transport` and
     `streamToken` exist on the wire and must not survive into the handle, and
     `sources().client` must not survive into the payload."""
-    out = _probe()
+    out = _run_bridge()
     assert out["handle"]["leaks"] == []
     assert out["sources"]["clientStripped"] is True
     assert out["handle"]["path"] == "/tmp/x.mp4"      # known before any frame
@@ -517,7 +517,7 @@ def test_the_handle_a_page_gets_names_no_backend():
 def test_the_container_comes_from_what_the_browser_can_encode():
     """The stub supports mp4 only, so the bridge must ask for mp4 — the path in
     the reply is the server's, but the CHOICE is the browser's (CP-5)."""
-    out = _probe()
+    out = _run_bridge()
     assert out["stop"]["path"].endswith(".mp4")
 
 
@@ -525,7 +525,7 @@ def test_a_microphone_with_no_label_yet_still_gets_a_name():
     """Chromium withholds device labels until the permission has been granted
     once. A page showing an empty string in a picker is worse than a placeholder,
     and this is a browser rule rather than something to fix."""
-    mics = _probe()["sources"]["microphones"]
+    mics = _run_bridge()["sources"]["microphones"]
     assert [m["name"] for m in mics] == ["Microphone 1"]
     # And a camera is not a microphone.
     assert len(mics) == 1
