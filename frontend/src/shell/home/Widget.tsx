@@ -1,6 +1,7 @@
 // One grid cell: the frame (title, "See all", and in edit mode the Change / ×
 // pill) around a body chosen by source.
 import { useState, type CSSProperties, type ReactNode } from "react";
+import { ArrowLeftRight, X } from "lucide-react";
 import { tabHref } from "@apps/ai_models/routes";
 import { softNavigate } from "./strip";
 import { SOURCES, type TileTarget, type WidgetSource, type Widget as WidgetModel } from "./layout";
@@ -137,13 +138,15 @@ export function WidgetFrame(p: WidgetFrameProps): ReactNode {
               aria-haspopup="dialog"
               aria-expanded={changeOpen}
               aria-label={compact ? `Change ${title}` : undefined}
+              title="Change what this tile shows"
               onClick={() => setChangeOpen((o) => !o)}
             >
-              {compact ? "⇄" : "⇄ Change"}
+              <ArrowLeftRight size={13} strokeWidth={2} aria-hidden="true" />
+              {compact ? null : <span>Change</span>}
             </button>
           )}
-          <button type="button" className="hw-swap-x" aria-label={`Remove ${title}`} onClick={p.onRemove}>
-            ×
+          <button type="button" className="hw-swap-x" aria-label={`Remove ${title}`} title={`Remove ${title}`} onClick={p.onRemove}>
+            <X size={13} strokeWidth={2} aria-hidden="true" />
           </button>
           {changeOpen ? (
             <ChangeTile

@@ -1548,47 +1548,93 @@ a.hw-more:hover {
   padding-right: 76px;
 }
 
-/* Change and remove: always visible in edit mode, over the tile's top-right corner. */
+/* Change and remove: one segmented control, always visible in edit mode, over the tile's top-right corner. */
 .hw-swap {
   position: absolute;
   top: 10px;
   right: 10px;
   z-index: 2;
   display: inline-flex;
-  gap: 6px;
+  align-items: stretch;
+  height: 26px;
+  border: 1px solid var(--ctl-quiet-border);
+  border-radius: 8px;
+  background: var(--bg-popover);
+  box-shadow: 0 2px 8px var(--shadow-lg);
+  overflow: visible;
+  transition: border-color 0.12s;
 }
 
 .hw-swap > button {
-  border: 1px solid var(--ctl-quiet-border);
-  border-radius: 999px;
-  background: var(--bg-popover);
-  color: var(--fg);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 0;
+  background: transparent;
+  color: var(--fg-muted);
   font-size: 12px;
   font-weight: 500;
-  line-height: 1.3;
-  padding: 3px 10px;
-  box-shadow: 0 2px 8px var(--shadow-lg);
+  line-height: 1;
+  padding: 0 9px;
   cursor: pointer;
+  transition: color 0.12s, background 0.12s;
 }
 
-.hw-swap > button:hover,
+.hw-swap > button:first-of-type {
+  border-radius: 7px 0 0 7px;
+}
+
+.hw-swap > button:last-of-type {
+  border-radius: 0 7px 7px 0;
+}
+
+.hw-swap > button:only-of-type {
+  border-radius: 7px;
+}
+
+.hw-swap > button:focus-visible {
+  outline-offset: -2px;
+}
+
+.hw-swap-change + .hw-swap-x {
+  border-left: 1px solid var(--ctl-quiet-border);
+}
+
+.hw-swap-change:hover,
 .hw-swap-change.is-open {
-  border-color: var(--accent);
+  color: var(--fg);
+  background: rgba(var(--accent-rgb), 0.12);
 }
 
-.hw-swap .hw-swap-x {
-  padding: 3px 8px;
-  color: var(--fg-muted);
+.hw-swap-change.is-open {
+  color: var(--accent);
 }
 
-.hw-swap .hw-swap-x:hover {
+.hw-swap > .hw-swap-x {
+  padding: 0 7px;
+}
+
+.hw-swap > .hw-swap-x:hover {
   color: var(--error);
+  background: rgba(var(--error-rgb), 0.12);
 }
 
-/* The bare tiles (search, build) have no header to hold the pill: × hangs off the corner. */
+.hw-swap:has(.hw-swap-change.is-open),
+.hw-swap:hover {
+  border-color: rgba(var(--accent-rgb), 0.6);
+}
+
+/* The bare tiles (search, build) have no header to hold the control: x hangs off the corner. */
 .hw-swap.is-bare {
   top: -10px;
   right: -10px;
+  height: 24px;
+  border-radius: 999px;
+}
+
+.hw-swap.is-bare > button {
+  padding: 0 6px;
+  border-radius: 999px;
 }
 
 /* An empty hole in the layout: choose what goes there. */
