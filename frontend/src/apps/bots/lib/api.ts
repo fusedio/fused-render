@@ -76,7 +76,8 @@ export interface BrowserState {
   running: boolean;
   url?: string;
   title?: string;
-  visible?: boolean;
+  /** Popped out as a real Chrome window on the desktop (the explicit escape hatch for passkeys and password managers). */
+  headed?: boolean;
   sealed?: boolean;
   encrypt?: boolean;
   /** Another bot drives this browser too (the bot's `shared_with` is non-empty). */
@@ -165,7 +166,6 @@ export interface Bot {
   offers_declined?: unknown;
   artifacts_dir?: string;
   control?: boolean;
-  visible?: boolean;
   dl_pct?: number | null;
   engine?: "auto" | "steps" | "agent";
   seq: number;
@@ -215,13 +215,13 @@ export interface BuildRow { entryId: string; name: string; dir: string; createdA
 export interface ChromeProfile { dir: string; name: string; email: string }
 /** GET /api/bots/browsers: one set of logins and the bots that drive it. `sites`: where it is signed in (best effort, may be []). */
 export interface BrowserRow { id: string; name: string; encrypt: boolean; chrome_profile: string; sites: string[]; running: boolean; bots: { id: string; name: string }[] }
-/** POST /api/bots/browsers/<id>. signin pops the browser out as a real window via one of its bots (`bot` in the reply),
- *  dock brings it back headless, delete gives every bot on it a fresh logged-out browser of its own. */
+/** POST /api/bots/browsers/<id>. signin hands one of its bots' tab to you in the live view (`bot` in the reply says which),
+ *  delete gives every bot on it a fresh logged-out browser of its own. */
 export type BrowserOpBody =
   | { op: "rename"; name: string }
   | { op: "encrypt"; on: boolean }
   | { op: "profile"; profile: string }
-  | { op: "signin" | "dock" | "delete" };
+  | { op: "signin" | "delete" };
 /** GET /api/bots/presets: a site the bot knows. `skills` are the playbook titles it comes with. */
 export interface Preset { key: string; name: string; color: string; order: number; model: string; instructions: string; apps: string[]; skills: string[] }
 /** GET /api/bot-apps/starters: an app that ships with fused-render (FusedBot starters), with its install state under the apps root. */
@@ -333,10 +333,12 @@ export const api = {
   stop: (id: string) => post<Ok>(`${bid(id)}/stop`, {}, "stop"),
   takeover: (id: string) => post<Ok>(`${bid(id)}/takeover`, {}, "takeover"),
   giveback: (id: string) => post<Ok>(`${bid(id)}/giveback`, {}, "giveback"),
+  /** The same profile as a real Chrome window (passkeys, password manager). dock brings it back headless with your take-over kept; giveback docks and hands back. */
+  popout: (id: string) => post<Ok>(`${bid(id)}/popout`, {}, "popout"),
+  dock: (id: string) => post<Ok>(`${bid(id)}/dock`, {}, "dock"),
   wake: (id: string) => post<Ok>(`${bid(id)}/wake`, {}, "wake"),
   /** The user clicked this bot open (or deep-linked to it): Super Bot's first task starts from this, nothing else. */
   open: (id: string) => post<Ok & { setup?: "started" | "pending" | "none" }>(`${bid(id)}/open`, {}, "open"),
-  window: (id: string, visible: boolean) => post<Ok>(`${bid(id)}/window`, { visible }, "window"),
   goto: (id: string, url: string) => post<{ ok: true; url: string }>(`${bid(id)}/goto`, { url }, "goto"),
   nav: (id: string, op: "back" | "forward" | "reload") => post<{ ok: true; url: string }>(`${bid(id)}/nav`, { op }, "nav"),
   tab: (id: string, body: { tab: "new" | "switch" | "close"; url?: string; index?: number }) =>

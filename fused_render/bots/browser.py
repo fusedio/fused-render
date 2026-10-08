@@ -2,7 +2,10 @@
 
 Two classes. A `BrowserProcess` owns one Chrome process: its profile
 directory, debugging port, the lock every action takes, encryption at rest,
-start/stop and the visible/headless relaunch. A `Browser` is one bot's view
+start/stop. Chrome is always headless and is launched once per profile; a
+take-over never relaunches it (the user drives the same tab from the page's
+live view, which forwards input over CDP), so the process, port, target ids
+and screencast sessions survive every hand-off. A `Browser` is one bot's view
 of a process: the tabs that bot opened, its screenshots, its downloads and
 every page action. Several bots may share one process (one set of logins,
 docs/bots.md §1, §5); each then drives its own tabs, opened in their own
@@ -18,7 +21,6 @@ Bots never share cookies with the user's real Chrome. Port of OpenBot's
     b.click(ref="sb3"); b.type("hi", ref="sb5", submit=True)
     b.screenshot()   -> absolute path of shot.png (the page fetches /api/bots/<id>/shot)
     b.screenshot_jpeg() -> JPEG bytes of the current frame (the agent engine's `screenshot` tool)
-    b.set_visible(True)  -> relaunch same profile as a real window (logins)
 
 Elements carry `ref` (a `data-sb-ref="sb<n>"` stamp on the DOM node) and,
 when the accessibility tree found them, `backend` (the node's
@@ -76,10 +78,30 @@ MAX_ELEMENTS = 160
 # AX candidates resolved per frame at most: bounds the snapshot's cost on
 # pages with thousands of links (the DOM scan still covers the viewport).
 MAX_AX_CANDIDATES = 2000
-# Windows virtual-key codes for the non-printable keys the bot's press action sends.
-_VK = {"Enter": 13, "Backspace": 8, "Tab": 9, "Escape": 27, " ": 32, "ArrowLeft": 37, "ArrowUp": 38,
-       "ArrowRight": 39, "ArrowDown": 40, "Delete": 46, "Home": 36, "End": 35, "PageUp": 33, "PageDown": 34,
-       "Shift": 16, "Control": 17, "Alt": 18, "Meta": 91, "CapsLock": 20}
+# US-layout key table for Input.dispatchKeyEvent (Puppeteer's USKeyboardLayout): code -> (Windows virtual-key
+# code, unshifted char, shifted char). The VK must come from this table, never from ord(char): Blink maps the VK to
+# an editing command BEFORE it reads `text`: ord(".") is 46 = VK_DELETE (deletes forward instead of typing),
+# ord("'") is 39 = VK_RIGHT, ord("-") 45 = VK_INSERT. Verified against Chrome 155.
+_KEYS = {f"Digit{i}": (48 + i, str(i), s) for i, s in enumerate(")!@#$%^&*(")}
+_KEYS.update({f"Key{c}": (ord(c), c.lower(), c) for c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"})
+_KEYS.update({"Minus": (189, "-", "_"), "Equal": (187, "=", "+"), "BracketLeft": (219, "[", "{"), "BracketRight": (221, "]", "}"),
+              "Backslash": (220, "\\", "|"), "Semicolon": (186, ";", ":"), "Quote": (222, "'", '"'), "Backquote": (192, "`", "~"),
+              "Comma": (188, ",", "<"), "Period": (190, ".", ">"), "Slash": (191, "/", "?"), "Space": (32, " ", " ")})
+_CHAR_CODE = {}
+for _c, (_vk, _a, _b) in _KEYS.items():
+    _CHAR_CODE.setdefault(_a, _c)
+    _CHAR_CODE.setdefault(_b, _c)
+# Non-printable keys: Windows virtual-key codes.
+_NAMED_VK = {"Enter": 13, "Tab": 9, "Backspace": 8, "Delete": 46, "Escape": 27, "ArrowLeft": 37, "ArrowUp": 38, "ArrowRight": 39,
+             "ArrowDown": 40, "Home": 36, "End": 35, "PageUp": 33, "PageDown": 34, "Insert": 45, "Shift": 16, "Control": 17,
+             "Alt": 18, "Meta": 91, "CapsLock": 20, **{f"F{n}": 111 + n for n in range(1, 13)}}
+# macOS editing commands (Playwright's macEditingCommands). CDP key events bypass Cocoa key bindings, so without
+# `commands` Cmd+A/C/V/X/Z and Cmd/Option+arrow do nothing in a Chrome on macOS.
+_CMD_LETTER = {"a": "SelectAll", "c": "Copy", "x": "Cut", "v": "Paste", "z": "Undo"}
+_CMD_ARROW = {"ArrowLeft": "MoveToBeginningOfLine", "ArrowRight": "MoveToEndOfLine",
+              "ArrowUp": "MoveToBeginningOfDocument", "ArrowDown": "MoveToEndOfDocument"}
+_WORD_ARROW = {"ArrowLeft": "MoveWordLeft", "ArrowRight": "MoveWordRight",
+               "ArrowUp": "MoveToBeginningOfParagraph", "ArrowDown": "MoveToEndOfParagraph"}
 # URL schemes `goto` passes through as-is (OpenBot prefixed https:// to any
 # url without "://", which broke data:/about: urls).
 _PASS_SCHEMES = ("about:", "data:", "file:", "blob:", "chrome:", "javascript:")
@@ -90,14 +112,6 @@ def find_chrome():
         if p and os.path.exists(p):
             return p
     raise RuntimeError("No Chrome/Chromium found in /Applications")
-
-
-def _free_port():
-    s = socket.socket()
-    s.bind(("127.0.0.1", 0))
-    port = s.getsockname()[1]
-    s.close()
-    return port
 
 
 def write_json_atomic(path, obj):
@@ -149,24 +163,51 @@ def _http(port, path, method="GET"):
         return json.loads(r.read().decode() or "null")
 
 
-def _key_params(key, code, mods, down):
-    """Input.dispatchKeyEvent params for one key stroke (CDP modifiers:
-    Alt=1 Ctrl=2 Meta=4 Shift=8). Printable keys carry text on keyDown unless
-    alt/ctrl/meta is held; ctrl/cmd letters also map to editing commands."""
-    params = {"type": "keyDown" if down else "keyUp", "key": key, "code": code, "modifiers": mods}
-    vk = _VK.get(key) or (ord(key.upper()) if len(key) == 1 else 0)
-    if vk:
-        params["windowsVirtualKeyCode"] = vk
-    if down:
-        if len(key) == 1 and not (mods & ~8):
-            params["text"] = params["unmodifiedText"] = key
-        elif key == "Enter":
-            params["text"] = params["unmodifiedText"] = "\r"
-        if mods & 6 and len(key) == 1:
-            cmd = {"a": "SelectAll", "c": "Copy", "v": "Paste", "x": "Cut", "z": "Undo"}.get(key.lower())
-            if cmd:
-                params["commands"] = [cmd]
-    return params
+def key_events(key, code="", mods=0):
+    """One key stroke as Input.dispatchKeyEvent params: `(down, up)`, or
+    `("insert", text)` for a printable character the US table does not know
+    (é, 日, emoji, a non-US layout): those go through Input.insertText, where no
+    virtual key has to be guessed. CDP modifiers: Alt=1 Ctrl=2 Meta=4 Shift=8.
+    Same table and rules as the live view's `keyAction` (frontend lib/live.ts). Never sets
+    `nativeVirtualKeyCode`: on macOS that flips the tab hidden and the screencast stops."""
+    shift, ctrl, alt, meta = bool(mods & 8), bool(mods & 2), bool(mods & 1), bool(mods & 4)
+    prim = ctrl or meta  # Ctrl counts like Cmd: the target Chrome is macOS whatever keyboard the caller has
+    sel = "AndModifySelection" if shift else ""
+
+    def mk(vk, text=None, commands=()):
+        base = {"key": key, "code": code, "modifiers": mods}
+        if vk:
+            base["windowsVirtualKeyCode"] = vk
+        down = dict(base, type="keyDown" if text else "rawKeyDown")
+        if text:
+            down["text"] = down["unmodifiedText"] = text
+        if commands:
+            down["commands"] = list(commands)
+        return down, dict(base, type="keyUp")
+
+    if len(key) > 1 and key.isascii():  # a named key (Enter, ArrowLeft, F5); a non-ASCII string is text to insert
+        cmds = ()
+        if key in _CMD_ARROW and prim:
+            cmds = (_CMD_ARROW[key] + sel,)
+        elif key in _WORD_ARROW and alt:
+            cmds = (_WORD_ARROW[key] + sel,)
+        elif key == "Backspace" and prim:
+            cmds = ("DeleteToBeginningOfLine",)
+        elif key == "Backspace" and alt:
+            cmds = ("DeleteWordBackward",)
+        elif key == "Delete" and alt:
+            cmds = ("DeleteWordForward",)
+        elif key in ("Home", "End"):
+            cmds = (("MoveToBeginningOfLine" if key == "Home" else "MoveToEndOfLine") + sel,)
+        return mk(_NAMED_VK.get(key, 0), "\r" if key == "Enter" else None, cmds)
+    c = code if code in _KEYS else _CHAR_CODE.get(key, "")
+    if (ctrl or meta) and not (ctrl and alt):  # a chord: no text, a command where macOS needs one
+        cmd = _CMD_LETTER.get(key.lower())
+        cmds = (("Redo" if key.lower() == "z" and shift else cmd),) if cmd and not alt else ()
+        return mk(_KEYS[c][0] if c else 0, None, cmds)
+    if c and key in _KEYS[c][1:]:
+        return mk(_KEYS[c][0], key)
+    return "insert", key
 
 
 def _sips(src, dst, *args):
@@ -234,12 +275,13 @@ class WS:
             raise RuntimeError("websocket upgrade refused")
         self.timeout = timeout
         self._id = 0
-        self.dialog = None  # Page.javascriptDialogOpening params, if one popped up
+        self.dialog = None       # Page.javascriptDialogOpening params while one is open
+        self.dialog_seen = None  # the last one that opened on this connection, kept past its close (the action's report)
         self.dom_enabled = False
 
     def _note(self, msg):
         if msg.get("method") == "Page.javascriptDialogOpening":
-            self.dialog = msg.get("params") or {}
+            self.dialog = self.dialog_seen = msg.get("params") or {}
         elif msg.get("method") == "Page.javascriptDialogClosed":
             self.dialog = None
 
@@ -961,51 +1003,119 @@ class BrowserProcess:
         except Exception:
             return False
 
-    def start(self, visible=False):
+    def start(self):
+        """Launch headless Chrome for this profile unless it is already up with the
+        live view's origin allowed; returns the session. Chrome is never relaunched
+        for a take-over: the user drives the same tab from the live view. A profile
+        popped out as a real window (`popout`) is left as it is: `dock` ends that."""
         origin = page_origin()
         with self.lock:
             sess = self.session()
             restore = ""
             if self.alive(sess):
-                if bool(sess.get("visible")) == visible and sess.get("origin") == origin:
+                if sess.get("origin") == origin or sess.get("headed"):
                     return sess
-                if sess.get("origin") != origin:
-                    restore = sess.get("url") or ""  # a relaunch just to pick up the flag keeps the page
+                restore = sess.get("url") or ""  # a relaunch just to pick up the flag keeps the page
                 self.stop(seal=False)
+            return self._launch(origin, False, restore)
+
+    def headed(self):
+        sess = self.session() or {}
+        return bool(sess.get("headed") or sess.get("visible"))  # `visible`: a window popped out before this flag existed
+
+    def popout(self, url="", view=None):
+        """The one deliberate relaunch left: the same profile as a real Chrome window
+        on the desktop, for what no screencast can carry (passkeys, the password
+        manager, print). `view` is the bot that asked: its page is the one restored.
+        Returns the session; a no-op when already headed."""
+        return self._relaunch(True, url, view)
+
+    def dock(self, url="", view=None):
+        """Back to headless after `popout` (the window may already be gone). Returns the session."""
+        return self._relaunch(False, url, view)
+
+    def _relaunch(self, headed, url, view):
+        with self.lock:
+            sess = self.session()
+            if self.alive(sess) and bool(sess.get("headed")) == headed:
+                return sess
+            url = url or (sess or {}).get("url") or ""
+            if sess:
+                self.stop(seal=False)  # clean: Chrome unlinks its Singleton* files, so the launch is never forwarded to it
+            return self._launch(page_origin(), headed, url, view)
+
+    def window_closed(self):
+        """A popped-out profile whose user closed the window: Chrome quit, or (macOS)
+        is still running with no page target left. False for a headless profile."""
+        sess = self.session()
+        if not sess or not sess.get("headed"):
+            return False
+        if not self.alive(sess):
+            return True
+        try:
+            return not any(t.get("type") == "page" for t in _http(sess["port"], "/json/list"))
+        except Exception:  # noqa: BLE001
+            return False  # a slow answer is not a closed window; the next poll asks again
+
+    def _launch(self, origin, headed, restore, view=None):
+        """Start Chrome on this profile (the caller holds the lock). `restore` is the page to come back
+        to; `view` the bot whose page it is (default: the first attached), which also claims the launch
+        tab on a shared process so the window Chrome opened is driven, not orphaned beside a new one."""
+        with self.lock:
+            restore = restore if restore and restore != "about:blank" else ""
             self.unseal()
             os.makedirs(self.profile, exist_ok=True)
             os.makedirs(self.cache_dir, exist_ok=True)
-            port = _free_port()
+            # Chrome picks the port (--remote-debugging-port=0) and writes it to <profile>/DevToolsActivePort
+            # (line 1 the port, line 2 the browser socket path); picking a free port here first is a race.
+            active = os.path.join(self.profile, "DevToolsActivePort")
+            try:
+                os.remove(active)  # a stale file from the previous run would read as "up" too early
+            except FileNotFoundError:
+                pass
             chrome = find_chrome()
-            # Headless renders at LIVE_SCALE natively (crisp live view) instead of
-            # a per-session Emulation override: overrides die with the DevTools
-            # session that set them, so every screenshot connection closing made
-            # the viewport snap back to 1x and the live view flip size.
-            # Visible: a shared Chrome stays on the desktop while a bot whose user
-            # handed back works on in a minimised / background window (set_visible),
-            # so occluded windows must keep compositing or its screenshots stall.
-            mode = ["--disable-backgrounding-occluded-windows", "--disable-renderer-backgrounding"] if visible else [
+            # Headless renders at LIVE_SCALE natively (crisp live view) instead of a per-session Emulation
+            # override: overrides die with the DevTools session that set them, so every screenshot connection
+            # closing made the viewport snap back to 1x and the live view flip size. A popped-out window is a
+            # plain Chrome; occluded windows must keep compositing or the live view's mirror of it freezes.
+            mode = ["--disable-backgrounding-occluded-windows", "--disable-renderer-backgrounding"] if headed else [
                 "--headless=new", f"--user-agent={_clean_user_agent(chrome)}", f"--force-device-scale-factor={LIVE_SCALE}"]
             args = [
                 chrome, *mode,
-                f"--remote-debugging-port={port}",
+                "--remote-debugging-port=0",
                 f"--remote-allow-origins={origin}",  # lets the page's live view connect directly
                 f"--user-data-dir={self.profile}",
                 "--no-first-run", "--no-default-browser-check",
                 "--disable-background-networking", "--disable-sync", "--hide-scrollbars",
+                # A crash (SIGKILL, power loss) leaves exit_type "Crashed" in the profile, which only a human
+                # dismissing the restore bubble resets; headless never can, so the bubble must never be asked for.
+                "--hide-crash-restore-bubble",
                 f"--window-size={VIEWPORT[0]},{VIEWPORT[1]}",
-                "about:blank",
+                _with_scheme(restore) if headed and restore else "about:blank",
             ]
             proc = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                     stderr=subprocess.DEVNULL, start_new_session=True, close_fds=False)
             self._proc = proc
-            sess = {"port": port, "pid": proc.pid, "started": time.time(), "visible": visible, "origin": origin}
+            sess = {"port": 0, "pid": proc.pid, "started": time.time(), "origin": origin, "headed": headed}
             for _ in range(100):
-                if self.alive(sess):
+                if not sess["port"]:
+                    try:
+                        with open(active, encoding="utf-8") as f:
+                            sess["port"] = int(f.readline().strip() or 0)
+                    except (OSError, ValueError):
+                        pass
+                if sess["port"] and self.alive(sess):
                     break
+                if proc.poll() is not None:
+                    raise RuntimeError(f"Chrome exited at launch (code {proc.returncode})")
                 time.sleep(0.1)
             else:
+                try:
+                    proc.kill()  # never leave a half-started Chrome holding the profile
+                except Exception:  # noqa: BLE001
+                    pass
                 raise RuntimeError("Chrome did not come up")
+            port = sess["port"]
             # The window Chrome opened on launch: the first view to act adopts it
             # (_page_target). The page appears a beat after DevTools answers.
             sess["launch_tab"] = ""
@@ -1018,16 +1128,35 @@ class BrowserProcess:
                     sess["launch_tab"] = launch[0]["id"]
                     break
                 time.sleep(0.1)
+            view = view if view in self.views else (self.views[0] if self.views else None)
             for v in self.views:
                 v._main_tab = None
-                v._fresh = True  # no window yet in this process: _page_target may open one even when visible
                 if self.shared():
                     v._own = []
-                if not visible:
-                    v.popped = False  # headless: no bot has the desktop any more
+            if headed and self.shared() and view is not None and sess["launch_tab"]:
+                # The headed window opened straight on the asking bot's page: that tab is its own, or its first
+                # action would open a second window beside it (_adopt_launch_tab only takes a blank launch tab).
+                view._own = [sess["launch_tab"]]
+                view._write_own(url=restore)
             write_json_atomic(self.session_path, sess)
-            view = self.views[0] if self.views else None
-            if view is not None and restore and restore != "about:blank":
+            # Headless Chrome has no permission prompt: every request is silently denied. Clipboard access is granted
+            # browser-wide so a page's own Copy buttons work (this Chrome's clipboard is private to it, measured, so a
+            # site reading it sees only what was copied inside the bot's browser). Geolocation, camera, microphone and
+            # notifications stay denied: granting those without a prompt would be a privacy decision made for the user.
+            try:
+                bws = WS(_http(port, "/json/version")["webSocketDebuggerUrl"], timeout=3)
+                try:
+                    bws.call("Browser.grantPermissions", permissions=["clipboardReadWrite", "clipboardSanitizedWrite"])
+                finally:
+                    bws.close()
+            except Exception:  # noqa: BLE001 — a Chrome without the permission names just keeps denying
+                log.debug("clipboard permission grant failed", exc_info=True)
+            if restore:
+                # The page comes back (headed: Chrome opened on it; headless: navigated below, not awaited). Recorded now so
+                # status / the live view's URL bar show it before the first action rewrites the session.
+                sess["url"] = restore
+                write_json_atomic(self.session_path, sess)
+            if view is not None and restore and not headed:
                 try:
                     tab, _ = view._page_target(port)
                     ws = WS(tab["webSocketDebuggerUrl"])
@@ -1050,49 +1179,58 @@ class BrowserProcess:
             sess = self.session()
             if sess:
                 proc = self._proc if (self._proc and self._proc.pid == sess["pid"]) else None
+                closing = False
                 try:
                     info = _http(sess["port"], "/json/version")
                     ws = WS(info["webSocketDebuggerUrl"], timeout=3)
                     try:
-                        ws.call("Browser.close")
+                        ws.notify("Browser.close")  # no reply ever comes: Chrome tears the socket down while closing (measured)
+                        closing = True
                     finally:
                         ws.close()
                 except Exception:
                     pass
-                try:
-                    os.kill(sess["pid"], signal.SIGTERM)
-                except Exception:
-                    pass
+                # Browser.close first and alone: Chrome then unlinks its Singleton* files on the way out, so the next
+                # launch is never forwarded to a dying pid (ProcessSingleton). SIGTERM only when that did not end it in
+                # 3 s (it would race the clean exit and leave stale lock files Chrome has to detect itself), then SIGKILL.
+                def gone():
+                    if proc is not None:
+                        return proc.poll() is not None
+                    try:  # not our child (the server restarted since): launchd reaps it, so the pid probe is exact
+                        os.kill(sess["pid"], 0)
+                        return False
+                    except ProcessLookupError:
+                        return True
+                    except OSError:
+                        return False
                 exited = False
-                if proc is not None:
-                    try:
-                        proc.wait(timeout=5)
-                        exited = True
-                    except subprocess.TimeoutExpired:
-                        exited = False
-                else:
-                    for _ in range(50):
+                for step, grace in ((("close", 3.0),) if closing else ()) + (("term", 3.0), ("kill", 2.0)):
+                    if step == "term":
                         try:
-                            os.kill(sess["pid"], 0)
-                        except OSError:
+                            os.kill(sess["pid"], signal.SIGTERM)
+                        except Exception:
+                            pass
+                    elif step == "kill":
+                        try:
+                            os.killpg(sess["pid"], signal.SIGKILL)
+                        except Exception:
+                            try:
+                                os.kill(sess["pid"], signal.SIGKILL)
+                            except Exception:
+                                pass
+                    end = time.time() + grace
+                    while time.time() < end:
+                        if gone():
                             exited = True
                             break
-                        time.sleep(0.1)
-                if not exited:
+                        time.sleep(0.05)
+                    if exited:
+                        break
+                if proc is not None:
                     try:
-                        os.killpg(sess["pid"], signal.SIGKILL)
+                        proc.wait(timeout=1)  # reap
                     except Exception:
-                        try:
-                            os.kill(sess["pid"], signal.SIGKILL)
-                        except Exception:
-                            pass
-                    if proc is not None:
-                        try:
-                            proc.wait(timeout=2)
-                        except Exception:
-                            pass
-                    else:
-                        time.sleep(0.5)
+                        pass
                 self._proc = None
                 try:
                     os.remove(self.session_path)
@@ -1108,85 +1246,6 @@ class BrowserProcess:
                 return False
             self.stop()
             return True
-
-    def set_visible(self, visible, restore_for=None):
-        """Relaunch the same profile visible/headless and return to the last URL.
-        `restore_for` is the view whose page is brought back (the one that asked);
-        other views on a shared process reopen on their own last page when they
-        next act (`Browser._page_target`).
-
-        Visibility is a property of the process (one Chrome is headless or it is
-        not), but a take-over is per bot: on a shared process the headless
-        relaunch waits until the LAST popped-out view hands back. Relaunching on
-        the first hand-back killed the Chrome under every other bot's desktop
-        window (the user closed bot A's window, bot B's vanished mid-login).
-        Returns True when Chrome was relaunched, False when it was left as is."""
-        view = restore_for or (self.views[0] if self.views else None)
-        with self.lock:
-            sess = self.session()
-            if view is not None:
-                view.popped = bool(visible)
-            if not visible and self.shared() and any(v.popped for v in self.views if v is not view):
-                # Another bot still drives this Chrome from the desktop: keep it
-                # visible. The handing-back bot carries on in a real window (its
-                # own tabs if any are left, else a new window on its next step).
-                if view is not None and sess and self.alive(sess):
-                    try:
-                        own = view._own_targets(sess["port"])
-                        if not own:
-                            view._fresh = True  # window gone: let _page_target open one instead of raising
-                            view._main_tab = None
-                        else:
-                            view._minimize(sess["port"], own)  # out of the user's way; still renders (start() flags)
-                    except Exception:  # noqa: BLE001
-                        pass
-                return False
-            url = ""
-            if view is not None and sess and self.alive(sess) and not view.window_closed():
-                try:
-                    tab, _ = view._page_target(sess["port"])
-                    url = tab.get("url") or ""
-                except Exception:
-                    pass
-            if not url:
-                url = (view.last_url() if view is not None and self.shared() else "") or (sess or {}).get("url") or ""
-            # New Chrome process: drop sessions bound to the old one.
-            self.start(visible)
-            for v in self.views:
-                v._main_tab = None
-
-            # One connection: kick off the navigation and raise the window, but
-            # do not wait for the page to finish loading. The user is about to
-            # watch it load in the real window (or the live view) anyway, and a
-            # heavy site could otherwise hold this call for many seconds.
-            def restore(ws):
-                if url and url != "about:blank":
-                    ws.call("Page.navigate", url=_with_scheme(url))
-                if visible:
-                    ws.call("Page.bringToFront")
-            if view is not None:
-                view._run(restore)
-            return True
-
-    def visible(self):
-        return bool((self.session() or {}).get("visible"))
-
-    def window_closed(self):
-        """True when the profile was popped out as a window and the user closed
-        it: Chrome quit, or (macOS) is still running with no page target left.
-        Checked before anything touches Chrome, since _page_target would
-        otherwise open a fresh window and start() would relaunch a visible one."""
-        sess = self.session()
-        if not sess or not sess.get("visible"):
-            return False
-        if not self.alive(sess):
-            return True
-        try:
-            return not any(t.get("type") == "page" for t in _http(sess["port"], "/json/list"))
-        except Exception:
-            return True
-
-    # -- connection --------------------------------------------------------
 
 # ---------------------------------------------------------------- browser ---
 class Browser:
@@ -1206,8 +1265,6 @@ class Browser:
         self._tab_order = []      # tab ids in open order (Chrome reports newest-first)
         self._own = self._read_own()  # target ids this view opened (shared process only)
         self._main_tab = None  # target id of the tab we drive
-        self._fresh = True     # no tab of ours in this process yet (set again on every relaunch)
-        self.popped = False    # this bot's user has the desktop window (BrowserProcess.set_visible); per view, unlike visible()
         self.idle = False      # set by the bot's idle sleep; cleared on the next action (stop_if_idle)
         self.idle_check = None  # bot.py sets a callable: "may this bot's browser sleep right now?" (looked at, task, control)
         self.live_seen = 0.0
@@ -1258,9 +1315,23 @@ class Browser:
     def alive(self, sess=None):
         return self.proc.alive(sess)
 
-    def start(self, visible=False):
+    def start(self):
         self.idle = False
-        return self.proc.start(visible)
+        return self.proc.start()
+
+    def headed(self):
+        return self.proc.headed()
+
+    def popout(self):
+        self.idle = False
+        return self.proc.popout(url=self.last_url() if self.shared() else "", view=self)
+
+    def dock(self):
+        self.idle = False
+        return self.proc.dock(url=self.last_url() if self.shared() else "", view=self)
+
+    def window_closed(self):
+        return self.proc.window_closed()
 
     def stop(self, seal=None):
         """Quit the process. On a shared process this closes every bot's tabs;
@@ -1285,30 +1356,6 @@ class Browser:
 
     def shared(self):
         return self.proc.shared()
-
-    def set_visible(self, visible):
-        """Returns True when Chrome was relaunched, False when a shared process
-        stayed visible for another bot's take-over."""
-        return self.proc.set_visible(visible, restore_for=self)
-
-    def visible(self):
-        return self.proc.visible()
-
-    def window_closed(self):
-        """True when the process was popped out as a window and the user closed
-        it (every page target gone), or, on a shared process, closed this bot's
-        own windows."""
-        if self.proc.window_closed():
-            return True
-        if not self.shared() or not self.visible():
-            return False
-        if self._fresh:
-            return False  # relaunched and not yet acted: no window of ours to have closed
-        sess = self.session()
-        try:
-            return not self._own_targets(sess["port"])
-        except Exception:
-            return False
 
     # -- own tabs (shared process) -----------------------------------------
     def _read_own(self):
@@ -1372,11 +1419,7 @@ class Browser:
         foreground tab, so bots sharing a process never throttle each other)."""
         ws = self._browser_ws(port)
         try:
-            # On a visible Chrome (another bot's user is in their window) ask for the
-            # new window in the background so it does not steal their focus; headless
-            # keeps the default, where a window's only tab is the foreground anyway.
-            extra = {"background": True} if self.visible() else {}
-            tid = ws.call("Target.createTarget", url=url or "about:blank", newWindow=True, **extra)["targetId"]
+            tid = ws.call("Target.createTarget", url=url or "about:blank", newWindow=True)["targetId"]
         finally:
             ws.close()
         self._own.append(tid)
@@ -1390,10 +1433,9 @@ class Browser:
 
     def _adopt_launch_tab(self, port, url):
         """Chrome opens one window on about:blank at launch. The first view to act
-        on a shared process claims it instead of opening a window beside it:
-        otherwise a popped-out browser showed the bot's page in one window and
-        a blank tab in a second window behind it. Only that launch tab is taken
-        (a blank tab another bot's user opened by hand is theirs)."""
+        on a shared process claims it instead of opening a window beside it,
+        so the profile does not keep a blank tab nobody drives. Only that
+        launch tab is taken (a blank tab the user opened from the live view is theirs)."""
         with self.proc.lock:  # two views cold-starting together must not both claim it
             tid = (self.session() or {}).get("launch_tab")
             if not tid or any(tid in v._own for v in self.proc.views if v is not self):
@@ -1411,27 +1453,6 @@ class Browser:
                 ws.close()
         return t
 
-    def _minimize(self, port, targets):
-        """Minimise the windows holding `targets` (this bot handed back while
-        another bot's user still has the shared Chrome on the desktop)."""
-        ws = self._browser_ws(port)
-        try:
-            seen = set()
-            for t in targets:
-                try:
-                    w = ws.call("Browser.getWindowForTarget", targetId=t["targetId"])
-                except Exception:  # noqa: BLE001
-                    continue
-                if w["windowId"] in seen:
-                    continue
-                seen.add(w["windowId"])
-                try:
-                    ws.call("Browser.setWindowBounds", windowId=w["windowId"], bounds={"windowState": "minimized"})
-                except Exception:  # noqa: BLE001
-                    pass
-        finally:
-            ws.close()
-
     def _page_target(self, port):
         """The one tab we drive. Stays the same tab across calls (popups from
         target=_blank links would otherwise become tabs[0] and hijack us).
@@ -1444,24 +1465,19 @@ class Browser:
         else:
             tabs = [t for t in _http(port, "/json/list") if t.get("type") == "page"]
         if not tabs:
-            # Only the bot whose user has the desktop window must not reopen one (the status poll docks
-            # it); a bot that already handed back on a still-visible shared Chrome gets a new window.
-            if (self.session() or {}).get("visible") and (self.popped or not self.shared()) and not (self.shared() and self._fresh):
-                raise RuntimeError("the desktop window was closed")
             if self.shared():
                 last = self.last_url()
                 url = _with_scheme(last) if last and last != "about:blank" else "about:blank"
                 tabs = [self._adopt_launch_tab(port, url) or self._new_window(port, url)]
             else:
                 tabs = [_http(port, "/json/new?about:blank", method="PUT")]
-        self._fresh = False
         main = next((t for t in tabs if t.get("id") == self._main_tab), None) or tabs[-1]
         self._main_tab = main.get("id")
         return main, tabs
 
     def _connect(self, timeout=30):
         self.idle = False
-        sess = self.start(self.visible())
+        sess = self.start()
         tab, _ = self._page_target(sess["port"])
         ws = WS(tab["webSocketDebuggerUrl"], timeout=timeout)
         ws.call("Page.enable")
@@ -1487,8 +1503,8 @@ class Browser:
         composites the foreground tab: a hidden one (another tab opened in front
         of it, or a fresh worker binding to tabs[-1]) sends no screencast frames
         and throttles its timers, so the live view freezes and input drags.
-        Visible windows are left alone; the user sees the real tabs there."""
-        if self.visible():
+        A popped-out window is the user's: nothing here may raise or resize their tabs."""
+        if self.headed():
             return
         try:
             ws.call("Page.bringToFront")
@@ -1552,7 +1568,7 @@ class Browser:
         return self._switch_to(tabs[i]["id"])
 
     def tab_new(self, url="about:blank"):
-        sess = self.start(self.visible())
+        sess = self.start()
         if url and url != "about:blank":
             url = _with_scheme(url)
         if self.shared():
@@ -1772,6 +1788,9 @@ class Browser:
         ws.sock.settimeout(3)
         try:
             ws.call("Runtime.evaluate", expression="1", returnByValue=True)
+            if ws.dialog_seen:  # it opened during the action and the live view (watching) already accepted it: still worth telling
+                d, ws.dialog_seen = ws.dialog_seen, None
+                return f"{d.get('type', 'dialog')}: {d.get('message', '')}".strip()
             return None
         except socket.timeout:
             pass
@@ -1782,7 +1801,7 @@ class Browser:
             ws.call("Page.handleJavaScriptDialog", accept=True)
         except Exception:
             return None
-        ws.dialog = None
+        ws.dialog = ws.dialog_seen = None
         return f"{d.get('type', 'dialog')}: {d.get('message', '')}".strip()
 
     @staticmethod
@@ -1801,21 +1820,18 @@ class Browser:
     def _shoot(self, ws):
         os.makedirs(self.cache_dir, exist_ok=True)
         # Never pass a clip. A clipped/scaled capture makes Chrome apply a
-        # temporary viewport emulation and undo it; the screencast (and, when
-        # popped out, the real window) shows that as the page shrinking and
-        # snapping back on every screenshot. Take the plain viewport at native
-        # device pixels and normalise headless shots to VIEWPORT afterwards
-        # with sips (macOS built-in), so the agent's coordinates and vision
-        # cost do not depend on LIVE_SCALE. Visible windows are left as-is:
-        # the bot is paused while visible, so nothing reads that frame.
+        # temporary viewport emulation and undo it; the screencast shows that as
+        # the page shrinking and snapping back on every screenshot. Take the plain
+        # viewport at native device pixels and normalise to VIEWPORT afterwards
+        # with sips (macOS built-in), so the agent's coordinates and vision cost
+        # do not depend on LIVE_SCALE.
         r = ws.call("Page.captureScreenshot", format="png")
         tmp = self.shot_path + ".tmp.png"
         with open(tmp, "wb") as f:
             f.write(base64.b64decode(r["data"]))
-        if not self.visible():
-            # Fit to the viewport width only: the CSS viewport is shorter than the window (Chrome's UI takes
-            # the rest, 1280x713 today), so forcing 1280x800 stretched the image and the model's clicks landed low.
-            _sips(tmp, tmp, "-Z", str(VIEWPORT[0]))
+        # Fit to the viewport width only: the CSS viewport is shorter than the window (Chrome's UI takes
+        # the rest, 1280x713 today), so forcing 1280x800 stretched the image and the model's clicks landed low.
+        _sips(tmp, tmp, "-Z", str(VIEWPORT[0]))
         os.replace(tmp, self.shot_path)
         # Small JPEG of the same frame for the transcript (bot.py files it per step).
         self.thumb_bytes = None
@@ -1938,12 +1954,18 @@ class Browser:
                    "pageup": "PageUp", "pagedown": "PageDown", "backspace": "Backspace", "tab": "Tab", "enter": "Enter",
                    "escape": "Escape", "home": "Home", "end": "End", "delete": "Delete"}
         k = aliases.get(k.lower(), k) if len(k) > 1 else k
-        code = {"Enter": "Enter", " ": "Space", "Escape": "Escape", "Tab": "Tab", "Backspace": "Backspace"}.get(k, k if len(k) > 1 else ("Key" + k.upper() if k.isalpha() else "Digit" + k if k.isdigit() else ""))
+        code = k if len(k) > 1 else _CHAR_CODE.get(k, "")
+        if len(k) == 1 and mods & 8 and code in _KEYS:
+            k = _KEYS[code][2]  # "Shift+a" types "A", "Shift+1" types "!", as the keyboard would
+        events = key_events(k, code, mods)
         def f(ws):
             if ref or text or backend is not None:
                 self._on_element(ws, _FOCUS_FN, (), "", ref, text, x, y, backend)
-            for down in (True, False):
-                ws.call("Input.dispatchKeyEvent", **_key_params(k, code, mods, down))
+            if events[0] == "insert":
+                ws.call("Input.insertText", text=events[1])
+            else:
+                for params in events:
+                    ws.call("Input.dispatchKeyEvent", **params)
             ws.wait_event("Page.loadEventFired", 3 if k == "Enter" else 0.5)
             time.sleep(0.4)
         return self._run(f)[1]
@@ -2124,7 +2146,7 @@ class Browser:
             except Exception:
                 url = title = None
         return {"running": self.alive(sess) if probe else bool(sess.get("pid")), "url": url,
-                "title": title, "visible": bool(sess.get("visible")), "sealed": self.sealed(), "encrypt": self.encrypt}
+                "title": title, "headed": bool(sess.get("headed")), "sealed": self.sealed(), "encrypt": self.encrypt}
 
     def status(self):
         return self._status(True)

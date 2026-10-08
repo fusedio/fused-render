@@ -92,7 +92,7 @@ fused_render/bots/            the backend package (in-process; no daemon, no fus
   store.py        bot dirs, bot.json (atomic write), events.jsonl, usage.jsonl ledger + summary
   browser.py      per-bot Chrome over CDP (port of OpenBot browser.py) + AX-tree snapshot + change report
   bot.py          class Bot: lifecycle, memory, skills, artifacts/inbox, routines, offers, builds, send/pause/resume/stop,
-                  takeover/giveback/window, file inbox (botsend), summary(); the engine-neutral half of agents.py
+                  takeover/giveback/popout/dock, file inbox (botsend), summary(); the engine-neutral half of agents.py
   steps_engine.py the OpenBot JSON-action loop (agents.py Bot._run/_prompt/_parse/_risk/_describe/_execute), via fused_ai
   agent_engine.py the Claude Code harness (section 6): one `claude -p` per task, tools over MCP
   tools.py        the tool table shared by both engines: names, schemas, descriptions, the risk rule, execution
@@ -161,8 +161,8 @@ Bot summary (`Bot.summary(light, detail)`): every key of `bot.json`
 (`id, name, model, effort, status, instructions, created, task, step, url,
 title, note, updated, approval, build_access, trusted_apps, face, routines, pinned, hidden,
 reactions, encrypt, chrome_profile, browser_id, imessage, imessage_to, builds,
-pending_offer, offers_declined, artifacts_dir, control, visible, dl_pct`) plus
-`seq`, `browser: {running, url, title, visible, sealed, encrypt, shared, tabs?[{i,id,title,url,active,ws}], files?, artifacts?, artifacts_dir?}`,
+pending_offer, offers_declined, artifacts_dir, control, dl_pct`) plus
+`seq`, `browser: {running, url, title, headed, sealed, encrypt, shared, tabs?[{i,id,title,url,active,ws}], files?, artifacts?, artifacts_dir?}`,
 `browser_name`, `shared_with: [{id, name}]` (the other bots on this bot's browser),
 `memory` (detail only), `skills` (detail only), `shot` (the shot URL,
 `/api/bots/<id>/shot`, or null), `shot_ts`, `viewport: [1280, 800]`, `events`
@@ -196,13 +196,12 @@ POST   /api/bots                      {name, model, effort, instructions, approv
 GET    /api/bots/presets              -> {ok, presets: [{key, name, color, order, model, instructions, setup, apps, skills: [title]}]}
 GET    /api/bots/profiles             -> {ok, profiles: [{dir, name, email}]}
 GET    /api/bots/browsers             -> {ok, browsers: [{id, name, encrypt, chrome_profile, sites, running, bots: [{id, name}]}]}
-POST   /api/bots/browsers/<bid>       {op: rename {name} | encrypt {on} | profile {profile} | signin | dock | delete}
-                                      -> {ok, name?|bot?}   (Settings > Browsers; delete moves each bot to a fresh browser)
+POST   /api/bots/browsers/<bid>       {op: rename {name} | encrypt {on} | profile {profile} | signin | delete}
+                                      -> {ok, name?|bot?}   (Settings > Browsers; signin = takeover on one of its bots, `bot` says which; delete moves each bot to a fresh browser)
 GET    /api/bots/usage                -> the usage summary
 GET    /api/bots/imessage             -> the bridge state
 POST   /api/bots/<id>/send            {text, reply_to?}                     -> {ok}      (also answers approvals/questions/offers)
-POST   /api/bots/<id>/pause | resume | stop | takeover | giveback | wake    -> {ok}
-POST   /api/bots/<id>/window          {visible}                             -> {ok}
+POST   /api/bots/<id>/pause | resume | stop | takeover | giveback | popout | dock | wake  -> {ok}   (dock keeps your take-over; giveback docks and hands back)
 POST   /api/bots/<id>/goto            {url}                                 -> {ok, url}
 POST   /api/bots/<id>/nav             {op: back|forward|reload}             -> {ok, url}
 POST   /api/bots/<id>/tab             {tab: new|switch|close, url?, index?} -> {ok, url, tabs}
@@ -406,8 +405,21 @@ drives every tab, as before. Encrypt-at-rest and an imported Chrome profile
 belong to the browser (browser.json) and are mirrored into each bot's
 `encrypt` / `chrome_profile` for the dialog. Idle sleep quits a shared Chrome
 only once every bot on it has been idle (`Browser.sleep` →
-`BrowserProcess.stop_if_idle`). Pop-out (`window`) is per process: every
-bot's windows appear, the asking bot's in front. Delete keeps a browser other
+`BrowserProcess.stop_if_idle`). Chrome is always headless and is never
+relaunched for a take-over: `takeover` pauses the bot and the user drives the
+same tab from the live view (screencast in, `Input.*` out over the tab's own
+DevTools socket; the key forwarder is `lib/live.ts keyAction`, the US-layout
+table plus macOS editing commands, with `Input.insertText` for IME and any
+character the table does not know; what headless Chrome never paints or
+prompts — select/datalist/picker popups, dialogs, the file chooser, drags,
+HTTP auth — the live view substitutes itself, `lib/cdp.ts`). One deliberate
+relaunch remains, `popout`/`dock` ("Real window" in the live view): the same
+profile as a real Chrome window for what no screencast carries (passkeys, the
+password manager, print). The stop is `Browser.close` alone (Chrome then
+unlinks its Singleton* files, so ProcessSingleton never forwards the next
+launch to the dying process), SIGTERM after 3 s, SIGKILL after 3 more; a
+closed window docks itself on the next status poll, no task starts while the
+window is out, and idle sleep never quits it. Delete keeps a browser other
 bots still use; the last bot takes it down. Settings' `browser_id` moves a bot
 (`bot.set_browser`): off a shared browser its tabs close, off a private one
 Chrome stops and the folder goes; refused mid-task. Clone shares by default.
@@ -437,7 +449,7 @@ README.md per task, `index.jsonl`), attachments (`save_bytes`,
 builds (`build`, `_watch_build`, `_build_prompt` update/new), `show_app`,
 `_resolve_app`, `_app_at`, the risk rule (`_risk`, `_RISKY_BTN`, `_YES`,
 `_NO`), the approval gate, the stuck detector, the `py`/`tool` one-run rule,
-idle sleep after 10 min, window pop-out/dock, `takeover`/`giveback`, the
+idle sleep after 10 min, `takeover`/`giveback`, the
 usage ledger, export to Markdown, Chrome profile import, encryption at rest.
 Step thumbnails (`_step_thumb`) stay; `_keep_bad_reply` stays for the steps
 engine.
@@ -802,9 +814,9 @@ Control flow inside the tools (the harness's job, in the server process):
   instruction clears the `py`/`tool` one-run ledger as in OpenBot.
 - `ask(message, options?)`: emits a `question` event, status `waiting`,
   blocks until `send()` or Stop; returns `USER ANSWER: …` (plus the
-  take-over note when the user drove meanwhile). `login(message)`: pops the
-  window (`bot.window(True)`), emits the question, waits for a reply or
-  hand-back, docks, returns.
+  take-over note when the user drove meanwhile). `login(message)`: `bot.takeover(note=False)`
+  (paused without the "Paused" card, control to the user in the live view),
+  emits the question, waits for a reply or hand-back, returns.
 - Approval: `_risk(name, args, obs)` decides; when non-empty and approval is
   `ask`, emit `approval` (`About to <describe>. <why> Approve?`), wait;
   denied (an OpenBot `_NO` answer) → return `DENIED by the user: … Do not

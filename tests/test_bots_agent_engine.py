@@ -67,7 +67,7 @@ class FakeBrowser:
         self.shoot_actions = True
         self.shoot_seen = []   # shoot_actions as each action saw it
 
-    def start(self, visible):
+    def start(self):
         self.started = True
 
     def alive(self):
@@ -125,7 +125,6 @@ class FakeBot:
         self.pause_flag = threading.Event()
         self.stop_flag = threading.Event()
         self.asking = False
-        self.window_closed = False
         self.task_origin = "manual"
         self.task_started = time.time()
         self.task_dir = None
@@ -182,14 +181,9 @@ class FakeBot:
         self.emit("system", "Stop requested")
         agent_engine.stop(self)
 
-    def window(self, visible):
-        self.meta["visible"] = visible
-        if visible:
-            self.pause_flag.set()
-            self.meta["control"] = True
-
-    def _closed_window_note(self, history):
-        pass
+    def takeover(self, note=True):
+        self.pause_flag.set()
+        self.meta["control"] = True
 
     def _recover_popup(self):
         pass

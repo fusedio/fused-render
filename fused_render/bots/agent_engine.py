@@ -35,7 +35,7 @@ turn in the same process.
 
 What this module expects of `bot` (class Bot in bot.py): id, meta, browser,
 emit, set_status, inbox, _drain_inbox, wake, pause_flag, stop_flag, asking,
-window, window_closed, _closed_window_note, _recover_popup,
+takeover, _recover_popup,
 collect_task_artifacts, _routine_outcome, _offer, _offer_hints, build,
 run_tool, run_py, show_app, _step_thumb, _skill_dirs, memory_for_prompt,
 skills_for_prompt, past_conversation, contacts, contact, py_ref, all_files,
@@ -130,7 +130,7 @@ Rules:
 - Use `type` with submit=true to search (it presses Enter). Prefer the site's own search or Google.
 - Only use refs from the latest element list you were given. If the target is not visible, `scroll` first or `observe` for the full list.
 - Navigation items with no href (e.g. "Products", "Resources") are dropdown menus: `hover` them, then click one of the links that appear.
-- Logins: NEVER ask for passwords or codes. If a page needs a sign-in, 2FA or captcha, call `login` with a short message (e.g. "This site needs you to sign in"). It opens a real Chrome window on the user's desktop: they sign in there with their own keyboard (password manager and passkeys work normally), then reply "done" or click Hand back, and you continue where they left off. Never use `ask` for this.
+- Logins: NEVER ask for passwords or codes. If a page needs a sign-in, 2FA or captcha, call `login` with a short message (e.g. "This site needs you to sign in"). It pauses you and hands your page to the user in the live view: they sign in there with their own keyboard, then reply "done" or click Hand back, and you continue where they left off. Never use `ask` for this.
 - Your tools are the truth about what you can do, even if an earlier message of yours said otherwise (e.g. with CONTACTS present you CAN read iMessage replies with `texts`; "did she answer?" means: run `texts` and report).
 - Use `ask` when you truly need the user for something else (a decision, a choice between options). Never invent logins. When the answer is a choice, pass the choices as `options` (short labels, 2-5 of them); the user can still type something else.
 - Payments, purchases and MFA codes: never complete these yourself. Stop and use `login` (or `ask` the user to take over) for that step.
@@ -860,7 +860,7 @@ def run(bot, task: str, label: str | None = None) -> None:
         except AttributeError:
             pass
         bot.emit("system", f"Task started: {label or task}")
-        bot.browser.start(False)
+        bot.browser.start()
         bin_path = claude_cli.runnable()
         if not bin_path:
             raise RuntimeError("the Claude Code CLI (`claude`) was not found; install it or pick a local model")
@@ -1408,12 +1408,9 @@ def _ask_wait(bot, sess: Turn, q: str, opts: list, summary: str = "", multi: boo
     if drove:
         bot.pause_flag.clear()
         bot.meta["control"] = False
-        if bot.window_closed:
-            bot._closed_window_note(lines)
-        else:
-            lines.append("The user took over your browser in the live view meanwhile and handed it back: the page, the "
-                         "login state and which tab is in front may all have changed. Do not assume anything from "
-                         "before; act on the page below.")
+        lines.append("The user took over your browser in the live view meanwhile and handed it back: the page, the "
+                     "login state and which tab is in front may all have changed. Do not assume anything from "
+                     "before; act on the page below.")
     bot.set_status("running", waiting_on=None)
     page = "\n" + tools.format_observation(_observe(bot, sess), compact=True) if drove else ""
     return answer, lines, page
@@ -1505,7 +1502,7 @@ def _ask_builtin(bot, sess: Turn, args: dict):
 
 def _login(bot, sess: Turn, args: dict):
     q = (args.get("message") or "").strip() or "This page needs you to sign in."
-    bot.window(True)
+    bot.takeover(note=False)  # the user signs in from the live view; the bot waits paused on this same tab
     ev = bot.emit("question", channels.login_text(bot, q))
     bot.set_status("waiting", waiting_on=_seq(ev))
     bot.asking = True
@@ -1521,12 +1518,10 @@ def _login(bot, sess: Turn, args: dict):
     if bot.stop_flag.is_set():
         return None
     answer = bot._drain_inbox()
-    if bot.meta.get("visible"):
-        bot.window(False)
     bot.pause_flag.clear()
     bot.set_status("running", control=False, waiting_on=None)
-    lines = [f"Opened a real browser window for sign-in ({q}); the user is done with it."]
-    bot._closed_window_note(lines)
+    lines = [f"Handed the page to the user to sign in ({q}); the user is done with it. Do not assume the sign-in "
+             "succeeded; act on the page below."]
     lines.extend(f"USER ANSWER: {a}" for a in answer)
     lines.append("\n" + tools.format_observation(_observe(bot, sess), compact=True))
     return _result("\n".join(lines))

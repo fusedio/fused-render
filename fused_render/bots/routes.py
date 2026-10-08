@@ -91,20 +91,20 @@ def _truthy(v) -> bool:
 
 # ------------------------------------------------------------------ status ---
 def _status_bot(b, shot_for: str, fast: bool, cursors: dict) -> dict:
-    """OpenBot `_main`'s status branch for one bot: idle shot refresh, auto-dock
-    of a closed desktop window, idle sleep, popup recovery, then the summary."""
+    """OpenBot `_main`'s status branch for one bot: idle shot refresh, idle
+    sleep, popup recovery, then the summary."""
     st = b.meta.get("status")
     idle = st in ("idle", "waiting", "paused", "error")
     running = b.thread is not None and b.thread.is_alive()
     if shot_for == b.id:
         b.last_looked = time.time()  # a shared browser's idle sleep (bot._may_sleep) must not quit under the bot on screen
-    # Popped-out window closed by the user -> dock it back automatically.
-    # Non-blocking: a second poll arriving mid-relaunch just skips.
-    try:  # only the bot that popped out watches (another bot on a shared browser would see "no tabs of mine" and dock it)
-        if b.meta.get("visible") and b.browser.window_closed() and b.browser.lock.acquire(blocking=False):
+    # A popped-out window the user closed -> back to headless. Any bot on the (possibly shared) process may notice: the
+    # one that popped out gets control back, the others just carry on. Non-blocking: a poll mid-relaunch skips.
+    try:
+        if b.browser.headed() and b.browser.window_closed() and b.browser.lock.acquire(blocking=False):
             try:
                 if b.browser.window_closed():
-                    b.window(False, closed=True)
+                    b.dock(closed=True)
             except Exception:  # noqa: BLE001
                 pass
             finally:
@@ -238,9 +238,10 @@ def bots_browsers():
 @router.post("/api/bots/browsers/{bid}")
 @_handled
 def bots_browser_op(bid: str, body: dict = Body(...), x_fused: str | None = Header(default=None)):
-    """Settings > Browsers: {op: rename {name} | encrypt {on} | profile {profile} | signin | dock | delete}.
+    """Settings > Browsers: {op: rename {name} | encrypt {on} | profile {profile} | signin | delete}.
     Encrypt, profile import and sign-in go through a bot on the browser (any: the flag and the
-    profile belong to the browser; sign-in pops that bot's window). Delete moves every bot on it
+    profile belong to the browser; sign-in hands that bot's tab to the user in the live view, `bot`
+    in the reply says which). Delete moves every bot on it
     to a fresh browser of its own, which takes the old one down with the last of them."""
     guard = _require_fused(x_fused)
     if guard is not None:
@@ -260,9 +261,9 @@ def bots_browser_op(bid: str, body: dict = Body(...), x_fused: str | None = Head
     if op == "profile":
         bm.import_profile(bots[0], body.get("profile") or "")
         return {"ok": True}
-    if op in ("signin", "dock"):
-        b = next((x for x in bots if x.meta.get("visible")), None) or bots[0]
-        b.window(op == "signin")
+    if op == "signin":
+        b = next((x for x in bots if x.meta.get("control")), None) or bots[0]
+        b.takeover()
         return {"ok": True, "bot": b.id}
     if op == "delete":
         busy = [b.meta.get("name") or b.id for b in bots if b.thread and b.thread.is_alive()]
@@ -416,15 +417,15 @@ def bot_send(bid: str, body: dict = Body(...), x_fused: str | None = Header(defa
 
 
 _CONTROL = {"pause": "pause", "resume": "resume", "stop": "stop", "takeover": "takeover",
-            "giveback": "giveback", "wake": "wake_browser", "open": "opened"}
+            "giveback": "giveback", "popout": "popout", "dock": "dock", "wake": "wake_browser", "open": "opened"}
 
 
 @router.post("/api/bots/{bid}/{op}")
 @_handled
 def bot_control(bid: str, op: str, body: dict = Body(default=None), x_fused: str | None = Header(default=None)):
-    """pause | resume | stop | takeover | giveback | wake | open (the user clicked the bot open: Super Bot's
+    """pause | resume | stop | takeover | giveback | popout | dock | wake | open (the user clicked the bot open: Super Bot's
     first task, docs §5), and the rest of the
-    one-segment POSTs (window, goto, nav, tab, attach, react, flag, settings,
+    one-segment POSTs (goto, nav, tab, attach, react, flag, settings,
     profile, clone, routines, skills, reveal, tool)."""
     guard = _require_fused(x_fused)
     if guard is not None:
@@ -437,11 +438,6 @@ def bot_control(bid: str, op: str, body: dict = Body(default=None), x_fused: str
     if fn is None:
         return _error(f"unknown bot action {op!r}", 404)
     return fn(bid, body)
-
-
-def _window(bid, body):
-    _bot(bid).window(_truthy(body.get("visible")))
-    return {"ok": True}
 
 
 def _goto(bid, body):
@@ -632,7 +628,7 @@ def _tool(bid, body):
         return _error(str(e) or "stale task token", 409)
 
 
-_POSTS = {"window": _window, "goto": _goto, "nav": _nav, "tab": _tab, "attach": _attach, "react": _react,
+_POSTS = {"goto": _goto, "nav": _nav, "tab": _tab, "attach": _attach, "react": _react,
           "flag": _flag, "settings": _settings, "profile": _profile, "clone": _clone, "routines": _routines,
           "skills": _skills, "reveal": _reveal, "tool": _tool}
 

@@ -88,20 +88,14 @@ class FakeBrowser:
         self.calls = []
 
     # lifecycle
-    def start(self, visible=False):
-        self.calls.append(("start", visible))
+    def start(self):
+        self.calls.append(("start",))
 
     def stop(self, seal=None):
         self.calls.append(("stop",))
 
     def alive(self):
         return True
-
-    def visible(self):
-        return False
-
-    def window_closed(self):
-        return False
 
     def shared(self):
         return False
@@ -114,7 +108,7 @@ class FakeBrowser:
         return False
 
     def status(self):
-        return {"running": True, "url": self.url, "title": "Shop", "visible": False, "sealed": False, "encrypt": False}
+        return {"running": True, "url": self.url, "title": "Shop", "sealed": False, "encrypt": False}
 
     status_cached = status
 

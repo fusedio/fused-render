@@ -158,7 +158,7 @@ APP_GUIDE = """APP GUIDE (Browser Bots, a local desktop app; every bot has its o
 - Routines (same menu): scheduled tasks, "Every N minutes" (min 5), "Daily at HH:MM" on chosen weekdays, or "Once at" a date-time. Each can be enabled, disabled, run now or deleted. A run only starts when you are idle; a busy bot skips that slot. A routine pauses itself after 3 failed runs in a row. You cannot create routines yourself: tell the user how to add one.
 - Skills (same menu): the PLAYBOOKS. The user can write one by hand, click "Learn from last task" (the model condenses your last finished task), or you save one with `learn`. Up to 40 per bot; each mounts into your prompt only when one of its trigger words appears in the task.
 - Chat: the user can pause, resume or stop you at any time; a message sent while you work arrives as USER INSTRUCTION and overrides the task; they can reply to or react with an emoji on one of your messages (you see reactions in CONVERSATION SO FAR); they can search the thread; "Export" saves the whole transcript as Markdown. Attaching, pasting or dropping a file on the composer puts it in FILES so you can `upload` it.
-- Live view: clicking your screenshot opens your browser full size with a tab strip, back/forward/reload and a URL bar. "Take over" pauses you and lets the user drive (solve a captcha, pass a popup); "Hand back" returns control and you continue. "Open in browser" pops your Chrome out as a real desktop window; "Dock" brings it back. Your `login` action pops a real window the same way and waits until the user replies "done" or clicks Hand back.
+- Live view: clicking your screenshot opens your browser full size with a tab strip, back/forward/reload and a URL bar. "Take over" pauses you and lets the user drive (solve a captcha, pass a popup); "Hand back" returns control and you continue; "Real window" opens the same browser as a real Chrome window for passkeys and password managers. Your `login` action hands the page over the same way and waits until the user replies "done" or clicks Hand back.
 - Inbox: everything you produce lands in the user's Inbox, a Finder folder at ~/Fused/bots/<your name>/ with one subfolder per task: `save` results, downloads that arrived during the task, and a README with the task and your final answer. The Inbox list under your screenshot shows the most recent items with "Open folder" to reveal them in Finder. Files the user attaches in the composer land in FILES instead, for `upload`. There is no other export path.
 - iMessage: only Super Bot takes tasks by text (from the phone number or Apple ID set in its Settings > Advanced) and texts its replies back; it can hand a browsing task to a bot like you, whose final answer goes back to it as the result. Other bots are not reachable by text. "Contacts the bot may text" (Settings > Advanced) is the allowlist your `text` action can message and `texts` can read replies from (shown to you as CONTACTS). You cannot add contacts yourself: tell the user where.
 - Builds (button under the bots list): Claude Code sessions that create fused-render apps. The user can start one there, and you can start one with `build` (say so, then `done` with the link it returns). Apps land under @APPS_ROOT@/<name>; the Builds panel tracks progress and holds Claude's chat for each build; a chat message (and a text, if iMessage is on) arrives when one is ready. Settings > Advanced > Builds picks "Scoped" (Claude asks the user before risky steps) or "Full access" (unattended).
@@ -483,9 +483,9 @@ class Bot:
             self.meta["browser_id"] = browsers.adopt(bid, self.dir, self.cache_dir, self.meta)
             store.write_meta(bid, self.meta)
         self.browser = Browser(self.dir, self.cache_dir, proc=browsers.get(self.meta["browser_id"]))
-        # A take-over survives a server restart in bot.json; the view's in-memory flag must
-        # agree, or the first hand-back on a shared browser relaunches it under this bot's window.
-        self.browser.popped = bool(self.meta.get("visible")) and self.browser.visible()
+        # Bots from before the live view was the only take-over path recorded a popped-out desktop window here.
+        if self.meta.pop("visible", None) is not None:
+            store.write_meta(bid, self.meta)
         self.browser.idle_check = self._may_sleep
         self.last_looked = time.time()  # when the page last polled with this bot selected (routes._status_bot); a bot just
         # loaded counts as looked at, so a shared Chrome never sleeps under it in the first poll after a restart
@@ -504,7 +504,6 @@ class Bot:
         self.engine = None        # "steps" | "agent" while a task runs
         self.wake = threading.Event()
         self.asking = False       # the task thread is blocked on a question/approval for the user
-        self.window_closed = False
         self.recovering = False
         self.shooting = False
         self.model_ready = set()
@@ -1867,6 +1866,9 @@ class Bot:
             # "setup" is the app's own first task (SUPER_SETUP, _maybe_super_setup), never an outside sender.
             self.emit("system", f"Ignored a task from {origin}: Super Bot only takes tasks you type here.")
             return False
+        if self.browser.headed():
+            self.emit("system", f"Not started: the browser is open as a real window on your desktop. Click \"Back here\" (or close the window), then try again: {label or task}")
+            return False
         with self.lock:
             if self.deleted:
                 return False
@@ -1951,76 +1953,70 @@ class Bot:
         except Exception:  # noqa: BLE001 — the flag alone still ends the task at its next wait
             logger.warning("bot %s: agent engine stop failed", self.id, exc_info=True)
 
-    def takeover(self):
+    def takeover(self, note=True):
         """Hand the page to the user inside the live view: the bot pauses and the
-        page drives the tab over its own DevTools socket. No relaunch."""
-        self.pause()
+        page drives the tab over its own DevTools socket. No relaunch. `note=False`
+        (the login tool) skips the "Paused" card: its own question card says why."""
+        self.pause(note=note)
         self.wake_browser()
         self.set_status("paused" if self.thread and self.thread.is_alive() else "idle", control=True)
 
-    def giveback(self):
-        if self.meta.get("visible"):
-            self.window(False)
+    def popout(self):
+        """Open this bot's browser as a real Chrome window on the desktop and hand it to
+        the user: the explicit escape hatch for what the live view cannot carry (passkeys,
+        the password manager, print). The only relaunch left; a shared browser pops out
+        for every bot on it, so it is refused while another of them is mid-task."""
+        busy = [o["name"] for o in self.shared_with() if self._working(_registry().get(o["id"]))]
+        if busy:
+            raise ValueError(f"{', '.join(busy)} is working in this shared browser; stop or pause that task first")
+        self.pause(note=False)
+        self.browser.popout()
+        self.set_status("paused" if self.thread and self.thread.is_alive() else "idle", control=True)
+        shared = (" Every bot sharing this browser is in that window too." if self.shared_with() else "")
+        self.emit("system", "Opened the browser as a real Chrome window on your desktop. Hand back (or close the window) when you are done." + shared)
+
+    @staticmethod
+    def _working(b):
+        return bool(b and b.thread and b.thread.is_alive() and not b.pause_flag.is_set())
+
+    def dock(self, closed=False, release=False):
+        """Back to headless after `popout`. "Back here" keeps your take-over (you go on driving in the
+        live view; Hand back when done); `release` (Hand back, or the window the user closed) returns
+        control to every bot on the browser that held it, so the bot that popped out resumes no
+        matter which bot's status poll noticed."""
+        self.browser.dock()
+        owners = [o for o in [self] + [_registry().get(x["id"]) for x in self.shared_with()] if o and o.meta.get("control")]
+        if closed or release:
+            for o in owners:
+                o._release(note=False)
+            msg = ("Window closed; the browser is back here, headless" + (" and the bot has control again." if owners else ".")
+                   if closed else "The browser is headless again and the bot has control.")
+        else:
+            msg = "The browser is headless again; you still have control in the live view."
+        for o in owners or [self]:
+            o.emit("system", msg)
+
+    def _release(self, note=True):
+        """Control back to this bot (the shared tail of giveback / dock)."""
         self.meta["control"] = False
         self.save()
-        self.resume()
+        self.resume(note=note)
+
+    def giveback(self):
+        if self.browser.headed():
+            self.dock(release=True)
+            return
+        self._release()
 
     def wake_browser(self):
-        """Relaunch an asleep browser (headless). A browser that is already up is
-        left exactly as it is (start(False) here used to tear down a popped-out
-        window the moment the user clicked Take over)."""
+        """Relaunch an asleep browser. A browser that is already up is left exactly as it is."""
         if self.browser.alive():
             return
-        self.browser.start(self.browser.visible())  # asleep -> no session -> headless
+        self.browser.start()
         # Waking restarts the idle clock (idle_sleep_due measures from meta["updated"]).
         with self.lock:
             self.meta["updated"] = time.time()
             self.save()
-
-    def window(self, visible, closed=False):
-        """Pop the same profile out as a real Chrome window on the desktop (or
-        back to headless). While visible, the bot is paused and you drive the
-        real window; the live view keeps mirroring it."""
-        if visible:
-            self.pause()
-            self.meta["control"] = True
-        relaunched = self.browser.set_visible(visible)  # False: a shared Chrome stays on the desktop for another bot
-        self.meta["visible"] = visible
-        handback = closed and bool(self.meta.get("control"))
-        if handback:
-            self.window_closed = True
-            self.meta["control"] = False
-        self.save()
-        shared_note = (" This browser is shared with " + ", ".join(o["name"] for o in self.shared_with())
-                       + "; their windows open too, this bot's in front.") if visible and self.shared_with() else ""
-        if visible:
-            msg = "Opened this bot's browser as a real window on your desktop. Hand back (or close the window) to return control to the bot." + shared_note
-        elif not relaunched:
-            still = ", ".join(o["name"] for o in self.shared_with() if (_registry().get(o["id"]) or self).meta.get("visible")) or "another bot"
-            where = ("this bot opens a fresh window in the background when it next acts" if closed
-                     else "this bot's windows are minimised and it keeps working there")
-            msg = (("Desktop window closed" if closed else "Handed back") + f"; {still} still has this shared browser open on your desktop, "
-                   f"so it stays a real window for now; {where}" + (", with control again." if handback else "."))
-        elif closed:
-            msg = "Desktop window closed; the browser is back here, headless" + (" and the bot has control again." if handback else ".")
-        else:
-            msg = "Browser is headless again; the live view is the only window."
-        self.emit("system", msg)
-        if handback:
-            if self.thread and self.thread.is_alive():
-                self.resume(note=False)
-            else:
-                self.set_status("idle", control=False)
-
-    def _closed_window_note(self, history):
-        if not self.window_closed:
-            return
-        self.window_closed = False
-        history.append("The user popped your browser out as a real desktop window and then closed that window "
-                       "instead of handing back, so control returned to you. Your browser is back on the last page "
-                       "it knew about (possibly about:blank), headless, or in a fresh window when another bot's user "
-                       "still has the shared browser open. Nothing was necessarily accomplished "
-                       "in that window; do not assume a login or any step succeeded. Act on the observation below.")
 
     def _recover_popup(self):
         if self.meta.get("control") and self.browser.recover_stuck_google_popup():
@@ -2053,15 +2049,15 @@ class Bot:
         return self.idle_sleep_due(time.time() - self.last_looked < 15)
 
     def idle_sleep_due(self, selected):
-        """Idle for a while, headless, not being looked at or driven -> put the
-        browser to sleep. The next task, take-over or live view relaunches it."""
+        """Idle for a while, not being looked at or driven -> put the browser to
+        sleep. The next task, take-over or live view relaunches it."""
         if selected or self.meta.get("control"):
             return False
         if self.meta.get("status") not in ("idle", "error") or (self.thread and self.thread.is_alive()):
             return False
         if time.time() - (self.meta.get("updated") or 0) < IDLE_SLEEP_S:
             return False
-        return self.browser.alive() and not self.browser.visible()
+        return self.browser.alive() and not self.browser.headed()  # never quit the user's own window under them
 
     def idle_sleep(self):
         try:
