@@ -12,14 +12,18 @@
 // bottom-left reads the same in either app; Render's sidebar card stays, it is
 // the decision surface for a found update and this chip only mirrors it.
 //
-// THE CHIP'S LABEL IS THE STATE, one line: "v0.6.22" at rest, then "Checking…"
-// / "Up to date" for a few seconds after a manual press, "Update available",
-// "Downloading" over a progress line, "Installing", "Restart to update",
-// "Restarting…", "Update failed" (red). The POPOVER holds the whole story:
-// the running version, the state's detail sentence and its action (Download /
-// Restart now / Try again — the same `installUpdate` / `requestRestart` paths
-// UpdateCard takes), the Check for updates button while nothing is pending,
-// and the auto-download toggle Preferences also offers.
+// THE CHIP'S LABEL IS THE STATE, one line: "v0.6.22" at rest, "Update
+// available", "Downloading" over a progress line, "Installing", "Restart to
+// update", "Restarting…", "Update failed" (red). NEXT TO IT IN THE BAR, not
+// inside the popover (Akshil: "check for updates button should be outside the
+// popover next to version number"), the Check for updates button — its own
+// phases "Checking…" / "Up to date" / "Couldn't check" for a few seconds after
+// a press; hidden while a found update is pending its decision, disabled with
+// a tooltip on a build with no updater (a dev run). The POPOVER holds the
+// rest: the running version, the state's detail sentence and its action
+// (Download / Restart now / Try again — the same `installUpdate` /
+// `requestRestart` paths UpdateCard takes), and the auto-download toggle
+// Preferences also offers.
 //
 // SPLIT INTO A PURE VIEW (`UpdatesCardView`) AND A STATEFUL WRAPPER, the
 // SystemDock/ModelsDock split, so the test renders the view with a fixed
@@ -32,7 +36,7 @@ import { restartInFlight, restartStageLabel, type RestartStage } from "@platform
 import { requestRestart, useRestartFlow } from "@platform/lib/restart-store";
 import { useStatusChip, type StatusChipState } from "@platform/lib/statusChip";
 import { useManualUpdateCheck } from "@platform/lib/update-check";
-import { checkNowLabel, installUpdate, useUpdateStatus, type ManualCheckPhase } from "@platform/lib/update-status";
+import { checkNowLabel, installUpdate, updateRelevant, useUpdateStatus, type ManualCheckPhase } from "@platform/lib/update-status";
 import StatusChip, { type ChipTone } from "@platform/ui/StatusChip";
 
 export interface UpdatesChip {
@@ -49,6 +53,8 @@ export function updatesChip(
   version: string | null | undefined,
   phase: ManualCheckPhase = "rest",
 ): UpdatesChip {
+  // `phase` only matters for the progress line while a press is in flight;
+  // the words for a press live on the Check button beside the chip.
   const rest = version ? `v${version}` : "Updates";
   if (!status) return { label: rest, tone: "idle" };
   if (status.state === "available") return { label: "Update available", tone: "on" };
@@ -64,9 +70,7 @@ export function updatesChip(
     return { label: rest, tone: "idle" };
   }
   if (status.state === "error") return { label: "Update failed", tone: "failure" };
-  if (phase === "checking" || status.state === "checking") return { label: "Checking…", tone: "idle", progress: null };
-  if (phase === "current") return { label: "Up to date", tone: "idle" };
-  if (phase === "failed") return { label: "Couldn't check", tone: "idle" };
+  if (phase === "checking" || status.state === "checking") return { label: rest, tone: "idle", progress: null };
   return { label: rest, tone: "idle" };
 }
 
@@ -150,6 +154,10 @@ export function UpdatesCardView({
   const detail = updatesDetail(status, stage);
   const running = version ? `Running v${version}` : "Version unknown";
   const progressLine = downloadProgressLine(status);
+  // The Check button leaves the bar while a found update waits on its
+  // decision (download? restart?) — pressing it then could only contradict
+  // the chip beside it with "Up to date".
+  const showCheck = !updateRelevant(status);
   return (
     <div className="dl-host upd-chip" {...hostProps}>
       <StatusChip
@@ -162,6 +170,17 @@ export function UpdatesCardView({
         ariaLabel={`Updates: ${chip.label}`}
         onClick={onToggle}
       />
+      {showCheck && (
+        <button
+          type="button"
+          className={"upd-check-btn" + (phase !== "rest" ? " is-" + phase : "")}
+          disabled={!hasUpdater || phase === "checking"}
+          title={hasUpdater ? "Look for a newer version now" : "Updates aren’t managed from inside the app on this build — a packaged Fused app updates itself; a dev run does not."}
+          onClick={onCheck}
+        >
+          {checkNowLabel(phase, hasUpdater ? null : version)}
+        </button>
+      )}
       {!collapsed && (
         <div className="dl-panel upd-panel" role="status">
           <div className="upd-head">{running}</div>
@@ -183,13 +202,9 @@ export function UpdatesCardView({
               )}
             </div>
           ) : hasUpdater ? (
-            <div className="upd-check">
-              <button type="button" className="update-card-btn" disabled={phase === "checking"} onClick={onCheck}>
-                {checkNowLabel(phase, version)}
-              </button>
-            </div>
+            <div className="upd-state-detail">{phase === "current" ? "You have the latest version." : "No update is waiting."}</div>
           ) : (
-            <div className="upd-state-detail upd-none">Updates aren&rsquo;t managed from inside the app on this build.</div>
+            <div className="upd-state-detail upd-none">Updates aren&rsquo;t managed from inside the app on this build &mdash; a packaged Fused app updates itself; a dev run does not.</div>
           )}
           {hasUpdater && (
             <label className="upd-auto">

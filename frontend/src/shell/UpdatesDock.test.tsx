@@ -24,11 +24,10 @@ test("at rest the chip is the running version; no updater reads the same", () =>
   expect(updatesChip(null, "ready", null).label).toBe("Updates");
 });
 
-test("a manual press shows its own phases over an idle store", () => {
-  expect(updatesChip(st({}), "ready", "1", "checking").label).toBe("Checking…");
-  expect(updatesChip(st({}), "ready", "1", "current").label).toBe("Up to date");
-  expect(updatesChip(st({}), "ready", "1", "failed").label).toBe("Couldn't check");
-  expect(updatesChip(st({ state: "checking" }), "ready", "1").label).toBe("Checking…");
+test("a manual press keeps the version on the chip (the Check button carries the words), with a busy line while in flight", () => {
+  expect(updatesChip(st({}), "ready", "1", "checking")).toEqual({ label: "v1", tone: "idle", progress: null });
+  expect(updatesChip(st({}), "ready", "1", "current").label).toBe("v1");
+  expect(updatesChip(st({ state: "checking" }), "ready", "1").progress).toBeNull();
 });
 
 test("every update state has its own label, tone and progress", () => {
@@ -79,18 +78,24 @@ function view(status: UpdateStatus | null, over: Partial<Parameters<typeof Updat
   );
 }
 
-test("open at rest: running version, the Check button and the auto-download row", () => {
+test("the Check button sits in the bar beside the chip, even collapsed; the popover has the version and the auto-download row", () => {
+  const closed = texts(view(st({}), { collapsed: true }).toJSON()).join(" | ");
+  expect(closed).toContain("v0.6.22");
+  expect(closed).toContain("Check for updates");
   const all = texts(view(st({})).toJSON()).join(" | ");
   expect(all).toContain("Running v0.6.22");
-  expect(all).toContain("Check for updates");
+  expect(all).toContain("No update is waiting.");
   expect(all).toContain("Automatically download updates");
+  expect(texts(view(st({}), { phase: "current" }).toJSON()).join(" | ")).toContain("Up to date");
 });
 
-test("no updater: the version still shows, the Check button does not", () => {
-  const all = texts(view(null, { hasUpdater: false }).toJSON()).join(" | ");
+test("no updater: the version still shows, the Check button is there but disabled", () => {
+  const r = view(null, { hasUpdater: false });
+  const all = texts(r.toJSON()).join(" | ");
   expect(all).toContain("Running v0.6.22");
-  expect(all).not.toContain("Check for updates");
-  expect(all).toContain("Updates aren’t managed from inside the app on this build.");
+  expect(all).toContain("Check for updates");
+  expect(r.root.findByProps({ className: "upd-check-btn" }).props.disabled).toBe(true);
+  expect(all).toContain("Updates aren’t managed from inside the app on this build");
   expect(all).not.toContain("Automatically download updates");
 });
 
@@ -108,8 +113,10 @@ test("an update found replaces the Check button with the decision", () => {
   expect(all).not.toContain("Check for updates");
 });
 
-test("collapsed: the chip alone, no panel", () => {
+test("collapsed: no panel; a pending update hides the Check button", () => {
   const all = texts(view(st({}), { collapsed: true }).toJSON()).join(" | ");
-  expect(all).toContain("v0.6.22");
   expect(all).not.toContain("Running");
+  const pending = texts(view(st({ state: "available" }), { collapsed: true }).toJSON()).join(" | ");
+  expect(pending).toContain("Update available");
+  expect(pending).not.toContain("Check for updates");
 });

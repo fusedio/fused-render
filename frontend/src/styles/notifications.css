@@ -1933,6 +1933,44 @@
   gap: 8px;
 }
 
+/* The Check for updates button, in the bar beside the chip. A quiet text
+   button at the bar's own type size; its answer phases ("Up to date",
+   "Couldn't check") recolour the text for the few seconds they hold. */
+.upd-check-btn {
+  margin: 0 0 0 2px;
+  padding: 0 8px;
+  height: 20px;
+  border: 1px solid color-mix(in srgb, var(--fg) 18%, transparent);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg-muted);
+  font: inherit;
+  font-size: 11px;
+  line-height: 18px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.upd-check-btn:hover:not(:disabled) {
+  color: var(--fg);
+  background: color-mix(in srgb, var(--fg) 8%, transparent);
+}
+
+.upd-check-btn:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.upd-check-btn.is-current {
+  color: var(--accent);
+  border-color: rgba(var(--accent-rgb), 0.5);
+}
+
+.upd-check-btn.is-failed {
+  color: var(--error);
+  border-color: rgba(var(--error-rgb), 0.5);
+}
+
 .upd-head {
   font-size: 12px;
   color: var(--fg);

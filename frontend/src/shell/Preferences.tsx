@@ -1876,17 +1876,19 @@ export default function Preferences() {
                 <CallLogSection prefs={prefs} onChange={setPrefs} />
                 <AccessibilitySection prefs={prefs} onChange={setPrefs} />
                 {/* Render-only features: Fused Bot has no canvases, no app
-                    sharing, no app git, no live previews, no process monitor —
-                    and its Bots switch is forced on by the server, so a toggle
-                    here would be a lie. Tasks DO exist in bot, so the queue and
-                    terminal-notify switches stay. */}
+                    sharing, no app git, no live previews — and its Bots switch
+                    is forced on by the server, so a toggle here would be a lie.
+                    Tasks DO exist in bot, so the queue and terminal-notify
+                    switches stay; so does the process Monitor (2026-10-08): the
+                    status bar's System chip renders under Fused Bot too, and
+                    this is the only switch for it. */}
                 {!bot && <CanvasesSection prefs={prefs} onChange={setPrefs} />}
                 {!bot && <AppSharingSection prefs={prefs} onChange={setPrefs} />}
                 <ProjectQueueSection prefs={prefs} onChange={setPrefs} />
                 {!bot && <GitAutoSyncSection prefs={prefs} onChange={setPrefs} />}
                 <TaskNotifyTerminalSection prefs={prefs} onChange={setPrefs} />
                 {!bot && <LivePreviewsSection prefs={prefs} onChange={setPrefs} />}
-                {!bot && <MonitorSection prefs={prefs} onChange={setPrefs} />}
+                <MonitorSection prefs={prefs} onChange={setPrefs} />
                 {!bot && <BotsSection prefs={prefs} onChange={setPrefs} />}
                 {(bot || prefs.bots.enabled) && <PhoneSection />}
                 <DiagnosticsSection />
