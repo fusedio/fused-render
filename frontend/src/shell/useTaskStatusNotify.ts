@@ -91,6 +91,14 @@ import { useTaskNotifyTerminalSessions } from "@shell/task-notify-terminal-flag"
 // its notices, as above (its feed rides the socket now and costs no slot).
 const READS_TASK_ROWS = !(IS_EMBED && !IS_TOP_EMBED);
 
+/** The hook as a LEAF (2026-10-09): mounted once in `App`'s tree, renders
+ *  nothing, and so is the only thing the listing's row publishes re-render
+ *  up there. See App.tsx at the mount for why the root must not subscribe. */
+export function TaskStatusNotifier(): null {
+  useTaskStatusNotify();
+  return null;
+}
+
 export function useTaskStatusNotify(): void {
   const tasks = useTasksPulseRows(READS_TASK_ROWS);
   const previous = useRef<Map<string, string>>(new Map());

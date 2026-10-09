@@ -78,7 +78,7 @@ import { PEEK_PARAM } from "@shell/task-peek-store";
 import type { TasksScope } from "@shell/Scheduled";
 import { useTaskPeekEnabled } from "@shell/task-peek-flag";
 import { TASKS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
-import { useTaskStatusNotify } from "@shell/useTaskStatusNotify";
+import { TaskStatusNotifier } from "@shell/useTaskStatusNotify";
 import ShortcutsOverlay from "@platform/ui/ShortcutsOverlay";
 import { isMod, isWindows } from "@platform/lib/platform";
 import { isOverlayOpen } from "@platform/lib/ui-overlay";
@@ -528,8 +528,12 @@ export default function App({ config }: { config: Config }) {
   // notifications.md §5's "Sources" — /api/tasks already computes
   // needs_attention/in_progress/blocked/done, this only watches the poll for
   // the transitions between them). Narrator-gated internally, same as
-  // useScheduleEvents above.
-  useTaskStatusNotify();
+  // useScheduleEvents above. A LEAF, NOT A HOOK HERE (2026-10-09): the hook
+  // subscribes to every row of the listing, and a subscription at the app
+  // root re-rendered the whole tree — sidebar, docks, the Tasks page with
+  // its old rows — on every publish, before the page's own transition
+  // rendered it again with the new ones. `<TaskStatusNotifier />` below
+  // holds the subscription and renders nothing.
 
   // The INTERACTIVE half of the same promise. A follow-up typed into a chat
   // creates no sys:schedule job and no schedule event, so neither wiring above
@@ -1118,6 +1122,7 @@ export default function App({ config }: { config: Config }) {
 
   return (
     <div id="app">
+      <TaskStatusNotifier />
       {!IS_EMBED && sidebar}
       <div id="main">
         {main}

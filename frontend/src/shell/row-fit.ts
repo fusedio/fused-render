@@ -31,7 +31,7 @@
 //
 // The pure half is here so it can be proved without a browser (row-fit.test.ts);
 // the hook underneath owns the ResizeObserver and the cache.
-import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 /**
  * THE ORDER THE WIDTH IS SPENT IN, right to left across the row's meta cluster
@@ -419,19 +419,47 @@ export function useRowFit(
   ref: React.RefObject<HTMLElement>,
   enabled = true,
   floored = false,
+  epoch: unknown = undefined,
 ): RowFit {
   const [fit, setFit] = useState<RowFit>(NO_FIT);
   // The cache outlives every measurement: an item's width is a fact about the
   // CONTENT, and re-reading it while the item is hidden would read zero.
   const costs = useRef<number[]>([]);
+  // The measurement, reachable from the epoch effect below without re-running
+  // the observer effect: a listing lands about once a second while a session
+  // is live, and tearing the observer down and up for each (one sweep on
+  // re-observe, one on the timer) would be two style passes a second.
+  const readRef = useRef<() => void>(() => {});
+  // The floor as a ref, so the measurement below never closes over a stale
+  // value and the binding does not have to be remade when it flips.
+  const flooredRef = useRef(floored);
+  flooredRef.current = floored;
+  // What is observed right now, so a commit that leaves the scroller in place
+  // (every listing delta) keeps the observer and a commit that swaps it (the
+  // list arriving after the empty state, a cleared search, a recovered poll)
+  // rebinds. The ref is read in the effect, after the commit, which is the
+  // only moment it is current — and the effect runs on `epoch` precisely so
+  // it can see a scroller that was not there the last time (Bugbot, #1524:
+  // TaskList returns the empty state until rows arrive, so a binding made
+  // once on mount observed nothing, ever).
+  const bound = useRef<{ el: HTMLElement; ro: ResizeObserver } | null>(null);
+  const unbind = () => {
+    bound.current?.ro.disconnect();
+    bound.current = null;
+    readRef.current = () => {};
+  };
   useLayoutEffect(() => {
     // OFF MEANS NOTHING IS OBSERVED. The ladder arrived with the side peek and
     // it is part of what the flag turns off, so with the feature down there is
     // no ResizeObserver, no MutationObserver and no `data-fit` — the list is
     // the list this page has always rendered (shell/task-peek-flag.ts).
-    if (!enabled) return;
-    const el = ref.current;
-    if (!el) return;
+    const el = enabled ? ref.current : null;
+    if (!el) {
+      unbind();
+      return;
+    }
+    if (bound.current?.el === el) return;
+    unbind();
     let frame = 0;
     const read = () => {
       measureCosts(el, costs.current);
@@ -444,7 +472,9 @@ export function useRowFit(
         const row = rows[i];
         if (row) need = Math.max(need, rowNeed(row, costs.current));
       }
-      const next = pickRowFit({ floored, available: el.clientWidth, need, costs: costs.current });
+      const next = pickRowFit({
+        floored: flooredRef.current, available: el.clientWidth, need, costs: costs.current,
+      });
       setFit((cur) => (cur.level === next.level && cur.need === next.need ? cur : next));
     };
     // READ IN THE CALLBACK, not on a frame. A `requestAnimationFrame` hop is
@@ -464,24 +494,40 @@ export function useRowFit(
         frame = 0;
       }
     };
-    read();
+    readRef.current = schedule;
+    // The ResizeObserver reports once on observe, so the first verdict lands
+    // before the first paint; the listing effect below is the read for a list
+    // whose box did not change.
     const ro = new ResizeObserver(schedule);
     ro.observe(el);
-    // The CONTENT changes width with the box standing still — a poll lands new
-    // rows, a folder chip appears once the list spans projects. Children only,
-    // and never the scroller's own attributes: this hook writes `data-fit`
-    // there, and observing what it writes would schedule the next verdict for
-    // ever (useFitStrip's own note).
-    const mo = new MutationObserver(schedule);
-    mo.observe(el, { childList: true, subtree: true, characterData: true });
-    return () => {
-      ro.disconnect();
-      mo.disconnect();
-    };
-    // `floored` is in the deps because it changes the VERDICT, not the
-    // measurement: crossing the floor has to re-read at once, in the same
-    // commit the frame's own attribute lands in.
-  }, [ref, enabled, floored]);
+    bound.current = { el, ro };
+    // NO MutationObserver ANY MORE (2026-10-09, Tasks latency design D5). It
+    // watched the content for width changes — a poll landing new rows, a
+    // folder chip appearing — and re-measured thirty rows' computed styles,
+    // synchronously, on every mutation. The list now folds rows under the
+    // scroll, so every reveal was such a mutation, and the read it forced was
+    // the 100 ms frame WebKit showed on every scroll step (measured: stubbing
+    // the observer took 38 such frames down to 2). The content changes that
+    // matter arrive with a LISTING, and the list says so through `epoch`
+    // below; a row folding or unfolding is not one of them.
+    // No cleanup here: the binding outlives this effect's re-runs on purpose
+    // (see `bound`); the unmount effect below releases it.
+  }, [ref, enabled, epoch]);
+  useLayoutEffect(() => unbind, []);
+  // `floored` changes the VERDICT, not the measurement: crossing the floor has
+  // to re-read at once, in the same commit the frame's own attribute lands in.
+  useLayoutEffect(() => {
+    readRef.current();
+  }, [floored]);
+  // A NEW LISTING IS ONE TRAILING RE-READ. `epoch` is the rows array, a fresh
+  // identity on every delta; the chips and titles it may have changed are
+  // measured once, a second after the last one landed, off the commit — not
+  // on every delta and never on a fold/unfold, which is not a listing.
+  useEffect(() => {
+    if (!enabled) return;
+    const id = window.setTimeout(() => readRef.current(), 1000);
+    return () => window.clearTimeout(id);
+  }, [enabled, epoch]);
   return enabled ? fit : NO_FIT;
 }
 

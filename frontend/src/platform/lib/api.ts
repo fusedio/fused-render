@@ -3177,6 +3177,14 @@ export interface Task {
   // "sdk-cli", which is exactly why the notify-terminal-sessions preference
   // exists rather than trying to make this exact.
   entrypoint?: "cli" | "sdk-cli" | null;
+  /** The folder this conversation lives in (`project`, else `target`) is gone
+   *  from the disk — answered by the build, which stats every target anyway,
+   *  so no window has to stat it again (2026-10-09). */
+  folder_missing?: boolean;
+  /** A short digest of the row's content, stamped by the server. The 20 s
+   *  floor read keeps the row object it already holds when the digest reads
+   *  the same (tasksPulse.reuseUnchangedRows). */
+  row_hash?: string;
   title: string;
   // Which source won: the user's own title, Claude Code's own `ai-title`
   // record, the first line of the session's own first prompt (`message`), or —

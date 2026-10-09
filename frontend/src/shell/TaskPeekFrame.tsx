@@ -75,12 +75,16 @@ export function TaskPeekFrame({
     const ro = new ResizeObserver(read);
     ro.observe(frame);
     // The page's own sections arrive after the first fetch, so the element the
-    // measurement needs may not exist on the first tick.
-    const mo = new MutationObserver(read);
-    mo.observe(frame, { childList: true, subtree: true });
+    // measurement needs may not exist on the first tick. A MutationObserver on
+    // the WHOLE frame used to re-read on every one of them — and every row the
+    // list folded or unfolded under a scroll was one (2026-10-09, measured:
+    // the observers that read layout were 95 % of WebKit's scroll jank). Two
+    // late re-reads cover the arrival instead; the store reads the page
+    // itself when it is asked for a number it does not have.
+    const late = [600, 2500].map((ms) => window.setTimeout(read, ms));
     return () => {
       ro.disconnect();
-      mo.disconnect();
+      for (const id of late) window.clearTimeout(id);
     };
   }, [peekable]);
   // The row itself, as STATE rather than a ref: a portal needs the element on

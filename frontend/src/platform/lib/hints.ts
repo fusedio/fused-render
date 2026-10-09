@@ -113,8 +113,8 @@ function hintAt(x: number, y: number, target: EventTarget | null): Element | nul
 const BAND = 0.8;
 function placeTask(x: number, y: number): void {
   const p = ensurePanel();
-  const w = measureWidth(p);
-  const h = p.offsetHeight;
+  const w = shownW;
+  const h = shownH;
   const vw = window.innerWidth;
   const bandLeft = vw * (1 - BAND) / 2;
   const bandRight = vw - bandLeft;
@@ -138,6 +138,18 @@ function measureWidth(p: HTMLDivElement): number {
   return p.offsetWidth;
 }
 
+/** THE PANEL'S SIZE, READ ONCE PER SHOW (2026-10-09). `place` runs on every
+ *  pointer move while a hint is up, and `measureWidth` is a style write
+ *  followed by a layout read — a forced layout per move, which on the Tasks
+ *  list is a style pass over every mounted row per move. The text does not
+ *  change between a show and the next; its size does not either. */
+let shownW = 0;
+let shownH = 0;
+function sizeOnce(p: HTMLDivElement): void {
+  shownW = measureWidth(p);
+  shownH = p.offsetHeight;
+}
+
 function place(x: number, y: number): void {
   const p = ensurePanel();
   // The band is for the ROW's two-line form, whose 90ch panel used to swing
@@ -148,9 +160,10 @@ function place(x: number, y: number): void {
     placeTask(x, y);
     return;
   }
-  // Measured after the text is in, because the flip depends on the width.
-  const w = measureWidth(p);
-  const h = p.offsetHeight;
+  // Measured after the text is in (`sizeOnce`, at show), because the flip
+  // depends on the width.
+  const w = shownW;
+  const h = shownH;
   let left = x + OFFSET_X;
   let top = y + OFFSET_Y;
   // Flip rather than clamp when the panel would leave the viewport: a clamped
@@ -261,12 +274,15 @@ function show(el: Element, x: number, y: number): void {
   p.classList.toggle("is-task", task);
   if (!task) p.classList.remove("is-reply");
   p.classList.add("is-on");
+  sizeOnce(p);
   place(x, y);
 }
 
 export function hideHint(): void {
   host = null;
-  if (panel) {
+  // Nothing to do for a panel that is already down — and this runs on every
+  // scroll event of every scroller in the document.
+  if (panel && panel.classList.contains("is-on")) {
     panel.classList.remove("is-on");
     // Emptied as well as hidden: stale content in a hidden panel is content
     // that flashes on the next show, before its own text lands.
@@ -284,12 +300,27 @@ function onOver(e: PointerEvent): void {
   show(el, e.clientX, e.clientY);
 }
 
+/** Does the pointer need the POINT resolved on this move? Only over an
+ *  element that opts in with `data-hint-through`: the Tasks row's stretched
+ *  link, one continuous element whose hint is the title's underneath it, so
+ *  moving from the title onto the empty space beside it never crosses an
+ *  event boundary even though the answer changes from "the task's name" to
+ *  "nothing". Everywhere else `pointerover` / `pointerout` already say when
+ *  the element under the pointer changed, and `elementsFromPoint` on every
+ *  move — a hit test over the whole document, 60+ times a second — was
+ *  measured as a share of the Tasks list's frame cost (2026-10-09). */
+function throughAt(target: EventTarget | null): boolean {
+  return target instanceof Element && target.closest("[data-hint-through]") !== null;
+}
+
 function onMove(e: PointerEvent): void {
-  // Asked on EVERY move rather than only while a hint is up, because the
-  // element under the pointer can change without any `pointerover` this sees:
-  // the row's stretched link is one continuous element, so moving from the
-  // title onto the empty space beside it never crosses an event boundary even
-  // though the answer changes from "the task's name" to "nothing".
+  if (!host && !throughAt(e.target)) return;
+  if (host && !throughAt(e.target)) {
+    // The hint's own element is under the pointer (pointerout would have
+    // hidden it otherwise); just follow.
+    place(e.clientX, e.clientY);
+    return;
+  }
   const el = hintAt(e.clientX, e.clientY, e.target);
   if (!el) {
     if (host) hideHint();

@@ -40,15 +40,17 @@ describe("what a point resolves to", () => {
     expect(SRC).toContain('return (el.getAttribute("data-hint") || "").trim() ? el : null;');
   });
 
-  it("re-asks on every move, because one element can span two answers", () => {
+  it("re-asks on a move over a pierce-through surface, because one element can span two answers", () => {
     // The row's stretched link is one continuous element: moving from the title
     // onto the empty space beside it crosses no event boundary, so a handler
     // that only reacted to `pointerover` would leave the caption up over a
-    // region that has none.
+    // region that has none. Only such a surface (`data-hint-through`) pays for
+    // a hit test per move; everywhere else over/out are enough (2026-10-09).
     const move = SRC.slice(SRC.indexOf("function onMove"));
     const body = move.slice(0, move.indexOf("\n}"));
     expect(body).toContain("hintAt(e.clientX, e.clientY, e.target)");
     expect(body).toContain("if (!el) {");
+    expect(body).toContain("throughAt(e.target)");
   });
 
   it("listens in the CAPTURE phase", () => {
