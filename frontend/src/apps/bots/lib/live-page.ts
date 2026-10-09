@@ -9,6 +9,7 @@ import { cur, showToast } from "../state/store";
 import { api } from "./api";
 import { cdp, focusCtl, inCtl, inFull, linked, onEvent, onOpen, onReset } from "./cdp";
 import { authKey } from "./live";
+import { botsRoot } from "./root";
 
 const toast = (text: string) => showToast({ text, ts: Date.now() / 1000 });
 
@@ -18,12 +19,13 @@ const authSeen = new Set<string>();
 // Viewport fit. The bot's Chrome window follows the stage's size (browser.py set_viewport resizes the window; the bot
 // addresses elements by ref and scales its screenshots, so any size suits it). Sent while the live view is open, whoever
 // drives, so the frame fills the stage; the size sticks for the bot afterwards. Per bot: the last size sent is remembered
-// so a poll or a store change does not repeat it.
+// so a poll or a store change does not repeat it. Not mid-drag: each resize takes Chrome seconds, and a pointer that pauses on the
+// gutter would send one per pause; root.dragging (lib/layout.ts) holds it until the drag ends (onDragEnd, App.installStage).
 let fitted: { id: string; size: string } | null = null;
 let fitting = false, refit = false;  // one resize in flight at a time (each takes Chrome up to seconds on a heavy page); the newest size follows
 export function fitViewport(): void {
   const b = cur(); const stage = document.getElementById("stage");
-  if (!b || !stage || !inFull() || !stage.clientWidth || !stage.clientHeight) return;
+  if (!b || !stage || !inFull() || !stage.clientWidth || !stage.clientHeight || botsRoot().classList.contains("dragging")) return;
   const size = `${Math.round(stage.clientWidth)}x${Math.round(stage.clientHeight)}`;
   if (fitted && fitted.id === b.id && fitted.size === size) return;
   if (fitting) { refit = true; return; }
