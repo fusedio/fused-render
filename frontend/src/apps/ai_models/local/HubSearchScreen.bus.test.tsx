@@ -153,3 +153,17 @@ test("followHubCache: opens ai.hubcache for the capability; the first frame is t
   off();
   expect(bus.open()).toEqual([]);
 });
+
+test("followHubCache: a first frame that already says the build finished is a move", () => {
+  // The catalog finished between the POST that reported "building" and this
+  // subscribe; the server pushes only on change, so the re-search that picks
+  // up the finished catalog has to come from this first frame.
+  const bus = fakeEvents();
+  let moved = 0;
+  const off = followHubCache("embeddings", () => (moved += 1), bus.subscribe);
+  bus.push({ state: "none", pagesDone: null, startedAt: 1, blockedUntil: null });
+  expect(moved).toBe(1);
+  bus.push({ state: "none", pagesDone: null, startedAt: 1, blockedUntil: null }, { replay: true });
+  expect(moved).toBe(1);
+  off();
+});
