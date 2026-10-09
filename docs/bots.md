@@ -40,7 +40,12 @@
 > - Lifecycle: `@on_startup _startup_bots` (`paths.migrate_layout()` then
 >   `registry.start()`: scheduler + iMessage bridge; skipped by a lean
 >   `fused-render open`), `@on_shutdown_always _shutdown_bots`
->   (`registry.shutdown()`: every loaded bot's task and Chrome).
+>   (`registry.shutdown()`: every loaded bot's task and Chrome). The packaged
+>   app's quit never runs the lifespan (app.py `QUIT_CHILDREN_BUDGET_S`), so
+>   its `_stop_children` rung calls the same `registry.shutdown()` itself —
+>   launch latch first (`browser.refuse_launches`), then every Chrome told to
+>   close in parallel (`browsers.stop_all`). Only this process's Chromes: a
+>   Fused Bot sharing the tree keeps its own.
 > - CLI: `python -m fused_render.bots.botsend <bot> "<task>"` / `--list`.
 > - `claude` resolution: `fused_render/bots/claude_cli.py::runnable()` over
 >   fused-render's `claude_health.resolve()` (FusedBot's module had it built in).

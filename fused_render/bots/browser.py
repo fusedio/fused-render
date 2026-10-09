@@ -966,6 +966,24 @@ def _openssl_cmd(*args):
 
 
 # ---------------------------------------------------------------- process ---
+# Quit latch (app.py `_stop_children`, the PR #1400 pattern): armed before the
+# quit's Chrome killers run, because the server is still answering while they
+# do — the scheduler ticks every 20 s and the live view keeps polling through
+# the bounded drain — and a relaunch in that window is a fresh Chrome that
+# `os._exit` then orphans. `_launch` is the one place every Chrome is spawned,
+# so the flag lives here and not on the registry.
+_LAUNCHES_REFUSED = threading.Event()
+
+
+def refuse_launches() -> None:
+    _LAUNCHES_REFUSED.set()
+
+
+def allow_launches() -> None:
+    """Tests only (the app never un-arms a quit)."""
+    _LAUNCHES_REFUSED.clear()
+
+
 class BrowserProcess:
     """One Chrome process: profile folder, debugging port, lock, encryption at
     rest. `views` are the `Browser`s (bots) driving it; with more than one the
@@ -1227,6 +1245,8 @@ class BrowserProcess:
         to; `view` the bot whose page it is (default: the first attached), which also claims the launch
         tab on a shared process so the window Chrome opened is driven, not orphaned beside a new one."""
         with self.lock:
+            if _LAUNCHES_REFUSED.is_set():
+                raise RuntimeError("the app is quitting; no Chrome is launched")
             restore = restore if restore and restore != "about:blank" else ""
             self.unseal()
             os.makedirs(self.profile, exist_ok=True)
