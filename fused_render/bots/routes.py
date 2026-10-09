@@ -60,6 +60,11 @@ def _apptools():
     return apptools
 
 
+def _tools():
+    from fused_render.bots import tools
+    return tools
+
+
 def _presets():
     from fused_render.bots import presets
     return presets
@@ -226,6 +231,8 @@ def bots_create(body: dict = Body(...), x_fused: str | None = Header(default=Non
         b.meta["build_access"] = body["build_access"]
     if isinstance(body.get("trusted_apps"), list):
         b.meta["trusted_apps"] = _apptools().clean_trusted_apps(body["trusted_apps"])
+    if isinstance(body.get("allow_rules"), list):
+        b.meta["allow_rules"] = _tools().clean_allow_rules(body["allow_rules"])
     if body.get("engine") in bm.ENGINES and not bm.is_super(b.meta):
         b.meta["engine"] = body["engine"]
     if bm.is_super(b.meta) and body.get("super_access") in bm.SUPER_ACCESS:
@@ -421,7 +428,7 @@ def bot_send(bid: str, body: dict = Body(...), x_fused: str | None = Header(defa
     text = (body.get("text") or "").strip()
     if not text:
         raise ValueError("empty message")
-    _bot(bid).send(text, reply_to=body.get("reply_to"))
+    _bot(bid).send(text, reply_to=body.get("reply_to"), forever=bool(body.get("forever")))
     return {"ok": True}
 
 
@@ -554,6 +561,8 @@ def _settings(bid, body):
         b.meta["build_access"] = body["build_access"]
     if isinstance(body.get("trusted_apps"), list):
         b.meta["trusted_apps"] = _apptools().clean_trusted_apps(body["trusted_apps"])
+    if isinstance(body.get("allow_rules"), list):
+        b.meta["allow_rules"] = _tools().clean_allow_rules(body["allow_rules"])
     if body.get("engine") in bm.ENGINES and not bm.is_super(b.meta):
         b.meta["engine"] = body["engine"]
     if body.get("super_access") in bm.SUPER_ACCESS and bm.is_super(b.meta):

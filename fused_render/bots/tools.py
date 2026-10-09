@@ -53,6 +53,7 @@ import json
 import os
 import re
 import time
+from urllib.parse import urlparse
 
 from fused_render.bots import apptools
 
@@ -316,6 +317,132 @@ def effective_build_access(bot) -> str:
     if phone_super(bot):
         return "scoped"
     return (getattr(bot, "meta", None) or {}).get("build_access") or "scoped"
+
+
+# ---- "Approve forever": per-bot rules that skip the card ---------------------------
+# bot.json `allow_rules`: [{kind, key, label}], written when the user answers an
+# approval card with its third button. The card's identity for a rule is NOT the
+# preview label (that embeds the arguments: `click "Submit review"` is stable, but
+# `run \`make test\`` and `call gmail › send_mail with {...}` are not): each door has
+# its own coarser key, built by forever_rule() from the same facts risk() reads.
+#   browser  <host>|<normalised button label>    ("github.com|submit review")
+#   tool     <app>/<tool>                        ("gmail/send_mail")
+#   py       <app>/<file>                        ("expenses/export.py")
+#   builtin  <tool> or Bash:<first word>         ("Edit", "Bash:gh")
+#   text     <contact handle>                    ("+1555…")
+#   upload   <host>
+#   build    build
+# A rule beats the model's own `risky: true` flag: for a browser click that flag is
+# the ONLY trigger (the GitHub "Submit review" story), so a rule that deferred to it
+# would never fire. ALWAYS_ASK calls and a phone-started Super Bot task never get a
+# rule (forever_rule returns None for both: no button on the card, no match).
+# Revoked in Settings › Permissions › Approved forever.
+FOREVER_KINDS = frozenset({"browser", "tool", "py", "builtin", "text", "upload", "build"})
+_TRAIL_COUNT = re.compile(r"[\s(\[]*\d+[)\]]*$")  # "Submit review (3)" / "Approve 2" -> "Submit review"
+
+
+def norm_label(s) -> str:
+    """One spelling for a button label: lower, whitespace collapsed, a trailing count and punctuation dropped."""
+    t = " ".join(str(s or "").split()).lower()
+    t = _TRAIL_COUNT.sub("", t)
+    return t.strip(" .:!…")
+
+
+def _host(obs) -> str:
+    try:
+        return (urlparse((obs or {}).get("url") or "").hostname or "").lower().removeprefix("www.")
+    except ValueError:
+        return ""
+
+
+def forever_rule(bot, act: str, d: dict, obs: dict):
+    """The rule the card's "don't ask again" button would write for this call:
+    {kind, key, label} (label is the sentence the user approves), or None when
+    the call may never be remembered (bot management, a phone-started task,
+    an unknown target)."""
+    d = d or {}
+    if act in ALWAYS_ASK or phone_super(bot):
+        return None
+    if act in ("click", "type", "press", "select"):
+        host = _host(obs)
+        lbl = norm_label(what_is(element(d, obs), d.get("ref") or ""))
+        if not host or not lbl or REF_RE.match(lbl):
+            return None
+        verb = {"click": "clicks", "type": "types into", "press": "presses a key in", "select": "picks in"}[act]
+        return {"kind": "browser", "key": f"{host}|{lbl}", "label": f'{verb} "{lbl}" on {host}'}
+    if act == "tool":
+        app, name, _ = apptools.tool_ref(d)
+        rec = apptools.find(apptools.registry(), app, name)
+        if rec is None:
+            return None
+        return {"kind": "tool", "key": f"{apptools.norm_app(rec.app)}/{rec.name}", "label": f"calls {rec.app} › {rec.name}"}
+    if act == "py":
+        app_dir, file, _ = bot.py_ref(d)
+        if not app_dir or not file:
+            return None
+        stem = os.path.basename(app_dir)
+        return {"kind": "py", "key": f"{apptools.norm_app(stem)}/{file}", "label": f"runs {stem} › {file}"}
+    if act == "text":
+        c = bot.contact(d)
+        if not c:
+            return None
+        return {"kind": "text", "key": str(c[1]), "label": f"texts {c[0]}"}
+    if act == "upload":
+        host = _host(obs)
+        return {"kind": "upload", "key": host, "label": f"uploads files to {host}"} if host else None
+    if act == "build":
+        return {"kind": "build", "key": "build", "label": "builds or updates apps with Claude Code"}
+    return None
+
+
+def builtin_forever_rule(bot, name: str, inp: dict):
+    """The rule for a Claude Code built-in (Super Bot, agent_engine._permission):
+    the tool name, or the command's first word for Bash."""
+    if phone_super(bot):
+        return None
+    if name == "Bash":
+        first = (str((inp or {}).get("command") or "").strip().split() or [""])[0]
+        if not first or not re.match(r"^[\w./-]+$", first):
+            return None
+        return {"kind": "builtin", "key": f"Bash:{first}", "label": f"runs `{first} …` commands"}
+    if not name:
+        return None
+    verb = {"Edit": "edits files", "MultiEdit": "edits files", "NotebookEdit": "edits notebooks", "Write": "writes files"}.get(name)
+    return {"kind": "builtin", "key": name, "label": verb or f"uses {name}"}
+
+
+def clean_allow_rules(v) -> list:
+    """The stored form of allow_rules: known kinds, non-empty keys, deduped, order kept."""
+    if not isinstance(v, list):
+        return []
+    out, seen = [], set()
+    for r in v:
+        if not isinstance(r, dict):
+            continue
+        kind, key = str(r.get("kind") or ""), str(r.get("key") or "").strip()
+        if kind not in FOREVER_KINDS or not key or (kind, key) in seen:
+            continue
+        seen.add((kind, key))
+        out.append({"kind": kind, "key": key, "label": str(r.get("label") or "")[:120]})
+    return out
+
+
+def forever_match(bot, rule) -> bool:
+    """True when the bot already holds this rule (and may skip the card)."""
+    if not rule:
+        return False
+    meta = getattr(bot, "meta", None) or {}
+    return any(r.get("kind") == rule["kind"] and r.get("key") == rule["key"] for r in clean_allow_rules(meta.get("allow_rules")))
+
+
+def add_allow_rule(bot, rule) -> None:
+    """Remember a rule on the bot (bot.json) and tell the thread where to undo it."""
+    if not rule or forever_match(bot, rule):
+        return
+    with bot.lock:
+        bot.meta["allow_rules"] = clean_allow_rules([*(bot.meta.get("allow_rules") or []), rule])
+    bot.save()
+    bot.emit("note", f"Won't ask again when this bot {rule['label']}. Undo it in Settings › Permissions.")
 
 
 def roster(bot) -> list[dict]:

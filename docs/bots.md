@@ -149,8 +149,9 @@ breaks the live view.
 Event (one line of `events.jsonl`, one item of `bot.events` in a status reply):
 
 ```
-{seq, ts, role, text, result?, thumb?, detail?, options?, offer?, app?, reply?, trace?, artifacts?}
+{seq, ts, role, text, result?, thumb?, detail?, options?, offer?, app?, reply?, trace?, artifacts?, forever?}
 role: user | thought | action | approval | question | done | error | system
+forever: {kind, key, label}  (approval only: the rule the card's third button writes, see allow_rules)
 thumb:  "<seq>.jpg" (cache/<id>/steps/<seq>.jpg); the page loads /api/bots/<id>/steps/<seq>.jpg
 offer:  {kind: "use"|"build", name, dir, spec}
 app:    {name, dir, params?, tools?}
@@ -159,7 +160,7 @@ reply:  {seq, role, text}   (quoted message the user replied to)
 
 Bot summary (`Bot.summary(light, detail)`): every key of `bot.json`
 (`id, name, model, effort, status, instructions, created, task, step, url,
-title, note, updated, approval, build_access, trusted_apps, face, routines, pinned, hidden,
+title, note, updated, approval, build_access, trusted_apps, allow_rules, face, routines, pinned, hidden,
 reactions, encrypt, chrome_profile, browser_id, imessage, imessage_to, builds,
 pending_offer, offers_declined, artifacts_dir, control, dl_pct`) plus
 `seq`, `browser: {running, url, title, headed, sealed, encrypt, shared, tabs?[{i,id,title,url,active,ws}], files?, artifacts?, artifacts_dir?}`,
@@ -180,7 +181,19 @@ and `py` calls skip the approval card for this bot whatever the write heuristic
 or the app's SKILL.md say; a call the bot flags `risky: true` still asks, and
 browser actions, texts and builds are not apps. Set from Settings → Advanced →
 Trusted apps (a checklist of `/api/bot-apps`); the APP TOOLS prompt drops the
-`[approval]` tag for those apps. Models: `haiku sonnet opus
+`[approval]` tag for those apps. `allow_rules`: `[{kind, key, label}]`, the
+calls the user answered with the card's third button, "Approve, don't ask
+again" (`POST /send` with `forever: true`; the flag rides on the message, so a
+typed "approve forever" is a plain yes). `tools.forever_rule` builds one key per
+door from the facts `risk()` reads: `browser` = `<host>|<normalised label>`
+(`github.com|submit review`), `tool` = `<app>/<tool>`, `py` = `<app>/<file>`,
+`builtin` = the Claude Code tool name or `Bash:<first word>`, `text` = the
+contact handle, `upload` = the host, `build` = `build`. A matching rule skips
+the card and beats the model's `risky: true` flag (for a click that flag is the
+only trigger). Never for `bot_create` / `bot_settings` (§12) or a phone-started
+Super Bot task (§5: no button on the card, no match), and for a built-in only
+while the task has not read the web (the posture in §6 stands). Revoked under
+Settings → Permissions → Approved forever; the `clone` copies them. Models: `haiku sonnet opus
 fable local-4b local-9b`. Efforts: `low medium high xhigh`.
 
 ## 3. HTTP API (`fused_render/bots/routes.py`, prefix `/api/bots`)
@@ -831,8 +844,10 @@ Control flow inside the tools (the harness's job, in the server process):
   take-over note when the user drove meanwhile). `login(message)`: `bot.takeover(note=False)`
   (paused without the "Paused" card, control to the user in the live view),
   emits the question, waits for a reply or hand-back, returns.
-- Approval: `_risk(name, args, obs)` decides; when non-empty and approval is
-  `ask`, emit `approval` (`About to <describe>. <why> Approve?`), wait;
+- Approval: `_risk(name, args, obs)` decides; a `forever_rule` the bot already
+  holds (`allow_rules`, §2) runs it with a `note` and no card; otherwise when
+  non-empty and approval is `ask`, emit `approval` (`About to <describe>. <why>
+  Approve?`, with `forever` when the call can be remembered), wait;
   denied (an OpenBot `_NO` answer) → return `DENIED by the user: … Do not
   retry it.`; approved (`_YES`) → run. Any other message is a mid-task
   instruction: it rides on this result as `USER INSTRUCTION …`, a `note`

@@ -75,6 +75,21 @@ def is_texted(s) -> bool:
     return isinstance(s, Texted)
 
 
+class Forever(str):
+    """An approval answered with the card's "don't ask again" button (the web
+    page's /send with `forever: true`): a plain yes for every reader of
+    `bot.inbox`, plus the flag the gate reads to write an allow rule
+    (tools.add_allow_rule). Never set from a phone channel: the flag lives on
+    the message, not in its words, so a typed "approve forever" stays a plain yes."""
+
+    def __new__(cls, text: str):
+        return super().__new__(cls, text)
+
+
+def is_forever(s) -> bool:
+    return isinstance(s, Forever)
+
+
 @dataclass(frozen=True)
 class Caps:
     """What a surface can render. The web has everything; a phone has text."""

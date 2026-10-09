@@ -1,6 +1,6 @@
 // The bot-level flows behind the dialogs and the bot menu (OpenBot dialogs.js): create, save settings, delete,
 // clone, export. Each runs its calls through act() so the page shows the effect and errors land in the banner.
-import { api, type Bot, type Face } from "../lib/api";
+import { api, type AllowRule, type Bot, type Face } from "../lib/api";
 import { loginValue } from "../lib/botform";
 import { act, cur, getState, select, setState } from "../state/store";
 import { askConfirm } from "./ask";
@@ -23,6 +23,8 @@ export interface BotDialogValue {
   superAccess: string;
   /** App folders whose tools never ask this bot for approval (Settings > Permissions > Trusted apps). */
   trustedApps: string[];
+  /** Calls approved forever from a card (Settings > Permissions > Approved forever); the dialog only removes. */
+  allowRules: AllowRule[];
   /** Logins: "" = a fresh browser of its own; else the `browser_id` of the bot whose sign-ins it shares. */
   browserId: string;
 }
@@ -54,9 +56,13 @@ export async function saveSettings(id: string, v: BotDialogValue): Promise<void>
   const switched = !!was && v.kind !== "super" && v.browserId !== loginValue(was);
   if (switched) await act(() => api.settings(id, { browser_id: v.browserId }));
   const encrypt = switched && v.encrypt === !!was?.encrypt ? {} : { encrypt: v.encrypt };
+  // allow_rules has two writers (this dialog, and the task thread when a card is answered "don't ask again"): sent
+  // only when the user removed one here, or a Save of an unrelated field would overwrite a rule written meanwhile
+  // with the stale list. Remaining window: a rule added mid-dialog AND one removed here, in the same Save.
+  const rules = JSON.stringify(v.allowRules) === JSON.stringify(was?.allow_rules ?? []) ? {} : { allow_rules: v.allowRules };
   await act(() => api.settings(id, { name: v.name, model: v.model, effort: v.effort, instructions: v.instructions, memory: v.memory, approval: v.approval,
     build_access: v.buildAccess, ...encrypt, ...phone(v), super_access: v.superAccess,
-    trusted_apps: v.trustedApps }));
+    trusted_apps: v.trustedApps, ...rules }));
   if (v.face && v.kind !== "super") await act(() => api.flag(id, { face: v.face }));
   if (v.profile) await act(() => api.profile(id, v.profile));
 }

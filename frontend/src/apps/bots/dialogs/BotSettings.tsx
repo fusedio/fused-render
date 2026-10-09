@@ -23,7 +23,8 @@ import { Switch } from "@platform/shadcn/ui/switch";
 import { Textarea } from "@platform/shadcn/ui/textarea";
 import { cn } from "@platform/lib/utils";
 import { Face } from "../components/Face";
-import { api, type AppRow, type Bot, type ChromeProfile, type Face as FaceT } from "../lib/api";
+import { Trash2Icon } from "lucide-react";
+import { api, type AllowRule, type AppRow, type Bot, type ChromeProfile, type Face as FaceT } from "../lib/api";
 import { EFFORTS, loginGroups, loginHint, loginLabel, loginValue, modelsFor, normApp } from "../lib/botform";
 import { faceOf } from "../lib/face";
 import { act, autoStage, getState, setAutoStage, setSounds, soundsOn } from "../state/store";
@@ -56,7 +57,8 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
     name: bot.name, model: bot.model || "sonnet", effort: bot.effort || "low", instructions: bot.instructions || "", memory: bot.memory || "",
     approval: bot.approval || "ask", buildAccess: bot.build_access || "scoped", encrypt: !!bot.encrypt,
     imessage: bot.imessage || "", imessageEnabled: !!bot.imessage_enabled, imessageTo: bot.imessage_to || "",
-    superAccess: bot.super_access || "ask", trustedApps: bot.trusted_apps || [], browserId: isSuper ? "" : loginValue(bot),
+    superAccess: bot.super_access || "ask", trustedApps: bot.trusted_apps || [], allowRules: bot.allow_rules || [],
+    browserId: isSuper ? "" : loginValue(bot),
   }));
   const [name, setName] = useState(init.name);
   const [model, setModel] = useState(init.model);
@@ -76,6 +78,7 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
   const [profile, setProfile] = useState("");
   const [profiles, setProfiles] = useState<ChromeProfile[]>([]);
   const [trustedApps, setTrustedApps] = useState<string[]>(init.trustedApps);
+  const [allowRules, setAllowRules] = useState<AllowRule[]>(init.allowRules);
   const [appRows, setAppRows] = useState<AppRow[]>([]);
   const [browserId, setBrowserId] = useState(init.browserId);
   // The Logins menu: one option per other browser (bots sharing one collapse into one; Super Bot's browser included),
@@ -91,7 +94,7 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
   const bm = useMemo(() => ({ id: bot.id, name: init.name, face }), [bot.id, init.name, face]);
   const read = (): BotDialogValue => ({ name: name.trim(), model, effort, instructions, memory, approval, buildAccess, encrypt, profile,
     face: faceOf(bm), imessage: imessage.trim(), imessageEnabled, imessageTo: imessageTo.trim(), preset: "",
-    kind: isSuper ? "super" : "bot", superAccess, trustedApps, browserId });  // the face shown is the face kept
+    kind: isSuper ? "super" : "bot", superAccess, trustedApps, allowRules, browserId });  // the face shown is the face kept
   const [initial] = useState(() => JSON.stringify(read()));
   const okDisabled = JSON.stringify(read()) === initial;
   const n = name.trim();
@@ -202,6 +205,19 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
                       <NativeSelectOption value="scoped">Ask before risky steps</NativeSelectOption>
                       <NativeSelectOption value="full">Run unattended</NativeSelectOption>
                     </NativeSelect>
+                  </Row>
+                ) : null}
+                {allowRules.length ? (
+                  <Row title="Approved forever" text="Answers you gave with “Approve, don't ask again” on a card. Remove one and the bot asks again next time." stack>
+                    <div className="max-h-48 divide-y divide-foreground/5 overflow-y-auto rounded-lg border border-input" id="bmforever">
+                      {allowRules.map((r) => (
+                        <div key={`${r.kind}:${r.key}`} className="flex items-center gap-2.5 px-3 py-1.5 text-sm">
+                          <span className="min-w-0 flex-1 truncate">{r.label || r.key}</span>
+                          <Button variant="ghost" size="icon-xs" aria-label="Ask again" title="Ask again" className="text-muted-foreground hover:text-destructive"
+                            onClick={() => setAllowRules((cur) => cur.filter((x) => !(x.kind === r.kind && x.key === r.key)))}><Trash2Icon /></Button>
+                        </div>
+                      ))}
+                    </div>
                   </Row>
                 ) : null}
                 {appRows.length ? (

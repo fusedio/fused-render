@@ -58,7 +58,7 @@ export function CreateBot({ pick, onClose, onBack }: CreateBotProps) {
   const read = (): BotDialogValue => ({
     name: name.trim(), model, effort, instructions, memory: "", approval: "ask", buildAccess: "scoped", encrypt: false, profile: "",
     face: faceOf(bm), imessage: "", imessageEnabled: false, imessageTo: "", preset: fresh.preset || "",
-    kind: isSuper ? "super" : "bot", superAccess: "ask", trustedApps: [],
+    kind: isSuper ? "super" : "bot", superAccess: "ask", trustedApps: [], allowRules: [],
     browserId: share && groups.some((g) => g.id === shareWith) ? shareWith : "",
   });
   const ok = () => { if (name.trim()) onClose(read()); };
