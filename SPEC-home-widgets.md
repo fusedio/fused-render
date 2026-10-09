@@ -205,7 +205,7 @@ Presets (`PRESETS`, `presetLayout(id, { folderId? })` in `shell/home/layout.ts`;
 | --- | --- |
 | Legacy | search 4x1 (0,0); apps, sessions, recents each custom 8x4 at y 1/5/9 |
 | Builder | search 4x1 (0,0); build 2x1 (0,1); apps 2x2 icons (4,1); bots 2x2 list (0,5); tasks 2x2 list (4,5) |
-| Mission control | search (0,0); tasks board custom 8x6 (0,1) showing open tasks only (`show: "open"`: Queued, In progress, Needs you); bots 2x2 list (0,7); sessions 2x2 list (4,7) |
+| Mission control | search (0,0); tasks board custom 6x4 (0,1); index 1x1 (6,1); bots 1x1 count (6,3); sessions 2x2 list (0,5); recents 2x2 cards (4,5) |
 | Files | search (0,0); recents list custom 6x4 (0,1); index 1x1 (6,1); bookmark folder 1x1 list (6,3), or sessions list custom 2x2 when no folder exists; apps 2x1 (0,5); tasks 2x1 (4,5) |
 | Focus | search (0,0); build 4x1 (0,1) |
 

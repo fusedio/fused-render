@@ -685,7 +685,7 @@ export type PresetId = "legacy" | "builder" | "mission" | "files" | "focus";
 export const PRESETS: { id: PresetId; name: string; blurb: string }[] = [
   { id: "legacy", name: "Legacy", blurb: "Search, then your apps, sessions and recent files." },
   { id: "builder", name: "Builder", blurb: "A big prompt box with your apps beside it." },
-  { id: "mission", name: "Mission control", blurb: "What's running, and what needs you." },
+  { id: "mission", name: "Mission control", blurb: "Tasks board first, bots and the index at a glance." },
   { id: "files", name: "Files", blurb: "Search and recent files lead; bookmarks beside them." },
   { id: "focus", name: "Focus", blurb: "Just search and the build box." },
 ];
@@ -699,11 +699,10 @@ type PresetRow = {
   /** Explicit footprint in units, for tiles no size preset describes. */
   custom?: { cols: number; rows: number };
   folderId?: string;
-  show?: TasksShow;
 };
 
 function widgetFromRow(r: PresetRow, id?: string): Widget {
-  const w = makeWidget(r.source, r.x, r.y, { id, size: r.size, format: r.format, folderId: r.folderId, show: r.show });
+  const w = makeWidget(r.source, r.x, r.y, { id, size: r.size, format: r.format, folderId: r.folderId });
   if (r.custom) {
     w.size = contentSizeFor(r.source, r.custom.cols, r.custom.rows);
     w.cols = r.custom.cols;
@@ -732,9 +731,11 @@ function presetRows(id: PresetId, folderId?: string): PresetRow[] {
     case "mission":
       return [
         { source: "search", x: 0, y: 0, size: "4x1" },
-        { source: "tasks", x: 0, y: 1, size: "2x2", format: "board", custom: { cols: 8, rows: 6 }, show: "open" },
-        { source: "bots", x: 0, y: 7, size: "2x2", format: "list" },
-        { source: "sessions", x: 4, y: 7, size: "2x2", format: "list" },
+        { source: "tasks", x: 0, y: 1, size: "2x2", format: "board", custom: { cols: 6, rows: 4 } },
+        { source: "index", x: 6, y: 1, size: "1x1" },
+        { source: "bots", x: 6, y: 3, size: "1x1", format: "count" },
+        { source: "sessions", x: 0, y: 5, size: "2x2", format: "list" },
+        { source: "recents", x: 4, y: 5, size: "2x2", format: "cards" },
       ];
     case "files":
       return [

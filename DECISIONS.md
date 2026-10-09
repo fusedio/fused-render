@@ -6701,3 +6701,7 @@ Cards in a 4x1 tile (120px) were about 260px tall and spilled 190 to 200px past 
 ## Home presets: Workbench removed, Legacy trimmed, Mission control reworked (2026-10-09, feat/home-fixed-grid)
 
 Workbench is gone from `PRESETS`; a saved layout with its shape now reads as custom, no migration. Legacy lost the AI Playground card (apps, sessions, recents at y 1/5/9). Mission control, as measured, filled half the screen, its board included the Done lane (220 tasks) that crowded out live work, the file index was a vanity number, bots and sessions at 1x1 and 2x1 fit one row each, and recents is not live work. It is now search, an 8x6 tasks board with `show: "open"` (Queued, In progress, Needs you), and bots and sessions as 2x2 lists. `PresetRow` carries `show` through to `makeWidget`; `shapeOf` ignores it, so `matchPreset` is unchanged.
+
+## Home presets: Mission control restored, its small tiles fixed (2026-10-10, feat/home-fixed-grid)
+
+The user preferred the previous Mission control layout (search, 6x4 tasks board, index count, bots, sessions, recents) over the open-tasks rework. Its only fault was unusable small tiles, so they were resized or reformatted rather than the layout replaced: bots became a 1x1 count (a list showed one bot), sessions a 2x2 list (2x1 showed one row), recents 2x2 cards (2x1 gave header-only cards). The tasks board is back to no `show`, and the `show` passthrough on `PresetRow` / `widgetFromRow` was removed because no preset uses it. The Workbench removal and the Legacy trim stand.

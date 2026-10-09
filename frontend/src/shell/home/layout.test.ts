@@ -682,12 +682,23 @@ test("presets: legacy is first; builder is the default; workbench is gone; files
   expect(mission.map((x) => [x.source, x.x, x.y])).toEqual([
     ["search", 0, 0],
     ["tasks", 0, 1],
-    ["bots", 0, 7],
-    ["sessions", 4, 7],
+    ["index", 6, 1],
+    ["bots", 6, 3],
+    ["sessions", 0, 5],
+    ["recents", 4, 5],
   ]);
   const mt = mission.find((x) => x.source === "tasks")!;
-  expect(mt.show).toBe("open");
-  expect(dimsOf(mt)).toEqual({ cols: 8, rows: 6 });
+  expect(mt.show).toBeUndefined();
+  expect(dimsOf(mt)).toEqual({ cols: 6, rows: 4 });
+  expect(mission.find((x) => x.source === "bots")!.format).toBe("count");
+  expect(mission.map((x) => dimsOf(x))).toEqual([
+    { cols: 8, rows: 1 },
+    { cols: 6, rows: 4 },
+    { cols: 2, rows: 2 },
+    { cols: 2, rows: 2 },
+    { cols: 4, rows: 4 },
+    { cols: 4, rows: 4 },
+  ]);
   expect(presetLayout("files").widgets.some((w) => w.source === "folder")).toBe(false);
   const f = presetLayout("files", { folderId: "f1" }).widgets.find((w) => w.source === "folder");
   expect(f?.folderId).toBe("f1");
@@ -876,9 +887,10 @@ test("preset card-strip tiles narrower than half a row are not cards", () => {
   }
 });
 
-test("Mission control lists Bots and Claude Sessions; Files shows recents as cards", () => {
+test("Mission control counts Bots, lists Claude Sessions, cards recents; Files shows recents as cards", () => {
   const m = presetLayout("mission").widgets;
-  expect(m.find((w) => w.source === "bots")!.format).toBe("list");
+  expect(m.find((w) => w.source === "bots")!.format).toBe("count");
+  expect(m.find((w) => w.source === "recents")!.format).toBe("cards");
   expect(m.find((w) => w.source === "sessions")!.format).toBe("list");
   const f = presetLayout("files").widgets;
   expect(f.find((w) => w.source === "recents")!.format).toBe("cards");
