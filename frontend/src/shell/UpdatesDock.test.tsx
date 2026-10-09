@@ -110,18 +110,18 @@ test("updater present but store not heard yet: no 'not managed' flash, the Check
   expect(texts(r.toJSON()).join(" | ")).not.toContain("managed from inside");
 });
 
-test("an update found replaces the Check button with the decision", () => {
+test("an update found shows the decision and keeps the Check button", () => {
   const r = view(st({ state: "available" }));
   const all = texts(r.toJSON()).join(" | ");
   expect(all).toContain("v9.9.9 is ready to download.");
   expect(all).toContain("Download");
-  expect(all).not.toContain("Check for updates");
+  expect(r.root.findByProps({ className: "upd-check-btn" }).props["data-hint"]).toBe("Check for updates");
 });
 
-test("collapsed: no panel; a pending update hides the Check button", () => {
+test("collapsed: no panel; a pending update keeps the Check button", () => {
   const all = texts(view(st({}), { collapsed: true }).toJSON()).join(" | ");
   expect(all).not.toContain("Running");
   const pending = view(st({ state: "available" }), { collapsed: true });
   expect(texts(pending.toJSON()).join(" | ")).toContain("Update available");
-  expect(pending.root.findAllByProps({ className: "upd-check-btn" }).length).toBe(0);
+  expect(pending.root.findAllByProps({ className: "upd-check-btn" }).length).toBe(1);
 });

@@ -18,8 +18,10 @@
 // inside the popover (Akshil: "check for updates button should be outside the
 // popover next to version number"), the Check for updates button — its own
 // phases "Checking…" / "Up to date" / "Couldn't check" for a few seconds after
-// a press; hidden while a found update is pending its decision, disabled with
-// a tooltip on a build with no updater (a dev run). The POPOVER holds the
+// a press; ALWAYS in the bar, whatever the chip says (Akshil, 2026-10-09:
+// "show check for update button prefix icon always in bottom left — even when
+// update is available, installed etc"), so the bottom-left never shifts;
+// disabled with a tooltip on a build with no updater (a dev run). The POPOVER holds the
 // rest: the running version, the state's detail sentence and its action
 // (Download / Restart now / Try again — the same `installUpdate` /
 // `requestRestart` paths UpdateCard takes), and the auto-download toggle
@@ -44,7 +46,7 @@ import { restartInFlight, restartStageLabel, type RestartStage } from "@platform
 import { requestRestart, useRestartFlow } from "@platform/lib/restart-store";
 import { useStatusChip, type StatusChipState } from "@platform/lib/statusChip";
 import { useManualUpdateCheck } from "@platform/lib/update-check";
-import { checkNowLabel, installUpdate, updateRelevant, useUpdateStatus, type ManualCheckPhase } from "@platform/lib/update-status";
+import { checkNowLabel, installUpdate, useUpdateStatus, type ManualCheckPhase } from "@platform/lib/update-status";
 import StatusChip, { type ChipTone } from "@platform/ui/StatusChip";
 
 /** The disabled Check button's hint on a build with no updater. */
@@ -165,17 +167,16 @@ export function UpdatesCardView({
   const detail = updatesDetail(status, stage);
   const running = version ? `Running v${version}` : "Version unknown";
   const progressLine = downloadProgressLine(status);
-  // The Check button leaves the bar while a found update waits on its
-  // decision (download? restart?) — pressing it then could only contradict
-  // the chip beside it with "Up to date".
-  const showCheck = !updateRelevant(status);
+  // The Check button STAYS while a found update waits on its decision
+  // (download? restart?): the prefix icon is a fixed landmark of the
+  // bottom-left (Akshil, 2026-10-09), and a press then just re-asks the
+  // server, which answers with the same pending update.
   // The Check button is a SIBLING of the chip's hover host, not a child:
   // inside it, hovering the icon would open the popover under the tooltip.
   // It comes FIRST — a prefix to the version (Akshil, 2026-10-08).
   return (
     <>
-      {showCheck && (
-        <button
+      <button
           type="button"
           className={"upd-check-btn" + (phase !== "rest" ? " is-" + phase : "")}
           disabled={!hasUpdater || phase === "checking"}
@@ -189,7 +190,6 @@ export function UpdatesCardView({
             : hasUpdater ? <RefreshCw size={13} aria-hidden />
             : <RefreshCwOff size={13} aria-hidden />}
         </button>
-      )}
     <div className="dl-host upd-chip" {...hostProps}>
       <StatusChip
         label={chip.label}
