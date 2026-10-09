@@ -108,6 +108,12 @@ div.bots-page.stage .preview > :is(header, .shotwrap, .toast, .cap, .info, .saba
 .bots-page .gutter { cursor: col-resize; position: relative; background: linear-gradient(var(--line), var(--line)) center / 1px 100% no-repeat; } /* the columns share one background, so the gutter carries the divider */
 .bots-page .gutter::after { content: ""; position: absolute; inset: 0 2px; border-radius: 2px; background: transparent; transition: background .15s; }
 .bots-page .gutter:hover::after, .bots-page .gutter.drag::after { background: var(--accent); }
+/* A grip pill at mid-height says the divider drags; it fades out under the hover / drag accent bar (::after is 2px, the pill 4px: both
+   at once would read as a stripe through the pill). Gone where the gutter is inert (the preview hid itself: rfit; the forced icon rail
+   in Stage), in step with the pointer-events rules above. */
+.bots-page .gutter::before { content: ""; position: absolute; left: 50%; top: 50%; width: 4px; height: 36px; translate: -50% -50%; border-radius: 2px; background: var(--muted); opacity: .45; pointer-events: none; transition: opacity .15s; }
+.bots-page .gutter:hover::before, .bots-page .gutter.drag::before { opacity: 0; }
+div.bots-page.rfit:not(.stage) .gutter.r::before, div.bots-page.stage .gutter.l::before { display: none; }  /* Stage re-enables the right gutter over rfit (above) */
 div.bots-page.dragging { cursor: col-resize; user-select: none; }
 div.bots-page.dragging img { pointer-events: none; }
 /* Icons-only sidebar (collapsed, or forced on very narrow windows). */
@@ -576,7 +582,7 @@ div.bots-page.stage.sfull #full { position: fixed; inset: 0; z-index: 25; }
 .bots-page #full header button, .bots-page #full .winacts button { font-size: 11.5px; display: inline-flex; align-items: center; gap: 5px; }
 .bots-page #full header button svg, .bots-page #full .winacts button svg { width: 13px; height: 13px; }
 .bots-page #full header .navctl svg { width: 16px; height: 16px; }
-.bots-page #full .stage { position: relative; flex: 1; overflow: auto; background: #000; display: flex; align-items: center; justify-content: center; }  /* relative: the overlays below position against it; centred: while you watch, the bot's fixed 1280x800 frame is letterboxed */
+.bots-page #full .stage { position: relative; flex: 1; overflow: auto; background: #000; display: flex; align-items: flex-start; justify-content: center; }  /* relative: the overlays below position against it; top-aligned: the frame fills the stage once Chrome takes its size (live-page.ts fitViewport), so the old frame holds the top meanwhile instead of parking mid-stage and jumping up */
 .bots-page #full .stage img { max-width: 100%; max-height: 100%; object-fit: contain; display: block; }  /* fit: the stage never scrolls, so pointer math needs no scroll offset */
 .bots-page #full .stage:focus, .bots-page #full .stage:focus-visible { outline: none; }
 /* #fkeys: the keyboard target while you drive (live-input.ts). 1x1 and transparent so an IME still attaches to it; focused with

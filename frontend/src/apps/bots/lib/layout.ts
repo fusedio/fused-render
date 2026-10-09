@@ -224,7 +224,7 @@ export function startGutterDrag(side: Side, g: HTMLElement, e: PointerEvent): vo
     layout = dragStep(layout, "l", w0 + ev.clientX - x0, roomFor());
     applyLayout(false);
   };
-  const up = () => { g.removeEventListener("pointermove", move); g.classList.remove("drag"); body().classList.remove("dragging"); applyLayout(true); };
+  const up = () => { g.removeEventListener("pointermove", move); g.classList.remove("drag"); body().classList.remove("dragging"); applyLayout(true); dragEnd?.(); };
   g.addEventListener("pointermove", move);
   g.addEventListener("pointerup", up, { once: true }); g.addEventListener("pointercancel", up, { once: true });
 }
@@ -241,9 +241,12 @@ function shownWidth(panel: Element | null, saved: number, min: number): number {
 
 // The right gutter crosses between the preview and Stage. App registers both ends (lib/cdp.ts: openFull opens the live view in
 // watch mode, handBack(true) gives control back if you drive and leaves Stage) — this module cannot import it without a cycle.
-let stageOpen: (() => void) | null = null, stageShut: (() => void) | null = null;
+let stageOpen: (() => void) | null = null, stageShut: (() => void) | null = null, dragEnd: (() => void) | null = null;
 export function onStageOpen(fn: (() => void) | null): void { stageOpen = fn; }
 export function onStageShut(fn: (() => void) | null): void { stageShut = fn; }
+/** The pointer let go of a gutter and the final layout is applied: App refits the live page's viewport here, once (lib/live-page.ts
+ *  fitViewport skips every resize while root.dragging is on, or each pause of the pointer would send Chrome a window resize). */
+export function onDragEnd(fn: (() => void) | null): void { dragEnd = fn; }
 
 /** The right gutter drags one quantity in both modes: B, the width of the `.preview` column (the thumbnail preview, or the live page in
  *  Stage). Sidebar + gutter + chat always sum to main − 12 − B, so the gutter sits at the same x for a given B whichever grid is up and
@@ -293,7 +296,7 @@ function startBrowserDrag(main: HTMLElement, g: HTMLElement, e: PointerEvent): v
     previewStep(b);
     applyLayout(false);
   };
-  const up = () => { g.removeEventListener("pointermove", move); g.classList.remove("drag"); body().classList.remove("dragging"); applyLayout(true); };
+  const up = () => { g.removeEventListener("pointermove", move); g.classList.remove("drag"); body().classList.remove("dragging"); applyLayout(true); dragEnd?.(); };
   g.addEventListener("pointermove", move);
   g.addEventListener("pointerup", up, { once: true }); g.addEventListener("pointercancel", up, { once: true });
 }

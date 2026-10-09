@@ -20,7 +20,8 @@ import { getSideApp, sideAppBrowser, sideAppShow } from "./apps/side";
 import { PrefsPanel } from "./components/PrefsPanel";
 import { useLayout } from "./hooks/useLayout";
 import { handBack, openFull } from "./lib/cdp";
-import { onStageOpen, onStageShut, setStage } from "./lib/layout";
+import { onDragEnd, onStageOpen, onStageShut, setStage } from "./lib/layout";
+import { fitViewport } from "./lib/live-page";
 import { installNotify } from "./lib/notify";
 import { botsRoot, detachPortalHost, portalHost, setBotsRoot } from "./lib/root";
 import { isBot } from "@platform/lib/flavor";
@@ -53,7 +54,9 @@ function installStage(): () => void {
   // keyboard stays where it is), the rail dragged back under it is the same exit as the Back button.
   onStageOpen(() => openFull({ focus: false }));
   onStageShut(() => { void handBack(true); });
-  return () => { stop(); onStageOpen(null); onStageShut(null); if (on) setStage(false); };
+  // The live page's Chrome window takes the stage's size once, when the gutter is let go (fitViewport holds while root.dragging).
+  onDragEnd(fitViewport);
+  return () => { stop(); onStageOpen(null); onStageShut(null); onDragEnd(null); if (on) setStage(false); };
 }
 
 function Banner() {
