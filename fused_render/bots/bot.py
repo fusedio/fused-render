@@ -492,6 +492,7 @@ class Bot:
         self.meta["encrypt"] = bool(self.browser.encrypt)  # mirrored from browser.json for the dialog
         self.seq = self._count_events()
         self.thread = None
+        self.learn_thread = None  # the learn_from_last worker while it runs: one at a time, `learning` in the JSON
         self.stop_flag = threading.Event()
         self.pause_flag = threading.Event()
         self.inbox = []           # user messages arriving mid-task
@@ -1275,6 +1276,8 @@ class Bot:
             raise ValueError("no finished task with actions to learn from yet")
         if self.thread and self.thread.is_alive():
             raise ValueError("wait until the bot is idle")
+        if self.learning:
+            raise ValueError("already learning a playbook; wait for it to land in the thread")
         self.emit("system", f"Learning a playbook from: {task[:80]}…")
 
         def go():
@@ -1297,10 +1300,16 @@ class Bot:
                 d = _parse(raw) or {}
                 name = self.skill_save(d.get("title"), d.get("trigger"), d.get("steps") or d.get("body"))
                 sk = next((x for x in self.skills() if x["name"] == name), None)
-                self.emit("system", f"Saved playbook \"{sk['title'] if sk else name}\" (trigger: {sk['trigger'] if sk else '?'}). Edit it under Skills.")
+                self.emit("system", f"Saved playbook \"{sk['title'] if sk else name}\" (trigger: {sk['trigger'] if sk else '?'}). Edit it under Settings › Skills.")
             except Exception as e:  # noqa: BLE001
                 self.emit("error", f"Could not learn a playbook: {e}")
-        threading.Thread(target=go, daemon=True, name=f"learn-{self.id}").start()
+        self.learn_thread = threading.Thread(target=go, daemon=True, name=f"learn-{self.id}")
+        self.learn_thread.start()
+
+    @property
+    def learning(self):
+        """A learn_from_last worker is running (the Skills section greys its button on this)."""
+        return bool(self.learn_thread and self.learn_thread.is_alive())
 
     # -- files: results the bot saves, and things you drop in for it to use ----
     @property
@@ -1587,7 +1596,7 @@ class Bot:
                 "browser_name": browsers.read_meta(self.browser_id).get("name") or self.meta.get("name") or "",
                 "shared_with": self.shared_with(), "encrypt": bool(self.browser.encrypt),
                 "memory": self.memory() if detail else None,
-                "skills": self.skills() if detail else None,
+                "skills": self.skills() if detail else None, "learning": self.learning,
                 "shot": f"/api/bots/{self.id}/shot" if shot_ts else None,
                 "shot_ts": shot_ts, "viewport": list(vp if isinstance(vp := getattr(self.browser, "viewport", None), (tuple, list))
                                  else getattr(browser_mod, "VIEWPORT", (1280, 800)))}

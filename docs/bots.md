@@ -164,7 +164,8 @@ reactions, encrypt, chrome_profile, browser_id, imessage, imessage_to, builds,
 pending_offer, offers_declined, artifacts_dir, control, dl_pct`) plus
 `seq`, `browser: {running, url, title, headed, sealed, encrypt, shared, tabs?[{i,id,title,url,active,ws}], files?, artifacts?, artifacts_dir?}`,
 `browser_name`, `shared_with: [{id, name}]` (the other bots on this bot's browser),
-`memory` (detail only), `skills` (detail only), `shot` (the shot URL,
+`memory` (detail only), `skills` (detail only), `learning` (a learn-from-last
+worker is running; a second `learn` is refused meanwhile), `shot` (the shot URL,
 `/api/bots/<id>/shot`, or null), `shot_ts`, `viewport: [1280, 800]`, `events`
 (since the page's cursor).
 
@@ -354,7 +355,7 @@ One module per OpenBot file so behaviour can be diffed:
 | core.js | `state/store.ts`, `lib/api.ts`, `lib/format.ts`, `lib/md.ts`, `components/Face.tsx`, `lib/face.ts` | poll loop (one in flight), events merge, 600-event cap, toasts, md(), face SVG + anime.js moods, select(), URL `?bot=` |
 | chat.js | `components/BotList.tsx`, `components/Thread.tsx`, `components/Composer.tsx`, `components/ThreadSearch.tsx`, `components/ToBottom.tsx`, `components/BotMenu.tsx`, `lib/unread.ts`, `lib/notify.ts` | list order (pinned → waiting-unread → last user ts), FLIP glide, unread/seen (localStorage `browser-bot.seen`), New rule, tobottom pill, reactions, reply quote, attachments (paste/drop), dictation, search, notifications, document.title |
 | live.js | `components/PreviewPane.tsx`, `components/LiveView.tsx`, `lib/cdp.ts`, `lib/layout.ts` | right column (shot, cap, inbox, routines, usage strip, side app), full-screen live view: CDP screencast WebSocket to `tabs[active].ws`, take over / hand back, input forwarding (toPage, keyParams), tab strip, popup follow, panel widths + collapse (localStorage `browser-bot.layout`), fit hysteresis |
-| dialogs.js | `dialogs/BotDialog.tsx`, `dialogs/FacePicker.tsx`, `dialogs/Confirm.tsx`, `dialogs/Routines.tsx`, `dialogs/Skills.tsx`, `dialogs/Usage.tsx`, `dialogs/PresetPicker.tsx`, `lib/presets.ts` | the six modals, dirty guard, iMessage status line, profiles list; the new-bot chooser ("+" asks for a preset or a blank bot first: four named blanks, every preset's brand face, search over names and playbook titles, Enter picks the first match) and the "Comes with N playbooks" note in the bot dialog |
+| dialogs.js | `dialogs/shell.ts`, `dialogs/BotSettings.tsx` (+ `SkillsSection.tsx`, `RoutinesSection.tsx`, `PhoneSection.tsx`), `dialogs/CreateBot.tsx`, `dialogs/FacePopover.tsx`, `dialogs/Confirm.tsx`, `dialogs/Usage.tsx`, `dialogs/PresetPicker.tsx`, `lib/presets.ts` | the dialogs (one shell, one size), dirty guard, iMessage status line, profiles list; the new-bot chooser ("+" asks for a preset or a blank bot first: four named blanks, every preset's brand face, search over names and playbook titles, Enter picks the first match) and the "Comes with N playbooks" note in the bot dialog |
 | core.js (BRANDS) | `lib/face.ts`, `components/Face.tsx`, `components/faceAnim.ts` | brand avatars: a disc with a hand-drawn white mark and no eyes for bots made from a preset (`face.icon`), eye animations are no-ops on them; the picker's brands row |
 | apps.js (starters) | `apps/StartersStrip.tsx`, `apps/starters.ts` | the Starter apps row above the gallery lists only the starters not installed yet, Install each (hidden once all are in); an installed starter is a plain gallery card that carries the Installed / Needs setup / Ready badge from `/api/bot-apps/starters` and its `status`, plus Update (confirmed) when a newer version ships |
 | builds.js | `builds/BuildsPanel.tsx`, `builds/BuildDialog.tsx`, `builds/builds.ts` | iframe to `/tasks?embed=1&scope=all&view=list` (+`&peek=<key>`), the row filter stylesheet, chip count, `builds.json` under the app home via `/api/fs/*`… see note |
@@ -524,15 +525,28 @@ Both flavors seed: the tree is shared. The store selects Super Bot when
 nothing is selected, so a first open lands in its chat. Tests: the bots
 fixture no-ops `registry.start`, so `seed_super()` is called directly.
 
-**Dialogs** (2026-10-07). "+ New bot" is `dialogs/CreateBot.tsx`: name,
-what it should do, model; effort behind the cog; every other setting takes
-its first-run default. Settings is `dialogs/BotSettings.tsx`: a rail of
-sections — General (avatar, name, instructions, model, thinking),
-Permissions (On this Mac for Super Bot; before it buys/deletes/posts;
-builds for ordinary bots; apps it may use without asking), Browser (Chrome
-profile, encryption), Memory, and Phone on Super Bot (`PhoneSection.tsx`,
-§10). `openDialog({kind: "settings", id, tab})` opens a section;
-`/bots?phone=1` (Preferences' Phone row) opens Super Bot's Phone tab.
+**Dialogs** (2026-10-07, one shell 2026-10-09). Every dialog on the page wears
+the shadcn shell in `dialogs/shell.ts`: `DIALOG_CLASS` (black surface per
+theme), `FOOTER_CLASS`, and `DIALOG_SIZE`, the Settings box at 880 × min(760px,
+90vh), fixed height. Settings, Browsers, the New bot picker and form, and Usage
+take that size; the confirm (`dialogs/Confirm.tsx`) and the build question
+(`builds/BuildDialog.tsx`) are content-height on the same skin. "+ New bot" is
+`dialogs/PresetPicker.tsx` (six cards a row, search) then `dialogs/CreateBot.tsx`:
+the avatar and the preset's playbooks on the left, name / what it should do /
+model on the right; effort behind the cog; every other setting takes its
+first-run default. Settings is `dialogs/BotSettings.tsx`: a rail of sections —
+General (avatar, name, instructions, model, thinking), Permissions (On this Mac
+for Super Bot; before it buys/deletes/posts; builds for ordinary bots; apps it
+may use without asking), Browser (Chrome profile, encryption), Skills
+(`SkillsSection.tsx`, the playbooks: edit, delete, learn from the last task,
+write by hand), Routines (`RoutinesSection.tsx`, not on Super Bot), Memory, and
+Phone on Super Bot (`PhoneSection.tsx`, §10). Skills and Routines post every op
+at once and never touch Save; the Skills… and Routines… menu rows and the
+preview pane's routines links open Settings on that section. The avatar picker
+is a Popover on the avatar (`dialogs/FacePopover.tsx`), not a dialog.
+`openDialog({kind: "settings", id, tab})` opens a section; `/bots?phone=1`
+(Preferences' Phone row) opens Super Bot's Phone tab. The confirm is the one
+sibling modal left: every dialog is non-modal and holds a `busy` ref while it is up.
 
 **Presets** (`bots/presets.py`, data in `fused_render/bots/presets/<key>/`,
 shipped inside the package). One folder per site: `preset.json` (`name`,

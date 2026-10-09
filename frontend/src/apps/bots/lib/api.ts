@@ -184,6 +184,8 @@ export interface Bot {
   browser?: BrowserState;
   memory?: string | null;
   skills?: Skill[] | null;
+  /** A learn-from-last worker is running: the backend refuses a second `learn` meanwhile. */
+  learning?: boolean;
   /** "/api/bots/<id>/shot" or null; use shotUrl(b) for a cache-busted src. */
   shot?: string | null;
   shot_ts?: number;

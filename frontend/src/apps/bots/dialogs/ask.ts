@@ -1,9 +1,7 @@
-// In-app replacement for window.confirm (OpenBot dialogs.js askConfirm) and the face picker's request slot
-// (core.js pickFace), as imperative promise APIs any module can await. Confirm.tsx / FacePicker.tsx render them.
-// Confirms queue: a second ask while one is up waits its turn instead of orphaning the first promise.
+// In-app replacement for window.confirm (OpenBot dialogs.js askConfirm) as an imperative promise API any module can
+// await; Confirm.tsx renders the head of the queue. A second ask while one is up waits its turn instead of orphaning
+// the first promise. (The face picker's request slot lived here too until it became a Popover, dialogs/FacePopover.tsx.)
 import { useSyncExternalStore } from "react";
-import type { Face } from "../lib/api";
-import { faceOf, type FaceDraft, type FaceSubject } from "../lib/face";
 
 export interface Credentials { user: string; pass: string }
 /** What the dialog collected besides the button: the auth fields, or the prompt's text. */
@@ -14,9 +12,8 @@ export interface ConfirmReq {
   fields?: "auth" | "prompt"; defaultValue?: string;
   resolve: (ok: boolean, vals?: ConfirmVals) => void;
 }
-export interface FacePickReq { id: number; draft: FaceDraft; onPick?: (f: Face) => void; resolve: (f: FaceDraft) => void }
 
-let confirms: ConfirmReq[] = [], pick: FacePickReq | null = null, seq = 0;
+let confirms: ConfirmReq[] = [], seq = 0;
 const listeners = new Set<() => void>();
 const emit = () => { for (const l of [...listeners]) l(); };
 const subscribe = (l: () => void) => { listeners.add(l); return () => { listeners.delete(l); }; };
@@ -45,22 +42,3 @@ export function settleConfirm(id: number, ok: boolean, vals?: ConfirmVals): void
   confirms = confirms.filter((x) => x.id !== id); emit(); c.resolve(ok, vals);
 }
 export const useConfirm = (): ConfirmReq | null => useSyncExternalStore(subscribe, () => confirms[0] || null, () => confirms[0] || null);
-
-/** Face picker: every pick repaints and calls onPick; Done, Enter, Escape or the backdrop resolve with the draft. */
-export function pickFace(b: FaceSubject, onPick?: (f: Face) => void): Promise<FaceDraft> {
-  return new Promise((resolve) => {
-    if (pick) pick.resolve({ ...pick.draft });  // one picker at a time
-    pick = { id: ++seq, draft: { ...faceOf(b) }, onPick, resolve }; emit();
-  });
-}
-/** A swatch was picked: update the draft and tell the opener. */
-export function updatePick(patch: Partial<FaceDraft>): void {
-  if (!pick) return;
-  pick = { ...pick, draft: { ...pick.draft, ...patch } }; emit();
-  pick.onPick?.({ ...pick.draft });
-}
-export function settlePick(): void {
-  const p = pick; if (!p) return;
-  pick = null; emit(); p.resolve({ ...p.draft });
-}
-export const useFacePick = (): FacePickReq | null => useSyncExternalStore(subscribe, () => pick, () => pick);

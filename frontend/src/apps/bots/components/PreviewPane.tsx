@@ -56,7 +56,7 @@ function Inbox({ b }: { b: Bot }) {
 
 function Routines({ b }: { b: Bot }) {
   const rs = b.routines || [];
-  const open = () => openDialog({ kind: "routines", id: b.id });
+  const open = () => openDialog({ kind: "settings", id: b.id, tab: "routines" });
   return (
     <section>
       {rs.length ? <h4>Routines</h4> : null}
@@ -135,7 +135,7 @@ export function PreviewPane() {
     const s = getState(); if (!s.sel) return;
     if (s.ui.menu) { closeMenu(); return; }
     const r = e.currentTarget.getBoundingClientRect();
-    openMenu({ id: s.sel, x: r.right, y: r.bottom + 6, full: true, live: true, alignRight: true });
+    openMenu({ id: s.sel, x: r.right, y: r.bottom + 6, live: true, alignRight: true });
   };
 
   const asleep = !!b && !!b.shot && !b.browser?.running && !b.control && b.status !== "running" && b.status !== "waiting";

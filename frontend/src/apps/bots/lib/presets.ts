@@ -96,9 +96,9 @@ export function highlightRuns(text: string, words: string[]): [string, boolean][
 /** Enter in the search box picks the first preset still showing (not a blank, unless nothing else is left). */
 export const firstPick = (shown: PickCard[]): PickCard | undefined => shown.find((c) => c.key) || shown[0];
 
-/** "Comes with N playbooks: a, b. Edit them under Skills once the bot exists." for a preset bot's dialog. */
+/** "Comes with N playbooks: a, b. Edit them under Settings › Skills once the bot exists." for a preset bot's dialog. */
 export const presetNote = (p: Pick<Preset, "skills">): string =>
-  `Comes with ${p.skills.length} playbooks: ${p.skills.join(", ")}. Edit them under Skills once the bot exists.`;
+  `Comes with ${p.skills.length} playbooks: ${p.skills.join(", ")}. Edit them under Settings › Skills once the bot exists.`;
 
 /** What the bot dialog opens with for a pick (OpenBot's `$("add").onclick`). */
 export function newBotInit(pick: NewBotPick): { title: string; name: string; model: string; instructions: string; face: Face; presetNote: string; preset: string; skills: string[] } {
