@@ -204,20 +204,23 @@ export const toggleCtl = (): Promise<void> => (cur()?.control ? handBack(false) 
 /** A take-over is in flight (clicks meanwhile are ignored). */
 export const isSwitching = (): boolean => switching;
 
-/** One at a time: the worker serialises these on the browser lock, so a second click would only queue behind the first
- *  (a held ⌘[ once stacked fifty of them, each waiting its turn). */
-let navBusy = false;
+/** One navigation in flight per bot: the worker serialises these on the browser lock, so a second one would only queue
+ *  behind the first (a held ⌘[ once stacked fifty of them, each waiting its turn). */
+const navBusy = new Set<string>();
+async function navigate(id: string, call: () => Promise<unknown>, silent: boolean): Promise<void> {
+  if (navBusy.has(id)) return;
+  navBusy.add(id);
+  try { await act(call, silent); } finally { navBusy.delete(id); }
+}
 export function nav(op: "back" | "forward" | "reload"): void {
   const id = getState().sel;
-  if (!inCtl() || !id || navBusy) return;
-  navBusy = true;
-  void act(() => api.nav(id, op), true).finally(() => { navBusy = false; });
+  if (inCtl() && id) void navigate(id, () => api.nav(id, op), true);
 }
 /** #furl Enter: only while you drive. */
 export async function gotoTyped(value: string): Promise<void> {
   if (!inCtl()) return;
   const u = value.trim(), id = getState().sel; if (!u || !id) return;
-  await act(() => api.goto(id, furlTarget(u)));
+  await navigate(id, () => api.goto(id, furlTarget(u)), false);
 }
 
 /** The first click on the page or the tab strip while the bot drives asks once per opening; later ones take over at once. */

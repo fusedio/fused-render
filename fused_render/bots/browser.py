@@ -66,9 +66,19 @@ LIVE_SCALE = 1.5
 STUCK_POPUP_URL = "https://accounts.google.com/gsi/select"
 RECOVER_TIMEOUT_S = 5
 INTERACT_TIMEOUT_S = 5
-# Longest a back / forward / reload waits for the page to settle before reporting where it is. Only reached when
-# no settle signal comes (a page that never finishes loading); the live view streams the page meanwhile anyway.
+# Longest a navigation waits for the page to settle before reporting where it is. Only reached when no settle
+# signal comes (a page that never finishes loading). NAV_SETTLE_S: back / forward / reload, and every navigation
+# the user asks for from the live view (the stream shows the page meanwhile). GOTO_SETTLE_S: the bot's own goto,
+# which reads the page right after. ACTION_GRACE_S: how long a click / Enter waits for a navigation to begin
+# before deciding it only ran a script.
 NAV_SETTLE_S = 5
+GOTO_SETTLE_S = 15
+ACTION_GRACE_S = 0.5
+# A reply the renderer withholds behind a JS dialog is abandoned this soon, so the dialog gets settled instead.
+DIALOG_GRACE_S = 1
+# The Page events wait_loaded reads. Nothing else a call() drains is kept (a heavy page emits hundreds).
+_NAV_EVENTS = frozenset({"Page.loadEventFired", "Page.frameStartedNavigating", "Page.frameStartedLoading",
+                         "Page.frameStoppedLoading", "Page.navigatedWithinDocument", "Page.windowOpen"})
 # Where the fused-render server listens when neither FUSED_RENDER_ORIGIN nor
 # server.json says: the bare `fused-render` port (`_branch.branch_port()`,
 # 1777 on the baseline, a per-branch port in a dev worktree). FusedBot's was 2777.
@@ -281,9 +291,12 @@ class WS:
         self.dialog = None       # Page.javascriptDialogOpening params while one is open
         self.dialog_seen = None  # the last one that opened on this connection, kept past its close (the action's report)
         self.dom_enabled = False
-        # Page events read while a call() waited for its reply. A bfcache restore (back/forward) commits and
-        # stops loading before Chrome even acks navigateToHistoryEntry, so wait_event must see what call() drained.
+        # Navigation events read while a call() waited for its reply. A bfcache restore (back/forward) commits and
+        # stops loading before Chrome even acks navigateToHistoryEntry, so wait_loaded must see what call() drained.
         self.events = []
+        # The top frame's id (= the page target's id), set by whoever connects. "" = unknown: frame events are then
+        # not trusted and only the load event settles a wait.
+        self.main_frame = ""
 
     def _note(self, msg):
         method = msg.get("method")
@@ -291,7 +304,7 @@ class WS:
             self.dialog = self.dialog_seen = msg.get("params") or {}
         elif method == "Page.javascriptDialogClosed":
             self.dialog = None
-        if method and method.startswith("Page.") and method != "Page.screencastFrame":
+        if method in _NAV_EVENTS:
             self.events.append(msg)
             del self.events[:-200]
 
@@ -355,13 +368,21 @@ class WS:
         self._id += 1
         mid = self._id
         self.send(json.dumps({"id": mid, "method": method, "params": params}))
-        while True:
-            msg = json.loads(self.recv())
-            self._note(msg)
-            if msg.get("id") == mid:
-                if "error" in msg:
-                    raise RuntimeError(f"{method}: {msg['error'].get('message')}")
-                return msg.get("result", {})
+        try:
+            while True:
+                if self.dialog and method != "Page.handleJavaScriptDialog":
+                    # A JS dialog is open: the renderer withholds this reply until it closes (browser-side calls
+                    # still answer within this). Give up soon (socket.timeout) so _run can settle the dialog,
+                    # instead of sitting out the socket timeout.
+                    self.sock.settimeout(DIALOG_GRACE_S)
+                msg = json.loads(self.recv())
+                self._note(msg)
+                if msg.get("id") == mid:
+                    if "error" in msg:
+                        raise RuntimeError(f"{method}: {msg['error'].get('message')}")
+                    return msg.get("result", {})
+        finally:
+            self.sock.settimeout(self.timeout)
 
     def call_many(self, calls, chunk=100):
         """Pipeline [(method, params)…]: send a chunk, then collect its replies.
@@ -388,33 +409,25 @@ class WS:
             out += res
         return out
 
-    def wait_event(self, name, timeout=15):
-        self.sock.settimeout(timeout)
-        try:
-            deadline = time.time() + timeout
-            while time.time() < deadline:
-                msg = json.loads(self.recv())
-                self._note(msg)
-                if msg.get("method") == name:
-                    return msg.get("params")
-        except socket.timeout:
-            return None
-        finally:
-            self.sock.settimeout(self.timeout)
-        return None
-
     def mark(self):
-        """Forget the Page events seen so far. Call right before the action whose navigation wait_loaded
+        """Forget the navigation events seen so far. Call right before the action whose navigation wait_loaded
         will watch, so nothing the previous page did (a late load, its abort) counts as the new one settling."""
         self.events = []
 
-    def wait_loaded(self, timeout=15, same_doc=False):
+    def wait_loaded(self, timeout=15, grace=None, url=None):
         """Block until the navigation the last action started has settled, or `timeout` s pass (True / False).
-        Settled: the load event; or the top frame stopping after it was seen starting on this socket (a bfcache
-        restore commits and stops in ~20 ms and never fires load); or, with `same_doc`, a top-frame same-document
-        move (back/forward over pushState history). A stop with no start seen is the previous page being aborted
-        and is ignored, as are child frames (an ad iframe's replaceState). Events call() drained while waiting
-        for the command's reply are read first, since a bfcache restore is done before the reply comes back."""
+
+        Settled, top frame only (child frames never count: an ad iframe's replaceState must not end a wait):
+        - the load event, after a start was seen on this socket (a load with no start is the previous page's);
+        - the frame stopping after a start (a bfcache restore commits and stops in ~20 ms and never fires load);
+        - a same-document move with no cross-document start in flight (back/forward over pushState history, a
+          hash goto, an SPA route change); `url` narrows it to that destination, so the page's own replaceState
+          timer cannot pass for the traversal;
+        - Page.windowOpen: the action opened a new tab, nothing more happens here.
+        Gives up at once when a JS dialog opens (nothing proceeds until _run settles it). With `grace`, gives up
+        that many seconds in if no navigation has started: a click that only ran a script is done.
+        A stop with no start seen is the previous page being aborted and is ignored. Events call() drained
+        while waiting for the command's reply are read first: a bfcache restore is done before the reply."""
         main = self.main_frame
         started = False
 
@@ -422,25 +435,35 @@ class WS:
             nonlocal started
             m, p = msg.get("method"), msg.get("params") or {}
             if m == "Page.loadEventFired":
+                return started or not main  # no frame filter possible: load is the only signal left
+            if m == "Page.windowOpen":
                 return True
-            if main and p.get("frameId") != main:
+            if not main or p.get("frameId") != main:
                 return False
             if m in ("Page.frameStartedNavigating", "Page.frameStartedLoading"):  # Chrome sends both; either arms the stop
                 started = True
             elif m == "Page.frameStoppedLoading":
                 return started
             elif m == "Page.navigatedWithinDocument":
-                return same_doc
+                return not started and (url is None or p.get("url") == url)
             return False
 
+        t0 = time.time()
         try:
+            if self.dialog:
+                return False
             if any(settled(msg) for msg in list(self.events)):
                 return True
-            self.sock.settimeout(timeout)
-            deadline = time.time() + timeout
-            while time.time() < deadline:
+            while True:
+                until = t0 + timeout if started or grace is None else min(t0 + timeout, t0 + grace)
+                left = until - time.time()
+                if left <= 0:
+                    return False
+                self.sock.settimeout(left)
                 msg = json.loads(self.recv())
                 self._note(msg)
+                if self.dialog:
+                    return False
                 if settled(msg):
                     return True
         except socket.timeout:
@@ -448,17 +471,6 @@ class WS:
         finally:
             self.events = []
             self.sock.settimeout(self.timeout)
-        return False
-
-    @property
-    def main_frame(self):
-        """The top frame's id, looked up once per connection ("" if Chrome would not say)."""
-        if not hasattr(self, "_main_frame"):
-            try:
-                self._main_frame = self.call("Page.getFrameTree")["frameTree"]["frame"]["id"]
-            except Exception:
-                self._main_frame = ""
-        return self._main_frame
 
     def close(self):
         try:
@@ -1637,6 +1649,7 @@ class Browser:
         sess = self.start()
         tab, _ = self._page_target(sess["port"])
         ws = WS(tab["webSocketDebuggerUrl"], timeout=timeout)
+        ws.main_frame = tab["id"]  # a page target's id is its top frame's id
         ws.call("Page.enable")
         self._foreground(ws)
         ws.call("Runtime.enable")
@@ -1790,6 +1803,7 @@ class Browser:
                     self._main_tab = opener["id"]
                     ws.close()
                     ws = WS(opener["webSocketDebuggerUrl"], timeout=RECOVER_TIMEOUT_S)
+                    ws.main_frame = opener["id"]
                 try:
                     ws.call("Page.enable")
                     self._foreground(ws)
@@ -1924,9 +1938,14 @@ class Browser:
         with self.lock:
             ws, sess = self._connect(timeout)
             try:
-                out = fn(ws)
+                try:
+                    out = fn(ws)
+                except Exception:
+                    if ws.dialog:  # the action's dialog withheld a reply: settle it now or every later action hangs on it too
+                        self._settle_dialog(ws)
+                    raise
                 dialog = self._settle_dialog(ws)
-                info = self._eval(ws, "({url: location.href, title: document.title})") or {}
+                info = self._where(ws)
                 if dialog:
                     info["dialog"] = dialog
                 sess["url"] = info.get("url")
@@ -1940,22 +1959,41 @@ class Browser:
             finally:
                 ws.close()
 
+    def _where(self, ws):
+        """url + title after an action. A navigation still in flight (the wait gave up on a slow page) can
+        destroy the context under the first evaluate; one short retry, then Chrome's history as the fallback."""
+        expr = "({url: location.href, title: document.title})"
+        for attempt in range(2):
+            try:
+                return self._eval(ws, expr) or {}
+            except RuntimeError:
+                if attempt:
+                    break
+                time.sleep(0.2)
+        try:
+            h = ws.call("Page.getNavigationHistory")
+            e = h["entries"][h["currentIndex"]]
+            return {"url": e.get("url"), "title": e.get("title")}
+        except Exception:
+            return {}
+
     @staticmethod
     def _settle_dialog(ws):
         """If the last action opened alert()/confirm()/prompt(), every evaluate
-        would hang until it is closed. Probe briefly; accept it and return its
-        message so the model learns what popped up."""
-        ws.sock.settimeout(3)
-        try:
-            ws.call("Runtime.evaluate", expression="1", returnByValue=True)
-            if ws.dialog_seen:  # it opened during the action and the live view (watching) already accepted it: still worth telling
-                d, ws.dialog_seen = ws.dialog_seen, None
-                return f"{d.get('type', 'dialog')}: {d.get('message', '')}".strip()
-            return None
-        except socket.timeout:
-            pass
-        finally:
-            ws.sock.settimeout(ws.timeout)
+        would hang until it is closed. Probe briefly (skipped when the socket already saw it open);
+        accept it and return its message so the model learns what popped up."""
+        if not ws.dialog:
+            ws.sock.settimeout(3)
+            try:
+                ws.call("Runtime.evaluate", expression="1", returnByValue=True)
+                if ws.dialog_seen:  # it opened during the action and the live view (watching) already accepted it: still worth telling
+                    d, ws.dialog_seen = ws.dialog_seen, None
+                    return f"{d.get('type', 'dialog')}: {d.get('message', '')}".strip()
+                return None
+            except socket.timeout:
+                pass
+            finally:
+                ws.sock.settimeout(ws.timeout)
         d = ws.dialog or {}
         try:
             ws.call("Page.handleJavaScriptDialog", accept=True)
@@ -1972,11 +2010,17 @@ class Browser:
             raise RuntimeError(ex.get("exception", {}).get("description") or ex.get("text"))
         return r.get("result", {}).get("value")
 
-    def _nav(self, ws, url):
+    def _nav(self, ws, url, settle=GOTO_SETTLE_S):
+        """Navigate and wait for the page to settle. Returns the error text when Chrome refused the URL
+        (net error) or turned it into a download: no load is coming then, so there is nothing to wait for."""
         ws.mark()
-        ws.call("Page.navigate", url=_with_scheme(url))
-        ws.wait_loaded(15)
+        r = ws.call("Page.navigate", url=_with_scheme(url))
+        if r.get("errorText") or r.get("isDownload"):
+            return r.get("errorText") or "the URL is a download, not a page"
+        # No loaderId = a same-document move (a hash on the current page): the page never reloads.
+        ws.wait_loaded(settle if r.get("loaderId") else 1)
         time.sleep(0.4)
+        return None
 
     def _shoot(self, ws):
         os.makedirs(self.cache_dir, exist_ok=True)
@@ -2012,8 +2056,12 @@ class Browser:
             return 0
 
     # -- actions -----------------------------------------------------------
-    def goto(self, url):
-        return self._run(lambda ws: self._nav(ws, url))[1]
+    def goto(self, url, settle=GOTO_SETTLE_S):
+        """`settle`: longest wait for the page; the live view passes NAV_SETTLE_S (the user sees it stream)."""
+        err, info = self._run(lambda ws: self._nav(ws, url, settle))
+        if err:
+            info["error"] = err
+        return info
 
     def _history(self, delta):
         def f(ws):
@@ -2022,7 +2070,7 @@ class Browser:
             if 0 <= i < len(h["entries"]):
                 ws.mark()
                 ws.call("Page.navigateToHistoryEntry", entryId=h["entries"][i]["id"])
-                ws.wait_loaded(NAV_SETTLE_S, same_doc=True)
+                ws.wait_loaded(NAV_SETTLE_S, url=h["entries"][i].get("url"))
                 time.sleep(0.3)
         return self._run(f, timeout=INTERACT_TIMEOUT_S)[1]
 
@@ -2088,7 +2136,7 @@ class Browser:
             if not box.get("clicked"):
                 for t in ("mouseMoved", "mousePressed", "mouseReleased"):
                     ws.call("Input.dispatchMouseEvent", type=t, x=box["x"], y=box["y"], button="left", clickCount=1)
-            ws.wait_loaded(3)
+            ws.wait_loaded(3, grace=ACTION_GRACE_S)
             time.sleep(0.5)
         return self._run(f)[1]
 
@@ -2101,7 +2149,7 @@ class Browser:
                 for t in ("keyDown", "keyUp"):
                     ws.call("Input.dispatchKeyEvent", type=t, key="Enter", code="Enter",
                             windowsVirtualKeyCode=13, text="\r" if t == "keyDown" else "")
-                ws.wait_loaded(8)
+                ws.wait_loaded(8, grace=ACTION_GRACE_S)
                 time.sleep(0.5)
         return self._run(f)[1]
 
@@ -2133,7 +2181,7 @@ class Browser:
             else:
                 for params in events:
                     ws.call("Input.dispatchKeyEvent", **params)
-            ws.wait_loaded(3 if k == "Enter" else 0.5)
+            ws.wait_loaded(3 if k == "Enter" else 0.5, grace=ACTION_GRACE_S)
             time.sleep(0.4)
         return self._run(f)[1]
 
@@ -2164,8 +2212,11 @@ class Browser:
             t0 = time.time()
             js = f"(document.body ? document.body.innerText : '').toLowerCase().includes({json.dumps(text.lower())})"
             while time.time() - t0 < timeout:
-                if self._eval(ws, js):
-                    return True
+                try:
+                    if self._eval(ws, js):
+                        return True
+                except RuntimeError:
+                    pass  # a navigation finishing mid-poll destroys the context: keep polling the new page
                 time.sleep(0.5)
             return False
         found, info = self._run(f)
