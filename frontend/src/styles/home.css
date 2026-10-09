@@ -661,15 +661,21 @@
   /* WidgetGrid sets --hw-cols in half-cell units (8, or 4 at phone width); the 16px gap makes a whole cell = 2 tracks + 16px, the same width the old 4-track grid gave. WidgetGrid places every item
      explicitly with inline grid-column/grid-row. */
   grid-template-columns: repeat(var(--hw-cols, 8), minmax(0, 1fr));
-  grid-auto-rows: auto;
+  /* One fixed grid: a unit row is exactly 52px (two units + the 16px gap make the 120px cell) in view and edit mode alike. A tile's height is only a function of its footprint; its content adapts (lists show what fits, the rest clips) and nothing a widget renders may grow a row. */
+  --hw-unit: 52px;
+  grid-auto-rows: var(--hw-unit);
   gap: 16px;
 }
 
-/* The edit canvas shows empty rows; they keep a height. View mode stays auto
-   so the bare search/build rows are not padded to 120px. */
+/* Children never push their track: they shrink to the footprint and clip. */
+.hw-grid > * {
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Edit mode uses the same fixed rows as view mode; empty rows keep the height. */
 .hw-grid.is-edit {
-  /* a unit row; two units + the gap = the 120px cell */
-  grid-auto-rows: minmax(52px, auto);
+  grid-auto-rows: var(--hw-unit);
 }
 
 /* Focus preset, view mode: the search bar stays on top and the Build composer
@@ -717,7 +723,6 @@
   display: flex;
   flex-direction: column;
   min-width: 0;
-  min-height: 120px;
   padding: 12px 14px;
   background: transparent;
   border: 1px solid var(--border);
@@ -1185,21 +1190,34 @@ a.hw-more:hover {
 }
 
 /* Board */
+.hw-body:has(> .hw-board) {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
 .hw-board {
   display: grid;
   grid-template-columns: repeat(var(--hw-lanes, 4), minmax(0, 1fr));
+  grid-template-rows: minmax(0, 1fr);
   gap: 12px;
-  align-items: start;
+  align-items: stretch;
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
 @media (max-width: 640px) {
   .hw-board {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-rows: repeat(2, minmax(0, 1fr));
+    grid-auto-rows: minmax(0, 1fr);
   }
 }
 
 .hw-lane {
   min-width: 0;
+  min-height: 0;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -2478,7 +2496,7 @@ a.hw-more:hover {
   min-height: 0;
   align-self: stretch;
   width: 100%;
-  padding: 4px 0 12px;
+  padding: 0;
   background: none;
   border-color: transparent;
   border-radius: 0;
@@ -2486,7 +2504,13 @@ a.hw-more:hover {
   text-align: center;
 }
 
-/* A live query takes over: only the search widget renders, across every column. */
+/* A live query takes over: only the search widget renders, across every column. It is a page takeover, not a tile, so its rows grow with the results. */
+.hw-grid.is-searching {
+  grid-auto-rows: auto;
+}
+.hw-grid.is-searching > * {
+  overflow: visible;
+}
 .hw-grid.is-searching .hw-widget {
   grid-column: 1 / -1;
   grid-row: auto;
@@ -2505,6 +2529,12 @@ a.hw-more:hover {
    alone still searches and the All files link lives in the sidebar. */
 .hw-widget.is-search.hw-size-1x1 .files-search-allfiles {
   display: none;
+}
+
+/* The 1-unit search tile is 52px tall: the bar itself must fit. */
+.hw-widget.is-search:not(.is-edit) .files-search {
+  box-sizing: border-box;
+  max-height: 48px;
 }
 
 /* Takeover: the old hero's breathing room above the bar. */
@@ -2530,17 +2560,21 @@ a.hw-more:hover {
    centred at the old Home's width with a headline above, and its sample chips
    start at the composer's left edge instead of centring under the full grid. */
 /* Bottom padding keeps the sample chips from crowding the next grid row (19px to the next tile measured, vs ~55px above the headline). */
-.hw-widget.is-build:not(.is-edit) { padding: 12px 0 40px; }
+.hw-widget.is-build:not(.is-edit) { padding: 4px 0 0; }
 .hw-build-hero { width: 100%; max-width: 760px; margin: 0 auto; }
 .hw-build-headline {
-  margin: 0 0 14px;
+  margin: 0 0 10px;
   font-size: 22px; font-weight: 500; letter-spacing: -0.02em;
   color: var(--fg-muted);
   text-align: center;
 }
 .hw-build-headline em { font-style: normal; color: var(--fg); }
 .hw-build-hero .home-composer-samples { justify-content: flex-start; }
-.hw-build-hero .home-composer-input { min-height: 112px; }
+.hw-build-hero .home-composer-input { min-height: 84px; }
+.hw-build-hero .home-composer-samples { margin-top: 8px; }
+
+/* The 1-unit search tile shows only its placeholder bar in edit mode. */
+.hw-widget.is-search.is-edit .hw-head { display: none; }
 
 /* Edit mode: the two bare widgets are their footprint (1 unit for search, 4
    for build). No card chrome; the × pill hangs off the corner (.hw-swap.is-bare). */
@@ -2570,7 +2604,7 @@ a.hw-more:hover {
   display: flex;
   flex-direction: column;
   justify-content: flex-start;
-  padding-top: 12px;
+  padding-top: 4px;
   box-sizing: border-box;
 }
 /* The search bar's hover highlight, which the transparent frame above
