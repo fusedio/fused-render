@@ -4585,7 +4585,7 @@ def warm() -> None:
         logger.debug("tasks warm failed", exc_info=True)
         return
     logger.info("tasks warm: %d rows in %.2fs", len(snap.rows), time.monotonic() - started)
-    tasks_index.save(_SCAN)
+    tasks_index.save(_SCAN, _BUILD_LOCK)
     if not tasks_watch.running():
         return
     global _builder_thread
@@ -4629,7 +4629,7 @@ def _builder_loop() -> None:
         # The transcripts this build re-read go to the index now, so the next
         # launch starts from here. Two rows while a session is live, none
         # otherwise; the builder thread's own time, never a request's.
-        tasks_index.save(_SCAN)
+        tasks_index.save(_SCAN, _BUILD_LOCK)
 
 
 def _rebuild_snapshot() -> _Snapshot:
