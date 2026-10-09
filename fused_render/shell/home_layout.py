@@ -39,6 +39,7 @@ SOURCES = {"search", "build", "apps", "playground", "sessions", "recents", "task
 SIZES = {"1x1", "2x1", "1x2", "2x2", "4x1"}
 FORMATS = {"cards", "list", "icons", "board", "count", "live", "bar"}
 APPS_SORTS = {"opened", "updated", "name"}
+TASKS_SHOWS = {"open", "open_done"}
 
 
 def _require_fused(x_fused: str | None) -> JSONResponse | None:
@@ -91,6 +92,9 @@ def _clean(doc) -> dict | None:
         sort = w.get("sort")
         if w["source"] == "apps" and sort in APPS_SORTS:
             item["sort"] = sort
+        show = w.get("show")
+        if w["source"] == "tasks" and show in TASKS_SHOWS:
+            item["show"] = show
         out.append(item)
     return {"version": doc["version"], "widgets": out}
 

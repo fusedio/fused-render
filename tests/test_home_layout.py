@@ -163,6 +163,34 @@ def test_sort_dropped_on_other_sources_and_unknown_values(tmp_path, monkeypatch)
     assert all("sort" not in x for x in got)
 
 
+def test_tasks_widget_roundtrips_show(tmp_path, monkeypatch):
+    client, _ = _client(tmp_path, monkeypatch)
+    lay = {
+        "version": 1,
+        "widgets": [
+            {"id": "t", "source": "tasks", "size": "2x2", "format": "list", "show": "open"},
+        ],
+    }
+    assert client.put("/api/home/layout", json=lay, headers=FUSED).status_code == 200
+    got = client.get("/api/home/layout").json()["layout"]["widgets"]
+    assert got[0]["show"] == "open"
+
+
+def test_show_dropped_on_other_sources_and_unknown_values(tmp_path, monkeypatch):
+    client, _ = _client(tmp_path, monkeypatch)
+    lay = {
+        "version": 1,
+        "widgets": [
+            {"id": "r", "source": "recents", "size": "2x1", "format": "list", "show": "open"},
+            {"id": "t", "source": "tasks", "size": "2x2", "format": "list", "show": "zzz"},
+        ],
+    }
+    assert client.put("/api/home/layout", json=lay, headers=FUSED).status_code == 200
+    got = client.get("/api/home/layout").json()["layout"]["widgets"]
+    assert [x["id"] for x in got] == ["r", "t"]
+    assert all("show" not in x for x in got)
+
+
 def test_old_version_document_is_kept_as_is(tmp_path, monkeypatch):
     # The server does not migrate: the client prepends the search widget to a
     # version-1 document and stamps 2 on its next write.
