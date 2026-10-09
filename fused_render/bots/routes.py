@@ -33,6 +33,7 @@ router = APIRouter()
 ATTACH_MAX = 8 * 1024 * 1024
 APP_IMPORT_MAX = 64 * 1024 * 1024
 IDLE_SHOT_TIMEOUT_S = 3
+RECOVER_EVERY_S = 3  # the stuck-Google-popup probe during a take-over (routes._status_bot)
 
 
 def _bot(bid):
@@ -124,8 +125,12 @@ def _status_bot(b, shot_for: str, fast: bool, cursors: dict) -> dict:
                 bot.browser.lock.release()
         threading.Thread(target=_sleep, daemon=True, name=f"sleep-{b.id}").start()
         b.meta["updated"] = time.time()  # one attempt per idle period
-    if shot_for == b.id and b.meta.get("control") and not running and not b.recovering:
+    # Only every few seconds: this runs on the 400 ms Stage poll, and each probe opens a fresh DevTools session on the
+    # very tab the user is driving (an idle bot taken over has no thread, so without the gate it ran on every poll).
+    if (shot_for == b.id and b.meta.get("control") and not running and not b.recovering
+            and time.time() - b.recover_ts > RECOVER_EVERY_S):
         b.recovering = True
+        b.recover_ts = time.time()
 
         def _recover(bot=b):
             try:
@@ -139,7 +144,11 @@ def _status_bot(b, shot_for: str, fast: bool, cursors: dict) -> dict:
             finally:
                 bot.recovering = False
         threading.Thread(target=_recover, daemon=True, name=f"recover-{b.id}").start()
-    if shot_for == b.id and idle and not b.shooting and b.browser.alive() and time.time() - b.browser.shot_ts() > 4:
+    # Not while the user drives: the screenshot (a native-pixel PNG, two sips runs, a 3 s dialog probe that would
+    # accept a confirm() they are looking at) holds browser.lock and stalls the screencast every 4 s; the frame they see
+    # is live anyway, and hand-back takes one fresh shot for the still (bot._release).
+    if (shot_for == b.id and idle and not b.meta.get("control") and not b.shooting and b.browser.alive()
+            and time.time() - b.browser.shot_ts() > 4):
         b.shooting = True
 
         def _shoot(bot=b):

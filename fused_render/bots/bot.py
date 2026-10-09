@@ -505,6 +505,7 @@ class Bot:
         self.wake = threading.Event()
         self.asking = False       # the task thread is blocked on a question/approval for the user
         self.recovering = False
+        self.recover_ts = 0.0     # when the stuck-popup probe last ran (routes._status_bot throttles it)
         self.shooting = False
         self.model_ready = set()
         self._offers = 0          # `offer` actions made in this task (one allowed)
@@ -2125,6 +2126,13 @@ class Bot:
 
     def _release(self, note=True):
         """Control back to this bot (the shared tail of giveback / dock)."""
+        # The idle shot pauses while the user drives (routes._status_bot), so the hand-back still comes from one fresh
+        # shot taken now: the page exactly as they left it. Only when the still will be used (the bot asked and waits).
+        if self.meta.get("control_by") == "bot" and self.meta.get("waiting_on") and self.thread and self.thread.is_alive():
+            try:
+                self.browser.screenshot(timeout=IDLE_SHOT_TIMEOUT_S)
+            except Exception:  # noqa: BLE001 — the last shot before the take-over stands in
+                pass
         with self.lock:
             still = self._control_off(handback=bool(self.thread and self.thread.is_alive()))
             self.save()
