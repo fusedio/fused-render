@@ -204,6 +204,25 @@ DEFAULT_IGNORE_NAMES = [
     ".gradle", ".terraform", ".next", ".nuxt", ".parcel-cache", ".turbo",
     ".cache", "Pods", ".Trash", "*.egg-info",
     "dist", "build", "out", "target", "coverage", "vendor",
+    # Cache folders that live OUTSIDE `~/Library/Caches` / `.cache`, which is
+    # where most of a home directory's churn actually sits. Bare names on
+    # purpose: the same Chromium/Electron folder names appear under
+    # `~/Library/Application Support` (macOS), `~/.config` (Linux) and
+    # `~/AppData/Local` (Windows), so one entry covers all three, and the
+    # watcher drops events under them before it ever plans a rescan — a
+    # browser profile writing its disk cache every few seconds no longer
+    # re-triggers "rescanning .../Chrome/Profile 3" (seen on a 16 GB machine
+    # at ~8 rescans/min). Capitalized forms only: a lowercase `cache` is real
+    # source in plenty of repos (`src/cache/`), and a name prunes at any depth.
+    #   Chromium / Electron (Chrome, Brave, Slack, VS Code, WhatsApp, …)
+    "Cache", "Code Cache", "GPUCache", "DawnCache", "DawnGraphiteCache",
+    "DawnWebGPUCache", "ShaderCache", "GrShaderCache", "CacheStorage",
+    "Cache_Data", "CachedData", "CachedExtensionVSIXs",
+    #   macOS sandboxed apps (`~/Library/Containers/*/Data/Library/Caches`,
+    #   `~/Library/Group Containers/*/Library/Caches`) and Xcode's build cache
+    "Caches", "DerivedData",
+    #   package-manager stores: npm's `~/.npm/_cacache`, pnpm's content store
+    "_cacache", ".pnpm-store",
     # An app's own state folder (D548). It belongs here for the same reason
     # `.cache` does, only more so: `~/Fused` IS indexed, and `.fused/cache/` is
     # an app-managed dir with no size bound at all — one page caching tiles or
