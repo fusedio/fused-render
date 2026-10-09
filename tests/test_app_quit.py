@@ -311,6 +311,8 @@ def test_children_rung_arms_the_spawn_latches_before_any_killer_runs(monkeypatch
     # real killer is replaced: the latch must not be left set for later tests,
     # and remove_server_json must not touch the real discovery file.
     from fused_render.ai import supervisor
+    from fused_render.bots import browser as bots_browser
+    from fused_render.bots import registry as bots_registry
     from fused_render.server import engine_host, index_watch
     from fused_render.server import app as server_app
     from fused_render import pty_session
@@ -320,6 +322,10 @@ def test_children_rung_arms_the_spawn_latches_before_any_killer_runs(monkeypatch
                         lambda: order.append("latch-engines"))
     monkeypatch.setattr(supervisor, "refuse_new_workers",
                         lambda: order.append("latch-ai"))
+    monkeypatch.setattr(bots_browser, "refuse_launches",
+                        lambda: order.append("latch-bots"))
+    monkeypatch.setattr(bots_registry, "shutdown",
+                        lambda budget_s=None: order.append("bots"))
     monkeypatch.setattr(engine_host, "stop_all", lambda: order.append("engines"))
     monkeypatch.setattr(supervisor, "unload_all", lambda: order.append("ai"))
     monkeypatch.setattr(pty_session.REGISTRY, "shutdown_all",
@@ -332,8 +338,8 @@ def test_children_rung_arms_the_spawn_latches_before_any_killer_runs(monkeypatch
 
     app_mod._stop_children(budget_s=2.0)
 
-    assert order[:2] == ["latch-engines", "latch-ai"]
-    assert set(order[2:]) == {"engines", "ai", "terminals", "index", "discovery"}
+    assert order[:3] == ["latch-engines", "latch-ai", "latch-bots"]
+    assert set(order[3:]) == {"engines", "ai", "terminals", "index", "bots", "discovery"}
 
 
 def test_children_rung_is_bounded_by_its_budget(monkeypatch):
@@ -345,9 +351,14 @@ def test_children_rung_is_bounded_by_its_budget(monkeypatch):
     from fused_render import pty_session
     import fused_render.index.runner as runner
 
+    from fused_render.bots import browser as bots_browser
+    from fused_render.bots import registry as bots_registry
+
     never = threading.Event()
     monkeypatch.setattr(engine_host, "refuse_new_children", lambda: None)
     monkeypatch.setattr(supervisor, "refuse_new_workers", lambda: None)
+    monkeypatch.setattr(bots_browser, "refuse_launches", lambda: None)
+    monkeypatch.setattr(bots_registry, "shutdown", lambda budget_s=None: None)
     monkeypatch.setattr(engine_host, "stop_all", lambda: never.wait(30))
     monkeypatch.setattr(supervisor, "unload_all", lambda: None)
     # Every other killer stubbed too: the real index path would cancel live runs

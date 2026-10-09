@@ -100,6 +100,35 @@ def get(bid: str) -> BrowserProcess:
         return p
 
 
+def stop_all(budget_s: float = 8.0) -> int:
+    """Quit every Chrome this process launched, in parallel, waiting at most
+    `budget_s` for the confirmations. Returns how many processes were told.
+
+    The quit path (app.py `_stop_children`): `BrowserProcess.stop` escalates
+    Browser.close → SIGTERM → SIGKILL with 3 + 3 + 2 s of waits, so walking the
+    processes in sequence would spend the whole children budget on the first
+    Chrome and never signal the second. One thread each: every Chrome gets
+    Browser.close at once. Browser.close is the load-bearing step (measured: a
+    headless Chrome is gone well inside a second); the quit terminates when
+    its 5 s children budget ends, so a Chrome that outlived close AND SIGTERM
+    is already hung and may never see the SIGKILL. The walk is `_procs`: every
+    browser this process holds a handle for, exactly what the lifespan path
+    always stopped — `stop` quits whatever pid the profile's session.json
+    names, ours or (a restart since) not. Idempotent: a process already
+    stopped has no session and `stop` is a no-op on it."""
+    with _lock:
+        procs = list(_procs.values())
+    threads = []
+    for p in procs:
+        t = threading.Thread(target=p.stop, daemon=True, name="bots-chrome-stop")
+        t.start()
+        threads.append(t)
+    deadline = time.monotonic() + budget_s
+    for t in threads:
+        t.join(max(0.0, deadline - time.monotonic()))
+    return len(procs)
+
+
 def forget(bid: str) -> None:
     with _lock:
         _procs.pop(browser_dir(bid), None)

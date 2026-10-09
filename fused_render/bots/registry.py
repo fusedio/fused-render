@@ -302,8 +302,26 @@ def imessage_state():
         return None
 
 
-def shutdown() -> None:
-    """Stop the threads, then every loaded bot's task and Chrome."""
+def shutdown(budget_s: float = 8.0) -> None:
+    """Stop the threads, then every loaded bot's task and every Chrome this
+    process launched. Two callers: the server lifespan (`_shutdown_bots`) and
+    the packaged app's quit (app.py `_stop_children`), where the lifespan never
+    runs — a quit used to leave every bot's Chrome running with ppid 1.
+
+    Order, and why it is not `Bot.shutdown()` per bot: that joins the task
+    thread for 5 s BEFORE quitting Chrome, and quits Chromes one after another
+    (up to 8 s each), so under the quit's budget the first Chrome was barely
+    signalled and the rest never were. Here the launch latch goes first (a
+    route or the scheduler mid-tick must not spawn a replacement), every task
+    is flagged to stop (releasing CDP waits and interrupting `claude`), every
+    Chrome is told to close at once (`browsers.stop_all`), and only then are
+    the task threads joined on whatever budget is left."""
+    # A module load, no Chrome spawned: at shutdown the "import browser.py
+    # lazily" rule in the module docstring has nothing left to protect.
+    from fused_render.bots import browser as browser_mod
+    from fused_render.bots import browsers
+
+    browser_mod.refuse_launches()
     with _lock:
         if _sched.get("stop") is not None:
             _sched["stop"].set()
@@ -316,15 +334,32 @@ def shutdown() -> None:
     with _lock:
         _sched.update(thread=None, stop=None)
     _drop_routines_lock()
-    for b in loaded():
+    started = time.monotonic()
+    bots = loaded()
+    for b in bots:
         try:
-            b.shutdown()
+            b.stop()
         except Exception:  # noqa: BLE001
-            logger.warning("bot %s did not shut down cleanly", getattr(b, "id", "?"), exc_info=True)
+            logger.warning("bot %s: stop failed", getattr(b, "id", "?"), exc_info=True)
+    try:
+        n = browsers.stop_all(budget_s)
+    except Exception:  # noqa: BLE001
+        n = -1
+        logger.warning("stopping the bots' Chromes failed", exc_info=True)
+    for b in bots:
+        t = getattr(b, "thread", None)
+        if t is not None and t.is_alive():
+            t.join(max(0.0, started + budget_s - time.monotonic()))
+    logger.info("bots shutdown: %d Chrome process(es) told to quit in %.1fs", n, time.monotonic() - started)
 
 
 def reset_for_tests() -> None:
     """Forget every Bot and thread handle (tests; never in the app)."""
+    try:
+        from fused_render.bots import browser as browser_mod
+        browser_mod.allow_launches()  # a test that ran shutdown() must not latch the next one
+    except Exception:  # noqa: BLE001
+        pass
     with _lock:
         if _sched.get("stop") is not None:
             _sched["stop"].set()

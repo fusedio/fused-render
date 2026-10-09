@@ -461,8 +461,11 @@ QUIT_FAST_SERVER_DRAIN_S = 0.5
 # then skips the lifespan entirely. Measured on the owner's machine
 # (2026-10-05): an engine worker 29h old and an MLX embed worker older than the
 # running app, both with ppid 1. Across an update that means OLD-version
-# workers survive into the new version's session. So the quit runs the same
-# killers itself, each on its own daemon thread, joined against this budget.
+# workers survive into the new version's session. Same for the bots' Chromes
+# (2026-10-09: every bot used in a session was still running after ⌥⌘Q, one
+# headless Chrome per bot, never cleaned up — their only killer was the
+# lifespan's `_shutdown_bots`). So the quit runs the same killers itself,
+# each on its own daemon thread, joined against this budget.
 # Each killer starts signalling at once but walks its own children in sequence
 # with confirmation waits (SIGKILL lands at 3 s), so the budget bounds how long
 # we wait for those confirmations, not whether the first signal is sent; a
@@ -516,10 +519,12 @@ def _stop_children(budget_s: float = QUIT_CHILDREN_BUDGET_S) -> None:
     rung exists to kill (bugbot, PR #1400)."""
     def refuse_spawns():
         from fused_render.ai import supervisor
+        from fused_render.bots import browser as bots_browser
         from fused_render.server import engine_host
 
         engine_host.refuse_new_children()
         supervisor.refuse_new_workers()
+        bots_browser.refuse_launches()
 
     def engines():
         from fused_render.server import engine_host
@@ -547,6 +552,14 @@ def _stop_children(budget_s: float = QUIT_CHILDREN_BUDGET_S) -> None:
             if run.get("running"):
                 runner.cancel(cfg, run["run_id"])
 
+    def bots():
+        # Every bot's task and Chrome (registry.shutdown: launch latch, stop
+        # flags, then every Chrome told to close in parallel). The Chromes are
+        # started with start_new_session=True, so nothing but this kills them.
+        from fused_render.bots import registry as bots_registry
+
+        bots_registry.shutdown(budget_s=budget_s)
+
     def discovery():
         from fused_render.server.app import remove_server_json
 
@@ -559,7 +572,7 @@ def _stop_children(budget_s: float = QUIT_CHILDREN_BUDGET_S) -> None:
     threads = []
     for name, step in (("engines", engines), ("ai", ai_workers),
                        ("terminals", terminals), ("index", index_runs),
-                       ("discovery", discovery)):
+                       ("bots", bots), ("discovery", discovery)):
         def _run(step=step, name=name):
             try:
                 step()
