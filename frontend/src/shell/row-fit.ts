@@ -31,7 +31,7 @@
 //
 // The pure half is here so it can be proved without a browser (row-fit.test.ts);
 // the hook underneath owns the ResizeObserver and the cache.
-import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 /**
  * THE ORDER THE WIDTH IS SPENT IN, right to left across the row's meta cluster
@@ -425,6 +425,11 @@ export function useRowFit(
   // The cache outlives every measurement: an item's width is a fact about the
   // CONTENT, and re-reading it while the item is hidden would read zero.
   const costs = useRef<number[]>([]);
+  // The measurement, reachable from the epoch effect below without re-running
+  // the observer effect: a listing lands about once a second while a session
+  // is live, and tearing the observer down and up for each (one sweep on
+  // re-observe, one on the timer) would be two style passes a second.
+  const readRef = useRef<() => void>(() => {});
   useLayoutEffect(() => {
     // OFF MEANS NOTHING IS OBSERVED. The ladder arrived with the side peek and
     // it is part of what the flag turns off, so with the feature down there is
@@ -465,12 +470,10 @@ export function useRowFit(
         frame = 0;
       }
     };
-    // MEASURED LATE, NOT ON MOUNT (2026-10-09): the first rows are still
-    // committing, and a synchronous read here forces a style pass of the whole
-    // list inside the commit. The ResizeObserver reports once on observe, so
-    // the first verdict still lands before the first paint; this timer is the
-    // read for a list whose box did not change.
-    const first = window.setTimeout(schedule, 300);
+    readRef.current = schedule;
+    // The ResizeObserver reports once on observe, so the first verdict lands
+    // before the first paint; the listing effect below is the read for a list
+    // whose box did not change.
     const ro = new ResizeObserver(schedule);
     ro.observe(el);
     // NO MutationObserver ANY MORE (2026-10-09, Tasks latency design D5). It
@@ -483,14 +486,22 @@ export function useRowFit(
     // matter arrive with a LISTING, and the list says so through `epoch`
     // below; a row folding or unfolding is not one of them.
     return () => {
-      window.clearTimeout(first);
+      readRef.current = () => {};
       ro.disconnect();
     };
     // `floored` is in the deps because it changes the VERDICT, not the
     // measurement: crossing the floor has to re-read at once, in the same
-    // commit the frame's own attribute lands in. `epoch` is the rows: a new
-    // listing is a new set of chips and titles to measure.
-  }, [ref, enabled, floored, epoch]);
+    // commit the frame's own attribute lands in.
+  }, [ref, enabled, floored]);
+  // A NEW LISTING IS ONE TRAILING RE-READ. `epoch` is the rows array, a fresh
+  // identity on every delta; the chips and titles it may have changed are
+  // measured once, a second after the last one landed, off the commit — not
+  // on every delta and never on a fold/unfold, which is not a listing.
+  useEffect(() => {
+    if (!enabled) return;
+    const id = window.setTimeout(() => readRef.current(), 1000);
+    return () => window.clearTimeout(id);
+  }, [enabled, epoch]);
   return enabled ? fit : NO_FIT;
 }
 

@@ -5040,21 +5040,26 @@ def api_tasks(under: str = Query(""), scope: str = Query(""),
 # Tasks latency design, Phase A). 821 rows are 1.7 MB of JSON and every open
 # window asks for them every 20 s; the server encoded them per request and the
 # wire carried them uncompressed. One encode per generation, served to every
-# window, ~0.3 MB on the wire. Keyed on the snapshot's generation, which is
-# what the rows stand for; a scoped listing (`?under`/`?scope`) is per caller
-# and takes the ordinary path.
+# window, ~0.3 MB on the wire. KEYED ON THE ROWS OBJECT, not the generation:
+# the builder rebuilds every `REBUILD_FLOOR_SEC` with the generation standing
+# still, and those rebuilds are what refresh the time-dependent fields (`live`
+# off a transcript's age, `next_run`, queue positions) — a cache that compared
+# generations served the previous floor's rows until the next watcher bump.
+# A snapshot's rows list is one object for its lifetime, so identity is the
+# right key and costs nothing. A scoped listing (`?under`/`?scope`) is per
+# caller and takes the ordinary path.
 _GZ_LOCK = threading.Lock()
-_GZ_CACHE: dict[str, tuple[int, bytes, bytes]] = {}
+_GZ_CACHE: dict[str, tuple[list, bytes, bytes]] = {}
 
 
 def _listing_response(rows: list[dict], gen: int, accept_encoding: str) -> Response:
     with _GZ_LOCK:
         hit = _GZ_CACHE.get("all")
-        if hit is None or hit[0] != gen:
+        if hit is None or hit[0] is not rows:
             raw = json.dumps({"tasks": rows, "generation": gen},
                              separators=(",", ":"), default=str,
                              ensure_ascii=False).encode("utf-8")
-            hit = (gen, raw, gzip.compress(raw, compresslevel=3))
+            hit = (rows, raw, gzip.compress(raw, compresslevel=3))
             _GZ_CACHE["all"] = hit
     _, raw, packed = hit
     headers = {"Vary": "Accept-Encoding", "Cache-Control": "no-store"}
