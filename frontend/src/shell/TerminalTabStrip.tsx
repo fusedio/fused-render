@@ -53,7 +53,7 @@ export default function TerminalTabStrip({ tabs, activeId, onSelect, onClose, on
                   type="button"
                   className="term-tab-close"
                   aria-label={`Close ${tab.label}`}
-                  title="Close terminal (ends its shell)"
+                  title="Close (comes back if Claude runs another command)"
                   onClick={() => onClose(tab.id)}
                 >
                   ×
