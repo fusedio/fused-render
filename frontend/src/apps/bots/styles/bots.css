@@ -102,6 +102,7 @@ div.bots-page { --chatw: 340px; }
 div.bots-page.stage main, div.bots-page.stage:is(.rcol, .rfit) main { grid-template-columns: var(--lweff) 6px minmax(0, 1fr) 6px max(50%, calc(100% - var(--lweff) - 12px - var(--chatw))); }
 div.bots-page.stage .preview { visibility: visible; transition: none; }
 div.bots-page.stage .gutter.r { background: none; pointer-events: auto; }
+div.bots-page.stage .gutter.l { pointer-events: none; }  /* the sidebar is a forced icon rail here: a drag would only save a width the track never shows (or snap it collapsed) */
 /* The thumbnail, caption, info, toast, side-app strip and frame step aside for the live view (child combinator: #full's own .toast stays). */
 div.bots-page.stage .preview > :is(header, .shotwrap, .toast, .cap, .info, .sabar, #saframe) { display: none; }
 .bots-page .gutter { cursor: col-resize; position: relative; background: linear-gradient(var(--line), var(--line)) center / 1px 100% no-repeat; } /* the columns share one background, so the gutter carries the divider */

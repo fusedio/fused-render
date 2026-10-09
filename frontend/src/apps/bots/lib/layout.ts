@@ -214,10 +214,13 @@ export function startGutterDrag(side: Side, g: HTMLElement, e: PointerEvent): vo
   const key = side === "l" ? "lw" : "rw", col = side === "l" ? "lcol" : "rcol", L = LIM[side];
   const other = side === "l" ? main.querySelector(".preview") : main.querySelector(".bots");
   // Width the far panel takes; for the sidebar, computed from layout so it can be asked "what if it were collapsed?".
-  const otherW = (lcol: boolean) => side === "l" ? (other?.getBoundingClientRect().width || 0) : (lcol ? 72 : Math.min(layout.lw, main.clientWidth * 0.4));
-  const roomFor = (lcol = layout.lcol) => main.clientWidth - otherW(lcol) - 12 - MID_MIN;
+  // A hidden preview still measures its last open width (--rwlock keeps it for the slide back in) although its track is 0: count it as 0.
+  const otherW = (lcol: boolean) => side === "l" ? (previewShown() && other ? other.getBoundingClientRect().width : 0) : (lcol ? 72 : Math.min(layout.lw, main.clientWidth * 0.4));
+  // The sidebar's track is min(--lw, 40%): cap its room the same way, or a drag saves a width the track never shows.
+  const roomFor = (lcol = layout.lcol) => Math.min(main.clientWidth - otherW(lcol) - 12 - MID_MIN, side === "l" ? main.clientWidth * 0.4 : Infinity);
   e.preventDefault(); g.setPointerCapture(e.pointerId); g.classList.add("drag"); body().classList.add("dragging");
-  const x0 = e.clientX, w0 = layout[col] ? L.shut : layout[key];
+  const panel = side === "l" ? main.querySelector(".bots") : main.querySelector(".preview");
+  const x0 = e.clientX, w0 = layout[col] ? L.shut : shownWidth(panel, layout[key], L.shut);
   let autoShut = false;
   const move = (ev: PointerEvent) => {
     const raw = w0 + (side === "l" ? ev.clientX - x0 : x0 - ev.clientX);
@@ -233,6 +236,15 @@ export function startGutterDrag(side: Side, g: HTMLElement, e: PointerEvent): vo
   g.addEventListener("pointerup", up, { once: true }); g.addEventListener("pointercancel", up, { once: true });
 }
 
+/** Where a drag starts: the width the grid shows for the panel, not the saved one. The saved width has no ceiling but the
+ *  window's room at the time, so after the window shrinks the track is clamped below it; a drag counted from the saved
+ *  value would then spend its first stretch inside that gap, moving nothing. A panel shown at its shut width or less (the fit
+ *  hid it: lfit / rfit; the sidebar's forced icon rail) starts from the saved width instead, so the gutter reopens it from there as before. */
+function shownWidth(panel: Element | null, saved: number, shut = 0): number {
+  const w = panel?.getBoundingClientRect().width || 0;
+  return w > shut && w < saved ? Math.round(w) : saved;
+}
+
 // Dragging the Stage rail past the live page's half-width floor closes Stage. App registers the close (lib/cdp.ts handBack(true):
 // gives control back if you drive, then leaves Stage) — this module cannot import it without a cycle.
 let stageShut: (() => void) | null = null;
@@ -242,7 +254,7 @@ export function onStageShut(fn: (() => void) | null): void { stageShut = fn; }
  *  further closes Stage and ends the drag — the rail is saved at the floor, not the overshoot. */
 function startRailDrag(main: HTMLElement, g: HTMLElement, e: PointerEvent): void {
   e.preventDefault(); g.setPointerCapture(e.pointerId); g.classList.add("drag"); body().classList.add("dragging");
-  const x0 = e.clientX, w0 = layout.cw;
+  const x0 = e.clientX, w0 = shownWidth(main.querySelector(".chat"), layout.cw);
   const up = () => {
     g.removeEventListener("pointermove", move); g.removeEventListener("pointerup", up); g.removeEventListener("pointercancel", up);
     g.classList.remove("drag"); body().classList.remove("dragging"); applyLayout(true);
