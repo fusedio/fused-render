@@ -41,7 +41,7 @@ Per-source allowed sizes / formats (first entry is the default):
 | playground | 4x1, 2x1, 2x2         | cards, list           | `PLAYGROUND_GROUPS` |
 | sessions   | 4x1, 2x1, 2x2         | cards, list           | `getHomeClaudeSessionFolders` |
 | recents    | 4x1, 2x1, 2x2         | cards, list           | `loadRecents` / `useRecentsVersion` |
-| tasks      | 2x2, 2x1, 4x1         | list, board, count    | `getTasks` (api.ts). Board = 3 columns Queued / In progress / Needs you (`needs_attention`). Count = big number of open tasks + "N need you". Exclude `done`/`archived`. Rows click through to the task (reuse whatever `shell/TaskCards.tsx` / Tasks page uses to open a task). |
+| tasks      | 2x2, 2x1, 4x1         | list, board, count    | `getTasks` (api.ts). Board = 4 lanes Queued / In progress / Needs you (`needs_attention`) / Done. Count = big number of open tasks + "N need you". Done tasks are kept; `archived` and drafts are excluded. A per-tile Show option (Open only / Open + done) drops the Done lane and the done rows. Rows click through to the task (reuse whatever `shell/TaskCards.tsx` / Tasks page uses to open a task). |
 | bots       | 1x1, 2x1, 2x2         | list, count           | bots `api.status` (`apps/bots/lib/api.ts`). List rows: name, status pill, `step`/`step_cap`, `title`/`note`. Click → `/bots`. |
 | folder     | 2x1, 1x1, 2x2, 4x1    | list, icons           | children of the bookmark folder `folderId`; title = folder name. Missing folder → empty state "This bookmark folder was deleted." |
 | index      | 1x1, 2x1              | count                 | `useIndexStatus` — file count + "updated N ago". |
