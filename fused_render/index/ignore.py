@@ -249,7 +249,8 @@ def default_home_dirs() -> list[str]:
 
 
 def default_ignore() -> list[str]:
-    """The starting ignore list, INCLUDING `~/Library/Caches`.
+    """The starting ignore list, INCLUDING `~/Library/Caches` and the app's
+    own log directory.
 
     `~/Library/Caches` is a PATH pattern (it contains a slash), so it matches
     that one path only — not the whole `~/Library` tree, which was tried on
@@ -259,13 +260,25 @@ def default_ignore() -> list[str]:
     DEFAULT_IGNORE_NAMES: machine-generated churn, unbounded in size, that a
     background crawl gets nothing out of walking.
 
+    The app's own log directory (`logs.log_dir()`, `~/Library/Logs/fused-render`
+    on macOS) is the other path entry. Every request the server answers
+    appends a line there, so a home-directory watch that keeps it sees the
+    app's own output as "an in-app change" and plans a rescan of the log
+    folder — a diagnostics bundle from a 16 GB machine showed 17 such rescans
+    in a few hours, the single most-rescanned root after the home itself. On
+    the other platforms the log dir sits under the fused-render home, which
+    MountGuard already refuses; the entry is harmless there and the one line
+    that makes macOS match.
+
     A caveat worth stating rather than fixing here: `default_ignore()` is a
     `default_factory`, consulted only when the saved config has no `ignore`
     key. A user who ever pressed Save in the Indexing panel carries a frozen
     list from whenever they saved it and does not receive this pattern
     retroactively. Changing how saved configs merge in new defaults is a
     separate change."""
-    out = [norm(os.path.expanduser("~/Library/Caches"))]
+    from fused_render.logs import log_dir  # stdlib-only module; no cycle
+
+    out = [norm(os.path.expanduser("~/Library/Caches")), norm(log_dir())]
     return DEFAULT_IGNORE_NAMES + out
 
 
