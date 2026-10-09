@@ -8696,20 +8696,19 @@ def test_the_WAIT_FOR_A_COLD_MODEL_can_rebuild_an_evicted_row(
 def _watcher_giveup_window_s():
     """How long `fused.watchJob` tolerates a missing row, read from the bridge.
 
-    Two numbers in `runtime.js`: the poll interval and the number of
-    consecutive misses that resolve the promise with null. Read rather than
-    restated, for the same reason `HEARTBEAT_S` is — this is a relationship
-    between the supervisor and the page, and a copy here would go stale in the
-    direction that looks fine.
+    One number in `runtime.js` now that the watcher rides the `jobs` topic:
+    the grace a row missing from a pushed snapshot is given before the
+    promise resolves with null. Read rather than restated, for the same reason
+    `HEARTBEAT_S` is — this is a relationship between the supervisor and the
+    page, and a copy here would go stale in the direction that looks fine.
     """
     path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                         "fused_render", "static", "runtime.js")
     source = open(path, encoding="utf-8").read()
-    watch = source[source.index("async watch(onUpdate, intervalMs)"):]
+    watch = source[source.index("function watchJob("):]
     watch = watch[:watch.index("stop()")]
-    interval_ms = int(re.search(r"intervalMs \|\| (\d+)", watch).group(1))
-    misses = int(re.search(r"\+\+missing >= (\d+)", watch).group(1))
-    return misses * interval_ms / 1000.0
+    grace_ms = int(re.search(r"const GONE_GRACE_MS = (\d+)", watch).group(1))
+    return grace_ms / 1000.0
 
 
 def test_a_LIVE_transcription_row_is_never_absent_at_all():

@@ -797,16 +797,16 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   };
   // THE ROWS, LIVE — one feed for the document (`tasksPulse.subscribeListing`).
   //
-  // The fast lane is still `/api/tasks/changes`, long-polling the server's change
-  // watcher (tasks_watch.py) so a `claude` typed into a terminal in some folder is
-  // a row here within a second rather than up to a poll later; only the rows that
-  // moved come back and are folded into place, and a 20s floor read stays as the
-  // truth underneath. What changed is WHOSE loop it is: this page used to run one
-  // and every ClaudeChat mount on it ran another, so the cards wall with twelve
-  // chats open held thirteen sockets on a 25-second wait against a browser cap of
-  // six, and every other request on the page queued behind them. The feed also
-  // publishes to the sidebar and remembers the listing for the next mount, which
-  // is what this effect used to do by hand.
+  // The feed is the document's one `tasks.listing` subscription on the events
+  // bus: the server's change watcher (tasks_watch.py) pushes only the rows that
+  // moved, so a `claude` typed into a terminal in some folder is a row here
+  // within a second, and the snapshot that answers a (re)subscribe is the truth
+  // underneath. This page used to run its own long-poll and every ClaudeChat
+  // mount on it ran another, so the cards wall with twelve chats open held
+  // thirteen sockets on a 25-second wait against a browser cap of six, and every
+  // other request on the page queued behind them. The feed also publishes to
+  // the sidebar and remembers the listing for the next mount, which is what
+  // this effect used to do by hand.
   useEffect(
     () =>
       subscribeListing((ev) => {
