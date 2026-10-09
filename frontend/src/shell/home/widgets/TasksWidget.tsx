@@ -107,7 +107,7 @@ export function TasksWidget({ widget }: { widget: Widget }) {
     const lanes = lanesFor(show);
     return (
       <div className="hw-body">
-        <div className="hw-board" style={{ gridTemplateColumns: `repeat(${lanes.length}, minmax(0, 1fr))` }}>
+        <div className="hw-board" style={{ "--hw-lanes": lanes.length } as React.CSSProperties}>
           {lanes.map((lane) => {
             const rows = data.filter((t) => laneOf(t) === lane.id);
             const shown = rows.slice(0, cap);

@@ -999,6 +999,7 @@ button.hw-row:hover {
   flex: 1 1 auto;
   min-height: 0;
 }
+
 .hw-strip > .hw-icons.is-strip {
   height: 100%;
 }
@@ -1190,9 +1191,15 @@ a.hw-more:hover {
 /* Board */
 .hw-board {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(var(--hw-lanes, 4), minmax(0, 1fr));
   gap: 12px;
   align-items: start;
+}
+
+@media (max-width: 640px) {
+  .hw-board {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 .hw-lane {
