@@ -40,6 +40,7 @@ import { canRunInTerminal, useCanRunInTerminal, openTerminal } from "@platform/l
 import { copyPendingText } from "@platform/lib/clipboard";
 import { fetchTerminalCommand as fetchAgentTerminalCommand } from "../protocol/agent";
 import { forgetSessionSeed } from "./useRecentTasks";
+import { subscribeListing } from "@shell/tasksPulse";
 
 /** Live by the listing's own clock (T:13166-13169). */
 const RUNNING_STATES = new Set<Task["status"]>([
@@ -78,37 +79,6 @@ export function forgetTaskCaches(sessionId: string): void {
   taskRunning.delete(sessionId);
 }
 
-/** One `/api/tasks` read per session id ONCE THE NUMBER HAS LANDED: a task
- *  number does not change after it is allocated, so a poll would buy nothing
- *  (T:12660-12672). Before it lands is the opposite case — see `ASK_AGAIN_MS`.
- *
- *  A SET OF WAITERS, not a bare "in flight" flag. A session really does get
- *  read by two mounts at once — a card and its own TaskPeek are exactly that —
- *  and a flag made the second mount skip the read AND the `bump` that follows
- *  it, so that one sat on the session hash until something unrelated
- *  re-rendered it. The read is still one read; every mount waiting on it is
- *  woken when it lands. */
-const inflight = new Map<string, Set<() => void>>();
-
-/**
- * WHEN TO ASK AGAIN, and it is not "never" (R2-9).
- *
- * "One read, ever" was right about a number that exists and wrong about the
- * moment this hook is most often called: a chat that has just started has a
- * session id seconds before `/api/tasks` has a row for it, so the one read came
- * back with nothing, nothing was cached, and the header printed a truncated
- * session hash until the reader reloaded the page (Akshil, 2026-09-08 — "shows
- * the session id instead of TASK-xxx, and only updates after reload").
- *
- * So the read repeats, on a DECAYING schedule and only while the answer is
- * still missing — four asks over about fifteen seconds, which covers the
- * scheduler allocating the row, and then it stops. It is not a poll: the moment
- * a number lands the schedule is torn down and never runs again for that
- * session, and every other source of an answer (the tasks-changed event, this
- * document's own chat-activity stamp) short-circuits the wait.
- */
-export const ASK_AGAIN_MS = [900, 2500, 5000, 8000];
-
 /** ClaudeChat's `CHAT_ACTIVITY_KEY`, restated rather than imported: that module
  *  imports this one through `ui/index`, and a chat cannot be made to depend on
  *  its own menu to know the name of a localStorage key. One string, in two
@@ -120,93 +90,67 @@ const CHAT_ACTIVITY_KEY = "fused-render:chat-activity";
  * read on entering a session rather than on opening the menu.
  *
  * The number is what the header prints (`#session`) and what the delete confirm
- * names, and the same listing read answers the kebab's "is there a task behind
- * this chat, and which way is it filed" — which is why T does one read here and
- * has the menu paint from what it already knows (T:12681-12684).
+ * names, and the same listing answers the kebab's "is there a task behind this
+ * chat, and which way is it filed" — which is why T does one read here and has
+ * the menu paint from what it already knows (T:12681-12684).
+ *
+ * READ OFF THE DOCUMENT'S LISTING FEED (`shell/tasksPulse.subscribeListing`,
+ * the events bus's `tasks.listing`), not a read of its own. A card and its own
+ * TaskPeek are two mounts on the same session, and a wall of cards is twelve:
+ * the feed is one subscription for all of them, and a mount that arrives after
+ * the rows are held is replayed them at once.
+ *
+ * WHILE THE NUMBER IS MISSING, AND NOT A MOMENT LONGER (R2-9). A chat that has
+ * just started has a session id seconds before `/api/tasks` has a row for it,
+ * and the header used to print a truncated session hash until the reader
+ * reloaded the page (Akshil, 2026-09-08 — "shows the session id instead of
+ * TASK-xxx, and only updates after reload"). So the hook stays on the feed
+ * until a frame carries the number — the server pushes the row the moment the
+ * scheduler allocates it, and this document's own `tasks-changed` and the chat
+ * activity stamp of every other document resync the feed (its `pokes`) — and
+ * then leaves: a task number does not change after it is allocated
+ * (T:12660-12672).
  *
  * FAILS OPEN to the session hash, like everything else that reads this listing:
- * an unreadable `/api/tasks`, or a session so new the listing has not seen it,
- * costs the better name and never the cell. Nothing is cached on that path, so
- * the next session change tries again.
+ * a failed listing, or a session so new the listing has not seen it, costs the
+ * better name and never the cell. Nothing is cached from a failed listing.
  */
 export function useTaskId(sessionId: string): string {
   const [, bump] = useState(0);
   useEffect(() => {
     if (!sessionId || taskIds.has(sessionId)) return;
+    // Cleared by the number landing or by the teardown. The feed may answer
+    // synchronously (the replay), before `off` is assigned.
     let live = true;
-    const timers: number[] = [];
-    const wake = () => {
-      if (live) bump((n) => n + 1);
-    };
-
-    /** One read, shared with any other mount asking for the same session in the
-     *  same window. Resolves when the answer (or the failure) has landed. */
-    const ask = (): Promise<void> => {
-      // Someone else is already asking: join their wake-up list rather than
-      // firing a second identical read (and rather than silently going without
-      // an answer, which is what a bare flag did).
-      const joined = inflight.get(sessionId);
-      if (joined) {
-        joined.add(wake);
-        return Promise.resolve();
-      }
-      const waiters = new Set<() => void>([wake]);
-      inflight.set(sessionId, waiters);
-      return getTasks()
-        .then((data) => {
-          const task = (data.tasks || []).find((t) => t && t.key === sessionId);
-          // Recorded BEFORE the number check, and the order matters: a task with
-          // no number allocated yet is still a task the kebab can archive, and
-          // `null` is the real answer "this chat is not a task" (T:12712-12718).
-          remember(archiveStates, sessionId, task ? task.status === "archived" : null);
-          remember(taskRunning, sessionId, !!task && RUNNING_STATES.has(task.status));
-          if (task?.task_id) remember(taskIds, sessionId, String(task.task_id));
-        })
-        .catch(() => {
-          // The hash stands.
-        })
-        .finally(() => {
-          inflight.delete(sessionId);
-          // Every mount that was waiting, not just the one that asked.
-          for (const waiter of [...waiters]) waiter();
-        });
-    };
-
-    /** Ask, and — while the answer is still missing — arrange to ask again.
-     *  `at` is the index into `ASK_AGAIN_MS`, so the schedule decays and ENDS;
-     *  a session that never becomes a task stops costing reads. */
-    const askThen = (at: number) => {
-      void ask().then(() => {
-        if (!live || taskIds.has(sessionId)) return;
-        const wait = ASK_AGAIN_MS[at];
-        if (wait === undefined) return;
-        timers.push(window.setTimeout(() => askThen(at + 1), wait));
-      });
-    };
-    askThen(0);
-
-    // THE TWO PUSHES, either of which beats the timer above. `tasks-changed` is
-    // announced by this document's own run controller the moment a turn starts
-    // (protocol/run-controller.ts), which is the same moment the row is created;
-    // the storage stamp is every OTHER document's chat saying the same thing
-    // (ClaudeChat's CHAT_ACTIVITY_KEY). Both are pokes, not payloads, so both
-    // land on one handler.
-    const poke = () => {
-      if (!live || taskIds.has(sessionId)) return;
-      void ask();
-    };
-    const onStorage = (ev: StorageEvent) => {
-      if (!ev.key || ev.key === CHAT_ACTIVITY_KEY) poke();
-    };
-    window.addEventListener(TASKS_CHANGED_EVENT, poke);
-    window.addEventListener("storage", onStorage);
-    return () => {
+    let off: () => void = () => {};
+    const stop = () => {
+      if (!live) return;
       live = false;
-      for (const id of timers) window.clearTimeout(id);
-      window.removeEventListener(TASKS_CHANGED_EVENT, poke);
-      window.removeEventListener("storage", onStorage);
-      inflight.get(sessionId)?.delete(wake);
+      off();
     };
+    off = subscribeListing((ev) => {
+      // A failed listing is not an answer: the hash stands, nothing is cached.
+      if (!live || ev.failed) return;
+      const task = ev.rows.find((t) => t && t.key === sessionId);
+      const was = [archiveStates.get(sessionId), taskRunning.get(sessionId)];
+      // Recorded BEFORE the number check, and the order matters: a task with
+      // no number allocated yet is still a task the kebab can archive, and
+      // `null` is the real answer "this chat is not a task" (T:12712-12718).
+      remember(archiveStates, sessionId, task ? task.status === "archived" : null);
+      remember(taskRunning, sessionId, !!task && RUNNING_STATES.has(task.status));
+      if (task?.task_id) {
+        remember(taskIds, sessionId, String(task.task_id));
+        stop();
+        bump((n) => n + 1);
+        return;
+      }
+      // Repaint only for news: the feed moves on every task in the machine.
+      if (was[0] !== archiveStates.get(sessionId) || was[1] !== taskRunning.get(sessionId)) {
+        bump((n) => n + 1);
+      }
+    });
+    if (!live) off();
+    return stop;
   }, [sessionId]);
   if (!sessionId) return "";
   const known = taskIds.get(sessionId);

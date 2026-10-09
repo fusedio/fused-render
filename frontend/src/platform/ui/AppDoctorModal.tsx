@@ -142,6 +142,7 @@ import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 import { appLandingUrl } from "@platform/lib/appLanding";
 import { navigate, navigateUrl } from "@platform/lib/router";
+import { subscribeTopic } from "@platform/lib/events";
 import { announceAppDoctorChanged, announceTasksChanged } from "@platform/lib/tasksChanged";
 import { chatUrl } from "@platform/lib/queue";
 import { ClaudeMark } from "@platform/ui/ClaudeMark";
@@ -687,10 +688,13 @@ export function useAppDoctorReport(dir: string, onDone?: () => void) {
       // notices and the sidebar's unread dot should notice it now, not on
       // its next idle tick.
       if (res.task) announceTasksChanged();
-      // ...and the header dot's own hook (useAppDoctorChecks) refetches on
-      // this: its answer now carries `check_task`, which is what starts ITS
-      // poll — the one that outlives this panel, so a check that finishes
-      // after a tab switch still moves the dot.
+      // ...and the header dot's own hook (useAppDoctorChecks) answers this
+      // with a resync of the folder's `apps.doctor` subscription — the one
+      // the effect below shares. This POST is this document's own write: the
+      // topic's last snapshot predates it, and its answer now carries
+      // `check_task`, which is what has the server re-read the report while
+      // the check runs, so a check that finishes after a tab switch still
+      // moves the dot.
       announceAppDoctorChanged(dir);
       if (alive.current) {
         setReport((r) =>
@@ -710,42 +714,43 @@ export function useAppDoctorReport(dir: string, onDone?: () => void) {
     }
   };
 
-  // While a check task is live, ask the server again every few seconds so
-  // the verdict lands on the row the moment the task writes it — without
-  // this, the row would say "Checking…" until the doctor was reopened. A
-  // plain GET: a bounded folder walk, no tokens. The old report stays on
-  // screen until the new one arrives (never through `load`, which blanks
-  // the checklist to a skeleton). When the task is gone from the answer,
-  // the header dot's own fetch (useAppDoctorChecks) is rung so it moves off
-  // "clean" over a row that just went red. Keyed on the live task's id, so
-  // the interval restarts only when the task changes, not on every render.
+  // While a check task is live, follow the folder's `apps.doctor` topic
+  // (snapshot == `GET /api/apps/doctor?fetch=0`, never the git force-fetch the
+  // modal-open GET performs) so the verdict lands on the row the moment the
+  // task writes it — without this, the row would say "Checking…" until the
+  // doctor was reopened. The server re-reads the report every 4 s while a
+  // check task is live and pushes each change; the dot (useAppDoctorChecks)
+  // holds the same subscription, so this adds no second one. The old report
+  // stays on screen until the new one arrives (never through `load`, which
+  // blanks the checklist to a skeleton). Keyed on the live task's id, so the
+  // subscription is re-made only when the task changes, not on every render.
+  //
+  // A REPLAYED snapshot is skipped: it is the dot's cached answer, taken
+  // before the POST that started this check, and it would put the row back to
+  // its pre-check state and end the wait at once. The dot's resync (rung by
+  // `runCheck`'s announcement) brings the fresh one. A refused frame changes
+  // nothing — the row keeps saying "Checking…" until the next snapshot.
   const liveCheckId = report?.checks.find((c) => c.check_task)?.check_task?.id ?? null;
   useEffect(() => {
     if (!liveCheckId) return;
-    let cancelled = false;
-    let timer = 0;
-    // A chained timeout, not setInterval: the next ask is armed only after
-    // the previous answer lands, so a slow folder walk never overlaps the
-    // next tick. `fetch: false` — a poll must not re-trigger the git
-    // force-fetch the modal-open GET performs.
-    const tick = async () => {
-      try {
-        const r = await getAppDoctor(dir, { fetch: false });
-        if (cancelled || !alive.current) return;
-        setReport(r);
-        if (!r.checks.some((c) => c.check_task?.id === liveCheckId)) {
-          announceAppDoctorChanged(dir);
-          return;
-        }
-      } catch {
-        /* ask again next tick; the row keeps saying "Checking…" meanwhile */
+    let settled = false;
+    let off: () => void = () => {};
+    off = subscribeTopic<AppDoctorReport>("apps.doctor", { path: dir }, (r, _delta, meta) => {
+      if (settled || !alive.current || meta.error !== undefined || meta.replay || r === null) return;
+      if (!Array.isArray(r.checks)) return;
+      setReport(r);
+      // The task is gone from the answer: the wait is over. (The dot heard
+      // the same snapshot on the shared subscription.)
+      if (!r.checks.some((c) => c.check_task?.id === liveCheckId)) {
+        settled = true;
+        off();
       }
-      if (!cancelled) timer = window.setTimeout(() => void tick(), CHECK_POLL_MS);
-    };
-    timer = window.setTimeout(() => void tick(), CHECK_POLL_MS);
+    });
+    if (settled) off();
     return () => {
-      cancelled = true;
-      window.clearTimeout(timer);
+      if (settled) return;
+      settled = true;
+      off();
     };
   }, [dir, liveCheckId]);
 
@@ -792,11 +797,6 @@ export function useAppDoctorReport(dir: string, onDone?: () => void) {
     onDone,
   };
 }
-
-// How often the checklist re-asks the server while a check task is live. A
-// check is a Sonnet read of a few files — tens of seconds — so a few seconds
-// between asks lands the verdict promptly without hammering a folder walk.
-const CHECK_POLL_MS = 4_000;
 
 type Report = ReturnType<typeof useAppDoctorReport>;
 

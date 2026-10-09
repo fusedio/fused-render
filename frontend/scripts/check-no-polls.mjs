@@ -31,7 +31,28 @@ const ALLOW = new Map([
   // D13: the banner measures the one path the bus does not own — whether this
   // document can get an HTTP answer through the pool at all.
   ["platform/ui/ServerStatusBanner.tsx", "the health probe (D13)"],
+  // UI clocks in files that also fetch once on an event: the interval only
+  // re-renders an elapsed label, and the file's fetches are a mic upload
+  // and the one-shot final transcript read.
+  ["apps/bots/components/Composer.tsx", "mic and run elapsed clocks; no fetch on a timer"],
+  ["apps/ai_models/playground/TranscribeStage.tsx", "recording elapsed clock; no fetch on a timer"],
+  // The stall watchdog: shows "still waiting on the worker" while ONE request
+  // this document already sent is in flight; it never sends another.
+  ["apps/bots/lib/api.ts", "in-flight stall watchdog; never issues a request"],
+  // The restart countdown ticks a reducer while a restart is in flight.
+  ["platform/lib/restart-store.ts", "restart countdown ticker; no fetch on a timer"],
+  // A 50 ms one-shot fallback for a missing requestIdleCallback that queues
+  // an iframe start after first paint; `request(` there is the start queue.
+  ["platform/lib/preview-start.ts", "idle-callback fallback; not a re-read"],
+  // The launcher page has no events client: after a successful PUT it
+  // re-reads its settings ONCE (the app rebinds a tick later) and never
+  // re-arms; the error path shows what it already holds.
+  ["launcher/launcher.ts", "one-shot re-read after a write; no events client on that page"],
 ]);
+
+// `setTimeout(fn, 0)` batches work already decided into one call (runtime.js's
+// superseded-call flush); it is not a cadence and never re-arms itself.
+const ZERO_DELAY = /setTimeout\(\s*[A-Za-z_$][\w$]*\s*,\s*0\s*\)/;
 
 const FETCH_LIKE = /\b(fetch|getJson|postJson|putJson|request|taskFetch|envPost|aiPost)\s*(<[^>]*>)?\s*\(/;
 
@@ -74,6 +95,7 @@ function check(file, rel) {
   }
   for (const m of code.matchAll(/\bsetTimeout\s*\(\s*([A-Za-z_$][\w$]*)\s*,/g)) {
     const name = m[1];
+    if (ZERO_DELAY.test(code.slice(m.index, m.index + 80))) continue;
     const body = bodyOf(code, name);
     if (body && FETCH_LIKE.test(body)) {
       problems.push(`setTimeout(${name}, …) re-arms a function that fetches`);

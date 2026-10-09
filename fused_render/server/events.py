@@ -249,6 +249,11 @@ class _KeyState:
         self.build_version = -1
         self.producer: asyncio.Task | None = None
         self.detach: Callable[[], None] | None = None
+        # "Read again NOW": set by a publish on this key and by a subscriber
+        # joining a key that already has a producer (a resync from a second
+        # document), so a producer sleeping at its idle cadence re-reads and
+        # re-chooses its interval at once instead of one idle interval later.
+        self.poke = asyncio.Event()
         # A polldiff producer whose signature is the snapshot hands the body
         # straight in here, so the subscribers' refresh never rebuilds it.
         self.ready_body: dict | None = None
@@ -454,6 +459,8 @@ class EventBus:
             state = _KeyState(topic, key, normalized)
             self._keys[(name, key)] = state
             await self._start_producer(state)
+        else:
+            state.poke.set()
         state.subs.add(sub)
         conn.subs[sid] = sub
         self._kick(sub)
@@ -522,6 +529,7 @@ class EventBus:
             state.version += 1
             state.ready_body = None
             state.ready_raw = None
+            state.poke.set()
             for sub in list(state.subs):
                 self._kick(sub)
 
@@ -685,10 +693,14 @@ class EventBus:
         last_sig: Any = None
         inflight: asyncio.Future | None = None
         started = time.monotonic()
+        # The key version this loop's baseline stands for: a publish since
+        # then (a write hook) already pushed the change this read is about to
+        # find, so the read re-baselines without pushing it a second time.
+        seen_version = state.version
         try:
             if topic.tick_only:
                 while True:
-                    await asyncio.sleep(topic.poll_interval(state.params, time.monotonic() - started, last_sig))
+                    await _nap(state, topic.poll_interval(state.params, time.monotonic() - started, last_sig))
                     self._publish_on_loop(topic.name, state.key, None)
             while True:
                 sig: Any = _UNSET
@@ -711,16 +723,30 @@ class EventBus:
                         sig = _UNSET
                 if sig is not _UNSET:
                     marker = canonical(sig) if isinstance(sig, (dict, list)) else sig
-                    if last is not _UNSET and marker != last:
+                    published_since = state.version != seen_version
+                    if last is not _UNSET and marker != last and not published_since:
                         if topic.signature_is_snapshot and isinstance(sig, dict):
                             self._ready(state, sig)
                         else:
                             self._publish_on_loop(topic.name, state.key, None)
+                    seen_version = state.version
                     last = marker
                     last_sig = sig
-                await asyncio.sleep(topic.poll_interval(state.params, time.monotonic() - started, last_sig))
+                await _nap(state, topic.poll_interval(state.params, time.monotonic() - started, last_sig))
         except asyncio.CancelledError:
             pass
+
+
+async def _nap(state: "_KeyState", seconds: float) -> None:
+    """The producer's sleep, cut short by a poke on its key (a publish, or a
+    second document resubscribing): a write hook or a resync means "look
+    now", and the cadence the next read chooses (1.5 s while a login is open,
+    not 60 s) starts from that read."""
+    state.poke.clear()
+    try:
+        await asyncio.wait_for(state.poke.wait(), timeout=max(0.0, float(seconds)))
+    except asyncio.TimeoutError:
+        pass
 
 
 _UNSET = object()

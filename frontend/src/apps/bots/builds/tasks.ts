@@ -47,7 +47,9 @@ export interface TaskHandle {
 /** A status that proves the task ran (OpenBot agents.py _watch_build `seen_running`). */
 const SEEN_RUNNING = new Set(["in_progress", "queued", "needs_attention", "blocked"]);
 const SETTLED = new Set(["done", "archived"]);
-/** A first quiet row is re-read after this long (runtime.js TASKS_CONFIRM_MS, the server's running-mark TTL). */
+/** A first quiet row is looked at again after this long (runtime.js TASKS_CONFIRM_MS, the server's running-mark
+ *  TTL) — the feed's held row, not a re-read: the bus pushes every change, so a row nothing has moved in this long
+ *  IS what the listing says. */
 const CONFIRM_MS = 15000;
 
 // ------------------------------------------------------------------ fetch ----
@@ -235,8 +237,11 @@ export function observeStatus(s: DoneState, status: string): { state: DoneState;
 // The key starts as `pending:<entry>` and flips to the session id once a row carries the same entry_id (or, for a
 // session row that does not, the one new row arriving in the same answer that retires the pending key). `done`
 // settles the _watch_build way: once the task was seen running, a done/archived status twice in a row; the second
-// look is the next feed event for the row or a re-read CONFIRM_MS later, whichever comes first. A row that leaves
-// the listing after it was seen settles with its last row (runtime.js: `done` never rejects).
+// look is the next feed event for the row or, CONFIRM_MS of quiet later, the row the feed still holds — whichever
+// comes first. That quiet period is a debounce over pushed rows and never fetches: the server pushes every change on
+// `tasks.listing`, so the held row is the answer a re-read would give (and an unreadable listing can no longer
+// re-arm it into a retry chain). A row that leaves the listing after it was seen settles with its last row
+// (runtime.js: `done` never rejects).
 function taskHandle(firstKey: string, entryId: string, under: string): TaskHandle {
   let key = firstKey, last: TaskRow | null = null, finished = false, st: DoneState = { seenRunning: false, stable: "" };
   let confirm: ReturnType<typeof setTimeout> | null = null;
@@ -269,11 +274,11 @@ function taskHandle(firstKey: string, entryId: string, under: string): TaskHandl
     confirm = setTimeout(() => {
       confirm = null;
       if (finished) return;
-      listing(scope).then((l) => {
-        if (finished) return;
-        const row = l.rows.find(mine);
-        if (row) consider(row); else if (last) finish(last);
-      }, () => { if (!finished) arm(); });  // an unreadable listing proves nothing; look again
+      const f = feedOf(scope);
+      // No rows held (the feed has not answered since it started): nothing proves anything yet; the next frame will.
+      if (!f.rows) return;
+      const row = feedRows(f).find(mine);
+      if (row) consider(row); else if (last) finish(last);
     }, CONFIRM_MS);
   }
 

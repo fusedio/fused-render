@@ -1,14 +1,22 @@
-// TWO MOUNTS, ONE READ, BOTH ANSWERED. A card and its own TaskPeek are two
-// mounts on the same session, and the dedupe that keeps `/api/tasks` to one
-// read must not cost the second mount its answer — it used to sit on the
-// session hash until something unrelated re-rendered it.
+// TWO MOUNTS, ONE SUBSCRIPTION, BOTH ANSWERED. A card and its own TaskPeek are
+// two mounts on the same session; `useTaskId` reads the number off the
+// document's listing feed (`shell/tasksPulse.subscribeListing`, the events
+// bus's `tasks.listing`), which is one subscription however many mounts ask,
+// and it stays on the feed only while the number is missing.
+//
+// The bus frames come from a scripted events client installed with
+// `setEventsClientForTests` (never `mock.module`, which is process-wide in
+// bun). The menu's own re-read (`Kebab`'s `refresh`) is still a GET, so the
+// R3-2 half of this file keeps its route-less `fetch` stub and counts it.
 import { installDomShim } from "@platform/lib/testDomShim";
 installDomShim();
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 
-const { Kebab, useTaskId, forgetTaskCaches, ASK_AGAIN_MS } = await import("./Kebab");
+const { Kebab, useTaskId, forgetTaskCaches } = await import("./Kebab");
 const { TASKS_CHANGED_EVENT } = await import("@platform/lib/tasksChanged");
+const { setEventsClientForTests } = await import("@platform/lib/events");
+const { resetListingFeedForTests } = await import("@shell/tasksPulse");
 const { readFileSync } = await import("node:fs");
 const { join } = await import("node:path");
 
@@ -17,9 +25,55 @@ let calls = 0;
 let answer: () => Promise<unknown> = async () => ({
   tasks: [{ key: SESSION, task_id: 42, status: "done" }],
 });
+
+// ---- the scripted bus ----------------------------------------------------------
+type Frame = (snap: unknown, delta: unknown, meta: Record<string, unknown>) => void;
+interface Sub {
+  topic: string;
+  params: unknown;
+  cb: Frame;
+  open: boolean;
+}
+let subs: Sub[] = [];
+let resyncs = 0;
+/** What the server's `tasks.listing` snapshot is right now; an Error is a
+ *  refused frame (the GET's failure). */
+let listing: unknown = { tasks: [{ key: SESSION, task_id: 42, status: "done" }] };
+function frame(sub: Sub) {
+  if (!sub.open) return;
+  if (listing instanceof Error) sub.cb(null, null, { error: listing.message, status: 500 });
+  else sub.cb(listing, null, { gen: null });
+}
+/** Push the current `listing` to every open subscriber, as a change would. */
+const push = () =>
+  act(async () => {
+    for (const sub of subs) if (sub.topic === "tasks.listing") frame(sub);
+  });
+const openListing = () => subs.filter((s) => s.topic === "tasks.listing" && s.open);
+
 const realFetch = globalThis.fetch;
 beforeEach(() => {
   calls = 0;
+  subs = [];
+  resyncs = 0;
+  listing = { tasks: [{ key: SESSION, task_id: 42, status: "done" }] };
+  resetListingFeedForTests();
+  setEventsClientForTests({
+    subscribe: ((topic: string, params: unknown, cb: Frame) => {
+      const sub: Sub = { topic, params, cb, open: true };
+      subs.push(sub);
+      // The server's answer to a subscribe: the snapshot, one hop later.
+      queueMicrotask(() => frame(sub));
+      return () => {
+        sub.open = false;
+      };
+    }) as never,
+    resync: ((topic: string) => {
+      resyncs += 1;
+      for (const sub of subs) if (sub.topic === topic) queueMicrotask(() => frame(sub));
+      return true;
+    }) as never,
+  });
   (globalThis as { fetch: unknown }).fetch = async () => {
     calls += 1;
     const body = await answer();
@@ -27,10 +81,10 @@ beforeEach(() => {
   };
 });
 /** The shim's `window` is a no-op for events (platform/lib/testDomShim), and
- *  the reactive half of R2-9 IS an event listener — so this suite gives the
- *  global window a real, tiny registry for the length of a test. Not a change
- *  to the shim: a chat's menu is the wrong reason to give every test in the
- *  repo a live event bus. */
+ *  the feed's pokes (`tasks-changed`, the chat activity stamp) ARE event
+ *  listeners — so this suite gives the global window a real, tiny registry for
+ *  the length of a test. Not a change to the shim: a chat's menu is the wrong
+ *  reason to give every test in the repo a live event bus. */
 function liveWindowEvents(): () => void {
   const w = globalThis.window as unknown as {
     addEventListener: unknown;
@@ -66,6 +120,8 @@ const mounted: ReactTestRenderer[] = [];
 afterEach(() => {
   for (const r of mounted.splice(0)) act(() => r.unmount());
   forgetTaskCaches(SESSION);
+  resetListingFeedForTests();
+  setEventsClientForTests(null);
   (globalThis as { fetch: unknown }).fetch = realFetch;
 });
 
@@ -88,78 +144,80 @@ const settle = () =>
     await new Promise((done) => setTimeout(done, 0));
   });
 
-test("a second mount on the same session gets the number too, off ONE read", async () => {
+test("a second mount on the same session gets the number too, off ONE subscription", async () => {
   const first = probe();
   const second = probe(); // the card and its peek, same session, same tick
   expect(first[0]).toBe("abcdef01"); // the hash paints first
+  // One `tasks.listing {}` subscription for the pair, and no GET at all.
+  expect(subs.length).toBe(1);
+  expect(subs[0].topic).toBe("tasks.listing");
+  expect(subs[0].params).toEqual({});
   await settle();
-  expect(calls).toBe(1); // still one `/api/tasks` read for the pair
+  expect(calls).toBe(0);
   expect(first[first.length - 1]).toBe("42");
   expect(second[second.length - 1]).toBe("42"); // …and NOT the hash
+  // The number landed, so the wait is over: the subscription is gone.
+  expect(openListing().length).toBe(0);
 });
 
-test("a failed read leaves both mounts on the hash and does not cache", async () => {
-  answer = async () => {
-    throw new Error("offline");
-  };
+test("a refused listing leaves both mounts on the hash and does not cache", async () => {
+  listing = new Error("offline");
   const first = probe();
   const second = probe();
   await settle();
   expect(first[first.length - 1]).toBe("abcdef01");
   expect(second[second.length - 1]).toBe("abcdef01");
-  expect(calls).toBe(1);
-  // Nothing was cached, so a later mount tries again.
-  answer = async () => ({ tasks: [{ key: SESSION, task_id: 7, status: "done" }] });
-  const third = probe();
-  await settle();
-  expect(calls).toBe(2);
-  expect(third[third.length - 1]).toBe("7");
+  // Still waiting — a failure is not an answer.
+  expect(openListing().length).toBe(1);
+  // Nothing was cached, so the next snapshot is read afresh.
+  listing = { tasks: [{ key: SESSION, task_id: 7, status: "done" }] };
+  await push();
+  expect(first[first.length - 1]).toBe("7");
+  expect(second[second.length - 1]).toBe("7");
+  expect(openListing().length).toBe(0);
+  expect(calls).toBe(0);
 });
 
 // ── R2-9: the number arrives without a reload ──────────────────────────────
 
-test("a session with no task row yet is asked about AGAIN, and the number lands", async () => {
+test("a session with no task row yet stays on the feed, and the number lands when the row is pushed", async () => {
   // The bug: a chat that has just started has a session id seconds before
   // `/api/tasks` has a row for it. One read, ever, meant the header printed a
   // truncated session hash until the reader reloaded the page.
-  answer = async () => ({ tasks: [] });
+  listing = { tasks: [] };
   const labels = probe();
   await settle();
   expect(labels[labels.length - 1]).toBe("abcdef01"); // the hash, for now
-  expect(calls).toBe(1);
+  expect(openListing().length).toBe(1);
 
-  // The row appears, and the retry that was already scheduled picks it up.
-  answer = async () => ({ tasks: [{ key: SESSION, task_id: "TASK-042", status: "done" }] });
-  await act(async () => {
-    await new Promise((done) => setTimeout(done, ASK_AGAIN_MS[0] + 20));
-  });
-  expect(calls).toBe(2);
+  // The row appears and the server pushes it.
+  listing = { tasks: [{ key: SESSION, task_id: "TASK-042", status: "done" }] };
+  await push();
   expect(labels[labels.length - 1]).toBe("TASK-042");
 
-  // …and now that it has landed, the schedule is over: nothing else is read.
-  await act(async () => {
-    await new Promise((done) => setTimeout(done, ASK_AGAIN_MS[1] + 20));
-  });
-  expect(calls).toBe(2);
+  // …and now that it has landed, the wait is over: nothing is subscribed.
+  expect(openListing().length).toBe(0);
+  expect(calls).toBe(0);
 });
 
-test("a tasks-changed announcement beats the timer", async () => {
+test("a tasks-changed announcement resyncs the feed and the number lands", async () => {
   const restore = liveWindowEvents();
   try {
-  answer = async () => ({ tasks: [] });
-  const labels = probe();
-  await settle();
-  expect(calls).toBe(1);
+    listing = { tasks: [] };
+    const labels = probe();
+    await settle();
+    expect(resyncs).toBe(0);
 
-  answer = async () => ({ tasks: [{ key: SESSION, task_id: "TASK-007", status: "done" }] });
-  // What the run controller fires the moment a turn starts — which is the same
-  // moment the task row is created (protocol/run-controller.ts).
-  await act(async () => {
-    window.dispatchEvent(new Event(TASKS_CHANGED_EVENT));
-    await new Promise((done) => setTimeout(done, 0));
-  });
-  expect(calls).toBe(2);
-  expect(labels[labels.length - 1]).toBe("TASK-007");
+    listing = { tasks: [{ key: SESSION, task_id: "TASK-007", status: "done" }] };
+    // What the run controller fires the moment a turn starts — which is the
+    // same moment the task row is created (protocol/run-controller.ts).
+    await act(async () => {
+      window.dispatchEvent(new Event(TASKS_CHANGED_EVENT));
+      await new Promise((done) => setTimeout(done, 0));
+    });
+    expect(resyncs).toBe(1);
+    expect(labels[labels.length - 1]).toBe("TASK-007");
+    expect(calls).toBe(0);
   } finally {
     restore();
   }
@@ -168,18 +226,29 @@ test("a tasks-changed announcement beats the timer", async () => {
 test("the poke is ignored once the number is known — a number does not change", async () => {
   const restore = liveWindowEvents();
   try {
-  answer = async () => ({ tasks: [{ key: SESSION, task_id: 11, status: "done" }] });
-  const labels = probe();
-  await settle();
-  expect(labels[labels.length - 1]).toBe("11");
-  await act(async () => {
-    window.dispatchEvent(new Event(TASKS_CHANGED_EVENT));
-    await new Promise((done) => setTimeout(done, ASK_AGAIN_MS[0] + 20));
-  });
-  expect(calls).toBe(1);
+    listing = { tasks: [{ key: SESSION, task_id: 11, status: "done" }] };
+    const labels = probe();
+    await settle();
+    expect(labels[labels.length - 1]).toBe("11");
+    await act(async () => {
+      window.dispatchEvent(new Event(TASKS_CHANGED_EVENT));
+      await new Promise((done) => setTimeout(done, 0));
+    });
+    // The feed left with the number, so nobody is following to resync.
+    expect(resyncs).toBe(0);
+    expect(openListing().length).toBe(0);
   } finally {
     restore();
   }
+});
+
+test("the wait goes with the mount", async () => {
+  listing = { tasks: [] };
+  probe();
+  await settle();
+  expect(openListing().length).toBe(1);
+  for (const r of mounted.splice(0)) act(() => r.unmount());
+  expect(openListing().length).toBe(0);
 });
 
 // ── R3-2: the menu's own state follows the task row ────────────────────────
@@ -337,7 +406,7 @@ test("Archive and Delete are refused while a mode owns the page (P3R1-5)", () =>
 // (Akshil, 2026-09-12, 🔴 review).
 test("answers nothing for a pending: key rather than the word `pending:`", async () => {
   const KEY = "pending:8f2c11d4-aaaa-bbbb";
-  answer = async () => ({ tasks: [] });
+  listing = { tasks: [] };
   const labels: string[] = [];
   function PendingProbe() {
     labels.push(useTaskId(KEY));
@@ -361,7 +430,7 @@ test("answers nothing for a pending: key rather than the word `pending:`", async
 // back: the guard drops the fallback, not the answer.
 test("still answers the number the listing holds for a pending: key", async () => {
   const KEY = "pending:9a1b";
-  answer = async () => ({ tasks: [{ key: KEY, task_id: "TASK-077", status: "queued" }] });
+  listing = { tasks: [{ key: KEY, task_id: "TASK-077", status: "queued" }] };
   const labels: string[] = [];
   function PendingProbe() {
     labels.push(useTaskId(KEY));

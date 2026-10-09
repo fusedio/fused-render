@@ -19,12 +19,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ChatMount } from "@apps/claude";
 import { statPath } from "@platform/lib/api";
+import { eventsClient, resyncTopic, subscribeTopic } from "@platform/lib/events";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import {
   fixWithClaude,
   getAccessToken,
   getCanvasesStatus,
-  getSyncStatus,
   getWhoami,
   startSync,
   type SyncStatus,
@@ -37,15 +37,37 @@ import {
   type LockHold,
 } from "./canvas-lock-lib";
 
-const SYNC_POLL_MS = 2000;
-
-// A status poll that keeps failing must not strand a lock ON forever. The
-// decide effect below is keyed on `sync`, and a caught poll failure used to
-// leave `sync` untouched — so a lock in force at the moment polling started
-// failing was never re-evaluated again at all (finding 6). After this many
-// consecutive misses, the canvas is treated as not-watched (same shape as a
-// dropped watcher), which both releases the lock and re-arms the self-heal.
-const FAILED_POLLS_BEFORE_RELEASE = 3;
+/**
+ * FOLLOW ONE CANVAS'S SYNC STATUS off the events bus (`canvases.sync {name}`,
+ * snapshot == `GET /api/canvases/sync/status?name=`; the server re-reads the
+ * sync manager every 2 s — the old poll's cadence — and pushes each change).
+ * Lives as long as the workspace is mounted; returns the unsubscribe.
+ *
+ * `lost` is finding 6, carried over from the poll: a status that stops
+ * arriving must not strand a lock ON forever. The decide effect is keyed on
+ * `sync`, so a lock in force when the answers stopped would never be
+ * re-evaluated again. The poll counted three failed GETs; on the bus the same
+ * fact is a refused frame or the socket going away — the server has stopped
+ * answering — and the page then treats the canvas as not-watched (the shape of
+ * a dropped watcher), which releases the lock. The snapshot that answers the
+ * resubscribe on reconnect re-arms the watcher the normal way.
+ */
+export function followCanvasSync(
+  name: string,
+  on: { status(s: SyncStatus): void; lost(): void },
+): () => void {
+  const off = subscribeTopic<SyncStatus>("canvases.sync", { name }, (s, _delta, meta) => {
+    if (meta.error !== undefined) return on.lost();
+    if (s !== null) on.status(s);
+  });
+  const offState = eventsClient()?.onState?.((connected) => {
+    if (!connected) on.lost();
+  });
+  return () => {
+    off();
+    offState?.();
+  };
+}
 
 // -- the left-pane lock --------------------------------------------------------
 //
@@ -127,6 +149,9 @@ export default function CanvasWorkspace({ name }: { name: string }) {
   // not `last_push_at`: that is the server's clock, and comparing it to
   // Date.now() makes the grace window wrong by whatever the skew is.
   const settledAtRef = useRef<number | null>(null);
+  // The boot's `startSync` is in flight: the sync subscription's self-heal
+  // stands down until it has answered.
+  const startingRef = useRef(false);
 
   // Boot: base URL + handle + make sure the watcher runs.
   useEffect(() => {
@@ -144,7 +169,10 @@ export default function CanvasWorkspace({ name }: { name: string }) {
           return;
         }
         setHandle(who.handle);
-        const started = await startSync(name);
+        startingRef.current = true;
+        const started = await startSync(name).finally(() => {
+          startingRef.current = false;
+        });
         if (cancelled) return;
         setDir(started.dir);
         const st = await statPath(started.dir);
@@ -208,10 +236,10 @@ export default function CanvasWorkspace({ name }: { name: string }) {
     return () => window.removeEventListener("message", onMessage);
   }, [seedToken, sendLock, locked]);
 
-  // Decide whether the workbench should be locked, from the polled status. The
+  // Decide whether the workbench should be locked, from the pushed status. The
   // rule itself lives in canvas-lock-lib (pure, and tested — the release half
-  // is correctness-critical). Re-runs on every poll, which is what advances the
-  // grace window.
+  // is correctness-critical). Re-runs on every snapshot; the grace window's
+  // end is the timer below, since a quiet canvas pushes nothing.
   useEffect(() => {
     const now = Date.now();
     const decision = decideLock(
@@ -225,8 +253,8 @@ export default function CanvasWorkspace({ name }: { name: string }) {
     settledAtRef.current = decision.settledAt;
     setLockHold(decision.hold);
     if (decision.hold !== "settling" || decision.settledAt === null) return;
-    // The next poll would get there anyway; this just releases on time rather
-    // than up to SYNC_POLL_MS late.
+    // Nothing else re-runs this while the canvas is quiet (the bus pushes only
+    // changes), so this is what releases the hold once the window has passed.
     const remaining = decision.settledAt + LOCK_RELEASE_GRACE_MS - now;
     const id = window.setTimeout(() => {
       setLockHold((h) => {
@@ -266,38 +294,26 @@ export default function CanvasWorkspace({ name }: { name: string }) {
     return () => window.clearTimeout(id);
   }, [locked, sendLock]);
 
-  // Sync status poll for the status strip; re-arms the watcher if it drops.
-  // The button's enabled/disabled state reads straight off sync.fix_active —
-  // set server-side the instant a fix spawns, cleared only by that run's own
-  // completion (D336 follow-up), never guessed from transcript activity here.
-  useEffect(() => {
-    let consecutiveFailures = 0;
-    const id = window.setInterval(() => {
-      void getSyncStatus(name)
-        .then((s) => {
-          consecutiveFailures = 0;
+  // Sync status for the status strip, live off the bus (`followCanvasSync`);
+  // re-arms the watcher if it drops. The button's enabled/disabled state reads
+  // straight off sync.fix_active — set server-side the instant a fix spawns,
+  // cleared only by that run's own completion (D336 follow-up), never guessed
+  // from transcript activity here.
+  useEffect(
+    () =>
+      followCanvasSync(name, {
+        status: (s) => {
           setSync(s);
           setDir((d) => d ?? s.dir);
-          // Self-heal: a server restart drops the watcher; re-arm it.
-          if (!s.watching) void startSync(name).catch(() => undefined);
-        })
-        .catch(() => {
-          consecutiveFailures += 1;
-          // A repeatedly failing poll must not strand a lock ON forever
-          // (finding 6): the decide effect is keyed on `sync`, and a caught
-          // failure otherwise leaves `sync` — and therefore the lock —
-          // frozen at whatever it was when polling started failing, with
-          // nothing left to ever re-evaluate it. After a few misses, treat
-          // the canvas the same as a dropped watcher: decideLock's own
-          // `!status.watching` branch releases it, and the next successful
-          // poll's `if (!s.watching)` re-arms sync the normal way.
-          if (consecutiveFailures >= FAILED_POLLS_BEFORE_RELEASE) {
-            setSync((s) => (s ? { ...s, watching: false } : s));
-          }
-        });
-    }, SYNC_POLL_MS);
-    return () => window.clearInterval(id);
-  }, [name]);
+          // Self-heal: a server restart drops the watcher; re-arm it. Not while
+          // the boot's own start is still on the wire — the first snapshot
+          // lands before it does, and would fire a second start beside it.
+          if (!s.watching && !startingRef.current) void startSync(name).catch(() => undefined);
+        },
+        lost: () => setSync((s) => (s ? { ...s, watching: false } : s)),
+      }),
+    [name],
+  );
 
   // Splitter drag: track the pointer over the whole window so the drag
   // survives entering the iframes (which would otherwise swallow mousemove —
@@ -342,11 +358,13 @@ export default function CanvasWorkspace({ name }: { name: string }) {
     try {
       const { run_id } = await fixWithClaude(name);
       setFixRunId(run_id);
-      // Don't wait for the next poll (up to SYNC_POLL_MS away) to reflect
+      // Don't wait for the server's next look at the sync manager to reflect
       // that a fix is now running — the gap let a double-click through to a
       // second POST (a 409, now that the server itself locks, but still a
-      // confusing one to show right after a successful click).
+      // confusing one to show right after a successful click). The resync is
+      // the same fact from the server, now: this POST is this page's write.
       setSync((s) => (s ? { ...s, fix_active: true } : s));
+      resyncTopic("canvases.sync", { name });
     } catch (e) {
       setFixError((e as Error).message);
     } finally {
@@ -364,7 +382,7 @@ export default function CanvasWorkspace({ name }: { name: string }) {
   // elsewhere — back is the browser's Back button, the canvas name is the
   // page title/URL, "Open local files" is the chat pane's own affordances
   // over the same folder, and sync state only matters when it FAILS, which
-  // the error banner below still reports. The poll keeps running for the
+  // the error banner below still reports. The subscription keeps running for the
   // banner and the watcher self-heal.
   // Whether THIS engagement's ack has arrived. Enforcement lives in the
   // workbench: acked means it will refuse edits and allow pan/zoom on its

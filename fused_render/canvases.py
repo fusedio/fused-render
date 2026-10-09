@@ -499,6 +499,7 @@ def api_canvases_login(x_fused: str | None = Header(default=None)):
             login = _ActiveLogin(proc=proc, started_at=time.time())
             _active_login = login
             threading.Thread(target=_watch_login, args=(login,), daemon=True).start()
+    _publish("canvases.status")
     return {"ok": True, "login_in_flight": True}
 
 
