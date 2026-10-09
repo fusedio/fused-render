@@ -661,7 +661,7 @@
   /* WidgetGrid sets --hw-cols in half-cell units (8, or 4 at phone width); the 16px gap makes a whole cell = 2 tracks + 16px, the same width the old 4-track grid gave. WidgetGrid places every item
      explicitly with inline grid-column/grid-row. */
   grid-template-columns: repeat(var(--hw-cols, 8), minmax(0, 1fr));
-  /* One fixed grid: a unit row is exactly 52px (two units + the 16px gap make the 120px cell) in view and edit mode alike. A tile's height is only a function of its footprint; its content adapts (lists show what fits, the rest clips) and nothing a widget renders may grow a row. */
+  /* One fixed grid, the same in view and edit mode (empty rows keep their height): a unit row is exactly 52px (two units + the 16px gap make the 120px cell). A tile's height is only a function of its footprint; its content adapts (lists show what fits, the rest clips) and nothing a widget renders may grow a row. */
   --hw-unit: 52px;
   grid-auto-rows: var(--hw-unit);
   gap: 16px;
@@ -671,11 +671,6 @@
 .hw-grid > * {
   min-height: 0;
   overflow: hidden;
-}
-
-/* Edit mode uses the same fixed rows as view mode; empty rows keep the height. */
-.hw-grid.is-edit {
-  grid-auto-rows: var(--hw-unit);
 }
 
 /* Focus preset, view mode: the search bar stays on top and the Build composer
@@ -775,7 +770,8 @@
 
 /* A list fills the height its tile really has; ItemList measures it and shows
    extra rows past the nominal capacity. */
-.hw-body:has(> .hw-list-wrap) {
+.hw-body:has(> .hw-list-wrap),
+.hw-body:has(> .hw-strip > .hw-icons) {
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -998,11 +994,6 @@ button.hw-row:hover {
 
 /* The icons strip fills the height its tile really has, so CardStrip can
    measure it and draw as many rows as fit. */
-.hw-body:has(> .hw-strip > .hw-icons) {
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-}
 .hw-body > .hw-strip:has(> .hw-icons) {
   flex: 1 1 auto;
   min-height: 0;
@@ -2314,22 +2305,11 @@ a.hw-more:hover {
   font-size: 14px;
 }
 
-/* App embed widget: the iframe fills the body; the skeleton sits under it until
-   it loads. Unit rows are minmax(52px, auto), so a 1x1 widget's two rows plus the gap give 120px; this min-height sets the height. */
+/* App embed widget: the iframe fills the body, whatever height the tile has; the skeleton sits under it until it loads. */
 .hw-app-body {
   display: flex;
   flex-direction: column;
-  min-height: 320px;
-}
-
-.hw-widget.hw-size-2x2:has(.hw-app-body),
-.hw-widget.hw-size-1x2:has(.hw-app-body) {
-  min-height: 420px;
-}
-
-.hw-widget.hw-size-2x2 .hw-app-body,
-.hw-widget.hw-size-1x2 .hw-app-body {
-  min-height: 360px;
+  min-height: 0;
 }
 
 .hw-app-frame {
