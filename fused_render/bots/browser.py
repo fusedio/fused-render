@@ -66,6 +66,9 @@ LIVE_SCALE = 1.5
 STUCK_POPUP_URL = "https://accounts.google.com/gsi/select"
 RECOVER_TIMEOUT_S = 5
 INTERACT_TIMEOUT_S = 5
+# Longest a back / forward / reload waits for the page to settle before reporting where it is. Only reached when
+# no settle signal comes (a page that never finishes loading); the live view streams the page meanwhile anyway.
+NAV_SETTLE_S = 5
 # Where the fused-render server listens when neither FUSED_RENDER_ORIGIN nor
 # server.json says: the bare `fused-render` port (`_branch.branch_port()`,
 # 1777 on the baseline, a per-branch port in a dev worktree). FusedBot's was 2777.
@@ -385,42 +388,67 @@ class WS:
             out += res
         return out
 
-    def wait_event(self, name, timeout=15, match=None):
-        """Block until a `name` event (one name or a tuple) arrives, or `timeout` s pass; returns its params or None.
-        `match(method, params)` narrows it further (a frame id). Events a call() drained meanwhile count too: a
-        back/forward restored from the bfcache has committed and stopped loading before its reply comes back."""
-        names = (name,) if isinstance(name, str) else tuple(name)
-        for msg in self.events:
-            if msg.get("method") in names and (match is None or match(msg["method"], msg.get("params") or {})):
-                self.events.remove(msg)
-                return msg.get("params") or {}
-        self.events = []
+    def wait_event(self, name, timeout=15):
         self.sock.settimeout(timeout)
         try:
             deadline = time.time() + timeout
             while time.time() < deadline:
                 msg = json.loads(self.recv())
                 self._note(msg)
-                if msg.get("method") in names and (match is None or match(msg["method"], msg.get("params") or {})):
-                    self.events = []
-                    return msg.get("params") or {}
+                if msg.get("method") == name:
+                    return msg.get("params")
         except socket.timeout:
             return None
         finally:
             self.sock.settimeout(self.timeout)
         return None
 
-    def wait_loaded(self, timeout=15):
-        """The page settled after a navigation this socket just asked for: the load event, or a same-document
-        move, or the top frame done loading (a bfcache restore fires frameStoppedLoading and never load).
-        Child frames' events are ignored (an ad iframe's replaceState must not end the wait).
-        Call right after the navigation command, on the same socket."""
-        main = self.main_frame
-        done = ("Page.loadEventFired", "Page.navigatedWithinDocument", "Page.frameStoppedLoading")
+    def mark(self):
+        """Forget the Page events seen so far. Call right before the action whose navigation wait_loaded
+        will watch, so nothing the previous page did (a late load, its abort) counts as the new one settling."""
+        self.events = []
 
-        def ok(method, params):
-            return method == "Page.loadEventFired" or not main or params.get("frameId") == main
-        return self.wait_event(done, timeout, match=ok)
+    def wait_loaded(self, timeout=15, same_doc=False):
+        """Block until the navigation the last action started has settled, or `timeout` s pass (True / False).
+        Settled: the load event; or the top frame stopping after it was seen starting on this socket (a bfcache
+        restore commits and stops in ~20 ms and never fires load); or, with `same_doc`, a top-frame same-document
+        move (back/forward over pushState history). A stop with no start seen is the previous page being aborted
+        and is ignored, as are child frames (an ad iframe's replaceState). Events call() drained while waiting
+        for the command's reply are read first, since a bfcache restore is done before the reply comes back."""
+        main = self.main_frame
+        started = False
+
+        def settled(msg):
+            nonlocal started
+            m, p = msg.get("method"), msg.get("params") or {}
+            if m == "Page.loadEventFired":
+                return True
+            if main and p.get("frameId") != main:
+                return False
+            if m == "Page.frameStartedLoading":
+                started = True
+            elif m == "Page.frameStoppedLoading":
+                return started
+            elif m == "Page.navigatedWithinDocument":
+                return same_doc
+            return False
+
+        try:
+            if any(settled(msg) for msg in list(self.events)):
+                return True
+            self.sock.settimeout(timeout)
+            deadline = time.time() + timeout
+            while time.time() < deadline:
+                msg = json.loads(self.recv())
+                self._note(msg)
+                if settled(msg):
+                    return True
+        except socket.timeout:
+            return False
+        finally:
+            self.events = []
+            self.sock.settimeout(self.timeout)
+        return False
 
     @property
     def main_frame(self):
@@ -1625,7 +1653,7 @@ class Browser:
                 break
             except Exception:
                 continue
-        ws.events = []  # a page still loading from before: its stop event must not settle the action's own navigation
+        ws.mark()
         return ws, sess
 
     def _foreground(self, ws):
@@ -1765,9 +1793,9 @@ class Browser:
                 try:
                     ws.call("Page.enable")
                     self._foreground(ws)
-                    ws.events = []
+                    ws.mark()
                     ws.call("Page.reload")
-                    ws.wait_loaded(15)
+                    ws.wait_loaded(NAV_SETTLE_S)
                 except Exception:
                     pass
                 return True
@@ -1945,6 +1973,7 @@ class Browser:
         return r.get("result", {}).get("value")
 
     def _nav(self, ws, url):
+        ws.mark()
         ws.call("Page.navigate", url=_with_scheme(url))
         ws.wait_loaded(15)
         time.sleep(0.4)
@@ -1991,8 +2020,9 @@ class Browser:
             h = ws.call("Page.getNavigationHistory")
             i = h["currentIndex"] + delta
             if 0 <= i < len(h["entries"]):
+                ws.mark()
                 ws.call("Page.navigateToHistoryEntry", entryId=h["entries"][i]["id"])
-                ws.wait_loaded(10)
+                ws.wait_loaded(NAV_SETTLE_S, same_doc=True)
                 time.sleep(0.3)
         return self._run(f, timeout=INTERACT_TIMEOUT_S)[1]
 
@@ -2004,8 +2034,9 @@ class Browser:
 
     def reload(self):
         def f(ws):
+            ws.mark()
             ws.call("Page.reload")
-            ws.wait_loaded(15)
+            ws.wait_loaded(NAV_SETTLE_S)
         return self._run(f, timeout=INTERACT_TIMEOUT_S)[1]
 
     def scroll(self, direction="down", ref="", text="", x=None, y=None, backend=None):
@@ -2052,6 +2083,7 @@ class Browser:
         rich editors and JS frameworks that ignore synthetic .click()). Falls
         back to el.click() when something else is layered over the element."""
         def f(ws):
+            ws.mark()
             box = self._on_element(ws, _CLICK_FN, (), selector, ref, text, x, y, backend)
             if not box.get("clicked"):
                 for t in ("mouseMoved", "mousePressed", "mouseReleased"):
@@ -2065,6 +2097,7 @@ class Browser:
             self._on_element(ws, _TYPE_FN, (), selector, ref, label, x, y, backend)
             ws.call("Input.insertText", text=text)
             if submit:
+                ws.mark()
                 for t in ("keyDown", "keyUp"):
                     ws.call("Input.dispatchKeyEvent", type=t, key="Enter", code="Enter",
                             windowsVirtualKeyCode=13, text="\r" if t == "keyDown" else "")
@@ -2094,6 +2127,7 @@ class Browser:
         def f(ws):
             if ref or text or backend is not None:
                 self._on_element(ws, _FOCUS_FN, (), "", ref, text, x, y, backend)
+            ws.mark()
             if events[0] == "insert":
                 ws.call("Input.insertText", text=events[1])
             else:
