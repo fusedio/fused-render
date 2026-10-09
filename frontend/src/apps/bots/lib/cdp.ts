@@ -16,13 +16,15 @@ import { flushSync } from "react-dom";
 import { askConfirm } from "../dialogs/ask";
 import { act, cur, getState, onHandover, poll, select, setFast, showBanner } from "../state/store";
 import { api, type Bot } from "./api";
-import { CAST, furlTarget, showUrl, type FrameMeta } from "./live";
+import { CAST, furlTarget, pageUrl, showUrl, type FrameMeta } from "./live";
 
 export const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T | null;
 const activeWs = (b: Bot | undefined): string | null => (b?.browser?.tabs || []).find((t) => t.active)?.ws || null;
 
-const link: { ws: WebSocket | null; url: string | null; id: number; tabs: Set<string> | null; meta: FrameMeta | null; retryAt: number } =
-  { ws: null, url: null, id: 0, tabs: null, meta: null, retryAt: 0 };
+const link: { ws: WebSocket | null; url: string | null; id: number; tabs: Set<string> | null; meta: FrameMeta | null; retryAt: number; frame: string | null } =
+  { ws: null, url: null, id: 0, tabs: null, meta: null, retryAt: 0, frame: null };
+/** The driven tab's top frame: a page target's id (the tail of its socket URL) is its top frame's id. */
+const topFrame = (wsUrl: string): string | null => wsUrl.split("/").pop() || null;
 /** The last frame's viewport metadata from Chrome (CSS px the frame covers), for pointer and overlay geometry. */
 export const frameMeta = (): FrameMeta | null => link.meta;
 
@@ -86,7 +88,7 @@ export function linkSync(): void {
   if (link.url === want && want && !link.ws && Date.now() < link.retryAt) return;
   linkClose();
   if (!want) return;
-  link.url = want;
+  link.url = want; link.frame = topFrame(want);
   const ws = new WebSocket(want); link.ws = ws;
   ws.onopen = () => {
     if (link.ws !== ws) return;
@@ -109,7 +111,14 @@ export function linkSync(): void {
     } else if (m.method === "Page.frameNavigated" && !(p.frame as { parentId?: string } | undefined)?.parentId) {
       const furl = $<HTMLInputElement>("furl");
       if (furl && document.activeElement !== furl) furl.value = showUrl((p.frame as { url?: string }).url);
+      // A cross-site hop (a sign-in through accounts.google.com and back) lands in a new renderer; a popup that closed
+      // leaves its opener reporting document.hasFocus() false. Re-assert what the worker's _foreground asserts after its
+      // own navigations, so the page you drive stays painted and focused.
+      cdp("Page.bringToFront"); cdp("Emulation.setFocusEmulationEnabled", { enabled: true });
       void poll();  // title and tab strip
+    } else if (m.method === "Page.navigatedWithinDocument" && (p.frameId === undefined || p.frameId === link.frame)) {
+      const furl = $<HTMLInputElement>("furl");
+      if (furl && document.activeElement !== furl) furl.value = showUrl(p.url as string | undefined);
     } else if (m.method === "Page.screencastVisibilityChanged" && p.visible === false) {
       cdp("Page.bringToFront"); cdp("Emulation.setFocusEmulationEnabled", { enabled: true });
     } else {
@@ -126,7 +135,7 @@ export function linkSync(): void {
 function settleAll() { for (const r of [...pending.values()]) r(null); pending.clear(); }
 
 export function linkClose(): void {
-  const ws = link.ws; link.ws = null; link.url = null; link.meta = null;
+  const ws = link.ws; link.ws = null; link.url = null; link.meta = null; link.frame = null;
   if (ws) {
     ws.onclose = ws.onerror = null;  // this close is ours: reset once, below, not again from the handler
     try { if (ws.readyState === 1) ws.send(JSON.stringify({ id: ++link.id, method: "Page.stopScreencast" })); ws.close(); } catch { /* already gone */ }
@@ -158,7 +167,7 @@ let switching = false, askedTakeover = false;
 /** Keyboard focus while you drive: #fkeys, the hidden textarea in the stage (live-input.ts forwards from it). An empty
  *  page has nothing to type into, so focus lands in the URL bar instead. preventScroll: #fkeys sits at the stage's top. */
 export function focusCtl(): void {
-  if (showUrl(cur()?.browser?.url)) $("fkeys")?.focus({ preventScroll: true });
+  if (showUrl(pageUrl(cur()))) $("fkeys")?.focus({ preventScroll: true });
   else { const f = $<HTMLInputElement>("furl"); if (f) { f.value = ""; f.focus(); } }
 }
 

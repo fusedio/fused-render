@@ -129,6 +129,12 @@ export function keyAction(e: KeyLike): KeyAction {
 /** The URL bar shows nothing for a blank page. */
 export const showUrl = (u: string | null | undefined): string => (!u || u === "about:blank" ? "" : u);
 
+/** Where the driven page is. `browser.url` is what the worker recorded after its last action (session/tabs.json), so while
+ *  you drive over the live socket it never moves; `tabs[]` comes from Chrome's live list on every detail poll. The URL bar
+ *  once mirrored the recorded url and reset itself to it 400 ms after every navigation you made (store poll). */
+export const pageUrl = (b: { browser?: { url?: string; tabs?: Array<{ active: boolean; url: string }> } } | undefined): string | undefined =>
+  b?.browser?.tabs?.find((t) => t.active)?.url || b?.browser?.url;
+
 /** #furl: only scheme-prefixed, dotted or localhost input is an address; bare words go to Google. */
 export const isUrl = (u: string): boolean =>
   /^[a-z][a-z0-9+.-]*:\/\//i.test(u) || (!/\s/.test(u) && /^(localhost|[^\s/?#]+\.[^\s/?#]+)(:\d+)?([/?#]|$)/i.test(u));

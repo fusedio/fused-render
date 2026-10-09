@@ -8,7 +8,7 @@ import { gotoTyped, handBack, inFull, nav, tabstripClick, takeOver, useLinked } 
 import { installLive } from "../lib/live-input";
 import { closeOverlay, pickerChange, pickSelect, runItem, useOverlay } from "../lib/live-overlays";
 import { statusLabel } from "../lib/derive";
-import { showUrl } from "../lib/live";
+import { pageUrl, showUrl } from "../lib/live";
 import { act, eventsOf, useBotsSelector } from "../state/store";
 import { Toast } from "./Toast";
 
@@ -97,12 +97,13 @@ export function LiveView() {
 
   useEffect(() => (stageRef.current ? installLive(stageRef.current) : undefined), []);
 
-  // The URL bar mirrors the driven page unless you are typing in it.
-  const url = b?.browser?.url;
+  // The URL bar mirrors the driven page unless you are typing in it. Only a change of page rewrites it: the socket's
+  // frameNavigated sets it first, and every poll hands a new bot object, which must not reset the bar to an older url.
+  const url = pageUrl(b), hasBot = !!b;
   useLayoutEffect(() => {
     const f = furlRef.current;
-    if (f && b && document.activeElement !== f) f.value = showUrl(url);
-  }, [b, url]);
+    if (f && hasBot && document.activeElement !== f) f.value = showUrl(url);
+  }, [hasBot, url]);
 
   const ctl = open && !!b?.control && isLinked;
   const headed = !!b?.browser?.headed;
