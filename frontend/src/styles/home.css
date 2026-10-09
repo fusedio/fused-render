@@ -1204,8 +1204,8 @@ a.hw-more:hover {
   border-radius: 50%;
   background: var(--fg-muted);
 }
-.hw-lane.is-you .hw-lane-dot { background: var(--warning); }
-.hw-lane.is-running .hw-lane-dot { background: var(--success); }
+.hw-lane.is-blocked .hw-lane-dot { background: var(--warning); }
+.hw-lane.is-in_progress .hw-lane-dot { background: var(--success); }
 
 .hw-lane-label {
   font-size: 11.5px;
