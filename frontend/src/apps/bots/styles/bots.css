@@ -94,9 +94,10 @@ div.bots-page.rcol .gutter.r { pointer-events: auto; }
 /* .stage = the live view is open in the preview column (lib/layout.ts setStage, from the store's `fast`): the sidebar folds to icons (the
    :is(.lcol, .lfit, .stage) rules), chat becomes a --chatw rail and the preview column, now the live page, takes the rest. Wins over
    .rcol / .rfit (the preview IS the stage), so these come after them. Same track types as the default grid (length · fr · length) so the
-   columns interpolate: chat's 1fr resolves to exactly --chatw once the last track takes everything else. */
+   columns interpolate: chat's 1fr resolves to exactly --chatw once the last track takes everything else. The live page keeps at least
+   half of main (lib/layout.ts stageRoom: the rail drag stops there, a stretch further closes Stage), so a rail saved on a wider window cannot squeeze it. */
 div.bots-page { --chatw: 340px; }
-div.bots-page.stage main, div.bots-page.stage:is(.rcol, .rfit) main { grid-template-columns: var(--lweff) 6px minmax(0, 1fr) 6px max(0px, calc(100% - var(--lweff) - 12px - var(--chatw))); }
+div.bots-page.stage main, div.bots-page.stage:is(.rcol, .rfit) main { grid-template-columns: var(--lweff) 6px minmax(0, 1fr) 6px max(50%, calc(100% - var(--lweff) - 12px - var(--chatw))); }
 div.bots-page.stage .preview { visibility: visible; transition: none; }
 div.bots-page.stage .gutter.r { background: none; pointer-events: auto; }
 /* The thumbnail, caption, info, toast, side-app strip and frame step aside for the live view (child combinator: #full's own .toast stays). */

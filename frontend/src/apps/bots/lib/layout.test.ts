@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { C_MIN, FIT_HYST, LAYOUT_DEF, LIM, MID_MIN, R_MIN, STAGE_MIN, dragStep, fitFlags, hyst } from "./layout";
+import { C_MIN, FIT_HYST, LAYOUT_DEF, LIM, MID_MIN, R_MIN, STAGE_MIN, dragStep, fitFlags, hyst, stageRoom } from "./layout";
 
 describe("layout", () => {
   test("hyst: on below zero, off from FIT_HYST, else holds", () => {
@@ -34,9 +34,13 @@ describe("layout", () => {
     expect(dragStep(LAYOUT_DEF, "r", 700, 500).rw).toBe(500);
     expect(dragStep({ ...LAYOUT_DEF, rcol: true }, "r", 400, 999)).toEqual({ ...LAYOUT_DEF, rw: 400 });
   });
-  test("dragStep: the Stage chat rail clamps to min/max/room and never collapses", () => {
+  test("dragStep: the Stage chat rail clamps to min/room and never collapses", () => {
     expect(dragStep(LAYOUT_DEF, "c", 10, 999)).toEqual({ ...LAYOUT_DEF, cw: LIM.c.min });
-    expect(dragStep(LAYOUT_DEF, "c", 2000, 999).cw).toBe(LIM.c.max);
+    expect(dragStep(LAYOUT_DEF, "c", 2000, 999).cw).toBe(999);
     expect(dragStep(LAYOUT_DEF, "c", 450, 400).cw).toBe(400);
+  });
+  test("stageRoom: the live page keeps half of main on wide windows, STAGE_MIN on narrow ones", () => {
+    expect(stageRoom(1600)).toBe(1600 / 2 - 84);
+    expect(stageRoom(900)).toBe(900 - 84 - STAGE_MIN);
   });
 });

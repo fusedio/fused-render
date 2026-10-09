@@ -19,7 +19,8 @@ import { closeView } from "./apps/apps";
 import { getSideApp, sideAppBrowser, sideAppShow } from "./apps/side";
 import { PrefsPanel } from "./components/PrefsPanel";
 import { useLayout } from "./hooks/useLayout";
-import { setStage } from "./lib/layout";
+import { handBack } from "./lib/cdp";
+import { onStageShut, setStage } from "./lib/layout";
 import { installNotify } from "./lib/notify";
 import { botsRoot, detachPortalHost, portalHost, setBotsRoot } from "./lib/root";
 import { isBot } from "@platform/lib/flavor";
@@ -48,7 +49,8 @@ function installStage(): () => void {
   };
   sync();
   const stop = subscribe(sync);
-  return () => { stop(); if (on) setStage(false); };
+  onStageShut(() => { void handBack(true); });  // the rail dragged past the live page's half-width floor: same exit as the Back button
+  return () => { stop(); onStageShut(null); if (on) setStage(false); };
 }
 
 function Banner() {

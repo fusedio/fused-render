@@ -19,9 +19,12 @@ export const LAYOUT_DEF: Layout = { lw: 280, rw: 400, cw: 340, lcol: false, rcol
 export const MID_MIN = 450, R_MIN = 280;
 // Stage: the chat rail's floor and the live page's floor; below 72 + 12 + C_MIN + STAGE_MIN the live view goes full-window (sfull).
 export const C_MIN = 300, STAGE_MIN = 480;
+// Stage: the live page keeps at least half of <main> (keep in step with the 50% in the Stage grid rule in bots.css); dragging the
+// rail STAGE_SHUT px past that closes Stage instead (the drag ends there: once Stage is off the same gutter is the preview's).
+export const STAGE_HALF = 0.5, STAGE_SHUT = 50;
 // Widths below snap collapse the panel; neither handle pushes the thread below MID_MIN, except the preview drag may collapse the sidebar to make room.
-// `c` is the chat rail in Stage (the right gutter resizes it there); it never collapses.
-export const LIM = { l: { min: 180, max: 560, snap: 130, shut: 72 }, r: { min: R_MIN, max: 900, snap: 150, shut: 0 }, c: { min: C_MIN, max: 520, snap: 0, shut: 0 } } as const;
+// `c` is the chat rail in Stage (the right gutter resizes it there); it never collapses, and its only ceiling is the room the live page leaves (stageRoom).
+export const LIM = { l: { min: 180, max: 560, snap: 130, shut: 72 }, r: { min: R_MIN, max: 900, snap: 150, shut: 0 }, c: { min: C_MIN, max: Infinity, snap: 0, shut: 0 } } as const;
 export const FIT_HYST = 24;
 export type Side = "l" | "r" | "c";
 
@@ -43,6 +46,9 @@ export function fitFlags(w: number, l: Layout, was: { lfit: boolean; rfit: boole
   const sidebar = l.lcol || lfit ? 72 : Math.min(l.lw, w * 0.4);
   return { lfit, rfit: hyst(was.rfit, w - sidebar - 12 - MID_MIN - R_MIN), sfull: hyst(!!was.sfull, w - 72 - 12 - C_MIN - STAGE_MIN) };
 }
+
+/** Stage: the widest the chat rail may go for a <main> of `w` px — the live page keeps STAGE_MIN, and at least half of <main>. */
+export const stageRoom = (w: number): number => Math.min(w - 72 - 12 - STAGE_MIN, w * (1 - STAGE_HALF) - 72 - 12);
 
 /** A gutter drag step: the new layout for a raw width (px) on `side`, given the room left for it. */
 export function dragStep(l: Layout, side: Side, raw: number, room: number): Layout {
@@ -225,14 +231,28 @@ export function startGutterDrag(side: Side, g: HTMLElement, e: PointerEvent): vo
   g.addEventListener("pointerup", up, { once: true }); g.addEventListener("pointercancel", up, { once: true });
 }
 
-/** Stage's right gutter: drag right widens the chat rail; the live page keeps at least STAGE_MIN. */
+// Dragging the Stage rail past the live page's half-width floor closes Stage. App registers the close (lib/cdp.ts handBack(true):
+// gives control back if you drive, then leaves Stage) — this module cannot import it without a cycle.
+let stageShut: (() => void) | null = null;
+export function onStageShut(fn: (() => void) | null): void { stageShut = fn; }
+
+/** Stage's right gutter: drag right widens the chat rail until the live page is down to half of <main> (stageRoom); STAGE_SHUT px
+ *  further closes Stage and ends the drag — the rail is saved at the floor, not the overshoot. */
 function startRailDrag(main: HTMLElement, g: HTMLElement, e: PointerEvent): void {
   e.preventDefault(); g.setPointerCapture(e.pointerId); g.classList.add("drag"); body().classList.add("dragging");
   const x0 = e.clientX, w0 = layout.cw;
-  const move = (ev: PointerEvent) => { layout = dragStep(layout, "c", w0 + ev.clientX - x0, main.clientWidth - 72 - 12 - STAGE_MIN); applyLayout(false); };
-  const up = () => { g.removeEventListener("pointermove", move); g.classList.remove("drag"); body().classList.remove("dragging"); applyLayout(true); };
+  const up = () => {
+    g.removeEventListener("pointermove", move); g.removeEventListener("pointerup", up); g.removeEventListener("pointercancel", up);
+    g.classList.remove("drag"); body().classList.remove("dragging"); applyLayout(true);
+  };
+  const move = (ev: PointerEvent) => {
+    const raw = w0 + ev.clientX - x0, room = stageRoom(main.clientWidth);
+    layout = dragStep(layout, "c", raw, room); applyLayout(false);
+    // up() first: it persists the clamped rail and its applyLayout settles any slide, so the close's own slide is not cut short.
+    if (raw > room + STAGE_SHUT && stageShut) { up(); stageShut(); }
+  };
   g.addEventListener("pointermove", move);
-  g.addEventListener("pointerup", up, { once: true }); g.addEventListener("pointercancel", up, { once: true });
+  g.addEventListener("pointerup", up); g.addEventListener("pointercancel", up);
 }
 
 /** Boot: apply the saved layout and refit on every resize of <main>. Returns the teardown. */
