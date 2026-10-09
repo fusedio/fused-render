@@ -717,10 +717,10 @@ function presetRows(id: PresetId, folderId?: string): PresetRow[] {
     case "legacy":
       return [
         { source: "search", x: 0, y: 0, size: "4x1" },
-        { source: "apps", x: 0, y: 1, size: "4x1" },
-        { source: "playground", x: 0, y: 3, size: "4x1" },
-        { source: "sessions", x: 0, y: 5, size: "4x1" },
-        { source: "recents", x: 0, y: 7, size: "4x1" },
+        { source: "apps", x: 0, y: 1, size: "4x1", custom: { cols: 8, rows: 4 } },
+        { source: "playground", x: 0, y: 5, size: "4x1", custom: { cols: 8, rows: 4 } },
+        { source: "sessions", x: 0, y: 9, size: "4x1", custom: { cols: 8, rows: 4 } },
+        { source: "recents", x: 0, y: 13, size: "4x1", custom: { cols: 8, rows: 4 } },
       ];
     case "workbench":
       return [
@@ -729,8 +729,8 @@ function presetRows(id: PresetId, folderId?: string): PresetRow[] {
         { source: "bots", x: 0, y: 5, size: "1x1" },
         { source: "index", x: 2, y: 5, size: "1x1" },
         { source: "tasks", x: 4, y: 5, size: "2x1" },
-        { source: "apps", x: 0, y: 7, size: "4x1" },
-        { source: "recents", x: 0, y: 9, size: "4x1" },
+        { source: "apps", x: 0, y: 7, size: "4x1", custom: { cols: 8, rows: 4 } },
+        { source: "recents", x: 0, y: 11, size: "4x1", custom: { cols: 8, rows: 4 } },
       ];
     case "builder":
       return [

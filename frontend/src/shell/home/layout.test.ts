@@ -678,7 +678,7 @@ test("presets: legacy is first; builder is the default; workbench keeps its 7 ti
     ["index", "1x1", 2, 5],
     ["tasks", "2x1", 4, 5],
     ["apps", "4x1", 0, 7],
-    ["recents", "4x1", 0, 9],
+    ["recents", "4x1", 0, 11],
   ]);
   expect(presetLayout("files").widgets.some((w) => w.source === "folder")).toBe(false);
   const f = presetLayout("files", { folderId: "f1" }).widgets.find((w) => w.source === "folder");
