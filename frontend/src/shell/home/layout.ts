@@ -680,11 +680,10 @@ export function reflowToColumns(layout: HomeLayout, cols: number): Map<string, R
 
 // ---- Presets and tile swap -------------------------------------------------
 
-export type PresetId = "legacy" | "workbench" | "builder" | "mission" | "files" | "focus";
+export type PresetId = "legacy" | "builder" | "mission" | "files" | "focus";
 
 export const PRESETS: { id: PresetId; name: string; blurb: string }[] = [
   { id: "legacy", name: "Legacy", blurb: "Search, then your apps, playground, sessions and recent files." },
-  { id: "workbench", name: "Workbench", blurb: "Search, the build box, and what's running." },
   { id: "builder", name: "Builder", blurb: "A big prompt box with your apps beside it." },
   { id: "mission", name: "Mission control", blurb: "Tasks board first, bots and the index at a glance." },
   { id: "files", name: "Files", blurb: "Search and recent files lead; bookmarks beside them." },
@@ -721,16 +720,6 @@ function presetRows(id: PresetId, folderId?: string): PresetRow[] {
         { source: "playground", x: 0, y: 5, size: "4x1", custom: { cols: 8, rows: 4 } },
         { source: "sessions", x: 0, y: 9, size: "4x1", custom: { cols: 8, rows: 4 } },
         { source: "recents", x: 0, y: 13, size: "4x1", custom: { cols: 8, rows: 4 } },
-      ];
-    case "workbench":
-      return [
-        { source: "search", x: 0, y: 0, size: "4x1" },
-        { source: "build", x: 0, y: 1, size: "4x1" },
-        { source: "bots", x: 0, y: 5, size: "1x1" },
-        { source: "index", x: 2, y: 5, size: "1x1" },
-        { source: "tasks", x: 4, y: 5, size: "2x1" },
-        { source: "apps", x: 0, y: 7, size: "4x1", custom: { cols: 8, rows: 4 } },
-        { source: "recents", x: 0, y: 11, size: "4x1", custom: { cols: 8, rows: 4 } },
       ];
     case "builder":
       return [

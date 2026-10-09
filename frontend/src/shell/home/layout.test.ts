@@ -666,20 +666,12 @@ test("presets: normalizeLayout keeps every tile where it is", () => {
   expect(normalizeLayout(files).widgets.length).toBe(files.widgets.length);
 });
 
-test("presets: legacy is first; builder is the default; workbench keeps its 7 tiles; files falls back without a folder", () => {
+test("presets: legacy is first; builder is the default; workbench is gone; files falls back without a folder", () => {
   const strip = (l: HomeLayout) => l.widgets.map(({ id: _i, ...w }) => w);
   expect(PRESETS[0].id).toBe("legacy");
   expect(strip(presetLayout("builder"))).toEqual(strip(defaultLayout()));
   expect(presetLayout("builder").widgets[0].id).not.toBe("default-search");
-  expect(presetLayout("workbench").widgets.map((x) => [x.source, x.size, x.x, x.y])).toEqual([
-    ["search", "4x1", 0, 0],
-    ["build", "4x1", 0, 1],
-    ["bots", "1x1", 0, 5],
-    ["index", "1x1", 2, 5],
-    ["tasks", "2x1", 4, 5],
-    ["apps", "4x1", 0, 7],
-    ["recents", "4x1", 0, 11],
-  ]);
+  expect(PRESETS.some((p) => (p.id as string) === "workbench")).toBe(false);
   expect(presetLayout("files").widgets.some((w) => w.source === "folder")).toBe(false);
   const f = presetLayout("files", { folderId: "f1" }).widgets.find((w) => w.source === "folder");
   expect(f?.folderId).toBe("f1");
