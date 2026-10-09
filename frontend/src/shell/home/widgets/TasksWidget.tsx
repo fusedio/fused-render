@@ -1,48 +1,62 @@
 import type { Task } from "@platform/lib/api";
 import { basename } from "@platform/lib/format";
 import { softNavigate } from "../strip";
-import { isDraftTask, taskHref } from "../../tasks-lib";
-import { BOARD_LANES, laneOf, type BoardLane } from "../../schedule-lib";
-import { useHomeTasks } from "../data";
+import { taskHref } from "../../tasks-lib";
+import { useHomeTasks, type HomeTasks } from "../data";
 import { dimsOf, itemCapacity, type Widget } from "../layout";
 import { BigCount, EmptyLine, ErrorLine, ItemList, ListSkeleton, MoreLine, type WidgetItem } from "./bits";
 
 const TASKS_HREF = "/tasks";
 
-const LANES = BOARD_LANES.filter((l) => l.key !== "archived") as readonly { key: BoardLane; label: string }[];
+type Lane = "queued" | "running" | "you" | "done";
 
-const LANE_EMPTY: Record<BoardLane, string> = {
-  upcoming: "Nothing upcoming",
-  in_progress: "Nothing running",
-  blocked: "All clear",
-  done: "Nothing done yet",
-  archived: "",
-};
-
-/** Which Tasks-page board lane a task sits in; a draft draws in Upcoming. */
-export function taskLane(t: Pick<Task, "status" | "kind">): BoardLane {
-  return laneOf(isDraftTask(t) ? "draft" : t.status);
+/** Which board column a task sits in. `blocked` (a run that stopped and needs
+    a human) reads as "Needs you" next to the permission/question cards. */
+export function laneOf(t: Pick<Task, "status">): Lane {
+  if (t.status === "done") return "done";
+  if (t.status === "in_progress") return "running";
+  if (t.status === "needs_attention" || t.status === "blocked") return "you";
+  return "queued";
 }
 
-/** Open = not done and not a draft (archived rows never reach the widget). */
-export function openCount(tasks: Pick<Task, "status" | "kind">[]): number {
-  return tasks.filter((t) => t.status !== "done" && t.status !== "archived" && !isDraftTask(t)).length;
+const LANES: { id: Lane; label: string; empty: string }[] = [
+  { id: "queued", label: "Queued", empty: "Nothing queued" },
+  { id: "running", label: "In progress", empty: "Nothing running" },
+  { id: "you", label: "Needs you", empty: "All clear" },
+  { id: "done", label: "Done", empty: "Nothing done yet" },
+];
+
+/** Open = not done (archived and drafts never reach the widget). */
+export function openCount(tasks: Pick<Task, "status">[]): number {
+  return tasks.filter((t) => t.status !== "done").length;
 }
 
-export function taskPill(t: Pick<Task, "status" | "kind" | "failed">): NonNullable<WidgetItem["pill"]> {
-  if (isDraftTask(t)) return { label: "Draft", tone: "idle" };
+/** Why the widget is empty: nothing at all, or only drafts and archived tasks. */
+export function emptyMessage({ drafts, archived }: Pick<HomeTasks, "drafts" | "archived">): string {
+  const parts = [
+    drafts ? `${drafts} draft${drafts === 1 ? "" : "s"}` : "",
+    archived ? `${archived} archived` : "",
+  ].filter(Boolean);
+  return parts.length ? `No active tasks \u00b7 ${parts.join(", ")}` : "No tasks yet.";
+}
+
+/** List order: open tasks first, then done ones; each group keeps its incoming
+    (newest-first) order. */
+export function listOrder<T extends Pick<Task, "status">>(tasks: T[]): T[] {
+  return [...tasks.filter((t) => t.status !== "done"), ...tasks.filter((t) => t.status === "done")];
+}
+
+export function taskPill(t: Pick<Task, "status" | "failed">): NonNullable<WidgetItem["pill"]> {
   switch (t.status) {
     case "in_progress":
       return { label: "Running", tone: "ok" };
-    case "queued":
-      return { label: "Queued", tone: "idle" };
     case "needs_attention":
     case "blocked":
       return { label: "Needs you", tone: "warn" };
     case "done":
       return t.failed ? { label: "Failed", tone: "err" } : { label: "Done", tone: "idle" };
     default:
-      return { label: "Upcoming", tone: "idle" };
+      return { label: "Queued", tone: "idle" };
   }
 }
 
@@ -58,12 +72,13 @@ function toItem(t: Task): WidgetItem {
 }
 
 export function TasksWidget({ widget }: { widget: Widget }) {
-  const { data, error, retry } = useHomeTasks();
-  if (error && !data) return <div className="hw-body"><ErrorLine message={`Couldn't load tasks. ${error}`} onRetry={retry} /></div>;
-  if (!data) return <div className="hw-body"><ListSkeleton rows={3} label="Loading tasks" /></div>;
-  if (!data.length) return <div className="hw-body"><EmptyLine>No tasks yet.</EmptyLine></div>;
+  const { data: split, error, retry } = useHomeTasks();
+  if (error && !split) return <div className="hw-body"><ErrorLine message={`Couldn't load tasks. ${error}`} onRetry={retry} /></div>;
+  if (!split) return <div className="hw-body"><ListSkeleton rows={3} label="Loading tasks" /></div>;
+  const data = split.tasks;
+  if (!data.length) return <div className="hw-body"><EmptyLine>{emptyMessage(split)}</EmptyLine></div>;
   const open = openCount(data);
-  const needs = data.filter((t) => taskLane(t) === "blocked").length;
+  const needs = data.filter((t) => laneOf(t) === "you").length;
   if (widget.format === "count") {
     return (
       <div className="hw-body">
@@ -81,16 +96,16 @@ export function TasksWidget({ widget }: { widget: Widget }) {
       <div className="hw-body">
         <div className="hw-board">
           {LANES.map((lane) => {
-            const rows = data.filter((t) => taskLane(t) === lane.key);
+            const rows = data.filter((t) => laneOf(t) === lane.id);
             const shown = rows.slice(0, cap);
             return (
-              <div key={lane.key} className={`hw-lane is-${lane.key}`}>
+              <div key={lane.id} className={`hw-lane is-${lane.id}`}>
                 <div className="hw-lane-head">
                   <span className="hw-lane-dot" aria-hidden="true" />
                   <span className="hw-lane-label">{lane.label}</span>
                   <span className="hw-lane-n">{rows.length}</span>
                 </div>
-                {shown.length === 0 && <div className="hw-lane-empty">{LANE_EMPTY[lane.key]}</div>}
+                {shown.length === 0 && <div className="hw-lane-empty">{lane.empty}</div>}
                 {shown.map((t) => {
                   const { href, name, sub } = toItem(t);
                   return (
@@ -110,7 +125,7 @@ export function TasksWidget({ widget }: { widget: Widget }) {
   }
   return (
     <div className="hw-body">
-      <ItemList items={data.map(toItem)} cap={itemCapacity(widget.size, "list")} moreHref={TASKS_HREF} />
+      <ItemList items={listOrder(data).map(toItem)} cap={itemCapacity(widget.size, "list")} moreHref={TASKS_HREF} />
     </div>
   );
 }

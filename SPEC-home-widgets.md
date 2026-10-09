@@ -113,10 +113,10 @@ of the four hard-coded `Section`s.
 Loading (skeleton, reuse Home's `SkeletonCard`/`SkeletonRow` where shape fits), error
 (copy says what failed + a Retry button; for bots: "Couldn't reach bots. Turn Bots on in
 Preferences if it's off." ), empty (reuse today's empty strings for the four existing
-sources; new ones: tasks "No tasks yet.", bots "No bots yet.", folder "This folder is
+sources; new ones: tasks "No tasks yet." (or, when only drafts and archived tasks exist, "No active tasks · 1 draft, 19 archived"), bots "No bots yet.", folder "This folder is
 empty."), overflow (lists show what fits + "+N more" linking to the full page; long names
 ellipsize, never wrap the frame).
-The Tasks widget shows recent tasks (done included, archived excluded), newest first; its board mirrors the Tasks page lanes (Upcoming, In Progress, Blocked, Done) and the count format stays open-only (not done, not drafts).
+The Tasks widget shows recent tasks, newest first, with drafts and archived tasks excluded (done are kept). Its board has Queued / In progress / Needs you / Done in one fixed four-column row, so Done never adds height (each lane shows the same cap plus "+N more"); the list shows open tasks first, then recent done ones; the count stays open-only (not done).
 
 ## Styling rules
 

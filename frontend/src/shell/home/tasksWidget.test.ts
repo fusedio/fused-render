@@ -1,10 +1,10 @@
 import { expect, test } from "bun:test";
-import { homeTasks } from "./data";
-import { openCount, taskLane, taskPill } from "./widgets/TasksWidget";
+import { homeTasks, splitHomeTasks } from "./data";
+import { emptyMessage, laneOf, listOrder, openCount, taskPill } from "./widgets/TasksWidget";
 
 const t = (o: Record<string, unknown>) => ({ key: "k", task_id: "T-1", status: "done", last_active: 1, ...o }) as any;
 
-test("homeTasks: drops archived, keeps done and drafts, newest first", () => {
+test("homeTasks: drops archived and drafts, keeps done, newest first", () => {
   const out = homeTasks([
     t({ key: "a", last_active: 5 }),
     t({ key: "b", status: "archived", last_active: 9 }),
@@ -13,31 +13,57 @@ test("homeTasks: drops archived, keeps done and drafts, newest first", () => {
     t({ key: "e", last_active: undefined }),
     t({ key: "f", status: "in_progress", last_active: 8 }),
   ]);
-  expect(out.map((x) => x.key)).toEqual(["f", "c", "a", "d", "e"]);
+  expect(out.map((x) => x.key)).toEqual(["f", "a", "d", "e"]);
 });
 
-test("taskLane mirrors the Tasks board lanes", () => {
-  expect(taskLane(t({ status: "in_progress" }))).toBe("in_progress");
-  expect(taskLane(t({ status: "queued" }))).toBe("in_progress");
-  expect(taskLane(t({ status: "needs_attention" }))).toBe("blocked");
-  expect(taskLane(t({ status: "blocked" }))).toBe("blocked");
-  expect(taskLane(t({ status: "upcoming" }))).toBe("upcoming");
-  expect(taskLane(t({ status: "upcoming", kind: "draft" }))).toBe("upcoming");
-  expect(taskLane(t({ status: "done" }))).toBe("done");
+test("laneOf maps statuses to the four lanes", () => {
+  expect(laneOf(t({ status: "in_progress" }))).toBe("running");
+  expect(laneOf(t({ status: "queued" }))).toBe("queued");
+  expect(laneOf(t({ status: "upcoming" }))).toBe("queued");
+  expect(laneOf(t({ status: "needs_attention" }))).toBe("you");
+  expect(laneOf(t({ status: "blocked" }))).toBe("you");
+  expect(laneOf(t({ status: "done" }))).toBe("done");
 });
 
-test("openCount excludes done and drafts", () => {
-  expect(
-    openCount([t({}), t({ status: "in_progress" }), t({ status: "blocked" }), t({ status: "upcoming", kind: "draft" })]),
-  ).toBe(2);
+test("listOrder: open tasks before done, order kept within each group", () => {
+  const out = listOrder([
+    t({ key: "d1" }),
+    t({ key: "o1", status: "in_progress" }),
+    t({ key: "d2" }),
+    t({ key: "o2", status: "queued" }),
+  ]);
+  expect(out.map((x) => x.key)).toEqual(["o1", "o2", "d1", "d2"]);
+});
+
+test("openCount excludes done", () => {
+  expect(openCount([t({}), t({ status: "in_progress" }), t({ status: "blocked" })])).toBe(2);
+  expect(openCount([t({}), t({})])).toBe(0);
 });
 
 test("taskPill", () => {
   expect(taskPill(t({ status: "in_progress" }))).toEqual({ label: "Running", tone: "ok" });
   expect(taskPill(t({ status: "queued" }))).toEqual({ label: "Queued", tone: "idle" });
   expect(taskPill(t({ status: "needs_attention" }))).toEqual({ label: "Needs you", tone: "warn" });
-  expect(taskPill(t({ status: "upcoming", kind: "draft" }))).toEqual({ label: "Draft", tone: "idle" });
-  expect(taskPill(t({ status: "upcoming" }))).toEqual({ label: "Upcoming", tone: "idle" });
   expect(taskPill(t({}))).toEqual({ label: "Done", tone: "idle" });
   expect(taskPill(t({ failed: true }))).toEqual({ label: "Failed", tone: "err" });
+});
+
+test("splitHomeTasks counts what it filtered out", () => {
+  const r = splitHomeTasks([
+    t({ key: "a" }),
+    t({ key: "b", status: "archived" }),
+    t({ key: "c", status: "archived", kind: "draft" }),
+    t({ key: "d", status: "upcoming", kind: "draft" }),
+  ]);
+  expect(r.tasks.map((x) => x.key)).toEqual(["a"]);
+  expect(r.drafts).toBe(1);
+  expect(r.archived).toBe(2);
+});
+
+test("emptyMessage", () => {
+  expect(emptyMessage({ drafts: 0, archived: 0 })).toBe("No tasks yet.");
+  expect(emptyMessage({ drafts: 1, archived: 0 })).toBe("No active tasks · 1 draft");
+  expect(emptyMessage({ drafts: 3, archived: 0 })).toBe("No active tasks · 3 drafts");
+  expect(emptyMessage({ drafts: 0, archived: 19 })).toBe("No active tasks · 19 archived");
+  expect(emptyMessage({ drafts: 1, archived: 19 })).toBe("No active tasks · 1 draft, 19 archived");
 });
