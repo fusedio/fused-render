@@ -4578,7 +4578,7 @@ def warm() -> None:
     # size and mtime the index still matches arrives in `_SCAN` and the head
     # cache already read, so the build below reopens only what changed since
     # the last run — a launch, not a gigabyte.
-    tasks_index.seed(_SCAN)
+    tasks_index.seed(_SCAN, _BUILD_LOCK)
     try:
         snap = _rebuild_snapshot()
     except Exception:  # noqa: BLE001 — a warm that fails costs nothing but the warmth

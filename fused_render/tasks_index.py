@@ -108,7 +108,7 @@ def _stat(p: str) -> tuple[int, int] | None:
     return st.st_size, st.st_mtime_ns
 
 
-def seed(scan_cache: dict[str, dict]) -> tuple[int, int]:
+def seed(scan_cache: dict[str, dict], lock: threading.Lock | None = None) -> tuple[int, int]:
     """Fill the router's scan cache and the store's head cache from the index,
     for every transcript whose size and mtime still match. Returns (seeded,
     held) — how many were taken, how many the index held. Called ONCE, by the
@@ -125,25 +125,28 @@ def seed(scan_cache: dict[str, dict]) -> tuple[int, int]:
             finally:
                 con.close()
         held = len(rows)
-        for p, size, mtime_ns, head_text, scan_text in rows:
-            live = _stat(p)
-            if live is None or live != (size, mtime_ns):
-                continue
-            try:
-                head = json.loads(head_text)
-                scan = json.loads(scan_text)
-            except ValueError:
-                continue
-            if not isinstance(scan, dict) or scan.get("size") != size:
-                continue
-            if not isinstance(head, list) or len(head) != 6:
-                continue
-            cwd, first_ts, prompt, pane, entrypoint, settled = head
-            tasks_store._HEAD_CACHE[p] = (size, cwd, first_ts, prompt, pane,
-                                          entrypoint, bool(settled))
-            scan_cache[p] = scan
-            _saved[p] = size
-            seeded += 1
+        # Written under the router's build lock, like `save` reads: a narrowed
+        # build on the changes path may be walking these caches already.
+        with (lock if lock is not None else threading.Lock()):
+            for p, size, mtime_ns, head_text, scan_text in rows:
+                live = _stat(p)
+                if live is None or live != (size, mtime_ns):
+                    continue
+                try:
+                    head = json.loads(head_text)
+                    scan = json.loads(scan_text)
+                except ValueError:
+                    continue
+                if not isinstance(scan, dict) or scan.get("size") != size:
+                    continue
+                if not isinstance(head, list) or len(head) != 6:
+                    continue
+                cwd, first_ts, prompt, pane, entrypoint, settled = head
+                tasks_store._HEAD_CACHE[p] = (size, cwd, first_ts, prompt, pane,
+                                              entrypoint, bool(settled))
+                scan_cache[p] = scan
+                _saved[p] = size
+                seeded += 1
         _enabled = True
     except Exception:  # noqa: BLE001 — a cache that cannot be read is a cold start
         logger.warning("tasks index: unreadable, starting cold", exc_info=True)
