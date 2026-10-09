@@ -48,7 +48,7 @@ Per-source allowed sizes / formats (first entry is the default):
 
 **Default layout** (used when the server reports no saved layout; saved layouts are never
 touched): the Builder preset (`presetRows("builder")`) — search 4x1, build 2x1, apps 2x2
-icons, bots 2x2 list, sessions 2x2 list — with stable `default-<source>` ids.
+icons, bots 2x2 list, tasks 2x2 list — with stable `default-<source>` ids.
 
 A `4x1` widget with format `cards` is today's strip: reuse the existing `Section` +
 `useStripCount` one-row behaviour inside it (CARD_W / CARD_GAP / MAX_ROW unchanged).
@@ -202,7 +202,7 @@ Presets (`PRESETS`, `presetLayout(id, { folderId? })` in `shell/home/layout.ts`;
 | Preset | Tiles (x,y; size in cells; custom = explicit cols x rows in units) |
 | --- | --- |
 | Workbench | exactly `defaultLayout()` |
-| Builder | search 4x1 (0,0); build (0,1) 4x4; apps 2x2 (4,1); playground 2x2 (0,5); sessions 2x2 (4,5) |
+| Builder | search 4x1 (0,0); build 2x1 (0,1); apps 2x2 icons (4,1); bots 2x2 list (0,5); tasks 2x2 list (4,5) |
 | Mission control | search (0,0); tasks board custom 6x4 (0,1); index 1x1 (6,1); bots 1x1 (6,3); sessions 2x1 (0,5); recents 2x1 (4,5) |
 | Files | search (0,0); recents list custom 6x4 (0,1); index 1x1 (6,1); bookmark folder 1x1 list (6,3), or sessions list custom 2x2 when no folder exists; apps 2x1 (0,5); tasks 2x1 (4,5) |
 | Focus | search (0,0); build 4x1 (0,1) |

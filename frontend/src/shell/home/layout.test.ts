@@ -70,9 +70,9 @@ test("default layout is the Builder preset (units), version 5, stable default-<s
     ["build", "2x1", 0, 1, SOURCES.build.formats[0]],
     ["apps", "2x2", 4, 1, "icons"],
     ["bots", "2x2", 0, 5, "list"],
-    ["sessions", "2x2", 4, 5, "list"],
+    ["tasks", "2x2", 4, 5, "list"],
   ]);
-  expect(ids(DEFAULT_LAYOUT)).toEqual(["default-search", "default-build", "default-apps", "default-bots", "default-sessions"]);
+  expect(ids(DEFAULT_LAYOUT)).toEqual(["default-search", "default-build", "default-apps", "default-bots", "default-tasks"]);
 });
 
 test("defaultLayout has no overlaps and no empty rows", () => {
