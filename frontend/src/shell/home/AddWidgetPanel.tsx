@@ -28,8 +28,8 @@ import { useBookmarksVersion } from "@platform/lib/hooks";
 import { isTopmost, popModal, pushModal } from "@platform/ui/modal/esc-stack";
 import { isFolder, loadBookmarks, type BookmarkFolder, type BookmarkItem } from "@platform/lib/bookmarks";
 import { FormatPreview } from "./FormatPreview";
-import { FormatPicks, SizeChips, SortChips, stageZoom } from "./Pickers";
-import { GRID_COLS, MAX_WIDGETS, SOURCES, defaultFormat, dimsOf, hasSearch, type AppsSort, type TileTarget, type WidgetFormat, type WidgetSize, type WidgetSource } from "./layout";
+import { FormatPicks, ShowChips, SizeChips, SortChips, stageZoom } from "./Pickers";
+import { GRID_COLS, MAX_WIDGETS, SOURCES, defaultFormat, dimsOf, hasSearch, type AppsSort, type TasksShow, type TileTarget, type WidgetFormat, type WidgetSize, type WidgetSource } from "./layout";
 import type { HomeLayoutApi } from "./useHomeLayout";
 import { AppGlyph } from "./widgets/AppsWidget";
 import { appName, useAllApps } from "./widgets/AppEmbedWidget";
@@ -97,6 +97,7 @@ export function AddWidgetPanel({
   const [format, setFormat] = useState<WidgetFormat>(defaultFormat(SOURCE_KEYS[0], tileCols));
   const [size, setSize] = useState<WidgetSize>(SOURCES[SOURCE_KEYS[0]].sizes[0]);
   const [sort, setSort] = useState<AppsSort>("opened");
+  const [show, setShow] = useState<TasksShow>("open_done");
   const [folderId, setFolderId] = useState<string | null>(null);
   const [appPath, setAppPath] = useState<string | null>(null);
   const [appQuery, setAppQuery] = useState("");
@@ -188,6 +189,7 @@ export function AddWidgetPanel({
     setFormat(defaultFormat(s, tileCols));
     setSize(SOURCES[s].sizes[0]);
     setSort("opened");
+    setShow("open_done");
   };
 
   // Focus the dialog on open; hand focus back to whatever opened it on close.
@@ -253,7 +255,9 @@ export function AddWidgetPanel({
           ? { appPath: urlMode ? url! : fileMode ? filePath : chosenApp?.path, format, size }
           : source === "apps"
             ? { format, size, sort }
-            : { format, size };
+            : source === "tasks"
+              ? { format, size, show }
+              : { format, size };
     if (target) {
       const { size: _size, ...tileOpts } = opts;
       if (target.kind === "swap") api.swap(target.widget.id, source, tileOpts);
@@ -517,6 +521,12 @@ export function AddWidgetPanel({
                 <div className="hw-opt">
                   <span className="hw-label">Sort by</span>
                   <SortChips value={sort} onChange={setSort} />
+                </div>
+              ) : null}
+              {source === "tasks" && format !== "count" ? (
+                <div className="hw-opt">
+                  <span className="hw-label">Show</span>
+                  <ShowChips value={show} onChange={setShow} />
                 </div>
               ) : null}
             </div>

@@ -39,6 +39,7 @@ import {
   rowsUsed,
   setFormat,
   setSort,
+  setTasksShow,
   setSize,
   sortByPosition,
   sourceFits,
@@ -433,6 +434,32 @@ test("setSort", () => {
   expect(setSort(l, "a", "opened")).toBe(l);
   expect(setSort(l, "zzz", "name")).toBe(l);
   expect(setSort(l, "t", "name")).toBe(l);
+});
+
+test("setTasksShow", () => {
+  const l = lay(w("a", "apps"), w("t", "tasks", "2x2", "list", 0, 1));
+  const closed = setTasksShow(l, "t", "open");
+  expect(closed.widgets[1].show).toBe("open");
+  expect(setTasksShow(closed, "t", "open")).toBe(closed);
+  expect(setTasksShow(l, "t", "open_done")).toBe(l);
+  expect(setTasksShow(l, "a", "open")).toBe(l);
+  expect(setTasksShow(l, "zzz", "open")).toBe(l);
+});
+
+test("show round-trips through normalizeLayout for tasks tiles only; addWidget too", () => {
+  const out = normalizeLayout({
+    version: 2,
+    widgets: [
+      { ...w("a", "tasks"), show: "open" },
+      { ...w("b", "apps"), show: "open" },
+      { ...w("c", "tasks"), show: "zzz" },
+    ],
+  });
+  expect(out.widgets.find((x) => x.id === "a")?.show).toBe("open");
+  expect(out.widgets.find((x) => x.id === "b")?.show).toBeUndefined();
+  expect(out.widgets.find((x) => x.id === "c")?.show).toBeUndefined();
+  expect(addWidget(lay(), "tasks", { id: "t", show: "open" }).widgets[0].show).toBe("open");
+  expect(addWidget(lay(), "apps", { id: "p", show: "open" }).widgets[0].show).toBeUndefined();
 });
 
 test("normalizeLayout keeps sort on apps widgets only", () => {

@@ -12,9 +12,11 @@ import {
   removeWidget,
   setFormat,
   setSort,
+  setTasksShow,
   swapSource,
   defaultLayout,
   type AppsSort,
+  type TasksShow,
   type HomeLayout,
   type PresetId,
   type Rect,
@@ -37,10 +39,11 @@ export interface HomeLayoutApi {
   swap: (id: string, source: WidgetSource, opts?: TileOpts) => void;
   /** Put a new tile of `source` on exactly `rect`, an empty slot. */
   fill: (rect: Rect, source: WidgetSource, opts?: TileOpts) => void;
-  add: (source: WidgetSource, opts?: { folderId?: string; appPath?: string; format?: WidgetFormat; size?: WidgetSize; sort?: AppsSort }) => void;
+  add: (source: WidgetSource, opts?: { folderId?: string; appPath?: string; format?: WidgetFormat; size?: WidgetSize; sort?: AppsSort; show?: TasksShow }) => void;
   remove: (id: string) => void;
   reformat: (id: string, format: WidgetFormat) => void;
   resort: (id: string, sort: AppsSort) => void;
+  reshow: (id: string, show: TasksShow) => void;
 }
 
 export function useHomeLayout(): HomeLayoutApi {
@@ -96,5 +99,6 @@ export function useHomeLayout(): HomeLayoutApi {
     remove: useCallback((id) => commit(removeWidget(ref.current, id)), [commit]),
     reformat: useCallback((id, format) => commit(setFormat(ref.current, id, format)), [commit]),
     resort: useCallback((id, sort) => commit(setSort(ref.current, id, sort)), [commit]),
+    reshow: useCallback((id, show) => commit(setTasksShow(ref.current, id, show)), [commit]),
   };
 }

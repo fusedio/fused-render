@@ -3,7 +3,7 @@ import { basename } from "@platform/lib/format";
 import { softNavigate } from "../strip";
 import { taskHref } from "../../tasks-lib";
 import { useHomeTasks, type HomeTasks } from "../data";
-import { dimsOf, itemCapacity, type Widget } from "../layout";
+import { dimsOf, itemCapacity, type TasksShow, type Widget } from "../layout";
 import { BigCount, EmptyLine, ErrorLine, ItemList, ListSkeleton, MoreLine, type WidgetItem } from "./bits";
 
 const TASKS_HREF = "/tasks";
@@ -25,6 +25,17 @@ const LANES: { id: Lane; label: string; empty: string }[] = [
   { id: "you", label: "Needs you", empty: "All clear" },
   { id: "done", label: "Done", empty: "Nothing done yet" },
 ];
+
+/** Lanes drawn for a tile: the Done lane only when done tasks are shown. */
+export function lanesFor(show: TasksShow) {
+  return show === "open" ? LANES.filter((l) => l.id !== "done") : LANES;
+}
+
+/** List rows for a tile: open first, then done unless the tile shows open only. */
+export function listFor<T extends Pick<Task, "status">>(tasks: T[], show: TasksShow): T[] {
+  const ordered = listOrder(tasks);
+  return show === "open" ? ordered.filter((t) => t.status !== "done") : ordered;
+}
 
 /** Open = not done (archived and drafts never reach the widget). */
 export function openCount(tasks: Pick<Task, "status">[]): number {
@@ -76,6 +87,7 @@ export function TasksWidget({ widget }: { widget: Widget }) {
   if (error && !split) return <div className="hw-body"><ErrorLine message={`Couldn't load tasks. ${error}`} onRetry={retry} /></div>;
   if (!split) return <div className="hw-body"><ListSkeleton rows={3} label="Loading tasks" /></div>;
   const data = split.tasks;
+  const show: TasksShow = widget.show ?? "open_done";
   if (!data.length) return <div className="hw-body"><EmptyLine>{emptyMessage(split)}</EmptyLine></div>;
   const open = openCount(data);
   const needs = data.filter((t) => laneOf(t) === "you").length;
@@ -92,10 +104,11 @@ export function TasksWidget({ widget }: { widget: Widget }) {
   }
   if (widget.format === "board") {
     const cap = widget.size === "2x2" || dimsOf(widget).rows >= 4 ? 4 : 2;
+    const lanes = lanesFor(show);
     return (
       <div className="hw-body">
-        <div className="hw-board">
-          {LANES.map((lane) => {
+        <div className="hw-board" style={{ gridTemplateColumns: `repeat(${lanes.length}, minmax(0, 1fr))` }}>
+          {lanes.map((lane) => {
             const rows = data.filter((t) => laneOf(t) === lane.id);
             const shown = rows.slice(0, cap);
             return (
@@ -123,9 +136,11 @@ export function TasksWidget({ widget }: { widget: Widget }) {
       </div>
     );
   }
+  const rows = listFor(data, show);
+  if (!rows.length) return <div className="hw-body"><EmptyLine>Nothing open</EmptyLine></div>;
   return (
     <div className="hw-body">
-      <ItemList items={listOrder(data).map(toItem)} cap={itemCapacity(widget.size, "list")} moreHref={TASKS_HREF} />
+      <ItemList items={rows.map(toItem)} cap={itemCapacity(widget.size, "list")} moreHref={TASKS_HREF} />
     </div>
   );
 }

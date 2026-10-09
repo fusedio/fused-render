@@ -33,6 +33,17 @@ function isAppsSort(v: unknown): v is AppsSort {
   return APPS_SORTS.some((s) => s.value === v);
 }
 
+export type TasksShow = "open" | "open_done";
+
+export const TASKS_SHOWS: { value: TasksShow; label: string }[] = [
+  { value: "open", label: "Open only" },
+  { value: "open_done", label: "Open + done" },
+];
+
+function isTasksShow(v: unknown): v is TasksShow {
+  return TASKS_SHOWS.some((s) => s.value === v);
+}
+
 export interface Widget {
   id: string;
   source: WidgetSource;
@@ -51,6 +62,8 @@ export interface Widget {
   appPath?: string;
   /** source === "apps": card order; absent = "opened". */
   sort?: AppsSort;
+  /** source === "tasks": whether done tasks show; absent = "open_done". */
+  show?: TasksShow;
 }
 
 export interface HomeLayout {
@@ -169,7 +182,7 @@ function makeWidget(
   source: WidgetSource,
   x: number,
   y: number,
-  opts: { id?: string; folderId?: string; appPath?: string; format?: WidgetFormat; size?: WidgetSize; sort?: AppsSort } = {},
+  opts: { id?: string; folderId?: string; appPath?: string; format?: WidgetFormat; size?: WidgetSize; sort?: AppsSort; show?: TasksShow } = {},
 ): Widget {
   const spec = SOURCES[source];
   const w: Widget = {
@@ -183,6 +196,7 @@ function makeWidget(
   if (opts.folderId) w.folderId = opts.folderId;
   if (source === "app" && opts.appPath) w.appPath = opts.appPath;
   if (source === "apps" && isAppsSort(opts.sort)) w.sort = opts.sort;
+  if (source === "tasks" && isTasksShow(opts.show)) w.show = opts.show;
   return w;
 }
 
@@ -255,6 +269,7 @@ export function normalizeLayout(raw: unknown): HomeLayout {
     if (source === "folder") w.folderId = folderId;
     if (source === "app") w.appPath = appPath;
     if (source === "apps" && isAppsSort(x.sort)) w.sort = x.sort;
+    if (source === "tasks" && isTasksShow(x.show)) w.show = x.show;
     cleaned.push({ w, rx: x.x, ry: x.y, rc: x.cols, rr: x.rows });
   }
   if (r.version === 1 && !cleaned.some((c) => c.w.source === "search")) {
@@ -356,7 +371,7 @@ export function hasSearch(layout: HomeLayout): boolean {
 export function addWidget(
   layout: HomeLayout,
   source: WidgetSource,
-  opts: { id?: string; folderId?: string; appPath?: string; format?: WidgetFormat; size?: WidgetSize; sort?: AppsSort } = {},
+  opts: { id?: string; folderId?: string; appPath?: string; format?: WidgetFormat; size?: WidgetSize; sort?: AppsSort; show?: TasksShow } = {},
 ): HomeLayout {
   if (layout.widgets.length >= MAX_WIDGETS) return layout;
   if (source === "search" && hasSearch(layout)) return layout;
@@ -418,6 +433,12 @@ export function setFormat(layout: HomeLayout, id: string, format: WidgetFormat):
 export function setSort(layout: HomeLayout, id: string, sort: AppsSort): HomeLayout {
   return patch(layout, id, (w) =>
     w.source === "apps" && (w.sort ?? "opened") !== sort ? { ...w, sort } : null,
+  );
+}
+
+export function setTasksShow(layout: HomeLayout, id: string, show: TasksShow): HomeLayout {
+  return patch(layout, id, (w) =>
+    w.source === "tasks" && (w.show ?? "open_done") !== show ? { ...w, show } : null,
   );
 }
 
@@ -881,7 +902,7 @@ export function sourceFits(
 /** Where a Change pick lands: an existing tile, or an empty slot. */
 export type TileTarget = { kind: "swap"; widget: Widget } | { kind: "fill"; rect: Rect };
 
-export type TileOpts = { folderId?: string; appPath?: string; format?: WidgetFormat; sort?: AppsSort };
+export type TileOpts = { folderId?: string; appPath?: string; format?: WidgetFormat; sort?: AppsSort; show?: TasksShow };
 
 /** A widget of `source` covering exactly `rect`: a matching size preset when
     there is one, else an explicit footprint. Null when the source's required
@@ -917,6 +938,7 @@ function tileFor(id: string, source: WidgetSource, rect: Rect, opts: TileOpts, f
   if (source === "folder") w.folderId = opts.folderId;
   if (source === "app") w.appPath = opts.appPath;
   if (source === "apps" && isAppsSort(opts.sort)) w.sort = opts.sort;
+  if (source === "tasks" && isTasksShow(opts.show)) w.show = opts.show;
   return w;
 }
 

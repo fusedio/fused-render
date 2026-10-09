@@ -116,7 +116,7 @@ Preferences if it's off." ), empty (reuse today's empty strings for the four exi
 sources; new ones: tasks "No tasks yet." (or, when only drafts and archived tasks exist, "No active tasks · 1 draft, 19 archived"), bots "No bots yet.", folder "This folder is
 empty."), overflow (lists show what fits + "+N more" linking to the full page; long names
 ellipsize, never wrap the frame).
-The Tasks widget shows recent tasks, newest first, with drafts and archived tasks excluded (done are kept). Its board has Queued / In progress / Needs you / Done in one fixed four-column row, so Done never adds height (each lane shows the same cap plus "+N more"); the list shows open tasks first, then recent done ones; the count stays open-only (not done).
+The Tasks widget shows recent tasks, newest first, with drafts and archived tasks excluded (done are kept). Its board has Queued / In progress / Needs you / Done in one fixed four-column row, so Done never adds height (each lane shows the same cap plus "+N more"); the list shows open tasks first, then recent done ones; the count stays open-only (not done). A per-tile "Show" option (Open only / Open + done, default Open + done; hidden on the count format) drops the Done lane (the board becomes three columns) and the done rows; with nothing open the list reads "Nothing open".
 
 ## Styling rules
 

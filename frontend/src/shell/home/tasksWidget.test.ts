@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { homeTasks, splitHomeTasks } from "./data";
-import { emptyMessage, laneOf, listOrder, openCount, taskPill } from "./widgets/TasksWidget";
+import { emptyMessage, lanesFor, listFor, laneOf, listOrder, openCount, taskPill } from "./widgets/TasksWidget";
 
 const t = (o: Record<string, unknown>) => ({ key: "k", task_id: "T-1", status: "done", last_active: 1, ...o }) as any;
 
@@ -66,4 +66,16 @@ test("emptyMessage", () => {
   expect(emptyMessage({ drafts: 3, archived: 0 })).toBe("No active tasks · 3 drafts");
   expect(emptyMessage({ drafts: 0, archived: 19 })).toBe("No active tasks · 19 archived");
   expect(emptyMessage({ drafts: 1, archived: 19 })).toBe("No active tasks · 1 draft, 19 archived");
+});
+
+test("lanesFor: Done lane only when done tasks show", () => {
+  expect(lanesFor("open_done").map((l) => l.id)).toEqual(["queued", "running", "you", "done"]);
+  expect(lanesFor("open").map((l) => l.id)).toEqual(["queued", "running", "you"]);
+});
+
+test("listFor: open only drops done; open_done lists open first", () => {
+  const ts = [t({ key: "d" }), t({ key: "o", status: "queued" })];
+  expect(listFor(ts, "open").map((x) => x.key)).toEqual(["o"]);
+  expect(listFor(ts, "open_done").map((x) => x.key)).toEqual(["o", "d"]);
+  expect(listFor([t({})], "open")).toEqual([]);
 });
