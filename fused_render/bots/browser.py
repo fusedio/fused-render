@@ -1189,21 +1189,23 @@ class BrowserProcess:
         except Exception:
             return False
 
-    def start(self):
+    def start(self, url="", view=None):
         """Launch headless Chrome for this profile unless it is already up with the
         live view's origin allowed; returns the session. Chrome is never relaunched
         for a take-over: the user drives the same tab from the live view. A profile
-        popped out as a real window (`popout`) is left as it is: `dock` ends that."""
+        popped out as a real window (`popout`) is left as it is: `dock` ends that.
+        `url` is the page to come back to on a cold start (the asking `view`'s last
+        page): session.json went with the quit, so a wake knows it only from the caller."""
         origin = page_origin()
         with self.lock:
             sess = self.session()
-            restore = ""
+            restore = url or ""
             if self.alive(sess):
                 if sess.get("origin") == origin or sess.get("headed"):
                     return sess
-                restore = sess.get("url") or ""  # a relaunch just to pick up the flag keeps the page
+                restore = sess.get("url") or restore  # a relaunch just to pick up the flag keeps the page
                 self.stop(seal=False)
-            return self._launch(origin, False, restore)
+            return self._launch(origin, False, restore, view)
 
     def headed(self):
         sess = self.session() or {}
@@ -1375,7 +1377,7 @@ class BrowserProcess:
                 write_json_atomic(self.session_path, sess)
             if view is not None and restore and not headed:
                 try:
-                    tab, _ = view._page_target(port)
+                    tab, _ = view._page_target(port)  # shared: adopts the launch tab on the view's last page already
                     ws = WS(tab["webSocketDebuggerUrl"])
                     ws.call("Page.navigate", url=restore)  # do not wait for the load
                     ws.close()
@@ -1533,8 +1535,10 @@ class Browser:
         return self.proc.alive(sess)
 
     def start(self):
+        """Up, or relaunched on this bot's last page. A wake after idle sleep used to come up on about:blank
+        for a lone bot: the launch tab is adopted as-is (only the shared branch of _page_target navigates it)."""
         self.idle = False
-        return self.proc.start()
+        return self.proc.start(url=self.last_url(), view=self)
 
     def headed(self):
         return self.proc.headed()
@@ -2006,8 +2010,9 @@ class Browser:
                 sess["url"] = info.get("url")
                 sess["title"] = info.get("title")
                 write_json_atomic(self.session_path, sess)
-                if self.shared():
-                    self._write_own(url=info.get("url") or "", title=info.get("title") or "")
+                # tabs.json too, lone bot included: session.json is removed with the quit, so this is the only
+                # record of the page a wake (Browser.start) brings back.
+                self._write_own(url=info.get("url") or "", title=info.get("title") or "")
                 if shoot:
                     self._shoot(ws)
                 return out, info
