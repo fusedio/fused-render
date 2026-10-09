@@ -6,6 +6,7 @@
 //   body.lanim / .lfast  the rail is mid-slide (rows morph and glide) / closing (quick slide)
 //   root.dragging      a gutter drag is in progress
 //   root.stage         the live view is open in the preview column (Stage: icon sidebar, chat rail --chatw, the page takes the rest)
+//   root.lstuck        the window is too narrow for the full sidebar even with the preview hidden: the expand toggle hides
 //   root.sfull         Stage, but the window is too narrow for it: the live view falls back to a fixed overlay (CSS only)
 // This module touches the DOM directly (main, .preview, #botlist, #lcol, #add, the root): it is the plumbing the
 // React tree sits on, exactly as in OpenBot. The fit is measured on the page's own <main> (ResizeObserver), never
@@ -49,6 +50,10 @@ export function fitFlags(w: number, l: Layout, was: { lfit: boolean; rfit: boole
   const sidebar = l.lcol || lfit ? 72 : Math.min(l.lw, w * 0.4);
   return { lfit, rfit: hyst(was.rfit, w - sidebar - 12 - MID_MIN - R_MIN), sfull: hyst(!!was.sfull, w - 72 - 12 - C_MIN - STAGE_MIN) };
 }
+
+/** Whether the full sidebar can show at all in a <main> of `w` px: with the preview hidden, the thread still keeps MID_MIN. Below this
+ *  the expand toggle hides (root .lstuck): a click could only fold the sidebar straight back. */
+export const sidebarFits = (w: number, l: Layout): boolean => w - Math.min(l.lw, w * 0.4) - 12 - MID_MIN >= 0;
 
 /** Stage: the widest the chat rail may go for a <main> of `w` px — the live page keeps STAGE_MIN, and at least half of <main>. */
 export const stageRoom = (w: number): number => Math.min(w - 72 - 12 - STAGE_MIN, w * (1 - STAGE_HALF) - 72 - 12);
@@ -157,12 +162,16 @@ export function withRailGlide(fn: () => void): void {
 }
 
 // Narrow windows: first the sidebar collapses to icons (lfit), then the preview hides (rfit); each undoes itself with FIT_HYST px to spare so nothing flaps.
+// unfolding: a hand expand in progress (toggleLeft). lfit's hysteresis restarts from off, so the sidebar only re-folds when the full
+// sidebar + thread cannot fit at all; carried over, a fold within FIT_HYST px of fitting would hold through the expand and the click would do nothing.
+let unfolding = false;
 export function fitPreview(): void {
   const main = mainEl(); if (!main) return;
-  const cl = body().classList, f = fitFlags(main.clientWidth, layout, { lfit: cl.contains("lfit"), rfit: cl.contains("rfit"), sfull: cl.contains("sfull") });
+  const cl = body().classList, f = fitFlags(main.clientWidth, layout, { lfit: !unfolding && cl.contains("lfit"), rfit: cl.contains("rfit"), sfull: cl.contains("sfull") });
   cl.toggle("lfit", f.lfit);
   cl.toggle("rfit", f.rfit);
   cl.toggle("sfull", f.sfull);
+  cl.toggle("lstuck", !sidebarFits(main.clientWidth, layout));
 }
 
 /** Stage on/off (the store's `fast`): the sidebar folds to icons with the same row glide as a collapse, the preview column widens into the live view. */
@@ -187,15 +196,21 @@ export function applyLayout(save: boolean): void {
 /** Replace part of the layout and apply it. */
 export function setLayout(patch: Partial<Layout>, save = true): void { layout = { ...layout, ...patch }; applyLayout(save); }
 
-/** #lcol: collapse or expand the bot list. */
+/** #lcol: collapse or expand the bot list. The toggle reads the rail as shown (railShut: collapsed by hand, folded by a narrow
+ *  window, or folded by Stage), so one click always expands a shut rail. Expanding is measured against the whole of <main>, and the
+ *  right section gives way for it: Stage closes back to the preview (the gutter's exit, handBack(true)), and the preview hides when the
+ *  full sidebar + thread + preview still cannot fit, rather than lfit snapping the sidebar straight back to icons. Stage folding the
+ *  sidebar on open is the other half (the .stage rules in bots.css): the two never show side by side, as Notion's peek and sidebar. */
 export function toggleLeft(): void {
-  const next = { ...layout, lcol: !layout.lcol };
-  // Expanding by hand: if the full sidebar + thread + preview cannot fit, hide the preview rather than let lfit snap the sidebar straight back to icons.
+  const next = { ...layout, lcol: !railShut() };
   if (!next.lcol && !next.rcol) {
     const w = mainEl()?.clientWidth || 0;
     if (w - Math.min(next.lw, w * 0.4) - 12 - MID_MIN - R_MIN < 0) next.rcol = true;
   }
-  layout = next; applyLayout(true);
+  // Layout first: the Stage grid ignores lcol / rcol, so this moves nothing yet, and the close then glides the rail open in one step.
+  layout = next; unfolding = !next.lcol;
+  try { applyLayout(true); } finally { unfolding = false; }
+  if (!next.lcol && staged() && stageShut) stageShut();
 }
 /** #rcol: show or hide the preview. */
 export function toggleRight(): void { layout = { ...layout, rcol: !layout.rcol }; applyLayout(true); }
