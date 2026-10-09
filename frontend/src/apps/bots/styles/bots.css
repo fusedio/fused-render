@@ -108,9 +108,11 @@ div.bots-page.stage .preview > :is(header, .shotwrap, .toast, .cap, .info, .saba
 .bots-page .gutter { cursor: col-resize; position: relative; background: linear-gradient(var(--line), var(--line)) center / 1px 100% no-repeat; } /* the columns share one background, so the gutter carries the divider */
 .bots-page .gutter::after { content: ""; position: absolute; inset: 0 2px; border-radius: 2px; background: transparent; transition: background .15s; }
 .bots-page .gutter:hover::after, .bots-page .gutter.drag::after { background: var(--accent); }
-/* A grip pill at mid-height says the divider drags; the hover / drag accent bar (::after) covers it. Gone where the gutter is inert
-   (the preview hid itself: rfit; the forced icon rail in Stage), in step with the pointer-events rules above. */
-.bots-page .gutter::before { content: ""; position: absolute; left: 50%; top: 50%; width: 4px; height: 36px; translate: -50% -50%; border-radius: 2px; background: var(--muted); opacity: .45; pointer-events: none; }
+/* A grip pill at mid-height says the divider drags; it fades out under the hover / drag accent bar (::after is 2px, the pill 4px: both
+   at once would read as a stripe through the pill). Gone where the gutter is inert (the preview hid itself: rfit; the forced icon rail
+   in Stage), in step with the pointer-events rules above. */
+.bots-page .gutter::before { content: ""; position: absolute; left: 50%; top: 50%; width: 4px; height: 36px; translate: -50% -50%; border-radius: 2px; background: var(--muted); opacity: .45; pointer-events: none; transition: opacity .15s; }
+.bots-page .gutter:hover::before, .bots-page .gutter.drag::before { opacity: 0; }
 div.bots-page.rfit .gutter.r::before, div.bots-page.stage .gutter.l::before { display: none; }
 div.bots-page.dragging { cursor: col-resize; user-select: none; }
 div.bots-page.dragging img { pointer-events: none; }
