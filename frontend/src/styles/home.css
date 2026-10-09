@@ -2154,13 +2154,14 @@ a.hw-more:hover {
 }
 
 .hw-gal-row {
-  display: grid;
-  align-items: end;
-  justify-items: start;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
   gap: 24px 32px;
 }
 
 .hw-gal-entry {
+  flex: none;
   display: flex;
   flex-direction: column;
   align-items: flex-start;
@@ -2215,6 +2216,9 @@ a.hw-more:hover {
 }
 
 .hw-gal-cap {
+  box-sizing: border-box;
+  width: 100%;
+  text-align: left;
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;

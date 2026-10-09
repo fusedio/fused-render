@@ -29,7 +29,7 @@ import { ArrowLeft } from "lucide-react";
 import { useBookmarksVersion } from "@platform/lib/hooks";
 import { isTopmost, popModal, pushModal } from "@platform/ui/modal/esc-stack";
 import { isFolder, loadBookmarks, type BookmarkFolder, type BookmarkItem } from "@platform/lib/bookmarks";
-import { CELL, GRID_COLS, MAX_WIDGETS, SOURCES, type TileTarget, type Widget, type WidgetSource } from "./layout";
+import { GRID_COLS, MAX_WIDGETS, SOURCES, type TileTarget, type Widget, type WidgetSource } from "./layout";
 import { freeSpaceNote, galleryEntries, previewPx, previewScale, type GalleryEntry } from "./gallery";
 import { WidgetBody } from "./Widget";
 import type { HomeLayoutApi } from "./useHomeLayout";
@@ -475,7 +475,7 @@ export function AddWidgetPanel({
                   <span className="hw-gal-sec-desc">{SOURCES[s.source].description}</span>
                 </div>
                 {metrics ? (
-                  <div className="hw-gal-row" style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${Math.round(previewPx(CELL, metrics.colW) * metrics.scale)}px, max-content))` }}>
+                  <div className="hw-gal-row">
                     {s.entries.map((e) => (
                       <GalleryCard key={e.key} entry={e} metrics={metrics} onChoose={() => choose(e)} />
                     ))}
@@ -521,7 +521,7 @@ function GalleryPreview({ entry, metrics }: { entry: GalleryEntry; metrics: Prev
   const widget = previewWidget(entry);
   const inert = (el: HTMLElement | null) => el?.setAttribute("inert", "");
   return (
-    <span className="hw-gal-prev" style={{ width: w * metrics.scale, height: h * metrics.scale }}>
+    <span className="hw-gal-prev" style={{ width: Math.round(w * metrics.scale), height: Math.round(h * metrics.scale) }}>
       <span ref={inert} className="hw-gal-scale" aria-hidden="true" tabIndex={-1} style={{ width: w, height: h, transform: `scale(${metrics.scale})` }}>
         <section className={"hw-widget" + ` hw-size-${entry.size}` + (bare ? " is-" + entry.source : "") + (needsTarget ? " is-ph" : "")} style={{ width: w, height: h }}>
           {bare ? null : (
