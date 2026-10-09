@@ -14,9 +14,10 @@
 // account and no network — "send it any way you like".
 //
 //   • Public link (share_app.py owns what each call means):
-//       not signed in → "Sign in to Fused", polling /api/canvases/status
-//         until the browser login lands. Spelled here rather than imported:
-//         platform may not import from apps/canvases.
+//       not signed in → "Sign in to Fused", following the events bus's
+//         `canvases.status` topic until the browser login lands
+//         (`followCliLogin`). Spelled here rather than imported: platform
+//         may not import from apps/canvases.
 //       signed in, never shared → one primary, Create link. On open a remote
 //         lookup runs in the background (the app may have been shared from
 //         another machine); Create link does not wait for it — publishing
@@ -63,6 +64,7 @@ import { copyToClipboard } from "@platform/lib/clipboard";
 import { timeAgo } from "@platform/lib/format";
 import { notify } from "@platform/lib/notifications";
 import { navigate } from "@platform/lib/router";
+import { resyncTopic, subscribeTopic } from "@platform/lib/events";
 import { cn } from "@platform/lib/utils";
 import {
   closeShareApp,
@@ -98,7 +100,6 @@ import {
 import { Input } from "@platform/shadcn/ui/input";
 import { Skeleton } from "@platform/shadcn/ui/skeleton";
 
-const LOGIN_POLL_MS = 1500;
 // The guarded GETs (whoami runs a CLI child) carry the X-Fused header too —
 // the server 403s them without it (apps/canvases/api.ts's GUARD, restated).
 const GUARD = { headers: { "X-Fused": "1" } };
@@ -114,8 +115,57 @@ interface CanvasesStatusLite {
 // the user may take minutes over (or never finish), and the file route needs
 // no account, so it has its own flag (`loggingIn`) and may overlap an export.
 // One shared flag for both was the bug: an export started mid-login and the
-// login poll's `setBusy(null)` then dropped the export lock (Bugbot, #1207).
+// login wait's `setBusy(null)` then dropped the export lock (Bugbot, #1207).
 type Busy = null | "publish" | "update" | "remove" | "export";
+
+/**
+ * WAIT FOR THE CLI'S BROWSER LOGIN TO END, off the events bus.
+ *
+ * Follows `canvases.status` (snapshot == `GET /api/canvases/status`; the
+ * server re-stats the credentials every 1.5 s while `login_in_flight`) until
+ * one of the two verdicts the old 1.5 s status poll reached:
+ *   * completed — signed in on a credentials store whose `creds_stamp` is not
+ *     the one held when the login started (a re-login over a stale-but-present
+ *     store never flips `logged_in`; the stamp moving is the whole signal);
+ *   * abandoned — the login child is gone without that (closed tab, denied).
+ * Either one drops the subscription. The returned function drops it early
+ * (unmount); it is idempotent.
+ *
+ * A REPLAYED snapshot is not a verdict. It is the cached answer of another
+ * reader's subscription (the sidebar's), taken BEFORE this document's POST
+ * started the login, so it would read `login_in_flight: false` and abandon a
+ * login that has only just begun. The resync below brings the fresh one. A
+ * refused frame is what a failed status GET was to the poll: nothing — the
+ * next snapshot decides.
+ */
+export function followCliLogin(
+  fromStamp: number | null,
+  on: { completed(): void; abandoned(): void },
+): () => void {
+  let settled = false;
+  let off: () => void = () => {};
+  const end = (verdict: () => void) => {
+    if (settled) return;
+    settled = true;
+    off();
+    verdict();
+  };
+  off = subscribeTopic<CanvasesStatusLite>("canvases.status", {}, (s, _delta, meta) => {
+    if (settled || meta.error !== undefined || meta.replay || s === null) return;
+    if (s.logged_in && s.creds_stamp !== fromStamp) end(on.completed);
+    else if (!s.login_in_flight) end(on.abandoned);
+  });
+  if (settled) off();
+  // The POST that started the login is this document's own write; the topic's
+  // last snapshot predates it (and the server only re-stats fast once it has
+  // SEEN a login in flight).
+  resyncTopic("canvases.status", {});
+  return () => {
+    if (settled) return;
+    settled = true;
+    off();
+  };
+}
 
 // One row of the sheet: a glyph plate, a title with its one-line description,
 // the row's action at the right, and whatever the route has to show once it
@@ -185,7 +235,8 @@ export function ShareAppModal({
   const [looking, setLooking] = useState(false);
   const [saved, setSaved] = useState<{ name: string; path: string } | null>(null);
   const loginStampRef = useRef<number | null>(null);
-  const pollRef = useRef<number | null>(null);
+  /** The running login wait's disposer (`followCliLogin`), or null. */
+  const loginWaitRef = useRef<(() => void) | null>(null);
 
   // `status.logged_in` is the credentials FILE existing (share_app.py, like
   // canvases.py). A file can exist and be dead — the token behind it refused
@@ -268,14 +319,15 @@ export function ShareAppModal({
 
   useEffect(
     () => () => {
-      if (pollRef.current !== null) window.clearInterval(pollRef.current);
+      loginWaitRef.current?.();
+      loginWaitRef.current = null;
     },
     [],
   );
 
   const onLogin = async () => {
     // Not while another action runs (same predicate as its button's
-    // `disabled`). Not twice, either — a second poll would run alongside the
+    // `disabled`). Not twice, either — a second wait would run alongside the
     // first.
     if (loggingIn || busy !== null) return;
     setLinkErr("");
@@ -288,28 +340,25 @@ export function ShareAppModal({
       setLinkErr((e as Error).message);
       return;
     }
-    pollRef.current = window.setInterval(() => {
-      void getJson<CanvasesStatusLite>("/api/canvases/status").then((s) => {
-        const completed = s.logged_in && s.creds_stamp !== loginStampRef.current;
-        if (completed) {
-          if (pollRef.current !== null) window.clearInterval(pollRef.current);
-          pollRef.current = null;
-          setLoggingIn(false);
-          setDenied(false);
-          // The same two reads the open does: a freshly signed-in account
-          // may already hold a canvas for this app from another machine, and
-          // the primary action must then be its link, not a second Create.
-          void refresh().then((s) => {
-            if (!goneRef.current) lookup(s);
-          });
-        } else if (!s.login_in_flight) {
-          if (pollRef.current !== null) window.clearInterval(pollRef.current);
-          pollRef.current = null;
-          setLoggingIn(false);
-          setLinkErr("Sign-in was not completed — try again.");
-        }
-      });
-    }, LOGIN_POLL_MS);
+    if (goneRef.current) return;
+    loginWaitRef.current = followCliLogin(loginStampRef.current, {
+      completed: () => {
+        loginWaitRef.current = null;
+        setLoggingIn(false);
+        setDenied(false);
+        // The same two reads the open does: a freshly signed-in account
+        // may already hold a canvas for this app from another machine, and
+        // the primary action must then be its link, not a second Create.
+        void refresh().then((s) => {
+          if (!goneRef.current) lookup(s);
+        });
+      },
+      abandoned: () => {
+        loginWaitRef.current = null;
+        setLoggingIn(false);
+        setLinkErr("Sign-in was not completed — try again.");
+      },
+    });
   };
 
   const doPublish = async (kind: "publish" | "update") => {

@@ -467,7 +467,6 @@ def super_id():
 MEMORY_LINES_HINT = 200  # Bot.MEMORY_LINES, visible to the class-body prompt string
 
 
-
 def _publish(topic: str, key=None) -> None:
     """Wake the events bus (server/events.py) for `topic`. Imported lazily so
     this module keeps importing in a process that never starts the server."""
@@ -625,8 +624,7 @@ class Bot:
             elif ev["via"] is None:
                 del ev["via"]
             if self.deleted:
-                _publish("bots")
-        return ev  # never recreate a deleted bot's folder
+                return ev  # never recreate a deleted bot's folder
             os.makedirs(self.dir, exist_ok=True)
             with open(self.events_path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(ev) + "\n")

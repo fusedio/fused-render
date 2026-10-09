@@ -369,6 +369,53 @@ def test_at_most_one_unsent_frame_per_subscription_latest_wins():
     asyncio.run(scenario())
 
 
+def test_a_publish_or_a_second_subscriber_wakes_an_idle_producer():
+    """A poll-and-diff producer sleeping at its idle cadence (60 s between
+    logins, an hour between doctor checks) re-reads AT ONCE when its key is
+    published or when a second document subscribes (a resync from a window
+    that did not start the login), and the cadence it then chooses starts
+    from that read — the completion a 1.5 s cadence exists for is not up to
+    one idle interval late."""
+    async def scenario():
+        b = EventBus()
+        state = {"n": 0}
+        topic = simple_topic("t.idle", lambda p: {"n": state["n"]}, kind="polldiff",
+                             poll_interval_s=60.0)
+        # Busy once something is in flight (n odd): 50 ms; idle: a minute.
+        topic.poll_interval = lambda params, age_s, last: 0.05 if (last or {}).get("n", 0) % 2 else 60.0
+        b.register(topic)
+        b.bind()
+        sent: list = []
+
+        async def send(text):
+            sent.append(json.loads(text))
+
+        conn = b.connect(send)
+        sub = await b.subscribe(conn, 1, "t.idle", {})
+        await _wait_for(lambda: any(f.get("t") == "snap" for f in sent))
+        # The write hook: one push, and the producer re-reads now, finding
+        # "in flight" and moving to the busy cadence.
+        state["n"] = 1
+        b.publish("t.idle")
+        await _wait_for(lambda: [f["body"]["n"] for f in sent if f.get("t") == "snap"][-1] == 1)
+        # Another process finishes the job without a write hook: at the idle
+        # cadence this would surface a minute later; at the busy one, now.
+        state["n"] = 2
+        await _wait_for(lambda: [f["body"]["n"] for f in sent if f.get("t") == "snap"][-1] == 2, timeout=2.0)
+        snaps = [f["body"]["n"] for f in sent if f.get("t") == "snap"]
+        assert snaps == [0, 1, 2], snaps  # the publish's own read pushed nothing twice
+        # A second document joining the key is a poke too.
+        state["n"] = 3
+        conn2 = b.connect(send)
+        sub2 = await b.subscribe(conn2, 1, "t.idle", {})
+        await _wait_for(lambda: sum(1 for f in sent if f.get("t") == "snap" and f["body"]["n"] == 3) >= 2, timeout=2.0)
+        b.unsubscribe(sub)
+        b.unsubscribe(sub2)
+        b.disconnect(conn)
+        b.disconnect(conn2)
+    asyncio.run(scenario())
+
+
 def test_publish_from_a_worker_thread():
     async def scenario():
         b = EventBus()

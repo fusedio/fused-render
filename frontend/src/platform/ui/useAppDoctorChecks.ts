@@ -1,77 +1,66 @@
-// Fetches the App Doctor checklist for the status dot (AppDoctorStatusDot.tsx),
+// Follows the App Doctor checklist for the status dot (AppDoctorStatusDot.tsx),
 // on BOTH surfaces that show it (shell/AppPage.tsx tab trigger,
-// apps/explorer/EntryActionsMenu.tsx) — one fetch policy, not two.
+// apps/explorer/EntryActionsMenu.tsx) — one policy, not two, and one
+// subscription per folder: the events bus's `apps.doctor {path}` topic,
+// refcounted by the client, so the dot, a second dot on the same app and the
+// Doctor panel (AppDoctorModal.tsx) all share one server-side subscription and
+// one cached snapshot.
 //
 // The report is a full content scan of the app folder, so it must never
-// block or delay the page it decorates: the fetch starts in an effect (after
-// the caller's own first paint, never during render), runs once per app open
-// (keyed on `dir` — no polling, no re-fetch on an unrelated re-render), and a
-// failure or a slow response just leaves the dot in its neutral "not known
-// yet" state rather than surfacing anywhere else. Same rule app_doctor.py's
-// own docstring states about a doctor that must never crash the thing it
-// reviews — a doctor that slows an app down is just as unwelcome.
+// block or delay the page it decorates: the subscription opens in an effect
+// (after the caller's own first paint, never during render), keyed on `dir`,
+// and a refused frame or a slow answer just leaves the dot in its neutral
+// "not known yet" state rather than surfacing anywhere else. Same rule
+// app_doctor.py's own docstring states about a doctor that must never crash
+// the thing it reviews — a doctor that slows an app down is just as unwelcome.
 //
-// The ONE exception to once-per-open: an on-demand Check (AppDoctorModal.tsx's
-// `runCheck`) announces `APP_DOCTOR_CHANGED_EVENT` with its folder, and this
-// hook refetches for that folder — the verdict is now cached server-side, so
-// that GET costs a folder walk and no tokens, and the dot would otherwise
-// stay clean over a row that just went red until the app was opened again.
+// The snapshot is the `fetch=0` variant of `GET /api/apps/doctor`: this dot
+// decorates a page, it is never the modal's own "load", so it must not force
+// a git fetch on every app open.
+//
+// WHEN IT MOVES. The server re-reads the report every 4 s while a CHECK TASK is
+// live on any row (the old poll's cadence, now the server's) and pushes each
+// change, so a check that finishes after a tab switch still moves the dot off
+// "clean" over a row that just went red — the reason this dot used to poll
+// while the Doctor panel was gone. Otherwise it re-reads only when asked: an
+// on-demand Check (AppDoctorModal.tsx's `runCheck`) announces
+// `APP_DOCTOR_CHANGED_EVENT` with its folder, and this hook answers it with a
+// resync of the folder's subscription — the verdict's task is cached
+// server-side now, and the topic's last snapshot predates the POST that made
+// it (with no live task in it, the server would not look again on its own).
 import { useEffect, useRef, useState } from "react";
-import { getAppDoctor, type AppCheck } from "@platform/lib/api";
+import type { AppCheck, AppDoctorReport } from "@platform/lib/api";
+import { resyncTopic, subscribeTopic } from "@platform/lib/events";
 import { useAppDoctorChanged } from "@platform/lib/tasksChanged";
 
-/** `checks` from `dir`'s App Doctor report, or null while unknown — not
- *  fetched yet, or the fetch failed. */
+/** `checks` from `dir`'s App Doctor report, or null while unknown — no
+ *  snapshot yet, or the subscription was refused. */
 export function useAppDoctorChecks(dir: string | null): AppCheck[] | null {
   const [checks, setChecks] = useState<AppCheck[] | null>(null);
-  // Bumped by the changed-event for THIS folder; the effect below keys on
-  // it, so a refetch is the same code path as the first fetch.
-  const [generation, setGeneration] = useState(0);
   useAppDoctorChanged((changed) => {
-    if (dir && changed === dir) setGeneration((g) => g + 1);
+    if (dir && changed === dir) resyncTopic("apps.doctor", { path: dir });
   });
   const lastDir = useRef<string | null>(null);
   useEffect(() => {
-    // A refetch keeps the old checks on screen until the new ones land — a
-    // dot that blinks to "unknown" for a folder walk would read as a change
-    // that did not happen. Only a change of FOLDER resets it.
+    // A new snapshot replaces the old checks in place — a dot that blinks to
+    // "unknown" for a folder walk would read as a change that did not happen.
+    // Only a change of FOLDER resets it.
     if (lastDir.current !== dir) {
       lastDir.current = dir;
       setChecks(null);
     }
     if (!dir) return;
     let alive = true;
-    // Always the poll variant: this dot decorates a page, it is never the
-    // modal's own "load", so it must not force a git fetch on every app open
-    // (nor on every 4s tick while a check task is live).
-    getAppDoctor(dir, { fetch: false })
-      .then((r) => {
-        if (alive) setChecks(r.checks);
-      })
-      .catch(() => {
-        /* stays as it was — the dot reads as unknown or stale, nothing else is affected */
-      });
+    const off = subscribeTopic<AppDoctorReport>("apps.doctor", { path: dir }, (r, _delta, meta) => {
+      // A refused frame: stays as it was — the dot reads as unknown or stale,
+      // nothing else is affected.
+      if (!alive || meta.error !== undefined || r === null) return;
+      if (Array.isArray(r.checks)) setChecks(r.checks);
+    });
     return () => {
       alive = false;
+      off();
     };
-  }, [dir, generation]);
-
-  // The OTHER exception: while a CHECK TASK is live on any row, ask again
-  // every few seconds until it is gone. The Doctor panel polls for itself
-  // while mounted, but this dot outlives it (the tab trigger, the explorer
-  // menu) — a check that finishes after a tab switch would otherwise leave
-  // the dot clean over a row that just went red until the app was reopened.
-  // Same cheap GET as above; the poll stops the moment no row carries a task.
-  const liveCheck = checks?.some((c) => c.check_task) ?? false;
-  useEffect(() => {
-    if (!dir || !liveCheck) return;
-    const timer = window.setInterval(() => setGeneration((g) => g + 1), CHECK_POLL_MS);
-    return () => window.clearInterval(timer);
-  }, [dir, liveCheck]);
+  }, [dir]);
   return checks;
 }
-
-// How often the dot re-asks while a check task is live — a Sonnet read of a
-// few files takes tens of seconds, so this lands the verdict promptly
-// without hammering a folder walk. Matches AppDoctorModal.tsx's own poll.
-const CHECK_POLL_MS = 4_000;
