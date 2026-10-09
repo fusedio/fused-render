@@ -85,6 +85,27 @@ def test_default_ignore_covers_library_caches_but_not_the_rest_of_library():
     assert not r.is_ignored_tree(norm(os.path.expanduser("~/Library/Application Support/foo")))
 
 
+def test_default_ignore_covers_caches_outside_library_caches():
+    """Most of a home directory's churn is NOT under `~/Library/Caches`: a
+    browser profile's disk cache, an Electron app's GPU/code caches, a
+    sandboxed app's `Containers/*/Data/Library/Caches`, Xcode's DerivedData.
+    Bare capitalized names cover them at any depth on every platform, while
+    the profile / app-support folders themselves stay indexed and a lowercase
+    `cache` (real source in many repos) is left alone."""
+    r = IgnoreRules(default_ignore())
+    home = os.path.expanduser("~")
+    chrome = norm(f"{home}/Library/Application Support/Google/Chrome/Profile 3")
+    assert r.is_ignored_tree(f"{chrome}/Cache/Cache_Data")
+    assert r.is_ignored_tree(f"{chrome}/Code Cache/js")
+    assert r.is_ignored_tree(f"{chrome}/Service Worker/CacheStorage/abc")
+    assert r.is_ignored_tree(norm(f"{home}/.config/BraveSoftware/Brave-Browser/Default/GPUCache"))
+    assert r.is_ignored_tree(norm(f"{home}/Library/Containers/net.whatsapp.WhatsApp/Data/Library/Caches/x"))
+    assert r.is_ignored_tree(norm(f"{home}/Library/Developer/Xcode/DerivedData/App-abc"))
+    assert r.is_ignored_tree(norm(f"{home}/.npm/_cacache/index-v5"))
+    assert not r.is_ignored_tree(chrome)
+    assert not r.is_ignored_tree(norm(f"{home}/code/app/src/cache"))
+
+
 def test_ignore_sig_is_order_sensitive_and_stable():
     assert ignore_sig(["a", "b"]) == ignore_sig(["a", "b"])
     assert ignore_sig(["a", "b"]) != ignore_sig(["b", "a"])

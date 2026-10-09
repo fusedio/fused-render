@@ -118,6 +118,15 @@ def test_paths_under_an_ignored_tree_or_the_store_dir_are_dropped():
 
     assert dropped(norm(os.path.expanduser("~/proj/node_modules/pkg/index.js")))
     assert dropped(norm(os.path.expanduser("~/Library/Caches/com.example/x")))
+    # the app's own log directory: every request appends a line there, and a
+    # watcher that kept it would rescan the log folder on its own output
+    from fused_render.logs import log_dir
+    assert dropped(norm(os.path.join(log_dir(), "fused-render-123.log")))
+    # ... and that holds STRUCTURALLY, with the ignore list emptied — on
+    # macOS the log dir sits outside the fused-render home, so neither the
+    # guard nor a saved (frozen) ignore list is what keeps the loop shut
+    assert make_dropped(IgnoreRules([]))(
+        norm(os.path.join(log_dir(), "fused-render-123.log")))
     # the store itself, under the fused-render home MountGuard also covers
     assert dropped(norm(os.path.expanduser("~/.fused-render/index/dirs.parquet")))
     # an ordinary file is not dropped

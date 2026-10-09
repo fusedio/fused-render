@@ -106,6 +106,15 @@ def make_dropped(rules, index_dir: str | None = None):
         triggers the scan that triggered it). Optional only so the many
         tests that don't care about this case don't have to pass it; real
         wiring always does.
+      * `logs.log_dir()` — the app's own log directory, the OTHER write the
+        app makes on every request: the server appends a line per answered
+        request, so a home watch that kept it would observe its own output
+        and plan a rescan of the log folder (17 times in a few hours on one
+        diagnostics bundle). Same shape as `index_dir`: on macOS the log dir
+        is `~/Library/Logs/fused-render`, outside the fused-render home, so
+        the guard does not cover it, and `default_ignore()` also lists it
+        only as a user-editable default that a saved config never receives.
+        This check is what survives both.
       * `is_inside_leaf_dir(path)` — whether an ANCESTOR of `path` is a leaf
         directory (`.git`, an `.app` bundle, ...). `.git` is deliberately
         NOT in the ignore names (it is a LEAF_DIR_NAME instead), so without
@@ -116,8 +125,10 @@ def make_dropped(rules, index_dir: str | None = None):
 
     Returning True for any means: this path or a change under it must never
     cause a flush. That is load-bearing, not an optimization."""
+    from fused_render.logs import log_dir
+
     guard = MountGuard()
-    idx = norm(str(index_dir or ""))
+    own = [d for d in (norm(str(index_dir or "")), norm(log_dir())) if d]
 
     def dropped(path: str) -> bool:
         p = norm(str(path or ""))
@@ -125,7 +136,7 @@ def make_dropped(rules, index_dir: str | None = None):
             return True
         if guard.blocks(p):
             return True
-        if idx and (p == idx or p.startswith(idx + "/")):
+        if any(p == d or p.startswith(d + "/") for d in own):
             return True
         if is_inside_leaf_dir(p):
             return True
