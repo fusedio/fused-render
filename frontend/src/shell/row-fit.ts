@@ -430,14 +430,36 @@ export function useRowFit(
   // is live, and tearing the observer down and up for each (one sweep on
   // re-observe, one on the timer) would be two style passes a second.
   const readRef = useRef<() => void>(() => {});
+  // The floor as a ref, so the measurement below never closes over a stale
+  // value and the binding does not have to be remade when it flips.
+  const flooredRef = useRef(floored);
+  flooredRef.current = floored;
+  // What is observed right now, so a commit that leaves the scroller in place
+  // (every listing delta) keeps the observer and a commit that swaps it (the
+  // list arriving after the empty state, a cleared search, a recovered poll)
+  // rebinds. The ref is read in the effect, after the commit, which is the
+  // only moment it is current — and the effect runs on `epoch` precisely so
+  // it can see a scroller that was not there the last time (Bugbot, #1524:
+  // TaskList returns the empty state until rows arrive, so a binding made
+  // once on mount observed nothing, ever).
+  const bound = useRef<{ el: HTMLElement; ro: ResizeObserver } | null>(null);
+  const unbind = () => {
+    bound.current?.ro.disconnect();
+    bound.current = null;
+    readRef.current = () => {};
+  };
   useLayoutEffect(() => {
     // OFF MEANS NOTHING IS OBSERVED. The ladder arrived with the side peek and
     // it is part of what the flag turns off, so with the feature down there is
     // no ResizeObserver, no MutationObserver and no `data-fit` — the list is
     // the list this page has always rendered (shell/task-peek-flag.ts).
-    if (!enabled) return;
-    const el = ref.current;
-    if (!el) return;
+    const el = enabled ? ref.current : null;
+    if (!el) {
+      unbind();
+      return;
+    }
+    if (bound.current?.el === el) return;
+    unbind();
     let frame = 0;
     const read = () => {
       measureCosts(el, costs.current);
@@ -450,7 +472,9 @@ export function useRowFit(
         const row = rows[i];
         if (row) need = Math.max(need, rowNeed(row, costs.current));
       }
-      const next = pickRowFit({ floored, available: el.clientWidth, need, costs: costs.current });
+      const next = pickRowFit({
+        floored: flooredRef.current, available: el.clientWidth, need, costs: costs.current,
+      });
       setFit((cur) => (cur.level === next.level && cur.need === next.need ? cur : next));
     };
     // READ IN THE CALLBACK, not on a frame. A `requestAnimationFrame` hop is
@@ -476,6 +500,7 @@ export function useRowFit(
     // whose box did not change.
     const ro = new ResizeObserver(schedule);
     ro.observe(el);
+    bound.current = { el, ro };
     // NO MutationObserver ANY MORE (2026-10-09, Tasks latency design D5). It
     // watched the content for width changes — a poll landing new rows, a
     // folder chip appearing — and re-measured thirty rows' computed styles,
@@ -485,14 +510,15 @@ export function useRowFit(
     // the observer took 38 such frames down to 2). The content changes that
     // matter arrive with a LISTING, and the list says so through `epoch`
     // below; a row folding or unfolding is not one of them.
-    return () => {
-      readRef.current = () => {};
-      ro.disconnect();
-    };
-    // `floored` is in the deps because it changes the VERDICT, not the
-    // measurement: crossing the floor has to re-read at once, in the same
-    // commit the frame's own attribute lands in.
-  }, [ref, enabled, floored]);
+    // No cleanup here: the binding outlives this effect's re-runs on purpose
+    // (see `bound`); the unmount effect below releases it.
+  }, [ref, enabled, epoch]);
+  useLayoutEffect(() => unbind, []);
+  // `floored` changes the VERDICT, not the measurement: crossing the floor has
+  // to re-read at once, in the same commit the frame's own attribute lands in.
+  useLayoutEffect(() => {
+    readRef.current();
+  }, [floored]);
   // A NEW LISTING IS ONE TRAILING RE-READ. `epoch` is the rows array, a fresh
   // identity on every delta; the chips and titles it may have changed are
   // measured once, a second after the last one landed, off the commit — not

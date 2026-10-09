@@ -291,6 +291,8 @@ def reset_cache() -> None:
     _SCAN.clear()
     _FULL.clear()
     _WINDOW.clear()
+    with _GZ_LOCK:
+        _GZ_CACHE.clear()
     # The builder loop ends on the flag, but it is parked in `tasks_watch.wait`
     # — so bump the watcher to wake it, and JOIN it before the snapshot is
     # nulled and the watcher reset: a build still in flight would otherwise
