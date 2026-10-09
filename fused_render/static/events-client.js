@@ -237,7 +237,14 @@
     };
     s.onerror = function () { /* always followed by close */ };
     s.onclose = function () {
-      if (sock !== s && !opened) return;
+      // ONLY THE CURRENT SOCKET'S CLOSE IS NEWS. The watchdog (and
+      // disconnectIfIdle, and _reset) close a socket by hand and account for
+      // it then; its `onclose` lands a tick later, by which time a redial may
+      // already have said hello — and running onClosed for it would mark THAT
+      // socket closed (opened=false, every wire id forgotten) while leaving it
+      // in `sock`, so nothing would ever redial and every frame would be
+      // dropped until a reload (Bugbot, PR #1537).
+      if (sock !== s) return;
       onClosed(s);
     };
   }

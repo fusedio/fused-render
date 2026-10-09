@@ -23,7 +23,7 @@ interface Sub {
   open: boolean;
 }
 
-function fakeSubscribe() {
+function fakeSubscribe(path = "/p") {
   const subs: Sub[] = [];
   const subscribe: SubscribeLike = (topic, params, cb, opts) => {
     const sub: Sub = { topic, params, opts, cb: cb as Frame, open: true };
@@ -37,10 +37,10 @@ function fakeSubscribe() {
     subscribe,
     open: () => subs.filter((x) => x.open),
     snapshot: (mtime: number | null) => {
-      for (const x of subs) if (x.open) x.cb({ paths: [{ path: "/p", mtime }] }, null, { gen: null });
+      for (const x of subs) if (x.open) x.cb({ paths: [{ path, mtime }] }, null, { gen: null });
     },
     change: (mtime: number | null) => {
-      for (const x of subs) if (x.open) x.cb(null, { changes: [{ path: "/p", mtime }] }, { gen: null });
+      for (const x of subs) if (x.open) x.cb(null, { changes: [{ path, mtime }] }, { gen: null });
     },
     fail: () => {
       for (const x of subs) if (x.open) x.cb(null, null, { error: "paths: every entry must be an absolute path", status: 400 });
@@ -119,8 +119,8 @@ test("transcript tail: a read landing after the unsubscribe is dropped", async (
   expect(got).toEqual([]);
 });
 
-test("live preview: the snapshot is not a reload; every reported change is one", () => {
-  const bus = fakeSubscribe();
+test("live preview: a snapshot without the file is not a reload; every reported change is one", () => {
+  const bus = fakeSubscribe("/out/img.preview.png");
   let reloads = 0;
   const off = followPreview("/out/img.preview.png", () => (reloads += 1), bus.subscribe);
   expect(bus.subs.map((x) => [x.topic, x.params, x.opts])).toEqual([
@@ -135,6 +135,15 @@ test("live preview: the snapshot is not a reload; every reported change is one",
   expect(reloads).toBe(2);
   off();
   expect(bus.open()).toEqual([]);
+});
+
+test("live preview: a snapshot in which the file already exists is a reload (the first frame landed before the watch)", () => {
+  const bus = fakeSubscribe("/out/img.preview.png");
+  let reloads = 0;
+  const off = followPreview("/out/img.preview.png", () => (reloads += 1), bus.subscribe);
+  bus.snapshot(7);
+  expect(reloads).toBe(1);
+  off();
 });
 
 test("neither stage re-reads on a timer any more", () => {

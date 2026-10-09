@@ -111,11 +111,14 @@ export async function measureSizes(
 /** Calls `onMoved` each time this capability's Hub catalog build moves
  *  (`ai.hubcache {capability}` on the events bus: `{state, pagesDone,
  *  startedAt, blockedUntil}`, restatted server-side while anyone listens).
- *  The first frame is only where the build stands now — the search that
- *  reported "building" just ran — so it is the baseline, not a move; every
- *  later snapshot that differs from the last one is. An error frame is
- *  ignored (the server says again). Returns the unsubscribe; `subscribe` is
- *  the test seam. */
+ *  The first frame is where the build stands now: a baseline when it is
+ *  still building (the search that reported "building" just ran), but a move
+ *  when the build has already finished or been blocked between that POST and
+ *  this subscribe — the server pushes only on change, so without re-asking
+ *  here the pane would wear the build banner until something else moved
+ *  (Bugbot, PR #1537). Every later snapshot that differs from the last one is
+ *  a move. An error frame is ignored (the server says again). Returns the
+ *  unsubscribe; `subscribe` is the test seam. */
 export function followHubCache(
   capability: string,
   onMoved: () => void,
@@ -123,9 +126,10 @@ export function followHubCache(
 ): () => void {
   let last: string | null = null;
   return subscribe("ai.hubcache", { capability }, (snap, _delta, meta) => {
-    if (meta.error !== undefined || snap === null) return;
+    if (meta.error !== undefined || snap === null || snap === undefined) return;
     const sig = JSON.stringify(snap);
-    const moved = last !== null && sig !== last;
+    const state = (snap as { state?: string }).state;
+    const moved = last === null ? state !== "building" : sig !== last;
     last = sig;
     if (moved) onMoved();
   });

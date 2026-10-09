@@ -295,12 +295,15 @@ interface Run {
 
 
 /** Call `onChange` each time the worker rewrites its live preview, heard
- *  through `fs.watch` on the events bus. The snapshot that answers the
- *  subscription is only where the file stands now — the <img> already asked
- *  for it when it mounted — so only a reported change (the file appearing
- *  included) is a reload. An error frame (the watch refused) changes
- *  nothing: the <img>'s own onError owns a broken preview. Not `hiddenOk`.
- *  Returns the unsubscribe; `subscribe` is the test seam. */
+ *  through `fs.watch` on the events bus. Every reported change is a reload,
+ *  and so is a snapshot in which the file already exists: the <img> asked for
+ *  it when it mounted, and if the worker wrote the first frame between that
+ *  404 and this snapshot there is no later change to hear — the broken image
+ *  would stand until the next write (Bugbot, PR #1537). A snapshot with no
+ *  file yet is not a reload (the change that creates it is). An error frame
+ *  (the watch refused) changes nothing: the <img>'s own onError owns a broken
+ *  preview. Not `hiddenOk`. Returns the unsubscribe; `subscribe` is the test
+ *  seam. */
 export function followPreview(
   path: string,
   onChange: () => void,
@@ -310,8 +313,14 @@ export function followPreview(
     "fs.watch",
     { paths: [path] },
     (snap, delta, meta) => {
-      if (meta.error !== undefined || snap !== null || delta === null) return;
-      onChange();
+      if (meta.error !== undefined) return;
+      if (snap !== null && snap !== undefined) {
+        const rows = (snap as { paths?: { path: string; mtime: number | null }[] }).paths || [];
+        const present = rows.some((p) => p.path === path && p.mtime !== null && p.mtime !== undefined);
+        if (present) onChange();
+        return;
+      }
+      if (delta !== null) onChange();
     },
     { hiddenOk: false },
   );
