@@ -18,8 +18,8 @@ import { api, type BrowserOpBody, type BrowserRow, type ChromeProfile } from "..
 import { openLive } from "../lib/cdp";
 import { act } from "../state/store";
 import { askConfirm } from "./ask";
-import { DIALOG_CLASS, FOOTER_CLASS } from "./BotSettings";
 import { Row, Rows } from "./SettingsRow";
+import { CARD_CLASS, DIALOG_CLASS, DIALOG_SIZE, FOOTER_CLASS, HEADER_CLASS } from "./shell";
 
 const botsN = (n: number) => `${n} bot${n === 1 ? "" : "s"}`;
 
@@ -56,8 +56,8 @@ export function BrowsersDialog({ onClose }: { onClose: () => void }) {
 
   return (
     <Dialog open modal={false} onOpenChange={(open) => { if (!open && !busy.current) onClose(); }}>
-      <DialogContent showCloseButton={false} className={cn(DIALOG_CLASS, "flex max-h-[min(760px,90vh)] flex-col sm:max-w-[680px]")}>
-        <DialogHeader className="gap-1 px-6 pt-5 pb-4">
+      <DialogContent showCloseButton={false} className={cn(DIALOG_CLASS, DIALOG_SIZE)}>
+        <DialogHeader className={HEADER_CLASS}>
           <DialogTitle>Browsers</DialogTitle>
           <DialogDescription>The logins your bots use. Bots on one browser share its sign-ins: log in once, every bot on it stays in.</DialogDescription>
         </DialogHeader>
@@ -116,7 +116,7 @@ function BrowserCard({ r, profiles, run, confirm }: CardProps) {
   };
 
   return (
-    <section className="flex flex-col gap-3 rounded-xl border border-foreground/10 bg-foreground/[0.02] p-4" data-browser={r.id} aria-busy={pending || undefined}>
+    <section className={CARD_CLASS} data-browser={r.id} aria-busy={pending || undefined}>
       <div className="flex min-w-0 flex-col gap-1.5">
         <div className="flex min-w-0 items-center gap-2">
           {editing ? (

@@ -1,9 +1,10 @@
 // "+ New bot", after the preset chooser, on shadcn/ui: three things and a bot exists. Name, what it should do,
 // model; the effort menu sits behind the cog. Everything else (approvals, builds, browser profile, encryption,
 // trusted apps, the phone) has a first-run default that is right and lives in Settings once the bot exists. Enter
-// in Name creates; Escape, the backdrop and Cancel dismiss (null). Same black dialog as BotSettings.
-import { useEffect, useMemo, useRef, useState } from "react";
-import { ChevronRightIcon, Settings2Icon } from "lucide-react";
+// in Name creates; Escape, the backdrop and Cancel dismiss (null). The Settings-sized shell (dialogs/shell.ts) in
+// two columns: the avatar (its picker is a Popover on it) and the preset's playbooks on the left, the fields on the right.
+import { useEffect, useMemo, useState } from "react";
+import { Settings2Icon } from "lucide-react";
 import { cn } from "@platform/lib/utils";
 import { Button } from "@platform/shadcn/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@platform/shadcn/ui/dialog";
@@ -19,8 +20,8 @@ import { faceOf } from "../lib/face";
 import { newBotInit, type NewBotPick } from "../lib/presets";
 import { getState } from "../state/store";
 import type { BotDialogValue } from "./actions";
-import { pickFace } from "./ask";
-import { DIALOG_CLASS, FOOTER_CLASS } from "./BotSettings";
+import { FacePopover } from "./FacePopover";
+import { DIALOG_CLASS, DIALOG_SIZE, FOOTER_CLASS, HEADER_CLASS } from "./shell";
 
 export interface CreateBotProps {
   pick: NewBotPick;
@@ -45,8 +46,6 @@ export function CreateBot({ pick, onClose, onBack }: CreateBotProps) {
   const [superBrowser] = useState(() => { const s = getState().bots.find((b) => b.kind === "super"); return s ? browserOf(s) : ""; });
   const [share, setShare] = useState(() => !!superBrowser && groups.some((g) => g.id === superBrowser));
   const [shareWith, setShareWith] = useState(() => (groups.some((g) => g.id === superBrowser) ? superBrowser : groups[0]?.id || ""));
-  const [showSkills, setShowSkills] = useState(false);
-  const busy = useRef(false);  // the face picker (a sibling modal) is up: its clicks are not outside presses to act on
 
   // The avatar subject: the face is hashed from the name the dialog opened with until one is picked.
   const bm = useMemo(() => ({ name: fresh.name, face }), [fresh.name, face]);
@@ -63,25 +62,31 @@ export function CreateBot({ pick, onClose, onBack }: CreateBotProps) {
     browserId: share && groups.some((g) => g.id === shareWith) ? shareWith : "",
   });
   const ok = () => { if (name.trim()) onClose(read()); };
-  const editAvatar = async () => {
-    busy.current = true;
-    try { setFace(await pickFace(bm, (d) => setFace(d))); } finally { busy.current = false; }
-  };
 
   return (
-    <Dialog open modal={false} onOpenChange={(open) => { if (!open && !busy.current) onClose(null); }}>
-      <DialogContent showCloseButton={false} className={cn(DIALOG_CLASS, "flex max-h-[90vh] flex-col sm:max-w-[480px]")}>
-        <DialogHeader className="shrink-0 gap-1 px-6 pt-5 pb-4">
+    <Dialog open modal={false} onOpenChange={(open) => { if (!open) onClose(null); }}>
+      <DialogContent showCloseButton={false} className={cn(DIALOG_CLASS, DIALOG_SIZE)}>
+        <DialogHeader className={HEADER_CLASS}>
           <DialogTitle>{fresh.title}</DialogTitle>
           <DialogDescription className="sr-only">Name it, say what it should do, pick a model.</DialogDescription>
         </DialogHeader>
-        <FieldGroup className="min-h-0 overflow-y-auto px-6 pb-5">
-          <button type="button" disabled={isSuper} onClick={() => { void editAvatar(); }}
-            className="group flex w-fit cursor-pointer appearance-none flex-col items-center gap-2 self-center rounded-lg border-0 bg-transparent p-0 outline-none focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-default"
-            title={isSuper ? "Super Bot's avatar is fixed" : "Edit avatar"}>
-            <span className="size-20 [&>svg]:block [&>svg]:size-full"><Face b={bm} /></span>
-            {isSuper ? null : <span className="text-xs text-muted-foreground group-hover:text-foreground">Edit avatar</span>}
-          </button>
+        <div className="flex min-h-0 flex-1 gap-8 px-6 pb-5">
+          <aside className="flex w-64 shrink-0 flex-col items-center gap-5 self-start">
+            <FacePopover subject={bm} onPick={setFace} disabled={isSuper} className="w-fit flex-col gap-2" title={isSuper ? "Super Bot's avatar is fixed" : "Edit avatar"}>
+              <span className="size-28 [&>svg]:block [&>svg]:size-full"><Face b={bm} /></span>
+              {isSuper ? null : <span className="text-xs text-muted-foreground group-hover:text-foreground">Edit avatar</span>}
+            </FacePopover>
+            {fresh.skills.length ? (
+              <div className="w-full text-sm">
+                <div className="mb-1.5 font-medium">Comes with {fresh.skills.length} playbooks</div>
+                <ul className="m-0 flex list-disc flex-col gap-0.5 pl-5 text-[13px] text-muted-foreground">
+                  {fresh.skills.map((sk) => <li key={sk}>{sk}</li>)}
+                </ul>
+                <p className="mt-2 mb-0 text-[13px] text-muted-foreground">Edit them under Settings › Skills once the bot exists.</p>
+              </div>
+            ) : fresh.presetNote ? <p className="m-0 w-full text-[13px] text-muted-foreground">{fresh.presetNote}</p> : null}
+          </aside>
+          <FieldGroup className="min-h-0 min-w-0 flex-1 overflow-y-auto">
           <Field>
             <FieldLabel htmlFor="bmname">Name</FieldLabel>
             <Input id="bmname" placeholder="e.g. LinkedIn scout" value={name} onChange={(e) => setName(e.target.value)}
@@ -135,27 +140,10 @@ export function CreateBot({ pick, onClose, onBack }: CreateBotProps) {
               <FieldDescription>How much it thinks per step. Applies from the next task.</FieldDescription>
             </Field>
           ) : null}
-          {fresh.skills.length ? (
-            <div className="-mt-2 text-sm text-muted-foreground">
-              <button type="button" aria-expanded={showSkills} onClick={() => setShowSkills((v) => !v)}
-                className="inline-flex cursor-pointer items-center gap-1 appearance-none border-0 bg-transparent p-0 text-inherit hover:text-foreground">
-                <ChevronRightIcon className={cn("size-3.5 transition-transform", showSkills && "rotate-90")} />
-                Comes with {fresh.skills.length} playbooks
-              </button>
-              {showSkills ? (
-                <ul className="mt-1.5 mb-0 list-disc space-y-0.5 pl-5">
-                  {fresh.skills.map((sk) => <li key={sk}>{sk}</li>)}
-                  <li className="list-none -ml-5 pt-1 opacity-80">Edit them under Skills once the bot exists.</li>
-                </ul>
-              ) : null}
-            </div>
-          ) : null}
-          <FieldDescription className="-mt-2">
-            {fresh.skills.length ? "" : fresh.presetNote ? fresh.presetNote + " " : ""}
-            {isSuper ? "" : "It asks you before anything it cannot undo; change that and more under Settings once it exists."}
-          </FieldDescription>
-        </FieldGroup>
-        <DialogFooter className={cn(FOOTER_CLASS, "shrink-0 sm:justify-between")}>
+          {isSuper ? null : <FieldDescription className="-mt-2">It asks you before anything it cannot undo; change that and more under Settings once it exists.</FieldDescription>}
+          </FieldGroup>
+        </div>
+        <DialogFooter className={cn(FOOTER_CLASS, "sm:justify-between")}>
           <Button variant="outline" size="icon" aria-pressed={more} aria-label="Thinking effort" title={more ? "Hide the thinking setting" : "Thinking effort"}
             className={cn(more && "bg-foreground text-background hover:bg-foreground hover:text-background dark:bg-foreground dark:text-background dark:hover:bg-foreground")} onClick={() => setMore((m) => !m)}>
             <Settings2Icon />

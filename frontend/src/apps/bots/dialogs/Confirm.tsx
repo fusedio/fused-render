@@ -1,50 +1,59 @@
-// #cmodal (OpenBot dialogs.js askConfirm): renders the head of the confirm queue (dialogs/ask.ts). Enter = OK,
-// Escape / Cancel / the backdrop = no. The key listener runs in the capture phase and stops propagation so nothing
+// The in-app confirm (OpenBot dialogs.js askConfirm): renders the head of the confirm queue (dialogs/ask.ts) on the
+// shadcn shell, content-height, above every page dialog (z-[60]; it is also mounted after the dialog slot). Enter = OK,
+// Escape / Cancel / an outside press = no. The key listener runs in the capture phase and stops propagation so nothing
 // underneath (the bot dialog's Enter, the live view's Esc) also reacts. Cancel takes focus on open (the first field for
-// the auth / prompt variants).
+// the auth / prompt variants). Non-modal like every dialog here: the page dialog under it holds its `busy` ref instead.
 import { useEffect, useRef } from "react";
+import { cn } from "@platform/lib/utils";
+import { Button } from "@platform/shadcn/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@platform/shadcn/ui/dialog";
+import { Input } from "@platform/shadcn/ui/input";
 import { settleConfirm, useConfirm } from "./ask";
+import { DIALOG_CLASS, FOOTER_CLASS, HEADER_CLASS } from "./shell";
 
 export function Confirm() {
   const c = useConfirm();
   const cancelRef = useRef<HTMLButtonElement>(null);
-  const userRef = useRef<HTMLInputElement>(null);
-  const passRef = useRef<HTMLInputElement>(null);
-  const textRef = useRef<HTMLInputElement>(null);
-  const creds = () => ({ user: userRef.current?.value ?? "", pass: passRef.current?.value ?? "", text: textRef.current?.value ?? "" });
+  const byId = (id: string) => document.getElementById(id) as HTMLInputElement | null;
+  const creds = () => ({ user: byId("cmuser")?.value ?? "", pass: byId("cmpass")?.value ?? "", text: byId("cmtext-in")?.value ?? "" });
   useEffect(() => {
     if (!c) return;
-    if (c.fields === "prompt" && textRef.current) { textRef.current.value = c.defaultValue ?? ""; textRef.current.focus(); textRef.current.select(); }
-    else (c.fields === "auth" ? userRef.current : cancelRef.current)?.focus();
+    // A tick later than the dialog's own initial focus, so this lands after it.
+    const t = window.setTimeout(() => {
+      if (c.fields === "prompt") { const el = byId("cmtext-in"); if (el) { el.value = c.defaultValue ?? ""; el.focus(); el.select(); } }
+      else if (c.fields === "auth") byId("cmuser")?.focus();
+      else cancelRef.current?.focus();
+    }, 0);
     const key = (e: KeyboardEvent) => {
       if (e.key === "Escape") { e.stopPropagation(); settleConfirm(c.id, false); }
       else if (e.key === "Enter") { e.stopPropagation(); e.preventDefault(); settleConfirm(c.id, true, creds()); }
     };
     document.addEventListener("keydown", key, true);
-    return () => document.removeEventListener("keydown", key, true);
+    return () => { window.clearTimeout(t); document.removeEventListener("keydown", key, true); };
   }, [c]);
   return (
-    <div id="cmodal" className={`modal${c ? " show" : ""}`} role="alertdialog" aria-modal="true" aria-labelledby="cmtitle"
-      onClick={(e) => { if (c && e.target === e.currentTarget) settleConfirm(c.id, false); }}>
-      <div className="box">
-        <h3 id="cmtitle">{c?.title ?? "Delete?"}</h3>
-        <p id="cmtext">{c?.text ?? ""}</p>
+    <Dialog open={!!c} modal={false} onOpenChange={(open) => { if (!open && c) settleConfirm(c.id, false); }}>
+      <DialogContent showCloseButton={false} id="cmodal" role="alertdialog" className={cn(DIALOG_CLASS, "z-[60] flex flex-col sm:max-w-[420px]")}>
+        <DialogHeader className={HEADER_CLASS}>
+          <DialogTitle id="cmtitle">{c?.title ?? "Delete?"}</DialogTitle>
+          <DialogDescription id="cmtext" className="text-foreground/90">{c?.text ?? ""}</DialogDescription>
+        </DialogHeader>
         {c?.fields === "prompt" ? (
-          <div className="authfields">
-            <input ref={textRef} id="cmtext-in" type="text" aria-label="Your answer" autoComplete="off" autoCapitalize="off" spellCheck={false} />
+          <div className="flex flex-col gap-2 px-6 pb-5">
+            <Input id="cmtext-in" type="text" aria-label="Your answer" autoComplete="off" autoCapitalize="off" spellCheck={false} />
           </div>
         ) : null}
         {c?.fields === "auth" ? (
-          <div className="authfields">
-            <input ref={userRef} id="cmuser" type="text" placeholder="User name" autoComplete="username" autoCapitalize="off" spellCheck={false} />
-            <input ref={passRef} id="cmpass" type="password" placeholder="Password" autoComplete="current-password" />
+          <div className="flex flex-col gap-2 px-6 pb-5">
+            <Input id="cmuser" type="text" placeholder="User name" autoComplete="username" autoCapitalize="off" spellCheck={false} />
+            <Input id="cmpass" type="password" placeholder="Password" autoComplete="current-password" />
           </div>
         ) : null}
-        <div className="row">
-          <button id="cmcancel" ref={cancelRef} onClick={() => c && settleConfirm(c.id, false)}>Cancel</button>
-          <button id="cmok" className={c && !c.danger ? "primary" : "danger"} onClick={() => c && settleConfirm(c.id, true, creds())}>{c?.okLabel ?? "Delete"}</button>
-        </div>
-      </div>
-    </div>
+        <DialogFooter className={FOOTER_CLASS}>
+          <Button id="cmcancel" ref={cancelRef} variant="outline" onClick={() => c && settleConfirm(c.id, false)}>Cancel</Button>
+          <Button id="cmok" variant={c && !c.danger ? "default" : "destructive"} onClick={() => c && settleConfirm(c.id, true, creds())}>{c?.okLabel ?? "Delete"}</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

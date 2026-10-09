@@ -1,5 +1,5 @@
 // The bot context menu (OpenBot chat.js openMenu, #cmenu) for the store's ui.menu request: right-click on a list row,
-// or the preview header's ☰ (full + live, alignRight). Rows and icons come from menuIcons.tsx. Clamped into the window
+// or the preview header's ☰ (live, alignRight). Rows and icons come from menuIcons.tsx. Clamped into the window
 // once laid out; closes on an outside click, Escape and window blur.
 import { useEffect, useLayoutEffect, useRef } from "react";
 import { cloneBot, deleteBot, exportBot } from "../dialogs/actions";
@@ -22,7 +22,7 @@ export function runMenuAction(a: MenuAction, b: Bot): void {
   select(id);
   if (a === "export") { void exportBot(cur()); return; }
   if (a === "delete") { void deleteBot(cur()); return; }
-  openDialog({ kind: a, id });  // settings, routines, skills
+  openDialog({ kind: "settings", id, ...(a === "settings" ? {} : { tab: a }) });  // settings, or its Skills / Routines section
 }
 
 export function BotMenu() {

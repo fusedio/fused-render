@@ -78,7 +78,7 @@ describe("newBotInit", () => {
     expect(v).toEqual({
       title: "New LinkedIn bot", name: "LinkedIn bot", model: "haiku", instructions: "Browse LinkedIn.",
       face: { icon: "linkedin", color: "#0a66c2" }, preset: "linkedin",
-      presetNote: "Comes with 2 playbooks: Find recruiters, Summarize my feed. Edit them under Skills once the bot exists.",
+      presetNote: "Comes with 2 playbooks: Find recruiters, Summarize my feed. Edit them under Settings › Skills once the bot exists.",
       skills: ["Find recruiters", "Summarize my feed"],
     });
   });
@@ -88,7 +88,7 @@ describe("newBotInit", () => {
     });
   });
   test("presetNote counts the playbooks", () => {
-    expect(presetNote({ skills: ["a"] })).toBe("Comes with 1 playbooks: a. Edit them under Skills once the bot exists.");
+    expect(presetNote({ skills: ["a"] })).toBe("Comes with 1 playbooks: a. Edit them under Settings › Skills once the bot exists.");
   });
 });
 

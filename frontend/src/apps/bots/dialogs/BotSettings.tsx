@@ -1,13 +1,17 @@
 // Settings (edit an existing bot), on shadcn/ui (owner's ask, 2026-10-07: "the entire settings modal black, use
-// shadcn"): a Dialog with a rail of sections — General · Permissions · Browser · Memory, plus Phone on Super Bot
-// (the one bot reachable over iMessage, docs §10) — and one setting per row (SettingsRow.tsx): its name and one line of why on the left, the control on the right.
+// shadcn"): a Dialog with a rail of sections — General · Permissions · Browser · Skills · Routines · Memory, plus
+// Phone on Super Bot (the one bot reachable over iMessage, docs §10; Super Bot has no Routines) — and one setting per
+// row (SettingsRow.tsx): its name and one line of why on the left, the control on the right. Skills and Routines
+// (once their own dialogs behind the ☰ menu, folded in 2026-10-09) are lists whose every op posts at once, like the
+// page-wide switches on Browser; they never touch the snapshot or Save.
 // Every control keeps its backend key. The form is a snapshot of the bot as the dialog opened (later polls never
 // reset what you typed); Save stays greyed until something differs from that snapshot. Escape and the backdrop
 // close at once when nothing changed and ask first otherwise; Enter in Name is Save.
 //
-// Base UI only coordinates dialogs through the React tree: the page's own confirm and face picker are siblings in
-// the bots portal host, so a click in either reads as an OUTSIDE press here and would fire onOpenChange(false). The
-// `busy` ref covers the time one of them is up, and the dialog is non-modal so its focus trap never fights theirs.
+// Base UI only coordinates dialogs through the React tree: the page's own confirm is a sibling in the bots portal
+// host, so a click in it reads as an OUTSIDE press here and would fire onOpenChange(false). The `busy` ref covers the
+// time it is up (`confirm` below is what the sections call), and the dialog is non-modal so its focus trap never
+// fights the confirm's. The avatar picker is a Popover anchored here, so it needs no such guard.
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@platform/shadcn/ui/button";
 import { Checkbox } from "@platform/shadcn/ui/checkbox";
@@ -23,15 +27,15 @@ import { EFFORTS, loginGroups, loginHint, loginLabel, loginValue, modelsFor, nor
 import { faceOf } from "../lib/face";
 import { act, autoStage, getState, setAutoStage, setSounds, soundsOn } from "../state/store";
 import type { BotDialogValue } from "./actions";
-import { askConfirm, pickFace } from "./ask";
+import { askConfirm } from "./ask";
+import { FacePopover } from "./FacePopover";
 import { PhoneSection } from "./PhoneSection";
+import { RoutinesSection } from "./RoutinesSection";
 import { Row, Rows } from "./SettingsRow";
+import { DIALOG_CLASS, DIALOG_SIZE, FOOTER_CLASS, HEADER_CLASS } from "./shell";
+import { SkillsSection } from "./SkillsSection";
 
-export type SettingsTab = "general" | "permissions" | "browser" | "memory" | "phone";
-
-/** The dialog's look, shared with CreateBot: black, stock shadcn everything else. */
-export const DIALOG_CLASS = "bots-dialog gap-0 overflow-hidden p-0";  // surface per theme in bots.css (.bots-dialog); ring from the shadcn dialog
-export const FOOTER_CLASS = "mx-0 mb-0 rounded-b-xl border-t border-foreground/10 bg-foreground/[0.03] px-6 py-4";
+export type SettingsTab = "general" | "permissions" | "browser" | "skills" | "routines" | "memory" | "phone";
 
 export interface BotSettingsProps {
   bot: Bot;
@@ -42,7 +46,8 @@ export interface BotSettingsProps {
 
 export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
   const isSuper = bot.kind === "super";
-  const tabs: [SettingsTab, string][] = [["general", "General"], ["permissions", "Permissions"], ["browser", "Browser"], ["memory", "Memory"],
+  const tabs: [SettingsTab, string][] = [["general", "General"], ["permissions", "Permissions"], ["browser", "Browser"], ["skills", "Skills"],
+    ...(isSuper ? [] : [["routines", "Routines"] as [SettingsTab, string]]), ["memory", "Memory"],
     ...(isSuper ? [["phone", "Phone"] as [SettingsTab, string]] : [])];
   const [tab, setTab] = useState<SettingsTab>(() => (tabs.some(([t]) => t === tab0) ? (tab0 as SettingsTab) : "general"));
   // What the dialog opened with (OpenBot's botDialog arguments).
@@ -78,7 +83,7 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
   const sharedNames = (bot.shared_with || []).map((o) => o.name).join(", ");
   const appliesToAll = sharedNames ? ` Applies to every bot sharing these logins (${sharedNames}).` : "";
   const [face, setFace] = useState<FaceT | null | undefined>(bot.face);
-  const busy = useRef(false);  // a sibling modal (confirm, face picker) is up: outside presses are theirs
+  const busy = useRef(false);  // the confirm (a sibling modal) is up: outside presses are its
 
   const bm = useMemo(() => ({ id: bot.id, name: init.name, face }), [bot.id, init.name, face]);
   const read = (): BotDialogValue => ({ name: name.trim(), model, effort, instructions, memory, approval, buildAccess, encrypt, profile,
@@ -109,25 +114,24 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
   }, [tab]);
 
   const ok = () => { if (!okDisabled) onClose(read()); };
-  const editAvatar = async () => {
+  /** askConfirm with the dialog held open while it is up (the sections' deletes, the dirty guard). */
+  const confirm = async (title: string, text: string, okLabel?: string, danger?: boolean) => {
     busy.current = true;
-    try { setFace(await pickFace(bm, (d) => setFace(d))); } finally { busy.current = false; }
+    try { return await askConfirm(title, text, okLabel, danger); } finally { busy.current = false; }
   };
   // Escape / backdrop: at once when clean, after a confirm when dirty (Discard, or Cancel to keep editing).
   const tryClose = async () => {
     if (busy.current) return;
     if (okDisabled) { onClose(null); return; }
-    busy.current = true;
-    try { if (await askConfirm("Discard changes?", "You have unsaved changes to this bot's settings.", "Discard")) onClose(null); }
-    finally { busy.current = false; }
+    if (await confirm("Discard changes?", "You have unsaved changes to this bot's settings.", "Discard")) onClose(null);
   };
 
   return (
     <Dialog open modal={false} onOpenChange={(open) => { if (!open) void tryClose(); }}>
-      <DialogContent showCloseButton={false} className={cn(DIALOG_CLASS, "flex h-[min(760px,90vh)] flex-col sm:max-w-[880px]")}>
-        <DialogHeader className="gap-1 px-6 pt-5 pb-4">
+      <DialogContent showCloseButton={false} className={cn(DIALOG_CLASS, DIALOG_SIZE)}>
+        <DialogHeader className={HEADER_CLASS}>
           <DialogTitle>Settings · {n || init.name}</DialogTitle>
-          <DialogDescription className="sr-only">How this bot thinks, what it may do without asking, its browser, its memory{isSuper ? " and your phone" : ""}.</DialogDescription>
+          <DialogDescription className="sr-only">How this bot thinks, what it may do without asking, its browser, its playbooks{isSuper ? "" : ", its routines"}, its memory{isSuper ? " and your phone" : ""}.</DialogDescription>
         </DialogHeader>
         <div className="flex min-h-0 flex-1 gap-6 px-6 pb-5">
           <nav className="-ml-2.5 flex w-36 shrink-0 flex-col gap-0.5 self-start" aria-label="Settings sections">
@@ -149,12 +153,10 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
                 </Row>
                 {/* Super Bot's avatar is the fixed Claude mark: no picker (the backend refuses a change too). */}
                 <Row title="Avatar" text={isSuper ? "Super Bot's mark is fixed." : "Shape and colour; the bot's face in the list and the chat."}>
-                  <button type="button" disabled={isSuper} onClick={() => { void editAvatar(); }}
-                    className="group flex cursor-pointer appearance-none items-center gap-2.5 rounded-lg border-0 bg-transparent p-0 outline-none focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-default"
-                    title={isSuper ? "Super Bot's avatar is fixed" : "Edit avatar"}>
+                  <FacePopover subject={bm} onPick={setFace} disabled={isSuper} title={isSuper ? "Super Bot's avatar is fixed" : "Edit avatar"}>
                     {isSuper ? null : <span className="text-[13px] text-muted-foreground group-hover:text-foreground">Change</span>}
                     <span className="size-9 [&>svg]:block [&>svg]:size-full"><Face b={bm} /></span>
-                  </button>
+                  </FacePopover>
                 </Row>
                 <Row title="What it should do" text="Standing rules for every task." htmlFor="bminstr" stack>
                   <Textarea id="bminstr" rows={3} value={instructions} onChange={(e) => setInstructions(e.target.value)} className="max-h-64"
@@ -245,6 +247,9 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
                 </Row>
               </Rows>
             ) : null}
+
+            {tab === "skills" ? <SkillsSection b={bot} confirm={confirm} /> : null}
+            {tab === "routines" && !isSuper ? <RoutinesSection b={bot} confirm={confirm} /> : null}
 
             {tab === "memory" ? (
               <Rows>

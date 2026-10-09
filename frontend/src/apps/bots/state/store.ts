@@ -20,9 +20,9 @@ export interface Toast { id: number; text: string; label: string; dot: string; t
 export interface BuildsChip { n: string; live: boolean; warn: boolean; fresh: boolean; title: string; hidden: boolean }
 /** A dialog another module asked for. Known kinds: newBot, settings, routines, skills, usage (dialogs/Dialogs.tsx owns them).
  *  newBot without `pick` is the preset chooser (#pmodal); with `pick` it is the bot dialog filled in from that pick. */
-export interface DialogReq { kind: "newBot" | "settings" | "routines" | "skills" | "usage" | (string & {}); id?: string | null; pick?: NewBotPick; [k: string]: unknown }
-/** The bot context menu (components/BotMenu.tsx): openMenu(id, x, y, full, live, alignRight) in OpenBot. */
-export interface MenuReq { id: string; x: number; y: number; full?: boolean; live?: boolean; alignRight?: boolean }
+export interface DialogReq { kind: "newBot" | "settings" | "usage" | "browsers" | (string & {}); id?: string | null; pick?: NewBotPick; [k: string]: unknown }
+/** The bot context menu (components/BotMenu.tsx): openMenu(id, x, y, live, alignRight); one row set wherever it opens. */
+export interface MenuReq { id: string; x: number; y: number; live?: boolean; alignRight?: boolean }
 export type PanelName = "builds" | "apps" | "prefs";
 
 export interface BotsState {

@@ -28,15 +28,16 @@ export const MI: Record<MenuIcon, ReactNode> = {
 export type MenuAction = "live" | "settings" | "routines" | "skills" | "export" | "clone" | "cloneCopy" | "pin" | "hide" | "read" | "delete";
 export type MenuItem = { a: MenuAction; label: string; icon: ReactNode; danger?: boolean } | "hr";
 
-/** openMenu's rows, in order. full: the header ☰ menu (routines, skills, export); live: lead with "Open live view". */
-export function menuItems(b: Bot, opts: { full?: boolean; live?: boolean } = {}): MenuItem[] {
-  const { full, live } = opts, out: MenuItem[] = [], ea = b.kind === "super";
+/** openMenu's rows, in order, the same wherever the menu opens (a row's right-click or the preview header's ☰, which
+ *  alone leads with "Open live view"). Skills… and Routines… open Settings on that section. */
+export function menuItems(b: Bot, opts: { live?: boolean } = {}): MenuItem[] {
+  const { live } = opts, out: MenuItem[] = [], ea = b.kind === "super";
   if (live) out.push({ a: "live", label: "Open live view", icon: MI.live }, "hr");
   out.push({ a: "settings", label: "Settings…", icon: MI.settings });
   // Super Bot takes tasks from the chat only and there is one per Mac: no routines, no clone (the backend refuses both).
-  if (full && !ea) out.push({ a: "routines", label: "Routines…", icon: MI.routines });
-  if (full) out.push({ a: "skills", label: "Skills…", icon: MI.skills });
-  if (full) out.push({ a: "export", label: "Export transcript…", icon: MI.export });
+  out.push({ a: "skills", label: "Skills…", icon: MI.skills });
+  if (!ea) out.push({ a: "routines", label: "Routines…", icon: MI.routines });
+  out.push({ a: "export", label: "Export transcript…", icon: MI.export });
   // Clone shares the source's logins (one browser); the second row is the old behaviour, a copy of them.
   if (!ea) out.push({ a: "clone", label: "Clone", icon: MI.clone }, { a: "cloneCopy", label: "Clone with a copy of its logins", icon: MI.clone });
   out.push("hr",
