@@ -988,6 +988,21 @@ button.hw-row:hover {
 }
 .hw-icons.is-strip::-webkit-scrollbar { display: none; }
 
+/* The icons strip fills the height its tile really has, so CardStrip can
+   measure it and draw as many rows as fit. */
+.hw-body:has(> .hw-strip > .hw-icons) {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.hw-body > .hw-strip:has(> .hw-icons) {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.hw-strip > .hw-icons.is-strip {
+  height: 100%;
+}
+
 .hw-tile {
   display: flex;
   flex-direction: column;
