@@ -394,7 +394,7 @@ function patch(layout: HomeLayout, id: string, fn: (w: Widget) => Widget | null)
     width needs. Refused (same object) when the new footprint is not free. */
 export function setSize(layout: HomeLayout, id: string, size: WidgetSize): HomeLayout {
   const w = layout.widgets.find((x) => x.id === id);
-  if (!w || (w.size === size && w.cols === undefined) || !SOURCES[w.source].sizes.includes(size)) return layout;
+  if (!w || (w.size === size && w.cols === undefined) || !sizesFor(w.source, w.format).includes(size)) return layout;
   const { cols, rows } = dimsFor(w.source, size);
   const x = Math.min(w.x, GRID_COLS - cols);
   if (!canPlace(layout.widgets, { x, y: w.y, cols, rows }, id)) return layout;

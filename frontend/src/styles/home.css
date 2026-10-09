@@ -2663,3 +2663,16 @@ a.hw-more:hover {
 }
 .hw-widget.is-app .hw-body { display: flex; flex-direction: column; min-height: 0; }
 .hw-widget.is-app .hw-app-iframe { border-radius: 0; }
+
+/* Size chips show their cell dimensions after the name. */
+.hw-sizechip-dims {
+  margin-left: 4px;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+.hw-sizechip.is-on .hw-sizechip-dims { color: inherit; }
+.hw-sizechip:disabled,
+.hw-pick:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}

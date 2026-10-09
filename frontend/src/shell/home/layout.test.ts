@@ -1070,3 +1070,9 @@ test("setFormat refuses icons on a short tile", () => {
   const l = lay({ ...w("a", "apps", "2x1", "cards"), x: 0, y: 0 });
   expect(setFormat(l, "a", "icons")).toBe(l);
 });
+
+test("setSize refuses a size too short for the tile's format", () => {
+  const l = lay({ ...w("a", "apps", "2x2", "icons"), x: 0, y: 0 });
+  expect(setSize(l, "a", "2x1")).toBe(l);
+  expect(setSize(l, "a", "1x2").widgets[0].size).toBe("1x2");
+});

@@ -5,8 +5,8 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useDismissOnOutside } from "@platform/lib/dismissOnOutside";
 import { SourceIcon } from "./AddWidgetPanel";
-import { FormatPicks, ShowChips, SortChips } from "./Pickers";
-import { MAX_WIDGETS, SOURCES, rectOf, sourceFits, type TileTarget, type WidgetSource } from "./layout";
+import { FormatPicks, ShowChips, SizeChips, SortChips } from "./Pickers";
+import { FIXED_ROWS, MAX_WIDGETS, SOURCES, allowedSizes, dimsOf, rectOf, sizesFor, sourceFits, type TileTarget, type WidgetSource } from "./layout";
 import type { HomeLayoutApi } from "./useHomeLayout";
 
 const NEEDS_CHOICE = new Set<WidgetSource>(["folder", "app"]);
@@ -126,13 +126,25 @@ export function ChangeTile({
           );
         })}
       </div>
-      {widget && spec && (spec.formats.length > 1 || widget.source === "apps") ? (
+      {widget && spec && (spec.formats.length > 1 || widget.source === "apps" || spec.sizes.length > 1) ? (
         <>
           <div className="hw-pop-divider" />
           {spec.formats.length > 1 ? (
             <>
               <div className="hw-label">Show as</div>
-              <FormatPicks source={widget.source} formats={spec.formats} value={widget.format} onChange={(f) => api.reformat(widget.id, f)} />
+              <FormatPicks source={widget.source} formats={spec.formats} value={widget.format} rows={dimsOf(widget).rows} onChange={(f) => api.reformat(widget.id, f)} />
+            </>
+          ) : null}
+          {spec.sizes.length > 1 && !FIXED_ROWS[widget.source] ? (
+            <>
+              <div className="hw-label">Size</div>
+              <SizeChips
+                source={widget.source}
+                sizes={sizesFor(widget.source, widget.format)}
+                allowed={allowedSizes(layout, widget.id)}
+                value={widget.cols === undefined ? widget.size : undefined}
+                onChange={(s) => api.resize(widget.id, s)}
+              />
             </>
           ) : null}
           {widget.source === "apps" ? (

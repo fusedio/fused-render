@@ -1,8 +1,9 @@
 // The "Add a widget" sheet: a centred modal with the sources on the left and,
-// on the right, a large preview of the chosen look plus the format and size
-// picks. "Add to Home" appends with the chosen format and size. Opened from a
-// tile's Change popover (`target`) it configures one folder or page for that
-// tile instead: no size, and "Put in this tile" swaps or fills it.
+// on the right, a large preview of the chosen look plus the format picks.
+// "Add to Home" appends with the chosen format at the first size that format
+// fits; sizing lives on the tile's Change card. Opened from that popover
+// (`target`) it configures one folder or page for that tile instead, and
+// "Put in this tile" swaps or fills it.
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { contractHome, useHome } from "../../apps/explorer/listing/home-path";
 import { listDir, statPath, type FsEntry } from "@platform/lib/api";
@@ -28,8 +29,8 @@ import { useBookmarksVersion } from "@platform/lib/hooks";
 import { isTopmost, popModal, pushModal } from "@platform/ui/modal/esc-stack";
 import { isFolder, loadBookmarks, type BookmarkFolder, type BookmarkItem } from "@platform/lib/bookmarks";
 import { FormatPreview } from "./FormatPreview";
-import { FormatPicks, ShowChips, SizeChips, SortChips, stageZoom } from "./Pickers";
-import { GRID_COLS, MAX_WIDGETS, SOURCES, defaultFormat, dimsOf, hasSearch, type AppsSort, type TasksShow, type TileTarget, type WidgetFormat, type WidgetSize, type WidgetSource } from "./layout";
+import { FormatPicks, ShowChips, SortChips, stageZoom } from "./Pickers";
+import { GRID_COLS, MAX_WIDGETS, SOURCES, defaultFormat, dimsOf, hasSearch, sizesFor, type AppsSort, type TasksShow, type TileTarget, type WidgetFormat, type WidgetSource } from "./layout";
 import type { HomeLayoutApi } from "./useHomeLayout";
 import { AppGlyph } from "./widgets/AppsWidget";
 import { appName, useAllApps } from "./widgets/AppEmbedWidget";
@@ -95,7 +96,6 @@ export function AddWidgetPanel({
   const tileCols = target ? (target.kind === "swap" ? dimsOf(target.widget).cols : target.rect.cols) : GRID_COLS;
   const [source, setSource] = useState<WidgetSource>(SOURCE_KEYS[0]);
   const [format, setFormat] = useState<WidgetFormat>(defaultFormat(SOURCE_KEYS[0], tileCols));
-  const [size, setSize] = useState<WidgetSize>(SOURCES[SOURCE_KEYS[0]].sizes[0]);
   const [sort, setSort] = useState<AppsSort>("opened");
   const [show, setShow] = useState<TasksShow>("open_done");
   const [folderId, setFolderId] = useState<string | null>(null);
@@ -187,7 +187,6 @@ export function AddWidgetPanel({
   const pick = (s: WidgetSource) => {
     setSource(s);
     setFormat(defaultFormat(s, tileCols));
-    setSize(SOURCES[s].sizes[0]);
     setSort("opened");
     setShow("open_done");
   };
@@ -247,6 +246,8 @@ export function AddWidgetPanel({
   };
 
   const add = () => {
+    // Sizing lives on the tile card; a new tile starts at the first size its format can be drawn in.
+    const size = sizesFor(source, format)[0];
     if (full || noFolders || noApps || (source === "app" && (urlMode ? !url : fileMode ? !fileOk : !chosenApp))) return;
     const opts =
       source === "folder"
@@ -511,12 +512,6 @@ export function AddWidgetPanel({
                   <FormatPicks source={source} formats={spec.formats} value={format} onChange={setFormat} />
                 </div>
               ) : null}
-              {target ? null : (
-                <div className="hw-opt">
-                  <span className="hw-label">Size</span>
-                  <SizeChips sizes={spec.sizes} value={size} onChange={setSize} />
-                </div>
-              )}
               {source === "apps" ? (
                 <div className="hw-opt">
                   <span className="hw-label">Sort by</span>

@@ -1,7 +1,7 @@
 // The two pickers the edit popover and the add sheet share: size chips (layout
 // glyph + label) and format picks (scaled preview thumbnail + caption).
 import { FormatPreview, previewKind } from "./FormatPreview";
-import { APPS_SORTS, FORMAT_LABELS, SIZE_LABELS, TASKS_SHOWS, type AppsSort, type TasksShow, type WidgetFormat, type WidgetSize, type WidgetSource } from "./layout";
+import { APPS_SORTS, CELL, FORMAT_LABELS, FORMAT_MIN_ROWS, SIZE_LABELS, dimsFor, TASKS_SHOWS, type AppsSort, type TasksShow, type WidgetFormat, type WidgetSize, type WidgetSource } from "./layout";
 import { SizeGlyph } from "./SizeGlyph";
 
 export function SortChips({ value, onChange }: { value: AppsSort; onChange: (s: AppsSort) => void }) {
@@ -38,12 +38,19 @@ export function sortSizes(sizes: WidgetSize[]): WidgetSize[] {
   return SIZE_ORDER.filter((s) => sizes.includes(s));
 }
 
+/** "2×2" in whole cells; empty for a fixed-row source whose height is a fraction of a cell. */
+export function cellDims(source: WidgetSource, size: WidgetSize): string {
+  const d = dimsFor(source, size);
+  return d.rows % CELL === 0 ? `${d.cols / CELL}\u00d7${d.rows / CELL}` : "";
+}
+
 export function SizeChips({
   sizes,
   value,
   onChange,
   label = "Size",
   allowed,
+  source,
 }: {
   sizes: WidgetSize[];
   value?: WidgetSize;
@@ -51,6 +58,8 @@ export function SizeChips({
   label?: string;
   /** Sizes that currently fit; the rest render disabled. Omit to allow all. */
   allowed?: WidgetSize[];
+  /** With a source, each chip shows its cell dimensions (Large 2×2). */
+  source?: WidgetSource;
 }) {
   return (
     <div className="hw-chips" role="radiogroup" aria-label={label}>
@@ -67,6 +76,7 @@ export function SizeChips({
         >
           <SizeGlyph size={s} scale={0.7} />
           {SIZE_LABELS[s]}
+          {source ? <span className="hw-sizechip-dims">{cellDims(source, s)}</span> : null}
         </button>
       ))}
     </div>
@@ -90,11 +100,14 @@ export function FormatPicks({
   formats,
   value,
   onChange,
+  rows,
 }: {
   source: WidgetSource;
   formats: WidgetFormat[];
   value: WidgetFormat;
   onChange: (f: WidgetFormat) => void;
+  /** The tile's height in units: a format that needs more is disabled. */
+  rows?: number;
 }) {
   return (
     <div className="hw-picks" role="radiogroup" aria-label="Show as">
@@ -105,6 +118,8 @@ export function FormatPicks({
           role="radio"
           aria-checked={f === value}
           className={"hw-pick" + (f === value ? " is-on" : "")}
+          disabled={rows !== undefined && f !== value && rows < (FORMAT_MIN_ROWS[f] ?? 0)}
+          title={rows !== undefined && f !== value && rows < (FORMAT_MIN_ROWS[f] ?? 0) ? "Needs a taller tile" : undefined}
           onClick={() => onChange(f)}
         >
           <span className="hw-thumb">
