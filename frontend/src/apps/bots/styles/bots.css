@@ -11,7 +11,7 @@
           anything else X            -> .bots-page X
         `html, body { height: 100% }` became "fill the shell's #content column"; the layout classes OpenBot set on
         <body> (lcol, rfit, dragging, hasapp…) sit on the root (lib/layout.ts); 40vw / 50vw in the grid became
-        40% / 50% (the shell sidebar takes width the page cannot use); keyframes are renamed bots-* so they never
+        40% / 50% (the shell sidebar takes width the page cannot use; the preview's 50% cap is gone since, see the grid); keyframes are renamed bots-* so they never
         collide with the shell's.
      2. The port's adjustments (bottom): shadcn token mapping (scoped), [data-slot] restyles, the portal host.
    Unlayered on purpose, like the original: it must beat Tailwind's layers inside the page. */
@@ -71,11 +71,13 @@ div.bots-page { margin: 0; display: flex; flex-direction: column; font-family: "
 .bots-page button.busy::before { content: ""; width: 12px; height: 12px; flex: none; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent; animation: bots-spin .7s linear infinite; }
 @media (prefers-reduced-motion: reduce) { .bots-page, .bots-page * { animation: none !important; transition: none !important; } }
 
-/* Columns: --lw/--rw are panel widths (set by the resize handles), --mid the thread's floor, --rmin the preview's; the middle is minmax(0,1fr) so content never pushes the preview off-screen. */
+/* Columns: --lw/--rw are panel widths (set by the resize handles), --mid the thread's floor, --rmin the preview's; the middle is minmax(0,1fr) so content never pushes the preview off-screen.
+   The preview's only ceiling is the room the thread floor leaves (lib/layout.ts roomFor; LIM.r has no max): OpenBot's 50vw cap here pinned it at half the window
+   while the drag went on collapsing the sidebar for room the track then never took. */
 div.bots-page { --lw: 280px; --rw: 400px; --mid: 450px; --rmin: 280px; --lweff: min(var(--lw), 40%); }
 /* .lcol = user collapsed the sidebar; .lfit = the window is too narrow for it, so it collapses itself (before the preview hides). */
 div.bots-page:is(.lcol, .lfit, .stage) { --lweff: 72px; }
-.bots-page main { flex: 1; display: grid; grid-template-columns: var(--lweff) 6px minmax(0, 1fr) 6px min(var(--rw), 50%, max(var(--rmin), calc(100% - var(--lweff) - 12px - var(--mid)))); min-height: 0; }
+.bots-page main { flex: 1; display: grid; grid-template-columns: var(--lweff) 6px minmax(0, 1fr) 6px min(var(--rw), max(var(--rmin), calc(100% - var(--lweff) - 12px - var(--mid)))); min-height: 0; }
 /* Panels slide open/shut: the tracks animate, so both states keep five of them (the hidden preview is a 0px track, clipped, not display:none). */
 .bots-page main { transition: grid-template-columns .3s cubic-bezier(.22,1,.36,1); }
 div.bots-page.dragging main { transition: none; }  /* a drag must track the pointer exactly... */
@@ -94,11 +96,13 @@ div.bots-page.rcol .gutter.r { pointer-events: auto; }
 /* .stage = the live view is open in the preview column (lib/layout.ts setStage, from the store's `fast`): the sidebar folds to icons (the
    :is(.lcol, .lfit, .stage) rules), chat becomes a --chatw rail and the preview column, now the live page, takes the rest. Wins over
    .rcol / .rfit (the preview IS the stage), so these come after them. Same track types as the default grid (length · fr · length) so the
-   columns interpolate: chat's 1fr resolves to exactly --chatw once the last track takes everything else. */
+   columns interpolate: chat's 1fr resolves to exactly --chatw once the last track takes everything else. The live page keeps at least
+   half of main (lib/layout.ts stageRoom: the rail drag stops there, a stretch further closes Stage), so a rail saved on a wider window cannot squeeze it. */
 div.bots-page { --chatw: 340px; }
-div.bots-page.stage main, div.bots-page.stage:is(.rcol, .rfit) main { grid-template-columns: var(--lweff) 6px minmax(0, 1fr) 6px max(0px, calc(100% - var(--lweff) - 12px - var(--chatw))); }
+div.bots-page.stage main, div.bots-page.stage:is(.rcol, .rfit) main { grid-template-columns: var(--lweff) 6px minmax(0, 1fr) 6px max(50%, calc(100% - var(--lweff) - 12px - var(--chatw))); }
 div.bots-page.stage .preview { visibility: visible; transition: none; }
 div.bots-page.stage .gutter.r { background: none; pointer-events: auto; }
+div.bots-page.stage .gutter.l { pointer-events: none; }  /* the sidebar is a forced icon rail here: a drag would only save a width the track never shows (or snap it collapsed) */
 /* The thumbnail, caption, info, toast, side-app strip and frame step aside for the live view (child combinator: #full's own .toast stays). */
 div.bots-page.stage .preview > :is(header, .shotwrap, .toast, .cap, .info, .sabar, #saframe) { display: none; }
 .bots-page .gutter { cursor: col-resize; position: relative; background: linear-gradient(var(--line), var(--line)) center / 1px 100% no-repeat; } /* the columns share one background, so the gutter carries the divider */
