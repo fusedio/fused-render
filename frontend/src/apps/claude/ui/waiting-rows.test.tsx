@@ -455,7 +455,7 @@ describe("the rows come from the server, which is what a reload reads", () => {
     // paint and for a chat that has no row at all.
     expect(CHAT).toContain("waitingFacts(sched.rec, admitAhead, claimedNext)");
     expect(WATCHER).toContain("queue_ahead_session?: string;");
-    expect(USE_SCHEDULE).toContain("if (!hasCard || !nextId) return;");
+    expect(USE_SCHEDULE).toContain("if (!hasCard || !nextId || !heldRows.current) return;");
   });
 
   it("keeps the optimistic row for the poll's own latency and no longer", () => {

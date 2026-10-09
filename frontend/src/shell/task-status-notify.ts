@@ -5,7 +5,7 @@
 //
 // Derives from the EXISTING task-status poll (tasksPulse.ts's
 // useTasksPulseRows) rather than adding a server channel, per the spec's own
-// "Sources" instruction — `/api/tasks`+`/api/tasks/changes`
+// "Sources" instruction — the `tasks.listing` feed (`/api/tasks` and its deltas)
 // (fused_render/server/routers/tasks.py `_status()`) already computes
 // `needs_attention` as its rule 0 and `in_progress`/`blocked`/`done` for
 // everything else. This file only watches for the three transitions the

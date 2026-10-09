@@ -274,6 +274,23 @@ const window = {
 };
 window.self = window;
 window.window = window;
+// The publish modal reads its four records off the events bus through
+// runtime.js's `_fusedWatchGithubSetup` hook (one frame at once, then one per
+// change). The probe stands in for runtime.js: a subscribe answers with the
+// fixture table merged into the frame shape the `github.setup` topic pushes.
+window._fusedWatchGithubSetup = (cb) => {
+  let on = true;
+  setTimeout(() => {
+    if (!on) return;
+    cb({
+      status: ghTable["/api/github/status"],
+      install: ghTable["/api/github/install"],
+      login: ghTable["/api/github/login"],
+      publish: ghTable["/api/github/publish"],
+    });
+  }, 0);
+  return () => { on = false; };
+};
 
 // ----------------------------------------------------------------- run it
 const scripts = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
