@@ -137,11 +137,36 @@ def test_text_endpoint_strips_ansi(client, logroot):
     assert client.get("/api/terminal/claude:zzz/text").status_code == 404
 
 
-def test_input_and_delete_refused_for_claude_tab(client, logroot):
+def _listed(client):
+    return [s["id"] for s in client.get("/api/terminal").json()["sessions"]]
+
+
+def test_input_refused_for_claude_tab(client, logroot):
     fake_cmd(logroot, "c1", "00000000001-1", "true", b"", code=0)
     assert client.post("/api/terminal/claude:c1/input", json={"data": "x"},
                        headers=H).status_code == 404
-    assert client.delete("/api/terminal/claude:c1", headers=H).status_code == 400
+
+
+def test_delete_dismisses_finished_claude_tab_until_a_new_command(client, logroot):
+    fake_cmd(logroot, "c1", "00000000001-1", "true", b"", code=0)
+    assert "claude:c1" in _listed(client)
+    assert client.delete("/api/terminal/claude:c1", headers=H).json() == {"ok": True}
+    assert "claude:c1" not in _listed(client)
+    # a command newer than the dismissal brings the chat back
+    marker = logroot / "c1" / claude_cmd_log.DISMISSED
+    os.utime(marker, (time.time() - 10, time.time() - 10))
+    fake_cmd(logroot, "c1", "00000000002-1", "true", b"", code=0)
+    assert "claude:c1" in _listed(client)
+
+
+def test_delete_refused_while_a_command_runs(client, logroot):
+    fake_cmd(logroot, "c1", "00000000001-1", "sleep 9", b"")  # no .exit, pid alive
+    assert client.delete("/api/terminal/claude:c1", headers=H).status_code == 409
+    assert "claude:c1" in _listed(client)
+
+
+def test_delete_unknown_claude_chat_is_404(client, logroot):
+    assert client.delete("/api/terminal/claude:nope", headers=H).status_code == 404
 
 
 def test_stop_requires_guard_and_known_chat(client, logroot):
@@ -248,3 +273,33 @@ def test_stream_poll_reads_only_new_bytes(logroot):
         f.write(b"0123456789")
     assert s.poll() == b"0123456789"
     assert s.poll() == b""
+
+
+def _age(path, secs):
+    t = time.time() - secs
+    os.utime(path, (t, t))
+
+
+def test_turn_ended_marker_hides_chat_until_newer_activity(logroot):
+    fake_cmd(logroot, "c1", "00000000001-1", "true", b"", code=0)
+    for f in (logroot / "c1").iterdir():
+        _age(f, 100)
+    assert [e["chat"] for e in claude_cmd_log.list_chats()] == ["c1"]
+    claude_cmd_log.mark("c1", claude_cmd_log.TURN_ENDED)
+    assert claude_cmd_log.list_chats() == []
+    # a marker OLDER than the last activity does not hide it
+    _age(logroot / "c1" / claude_cmd_log.TURN_ENDED, 500)
+    assert [e["chat"] for e in claude_cmd_log.list_chats()] == ["c1"]
+
+
+def test_markers_do_not_count_as_activity_and_mark_never_creates_dir(logroot):
+    fake_cmd(logroot, "c1", "00000000001-1", "true", b"", code=0)
+    for f in (logroot / "c1").iterdir():
+        _age(f, 100)
+    before = claude_cmd_log.last_activity("c1")
+    claude_cmd_log.mark("c1", claude_cmd_log.DISMISSED)
+    assert claude_cmd_log.last_activity("c1") == before
+    assert claude_cmd_log.command_ids("c1") == ["00000000001-1"]
+    claude_cmd_log.mark("ghost", claude_cmd_log.DISMISSED)
+    claude_cmd_log.mark("../x", claude_cmd_log.DISMISSED)
+    assert not (logroot / "ghost").exists()

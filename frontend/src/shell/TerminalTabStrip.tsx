@@ -22,8 +22,9 @@ export default function TerminalTabStrip({ tabs, activeId, onSelect, onClose, on
       {tabs.map((tab) => {
         const active = tab.id === activeId;
         if (tab.kind === "claude") {
-          // The read-only tab of what Claude is running: no close (it follows
-          // the chat, not the user), no Ask-Claude, a Stop while a command runs.
+          // The read-only tab of what Claude is running: no Ask-Claude, a Stop
+          // while a command runs, and a close only once nothing is running (the
+          // server refuses to dismiss a chat mid-command).
           return (
             <div
               key={tab.id}
@@ -45,6 +46,17 @@ export default function TerminalTabStrip({ tabs, activeId, onSelect, onClose, on
                   onClick={() => onStop(tab.id)}
                 >
                   ■
+                </button>
+              )}
+              {!tab.running && (
+                <button
+                  type="button"
+                  className="term-tab-close"
+                  aria-label={`Close ${tab.label}`}
+                  title="Close terminal (ends its shell)"
+                  onClick={() => onClose(tab.id)}
+                >
+                  ×
                 </button>
               )}
             </div>

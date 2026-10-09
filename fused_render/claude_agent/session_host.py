@@ -425,10 +425,31 @@ def main() -> None:
             "read_dirs": req["extra_read_dirs"],
         }, f)
 
-    _reap_loop(agent, run_dir, cli, host_json)
+    _reap_loop(agent, run_dir, cli, host_json,
+               chat_id=req["session_id"] or req.get("new_session_id", ""))
 
 
-def _reap_loop(agent, run_dir: str, cli, host_json: str) -> None:
+def _mark_cmd_log_turn_ended(agent, chat_id: str) -> None:
+    """Touch `<CMD_LOGS>/<chat>/.turn_ended` so the drawer's read-only Claude
+    tab for this chat goes away. The literal repeats `claude_cmd_log.TURN_ENDED`
+    (this file is a standalone script; a test pins the two equal). Never
+    creates the dir: a chat that ran no Bash command has no tab to hide."""
+    if not chat_id or agent._bad_id(chat_id):
+        return
+    log_dir = os.path.join(agent.CMD_LOGS, chat_id)
+    if not os.path.isdir(log_dir):
+        return
+    try:
+        path = os.path.join(log_dir, ".turn_ended")
+        with open(path, "a"):
+            pass
+        os.utime(path, None)
+    except OSError:
+        pass
+
+
+def _reap_loop(agent, run_dir: str, cli, host_json: str,
+               chat_id: str = "") -> None:
     """Drain `run_dir/inbox` into `cli`'s stdin and watch
     `agent._turn_state` until idle-with-nothing-pending has held for
     `_IDLE_REAP_SECONDS`, then tear the session down. Extracted out of
@@ -471,6 +492,7 @@ def _reap_loop(agent, run_dir: str, cli, host_json: str) -> None:
                 # follow-up's own (earlier-arriving) mark survive a slow
                 # delivery of this event (bugbot, 2026-09-17).
                 _post_event(run_dir, "turn_ended", at=time.time())
+                _mark_cmd_log_turn_ended(agent, chat_id)
             was_open = turn_open
             if turn_open or tasks_pending:
                 idle_since = None
@@ -519,6 +541,7 @@ def _reap_loop(agent, run_dir: str, cli, host_json: str) -> None:
         # stamp, and the whole point is that it must not drift with how long
         # the HTTP POST itself takes to land (bugbot, 2026-09-17).
         exited_at = time.time()
+        _mark_cmd_log_turn_ended(agent, chat_id)
         # The session is over — the CLI exited on its own, the idle timer
         # reaped it, or a read in the loop above threw. All three are the same
         # news to the queue (this folder's owner is gone), so it is announced

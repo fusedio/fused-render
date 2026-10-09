@@ -374,3 +374,53 @@ def test_start_never_clobbers_a_pid_the_host_already_wrote(agent, monkeypatch,
         pid = f.read().strip()
     assert pid == "999999", \
         "the host's own write must survive _start's later placeholder write"
+
+
+# ------------------------------------- turn end hides the drawer's Claude tab
+
+def _run_reap_with_turn_states(host, agent, tmp_path, monkeypatch, chat_id):
+    monkeypatch.setattr(host, "_IDLE_REAP_SECONDS", 0.001)
+    monkeypatch.setattr(host, "_DRAIN_INTERVAL_SECONDS", 0.01)
+    monkeypatch.setattr(host, "_post_event", lambda *a, **k: None)
+    monkeypatch.setattr(host, "_turn_state_if_grown", lambda a, rd, c: (False, False))
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "host.json").write_text("{}")
+
+    class _Stdin:
+        def write(self, d): pass
+        def flush(self): pass
+        def close(self): pass
+
+    class _Cli:
+        stdin = _Stdin()
+        def poll(self): return None
+        def wait(self, timeout=None): pass
+
+    host._reap_loop(agent, str(run_dir), _Cli(), str(run_dir / "host.json"),
+                    chat_id=chat_id)
+
+
+def test_turn_end_touches_cmd_log_marker_when_dir_exists(tmp_path, monkeypatch):
+    host, agent = _load_host(), _load_agent()
+    logs = tmp_path / "claude-cmds"
+    (logs / "chat1").mkdir(parents=True)
+    monkeypatch.setattr(agent, "CMD_LOGS", str(logs))
+    _run_reap_with_turn_states(host, agent, tmp_path, monkeypatch, "chat1")
+    assert (logs / "chat1" / ".turn_ended").exists()
+
+
+def test_turn_end_does_not_create_missing_cmd_log_dir(tmp_path, monkeypatch):
+    host, agent = _load_host(), _load_agent()
+    logs = tmp_path / "claude-cmds"
+    logs.mkdir()
+    monkeypatch.setattr(agent, "CMD_LOGS", str(logs))
+    _run_reap_with_turn_states(host, agent, tmp_path, monkeypatch, "chat1")
+    assert list(logs.iterdir()) == []
+
+
+def test_turn_ended_marker_name_matches_claude_cmd_log():
+    from fused_render import claude_cmd_log
+    assert claude_cmd_log.TURN_ENDED == ".turn_ended"
+    import inspect
+    assert '".turn_ended"' in inspect.getsource(_load_host()._mark_cmd_log_turn_ended)

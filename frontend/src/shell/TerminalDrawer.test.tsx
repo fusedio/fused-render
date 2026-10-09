@@ -745,6 +745,21 @@ const stripProps = (r: ReactTestRenderer) => r.root.findByType(TerminalTabStrip)
 const focusPuts = (srv: { calls: Call[] }) =>
   srv.calls.filter((c) => c.method === "PUT" && c.url === "/api/terminal/focus").map((c) => JSON.parse(c.body!).id);
 
+test("claude tab: closing a finished one sends DELETE and drops the tab", async () => {
+  seed(["a"]);
+  const srv = fakeServer({
+    live: [{ id: "a" }, { id: "claude:c1", kind: "claude", running: false } as { id: string }],
+  });
+  try {
+    const r = await mountOpen();
+    expect(stripProps(r).tabs.map((t: { id: string }) => t.id)).toEqual(["a", "claude:c1"]);
+    act(() => stripProps(r).onClose("claude:c1"));
+    await tick();
+    expect(srv.calls.some((c) => c.method === "DELETE" && decodeURIComponent(c.url).endsWith("/claude:c1"))).toBe(true);
+    expect(stripProps(r).tabs.map((t: { id: string }) => t.id)).toEqual(["a"]);
+  } finally { srv.restore(); }
+});
+
 test("claude focus: the drawer reports its active tab on open and when the tab changes", async () => {
   resetTerminalFocusForTests();
   seed(["a"]);
@@ -887,7 +902,7 @@ test("syncClaudeTabs: adds, refreshes running, drops; shell tabs untouched; no c
   expect(dropped.activeId).toBe("a");
 });
 
-test("tab strip: claude tab is marked, has no close/ask, and Stop only while running", () => {
+test("tab strip: claude tab is marked, has no ask, and Stop/close are mutually exclusive on running", () => {
   const stops: string[] = [];
   const mk = (running: boolean) =>
     strip({
@@ -906,6 +921,7 @@ test("tab strip: claude tab is marked, has no close/ask, and Stop only while run
   expect(stops).toEqual(["claude:c1"]);
   const idle = mk(false).findAll((n) => n.props.role === "tab")[1];
   expect(idle.findAll((n) => n.type === "button" && n.props.className === "term-tab-stop")).toHaveLength(0);
+  expect(idle.findAll((n) => n.type === "button" && n.props.className === "term-tab-close")).toHaveLength(1);
 });
 
 test("claude tab: an open drawer picks a new chat's tab up from the list and Stop POSTs the stop route", async () => {

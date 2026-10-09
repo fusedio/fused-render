@@ -21,9 +21,14 @@ import threading
 import time
 
 PREFIX = "claude:"
-# A chat's tab disappears from the list this long after its last command wrote
-# anything, and the list is capped, so old chats do not pile up as tabs.
+# Fallback expiry: a chat's tab disappears this long after its last command
+# wrote anything, and the list is capped, so old chats do not pile up as tabs.
+# It normally goes sooner: when the user closes it (DISMISSED) or Claude's turn
+# ends (TURN_ENDED, written by session_host; it repeats this literal). A marker
+# only hides the chat until a command newer than it runs.
 ACTIVE_WINDOW_SECONDS = 2 * 3600
+DISMISSED = ".dismissed"
+TURN_ENDED = ".turn_ended"
 MAX_CHATS = 8
 
 _ANSI = re.compile(rb"\x1b\[[0-9;?]*[A-Za-z]")
@@ -153,6 +158,8 @@ def last_activity(chat: str) -> float:
     newest = 0.0
     try:
         for n in os.listdir(d):
+            if n.startswith("."):
+                continue  # markers are not command activity
             try:
                 newest = max(newest, os.stat(os.path.join(d, n)).st_mtime)
             except OSError:
@@ -160,6 +167,26 @@ def last_activity(chat: str) -> float:
     except OSError:
         pass
     return newest
+
+
+def mark(chat: str, name: str) -> None:
+    """Touch marker `name` in the chat's dir (never creates the dir)."""
+    if bad_chat(chat) or not os.path.isdir(chat_dir(chat)):
+        return
+    path = os.path.join(chat_dir(chat), name)
+    try:
+        with open(path, "a"):
+            pass
+        os.utime(path, None)
+    except OSError:
+        pass
+
+
+def _marker_time(chat: str, name: str) -> float:
+    try:
+        return os.stat(os.path.join(chat_dir(chat), name)).st_mtime
+    except OSError:
+        return 0.0
 
 
 def list_chats() -> list[dict]:
@@ -177,6 +204,9 @@ def list_chats() -> list[dict]:
         act = last_activity(chat)
         running = any(c.running for c in commands(chat))
         if not running and now - act > ACTIVE_WINDOW_SECONDS:
+            continue
+        if not running and (_marker_time(chat, DISMISSED) >= act
+                            or _marker_time(chat, TURN_ENDED) >= act):
             continue
         out.append({"chat": chat, "running": running, "lastActivity": act})
     out.sort(key=lambda e: e["lastActivity"], reverse=True)
