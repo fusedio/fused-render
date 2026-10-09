@@ -733,7 +733,7 @@ describe("the middle pane's floor", () => {
     // The number is written by the list itself, beside the `data-fit` it no
     // longer spends at this width.
     expect(VIEWS).toContain('"--tasks-row-need": `${fit.need}px`');
-    expect(VIEWS).toContain("useRowFit(listRef, peekOn, floored)");
+    expect(VIEWS).toContain("useRowFit(listRef, peekOn, floored, tasks)");
     // …and the page hands the pane's own state down, so the stylesheet and the
     // ladder cannot disagree about which side of the floor it is on.
     expect(PAGE).toContain("floored={scrolls}");
