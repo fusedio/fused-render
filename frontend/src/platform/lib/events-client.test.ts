@@ -5,7 +5,9 @@
 // — which lands a tick later, by which time the redial may already have said
 // hello — must not be mistaken for the new one closing (Bugbot, PR #1537).
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import "@static/events-client.js";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import type { FusedEvents } from "@static/events-client.js";
 
 type Timer = { fn: () => void; ms: number; id: number };
 
@@ -63,13 +65,18 @@ const fire = (pred: (t: Timer) => boolean) => {
   for (const t of due) t.fn();
 };
 
-// The IIFE attaches to `window` when one exists (the test preload's DOM shim)
-// and to `globalThis` otherwise.
+// A PRIVATE INSTANCE of the client, not the process-wide one. `bun test` runs
+// every suite in one process and the IIFE attaches to whatever `window` is at
+// first import; a suite that swaps the DOM shim's window afterwards leaves the
+// shared instance unreachable, and its socket/timer state would leak between
+// files either way. Evaluating the source with a root of our own gives this
+// file a client nothing else can see or disturb.
+const SOURCE = readFileSync(join(import.meta.dir, "..", "..", "..", "..", "fused_render", "static", "events-client.js"), "utf8");
+const root: { fusedEvents?: FusedEvents } = {};
+new Function("window", SOURCE)(root);
 const client = () => {
-  const g = globalThis as unknown as { window?: { fusedEvents?: typeof fusedEvents }; fusedEvents?: typeof fusedEvents };
-  const c = g.window?.fusedEvents ?? g.fusedEvents;
-  if (!c) throw new Error("events client not loaded");
-  return c;
+  if (!root.fusedEvents) throw new Error("events client did not attach");
+  return root.fusedEvents;
 };
 
 beforeEach(() => {
