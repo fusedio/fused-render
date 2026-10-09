@@ -157,9 +157,12 @@ export function withRailGlide(fn: () => void): void {
 }
 
 // Narrow windows: first the sidebar collapses to icons (lfit), then the preview hides (rfit); each undoes itself with FIT_HYST px to spare so nothing flaps.
+// unfolding: a hand expand in progress (toggleLeft). lfit's hysteresis restarts from off, so the sidebar only re-folds when the full
+// sidebar + thread cannot fit at all; carried over, a fold within FIT_HYST px of fitting would hold through the expand and the click would do nothing.
+let unfolding = false;
 export function fitPreview(): void {
   const main = mainEl(); if (!main) return;
-  const cl = body().classList, f = fitFlags(main.clientWidth, layout, { lfit: cl.contains("lfit"), rfit: cl.contains("rfit"), sfull: cl.contains("sfull") });
+  const cl = body().classList, f = fitFlags(main.clientWidth, layout, { lfit: !unfolding && cl.contains("lfit"), rfit: cl.contains("rfit"), sfull: cl.contains("sfull") });
   cl.toggle("lfit", f.lfit);
   cl.toggle("rfit", f.rfit);
   cl.toggle("sfull", f.sfull);
@@ -199,7 +202,8 @@ export function toggleLeft(): void {
     if (w - Math.min(next.lw, w * 0.4) - 12 - MID_MIN - R_MIN < 0) next.rcol = true;
   }
   // Layout first: the Stage grid ignores lcol / rcol, so this moves nothing yet, and the close then glides the rail open in one step.
-  layout = next; applyLayout(true);
+  layout = next; unfolding = !next.lcol;
+  try { applyLayout(true); } finally { unfolding = false; }
   if (!next.lcol && staged() && stageShut) stageShut();
 }
 /** #rcol: show or hide the preview. */
