@@ -285,7 +285,7 @@ export function normalizeLayout(raw: unknown): HomeLayout {
         oldRows.set(w.id, stored ? (rr as number) : dims(w.size).rows);
       }
       if ((r.version === 4 || r.version === LAYOUT_VERSION) && stored) {
-        const min = minFootprint(w.source);
+        const min = minFootprint(w.source, w.format);
         const c = rc as number;
         // A fixed-row source takes its rows from FIXED_ROWS, whatever was stored.
         const rw = fixed ?? (rr as number);
@@ -297,6 +297,8 @@ export function normalizeLayout(raw: unknown): HomeLayout {
           w = preset ? { ...w, size: preset } : { ...w, size: contentSizeFor(w.source, c, rw), cols: c, rows: rw };
         }
       }
+      // A stored icons tile too short to draw icons falls back to its source's first format that fits; it is not moved or resized.
+      w = { ...w, format: formatForRows(w.source, w.format, dimsOf(w).rows) };
       const { cols, rows } = dimsOf(w);
       if (!Number.isInteger(x) || !Number.isInteger(y) || !canPlace(widgets, { x, y, cols, rows })) {
         ({ x, y } = firstFreeSlot(widgets, w.size, GRID_COLS, undefined, w.source));
@@ -409,7 +411,7 @@ export function allowedSizes(layout: HomeLayout, id: string): WidgetSize[] {
   const w = layout.widgets.find((x) => x.id === id);
   if (!w) return [];
   const occ = occupancy(layout.widgets, id);
-  return SOURCES[w.source].sizes.filter((s) => {
+  return sizesFor(w.source, w.format).filter((s) => {
     if (s === w.size) return true;
     const { cols, rows } = dimsFor(w.source, s);
     return canPlace(layout.widgets, { x: Math.min(w.x, GRID_COLS - cols), y: w.y, cols, rows }, id, GRID_COLS, occ);
@@ -418,7 +420,9 @@ export function allowedSizes(layout: HomeLayout, id: string): WidgetSize[] {
 
 export function setFormat(layout: HomeLayout, id: string, format: WidgetFormat): HomeLayout {
   return patch(layout, id, (w) =>
-    SOURCES[w.source].formats.includes(format) && w.format !== format ? { ...w, format } : null,
+    SOURCES[w.source].formats.includes(format) && w.format !== format && dimsOf(w).rows >= (FORMAT_MIN_ROWS[format] ?? 0)
+      ? { ...w, format }
+      : null,
   );
 }
 
@@ -458,10 +462,29 @@ export function dimsOf(w: Pick<Widget, "source" | "size" | "cols" | "rows">): { 
     : dimsFor(w.source, w.size);
 }
 
-/** Smallest footprint a source allows: its smallest preset on each axis. */
-export function minFootprint(source: WidgetSource): { cols: number; rows: number } {
+/** Fewest unit rows a format can be drawn in. Home is one fixed grid, so a
+    format that cannot fit a size is not offered at that size. An icon tile is
+    82px; a one-cell-tall tile body is about 64px. */
+export const FORMAT_MIN_ROWS: Partial<Record<WidgetFormat, number>> = { icons: 2 * CELL };
+
+/** The source's presets that can show `format`: fixed-row sources are unaffected. */
+export function sizesFor(source: WidgetSource, format?: WidgetFormat): WidgetSize[] {
+  const min = (format && FORMAT_MIN_ROWS[format]) || 0;
+  return SOURCES[source].sizes.filter((s) => dimsFor(source, s).rows >= min);
+}
+
+/** Smallest footprint a source allows: its smallest preset on each axis, and
+    tall enough for `format` when one is given. */
+export function minFootprint(source: WidgetSource, format?: WidgetFormat): { cols: number; rows: number } {
   const ds = SOURCES[source].sizes.map(dims);
-  return { cols: Math.min(...ds.map((d) => d.cols)), rows: FIXED_ROWS[source] ?? Math.min(...ds.map((d) => d.rows)) };
+  const rows = FIXED_ROWS[source] ?? Math.min(...ds.map((d) => d.rows));
+  return { cols: Math.min(...ds.map((d) => d.cols)), rows: Math.max(rows, (format && FORMAT_MIN_ROWS[format]) || 0) };
+}
+
+/** `format` unless the footprint is too short for it; then the source's first format that fits. */
+export function formatForRows(source: WidgetSource, format: WidgetFormat, rows: number): WidgetFormat {
+  if (rows >= (FORMAT_MIN_ROWS[format] ?? 0)) return format;
+  return SOURCES[source].formats.find((f) => rows >= (FORMAT_MIN_ROWS[f] ?? 0)) ?? format;
 }
 
 /** The source's preset whose dims equal (cols, rows) exactly, else null; a
@@ -492,9 +515,10 @@ export function contentSizeFor(source: WidgetSource, cols: number, rows: number)
   return best ?? SOURCES[source].sizes[0];
 }
 
-/** How many list rows / icon tiles a widget of this size draws before it says
-    "+N more". Fixed per size: the grid's row height is fixed, so this needs no
-    measuring. A full-row list runs in two columns. */
+/** First-paint guess of how many list rows / icon tiles a widget of this size
+    draws before it says "+N more". The grid is fixed but row heights, fonts and
+    headers vary, so lists and board lanes re-measure after layout (useFitCount)
+    and settle on what really fits. A full-row list runs in two columns. */
 export function itemCapacity(size: WidgetSize, format: WidgetFormat): number {
   // Only list/icon widgets are counted here, never the fixed-row search/build,
   // so plain dims() (in units; capacity counts whole cells) is right.
@@ -711,7 +735,7 @@ export function resizeTo(layout: HomeLayout, id: string, cols: number, rows: num
   // A fixed-row source cannot change height: any asked-for rows are its own.
   const fixed = FIXED_ROWS[w.source];
   if (fixed !== undefined) rows = fixed;
-  const min = minFootprint(w.source);
+  const min = minFootprint(w.source, w.format);
   if (cols < min.cols || rows < min.rows || w.x + cols > GRID_COLS || rows > MAX_WIDGET_ROWS) return layout;
   if (!canPlace(layout.widgets, { x: w.x, y: w.y, cols, rows }, id)) return layout;
   const preset = presetFor(w.source, cols, rows);
@@ -827,8 +851,8 @@ function presetRows(id: PresetId, folderId?: string): PresetRow[] {
         folderId
           ? { source: "folder", x: 6, y: 3, size: "1x1", format: "list", folderId }
           : { source: "bots", x: 6, y: 3, size: "1x1" },
-        { source: "apps", x: 0, y: 5, size: "2x1", format: "icons" },
-        { source: "tasks", x: 4, y: 5, size: "2x1" },
+        { source: "apps", x: 0, y: 5, size: "2x2", format: "icons" },
+        { source: "tasks", x: 4, y: 5, size: "2x2" },
       ];
     case "focus":
       return [
@@ -918,7 +942,7 @@ function tileFor(id: string, source: WidgetSource, rect: Rect, opts: TileOpts, f
     id,
     source,
     size: spec.sizes[0],
-    format: f && spec.formats.includes(f) ? f : defaultFormat(source, rect.cols),
+    format: formatForRows(source, f && spec.formats.includes(f) ? f : defaultFormat(source, rect.cols), rect.rows),
     x: rect.x,
     y: rect.y,
   };

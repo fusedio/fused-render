@@ -2,6 +2,9 @@ import { expect, test } from "bun:test";
 import {
   DEFAULT_LAYOUT,
   FIXED_ROWS,
+  FORMAT_MIN_ROWS,
+  sizesFor,
+  formatForRows,
   GRID_COLS,
   MAX_ROWS,
   MAX_WIDGET_ROWS,
@@ -1018,4 +1021,52 @@ test("only the Legacy preset has a playground tile", () => {
     const has = presetLayout(p.id).widgets.some((w) => w.source === "playground");
     expect(has).toBe(p.id === "legacy");
   }
+});
+
+test("FORMAT_MIN_ROWS: icons need two cells (4 units)", () => {
+  expect(FORMAT_MIN_ROWS.icons).toBe(4);
+});
+
+test("sizesFor drops presets too short for the format, fixed-row sources are unaffected", () => {
+  expect(sizesFor("apps", "icons")).toEqual(["1x2", "2x2"]);
+  expect(sizesFor("apps", "cards")).toEqual(SOURCES.apps.sizes);
+  expect(sizesFor("apps")).toEqual(SOURCES.apps.sizes);
+  expect(sizesFor("folder", "icons")).toEqual(["1x2", "2x2"]);
+  expect(sizesFor("search", "bar")).toEqual(SOURCES.search.sizes);
+  expect(sizesFor("build", "live")).toEqual(SOURCES.build.sizes);
+});
+
+test("minFootprint with a format is at least the format's rows", () => {
+  expect(minFootprint("apps").rows).toBe(2);
+  expect(minFootprint("apps", "icons").rows).toBe(4);
+  expect(minFootprint("apps", "cards").rows).toBe(2);
+  expect(minFootprint("search", "bar").rows).toBe(1);
+});
+
+test("formatForRows keeps a format that fits and falls back otherwise", () => {
+  expect(formatForRows("apps", "icons", 4)).toBe("icons");
+  expect(formatForRows("apps", "icons", 2)).toBe("cards");
+  expect(formatForRows("folder", "icons", 2)).toBe("list");
+});
+
+test("allowedSizes for an icons tile never offers a short size", () => {
+  const l = lay(w("a", "apps", "2x2", "icons"));
+  expect(allowedSizes(l, "a")).toEqual(["1x2", "2x2"]);
+});
+
+test("normalizeLayout: a stored icons tile that is too short gets the source's first fitting format, unmoved", () => {
+  const out = normalizeLayout({ version: 5, widgets: [{ id: "a", source: "apps", size: "2x1", format: "icons", x: 2, y: 1 }] });
+  expect(out.widgets[0]).toMatchObject({ format: "cards", size: "2x1", x: 2, y: 1 });
+  const tall = normalizeLayout({ version: 5, widgets: [{ id: "a", source: "apps", size: "2x2", format: "icons", x: 0, y: 0 }] });
+  expect(tall.widgets[0].format).toBe("icons");
+});
+
+test("resizeTo refuses a footprint too short for the widget's format", () => {
+  const l = lay({ ...w("a", "apps", "2x2", "icons"), x: 0, y: 0 });
+  expect(resizeTo(l, "a", 4, 2)).toBe(l);
+});
+
+test("setFormat refuses icons on a short tile", () => {
+  const l = lay({ ...w("a", "apps", "2x1", "cards"), x: 0, y: 0 });
+  expect(setFormat(l, "a", "icons")).toBe(l);
 });
