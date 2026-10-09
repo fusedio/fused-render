@@ -19,8 +19,8 @@ import { closeView } from "./apps/apps";
 import { getSideApp, sideAppBrowser, sideAppShow } from "./apps/side";
 import { PrefsPanel } from "./components/PrefsPanel";
 import { useLayout } from "./hooks/useLayout";
-import { handBack } from "./lib/cdp";
-import { onStageShut, setStage } from "./lib/layout";
+import { handBack, openFull } from "./lib/cdp";
+import { onStageOpen, onStageShut, setStage } from "./lib/layout";
 import { installNotify } from "./lib/notify";
 import { botsRoot, detachPortalHost, portalHost, setBotsRoot } from "./lib/root";
 import { isBot } from "@platform/lib/flavor";
@@ -49,8 +49,11 @@ function installStage(): () => void {
   };
   sync();
   const stop = subscribe(sync);
-  onStageShut(() => { void handBack(true); });  // the rail dragged past the live page's half-width floor: same exit as the Back button
-  return () => { stop(); onStageShut(null); if (on) setStage(false); };
+  // The right gutter crosses the live page's half-width floor: the preview dragged up to it opens the live view (watch mode, the
+  // keyboard stays where it is), the rail dragged back under it is the same exit as the Back button.
+  onStageOpen(() => openFull({ focus: false }));
+  onStageShut(() => { void handBack(true); });
+  return () => { stop(); onStageOpen(null); onStageShut(null); if (on) setStage(false); };
 }
 
 function Banner() {
