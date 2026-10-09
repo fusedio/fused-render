@@ -147,16 +147,20 @@ The Tasks widget shows recent tasks, newest first, with drafts and archived task
 Free-form resizing, multiple Homes/pages, per-widget settings beyond size/format/folder,
 widgets from third-party apps, changing the Bots front-door flag.
 
+## Fixed grid
+
+Home is one fixed grid. A unit row is exactly 52px (`--hw-unit`; two units plus the 16px gap make the 120px cell) in view and edit mode alike, and a tile's height is purely a function of its footprint. Nothing a widget renders may grow a row: grid children are `min-height: 0; overflow: hidden`, and only the search takeover (`.hw-grid.is-searching`, a page rather than a tile) keeps auto rows. A widget's content adapts to its tile instead: lists and board lanes show what fits plus "+N more" (`useFitCount` in widgets/bits.tsx, driven by the pure `fitCount`; `itemCapacity` is only the first-paint guess and the count can go below it), icons and cards measure the real tile. If a format cannot fit a size, that size is not offered for that format: `FORMAT_MIN_ROWS` (icons need 2 cells = 4 units), `sizesFor(source, format)`, `minFootprint(source, format)`. A stored icons tile too short for icons falls back to the source's first fitting format on load (`normalizeLayout`, not moved or resized). The Change card lists every size of the tile's format with its cell dimensions (Large 2x2); sizes that do not fit where the tile sits are disabled ("No room here"), and the Icons format is disabled on a short tile ("Needs a taller tile"). The add sheet has no size row: a new tile takes `sizesFor(source, format)[0]`.
+
 ## Builder notes
 
 Deviations and decisions:
-- Grid rows are `minmax(120px, auto)`, not a fixed 120px: a cards widget is about 270px tall and cannot fit a fixed row.
+- Superseded: grid rows are no longer content-sized; see "Fixed grid" below.
 - The Customize/Done button sits in a toolbar row below the hero (inside `.home-strips`), not inside the hero.
 - Widget "meta" text was omitted.
 - Tasks "blocked" and "needs_attention" both map to the "Needs you" lane.
 - The welcome tour's readyWhen needs an apps widget to exist (anchors `#home-sec-apps`, first apps/playground/sessions widget carries `home-sec-<source>`).
 - Each widget measures and fetches on its own, so duplicate widgets of one source re-fetch. Cards widgets use the old measured-count logic (`useStripCount`); 2x2 uses `limit * rows`.
-- Lists and icons use a fixed item-capacity table (`itemCapacity` in layout.ts) rather than measuring.
+- `itemCapacity` (layout.ts) is only the first-paint guess; see "Fixed grid" below.
 - The apps error state now has a Retry button instead of the plain empty message.
 - Source-text pin tests (`home-performance.test.ts`, `new-task-form.test.ts`) were repointed to `home/data.ts`, `home/strip.ts`, the widget files and `skeleton.tsx`; three regexes were loosened (`[limit(?:, \w+)*]`, `cards ? (<SkeletonRow`, `count={cap}`).
 - The TDD red step was not observed for layout.ts (tests written alongside).
