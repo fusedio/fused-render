@@ -4241,9 +4241,12 @@
 
   // The events-bus client (static/events-client.js, loaded ahead of this
   // file by /render). One socket per document for every live fact — the
-  // reload watch, `fused.tasks.watch`, `fused.watchJob`, `fused.subscribe`.
-  // A page that somehow runs without it (an export, a test) gets a client
-  // that subscribes to nothing and never calls back, rather than a throw.
+  // reload watch, `fused.tasks.watch`, `fused.daemon.watch`, `fused.watchJob`
+  // and the env-install wait, each behind its EXISTING signature. NOT a page
+  // API (D15): topic names never reach an app author, so this helper is
+  // internal to runtime.js. A page that somehow runs without the client (an
+  // export, a test) gets one that subscribes to nothing and never calls back,
+  // rather than a throw.
   function eventsClient() {
     return window.fusedEvents || null;
   }
@@ -6804,11 +6807,6 @@
     tasks,
     trackJob,
     watchJob,
-    // fused.subscribe(topic, params, cb) -> unsubscribe: the events bus
-    // itself, for a page that wants a live fact the server publishes
-    // (`cb(snapshot, delta, meta)`; see static/events-client.js). The one way
-    // a page follows anything live — never a timer that fetches.
-    subscribe: subscribeTopic,
     autoReload,
     // Whether THIS frame is inside a git snapshot, and what it resolved to —
     // `null` when there is none (no `_snapshot` on this frame's url, or the
