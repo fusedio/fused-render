@@ -1000,10 +1000,6 @@ button.hw-row:hover {
   min-height: 0;
 }
 
-.hw-strip > .hw-icons.is-strip {
-  height: 100%;
-}
-
 .hw-tile {
   display: flex;
   flex-direction: column;
