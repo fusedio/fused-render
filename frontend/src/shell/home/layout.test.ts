@@ -63,15 +63,16 @@ const at = (l: HomeLayout) => l.widgets.map((x) => [x.x, x.y]);
 // A v2 document (no coordinates) in the shape the packDense test uses.
 const v2 = (sizes: string[]) => sizes.map((s, i) => ({ id: `w${i}`, source: "folder", folderId: "f", size: s, format: "list" }));
 
-test("default layout is Legacy: search then four one-row strips (units), version 5", () => {
+test("default layout is the Builder preset (units), version 5, stable default-<source> ids", () => {
   expect(DEFAULT_LAYOUT.version).toBe(5);
-  expect(DEFAULT_LAYOUT.widgets.map((x) => [x.source, x.size, x.x, x.y])).toEqual([
-    ["search", "4x1", 0, 0],
-    ["apps", "4x1", 0, 1],
-    ["playground", "4x1", 0, 3],
-    ["sessions", "4x1", 0, 5],
-    ["recents", "4x1", 0, 7],
+  expect(DEFAULT_LAYOUT.widgets.map((x) => [x.source, x.size, x.x, x.y, x.format])).toEqual([
+    ["search", "4x1", 0, 0, "bar"],
+    ["build", "2x1", 0, 1, SOURCES.build.formats[0]],
+    ["apps", "2x2", 4, 1, "icons"],
+    ["bots", "2x2", 0, 5, "list"],
+    ["sessions", "2x2", 4, 5, "list"],
   ]);
+  expect(ids(DEFAULT_LAYOUT)).toEqual(["default-search", "default-build", "default-apps", "default-bots", "default-sessions"]);
 });
 
 test("defaultLayout has no overlaps and no empty rows", () => {
@@ -796,11 +797,11 @@ test("presets: normalizeLayout keeps every tile where it is", () => {
   expect(normalizeLayout(files).widgets.length).toBe(files.widgets.length);
 });
 
-test("presets: legacy is first and the default; workbench keeps its 7 tiles; files falls back without a folder", () => {
+test("presets: legacy is first; builder is the default; workbench keeps its 7 tiles; files falls back without a folder", () => {
   const strip = (l: HomeLayout) => l.widgets.map(({ id: _i, ...w }) => w);
   expect(PRESETS[0].id).toBe("legacy");
-  expect(strip(presetLayout("legacy"))).toEqual(strip(defaultLayout()));
-  expect(presetLayout("legacy").widgets[0].id).not.toBe("default-search");
+  expect(strip(presetLayout("builder"))).toEqual(strip(defaultLayout()));
+  expect(presetLayout("builder").widgets[0].id).not.toBe("default-search");
   expect(presetLayout("workbench").widgets.map((x) => [x.source, x.size, x.x, x.y])).toEqual([
     ["search", "4x1", 0, 0],
     ["build", "4x1", 0, 1],
@@ -820,7 +821,7 @@ test("matchPreset: each preset matches itself, custom is null", () => {
     expect(matchPreset(presetLayout(id, { folderId: "f1" }))).toBe(id);
     expect(matchPreset(presetLayout(id))).toBe(id);
   }
-  expect(matchPreset(defaultLayout())).toBe("legacy");
+  expect(matchPreset(defaultLayout())).toBe("builder");
   const l = presetLayout("mission");
   const tasks = l.widgets.find((w) => w.source === "tasks")!;
   expect(matchPreset(swapSource(l, tasks.id, "playground"))).toBe(null);

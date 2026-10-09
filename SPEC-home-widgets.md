@@ -46,9 +46,9 @@ Per-source allowed sizes / formats (first entry is the default):
 | folder     | 2x1, 1x1, 2x2, 4x1    | list, icons           | children of the bookmark folder `folderId`; title = folder name. Missing folder → empty state "This bookmark folder was deleted." |
 | index      | 1x1, 2x1              | count                 | `useIndexStatus` — file count + "updated N ago". |
 
-**Default layout** (used when the server reports no saved layout — must reproduce today's
-Home so nobody opens an empty page): apps 4x1 cards, playground 4x1 cards, sessions 4x1
-cards, recents 4x1 cards — same order as today.
+**Default layout** (used when the server reports no saved layout; saved layouts are never
+touched): the Builder preset (`presetRows("builder")`) — search 4x1, build 2x1, apps 2x2
+icons, bots 2x2 list, sessions 2x2 list — with stable `default-<source>` ids.
 
 A `4x1` widget with format `cards` is today's strip: reuse the existing `Section` +
 `useStripCount` one-row behaviour inside it (CARD_W / CARD_GAP / MAX_ROW unchanged).
