@@ -58,17 +58,28 @@ _stamp: str | None = None
 def _fingerprint() -> str:
     """The version plus the derivation's own source, hashed. Imported lazily:
     the router imports this module, so the reverse import has to wait until
-    first use."""
+    first use.
+
+    WHOLE MODULES for the two the derivation delegates into (Bugbot, #1525):
+    `_prompt` and `_parse_head` reach `strip_machinery`, `user_words`,
+    `pane_file`, `ann_notes`, `epoch`, `ai_title` and more, and a list of
+    function names is a list that goes stale the next time one is added. The
+    router is hashed by its derivation functions only: it is 8k lines that
+    change with every feature, and a cold build per unrelated edit would be
+    the wrong trade."""
     global _stamp
     if _stamp is not None:
         return _stamp
-    from fused_render.server.routers import tasks as router  # noqa: PLC0415
+    from fused_render.server.routers import claude_sessions, tasks as router  # noqa: PLC0415
     parts = [__version__]
+    for mod in (tasks_store, claude_sessions):
+        try:
+            parts.append(inspect.getsource(mod))
+        except (OSError, TypeError):
+            parts.append(getattr(mod, "__name__", repr(mod)))
     for fn in (router._new_scan, router._absorb, router._condense_reply,
                router._reply_fate, router._mark_fate, router._prompt,
-               router._command, router._interrupt_at,
-               tasks_store._parse_head, tasks_store.first_text,
-               tasks_store.is_interrupt_mark):
+               router._command, router._interrupt_at):
         try:
             parts.append(inspect.getsource(fn))
         except (OSError, TypeError):
@@ -95,8 +106,18 @@ def _connect() -> sqlite3.Connection:
     stamp = _fingerprint()
     row = con.execute("SELECT value FROM meta WHERE key='version'").fetchone()
     if row is None or row[0] != stamp:
+        # Somebody else's facts — a previous release, or another checkout
+        # sharing this state dir with a different derivation. Dropped, and
+        # with them this process's memory of what it has written (Bugbot,
+        # #1525): the next `save` then backfills every transcript it holds
+        # rather than the two that moved, so the launch after this one is
+        # warm again. Two checkouts alternating stamps would thrash; that is
+        # logged, and it costs a cold build, never a wrong row.
+        if row is not None:
+            logger.info("tasks index: stamp %s → %s, rebuilding", row[0], stamp)
         con.execute("DELETE FROM transcripts")
         con.execute("INSERT OR REPLACE INTO meta VALUES ('version', ?)", (stamp,))
+        _saved.clear()
     return con
 
 
