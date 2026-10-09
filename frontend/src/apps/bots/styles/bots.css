@@ -113,7 +113,7 @@ div.bots-page.stage .preview > :is(header, .shotwrap, .toast, .cap, .info, .saba
    in Stage), in step with the pointer-events rules above. */
 .bots-page .gutter::before { content: ""; position: absolute; left: 50%; top: 50%; width: 4px; height: 36px; translate: -50% -50%; border-radius: 2px; background: var(--muted); opacity: .45; pointer-events: none; transition: opacity .15s; }
 .bots-page .gutter:hover::before, .bots-page .gutter.drag::before { opacity: 0; }
-div.bots-page.rfit .gutter.r::before, div.bots-page.stage .gutter.l::before { display: none; }
+div.bots-page.rfit:not(.stage) .gutter.r::before, div.bots-page.stage .gutter.l::before { display: none; }  /* Stage re-enables the right gutter over rfit (above) */
 div.bots-page.dragging { cursor: col-resize; user-select: none; }
 div.bots-page.dragging img { pointer-events: none; }
 /* Icons-only sidebar (collapsed, or forced on very narrow windows). */
