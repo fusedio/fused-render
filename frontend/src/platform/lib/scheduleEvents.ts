@@ -1,5 +1,5 @@
-// Background scheduled-message poll → global toasts. Mounted ONCE at the app
-// root (App), alongside useMountHealth, whose shape this follows exactly.
+// Scheduled-message events → global toasts, off the events bus. Mounted ONCE
+// at the app root (App), alongside useMountHealth, whose shape this follows.
 //
 // This exists because of the one thing that makes scheduled messages different
 // from everything else the app runs: **nobody is looking when they happen.** A
@@ -25,26 +25,33 @@
 //              "no toast at all" rule for `done` (D661,
 //              DECISIONS-actionable-notifications.md).
 //
-// NARRATOR-ONLY (§1/§5): only the elected top-level window polls at all —
+// THE FEED IS A SUBSCRIPTION, NOT A POLL (Fused Events Bus, D3): the server
+// pushes the `schedule.events` snapshot — the same body `GET
+// /api/schedule/events` answered — on subscribe and again whenever an event is
+// recorded. It is a NARRATOR topic (`hiddenOk: false`): a run that fires while
+// this tab is hidden still has to be said, so the client keeps the
+// subscription open through `document.hidden` instead of dropping it.
+//
+// NARRATOR-ONLY (§1/§5): only the elected top-level window narrates at all —
 // every embed iframe, and every non-narrator top-level tab, would otherwise
-// poll independently and double/triple-toast the same events. Checked once
-// per poll tick (not just once at mount) so narration hands off cleanly the
-// moment the current narrator's tab closes and a heartbeat elects another.
+// double/triple-toast the same events. Checked on every frame (not just once
+// at mount) so narration hands off cleanly the moment the current narrator's
+// tab closes and a heartbeat elects another.
 import { useEffect, useRef } from "react";
-import { ackScheduleEvents, getScheduleEvents } from "@platform/lib/api";
+import { ackScheduleEvents } from "@platform/lib/api";
+import type { ScheduleEvent } from "@platform/lib/api";
+import { subscribeTopic } from "@platform/lib/events";
 import { IS_EMBED, navigateUrl } from "@platform/lib/router";
 import { dismissNotification, dismissPopup, notify } from "@platform/lib/notifications";
 import { isNarrator } from "@platform/lib/presence";
 import { toastForEvent } from "@platform/lib/schedule-toast";
 import type { ScheduleToast } from "@platform/lib/schedule-toast";
 
-const POLL_MS = 15_000;
-
 /**
- * @param onOutcome Called once per poll that narrated a started/done/failed
+ * @param onOutcome Called once per snapshot that narrated a started/done/failed
  *   event — a scheduled run's row just CHANGED (began running, or ended),
- *   which is exactly the fact the Tasks page and the sidebar are otherwise
- *   waiting out their own timers to learn. The shell passes
+ *   which is the fact the Tasks page and the sidebar want on the same beat
+ *   (their own listing subscription is resynced by it). The shell passes
  *   tasksPulse.pokeTasks here (App); it is a parameter rather than an import
  *   because that store lives in shell and platform may not reach up
  *   (frontend/scripts/check-boundaries.mjs). `missed` deliberately does not
@@ -52,9 +59,9 @@ const POLL_MS = 15_000;
  */
 export function useScheduleEvents(onOutcome?: () => void): void {
   // The highest event id already turned into a toast IN THIS PAGE. A ref (not
-  // state) so it survives re-renders without re-arming the interval, and so two
-  // overlapping polls can't narrate the same event twice while the ack for the
-  // first is still in flight.
+  // state) so it survives re-renders without re-subscribing, and so two
+  // snapshots landing back to back can't narrate the same event twice while
+  // the ack for the first is still in flight.
   //
   // There is deliberately **no silent baseline** here, unlike useMountHealth.
   // The server only hands over events nobody has confirmed narrating
@@ -63,26 +70,20 @@ export function useScheduleEvents(onOutcome?: () => void): void {
   // verdict emitted by the scheduler's first tick still gets said out loud when
   // the shell finally loads. A client-side baseline swallowed exactly those.
   const lastEventId = useRef(0);
-  // Through a ref so the poll loop below (armed once, deps []) always calls the
-  // caller's CURRENT function rather than the one from the mounting render.
+  // Through a ref so the subscription below (opened once, deps []) always calls
+  // the caller's CURRENT function rather than the one from the mounting render.
   const outcome = useRef(onOutcome);
   outcome.current = onOutcome;
 
   useEffect(() => {
-    // Only the top-level shell narrates: every embed iframe would otherwise poll
-    // and double-toast the same events into the host page.
+    // Only the top-level shell narrates: every embed iframe would otherwise
+    // subscribe and double-toast the same events into the host page.
     if (IS_EMBED) return;
     let alive = true;
 
-    const poll = async () => {
-      // Re-checked every tick, not just once at mount — see header comment.
+    const narrate = async (body: { events: ScheduleEvent[] }) => {
+      // Re-checked on every frame, not just once at mount — see header comment.
       if (!isNarrator()) return;
-      let body;
-      try {
-        body = await getScheduleEvents();
-      } catch {
-        return; // network blip / server restart — retry next interval
-      }
       if (!alive) return;
 
       const fresh = body.events.filter((e) => e.id > lastEventId.current);
@@ -91,10 +92,10 @@ export function useScheduleEvents(onOutcome?: () => void): void {
       lastEventId.current = Math.max(lastEventId.current, highest);
 
       for (const e of fresh) push(toastForEvent(e));
-      // The events just narrated are also the earliest word this poll has that
+      // The events just narrated are also the earliest word this page has that
       // a run's STATE changed (started running, or ended) — see the onOutcome
       // contract above. Once per batch, not per event: the outcome callback
-      // refetches, and one refetch reads them all.
+      // resyncs the listing, and one resync reads them all.
       if (fresh.some((e) => e.kind === "started" || e.kind === "done" || e.kind === "failed")) {
         outcome.current?.();
       }
@@ -103,9 +104,9 @@ export function useScheduleEvents(onOutcome?: () => void): void {
       // right way round for the one thing here that must not go unsaid. This
       // is also what makes an unattended run's notification unlosable: nobody
       // narrating (no narrator tab open at all) means nothing acks, so the
-      // event is still sitting here, undelivered, the next time any window
-      // polls — suppression only ever means "already seen", never "nobody
-      // was there" (SPEC-quiet-notifications.md §5's own named trap).
+      // event is still sitting in the snapshot, undelivered, the next time any
+      // window subscribes — suppression only ever means "already seen", never
+      // "nobody was there" (SPEC-quiet-notifications.md §5's own named trap).
       try {
         await ackScheduleEvents(highest);
       } catch {
@@ -140,11 +141,21 @@ export function useScheduleEvents(onOutcome?: () => void): void {
       });
     };
 
-    poll();
-    const timer = window.setInterval(poll, POLL_MS);
+    // `hiddenOk: false` — the narrator topic: the client never drops this
+    // subscription while the tab is hidden, which is exactly when an
+    // unattended run fires. An `err` frame (the GET's refusal) carries no
+    // snapshot and is simply skipped; the next push is the retry.
+    const off = subscribeTopic<{ events: ScheduleEvent[] }>(
+      "schedule.events",
+      null,
+      (snap) => {
+        if (snap) void narrate(snap);
+      },
+      { hiddenOk: false },
+    );
     return () => {
       alive = false;
-      window.clearInterval(timer);
+      off();
     };
   }, []);
 }

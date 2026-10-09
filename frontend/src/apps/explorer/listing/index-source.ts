@@ -33,11 +33,12 @@ export type SearchStep = "answer" | "scan" | "poll";
 // on-demand scan the instant it was requested.
 export const UNCOVERED_GRACE = 3;
 
-// How many times a scan in flight is polled before the box settles for what it
-// has. A first whole-home scan is ~10 s and a rescan of a big root can be
-// minutes; the rows already returned are real, and re-asking for them at a
-// fixed cadence for the length of a scan is not what the poll is for. At
-// SCAN_POLL_MS this is a couple of minutes.
+// How many `index.status` pushes a scan in flight may trigger a re-ask before
+// the box settles for what it has. A first whole-home scan is ~10 s and a
+// rescan of a big root can be minutes; the rows already returned are real, and
+// re-asking for them for the length of a scan is not what the re-ask is for.
+// The server pushes at the scanner's own 1.5 s cadence, so this is a couple of
+// minutes.
 //
 // Per polling EPISODE, and per folder+generation within one: a query typed
 // midway through a scan inherits the patience already spent on that scan

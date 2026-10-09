@@ -1,8 +1,8 @@
 // THE STANDING LIVE WATCH (D415, inventory 05 §D, T:17550-17745). Pure TS: the
 // triggers are wired to `window`/`document` by `start()`, everything else is
-// injected, so the whole policy is testable with fake timers.
+// injected, so the whole policy is testable with a scripted subscription.
 //
-// PR1 shipped the WINDOW around opening a chat — `adoptLiveRun`'s ~3 s of laps,
+// PR1 shipped the WINDOW around opening a chat — `adoptLiveRun`'s ~3 s probe,
 // which is the whole of the page's answer to "was something already running
 // when I got here?". It covers arriving late and covers nothing after: a
 // session that becomes busy while this chat sits open lit no indicator and
@@ -13,34 +13,48 @@
 // of them go through `sendMessage`, which is the only path that arms the
 // running chrome.
 //
-// So the question is asked on a timer for the life of the page, and asked of
-// the SERVER — the one party that knows a run is alive — rather than inferred
-// from what this frame happens to have sent.
+// So the question is asked for the life of the page, and asked of the SERVER
+// — the one party that knows a run is alive — rather than inferred from what
+// this frame happens to have sent. It is a SUBSCRIPTION now (D3): `claude.live
+// {file, session_id, path}` pushes `{live: <live_run>, liveness: <the
+// transcript's stat>}` whenever either moves, and every frame is one lap.
 //
-// A TIMER ALONE IS A BLIND WINDOW AND A SHORT TURN FITS INSIDE IT (Akshil,
-// 2026-08-21, two tabs on one chat): a 10 s interval found runs that had
-// already FINISHED, so `resumeRun` took its done-branch and repaired the
-// transcript in silence. The fix is to ask SOONER, not to arm harder — three
-// triggers, cheapest and fastest first:
+// A BLIND WINDOW LETS A SHORT TURN FIT INSIDE IT (Akshil, 2026-08-21, two tabs
+// on one chat): a 10 s interval found runs that had already FINISHED, so
+// `resumeRun` took its done-branch and repaired the transcript in silence. The
+// fix was to ask SOONER, not to arm harder — and the bus is the soonest:
 //
 //   * A POKE FROM THE TAB THAT STARTED IT. `stampChatActivity` already writes
 //     `localStorage` at the START of every turn this app runs, for the shell's
 //     tasks store — and a `storage` event fires in every OTHER document on this
-//     origin and never in the writer, which is exactly the shape needed. The
-//     two-tab case costs no polling at all and lands in milliseconds.
-//   * BECOMING VISIBLE / FOCUSED. A tab that was in the background while
-//     something ran should not wait out an interval to catch up.
-//   * THE INTERVAL, 5 s and SKIPPED while the document is hidden. It is the
-//     backstop for the one starter that pokes nothing this page can hear — a
-//     run spawned by the server (a scheduled message, the canvases workspace).
+//     origin and never in the writer, which is exactly the shape needed. It
+//     asks the bus for a fresh snapshot (`resyncTopic`) — an event, not a
+//     timer — so the two-tab case lands in milliseconds.
+//   * BECOMING VISIBLE / FOCUSED asks the same way. (The client already drops
+//     this `hidden_ok` subscription while the document is hidden and
+//     resubscribes on visible, so the snapshot that answers IS the catch-up.)
+//   * THE SERVER'S OWN CADENCE — 400 ms for ~3.5 s after a subscribe, then
+//     every 5 s (`LIVE_WATCH_MS`), sending a frame only when the answer moved.
+//     It is the backstop for the one starter that pokes nothing this page can
+//     hear — a run spawned by the server (a scheduled message, the canvases
+//     workspace).
 //
-// Hidden tabs give up the interval deliberately: chrome nobody is looking at is
-// worth nothing, the storage poke still reaches them, and becoming visible laps
-// at once.
+// Hidden tabs give up the frames deliberately: chrome nobody is looking at is
+// worth nothing, and becoming visible resubscribes at once.
+//
+// WHICH KEY. The host hands this file the session; the target (`file`) and the
+// transcript's `path` come from the controller that owns them
+// (`chatTargetFor`, unless `deps.file` names the target), and the subscription
+// RE-KEYS when either moves — the watermark lands with the history, after the
+// watch is armed, and its `path` is what turns the liveness half on.
 import { TASKS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
+import { canonicalKey, resyncTopic, subscribeTopic, type SubscribeLike } from "@platform/lib/events";
+import { chatTargetFor, onChatTargets, type ClaudeLiveBody } from "../protocol/run-controller";
 import type { TranscriptStat } from "../protocol/types";
 
-/** T:17601. */
+/** T:17601 — the standing watch's backstop cadence, which is now the SERVER's
+ *  (`topics.py ClaudeLiveTopic.poll_interval_s`) once its fast probe window is
+ *  over. Nothing on the page arms it. */
 export const LIVE_WATCH_MS = 5000;
 
 /** `GET /api/claude-sessions/liveness` (T:17691-17694). */
@@ -103,14 +117,19 @@ export interface LiveWatchDeps {
    * keeps the old behaviour rather than losing the guard.
    */
   hasActiveRun?(): boolean;
-  /** `adoptLiveRun(id, {laps: 1, quiet: true})`. */
+  /** `adoptLiveRun(id, {laps: 1, quiet: true})`. Asked only when the frame
+   *  names a live run (or when the frame cannot say — no target known); the
+   *  controller then attaches through its own one-frame probe. */
   adopt(sessionId: string): Promise<void>;
   /** The watermark the visible render is good to — `ChatState.transcript`,
    *  written by `history` (T:17663-17665). Compared by IDENTITY after the await,
-   *  so a render that landed while we asked discards our answer. */
+   *  so a render that landed while we asked discards our answer. Its `path` is
+   *  the subscription's. */
   transcriptMark(): TranscriptStat | null;
   /** `ChatState.ownRunEndedAt`, in EPOCH SECONDS. */
   ownRunEndedAt(): number;
+  /** The one-off stat for a lap with no frame behind it (`tick()` called
+   *  directly). A frame carries its own `liveness` and this is not asked. */
   liveness(path: string): Promise<LivenessProbe>;
   /** `loadHistory(id, {refresh: true})` — no skeleton, scroll kept. */
   refreshHistory(sessionId: string): Promise<void>;
@@ -131,13 +150,22 @@ export interface LiveWatchDeps {
    * `run-controller.ts`'s `noteChatActivity` already dispatches
    * `TASKS_CHANGED_EVENT` on the window at both turn boundaries — the shell's
    * tasks store is its other listener — so this listens for it beside
-   * `storage`. The WRITER does not re-tick itself: the existing `busy()` gate
-   * is what stops that, exactly as it does for the interval.
+   * `storage`, and asks the bus for a fresh snapshot on it. The WRITER does not
+   * re-adopt its own turn: the existing `busy()` gate is what stops that,
+   * exactly as it does for every other frame.
    */
   localEvent?: string | null;
+  /** The chat's target, for the subscription's `file`. Optional: absent, the
+   *  controller that owns this session says (`chatTargetFor`). */
+  file?(): string;
+  /** The bus seam (`subscribeTopic` by default) — the suites hand in a
+   *  scripted one. */
+  subscribe?: SubscribeLike;
+  /** Ask for a fresh snapshot now (`resyncTopic` by default). */
+  resync?: (topic: string, params: Record<string, unknown>) => void;
+  /** Hear the controllers' targets move (`onChatTargets` by default). */
+  onTargets?: (cb: () => void) => () => void;
   /** Injectable for tests. */
-  setInterval?: (fn: () => void, ms: number) => unknown;
-  clearInterval?: (handle: unknown) => void;
   isHidden?: () => boolean;
   /** The two event targets, injectable because the suites have no real ones:
    *  the DOM shim's `window` and `document` are no-op stubs, so a test that has
@@ -153,17 +181,25 @@ export interface EventTargetLike {
   removeEventListener(type: string, fn: (ev: never) => void, capture?: boolean): void;
 }
 
+/** One `claude.live` frame as a lap reads it. `live` is `undefined` when the
+ *  subscription could not name the target — the frame then says nothing about
+ *  run dirs, and the lap asks `adopt` as it always did. */
+export interface LiveFrame {
+  live?: ClaudeLiveBody["live"];
+  liveness: LivenessProbe | null;
+}
+
 export interface LiveWatch {
-  /** One lap. Every trigger goes through this, whose busy seat makes a burst of
-   *  them (a poke landing on an interval landing on a focus) ONE lookup rather
-   *  than three (T:17604). */
-  tick(): Promise<void>;
-  /** Arm the interval and the three event triggers. Returns the disarm. */
+  /** One lap — on a frame (what `start()` does with every one), or with no
+   *  frame behind it, when it asks `adopt` and `deps.liveness` itself. Its
+   *  busy seat makes a burst of them ONE lookup rather than three (T:17604). */
+  tick(frame?: LiveFrame | null): Promise<void>;
+  /** Subscribe and arm the event triggers. Returns the disarm. */
   start(): () => void;
 }
 
 export function createLiveWatch(deps: LiveWatchDeps): LiveWatch {
-  let busy = false; // one lap at a time; a lap can outlive its interval
+  let busy = false; // one lap at a time; a lap can outlive the next frame
   let stopped = false;
 
   /**
@@ -177,15 +213,28 @@ export function createLiveWatch(deps: LiveWatchDeps): LiveWatch {
    * automated, and deliberately nothing more: the server stats the transcript,
    * a move re-renders through `history` (the page does not decide what is new,
    * it re-asks what the conversation IS), and granularity is a whole turn.
+   *
+   * The stat is the frame's `liveness` when there is a frame; a frame without
+   * one (no `path` in its key yet, or the stat failed server-side) is a lap
+   * with nothing to compare.
    */
-  async function followTranscript(sessionId: string, ownEndBefore: number): Promise<void> {
+  async function followTranscript(
+    sessionId: string,
+    ownEndBefore: number,
+    frame: LiveFrame | null,
+  ): Promise<void> {
     const mark = deps.transcriptMark();
     if (!mark || !mark.path) return; // no render to compare against yet
     let probe: LivenessProbe;
-    try {
-      probe = await deps.liveness(mark.path);
-    } catch {
-      return; // a failed stat leaves the transcript exactly as it rendered
+    if (frame) {
+      if (!frame.liveness) return;
+      probe = frame.liveness;
+    } else {
+      try {
+        probe = await deps.liveness(mark.path);
+      } catch {
+        return; // a failed stat leaves the transcript exactly as it rendered
+      }
     }
     // Everything can have changed across the await, and each of these outranks a
     // stale answer: the reader left, or a real run attached and owns the chrome.
@@ -214,7 +263,7 @@ export function createLiveWatch(deps: LiveWatchDeps): LiveWatch {
     }
   }
 
-  async function tick(): Promise<void> {
+  async function tick(frame: LiveFrame | null = null): Promise<void> {
     if (stopped || busy || deps.busy()) return;
     const sessionId = deps.sessionId();
     // Only with a session on screen. Without one there is no conversation to
@@ -245,14 +294,18 @@ export function createLiveWatch(deps: LiveWatchDeps): LiveWatch {
        * has just ended.
        */
       const ownEndBefore = deps.ownRunEndedAt();
-      await deps.adopt(sessionId);
+      // A frame that KNOWS nothing is live saves the controller its probe: the
+      // answer `adopt` would fetch is the one in hand. Anything else — a run
+      // named, or a frame that could not name the target — asks.
+      const nothingLive = !!frame && frame.live !== undefined && !(frame.live && frame.live.run_id);
+      if (!nothingLive) await deps.adopt(sessionId);
       // RUN DIRS FIRST, ALWAYS. A run this app spawned streams token by token
       // and owns the chrome; the transcript is the coarser, blinder fallback and
       // only speaks for the turns no run dir can account for. So it is asked
       // strictly after, and only if nothing attached.
       const took = deps.busy() || deps.ownRunEndedAt() !== ownEndBefore;
       if (!stopped && !took && deps.sessionId() === sessionId) {
-        await followTranscript(sessionId, ownEndBefore);
+        await followTranscript(sessionId, ownEndBefore, frame);
       }
     } finally {
       busy = false;
@@ -263,27 +316,118 @@ export function createLiveWatch(deps: LiveWatchDeps): LiveWatch {
     tick,
     start() {
       stopped = false;
-      const every = deps.setInterval || ((fn, ms) => setInterval(fn, ms));
-      const clear = deps.clearInterval || ((h) => clearInterval(h as never));
+      const subscribe = deps.subscribe || subscribeTopic;
+      const resync =
+        deps.resync ||
+        ((topic: string, params: Record<string, unknown>) => {
+          resyncTopic(topic, params);
+        });
       const hidden = deps.isHidden || (() => typeof document !== "undefined" && document.hidden);
-      const handle = every(() => {
-        if (!hidden()) void tick();
-      }, LIVE_WATCH_MS);
+
+      /** The subscription's key, its params, its unsubscribe, and whether it
+       *  carried the target (a frame from one that did not cannot speak for
+       *  run dirs). */
+      let key = "";
+      let params: Record<string, unknown> | null = null;
+      let fileKnown = false;
+      let off: (() => void) | null = null;
+
+      /**
+       * THE NEWEST FRAME, LAPPED ONE AT A TIME. A frame that lands while a lap
+       * is running is held, not dropped: the bus sends only what MOVED, so a
+       * dropped frame is news nobody will repeat. Latest wins — each frame is
+       * the whole answer.
+       */
+      let pending: LiveFrame | null = null;
+      let draining = false;
+      const drain = async () => {
+        if (draining) return;
+        draining = true;
+        try {
+          while (pending && !stopped) {
+            const frame = pending;
+            pending = null;
+            await tick(frame);
+          }
+        } finally {
+          draining = false;
+        }
+      };
+
+      const paramsNow = (): Record<string, unknown> | null => {
+        const sessionId = deps.sessionId();
+        if (!sessionId) return null;
+        const owner = chatTargetFor(sessionId);
+        const file = deps.file ? deps.file() : owner ? owner.file : "";
+        const mark = deps.transcriptMark();
+        const path = (mark && mark.path) || "";
+        return { file, session_id: sessionId, ...(path ? { path } : {}) };
+      };
+      /** Subscribe for the key as it stands now, if it moved. */
+      const rekey = () => {
+        if (stopped) return;
+        const next = paramsNow();
+        const nextKey = next ? canonicalKey(next) : "";
+        if (nextKey === key) return;
+        off?.();
+        off = null;
+        key = nextKey;
+        params = next;
+        fileKnown = !!(next && next.file);
+        if (!next) return;
+        const carriesFile = fileKnown;
+        let mine = true;
+        const unsubscribe = subscribe(
+          "claude.live",
+          next,
+          (raw, _delta, meta) => {
+            // A refusal is a lap with nothing in it: the transcript stays
+            // exactly as it rendered, as for a failed stat.
+            const snap = raw as ClaudeLiveBody | null;
+            if (stopped || !mine || !snap || (meta && meta.error)) return;
+            pending = {
+              ...(carriesFile ? { live: snap.live ?? null } : {}),
+              liveness: snap.liveness ?? null,
+            };
+            // The key may have moved since (a watermark landed): follow it
+            // before lapping, so the next frame is the right one. Off the
+            // client's call stack: a replayed snapshot is delivered inside
+            // `subscribe`, which can itself be inside a controller's emit.
+            void Promise.resolve().then(() => {
+              rekey();
+              return drain();
+            });
+          },
+        );
+        off = () => {
+          mine = false;
+          unsubscribe();
+        };
+      };
+      /** A trigger: re-key if the target moved, else ask for a fresh frame. */
+      const poke = () => {
+        if (stopped) return;
+        const before = key;
+        rekey();
+        // A new key's subscribe IS the fresh snapshot; an unchanged one asks.
+        if (key && key === before && params) resync("claude.live", params);
+      };
+
       const onStorage = (ev: StorageEvent) => {
         // KEYED, because every other `storage` event on this origin (the queue
         // mirror, the shell's own stores) is not news about a turn.
-        if (ev.key === deps.activityKey) void tick();
+        if (ev.key === deps.activityKey) poke();
       };
       /** The in-document twin of `onStorage` — see `deps.localEvent`. Unkeyed
        *  because the event NAME is the key: unlike `storage`, nothing else is
        *  delivered on it. */
-      const onLocal = () => void tick();
+      const onLocal = () => poke();
       const localEvent =
         deps.localEvent !== undefined ? deps.localEvent : TASKS_CHANGED_EVENT;
       const onVisible = () => {
-        if (!hidden()) void tick();
+        if (!hidden()) poke();
       };
-      const onFocus = () => void tick();
+      const onFocus = () => poke();
       const win =
         deps.win !== undefined
           ? deps.win
@@ -300,9 +444,20 @@ export function createLiveWatch(deps: LiveWatchDeps): LiveWatch {
       if (localEvent) win?.addEventListener(localEvent, onLocal as (ev: never) => void);
       doc?.addEventListener("visibilitychange", onVisible as (ev: never) => void);
       win?.addEventListener("focus", onFocus as (ev: never) => void);
+      // The controller says when the target or the watermark moved — from
+      // inside its emit, so the re-key runs after it.
+      const offTargets = (deps.onTargets || onChatTargets)(() => {
+        void Promise.resolve().then(rekey);
+      });
+      rekey();
       return () => {
         stopped = true;
-        clear(handle);
+        offTargets();
+        off?.();
+        off = null;
+        key = "";
+        params = null;
+        pending = null;
         win?.removeEventListener("storage", onStorage as (ev: never) => void);
         if (localEvent) win?.removeEventListener(localEvent, onLocal as (ev: never) => void);
         doc?.removeEventListener("visibilitychange", onVisible as (ev: never) => void);

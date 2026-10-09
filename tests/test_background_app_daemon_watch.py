@@ -1,15 +1,15 @@
 """`fused.daemon.watch()` (fused_render/static/runtime.js, SPEC.md §46): the
-only way a page currently learns its daemon's state changed WITHOUT the page
-itself having caused it — the OpenWhisper tray's Quit routes through
-`POST /api/apps/background/stop`, so the server knows, but nothing used to
-tell the page, and its mic icon stayed stale until a manual refresh.
+page-side watcher a background app's own page uses to follow its daemon's
+status. Since the events bus it is one `apps.background` subscription behind
+the same signature (D15): the callback hears the first frame and every CHANGE
+to the watched fields, and the unsubscribe releases the subscription. The
+hidden-window policy is the events client's (D7, tested in bun), not this
+function's, so there is no timer and no visibility listener here any more.
 
-Same node-harness style as test_background_app_daemon_guard.py: the named
-functions are lifted out of runtime.js by source text and driven under node
-with `document`/`window`/`fetch`/`setInterval` stubbed, because what matters
-is the polling/diffing/listener decisions, not a real DOM or a real 5s wait.
-`setInterval`/`clearInterval` are faked (queued, manually "ticked") so the
-suite runs in milliseconds and can assert exactly how many polls happened.
+The functions are lifted out of runtime.js by source text and driven under
+node with `document`/`window`/`fetch` stubbed and `subscribeTopic` faked (a
+scripted subscription whose frames the test pushes), because what matters is
+the observable contract of `watch()` against the bus, not the DOM.
 """
 import json
 import os
@@ -56,8 +56,8 @@ _HARNESS_PRELUDE = """
   }
   function callHeaders(extra) { return Object.assign({}, extra || {}); }
 
-  // fetch: each call returns the next entry of STATUSES (JSON), sticking on
-  // the last one once exhausted. Every call is counted.
+  // fetch (the thumbnail's one status() read): each call returns the next
+  // entry of STATUSES (JSON), sticking on the last one once exhausted.
   let _statusIdx = 0;
   let fetchCalls = [];
   globalThis.fetch = (url, opts) => {
@@ -67,51 +67,26 @@ _HARNESS_PRELUDE = """
     return Promise.resolve({ ok: true, json: () => Promise.resolve(body) });
   };
 
-  // Fake document: visibilitychange listeners + a mutable visibilityState.
-  const docListeners = {};
-  const document = {
-    visibilityState: "visible",
-    addEventListener(evt, fn) {
-      (docListeners[evt] = docListeners[evt] || []).push(fn);
-    },
-    removeEventListener(evt, fn) {
-      docListeners[evt] = (docListeners[evt] || []).filter((f) => f !== fn);
-    },
-  };
-  function setVisibility(state) {
-    document.visibilityState = state;
-    (docListeners["visibilitychange"] || []).slice().forEach((fn) => fn());
+  // The events-bus client, faked: `subscribeTopic` records the subscription
+  // and delivers STATUSES[0] as the snapshot at once; `push()` hands the next
+  // scripted status over as a fresh snapshot, the way the server would after
+  // a change. `subscriptions` counts what is open.
+  const subs = [];
+  function subscribeTopic(topic, params, cb, opts) {
+    const entry = { topic, params, cb, open: true };
+    subs.push(entry);
+    cb(STATUSES[Math.min(_statusIdx++, STATUSES.length - 1)], null, { gen: null });
+    return () => { entry.open = false; };
   }
+  function push() {
+    const body = STATUSES[Math.min(_statusIdx++, STATUSES.length - 1)];
+    subs.filter((s) => s.open).forEach((s) => s.cb(body, null, { gen: null }));
+  }
+  function subscriptions() { return subs.filter((s) => s.open).length; }
 
-  // window focus listeners.
-  const winListeners = {};
-  window.addEventListener = (evt, fn) => {
-    (winListeners[evt] = winListeners[evt] || []).push(fn);
-  };
-  window.removeEventListener = (evt, fn) => {
-    winListeners[evt] = (winListeners[evt] || []).filter((f) => f !== fn);
-  };
-  function fireFocus() {
-    (winListeners["focus"] || []).slice().forEach((fn) => fn());
-  }
-
-  // Fake interval scheduler: setInterval just remembers the callback: no
-  // real waiting. tick() invokes it once, as if 5s elapsed.
-  let _timerFn = null;
-  let _timerCleared = true;
-  globalThis.setInterval = (fn) => {
-    _timerFn = fn;
-    _timerCleared = false;
-    return 1;
-  };
-  globalThis.clearInterval = () => {
-    _timerCleared = true;
-    _timerFn = null;
-  };
-  function tick() {
-    if (_timerFn) _timerFn();
-  }
-  function timerActive() { return !_timerCleared; }
+  const document = { visibilityState: "visible", addEventListener() {}, removeEventListener() {} };
+  window.addEventListener = () => {};
+  window.removeEventListener = () => {};
 
   const calls = [];
 """
@@ -134,7 +109,8 @@ def _run(body, search="?path=/apps/x/index.html", statuses=None):
       setTimeout(() => {
         setTimeout(() => {
           console.log(JSON.stringify({
-            calls, fetchCount: fetchCalls.length, timerActive: timerActive(),
+            calls, fetchCount: fetchCalls.length, subscriptions: subscriptions(),
+            topics: subs.map((s) => s.topic), params: subs.map((s) => s.params),
           }));
         }, 0);
       }, 0);
@@ -145,126 +121,73 @@ def _run(body, search="?path=/apps/x/index.html", statuses=None):
     return json.loads(out.stdout)
 
 
-def test_watch_calls_back_once_on_initial_read():
+def test_watch_calls_back_once_on_the_first_frame():
     result = _run("""
       const unsub = daemon.watch((s) => calls.push(s));
     """)
-    assert result["fetchCount"] == 1
+    # One `apps.background` subscription for this page's folder, no fetch.
+    assert result["fetchCount"] == 0
+    assert result["subscriptions"] == 1
+    assert result["topics"] == ["apps.background"]
+    assert result["params"][0]["html"] == "%2Fapps%2Fx%2Findex.html"
     assert len(result["calls"]) == 1
     assert result["calls"][0]["running"] is True
 
 
-def test_watch_does_not_fire_again_when_a_tick_reports_the_same_state():
+def test_watch_does_not_fire_again_when_a_frame_reports_the_same_state():
     result = _run("""
       const unsub = daemon.watch((s) => calls.push(s));
+      push();
     """, statuses=[
         {"running": True, "autostart": False, "pid": 1, "version": "v1"},
         {"running": True, "autostart": False, "pid": 1, "version": "v1"},
     ])
-    # Two fetches (initial poll + one tick) is asserted by a separate test
-    # below that drives tick() explicitly; here we only need to confirm the
-    # initial read fired exactly once and produced one callback.
     assert len(result["calls"]) == 1
 
 
-def test_watch_fires_when_running_flips_on_a_tick():
+def test_watch_fires_when_a_watched_field_moves():
     result = _run("""
       const unsub = daemon.watch((s) => calls.push(s));
-    """, statuses=[
-        {"running": False, "autostart": False, "pid": 0, "version": ""},
-    ])
-    assert len(result["calls"]) == 1
-    assert result["calls"][0]["running"] is False
-
-
-def test_watch_only_polls_while_document_is_visible():
-    """Hidden -> no interval scheduled; becoming visible schedules one and
-    polls immediately."""
-    result = _run("""
-      setVisibility("hidden");
-      const unsub = daemon.watch((s) => calls.push(s));
-    """)
-    # No poll at all while starting hidden — watch() itself does one initial
-    # read regardless (so a caller always learns the starting state), but no
-    # background timer should be running while hidden.
-    assert result["timerActive"] is False
-
-
-def test_watch_refreshes_on_visibilitychange_to_visible():
-    result = _run("""
-      const unsub = daemon.watch((s) => calls.push(s));
-      setVisibility("hidden");
-      setVisibility("visible");
-    """, statuses=[
-        {"running": True, "autostart": False, "pid": 1, "version": "v1"},
-        {"running": False, "autostart": False, "pid": 0, "version": ""},
-    ])
-    assert result["fetchCount"] == 2
-    assert result["calls"][-1]["running"] is False
-    assert result["timerActive"] is True
-
-
-def test_watch_refreshes_on_window_focus():
-    result = _run("""
-      const unsub = daemon.watch((s) => calls.push(s));
-      fireFocus();
+      push();
+      push();
     """, statuses=[
         {"running": True, "autostart": False, "pid": 1, "version": "v1"},
         {"running": True, "autostart": True, "pid": 1, "version": "v1"},
+        {"running": False, "autostart": True, "pid": 0, "version": ""},
     ])
-    assert result["fetchCount"] == 2
-    assert result["calls"][-1]["autostart"] is True
+    assert [c["autostart"] for c in result["calls"]] == [False, True, True]
+    assert result["calls"][-1]["running"] is False
 
 
-def test_watch_polls_on_a_tick_while_visible():
-    result = _run("""
-      const unsub = daemon.watch((s) => calls.push(s));
-      tick();
-    """, statuses=[
-        {"running": True, "autostart": False, "pid": 1, "version": "v1"},
-        {"running": True, "autostart": False, "pid": 2, "version": "v1"},
-    ])
-    assert result["fetchCount"] == 2
-    assert result["calls"][-1]["pid"] == 2
-
-
-def test_watch_unsubscribe_stops_the_timer_and_listeners():
+def test_watch_unsubscribe_releases_the_subscription():
     result = _run("""
       const unsub = daemon.watch((s) => calls.push(s));
       unsub();
-      setVisibility("hidden");
-      setVisibility("visible");
-      fireFocus();
-      tick();
+      push();
     """, statuses=[
         {"running": True, "autostart": False, "pid": 1, "version": "v1"},
         {"running": False, "autostart": False, "pid": 0, "version": ""},
     ])
-    # Only the one initial poll from watch() itself — nothing after unsub().
-    assert result["fetchCount"] == 1
+    # Only the first frame — nothing after unsub(), and nothing left open.
     assert len(result["calls"]) == 1
-    assert result["timerActive"] is False
+    assert result["subscriptions"] == 0
 
 
-def test_watch_in_a_preview_thumbnail_does_a_single_read_with_no_timer_or_listeners():
+def test_watch_in_a_preview_thumbnail_does_a_single_read_with_no_subscription():
     """Preview guard: watch() is status() underneath, and status() is the one
     fused.daemon method a thumbnail may call — so watch() must not reject —
-    but it must not leave a poll loop or listeners running in a sandboxed
-    preview iframe either. One read, no timer, unsubscribe is a no-op."""
+    but it must not leave a subscription running in a sandboxed preview iframe
+    either. One read, no subscription, unsubscribe is a no-op."""
     result = _run("""
       const unsub = daemon.watch((s) => calls.push(s));
       unsub();
-      setVisibility("hidden");
-      setVisibility("visible");
-      fireFocus();
-      tick();
     """, search="?path=/apps/x/index.html&_preview=1", statuses=[
         {"running": True, "autostart": False, "pid": 1, "version": "v1"},
         {"running": False, "autostart": False, "pid": 0, "version": ""},
     ])
     assert result["fetchCount"] == 1
     assert len(result["calls"]) == 1
-    assert result["timerActive"] is False
+    assert result["subscriptions"] == 0
 
 
 def test_watch_rejects_a_non_function_callback():

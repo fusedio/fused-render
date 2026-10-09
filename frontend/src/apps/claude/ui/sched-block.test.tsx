@@ -1,7 +1,9 @@
 // The banner, and the two-press arm behind its one button. The RULES are tested
 // next door (`sched/scheduled.test.ts`); this drives the seam — a repeat armed
 // by one press and disarmed by a gesture, a one-off cancelled in one, and the
-// refusal that survives the poll the same click asks for.
+// refusal that survives the snapshot the same click asks for. The schedule and
+// the tasks listing are both injected feeds (the real ones ride the events bus
+// and never call back in bun): `poll()` pushes the store as a snapshot.
 import { installDomShim } from "@platform/lib/testDomShim";
 installDomShim();
 import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
@@ -16,19 +18,17 @@ let tasks: Task[] = [];
 let cancelFails = false;
 const cancelled: string[] = [];
 
-/** The three endpoint calls, HANDED IN rather than module-mocked: `bun test`
+/** The one endpoint call, HANDED IN rather than module-mocked: `bun test`
  *  runs every suite in one process, so replacing `@platform/lib/api` here
  *  replaces it for every suite loaded after this one. */
 const schedApi = {
-  getSchedule: () => Promise.resolve({ entries }),
-  getTasks: () => Promise.resolve({ tasks }),
   cancelScheduledMessage: (id: string) => {
     cancelled.push(id);
     if (cancelFails) return Promise.reject(new Error("404"));
-    // The STORE is the source of truth and the click's own `tick()` re-reads it,
-    // so a cancel that does not actually remove the entry would have the poll
-    // put the block straight back — which is exactly what the server does not
-    // do, and what the local unblock is measured against.
+    // The STORE is the source of truth and the click's own resync re-reads it,
+    // so a cancel that does not actually remove the entry would have the
+    // snapshot put the block straight back — which is exactly what the server
+    // does not do, and what the local unblock is measured against.
     entries = entries.filter((e) => e.id !== id && e.template_id !== id);
     return Promise.resolve({ entry: {} });
   },
@@ -88,6 +88,7 @@ const { SchedBlock } = await import("./SchedBlock");
 const { useSchedule } = await import("../sched/useSchedule");
 const { listenerCountsForTests } = await import("../feature-flag");
 type ScheduleState = import("../sched/useSchedule").ScheduleState;
+type ScheduleFrame = import("../sched/scheduled").ScheduleFrame;
 type ChatController = import("../protocol/controller-api").ChatController;
 
 /** Only the four members the hook reaches for. */
@@ -118,9 +119,17 @@ afterEach(() => {
 
 function mount(over: { navLocked?: boolean } = {}) {
   let api: ScheduleState | null = null;
-  /** The 15 s poll, captured instead of waited out: `poll()` below is one tick
-   *  of the real watcher, which is what re-reads the store. */
-  const ticks: (() => void)[] = [];
+  /** The `schedule` subscription, scripted: `poll()` below pushes the store as
+   *  one snapshot, exactly as the bus does on a change or a resync. */
+  const frames: ScheduleFrame[] = [];
+  const pushSchedule = () => {
+    for (const fn of [...frames]) fn({ entries }, {});
+  };
+  /** …and the tasks listing feed, the row's one source. */
+  const rowFeeds: ((rows: Task[]) => void)[] = [];
+  const pushRows = () => {
+    for (const fn of [...rowFeeds]) fn(tasks);
+  };
   const Harness = () => {
     const sched = useSchedule({
       controller: stubController(),
@@ -129,12 +138,22 @@ function mount(over: { navLocked?: boolean } = {}) {
       inChat: true,
       setRunParam: () => {},
       api: schedApi,
-      timers: {
-        setInterval: (fn) => {
-          ticks.push(fn);
-          return ticks.length;
+      scheduleFeed: {
+        subscribe: (cb) => {
+          frames.push(cb);
+          return () => {
+            const at = frames.indexOf(cb);
+            if (at >= 0) frames.splice(at, 1);
+          };
         },
-        clearInterval: () => {},
+        resync: pushSchedule,
+      },
+      subscribeRows: (cb) => {
+        rowFeeds.push(cb);
+        return () => {
+          const at = rowFeeds.indexOf(cb);
+          if (at >= 0) rowFeeds.splice(at, 1);
+        };
       },
       ...over,
     });
@@ -155,10 +174,16 @@ function mount(over: { navLocked?: boolean } = {}) {
     tree = create(createElement(Harness));
   });
   mounted.push(tree!);
+  // The snapshots that answer the two subscribes, as a page's first frames.
+  act(() => {
+    pushSchedule();
+    pushRows();
+  });
   return {
     tree: tree!,
     poll: () => {
-      for (const fn of ticks) fn();
+      pushSchedule();
+      pushRows();
     },
     get api() {
       return api!;
@@ -215,7 +240,7 @@ test("a one-off draws the reason, the row and one press's worth of button", asyn
   });
   await flush();
   expect(cancelled).toContain("e1");
-  // Applied LOCALLY so the box opens on the click rather than 15 s later.
+  // Applied LOCALLY so the box opens on the click rather than on the next snapshot.
   expect(m.api.blocked).toBe(false);
 });
 
@@ -422,7 +447,7 @@ test("the mode's lock closes the CALENDAR and nothing else", async () => {
 });
 
 test("THE DUE BOUNDARY IS CROSSED IN PLACE: same entry, new when-text", async () => {
-  // T repaints the whole card on every 15 s poll, which is how `.sb-meta`
+  // T repaints the whole card on every snapshot, which is how `.sb-meta`
   // crosses from "09:00 today" to "any moment now" (T:16921-16931). Dedupe the
   // published rows on ID ORDER ALONE and the row shows a stale time for the
   // life of the pendency — the id set never changes, so no repaint ever lands.
@@ -434,7 +459,7 @@ test("THE DUE BOUNDARY IS CROSSED IN PLACE: same entry, new when-text", async ()
   expect(texts(m.tree, "sb-meta")[0]).not.toBe("Upcoming · any moment now");
   expect(texts(m.tree, "sb-meta")[0].endsWith(" today")).toBe(true);
 
-  // The SAME id, past due now. One poll later the row has to say so.
+  // The SAME id, past due now. One snapshot later the row has to say so.
   entries = [
     {
       id: "e9",
@@ -448,15 +473,15 @@ test("THE DUE BOUNDARY IS CROSSED IN PLACE: same entry, new when-text", async ()
   });
   await flush();
   expect(texts(m.tree, "sb-meta")[0]).toBe("Upcoming · any moment now");
-  // ...and the listing row it was labelled from is NOT refetched: the pendency
+  // ...and the listing row it was labelled from is the same one: the pendency
   // is the same one, which is what the id dedupe is actually for.
   expect(texts(m.tree, "sb-id")).toEqual(["T050"]);
 });
 
 test("THE CLOCK ALONE CROSSES IT: nothing about the entry changes", async () => {
   // The half of the boundary the id/`due`/`state` dedupe cannot see. The entry
-  // is byte-for-byte the SAME OBJECT on both polls — what moves is the wall
-  // clock, and "14:01 today" is only true until 14:01. So the poll publishes
+  // is byte-for-byte the SAME OBJECT in both snapshots — what moves is the wall
+  // clock, and "14:01 today" is only true until 14:01. So the watcher publishes
   // the clock it saw (`useSchedule.tick`) beside the rows it deduped, and the
   // cell is read against that rather than against whichever render the entry
   // happened to trigger. Without it the row says "14:01 today" for the whole
@@ -480,8 +505,8 @@ test("THE CLOCK ALONE CROSSES IT: nothing about the entry changes", async () => 
     expect(texts(m.tree, "sb-meta")[0]).toBe("Upcoming · 14:01 today");
     const before = m.api.blockers;
 
-    // ONE POLL LATER, past due — and `entries` is untouched: same array, same
-    // object, same `due`, same `state`.
+    // ONE SNAPSHOT LATER, past due — and `entries` is untouched: same array,
+    // same object, same `due`, same `state`.
     Date.now = () => base + 120_000;
     await act(async () => {
       m.poll();
@@ -490,7 +515,7 @@ test("THE CLOCK ALONE CROSSES IT: nothing about the entry changes", async () => 
     expect(texts(m.tree, "sb-meta")[0]).toBe("Upcoming · any moment now");
     // THE DEDUPE IS STILL DOING ITS JOB: the published array was not replaced
     // (that is the identity the render loop was guarded against), and the
-    // listing row was not refetched for a pendency that never changed.
+    // listing row still labels a pendency that never changed.
     expect(m.api.blockers).toBe(before);
     expect(m.api.blockers[0]).toBe(entry);
     expect(texts(m.tree, "sb-id")).toEqual(["T051"]);
@@ -525,7 +550,7 @@ test("A HALF-PRESSED STOP DIES WITH ITS ENTRY (T:17091-17097, 17146)", async () 
 
   // A DIFFERENT message comes to the front. The arm belonged to the one that
   // left, and a destructive button must never be found armed with no press
-  // behind it — so it goes back cold rather than sitting one poll away from
+  // behind it — so it goes back cold rather than sitting one snapshot away from
   // spending a repeat nobody pressed against.
   entries = [
     {

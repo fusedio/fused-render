@@ -9,6 +9,7 @@
 // components still subscribe via useBookmarksVersion (lib/hooks.ts) and call
 // notifyBookmarksChanged() after each mutation they trigger.
 import { getBookmarks, putBookmarks } from "@platform/lib/api";
+import type { BookmarksResult } from "@platform/lib/api";
 import { notifyArmedChanged } from "@platform/lib/hooks";
 import { splitShellSearch } from "@platform/lib/layout-codec";
 import { rewriteLegacyUrl } from "@platform/lib/router";
@@ -45,8 +46,8 @@ let cache: BookmarkItem[] = [];
 // side-channel, never part of `cache`/the persisted tree, so it can never leak
 // into a PUT. Refreshed by hydrate/refresh alongside the tree; NOT updated by
 // local mutations (a just-added/renamed bookmark reads as present until the
-// next hydrate/poll — same eventual-consistency posture as the tree poll
-// itself, D77).
+// next hydrate or pushed snapshot — same eventual-consistency posture as the
+// cross-document convergence itself, D77).
 let missingIds = new Set<string>();
 
 export function loadBookmarks(): BookmarkItem[] {
@@ -68,12 +69,13 @@ async function commit(items: BookmarkItem[]): Promise<void> {
 }
 
 // All cache access runs through one serial promise chain — hydration, every
-// mutation, and the cross-tab refresh poll. So: (1) a mutation never reads a
-// half-hydrated cache — an early click before the initial GET returns waits for
-// the load instead of PUTting an empty tree over the file; (2) two overlapping
-// mutations can't both clone the same snapshot and clobber each other — each
-// runs after the previous one's commit; (3) the poll can't overwrite the cache
-// mid-mutation. Cross-tab convergence is eventual (≤ the poll interval), still
+// mutation, and the cross-tab snapshot the bus pushes. So: (1) a mutation never
+// reads a half-hydrated cache — an early click before the initial GET returns
+// waits for the load instead of PUTting an empty tree over the file; (2) two
+// overlapping mutations can't both clone the same snapshot and clobber each
+// other — each runs after the previous one's commit; (3) a pushed snapshot
+// can't overwrite the cache mid-mutation. Cross-tab convergence is eventual
+// (the server pushes the `bookmarks` topic on every write), still
 // last-write-wins on simultaneous writes — D77.
 let tail: Promise<unknown> = Promise.resolve();
 let hydrated = false;
@@ -113,34 +115,48 @@ export function hydrateBookmarks(): Promise<void> {
   });
 }
 
-// Re-read the server tree to pick up another tab's writes (D77 poll), AND the
-// latest missing-file flags (a target can vanish/reappear between polls with
-// the tree itself unchanged). Enqueued so it never overwrites an in-flight
-// local mutation; resolves true only when the tree OR the missing set actually
-// changed, so the caller re-renders once every 30 s at most, not on every tick.
-// No import logic — plain GET (hydrate owns the one-time import); a failed
-// poll is logged and skipped.
+// Adopt a tree the server handed over — another tab's writes (D77), AND the
+// latest missing-file flags (a target can vanish/reappear with the tree itself
+// unchanged). Resolves true only when the tree OR the missing set actually
+// changed, so the caller re-renders on a change and never on a repeat.
+function adopt({ bookmarks, missing }: Pick<BookmarksResult, "bookmarks" | "missing">): boolean {
+  // Same normalization as hydrate — a pushed tree would otherwise resurrect
+  // legacy urls right after hydrate cleaned them (tree-changed compare is
+  // against the normalized cache).
+  const next = normalizeUrls(bookmarks as BookmarkItem[]);
+  const nextMissing = new Set(missing);
+  const treeChanged = JSON.stringify(next) !== JSON.stringify(cache);
+  const missingChanged =
+    nextMissing.size !== missingIds.size || [...nextMissing].some((id) => !missingIds.has(id));
+  if (!treeChanged && !missingChanged) return false;
+  cache = next;
+  missingIds = nextMissing;
+  return true;
+}
+
+// Re-read the server tree on demand. Enqueued so it never overwrites an
+// in-flight local mutation. No import logic — plain GET (hydrate owns the
+// one-time import); a failed read is logged and skipped.
 export function refreshBookmarks(): Promise<boolean> {
   return enqueue(async () => {
     try {
-      const { bookmarks, missing } = await getBookmarks();
-      // Same normalization as hydrate — the poll would otherwise resurrect
-      // legacy urls right after hydrate cleaned them (tree-changed compare is
-      // against the normalized cache).
-      const next = normalizeUrls(bookmarks as BookmarkItem[]);
-      const nextMissing = new Set(missing);
-      const treeChanged = JSON.stringify(next) !== JSON.stringify(cache);
-      const missingChanged =
-        nextMissing.size !== missingIds.size || [...nextMissing].some((id) => !missingIds.has(id));
-      if (!treeChanged && !missingChanged) return false;
-      cache = next;
-      missingIds = nextMissing;
-      return true;
+      return adopt(await getBookmarks());
     } catch (e) {
       console.error("[fused] failed to refresh bookmarks:", e);
       return false;
     }
   });
+}
+
+// The `bookmarks` topic's snapshot (the body `GET /api/bookmarks` would have
+// answered), pushed by the events bus on subscribe and on every write any
+// document makes — applied without a second GET. Enqueued behind hydration
+// and every mutation for the same reason `refreshBookmarks` is, and `exists`
+// is honoured the way hydrate honours it: no file yet means an empty tree.
+export function applyBookmarksSnapshot(body: BookmarksResult): Promise<boolean> {
+  return enqueue(async () =>
+    adopt({ bookmarks: body.exists ? body.bookmarks : [], missing: body.missing ?? [] }),
+  );
 }
 
 export function isFolder(item: BookmarkItem): item is BookmarkFolder {

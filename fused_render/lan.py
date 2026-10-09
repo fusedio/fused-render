@@ -417,6 +417,16 @@ def _device_name(user_agent: str) -> str:
     return f"{device} · {browser}"
 
 
+
+def _publish(topic: str, key=None) -> None:
+    """Wake the events bus (server/events.py) for `topic`. Imported lazily so
+    this module keeps importing in a process that never starts the server."""
+    try:
+        from fused_render.server.events import bus
+        bus.publish(topic, key)
+    except Exception:  # noqa: BLE001 — a missed wake is latency, never an error
+        pass
+
 def _pair_device(user_agent: str) -> tuple[str, dict]:
     """Register a new device; returns (cookie secret, public record)."""
     import secrets
@@ -574,6 +584,8 @@ def _handle_pair(scope) -> Response:
     with _pair_lock:
         _recent_pairings.append({"id": record["id"], "name": record["name"], "at": record["paired_at"]})
         del _recent_pairings[:-20]  # a bound, not a policy — nobody pairs 20 devices unseen
+    _publish("lan.pairings")
+    _publish("lan.devices")
     return _with_cookie(RedirectResponse("/", status_code=302), secret,
                         secure=scope.get("scheme") == "https")
 
@@ -1516,6 +1528,7 @@ def api_lan_device_revoke(device_id: str, x_fused: str | None = Header(default=N
         return guard
     if not revoke_device(device_id):
         return JSONResponse({"error": "no such device"}, status_code=404)
+    _publish("lan.devices")
     return {"devices": list_devices()}
 
 
@@ -1524,6 +1537,7 @@ def api_lan_devices_revoke_all(x_fused: str | None = Header(default=None)):
     if (guard := _require_fused(x_fused)) is not None:
         return guard
     revoke_all_devices()
+    _publish("lan.devices")
     return {"devices": []}
 
 
@@ -1543,6 +1557,8 @@ def api_lan_pairing_dismiss(body: dict, x_fused: str | None = Header(default=Non
     wanted = str(body.get("id") or "")
     with _pair_lock:
         _recent_pairings[:] = [p for p in _recent_pairings if p["id"] != wanted]
+    _publish("lan.pairings")
+    with _pair_lock:
         return {"pairings": list(_recent_pairings)}
 
 

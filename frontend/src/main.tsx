@@ -5,7 +5,9 @@ import { TroubleCard } from "@platform/ui/TroubleCard";
 import { IS_EMBED, IS_SNAPSHOT } from "@platform/lib/router";
 import { clearListPrefetch, getConfig } from "@platform/lib/api";
 import { notifyFsChanged } from "@apps/explorer/listing/fsChangeBus";
-import { hydrateBookmarks, refreshBookmarks } from "@platform/lib/bookmarks";
+import { applyBookmarksSnapshot, hydrateBookmarks } from "@platform/lib/bookmarks";
+import type { BookmarksResult } from "@platform/lib/api";
+import { subscribeTopic } from "@platform/lib/events";
 import { hydrateRecents } from "@apps/explorer/lib/recents";
 import { notifyBookmarksChanged, setDefaultFavicon } from "@platform/lib/hooks";
 import { displayName, isBot, seedFlavor } from "@platform/lib/flavor";
@@ -111,32 +113,20 @@ getConfig().then(
     // Recents hydrate the same way; the store notifies its own subscribers.
     // (The app builder's parallel (tag, name) store went with its route.)
     void hydrateRecents();
-    // Poll every 30 s so another tab's/window's bookmark edits converge here
-    // (D77). refreshBookmarks() re-renders only when the tree actually changed.
-    // In-flight guarded (mirrors ServerStatusBanner's probingRef, D126): both
-    // the interval and the focus listener below call the same pollBookmarks,
-    // and refreshBookmarks() shares bookmarks.ts's serial mutation queue — an
-    // unguarded burst of focus events (or a focus landing mid-tick) would
-    // stack redundant GETs on that queue and delay real bookmark edits behind
-    // them, not just waste a request.
-    const BOOKMARK_POLL_MS = 30_000;
-    let bookmarkPollInFlight = false;
-    const pollBookmarks = () => {
-      if (bookmarkPollInFlight) return;
-      bookmarkPollInFlight = true;
-      refreshBookmarks()
-        .then((changed) => changed && notifyBookmarksChanged())
-        .finally(() => {
-          bookmarkPollInFlight = false;
-        });
-    };
-    setInterval(pollBookmarks, BOOKMARK_POLL_MS);
-    // Also refresh the instant the window regains focus — the common case for
-    // the missing-file flag (D127): switch away, fix/restore the file, switch
-    // back, and the sidebar reflects it immediately instead of waiting out the
-    // rest of the 30 s tick. Same "refresh on focus" posture as
-    // ServerStatusBanner's health probe (D126).
-    window.addEventListener("focus", pollBookmarks);
+    // Another tab's/window's bookmark edits converge here through the bus
+    // (D77): the `bookmarks` topic pushes the tree — the same body
+    // `GET /api/bookmarks` answers — on subscribe and on every write, and the
+    // missing-file flags ride along (D127: switch away, fix/restore the file,
+    // switch back, and the snapshot that answers the resubscribe says so).
+    // `applyBookmarksSnapshot` shares bookmarks.ts's serial mutation queue, so
+    // a frame landing mid-edit waits its turn rather than clobbering it, and
+    // re-renders only when the tree or the flags actually changed. No timer
+    // and no focus listener (D3): the client itself drops the subscription
+    // while hidden and the resubscribe's snapshot is the catch-up.
+    subscribeTopic<BookmarksResult>("bookmarks", null, (snap) => {
+      if (!snap) return;
+      void applyBookmarksSnapshot(snap).then((changed) => changed && notifyBookmarksChanged());
+    });
   },
   (err: Error) =>
     // THE BOOT FAILURE, and the one error surface that cannot describe itself:

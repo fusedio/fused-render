@@ -14,7 +14,7 @@
 //     turn into this transcript, because the reader was told to leave the chat
 //     open and watch it.
 //
-// Both read the ONE `/api/schedule` payload the poller already fetches, so the
+// Both read the ONE `schedule` snapshot the watcher already follows, so the
 // pair costs no second endpoint and cannot disagree about whether this chat is
 // blocked.
 //
@@ -112,38 +112,6 @@ export interface SchedTask {
   resumes_at?: number;
 }
 
-/** T:16749. */
-export const SCHEDULE_POLL_MS = 15000;
-/**
- * AND THE FAST ONE, WHILE THE COMPOSER IS SHUT (FIX-D, P4R1-3).
- *
- * The block is a pure `state === "pending"` filter, so it is always CORRECT and
- * up to one interval STALE — and a scheduled haiku turn measured at 8 seconds
- * end to end fits inside a 15 s interval with room to spare. What the reader
- * saw was a dead composer for 8-16 seconds after the work had visibly
- * finished, which reads as "a done entry still blocks" (diagnosis §2.3,
- * measured on legacy identically).
- *
- * So the poll asks oftener for exactly as long as this chat is unusable AND the
- * thing it is waiting for is about to happen — see `SCHEDULE_IMMINENT_MS` and
- * `schedImminent`. "While there is a blocker" is NOT bounded by construction:
- * a message scheduled for next Tuesday is a pending blocker for six days, and
- * gating on its mere existence left the page asking twenty times a minute for
- * the life of the tab (M1, R1 review). The 8-16 s dead composer this rate buys
- * back only exists in the minute the entry FIRES, so that is the only minute
- * that pays for it — an open composer, and a chat waiting on next week, both
- * still re-render four times a minute at most, which is the whole point of
- * `absorb`'s dedupe.
- */
-export const SCHEDULE_POLL_BLOCKED_MS = 3000;
-/**
- * HOW CLOSE "ABOUT TO FIRE" IS. Two minutes, not seconds: the poll it arms is
- * the thing that NOTICES the fire, so the window has to open comfortably before
- * the due stamp or the fast rate arrives after the event it was for. One slow
- * interval (15 s) plus the server's own claim tick fits inside it several times
- * over, and being early costs at most eight extra requests.
- */
-export const SCHEDULE_IMMINENT_MS = 120000;
 /** T:17038 — the shell's own remembered-view row, written so the Tasks page
  *  opens on the calendar. `Scheduled.tsx` reads this preference on mount and
  *  has no URL param for it, so writing it is the same gesture as pressing that
@@ -398,39 +366,6 @@ export function schedRanSessions(
   return out;
 }
 
-/**
- * IS THE SOONEST OF THESE BLOCKERS ABOUT TO FIRE — the question the poll's rate
- * is allowed to ask, and the only one (M1).
- *
- * `schedPendingHere` has no due filter, by design: a pending entry blocks this
- * composer whenever it is due, and a chat holding next Tuesday's message is
- * every bit as blocked as one holding the next thirty seconds'. The RATE is a
- * different question. The fast rate exists to shorten the gap between a run
- * finishing and the composer noticing, which is a gap that only exists around
- * the due stamp — so a far-future blocker keeps the composer shut and the poll
- * slow, and only the approach of the due time buys the fast one.
- *
- * PAST DUE COUNTS. An overdue pending is the ordinary shape here (scheduling
- * into the past is allowed, and the server's claim sweep is what clears it), and
- * that is precisely the state where the release is imminent.
- *
- * A row with a `due` this cannot read is treated as imminent: it is a stamp we
- * cannot reason about, and one that reads as far-future by accident would be the
- * one bug worth avoiding — a composer stuck shut with a slow poll behind it.
- */
-export function schedImminent(
-  rows: readonly SchedEntry[] | null | undefined,
-  now: number,
-): boolean {
-  for (const r of rows || []) {
-    if (!r) continue;
-    const at = Date.parse(String(r.due || ""));
-    if (!Number.isFinite(at)) return true;
-    if (at - now <= SCHEDULE_IMMINENT_MS) return true;
-  }
-  return false;
-}
-
 /** T:17057 — a pending OCCURRENCE of a repeat carries `template_id`; a template
  *  itself carries `repeats` or `rule`. */
 export function schedIsRepeat(entry: SchedEntry | null | undefined): boolean {
@@ -439,7 +374,7 @@ export function schedIsRepeat(entry: SchedEntry | null | undefined): boolean {
 
 /**
  * EVERY FIELD THE BANNER DRAWS, and no more (T:17088-17165). T repaints the card
- * from scratch on every 15 s tick, so an entry edited on the Tasks page shows
+ * from scratch on every pushed snapshot, so an entry edited on the Tasks page shows
  * its new wording within one interval; a dedupe on `id`/`due`/`state` alone
  * froze three separate cells against exactly that edit — the `.sb-name`
  * (`schedMsgLine` reads `message`), and the reason line, the stop button's label
@@ -701,8 +636,8 @@ export function schedRowName(
   return own || (rec && rec.title) || schedMsgLine(entry);
 }
 
-/** T:17140-17143 — a refused cancel, keyed to the ENTRY so the reconciling poll
- *  re-renders the sentence rather than wiping it. */
+/** T:17140-17143 — a refused cancel, keyed to the ENTRY so the reconciling
+ *  snapshot re-renders the sentence rather than wiping it. */
 export function schedRefusalNote(repeat: boolean): string {
   return repeat
     ? "The repeat is still on — it may already be running."
@@ -729,13 +664,34 @@ export function schedStopTitle(repeat: boolean, comeback = false): string {
     : "Cancels this scheduled message, and this chat reopens";
 }
 
-// ---- the poller (T:17379-17447) --------------------------------------------
+// ---- the watcher (T:17379-17447) ------------------------------------------
+//
+// SINCE 2026-10-09 THIS DOES NOT POLL. The schedule arrives as a `schedule`
+// subscription on the events bus (platform/lib/events): the server answers
+// the subscribe with a snapshot — the `GET /api/schedule` body — and pushes a
+// fresh one on every change (an entry claimed, sent, cancelled, a run that
+// ended), so the 15 s lap, the 3 s "imminent" lap and the imminence rule that
+// chose between them are gone (D3). Every pass below is what one lap used to
+// do with its answer: block, then at most one attach.
+
+/** The frame the subscription hands over: the GET's body, or `null` with the
+ *  refusal in `meta` (an `err` frame). */
+export type ScheduleFrame = (
+  snapshot: { entries?: SchedEntry[] } | null,
+  meta: { error?: string; status?: number; replay?: boolean },
+) => void;
 
 export interface ScheduleWatcherDeps {
   /** The chat's target — an entry is only ours to render if it fired for it. */
   file: string | null;
-  /** `GET /api/schedule`. THROWS or answers falsy on failure; either fails open. */
-  fetchSchedule(): Promise<{ entries?: SchedEntry[] } | null | undefined>;
+  /** The `schedule` subscription: calls `cb` with every frame, returns the
+   *  unsubscribe. The app hands over `subscribeTopic("schedule", …)`; a suite
+   *  hands over one it drives by hand. */
+  subscribe(cb: ScheduleFrame): () => void;
+  /** "Ask the bus for a fresh snapshot NOW" — for a write this pane just made
+   *  (a cancel, a status word that changed under the row). An event, never a
+   *  timer. */
+  resync(): void;
   /** The session on screen, `""` on the landing page. */
   sessionId(): string;
   /** False on the landing page — nothing to render a turn into (T:17394). */
@@ -743,7 +699,7 @@ export interface ScheduleWatcherDeps {
   /** `activeRun || sending`: a live turn owns the transcript (T:17429). */
   busy(): boolean;
   /** The pending messages aimed at this conversation, soonest first. Called on
-   *  EVERY tick, including the failing ones (with `[]`). */
+   *  EVERY frame, including the failing ones (with `[]`). */
   onBlockers(blockers: SchedEntry[]): void;
   /**
    * EVERY pending entry's id, this conversation's or not — the queue chip's
@@ -755,14 +711,14 @@ export interface ScheduleWatcherDeps {
    * (a brand-new task queues as `pending:<id>`), so the filtered list answers
    * `[]` for it and would take the chip down the instant it went up.
    *
-   * NOT called on a failing tick, unlike `onBlockers` — and that asymmetry is
+   * NOT called on a failing frame, unlike `onBlockers` — and that asymmetry is
    * the point. Failing open is right for a BLOCK (a schedule nobody can read
    * blocks nothing); it is wrong for this, where "I could not ask" would read
    * as "your message went" and silently drop the chip.
    */
   onPending?(ids: string[]): void;
   /**
-   * EVERY ENTRY THE TICK SAW, WHOLE — pending, claimed, and long since run.
+   * EVERY ENTRY THE FRAME CARRIED, WHOLE — pending, claimed, and long since run.
    *
    * A chat with no session has no `onBlockers` list (that filter is by session,
    * and there is none), so the only address its waiting messages have is the
@@ -784,7 +740,7 @@ export interface ScheduleWatcherDeps {
    * WHICH SESSION EACH RUN ENTRY OPENED (`schedRanSessions`) — the half of the
    * queue a chat with no session of its own depends on.
    *
-   * Called beside `onPending`, on successful ticks only and for the same
+   * Called beside `onPending`, on successful frames only and for the same
    * reason: "I could not ask" must never be spelled the same way as "it has not
    * run", or a chat would adopt nothing on a blip and then never look again.
    */
@@ -799,18 +755,16 @@ export interface ScheduleWatcherDeps {
   /** `controller.hasShownRun(id)` — has the CONTROLLER already taken this run
    *  (its own send, a `run` param, a turn the 5 s standing watch adopted)? */
   shownRun(runId: string): boolean;
-  /** Injectable for tests. */
-  setInterval?: (fn: () => void, ms: number) => unknown;
-  clearInterval?: (handle: unknown) => void;
-  /** Injectable for tests — the wall clock the imminence gate reads. */
-  now?: () => number;
 }
 
 export interface ScheduleWatcher {
-  /** One pass: block, then at most one attach. */
+  /** Ask for a fresh snapshot now. Resolves once the pass for the frame that
+   *  answered synchronously (a scripted subscribe) has run; the real bus
+   *  answers on its own socket, and that pass runs when the frame lands. */
   tick(): Promise<void>;
-  /** Baseline immediately (T:17410-17416 — at LOAD, not one interval later),
-   *  then watch every 15 s. Returns the stop. */
+  /** Subscribe: the snapshot that answers is the silent baseline (T:17410-17416
+   *  — at LOAD, not one interval later), every push after it a pass. Returns
+   *  the stop. */
   start(): () => void;
   /** T:16776-16786 `scheduleResetForNewTranscript` — called whenever the VISIBLE
    *  conversation is replaced. */
@@ -828,52 +782,34 @@ export function createScheduleWatcher(deps: ScheduleWatcherDeps): ScheduleWatche
    *  session still restores the turn from history (T:16747). */
   const noted = new Set<string>();
   let baselined = false;
-  let stopped = false;
-  /** Set by `start`, so a tick can ask for the OTHER rate — see `publish`. Null
-   *  for a watcher nobody started (or one already stopped): `tick` is public and
-   *  `resetForNewTranscript` calls it, and neither may arm a timer. */
-  let rearm: ((ms: number) => void) | null = null;
+  let stopped = true;
+  /** The pass for the newest frame, so `tick()` can hand its caller something
+   *  to await. */
+  let last: Promise<void> = Promise.resolve();
 
   /**
-   * THE ONE PLACE THE BLOCKERS LEAVE (FIX-D). Publishing the list and choosing
-   * the poll's rate are the same decision made twice otherwise, and the failing
-   * road publishes `[]` too — a schedule that cannot be read blocks nothing, so
-   * it must also not leave this page polling three times a second forever.
+   * THE ONE PLACE THE BLOCKERS LEAVE. The failing road publishes `[]` too — a
+   * schedule that cannot be read blocks nothing.
    */
   function publish(rows: SchedEntry[]): void {
     deps.onBlockers(rows);
-    // The list and the rate are two questions. Any pending blocker shuts the
-    // composer; only an IMMINENT one earns the fast poll (M1) — so the rate can
-    // come up as a far-future entry's due time approaches, and go back down on
-    // the tick after it clears, without the blocker list changing shape.
-    // …AND THE RATE READS THE PENDING HALF ONLY (`schedPendingOnly`, 🔴 review
-    // 2026-09-12). `rows` is the WIDENED list — it carries a claimed `sending`
-    // entry, which the queue's rows draw and which main never knew about — and
-    // spending the fast poll on one would put a flag-OFF page on the 3 s rate for
-    // a state it does not draw. Flag off is main byte for byte, here too.
-    const fast = schedImminent(schedPendingOnly(rows), (deps.now || Date.now)());
-    rearm?.(fast ? SCHEDULE_POLL_BLOCKED_MS : SCHEDULE_POLL_MS);
   }
 
-  async function tick(): Promise<void> {
+  /** One pass over one frame: block, then at most one attach. */
+  async function apply(data: { entries?: SchedEntry[] } | null | undefined): Promise<void> {
     if (stopped) return;
-    let data: { entries?: SchedEntry[] } | null | undefined;
-    try {
-      data = await deps.fetchSchedule();
-      if (!data) throw new Error("no schedule");
-    } catch {
+    if (!data) {
       // Fail OPEN, both halves: no turn to attach and no block to impose.
       publish([]);
       return;
     }
-    if (stopped) return;
     const entries = data.entries || [];
     // The block is a fact about the SCHEDULE, not about what this frame has
     // rendered — so it is applied before the home-view return and before the
     // baseline (T:17391-17394).
     publish(schedPendingHere(entries, deps.sessionId()));
     // …and the unfiltered pending set, for the queue chips (see `onPending`).
-    // After `publish`, so a tick that reaches here has already done the job it
+    // After `publish`, so a pass that reaches here has already done the job it
     // has always done — this is an addition to the pass, never a gate on it.
     // A CLAIMED ENTRY IS STILL ONE OF THESE (`schedIsWaiting`): the ids are what
     // keeps an optimistic row up until the server has listed its entry, and a
@@ -881,23 +817,23 @@ export function createScheduleWatcher(deps: ScheduleWatcherDeps): ScheduleWatche
     // turn lands.
     const waiting = entries.filter((e) => schedIsWaiting(e));
     deps.onPending?.(waiting.map((e) => String(e.id)));
-    // …and EVERY row the tick saw, for the one chat the session filter above
-    // cannot serve: a chat with no session draws its waiting messages by leader,
-    // and an id alone has no words, no due time and no origin to draw. The rows
-    // that have already run are carried for the link only they hold — see
-    // `onAllRows`. Same tick, same payload, so the two can never disagree about
-    // an entry that fired between two reads.
+    // …and EVERY row the frame carried, for the one chat the session filter
+    // above cannot serve: a chat with no session draws its waiting messages by
+    // leader, and an id alone has no words, no due time and no origin to draw.
+    // The rows that have already run are carried for the link only they hold —
+    // see `onAllRows`. Same frame, same payload, so the two can never disagree
+    // about an entry that fired between two pushes.
     // …AND ONLY THE ROWS THAT CAN ANSWER EITHER QUESTION (🔴 review 2026-09-12).
     // This list exists for two readers: the waiting rows of a chat with no
     // session (which need entries still in the line — `schedIsWaiting`, pending
     // or claimed) and the LINK from a leader that has already run to the session
     // it opened (`claude_session_id`). A done entry with neither is a row nobody
-    // reads, published four times a minute into a memo that re-renders the
-    // composer's column whenever its shape changes.
+    // reads, published into a memo that re-renders the composer's column
+    // whenever its shape changes.
     deps.onAllRows?.(entries.filter((e) => schedIsWaiting(e) || !!(e && e.claude_session_id)));
     // …and which conversation each entry's run opened, for a chat that is still
-    // waiting to learn its own (see `onSessions`). Same tick, same payload: the
-    // pair cannot disagree about an entry that fired between two reads.
+    // waiting to learn its own (see `onSessions`). Same frame, same payload: the
+    // pair cannot disagree about an entry that fired between two pushes.
     deps.onSessions?.(schedRanSessions(entries));
     if (!deps.inChat()) return;
     const fired = entries.filter((e) => e && e.target === deps.file && e.run_id);
@@ -914,12 +850,12 @@ export function createScheduleWatcher(deps: ScheduleWatcherDeps): ScheduleWatche
       const runId = String(entry.run_id);
       if (attached.has(runId)) continue;
       // THE CONTROLLER MAY ALREADY OWN THIS RUN. The standing watch looks every
-      // 5 s and this poll every 15, so a fired scheduled run is normally
-      // ADOPTED FIRST — and `busy()` then holds this loop at the guard below
-      // with the entry left unmarked, exactly as intended. Once the turn ends
-      // `busy()` is false and the entry is still in the listing, so the next
-      // tick used to `resumeRun` it with `neverShown` and append the very turn
-      // the watch had just streamed a second time (Bugbot PR #1075).
+      // 5 s, so a fired scheduled run is normally ADOPTED FIRST — and `busy()`
+      // then holds this loop at the guard below with the entry left unmarked,
+      // exactly as intended. Once the turn ends `busy()` is false and the entry
+      // is still in the listing, so the next pass used to `resumeRun` it with
+      // `neverShown` and append the very turn the watch had just streamed a
+      // second time (Bugbot PR #1075).
       //
       // A run the controller has shown is ATTACHED, not resumable — the same
       // SCHEDULE_ATTACHED semantics as the baseline (T:16746-16765) — and it
@@ -935,15 +871,15 @@ export function createScheduleWatcher(deps: ScheduleWatcherDeps): ScheduleWatche
         // folder — a chat that never scheduled anything got a warning about
         // work it has nothing to do with. The run is someone else's
         // conversation; it shows up there, and on the tasks page. The id is
-        // still remembered so a later tick does not re-evaluate it.
+        // still remembered so a later pass does not re-evaluate it.
         noted.add(runId);
         continue;
       }
       // The live-turn guard sits HERE, adjacent to the call with nothing awaited
-      // in between: checked at the top it could go stale across the fetch, and
+      // in between: checked at the top it could go stale across the frame, and
       // an id written off as handled while `resumeRun` returned immediately is a
       // turn that never appears at all. Returning leaves the entry unmarked for
-      // the next tick (T:17423-17429).
+      // the next pass (T:17423-17429).
       if (deps.busy()) return;
       // NO NOTE FOR A CHAT-ORIGIN ENTRY (Akshil, 2026-09-21). A message the
       // reader typed into this chat and the queue admitted later — pumped or
@@ -955,8 +891,21 @@ export function createScheduleWatcher(deps: ScheduleWatcherDeps): ScheduleWatche
       attached.add(runId);
       deps.setRunParam(runId);
       await deps.resumeRun(runId);
-      return; // one at a time; the next tick picks up anything behind it
+      return; // one at a time; the next pass picks up anything behind it
     }
+  }
+
+  function onFrame(snapshot: { entries?: SchedEntry[] } | null, meta: { error?: string }): void {
+    if (stopped) return;
+    // An `err` frame is the GET's refusal: fail open. A snapshot is a pass.
+    if (snapshot) last = apply(snapshot);
+    else if (meta.error !== undefined) last = apply(null);
+  }
+
+  function tick(): Promise<void> {
+    if (stopped) return Promise.resolve();
+    deps.resync();
+    return last;
   }
 
   function resetForNewTranscript(): void {
@@ -964,9 +913,9 @@ export function createScheduleWatcher(deps: ScheduleWatcherDeps): ScheduleWatche
     noted.clear();
     baselined = false;
     // The block belongs to the conversation that WAS on screen, so it goes with
-    // it rather than hanging over the next one for up to a poll interval.
-    // Unblocking is the safe direction to be briefly wrong in, and the poll
-    // fired underneath re-establishes it for this session immediately.
+    // it rather than hanging over the next one until the next push. Unblocking
+    // is the safe direction to be briefly wrong in, and the snapshot asked for
+    // underneath re-establishes it for this session immediately.
     publish([]);
     void tick();
   }
@@ -975,30 +924,10 @@ export function createScheduleWatcher(deps: ScheduleWatcherDeps): ScheduleWatche
     tick,
     start() {
       stopped = false;
-      const every = deps.setInterval || ((fn, ms) => setInterval(fn, ms));
-      const clear = deps.clearInterval || ((h) => clearInterval(h as never));
-      let handle: unknown = null;
-      /** The rate CURRENTLY armed, so a tick that publishes the same-shaped
-       *  answer as the last one does not tear the interval down and put an
-       *  identical one back up four times a minute. */
-      let armed = 0;
-      const arm = (ms: number) => {
-        if (handle !== null && armed === ms) return;
-        if (handle !== null) clear(handle);
-        armed = ms;
-        handle = every(() => void tick(), ms);
-      };
-      rearm = arm;
-      // The SLOW rate first: the first tick has not answered yet, and a page
-      // that arrives on an open composer must not spend the fast rate finding
-      // out. That tick then re-arms within milliseconds if this chat is blocked.
-      arm(SCHEDULE_POLL_MS);
-      void tick();
+      const off = deps.subscribe(onFrame);
       return () => {
         stopped = true;
-        rearm = null;
-        if (handle !== null) clear(handle);
-        handle = null;
+        off();
       };
     },
     resetForNewTranscript,

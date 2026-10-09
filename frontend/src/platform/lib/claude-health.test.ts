@@ -281,7 +281,7 @@ test("unavailable storage reads as NOT dismissed, and never throws", () => {
 
 const STRIP = readFileSync(
   join(import.meta.dir, "..", "ui", "ClaudeHealthStrip.tsx"), "utf8");
-// The machine itself — load, focus re-check, install poll — moved to
+// The machine itself — load, focus re-check, install follow — moved to
 // lib/claude-setup so the first-run wizard could share it; the strip keeps
 // only the render and the dismissal. Pins follow the code they pin.
 const SETUP = readFileSync(join(import.meta.dir, "claude-setup.ts"), "utf8");
@@ -470,11 +470,14 @@ test("dismissing a broken install does not hide a later, different problem", () 
   undismiss();
 });
 
-test("the strip polls only while an install is running, and re-probes when it ends", () => {
+test("the strip follows the install only while it is running, and re-probes when it ends", () => {
   expect(SETUP).toContain('if (install?.state !== "running") return;');
   // A finished install changed the machine, so the claim on screen is now stale.
   expect(SETUP).toContain('if (next.state === "done") load(true);');
-  expect(SETUP).toContain("window.clearInterval(timer)");
+  // Followed on the events bus, never on a timer (claude-setup.test.tsx
+  // drives the frames).
+  expect(SETUP).toContain('subscribeTopic<ClaudeSetupSnapshot>("claude.setup"');
+  expect(SETUP).not.toContain("setInterval");
 });
 
 test("the strip discloses the command beside the button that runs it", () => {

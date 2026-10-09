@@ -1,13 +1,8 @@
-import { expect, test } from "bun:test";
-import {
-  BUSY_CPU_PCT,
-  COLD_RETRIES,
-  FAST_POLL_MS,
-  SLOW_POLL_MS,
-  formatBytes,
-  formatCpu,
-  pollIntervalFor,
-} from "@shell/system-lib";
+import { afterEach, expect, test } from "bun:test";
+import { createElement } from "react";
+import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { formatBytes, formatCpu, resetSystemActivityForTests, useSystemActivity } from "@shell/system-lib";
+import { setEventsClientForTests } from "@platform/lib/events";
 import type { SystemActivity } from "@platform/lib/sysmon";
 
 const MB = 1024 ** 2;
@@ -44,21 +39,76 @@ test("formatCpu keeps one decimal and dashes an unknown", () => {
   expect(formatCpu(null)).toBe("–");
 });
 
-test("poll is fast while asked to, or while any process is busy", () => {
-  expect(pollIntervalFor(null, false)).toBe(SLOW_POLL_MS);
-  expect(pollIntervalFor(null, true)).toBe(FAST_POLL_MS);
-  expect(pollIntervalFor(payload([1, null, BUSY_CPU_PCT]), false)).toBe(SLOW_POLL_MS);
-  expect(pollIntervalFor(payload([1, BUSY_CPU_PCT + 0.1]), false)).toBe(FAST_POLL_MS);
+// The hub: one subscription to `system.activity` for fused-render's own
+// processes however many components read it, fed by the fake events client
+// (the real one has no socket in bun and never calls back).
+let renderers: ReactTestRenderer[] = [];
+
+afterEach(() => {
+  act(() => renderers.forEach((r) => r.unmount()));
+  renderers = [];
+  setEventsClientForTests(null);
+  resetSystemActivityForTests();
 });
 
-test("the slow cadence outlasts the sampler's 15 s idle, so an idle chip lets it sleep", () => {
-  expect(SLOW_POLL_MS).toBeGreaterThan(15_000);
+function Reader({ fast, seen }: { fast: boolean; seen: (d: SystemActivity | null) => void }) {
+  seen(useSystemActivity(fast));
+  return null;
+}
+
+function mount(fast: boolean, seen: (d: SystemActivity | null) => void): ReactTestRenderer {
+  let r!: ReactTestRenderer;
+  act(() => {
+    r = create(createElement(Reader, { fast, seen }));
+  });
+  renderers.push(r);
+  return r;
+}
+
+test("readers share ONE subscription, scoped to fused-render, closed with the last reader", () => {
+  const calls: { topic: string; params: unknown }[] = [];
+  let unsubscribes = 0;
+  let push: ((snap: unknown) => void) | null = null;
+  setEventsClientForTests({
+    subscribe: ((topic: string, params: unknown, cb: (s: unknown, d: unknown, m: Record<string, unknown>) => void) => {
+      calls.push({ topic, params });
+      push = (snap) => cb(snap, null, { gen: null });
+      return () => {
+        unsubscribes += 1;
+      };
+    }) as never,
+  });
+  const seen: (SystemActivity | null)[] = [];
+  mount(false, (d) => seen.push(d));
+  // `fast` asks for nothing extra: the server pushes every sampler tick.
+  mount(true, (d) => seen.push(d));
+  expect(calls).toEqual([{ topic: "system.activity", params: { scope: "fused" } }]);
+  expect(seen.every((d) => d === null)).toBe(true);
+
+  act(() => push?.(payload([1, 50])));
+  expect(seen.slice(-2).every((d) => d?.procs.length === 2)).toBe(true);
+
+  act(() => renderers[0].unmount());
+  expect(unsubscribes).toBe(0);
+  act(() => renderers[1].unmount());
+  renderers = [];
+  expect(unsubscribes).toBe(1);
 });
 
-test("a cold read with no CPU yet is retried after 1 s, at most COLD_RETRIES times", () => {
-  const cold = payload([null]);
-  expect(pollIntervalFor(cold, false, 1)).toBe(FAST_POLL_MS);
-  expect(pollIntervalFor(cold, false, COLD_RETRIES)).toBe(FAST_POLL_MS);
-  expect(pollIntervalFor(cold, false, COLD_RETRIES + 1)).toBe(SLOW_POLL_MS);
-  expect(pollIntervalFor(cold, false, 0)).toBe(SLOW_POLL_MS);
+test("a refused frame keeps the last snapshot", () => {
+  let cb: ((s: unknown, d: unknown, m: Record<string, unknown>) => void) | null = null;
+  setEventsClientForTests({
+    subscribe: ((_t: string, _p: unknown, c: typeof cb) => {
+      cb = c;
+      return () => {};
+    }) as never,
+  });
+  const seen = { latest: null as SystemActivity | null };
+  mount(false, (d) => {
+    seen.latest = d;
+  });
+  act(() => cb?.(payload([3]), null, { gen: null }));
+  expect(seen.latest?.procs.length).toBe(1);
+  act(() => cb?.(null, null, { error: "sampler gone", status: 500 }));
+  expect(seen.latest?.procs.length).toBe(1);
 });

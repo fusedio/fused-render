@@ -3,22 +3,27 @@
 // FdaStrip (Home, /apps, the explorer's AccessDenied card) and the onboarding
 // FdaStep used to each poll /api/config on their own timer with their own
 // idea of the state, so a grant could be "seen" by one and not another, and
-// the copy drifted. This module owns the poll, the shape, and the words; the
-// components render.
+// the copy drifted. This module owns the subscription, the shape, and the
+// words; the components render.
 //
 // The server (fused_render/shell/fda.py) is the only source of truth: the
 // `fda` field of /api/config, or its absence. Absent = not offered (non-mac,
-// dev server) or inconclusive = render nothing, and this store stops polling.
+// dev server) or inconclusive = render nothing.
 //
-// The poll runs only while someone is subscribed and the answer can still
-// change: `granted` is final for this process (a revoke needs a relaunch too),
-// so polling stops there as well. A subscriber joining kicks an immediate
-// fetch — AccessDenied's contract is that the server flipped `denied` inside
-// the very request that failed, so the card's mount-time read must already
-// see it, not wait for the next tick.
+// SINCE 2026-10-09 NOTHING HERE POLLS (D3). The state arrives over the
+// document's events-bus socket (`fda`, platform/lib/events): the server
+// pushes `{ fda }` — the `fda` field of GET /api/config, exactly — on
+// subscribe and whenever it moves, at the old 3 s cadence while a grant is
+// still possible. The subscription opens with the first `subscribeFda`
+// listener and closes with the last; a listener joining is answered with a
+// snapshot at once — AccessDenied's contract is that the server flipped
+// `denied` inside the very request that failed, so the card's mount-time
+// read already sees it. The "stop once granted / not offered" rule that
+// bounded the timer is the server's now: it simply has nothing new to push.
 import { useSyncExternalStore } from "react";
 
-import { getConfig, type FdaState } from "@platform/lib/api";
+import type { FdaState } from "@platform/lib/api";
+import { resyncTopic, subscribeTopic } from "@platform/lib/events";
 import { bundleName, deepLinkScheme } from "@platform/lib/flavor";
 
 export type { FdaState };
@@ -26,16 +31,17 @@ export type { FdaState };
 // undefined = not fetched yet; null = the server has no `fda` field.
 export type FdaSnapshot = FdaState | null | undefined;
 
-//: While anyone is watching and the answer can still change. Localhost, and
-//: the server memoizes the one expensive part (the child probe), so one
-//: cadence for every stage is fine.
-export const POLL_MS = 3000;
+/** The `fda` topic's snapshot: the `fda` field of GET /api/config, absent
+ *  when the server does not offer it. */
+type FdaFrame = { fda?: FdaState | null };
+
+const TOPIC = "fda";
 
 // The one deep link that respawns the SAME version so a fresh grant takes
 // effect (fused_render/deeplink.py). Rendered as a plain <a>, like the
 // update dialog's Restart: the OS hands it to the running app, which quits
-// through the normal teardown and respawns; this tab's poll picks the new
-// server up on its own.
+// through the normal teardown and respawns; this tab's subscription picks the
+// new server up on its own (the client reconnects and resubscribes).
 //
 // A FUNCTION, not a constant: the scheme is the flavor's (`fused-bot://` for
 // Fused Bot, platform/lib/flavor.ts), and the flavor is seeded after this
@@ -68,8 +74,8 @@ export function fdaCopy() {
 
 let snapshot: FdaSnapshot = undefined;
 const listeners = new Set<() => void>();
-let timer: number | null = null;
-let inflight = false;
+/** This store's one subscription to `fda`, or null while nobody listens. */
+let lane: (() => void) | null = null;
 
 function emit() {
   for (const l of listeners) l();
@@ -89,43 +95,33 @@ function set(next: FdaSnapshot) {
   emit();
 }
 
-function shouldPoll(): boolean {
-  if (listeners.size === 0) return false;
-  if (snapshot === null) return false; // not offered: nothing will change
-  if (snapshot?.granted) return false; // final for this process
-  return true;
+// One frame from the bus. A refusal (`meta.error`: the server down
+// mid-relaunch, say) keeps the last snapshot rather than blanking it — the
+// strip must not vanish and reappear while the app respawns.
+function onFrame(frame: FdaFrame | null) {
+  if (frame === null) return;
+  set(frame.fda ?? null);
 }
 
-function schedule() {
-  if (timer !== null) return;
-  if (!shouldPoll()) return;
-  timer = window.setTimeout(() => {
-    timer = null;
-    void refresh().finally(schedule);
-  }, POLL_MS);
+function open() {
+  if (lane) return;
+  lane = subscribeTopic<FdaFrame>(TOPIC, {}, onFrame);
 }
 
-function stop() {
-  if (timer !== null) {
-    window.clearTimeout(timer);
-    timer = null;
-  }
+function close() {
+  if (!lane) return;
+  const stop = lane;
+  lane = null;
+  stop();
 }
 
-// Re-read the server now. Returns the fresh snapshot. A failed fetch (server
-// down mid-relaunch, say) keeps the last snapshot rather than blanking it —
-// the strip must not vanish and reappear while the app respawns.
+// Ask the bus for a fresh snapshot now and hand back what the store holds.
+// The resync is an event, never awaited: the fresh frame lands through
+// `onFrame` like any other and wakes the listeners, so a caller that wants
+// the answer reads the store — `useFda` — rather than this promise's value,
+// which is whatever is held at the moment of asking.
 export async function refresh(): Promise<FdaSnapshot> {
-  if (inflight) return snapshot;
-  inflight = true;
-  try {
-    const config = await getConfig();
-    set(config.fda ?? null);
-  } catch {
-    // keep what we have
-  } finally {
-    inflight = false;
-  }
+  resyncTopic(TOPIC, {});
   return snapshot;
 }
 
@@ -139,23 +135,21 @@ export function getFda(): FdaSnapshot {
   return snapshot;
 }
 
+// The lane opens with the first listener and closes with the last: N readers
+// share one subscription and one snapshot.
 export function subscribeFda(cb: () => void): () => void {
   listeners.add(cb);
-  if (listeners.size === 1) {
-    void refresh().finally(schedule);
-  } else {
-    schedule();
-  }
+  if (listeners.size === 1) open();
   return () => {
     listeners.delete(cb);
-    if (listeners.size === 0) stop();
+    if (listeners.size === 0) close();
   };
 }
 
-// Restart the poll after a change that makes it worth watching again — e.g.
-// a dismissal took `denied` down, or the Settings pane was just opened.
+// Re-ask after a change that makes the answer worth a fresh look — e.g. a
+// dismissal took `denied` down, or the Settings pane was just opened.
 export function pokeFda() {
-  void refresh().finally(schedule);
+  void refresh();
 }
 
 export function useFda(): FdaSnapshot {
@@ -164,8 +158,7 @@ export function useFda(): FdaSnapshot {
 
 // Test seam.
 export function _resetFdaStore() {
-  stop();
+  close();
   snapshot = undefined;
-  inflight = false;
   listeners.clear();
 }

@@ -1,7 +1,12 @@
-// The ranked search box, DRIVEN: a query is typed, a reply lands, the clock
-// moves past the poll interval, the folder changes under an outstanding
-// request. Everything here is a sequence, which is precisely what the source
-// guards next door (index-source.test.ts) could not test.
+// The ranked search box, DRIVEN: a query is typed, a reply lands, the bus
+// pushes an `index.status` snapshot mid-scan, the folder changes under an
+// outstanding request. Everything here is a sequence, which is precisely what
+// the source guards next door (index-source.test.ts) could not test.
+//
+// The events client is a scripted one (`setEventsClientForTests`): the hook
+// re-asks the rank on every `index.status` snapshot while a scan runs, so a
+// test "ticks" the scan by pushing one. Nothing in the hook fetches on a
+// timer any more (D3).
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import type { IndexRankResult, Prefs } from "@platform/lib/api";
 import { Clock, Deferred, flush, renderHook } from "@apps/explorer/listing/hook-harness";
@@ -69,6 +74,20 @@ mock.module("@platform/lib/router", () => ({
 
 const { useListingSearch } = await import("@apps/explorer/listing/useListingSearch");
 const freshness = await import("@platform/lib/index-freshness");
+const { setEventsClientForTests } = await import("@platform/lib/events");
+
+/** The scripted `index.status` subscription: `statusTick()` pushes one
+ *  snapshot to every open subscriber — the server saying "the scan moved" —
+ *  and `statusSubs()` is how many are open, which is the hook's whole
+ *  "am I still waiting on a scan" state made observable. */
+const statusCbs = new Set<(s: unknown, d: unknown, m: Record<string, unknown>) => void>();
+const statusTopics: string[] = [];
+function statusTick(): void {
+  for (const cb of [...statusCbs]) {
+    cb({ scanning: true, has_index: true, files_indexed: 0, last_completed_at: null, running: true }, null, { gen: null });
+  }
+}
+const statusSubs = () => statusCbs.size;
 // Imported directly (not through the `getPrefs` stub above) so a test can
 // pin the preference deterministically: the module-level cache in
 // ranked-search-pref.ts is process-global (bun runs every test file in one
@@ -103,8 +122,27 @@ beforeEach(() => {
   publishRankedSearchEnabled(true);
   freshness.resetFsMutations();
   clock.install();
+  statusCbs.clear();
+  statusTopics.length = 0;
+  setEventsClientForTests({
+    subscribe: ((
+      topic: string,
+      _params: unknown,
+      cb: (s: unknown, d: unknown, m: Record<string, unknown>) => void,
+    ) => {
+      statusTopics.push(topic);
+      statusCbs.add(cb);
+      return () => {
+        statusCbs.delete(cb);
+      };
+    }) as never,
+    resync: () => true,
+  });
 });
-afterEach(() => clock.restore());
+afterEach(() => {
+  clock.restore();
+  setEventsClientForTests(null);
+});
 
 /** Mount the hook and type `q` into it.
  *
@@ -120,7 +158,6 @@ async function search(q: string, fsPath = "/d") {
   return box;
 }
 
-const SCAN_POLL_MS = 1_500;
 const MAX_SCANNING_POLLS = 80;
 
 describe("the MIN_QUERY_CHARS gate", () => {
@@ -219,25 +256,27 @@ describe("aborting a superseded request (rank-starvation fallback fix)", () => {
   });
 
   // The guard this fix must not break: `inflightKey.current === key` exists
-  // so a poll tick (the fetch effect re-running on `pollTick`/`polling`
+  // so a status snapshot (the fetch effect re-running on `pollTick`/`polling`
   // alone, query unchanged) does not abort-and-restart a live request -- a
-  // rank that outlasts SCAN_POLL_MS would otherwise never be allowed to
-  // finish (see "an uncovered folder: scan, poll, answer" above, which this
-  // reuses the shape of).
-  test("a poll tick landing on the SAME query does not abort the request already in flight", async () => {
+  // rank that outlasts the gap between two snapshots would otherwise never be
+  // allowed to finish (see "an uncovered folder: scan, poll, answer" above,
+  // which this reuses the shape of).
+  test("a status snapshot landing on the SAME query does not abort the request already in flight", async () => {
     const box = await search("widget");
     await flush(() => rankCalls[0].reply.resolve(answer({ covered: false, reason: "uncovered" })));
     expect(scanCalls).toEqual(["/d"]);
 
-    await flush(() => clock.advance(SCAN_POLL_MS));
+    await flush(() => statusTick());
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
     expect(rankCalls).toHaveLength(2);
     const polled = rankCalls[1];
     expect(polled.signal?.aborted).toBe(false);
 
-    // Left UNRESOLVED on purpose: another poll tick landing on the exact
+    // Left UNRESOLVED on purpose: another snapshot landing on the exact
     // same key before this one settles is the regression the inflightKey
     // guard exists to prevent.
-    await flush(() => clock.advance(SCAN_POLL_MS));
+    await flush(() => statusTick());
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
     expect(rankCalls).toHaveLength(2); // no new request -- the guard matched
     expect(polled.signal?.aborted).toBe(false);
     box.unmount();
@@ -300,21 +339,29 @@ describe("an uncovered folder: scan, poll, answer", () => {
     expect(scanCalls).toEqual(["/d"]);
     expect(box.current().scanPending).toBe(true);
     expect(box.current().displayHits).toEqual([]);
+    // Waiting on the scan ⇒ following `index.status`, and nothing else.
+    expect(statusSubs()).toBe(1);
+    expect(statusTopics).toEqual(["index.status"]);
 
-    await flush(() => clock.advance(SCAN_POLL_MS));
+    await flush(() => statusTick());
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
     expect(rankCalls).toHaveLength(2);
     await flush(() => rankCalls[1].reply.resolve(answer({ covered: true, reason: "scanning" })));
     expect(box.current().scanPending).toBe(true);
-    expect(scanCalls).toHaveLength(1); // asked ONCE, however many polls
+    expect(scanCalls).toHaveLength(1); // asked ONCE, however many snapshots
 
-    await flush(() => clock.advance(SCAN_POLL_MS));
+    await flush(() => statusTick());
     await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
     await flush(() => rankCalls[2].reply.resolve(answer({ hits: [hit("a/widget.md")], total: 1 })));
     expect(box.current().displayHits.map((h) => h.entry.rel)).toEqual(["a/widget.md"]);
     expect(box.current().scanPending).toBe(false);
 
-    await flush(() => clock.advance(SCAN_POLL_MS * 3));
-    expect(rankCalls).toHaveLength(3); // no poll outlives the scan
+    // The answer settled: the subscription is closed, and a late snapshot
+    // re-asks nothing.
+    expect(statusSubs()).toBe(0);
+    await flush(() => statusTick());
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
+    expect(rankCalls).toHaveLength(3); // no re-ask outlives the scan
     box.unmount();
   });
 
@@ -350,8 +397,10 @@ describe("an uncoverable folder reports the index gap, not an infinite loop", ()
     expect(box.current().reason).toBe("mount");
     expect(scanCalls).toEqual([]);
 
-    // Nothing polls for it: no further request appears on its own.
-    await flush(() => clock.advance(SCAN_POLL_MS * 5));
+    // Nothing follows the scan for it: no subscription, no further request.
+    expect(statusSubs()).toBe(0);
+    await flush(() => statusTick());
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
     expect(rankCalls).toHaveLength(1);
     box.unmount();
   });
@@ -361,9 +410,9 @@ describe("an uncoverable folder reports the index gap, not an infinite loop", ()
     await flush(() => rankCalls[0].reply.resolve(answer({ covered: false, reason: "uncovered" })));
     expect(scanCalls).toEqual(["/d"]);
 
-    // Grace polls, each still uncovered.
+    // Grace re-asks, one per snapshot, each still uncovered.
     for (let i = 0; i < 5; i++) {
-      await flush(() => clock.advance(SCAN_POLL_MS));
+      await flush(() => statusTick());
       await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
       const last = rankCalls[rankCalls.length - 1];
       await flush(() => last.reply.resolve(answer({ covered: false, reason: "uncovered" })));
@@ -375,19 +424,19 @@ describe("an uncoverable folder reports the index gap, not an infinite loop", ()
     box.unmount();
   });
 
-  test("running out of poll patience on a scanning folder settles too", async () => {
-    // Ticks count against the ceiling whatever the replies do — every one of
-    // these is left hanging, as they would be if rank consistently outlasted
-    // the poll interval. A ceiling counted in answers is one this loop could
-    // starve.
+  test("running out of patience on a scanning folder settles too", async () => {
+    // Snapshots count against the ceiling whatever the replies do — every one
+    // of these is left hanging, as they would be if rank consistently outlasted
+    // the gap between two pushes. A ceiling counted in answers is one this
+    // loop could starve.
     const box = await search("widget");
     await flush(() => rankCalls[0].reply.resolve(answer({ covered: false, reason: "uncovered" })));
+    expect(statusSubs()).toBe(1);
     for (let i = 0; i < MAX_SCANNING_POLLS + 2; i++) {
-      await flush(() => clock.advance(SCAN_POLL_MS));
+      await flush(() => statusTick());
     }
-    const ticks = clock.pending;
-    await flush(() => clock.advance(SCAN_POLL_MS * 5));
-    expect(clock.pending).toBeLessThanOrEqual(ticks); // the poll loop is over
+    expect(statusSubs()).toBe(0); // the re-ask loop is over: nothing follows the topic
+    expect(box.current().scanPending).toBe(false);
     box.unmount();
   });
 });
@@ -499,7 +548,7 @@ describe("a covered folder with a genuinely empty answer: fire a scan (SPEC-empt
     box.unmount();
   });
 
-  test("bumps the caller's onScanRequested once the scan request resolves, restarting the poll's idle beat", async () => {
+  test("bumps the caller's onScanRequested once the scan request resolves, so it can resync its status subscription", async () => {
     let bumped = 0;
     const box = renderHook(
       (p: string, r: number) =>
@@ -918,7 +967,8 @@ describe("closing the box mid-scan", () => {
     const box = await search("widget");
     await flush(() => rankCalls[0].reply.resolve(answer({ covered: false, reason: "uncovered" })));
     for (let i = 0; i < 50; i++) {
-      await flush(() => clock.advance(SCAN_POLL_MS));
+      await flush(() => statusTick());
+      await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
       const last = rankCalls[rankCalls.length - 1];
       await flush(() => last.reply.resolve(answer({ covered: false, reason: "scanning" })));
     }
@@ -928,11 +978,12 @@ describe("closing the box mid-scan", () => {
     await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
 
     for (let i = 0; i < 35; i++) {
-      await flush(() => clock.advance(SCAN_POLL_MS));
+      await flush(() => statusTick());
+      await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
       const last = rankCalls[rankCalls.length - 1];
       await flush(() => last.reply.resolve(answer({ covered: false, reason: "scanning" })));
     }
-    // 35 ticks after a reset is nowhere near a ceiling of 80 — still polling.
+    // 35 snapshots after a reset is nowhere near a ceiling of 80 — still waiting.
     expect(box.current().scanPending).toBe(true);
     box.unmount();
   });

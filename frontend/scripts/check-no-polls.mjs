@@ -102,7 +102,7 @@ if (fs.existsSync(RUNTIME)) violations.push(...check(RUNTIME, "fused_render/stat
 if (violations.length) {
   console.error("Timer-driven fetches (the events bus carries live facts, D3):\n" + violations.map((v) => "  " + v).join("\n"));
   console.error(
-    "\nSubscribe to the topic that would change the answer (platform/lib/events useTopic / fused.subscribe) " +
+    "\nSubscribe to the topic that would change the answer (platform/lib/events useTopic; inside runtime.js, subscribeTopic) " +
       "and re-ask a query on its change; a timer that fetches needs an ALLOW entry with its reason.",
   );
   process.exit(1);
