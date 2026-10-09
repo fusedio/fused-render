@@ -12,7 +12,7 @@ and one source for both is the only way that stays true.
 
 import os
 
-from fastapi import APIRouter, Body, Header
+from fastapi import APIRouter, Body, Header, Query
 from fastapi.responses import JSONResponse
 
 from fused_render.server.common import _error, _require_fused
@@ -47,7 +47,7 @@ def _project_for(body: dict):
 
 
 @router.post("/api/env/install")
-def api_env_install(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+def api_env_install(body: dict = Body(...), x_fused: str | None = Query(default=None)):
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
