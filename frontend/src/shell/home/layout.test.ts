@@ -678,6 +678,16 @@ test("presets: legacy is first; builder is the default; workbench is gone; files
     ["sessions", 0, 5],
     ["recents", 0, 9],
   ]);
+  const mission = presetLayout("mission").widgets;
+  expect(mission.map((x) => [x.source, x.x, x.y])).toEqual([
+    ["search", 0, 0],
+    ["tasks", 0, 1],
+    ["bots", 0, 7],
+    ["sessions", 4, 7],
+  ]);
+  const mt = mission.find((x) => x.source === "tasks")!;
+  expect(mt.show).toBe("open");
+  expect(dimsOf(mt)).toEqual({ cols: 8, rows: 6 });
   expect(presetLayout("files").widgets.some((w) => w.source === "folder")).toBe(false);
   const f = presetLayout("files", { folderId: "f1" }).widgets.find((w) => w.source === "folder");
   expect(f?.folderId).toBe("f1");
@@ -725,7 +735,7 @@ test("sourceFits: other sources", () => {
 });
 
 test("swapSource keeps id and rectangle", () => {
-  const l = presetLayout("mission");
+  const l = presetLayout("files");
   const tasks = l.widgets.find((w) => w.source === "tasks")!;
   const next = swapSource(l, tasks.id, "recents");
   const w = next.widgets.find((x) => x.id === tasks.id)!;
@@ -741,14 +751,14 @@ test("swapSource keeps id and rectangle", () => {
 });
 
 test("swapSource: a footprint no preset matches is stored explicitly", () => {
-  const l = presetLayout("mission");
-  const tasks = l.widgets.find((w) => w.source === "tasks")!;
-  const w = swapSource(l, tasks.id, "apps").widgets.find((x) => x.id === tasks.id)!;
+  const l = presetLayout("files");
+  const rec = l.widgets.find((w) => w.source === "recents")!;
+  const w = swapSource(l, rec.id, "apps").widgets.find((x) => x.id === rec.id)!;
   expect(w).toMatchObject({ source: "apps", cols: 6, rows: 4 });
 });
 
 test("swapSource: no-op cases return the same object", () => {
-  const l = presetLayout("mission");
+  const l = presetLayout("files");
   const bots = l.widgets.find((w) => w.source === "bots")!;
   const search = l.widgets.find((w) => w.source === "search")!;
   expect(swapSource(l, bots.id, "build")).toBe(l);
@@ -760,7 +770,7 @@ test("swapSource: no-op cases return the same object", () => {
 });
 
 test("swapSource: folder and app carry their fields, leaving drops them", () => {
-  const l = presetLayout("mission");
+  const l = presetLayout("files");
   const bots = l.widgets.find((w) => w.source === "tasks")!;
   const f = swapSource(l, bots.id, "folder", { folderId: "f1", format: "icons" });
   expect(f.widgets.find((x) => x.id === bots.id)).toMatchObject({ source: "folder", folderId: "f1", format: "icons" });
@@ -777,7 +787,7 @@ test("swapSource: folder and app carry their fields, leaving drops them", () => 
 
 test("emptySlots: preset layouts have none, a removed tile leaves its rectangle", () => {
   expect(emptySlots({ version: 5, widgets: [] })).toEqual([]);
-  const l = presetLayout("mission");
+  const l = presetLayout("files");
   const tasks = l.widgets.find((w) => w.source === "tasks")!;
   expect(emptySlots(removeWidget(l, tasks.id))).toEqual([rectOf(tasks)]);
   const idx = l.widgets.find((w) => w.source === "index")!;
@@ -787,13 +797,14 @@ test("emptySlots: preset layouts have none, a removed tile leaves its rectangle"
 });
 
 test("fillSlot: adds exactly the rectangle; refuses what does not fit", () => {
-  const l = presetLayout("mission");
+  const l = presetLayout("files");
   const tasks = l.widgets.find((w) => w.source === "tasks")!;
   const hole = removeWidget(l, tasks.id);
   const [slot] = emptySlots(hole);
   const next = fillSlot(hole, slot, "apps");
   expect(next.widgets.length).toBe(l.widgets.length);
-  const w = next.widgets.find((x) => x.source === "apps")!;
+  const w = next.widgets.find((x) => !l.widgets.some((o) => o.id === x.id))!;
+  expect(w.source).toBe("apps");
   expect(rectOf(w)).toEqual(slot);
   expect(emptySlots(next)).toEqual([]);
   expect(fillSlot(hole, slot, "build")).not.toBe(hole);
@@ -848,8 +859,8 @@ test("defaultFormat: card strips narrower than a full row use their compact form
 });
 
 test("swapSource into a 4-unit tile opens card strips as a list", () => {
-  const l = presetLayout("mission");
-  const rec = l.widgets.find((w) => w.source === "recents")!;
+  const l = presetLayout("files");
+  const rec = l.widgets.find((w) => w.source === "tasks")!;
   expect(rectOf(rec).cols).toBe(4);
   const w = swapSource(l, rec.id, "sessions").widgets.find((x) => x.id === rec.id)!;
   expect(w.source).toBe("sessions");
@@ -865,10 +876,10 @@ test("preset card-strip tiles narrower than half a row are not cards", () => {
   }
 });
 
-test("Mission control lists Claude Sessions and shows Recent files as cards; Files shows recents as cards", () => {
+test("Mission control lists Bots and Claude Sessions; Files shows recents as cards", () => {
   const m = presetLayout("mission").widgets;
+  expect(m.find((w) => w.source === "bots")!.format).toBe("list");
   expect(m.find((w) => w.source === "sessions")!.format).toBe("list");
-  expect(m.find((w) => w.source === "recents")!.format).toBe("cards");
   const f = presetLayout("files").widgets;
   expect(f.find((w) => w.source === "recents")!.format).toBe("cards");
 });
@@ -880,10 +891,9 @@ test("Builder preset shows Bots at 0,5 and no recent files", () => {
   expect([bots.x, bots.y]).toEqual([0, 5]);
 });
 
-test("only the Legacy preset has a playground tile", () => {
+test("no preset has a playground tile", () => {
   for (const p of PRESETS) {
-    const has = presetLayout(p.id).widgets.some((w) => w.source === "playground");
-    expect(has).toBe(p.id === "legacy");
+    expect(presetLayout(p.id).widgets.some((w) => w.source === "playground")).toBe(false);
   }
 });
 

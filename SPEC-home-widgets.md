@@ -203,9 +203,9 @@ Presets (`PRESETS`, `presetLayout(id, { folderId? })` in `shell/home/layout.ts`;
 
 | Preset | Tiles (x,y; size in cells; custom = explicit cols x rows in units) |
 | --- | --- |
-| Workbench | exactly `defaultLayout()` |
+| Legacy | search 4x1 (0,0); apps, sessions, recents each custom 8x4 at y 1/5/9 |
 | Builder | search 4x1 (0,0); build 2x1 (0,1); apps 2x2 icons (4,1); bots 2x2 list (0,5); tasks 2x2 list (4,5) |
-| Mission control | search (0,0); tasks board custom 6x4 (0,1); index 1x1 (6,1); bots 1x1 (6,3); sessions 2x1 (0,5); recents 2x1 (4,5) |
+| Mission control | search (0,0); tasks board custom 8x6 (0,1) showing open tasks only (`show: "open"`: Queued, In progress, Needs you); bots 2x2 list (0,7); sessions 2x2 list (4,7) |
 | Files | search (0,0); recents list custom 6x4 (0,1); index 1x1 (6,1); bookmark folder 1x1 list (6,3), or sessions list custom 2x2 when no folder exists; apps 2x1 (0,5); tasks 2x1 (4,5) |
 | Focus | search (0,0); build 4x1 (0,1) |
 
@@ -231,4 +231,4 @@ Not verified without a browser: every visual (preset chips and thumbnails, the p
 Add widget gallery (feat/home-fixed-grid):
 - Not verified without a browser: preview look and legibility at 0.5 scale in both themes, bottom alignment of captions across a wrapping row, the hover lift and focus ring, three Large previews per row in the 900px sheet, live bodies inside previews (tasks, bots, apps) not stealing focus or firing requests per card, the folder and page picker view, Escape and Tab trap.
 
-Compact cards: a card fills its tile's height (`.hw-cards` rows are `minmax(0, 1fr)`, each card root `height: 100%`, `container-type: size`). The header keeps its size; the body (app thumb, playground well, folder stack) takes the rest and crops. When the tile is 120px or shorter (`@container (max-height: 120px)`) the body and share chip are hidden and the card is its header: icon, title, path, time. Presets: Legacy (apps, playground, sessions, recents at y 1/5/9/13) and Workbench (apps y7, recents y11) give cards 8x4 cells (`custom`) so previews show; a saved layout of the old 8x2 Legacy shape reads as custom and gets header-only cards. Lists and board lanes show their "+N more" line only when it fits under the shown items (`moreLineFits`).
+Compact cards: a card fills its tile's height (`.hw-cards` rows are `minmax(0, 1fr)`, each card root `height: 100%`, `container-type: size`). The header keeps its size; the body (app thumb, playground well, folder stack) takes the rest and crops. When the tile is 120px or shorter (`@container (max-height: 120px)`) the body and share chip are hidden and the card is its header: icon, title, path, time. Presets: Legacy (apps, sessions, recents at y 1/5/9) gives cards 8x4 cells (`custom`) so previews show; a saved layout of the old 8x2 Legacy shape reads as custom and gets header-only cards. Lists and board lanes show their "+N more" line only when it fits under the shown items (`moreLineFits`).
