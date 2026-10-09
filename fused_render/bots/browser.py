@@ -413,12 +413,13 @@ class WS:
     def wait_loaded(self, timeout=15):
         """The page settled after a navigation this socket just asked for: the load event, or a same-document
         move, or the top frame done loading (a bfcache restore fires frameStoppedLoading and never load).
-        Child frames' stop events are ignored. Call right after the navigation command, on the same socket."""
+        Child frames' events are ignored (an ad iframe's replaceState must not end the wait).
+        Call right after the navigation command, on the same socket."""
         main = self.main_frame
         done = ("Page.loadEventFired", "Page.navigatedWithinDocument", "Page.frameStoppedLoading")
 
         def ok(method, params):
-            return method != "Page.frameStoppedLoading" or not main or params.get("frameId") == main
+            return method == "Page.loadEventFired" or not main or params.get("frameId") == main
         return self.wait_event(done, timeout, match=ok)
 
     @property
@@ -1624,6 +1625,7 @@ class Browser:
                 break
             except Exception:
                 continue
+        ws.events = []  # a page still loading from before: its stop event must not settle the action's own navigation
         return ws, sess
 
     def _foreground(self, ws):
@@ -1763,6 +1765,7 @@ class Browser:
                 try:
                     ws.call("Page.enable")
                     self._foreground(ws)
+                    ws.events = []
                     ws.call("Page.reload")
                     ws.wait_loaded(15)
                 except Exception:
