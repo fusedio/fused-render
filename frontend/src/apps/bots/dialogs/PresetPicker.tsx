@@ -1,6 +1,6 @@
 // The New bot chooser (OpenBot dialogs.js pickPreset) on the Settings-sized shell: "+" asks which preset first (a site
 // the bot knows, with its playbooks, or a blank bot), then the create form opens with the pick filled in. Four blank
-// starters fill the first row, then the presets in the order the backend returns them, six to a row. The search box
+// starters lead the grid, then the presets in the order the backend returns them, six to a row. The search box
 // swaps the grid for a list: the cards whose name matched, then one row per playbook that matched, each naming its
 // site, so a hit on a playbook reads as what it is. Enter picks the first row still showing. Escape clears a search
 // first, then closes; the backdrop and the X dismiss (null).

@@ -2,7 +2,7 @@
 // confirm), "Learn from last task" and the hand-written form (Title, Trigger words, Steps). Every op posts at once and
 // the next poll repaints the list; nothing here touches the Settings snapshot or its Save. The confirm is a sibling
 // modal, so it goes through the dialog's `confirm` (holds `busy`) and not askConfirm directly.
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Trash2Icon } from "lucide-react";
 import { Badge } from "@platform/shadcn/ui/badge";
 import { Button } from "@platform/shadcn/ui/button";
@@ -24,10 +24,12 @@ export function SkillsSection({ b, confirm }: SectionProps) {
   const [editing, setEditing] = useState<string | null>(null);  // the skill's name while editing an existing one
   const [title, setTitle] = useState(""), [trigger, setTrigger] = useState(""), [body, setBody] = useState("");
   const [learning, setLearning] = useState(false);
+  const sk = b.skills || [];
+  // The learnt playbook lands with a poll as a new card: that is when the button comes back.
+  useEffect(() => { setLearning(false); }, [sk.length]);
   // By id, not ref: the shadcn Input forwards no ref on React 18.
   const focusTitle = () => requestAnimationFrame(() => document.getElementById("sktitle")?.focus());
 
-  const sk = b.skills || [];
   const edit = (name: string) => {
     const k = sk.find((x) => x.name === name); if (!k) return;
     setEditing(name); setTitle(k.title); setTrigger(k.trigger); setBody(k.body); setForm(true); focusTitle();
