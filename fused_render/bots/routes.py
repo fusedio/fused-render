@@ -26,7 +26,6 @@ from fastapi import APIRouter, Body, Header, Query, Response
 
 from fused_render.bots import paths as bpaths
 from fused_render.bots import registry
-from fused_render.bots.browser import NAV_SETTLE_S
 from fused_render.server.common import _error, _require_fused
 
 router = APIRouter()
@@ -454,6 +453,7 @@ def _goto(bid, body):
     url = (body.get("url") or "").strip()
     if not url:
         raise ValueError("no url")
+    from fused_render.bots.browser import NAV_SETTLE_S  # lazy, like the rest of the bot layer (module docstring)
     info = _bot(bid).browser.goto(url, settle=NAV_SETTLE_S) or {}
     return {"ok": True, "url": info.get("url")}
 

@@ -370,11 +370,11 @@ class WS:
         self.send(json.dumps({"id": mid, "method": method, "params": params}))
         try:
             while True:
-                if self.dialog and method != "Page.handleJavaScriptDialog":
-                    # A JS dialog is open: the renderer withholds this reply until it closes (browser-side calls
-                    # still answer within this). Give up soon (socket.timeout) so _run can settle the dialog,
-                    # instead of sitting out the socket timeout.
-                    self.sock.settimeout(DIALOG_GRACE_S)
+                # A JS dialog is open: the renderer withholds this reply until it closes (browser-side calls still
+                # answer within this). Give up soon (socket.timeout) so _run can settle the dialog, instead of
+                # sitting out the socket timeout. Re-evaluated per message: the live view may close it meanwhile.
+                blocked = self.dialog and method != "Page.handleJavaScriptDialog"
+                self.sock.settimeout(DIALOG_GRACE_S if blocked else self.timeout)
                 msg = json.loads(self.recv())
                 self._note(msg)
                 if msg.get("id") == mid:
