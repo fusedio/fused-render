@@ -13,6 +13,8 @@ export type Effort = "low" | "medium" | "high" | "xhigh";
 export interface Offer { kind: "use" | "build"; name: string; dir: string; spec: string }
 export interface AppRef { name: string; dir: string; params?: Record<string, string> | string; tools?: unknown }
 export interface ReplyRef { seq: number; role: Role; text: string }
+/** One "Approve forever" rule (bot.json `allow_rules`): what kind of call, its coarse key, and the sentence shown for it. */
+export interface AllowRule { kind: "browser" | "tool" | "py" | "builtin" | "text" | "upload" | "build" | (string & {}); key: string; label: string }
 
 /** A channel address (docs §10): "imessage" + the sender's handle, "routine", "botsend", "handoff" + the Super Bot's id
  *  (a task Super Bot delegated, docs §11); the web is never stamped. */
@@ -47,6 +49,9 @@ export interface BotEvent {
   options?: string[];
   /** Several options may be ticked; the answer is a comma-separated list (or "None"). */
   multi?: boolean;
+  /** approval: the rule the card's third button writes (send with `forever: true`); absent when this call may never
+   *  be remembered (bot management, a phone-started task). `label` is the sentence the user approves. */
+  forever?: AllowRule;
   offer?: Offer;
   app?: AppRef;
   reply?: ReplyRef;
@@ -137,6 +142,8 @@ export interface Bot {
   build_access?: "scoped" | "full";
   /** App folders (normalised) whose tools and scripts never raise an approval card for this bot. */
   trusted_apps?: string[];
+  /** Calls the user approved forever from a card; revoked under Settings › Permissions. */
+  allow_rules?: AllowRule[];
   /** "super": the one bot per Mac with Claude Code's own tools (docs §5 "Super Bot"); absent for an ordinary bot. */
   kind?: "bot" | "super";
   /** Super Bot's permission posture: ask before writes / edits / shell, or unattended (Claude's own judgement). */
@@ -315,6 +322,8 @@ export interface SettingsBody {
   name?: string; model?: string; effort?: string; instructions?: string; memory?: string; approval?: string;
   build_access?: string; encrypt?: boolean; imessage_handle?: string; imessage_to?: string; imessage_enabled?: boolean;
   super_access?: string; trusted_apps?: string[];
+  /** Forever rules to drop (kind + key); applied to the live list, since the task thread also writes it. */
+  allow_rules_remove?: AllowRule[];
   /** "" or the bot's own id = a browser of its own; another bot's `browser_id` = share its logins. Refused while a task runs. */
   browser_id?: string;
 }
@@ -340,8 +349,10 @@ export const api = {
   imessage: () => get<ImessageState>(`${B}/imessage`, "imessage"),
   /** Settings > Phone "Send a test text": one text from this Mac to Super Bot's handle (the Automation consent lands here). */
   imessageTest: () => post<{ ok: true; handle: string }>(`${B}/imessage/test`, {}, "test text"),
-  /** Also answers approvals ("approve"/"deny"), questions and offers. */
-  send: (id: string, text: string, reply_to?: number | null) => post<Ok>(`${bid(id)}/send`, { text, reply_to: reply_to ?? null }, "send"),
+  /** Also answers approvals ("approve"/"deny"), questions and offers. `forever`: the approval card's third button; the
+   *  backend writes the card's rule on this yes (the flag lives on the message, so typed words never set it). */
+  send: (id: string, text: string, reply_to?: number | null, forever?: boolean) =>
+    post<Ok>(`${bid(id)}/send`, { text, reply_to: reply_to ?? null, ...(forever ? { forever: true } : {}) }, "send"),
   pause: (id: string) => post<Ok>(`${bid(id)}/pause`, {}, "pause"),
   resume: (id: string) => post<Ok>(`${bid(id)}/resume`, {}, "resume"),
   stop: (id: string) => post<Ok>(`${bid(id)}/stop`, {}, "stop"),

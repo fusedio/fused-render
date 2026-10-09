@@ -198,7 +198,17 @@ function body({ e, botId, reaction, live, chosen, appsRoot, onBeside, hstate, ta
     return (
       <div className={`msg approval${live ? "" : " settled"}`} data-seq={e.seq} title={title}>
         {e.text}
-        <div className="btns"><button className="primary" data-approve="1" disabled={!live}>Approve</button><button data-deny="1" disabled={!live}>Deny</button></div>
+        <div className="btns">
+          <button className="primary" data-approve="1" disabled={!live}>Approve</button>
+          <button data-deny="1" disabled={!live}>Deny</button>
+          {e.forever ? (
+            // The third answer: a yes that also writes the card's rule (bot.json allow_rules), so this bot never asks
+            // again when it does the same thing. Only cards whose call can be remembered carry `forever`.
+            <button className="forever" data-forever="1" disabled={!live} title={`Never ask again when this bot ${e.forever.label}. Undo it in Settings › Permissions.`}>
+              Approve, don't ask again
+            </button>
+          ) : null}
+        </div>
       </div>
     );
   }
@@ -490,8 +500,10 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
     if (opt && opt.hasAttribute("data-mopt")) return;  // a multi-select row: MultiQuestion handles its own clicks
     if (opt && sel) { const text = opt.getAttribute("data-opt") || ""; settleNow(opt, () => act(() => api.send(sel, text))); return; }
     const ok = t.closest(".msg.approval:not(.settled) [data-approve]"), no = t.closest(".msg.approval:not(.settled) [data-deny]");
-    if ((!ok && !no) || !sel) return;
-    settleNow((ok || no)!, () => act(() => api.send(sel, ok ? "approve" : "deny")));
+    const fv = t.closest(".msg.approval:not(.settled) [data-forever]");
+    if ((!ok && !no && !fv) || !sel) return;
+    // The forever button sends readable words (the thread shows what you did) plus the flag the gate reads.
+    settleNow((ok || no || fv)!, () => act(() => (fv ? api.send(sel, "Approve, don't ask again", null, true) : api.send(sel, ok ? "approve" : "deny"))));
   };
 
   let content: JSX.Element | JSX.Element[];

@@ -1780,11 +1780,12 @@ class Bot:
     def running(self):
         return self.thread is not None and self.thread.is_alive()
 
-    def send(self, text, reply_to=None):
-        """A message typed on the web page (the composer, a card button)."""
-        return self.receive(text, via=None, reply_to=reply_to)
+    def send(self, text, reply_to=None, forever=False):
+        """A message typed on the web page (the composer, a card button).
+        `forever`: the approval card's third button; the yes also writes an allow rule (tools.add_allow_rule)."""
+        return self.receive(text, via=None, reply_to=reply_to, forever=forever)
 
-    def receive(self, text, via=None, reply_to=None):
+    def receive(self, text, via=None, reply_to=None, forever=False):
         """A message from the user, from any channel (docs §10): the one entry
         point. `via` is where it came from (channels/base.py; None = the web).
         `reply_to` is the seq of an earlier message the user is replying to: the
@@ -1827,9 +1828,9 @@ class Bot:
                                      {"seq": uev.get("seq"), "text": text, "shown": shown, "via": via}]
                 self.save()
                 return
-        self._deliver_message(text, shown, via, uev)
+        self._deliver_message(text, shown, via, uev, forever=forever and chan.is_web(via))
 
-    def _deliver_message(self, text, shown, via, uev):
+    def _deliver_message(self, text, shown, via, uev, forever=False):
         """receive()'s second half: a written user line reaches the task (an instruction or an answer) or starts one."""
         with self.lock:
             running = self.thread is not None and self.thread.is_alive()
@@ -1855,7 +1856,8 @@ class Bot:
                 running = True  # a hand-off started a task first: this message becomes an instruction to it
             if running:
                 # Marked as texted: approval and offer waits never take it as their verdict (channels.base.Texted).
-                self.inbox.append(chan.Texted(text, via) if texted else text)
+                # Marked as forever: the approval gate writes an allow rule on the yes (channels.base.Forever).
+                self.inbox.append(chan.Texted(text, via) if texted else (chan.Forever(text) if forever else text))
                 self.wake.set()
                 if self.meta.get("status") == "waiting":
                     # waiting_on stays: the engine clears it when its wait ends,
@@ -3421,6 +3423,11 @@ def _copy_lenient(a, b_):
         pass
 
 
+def _tools_mod():
+    from fused_render.bots import tools  # lazy: tools imports this module for the manage verbs
+    return tools
+
+
 def clone(src_id, name="", share=True):
     """New bot with another bot's memory, instructions and skills, on the same
     browser (sharing its logins; the default) or, with share=False, on a copy
@@ -3453,6 +3460,7 @@ def clone(src_id, name="", share=True):
             "effort": src.meta.get("effort", DEFAULT_EFFORT), "instructions": src.meta.get("instructions", ""),
             "approval": src.meta.get("approval", "ask"), "build_access": src.meta.get("build_access", "scoped"),
             "trusted_apps": apptools.clean_trusted_apps(src.meta.get("trusted_apps")),
+            "allow_rules": _tools_mod().clean_allow_rules(src.meta.get("allow_rules")),
             "status": "idle", "created": time.time(), "task": "", "step": 0, "url": None, "title": None}
     if src.meta.get("engine"):
         meta["engine"] = src.meta["engine"]

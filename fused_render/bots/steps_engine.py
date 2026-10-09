@@ -353,19 +353,29 @@ def run(bot, task, label=None):
             # in "ask" mode (the default). Both the model's own flag and a
             # button-text heuristic can trigger it.
             why = tools.risk(bot, act, decision, obs)
-            if why and (bot.meta.get("approval") or "ask") != "auto":
+            # An "Approve forever" rule from an earlier card skips it (tools.forever_rule; the same rule set as
+            # the agent engine, so a bot moved to a local model keeps what the user allowed).
+            rule = tools.forever_rule(bot, act, decision, obs) if why else None
+            ask = bool(why) and (bot.meta.get("approval") or "ask") != "auto"
+            if ask and tools.forever_match(bot, rule):
+                bot.emit("note", f"Running without asking ({rule['label']}: approved forever).")
+                history.append(f"APPROVED by a standing rule the user set: {tools.describe(bot, act, decision, obs)}")
+            elif ask:
                 preview = tools.describe(bot, act, decision, obs)
-                ev = bot.emit("approval", f"About to {preview}. {why} Approve?", detail=preview)
+                ev = bot.emit("approval", f"About to {preview}. {why} Approve?", detail=preview, **({"forever": rule} if rule else {}))
                 bot.set_status("waiting", waiting_on=ev["seq"])
                 _wait_for_user(bot)
                 if bot.stop_flag.is_set():
                     break
                 answers = bot._drain_inbox()
                 bot.set_status("running", waiting_on=None)
-                if not any(botmod._YES.match(a) for a in answers):
+                yes = [a for a in answers if botmod._YES.match(a)]
+                if not yes:
                     history.append(f"DENIED by the user: {preview}. Do not retry it; " + " ".join(f"USER: {a}" for a in answers if not botmod._NO.match(a)))
                     bot.emit("system", "Denied; the bot will try something else.")
                     continue
+                if rule and any(channels.base.is_forever(a) for a in yes):
+                    tools.add_allow_rule(bot, rule)
                 history.append(f"APPROVED by the user: {preview}")
             lbl, result = tools.execute(bot, act, decision, obs)
             # The thumb is "the page after this step": only browser actions change the page.

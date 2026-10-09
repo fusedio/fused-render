@@ -459,7 +459,9 @@ div.bots-page:not(.sideapp) #satabb, div.bots-page.sideapp #sataba { background:
 div.bots-page.sideapp #saframe { display: block; }
 div.bots-page.sideapp .preview > :is(.shotwrap, .toast, .cap, .info) { display: none; }
 .bots-page .msg.approval { align-self: flex-start; background: var(--card); max-width: min(48rem, 90%); }
-.bots-page .msg.approval .btns { display: flex; gap: 8px; margin-top: 10px; }
+.bots-page .msg.approval .btns { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+/* "Approve, don't ask again": the quiet third answer, pushed to the far end so Approve / Deny keep their places. */
+.bots-page .msg.approval .btns .forever { margin-left: auto; color: var(--muted); }
 .bots-page .msg.approval.settled .btns { display: none; }
 .bots-page .composer { padding: 6px var(--chatgut) 18px; display: flex; flex-direction: column; gap: 8px; }
 /* Pause / Resume / Stop row: right-aligned, and gone entirely (no gap) while the bot is idle. */

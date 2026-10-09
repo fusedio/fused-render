@@ -1351,6 +1351,13 @@ def _permission(bot, sess: Turn, args: dict):
     unattended = super_mode(bot) == "auto"  # never for a phone-started task (super_mode)
     if unattended and not sess.web_touched:
         return _permission_answer(True, args)
+    # An "Approve forever" rule (tools.builtin_forever_rule: the tool, or Bash:<first word>) skips the card the way
+    # unattended does: only while the task has not read the web. Once it has, every write and command asks either
+    # way (the prompt-injection posture above); the card still offers the button, for the next clean task.
+    rule = tools.builtin_forever_rule(bot, name, inp)
+    if not sess.web_touched and tools.forever_match(bot, rule):
+        bot.emit("note", f"Running without asking ({rule['label']}: approved forever).")
+        return _permission_answer(True, args)
     if preview in sess.denied:
         bot.emit("note", f"Not asking again: the user already declined to {preview}.")
         return _permission_answer(False, args, f"DENIED EARLIER by the user: {preview}. Do not retry it; do something else "
@@ -1363,7 +1370,7 @@ def _permission(bot, sess: Turn, args: dict):
     # deny carries a message the model reads, so they ride on that.
     notes: list = []
     raw: list = []
-    verdict, said = _gate(bot, sess, preview, why, notes, raw)
+    verdict, said = _gate(bot, sess, preview, why, notes, raw, rule=rule)
     if verdict is None:
         return None
     if verdict:
@@ -1549,15 +1556,18 @@ def _loaded_skill(bot, args: dict) -> list:
     return [sec] if sec else []
 
 
-def _gate(bot, sess: Turn, preview: str, why: str, notes: list, raw: list | None = None):
+def _gate(bot, sess: Turn, preview: str, why: str, notes: list, raw: list | None = None, rule: dict | None = None):
     """The approval card for one risky call. (verdict, said): True approved,
     False denied (with the user's words), None Stop. An answer that is neither
     yes nor no is a mid-task instruction ("use the blue one", "wait, check the
     price first"): it rides on this result (`notes`) and the card stays live,
     because recording it as a denial put the model on a different route the
     user never asked for. `raw` (Super Bot's permission card, whose answer
-    cannot carry text) also collects those messages verbatim for re-queueing."""
-    ev = bot.emit("approval", " ".join(p for p in (f"About to {preview}.", why.strip(), "Approve?") if p), detail=preview)
+    cannot carry text) also collects those messages verbatim for re-queueing.
+    `rule` (tools.forever_rule): the card gets its third button, and a yes that
+    carries the Forever marker writes the rule so this call never asks again."""
+    ev = bot.emit("approval", " ".join(p for p in (f"About to {preview}.", why.strip(), "Approve?") if p), detail=preview,
+                  **({"forever": rule} if rule else {}))
     seq = _seq(ev)
     bot.set_status("waiting", waiting_on=seq)
     verdict, said = None, ""
@@ -1570,6 +1580,8 @@ def _gate(bot, sess: Turn, preview: str, why: str, notes: list, raw: list | None
             # A texted message is never the verdict (approvals are answered at the Mac, docs §10): an instruction.
             if verdict is None and not channels.base.is_texted(a) and YES.match(a):
                 verdict = True
+                if rule and channels.base.is_forever(a):
+                    tools.add_allow_rule(bot, rule)
             elif verdict is None and not channels.base.is_texted(a) and NO.match(a):
                 verdict = False  # a plain "no, too expensive" is the verdict, not an instruction (OpenBot _NO)
                 said = a.strip()
@@ -1602,8 +1614,15 @@ def _act(bot, sess: Turn, name: str, args: dict, notes: list | None = None) -> d
                        "only if the user asks again or the args differ.")
     pre = []
     why = tools.risk(bot, name, args, obs)
+    # An "Approve forever" rule the user wrote from an earlier card (tools.forever_rule): no card, the call runs.
+    # It beats the model's `risky: true` flag (for a click that flag is the only trigger). Never for ALWAYS_ASK
+    # or a phone-started task: forever_rule returns None for both.
+    rule = tools.forever_rule(bot, name, args, obs) if why else None
     # ALWAYS_ASK (bot_create / bot_settings) raises the card under "Never ask" too (docs §12).
-    if why and (name in tools.ALWAYS_ASK or tools.effective_approval(bot) != "auto"):
+    if why and tools.forever_match(bot, rule) and tools.effective_approval(bot) != "auto":
+        bot.emit("note", f"Running without asking ({rule['label']}: approved forever).")
+        pre.append(f"APPROVED by a standing rule the user set: {tools.describe(bot, name, args, obs)}")
+    elif why and (name in tools.ALWAYS_ASK or tools.effective_approval(bot) != "auto"):
         preview = tools.describe(bot, name, args, obs)
         if preview in sess.denied:
             # Seen live: haiku re-issued a denied click one step later ("the task
@@ -1612,7 +1631,7 @@ def _act(bot, sess: Turn, name: str, args: dict, notes: list | None = None) -> d
             bot.emit("note", f"Not asking again: the user already declined to {preview}.")
             return _result(f"DENIED EARLIER by the user: {preview}. It was not run and the user was not asked again. "
                            "Do not retry it: do something else, or finish and say what you could not do.", error=True)
-        verdict, said = _gate(bot, sess, preview, why, notes)
+        verdict, said = _gate(bot, sess, preview, why, notes, rule=rule)
         if verdict is None:
             return None
         if not verdict:
