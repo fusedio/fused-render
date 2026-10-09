@@ -672,6 +672,12 @@ test("presets: legacy is first; builder is the default; workbench is gone; files
   expect(strip(presetLayout("builder"))).toEqual(strip(defaultLayout()));
   expect(presetLayout("builder").widgets[0].id).not.toBe("default-search");
   expect(PRESETS.some((p) => (p.id as string) === "workbench")).toBe(false);
+  expect(presetLayout("legacy").widgets.map((x) => [x.source, x.x, x.y])).toEqual([
+    ["search", 0, 0],
+    ["apps", 0, 1],
+    ["sessions", 0, 5],
+    ["recents", 0, 9],
+  ]);
   expect(presetLayout("files").widgets.some((w) => w.source === "folder")).toBe(false);
   const f = presetLayout("files", { folderId: "f1" }).widgets.find((w) => w.source === "folder");
   expect(f?.folderId).toBe("f1");

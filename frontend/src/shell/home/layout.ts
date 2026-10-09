@@ -683,7 +683,7 @@ export function reflowToColumns(layout: HomeLayout, cols: number): Map<string, R
 export type PresetId = "legacy" | "builder" | "mission" | "files" | "focus";
 
 export const PRESETS: { id: PresetId; name: string; blurb: string }[] = [
-  { id: "legacy", name: "Legacy", blurb: "Search, then your apps, playground, sessions and recent files." },
+  { id: "legacy", name: "Legacy", blurb: "Search, then your apps, sessions and recent files." },
   { id: "builder", name: "Builder", blurb: "A big prompt box with your apps beside it." },
   { id: "mission", name: "Mission control", blurb: "Tasks board first, bots and the index at a glance." },
   { id: "files", name: "Files", blurb: "Search and recent files lead; bookmarks beside them." },
@@ -717,9 +717,8 @@ function presetRows(id: PresetId, folderId?: string): PresetRow[] {
       return [
         { source: "search", x: 0, y: 0, size: "4x1" },
         { source: "apps", x: 0, y: 1, size: "4x1", custom: { cols: 8, rows: 4 } },
-        { source: "playground", x: 0, y: 5, size: "4x1", custom: { cols: 8, rows: 4 } },
-        { source: "sessions", x: 0, y: 9, size: "4x1", custom: { cols: 8, rows: 4 } },
-        { source: "recents", x: 0, y: 13, size: "4x1", custom: { cols: 8, rows: 4 } },
+        { source: "sessions", x: 0, y: 5, size: "4x1", custom: { cols: 8, rows: 4 } },
+        { source: "recents", x: 0, y: 9, size: "4x1", custom: { cols: 8, rows: 4 } },
       ];
     case "builder":
       return [
