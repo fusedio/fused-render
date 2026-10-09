@@ -364,17 +364,19 @@ class WS:
         self._id += 1
         self.send(json.dumps({"id": self._id, "method": method, "params": params}))
 
-    def call(self, method, **params):
+    def call(self, method, _timeout=None, **params):
+        """One command, its result. `_timeout` bounds this call alone (the dialog probe uses 3 s)."""
         self._id += 1
         mid = self._id
         self.send(json.dumps({"id": mid, "method": method, "params": params}))
+        base = _timeout or self.timeout
         try:
             while True:
                 # A JS dialog is open: the renderer withholds this reply until it closes (browser-side calls still
                 # answer within this). Give up soon (socket.timeout) so _run can settle the dialog, instead of
                 # sitting out the socket timeout. Re-evaluated per message: the live view may close it meanwhile.
                 blocked = self.dialog and method != "Page.handleJavaScriptDialog"
-                self.sock.settimeout(DIALOG_GRACE_S if blocked else self.timeout)
+                self.sock.settimeout(min(base, DIALOG_GRACE_S) if blocked else base)
                 msg = json.loads(self.recv())
                 self._note(msg)
                 if msg.get("id") == mid:
@@ -440,7 +442,12 @@ class WS:
                 return True
             if not main or p.get("frameId") != main:
                 return False
-            if m in ("Page.frameStartedNavigating", "Page.frameStartedLoading"):  # Chrome sends both; either arms the stop
+            if m == "Page.frameStartedNavigating":
+                # Chrome sends this for same-document moves too (navigationType sameDocument / historySameDocument);
+                # those never stop or load, so only a cross-document one arms the stop.
+                if not (p.get("navigationType") or "").lower().endswith("samedocument"):
+                    started = True
+            elif m == "Page.frameStartedLoading":
                 started = True
             elif m == "Page.frameStoppedLoading":
                 return started
@@ -1983,17 +1990,14 @@ class Browser:
         would hang until it is closed. Probe briefly (skipped when the socket already saw it open);
         accept it and return its message so the model learns what popped up."""
         if not ws.dialog:
-            ws.sock.settimeout(3)
             try:
-                ws.call("Runtime.evaluate", expression="1", returnByValue=True)
+                ws.call("Runtime.evaluate", _timeout=3, expression="1", returnByValue=True)
                 if ws.dialog_seen:  # it opened during the action and the live view (watching) already accepted it: still worth telling
                     d, ws.dialog_seen = ws.dialog_seen, None
                     return f"{d.get('type', 'dialog')}: {d.get('message', '')}".strip()
                 return None
             except socket.timeout:
                 pass
-            finally:
-                ws.sock.settimeout(ws.timeout)
         d = ws.dialog or {}
         try:
             ws.call("Page.handleJavaScriptDialog", accept=True)
