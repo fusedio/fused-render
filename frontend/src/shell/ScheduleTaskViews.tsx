@@ -2308,7 +2308,9 @@ export function TaskList({
   // scroller is the box that must never grow a horizontal bar, so it is the box
   // that is measured (shell/row-fit.ts states the rule and why it is not a
   // breakpoint).
-  const fit = useRowFit(listRef, peekOn, floored);
+  // Re-measured when the ROWS change (a listing publish), never when a row
+  // folds or unfolds under the scroll: see useRowFit for the 2026-10-09 move.
+  const fit = useRowFit(listRef, peekOn, floored, tasks);
 
   // ---- the fold --------------------------------------------------------------
   // WHICH ROWS ARE DRAWN IN FULL (2026-10-05, macOS 14 native windows). Every
@@ -3840,6 +3842,11 @@ function TaskNode({
           <a
             className="tasks-rowlink"
             href={href}
+            /* The hint under this link is the title's, and the pointer never
+               leaves this one element while crossing it — so the hints
+               layer is told to resolve by POINT while over it, and only
+               here (platform/lib/hints.ts `data-hint-through`). */
+            data-hint-through=""
             /* NO `title` OF ITS OWN (2026-08-24). This <a> is stretched over the
                whole row and sits above it, so a title here is the one actually
                shown — and the row div already carries the same words, one walk

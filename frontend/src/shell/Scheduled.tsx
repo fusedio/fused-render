@@ -120,7 +120,7 @@ import {
 import type { QueueOverride, QueueOverrides, TaskView } from "./tasks-lib";
 import { TaskCards } from "./TaskCards";
 import { TasksSkeleton } from "./TasksSkeleton";
-import { useMissingFolders } from "./useMissingFolders";
+import { missingFolders } from "./useMissingFolders";
 import { TOOLBAR_MERGE_LEVEL, useToolbarFit } from "./row-fit";
 import { useTaskPeekEnabled } from "./task-peek-flag";
 import { TaskPeek, useTaskPeekHost, useTaskPeekLayout } from "./TaskPeek";
@@ -750,20 +750,35 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   // and every chat card on it read the same listing off the same socket, and the
   // sidebar's dot, which that feed publishes, cannot disagree with the rows under
   // it. This pair keeps its own clock because it is its own pair of endpoints.
+  // WRITTEN ONLY WHEN THE ANSWER CHANGED (2026-10-09, Tasks latency design
+  // D7). Both endpoints answer every 20 s and on every poke, and a fresh
+  // object per answer was a full re-render of this page — rows, peek, toolbar
+  // — at default priority, for a schedule that had not moved. The last answer
+  // is kept as text; the same text is the same state.
+  const feedSeen = useRef<{ schedule: string; queue: string }>({ schedule: "", queue: "" });
   const reloadFeeds = () => {
     getSchedule().then(
       (r) => {
-        setState(r);
-        setLoadError(null);
+        const text = JSON.stringify(r);
+        if (text !== feedSeen.current.schedule) {
+          feedSeen.current.schedule = text;
+          setState(r);
+        }
+        setLoadError((cur) => (cur === null ? cur : null));
       },
       (e: Error) => setLoadError(e.message),
     );
     getScheduleQueue().then(
       (r) => {
+        const text = JSON.stringify([r.queued ?? [], r.running ?? []]);
+        if (text === feedSeen.current.queue) return;
+        feedSeen.current.queue = text;
         setQueued(r.queued ?? []);
         setRunning(r.running ?? []);
       },
       () => {
+        if (feedSeen.current.queue === "[[],[]]") return;
+        feedSeen.current.queue = "[[],[]]";
         setQueued([]);
         setRunning([]);
       },
@@ -917,10 +932,13 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
     () => filterTasks(inScope, filtersForView(filters, view)),
     [inScope, filters, view],
   );
-  // Which of the shown tasks' folders the disk no longer has — asked once per
-  // folder, so a row can say "Folder missing" instead of opening an Explorer
-  // that can only answer with a stat error (useMissingFolders).
-  const missing = useMissingFolders(shown);
+  // Which of the shown tasks' folders the disk no longer has, so a row can say
+  // "Folder missing" instead of opening an Explorer that can only answer with
+  // a stat error. READ OFF THE ROWS (2026-10-09): the server stats every
+  // target while it builds the listing and now says so (`folder_missing`);
+  // this page used to ask `/api/fs/stat` once per distinct folder — 516
+  // requests per window on the owner's machine — for the same answer.
+  const missing = useMemo(() => missingFolders(shown), [shown]);
   // THE SIDE PEEK, and it belongs to THIS page only: `useTaskPeekHost` is what
   // arms `openPeek` for the four views, adopts a `?peek=` deep link and follows
   // Back. Scoped (the app page's Tasks tab) it stays disarmed, so every press

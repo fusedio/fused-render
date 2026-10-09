@@ -342,10 +342,18 @@ export function reuseUnchangedRows(held: Task[] | null, next: Task[]): Task[] {
   const rows = next.map((t) => {
     const was = prior.get(t.key);
     if (!was || was === t) return t;
-    try {
-      if (JSON.stringify(was) !== JSON.stringify(t)) return t;
-    } catch {
-      return t;
+    // THE SERVER'S DIGEST FIRST (2026-10-09, D7): a row carries `row_hash`,
+    // a short digest of its own content stamped at build time, so two rows
+    // compare as two short strings. The stringify below is the fallback for
+    // a row from a server that does not stamp one yet.
+    if (was.row_hash && t.row_hash) {
+      if (was.row_hash !== t.row_hash) return t;
+    } else {
+      try {
+        if (JSON.stringify(was) !== JSON.stringify(t)) return t;
+      } catch {
+        return t;
+      }
     }
     reused = true;
     return was;

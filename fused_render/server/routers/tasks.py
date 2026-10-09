@@ -111,6 +111,8 @@ next door, which carries no guard either: it moves a badge, it does not run
 code.
 """
 import asyncio
+import gzip
+import hashlib
 import json
 import logging
 import os
@@ -123,6 +125,7 @@ from datetime import datetime, timezone
 from urllib.parse import unquote, urlencode
 
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi.responses import Response
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
@@ -4725,6 +4728,34 @@ def _task_rows(only: frozenset | set | None = None,
     return _narrowed(only, at_least)[0]
 
 
+def _folder_missing(project: object, target: object) -> bool:
+    """Is the folder this task's conversation lives in gone from the disk?
+
+    The same folder the page's door opens (`useMissingFolders.taskFolder`):
+    the project first, the target for a row carrying no project. One `exists`
+    per row per build — the build already stats every target (`_task_entry`),
+    so this is the answer it was throwing away."""
+    folder = str(project or target or "")
+    if not folder:
+        return False
+    try:
+        return not os.path.exists(folder)
+    except (OSError, ValueError):
+        return False
+
+
+def _row_hash(row: dict) -> str:
+    """A short digest of a row's content, for the page's "is this the row I
+    already hold" test. Field order is the build's own and stable, so the plain
+    dump is enough; `default=str` because a row may carry a datetime-shaped
+    value the encoder would otherwise refuse."""
+    try:
+        raw = json.dumps(row, separators=(",", ":"), default=str, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return ""
+    return hashlib.blake2b(raw.encode("utf-8"), digest_size=8).hexdigest()
+
+
 def _build_task_rows(only: frozenset | set | None = None) -> list[dict]:
     """Build the authoritative task rows shared by the two listing shapes.
 
@@ -4863,6 +4894,18 @@ def _build_task_rows(only: frozenset | set | None = None) -> list[dict]:
     # its place rather than appended past the end of the lane.
     rows.extend(_draft_rows(only, chat_drafts, task_drafts))
     rows.sort(key=_row_order)
+    # TWO FACTS EVERY ROW CARRIES SO NO WINDOW HAS TO ASK AGAIN (2026-10-09,
+    # Tasks latency design D4/D7). `folder_missing`: the page used to stat
+    # every distinct folder itself (`useMissingFolders`, 516 `/api/fs/stat`
+    # per window on this machine) to learn what `_task_entry` had already
+    # looked at. `row_hash`: the 20 s floor read keeps a row object the page
+    # already holds when the server's row reads the same; comparing two short
+    # hashes replaces stringifying both sides of every row in every window.
+    # Stamped here, after the sort and the drafts, so a draft row and a
+    # narrowed build carry them too. The hash is of the row WITHOUT itself.
+    for row in rows:
+        row["folder_missing"] = _folder_missing(row.get("project"), row.get("target"))
+        row["row_hash"] = _row_hash(row)
     # The Current apps desk (current_apps.py) learns about NEW tasks here —
     # the one place every task on the machine passes, whatever started it.
     # Best-effort: the desk is a side table, and a store that cannot be
@@ -4967,7 +5010,8 @@ def _scoped(rows: list[dict], scope_dir: str) -> list[dict]:
 
 @router.get("/api/tasks")
 def api_tasks(under: str = Query(""), scope: str = Query(""),
-              x_fused_page: str | None = Header(default=None)):
+              x_fused_page: str | None = Header(default=None),
+              accept_encoding: str = Header(default="")):
     """Every task, newest activity first, each with its three newest messages.
 
     Includes tasks that have never been scheduled (a chat session is a task) and
@@ -4987,7 +5031,37 @@ def api_tasks(under: str = Query(""), scope: str = Query(""),
     # `/api/tasks/changes` from it must be told about everything these rows
     # have not seen.
     rows, gen = _listing()
+    if not scope_dir:
+        return _listing_response(rows, gen, accept_encoding)
     return {"tasks": _scoped(rows, scope_dir), "generation": gen}
+
+
+# THE WHOLE LISTING, SERIALISED AND GZIPPED ONCE PER SNAPSHOT (2026-10-09,
+# Tasks latency design, Phase A). 821 rows are 1.7 MB of JSON and every open
+# window asks for them every 20 s; the server encoded them per request and the
+# wire carried them uncompressed. One encode per generation, served to every
+# window, ~0.3 MB on the wire. Keyed on the snapshot's generation, which is
+# what the rows stand for; a scoped listing (`?under`/`?scope`) is per caller
+# and takes the ordinary path.
+_GZ_LOCK = threading.Lock()
+_GZ_CACHE: dict[str, tuple[int, bytes, bytes]] = {}
+
+
+def _listing_response(rows: list[dict], gen: int, accept_encoding: str) -> Response:
+    with _GZ_LOCK:
+        hit = _GZ_CACHE.get("all")
+        if hit is None or hit[0] != gen:
+            raw = json.dumps({"tasks": rows, "generation": gen},
+                             separators=(",", ":"), default=str,
+                             ensure_ascii=False).encode("utf-8")
+            hit = (gen, raw, gzip.compress(raw, compresslevel=3))
+            _GZ_CACHE["all"] = hit
+    _, raw, packed = hit
+    headers = {"Vary": "Accept-Encoding", "Cache-Control": "no-store"}
+    if "gzip" in (accept_encoding or "").lower():
+        headers["Content-Encoding"] = "gzip"
+        return Response(packed, media_type="application/json", headers=headers)
+    return Response(raw, media_type="application/json", headers=headers)
 
 
 def _draft_changes(keys) -> dict:

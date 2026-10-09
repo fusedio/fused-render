@@ -419,6 +419,7 @@ export function useRowFit(
   ref: React.RefObject<HTMLElement>,
   enabled = true,
   floored = false,
+  epoch: unknown = undefined,
 ): RowFit {
   const [fit, setFit] = useState<RowFit>(NO_FIT);
   // The cache outlives every measurement: an item's width is a fact about the
@@ -464,24 +465,32 @@ export function useRowFit(
         frame = 0;
       }
     };
-    read();
+    // MEASURED LATE, NOT ON MOUNT (2026-10-09): the first rows are still
+    // committing, and a synchronous read here forces a style pass of the whole
+    // list inside the commit. The ResizeObserver reports once on observe, so
+    // the first verdict still lands before the first paint; this timer is the
+    // read for a list whose box did not change.
+    const first = window.setTimeout(schedule, 300);
     const ro = new ResizeObserver(schedule);
     ro.observe(el);
-    // The CONTENT changes width with the box standing still — a poll lands new
-    // rows, a folder chip appears once the list spans projects. Children only,
-    // and never the scroller's own attributes: this hook writes `data-fit`
-    // there, and observing what it writes would schedule the next verdict for
-    // ever (useFitStrip's own note).
-    const mo = new MutationObserver(schedule);
-    mo.observe(el, { childList: true, subtree: true, characterData: true });
+    // NO MutationObserver ANY MORE (2026-10-09, Tasks latency design D5). It
+    // watched the content for width changes — a poll landing new rows, a
+    // folder chip appearing — and re-measured thirty rows' computed styles,
+    // synchronously, on every mutation. The list now folds rows under the
+    // scroll, so every reveal was such a mutation, and the read it forced was
+    // the 100 ms frame WebKit showed on every scroll step (measured: stubbing
+    // the observer took 38 such frames down to 2). The content changes that
+    // matter arrive with a LISTING, and the list says so through `epoch`
+    // below; a row folding or unfolding is not one of them.
     return () => {
+      window.clearTimeout(first);
       ro.disconnect();
-      mo.disconnect();
     };
     // `floored` is in the deps because it changes the VERDICT, not the
     // measurement: crossing the floor has to re-read at once, in the same
-    // commit the frame's own attribute lands in.
-  }, [ref, enabled, floored]);
+    // commit the frame's own attribute lands in. `epoch` is the rows: a new
+    // listing is a new set of chips and titles to measure.
+  }, [ref, enabled, floored, epoch]);
   return enabled ? fit : NO_FIT;
 }
 
