@@ -264,8 +264,7 @@ div.bots-page.lanim .bots header #add svg { width: 20px; height: 20px; }
 /* The chat's toast slot (#ctoast) only while the preview, which carries #toast, is hidden and Stage is off (#ftoast covers Stage). */
 .bots-page .chat > #ctoast { display: none; }
 div.bots-page:is(.rcol, .rfit):not(.stage) .chat > #ctoast { display: flex; }
-/* Stage folds the sidebar to icons by itself; the collapse toggle would flip layout.lcol unseen, so it steps aside. */
-div.bots-page.stage .bots header #lcol { display: none; }
+/* Stage folds the sidebar to icons by itself; the expand toggle stays: it leaves Stage for the preview and opens the sidebar (lib/layout.ts toggleLeft). */
 div.bots-page.stage .chat header #rcol { display: none; }  /* same: the preview toggle would flip layout.rcol unseen under Stage */
 /* While you hold the browser: the hand-back row closing the bot's live hand-over question, or the "You're driving" note
    at the end of the thread (components/HandoverCard.tsx). */

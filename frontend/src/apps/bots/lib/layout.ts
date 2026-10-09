@@ -187,15 +187,20 @@ export function applyLayout(save: boolean): void {
 /** Replace part of the layout and apply it. */
 export function setLayout(patch: Partial<Layout>, save = true): void { layout = { ...layout, ...patch }; applyLayout(save); }
 
-/** #lcol: collapse or expand the bot list. */
+/** #lcol: collapse or expand the bot list. The toggle reads the rail as shown (railShut: collapsed by hand, folded by a narrow
+ *  window, or folded by Stage), so one click always expands a shut rail. Expanding is measured against the whole of <main>, and the
+ *  right section gives way for it: Stage closes back to the preview (the gutter's exit, handBack(true)), and the preview hides when the
+ *  full sidebar + thread + preview still cannot fit, rather than lfit snapping the sidebar straight back to icons. Stage folding the
+ *  sidebar on open is the other half (the .stage rules in bots.css): the two never show side by side, as Notion's peek and sidebar. */
 export function toggleLeft(): void {
-  const next = { ...layout, lcol: !layout.lcol };
-  // Expanding by hand: if the full sidebar + thread + preview cannot fit, hide the preview rather than let lfit snap the sidebar straight back to icons.
+  const next = { ...layout, lcol: !railShut() };
   if (!next.lcol && !next.rcol) {
     const w = mainEl()?.clientWidth || 0;
     if (w - Math.min(next.lw, w * 0.4) - 12 - MID_MIN - R_MIN < 0) next.rcol = true;
   }
+  // Layout first: the Stage grid ignores lcol / rcol, so this moves nothing yet, and the close then glides the rail open in one step.
   layout = next; applyLayout(true);
+  if (!next.lcol && staged() && stageShut) stageShut();
 }
 /** #rcol: show or hide the preview. */
 export function toggleRight(): void { layout = { ...layout, rcol: !layout.rcol }; applyLayout(true); }
