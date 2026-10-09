@@ -3,7 +3,7 @@
 // trusted apps, the phone) has a first-run default that is right and lives in Settings once the bot exists. Enter
 // in Name creates; Escape, the backdrop and Cancel dismiss (null). The Settings-sized shell (dialogs/shell.ts) in
 // two columns: the avatar (its picker is a Popover on it) and the preset's playbooks on the left, the fields on the right.
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Settings2Icon } from "lucide-react";
 import { cn } from "@platform/lib/utils";
 import { Button } from "@platform/shadcn/ui/button";
@@ -62,9 +62,13 @@ export function CreateBot({ pick, onClose, onBack }: CreateBotProps) {
     browserId: share && groups.some((g) => g.id === shareWith) ? shareWith : "",
   });
   const ok = () => { if (name.trim()) onClose(read()); };
+  // The avatar popover is up: the press outside it that closes it must not also drop the whole New-bot flow (held
+  // while open, released a tick after close; swatch presses count as inside already, see FacePopover.tsx).
+  const busy = useRef(false);
+  const holdFor = (open: boolean) => { if (open) busy.current = true; else window.setTimeout(() => { busy.current = false; }, 0); };
 
   return (
-    <Dialog open modal={false} onOpenChange={(open) => { if (!open) onClose(null); }}>
+    <Dialog open modal={false} onOpenChange={(open) => { if (!open && !busy.current) onClose(null); }}>
       <DialogContent showCloseButton={false} className={cn(DIALOG_CLASS, DIALOG_SIZE)}>
         <DialogHeader className={HEADER_CLASS}>
           <DialogTitle>{fresh.title}</DialogTitle>
@@ -72,7 +76,7 @@ export function CreateBot({ pick, onClose, onBack }: CreateBotProps) {
         </DialogHeader>
         <div className="flex min-h-0 flex-1 gap-8 px-6 pb-5">
           <aside className="flex w-64 shrink-0 flex-col items-center gap-5 self-start">
-            <FacePopover subject={bm} onPick={setFace} disabled={isSuper} className="w-fit flex-col gap-2" title={isSuper ? "Super Bot's avatar is fixed" : "Edit avatar"}>
+            <FacePopover subject={bm} onPick={setFace} onOpenChange={holdFor} disabled={isSuper} className="w-fit flex-col gap-2" title={isSuper ? "Super Bot's avatar is fixed" : "Edit avatar"}>
               <span className="size-28 [&>svg]:block [&>svg]:size-full"><Face b={bm} /></span>
               {isSuper ? null : <span className="text-xs text-muted-foreground group-hover:text-foreground">Edit avatar</span>}
             </FacePopover>

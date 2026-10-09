@@ -11,7 +11,8 @@
 // Base UI only coordinates dialogs through the React tree: the page's own confirm is a sibling in the bots portal
 // host, so a click in it reads as an OUTSIDE press here and would fire onOpenChange(false). The `busy` ref covers the
 // time it is up (`confirm` below is what the sections call), and the dialog is non-modal so its focus trap never
-// fights the confirm's. The avatar picker is a Popover anchored here, so it needs no such guard.
+// fights the confirm's. The avatar picker is a Popover in this React tree, so its swatch presses count as inside; the
+// press outside it that closes it is held off the same way (`holdFor`).
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@platform/shadcn/ui/button";
 import { Checkbox } from "@platform/shadcn/ui/checkbox";
@@ -83,7 +84,9 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
   const sharedNames = (bot.shared_with || []).map((o) => o.name).join(", ");
   const appliesToAll = sharedNames ? ` Applies to every bot sharing these logins (${sharedNames}).` : "";
   const [face, setFace] = useState<FaceT | null | undefined>(bot.face);
-  const busy = useRef(false);  // the confirm (a sibling modal) is up: outside presses are its
+  const busy = useRef(false);  // the confirm (a sibling modal) or the avatar popover is up: outside presses are theirs
+  // Held while the popover is open, released a tick after it closes: the press that closes it must not also close this.
+  const holdFor = (open: boolean) => { if (open) busy.current = true; else window.setTimeout(() => { busy.current = false; }, 0); };
 
   const bm = useMemo(() => ({ id: bot.id, name: init.name, face }), [bot.id, init.name, face]);
   const read = (): BotDialogValue => ({ name: name.trim(), model, effort, instructions, memory, approval, buildAccess, encrypt, profile,
@@ -153,7 +156,7 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
                 </Row>
                 {/* Super Bot's avatar is the fixed Claude mark: no picker (the backend refuses a change too). */}
                 <Row title="Avatar" text={isSuper ? "Super Bot's mark is fixed." : "Shape and colour; the bot's face in the list and the chat."}>
-                  <FacePopover subject={bm} onPick={setFace} disabled={isSuper} title={isSuper ? "Super Bot's avatar is fixed" : "Edit avatar"}>
+                  <FacePopover subject={bm} onPick={setFace} onOpenChange={holdFor} disabled={isSuper} title={isSuper ? "Super Bot's avatar is fixed" : "Edit avatar"}>
                     {isSuper ? null : <span className="text-[13px] text-muted-foreground group-hover:text-foreground">Change</span>}
                     <span className="size-9 [&>svg]:block [&>svg]:size-full"><Face b={bm} /></span>
                   </FacePopover>
