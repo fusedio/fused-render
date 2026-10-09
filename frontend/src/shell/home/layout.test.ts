@@ -1076,3 +1076,13 @@ test("setSize refuses a size too short for the tile's format", () => {
   expect(setSize(l, "a", "2x1")).toBe(l);
   expect(setSize(l, "a", "1x2").widgets[0].size).toBe("1x2");
 });
+
+test("normalizeLayout: a stored icons tile one cell tall keeps its footprint and drops to another format", () => {
+  const raw = {
+    version: 5,
+    widgets: [{ id: "a", source: "apps", size: "2x1", format: "icons", x: 2, y: 3, cols: 5, rows: 2 }],
+  };
+  const out = normalizeLayout(raw).widgets[0];
+  expect(out).toMatchObject({ x: 2, y: 3, format: "cards" });
+  expect(dimsOf(out)).toEqual({ cols: 5, rows: 2 });
+});

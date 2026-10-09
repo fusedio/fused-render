@@ -285,10 +285,11 @@ export function normalizeLayout(raw: unknown): HomeLayout {
         oldRows.set(w.id, stored ? (rr as number) : dims(w.size).rows);
       }
       if ((r.version === 4 || r.version === LAYOUT_VERSION) && stored) {
-        const min = minFootprint(w.source, w.format);
         const c = rc as number;
         // A fixed-row source takes its rows from FIXED_ROWS, whatever was stored.
         const rw = fixed ?? (rr as number);
+        // A stored icons tile too short for icons is downgraded first, so the footprint check does not move or resize it.
+        const min = minFootprint(w.source, formatForRows(w.source, w.format, rw));
         if (
           c >= min.cols && c <= GRID_COLS && rw >= min.rows && rw <= MAX_WIDGET_ROWS &&
           Number.isInteger(x) && x + c <= GRID_COLS

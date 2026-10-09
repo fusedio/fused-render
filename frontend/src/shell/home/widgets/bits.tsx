@@ -32,14 +32,12 @@ function ItemLink({ item, className, children }: { item: WidgetItem; className: 
 const MORE_FALLBACK = 20;
 
 /**
- * Whole rows (times `cols` items per row) that `free` px of spare height buys,
- * given rows `rowH` px tall. Negative when the content overflows by a row or
- * more, so callers can shrink back.
+ * The count to render: `n`, unless nothing is shown while items exist (a list
+ * that mounted empty and got items later); then the first-paint guess again,
+ * because with no item rendered there is nothing to measure.
  */
-export function fitExtra(free: number, rowH: number, cols = 1): number {
-  if (!(rowH > 0) || !Number.isFinite(free)) return 0;
-  const lines = Math.floor(free / rowH);
-  return lines === 0 ? 0 : lines * Math.max(1, cols);
+export function seedCount(n: number, total: number, cap: number): number {
+  return n === 0 && total > 0 ? Math.min(total, cap) : n;
 }
 
 /**
@@ -73,6 +71,7 @@ const px = (v: string) => (Number.parseFloat(v) || 0);
 export function useFitCount(total: number, cap: number, itemSel: string, listSel?: string) {
   const ref = useRef<HTMLDivElement>(null);
   const [n, setN] = useState(() => Math.min(total, cap));
+  const seeded = seedCount(n, total, cap);
   const measure = () => {
     const wrap = ref.current;
     if (!wrap) return;
@@ -97,6 +96,9 @@ export function useFitCount(total: number, cap: number, itemSel: string, listSel
       return next === prev ? prev : next;
     });
   };
+  useLayoutEffect(() => {
+    if (seeded !== n) setN(seeded);
+  });
   useLayoutEffect(measure);
   useEffect(() => {
     const wrap = ref.current;
@@ -105,7 +107,7 @@ export function useFitCount(total: number, cap: number, itemSel: string, listSel
     ro.observe(wrap);
     return () => ro.disconnect();
   });
-  return { ref, n: Math.min(n, total) };
+  return { ref, n: Math.min(seeded, total) };
 }
 
 export function ItemList({ items, cap, moreHref, variant }: { items: WidgetItem[]; cap: number; moreHref?: string; variant?: "tall" }) {
