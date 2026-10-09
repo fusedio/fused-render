@@ -671,15 +671,15 @@ div.bots-page.stage.sfull #full { position: fixed; inset: 0; z-index: 25; }
 /* The face picker's box is a flex column with its own 16px gap: no extra top margin on the footer. A scrolling box
    (routines) cannot bleed a negative bottom margin: its bottom padding goes and the footer sits flush instead. */
 .bots-page #fmodal .box > .row:last-child { margin-top: 0; align-self: stretch; }
-.bots-page #rmodal .box { padding-bottom: 0; }
-.bots-page #rmodal .box > .row:last-child { margin-bottom: 0; position: sticky; bottom: 0; background: #121212; }  /* opaque: it pins over the list when it scrolls */
-[data-theme="light"] .bots-page #rmodal .box > .row:last-child { background: #f4f5f1; }
+.bots-page :is(#rmodal, #smodal) .box { padding-bottom: 0; }
+.bots-page :is(#rmodal, #smodal) .box > .row:last-child { margin-bottom: 0; position: sticky; bottom: 0; background: #121212; }  /* opaque: it pins over the list when it scrolls */
+[data-theme="light"] .bots-page :is(#rmodal, #smodal) .box > .row:last-child { background: #f4f5f1; }
 .bots-page .modal .box input:not([type=checkbox]), .bots-page .modal .box select, .bots-page .modal .box textarea { color: var(--text); }
 /* The seeded greeting's door to Settings > Phone (components/Thread.tsx). */
 .bots-page .msg .opt.seed { justify-content: center; }
 /* Chat header: Super Bot's phone glyph, green once connected. */
 .bots-page .chat header #cphone.on { color: var(--ok, #2f9e5b); }
-.bots-page #rmodal .box { width: 540px; max-height: 90vh; overflow: auto; }
+.bots-page :is(#rmodal, #smodal) .box { width: 540px; max-height: 90vh; overflow: auto; }  /* routines and skills: lists that outgrow the window scroll inside the box */
 /* In-app confirm: sits above the other modals (routines/skills can ask from inside theirs). */
 .bots-page #cmodal { z-index: 60; }
 .bots-page #cmodal .box { width: 360px; }
@@ -687,14 +687,15 @@ div.bots-page.stage.sfull #full { position: fixed; inset: 0; z-index: 25; }
 .bots-page #cmodal button.danger { background: var(--err); color: #fff; font-weight: 400; }
 .bots-page #cmodal button.danger:hover { filter: brightness(1.08); }
 .bots-page .rlist { display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; }
-.bots-page .rlist .r { display: grid; grid-template-columns: 1fr auto; gap: 4px 10px; padding: 10px 12px; border-radius: 12px; background: var(--inset); }
+.bots-page .rlist .r { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 10px; padding: 10px 12px; border-radius: 12px; background: var(--inset); min-width: 0; }  /* minmax(0,…): a long URL in a playbook must not widen the row */
 .bots-page .rlist .r.off { opacity: .55; }
 .bots-page .rlist .r .t { font-weight: 400; white-space: pre-wrap; }
 .bots-page .rlist .r .s { color: var(--muted); font-size: 11px; grid-column: 1 / -1; }
 .bots-page .rlist .r .b { display: flex; gap: 4px; align-items: flex-start; }
 .bots-page .rlist .r .b button { padding: 2px 9px; font-size: 10.5px; }
 .bots-page .rlist .r .t small { color: var(--muted); font-weight: 300; margin-left: 6px; }
-.bots-page .rlist .r .body { grid-column: 1 / -1; white-space: pre-wrap; font-size: 11.5px; color: var(--muted); max-height: 7.5em; overflow: auto; }
+.bots-page #smodal .r .t small { display: block; margin: 2px 0 0; font-size: 11px; }  /* a playbook's trigger list is long: its own line under the title, not inline */
+.bots-page .rlist .r .body { grid-column: 1 / -1; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11.5px; color: var(--muted); max-height: 7.5em; overflow: hidden auto; }  /* anywhere: URLs wrap instead of a horizontal scrollbar */
 .bots-page .radd .field input { width: 100%; }
 .bots-page .rrow { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
 .bots-page .rrow select, .bots-page .rrow input { font: inherit; color: var(--text); background: var(--inset); border: 1px solid transparent; border-radius: 10px; padding: 6px 10px; }
