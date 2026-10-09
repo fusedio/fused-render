@@ -768,10 +768,12 @@
   min-width: 0;
 }
 
-/* A list fills the height its tile really has; ItemList measures it and shows
-   extra rows past the nominal capacity. */
+/* A list or a strip (cards or icons) fills the height its tile really has;
+   ItemList and CardStrip measure it and show extra rows past the nominal
+   capacity. The body must be a flex column, or the strip's flex: 1 does
+   nothing and size-contained cards collapse to 0 height. */
 .hw-body:has(> .hw-list-wrap),
-.hw-body:has(> .hw-strip > .hw-icons) {
+.hw-body:has(> .hw-strip) {
   display: flex;
   flex-direction: column;
   min-height: 0;
