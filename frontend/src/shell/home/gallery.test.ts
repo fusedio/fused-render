@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { CELL, GRID_COLS, MAX_WIDGETS, SOURCES, addWidget, defaultLayout, sizesFor, type HomeLayout, type Widget, type WidgetSource } from "./layout";
-import { footprintLabel, freeSpaceNote, galleryEntries, previewPx } from "./gallery";
+import { footprintLabel, freeSpaceNote, galleryEntries, previewPx, previewScale } from "./gallery";
 
 const empty: HomeLayout = { ...defaultLayout(), widgets: [] };
 const w = (id: string, source: Widget["source"], x: number, y: number, cols: number, rows: number): Widget => ({
@@ -43,7 +43,7 @@ test("a second search stays listed but disabled with the note", () => {
   const layout = addWidget(empty, "search");
   const e = galleryEntries(layout).find((x) => x.source === "search")!;
   expect(e.disabled).toBe("Already on Home");
-  expect(e.description).toBe("Already on Home");
+  expect(e.description).toBe(SOURCES.search.description);
 });
 
 test("a full Home disables every entry", () => {
@@ -79,11 +79,25 @@ test("footprint label in whole cells, halves for a one-unit row", () => {
   expect(footprintLabel(2, 2)).toBe("1×1");
 });
 
-test("preview pixels use the 52px unit and 16px gap, halved for the scaled box", () => {
-  expect(previewPx(1)).toBe(52);
-  expect(previewPx(2)).toBe(120);
-  expect(previewPx(4)).toBe(256);
-  expect(previewPx(GRID_COLS)).toBe(8 * 52 + 7 * 16);
+test("preview pixels span n units of the given size plus the 16px gaps", () => {
+  expect(previewPx(1, 52)).toBe(52);
+  expect(previewPx(2, 52)).toBe(120);
+  expect(previewPx(1, 100)).toBe(100);
+  expect(previewPx(GRID_COLS, 100)).toBe(8 * 100 + 7 * 16);
+});
+
+test("one scale fits a full-row preview into the width, capped at 0.6", () => {
+  const full = previewPx(GRID_COLS, 100);
+  expect(previewScale(full, 2000)).toBe(0.6);
+  expect(previewScale(full, full / 2)).toBeCloseTo(0.5);
+});
+
+test("fixed-row sources read Full row, never a fraction", () => {
+  const es = galleryEntries(empty);
+  expect(es.find((e) => e.source === "search")!.footprint).toBe("Full row");
+  expect(es.find((e) => e.source === "build")!.footprint).toBe("Full row");
+  expect(es.find((e) => e.source === "index")!.footprint).toBe(footprintLabel(es.find((e) => e.source === "index")!.cols, es.find((e) => e.source === "index")!.rows));
+  expect(es.every((e) => !e.footprint.includes("½"))).toBe(true);
 });
 
 test("free space note: cells left inside the used rows, else a new row", () => {

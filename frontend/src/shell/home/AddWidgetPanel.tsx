@@ -3,7 +3,7 @@
 // Clicking one adds it at its default size; sizing lives on the tile's Change
 // card. A folder or page first asks which one. Opened from that popover
 // (`target`) it lists the one source for that tile and a pick swaps or fills it.
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { contractHome, useHome } from "../../apps/explorer/listing/home-path";
 import { listDir, statPath, type FsEntry } from "@platform/lib/api";
 import { appFolderLine, filterPickerApps, normalizeWebUrl, pickerApps } from "./appPicker";
@@ -29,8 +29,8 @@ import { ArrowLeft } from "lucide-react";
 import { useBookmarksVersion } from "@platform/lib/hooks";
 import { isTopmost, popModal, pushModal } from "@platform/ui/modal/esc-stack";
 import { isFolder, loadBookmarks, type BookmarkFolder, type BookmarkItem } from "@platform/lib/bookmarks";
-import { MAX_WIDGETS, SOURCES, type TileTarget, type Widget, type WidgetSource } from "./layout";
-import { PREVIEW_SCALE, footprintLabel, freeSpaceNote, galleryEntries, previewPx, type GalleryEntry } from "./gallery";
+import { CELL, GRID_COLS, MAX_WIDGETS, SOURCES, type TileTarget, type Widget, type WidgetSource } from "./layout";
+import { freeSpaceNote, galleryEntries, previewPx, previewScale, type GalleryEntry } from "./gallery";
 import { WidgetBody } from "./Widget";
 import type { HomeLayoutApi } from "./useHomeLayout";
 import { AppGlyph } from "./widgets/AppsWidget";
@@ -103,6 +103,13 @@ export function AddWidgetPanel({
     }
     return out;
   }, [entries]);
+  // Previews are drawn at the live tile size, then scaled by one shared factor.
+  const [metrics, setMetrics] = useState<PreviewMetrics | null>(null);
+  useLayoutEffect(() => {
+    if (pending) return;
+    const body = dialog.current?.querySelector<HTMLElement>(".hw-gal-body");
+    if (body) setMetrics(measurePreviews(body));
+  }, [pending]);
   const full = (!target || target.kind === "fill") && api.layout.widgets.length >= MAX_WIDGETS;
   const note = full
     ? `Home is full (${MAX_WIDGETS} widgets)`
@@ -463,12 +470,17 @@ export function AddWidgetPanel({
           ) : (
             sections.map((s) => (
               <section key={s.source} className="hw-gal-sec" aria-label={SOURCES[s.source].label}>
-                <div className="hw-label hw-gal-sec-title">{SOURCES[s.source].label}</div>
-                <div className="hw-gal-row">
-                  {s.entries.map((e) => (
-                    <GalleryCard key={e.key} entry={e} onChoose={() => choose(e)} />
-                  ))}
+                <div className="hw-gal-sec-head">
+                  <span className="hw-label">{SOURCES[s.source].label}</span>
+                  <span className="hw-gal-sec-desc">{SOURCES[s.source].description}</span>
                 </div>
+                {metrics ? (
+                  <div className="hw-gal-row" style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${Math.round(previewPx(CELL, metrics.colW) * metrics.scale)}px, max-content))` }}>
+                    {s.entries.map((e) => (
+                      <GalleryCard key={e.key} entry={e} metrics={metrics} onChoose={() => choose(e)} />
+                    ))}
+                  </div>
+                ) : null}
               </section>
             ))
           )}
@@ -484,17 +496,33 @@ function previewWidget(e: GalleryEntry): Widget {
   return { id: "gallery-" + e.key, source: e.source, size: e.size, format: e.format, x: 0, y: 0 };
 }
 
-/** The widget at its real proportions, scaled down. Folder and page need a
+interface PreviewMetrics {
+  /** Pixel width of one grid column on the page behind the sheet. */
+  colW: number;
+  scale: number;
+}
+
+/** The live grid's column width (the sheet split into columns when no grid is
+    mounted), and the one scale that fits a full-row preview into the body. */
+function measurePreviews(body: HTMLElement): PreviewMetrics {
+  const avail = body.clientWidth - 40;
+  const gridW = document.querySelector<HTMLElement>(".hw-grid")?.clientWidth || avail;
+  const colW = Math.max(40, (gridW - (GRID_COLS - 1) * 16) / GRID_COLS);
+  return { colW, scale: previewScale(previewPx(GRID_COLS, colW), avail) };
+}
+
+/** The widget at its real tile size, scaled down. Folder and page need a
     target to show anything, so they draw a stand-in. */
-function GalleryPreview({ entry }: { entry: GalleryEntry }) {
-  const w = previewPx(entry.cols);
-  const h = previewPx(entry.rows);
+function GalleryPreview({ entry, metrics }: { entry: GalleryEntry; metrics: PreviewMetrics }) {
+  const w = previewPx(entry.cols, metrics.colW);
+  const h = previewPx(entry.rows, 52);
   const bare = entry.source === "search" || entry.source === "build";
   const needsTarget = entry.source === "folder" || entry.source === "app";
   const widget = previewWidget(entry);
+  const inert = (el: HTMLElement | null) => el?.setAttribute("inert", "");
   return (
-    <span className="hw-gal-prev" style={{ width: w * PREVIEW_SCALE, height: h * PREVIEW_SCALE }}>
-      <span className="hw-gal-scale" aria-hidden="true" style={{ width: w, height: h, transform: `scale(${PREVIEW_SCALE})` }}>
+    <span className="hw-gal-prev" style={{ width: w * metrics.scale, height: h * metrics.scale }}>
+      <span ref={inert} className="hw-gal-scale" aria-hidden="true" tabIndex={-1} style={{ width: w, height: h, transform: `scale(${metrics.scale})` }}>
         <section className={"hw-widget" + ` hw-size-${entry.size}` + (bare ? " is-" + entry.source : "") + (needsTarget ? " is-ph" : "")} style={{ width: w, height: h }}>
           {bare ? null : (
             <div className="hw-head">
@@ -511,17 +539,20 @@ function GalleryPreview({ entry }: { entry: GalleryEntry }) {
           )}
         </section>
       </span>
-      <span className="hw-gal-badge">{footprintLabel(entry.cols, entry.rows)}</span>
     </span>
   );
 }
 
-function GalleryCard({ entry, onChoose }: { entry: GalleryEntry; onChoose: () => void }) {
+function GalleryCard({ entry, metrics, onChoose }: { entry: GalleryEntry; metrics: PreviewMetrics; onChoose: () => void }) {
+  const w = Math.round(previewPx(entry.cols, metrics.colW) * metrics.scale);
   return (
-    <button type="button" className="hw-gal-entry" disabled={!!entry.disabled} onClick={onChoose} title={entry.disabled}>
-      <GalleryPreview entry={entry} />
-      <span className="hw-gal-title">{entry.title}</span>
-      <span className="hw-gal-desc">{entry.disabled ?? entry.description}</span>
+    <button type="button" className="hw-gal-entry" style={{ width: w }} disabled={!!entry.disabled} onClick={onChoose} title={entry.disabled ?? entry.title}>
+      <GalleryPreview entry={entry} metrics={metrics} />
+      <span className="hw-gal-cap">
+        {entry.formatLabel ? <span className="hw-gal-title">{entry.formatLabel}</span> : null}
+        <span className="hw-gal-fp">{entry.formatLabel ? "· " : ""}{entry.footprint}</span>
+      </span>
+      {entry.disabled ? <span className="hw-gal-fp">{entry.disabled}</span> : null}
     </button>
   );
 }

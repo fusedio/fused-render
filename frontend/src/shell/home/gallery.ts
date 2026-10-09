@@ -10,6 +10,7 @@ import {
   dimsFor,
   dimsOf,
   firstFreeRect,
+  FIXED_ROWS,
   hasSearch,
   occupancy,
   rectOf,
@@ -35,17 +36,26 @@ export interface GalleryEntry {
   rows: number;
   /** Source label, plus the format when the source has several. */
   title: string;
+  /** The format label alone when the source has several formats. */
+  formatLabel?: string;
+  /** "2×2" in whole cells, or "Full row" for a fixed-row source. */
+  footprint: string;
   description: string;
   /** Why the entry cannot be picked; absent when it can. */
   disabled?: string;
 }
 
-/** Scale the previews are drawn at. */
-export const PREVIEW_SCALE = 0.5;
+/** Largest scale a preview is drawn at. */
+export const MAX_PREVIEW_SCALE = 0.6;
 
-/** Pixels spanned by `n` grid units: the 52px unit plus the 16px gaps between them. */
-export function previewPx(n: number): number {
-  return n * 52 + (n - 1) * 16;
+/** Pixels spanned by `n` units of `unit` pixels plus the 16px gaps between them. */
+export function previewPx(n: number, unit: number): number {
+  return n * unit + (n - 1) * 16;
+}
+
+/** The one scale every preview shares: a full-row preview fits `avail` pixels. */
+export function previewScale(fullRowPx: number, avail: number): number {
+  return Math.min(MAX_PREVIEW_SCALE, avail / fullRowPx);
 }
 
 /** "2×2" in whole cells, with a half for a one-unit height ("4×½"). */
@@ -86,7 +96,9 @@ export function galleryEntries(layout: HomeLayout, target?: TileTarget, only?: W
         cols,
         rows,
         title: spec.formats.length > 1 ? `${spec.label} · ${FORMAT_LABELS[format]}` : spec.label,
-        description: disabled === "Already on Home" ? disabled : spec.description,
+        formatLabel: spec.formats.length > 1 ? FORMAT_LABELS[format] : undefined,
+        footprint: FIXED_ROWS[source] !== undefined ? "Full row" : footprintLabel(cols, rows),
+        description: spec.description,
         disabled,
       });
     }
