@@ -278,12 +278,19 @@ class WS:
         self.dialog = None       # Page.javascriptDialogOpening params while one is open
         self.dialog_seen = None  # the last one that opened on this connection, kept past its close (the action's report)
         self.dom_enabled = False
+        # Page events read while a call() waited for its reply. A bfcache restore (back/forward) commits and
+        # stops loading before Chrome even acks navigateToHistoryEntry, so wait_event must see what call() drained.
+        self.events = []
 
     def _note(self, msg):
-        if msg.get("method") == "Page.javascriptDialogOpening":
+        method = msg.get("method")
+        if method == "Page.javascriptDialogOpening":
             self.dialog = self.dialog_seen = msg.get("params") or {}
-        elif msg.get("method") == "Page.javascriptDialogClosed":
+        elif method == "Page.javascriptDialogClosed":
             self.dialog = None
+        if method and method.startswith("Page.") and method != "Page.screencastFrame":
+            self.events.append(msg)
+            del self.events[:-200]
 
     def _recv_exact(self, n):
         out = b""
@@ -378,20 +385,51 @@ class WS:
             out += res
         return out
 
-    def wait_event(self, name, timeout=15):
+    def wait_event(self, name, timeout=15, match=None):
+        """Block until a `name` event (one name or a tuple) arrives, or `timeout` s pass; returns its params or None.
+        `match(method, params)` narrows it further (a frame id). Events a call() drained meanwhile count too: a
+        back/forward restored from the bfcache has committed and stopped loading before its reply comes back."""
+        names = (name,) if isinstance(name, str) else tuple(name)
+        for msg in self.events:
+            if msg.get("method") in names and (match is None or match(msg["method"], msg.get("params") or {})):
+                self.events.remove(msg)
+                return msg.get("params") or {}
+        self.events = []
         self.sock.settimeout(timeout)
         try:
             deadline = time.time() + timeout
             while time.time() < deadline:
                 msg = json.loads(self.recv())
                 self._note(msg)
-                if msg.get("method") == name:
-                    return msg.get("params")
+                if msg.get("method") in names and (match is None or match(msg["method"], msg.get("params") or {})):
+                    self.events = []
+                    return msg.get("params") or {}
         except socket.timeout:
             return None
         finally:
             self.sock.settimeout(self.timeout)
         return None
+
+    def wait_loaded(self, timeout=15):
+        """The page settled after a navigation this socket just asked for: the load event, or a same-document
+        move, or the top frame done loading (a bfcache restore fires frameStoppedLoading and never load).
+        Child frames' stop events are ignored. Call right after the navigation command, on the same socket."""
+        main = self.main_frame
+        done = ("Page.loadEventFired", "Page.navigatedWithinDocument", "Page.frameStoppedLoading")
+
+        def ok(method, params):
+            return method != "Page.frameStoppedLoading" or not main or params.get("frameId") == main
+        return self.wait_event(done, timeout, match=ok)
+
+    @property
+    def main_frame(self):
+        """The top frame's id, looked up once per connection ("" if Chrome would not say)."""
+        if not hasattr(self, "_main_frame"):
+            try:
+                self._main_frame = self.call("Page.getFrameTree")["frameTree"]["frame"]["id"]
+            except Exception:
+                self._main_frame = ""
+        return self._main_frame
 
     def close(self):
         try:
@@ -1726,7 +1764,7 @@ class Browser:
                     ws.call("Page.enable")
                     self._foreground(ws)
                     ws.call("Page.reload")
-                    ws.wait_event("Page.loadEventFired", 15)
+                    ws.wait_loaded(15)
                 except Exception:
                     pass
                 return True
@@ -1905,7 +1943,7 @@ class Browser:
 
     def _nav(self, ws, url):
         ws.call("Page.navigate", url=_with_scheme(url))
-        ws.wait_event("Page.loadEventFired", 15)
+        ws.wait_loaded(15)
         time.sleep(0.4)
 
     def _shoot(self, ws):
@@ -1951,7 +1989,7 @@ class Browser:
             i = h["currentIndex"] + delta
             if 0 <= i < len(h["entries"]):
                 ws.call("Page.navigateToHistoryEntry", entryId=h["entries"][i]["id"])
-                ws.wait_event("Page.loadEventFired", 10)
+                ws.wait_loaded(10)
                 time.sleep(0.3)
         return self._run(f, timeout=INTERACT_TIMEOUT_S)[1]
 
@@ -1964,7 +2002,7 @@ class Browser:
     def reload(self):
         def f(ws):
             ws.call("Page.reload")
-            ws.wait_event("Page.loadEventFired", 15)
+            ws.wait_loaded(15)
         return self._run(f, timeout=INTERACT_TIMEOUT_S)[1]
 
     def scroll(self, direction="down", ref="", text="", x=None, y=None, backend=None):
@@ -2015,7 +2053,7 @@ class Browser:
             if not box.get("clicked"):
                 for t in ("mouseMoved", "mousePressed", "mouseReleased"):
                     ws.call("Input.dispatchMouseEvent", type=t, x=box["x"], y=box["y"], button="left", clickCount=1)
-            ws.wait_event("Page.loadEventFired", 3)
+            ws.wait_loaded(3)
             time.sleep(0.5)
         return self._run(f)[1]
 
@@ -2027,7 +2065,7 @@ class Browser:
                 for t in ("keyDown", "keyUp"):
                     ws.call("Input.dispatchKeyEvent", type=t, key="Enter", code="Enter",
                             windowsVirtualKeyCode=13, text="\r" if t == "keyDown" else "")
-                ws.wait_event("Page.loadEventFired", 8)
+                ws.wait_loaded(8)
                 time.sleep(0.5)
         return self._run(f)[1]
 
@@ -2058,7 +2096,7 @@ class Browser:
             else:
                 for params in events:
                     ws.call("Input.dispatchKeyEvent", **params)
-            ws.wait_event("Page.loadEventFired", 3 if k == "Enter" else 0.5)
+            ws.wait_loaded(3 if k == "Enter" else 0.5)
             time.sleep(0.4)
         return self._run(f)[1]
 

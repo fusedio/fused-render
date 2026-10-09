@@ -204,9 +204,14 @@ export const toggleCtl = (): Promise<void> => (cur()?.control ? handBack(false) 
 /** A take-over is in flight (clicks meanwhile are ignored). */
 export const isSwitching = (): boolean => switching;
 
+/** One at a time: the worker serialises these on the browser lock, so a second click would only queue behind the first
+ *  (a held ⌘[ once stacked fifty of them, each waiting its turn). */
+let navBusy = false;
 export function nav(op: "back" | "forward" | "reload"): void {
   const id = getState().sel;
-  if (inCtl() && id) void act(() => api.nav(id, op), true);
+  if (!inCtl() || !id || navBusy) return;
+  navBusy = true;
+  void act(() => api.nav(id, op), true).finally(() => { navBusy = false; });
 }
 /** #furl Enter: only while you drive. */
 export async function gotoTyped(value: string): Promise<void> {
