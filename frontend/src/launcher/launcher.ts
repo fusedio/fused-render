@@ -318,8 +318,11 @@ function recordKey(e: KeyboardEvent) {
   state.recording = false;
   shortcut.classList.remove("rec");
   put({ launcher_hotkey: spec })
+    // One re-read after a write that landed (the rebind's `bound` verdict follows the PUT): a single look, never a
+    // chain. A failed PUT changed nothing on the server, so its error stands for 1.5 s and the footer then goes back
+    // to the settings already held — no second request, so a server that keeps refusing is not asked on a timer.
     .then((h) => { setSettings(h); setTimeout(loadSettings, 300); })
-    .catch((err) => { shortcut.textContent = String(err?.message || err); shortcut.classList.add("bad"); setTimeout(loadSettings, 1500); })
+    .catch((err) => { shortcut.textContent = String(err?.message || err); shortcut.classList.add("bad"); setTimeout(() => setSettings(state.settings || {}), 1500); })
     // Resume AFTER the PUT: the rebind it triggers and this resume both
     // bind the stored spec, in that order, on the app's main thread.
     .finally(() => { suspend(false); q.focus(); });

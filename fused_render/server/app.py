@@ -60,6 +60,8 @@ from fused_render.server.routers.health import router as health_router
 from fused_render.server.routers.env import router as env_router
 from fused_render.server.routers.export import router as export_router
 from fused_render.server.fs_mutate import router as fs_mutate_router
+from fused_render.server.routers.events import router as events_router
+from fused_render.server import topics as _server_topics
 from fused_render.server.routers.fs_read import router as fs_read_router
 from fused_render.server.routers.git_repos import router as git_repos_router
 from fused_render.server.routers.git_snapshot import router as git_snapshot_router
@@ -588,6 +590,18 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
 
         tasks_watch.start()
 
+    # The events bus (server/events.py) captures the uvicorn loop here so a
+    # producer on any thread (tasks_watch, the scheduler, a job reporter) can
+    # `publish()` into it. Always, lean too: a lean page's socket is how it
+    # hears about edits made by another process's scheduler, exactly as the
+    # watcher above is. Tests that build apps without lifespan bind lazily on
+    # the first socket instead.
+    @on_startup_always
+    async def _startup_events_bus():
+        from fused_render.server.events import bus
+
+        bus.bind()
+
     # Warm the Tasks listing's transcript caches (routers/tasks.py `warm`) so
     # the first `/api/tasks` or `/api/tasks/pulse` of the process answers in
     # milliseconds instead of reading every transcript on the machine inside
@@ -1099,6 +1113,10 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # and /api/export (_server_export.py). GET/PUT /api/session used to lead
     # this list; the per-file session restore it served is gone (D329).
     app.include_router(fs_read_router)
+    # One socket per document for every live fact (server/events.py); the
+    # topic catalog registers once per process (server/topics.py).
+    _server_topics.register_all()
+    app.include_router(events_router)
     app.include_router(search_router)
     app.include_router(fs_mutate_router)
     app.include_router(render_router)

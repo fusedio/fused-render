@@ -467,6 +467,15 @@ def super_id():
 MEMORY_LINES_HINT = 200  # Bot.MEMORY_LINES, visible to the class-body prompt string
 
 
+def _publish(topic: str, key=None) -> None:
+    """Wake the events bus (server/events.py) for `topic`. Imported lazily so
+    this module keeps importing in a process that never starts the server."""
+    try:
+        from fused_render.server.events import bus
+        bus.publish(topic, key)
+    except Exception:  # noqa: BLE001 — a missed wake is latency, never an error
+        pass
+
 class Bot:
     deleted = False  # class default: a Bot built with __new__ (tests) still has it; delete() sets the instance flag
 
@@ -620,6 +629,7 @@ class Bot:
             with open(self.events_path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(ev) + "\n")
         _registry().on_event(self, ev)
+        _publish("bots")
         return ev
 
     # -- step thumbnails -------------------------------------------------------
@@ -1563,6 +1573,7 @@ class Bot:
             self.meta["updated"] = time.time()
             self.save()
         self._write_still(still)
+        _publish("bots")
 
     @property
     def browser_id(self):

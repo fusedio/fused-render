@@ -6,6 +6,7 @@
 // (/api/ai/transcribe, a job), drop the text at the caret for review. Nothing is sent on its own.
 import { useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent, type RefObject } from "react";
 import { api, rawFileUrl, request, type Bot } from "../lib/api";
+import { watchJobRow } from "@platform/lib/jobs";
 import { jobNote } from "../lib/dictation";
 import { statusLabel } from "../lib/derive";
 import { fmtAgo, fmtBytes, fmtSecs } from "../lib/format";
@@ -57,17 +58,14 @@ const typed = (msg: string, type: string, jobId?: string): TypedError => Object.
 /** Where the transcription's progress sentence goes (the mic title and the placeholder while busy). */
 type Note = (text: string) => void;
 
-/** Poll /api/jobs (every 700 ms) until the job leaves running/waiting; null when it vanished (5 misses after a sighting) or `stopped()` says so.
+/** Follow the job over the events bus until it leaves running/waiting; null when it vanished or `stopped()` says so.
  *  `tick` sees every sighting while it runs, so a long first-run phase can be narrated. */
-async function watchJob(id: string, stopped: () => boolean = () => false, tick?: (rec: JobRow) => void): Promise<JobRow | null> {
-  let seen = false, missing = 0;
-  for (;;) {
-    if (stopped()) return null;
-    const rec = await request<{ jobs?: JobRow[] }>("GET", "/api/jobs", undefined, "jobs").then((d) => (d?.jobs || []).find((j) => j.id === id) || null, () => null);
-    if (rec) { seen = true; missing = 0; if (rec.state !== "running" && rec.state !== "waiting") return rec; tick?.(rec); }
-    else if (seen && ++missing >= 5) return null;
-    await new Promise((r) => setTimeout(r, 700));
-  }
+function watchJob(id: string, stopped: () => boolean = () => false, tick?: (rec: JobRow) => void): Promise<JobRow | null> {
+  return watchJobRow(id, {
+    stopped,
+    onTick: (rec) => tick?.(rec as unknown as JobRow),
+    until: (rec) => rec.state !== "running" && rec.state !== "waiting",
+  }) as Promise<JobRow | null>;
 }
 
 /**

@@ -38,6 +38,7 @@ from fastapi.responses import JSONResponse
 
 from fused_render import background_apps
 from fused_render.server import engine_host
+from fused_render.server.events import bus
 from fused_render.server.common import _error, _require_fused
 
 router = APIRouter()
@@ -101,17 +102,15 @@ def _protocol_for(manifest: background_apps.Manifest | None) -> str | None:
     return None if manifest is None else ("main" if manifest.main else "daemon")
 
 
-@router.get("/api/apps/background/status")
-async def api_background_status(html: str = ""):
-    # Read-only, same posture as every other GET here — no X-Fused guard.
-    folder = _folder_for(html)
-    if folder is None:
-        return _error("query must include 'html'")
+def background_status(folder: str) -> dict:
+    """The status body for one app folder — the GET's inner function, and the
+    `apps.background` topic's snapshot (server/topics.py). Sync: it reads disk
+    (`autostart_paths`, `load_manifest`), so callers run it off the loop."""
     engine_id = background_apps.engine_id_for(folder)
-    autostart = folder in await asyncio.to_thread(background_apps.autostart_paths)
+    autostart = folder in background_apps.autostart_paths()
     child = engine_host.current(engine_id)
     running = child is not None and engine_host._alive(child)
-    manifest = await asyncio.to_thread(background_apps.load_manifest, folder)
+    manifest = background_apps.load_manifest(folder)
     protocol = _protocol_for(manifest)
     return {
         "running": running,
@@ -121,6 +120,15 @@ async def api_background_status(html: str = ""):
         "engine_id": engine_id,
         "protocol": protocol,
     }
+
+
+@router.get("/api/apps/background/status")
+async def api_background_status(html: str = ""):
+    # Read-only, same posture as every other GET here — no X-Fused guard.
+    folder = _folder_for(html)
+    if folder is None:
+        return _error("query must include 'html'")
+    return await asyncio.to_thread(background_status, folder)
 
 
 @router.post("/api/apps/background/start")
@@ -156,6 +164,7 @@ async def api_background_start(body: dict = Body(...),
         detail = unbuilt_reason if unbuilt_reason is not None else str(e)
         return _error(f"could not start {os.path.basename(folder)}'s "
                       f"background app: {detail}", status=502)
+    bus.publish("apps.background", folder)
     return {"ok": True, "engine_id": engine_id, "pid": child.pid,
             "version": child.version, "protocol": _protocol_for(manifest)}
 
@@ -173,6 +182,7 @@ async def api_background_autostart(body: dict = Body(...),
         return _error("request body must include 'html'")
     autostart = bool(body.get("autostart"))
     await asyncio.to_thread(background_apps.set_autostart, folder, autostart)
+    bus.publish("apps.background", folder)
     return {"ok": True, "autostart": autostart}
 
 
@@ -190,6 +200,7 @@ async def api_background_stop(body: dict = Body(...),
         return _error("request body must include 'html'")
     engine_id = background_apps.engine_id_for(folder)
     await asyncio.to_thread(engine_host.stop, engine_id)
+    bus.publish("apps.background", folder)
     return {"ok": True}
 
 
@@ -236,6 +247,7 @@ async def api_background_restart(body: dict = Body(...),
         # the folder's own unbuilt venv when that's what triggered it.
         return _error(unbuilt_reason if unbuilt_reason is not None else str(e),
                       status=502)
+    bus.publish("apps.background", folder)
     return {"ok": True, "pid": child.pid, "version": child.version,
             "protocol": _protocol_for(manifest)}
 

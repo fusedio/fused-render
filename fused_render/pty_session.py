@@ -445,6 +445,15 @@ class PtySession:
         self._reader.join(timeout=timeout)
 
 
+def _publish_terminals() -> None:
+    """Wake the `terminal.list` topic (server/topics.py)."""
+    try:
+        from fused_render.server.events import bus
+        bus.publish("terminal.list")
+    except Exception:  # noqa: BLE001
+        pass
+
+
 class PtySessionRegistry:
     """Per-app-instance registry of live pty sessions, capped at
     MAX_SESSIONS."""
@@ -472,7 +481,8 @@ class PtySessionRegistry:
             sid = uuid.uuid4().hex
             session = PtySession(sid, profile, rows=rows, cols=cols)
             self._sessions[sid] = session
-            return session
+        _publish_terminals()
+        return session
 
     def get(self, sid: str) -> Optional[PtySession]:
         return self._sessions.get(sid)
@@ -487,6 +497,7 @@ class PtySessionRegistry:
         if session is None:
             return False
         session.kill()
+        _publish_terminals()
         return True
 
     def reap_dead(self) -> None:

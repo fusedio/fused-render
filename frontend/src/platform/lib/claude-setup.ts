@@ -1,5 +1,6 @@
 // The Claude Code setup MACHINE — snapshot, the install / update / doctor /
-// sign-in / link-path actions, and the polls that follow each — as one hook.
+// sign-in / link-path actions, and the events-bus subscriptions that follow
+// each — as one hook.
 //
 // Lifted out of ClaudeHealthStrip so the first-run wizard's "Claude Code" step
 // (shell/onboarding) can drive exactly the same endpoints with exactly the
@@ -24,6 +25,7 @@ import {
   type ClaudeLoginStatus,
 } from "./api";
 import type { ClaudeIssue } from "./claude-health";
+import { resyncTopic, subscribeTopic } from "./events";
 import { useTerminalDockOpen } from "./terminalDockStore";
 
 // The last snapshot seen, so walking between Home and /apps — which both render
@@ -44,16 +46,12 @@ let cached: ClaudeHealth | null = null;
 //: work, so near-simultaneous ones collapse into the first.
 export const FOCUS_RECHECK_MS = 3000;
 
-/** How often to ask the server how the install is getting on. The record is an
-    in-memory read on the server side, so this is cheap; the interval is set by
-    what reads as live rather than by cost. */
-const INSTALL_POLL_MS = 1200;
-
-/** How often to ask whether the browser sign-in has finished. Slower than the
-    install poll on purpose: nothing changes here until a person has finished
-    with a browser window, so a faster tick would only spend requests watching
-    someone read a consent screen. */
-const LOGIN_POLL_MS = 2000;
+/** `claude.setup`'s snapshot: the bodies of GET /api/claude/install and
+    GET /api/claude/login, side by side. */
+interface ClaudeSetupSnapshot {
+  install: ClaudeInstallStatus;
+  login: ClaudeLoginStatus;
+}
 
 export interface ClaudeSetup {
   health: ClaudeHealth | null;
@@ -90,14 +88,14 @@ export function useClaudeSetup(watching: boolean): ClaudeSetup {
   const [loaded, setLoaded] = useState(cached !== null);
   const [busy, setBusy] = useState(false);
   const lastCheck = useRef(0);
-  // The install/update record, polled only while one is running. Null means
+  // The install/update record, followed only while one is running. Null means
   // nothing has been started from this page.
   const [install, setInstall] = useState<ClaudeInstallStatus | null>(null);
   // `claude doctor`'s report, once it has been asked for. Seeded from the
   // snapshot, because the server already ran one whenever it found something
   // worth explaining.
   const [doctor, setDoctor] = useState<ClaudeDoctor | null>(null);
-  // The browser sign-in record, polled only while one is open. Its own state
+  // The browser sign-in record, followed only while one is open. Its own state
   // because it is its own endpoint for its own reason: this one waits on a
   // person and can be called off.
   const [login, setLogin] = useState<ClaudeLoginStatus | null>(null);
@@ -166,51 +164,45 @@ export function useClaudeSetup(watching: boolean): ClaudeSetup {
     );
   }, []);
 
-  // POLL ONLY WHILE SOMETHING IS RUNNING.
+  // FOLLOW ONLY WHILE SOMETHING IS RUNNING. `claude.setup` on the events bus
+  // carries both records (`{install, login}`, the two GETs' bodies); the
+  // server restats them while anyone listens, and the subscription closes
+  // once the install is no longer running (this effect's deps move).
   useEffect(() => {
     if (install?.state !== "running") return;
     let alive = true;
-    const timer = window.setInterval(() => {
-      getClaudeInstall().then(
-        (next) => {
-          if (!alive) return;
-          setInstall(next);
-          // A finished install changed the machine. Re-probe so the UI can
-          // retire the claim the user just fixed.
-          if (next.state === "done") load(true);
-        },
-        () => {
-          /* A failed poll is not a failed install — keep what we last knew. */
-        },
-      );
-    }, INSTALL_POLL_MS);
+    const off = subscribeTopic<ClaudeSetupSnapshot>("claude.setup", null, (snap, _delta, meta) => {
+      // A refused read is not a failed install — keep what we last knew.
+      if (!alive || meta.error !== undefined || !snap) return;
+      const next = snap.install;
+      setInstall(next);
+      // A finished install changed the machine. Re-probe so the UI can
+      // retire the claim the user just fixed.
+      if (next.state === "done") load(true);
+    });
     return () => {
       alive = false;
-      window.clearInterval(timer);
+      off();
     };
   }, [install?.state, load]);
 
-  // POLL ONLY WHILE A SIGN-IN IS OPEN. The CLI writes a credential this app
+  // FOLLOW ONLY WHILE A SIGN-IN IS OPEN. The CLI writes a credential this app
   // never sees, so the only authority on whether it worked is `claude auth
-  // status` — re-probe when the record stops being in flight.
+  // status` — re-probe when the record stops being in flight. Same topic as
+  // the install's; the client shares one server subscription between them.
   useEffect(() => {
     if (!login?.in_flight) return;
     let alive = true;
-    const timer = window.setInterval(() => {
-      getClaudeLogin().then(
-        (next) => {
-          if (!alive) return;
-          setLogin(next);
-          if (!next.in_flight) load(true);
-        },
-        () => {
-          /* A failed poll is not a failed sign-in — keep what we last knew. */
-        },
-      );
-    }, LOGIN_POLL_MS);
+    const off = subscribeTopic<ClaudeSetupSnapshot>("claude.setup", null, (snap, _delta, meta) => {
+      // A refused read is not a failed sign-in — keep what we last knew.
+      if (!alive || meta.error !== undefined || !snap) return;
+      const next = snap.login;
+      setLogin(next);
+      if (!next.in_flight) load(true);
+    });
     return () => {
       alive = false;
-      window.clearInterval(timer);
+      off();
     };
   }, [login?.in_flight, load]);
 
@@ -257,6 +249,9 @@ export function useClaudeSetup(watching: boolean): ClaudeSetup {
       startClaudeLogin().then(
         (rec) => {
           done();
+          // This document just opened the sign-in: the bus should restat now,
+          // not when its producer next looks.
+          resyncTopic("claude.setup");
           setLogin(rec);
         },
         (e) => {
@@ -270,6 +265,7 @@ export function useClaudeSetup(watching: boolean): ClaudeSetup {
     startClaudeInstall(issue.action.kind).then(
       (rec) => {
         done();
+        resyncTopic("claude.setup");
         setInstall(rec);
       },
       (e) => {
@@ -282,11 +278,15 @@ export function useClaudeSetup(watching: boolean): ClaudeSetup {
   }, []);
 
   // Calling off a sign-in. The server settles the record before answering, so
-  // what comes back is already not in flight and the poll stops on its own.
+  // what comes back is already not in flight and the subscription closes on
+  // its own.
   const cancelLogin = useCallback(() => {
     setActionError(null);
     cancelClaudeLogin().then(
-      (rec) => setLogin(rec),
+      (rec) => {
+        resyncTopic("claude.setup");
+        setLogin(rec);
+      },
       () => setLogin(null),
     );
   }, []);

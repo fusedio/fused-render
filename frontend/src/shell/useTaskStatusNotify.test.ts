@@ -29,15 +29,12 @@ const presenceStore = new Map<string, string>();
   length: 0,
 } as Storage;
 
-// The pulse store's own poll would otherwise fire against a real endpoint —
-// answer the pulse read with an empty pull-your-own-answers response, and
-// anything else (the listing feed's read/long-poll) with a promise that never
+// The listing rides the events bus now and bun has no socket, so nothing here
+// reaches the network on its own; any stray fetch gets a promise that never
 // resolves (tasksPulse.lane.test.tsx's own pattern for keeping that feed out
 // of the way of a test that only cares about the pulse rows).
-globalThis.fetch = ((url: string) =>
-  String(url).includes("/api/tasks/pulse")
-    ? Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ tasks: [] }) } as unknown as Response)
-    : new Promise<Response>(() => {})) as unknown as typeof fetch;
+globalThis.fetch = ((_url: string) =>
+  new Promise<Response>(() => {})) as unknown as typeof fetch;
 
 const { useTaskStatusNotify } = await import("@shell/useTaskStatusNotify");
 const { publishTasks } = await import("@shell/tasksPulse");

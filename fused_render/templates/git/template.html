@@ -1407,11 +1407,9 @@ let ghBusy = null;
  * because only one of those can be true to show at a time and the modal
  * shows gh's own words in place rather than losing them to a fresh poll. */
 let ghError = null;
-/* The interval driving the poll while the modal is open, and the guard that
- * keeps `ghStartPolling` idempotent under the stub `setInterval` the render
- * probe hands it (which returns the same falsy id every time — see
+/* Whether the modal is open and following the server's frames, and the guard
+ * that keeps `ghStartPolling` idempotent across repaints (see
  * `ghStartPolling`'s docstring). */
-let ghPollTimer = null;
 let ghPolling = false;
 /* Guards `ghTick`'s own repeat call to `draw(true)`: `draw` cancels any
  * overview read still in flight (`mine = ++seq`) and starts a fresh one on
@@ -1457,7 +1455,10 @@ let ghIdentityFocusDone = false;
  * the Publish button stays disabled until one of "private"/"public" is
  * chosen on purpose. */
 let ghVisibility = "";
-const GH_POLL_MS = 1500;
+/* The server pushes the four records on change (runtime.js
+ * `_fusedWatchGithubSetup`); this is the subscription's disposer while the
+ * modal is open. */
+let ghWatchOff = null;
 /* Which escape hatch's inline form is open, or `null` for neither — see
  * `ghHatchesNode`. The URL typed into it is kept here rather than in a local
  * variable for the same reason `ghName` is module-level: the modal repaints
@@ -2446,6 +2447,7 @@ async function ghInstallClick() {
   let result;
   try {
     result = await ghFetch("/api/github/install", { method: "POST" });
+    ghRefresh();
   } catch (err) {
     result = { error: err && err.message ? err.message : String(err) };
   }
@@ -2463,6 +2465,7 @@ async function ghLoginClick() {
   let result;
   try {
     result = await ghFetch("/api/github/login", { method: "POST" });
+    ghRefresh();
   } catch (err) {
     result = { error: err && err.message ? err.message : String(err) };
   }
@@ -2479,6 +2482,7 @@ async function ghLoginCancelClick() {
   let result;
   try {
     result = await ghFetch("/api/github/login/cancel", { method: "POST" });
+    ghRefresh();
   } catch (err) {
     result = { error: err && err.message ? err.message : String(err) };
   }
@@ -2499,6 +2503,7 @@ async function ghPublishClick(repo) {
   try {
     result = await ghFetch("/api/github/publish", { method: "POST",
       body: { root: repo.root, name: ghName.trim(), visibility: ghVisibility } });
+    ghRefresh();
   } catch (err) {
     result = { error: err && err.message ? err.message : String(err) };
   }
@@ -2612,15 +2617,22 @@ function ghOwnRecord(rec, baselineStamp, running) {
   return ghStamp(rec) === baselineStamp ? null : rec;
 }
 
-async function ghTick() {
+/* One frame of the four records, pushed by the server through runtime.js's
+ * `_fusedWatchGithubSetup` hook (the first at once, then on every change) —
+ * what `ghTick` used to fetch for itself every 1.5 s. `ghRefresh` asks for a
+ * fresh frame right after an action this modal took. */
+function ghRefresh() {
+  if (typeof window._fusedWatchGithubSetup !== "function" || !ghPolling) return;
+  // Re-subscribing is the "ask again now": the snapshot that answers is the
+  // fresh read.
+  ghStopWatch();
+  ghWatchOff = window._fusedWatchGithubSetup((frame) => { void ghTick(frame); });
+}
+
+async function ghTick(frame) {
   if (param("panel") !== "publish") { ghStopPolling(); return; }
   try {
-    const [status, install, login, pub] = await Promise.all([
-      ghFetch("/api/github/status"),
-      ghFetch("/api/github/install"),
-      ghFetch("/api/github/login"),
-      ghFetch("/api/github/publish"),
-    ]);
+    const status = frame.status, install = frame.install, login = frame.login, pub = frame.publish;
     ghStatus = status;
     if (ghBaseline === null) {
       // The first tick of this modal session — see `ghBaseline`'s own
@@ -2632,7 +2644,7 @@ async function ghTick() {
     ghLogin = ghOwnRecord(login, ghBaseline.login, login && login.in_flight);
     ghPublish = ghOwnRecord(pub, ghBaseline.publish, pub && pub.state === "running");
   } catch (err) {
-    // A network hiccup. The next tick tries again; the modal keeps showing
+    // A malformed frame. The next one is applied; the modal keeps showing
     // the last good read rather than flashing an error over it.
   }
   if (param("panel") !== "publish") return;
@@ -2650,11 +2662,11 @@ async function ghTick() {
     return;
   }
   // Guarded, unlike the draw() above: that one fires once, this one is
-  // called again every GH_POLL_MS, and `draw` cancels-and-restarts any
+  // called again on every frame, and `draw` cancels-and-restarts any
   // overview read still in flight on every call — see `ghDrawInFlight`'s
-  // own comment. Skipping a redraw here just means the next tick, 1.5s
-  // later, tries again with whatever `ghStatus`/`ghInstall`/`ghLogin`/
-  // `ghPublish` already hold.
+  // own comment. Skipping a redraw here just means the next frame tries
+  // again with whatever `ghStatus`/`ghInstall`/`ghLogin`/`ghPublish`
+  // already hold.
   if (!ghDrawInFlight) {
     ghDrawInFlight = true;
     draw(true).finally(() => { ghDrawInFlight = false; });
@@ -2692,14 +2704,19 @@ function ghStartPolling(root) {
   ghIdentityName = "";
   ghIdentityEmail = "";
   ghIdentityFocusDone = false;
-  if (ghPollTimer !== null) { clearInterval(ghPollTimer); ghPollTimer = null; }
-  ghPollTimer = setInterval(() => { void ghTick(); }, GH_POLL_MS);
-  void ghTick();
+  ghStopWatch();
+  if (typeof window._fusedWatchGithubSetup === "function") {
+    ghWatchOff = window._fusedWatchGithubSetup((frame) => { void ghTick(frame); });
+  }
+}
+
+function ghStopWatch() {
+  if (ghWatchOff !== null) { const off = ghWatchOff; ghWatchOff = null; off(); }
 }
 
 function ghStopPolling() {
   ghPolling = false;
-  if (ghPollTimer !== null) { clearInterval(ghPollTimer); ghPollTimer = null; }
+  ghStopWatch();
 }
 
 /* The dialog itself: "Publish to GitHub", opened from the toolbar's own slot
@@ -2780,7 +2797,7 @@ function publishModal(data) {
       action("gh-cancel", "Cancel", { onClick: close })));
   } else if (state === "identity") {
     // ghIdentityName/ghIdentityEmail live at module scope, not as locals —
-    // ghTick repaints this whole panel every GH_POLL_MS, and a plain local
+    // ghTick repaints this whole panel on every frame, and a plain local
     // would be discarded, caret and all, on the next tick. Same pattern as
     // the "ready" step's ghName below.
     const name = el("input", { type: "text", placeholder: "Your name",
@@ -4555,7 +4572,7 @@ function render(data, stashes, diff) {
   } else if (publishOpen) {
     page.append(publishModal(data));
   }
-  /* The publish dialog drives its own poll while it is open (`ghTick`), and
+  /* The publish dialog follows the server's frames while it is open (`ghTick`), and
      nothing else in this view needs one — starting/stopping it here, next to
      the one place that mounts the modal, is what keeps it from outliving the
      panel that owns it. */

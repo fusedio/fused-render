@@ -9,7 +9,7 @@ import subprocess
 import sys
 import time
 
-from fastapi import APIRouter, Body, Header, Request, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Body, Header, Request
 from fastapi.responses import (
     FileResponse,
     JSONResponse,
@@ -56,7 +56,6 @@ from fused_render.server.walk import (
     _walk_bfs,
     _win_protected,
 )
-from fused_render.server.watch import _WATCH_REGISTRY
 
 router = APIRouter()
 
@@ -412,53 +411,11 @@ def _not_modified(request: Request, etag: str | None, mtime: float) -> bool:
         return int(mtime) <= since
     return False
 
-@router.websocket("/api/fs/events")
-async def api_fs_events(ws: WebSocket):
-    # File-change feed (SPEC §13.2), WebSocket not SSE (D74): every rendered
-    # pane holds one of these open for the lifetime of the page, and SSE
-    # rides ordinary HTTP/1.1 — Chrome caps those at 6 per origin, so a
-    # 6-pane panel pinned every socket and all later fetches (/api/run!)
-    # queued browser-side forever. WebSockets live in a separate, much
-    # larger connection pool. Messages are JSON: {path, mtime} on change,
-    # {keepalive: true} every 15 s (WF-3).
-    #
-    # Stat mechanics live in the module-level _WATCH_REGISTRY, NOT here:
-    # every socket watching a given path shares ONE ticker (so a panel of
-    # panes previewing the same file makes one stat per interval,
-    # not one per pane), stats run off the event loop with a hard timeout
-    # so a hung stat can't freeze the server, and a stat already
-    # in flight is never stacked on. This handler just plumbs each path's queue to the
-    # socket and emits keepalives.
-    await ws.accept()
-    paths = ws.query_params.getlist("path")
+# `/api/fs/events` used to live here (SPEC §13.2 WF-1, D74). It is the
+# `fs.watch` topic of the events bus now (server/topics.py), on the one
+# socket per document; the coalescing stat registry (server/watch.py) is
+# reused as is.
 
-    queue: asyncio.Queue = asyncio.Queue()
-    entries = [await _WATCH_REGISTRY.subscribe(p, queue) for p in paths]
-
-    async def pump():
-        # Forward change messages; a 15s idle gap emits a keepalive (WF-3).
-        while True:
-            try:
-                msg = await asyncio.wait_for(queue.get(), timeout=15)
-            except asyncio.TimeoutError:
-                await ws.send_text(json.dumps({"keepalive": True}))
-                continue
-            await ws.send_text(msg)
-
-    pumper = asyncio.create_task(pump())
-    try:
-        # Drain the receive side purely to learn about disconnect; the
-        # pump loop alone would only notice on its next send.
-        while True:
-            msg = await ws.receive()
-            if msg["type"] == "websocket.disconnect":
-                break
-    except WebSocketDisconnect:
-        pass
-    finally:
-        pumper.cancel()
-        for entry in entries:
-            _WATCH_REGISTRY.unsubscribe(entry, queue)
 
 def _git_repo_payload(path: str):
     """Whether `path` is the work-tree root of a git repository.

@@ -2135,3 +2135,150 @@ test("a non-attention, retained message lands in 'New', unfolded (unchanged beha
     expect.arrayContaining([expect.stringContaining("Moved 3 items")]),
   );
 });
+
+// ---------------------------------------------------- useRepoUpdates itself
+//
+// The hook behind both the dock and NativeAppSyncNotices: `git.upstream` and
+// `lan.pairings` on the events bus, each answered by a snapshot, each
+// degrading alone, and `refresh()` a resync of what is followed — never a
+// fetch. A SCOPED reader (a native app window) follows `git.upstream` only,
+// filtered to its own repo, exactly as before the port. Driven through a
+// scripted client (`setEventsClientForTests`): the real one never calls back
+// under bun, and `mock.module` is process-wide (see this file's header).
+const { useRepoUpdates } = await import("@shell/RepoUpdatesDock");
+const { setEventsClientForTests } = await import("@platform/lib/events");
+const { getPopupNotification } = await import("@platform/lib/notifications");
+
+type Frame = (snap: unknown, delta: unknown, meta: Record<string, unknown>) => void;
+type HookState = ReturnType<typeof useRepoUpdates>;
+
+function fakeBus(first: Record<string, unknown>) {
+  const subs = new Map<string, Set<Frame>>();
+  const resyncs: string[] = [];
+  setEventsClientForTests({
+    subscribe: ((topic: string, _params: unknown, cb: Frame) => {
+      if (!(topic in first)) throw new Error(`unscripted topic: ${topic}`);
+      let set = subs.get(topic);
+      if (!set) subs.set(topic, (set = new Set()));
+      set.add(cb);
+      cb(first[topic], null, { gen: null });
+      return () => {
+        set.delete(cb);
+      };
+    }) as never,
+    resync: (topic: string) => {
+      resyncs.push(topic);
+      return true;
+    },
+  });
+  return {
+    resyncs,
+    subscriptions: (topic: string) => subs.get(topic)?.size ?? 0,
+    push: (topic: string, snap: unknown) => {
+      for (const cb of subs.get(topic) ?? []) cb(snap, null, { gen: null });
+    },
+    pushError: (topic: string) => {
+      for (const cb of subs.get(topic) ?? []) cb(null, null, { error: "down", status: 500 });
+    },
+  };
+}
+
+function RepoUpdatesHarness({ scope, onState }: { scope?: { forApp: string | null }; onState: (s: HookState) => void }) {
+  onState(useRepoUpdates(scope));
+  return null;
+}
+
+const failureAt = (root: string, name: string) => ({
+  id: `${root}::auth`,
+  root,
+  name,
+  reason: "auth",
+  title: "some failure",
+  action: "Auto-update on app open",
+  command: "git pull",
+  output: "x",
+  push: false,
+  at: 1,
+});
+
+test("useRepoUpdates: the dock follows git.upstream and lan.pairings, each source degrades alone, refresh resyncs both", async () => {
+  _resetNotificationsForTest();
+  const bus = fakeBus({
+    "git.upstream": { repos: [], sync_failures: [failureAt("/a/widget", "widget")], pulls: [{ id: "p0", root: "/a/widget", name: "widget", count: 2, at: 1 }] },
+    "lan.pairings": { pairings: [{ id: "d1", name: "Phone", at: 1 }] },
+  });
+  let latest!: HookState;
+  let r!: ReactTestRenderer;
+  try {
+    await act(async () => {
+      r = create(<RepoUpdatesHarness onState={(s) => (latest = s)} />);
+    });
+    expect(bus.subscriptions("git.upstream")).toBe(1);
+    expect(bus.subscriptions("lan.pairings")).toBe(1);
+    expect(latest.syncFailures.map((f) => f.id)).toEqual(["/a/widget::auth"]);
+    expect(latest.pairings.map((p) => p.id)).toEqual(["d1"]);
+    // A pull that happened before this shell opened is history, never a popup.
+    expect(getPopupNotification()).toBeNull();
+
+    // A NEW pull on a later snapshot pops; the pairings survive a refused
+    // pairings frame; a refused upstream frame leaves the rows standing.
+    await act(async () => {
+      bus.push("git.upstream", { repos: [], sync_failures: [], pulls: [{ id: "p1", root: "/a/widget", name: "widget", count: 1, at: 2 }] });
+      bus.pushError("lan.pairings");
+    });
+    expect(getPopupNotification()?.title).toBe("Updated widget with 1 change");
+    expect(latest.syncFailures).toEqual([]);
+    expect(latest.pairings.map((p) => p.id)).toEqual(["d1"]);
+    await act(async () => {
+      bus.pushError("git.upstream");
+    });
+    expect(latest.syncFailures).toEqual([]);
+
+    latest.refresh();
+    expect(bus.resyncs).toEqual(["git.upstream", "lan.pairings"]);
+
+    await act(async () => {
+      r.unmount();
+    });
+    expect(bus.subscriptions("git.upstream")).toBe(0);
+    expect(bus.subscriptions("lan.pairings")).toBe(0);
+  } finally {
+    _resetNotificationsForTest();
+    setEventsClientForTests(null);
+  }
+});
+
+test("useRepoUpdates: a native window's scoped reader follows git.upstream only, filtered to its own repo", async () => {
+  _resetNotificationsForTest();
+  const bus = fakeBus({
+    "git.upstream": { repos: [], sync_failures: [failureAt("/a/widget", "widget"), failureAt("/b/other", "other")], pulls: [] },
+    "lan.pairings": { pairings: [{ id: "d1", name: "Phone", at: 1 }] },
+  });
+  let latest!: HookState;
+  let r!: ReactTestRenderer;
+  try {
+    await act(async () => {
+      r = create(<RepoUpdatesHarness scope={{ forApp: "/a/widget/app.py" }} onState={(s) => (latest = s)} />);
+    });
+    expect(bus.subscriptions("git.upstream")).toBe(1);
+    expect(bus.subscriptions("lan.pairings")).toBe(0);
+    expect(latest.syncFailures.map((f) => f.root)).toEqual(["/a/widget"]);
+    expect(latest.pairings).toEqual([]);
+    // Only its own repo's pull pops.
+    await act(async () => {
+      bus.push("git.upstream", { repos: [], sync_failures: [], pulls: [
+        { id: "p1", root: "/b/other", name: "other", count: 3, at: 2 },
+        { id: "p2", root: "/a/widget", name: "widget", count: 1, at: 2 },
+      ] });
+    });
+    expect(getPopupNotification()?.title).toBe("Updated widget with 1 change");
+    latest.refresh();
+    expect(bus.resyncs).toEqual(["git.upstream"]);
+    await act(async () => {
+      r.unmount();
+    });
+  } finally {
+    _resetNotificationsForTest();
+    setEventsClientForTests(null);
+  }
+});

@@ -17,8 +17,8 @@
 // file over share_file.py's INLINE_PUBLISH_MAX_BYTES makes /publish answer a
 // 409 (folded onto `code: "upload_required"` by share-file.ts's `withCode`)
 // instead of doing the work inline. On that code alone, `useShareFile` below
-// switches to driving /upload → poll /upload/status → /publish with the
-// finished job's id, and the sheet shows a progress row with a Cancel button
+// switches to driving /upload → follow `share.upload` on the events bus (the
+// /upload/status body) → /publish with the finished job's id, and the sheet shows a progress row with a Cancel button
 // in the meantime — the row REPLACES the buttons, so a click never has a
 // second meaning.
 //
@@ -46,6 +46,7 @@ import {
   XIcon,
 } from "lucide-react";
 import { copyToClipboard } from "@platform/lib/clipboard";
+import { subscribeTopic } from "@platform/lib/events";
 import { basename, dirname } from "@platform/lib/format";
 import {
   cancelUpload,
@@ -54,7 +55,6 @@ import {
   publishShareFile,
   removeShareFile,
   startUpload,
-  uploadStatus,
   useShareFileRequest,
   type ShareableFile,
   type ShareFileRequest,
@@ -86,8 +86,6 @@ import {
 import { Input } from "@platform/shadcn/ui/input";
 import { Skeleton } from "@platform/shadcn/ui/skeleton";
 import { iconForEntry } from "@platform/ui/FileIcons";
-
-const UPLOAD_POLL_MS = 1200;
 
 type Busy = null | ShareMode | "remove";
 
@@ -153,7 +151,8 @@ export function useShareFile(file: ShareableFile): ShareFileHookState {
   const [copied, setCopied] = useState(false);
   const [confirmStop, setConfirmStop] = useState(false);
   const [upload, setUpload] = useState<UploadStatus | null>(null);
-  const pollRef = useRef<number | null>(null);
+  // The live `share.upload` subscription's disposer, while one is open.
+  const followRef = useRef<(() => void) | null>(null);
   const goneRef = useRef(false);
 
   const refresh = useCallback(async () => {
@@ -175,15 +174,15 @@ export function useShareFile(file: ShareableFile): ShareFileHookState {
     void refresh();
     return () => {
       goneRef.current = true;
-      if (pollRef.current !== null) window.clearInterval(pollRef.current);
+      followRef.current?.();
+      followRef.current = null;
     };
   }, [refresh]);
 
-  const stopPolling = () => {
-    if (pollRef.current !== null) {
-      window.clearInterval(pollRef.current);
-      pollRef.current = null;
-    }
+  const stopFollowing = () => {
+    const off = followRef.current;
+    followRef.current = null;
+    off?.();
   };
 
   const finishPublish = useCallback(
@@ -204,40 +203,50 @@ export function useShareFile(file: ShareableFile): ShareFileHookState {
     [file.path],
   );
 
-  const pollUpload = useCallback(
+  // Follow the detached upload on the events bus (`share.upload {id}`, the
+  // body of GET /upload/status, restatted server-side while anyone listens)
+  // until it reaches a terminal state, then drop the subscription.
+  const followUpload = useCallback(
     (id: string, mode: ShareMode) => {
-      stopPolling();
-      pollRef.current = window.setInterval(() => {
-        void uploadStatus(id)
-          .then((s) => {
-            if (goneRef.current) return;
-            setUpload(s);
-            if (s.state === "done") {
-              stopPolling();
-              void finishPublish(mode, id);
-            } else if (s.state === "failed" || s.state === "cancelled") {
-              stopPolling();
-              setErr(s.error || `the upload was ${s.state}`);
-              setBusy(null);
-              setUpload(null);
-            }
-          })
-          .catch((e: unknown) => {
-            // Finding 10: a rejected uploadStatus() call (a transient
-            // network blip, the server briefly unreachable) previously fell
-            // through with no handler — the interval kept firing, but
-            // nothing here ever ended the "uploading" phase, so the sheet
-            // could get stuck on that spinner forever even after the
-            // underlying upload had long since finished, failed, or was
-            // cancelled. Surface it and stop polling instead of spinning
-            // silently.
-            if (goneRef.current) return;
-            stopPolling();
-            setErr((e as Error).message || "lost track of the upload");
-            setBusy(null);
-            setUpload(null);
-          });
-      }, UPLOAD_POLL_MS);
+      stopFollowing();
+      let settled = false;
+      let off: () => void = () => {};
+      const end = () => {
+        settled = true;
+        if (followRef.current === off) followRef.current = null;
+        off();
+      };
+      off = subscribeTopic<UploadStatus>("share.upload", { id }, (s, _delta, meta) => {
+        if (settled || goneRef.current) return;
+        if (meta.error !== undefined) {
+          // Finding 10: a refused status read (the server briefly
+          // unreachable, a bad id) used to fall through with no handler —
+          // nothing ever ended the "uploading" phase, so the sheet could get
+          // stuck on that spinner forever even after the underlying upload
+          // had long since finished, failed, or was cancelled. Surface it
+          // and stop following instead of spinning silently.
+          end();
+          setErr(meta.error || "lost track of the upload");
+          setBusy(null);
+          setUpload(null);
+          return;
+        }
+        if (s === null) return;
+        setUpload(s);
+        if (s.state === "done") {
+          end();
+          void finishPublish(mode, id);
+        } else if (s.state === "failed" || s.state === "cancelled") {
+          end();
+          setErr(s.error || `the upload was ${s.state}`);
+          setBusy(null);
+          setUpload(null);
+        }
+      });
+      // A cached snapshot is replayed synchronously, inside `subscribeTopic`:
+      // the wait may already be over by the time the disposer is handed back.
+      if (settled) off();
+      else followRef.current = off;
     },
     [finishPublish],
   );
@@ -271,7 +280,7 @@ export function useShareFile(file: ShareableFile): ShareFileHookState {
                 // /publish someone else's — or no — upload id.
                 void finishPublish(mode, s.id);
               } else {
-                pollUpload(s.id, mode);
+                followUpload(s.id, mode);
               }
             } catch (uploadErr) {
               if (!goneRef.current) {
@@ -286,12 +295,12 @@ export function useShareFile(file: ShareableFile): ShareFileHookState {
         }
       })();
     },
-    [busy, file.path, finishPublish, pollUpload],
+    [busy, file.path, finishPublish, followUpload],
   );
 
   const cancelUploadNow = useCallback(() => {
     if (!upload) return;
-    stopPolling();
+    stopFollowing();
     const id = upload.id;
     setUpload(null);
     setBusy(null);

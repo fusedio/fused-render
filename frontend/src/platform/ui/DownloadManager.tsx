@@ -73,7 +73,7 @@
 // idea what the work is or which process is doing it, so the ✕ sets a flag the
 // reporting page reads on its next tick and acts on. The row therefore says
 // "Cancelling…" until the work actually stops, rather than lying about it.
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { requestOpenSection, useStatusChip } from "@platform/lib/statusChip";
 import { navigateToJobPage, isJobPageRoute } from "@platform/lib/router";
 import StatusChip from "@platform/ui/StatusChip";
@@ -85,7 +85,6 @@ import {
   cancelJob,
   dismissJob,
   engineDuration,
-  fetchJobs,
   isRunning,
   isTerminal,
   jobAmount,
@@ -95,10 +94,9 @@ import {
   inFlightJobs,
   mergedRows,
   jobStatusLine,
-  pollInterval,
-  JOB_PING_KEY,
   type Job,
 } from "@platform/lib/jobs";
+import { resyncTopic, subscribeTopic } from "@platform/lib/events";
 import { repoName } from "@platform/lib/format";
 import type { RunningEngine } from "@platform/lib/api";
 // NOTHING ABOUT THE FOLD IS PERSISTED (D603, user: "on page reload the models
@@ -122,38 +120,32 @@ import type { RunningEngine } from "@platform/lib/api";
 // explicit click within the session. Any key left on a real machine from an
 // earlier build is inert and needs no migration — nothing reads it.
 
-// Poll /api/jobs, adapting the cadence to whether anything is live, and poll
-// IMMEDIATELY when another same-origin document says it just reported.
+// Follow `/api/jobs` as the `jobs` topic of the events bus: the server pushes
+// a fresh snapshot on every report, dismiss, cancel and clear, and on its own
+// slow tick while anything is subscribed (a row ageing out). No cadence, no
+// ping: a download appears the instant its first report lands because the
+// report itself is what wakes the bus.
 //
-// The ping is what makes a download appear the instant it starts instead of up
-// to POLL_IDLE_MS later. It is only an optimisation: a reporter with no JS (a
-// Python worker) writes no ping, so the idle poll below is the floor that
-// guarantees the row shows up either way.
 // Exported purely so DownloadManager.test.tsx (the "loaded" suite) can
 // drive it directly, the way ActivityDock.tsx exports `retiredEngines` for
 // its own test — the default-exported `DownloadManager` below is otherwise
 // the only caller.
 export function useJobs(): {
   jobs: Job[];
-  /** The SERVER's clock at the last successful read (`JobsSnapshot.now`) —
-   *  what `jobDetail` measures a running job's age against (C4 fix), never
-   *  the browser's `Date.now()`. Starts at `Date.now() / 1000` so a row
-   *  drawn before the first response lands still gets a plausible age
-   *  rather than measuring against zero. */
+  /** The SERVER's clock at the last snapshot (`JobsSnapshot.now`) — what
+   *  `jobDetail` measures a running job's age against (C4 fix), never the
+   *  browser's `Date.now()`. Starts at `Date.now() / 1000` so a row drawn
+   *  before the first snapshot lands still gets a plausible age rather than
+   *  measuring against zero. */
   now: number;
-  /** Whether a real `/api/jobs` response has actually been PAINTED at least
-   *  once. `jobs` starts `[]` at mount, before any network round trip has
-   *  happened — that empty array is a placeholder, not an observation, and a
-   *  consumer that cannot tell the two apart (the pop-up's first-tick
-   *  seeding, below and in `ActivityDock.tsx`) mistakes it for "the poll's
-   *  first real read came back empty" and treats every job the ACTUAL first
-   *  read finds already terminal as brand new. Flips once, on the first
-   *  response that lands AND is applied to `jobs` — a stale response (`poll`'s
-   *  `at !== epochRef.current` branch) is real but is deliberately dropped
-   *  without touching `jobs`, so it must not flip this either, or `reported`
-   *  is still the placeholder the moment a consumer is told it is loaded.
-   *  Never flips back once true: a later fetch failure leaves the last real
-   *  snapshot on screen, which is still a real snapshot. */
+  /** Whether a real snapshot has actually been PAINTED at least once. `jobs`
+   *  starts `[]` at mount, before any frame has landed — that empty array is
+   *  a placeholder, not an observation, and a consumer that cannot tell the
+   *  two apart (the pop-up's first-tick seeding, below and in
+   *  `ActivityDock.tsx`) mistakes it for "the first real read came back
+   *  empty". Flips once, on the first snapshot applied to `jobs`, and never
+   *  flips back: a later error frame leaves the last real snapshot on
+   *  screen, which is still a real snapshot. */
   loaded: boolean;
   refresh: () => void;
   patch: (fn: (jobs: Job[]) => Job[]) => void;
@@ -161,128 +153,32 @@ export function useJobs(): {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [now, setNow] = useState<number>(() => Date.now() / 1000);
   const [loaded, setLoaded] = useState(false);
-  // Read by the scheduler without re-arming it: the poll loop re-reads the
-  // cadence after every response, so `jobs` must not be in its dependency list
-  // or every tick would tear the timer down and build a new one.
-  const jobsRef = useRef<Job[]>(jobs);
-  jobsRef.current = jobs;
-  const pollRef = useRef<() => void>(() => {});
-  // When a running job was last seen, so the poll loop can hold the ACTIVE
-  // cadence for GRACE_MS after the last one disappears (see jobs.ts). Starts
-  // at -Infinity: on first mount nothing has been seen running yet, so there
-  // is no grace to extend.
-  const lastRunningAtRef = useRef<number>(-Infinity);
-  // Bumped by every mutation — a request the user made, or a read this hook
-  // asked for after one. A response issued BEFORE that describes the list as it
-  // was, so painting it flicks the row the user just dismissed back onto the
-  // screen. Lives in a ref rather than the effect closure because `patch`
-  // (outside the effect) has to invalidate an in-flight read as well.
-  const epochRef = useRef(0);
 
   useEffect(() => {
-    let disposed = false;
-    let timer: number | undefined;
-    let inFlight = false;
-    // A read asked for while one was already in flight. Without this the
-    // request is simply dropped — and the request that gets dropped is almost
-    // always the one that matters, because every mutation (cancel / dismiss /
-    // clear) asks for a read the moment it lands.
-    let queued = false;
-
-    const schedule = (ms: number) => {
-      window.clearTimeout(timer);
-      timer = window.setTimeout(poll, ms);
-    };
-
-    // Records `jobs` as the latest known snapshot and schedules the next poll
-    // off it — updating `lastRunningAtRef` first, so a job that just stopped
-    // running still gets the grace window rather than an immediate idle drop.
-    const scheduleFor = (jobs: Job[]) => {
-      const now = Date.now();
-      if (jobs.some(isRunning)) lastRunningAtRef.current = now;
-      schedule(pollInterval(jobs, now - lastRunningAtRef.current));
-    };
-
-    async function poll() {
-      // A page hidden behind another tab is not being read; its throttled
-      // timers would fire in a clump on return anyway. Keep the loop alive at
-      // the idle cadence so the first visible frame is fresh.
-      if (document.visibilityState === "hidden") {
-        scheduleFor(jobsRef.current);
-        return;
-      }
-      if (inFlight) {
-        queued = true;
-        return;
-      }
-      inFlight = true;
-      const at = epochRef.current;
-      try {
-        const snapshot = await fetchJobs();
-        if (disposed) return;
-        if (at === epochRef.current) {
-          setJobs(snapshot.jobs);
-          setNow(snapshot.now);
-          setLoaded(true);
-          scheduleFor(snapshot.jobs);
-        } else {
-          // Stale. Dropped rather than painted; `queued` is set (the mutation
-          // asked for a read while this one was in flight), so the fresh read
-          // is already on its way. `loaded` does NOT flip here: this response
-          // never touched `jobs`, which is still whatever it was before (the
-          // `[]` placeholder, on the very first poll) — flipping `loaded` off
-          // a response that changed nothing is what used to let a consumer
-          // gated on it (`DownloadManagerView`'s `onJobsReported` effect)
-          // forward that untouched placeholder as though it were a genuine
-          // first read.
-          scheduleFor(jobsRef.current);
-        }
-      } catch {
-        // The server being unreachable is the ServerStatusBanner's story to
-        // tell, not this card's — keep the last list on screen and retry at the
-        // idle cadence rather than blanking the manager on one failed probe.
-        if (!disposed) scheduleFor(jobsRef.current);
-      } finally {
-        inFlight = false;
-        if (queued && !disposed) {
-          queued = false;
-          poll();
-        }
-      }
-    }
-
-    pollRef.current = () => {
-      if (disposed) return;
-      epochRef.current += 1;
-      poll();
-    };
-    poll();
-
-    const onPing = (e: StorageEvent) => {
-      if (e.key === JOB_PING_KEY) pollRef.current();
-    };
-    const onVisible = () => {
-      if (document.visibilityState === "visible") pollRef.current();
-    };
-    window.addEventListener("storage", onPing);
-    document.addEventListener("visibilitychange", onVisible);
-    return () => {
-      disposed = true;
-      window.clearTimeout(timer);
-      window.removeEventListener("storage", onPing);
-      document.removeEventListener("visibilitychange", onVisible);
-    };
+    const off = subscribeTopic<{ jobs: Job[]; now: number }>("jobs", {}, (snap, _delta, meta) => {
+      // The server being unreachable is the ServerStatusBanner's story to
+      // tell, not this card's — an error frame keeps the last list on screen.
+      if (meta.error !== undefined || snap === null) return;
+      setJobs(snap.jobs);
+      setNow(snap.now);
+      setLoaded(true);
+    });
+    return off;
   }, []);
 
-  const refresh = useCallback(() => pollRef.current(), []);
+  // "Ask again now": a mutation this document made that the bus will also
+  // announce — one resync covers the beat between the two.
+  const refresh = useCallback(() => {
+    resyncTopic("jobs", {});
+  }, []);
 
-  // Apply a change the SERVER has already confirmed, without waiting for a read
-  // to tell us what we just did. A dismiss is a request that answered 200 — the
-  // row is gone — so leaving it on screen until the next poll lands makes the ✕
-  // feel broken, and on the idle cadence that wait is seconds. The poll still
-  // reconciles; this only removes the gap.
+  // Apply a change the SERVER has already confirmed, without waiting for the
+  // bus to tell us what we just did. A dismiss is a request that answered 200
+  // — the row is gone — so leaving it on screen until the next frame lands
+  // makes the ✕ feel broken. The next snapshot still reconciles; this only
+  // removes the gap. Frames arrive in order, so nothing in flight can be
+  // older than this.
   const patch = useCallback((fn: (jobs: Job[]) => Job[]) => {
-    epochRef.current += 1; // any read already in flight predates this
     setJobs(fn);
   }, []);
 

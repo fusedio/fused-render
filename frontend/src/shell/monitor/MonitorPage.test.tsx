@@ -1,11 +1,13 @@
-// The /monitor page rendered against a fixed whole-machine payload (`load`
-// injected, the poll parked on a huge interval). The one network call that
-// matters — the kill — goes through the REAL `killSystemProcess` with
+// The /monitor page rendered against a fixed whole-machine payload, pushed as
+// `system.activity` snapshots by a fake events client (`setEventsClientForTests`:
+// the real client has no socket in bun and never calls back). The one network
+// call that matters — the kill — goes through the REAL `killSystemProcess` with
 // `globalThis.fetch` stubbed, so the X-Fused guard header is what is asserted,
 // not a mock's call record.
 import { afterEach, expect, test } from "bun:test";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 
+import { setEventsClientForTests } from "@platform/lib/events";
 import type { MachineSnapshot, MachineProc } from "@platform/lib/sysmon";
 import MonitorPage from "@shell/monitor/MonitorPage";
 
@@ -62,9 +64,19 @@ const PAYLOAD: MachineSnapshot = {
 let renderer: ReactTestRenderer | null = null;
 const realFetch = globalThis.fetch;
 
+/** The page's one subscription, as the fake client saw it. */
+type Frame = (snap: unknown, delta: unknown, meta: Record<string, unknown>) => void;
+let frames: Frame | null = null;
+let subscribed: { topic: string; params: unknown }[] = [];
+let historyCalls: number[][] = [];
+
 afterEach(() => {
   act(() => renderer?.unmount());
   renderer = null;
+  frames = null;
+  subscribed = [];
+  historyCalls = [];
+  setEventsClientForTests(null);
   globalThis.fetch = realFetch;
 });
 
@@ -74,39 +86,52 @@ async function flush(): Promise<void> {
   });
 }
 
+/** A new snapshot lands on the page's subscription. */
+async function push(snap: MachineSnapshot): Promise<void> {
+  await act(async () => {
+    frames?.(snap, null, { gen: null });
+  });
+  await flush();
+}
+
 // Mounts the page and WIDENS it to the whole machine: the page opens on
 // fused-render's own processes (see "opens on fused-render only" below), and
 // every test here but that one is about the whole-machine table.
 async function mount(
-  payload: MachineSnapshot | (() => MachineSnapshot) = PAYLOAD,
+  payload: MachineSnapshot = PAYLOAD,
   confirmMs?: number,
-  pollMs = 1e9,
 ): Promise<ReactTestRenderer> {
-  const r = await mountNarrow(payload, confirmMs, pollMs);
+  const r = await mountNarrow(payload, confirmMs);
   const toggle = r.root.find((n) => n.type === "button" && text(n) === "fused-render only");
   click(toggle);
   return r;
 }
 
 async function mountNarrow(
-  payload: MachineSnapshot | (() => MachineSnapshot) = PAYLOAD,
+  payload: MachineSnapshot = PAYLOAD,
   confirmMs?: number,
-  pollMs = 1e9,
 ): Promise<ReactTestRenderer> {
-  const read = typeof payload === "function" ? payload : () => payload;
+  setEventsClientForTests({
+    subscribe: ((topic: string, params: unknown, cb: Frame) => {
+      subscribed.push({ topic, params });
+      frames = cb;
+      return () => {
+        frames = null;
+      };
+    }) as never,
+  });
   await act(async () => {
     renderer = create(
       <MonitorPage
         confirmMs={confirmMs}
-        load={async () => read()}
-        loadHistory={async (pids) =>
-          Object.fromEntries(pids.map((p) => [String(p), [{ t: 101, cpuPct: 1, memBytes: MB }]]))
-        }
-        pollMs={pollMs}
+        loadHistory={async (pids) => {
+          historyCalls.push(pids);
+          return Object.fromEntries(pids.map((p) => [String(p), [{ t: 101, cpuPct: 1, memBytes: MB }]]));
+        }}
       />,
     );
   });
-  await flush();
+  await push(payload);
   return renderer!;
 }
 
@@ -339,14 +364,12 @@ const RESORTED: MachineSnapshot = {
 const NEWCOMER = proc({ pid: 777, command: "newcomer", cpuPct: 99 });
 
 test("while the pointer is over the table the order holds; values update in place", async () => {
-  let current = PAYLOAD;
-  const r = await mount(() => current, undefined, 25);
+  const r = await mount();
   expect(pidsOf(r)).toEqual([400, 201, 100, 300, 1, 500]);
   const body = r.root.find((n) => n.type === "tbody");
   act(() => body.props.onMouseEnter());
   expect(text(r.root)).toContain("order held");
-  current = { ...RESORTED, procs: [...RESORTED.procs, NEWCOMER] };
-  await wait(80);
+  await push({ ...RESORTED, procs: [...RESORTED.procs, NEWCOMER] });
   // Same order, new values, the newcomer appended at the bottom.
   expect(pidsOf(r)).toEqual([400, 201, 100, 300, 1, 500, 777]);
   expect(text(row(r, 300))).toContain("90.0");
@@ -357,11 +380,9 @@ test("while the pointer is over the table the order holds; values update in plac
 });
 
 test("a selection holds the order too; a header click re-sorts under it", async () => {
-  let current = PAYLOAD;
-  const r = await mount(() => current, undefined, 25);
+  const r = await mount();
   click(row(r, 500));
-  current = RESORTED;
-  await wait(80);
+  await push(RESORTED);
   expect(pidsOf(r)).toEqual([400, 201, 100, 300, 1, 500]);
   const cpuHeader = r.root.findAll((n) => n.type === "button" && n.props.className === "monitor-sort")[3];
   click(cpuHeader); // % CPU ascending, applied now despite the hold
@@ -382,16 +403,45 @@ test("an armed confirm is disarmed by any selection change", async () => {
 });
 
 test("a selected pid that comes back as a different process drops out", async () => {
-  let current = PAYLOAD;
-  const r = await mount(() => current, undefined, 25);
+  const r = await mount();
   click(row(r, 300));
   click(row(r, 400), { metaKey: true });
   expect(text(bar(r))).toContain("2 selected");
-  current = {
+  await push({
     ...PAYLOAD,
     procs: PAYLOAD.procs.map((p) => (p.pid === 300 ? { ...p, startedAt: 9999 } : p)),
-  };
-  await wait(80);
+  });
   expect(text(bar(r))).toContain("1 selected");
   expect(row(r, 300).props.className).not.toContain("is-selected");
+});
+
+// ---- the transport -------------------------------------------------------------
+
+test("the page is ONE subscription to system.activity scope=all; a refusal reads as the error line", async () => {
+  const r = await mount();
+  expect(subscribed).toEqual([{ topic: "system.activity", params: { scope: "all" } }]);
+  await act(async () => {
+    frames?.(null, null, { error: "sampler unavailable", status: 503 });
+  });
+  expect(text(r.root)).toContain("Can't read processes: sampler unavailable");
+  // The next snapshot clears it.
+  await push(PAYLOAD);
+  expect(text(r.root)).not.toContain("Can't read processes");
+  act(() => renderer?.unmount());
+  renderer = null;
+  expect(frames).toBe(null);
+});
+
+test("the per-process history is a GET re-asked on every activity snapshot, not on a timer", async () => {
+  const r = await mount();
+  expect(historyCalls).toEqual([]);
+  click(row(r, 400));
+  await flush();
+  expect(historyCalls).toEqual([[400]]);
+  await push(PAYLOAD);
+  expect(historyCalls).toEqual([[400], [400]]);
+  // Nothing selected: nothing asked, whatever lands.
+  click(button(bar(r), "Clear"));
+  await push(PAYLOAD);
+  expect(historyCalls).toHaveLength(2);
 });

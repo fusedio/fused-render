@@ -372,6 +372,16 @@ _LOGIN_LOCK = threading.Lock()
 _active_login: _ActiveLogin | None = None
 
 
+
+def _publish(topic: str, key=None) -> None:
+    """Wake the events bus (server/events.py) for `topic`. Imported lazily so
+    this module keeps importing in a process that never starts the server."""
+    try:
+        from fused_render.server.events import bus
+        bus.publish(topic, key)
+    except Exception:  # noqa: BLE001 — a missed wake is latency, never an error
+        pass
+
 def _reap_login() -> _ActiveLogin | None:
     """The live login child, dropping a dead one; callers hold no lock."""
     global _active_login
@@ -489,6 +499,7 @@ def api_canvases_login(x_fused: str | None = Header(default=None)):
             login = _ActiveLogin(proc=proc, started_at=time.time())
             _active_login = login
             threading.Thread(target=_watch_login, args=(login,), daemon=True).start()
+    _publish("canvases.status")
     return {"ok": True, "login_in_flight": True}
 
 
@@ -500,6 +511,7 @@ def api_canvases_login_cancel(x_fused: str | None = Header(default=None)):
     login = _reap_login()
     if login is not None:
         login.proc.terminate()
+    _publish("canvases.status")
     return {"ok": True, "canceled": login is not None}
 
 

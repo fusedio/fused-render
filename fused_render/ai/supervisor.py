@@ -3449,3 +3449,27 @@ def reset() -> None:
         # direct `_wait_for_draining` call) block for the full drain timeout
         # waiting on a `Worker` that no longer exists.
         _draining.clear()
+
+
+# THE BUS'S EAR: a load, an unload or a worker's report changes what
+# `describe()` answers, so each wakes the `ai.runtime` topic
+# (server/topics.py). Wrapped here so the functions' own locking is untouched.
+def _publishing_runtime(fn):
+    def wrapped(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            try:
+                from fused_render.server.events import bus
+                bus.publish("ai.runtime")
+            except Exception:  # noqa: BLE001
+                pass
+    wrapped.__name__ = fn.__name__
+    wrapped.__doc__ = fn.__doc__
+    return wrapped
+
+
+load = _publishing_runtime(load)
+unload = _publishing_runtime(unload)
+unload_all = _publishing_runtime(unload_all)
+_report = _publishing_runtime(_report)

@@ -51,12 +51,12 @@
 // figure it produces.
 import { useEffect, useState, type CSSProperties } from "react";
 import {
-  getAiUsage,
   type AiUsage,
   type AiUsageBucket,
   type AiUsageCounts,
   type AiUsageTier,
 } from "@platform/lib/api";
+import { subscribeTopic } from "@platform/lib/events";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 
@@ -67,10 +67,10 @@ import { SkeletonLines } from "@platform/ui/Skeleton";
 // for that the store cannot fill.
 const RANGES = [5, 15, 60] as const;
 
-// Half a bucket. The newest column is always partial, so refreshing at the
-// bucket width would leave it visibly stale for most of its life; at half of it
-// the bar grows in two steps instead of appearing finished from birth.
-const POLL_MS = 5000;
+// The server restats `ai.metrics` at half a bucket (5 s, server/topics.py
+// AiMetricsTopic). The newest column is always partial, so refreshing at the
+// bucket width would leave it visibly stale for most of its life; at half of
+// it the bar grows in two steps instead of appearing finished from birth.
 
 const fmt = (n: number) => n.toLocaleString();
 
@@ -245,8 +245,9 @@ const TIER_LABEL: Record<AiUsageTier, string> = {
  *
  *  So is the RATE, for a different reason: every model is priced differently
  *  and this app knows none of those prices, so the rate is a box per row rather
- *  than one figure for the table. `rates` is held by the caller so a poll — one
- *  every five seconds — cannot reset a number somebody is still typing.
+ *  than one figure for the table. `rates` is held by the caller so a fresh
+ *  snapshot — one every five seconds — cannot reset a number somebody is
+ *  still typing.
  */
 function UsageModels({
   usage,
@@ -373,45 +374,31 @@ export default function UsageTab() {
   const [error, setError] = useState<string | null>(null);
   // Model id -> the rate typed for it, as the STRING the box holds: a half-typed
   // "1." or an emptied box are states a number would erase under the cursor.
-  // Held here, above the table, so the five-second poll re-renders rows without
+  // Held here, above the table, so each five-second snapshot re-renders rows without
   // touching what somebody is editing.
   const [rates, setRates] = useState<Record<string, string>>({});
   const setRate = (model: string, rate: string) =>
     setRates((prev) => ({ ...prev, [model]: rate }));
 
-  // Poll, and keep the LAST good answer on a failure. A metrics read that lost
-  // a race with a restarting server should leave the graph as it was, exactly
-  // as the runtime poll does (aiRuntime.ts) — blanking a chart because one
-  // request in a hundred failed is worse than a chart one tick behind.
-  //
-  // `setTimeout` after each response rather than an interval: the request is
-  // cheap but it is not instant, and an interval shorter than a slow answer
-  // stacks requests on a machine that is already busy generating.
+  // Follow `ai.metrics {minutes}` on the events bus (the GET /api/ai/metrics
+  // body, restatted server-side every half bucket while anyone listens), and
+  // keep the LAST good answer on a failure. A metrics read that lost a race
+  // with a restarting server should leave the graph as it was, exactly as the
+  // runtime feed does (aiRuntime.ts) — blanking a chart because one read in a
+  // hundred failed is worse than a chart one step behind.
   useEffect(() => {
-    let alive = true;
-    let timer = 0;
-    const controller = new AbortController();
-    const tick = async () => {
-      try {
-        const next = await getAiUsage(minutes, { signal: controller.signal });
-        if (!alive) return;
-        setUsage(next);
-        setError(null);
-      } catch (e) {
-        if (!alive || controller.signal.aborted) return;
-        setError((e as Error).message);
+    return subscribeTopic<AiUsage>("ai.metrics", { minutes }, (next, _delta, meta) => {
+      if (meta.error !== undefined) {
+        setError(meta.error);
+        return;
       }
-      if (alive) timer = window.setTimeout(tick, POLL_MS);
-    };
-    void tick();
-    return () => {
-      alive = false;
-      controller.abort();
-      window.clearTimeout(timer);
-    };
-    // The window is part of the request, so changing it restarts the poll. The
-    // previous answer stays on screen until the new one lands — one frame of
-    // the old window is better than a blank card.
+      if (!next) return;
+      setUsage(next);
+      setError(null);
+    });
+    // The window is part of the request, so changing it is a new
+    // subscription. The previous answer stays on screen until the new one
+    // lands — one frame of the old window is better than a blank card.
   }, [minutes]);
 
   return (

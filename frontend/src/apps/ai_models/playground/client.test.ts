@@ -108,31 +108,51 @@ test("startVideo sends X-Fused-Source the same way", async () => {
   expect(req.headers["X-Fused-Page"]).toBeUndefined();
 });
 
-/** Drive one watch over a scripted sequence of polls. A string entry is a
- *  state for job j1, `"absent"` is a snapshot without the row, and an Error is
- *  a transport failure. The 1s sleep is stubbed out so a multi-tick scenario
- *  costs nothing. */
-async function watch(script: (string | Error)[], signal = new AbortController().signal) {
-  const realFetch = globalThis.fetch;
-  const realSetTimeout = globalThis.setTimeout;
+/** A scripted events client whose `jobs` subscription pushes one snapshot
+ *  per entry: a string is a state for job j1, `"absent"` a snapshot without
+ *  the row, and an Error an error frame (a transport failure the bus will
+ *  say again about). Installed through `setEventsClientForTests`, since bun
+ *  has no module mocks that stay inside one file. */
+function fakeJobsClient(script: (string | Error)[]) {
   let at = 0;
-  const seen: string[] = [];
-  (globalThis as { fetch: unknown }).fetch = async () => {
-    const step = script[Math.min(at++, script.length - 1)];
-    if (step instanceof Error) throw step;
-    return {
-      ok: true,
-      json: async () => ({
-        jobs: step === "absent" ? [] : [{ ...JOB, state: step }],
-        now: 0,
-      }),
-    };
+  return {
+    subscribe: ((_t: string, _p: unknown, cb: (s: unknown, d: unknown, m: Record<string, unknown>) => void) => {
+      let open = true;
+      // Frames land on microtasks, one per entry, so a watch that settles on
+      // an early frame never sees the later ones — exactly as a closed
+      // subscription hears nothing more.
+      const next = () => {
+        if (!open || at >= script.length) return;
+        const step = script[at++];
+        if (step instanceof Error) cb(null, null, { error: step.message, status: 500 });
+        else cb({ jobs: step === "absent" ? [] : [{ ...JOB, state: step }], now: 0 }, null, { gen: null });
+        queueMicrotask(next);
+      };
+      queueMicrotask(next);
+      return () => {
+        open = false;
+      };
+    }) as never,
+    at: () => at,
   };
-  (globalThis as { setTimeout: unknown }).setTimeout = (fn: () => void) => realSetTimeout(fn, 0);
+}
+
+/** Drive one watch over a scripted sequence of frames. */
+async function watch(script: (string | Error)[], signal = new AbortController().signal) {
+  const { setEventsClientForTests } = await import("@platform/lib/events");
+  const { GONE_GRACE_MS } = await import("@platform/lib/jobs");
+  const realSetTimeout = globalThis.setTimeout;
+  const seen: string[] = [];
+  const client = fakeJobsClient(script);
+  setEventsClientForTests(client);
+  // The gone grace is a real timer; collapse it so an `absent` scenario
+  // costs nothing.
+  (globalThis as { setTimeout: unknown }).setTimeout = (fn: () => void, ms?: number) =>
+    realSetTimeout(fn, ms === GONE_GRACE_MS ? 0 : ms);
   try {
-    return { outcome: await watchJob("j1", signal, (job) => seen.push(job.state)), seen, at };
+    return { outcome: await watchJob("j1", signal, (job) => seen.push(job.state)), seen, at: client.at() };
   } finally {
-    globalThis.fetch = realFetch;
+    setEventsClientForTests(null);
     globalThis.setTimeout = realSetTimeout;
   }
 }
@@ -153,17 +173,16 @@ test("a cancelled row is NOT a finished one", async () => {
   expect(outcome.state).toBe("cancelled");
 });
 
-test("a vanished row resolves gone after enough consecutive misses", async () => {
-  // FINISHED_TTL_S is a few seconds against a 1s poll, so the manager
-  // retiring a row we took too long to read is still the ordinary case here
-  // — it just takes a run of misses, not one, to conclude that is what
-  // happened (see GONE_MISS_TOLERANCE).
+test("a vanished row resolves gone once the grace has passed", async () => {
+  // A snapshot without the row is not yet evidence it never existed — the
+  // reporter's first tick may still be landing — so `gone` takes the grace
+  // (`watchJobRow`), not one frame.
   const { outcome } = await watch(["absent"]);
   expect(outcome).toEqual({ state: "gone" });
 });
 
-test("a single missed poll is not read as gone", async () => {
-  // The regression this tolerance exists to close: one slow tick used to
+test("a row that comes back inside the grace is not read as gone", async () => {
+  // The regression this grace exists to close: one missing frame used to
   // resolve `gone`, which every caller (ImageStage, TranscribeStage,
   // TextStage, EmbedStage) reads as "done, no artefact to distrust" — so a
   // render that was still in flight got filed as a finished one with a path
@@ -173,33 +192,25 @@ test("a single missed poll is not read as gone", async () => {
   expect(seen).toEqual(["running", "done"]);
 });
 
-test("misses only count while consecutive — a sighting resets the count", async () => {
-  const script: (string | Error)[] = ["running"];
-  for (let i = 0; i < 8; i++) {
-    script.push("absent");
-    script.push("running"); // resets the streak before it reaches tolerance
-  }
-  script.push("done");
-  const { outcome } = await watch(script);
-  expect(outcome).toEqual({ state: "done", job: { ...JOB, state: "done" } });
-});
-
 test("an error row throws its own message", async () => {
-  const realFetch = globalThis.fetch;
-  (globalThis as { fetch: unknown }).fetch = async () => ({
-    ok: true,
-    json: async () => ({ jobs: [{ ...JOB, state: "error", message: "out of memory" }], now: 0 }),
-  });
+  const { setEventsClientForTests } = await import("@platform/lib/events");
   try {
+    const realJob = { ...JOB, state: "error", message: "out of memory" };
+    setEventsClientForTests({
+      subscribe: ((_t: string, _p: unknown, cb: (s: unknown, d: unknown, m: Record<string, unknown>) => void) => {
+        queueMicrotask(() => cb({ jobs: [realJob], now: 0 }, null, { gen: null }));
+        return () => {};
+      }) as never,
+    });
     await expect(watchJob("j1", new AbortController().signal)).rejects.toThrow("out of memory");
   } finally {
-    globalThis.fetch = realFetch;
+    setEventsClientForTests(null);
   }
 });
 
-test("a failed poll is retried, NOT read as a vanished row", async () => {
-  // The regression. Before the fix this resolved `null` on the first throw and
-  // every caller treated that as success.
+test("an error frame is waited out, NOT read as a vanished row", async () => {
+  // The regression. Before the fix a transport failure resolved `null` and
+  // every caller treated that as success. The bus says again when it is back.
   const { outcome, at } = await watch([
     new Error("network"),
     "running",
@@ -210,25 +221,7 @@ test("a failed poll is retried, NOT read as a vanished row", async () => {
   expect(at).toBe(4);
 });
 
-test("a run of failed polls eventually gives up instead of hanging", async () => {
-  // Without a cap, a dead server is a spinner that never resolves and never
-  // errors — the failure the retry loop would otherwise trade the old bug for.
-  const script = Array.from({ length: 40 }, () => new Error("network"));
-  await expect(watch(script)).rejects.toThrow(/lost contact/);
-});
-
-test("a poll run that recovers resets the failure count", async () => {
-  const script: (string | Error)[] = [];
-  for (let round = 0; round < 5; round++) {
-    for (let i = 0; i < 9; i++) script.push(new Error("network"));
-    script.push("running");
-  }
-  script.push("done");
-  const { outcome } = await watch(script);
-  expect(outcome.state).toBe("done");
-});
-
-test("an already-aborted signal throws before the first poll", async () => {
+test("an already-aborted signal throws before the first frame", async () => {
   const controller = new AbortController();
   controller.abort();
   await expect(watch(["done"], controller.signal)).rejects.toThrow(/abort/i);
@@ -247,13 +240,16 @@ test("an already-aborted signal throws before the first poll", async () => {
  *  throws ModelLoading with a job id, "409-nojob" throws one without. Every
  *  job poll answers `done`, and both sleeps are stubbed to zero. */
 async function dance(script: string[], jobState = "done") {
-  const realFetch = globalThis.fetch;
+  const { setEventsClientForTests } = await import("@platform/lib/events");
   const realSetTimeout = globalThis.setTimeout;
   const status: (string | null)[] = [];
   let attempts = 0;
-  (globalThis as { fetch: unknown }).fetch = async () => ({
-    ok: true,
-    json: async () => ({ jobs: [{ ...JOB, state: jobState }], now: 0 }),
+  // Every job watch sees one snapshot with the row in `jobState`.
+  setEventsClientForTests({
+    subscribe: ((_t: string, _p: unknown, cb: (s: unknown, d: unknown, m: Record<string, unknown>) => void) => {
+      queueMicrotask(() => cb({ jobs: [{ ...JOB, state: jobState }], now: 0 }, null, { gen: null }));
+      return () => {};
+    }) as never,
   });
   (globalThis as { setTimeout: unknown }).setTimeout = (fn: () => void) => realSetTimeout(fn, 0);
   const attempt = async () => {
@@ -274,7 +270,7 @@ async function dance(script: string[], jobState = "done") {
       status,
     };
   } finally {
-    globalThis.fetch = realFetch;
+    setEventsClientForTests(null);
     globalThis.setTimeout = realSetTimeout;
   }
 }

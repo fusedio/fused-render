@@ -25,12 +25,14 @@
 //
 // A render is job-shaped — the reply carries the job to watch and the SETTLED
 // parameters (width snapped, steps clamped, seed invented). While it denoises
-// the worker drops a preview beside the output path and this stage polls it;
+// the worker drops a preview beside the output path and this stage reloads it
+// each time the events bus says it changed (`fs.watch`);
 // the job survives a tab switch on purpose (it shows in Activity), so only the
 // WATCH stops on unmount.
 import { useEffect, useRef, useState } from "react";
 import { cancelJob, type Job } from "@platform/lib/jobs";
 import { pickFile, rawUrl, type AiCatalogModel } from "@platform/lib/api";
+import { subscribeTopic, type SubscribeLike } from "@platform/lib/events";
 import { startImage, watchJob, type ImageStarted } from "./client";
 import { MenuIcons } from "@platform/ui/MenuIcons";
 import { Input } from "@platform/shadcn/ui/input";
@@ -289,6 +291,39 @@ interface Run {
   // check TranscribeStage already does by reading its artefact back — this
   // stage's artefact IS the image, so its own <img> tag is that read-back.
   readFailed: boolean;
+}
+
+
+/** Call `onChange` each time the worker rewrites its live preview, heard
+ *  through `fs.watch` on the events bus. Every reported change is a reload,
+ *  and so is a snapshot in which the file already exists: the <img> asked for
+ *  it when it mounted, and if the worker wrote the first frame between that
+ *  404 and this snapshot there is no later change to hear — the broken image
+ *  would stand until the next write (Bugbot, PR #1537). A snapshot with no
+ *  file yet is not a reload (the change that creates it is). An error frame
+ *  (the watch refused) changes nothing: the <img>'s own onError owns a broken
+ *  preview. Not `hiddenOk`. Returns the unsubscribe; `subscribe` is the test
+ *  seam. */
+export function followPreview(
+  path: string,
+  onChange: () => void,
+  subscribe: SubscribeLike = subscribeTopic,
+): () => void {
+  return subscribe(
+    "fs.watch",
+    { paths: [path] },
+    (snap, delta, meta) => {
+      if (meta.error !== undefined) return;
+      if (snap !== null && snap !== undefined) {
+        const rows = (snap as { paths?: { path: string; mtime: number | null }[] }).paths || [];
+        const present = rows.some((p) => p.path === path && p.mtime !== null && p.mtime !== undefined);
+        if (present) onChange();
+        return;
+      }
+      if (delta !== null) onChange();
+    },
+    { hiddenOk: false },
+  );
 }
 
 export function ImageStage({ model, entry }: { model: string; entry: AiCatalogModel }) {
@@ -568,15 +603,16 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
   const capture = () => webcam.capture((blob) => void save(blob, "webcam.png"));
 
   // Keyed on the STARTED reply, not on `run`: the watch's onTick rewrites
-  // `run` every poll (a fresh `{...r, job}`), so an effect keyed on the whole
-  // object was torn down and rebuilt each second and the 1500ms timer never
-  // lived long enough to fire once — the live preview never advanced. Same
-  // shape TranscribeStage uses for its partial-transcript tail.
+  // `run` on every job frame (a fresh `{...r, job}`), so an effect keyed on
+  // the whole object was torn down and rebuilt each time and the preview
+  // reload never lived long enough to fire once — the live preview never
+  // advanced. Same shape TranscribeStage uses for its partial-transcript
+  // tail. Each change of the preview file (`followPreview`, the events bus)
+  // is one reload of the <img>.
   const rendering = run && !run.done ? run.started : null;
   useEffect(() => {
     if (!rendering) return;
-    const timer = window.setInterval(() => setPreviewTick((n) => n + 1), 1500);
-    return () => window.clearInterval(timer);
+    return followPreview(rendering.previewPath, () => setPreviewTick((n) => n + 1));
   }, [rendering]);
 
   const locked = ASPECTS.find((a) => a.value === aspect) ?? null;

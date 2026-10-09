@@ -1,15 +1,21 @@
 // Pure logic only — `updateRelevant` and `updateLabel` are what the badge,
 // the collapsed rail's dot, and the Settings popover row each gate/word
 // themselves on, so a bug here would be wrong in three places at once.
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
+import { createElement } from "react";
+import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import type { UpdateStatus } from "@platform/lib/api";
+import { setEventsClientForTests } from "@platform/lib/events";
 import {
   CHECK_RESULT_HOLD_MS,
   checkNowLabel,
-  pollDelay,
+  pokeUpdateStatus,
+  resetUpdateStatusForTests,
+  setUpdateStatus,
   shouldCheckOnReturn,
   updateLabel,
   updateRelevant,
+  useUpdateStatus,
 } from "./update-status";
 
 function status(overrides: Partial<UpdateStatus>): UpdateStatus {
@@ -72,23 +78,102 @@ describe("updateLabel", () => {
 });
 
 
-describe("pollDelay", () => {
-  const st = (state: UpdateStatus["state"]) => ({ state } as UpdateStatus);
-  it("is quick while an install runs, warm only while the first check is still plausibly coming", () => {
-    expect(pollDelay(st("installing"), 0)).toBe(2_000);
-    // Hot for the first twenty seconds — the server's first check lands ~1s in.
-    expect(pollDelay(st("checking"), 0)).toBe(2_000);
-    // "checking" is busy at ANY age (bugbot, PR #1097): a fetch lasts seconds,
-    // and the answer it ends in must not wait out a slow tick.
-    expect(pollDelay(st("checking"), 20_000)).toBe(2_000);
-    expect(pollDelay(st("checking"), 300_000)).toBe(2_000);
-    expect(pollDelay(st("idle"), 10_000)).toBe(2_000);
-    expect(pollDelay(st("idle"), 30_000)).toBe(15_000);
-    // …and settles: idle is also the resting state after a check found nothing.
-    expect(pollDelay(st("idle"), 120_000)).toBe(60_000);
-    expect(pollDelay(st("available"), 0)).toBe(60_000);
-    // No updater at all (dev run): nothing to be quick about.
-    expect(pollDelay(null, 0)).toBe(60_000);
+// The store itself: one subscription to the `update` topic however many
+// surfaces read it, fed by the fake client (`setEventsClientForTests`) — the
+// real one has no socket in bun and never calls back.
+describe("useUpdateStatus", () => {
+  let renderers: ReactTestRenderer[] = [];
+
+  afterEach(() => {
+    act(() => renderers.forEach((r) => r.unmount()));
+    renderers = [];
+    setEventsClientForTests(null);
+    resetUpdateStatusForTests();
+  });
+
+  function fakeClient() {
+    const state = { subscribes: 0, unsubscribes: 0, resyncs: 0, topics: [] as string[] };
+    let push: ((snap: unknown) => void) | null = null;
+    setEventsClientForTests({
+      subscribe: ((topic: string, _p: unknown, cb: (s: unknown, d: unknown, m: Record<string, unknown>) => void) => {
+        state.subscribes += 1;
+        state.topics.push(topic);
+        push = (snap) => cb(snap, null, { gen: null });
+        return () => {
+          state.unsubscribes += 1;
+          push = null;
+        };
+      }) as never,
+      resync: () => {
+        state.resyncs += 1;
+        return true;
+      },
+    });
+    return { state, push: (snap: unknown) => push?.(snap) };
+  }
+
+  function Reader({ seen }: { seen: (s: UpdateStatus | null) => void }) {
+    seen(useUpdateStatus());
+    return null;
+  }
+
+  function mount(seen: (s: UpdateStatus | null) => void): ReactTestRenderer {
+    let r!: ReactTestRenderer;
+    act(() => {
+      r = create(createElement(Reader, { seen }));
+    });
+    renderers.push(r);
+    return r;
+  }
+
+  it("three readers share ONE subscription to `update`, closed with the last reader", () => {
+    const { state, push } = fakeClient();
+    const seen: (UpdateStatus | null)[] = [];
+    mount((s) => seen.push(s));
+    mount((s) => seen.push(s));
+    mount((s) => seen.push(s));
+    expect(state.subscribes).toBe(1);
+    expect(state.topics).toEqual(["update"]);
+    expect(seen.every((s) => s === null)).toBe(true);
+
+    // The snapshot is `{ update }` — GET /api/config's `update` field — and
+    // every reader sees it.
+    act(() => push({ update: status({ state: "available", latest_version: "0.5.10" }) }));
+    const last = seen.slice(-3);
+    expect(last.every((s) => s?.state === "available" && s.latest_version === "0.5.10")).toBe(true);
+
+    // No updater at all (a dev run): the field is null, and so is the store.
+    act(() => push({ update: null }));
+    expect(seen[seen.length - 1]).toBe(null);
+
+    act(() => renderers.forEach((r) => r.unmount()));
+    renderers = [];
+    expect(state.unsubscribes).toBe(1);
+  });
+
+  it("a frame carrying the same status by value wakes nobody", () => {
+    const { push } = fakeClient();
+    let renders = 0;
+    mount(() => {
+      renders += 1;
+    });
+    act(() => push({ update: status({ state: "idle" }) }));
+    const after = renders;
+    act(() => push({ update: status({ state: "idle" }) }));
+    expect(renders).toBe(after);
+  });
+
+  it("setUpdateStatus sets locally and pokeUpdateStatus is one resync, never a fetch", () => {
+    const { state } = fakeClient();
+    const seen = { latest: null as UpdateStatus | null };
+    mount((s) => {
+      seen.latest = s;
+    });
+    act(() => setUpdateStatus(status({ state: "installing" })));
+    expect(seen.latest?.state).toBe("installing");
+    pokeUpdateStatus();
+    expect(state.resyncs).toBe(1);
+    expect(state.subscribes).toBe(1);
   });
 });
 

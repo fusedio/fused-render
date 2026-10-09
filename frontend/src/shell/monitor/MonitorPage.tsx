@@ -26,11 +26,20 @@
 // nothing selected, on a column-header click, or when Pause is lifted; the
 // toolbar says "order held" meanwhile.
 //
-// DATA: `GET /api/system/activity?scope=all` every 2 s while the page is
-// mounted and the document visible (the server only samples the whole
-// machine while this is being read, and drops that state 15 s after).
-// Pause freezes what is DRAWN, never the poll, so un-pausing is instant and
-// the 3 s "still running?" check after a kill keeps seeing live data.
+// DATA: one subscription to `system.activity` with `{ scope: "all" }` on the
+// document's events-bus socket (platform/lib/events) while the page is
+// mounted — the server pushes `GET /api/system/activity?scope=all`'s body on
+// subscribe and on every sampler tick after, and only samples the whole
+// machine while someone is subscribed. The client drops the subscription
+// while the document is hidden and resubscribes on return (the snapshot that
+// answers is the catch-up). Nothing here fetches on a timer (D3): the 2 s
+// poll, its visibility restart and the per-process history's own 2 s poll
+// are gone. The per-process history is a query with arguments
+// (`/history?pids=`), so it stays a GET — re-asked each time a new activity
+// snapshot lands, which is exactly when its answer can have moved (D11).
+// Pause freezes what is DRAWN, never the subscription, so un-pausing is
+// instant and the 3 s "still running?" check after a kill keeps seeing live
+// data.
 //
 // ENDING A PROCESS: fused-render's own rows with an owner (Claude, engines,
 // models, terminals) go through the owner-aware `POST /stop` and read "Stop";
@@ -41,10 +50,10 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import { isMac } from "@platform/lib/platform";
 import { notify } from "@platform/lib/notifications";
+import { subscribeTopic } from "@platform/lib/events";
 import {
   formatBytes,
   formatCpu,
-  getMachineSnapshot,
   getProcHistory,
   type MachineSnapshot,
   type MachineProc,
@@ -57,9 +66,7 @@ import {
   DEFAULT_SORT,
   EMPTY_SELECTION,
   GRAPH_CAP,
-  HISTORY_POLL_MS,
   KIND_CHIP,
-  POLL_MS,
   ROW_CAP,
   STILL_ALIVE_MS,
   bulkVerb,
@@ -99,48 +106,6 @@ type RowState =
   | { phase: "denied"; token: number }
   | { phase: "still" }
   | { phase: "error"; message: string };
-
-const visible = () => typeof document === "undefined" || document.visibilityState !== "hidden";
-
-/** Poll `load` every `ms` while mounted and visible; a return to the tab
- *  reads at once. A generation counter keeps exactly one loop alive. */
-function usePoll<T>(load: (() => Promise<T>) | null, ms: number, onData: (d: T) => void, onError?: (e: Error) => void) {
-  const cb = useRef({ onData, onError });
-  cb.current = { onData, onError };
-  useEffect(() => {
-    if (!load) return;
-    let gen = 0;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const run = async (mine: number) => {
-      if (mine !== gen) return;
-      if (visible()) {
-        try {
-          const d = await load();
-          if (mine === gen) cb.current.onData(d);
-        } catch (e) {
-          if (mine === gen) cb.current.onError?.(e as Error);
-        }
-      }
-      // Hidden: no timer at all; the visibilitychange listener restarts the
-      // loop the moment the tab is visible again.
-      if (mine === gen && visible()) timer = setTimeout(() => void run(mine), ms);
-    };
-    const restart = () => {
-      if (timer !== undefined) clearTimeout(timer);
-      void run(++gen);
-    };
-    const onVis = () => {
-      if (visible()) restart();
-    };
-    restart();
-    if (typeof document !== "undefined") document.addEventListener("visibilitychange", onVis);
-    return () => {
-      gen++;
-      if (timer !== undefined) clearTimeout(timer);
-      if (typeof document !== "undefined") document.removeEventListener("visibilitychange", onVis);
-    };
-  }, [load, ms]);
-}
 
 function clock(ms: number): string {
   return new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
@@ -419,14 +384,10 @@ function ProcGraphs({
 // ---- the page --------------------------------------------------------------------------
 
 export default function MonitorPage({
-  load = getMachineSnapshot,
   loadHistory = getProcHistory,
-  pollMs = POLL_MS,
   confirmMs = CONFIRM_MS,
 }: {
-  load?: () => Promise<MachineSnapshot>;
   loadHistory?: (pids: number[]) => Promise<Record<string, ProcHistoryPoint[]>>;
-  pollMs?: number;
   confirmMs?: number;
 } = {}) {
   const [data, setData] = useState<MachineSnapshot | null>(null);
@@ -483,16 +444,23 @@ export default function MonitorPage({
     timers.current.add(id);
   }, []);
 
-  usePoll(
-    load,
-    pollMs,
-    (d) => {
-      latest.current = d;
+  // Which activity snapshot is the latest, for the history re-ask below: a
+  // counter rather than the snapshot itself, so a paused page (which does not
+  // draw) still re-asks on the server's tick.
+  const [activityTick, setActivityTick] = useState(0);
+  useEffect(() => {
+    return subscribeTopic<MachineSnapshot>("system.activity", { scope: "all" }, (snap, _delta, meta) => {
+      if (meta.error) {
+        setError(meta.error);
+        return;
+      }
+      if (snap === null) return;
+      latest.current = snap;
       setError(null);
-      if (!pausedRef.current) draw(d);
-    },
-    (e) => setError(e.message),
-  );
+      if (!pausedRef.current) draw(snap);
+      setActivityTick((t) => t + 1);
+    });
+  }, [draw]);
 
   const togglePause = () => {
     if (paused) {
@@ -555,7 +523,9 @@ export default function MonitorPage({
     .map((p) => p.pid)
     .join(",");
 
-  // Per-process history, only while something is selected.
+  // Per-process history, only while something is selected: asked when the
+  // selection changes and again on every activity snapshot (D11). An answer
+  // that lands after the next ask began is dropped — it is already stale.
   const loadSelected = useMemo(
     () =>
       selectedKey
@@ -563,9 +533,20 @@ export default function MonitorPage({
         : null,
     [selectedKey, loadHistory],
   );
-  usePoll(loadSelected, HISTORY_POLL_MS, (h) => {
-    if (!pausedRef.current) setHistory(h);
-  });
+  useEffect(() => {
+    if (!loadSelected) return;
+    let live = true;
+    loadSelected()
+      .then((h) => {
+        if (live && !pausedRef.current) setHistory(h);
+      })
+      .catch(() => {
+        // Best effort: the graph keeps its last minute.
+      });
+    return () => {
+      live = false;
+    };
+  }, [loadSelected, activityTick]);
   useEffect(() => {
     if (!selectedKey) setHistory({});
   }, [selectedKey]);

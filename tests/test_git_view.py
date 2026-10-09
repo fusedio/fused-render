@@ -229,7 +229,7 @@ def _identity_branch(source):
 
 
 def test_identity_step_survives_a_repaint():
-    """`ghTick` calls `draw(true)` every `GH_POLL_MS`, rebuilding the whole
+    """`ghTick` calls `draw(true)` on every frame the server pushes, rebuilding the whole
     panel from scratch. The "identity" step's name/email fields must read
     their value from module-level state (the same pattern the "ready" step's
     `ghName` already uses below), not from a plain local that a fresh render
@@ -253,7 +253,7 @@ def test_identity_step_survives_a_repaint():
 
 
 def test_identity_step_focuses_only_once_per_session():
-    """A repaint from a poll tick must not yank the caret out of a field the
+    """A repaint from a pushed frame must not yank the caret out of a field the
     user is mid-typing into — `focusSoon` may only run gated behind a
     once-per-session flag, the same pattern the "ready" step's
     `ghReadyFocusDone` already uses, never unconditionally on every render.

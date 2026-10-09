@@ -417,6 +417,16 @@ def _device_name(user_agent: str) -> str:
     return f"{device} · {browser}"
 
 
+
+def _publish(topic: str, key=None) -> None:
+    """Wake the events bus (server/events.py) for `topic`. Imported lazily so
+    this module keeps importing in a process that never starts the server."""
+    try:
+        from fused_render.server.events import bus
+        bus.publish(topic, key)
+    except Exception:  # noqa: BLE001 — a missed wake is latency, never an error
+        pass
+
 def _pair_device(user_agent: str) -> tuple[str, dict]:
     """Register a new device; returns (cookie secret, public record)."""
     import secrets
@@ -574,6 +584,8 @@ def _handle_pair(scope) -> Response:
     with _pair_lock:
         _recent_pairings.append({"id": record["id"], "name": record["name"], "at": record["paired_at"]})
         del _recent_pairings[:-20]  # a bound, not a policy — nobody pairs 20 devices unseen
+    _publish("lan.pairings")
+    _publish("lan.devices")
     return _with_cookie(RedirectResponse("/", status_code=302), secret,
                         secure=scope.get("scheme") == "https")
 
@@ -611,7 +623,7 @@ class LanApp:
     """ASGI wrapper: answers lifespan itself (never forwarded — the inner app's
     startup/shutdown handlers belong to the loopback server; forwarding them
     would run engine_host's tree-kill when the LAN switch flips OFF), closes
-    websockets (``/api/fs/events`` — the page degrades to polling), serves its
+    every websocket (D9: the events bus is loopback-only), serves its
     own grid, and forwards allowlisted, scoped HTTP requests to the inner app."""
 
     def __init__(self, inner):
@@ -629,27 +641,17 @@ class LanApp:
                     return
             return
         if kind == "websocket":
-            # /api/fs/events (the runtime's change feed) is the one socket a
-            # page needs; forwarded when every watched `path` is in the roots.
-            # /api/terminal/{sid}/stream is deliberately NOT allowlisted here —
-            # a paired LAN peer gets a 1008 close instead of a shell. This is a
-            # UX/scope call, not a security barrier (/api/run already executes
-            # arbitrary Python for any client that reaches the loopback
-            # server), so the omission is intentional, not an oversight the
-            # next socket added here should "fix".
-            # /api/run/ws is refused too: POST /api/run is scoped per request
-            # from its body (`_route`), and the socket would need the same
-            # check per MESSAGE (a frame-inspecting receive wrapper). The
-            # runtime falls back to the POST when this socket never opens, and
-            # the 6-connection WebKit cap it exists for is a loopback-windows
-            # problem, not a phone's.
-            query = parse_qs(scope.get("query_string", b"").decode("utf-8", "replace"),
-                             keep_blank_values=True)
-            if (_host_ok(scope) and _paired(scope) and scope["path"] == "/api/fs/events"
-                    and query.get("path") and _args_in_scope(query)):
-                await self.inner(scope, receive, send)
-            else:
-                await send({"type": "websocket.close", "code": 1008})
+            # EVERY socket is refused (D9, 2026-10-09): the events bus
+            # (`/api/events`) carries every live fact on loopback and is
+            # origin-checked against a loopback Host a phone can never
+            # present; forwarding it would need a frame-inspecting wrapper with
+            # per-message scope checks for a feature nobody uses. A paired
+            # phone keeps working over HTTP and loses live reload (the old
+            # /api/fs/events was the one socket this forwarded).
+            # /api/terminal/{sid}/stream and /api/run/ws were never forwarded:
+            # a LAN peer gets no shell, and the run socket would need the
+            # POST's per-request scoping per MESSAGE.
+            await send({"type": "websocket.close", "code": 1008})
             return
         if kind != "http":
             return
@@ -1526,6 +1528,7 @@ def api_lan_device_revoke(device_id: str, x_fused: str | None = Header(default=N
         return guard
     if not revoke_device(device_id):
         return JSONResponse({"error": "no such device"}, status_code=404)
+    _publish("lan.devices")
     return {"devices": list_devices()}
 
 
@@ -1534,6 +1537,7 @@ def api_lan_devices_revoke_all(x_fused: str | None = Header(default=None)):
     if (guard := _require_fused(x_fused)) is not None:
         return guard
     revoke_all_devices()
+    _publish("lan.devices")
     return {"devices": []}
 
 
@@ -1553,6 +1557,8 @@ def api_lan_pairing_dismiss(body: dict, x_fused: str | None = Header(default=Non
     wanted = str(body.get("id") or "")
     with _pair_lock:
         _recent_pairings[:] = [p for p in _recent_pairings if p["id"] != wanted]
+    _publish("lan.pairings")
+    with _pair_lock:
         return {"pairings": list(_recent_pairings)}
 
 

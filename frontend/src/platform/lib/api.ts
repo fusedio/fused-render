@@ -3484,8 +3484,8 @@ export interface Task {
   // full transcript parse per task would not survive a few hundred of them.
   messages: TaskMessage[];
   // CLIENT-ONLY, never sent by the server: this row was built from the
-  // /api/tasks/pulse fields (shell/tasks-lib.provisionalTasks) while the full
-  // listing is still in flight, so the fields pulse does not carry hold
+  // compact pulse fields (shell/tasks-lib.provisionalTasks) while the full
+  // listing is still in flight, so the fields the pulse does not carry hold
   // neutral defaults rather than facts. The views that would otherwise print
   // one of those defaults as a number read this and draw a placeholder.
   provisional?: true;
@@ -3495,7 +3495,7 @@ export interface Task {
 // and message previews — which is where a task listing's weight actually is.
 // Keep this structural subset compatible with Task so the Tasks page can still
 // publish its full rows into the shared pulse store while every other route
-// polls the compact endpoint.
+// subscribes to the shared tasks feed.
 // `project` is here for the sidebar's Current apps section (D487), which groups
 // live tasks by the workspace app they belong to off this same poll; `task_id`,
 // `title`, `target` and `session_id` for the Notifications section's
@@ -3550,36 +3550,8 @@ export function putTaskDefaults(
 
 export function getTasks(): Promise<{ tasks: Task[]; generation?: number }> {
   return getJson<{ tasks: Task[]; generation?: number }>("/api/tasks");
-}
 
-/** What `/api/tasks/changes` answers: the rows that moved since a generation,
- *  the keys that moved and are no longer listed, or `full` when the server no
- *  longer remembers that far back and the page should reload the listing. */
-export interface TaskChanges {
-  generation: number;
-  rows?: Task[];
-  gone?: string[];
-  full?: boolean;
 }
-
-/** Long-poll for task changes since `since`. Resolves the moment the server's
- *  watcher sees a session start, resume, take a prompt or grow — or after
- *  `wait` seconds with `rows: []`. */
-export function getTaskChanges(
-  since: number,
-  wait = 25,
-  signal?: AbortSignal,
-): Promise<TaskChanges> {
-  return getJson<TaskChanges>(
-    `/api/tasks/changes?since=${encodeURIComponent(since)}&wait=${encodeURIComponent(wait)}`,
-    { signal },
-  );
-}
-
-export function getTasksPulse(): Promise<{ tasks: TaskPulseTask[] }> {
-  return getJson<{ tasks: TaskPulseTask[] }>("/api/tasks/pulse");
-}
-
 // ---- the project queue (prefs `queue.enabled`) --------------------------------
 // Three verbs, and they exist because the client cannot derive any of them: who
 // holds a folder is a fact about live processes (project_queue.holders()), and

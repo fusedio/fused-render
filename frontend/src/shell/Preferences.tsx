@@ -72,7 +72,6 @@ import {
   putLauncherRowModifier,
   postLauncherSuspend,
   getLanPairToken,
-  getLanDevices,
   revokeLanDevice,
   revokeAllLanDevices,
   putDefaultModel,
@@ -81,6 +80,7 @@ import {
 } from "@platform/lib/api";
 import type { DiagnosticsPlan, DiagnosticsResult } from "@platform/lib/api";
 import { copyToClipboard } from "@platform/lib/clipboard";
+import { resyncTopic, subscribeTopic } from "@platform/lib/events";
 import { formatBytes } from "@platform/lib/sysmon";
 import qrcode from "qrcode-generator";
 import { publishCanvasesEnabled } from "@apps/canvases/feature-flag";
@@ -1271,23 +1271,17 @@ function LanSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) =>
 
   // While the QR is on screen, watch for the phone to pair: the list grows,
   // and the spent code is replaced with a fresh one (tokens are single-use).
+  // A `lan.devices` subscription (its snapshot is the `GET /api/lan/devices`
+  // body), pushed on subscribe and the moment a device pairs or is revoked —
+  // no timer (D3). An `err` frame leaves the list as it was; the next push is
+  // the retry.
   useEffect(() => {
     if (!pairable) return;
-    let alive = true;
-    const tick = async () => {
-      try {
-        const { devices: next } = await getLanDevices();
-        if (!alive) return;
-        setDevices((prev) => (prev.length === next.length && prev.every((d, i) => d.id === next[i].id) ? prev : next));
-      } catch {
-        /* the next tick retries */
-      }
-    };
-    const id = window.setInterval(tick, 3000);
-    return () => {
-      alive = false;
-      window.clearInterval(id);
-    };
+    return subscribeTopic<{ devices: LanDevice[] }>("lan.devices", null, (snap) => {
+      if (!snap) return;
+      const next = snap.devices ?? [];
+      setDevices((prev) => (prev.length === next.length && prev.every((d, i) => d.id === next[i].id) ? prev : next));
+    });
   }, [pairable]);
 
   const revoke = async (id: string | null) => {
@@ -1541,10 +1535,12 @@ function ModelSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) 
 // needs a specific fine-grained token exports HF_TOKEN instead, which hf reads
 // ahead of its own store and which this section reports as being in force.
 //
-// The page POLLS while a login is pending rather than holding a request open:
-// the thing being waited for is a person going to another tab, which can take
-// as long as it takes, and hf's device code lives for ~15 minutes.
-function HuggingFaceSection() {
+// The page FOLLOWS `hf.auth` on the events bus while a login is pending rather
+// than holding a request open: the thing being waited for is a person going
+// to another tab, which can take as long as it takes, and hf's device code
+// lives for ~15 minutes.
+// Exported for its suite (Preferences.hf.test.tsx) only; the page mounts it below.
+export function HuggingFaceSection() {
   const [auth, setAuth] = useState<HfAuth | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -1559,21 +1555,18 @@ function HuggingFaceSection() {
     };
   }, []);
 
-  // One poll loop, armed only while a login is actually in flight — a settings
-  // page must not sit on a timer for a flow nobody started.
+  // One `hf.auth` subscription on the events bus (the GET /api/hf/auth body,
+  // restatted server-side while anyone listens), open only while a login is
+  // actually in flight — a settings page must not hold a live feed for a flow
+  // nobody started. It closes when the snapshot says the login is over
+  // (signed in, denied, expired, cancelled): `pending` goes null.
   const pending = auth?.pending ?? null;
   useEffect(() => {
     if (!pending) return;
-    let alive = true;
-    const id = setInterval(() => {
-      getHfAuth()
-        .then((a) => alive && setAuth(a))
-        .catch(() => undefined); // a blip mid-login is not worth a banner
-    }, 2000);
-    return () => {
-      alive = false;
-      clearInterval(id);
-    };
+    return subscribeTopic<HfAuth>("hf.auth", null, (snap, _delta, meta) => {
+      if (meta.error !== undefined) return; // a blip mid-login is not worth a banner
+      if (snap) setAuth(snap);
+    });
   }, [pending !== null]);
 
   const act = async (fn: () => Promise<HfAuth>) => {
@@ -1582,6 +1575,9 @@ function HuggingFaceSection() {
     setError(null);
     try {
       setAuth(await fn());
+      // This document just moved the login; a live subscription should hear
+      // where it stands now, not at the producer's next stat.
+      resyncTopic("hf.auth");
     } catch (e) {
       setError((e as Error).message);
     } finally {

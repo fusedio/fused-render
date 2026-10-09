@@ -1160,6 +1160,11 @@ def api_app_doctor_run(body: dict = Body(...),
                 "the check task started but its verdict cannot be cached in this folder")
         live = {"id": task_id, "state": str(task.get("state") or ""),
                 "run_id": task.get("run_id") or None}
+        # The `apps.doctor {path}` topic: the dot and the modal in every open
+        # document see "Checking…" now, and the producer moves to the
+        # while-a-check-is-live cadence from this read.
+        from fused_render.server.events import bus
+        bus.publish("apps.doctor", folder)
         return {"path": folder, "entry_html": entry_html, "check": row_now(live),
                 "task": task, "task_error": task_error}
 

@@ -474,7 +474,7 @@ const taskUrl = (id: string) => `/api/drafts/task/${encodePath(id)}`;
  *
  * Keyed the way the LISTING keys drafts — a chat key verbatim (a session id, or
  * `new:<file>`) and `draft:<id>` for a task draft — because that is the same
- * key `/api/tasks/changes` pushes versions under (`tasksPulse.onDraftChange`),
+ * key the `tasks.listing` deltas push versions under (`tasksPulse.onDraftChange`),
  * and two spellings of one record is exactly the class of bug this design
  * exists to end.
  *
@@ -491,8 +491,8 @@ const taskUrl = (id: string) => `/api/drafts/task/${encodePath(id)}`;
  */
 const versions = new Map<string, number>();
 
-/** The listing's key for a task draft — the one `/api/tasks/changes` and the
- *  rows both use. */
+/** The listing's key for a task draft — the one the `tasks.listing` deltas and
+ *  the rows both use. */
 export const taskDraftKey = (id: string) => `draft:${id}`;
 
 /** What this client believes the server holds under `key`, or `undefined` for a

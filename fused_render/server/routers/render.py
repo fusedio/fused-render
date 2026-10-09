@@ -94,8 +94,12 @@ def render(
         except Exception:
             logger.warning("recording app open failed for %s", path, exc_info=True)
 
-    # Always inject the runtime.
-    injection = '<script src="/static/runtime.js"></script>'
+    # Always inject the runtime — and the events-bus client ahead of it: one
+    # plain-JS module shared with the shell (D12), which runtime.js reads off
+    # `window.fusedEvents` for auto-reload, `fused.tasks.watch` and
+    # `fused.watchJob`.
+    injection = ('<script src="/static/events-client.js"></script>'
+                 '<script src="/static/runtime.js"></script>')
     lower = html.lower()
     head_idx = lower.find("<head>")
     if head_idx != -1:

@@ -28,6 +28,8 @@ from fused_render.server import create_app
 from fused_render.server.routers import claude_sessions as sessions_mod
 from fused_render.server.routers import schedule as schedule_mod
 from fused_render.server.routers import tasks as tasks_mod
+from tests._tasks_feed import changes, pulse
+
 
 WRITE = {"X-Fused": "1"}
 T9 = "2026-09-11T09:00:00Z"
@@ -464,7 +466,7 @@ def test_scheduling_by_draft_key_deletes_exactly_once(client, tmp_path,
     # A session keyed draft never had a number of its own — the conversation
     # holds it — so nothing was moved onto the new entry.
     assert _by_key(client)["sess-a"]["draft"] is None
-    changed = client.get(f"/api/tasks/changes?since={gen}&wait=0").json()
+    changed = changes(client, gen)
     assert "sess-a" in changed["drafts"]["gone"]
 
 
@@ -515,7 +517,7 @@ def test_spending_a_key_with_no_record_is_a_no_op(client, tmp_path):
     entry_id = str(r.json()["entry"]["id"])
     assert drafts.get_chat(key) is None
     assert tasks_store.task_number(key) == "", "nothing was ever numbered here"
-    changed = client.get(f"/api/tasks/changes?since={gen}&wait=0").json()
+    changed = changes(client, gen)
     assert key not in changed.get("drafts", {}).get("gone", []), (
         "a key with no record is not news")
     # The entry gets its own number, minted the ordinary way rather than
@@ -898,14 +900,14 @@ def test_the_changes_payload_carries_the_drafts_that_moved(client, tmp_path):
     client.put(_chat_url(key), json={"text": "one"})
     client.put("/api/drafts/task/draft-0001", json={"title": "a form"})
 
-    r = client.get(f"/api/tasks/changes?since={gen}&wait=0").json()
+    r = changes(client, gen)
     changed = {row["key"]: row["version"] for row in r["drafts"]["changed"]}
     assert changed == {key: 1, "draft:draft-0001": 1}
     assert r["drafts"]["gone"] == []
 
     gen = r["generation"]
     client.put(_chat_url(key), json={"text": "one two"})
-    r = client.get(f"/api/tasks/changes?since={gen}&wait=0").json()
+    r = changes(client, gen)
     assert r["drafts"]["changed"] == [{"key": key, "version": 2}]
 
 
@@ -917,7 +919,7 @@ def test_a_discarded_draft_is_reported_gone(client, tmp_path):
     gen = client.get("/api/tasks").json()["generation"]
     assert client.delete(_chat_url(key)).json()["removed"] is True
 
-    r = client.get(f"/api/tasks/changes?since={gen}&wait=0").json()
+    r = changes(client, gen)
     assert r["drafts"] == {"changed": [], "gone": [key]}
 
 
@@ -932,6 +934,6 @@ def test_the_changes_payload_costs_one_read(client, tmp_path, monkeypatch):
     reads = []
     real = drafts.list_all
     monkeypatch.setattr(drafts, "list_all", lambda: (reads.append(1), real())[1])
-    r = client.get(f"/api/tasks/changes?since={gen}&wait=0").json()
+    r = changes(client, gen)
     assert r["drafts"]["changed"] == [{"key": key, "version": 1}]
     assert len(reads) == 2, "one for the rows the listing built, one for this"

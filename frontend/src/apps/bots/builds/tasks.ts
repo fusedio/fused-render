@@ -1,9 +1,9 @@
 // fused.tasks for the bots page (runtime.js's `fused.tasks` block, D890), as plain fetches. OpenBot ran inside
 // /render and called fused.tasks.*; this page has no runtime, so the pieces Builds needs live here:
-//   list / watch   GET /api/tasks and the GET /api/tasks/changes long poll (generation cursor), ONE shared loop per
-//                  scope key, refcounted, with runtime.js's rules: a full listing first, deltas folded in, `full`
-//                  answered by a re-read, a 20 s floor re-read, hidden tabs sitting the poll out. The long poll
-//                  rides the tasks-changes WebSocket; its HTTP fallback goes through sharedLongPoll (ONE shared long-poll app-wide).
+//   list / watch   GET /api/tasks, and the `tasks.listing` topic of the events bus (platform/lib/events) for the
+//                  watch: ONE subscription per scope key, refcounted, with runtime.js's rules: the snapshot first,
+//                  deltas folded in. No floor read, no backoff, no hidden-tab park: the server pushes every
+//                  change and the bus client drops the subscription while the document is hidden (D7).
 //   create         POST /api/tasks/create → a handle {entryId, key (getter: pending:<entry> → session id), done}
 //   markRead       POST /api/tasks/read {key, all: true}
 //   ui             GET /api/tasks/ui?view=&task=&scope= → the /tasks?embed=1… iframe src
@@ -15,7 +15,7 @@
 // X-Fused-Page, so "app" scope is not available here. A handle rides the same unscoped feed (runtime.js used an
 // `under=<dir>` feed per handle only because it had no shared unscoped one).
 
-import { requestTasksChanges } from "@platform/lib/tasksChangesSocket";
+import { subscribeTopic } from "@platform/lib/events";
 
 /** A row of GET /api/tasks (routes/tasks.py `_row`): the fields Builds reads. */
 export interface TaskRow {
@@ -44,14 +44,13 @@ export interface TaskHandle {
   done: Promise<TaskRow>;
 }
 
-const CHANGES_WAIT_S = 25, BACKOFF_MS = 3000, FLOOR_MS = 20000, CATCH_UP_MS = 1000;
 /** A status that proves the task ran (OpenBot agents.py _watch_build `seen_running`). */
 const SEEN_RUNNING = new Set(["in_progress", "queued", "needs_attention", "blocked"]);
 const SETTLED = new Set(["done", "archived"]);
-/** A first quiet row is re-read after this long (runtime.js TASKS_CONFIRM_MS, the server's running-mark TTL). */
+/** A first quiet row is looked at again after this long (runtime.js TASKS_CONFIRM_MS, the server's running-mark
+ *  TTL) — the feed's held row, not a re-read: the bus pushes every change, so a row nothing has moved in this long
+ *  IS what the listing says. */
 const CONFIRM_MS = 15000;
-
-import { sharedLongPollFetch } from "@platform/lib/sharedLongPoll";
 
 // ------------------------------------------------------------------ fetch ----
 export class TaskError extends Error {
@@ -102,116 +101,68 @@ export async function tasksList(opts: ScopeOpts = { scope: "all" }): Promise<Tas
 // ------------------------------------------------------------------ the shared feed ----
 type FeedChange = TaskChange & { before?: Set<string>; replay?: boolean };
 interface Feed {
-  scope: string; subs: Set<(c: FeedChange) => void>; rows: Map<string, TaskRow> | null; gen: number;
-  stopped: boolean; run: number; abort: AbortController | null; floor: ReturnType<typeof setInterval> | null;
-  wake: (() => void) | null; seat: number; catchingUp: boolean;
+  scope: string; subs: Set<(c: FeedChange) => void>; rows: Map<string, TaskRow> | null;
+  stopped: boolean; off: (() => void) | null;
 }
 const feeds: Record<string, Feed> = {};
-const hidden = (): boolean => typeof document !== "undefined" && document.hidden;
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function feedOf(scope: string): Feed {
-  return feeds[scope] || (feeds[scope] = { scope, subs: new Set(), rows: null, gen: -1, stopped: true, run: 0, abort: null, floor: null, wake: null, seat: 0, catchingUp: false });
+  return feeds[scope] || (feeds[scope] = { scope, subs: new Set(), rows: null, stopped: true, off: null });
 }
 const feedRows = (f: Feed): TaskRow[] => (f.rows ? [...f.rows.values()] : []);
 function emit(f: Feed, change: FeedChange) {
   for (const sub of [...f.subs]) { try { sub(change); } catch (e) { console.error("[bots tasks] a watch callback threw:", e); } }
 }
 
-async function feedLoad(f: Feed) {
-  const mine = ++f.seat;
-  try {
-    const l = await listing(f.scope);
-    if (f.stopped || f.seat !== mine) return;
-    f.catchingUp = false;
-    // A listing that left before a delta landed is OLDER than what is held.
-    if (typeof l.generation === "number") {
-      if (f.rows && l.generation < f.gen) return;
-      if (f.gen < 0 || l.generation > f.gen) f.gen = l.generation;
-    }
-    const prev = f.rows;
-    f.rows = new Map(l.rows.map((r) => [r.key, r]));
-    const gone = prev ? [...prev.keys()].filter((k) => !f.rows!.has(k)) : [];
-    emit(f, { full: true, rows: l.rows, gone });
-  } catch {
-    // A failed read keeps what is held: the next floor read or delta catches up.
-    if (!f.stopped && f.seat === mine) f.catchingUp = false;
-  }
-}
-
-async function feedWatch(f: Feed, run: number) {
-  const live = () => !f.stopped && f.run === run;
-  while (live()) {
-    if (hidden()) {
-      await new Promise<void>((resolve) => {
-        const fire = () => { document.removeEventListener("visibilitychange", fire); if (f.wake === fire) f.wake = null; resolve(); };
-        f.wake = fire;
-        document.addEventListener("visibilitychange", fire);
-      });
-      continue;
-    }
-    const ctl = new AbortController();
-    f.abort = ctl;
-    let r: { generation?: number; full?: boolean; rows?: TaskRow[]; gone?: string[] };
-    try {
-      // `since` is the listing's own generation, so nothing slips between "listed at N" and "changes since N".
-      // Over the document's tasks-changes WebSocket, the GET only where none can be had: native windows share WebKit's
-      // six HTTP/1.1 connections per host, and parked long-polls filled them (measured 2026-10-08; tasksChangesSocket).
-      const since = f.gen, scopeQ = new URLSearchParams(f.scope);
-      r = await requestTasksChanges<typeof r>(
-        { since, wait: CHANGES_WAIT_S, under: scopeQ.get("under") || undefined, scope: scopeQ.get("scope") || undefined },
-        () => taskFetch<typeof r>("GET", "/api/tasks/changes" + query(f.scope, { since: String(since), wait: String(CHANGES_WAIT_S) }), undefined, ctl.signal, (u, i) => sharedLongPollFetch(u, { signal: i.signal ?? undefined })),
-        ctl.signal,
-      );
-    } catch {
-      if (ctl.signal.aborted || !live()) return;
-      await sleep(BACKOFF_MS);
-      continue;
-    } finally {
-      if (f.abort === ctl) f.abort = null;
-    }
-    if (!live()) return;
-    const handshake = f.gen < 0;
-    if (typeof r.generation === "number") f.gen = r.generation;
-    if (handshake) continue;
-    if (r.full) {
-      // A restarted server counts from zero again: forget the generation first, fold nothing until the re-read lands.
-      f.gen = -1; f.catchingUp = true;
-      void feedLoad(f);
-      await sleep(CATCH_UP_MS);
-      continue;
-    }
-    if (f.catchingUp) continue;
-    const rows = (Array.isArray(r.rows) ? r.rows : []).filter((x) => x && x.key);
-    const gone = Array.isArray(r.gone) ? r.gone : [];
-    if (!rows.length && !gone.length) continue;
-    const before = new Set(f.rows ? f.rows.keys() : []);
-    // `gone` is not scope-filtered server-side: a key this feed never held is somebody else's news.
-    const held = gone.filter((k) => before.has(k));
-    if (!rows.length && !held.length) continue;
-    // Rows that moved go to the front, newest first like the listing.
-    const next = new Map<string, TaskRow>(rows.map((x) => [x.key, x]));
-    for (const [k, x] of f.rows || new Map<string, TaskRow>()) if (!next.has(k) && !held.includes(k)) next.set(k, x);
-    f.rows = next;
-    emit(f, { full: false, rows, gone: held, before });
-  }
+/** The subscribe's params for a scope key ("" = every task, "under=<dir>" = one folder). */
+function feedParams(scope: string): Record<string, string> {
+  const q = new URLSearchParams(scope);
+  const p: Record<string, string> = {};
+  const under = q.get("under"), sc = q.get("scope");
+  if (under) p.under = under;
+  if (sc) p.scope = sc;
+  return p;
 }
 
 function feedStart(f: Feed) {
   f.stopped = false;
-  const run = ++f.run;
-  f.gen = -1; f.rows = null; f.catchingUp = false;
-  void feedLoad(f).then(() => { if (!f.stopped && f.run === run) void feedWatch(f, run); });
-  // The floor: the answer to a watcher that missed something.
-  f.floor = setInterval(() => { if (!hidden()) void feedLoad(f); }, FLOOR_MS);
+  f.off = subscribeTopic<{ tasks?: TaskRow[] }, { rows?: TaskRow[]; gone?: string[] }>(
+    "tasks.listing",
+    feedParams(f.scope),
+    (snap, delta, meta) => {
+      if (f.stopped) return;
+      // An error frame keeps what is held; the server says again when it can.
+      if (meta.error !== undefined) return;
+      if (snap !== null) {
+        const rows = (Array.isArray(snap.tasks) ? snap.tasks : []).filter((r) => r && r.key);
+        const prev = f.rows;
+        f.rows = new Map(rows.map((r) => [r.key, r]));
+        const gone = prev ? [...prev.keys()].filter((k) => !f.rows!.has(k)) : [];
+        emit(f, { full: true, rows, gone });
+        return;
+      }
+      if (delta === null) return;
+      const rows = (Array.isArray(delta.rows) ? delta.rows : []).filter((x) => x && x.key);
+      const gone = Array.isArray(delta.gone) ? delta.gone : [];
+      if (!rows.length && !gone.length) return;
+      const before = new Set(f.rows ? f.rows.keys() : []);
+      // `gone` is not scope-filtered server-side: a key this feed never held is somebody else's news.
+      const held = gone.filter((k) => before.has(k));
+      if (!rows.length && !held.length) return;
+      // Rows that moved go to the front, newest first like the listing.
+      const next = new Map<string, TaskRow>(rows.map((x) => [x.key, x]));
+      for (const [k, x] of f.rows || new Map<string, TaskRow>()) if (!next.has(k) && !held.includes(k)) next.set(k, x);
+      f.rows = next;
+      emit(f, { full: false, rows, gone: held, before });
+    },
+    { hiddenOk: true },
+  );
 }
 
 function feedStop(f: Feed) {
-  f.stopped = true; f.run++; f.seat++;
-  f.abort?.abort(); f.abort = null;
-  if (f.floor) clearInterval(f.floor);
-  f.floor = null;
-  f.wake?.();
+  f.stopped = true;
+  f.off?.();
+  f.off = null;
   f.rows = null;
 }
 
@@ -286,8 +237,11 @@ export function observeStatus(s: DoneState, status: string): { state: DoneState;
 // The key starts as `pending:<entry>` and flips to the session id once a row carries the same entry_id (or, for a
 // session row that does not, the one new row arriving in the same answer that retires the pending key). `done`
 // settles the _watch_build way: once the task was seen running, a done/archived status twice in a row; the second
-// look is the next feed event for the row or a re-read CONFIRM_MS later, whichever comes first. A row that leaves
-// the listing after it was seen settles with its last row (runtime.js: `done` never rejects).
+// look is the next feed event for the row or, CONFIRM_MS of quiet later, the row the feed still holds — whichever
+// comes first. That quiet period is a debounce over pushed rows and never fetches: the server pushes every change on
+// `tasks.listing`, so the held row is the answer a re-read would give (and an unreadable listing can no longer
+// re-arm it into a retry chain). A row that leaves the listing after it was seen settles with its last row
+// (runtime.js: `done` never rejects).
 function taskHandle(firstKey: string, entryId: string, under: string): TaskHandle {
   let key = firstKey, last: TaskRow | null = null, finished = false, st: DoneState = { seenRunning: false, stable: "" };
   let confirm: ReturnType<typeof setTimeout> | null = null;
@@ -320,11 +274,11 @@ function taskHandle(firstKey: string, entryId: string, under: string): TaskHandl
     confirm = setTimeout(() => {
       confirm = null;
       if (finished) return;
-      listing(scope).then((l) => {
-        if (finished) return;
-        const row = l.rows.find(mine);
-        if (row) consider(row); else if (last) finish(last);
-      }, () => { if (!finished) arm(); });  // an unreadable listing proves nothing; look again
+      const f = feedOf(scope);
+      // No rows held (the feed has not answered since it started): nothing proves anything yet; the next frame will.
+      if (!f.rows) return;
+      const row = feedRows(f).find(mine);
+      if (row) consider(row); else if (last) finish(last);
     }, CONFIRM_MS);
   }
 

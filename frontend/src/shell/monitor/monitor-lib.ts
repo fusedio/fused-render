@@ -8,8 +8,6 @@ import {
   type MachineProc,
 } from "@platform/lib/sysmon";
 
-export const POLL_MS = 2_000;
-export const HISTORY_POLL_MS = 2_000;
 /** Rows drawn at once; the rest are counted ("showing 400 of N"). */
 export const ROW_CAP = 400;
 /** Lines on the per-process graph. */

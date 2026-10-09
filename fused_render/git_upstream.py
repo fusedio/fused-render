@@ -417,10 +417,21 @@ def _mutation_preflight(root, *, include_untracked=True, allow_detached=False):
     return branch, default_branch, None
 
 
+
+def _publish(topic: str, key=None) -> None:
+    """Wake the events bus (server/events.py) for `topic`. Imported lazily so
+    this module keeps importing in a process that never starts the server."""
+    try:
+        from fused_render.server.events import bus
+        bus.publish(topic, key)
+    except Exception:  # noqa: BLE001 — a missed wake is latency, never an error
+        pass
+
 def _record(result):
     if result is not None:
         with _state_lock:
             _state[result["root"]] = result
+        _publish("git.upstream")
 
 
 def _refresh_after_mutation(root, *, keep_on_failure=False, known_update=None):
@@ -1227,3 +1238,23 @@ def is_known_repo(root):
             return True
     with _sync_lock:
         return any(k[0] == root for k in _sync_failures)
+
+
+# THE BUS'S EAR: every state write above wakes the `git.upstream` topic
+# (server/topics.py). Wrapped here rather than edited in place so each
+# writer's own locking stays exactly as it was.
+def _publishing(fn):
+    def wrapped(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            _publish("git.upstream")
+    wrapped.__name__ = fn.__name__
+    wrapped.__doc__ = fn.__doc__
+    return wrapped
+
+
+_record_failure = _publishing(_record_failure)
+_record_pull = _publishing(_record_pull)
+dismiss_sync_failure = _publishing(dismiss_sync_failure)
+_refresh_after_mutation = _publishing(_refresh_after_mutation)

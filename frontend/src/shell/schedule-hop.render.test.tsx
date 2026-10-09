@@ -11,13 +11,16 @@
 // A stubbed `globalThis.fetch`, not `mock.module`, for the reason
 // `Indexing.render.test.tsx`'s header gives: the modules under test are thin
 // wrappers over `fetch`, and replacing one process-wide leaks into every other
-// suite in the run.
+// suite in the run. The schedule and the queue arrive over the events bus,
+// not a GET, so a scripted client (`setEventsClientForTests`) answers those
+// two subscriptions with the same empty bodies the stub serves everything else.
 import { installDomShim } from "@platform/lib/testDomShim";
 installDomShim();
 
 import { afterEach, expect, test } from "bun:test";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { createElement } from "react";
+import { setEventsClientForTests } from "@platform/lib/events";
 
 const realFetch = globalThis.fetch;
 const doc = globalThis.document as unknown as { body?: unknown };
@@ -195,6 +198,7 @@ afterEach(async () => {
     await act(async () => box.unmount());
   }
   globalThis.fetch = realFetch;
+  setEventsClientForTests(null);
   removeMeasuring();
   delete doc.body;
 });
@@ -208,11 +212,27 @@ function json(body: unknown): Promise<Response> {
 /** One chat record under one key, and a server that answers everything else
  *  this page asks with the emptiest true answer it has. */
 function serve(chat: Record<string, unknown>) {
+  // The two topics the page needs an answer from before it can open the card
+  // (`state` gates the form); every other topic stays silent, as the real
+  // client in bun does.
+  setEventsClientForTests({
+    subscribe: ((
+      topic: string,
+      _params: unknown,
+      cb: (s: unknown, d: unknown, m: Record<string, unknown>) => void,
+    ) => {
+      if (topic === "schedule") {
+        cb({ entries: [], permission_modes: ["default"], max_late_seconds: null }, null, { gen: null });
+      } else if (topic === "schedule.queue") {
+        cb({ queued: [], running: [] }, null, { gen: null });
+      }
+      return () => {};
+    }) as never,
+    resync: () => true,
+  });
   globalThis.fetch = ((url: string) => {
     const u = String(url);
     if (u.startsWith("/api/drafts")) return json({ chat, task: {} });
-    if (u.startsWith("/api/schedule/queue")) return json({ queued: [], running: [] });
-    if (u.startsWith("/api/schedule")) return json({ entries: [], permission_modes: ["default"] });
     // The long poll is a request that never answers — the page must not be
     // waiting on it to draw anything.
     if (u.includes("/api/tasks/changes")) return new Promise<Response>(() => {});

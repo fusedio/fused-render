@@ -24,6 +24,16 @@ USAGE_PRUNE_AT = 500  # stale lines before the ledger is rewritten without them
 
 
 # ------------------------------------------------------------------ files ---
+
+def _publish(topic: str, key=None) -> None:
+    """Wake the events bus (server/events.py) for `topic`. Imported lazily so
+    this module keeps importing in a process that never starts the server."""
+    try:
+        from fused_render.server.events import bus
+        bus.publish(topic, key)
+    except Exception:  # noqa: BLE001 — a missed wake is latency, never an error
+        pass
+
 def write_json_atomic(path: str, obj) -> None:
     """Write to a temp file beside `path` and rename it into place. The temp name
     carries pid + thread id: a shared "<path>.tmp" let two writers (a bot's task
@@ -302,3 +312,4 @@ def builds_write(builds: list) -> None:
         raise ValueError("builds must be a list")
     with _builds_lock:
         write_json_atomic(_bpaths.builds_path(), builds)
+    _publish("bots.builds")

@@ -45,7 +45,8 @@ import { hubModelUrl } from "@apps/ai_models/local/hub";
 import { readParam, resetParams, writeParams } from "@apps/ai_models/lib/params";
 import { groupByUseCase, useCaseOf, type UseCase } from "@apps/ai_models/lib/useCases";
 import { isBusy, refreshAiRuntime, useAiRuntime } from "@apps/ai_models/lib/aiRuntime";
-import { activeJobByModel, cancelJob, fetchJobs, isRunning, type Job } from "@platform/lib/jobs";
+import { activeJobByModel, cancelJob, isRunning, type Job } from "@platform/lib/jobs";
+import { subscribeTopic } from "@platform/lib/events";
 import {
   downloadAiModel,
   getAiCatalog,
@@ -261,14 +262,10 @@ export default function PlaygroundTab() {
       setJobs([]);
       return;
     }
-    let alive = true;
-    const tick = () => fetchJobs().then((s) => alive && setJobs(s.jobs), () => {});
-    void tick();
-    const timer = window.setInterval(tick, 1000);
-    return () => {
-      alive = false;
-      window.clearInterval(timer);
-    };
+    // The `jobs` topic pushes every report; nothing here ticks.
+    return subscribeTopic<{ jobs: Job[] }>("jobs", {}, (snap) => {
+      if (snap) setJobs(snap.jobs);
+    });
   }, [anyBusy]);
 
   const capabilities = catalog.status === "ok" ? catalog.capabilities : [];

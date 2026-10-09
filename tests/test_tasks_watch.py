@@ -17,6 +17,8 @@ from fused_render import tasks_store, tasks_watch
 from fused_render.server import create_app
 from fused_render.server.routers import claude_sessions as sessions_mod
 from fused_render.server.routers import tasks as tasks_mod
+from tests._tasks_feed import changes, pulse
+
 
 SID = "11111111-1111-1111-1111-111111111111"
 SID2 = "22222222-2222-2222-2222-222222222222"
@@ -188,7 +190,7 @@ def test_changes_listing_does_not_prune_current_apps(claude_home, monkeypatch):
         gen = client.get("/api/tasks").json()["generation"]
         assert calls == [2, 2]
         tasks_watch.notify({SID})
-        client.get(f"/api/tasks/changes?since={gen}&wait=0")
+        changes(client, gen)
         assert calls == [2, 2]  # the partial listing told the desk nothing
 
 
@@ -258,7 +260,7 @@ def test_notify_all_makes_every_waiter_reload_the_listing():
     assert tasks_watch.wait(2, 0) == (3, frozenset({"b"}))
     # …and the endpoint says so in the shape the client reloads on.
     with TestClient(create_app(os.getcwd())) as client:
-        assert client.get("/api/tasks/changes?since=1&wait=0").json() == {
+        assert changes(client, 1) == {
             "generation": 3, "full": True}
 
 
@@ -280,7 +282,7 @@ def test_changes_names_the_pending_key_a_run_message_left_behind(claude_home, mo
     with TestClient(create_app(str(claude_home))) as client:
         gen = client.get("/api/tasks").json()["generation"]
         tasks_watch.notify({SID})
-        r = client.get(f"/api/tasks/changes?since={gen}&wait=0").json()
+        r = changes(client, gen)
         assert [t["key"] for t in r["rows"]] == [SID]
         assert r["gone"] == [tasks_store.pending_key(entry_id)]
 
@@ -310,7 +312,7 @@ def test_changes_endpoint_returns_only_the_moved_rows(claude_home):
         assert {t["key"] for t in full["tasks"]} == {SID, SID2}
         gen = full["generation"]
         tasks_watch.notify({SID})
-        r = client.get(f"/api/tasks/changes?since={gen}&wait=0").json()
+        r = changes(client, gen)
         assert r["generation"] == gen + 1
         assert [t["key"] for t in r["rows"]] == [SID]
         assert r["gone"] == []
@@ -321,10 +323,10 @@ def test_changes_endpoint_returns_only_the_moved_rows(claude_home):
         # Nothing since: an empty answer, same generation.
         empty = {"generation": gen + 1, "rows": [], "gone": [],
                  "drafts": {"changed": [], "gone": []}}
-        r = client.get(f"/api/tasks/changes?since={gen + 1}&wait=0").json()
+        r = changes(client, gen + 1)
         assert r == empty
         # Handshake: the generation, nothing else, no wait.
-        r = client.get("/api/tasks/changes?since=-1&wait=0").json()
+        r = changes(client, -1)
         assert r == empty
 
 
@@ -333,7 +335,7 @@ def test_changes_endpoint_reports_a_deleted_task_as_gone(claude_home):
     with TestClient(create_app(str(claude_home))) as client:
         gen = client.get("/api/tasks").json()["generation"]
         assert client.post("/api/tasks/delete", headers={"X-Fused": "1"}, json={"key": SID}).json()["ok"]
-        r = client.get(f"/api/tasks/changes?since={gen}&wait=0").json()
+        r = changes(client, gen)
         assert r["rows"] == []
         assert r["gone"] == [SID]
 
@@ -411,7 +413,7 @@ def test_running_endpoint_marks_the_session_and_wakes_the_long_poll(claude_home)
         gen = client.get("/api/tasks").json()["generation"]
         assert client.post("/api/tasks/running", headers={"X-Fused": "1"}, json={"session_id": SID}).json() == {
             "ok": True, "session_id": SID}
-        r = client.get(f"/api/tasks/changes?since={gen}&wait=0").json()
+        r = changes(client, gen)
         assert [t["key"] for t in r["rows"]] == [SID]
         # THE WHOLE POINT: the row the poll hands back already wears the lane,
         # not just the flag under it.
@@ -944,11 +946,11 @@ def test_changes_waits_for_the_snapshot_and_names_the_client_generation_when_it_
         tasks_watch.notify({SID})
         # The build is stuck: the answer is "nothing yet" at the client's own
         # generation, so it asks again rather than skipping the change.
-        stuck = client.get(f"/api/tasks/changes?since={since}&wait=0").json()
+        stuck = changes(client, since)
         assert stuck == {"generation": since, "rows": [], "gone": [],
                          "drafts": {"changed": [], "gone": []}}
         gate.set()
         _wait_for(lambda: tasks_mod._snapshot.generation > since)
-        answer = client.get(f"/api/tasks/changes?since={since}&wait=0").json()
+        answer = changes(client, since)
         assert answer["generation"] == since + 1
         assert [r["key"] for r in answer["rows"]] == [SID]

@@ -9,6 +9,7 @@
 // embedded live workbench). Styling lives in styles/canvases.css.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import previewTile from "@assets/canvas-preview-tile.png";
+import { resyncTopic, subscribeTopic } from "@platform/lib/events";
 import { navigateUrl } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import {
@@ -24,10 +25,6 @@ import {
   type CanvasesStatus,
 } from "./api";
 import { publishLoggedIn } from "./logged-in";
-
-// `fused login`'s own browser callback times out server-side; polling any
-// slower than this makes a completed sign-in feel stuck.
-const LOGIN_POLL_MS = 1500;
 
 // Same rule the server (and the CLI's push) enforces.
 const NAME_RE = /^[A-Za-z0-9_]{1,128}$/;
@@ -88,7 +85,6 @@ export default function Canvases() {
   // Preview URLs that failed to load (expired presigned URL, deleted asset) —
   // fall back to the monogram instead of a broken-image icon.
   const [brokenPreviews, setBrokenPreviews] = useState<Set<string>>(new Set());
-  const pollRef = useRef<number | null>(null);
   // creds_stamp at the moment login started: a re-login over a stale-but-
   // present store never flips logged_in, so completion = the stamp changing.
   const loginStampRef = useRef<number | null | undefined>(undefined);
@@ -161,44 +157,66 @@ export default function Canvases() {
   }, [refresh]);
 
   // The sidebar's Canvases row reads the same fact this page does, so
-  // hand it every status this page learns — the first read, the login poll's
+  // hand it every status this page learns — the first read, the login wait's
   // flip, the 401 downgrade, the sign-out — rather than leaving it to notice on
-  // its own minute-long poll. The whole status goes over, not just the boolean:
+  // its own subscription. The whole status goes over, not just the boolean:
   // the 401 downgrade below is a verdict on a SPECIFIC credentials store, and
   // `creds_stamp` is what names it (see ./logged-in).
   useEffect(() => {
     if (status) publishLoggedIn(status);
   }, [status]);
 
-  // While a login is in flight, poll status until logged_in flips — or the
-  // browser child exits without ever flipping it (closed tab, denied, or the
-  // flow otherwise failed), which must also drop `loggingIn` or the button
-  // stays stuck on "Waiting for browser sign-in…" forever.
+  // While a login is in flight, follow `canvases.status` on the events bus
+  // until logged_in flips — or the browser child exits without ever flipping
+  // it (closed tab, denied, or the flow otherwise failed), which must also drop
+  // `loggingIn` or the button stays stuck on "Waiting for browser sign-in…"
+  // forever. The server re-stats the credentials every 1.5 s while it sees a
+  // login in flight (the old poll's cadence) and pushes each change; either
+  // verdict drops the subscription.
+  //
+  // A REPLAYED snapshot is skipped: it is the sidebar's cached answer from
+  // before the POST that started this login, and its `login_in_flight: false`
+  // would end the wait the moment it began. The resync right after subscribing
+  // brings the fresh one. A refused frame is what a failed status GET was to
+  // the poll — nothing; the next snapshot decides.
+  //
+  // `setStatus` keeps the held object when nothing changed. Every status this
+  // page holds is published to ./logged-in, and a publish resyncs the very
+  // subscription this effect is reading — a new object per identical snapshot
+  // would publish, resync and answer itself forever.
   useEffect(() => {
     if (!loggingIn) return;
-    // A poll tick already in flight when this effect is torn down (e.g. a
-    // deliberate sign-out) must not act on its result — clearInterval only
-    // stops future ticks, not a request that's already on the wire.
-    let cancelled = false;
-    pollRef.current = window.setInterval(() => {
-      void getCanvasesStatus().then((s) => {
-        if (cancelled) return;
-        setStatus(s);
-        const completed =
-          s.logged_in && s.creds_stamp !== loginStampRef.current;
-        if (completed) {
-          setLoggingIn(false);
-          setError(null);
-          void refresh();
-        } else if (!s.login_in_flight) {
-          setLoggingIn(false);
-          setError("Sign-in was not completed — try again.");
-        }
-      });
-    }, LOGIN_POLL_MS);
+    // Set by a verdict or the teardown (e.g. a deliberate sign-out): a frame
+    // after either must not act — the subscription can answer synchronously,
+    // before `off` is even assigned.
+    let settled = false;
+    let off: () => void = () => {};
+    const end = () => {
+      settled = true;
+      off();
+    };
+    off = subscribeTopic<CanvasesStatus>("canvases.status", {}, (s, _delta, meta) => {
+      if (settled || meta.error !== undefined || meta.replay || s === null) return;
+      setStatus((prev) => (prev && JSON.stringify(prev) === JSON.stringify(s) ? prev : s));
+      const completed =
+        s.logged_in && s.creds_stamp !== loginStampRef.current;
+      if (completed) {
+        end();
+        setLoggingIn(false);
+        setError(null);
+        void refresh();
+      } else if (!s.login_in_flight) {
+        end();
+        setLoggingIn(false);
+        setError("Sign-in was not completed — try again.");
+      }
+    });
+    if (settled) off();
+    // The POST that started the login is this page's own write.
+    resyncTopic("canvases.status", {});
     return () => {
-      cancelled = true;
-      if (pollRef.current !== null) window.clearInterval(pollRef.current);
+      if (settled) return;
+      end();
     };
   }, [loggingIn, refresh]);
 
@@ -216,8 +234,8 @@ export default function Canvases() {
   const onLogout = async () => {
     setError(null);
     // A deliberate sign-out during a stale-creds re-login must not let the
-    // login poll's now-defunct login_in_flight read surface a spurious
-    // "sign-in was not completed" error over this.
+    // login wait's next snapshot (login_in_flight now false) surface a
+    // spurious "sign-in was not completed" error over this.
     setLoggingIn(false);
     try {
       await logout();

@@ -3,12 +3,43 @@
 // React, no DOM. The UI reads `ChatState` and calls the methods on
 // `ChatController` (protocol/controller-api.ts).
 //
+// PROTOCOL NOTE — the run stream is a subscription on the events bus (D3), not
+// a 400 ms `poll` loop:
+//   * `claude.run {run_id, file, native, queue}` — every `snap` frame's body is
+//     EXACTLY what `run("poll", …)` resolved with (the whole-turn
+//     `PollResponse`, or `{error: "unknown run_id", done: true}`). The server
+//     ticks `_poll` at the old 400 ms per subscribed run and drops a body
+//     identical to the last one, so a frame means something moved; the first
+//     frame (the snapshot on subscribe) always arrives. No deltas.
+//   * `pollLoop` reads frames through `openFeed`: one subscription per turn,
+//     LATEST FRAME WINS when the loop body is slower than the frames (a whole
+//     turn supersedes the one before it, so nothing is lost by coalescing).
+//     It ends exactly where the poll loop ended — done, unknown run, the reader
+//     left (`logGen`), dispose — and its `finally` unsubscribes. A generation
+//     bump or a dispose WAKES a feed waiting on a frame, so a loop parked on a
+//     permission card (no frames: nothing moves) still leaves at once.
+//   * An `err` frame (`meta.error`) is the old thrown poll: counted against
+//     the same budgets (`transientPollBudget`), a good frame resets the count.
+//     SILENCE IS NOT AN ERROR: a dropped socket delivers no frames, the client
+//     redials and resubscribes, and the loop simply waits — the old 15-lap
+//     network budget no longer applies to it.
+//   * `claude.live {file, session_id}` — body `{live: <live_run answer>,
+//     liveness}` — replaces the `live_run` probe laps (`adoptWatch`,
+//     `liveAfterStartTimeout`): the first frame answers at once when it names
+//     a run; otherwise up to the old lap count of further frames, or the old
+//     window (laps × `POLL_MS`) after the first frame, whichever ends first.
+//     That one deadline is a plain `setTimeout` that fetches nothing.
+//   * `deps.subscribe` is the seam (default: `subscribeTopic`); a scripted
+//     source may hang `pull()` on its unsubscribe to be asked for one frame
+//     whenever the loop waits (protocol/test-bus.ts). The bus ignores it.
+//
 // The five rules that make this correct, each of which had its own bug first:
 //
-// 1. NO CURSOR. Every poll returns the WHOLE turn — segments, text,
+// 1. NO CURSOR. Every frame carries the WHOLE turn — segments, text,
 //    permissions, skills and app_state all replayed — and the client dedupes by
-//    id / renders idempotently (T:16250-16261, segments.ts). The cadence is a
-//    flat `sleep(400)` with no backoff (T:16377).
+//    id / renders idempotently (T:16250-16261, segments.ts). The server keeps
+//    T's flat 400 ms cadence with no backoff (T:16377); the page no longer
+//    sleeps between asks — it waits for the next frame.
 //
 // 2. D687 SLICING. The server cursor deliberately refuses to advance past a
 //    mid-turn echo, so after a follow-up lands the replay still carries
@@ -23,13 +54,13 @@
 //    not proof of ownership, because a reopened chat re-attaches to the SAME
 //    run id (Bugbot, PR #653: T:16311-16318, 16396-16410).
 //
-// 4. A THROWN POLL ABORTS THE BUBBLE AND KEEPS `?run=`. The partial reply goes
-//    so a failed run never leaves half a sentence behind; the param stays so the
-//    next boot re-attaches to the subprocess, which is still working
-//    (T:16378-16386).
+// 4. A FAILED POLL (an `err` frame past its budget) ABORTS THE BUBBLE AND KEEPS
+//    `?run=`. The partial reply goes so a failed run never leaves half a
+//    sentence behind; the param stays so the next boot re-attaches to the
+//    subprocess, which is still working (T:16378-16386).
 //
 // 5. CARDS LAND BELOW THE PROSE THEY INTERRUPT. `syncPermissions` runs AFTER
-//    the segment render, every poll, and re-pins the open cards last
+//    the segment render, every frame, and re-pins the open cards last
 //    (T:16305-16311, 14665-14775).
 import {
   decideThroughQueue,
@@ -40,6 +71,7 @@ import {
 import { chatDraftKey } from "@platform/lib/drafts";
 import { queueEnabled, queueFlagReady } from "../feature-flag";
 import { announceTasksChanged } from "@platform/lib/tasksChanged";
+import { subscribeTopic, type FusedEventsMeta, type SubscribeLike } from "@platform/lib/events";
 
 import { AgentError, runAgent } from "./agent";
 import type {
@@ -93,20 +125,27 @@ import type { Receipt } from "../shots/types";
 
 // ---- constants (all with their T line) -------------------------------------
 
-/** T:16377 — the poll cadence. No backoff, ever. */
+/** T:16377 — the poll cadence: the server's `claude.run` tick
+ *  (`topics.py ClaudeRunTopic.poll_interval_s`), and the unit of the probe
+ *  windows below (`ADOPT_LAPS` × this). Nothing on the page sleeps on it. */
 export const POLL_MS = 400;
 
 /**
- * HOW MANY CONSECUTIVE TRANSIENT POLL FAILURES a live view rides out before it
- * gives up and shows the trouble card. One failed poll is not a failed run: the
- * run lives in the server, and the next poll replays the whole turn anyway.
+ * HOW MANY CONSECUTIVE FAILED FRAMES a live view rides out before it gives up
+ * and shows the trouble card. One failed poll is not a failed run: the run
+ * lives in the server, and the next good frame replays the whole turn anyway.
  *
- * Two kinds, two budgets, because they cost very different amounts of time:
+ * Two kinds, two budgets — counted on `err` frames (`meta.error`, rebuilt into
+ * the error the poll used to throw by `frameError`) exactly as they were
+ * counted on thrown polls:
  *
- *   * NETWORK (`fetch` rejected: dropped socket, sleep/wake, a server mid-
- *     restart) fails fast, so a lap is ~`POLL_MS`. 15 laps ≈ 6 s — enough for
- *     a blip; a real restart loses the in-process run anyway and the next good
- *     poll answers `unknown run_id`, which has its own card.
+ *   * NETWORK (a transport failure: dropped socket, sleep/wake, a server mid-
+ *     restart). 15 in a row — enough for a blip; a real restart loses the
+ *     in-process run anyway and the next good frame answers `unknown run_id`,
+ *     which has its own card. NOTE the bus never sends a frame for a dropped
+ *     socket: it sends NOTHING, the client redials and resubscribes, and the
+ *     loop simply waits for the snapshot that answers. Silence spends none of
+ *     this budget.
  *   * TIMEOUT (504, `AgentError.type === "Timeout"`) has ALREADY waited out the
  *     server's `poll` budget (60 s, `claude_agent/pool.py` BUDGETS_S) before
  *     it reaches us. One is a slow lap worth riding out; 3 in a row ≈ 3 min of
@@ -114,7 +153,7 @@ export const POLL_MS = 400;
  *     the reader should know. Kept at 3 rather than scaled to the budget: the
  *     wait between cards is the budget's job, the count only says "repeatedly".
  *
- * Any good poll resets the count. Anything else thrown keeps today's road: the
+ * Any good frame resets the count. Any other refusal keeps today's road: the
  * card, at once.
  */
 export const POLL_NETWORK_RETRIES = 15;
@@ -146,12 +185,107 @@ function isTimeout(err: unknown): err is AgentError {
   return err instanceof AgentError && err.type === "Timeout";
 }
 
-/** The retry budget for a thrown poll, or `0` when it is not transient. */
+/** The retry budget for a failed poll frame, or `0` when it is not transient. */
 function transientPollBudget(err: unknown): number {
   // `NotRun` too: a poll cancelled while queued for a worker is a backed-up
   // pool, which says no more about the run than a slow one does.
   if (err instanceof AgentError) return err.type === "Timeout" || err.type === "NotRun" ? POLL_TIMEOUT_RETRIES : 0;
   return isNetworkFailure(err) ? POLL_NETWORK_RETRIES : 0;
+}
+
+/**
+ * AN `err` FRAME, AS THE ERROR THE POLL USED TO THROW — so the budgets above,
+ * `troubleFromError` and the card read it exactly as before. The bus carries
+ * the refusal as `{error, status}`:
+ *   * 504 is the route's budget expiring — `AgentError` `"Timeout"`;
+ *   * no status at all is a refusal from the transport rather than from the
+ *     handler (the bus itself always names one), and classifies by its message
+ *     like a rejected `fetch` did — the network budget;
+ *   * anything else is the handler refusing (500 `internal error`, a 400 for a
+ *     bad run id) — an `AgentError`, the card at once.
+ */
+function frameError(meta: FusedEventsMeta): Error {
+  const message = meta.error || "the chat agent failed";
+  if (meta.status === 504) return new AgentError({ type: "Timeout", message });
+  if (!meta.status) return new Error(message);
+  return new AgentError({ message });
+}
+
+/** One frame off a feed: the snapshot body, or the refusal in its place. */
+interface Frame<S> {
+  body: S | null;
+  meta: FusedEventsMeta | null;
+}
+
+/** `deps.subscribe`'s unsubscribe. A SCRIPTED source (the suites'
+ *  `protocol/test-bus.ts`) also hangs `pull` on it, and the feed calls it
+ *  whenever its reader waits with nothing held: one ask, one frame — so a
+ *  script keeps meaning one entry per poll. The bus pushes on its own clock and
+ *  never has one. */
+type Unsubscribe = (() => void) & { pull?: () => void };
+
+/** `claude.live`'s body (`topics.py ClaudeLiveTopic`): what `live_run`
+ *  answered, and the transcript's liveness when the subscription named a
+ *  `path` (the standing watch, `live/watch.ts`). */
+export interface ClaudeLiveBody {
+  live: RunIdResponse | null;
+  liveness: { exists: boolean; mtime: number; size: number; running: boolean } | null;
+}
+
+/** The run id a `claude.live` frame names, `""` for none. */
+const liveRunId = (body: ClaudeLiveBody | null): string =>
+  body && body.live && body.live.run_id ? String(body.live.run_id) : "";
+
+/** The controller's deps plus the bus seam. Kept here rather than on
+ *  `ControllerDeps` because only this file reads it. */
+export type ChatControllerDeps = ControllerDeps & {
+  /** `subscribeTopic` by default; the suites hand in `protocol/test-bus.ts`. */
+  subscribe?: SubscribeLike;
+};
+
+// ---- where each open chat is (for the standing watch) ---------------------
+
+/**
+ * THE TARGET, THE SESSION AND THE TRANSCRIPT OF EVERY CHAT ON THE PAGE, as the
+ * controllers know them. The standing watch (`live/watch.ts`) subscribes to
+ * `claude.live` with exactly these three, and its host hands it neither the
+ * target nor news of the transcript moving (the watermark lands with the
+ * history, after the watch is armed) — so the controller that owns them says
+ * so here, and the watch re-keys its subscription when they change. In-memory
+ * and per document, like the controllers themselves.
+ */
+export interface ChatTarget {
+  file: string;
+  sessionId: string;
+  path: string;
+}
+const chatTargets = new Map<number, ChatTarget>();
+const chatTargetListeners = new Set<() => void>();
+let controllerSeq = 0;
+
+function announceTargets(): void {
+  for (const cb of [...chatTargetListeners]) {
+    try {
+      cb();
+    } catch (err) {
+      console.error("[chat] a chat-target listener threw:", err);
+    }
+  }
+}
+
+/** The newest controller's view of `sessionId`, or null when none has it. */
+export function chatTargetFor(sessionId: string): ChatTarget | null {
+  let found: ChatTarget | null = null;
+  for (const t of chatTargets.values()) if (t.sessionId === sessionId) found = t;
+  return found;
+}
+
+/** Hear every change to `chatTargetFor`'s answers. Returns the unsubscribe. */
+export function onChatTargets(cb: () => void): () => void {
+  chatTargetListeners.add(cb);
+  return () => {
+    chatTargetListeners.delete(cb);
+  };
 }
 /** T:11911 — `params.permission || DEFAULT_PERMISSION`. */
 export const DEFAULT_PERMISSION: PermissionMode = "prompt";
@@ -182,9 +316,11 @@ export const ARTIFACTS_EVERY_TICKS = 8;
 /** T:17781 — `retryUnknown`'s budget for a run dir that is not visible yet. */
 export const UNKNOWN_RUN_RETRIES = 5;
 export const UNKNOWN_RUN_RETRY_MS = 700;
-/** T:17509 — `adoptLiveRun`'s laps. ~3 s of looking at one poll interval each:
- *  one tick is the common case (the reopen itself), the tail covers the window
- *  in which a run started elsewhere has not become visible yet. */
+/** T:17509 — `adoptLiveRun`'s laps: up to this many `claude.live` frames, or
+ *  `ADOPT_LAPS × POLL_MS` (~3 s, the server's fast probe window) after the
+ *  first one. The first frame is the common case (the reopen itself); the tail
+ *  covers the window in which a run started elsewhere has not become visible
+ *  yet. */
 export const ADOPT_LAPS = 8;
 
 // ---- runEnding (pure, T:15871-15900) --------------------------------------
@@ -283,8 +419,9 @@ function emptyState(file: string | null): ChatState {
 
 // ---- the controller --------------------------------------------------------
 
-export function createChatController(deps: ControllerDeps): ChatController {
+export function createChatController(deps: ChatControllerDeps): ChatController {
   const sleep = deps.sleep || nativeSleep;
+  const subscribe: SubscribeLike = deps.subscribe || subscribeTopic;
   const now = deps.now || Date.now;
   /** WHAT TIME IT IS, as opposed to how long something took (review #9). See
    *  `ControllerDeps.wallClock`. */
@@ -305,8 +442,124 @@ export function createChatController(deps: ControllerDeps): ChatController {
 
   const emit = (patch: Partial<ChatState>) => {
     state = { ...state, ...patch, rev: state.rev + 1 };
+    publishTarget();
     for (const cb of listeners) cb();
   };
+
+  /** This controller's row in `chatTargets` — rewritten only when the session
+   *  or the transcript watermark's path actually moved. */
+  const me = ++controllerSeq;
+  let lastTarget = "";
+  function publishTarget(): void {
+    if (disposed) return;
+    const t: ChatTarget = {
+      file: FILE || "",
+      sessionId: state.sessionId || "",
+      path: (state.transcript && state.transcript.path) || "",
+    };
+    const sig = t.file + "\u0000" + t.sessionId + "\u0000" + t.path;
+    if (sig === lastTarget) return;
+    lastTarget = sig;
+    chatTargets.set(me, t);
+    announceTargets();
+  }
+
+  // ---- frames off the events bus (see the protocol note up top) -----------
+
+  interface Feed<S> {
+    /** The next frame — the newest one held, or the next to land. `null` when
+     *  the feed was closed or woken (a generation bump / dispose), or when its
+     *  window ran out after the first frame. */
+    next(): Promise<Frame<S> | null>;
+    wake(): void;
+    close(): void;
+  }
+  /** Every open feed, so `newChat` / `dispose` can wake a reader parked on a
+   *  frame that may never come (a run blocked on a card sends none). */
+  const feeds = new Set<Feed<unknown>>();
+  const wakeFeeds = () => {
+    for (const f of [...feeds]) f.wake();
+  };
+
+  /**
+   * ONE SUBSCRIPTION, READ AS A QUEUE OF LENGTH ONE. Latest frame wins: the
+   * body is the whole turn (or the whole live answer), so a frame that landed
+   * while the reader was busy is superseded by the next, never queued behind
+   * it. `windowMs` (> 0) bounds how long the reader may wait for MORE frames
+   * after the first — the probe window; the first frame is always waited for,
+   * because it is the answer itself. Not `hidden_ok`: a run streams into a
+   * hidden chat, and a probe a send is waiting on must answer while hidden.
+   */
+  function openFeed<S>(
+    topic: string,
+    params: Record<string, unknown>,
+    windowMs = 0,
+  ): Feed<S> {
+    let held: Frame<S> | null = null;
+    let waiter: ((f: Frame<S> | null) => void) | null = null;
+    let closed = false;
+    let expired = false;
+    let delivered = 0;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const settle = (f: Frame<S> | null) => {
+      const w = waiter;
+      waiter = null;
+      if (f) delivered++;
+      w?.(f);
+    };
+    const off = subscribe(
+      topic,
+      params,
+      (snap, _delta, meta) => {
+        if (closed) return;
+        const refused = !!meta && typeof meta.error === "string";
+        if (!refused && snap === null) return; // a delta: these topics send none
+        const frame: Frame<S> = refused ? { body: null, meta } : { body: snap as S, meta: null };
+        if (waiter) settle(frame);
+        else held = frame;
+      },
+      { hiddenOk: false },
+    ) as Unsubscribe;
+    if (windowMs > 0) {
+      // THE ONE TIMER, and it fetches nothing: it ends the wait for further
+      // frames once the probe window is over.
+      timer = setTimeout(() => {
+        timer = null;
+        expired = true;
+        if (delivered > 0) settle(null);
+      }, windowMs);
+    }
+    const feed: Feed<S> = {
+      next() {
+        if (closed) return Promise.resolve(null);
+        if (held) {
+          const f = held;
+          held = null;
+          delivered++;
+          return Promise.resolve(f);
+        }
+        if (expired && delivered > 0) return Promise.resolve(null);
+        return new Promise<Frame<S> | null>((resolve) => {
+          waiter = resolve;
+          off.pull?.();
+        });
+      },
+      wake() {
+        settle(null);
+      },
+      close() {
+        if (closed) return;
+        closed = true;
+        if (timer) clearTimeout(timer);
+        timer = null;
+        feeds.delete(feed as Feed<unknown>);
+        off();
+        settle(null);
+      },
+    };
+    feeds.add(feed as Feed<unknown>);
+    return feed;
+  }
 
   // ---- ownership seats (T:16187-16201) ------------------------------------
   let sending = false;
@@ -436,9 +689,6 @@ export function createChatController(deps: ControllerDeps): ChatController {
   const setAdopting = (value: boolean) => {
     if (state.adopting !== value) emit({ adopting: value });
   };
-  /** Aborted by `dispose`, so the in-flight poll and its `sleep` do not outlive
-   *  the unmount by a lap (agent.ts takes the signal). */
-  let life: AbortController | null = typeof AbortController === "function" ? new AbortController() : null;
 
   // ---- per-transcript memos (T:15721-15756) -------------------------------
   const answeredStates = new Set<string>();
@@ -950,7 +1200,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
    *  answer, with how many polls each has been seen for: a request whose count
    *  has passed APP_STATE_NULL_POLLS is one the pane should answer with the
    *  explicit "no app" sentence rather than keep waiting (T:15726-15734). */
-  const surfaceAppState = (list: AppStateRow[] | null | undefined, runId: string) => {
+  const surfaceAppState = (list: AppStateRow[] | null | undefined, runId: string): number => {
     const rows: AppStateRow[] = [];
     for (const req of list || []) {
       if (!req || !req.id || answeredStates.has(req.id)) continue;
@@ -969,8 +1219,12 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // T calls `answerAppState` from the poll itself and so retries every tick
     // (T:15758-15869); without a fresh row per poll the count never passes
     // APP_STATE_NULL_POLLS and the explicit "no app" answer is unreachable
-    // (T:15726-15734). The rows ARE new information every 400 ms.
+    // (T:15726-15734). The rows ARE new information every 400 ms — and since
+    // the bus sends a frame only when the turn MOVES (a blocked tool call
+    // moves nothing), `pollLoop` keeps that 400 ms re-stamp itself while rows
+    // are outstanding (`restampAppState`); it re-reads nothing.
     if (rows.length || state.appState.length) emit({ appState: rows });
+    return rows.length;
   };
 
   // ---- permissions (T:14750-14775) ---------------------------------------
@@ -1207,6 +1461,14 @@ export function createChatController(deps: ControllerDeps): ChatController {
    * as delivered into the run it was sent to. No session means nothing to ask
    * about, and `""` at once: this page's own loop still running is no evidence
    * the message ARRIVED, so callers treat that case as not sent.
+   *
+   * STILL THREE ASKS OF `live_host`, NOT A `claude.live` SUBSCRIPTION, on
+   * purpose: the question is "is the session HOST up" (true between turns,
+   * which is when most sends land), and `claude.live` carries `live_run` —
+   * "is a TURN open". Asked that instead, a send that timed out into an idle
+   * host and has not yet opened its turn would read as not sent, and the
+   * reader's resend would run the message twice. Three asks after a failure,
+   * not a cadence.
    */
   async function liveAfterSendTimeout(sessionId: string, want?: string): Promise<string> {
     if (!sessionId) return "";
@@ -1228,26 +1490,35 @@ export function createChatController(deps: ControllerDeps): ChatController {
    * After a `start` 504 of type `"Timeout"` (Bugbot, PR #1409): the handler
    * RAN and may still spawn its host, so handing the words back for a resend
    * would start a SECOND host (or be refused as folder-busy). Same posture as
-   * `liveAfterSendTimeout`, but asked through `live_run`, because a fresh chat
-   * has no session id yet — and even a resume's start may mint a NEW one the
-   * page never received. With no session, the probe asks for the file as a
-   * whole and takes the newest live run there; the folder gate makes that
-   * this start's run in practice. A run this frame already streamed is never
-   * it. `""` after the probes: nothing live, the Timeout stands.
+   * `liveAfterSendTimeout`, but asked of `claude.live` (`live_run`), because a
+   * fresh chat has no session id yet — and even a resume's start may mint a
+   * NEW one the page never received. With no session, the probe asks for the
+   * file as a whole and takes the newest live run there; the folder gate makes
+   * that this start's run in practice. A run this frame already streamed is
+   * never it. `""` once the old probe budget is spent — `SEND_TIMEOUT_PROBES`
+   * frames, or `SEND_TIMEOUT_PROBES × SEND_TIMEOUT_PROBE_MS` after the first —
+   * with nothing live: the Timeout stands.
    */
   async function liveAfterStartTimeout(sessionId: string): Promise<string> {
-    for (let i = 0; i < SEND_TIMEOUT_PROBES; i++) {
-      if (i) await sleep(SEND_TIMEOUT_PROBE_MS);
-      if (disposed) return "";
-      try {
-        const res = (await run("live_run", { file: FILE || "", session_id: sessionId || "" })) as RunIdResponse;
-        const id = res && res.run_id ? String(res.run_id) : "";
+    if (disposed) return "";
+    const feed = openFeed<ClaudeLiveBody>(
+      "claude.live",
+      { file: FILE || "", session_id: sessionId || "" },
+      SEND_TIMEOUT_PROBES * SEND_TIMEOUT_PROBE_MS,
+    );
+    try {
+      for (let i = 0; i < SEND_TIMEOUT_PROBES; i++) {
+        const frame = await feed.next();
+        if (!frame || disposed) return "";
+        // A refused probe is one more "not yet".
+        if (frame.meta) continue;
+        const id = liveRunId(frame.body);
         if (id && !shownRuns.has(id)) return id;
-      } catch {
-        // A probe that cannot reach the server is one more "not yet".
       }
+      return "";
+    } finally {
+      feed.close();
     }
-    return "";
   }
 
   async function pollLoop(
@@ -1398,34 +1669,60 @@ export function createChatController(deps: ControllerDeps): ChatController {
      */
     let adoptFirstSeam = !!opts.ownTurn;
     let tick = 0;
-    /** Consecutive transient poll failures (see `POLL_NETWORK_RETRIES`). */
+    /** Consecutive failed frames (see `POLL_NETWORK_RETRIES`). */
     let transient = 0;
+    /**
+     * THE TURN, AS FRAMES. One `claude.run` subscription for the life of this
+     * loop; each frame's body is what one `poll` answered. The `queue` flag is
+     * read once, at subscribe, where the poll used to read it per lap: a flag
+     * that flips mid-turn takes effect from the next turn.
+     */
+    /**
+     * THE TICK THE PANE COUNTS, without a poll behind it. `useAppStateResponder`
+     * answers a blocked `app_state` call once per fresh row and gives up waiting
+     * on a reloading pane after `APP_STATE_NULL_POLLS` of them (see
+     * `surfaceAppState`). A poll used to hand it one every 400 ms; a frame
+     * arrives only when the turn moves, and a tool call blocked on the pane
+     * moves nothing. So while rows are outstanding, the last frame's rows are
+     * re-stamped on T's cadence — a UI timer that fetches nothing; every frame
+     * restarts it, and it stops the moment no row is left to answer.
+     */
+    let appStateTimer: ReturnType<typeof setTimeout> | null = null;
+    const restampAppState = (rows: AppStateRow[] | null | undefined) => {
+      if (appStateTimer) clearTimeout(appStateTimer);
+      appStateTimer = null;
+      if (!rows || !rows.length) return;
+      const again = () => {
+        appStateTimer = null;
+        if (disposed || logGen !== gen) return;
+        if (surfaceAppState(rows, runId)) appStateTimer = setTimeout(again, POLL_MS);
+      };
+      appStateTimer = setTimeout(again, POLL_MS);
+    };
+    const feed = openFeed<PollResponse | { error: string; done: true }>("claude.run", {
+      run_id: runId,
+      file: FILE || "",
+      native: "1",
+      queue: queueEnabled() ? "1" : "0",
+    });
 
     try {
       for (;;) {
-        let data: PollResponse | { error: string; done: true };
-        try {
-          data = (await run(
-            "poll",
-            { run_id: runId, file: FILE || "", native: "1", queue: queueEnabled() ? "1" : "0" },
-            // The controller's own lifetime: `dispose` aborts, so an unmounted
-            // chat's last poll does not run to completion on its own.
-            { ...(life ? { signal: life.signal } : {}) },
-          )) as PollResponse | { error: string; done: true };
-        } catch (err) {
-          // A 504 or a fetch that never left the machine says nothing about
-          // the RUN — ride it out for a bounded number of laps, keeping the
-          // bubble, before the outer catch draws the card. A disposed or
-          // superseded loop neither retries NOR reports: its abort is not a
-          // failure, and a card would land in whatever transcript replaced it.
-          if (disposed || logGen !== gen) break;
+        const frame = await feed.next();
+        // Woken or closed: `newChat` / `dispose` moved the generation under a
+        // loop waiting on a frame. Leave quietly — the run goes on server-side.
+        if (!frame || disposed || logGen !== gen) break;
+        if (frame.meta) {
+          // A 504 or a transport failure says nothing about the RUN — ride it
+          // out for a bounded number of frames, keeping the bubble, before the
+          // outer catch draws the card. A disposed or superseded loop neither
+          // waits NOR reports (checked above): a card would land in whatever
+          // transcript replaced it.
+          const err = frameError(frame.meta);
           if (++transient > transientPollBudget(err)) throw err;
-          await sleep(POLL_MS);
-          // `dispose` during the wait (it aborts `life`, which this sleep does
-          // not take): leave quietly, exactly like the reader-left check below.
-          if (disposed || logGen !== gen || life?.signal.aborted) break;
           continue;
         }
+        const data = frame.body as PollResponse | { error: string; done: true };
         transient = 0;
         // The reader left; the run continues without this page.
         if (logGen !== gen || disposed) break;
@@ -1466,7 +1763,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
         // that knows WHICH conversation is on screen.
         if (poll.context) emit({ context: poll.context });
         noteSkills(poll.skills);
-        surfaceAppState(poll.app_state, runId);
+        restampAppState(surfaceAppState(poll.app_state, runId) ? poll.app_state : null);
         // THE LIVE HOST'S UNDRAINED FOLLOW-UPS, republished verbatim — see
         // `publishInbox`. An older agent.py sends none, which reads as an empty
         // inbox, which is what it was before this field existed.
@@ -1765,15 +2062,17 @@ export function createChatController(deps: ControllerDeps): ChatController {
           if (loopSeq === seat && end.note) addNote(end.note, "⏹");
           break;
         }
-        await sleep(POLL_MS);
+        // No sleep: the next frame is the next lap (the server ticks at
+        // `POLL_MS` and sends only what moved).
       }
     } catch (err) {
       // Drop the partial bubble so a failed run never leaves a half-streamed
       // reply behind. The `run` param is deliberately NOT cleared: a poll that
       // died with the page being torn down should still re-attach next boot.
       //
-      // A DISPOSED controller says nothing: the poll we aborted ourselves is
-      // not a failure of the run, and there is nobody left to read a card.
+      // A DISPOSED controller says nothing: the subscription we closed
+      // ourselves is not a failure of the run, and there is nobody left to
+      // read a card.
       // A SUPERSEDED loop (the reader left: `logGen` moved) is the same: its
       // bubbles and its card belong to a transcript that is no longer on screen.
       if (!disposed && logGen === gen) {
@@ -1781,6 +2080,10 @@ export function createChatController(deps: ControllerDeps): ChatController {
         reportTrouble(troubleFromError(err));
       }
     } finally {
+      // The subscription goes with the loop, on every road out — and the
+      // pane's re-stamp with it.
+      feed.close();
+      restampAppState(null);
       emit({ working: null });
       // Ownership means being the NEWEST loop, not matching the run id: a chat
       // left mid-turn and reopened re-attaches to the SAME run_id, and the
@@ -3034,77 +3337,95 @@ export function createChatController(deps: ControllerDeps): ChatController {
     gen: number,
     opts: AdoptOptions,
   ): Promise<void> {
-    // ONE LAP is the STANDING WATCH's posture (T:17615): it is re-armed every
-    // 5 s and by three events of its own, so laps here would only duplicate a
-    // timer that already exists. The open-a-chat window keeps all eight.
+    // ONE LAP is the STANDING WATCH's posture (T:17615): its own `claude.live`
+    // subscription is what re-arms it, so laps here would only duplicate it.
+    // The open-a-chat window keeps all eight.
+    //
+    // A LAP IS A FRAME. Subscribing restarts the server's fast probe window
+    // (400 ms, ~3.5 s), so the first frame answers at once and further frames
+    // arrive only when the answer moves; the wait for them ends after `laps`
+    // frames or `laps × POLL_MS` after the first, whichever comes first.
     const laps = Math.max(1, opts.laps ?? ADOPT_LAPS);
-    for (let tries = 0; tries < laps; tries++) {
-      if (tries) await sleep(POLL_MS);
-      if (logGen !== gen || disposed) return;
-      if (activeRun) return;
-      if (sending) continue;
-      let live: RunIdResponse | null = null;
-      try {
-        live = (await run(
-          "live_run",
-          { file: FILE || "", session_id: sessionId || "" },
-        )) as RunIdResponse;
-      } catch {
-        return;
+    let feed: Feed<ClaudeLiveBody> | null = null;
+    const open = () =>
+      openFeed<ClaudeLiveBody>(
+        "claude.live",
+        { file: FILE || "", session_id: sessionId || "" },
+        laps * POLL_MS,
+      );
+    try {
+      for (let tries = 0; tries < laps; tries++) {
+        if (logGen !== gen || disposed) return;
+        if (activeRun) return;
+        if (!feed) feed = open();
+        const frame = await feed.next();
+        // The window ran out (nothing live), or a Back / dispose woke us.
+        if (!frame) return;
+        // A refused lookup ends the watch, as a thrown one did.
+        if (frame.meta) return;
+        // Both can have changed across the await.
+        if (logGen !== gen || disposed || activeRun) return;
+        // The gate is held THIS frame (history still restoring, a send in
+        // flight): look again on the next one rather than give up.
+        if (sending) continue;
+        const id = liveRunId(frame.body);
+        if (!id) {
+          // NOTHING IS LIVE, AND THAT IS AN ANSWER — the transcript can paint.
+          // The remaining frames exist to catch a run that starts a moment
+          // later (a hand-off, another viewer's send), which is not something a
+          // first paint should be held for: waiting them out would hide a
+          // restored conversation for ~3 s every time it is reopened idle.
+          setAdopting(false);
+          continue;
+        }
+        /**
+         * A RUN THIS FRAME ALREADY STREAMED IS NOT ADOPTED AGAIN (Bugbot, this
+         * batch). `shownRuns` was being WRITTEN here and never read, which left
+         * the half of its own contract undone — "a streamed run is attached,
+         * never re-resumed".
+         *
+         * The window is real and now reliably reachable: `noteChatActivity`
+         * announces at both turn boundaries, and at the END one the `busy()` gate
+         * is already down, so the tile that ran the turn hears its own poke,
+         * `live_run` still answers the id for a few seconds, and this frame
+         * re-adopts the reply it just streamed — the done branch strips and
+         * rebuilds the turn, bumps `repaired` (a forced scroll) and takes the
+         * caret back. The watch's 5 s backstop could already hit the same window;
+         * the in-document poke (P4-06) only made it certain.
+         *
+         * `continue`, not `return`: the remaining laps of the open-a-chat window
+         * should go on looking for a DIFFERENT id, and the transcript follower
+         * below is the coarser fallback for any tail this skips — which is exactly
+         * the division of labour `tick` is built on ("run dirs first, always …
+         * the transcript is the blinder fallback and only speaks for the turns no
+         * run dir can account for").
+         */
+        // `claimingRuns` beside it for the OTHER half: an attach already in
+        // flight for this id (the boot's `?run=`, the schedule poller) owns it
+        // until it either attaches or lets go — see the declaration.
+        if (shownRuns.has(id) || claimingRuns.has(id)) {
+          setAdopting(false);
+          continue;
+        }
+        // The probe is answered: its subscription goes before the turn is
+        // streamed (the run has its own, `claude.run`), and another lap opens
+        // a fresh one — whose first frame is then a fresh answer.
+        feed.close();
+        feed = null;
+        setRunParam(id);
+        // `quiet` rides through to the reconciliation: the watch may be adopting a
+        // turn whose user line this transcript is already showing (the woken run
+        // whose first turn this frame streamed) or one it has never shown (a send
+        // made in another tab). Only `resumeRun` can tell those apart.
+        await resumeRun(id, { quiet: !!opts.quiet });
+        // `resumeRun` resolves at the END of the turn, so a completed call means
+        // the run was handled — its own done branch cleared the param. The one
+        // call that resolves with the param still reading `id` is a bail on a
+        // gate grabbed between these two lines, and only that earns another lap.
+        if (deps.params.get("run") !== id) return;
       }
-      // Both can have changed across the await.
-      if (logGen !== gen || disposed || activeRun) return;
-      const id = live && live.run_id;
-      if (!id) {
-        // NOTHING IS LIVE, AND THAT IS AN ANSWER — the transcript can paint.
-        // The remaining laps exist to catch a run that starts a moment later
-        // (a hand-off, another viewer's send), which is not something a first
-        // paint should be held for: waiting them out would hide a restored
-        // conversation for ~3 s every time it is reopened idle.
-        setAdopting(false);
-        continue;
-      }
-      if (sending) continue;
-      /**
-       * A RUN THIS FRAME ALREADY STREAMED IS NOT ADOPTED AGAIN (Bugbot, this
-       * batch). `shownRuns` was being WRITTEN here and never read, which left
-       * the half of its own contract undone — "a streamed run is attached,
-       * never re-resumed".
-       *
-       * The window is real and now reliably reachable: `noteChatActivity`
-       * announces at both turn boundaries, and at the END one the `busy()` gate
-       * is already down, so the tile that ran the turn hears its own poke,
-       * `live_run` still answers the id for a few seconds, and this frame
-       * re-adopts the reply it just streamed — the done branch strips and
-       * rebuilds the turn, bumps `repaired` (a forced scroll) and takes the
-       * caret back. The 5 s interval could already hit the same window; the
-       * in-document poke (P4-06) only made it certain.
-       *
-       * `continue`, not `return`: the remaining laps of the open-a-chat window
-       * should go on looking for a DIFFERENT id, and the transcript follower
-       * below is the coarser fallback for any tail this skips — which is exactly
-       * the division of labour `tick` is built on ("run dirs first, always …
-       * the transcript is the blinder fallback and only speaks for the turns no
-       * run dir can account for").
-       */
-      // `claimingRuns` beside it for the OTHER half: an attach already in
-      // flight for this id (the boot's `?run=`, the schedule poller) owns it
-      // until it either attaches or lets go — see the declaration.
-      if (shownRuns.has(id) || claimingRuns.has(id)) {
-        setAdopting(false);
-        continue;
-      }
-      setRunParam(id);
-      // `quiet` rides through to the reconciliation: the watch may be adopting a
-      // turn whose user line this transcript is already showing (the woken run
-      // whose first turn this frame streamed) or one it has never shown (a send
-      // made in another tab). Only `resumeRun` can tell those apart.
-      await resumeRun(id, { quiet: !!opts.quiet });
-      // `resumeRun` resolves at the END of the turn, so a completed call means
-      // the run was handled — its own done branch cleared the param. The one
-      // call that resolves with the param still reading `id` is a bail on a
-      // gate grabbed between these two lines, and only that earns another lap.
-      if (deps.params.get("run") !== id) return;
+    } finally {
+      feed?.close();
     }
   }
 
@@ -3184,25 +3505,46 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // Tagged with this attach's seat so only this attach can let it go.
     if (runId) claimingRuns.set(runId, seat);
     try {
-      let probe = (await run("poll", { run_id: runId, file: FILE || "", native: "1", queue: queueEnabled() ? "1" : "0" })) as
-        | PollResponse
-        | { error: string; done: true };
-      if (logGen !== gen || disposed) return;
-      // A frame handed a run id by its EMBEDDER can boot before the freshly
-      // created run dir is visible to the agent — a race, not a stale bookmark.
-      // A few short retries tell the two apart (T:17777-17787).
-      for (
-        let i = 0;
-        retryUnknown &&
-        i < UNKNOWN_RUN_RETRIES &&
-        (probe as { error?: string }).error === "unknown run_id";
-        i++
-      ) {
-        await sleep(UNKNOWN_RUN_RETRY_MS);
-        probe = (await run("poll", { run_id: runId, file: FILE || "", native: "1", queue: queueEnabled() ? "1" : "0" })) as
-          | PollResponse
-          | { error: string; done: true };
-        if (logGen !== gen || disposed) return;
+      /**
+       * THE PROBE IS THE FIRST `claude.run` FRAME — the same body `poll`
+       * answered. A frame handed a run id by its EMBEDDER can boot before the
+       * freshly created run dir is visible to the agent — a race, not a stale
+       * bookmark — and the retry that tells the two apart (T:17777-17787) is
+       * now "wait for the frame that moves": the server re-reads the run at
+       * 400 ms and sends a frame the moment the answer changes, for up to the
+       * old budget (`UNKNOWN_RUN_RETRIES` frames, or `UNKNOWN_RUN_RETRIES ×
+       * UNKNOWN_RUN_RETRY_MS` after the first). The subscription is the
+       * probe's alone and goes before the turn streams; `pollLoop` opens its
+       * own.
+       */
+      type ProbeBody = PollResponse | { error: string; done: true };
+      const probeFeed = openFeed<ProbeBody>(
+        "claude.run",
+        { run_id: runId, file: FILE || "", native: "1", queue: queueEnabled() ? "1" : "0" },
+        retryUnknown ? UNKNOWN_RUN_RETRIES * UNKNOWN_RUN_RETRY_MS : 0,
+      );
+      let probe: ProbeBody;
+      try {
+        const first = await probeFeed.next();
+        if (!first || logGen !== gen || disposed) return;
+        // A refused probe is a thrown one: the catch below decides card or warn.
+        if (first.meta) throw frameError(first.meta);
+        probe = first.body as ProbeBody;
+        for (
+          let i = 0;
+          retryUnknown &&
+          i < UNKNOWN_RUN_RETRIES &&
+          (probe as { error?: string }).error === "unknown run_id";
+          i++
+        ) {
+          const next = await probeFeed.next();
+          if (logGen !== gen || disposed) return;
+          if (!next) break; // the window ran out: the stale id stands
+          if (next.meta) throw frameError(next.meta);
+          probe = next.body as ProbeBody;
+        }
+      } finally {
+        probeFeed.close();
       }
       if (isUnknownRun((probe as { error?: string }).error)) {
         // Stale param — nothing to attach to (T:17788-17796). NOT `onRunEnded`:
@@ -3751,6 +4093,9 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // run itself keeps going server-side (Akshil, 2026-08-19 — Back is live
     // mid-turn) and re-attaches from the session list.
     logGen++;
+    // WOKEN, not left to wait: a loop parked on a frame that may never come (a
+    // run blocked on a card sends none) reads the bump now and unsubscribes.
+    wakeFeeds();
     sending = false; // the button releases the gate
     activeRun = null;
     activeSeat = 0;
@@ -3831,10 +4176,10 @@ export function createChatController(deps: ControllerDeps): ChatController {
     dispose() {
       disposed = true;
       logGen++;
-      // The in-flight poll and its `sleep(400)` would otherwise outlive the
-      // unmount by up to one lap; `agent.ts` takes the signal.
-      life?.abort();
-      life = null;
+      // Every subscription goes with the controller: the run loop's and any
+      // probe's would otherwise outlive the unmount until their next frame.
+      for (const f of [...feeds]) f.close();
+      if (chatTargets.delete(me)) announceTargets();
       listeners.clear();
     },
   };

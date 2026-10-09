@@ -20,7 +20,8 @@ import {
   rawUrl,
   type AiCatalogCapability,
 } from "@platform/lib/api";
-import { fetchJobs, type Job, type JobState } from "@platform/lib/jobs";
+import { watchJobRow, type Job, type JobsSnapshot } from "@platform/lib/jobs";
+import type { SubscribeLike } from "@platform/lib/events";
 
 /** The capability id the speech models sit under, server-side
  *  (`registry.SPEECH_TO_TEXT`). One spelling, used by both functions here. */
@@ -208,16 +209,16 @@ export interface TranscribeRun {
 
 export interface TranscribeDeps {
   post?: typeof postJson;
-  jobs?: typeof fetchJobs;
+  /** The `jobs` bus subscription the watch rides (`platform/lib/events`). */
+  subscribe?: SubscribeLike<JobsSnapshot, unknown>;
   /** Reads the finished transcript. Injected so a test needs no `/api/fs/raw`. */
   readJson?: (path: string) => Promise<unknown>;
   /** `POST /api/jobs/{id}/cancel`. */
   cancel?: (jobId: string) => Promise<unknown>;
   /** Per-tick, while the row lives (R:4204's `onProgress`). */
   onProgress?: (job: Job) => void;
-  /** The poll interval — `watchJob`'s own floor and default (R:4732). */
-  intervalMs?: number;
-  sleep?: (ms: number) => Promise<void>;
+  /** The grace a missing row is given before it is called gone (`watchJobRow`). */
+  goneGraceMs?: number;
 }
 
 function defaultReadJson(path: string): Promise<unknown> {
@@ -299,71 +300,29 @@ async function startJob(
   return started;
 }
 
-/** How many CONSECUTIVE polls may come back WITHOUT the row before the watch
- *  gives up on it. `FINISHED_TTL_S` (`fused_render/jobs.py`) is a few seconds
- *  against this watch's sub-second poll, so one slow tick or a throttled
- *  background timer can miss a finished row's whole window — five cannot.
- *  Matches `runtime.js`'s `watchJob` and the playground's own
- *  `GONE_MISS_TOLERANCE`, which have tolerated five for the same reason.
- *
- *  COUNTED FROM THE FIRST POLL, not from the first sighting (Bugbot, PR #1074).
- *  Gating the counter on "seen at least once" made the row's very existence the
- *  loop's only exit: a `jobId` the listing never carries — retired before the
- *  first poll landed, or a supervisor that dropped it — left `end()` sitting in
- *  "Transcribing…" with the Comment seat held for the life of the page. An
- *  UNSEEN job is exactly the case with no other witness, so it needs the same
- *  bound, and the transcript file is still consulted afterwards
- *  (`startTranscribe`'s `!record` branch): a run that really finished is read
- *  off disk, and only a run with no words to show for it becomes the typed
- *  "no longer being reported" rejection. */
-const GONE_MISS_TOLERANCE = 5;
-
-/** How many CONSECUTIVE `/api/jobs` reads may FAIL before the watch gives up.
- *  A failed poll is not a missing row — that conflation is what let a flaky
- *  listing spend a miss it had not earned — but it cannot be tolerated forever
- *  either, or an offline server polls until the tab closes. Ten, per the
- *  playground's `MAX_POLL_FAILURES`, is well past a transient blip. */
-const MAX_POLL_FAILURES = 10;
-
-/** `watchJob(id).watch()` (R:4711-4746): poll `/api/jobs` until the row leaves
- *  "running", calling back on the way. Resolves NULL when the row is GONE — a
- *  finished record is dropped after its retention window (SPEC BG-6), which a
- *  backgrounded tab can sleep straight through, and polling forever for a row
- *  that is never coming back is a promise that never settles.
+/** `watchJob(id).watch()` (R:4711-4746), over the events bus: follow the
+ *  row until it leaves "running", calling back on the way. Resolves NULL when
+ *  the row is GONE — a finished record is dropped after its retention window
+ *  (SPEC BG-6), which a backgrounded tab can sleep straight through, and
+ *  waiting forever for a row that is never coming back is a promise that never
+ *  settles.
  *
  *  Every exit is BOUNDED, which is the whole point: the caller paints
  *  "Transcribing…" and disables the Comment seat before awaiting this, so a
- *  loop with an unreachable exit is a stuck status bar, not a slow one. */
-async function watchJob(
+ *  watch with an unreachable exit is a stuck status bar, not a slow one. */
+function watchJob(
   deps: TranscribeDeps,
   id: string,
   stopped: () => boolean,
+  signal?: AbortSignal,
 ): Promise<Job | null> {
-  const list = deps.jobs || fetchJobs;
-  const sleep = deps.sleep || ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
-  const every = Math.max(200, deps.intervalMs || 700);
-  let missing = 0;
-  let failures = 0;
-  for (;;) {
-    if (stopped()) return null;
-    const snapshot = await list().catch(() => null);
-    if (!snapshot) {
-      // The READ failed; nothing was learned about the row either way. Spend a
-      // failure, not a miss, and ask again on the next tick.
-      if (++failures >= MAX_POLL_FAILURES) return null;
-    } else {
-      failures = 0;
-      const record = snapshot.jobs.find((j) => j.id === id) || null;
-      if (record) {
-        missing = 0;
-        if (deps.onProgress) deps.onProgress(record);
-        if (record.state !== ("running" as JobState)) return record;
-      } else if (++missing >= GONE_MISS_TOLERANCE) {
-        return null;
-      }
-    }
-    await sleep(every);
-  }
+  return watchJobRow(id, {
+    subscribe: deps.subscribe,
+    stopped,
+    signal,
+    onTick: deps.onProgress,
+    goneGraceMs: deps.goneGraceMs,
+  });
 }
 
 /**
@@ -396,6 +355,9 @@ export async function startTranscribe(
 
   const started = await startJob(post, "/api/ai/transcribe", body);
   let stopped = false;
+  // The watch is push-driven, so a cancel has to WAKE it rather than wait
+  // for a frame that may never come: the signal settles it at once.
+  const halt = new AbortController();
 
   // The transcript file is the RESULT; the row only said when to read it. Typed
   // on failure like every other rejection here — the reads can fail on their
@@ -426,7 +388,7 @@ export async function startTranscribe(
   };
 
   const done = (async (): Promise<Transcript> => {
-    const record = await watchJob(deps, started.jobId, () => stopped);
+    const record = await watchJob(deps, started.jobId, () => stopped, halt.signal);
     if (stopped) {
       throw fail("the transcription was cancelled", "cancelled", { jobId: started.jobId });
     }
@@ -465,6 +427,7 @@ export async function startTranscribe(
     done,
     cancel: async () => {
       stopped = true;
+      halt.abort();
       await cancelJob(started.jobId);
     },
   };

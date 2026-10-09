@@ -9,6 +9,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { CheckIcon } from "lucide-react";
 import { openFdaSettings } from "@platform/lib/api";
 import { fdaCopy, pokeFda, relaunchHref, useFda } from "@platform/lib/fda";
+import { resyncTopic, subscribeTopic } from "@platform/lib/events";
 import { cn } from "@platform/lib/utils";
 import { Button } from "@platform/shadcn/ui/button";
 import { Input } from "@platform/shadcn/ui/input";
@@ -26,7 +27,7 @@ export interface PhoneSectionProps {
   contacts: string; setContacts: (c: string) => void;
 }
 
-const POLL_MS = 3000;
+const IMESSAGE_TOPIC = "bots.imessage";
 
 /** The backend's norm_handle, so a typed "+1 (555) 123-4567" compares equal to the stored "+15551234567". */
 export function normHandle(h: string): string {
@@ -70,19 +71,10 @@ export function PhoneSection({ botId, handle, setHandle, enabled, setEnabled, co
   const [tested, setTested] = useState<{ ok: boolean; text: string } | null>(null);
   const [opened, setOpened] = useState(false);        // System Settings was opened from here
 
-  // The bridge's state, fresh while the section shows: the switch turning on makes the bridge read chat.db and learn
-  // this Mac's own handles a poll or two later.
-  useEffect(() => {
-    let live = true, t: number | null = null;
-    const tick = async () => {
-      const r = await act(() => api.imessage(), true);
-      if (!live) return;
-      if (r) setSt(r);
-      t = window.setTimeout(() => { void tick(); }, POLL_MS);
-    };
-    void tick();
-    return () => { live = false; if (t !== null) window.clearTimeout(t); };
-  }, []);
+  // The bridge's state, fresh while the section shows: topic `bots.imessage` (the body of `GET /api/bots/imessage`),
+  // which the server re-reads every 3 s while subscribed — the switch turning on makes the bridge read chat.db and
+  // learn this Mac's own handles a tick or two later. A refusal leaves the last state shown (the read was silent).
+  useEffect(() => subscribeTopic<ImessageState>(IMESSAGE_TOPIC, null, (snap) => { if (snap) setSt(snap); }), []);
 
   const own = st?.own_handles || [];
   const nh = normHandle(handle);
@@ -105,8 +97,8 @@ export function PhoneSection({ botId, handle, setHandle, enabled, setEnabled, co
     const run = async () => {
       const { on: o, h: hh } = want.current, w = normHandle(hh);
       await act(() => api.settings(botId, { imessage_enabled: o, ...(w ? { imessage_handle: w } : {}) }));
-      const r = await act(() => api.imessage(), true);
-      if (r) setSt(r);
+      // The bridge reads both from disk: ask the stream for its state now rather than at the next tick.
+      resyncTopic(IMESSAGE_TOPIC);
     };
     chain.current = chain.current.then(run, run);
     return chain.current;
