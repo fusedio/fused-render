@@ -9,6 +9,8 @@ the invariants the Fused Events Bus design names, each pinned once.
   * every socket that reaches app state checks Origin
   * LanApp closes every socket, the events route included
   * hidden policy is the client's: the catalog says which topics may be dropped
+  * no topic name appears outside runtime.js and frontend/src (D15: no page API)
+  * every poll-and-diff producer names the client cadence it replaces (D16)
 """
 import asyncio
 import json
@@ -406,3 +408,54 @@ def test_ping_when_silent():
         finally:
             ev.PING_EVERY_S = orig
     asyncio.run(scenario())
+
+
+# ----------------------------------------------------------- D15 / D16 guards
+
+def _topic_names() -> list[str]:
+    from fused_render.server import topics as topics_mod
+    topics_mod.register_all()
+    return sorted(bus.topics)
+
+
+def test_no_topic_name_appears_in_templates_or_skills():
+    """D15: topic names are internal plumbing. A template or a skill that
+    names one would be a page API by the back door."""
+    import pathlib
+    root = pathlib.Path(__file__).resolve().parent.parent
+    # Dotted names only: a bare word like `jobs` is also a JSON key every
+    # job-reporting template reads (`data["jobs"]`), and that is the GET's
+    # body, not a topic. Every topic but `jobs` and `bots` is dotted.
+    names = [n for n in _topic_names() if "." in n]
+    assert names, "no topics registered"
+    hits = []
+    for base in (root / "fused_render" / "templates", root / "skills", root / ".claude" / "skills"):
+        if not base.exists():
+            continue
+        for path in base.rglob("*"):
+            if not path.is_file() or path.suffix not in {".py", ".js", ".html", ".md", ".ts", ".tsx"}:
+                continue
+            try:
+                text = path.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            for name in names:
+                if f'"{name}"' in text or f"'{name}'" in text:
+                    hits.append(f"{path.relative_to(root)}: {name}")
+    assert not hits, "topic names leaked outside runtime.js/frontend:\n" + "\n".join(hits)
+
+
+def test_every_poll_and_diff_producer_names_the_cadence_it_replaces():
+    """D16: a server-side producer runs at the OLD client interval, and the
+    source says which client file:line that interval came from."""
+    import inspect
+    from fused_render.server import topics as topics_mod
+    topics_mod.register_all()
+    for name, topic in bus.topics.items():
+        if not topic.poll_interval_s:
+            continue
+        src = inspect.getsource(type(topic)) if type(topic) is not type(bus.topics["tasks.listing"]).__base__ else ""
+        if not src:
+            src = topic.__dict__.get("cadence_note", "")
+        assert "old" in src.lower() and ("cadence" in src.lower() or "interval" in src.lower()), \
+            f"{name}: poll_interval_s={topic.poll_interval_s} is not annotated with the client cadence it replaces"

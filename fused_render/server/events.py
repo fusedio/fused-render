@@ -137,6 +137,14 @@ class Topic:
         snapshot itself (and then `signature_is_snapshot` should be True)."""
         return self.snapshot(params)
 
+    def poll_interval(self, params: dict, age_s: float, last: Any) -> float:
+        """The producer's next sleep: `poll_interval_s` by default. A topic
+        whose old client cadence depended on state (fast while a login is
+        open, fast for the first second of an install) answers from `age_s`
+        (seconds since the key's first subscriber) and `last` (the last
+        signature) — the OLD CLIENT CADENCE EXACTLY, never a floor (D16)."""
+        return float(self.poll_interval_s or 1.0)
+
     async def attach(self, key: Hashable, params: dict, bus: "EventBus") -> Callable[[], None] | None:
         """event topics with a per-key producer that must be started on the
         first subscriber (fs.watch's registry entry): return a detach callable,
@@ -635,7 +643,9 @@ class EventBus:
         subscribe's own snapshot already told the client where things stand."""
         topic = state.topic
         last: Any = _UNSET
+        last_sig: Any = None
         inflight: asyncio.Future | None = None
+        started = time.monotonic()
         try:
             while True:
                 sig: Any = _UNSET
@@ -664,7 +674,8 @@ class EventBus:
                         else:
                             self._publish_on_loop(topic.name, state.key, None)
                     last = marker
-                await asyncio.sleep(float(topic.poll_interval_s or 1.0))
+                    last_sig = sig
+                await asyncio.sleep(topic.poll_interval(state.params, time.monotonic() - started, last_sig))
         except asyncio.CancelledError:
             pass
 

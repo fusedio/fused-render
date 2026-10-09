@@ -156,6 +156,10 @@ class JobsTopic(Topic):
     name = "jobs"
     kind = "event"
     hidden_ok = False
+    # The old idle cadence: frontend platform/lib/jobs.ts POLL_IDLE_MS (5 s),
+    # DownloadManager's `useJobs` — the floor under which a row ageing out
+    # was noticed before. (The 1 s busy cadence needs no server tick: every
+    # report is a write, and every write publishes.)
     poll_interval_s = 5.0
 
     def validate(self, params: dict) -> dict:
@@ -194,8 +198,18 @@ class EnvProgressTopic(Topic):
     name = "env.progress"
     kind = "polldiff"
     hidden_ok = False  # an install the user is waiting on must still finish
+    # The old client cadence (static/runtime.js `startInstall`'s poll, the
+    # INSTALL_POLL_FAST_MS / INSTALL_POLL_MS pair): 100 ms for the first
+    # second of the wait — a ~540 ms install must not sit out a 500 ms grid —
+    # then 500 ms. Measured from the first subscriber, as the page measured
+    # from its first poll.
     poll_interval_s = 0.5
+    FAST_S = 0.1
+    FAST_WINDOW_S = 1.0
     signature_is_snapshot = True
+
+    def poll_interval(self, params, age_s, last):
+        return self.FAST_S if age_s < self.FAST_WINDOW_S else self.poll_interval_s
 
     def validate(self, params: dict) -> dict:
         from fused_render import envinstall
@@ -228,6 +242,7 @@ class AppsBackgroundTopic(Topic):
     name = "apps.background"
     kind = "write"
     hidden_ok = True
+    # The old client cadence: static/runtime.js `daemonWatch`'s POLL_MS (5 s).
     poll_interval_s = 5.0
     signature_is_snapshot = True
 
