@@ -267,14 +267,22 @@ function startBrowserDrag(main: HTMLElement, g: HTMLElement, e: PointerEvent): v
   const x0 = e.clientX, b0 = staged() ? Math.round(shown) : layout.rcol ? LIM.r.shut : Math.min(Math.round(shown), cap());
   let autoShut = false;
   const stageStep = (b: number) => { layout = dragStep(layout, "c", main.clientWidth - 72 - 12 - b, stageRoom(main.clientWidth)); };
+  // Preview: the sidebar folds for room only when the thread floor, not the Stage floor, is the ceiling: past the Stage floor the mode flips (or caps).
+  const previewStep = (b: number) => {
+    const floor = stageFloor(main.clientWidth);
+    if (!layout.lcol && b > roomFor() && roomFor() < floor) { layout = { ...layout, lcol: true }; autoShut = true; }
+    else if (autoShut && b <= roomFor(false)) { layout = { ...layout, lcol: false }; autoShut = false; }
+    layout = dragStep(layout, "r", b, cap());
+  };
   const move = (ev: PointerEvent) => {
     const b = b0 + x0 - ev.clientX, floor = stageFloor(main.clientWidth);
     if (staged()) {
       stageStep(b);
       if (b < floor - STAGE_BAND && stageShut) {
-        // rw first: with control held the close resolves after the giveback, maybe after the pointer is up, and the preview must then
-        // show at the dragged width, not the one saved before Stage opened (--rw is unused while the Stage grid is up, so this is free).
-        layout = dragStep(layout, "r", b, cap());
+        // The preview step first (rw and the sidebar fold it needs for room): with control held the close resolves after the giveback,
+        // maybe after the pointer is up, and the preview must then show at the dragged width, not the one saved before Stage opened.
+        // --rw and lcol are unused while the Stage grid is up, so this costs nothing.
+        previewStep(b);
         stageShut();
       }
       if (staged()) { applyLayout(false); return; }
@@ -282,10 +290,7 @@ function startBrowserDrag(main: HTMLElement, g: HTMLElement, e: PointerEvent): v
       stageOpen();
       if (staged()) { stageStep(b); applyLayout(false); return; }
     }
-    // Preview. The sidebar folds for room only when the thread floor, not the Stage floor, is the ceiling: past the Stage floor the mode flips (or caps).
-    if (!layout.lcol && b > roomFor() && roomFor() < floor) { layout = { ...layout, lcol: true }; autoShut = true; }
-    else if (autoShut && b <= roomFor(false)) { layout = { ...layout, lcol: false }; autoShut = false; }
-    layout = dragStep(layout, "r", b, cap());
+    previewStep(b);
     applyLayout(false);
   };
   const up = () => { g.removeEventListener("pointermove", move); g.classList.remove("drag"); body().classList.remove("dragging"); applyLayout(true); };
