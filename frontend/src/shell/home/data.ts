@@ -16,6 +16,7 @@ import { useCurrentAppsChanged, TASKS_CHANGED_EVENT } from "@platform/lib/tasksC
 import { api as botsApi, type Bot } from "@apps/bots/lib/api";
 import type { AppsSort } from "./layout";
 import { MAX_ROW } from "./strip";
+import { isDraftTask } from "../tasks-lib";
 
 export const APPS_PAGE = 48;
 
@@ -210,15 +211,36 @@ function useAsyncResource<T>(
   };
 }
 
-const loadOpenTasks = () =>
-  getTasks().then((r) => r.tasks.filter((t) => t.status !== "done" && t.status !== "archived" && t.kind !== "draft"));
+export interface HomeTasks {
+  tasks: Task[];
+  drafts: number;
+  archived: number;
+}
+
+/** Split the task list for the Home Tasks widget: what it shows (everything but
+    archived and drafts, done included, newest activity first) plus the counts
+    of what it left out, so an empty widget can say why. */
+export function splitHomeTasks(all: Task[]): HomeTasks {
+  const archived = all.filter((t) => t.status === "archived").length;
+  const drafts = all.filter((t) => t.status !== "archived" && isDraftTask(t)).length;
+  const tasks = all
+    .filter((t) => t.status !== "archived" && !isDraftTask(t))
+    .sort((a, b) => (b.last_active || 0) - (a.last_active || 0));
+  return { tasks, drafts, archived };
+}
+
+export function homeTasks(all: Task[]): Task[] {
+  return splitHomeTasks(all).tasks;
+}
+
+const loadHomeTasks = () => getTasks().then((r) => splitHomeTasks(r.tasks));
 const loadHomeBots = () => botsApi.status({ cursors: {}, shot_for: "", fast: true }).then((r) => r.bots ?? []);
 
-/** Open tasks (everything but done/archived) — refetched when anything
+/** Recent tasks (everything but archived and drafts), newest first — refetched when anything
     announces a task change, and on a slow beat so a run finishing in the
     background shows up. */
-export function useOpenTasks(): AsyncState<Task[]> {
-  return useAsyncResource(loadOpenTasks, {
+export function useHomeTasks(): AsyncState<HomeTasks> {
+  return useAsyncResource(loadHomeTasks, {
     pollMs: 15000,
     event: TASKS_CHANGED_EVENT,
     errorText: "Couldn't load tasks.",

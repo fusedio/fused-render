@@ -41,14 +41,14 @@ Per-source allowed sizes / formats (first entry is the default):
 | playground | 4x1, 2x1, 2x2         | cards, list           | `PLAYGROUND_GROUPS` |
 | sessions   | 4x1, 2x1, 2x2         | cards, list           | `getHomeClaudeSessionFolders` |
 | recents    | 4x1, 2x1, 2x2         | cards, list           | `loadRecents` / `useRecentsVersion` |
-| tasks      | 2x2, 2x1, 4x1         | list, board, count    | `getTasks` (api.ts). Board = 3 columns Queued / In progress / Needs you (`needs_attention`). Count = big number of open tasks + "N need you". Exclude `done`/`archived`. Rows click through to the task (reuse whatever `shell/TaskCards.tsx` / Tasks page uses to open a task). |
+| tasks      | 2x2, 2x1, 4x1         | list, board, count    | `getTasks` (api.ts). Board = 4 lanes Queued / In progress / Needs you (`needs_attention`) / Done. Count = big number of open tasks + "N need you". Done tasks are kept; `archived` and drafts are excluded. A per-tile Show option (Open only / Open + done) drops the Done lane and the done rows. Rows click through to the task (reuse whatever `shell/TaskCards.tsx` / Tasks page uses to open a task). |
 | bots       | 1x1, 2x1, 2x2         | list, count           | bots `api.status` (`apps/bots/lib/api.ts`). List rows: name, status pill, `step`/`step_cap`, `title`/`note`. Click → `/bots`. |
 | folder     | 2x1, 1x1, 2x2, 4x1    | list, icons           | children of the bookmark folder `folderId`; title = folder name. Missing folder → empty state "This bookmark folder was deleted." |
 | index      | 1x1, 2x1              | count                 | `useIndexStatus` — file count + "updated N ago". |
 
-**Default layout** (used when the server reports no saved layout — must reproduce today's
-Home so nobody opens an empty page): apps 4x1 cards, playground 4x1 cards, sessions 4x1
-cards, recents 4x1 cards — same order as today.
+**Default layout** (used when the server reports no saved layout; saved layouts are never
+touched): the Builder preset (`presetRows("builder")`) — search 4x1, build 2x1, apps 2x2
+icons, bots 2x2 list, tasks 2x2 list — with stable `default-<source>` ids.
 
 A `4x1` widget with format `cards` is today's strip: reuse the existing `Section` +
 `useStripCount` one-row behaviour inside it (CARD_W / CARD_GAP / MAX_ROW unchanged).
@@ -113,9 +113,10 @@ of the four hard-coded `Section`s.
 Loading (skeleton, reuse Home's `SkeletonCard`/`SkeletonRow` where shape fits), error
 (copy says what failed + a Retry button; for bots: "Couldn't reach bots. Turn Bots on in
 Preferences if it's off." ), empty (reuse today's empty strings for the four existing
-sources; new ones: tasks "No open tasks.", bots "No bots yet.", folder "This folder is
+sources; new ones: tasks "No tasks yet." (or, when only drafts and archived tasks exist, "No active tasks · 1 draft, 19 archived"), bots "No bots yet.", folder "This folder is
 empty."), overflow (lists show what fits + "+N more" linking to the full page; long names
 ellipsize, never wrap the frame).
+The Tasks widget shows recent tasks, newest first, with drafts and archived tasks excluded (done are kept). Its board has Queued / In progress / Needs you / Done in one fixed four-column row, so Done never adds height (each lane shows the same cap plus "+N more"); the list shows open tasks first, then recent done ones; the count stays open-only (not done). A per-tile "Show" option (Open only / Open + done, default Open + done; hidden on the count format) drops the Done lane (the board becomes three columns) and the done rows; with nothing open the list reads "Nothing open".
 
 ## Styling rules
 
@@ -201,7 +202,7 @@ Presets (`PRESETS`, `presetLayout(id, { folderId? })` in `shell/home/layout.ts`;
 | Preset | Tiles (x,y; size in cells; custom = explicit cols x rows in units) |
 | --- | --- |
 | Workbench | exactly `defaultLayout()` |
-| Builder | search 4x1 (0,0); build (0,1) 4x4; apps 2x2 (4,1); playground 2x2 (0,5); sessions 2x2 (4,5) |
+| Builder | search 4x1 (0,0); build 2x1 (0,1); apps 2x2 icons (4,1); bots 2x2 list (0,5); tasks 2x2 list (4,5) |
 | Mission control | search (0,0); tasks board custom 6x4 (0,1); index 1x1 (6,1); bots 1x1 (6,3); sessions 2x1 (0,5); recents 2x1 (4,5) |
 | Files | search (0,0); recents list custom 6x4 (0,1); index 1x1 (6,1); bookmark folder 1x1 list (6,3), or sessions list custom 2x2 when no folder exists; apps 2x1 (0,5); tasks 2x1 (4,5) |
 | Focus | search (0,0); build 4x1 (0,1) |

@@ -33,6 +33,17 @@ function isAppsSort(v: unknown): v is AppsSort {
   return APPS_SORTS.some((s) => s.value === v);
 }
 
+export type TasksShow = "open" | "open_done";
+
+export const TASKS_SHOWS: { value: TasksShow; label: string }[] = [
+  { value: "open", label: "Open only" },
+  { value: "open_done", label: "Open + done" },
+];
+
+function isTasksShow(v: unknown): v is TasksShow {
+  return TASKS_SHOWS.some((s) => s.value === v);
+}
+
 export interface Widget {
   id: string;
   source: WidgetSource;
@@ -51,6 +62,8 @@ export interface Widget {
   appPath?: string;
   /** source === "apps": card order; absent = "opened". */
   sort?: AppsSort;
+  /** source === "tasks": whether done tasks show; absent = "open_done". */
+  show?: TasksShow;
 }
 
 export interface HomeLayout {
@@ -169,7 +182,7 @@ function makeWidget(
   source: WidgetSource,
   x: number,
   y: number,
-  opts: { id?: string; folderId?: string; appPath?: string; format?: WidgetFormat; size?: WidgetSize; sort?: AppsSort } = {},
+  opts: { id?: string; folderId?: string; appPath?: string; format?: WidgetFormat; size?: WidgetSize; sort?: AppsSort; show?: TasksShow } = {},
 ): Widget {
   const spec = SOURCES[source];
   const w: Widget = {
@@ -183,24 +196,17 @@ function makeWidget(
   if (opts.folderId) w.folderId = opts.folderId;
   if (source === "app" && opts.appPath) w.appPath = opts.appPath;
   if (source === "apps" && isAppsSort(opts.sort)) w.sort = opts.sort;
+  if (source === "tasks" && isTasksShow(opts.show)) w.show = opts.show;
   return w;
 }
 
-/** The Legacy preset: the Home page as it was before widgets — search, then
-    four full-width one-row strips. */
+/** The Builder preset, with stable `default-<source>` ids. Built from the same
+    rows as presetLayout("builder"). */
 export const DEFAULT_LAYOUT: HomeLayout = {
   version: LAYOUT_VERSION,
-  widgets: [
-    makeWidget("search", 0, 0, { id: "default-search" }),
-    makeWidget("apps", 0, 1, { id: "default-apps", size: "4x1" }),
-    makeWidget("playground", 0, 3, { id: "default-playground", size: "4x1" }),
-    makeWidget("sessions", 0, 5, { id: "default-sessions", size: "4x1" }),
-    makeWidget("recents", 0, 7, { id: "default-recents", size: "4x1" }),
-  ],
+  widgets: sortByPosition(presetRows("builder").map((r) => widgetFromRow(r, `default-${r.source}`))),
 };
 
-/** Fresh copy of the default — callers mutate nothing, but state should never
-    alias the module constant. */
 export function defaultLayout(): HomeLayout {
   return { version: LAYOUT_VERSION, widgets: DEFAULT_LAYOUT.widgets.map((w) => ({ ...w })) };
 }
@@ -255,6 +261,7 @@ export function normalizeLayout(raw: unknown): HomeLayout {
     if (source === "folder") w.folderId = folderId;
     if (source === "app") w.appPath = appPath;
     if (source === "apps" && isAppsSort(x.sort)) w.sort = x.sort;
+    if (source === "tasks" && isTasksShow(x.show)) w.show = x.show;
     cleaned.push({ w, rx: x.x, ry: x.y, rc: x.cols, rr: x.rows });
   }
   if (r.version === 1 && !cleaned.some((c) => c.w.source === "search")) {
@@ -356,7 +363,7 @@ export function hasSearch(layout: HomeLayout): boolean {
 export function addWidget(
   layout: HomeLayout,
   source: WidgetSource,
-  opts: { id?: string; folderId?: string; appPath?: string; format?: WidgetFormat; size?: WidgetSize; sort?: AppsSort } = {},
+  opts: { id?: string; folderId?: string; appPath?: string; format?: WidgetFormat; size?: WidgetSize; sort?: AppsSort; show?: TasksShow } = {},
 ): HomeLayout {
   if (layout.widgets.length >= MAX_WIDGETS) return layout;
   if (source === "search" && hasSearch(layout)) return layout;
@@ -418,6 +425,12 @@ export function setFormat(layout: HomeLayout, id: string, format: WidgetFormat):
 export function setSort(layout: HomeLayout, id: string, sort: AppsSort): HomeLayout {
   return patch(layout, id, (w) =>
     w.source === "apps" && (w.sort ?? "opened") !== sort ? { ...w, sort } : null,
+  );
+}
+
+export function setTasksShow(layout: HomeLayout, id: string, show: TasksShow): HomeLayout {
+  return patch(layout, id, (w) =>
+    w.source === "tasks" && (w.show ?? "open_done") !== show ? { ...w, show } : null,
   );
 }
 
@@ -489,8 +502,8 @@ export function itemCapacity(size: WidgetSize, format: WidgetFormat): number {
   const cols = d.cols / CELL;
   const rows = d.rows / CELL;
   if (format === "icons") return cols * 3 * rows;
-  // 1x2 (cols 1, rows 2) is covered: list 5, icons 6.
-  const perColumn = rows === 1 ? 2 : 5;
+  // 1x2 (cols 1, rows 2) is covered: list 4, icons 6.
+  const perColumn = rows === 1 ? 2 : 4;
   return perColumn * (cols >= 4 ? 2 : 1);
 }
 
@@ -759,6 +772,16 @@ type PresetRow = {
   folderId?: string;
 };
 
+function widgetFromRow(r: PresetRow, id?: string): Widget {
+  const w = makeWidget(r.source, r.x, r.y, { id, size: r.size, format: r.format, folderId: r.folderId });
+  if (r.custom) {
+    w.size = contentSizeFor(r.source, r.custom.cols, r.custom.rows);
+    w.cols = r.custom.cols;
+    w.rows = r.custom.rows;
+  }
+  return w;
+}
+
 function presetRows(id: PresetId, folderId?: string): PresetRow[] {
   switch (id) {
     case "legacy":
@@ -785,7 +808,7 @@ function presetRows(id: PresetId, folderId?: string): PresetRow[] {
         { source: "build", x: 0, y: 1, size: "2x1" },
         { source: "apps", x: 4, y: 1, size: "2x2", format: "icons" },
         { source: "bots", x: 0, y: 5, size: "2x2", format: "list" },
-        { source: "sessions", x: 4, y: 5, size: "2x2", format: "list" },
+        { source: "tasks", x: 4, y: 5, size: "2x2", format: "list" },
       ];
     case "mission":
       return [
@@ -818,15 +841,7 @@ function presetRows(id: PresetId, folderId?: string): PresetRow[] {
 /** A preset as a plain layout document with fresh ids. Files shows a bookmark
     folder when it is given one, else bots in that slot. */
 export function presetLayout(id: PresetId, opts: { folderId?: string } = {}): HomeLayout {
-  const widgets = presetRows(id, opts.folderId).map((r) => {
-    const w = makeWidget(r.source, r.x, r.y, { size: r.size, format: r.format, folderId: r.folderId });
-    if (r.custom) {
-      w.size = contentSizeFor(r.source, r.custom.cols, r.custom.rows);
-      w.cols = r.custom.cols;
-      w.rows = r.custom.rows;
-    }
-    return w;
-  });
+  const widgets = presetRows(id, opts.folderId).map((r) => widgetFromRow(r));
   return { version: LAYOUT_VERSION, widgets: sortByPosition(widgets) };
 }
 
@@ -881,7 +896,7 @@ export function sourceFits(
 /** Where a Change pick lands: an existing tile, or an empty slot. */
 export type TileTarget = { kind: "swap"; widget: Widget } | { kind: "fill"; rect: Rect };
 
-export type TileOpts = { folderId?: string; appPath?: string; format?: WidgetFormat; sort?: AppsSort };
+export type TileOpts = { folderId?: string; appPath?: string; format?: WidgetFormat; sort?: AppsSort; show?: TasksShow };
 
 /** A widget of `source` covering exactly `rect`: a matching size preset when
     there is one, else an explicit footprint. Null when the source's required
@@ -917,6 +932,7 @@ function tileFor(id: string, source: WidgetSource, rect: Rect, opts: TileOpts, f
   if (source === "folder") w.folderId = opts.folderId;
   if (source === "app") w.appPath = opts.appPath;
   if (source === "apps" && isAppsSort(opts.sort)) w.sort = opts.sort;
+  if (source === "tasks" && isTasksShow(opts.show)) w.show = opts.show;
   return w;
 }
 

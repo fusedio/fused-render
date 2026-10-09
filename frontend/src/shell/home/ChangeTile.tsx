@@ -5,7 +5,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useDismissOnOutside } from "@platform/lib/dismissOnOutside";
 import { SourceIcon } from "./AddWidgetPanel";
-import { FormatPicks, SortChips } from "./Pickers";
+import { FormatPicks, ShowChips, SortChips } from "./Pickers";
 import { MAX_WIDGETS, SOURCES, rectOf, sourceFits, type TileTarget, type WidgetSource } from "./layout";
 import type { HomeLayoutApi } from "./useHomeLayout";
 
@@ -139,6 +139,12 @@ export function ChangeTile({
             <>
               <div className="hw-label">Sort by</div>
               <SortChips value={widget.sort ?? "opened"} onChange={(s) => api.resort(widget.id, s)} />
+            </>
+          ) : null}
+          {widget.source === "tasks" && widget.format !== "count" ? (
+            <>
+              <div className="hw-label">Show</div>
+              <ShowChips value={widget.show ?? "open_done"} onChange={(s) => api.reshow(widget.id, s)} />
             </>
           ) : null}
         </>

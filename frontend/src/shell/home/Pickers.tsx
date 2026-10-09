@@ -1,13 +1,26 @@
 // The two pickers the edit popover and the add sheet share: size chips (layout
 // glyph + label) and format picks (scaled preview thumbnail + caption).
 import { FormatPreview, previewKind } from "./FormatPreview";
-import { APPS_SORTS, FORMAT_LABELS, SIZE_LABELS, type AppsSort, type WidgetFormat, type WidgetSize, type WidgetSource } from "./layout";
+import { APPS_SORTS, FORMAT_LABELS, SIZE_LABELS, TASKS_SHOWS, type AppsSort, type TasksShow, type WidgetFormat, type WidgetSize, type WidgetSource } from "./layout";
 import { SizeGlyph } from "./SizeGlyph";
 
 export function SortChips({ value, onChange }: { value: AppsSort; onChange: (s: AppsSort) => void }) {
   return (
     <div className="hw-chips" role="radiogroup" aria-label="Sort by">
       {APPS_SORTS.map((s) => (
+        <button key={s.value} type="button" role="radio" aria-checked={s.value === value}
+          className={"hw-sizechip" + (s.value === value ? " is-on" : "")} onClick={() => onChange(s.value)}>
+          {s.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+export function ShowChips({ value, onChange }: { value: TasksShow; onChange: (s: TasksShow) => void }) {
+  return (
+    <div className="hw-chips" role="radiogroup" aria-label="Show">
+      {TASKS_SHOWS.map((s) => (
         <button key={s.value} type="button" role="radio" aria-checked={s.value === value}
           className={"hw-sizechip" + (s.value === value ? " is-on" : "")} onClick={() => onChange(s.value)}>
           {s.label}

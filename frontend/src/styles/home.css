@@ -972,7 +972,7 @@ button.hw-row:hover {
   grid-template-columns: repeat(auto-fill, minmax(76px, 1fr));
   gap: 8px;
   height: 100%;
-  align-content: center;
+  align-content: start;
 }
 
 .hw-icons.is-strip {
@@ -980,13 +980,25 @@ button.hw-row:hover {
   grid-auto-flow: column;
   grid-auto-columns: 76px;
   grid-template-rows: repeat(var(--hw-rows, 1), auto);
-  align-content: center;
+  align-content: start;
   overflow-x: auto;
   overscroll-behavior-x: contain;
   scrollbar-width: none;
   padding-right: 56px; /* room for the peek fade */
 }
 .hw-icons.is-strip::-webkit-scrollbar { display: none; }
+
+/* The icons strip fills the height its tile really has, so CardStrip can
+   measure it and draw as many rows as fit. */
+.hw-body:has(> .hw-strip > .hw-icons) {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.hw-body > .hw-strip:has(> .hw-icons) {
+  flex: 1 1 auto;
+  min-height: 0;
+}
 
 .hw-tile {
   display: flex;
@@ -1175,9 +1187,15 @@ a.hw-more:hover {
 /* Board */
 .hw-board {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  grid-template-columns: repeat(var(--hw-lanes, 4), minmax(0, 1fr));
   gap: 12px;
   align-items: start;
+}
+
+@media (max-width: 640px) {
+  .hw-board {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 .hw-lane {
