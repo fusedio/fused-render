@@ -35,6 +35,17 @@ export function iconRowsThatFit(height: number, tileH: number, gap: number, minR
   return Math.max(minRows, Math.floor((height + gap) / (tileH + gap)));
 }
 
+/** How many whole icon columns fit in `width`, never fewer than one. */
+export function iconColsThatFit(width: number, tileW: number, gap: number): number {
+  if (!(width > 0) || !(tileW > 0)) return 1;
+  return Math.max(1, Math.floor((width + gap) / (tileW + gap)));
+}
+
+/** Pixel width of `cols` whole icon columns, so no partial column peeks in. */
+export function iconColsWidth(cols: number, tileW: number, gap: number): number {
+  return cols * tileW + (cols - 1) * gap;
+}
+
 /**
  * `fitRows` capped so a few items do not stack into one column: with column
  * flow, `itemCount` items need only ceil(itemCount / colsThatFit) rows.
@@ -66,6 +77,7 @@ export function CardStrip({
   const scroller = useRef<HTMLDivElement>(null);
   const [edges, setEdges] = useState({ canPrev: false, canNext: false });
   const [fitRows, setFitRows] = useState(0);
+  const [fitCols, setFitCols] = useState(0);
   const nearEndRef = useRef(onNearEnd);
   nearEndRef.current = onNearEnd;
   const update = useCallback(() => {
@@ -75,7 +87,10 @@ export function CardStrip({
     if (variant === "icons") {
       const tileH = (el.firstElementChild as HTMLElement | null)?.offsetHeight || ICON_TILE_H;
       const tileW = (el.firstElementChild as HTMLElement | null)?.offsetWidth || ICON_TILE_W;
-      const colsThatFit = Math.max(1, Math.floor((el.clientWidth + ICON_GAP) / (tileW + ICON_GAP)));
+      // The scroller is itself sized to whole columns, so the room is its parent's width.
+      const room = el.parentElement?.clientWidth || el.clientWidth;
+      const colsThatFit = iconColsThatFit(room, tileW, ICON_GAP);
+      setFitCols((prev) => (prev === colsThatFit ? prev : colsThatFit));
       const n = cappedIconRows(iconRowsThatFit(el.clientHeight, tileH, ICON_GAP, 1), el.childElementCount, colsThatFit);
       setFitRows((prev) => (prev === n ? prev : n));
     }
@@ -88,24 +103,28 @@ export function CardStrip({
     if (!el || typeof ResizeObserver === "undefined") return;
     const ro = new ResizeObserver(update);
     ro.observe(el);
+    if (variant === "icons" && el.parentElement) ro.observe(el.parentElement);
     return () => ro.disconnect();
-  }, [update]);
+  }, [update, variant]);
 
   const page = (dir: 1 | -1) => {
     const el = scroller.current;
     if (!el) return;
     const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    el.scrollBy({ left: dir * (el.clientWidth - PEEK_W), behavior: reduce ? "auto" : "smooth" });
+    // Icons page by whole columns (the scroller is exactly that wide); cards leave a peek.
+    const step = variant === "icons" ? el.clientWidth + ICON_GAP : el.clientWidth - PEEK_W;
+    el.scrollBy({ left: dir * step, behavior: reduce ? "auto" : "smooth" });
   };
   const icons = variant === "icons";
+  const iconsW = icons && fitCols > 0 ? iconColsWidth(fitCols, ICON_TILE_W, ICON_GAP) : undefined;
   const overflowing = icons ? total > 0 : count !== null && total > count * rows;
   const { canPrev, canNext } = edges;
   return (
-    <div className={"hw-strip" + (canNext ? " has-more" : "")}>
+    <div className={"hw-strip" + (canNext && !icons ? " has-more" : "")}>
       <div
         ref={scroller}
         className={(icons ? "hw-icons is-strip" : "home-row hw-cards") + (overflowing ? " is-overflowing" : "")}
-        style={({ ...(icons ? {} : { "--hw-n": count ?? 1 }), "--hw-rows": icons ? Math.max(rows, fitRows) : rows }) as CSSProperties}
+        style={(({ ...(icons ? { width: iconsW } : { "--hw-n": count ?? 1 }), "--hw-rows": icons ? Math.max(rows, fitRows) : rows }) as unknown) as CSSProperties}
         onScroll={update}
       >
         {children}

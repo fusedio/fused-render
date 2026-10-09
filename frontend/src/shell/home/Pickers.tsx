@@ -1,7 +1,7 @@
-// The two pickers the edit popover and the add sheet share: size chips (layout
-// glyph + label) and format picks (scaled preview thumbnail + caption).
+// The pickers on the tile Change card: size chips (layout glyph + label) and
+// format picks (scaled preview thumbnail + caption).
 import { FormatPreview, previewKind } from "./FormatPreview";
-import { APPS_SORTS, FORMAT_LABELS, SIZE_LABELS, TASKS_SHOWS, type AppsSort, type TasksShow, type WidgetFormat, type WidgetSize, type WidgetSource } from "./layout";
+import { APPS_SORTS, CELL, FORMAT_LABELS, SIZE_LABELS, dimsFor, TASKS_SHOWS, type AppsSort, type TasksShow, type WidgetFormat, type WidgetSize, type WidgetSource } from "./layout";
 import { SizeGlyph } from "./SizeGlyph";
 
 export function SortChips({ value, onChange }: { value: AppsSort; onChange: (s: AppsSort) => void }) {
@@ -38,22 +38,29 @@ export function sortSizes(sizes: WidgetSize[]): WidgetSize[] {
   return SIZE_ORDER.filter((s) => sizes.includes(s));
 }
 
+/** "2×2" in whole cells; empty for a fixed-row source whose height is a fraction of a cell. */
+export function cellDims(source: WidgetSource, size: WidgetSize): string {
+  const d = dimsFor(source, size);
+  return d.rows % CELL === 0 ? `${d.cols / CELL}\u00d7${d.rows / CELL}` : "";
+}
+
 export function SizeChips({
   sizes,
   value,
   onChange,
-  label = "Size",
   allowed,
+  source,
 }: {
   sizes: WidgetSize[];
   value?: WidgetSize;
   onChange: (s: WidgetSize) => void;
-  label?: string;
-  /** Sizes that currently fit; the rest render disabled. Omit to allow all. */
-  allowed?: WidgetSize[];
+  /** Sizes that currently fit; the rest render disabled. */
+  allowed: WidgetSize[];
+  /** Each chip shows its cell dimensions (Large 2×2). */
+  source: WidgetSource;
 }) {
   return (
-    <div className="hw-chips" role="radiogroup" aria-label={label}>
+    <div className="hw-chips" role="radiogroup" aria-label="Size">
       {sortSizes(sizes).map((s) => (
         <button
           key={s}
@@ -61,12 +68,13 @@ export function SizeChips({
           role="radio"
           aria-checked={s === value}
           className={"hw-sizechip" + (s === value ? " is-on" : "")}
-          disabled={allowed ? !allowed.includes(s) : false}
-          title={allowed && !allowed.includes(s) ? "No room here" : undefined}
+          disabled={!allowed.includes(s)}
+          title={!allowed.includes(s) ? "No room here" : undefined}
           onClick={() => onChange(s)}
         >
           <SizeGlyph size={s} scale={0.7} />
           {SIZE_LABELS[s]}
+          <span className="hw-sizechip-dims">{cellDims(source, s)}</span>
         </button>
       ))}
     </div>
@@ -90,31 +98,39 @@ export function FormatPicks({
   formats,
   value,
   onChange,
+  disabled,
 }: {
   source: WidgetSource;
   formats: WidgetFormat[];
   value: WidgetFormat;
   onChange: (f: WidgetFormat) => void;
+  /** True for a format that cannot be picked on this tile. */
+  disabled?: (f: WidgetFormat) => boolean;
 }) {
   return (
     <div className="hw-picks" role="radiogroup" aria-label="Show as">
-      {formats.map((f) => (
-        <button
-          key={f}
-          type="button"
-          role="radio"
-          aria-checked={f === value}
-          className={"hw-pick" + (f === value ? " is-on" : "")}
-          onClick={() => onChange(f)}
-        >
-          <span className="hw-thumb">
-            <span className="hw-thumb-in" style={{ zoom: thumbZoom(source, f) }}>
-              <FormatPreview source={source} format={f} />
+      {formats.map((f) => {
+        const off = f !== value && !!disabled?.(f);
+        return (
+          <button
+            key={f}
+            type="button"
+            role="radio"
+            aria-checked={f === value}
+            className={"hw-pick" + (f === value ? " is-on" : "")}
+            disabled={off}
+            title={off ? "Needs a taller tile" : undefined}
+            onClick={() => onChange(f)}
+          >
+            <span className="hw-thumb">
+              <span className="hw-thumb-in" style={{ zoom: thumbZoom(source, f) }}>
+                <FormatPreview source={source} format={f} />
+              </span>
             </span>
-          </span>
-          <span className="hw-pick-cap">{FORMAT_LABELS[f]}</span>
-        </button>
-      ))}
+            <span className="hw-pick-cap">{FORMAT_LABELS[f]}</span>
+          </button>
+        );
+      })}
     </div>
   );
 }

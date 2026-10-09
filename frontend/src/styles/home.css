@@ -661,15 +661,16 @@
   /* WidgetGrid sets --hw-cols in half-cell units (8, or 4 at phone width); the 16px gap makes a whole cell = 2 tracks + 16px, the same width the old 4-track grid gave. WidgetGrid places every item
      explicitly with inline grid-column/grid-row. */
   grid-template-columns: repeat(var(--hw-cols, 8), minmax(0, 1fr));
-  grid-auto-rows: auto;
+  /* One fixed grid, the same in view and edit mode (empty rows keep their height): a unit row is exactly 52px (two units + the 16px gap make the 120px cell). A tile's height is only a function of its footprint; its content adapts (lists show what fits, the rest clips) and nothing a widget renders may grow a row. */
+  --hw-unit: 52px;
+  grid-auto-rows: var(--hw-unit);
   gap: 16px;
 }
 
-/* The edit canvas shows empty rows; they keep a height. View mode stays auto
-   so the bare search/build rows are not padded to 120px. */
-.hw-grid.is-edit {
-  /* a unit row; two units + the gap = the 120px cell */
-  grid-auto-rows: minmax(52px, auto);
+/* Children never push their track: they shrink to the footprint and clip. */
+.hw-grid > * {
+  min-height: 0;
+  overflow: hidden;
 }
 
 /* Focus preset, view mode: the search bar stays on top and the Build composer
@@ -717,7 +718,6 @@
   display: flex;
   flex-direction: column;
   min-width: 0;
-  min-height: 120px;
   padding: 12px 14px;
   background: transparent;
   border: 1px solid var(--border);
@@ -768,9 +768,12 @@
   min-width: 0;
 }
 
-/* A list fills the height its tile really has; ItemList measures it and shows
-   extra rows past the nominal capacity. */
-.hw-body:has(> .hw-list-wrap) {
+/* A list or a strip (cards or icons) fills the height its tile really has;
+   ItemList and CardStrip measure it and show extra rows past the nominal
+   capacity. The body must be a flex column, or the strip's flex: 1 does
+   nothing and size-contained cards collapse to 0 height. */
+.hw-body:has(> .hw-list-wrap),
+.hw-body:has(> .hw-strip) {
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -789,12 +792,21 @@
 .hw-strip {
   position: relative;
   min-width: 0;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.hw-strip > .hw-cards {
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
 .hw-cards {
   display: grid;
   grid-auto-flow: column;
-  grid-template-rows: repeat(var(--hw-rows, 1), auto);
+  grid-template-rows: repeat(var(--hw-rows, 1), minmax(0, 1fr));
   grid-auto-columns: 330px;
   gap: 16px;
   overflow-x: auto;
@@ -820,6 +832,40 @@
   min-width: 0;
   width: auto;
   max-width: none;
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  container-type: size;
+}
+
+/* A card fills the height its tile has. The header keeps its size; the body
+   (thumb, playground well, folder stack) takes what is left and crops. */
+.hw-cards .app-pcard-thumb,
+.hw-cards .home-pg-body,
+.hw-cards .fhb-stack {
+  flex: 1 1 auto;
+  min-height: 0;
+  aspect-ratio: auto;
+  overflow: hidden;
+}
+
+.hw-cards .app-pcard-thumb img,
+.hw-cards .app-pcard-shot {
+  object-fit: cover;
+  object-position: top;
+}
+
+/* A short tile has no room for a body: the card is its header alone (icon,
+   title, path, time). */
+@container (max-height: 120px) {
+  .hw-cards .app-pcard-thumb,
+  .hw-cards .app-pcard-share,
+  .hw-cards .home-pg-body,
+  .hw-cards .fhb-stack {
+    display: none;
+  }
 }
 
 /* Fade the peeking card into the widget background. */
@@ -984,17 +1030,15 @@ button.hw-row:hover {
   overflow-x: auto;
   overscroll-behavior-x: contain;
   scrollbar-width: none;
-  padding-right: 56px; /* room for the peek fade */
+  /* CardStrip sizes the strip to whole columns, so a column never peeks in half-cut; scrolling rests on column edges. */
+  max-width: 100%;
+  scroll-snap-type: x mandatory;
 }
+.hw-icons.is-strip > .hw-tile { scroll-snap-align: start; }
 .hw-icons.is-strip::-webkit-scrollbar { display: none; }
 
 /* The icons strip fills the height its tile really has, so CardStrip can
    measure it and draw as many rows as fit. */
-.hw-body:has(> .hw-strip > .hw-icons) {
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-}
 .hw-body > .hw-strip:has(> .hw-icons) {
   flex: 1 1 auto;
   min-height: 0;
@@ -1185,21 +1229,39 @@ a.hw-more:hover {
 }
 
 /* Board */
-.hw-board {
-  display: grid;
-  grid-template-columns: repeat(var(--hw-lanes, 4), minmax(0, 1fr));
-  gap: 12px;
-  align-items: start;
+.hw-body:has(> .hw-board) {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 
-@media (max-width: 640px) {
-  .hw-board {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
+.hw-board {
+  --hw-lane-min: 160px;
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(var(--hw-lane-min), 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  gap: 12px;
+  align-items: stretch;
+  flex: 1 1 auto;
+  min-height: 0;
+  /* A narrow tile scrolls the board sideways; a wide one stretches the lanes to fill. */
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  scroll-snap-type: x proximity;
+  scrollbar-width: none;
+}
+
+.hw-board::-webkit-scrollbar {
+  display: none;
 }
 
 .hw-lane {
+  scroll-snap-align: start;
   min-width: 0;
+  min-height: 0;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -1226,12 +1288,18 @@ a.hw-more:hover {
 .hw-lane.is-running .hw-lane-dot { background: var(--success); }
 
 .hw-lane-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
   font-size: 11.5px;
   font-weight: 500;
   color: var(--fg-muted);
 }
 
 .hw-lane-n {
+  flex: none;
   padding: 0 6px;
   border-radius: 999px;
   font-size: 10.5px;
@@ -1609,7 +1677,6 @@ a.hw-more:hover {
 .hw-po:focus-visible,
 .hw-sizechip:focus-visible,
 .hw-pick:focus-visible,
-.hw-src:focus-visible,
 .hw-folder:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
@@ -1626,10 +1693,6 @@ a.hw-more:hover {
 
 .hw-widget.is-edit:hover {
   border-color: rgba(var(--accent-rgb), 0.5);
-}
-
-.hw-widget.is-edit:has(.hw-pop) {
-  z-index: 30;
 }
 
 .hw-widget.is-edit .hw-body {
@@ -1773,13 +1836,11 @@ a.hw-more:hover {
 }
 
 .hw-pop {
-  position: absolute;
-  top: calc(100% + 6px);
-  right: 0;
-  z-index: 40;
+  position: fixed;
+  z-index: 60;
   width: 440px;
-  max-width: calc(100vw - 32px);
-  max-height: calc(100vh - 120px);
+  max-width: calc(100vw - 16px);
+  max-height: calc(100vh - 16px);
   overflow-y: auto;
   box-sizing: border-box;
   display: flex;
@@ -1791,31 +1852,6 @@ a.hw-more:hover {
   border-radius: 12px;
   box-shadow: 0 10px 30px var(--shadow-md);
   cursor: default;
-}
-
-.hw-pop.is-left {
-  right: auto;
-  left: 0;
-}
-
-.hw-pop.is-up {
-  top: auto;
-  bottom: calc(100% + 6px);
-}
-
-.hw-slot-wrap .hw-pop {
-  top: 12px;
-  right: 12px;
-}
-
-.hw-slot-wrap .hw-pop.is-left {
-  right: auto;
-  left: 12px;
-}
-
-.hw-slot-wrap .hw-pop.is-up {
-  top: auto;
-  bottom: 12px;
 }
 
 .hw-po-list {
@@ -2047,46 +2083,6 @@ a.hw-more:hover {
   outline: none;
 }
 
-.hw-sheet-body {
-  flex: 1 1 auto;
-  min-height: 0;
-  display: flex;
-}
-
-.hw-sheet-side {
-  flex: none;
-  width: 220px;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 10px;
-  overflow-y: auto;
-  background: var(--bg-alt);
-}
-
-.hw-src {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 10px;
-  border: 0;
-  border-radius: 8px;
-  background: transparent;
-  color: var(--fg-muted);
-  font-size: 13px;
-  text-align: left;
-  cursor: pointer;
-}
-
-.hw-src:hover {
-  color: var(--fg);
-}
-
-.hw-src.is-on {
-  color: var(--fg);
-  background: rgba(var(--accent-rgb), 0.14);
-}
-
 .hw-src-sq {
   flex: none;
   display: inline-flex;
@@ -2099,12 +2095,6 @@ a.hw-more:hover {
   color: var(--fg-muted);
 }
 
-.hw-src.is-on .hw-src-sq,
-.hw-src:hover .hw-src-sq {
-  background: rgba(var(--accent-rgb), 0.14);
-  color: var(--accent);
-}
-
 .hw-src-sq.is-lg {
   background: rgba(var(--accent-rgb), 0.14);
   color: var(--accent);
@@ -2113,44 +2103,197 @@ a.hw-more:hover {
   border-radius: 11px;
 }
 
-.hw-sheet-main {
-  flex: 1 1 auto;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  padding: 20px 22px 12px;
-  overflow-y: auto;
-}
-
-.hw-sheet-cfg {
-  flex: 1 1 auto;
-  min-height: 0;
-  display: flex;
-  gap: 18px;
-}
-
-.hw-sheet-cfg > .hw-stage-box {
-  flex: 1 1 auto;
-  min-width: 0;
-}
-
 .hw-sheet-title {
   margin: 0;
-  font-size: 17px;
+  font-size: 15px;
   font-weight: 600;
 }
 
-.hw-sheet-desc {
-  margin: 2px 0 0;
-  font-size: 12.5px;
+/* Add sheet gallery: a sticky header over a scrolling body of source sections. */
+.hw-gal-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px 12px 20px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-panel);
+}
+
+.hw-gal-note {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 12px;
   color: var(--fg-muted);
 }
 
-.hw-sheet-note {
-  margin: 0;
+.hw-gal-head .hw-sheet-title {
+  flex: none;
+}
+
+.hw-gal-x,
+.hw-gal-back {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--fg-muted);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.hw-gal-x {
+  width: 30px;
+  height: 30px;
+}
+
+.hw-gal-back {
+  padding: 6px 8px;
+}
+
+.hw-gal-x:hover,
+.hw-gal-back:hover {
+  color: var(--fg);
+  background: var(--row-bg-hover);
+}
+
+.hw-gal-x:focus-visible,
+.hw-gal-back:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.hw-gal-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  padding: 18px 20px 24px;
+  overflow-y: auto;
+  background: var(--bg-alt);
+}
+
+.hw-gal-sec {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.hw-gal-sec-head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+.hw-gal-sec-desc {
+  min-width: 0;
   font-size: 12px;
-  color: var(--warning);
+  color: var(--fg-muted);
+}
+
+.hw-gal-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 24px 32px;
+}
+
+.hw-gal-entry {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--fg);
+  text-align: left;
+  cursor: pointer;
+}
+
+.hw-gal-entry:focus {
+  outline: none;
+}
+
+.hw-gal-entry:disabled {
+  cursor: not-allowed;
+}
+
+.hw-gal-prev {
+  position: relative;
+  display: block;
+  flex: none;
+  overflow: hidden;
+  border-radius: 14px;
+  background: var(--bg);
+  box-shadow: 0 0 0 1px var(--border);
+  pointer-events: none;
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+
+.hw-gal-entry:hover:not(:disabled) .hw-gal-prev,
+.hw-gal-entry:focus-visible .hw-gal-prev {
+  transform: translateY(-2px);
+  box-shadow: 0 0 0 2px var(--accent), 0 8px 20px var(--shadow-ink-deep);
+}
+
+.hw-gal-entry:disabled .hw-gal-prev {
+  opacity: 0.45;
+}
+
+.hw-gal-scale {
+  display: block;
+  transform-origin: top left;
+  pointer-events: none;
+}
+
+.hw-gal-scale > .hw-widget {
+  box-sizing: border-box;
+  border-radius: 14px;
+}
+
+.hw-gal-cap {
+  box-sizing: border-box;
+  width: 100%;
+  text-align: left;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 5px;
+}
+
+.hw-gal-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.hw-gal-fp {
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--fg-muted);
+}
+
+.hw-gal-ph {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--fg-muted);
+  font-size: 13px;
+}
+
+.hw-gal-body > .hw-stage-box {
+  flex: 1 1 auto;
 }
 
 .hw-stage-box {
@@ -2164,17 +2307,6 @@ a.hw-more:hover {
   border: 1px solid var(--border);
   border-radius: 12px;
 }
-
-.hw-stage-in {
-  display: block;
-  max-width: 100%;
-}
-
-.hw-stage-card { width: min(100%, 540px); display: flex; flex-direction: column; gap: 10px; padding: 12px 14px; background: var(--bg-panel); border: 1px solid var(--border); border-radius: 16px; overflow: hidden; }
-.hw-stage-card-head { display: flex; align-items: center; justify-content: space-between; font-size: 13px; font-weight: 600; color: var(--fg); }
-.hw-stage-card-head span { font-size: 12px; font-weight: 400; color: var(--fg-muted); }
-.hw-stage-card .hw-stage-in { width: 100%; }
-.hw-stage-card .fp-strip { mask-image: linear-gradient(90deg, black 82%, transparent); -webkit-mask-image: linear-gradient(90deg, black 82%, transparent); }
 
 .hw-stage-box.is-folders {
   place-items: stretch;
@@ -2222,88 +2354,11 @@ a.hw-more:hover {
   font-size: 14px;
 }
 
-.hw-opts {
-  flex: none;
-  width: 230px;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  overflow-y: auto;
-}
-
-.hw-opt {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  min-width: 0;
-}
-
-.hw-opts .hw-pick {
-  flex: 1 1 0;
-  max-width: none;
-}
-
-.hw-sheet-foot {
-  flex: none;
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  padding: 12px 18px;
-  border-top: 1px solid var(--border);
-}
-
-/* Narrow sheet: sources become a scrolling row above the right column. */
-@container (max-width: 640px) {
-  .hw-sheet-body {
-    flex-direction: column;
-  }
-
-  .hw-sheet-side {
-    width: auto;
-    flex-direction: row;
-    gap: 4px;
-    overflow-x: auto;
-    overflow-y: hidden;
-  }
-
-  .hw-src {
-    flex: none;
-    white-space: nowrap;
-  }
-
-  .hw-sheet-main {
-    padding: 14px 16px 8px;
-  }
-
-  .hw-sheet-cfg {
-    flex-direction: column;
-  }
-
-  .hw-opts {
-    width: auto;
-    flex-direction: row;
-    flex-wrap: wrap;
-    gap: 16px 28px;
-    overflow: visible;
-  }
-}
-
-/* App embed widget: the iframe fills the body; the skeleton sits under it until
-   it loads. Unit rows are minmax(52px, auto), so a 1x1 widget's two rows plus the gap give 120px; this min-height sets the height. */
+/* App embed widget: the iframe fills the body, whatever height the tile has; the skeleton sits under it until it loads. */
 .hw-app-body {
   display: flex;
   flex-direction: column;
-  min-height: 320px;
-}
-
-.hw-widget.hw-size-2x2:has(.hw-app-body),
-.hw-widget.hw-size-1x2:has(.hw-app-body) {
-  min-height: 420px;
-}
-
-.hw-widget.hw-size-2x2 .hw-app-body,
-.hw-widget.hw-size-1x2 .hw-app-body {
-  min-height: 360px;
+  min-height: 0;
 }
 
 .hw-app-frame {
@@ -2478,7 +2533,7 @@ a.hw-more:hover {
   min-height: 0;
   align-self: stretch;
   width: 100%;
-  padding: 4px 0 12px;
+  padding: 0;
   background: none;
   border-color: transparent;
   border-radius: 0;
@@ -2486,7 +2541,13 @@ a.hw-more:hover {
   text-align: center;
 }
 
-/* A live query takes over: only the search widget renders, across every column. */
+/* A live query takes over: only the search widget renders, across every column. It is a page takeover, not a tile, so its rows grow with the results. */
+.hw-grid.is-searching {
+  grid-auto-rows: auto;
+}
+.hw-grid.is-searching > * {
+  overflow: visible;
+}
 .hw-grid.is-searching .hw-widget {
   grid-column: 1 / -1;
   grid-row: auto;
@@ -2505,6 +2566,12 @@ a.hw-more:hover {
    alone still searches and the All files link lives in the sidebar. */
 .hw-widget.is-search.hw-size-1x1 .files-search-allfiles {
   display: none;
+}
+
+/* The 1-unit search tile is 52px tall: the bar itself must fit. */
+.hw-widget.is-search:not(.is-edit) .files-search {
+  box-sizing: border-box;
+  max-height: 48px;
 }
 
 /* Takeover: the old hero's breathing room above the bar. */
@@ -2530,17 +2597,21 @@ a.hw-more:hover {
    centred at the old Home's width with a headline above, and its sample chips
    start at the composer's left edge instead of centring under the full grid. */
 /* Bottom padding keeps the sample chips from crowding the next grid row (19px to the next tile measured, vs ~55px above the headline). */
-.hw-widget.is-build:not(.is-edit) { padding: 12px 0 40px; }
+.hw-widget.is-build:not(.is-edit) { padding: 4px 0 0; }
 .hw-build-hero { width: 100%; max-width: 760px; margin: 0 auto; }
 .hw-build-headline {
-  margin: 0 0 14px;
+  margin: 0 0 10px;
   font-size: 22px; font-weight: 500; letter-spacing: -0.02em;
   color: var(--fg-muted);
   text-align: center;
 }
 .hw-build-headline em { font-style: normal; color: var(--fg); }
 .hw-build-hero .home-composer-samples { justify-content: flex-start; }
-.hw-build-hero .home-composer-input { min-height: 112px; }
+.hw-build-hero .home-composer-input { min-height: 84px; }
+.hw-build-hero .home-composer-samples { margin-top: 8px; }
+
+/* The 1-unit search tile shows only its placeholder bar in edit mode. */
+.hw-widget.is-search.is-edit .hw-head { display: none; }
 
 /* Edit mode: the two bare widgets are their footprint (1 unit for search, 4
    for build). No card chrome; the × pill hangs off the corner (.hw-swap.is-bare). */
@@ -2570,7 +2641,7 @@ a.hw-more:hover {
   display: flex;
   flex-direction: column;
   justify-content: flex-start;
-  padding-top: 12px;
+  padding-top: 4px;
   box-sizing: border-box;
 }
 /* The search bar's hover highlight, which the transparent frame above
@@ -2629,3 +2700,16 @@ a.hw-more:hover {
 }
 .hw-widget.is-app .hw-body { display: flex; flex-direction: column; min-height: 0; }
 .hw-widget.is-app .hw-app-iframe { border-radius: 0; }
+
+/* Size chips show their cell dimensions after the name. */
+.hw-sizechip-dims {
+  margin-left: 4px;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+.hw-sizechip.is-on .hw-sizechip-dims { color: inherit; }
+.hw-sizechip:disabled,
+.hw-pick:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}

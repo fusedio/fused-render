@@ -28,45 +28,88 @@ function ItemLink({ item, className, children }: { item: WidgetItem; className: 
   );
 }
 
-/** Fallback row height when no row has rendered yet. */
-const ROW_FALLBACK = 44;
+/** Height reserved for the more line before one has rendered. */
+const MORE_FALLBACK = 20;
 
 /**
- * Whole rows (times `cols` items per row) that `free` px of spare height buys,
- * given rows `rowH` px tall. Negative when the content overflows by a row or
- * more, so callers can shrink back.
+ * The count to render: `n`, unless nothing is shown while items exist (a list
+ * that mounted empty and got items later); then the first-paint guess again,
+ * because with no item rendered there is nothing to measure.
  */
-export function fitExtra(free: number, rowH: number, cols = 1): number {
-  if (!(rowH > 0) || !Number.isFinite(free)) return 0;
-  const lines = Math.floor(free / rowH);
-  return lines === 0 ? 0 : lines * Math.max(1, cols);
+export function seedCount(n: number, total: number, cap: number): number {
+  return n === 0 && total > 0 ? Math.min(total, cap) : n;
 }
 
 /**
- * How many rows beyond `cap` the list wrapper's real height has room for. A
- * tile often renders taller than its nominal size (a neighbour stretches the
- * grid row), so `cap` is only the minimum. Extra rows only consume spare
- * height, so they never grow the tile.
+ * The pure step of the measured fit. `contentH` is the height of the items
+ * shown now (without the "+N more" line), `avail` the height the container
+ * really has. Returns the next shown count: one line fewer when the content
+ * (plus the more line, reserved whenever items are hidden) overflows, one line
+ * more when that line still fits with the more line it would leave, else the
+ * same. Both branches judge the same inequality, so repeated calls settle.
  */
-function useFitRows(total: number, cap: number) {
+export function fitCount(o: { n: number; total: number; avail: number; contentH: number; rowH: number; moreH: number; cols: number }): number {
+  const { n, total, avail, contentH, rowH, moreH } = o;
+  const cols = Math.max(1, o.cols);
+  if (!(rowH > 0) || !Number.isFinite(avail) || !Number.isFinite(contentH)) return n;
+  if (contentH + (n < total ? moreH : 0) > avail) return n > 1 ? Math.max(1, n - cols) : n;
+  if (n >= total) return n;
+  const next = Math.min(total, n + cols);
+  const added = Math.ceil(next / cols) - Math.ceil(n / cols);
+  const h = contentH + added * rowH + (next < total ? moreH : 0);
+  return h <= avail ? next : n;
+}
+
+/** Whether the "+N more" line fits under the items shown now. False only when
+    even that line pushes the content past `avail`, which at the settled state
+    means a single item in a very short tile: the line is then left out. */
+export function moreLineFits(contentH: number, moreH: number, avail: number): boolean {
+  if (!Number.isFinite(contentH) || !Number.isFinite(avail)) return true;
+  return contentH + moreH <= avail;
+}
+
+const px = (v: string) => (Number.parseFloat(v) || 0);
+
+/**
+ * Show as many of `total` items as the container's real height holds. `cap`
+ * is only the first-paint guess; the count can go below it (a short tile) or
+ * above it (a tall one). Items are `itemSel` inside the container; `listSel`
+ * (optional) names the grid whose columns set how many items share a line.
+ */
+export function useFitCount(total: number, cap: number, itemSel: string, listSel?: string) {
   const ref = useRef<HTMLDivElement>(null);
-  const [extra, setExtra] = useState(0);
+  const [n, setN] = useState(() => Math.min(total, cap));
+  const [moreFits, setMoreFits] = useState(true);
+  const seeded = seedCount(n, total, cap);
   const measure = () => {
     const wrap = ref.current;
     if (!wrap) return;
-    const ul = wrap.querySelector<HTMLElement>(".hw-list");
-    if (!ul) return;
-    const li = ul.querySelector<HTMLElement>(".hw-li");
+    const item = wrap.querySelector<HTMLElement>(itemSel);
+    if (!item) return;
+    const parent = item.parentElement as HTMLElement;
     const more = wrap.querySelector<HTMLElement>(".hw-more");
-    const rowH = (li?.offsetHeight || 0) || ROW_FALLBACK;
-    const cols = Math.max(1, getComputedStyle(ul).gridTemplateColumns.split(" ").filter(Boolean).length);
-    const free = wrap.clientHeight - ul.offsetHeight - (more ? more.offsetHeight : 0);
-    const room = Math.max(0, total - cap);
-    setExtra((prev) => {
-      const next = Math.min(room, Math.max(0, prev + fitExtra(free, rowH, cols)));
+    const kids = Array.from(wrap.children).filter((c) => (c as HTMLElement).offsetParent !== null && c !== more) as HTMLElement[];
+    if (!kids.length) return;
+    const cs = getComputedStyle(wrap);
+    const gap = px(getComputedStyle(parent).rowGap);
+    const rowH = item.offsetHeight + gap;
+    const list = listSel ? wrap.querySelector<HTMLElement>(listSel) : null;
+    const cols = list ? Math.max(1, getComputedStyle(list).gridTemplateColumns.split(" ").filter(Boolean).length) : 1;
+    const top = Math.min(...kids.map((k) => k.offsetTop));
+    const bottom = Math.max(...kids.map((k) => k.offsetTop + k.offsetHeight));
+    const avail = wrap.clientHeight - px(cs.paddingTop) - px(cs.paddingBottom);
+    const moreH = (more ? more.offsetHeight : 0) || MORE_FALLBACK;
+    const moreGap = px(cs.rowGap);
+    const fits = moreLineFits(bottom - top, moreH + moreGap, avail);
+    setMoreFits((prev) => (prev === fits ? prev : fits));
+    setN((prev) => {
+      const next = Math.min(total, Math.max(1, fitCount({ n: Math.min(prev, total), total, avail, contentH: bottom - top, rowH, moreH: moreH + moreGap, cols })));
       return next === prev ? prev : next;
     });
   };
+  useLayoutEffect(() => {
+    if (seeded !== n) setN(seeded);
+  });
   useLayoutEffect(measure);
   useEffect(() => {
     const wrap = ref.current;
@@ -75,12 +118,12 @@ function useFitRows(total: number, cap: number) {
     ro.observe(wrap);
     return () => ro.disconnect();
   });
-  return { ref, extra };
+  return { ref, n: Math.min(seeded, total), moreFits };
 }
 
 export function ItemList({ items, cap, moreHref, variant }: { items: WidgetItem[]; cap: number; moreHref?: string; variant?: "tall" }) {
-  const { ref, extra } = useFitRows(items.length, cap);
-  const shown = items.slice(0, cap + extra);
+  const { ref, n, moreFits } = useFitCount(items.length, cap, ".hw-li", ".hw-list");
+  const shown = items.slice(0, n);
   const more = items.length - shown.length;
   return (
     <div ref={ref} className={variant === "tall" ? "hw-list-wrap is-tall" : "hw-list-wrap"}>
@@ -98,7 +141,7 @@ export function ItemList({ items, cap, moreHref, variant }: { items: WidgetItem[
           </li>
         ))}
       </ul>
-      <MoreLine count={more} href={moreHref} />
+      <MoreLine count={moreFits ? more : 0} href={moreHref} />
     </div>
   );
 }
