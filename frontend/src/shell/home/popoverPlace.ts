@@ -18,6 +18,7 @@ export interface Placement {
 }
 
 const GAP = 6;
+const MARGIN = 8;
 
 /**
  * `size` is the popover's natural size (width cap and full content height),
@@ -29,9 +30,8 @@ export function placePopover(o: {
   bounds: Box;
   size: { width: number; height: number };
   alignLeft?: boolean;
-  margin?: number;
 }): Placement {
-  const m = o.margin ?? 8;
+  const m = MARGIN;
   const { anchor: a, bounds: b } = o;
   const availW = Math.max(0, b.right - b.left - 2 * m);
   const availH = Math.max(0, b.bottom - b.top - 2 * m);

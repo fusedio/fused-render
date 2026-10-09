@@ -1,7 +1,7 @@
 // The pickers on the tile Change card: size chips (layout glyph + label) and
 // format picks (scaled preview thumbnail + caption).
 import { FormatPreview, previewKind } from "./FormatPreview";
-import { APPS_SORTS, CELL, FORMAT_LABELS, FORMAT_MIN_ROWS, SIZE_LABELS, dimsFor, TASKS_SHOWS, type AppsSort, type TasksShow, type WidgetFormat, type WidgetSize, type WidgetSource } from "./layout";
+import { APPS_SORTS, CELL, FORMAT_LABELS, SIZE_LABELS, dimsFor, TASKS_SHOWS, type AppsSort, type TasksShow, type WidgetFormat, type WidgetSize, type WidgetSource } from "./layout";
 import { SizeGlyph } from "./SizeGlyph";
 
 export function SortChips({ value, onChange }: { value: AppsSort; onChange: (s: AppsSort) => void }) {
@@ -48,21 +48,19 @@ export function SizeChips({
   sizes,
   value,
   onChange,
-  label = "Size",
   allowed,
   source,
 }: {
   sizes: WidgetSize[];
   value?: WidgetSize;
   onChange: (s: WidgetSize) => void;
-  label?: string;
-  /** Sizes that currently fit; the rest render disabled. Omit to allow all. */
-  allowed?: WidgetSize[];
-  /** With a source, each chip shows its cell dimensions (Large 2×2). */
-  source?: WidgetSource;
+  /** Sizes that currently fit; the rest render disabled. */
+  allowed: WidgetSize[];
+  /** Each chip shows its cell dimensions (Large 2×2). */
+  source: WidgetSource;
 }) {
   return (
-    <div className="hw-chips" role="radiogroup" aria-label={label}>
+    <div className="hw-chips" role="radiogroup" aria-label="Size">
       {sortSizes(sizes).map((s) => (
         <button
           key={s}
@@ -70,13 +68,13 @@ export function SizeChips({
           role="radio"
           aria-checked={s === value}
           className={"hw-sizechip" + (s === value ? " is-on" : "")}
-          disabled={allowed ? !allowed.includes(s) : false}
-          title={allowed && !allowed.includes(s) ? "No room here" : undefined}
+          disabled={!allowed.includes(s)}
+          title={!allowed.includes(s) ? "No room here" : undefined}
           onClick={() => onChange(s)}
         >
           <SizeGlyph size={s} scale={0.7} />
           {SIZE_LABELS[s]}
-          {source ? <span className="hw-sizechip-dims">{cellDims(source, s)}</span> : null}
+          <span className="hw-sizechip-dims">{cellDims(source, s)}</span>
         </button>
       ))}
     </div>
@@ -100,36 +98,39 @@ export function FormatPicks({
   formats,
   value,
   onChange,
-  rows,
+  disabled,
 }: {
   source: WidgetSource;
   formats: WidgetFormat[];
   value: WidgetFormat;
   onChange: (f: WidgetFormat) => void;
-  /** The tile's height in units: a format that needs more is disabled. */
-  rows?: number;
+  /** True for a format that cannot be picked on this tile. */
+  disabled?: (f: WidgetFormat) => boolean;
 }) {
   return (
     <div className="hw-picks" role="radiogroup" aria-label="Show as">
-      {formats.map((f) => (
-        <button
-          key={f}
-          type="button"
-          role="radio"
-          aria-checked={f === value}
-          className={"hw-pick" + (f === value ? " is-on" : "")}
-          disabled={rows !== undefined && f !== value && rows < (FORMAT_MIN_ROWS[f] ?? 0)}
-          title={rows !== undefined && f !== value && rows < (FORMAT_MIN_ROWS[f] ?? 0) ? "Needs a taller tile" : undefined}
-          onClick={() => onChange(f)}
-        >
-          <span className="hw-thumb">
-            <span className="hw-thumb-in" style={{ zoom: thumbZoom(source, f) }}>
-              <FormatPreview source={source} format={f} />
+      {formats.map((f) => {
+        const off = f !== value && !!disabled?.(f);
+        return (
+          <button
+            key={f}
+            type="button"
+            role="radio"
+            aria-checked={f === value}
+            className={"hw-pick" + (f === value ? " is-on" : "")}
+            disabled={off}
+            title={off ? "Needs a taller tile" : undefined}
+            onClick={() => onChange(f)}
+          >
+            <span className="hw-thumb">
+              <span className="hw-thumb-in" style={{ zoom: thumbZoom(source, f) }}>
+                <FormatPreview source={source} format={f} />
+              </span>
             </span>
-          </span>
-          <span className="hw-pick-cap">{FORMAT_LABELS[f]}</span>
-        </button>
-      ))}
+            <span className="hw-pick-cap">{FORMAT_LABELS[f]}</span>
+          </button>
+        );
+      })}
     </div>
   );
 }

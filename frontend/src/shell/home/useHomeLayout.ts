@@ -25,6 +25,7 @@ import {
   type WidgetFormat,
   type WidgetSize,
   type WidgetSource,
+  type AddOpts,
 } from "./layout";
 
 export interface HomeLayoutApi {
@@ -40,7 +41,7 @@ export interface HomeLayoutApi {
   swap: (id: string, source: WidgetSource, opts?: TileOpts) => void;
   /** Put a new tile of `source` on exactly `rect`, an empty slot. */
   fill: (rect: Rect, source: WidgetSource, opts?: TileOpts) => void;
-  add: (source: WidgetSource, opts?: { folderId?: string; appPath?: string; format?: WidgetFormat; size?: WidgetSize; sort?: AppsSort; show?: TasksShow }) => void;
+  add: (source: WidgetSource, opts?: AddOpts) => void;
   remove: (id: string) => void;
   reformat: (id: string, format: WidgetFormat) => void;
   /** Resize a tile to a preset; a no-op when it does not fit where the tile sits. */

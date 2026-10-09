@@ -7,7 +7,7 @@ import { createPortal } from "react-dom";
 import { useDismissOnOutside } from "@platform/lib/dismissOnOutside";
 import { SourceIcon } from "./AddWidgetPanel";
 import { FormatPicks, ShowChips, SizeChips, SortChips } from "./Pickers";
-import { FIXED_ROWS, MAX_WIDGETS, SOURCES, allowedSizes, dimsOf, rectOf, sizesFor, sourceFits, type TileTarget, type WidgetSource } from "./layout";
+import { FIXED_ROWS, FORMAT_MIN_ROWS, MAX_WIDGETS, SOURCES, allowedSizes, dimsOf, rectOf, sizesFor, sourceFits, type TileTarget, type WidgetSource } from "./layout";
 import { placePopover, type Box, type Placement } from "./popoverPlace";
 import type { HomeLayoutApi } from "./useHomeLayout";
 
@@ -41,15 +41,12 @@ export function ChangeTile({
   api,
   target,
   title,
-  anchorAlign,
   onClose,
   onPick,
 }: {
   api: HomeLayoutApi;
   target: TileTarget;
   title: string;
-  /** Which edge of the anchor the card hangs from; absent = whichever fits on screen. */
-  anchorAlign?: "left" | "right";
   onClose: () => void;
   /** A source that needs a further choice (folder, page). */
   onPick: (source: WidgetSource) => void;
@@ -98,7 +95,6 @@ export function ChangeTile({
       anchor: anchor.getBoundingClientRect(),
       bounds: contentBounds(anchor),
       size: { width: 440, height: pop.scrollHeight + (pop.offsetHeight - pop.clientHeight) },
-      alignLeft: anchorAlign === "left",
     });
     setPos((p) => (p && p.left === next.left && p.top === next.top && p.maxHeight === next.maxHeight && p.width === next.width ? p : next));
   };
@@ -168,7 +164,7 @@ export function ChangeTile({
           {spec.formats.length > 1 ? (
             <>
               <div className="hw-label">Show as</div>
-              <FormatPicks source={widget.source} formats={spec.formats} value={widget.format} rows={dimsOf(widget).rows} onChange={(f) => api.reformat(widget.id, f)} />
+              <FormatPicks source={widget.source} formats={spec.formats} value={widget.format} disabled={(f) => dimsOf(widget).rows < (FORMAT_MIN_ROWS[f] ?? 0)} onChange={(f) => api.reformat(widget.id, f)} />
             </>
           ) : null}
           {spec.sizes.length > 1 && !FIXED_ROWS[widget.source] ? (

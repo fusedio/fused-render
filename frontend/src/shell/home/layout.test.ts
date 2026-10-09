@@ -15,36 +15,29 @@ import {
   allowedSizes,
   canPlace,
   collapseShrunkRows,
-  compactLayout,
   contentSizeFor,
   defaultLayout,
   dims,
   dimsOf,
-  emptyRows,
   emptySlots,
   fillSlot,
   firstFreeSlot,
   itemCapacity,
   matchPreset,
   minFootprint,
-  moveByArrow,
   normalizeLayout,
   occupancy,
   packDense,
   presetLayout,
-  placeWidget,
   presetFor,
   rectOf,
   reflowToColumns,
   removeWidget,
-  resizeByArrow,
-  resizeTo,
   rowsUsed,
   setFormat,
   setSort,
   setTasksShow,
   setSize,
-  sortByPosition,
   sourceFits,
   swapSource,
   type HomeLayout,
@@ -78,10 +71,8 @@ test("default layout is the Builder preset (units), version 5, stable default-<s
   expect(ids(DEFAULT_LAYOUT)).toEqual(["default-search", "default-build", "default-apps", "default-bots", "default-tasks"]);
 });
 
-test("defaultLayout has no overlaps and no empty rows", () => {
+test("defaultLayout has no overlaps", () => {
   const l = defaultLayout();
-  const rects = l.widgets.map(rectOf);
-  expect(emptyRows(rects)).toEqual([]);
   expect(l.widgets.every((x) => canPlace(l.widgets, rectOf(x), x.id))).toBe(true);
 });
 
@@ -275,44 +266,10 @@ test("firstFreeSlot scans row-major and opens a new row when nothing fits", () =
     w("b", "apps", "1x1", "cards", 4, 0),
     w("c", "apps", "4x1", "cards", 0, 2),
   );
-  expect(firstFreeSlot(l.widgets, "1x1")).toEqual({ x: 6, y: 0 });
-  expect(firstFreeSlot(l.widgets, "2x1")).toEqual({ x: 0, y: 4 });
-  expect(firstFreeSlot(l.widgets, "4x1")).toEqual({ x: 0, y: 4 });
-  expect(firstFreeSlot([], "2x2")).toEqual({ x: 0, y: 0 });
-});
-
-test("placeWidget moves to a free cell, refuses occupied and out of bounds by returning the same object, keeps (y,x) order", () => {
-  const l = lay(w("a", "apps", "1x1", "cards", 0, 0), w("b", "apps", "1x1", "cards", 2, 0));
-  const moved = placeWidget(l, "a", 6, 0);
-  expect(moved).not.toBe(l);
-  expect(ids(moved)).toEqual(["b", "a"]);
-  expect(at(moved)).toEqual([
-    [2, 0],
-    [6, 0],
-  ]);
-  expect(placeWidget(l, "a", 1, 0)).toBe(l);
-  expect(placeWidget(l, "a", 8, 0)).toBe(l);
-  expect(placeWidget(l, "a", -1, 0)).toBe(l);
-  expect(placeWidget(l, "zzz", 2, 2)).toBe(l);
-  expect(placeWidget(l, "a", 0, 0)).toBe(l);
-  expect(at(l)).toEqual([
-    [0, 0],
-    [2, 0],
-  ]); // pure
-});
-
-test("moveByArrow steps one unit, skips over blocked units, stops at the bounds, Down can open a new row", () => {
-  const l = lay(w("a", "apps", "1x1", "cards", 0, 0), w("b", "apps", "1x1", "cards", 2, 0));
-  expect(at(moveByArrow(l, "b", "ArrowRight")).pop()).toEqual([3, 0]);
-  expect(at(moveByArrow(l, "a", "ArrowRight"))).toEqual([
-    [2, 0],
-    [4, 0],
-  ]);
-  expect(moveByArrow(l, "a", "ArrowLeft")).toBe(l);
-  expect(moveByArrow(l, "b", "ArrowUp")).toBe(l);
-  const down = moveByArrow(l, "a", "ArrowDown");
-  expect(down.widgets.find((x) => x.id === "a")).toMatchObject({ x: 0, y: 1 });
-  expect(moveByArrow(l, "a", "Enter")).toBe(l);
+  expect(firstFreeSlot(l.widgets, "apps", "1x1")).toEqual({ x: 6, y: 0 });
+  expect(firstFreeSlot(l.widgets, "apps", "2x1")).toEqual({ x: 0, y: 4 });
+  expect(firstFreeSlot(l.widgets, "apps", "4x1")).toEqual({ x: 0, y: 4 });
+  expect(firstFreeSlot([], "apps", "2x2")).toEqual({ x: 0, y: 0 });
 });
 
 test("setSize keeps the top-left anchor, clamps x for width, refuses when the new footprint overlaps; allowedSizes agrees", () => {
@@ -359,39 +316,6 @@ test("removeWidget leaves the hole", () => {
     [0, 2],
   ]);
   expect(removeWidget(l, "zzz")).toBe(l);
-});
-
-test("compactLayout equals packDense of reading order", () => {
-  const l = lay(
-    w("a", "apps", "2x1", "cards", 4, 6),
-    w("b", "apps", "1x1", "cards", 0, 10),
-    w("c", "apps", "4x1", "cards", 0, 14),
-  );
-  const out = compactLayout(l);
-  expect(at(out)).toEqual(sortByPosition(packDense(sortByPosition(l.widgets))).map((x) => [x.x, x.y]));
-  expect(at(out)).toEqual([
-    [0, 0],
-    [4, 0],
-    [0, 2],
-  ]);
-  expect(ids(out)).toEqual(["a", "b", "c"]);
-});
-
-test("compactLayout lands widgets that sat on odd (half-cell) x on even x", () => {
-  const l = lay(w("a", "apps", "1x1", "cards", 1, 0), w("b", "apps", "1x1", "cards", 5, 0), w("c", "apps", "1x1", "cards", 3, 4));
-  const out = compactLayout(l);
-  for (const x of out.widgets) expect(x.x % 2).toBe(0);
-  expect(at(out)).toEqual([
-    [0, 0],
-    [2, 0],
-    [4, 0],
-  ]);
-});
-
-test("compactLayout is idempotent", () => {
-  const l = lay(w("a", "apps", "2x2", "cards", 2, 8), w("b", "apps", "1x1", "cards", 6, 18), w("c", "apps", "4x1", "cards", 0, 24));
-  const once = compactLayout(l);
-  expect(compactLayout(once)).toEqual(once);
 });
 
 test("reflowToColumns(4) clamps 4x1 to 4 units wide, keeps reading order, packs densely", () => {
@@ -582,17 +506,6 @@ test("normalizeLayout v4 repair never places a widget beyond MAX_ROWS", () => {
   for (const o of out.widgets) expect(o.y + dims(o.size).rows).toBeLessThanOrEqual(MAX_ROWS);
 });
 
-test("emptyRows lists wholly uncovered rows above the last occupied row", () => {
-  const r = (y: number, rows = 1) => ({ y, rows });
-  expect(emptyRows([r(0), r(2)])).toEqual([1]);
-  expect(emptyRows([r(0), r(1), r(2)])).toEqual([]);
-  expect(emptyRows([r(0), r(1, 2)])).toEqual([]);
-  expect(emptyRows([r(0), r(3)])).toEqual([1, 2]);
-  expect(emptyRows([])).toEqual([]);
-  // Two 1x1s (2 unit rows each) at y=0 and y=3 leave unit row 2 uncovered.
-  expect(emptyRows([r(0, 2), r(3, 2)])).toEqual([2]);
-});
-
 // ---- Edge resize (explicit cols/rows footprint) -----------------------------
 
 const solo = (extra: any = {}, source: any = "bots", size: any = "1x1") =>
@@ -611,17 +524,6 @@ test("search and build have a fixed height; presets mean width only", () => {
   expect(minFootprint("search")).toEqual({ cols: 2, rows: 1 });
   expect(minFootprint("build")).toEqual({ cols: 4, rows: 4 });
   expect(minFootprint("apps")).toEqual({ cols: 2, rows: 2 });
-});
-
-test("resizeTo and resizeByArrow cannot change a fixed-row widget's height", () => {
-  const l = lay(w("s", "search", "4x1", "bar", 0, 0), w("b", "build", "4x1", "bar", 0, 2));
-  expect(resizeTo(l, "s", 8, 4)).toBe(l);
-  expect(resizeByArrow(l, "b", "ArrowDown")).toBe(l);
-  expect(resizeByArrow(l, "b", "ArrowUp")).toBe(l);
-  const narrower = resizeByArrow(l, "b", "ArrowLeft");
-  expect(narrower).not.toBe(l);
-  expect(dimsOf(narrower.widgets.find((x) => x.id === "b")!)).toEqual({ cols: 7, rows: 4 });
-  expect(resizeTo(l, "s", 4, 7).widgets.find((x) => x.id === "s")).toMatchObject({ size: "2x1" });
 });
 
 test("presetFor and allowedSizes treat search width only", () => {
@@ -695,46 +597,12 @@ test("contentSizeFor picks the largest preset inside the footprint", () => {
   expect(contentSizeFor("tasks", 2, 2)).toBe(SOURCES.tasks.sizes[0]);
 });
 
-test("resizeTo stores a custom footprint and keeps the content preset", () => {
-  const l = resizeTo(solo(), "a", 3, 2);
-  expect(only(l).size).toBe("1x1");
-  expect(only(l).cols).toBe(3);
-  expect(only(l).rows).toBe(2);
-});
-
-test("resizeTo onto a preset footprint stores only the preset", () => {
-  const l = resizeTo(solo(), "a", 4, 2);
-  expect(only(l).size).toBe("2x1");
-  expect("cols" in only(l)).toBe(false);
-  expect("rows" in only(l)).toBe(false);
-  const wide = resizeTo(solo(), "a", 6, 2);
-  expect(only(wide).size).toBe("2x1");
-  expect(only(wide).cols).toBe(6);
-});
-
-test("resizeTo is refused (same object) when blocked or out of bounds", () => {
-  const blocked = lay(w("a", "bots", "1x1", "cards", 0, 0), w("n", "bots", "1x1", "cards", 4, 0));
-  expect(resizeTo(blocked, "a", 6, 2)).toBe(blocked);
-  const s = solo();
-  expect(resizeTo(s, "a", GRID_COLS + 1, 2)).toBe(s);
-  expect(resizeTo(s, "a", 2, MAX_WIDGET_ROWS + 1)).toBe(s);
-  const b = solo({}, "build", "4x1");
-  expect(resizeTo(b, "a", 2, 2)).toBe(b);
-});
-
 test("setSize on a custom widget clears the override even when the chip equals its content size", () => {
-  const custom = resizeTo(solo(), "a", 3, 2);
+  const custom = solo({ cols: 3, rows: 2 });
   const l = setSize(custom, "a", "1x1");
   expect(l).not.toBe(custom);
   expect("cols" in only(l)).toBe(false);
   expect(only(l).size).toBe("1x1");
-});
-
-test("resizeByArrow steps one unit; Up at the minimum is refused", () => {
-  const s = solo();
-  expect(only(resizeByArrow(s, "a", "ArrowRight")).cols).toBe(3);
-  expect(resizeByArrow(s, "a", "ArrowUp")).toBe(s);
-  expect(resizeByArrow(s, "a", "Enter")).toBe(s);
 });
 
 test("normalizeLayout keeps a valid v4 footprint, corrects size, and drops invalid ones", () => {
@@ -749,12 +617,10 @@ test("normalizeLayout keeps a valid v4 footprint, corrects size, and drops inval
   }
 });
 
-test("rectOf / rowsUsed / compactLayout / canPlace / occupancy honour the override", () => {
+test("rectOf / rowsUsed / canPlace / occupancy honour the override", () => {
   const l = solo({ cols: 3, rows: 4 });
   expect(rectOf(only(l))).toEqual({ x: 0, y: 0, cols: 3, rows: 4 });
   expect(rowsUsed(l.widgets)).toBe(4);
-  const c = compactLayout(l);
-  expect(dimsOf(only(c))).toEqual({ cols: 3, rows: 4 });
   expect(occupancy(l.widgets).get("2,0")).toBe("a");
   expect(canPlace(l.widgets, { x: 2, y: 0, cols: 2, rows: 2 })).toBe(false);
   expect(canPlace(l.widgets, { x: 3, y: 0, cols: 2, rows: 2 })).toBe(true);
@@ -1059,11 +925,6 @@ test("normalizeLayout: a stored icons tile that is too short gets the source's f
   expect(out.widgets[0]).toMatchObject({ format: "cards", size: "2x1", x: 2, y: 1 });
   const tall = normalizeLayout({ version: 5, widgets: [{ id: "a", source: "apps", size: "2x2", format: "icons", x: 0, y: 0 }] });
   expect(tall.widgets[0].format).toBe("icons");
-});
-
-test("resizeTo refuses a footprint too short for the widget's format", () => {
-  const l = lay({ ...w("a", "apps", "2x2", "icons"), x: 0, y: 0 });
-  expect(resizeTo(l, "a", 4, 2)).toBe(l);
 });
 
 test("setFormat refuses icons on a short tile", () => {

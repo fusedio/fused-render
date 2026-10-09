@@ -178,11 +178,14 @@ export function newWidgetId(): string {
   return Math.random().toString(36).slice(2, 10);
 }
 
+/** What a new widget can be created with beyond its source. */
+export type AddOpts = { id?: string; folderId?: string; appPath?: string; format?: WidgetFormat; size?: WidgetSize; sort?: AppsSort; show?: TasksShow };
+
 function makeWidget(
   source: WidgetSource,
   x: number,
   y: number,
-  opts: { id?: string; folderId?: string; appPath?: string; format?: WidgetFormat; size?: WidgetSize; sort?: AppsSort; show?: TasksShow } = {},
+  opts: AddOpts = {},
 ): Widget {
   const spec = SOURCES[source];
   const w: Widget = {
@@ -302,7 +305,7 @@ export function normalizeLayout(raw: unknown): HomeLayout {
       w = { ...w, format: formatForRows(w.source, w.format, dimsOf(w).rows) };
       const { cols, rows } = dimsOf(w);
       if (!Number.isInteger(x) || !Number.isInteger(y) || !canPlace(widgets, { x, y, cols, rows })) {
-        ({ x, y } = firstFreeSlot(widgets, w.size, GRID_COLS, undefined, w.source));
+        ({ x, y } = firstFreeSlot(widgets, w.source, w.size));
         // Same bound addWidget enforces: a repaired slot past MAX_ROWS drops the widget.
         if (y + dimsOf(w).rows > MAX_ROWS) continue;
       }
@@ -366,12 +369,12 @@ export function hasSearch(layout: HomeLayout): boolean {
 export function addWidget(
   layout: HomeLayout,
   source: WidgetSource,
-  opts: { id?: string; folderId?: string; appPath?: string; format?: WidgetFormat; size?: WidgetSize; sort?: AppsSort; show?: TasksShow } = {},
+  opts: AddOpts = {},
 ): HomeLayout {
   if (layout.widgets.length >= MAX_WIDGETS) return layout;
   if (source === "search" && hasSearch(layout)) return layout;
   const probe = makeWidget(source, 0, 0, opts);
-  const { x, y } = firstFreeSlot(layout.widgets, probe.size, GRID_COLS, undefined, source);
+  const { x, y } = firstFreeSlot(layout.widgets, source, probe.size);
   if (y + dimsOf(probe).rows > MAX_ROWS) return layout;
   return { ...layout, widgets: sortByPosition([...layout.widgets, { ...probe, x, y }]) };
 }
@@ -415,7 +418,7 @@ export function allowedSizes(layout: HomeLayout, id: string): WidgetSize[] {
   return sizesFor(w.source, w.format).filter((s) => {
     if (s === w.size) return true;
     const { cols, rows } = dimsFor(w.source, s);
-    return canPlace(layout.widgets, { x: Math.min(w.x, GRID_COLS - cols), y: w.y, cols, rows }, id, GRID_COLS, occ);
+    return canPlace(layout.widgets, { x: Math.min(w.x, GRID_COLS - cols), y: w.y, cols, rows }, id, occ);
   });
 }
 
@@ -572,20 +575,6 @@ export function rowsUsed(widgets: Widget[]): number {
   return n;
 }
 
-/** Rows above the last occupied row that nothing covers: the gaps the user
- *  left, which view mode must keep as tall as the edit canvas does. */
-export function emptyRows(rects: { y: number; rows: number }[]): number[] {
-  const covered = new Set<number>();
-  let end = 0;
-  for (const r of rects) {
-    for (let j = 0; j < r.rows; j++) covered.add(r.y + j);
-    end = Math.max(end, r.y + r.rows);
-  }
-  const gaps: number[] = [];
-  for (let y = 0; y < end; y++) if (!covered.has(y)) gaps.push(y);
-  return gaps;
-}
-
 /** Reading order (y, x); stable. */
 export function sortByPosition(widgets: Widget[]): Widget[] {
   return widgets.slice().sort((a, b) => a.y - b.y || a.x - b.x);
@@ -617,11 +606,10 @@ export function canPlace(
   widgets: Widget[],
   rect: Rect,
   except?: string,
-  cols = GRID_COLS,
   /** Prebuilt `occupancy(widgets, except)`, to reuse across several candidates. */
   occ: Map<string, string> = occupancy(widgets, except),
 ): boolean {
-  if (rect.x < 0 || rect.x + rect.cols > cols || rect.y < 0 || rect.y + rect.rows > MAX_ROWS) return false;
+  if (rect.x < 0 || rect.x + rect.cols > GRID_COLS || rect.y < 0 || rect.y + rect.rows > MAX_ROWS) return false;
   for (let j = 0; j < rect.rows; j++) {
     for (let i = 0; i < rect.cols; i++) if (occ.has(`${rect.x + i},${rect.y + j}`)) return false;
   }
@@ -653,13 +641,11 @@ export function firstFreeRect(rects: Rect[], cols: number, rows: number, gridCol
 
 export function firstFreeSlot(
   widgets: Widget[],
+  source: WidgetSource,
   size: WidgetSize,
-  cols = GRID_COLS,
-  except?: string,
-  source?: WidgetSource,
 ): { x: number; y: number } {
-  const { cols: c, rows } = source ? dimsFor(source, size) : dims(size);
-  return firstFreeRect(widgets.filter((w) => w.id !== except).map(rectOf), c, rows, cols);
+  const { cols, rows } = dimsFor(source, size);
+  return firstFreeRect(widgets.map(rectOf), cols, rows);
 }
 
 /** CSS `grid-auto-flow: row dense` on `cols` columns with every item
@@ -690,87 +676,6 @@ export function reflowToColumns(layout: HomeLayout, cols: number): Map<string, R
     out.set(w.id, rect);
   }
   return out;
-}
-
-/** Move to (x, y); the same object when the footprint is not free or in bounds. */
-export function placeWidget(layout: HomeLayout, id: string, x: number, y: number): HomeLayout {
-  const w = layout.widgets.find((o) => o.id === id);
-  if (!w) return layout;
-  if (w.x === x && w.y === y) return layout;
-  const { cols, rows } = dimsOf(w);
-  if (!canPlace(layout.widgets, { x, y, cols, rows }, id)) return layout;
-  const widgets = layout.widgets.map((o) => (o.id === id ? { ...o, x, y } : o));
-  return { ...layout, widgets: sortByPosition(widgets) };
-}
-
-/** Alt+Arrow: step half a cell (one unit), then keep stepping past blocked cells until a
-    free slot or the bound. Same object when nothing is possible. */
-export function moveByArrow(layout: HomeLayout, id: string, key: string): HomeLayout {
-  const w = layout.widgets.find((o) => o.id === id);
-  if (!w) return layout;
-  const delta: Record<string, [number, number]> = {
-    ArrowLeft: [-1, 0],
-    ArrowRight: [1, 0],
-    ArrowUp: [0, -1],
-    ArrowDown: [0, 1],
-  };
-  const d = delta[key];
-  if (!d) return layout;
-  const { cols, rows } = dimsOf(w);
-  const maxY = rowsUsed(layout.widgets);
-  let x = w.x + d[0];
-  let y = w.y + d[1];
-  while (x >= 0 && x <= GRID_COLS - cols && y >= 0 && y <= maxY) {
-    if (canPlace(layout.widgets, { x, y, cols, rows }, id)) return placeWidget(layout, id, x, y);
-    x += d[0];
-    y += d[1];
-  }
-  return layout;
-}
-
-/** Edge drag: set the footprint in units, top-left anchored. Same object when
-    out of bounds, below the source minimum, or not free. */
-export function resizeTo(layout: HomeLayout, id: string, cols: number, rows: number): HomeLayout {
-  const w = layout.widgets.find((o) => o.id === id);
-  if (!w || !Number.isInteger(cols) || !Number.isInteger(rows)) return layout;
-  // A fixed-row source cannot change height: any asked-for rows are its own.
-  const fixed = FIXED_ROWS[w.source];
-  if (fixed !== undefined) rows = fixed;
-  const min = minFootprint(w.source, w.format);
-  if (cols < min.cols || rows < min.rows || w.x + cols > GRID_COLS || rows > MAX_WIDGET_ROWS) return layout;
-  if (!canPlace(layout.widgets, { x: w.x, y: w.y, cols, rows }, id)) return layout;
-  const preset = presetFor(w.source, cols, rows);
-  const { cols: _c, rows: _r, ...rest } = w;
-  const next: Widget = preset
-    ? { ...rest, size: preset }
-    : { ...rest, size: contentSizeFor(w.source, cols, rows), cols, rows };
-  if (next.size === w.size && next.cols === w.cols && next.rows === w.rows) return layout;
-  const widgets = layout.widgets.map((o) => (o.id === id ? next : o));
-  return { ...layout, widgets: sortByPosition(widgets) };
-}
-
-/** Alt+Shift+Arrow: grow or shrink the footprint by one unit. */
-export function resizeByArrow(layout: HomeLayout, id: string, key: string): HomeLayout {
-  const w = layout.widgets.find((o) => o.id === id);
-  if (!w) return layout;
-  const { cols, rows } = dimsOf(w);
-  switch (key) {
-    case "ArrowRight":
-      return resizeTo(layout, id, cols + 1, rows);
-    case "ArrowLeft":
-      return resizeTo(layout, id, cols - 1, rows);
-    case "ArrowDown":
-      return resizeTo(layout, id, cols, rows + 1);
-    case "ArrowUp":
-      return resizeTo(layout, id, cols, rows - 1);
-    default:
-      return layout;
-  }
-}
-
-/** Pack everything densely in reading order. Never automatic. */
-export function compactLayout(layout: HomeLayout): HomeLayout {
-  return { ...layout, widgets: sortByPosition(packDense(sortByPosition(layout.widgets))) };
 }
 
 // ---- Presets and tile swap -------------------------------------------------

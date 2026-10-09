@@ -130,7 +130,7 @@ export function TasksWidget({ widget }: { widget: Widget }) {
   }
   if (widget.format === "board") {
     // First-paint guess only; each lane measures how many cards its tile really holds.
-    const cap = widget.size === "2x2" || dimsOf(widget).rows >= 4 ? 4 : 2;
+    const cap = dimsOf(widget).rows >= 4 ? 4 : 2;
     const lanes = lanesFor(show);
     return (
       <div className="hw-body">
