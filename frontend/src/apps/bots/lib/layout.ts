@@ -277,11 +277,15 @@ function startBrowserDrag(main: HTMLElement, g: HTMLElement, e: PointerEvent): v
     else if (autoShut && b <= roomFor(false)) { layout = { ...layout, lcol: false }; autoShut = false; }
     layout = dragStep(layout, "r", b, cap());
   };
+  // The flip point, both ways: the Stage floor, or the preview's ceiling with the sidebar folded when that comes first (a narrow
+  // <main>: the thread floor stops the preview under half, so the mode flips there instead; Stage then caps the page at its floor).
+  // Closing must measure from the same point: closing at the floor while opening under it flipped Stage on and off on every move.
+  const flipAt = () => Math.min(stageFloor(main.clientWidth), roomFor(true));
   const move = (ev: PointerEvent) => {
-    const b = b0 + x0 - ev.clientX, floor = stageFloor(main.clientWidth);
+    const b = b0 + x0 - ev.clientX;
     if (staged()) {
       stageStep(b);
-      if (b < floor - STAGE_BAND && stageShut) {
+      if (b < flipAt() - STAGE_BAND && stageShut) {
         // The preview step first (rw and the sidebar fold it needs for room): with control held the close resolves after the giveback,
         // maybe after the pointer is up, and the preview must then show at the dragged width, not the one saved before Stage opened.
         // --rw and lcol are unused while the Stage grid is up, so this costs nothing.
@@ -289,7 +293,7 @@ function startBrowserDrag(main: HTMLElement, g: HTMLElement, e: PointerEvent): v
         stageShut();
       }
       if (staged()) { applyLayout(false); return; }
-    } else if (b >= Math.min(floor, roomFor(true)) && stageOpen && !sfull()) {
+    } else if (b >= flipAt() && stageOpen && !sfull()) {
       stageOpen();
       if (staged()) { stageStep(b); applyLayout(false); return; }
     }
