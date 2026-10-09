@@ -159,7 +159,7 @@ export function LiveView() {
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66" /><path d="M20 4v5h-5" /></svg>
           </button>
           <input id="furl" ref={furlRef} className="navctl" placeholder="Take over to navigate this bot's browser"
-            onKeyDown={(e) => { if (e.key === "Enter" && inFull()) void gotoTyped(e.currentTarget.value); }} />
+            onKeyDown={(e) => { if (e.key === "Enter" && !e.repeat && inFull()) void gotoTyped(e.currentTarget.value); }} />
         </span>
         <span className="fstat" id="fstat" title="What the bot is doing">{fstat}</span>
       </header>

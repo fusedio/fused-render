@@ -174,9 +174,12 @@ export function installLive(stage: HTMLElement): () => void {
     if (e.isComposing || e.keyCode === 229 || e.key === "Dead" || e.key === "Process") return;  // compositionend forwards it
     if (e.key === composed.text && performance.now() - composed.t < 100) { e.preventDefault(); if (keys) keys.value = ""; return; }  // the echo of a composition
     // History only on ⌘[ / ⌘] (never ⌥←/⌥→: those are word moves on macOS and belong to the page).
-    if (down && e.metaKey && e.key === "[") { e.preventDefault(); nav("back"); return; }
-    if (down && e.metaKey && e.key === "]") { e.preventDefault(); nav("forward"); return; }
-    if (down && e.metaKey && k === "r") { e.preventDefault(); nav("reload"); return; }
+    // Auto-repeat (a held key) is swallowed: one press, one navigation.
+    if (e.metaKey && (e.key === "[" || e.key === "]" || k === "r")) {
+      e.preventDefault();
+      if (down && !e.repeat) nav(e.key === "[" ? "back" : e.key === "]" ? "forward" : "reload");
+      return;
+    }
     e.preventDefault();
     const o = getOverlay();
     if (o && o.kind !== "list") { if (down && e.key === "Escape") closeOverlay(); return; }  // the menu / picker owns the keyboard

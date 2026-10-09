@@ -453,7 +453,8 @@ def _goto(bid, body):
     url = (body.get("url") or "").strip()
     if not url:
         raise ValueError("no url")
-    info = _bot(bid).browser.goto(url) or {}
+    from fused_render.bots.browser import NAV_SETTLE_S  # lazy, like the rest of the bot layer (module docstring)
+    info = _bot(bid).browser.goto(url, settle=NAV_SETTLE_S) or {}
     return {"ok": True, "url": info.get("url")}
 
 

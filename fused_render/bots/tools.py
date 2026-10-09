@@ -899,6 +899,8 @@ def execute(bot, act: str, d: dict, obs: dict) -> tuple[str, str]:
             if not url:
                 return "goto", "error: no url"
             info = b.goto(url)
+            if info.get("error"):
+                return f"goto {url}", f"error: {info['error']}; still at {info.get('url')}"
             return f"goto {url}", f"ok, now at {info.get('url')}"
         if act == "click":
             ref, what, at = target(d, obs)
