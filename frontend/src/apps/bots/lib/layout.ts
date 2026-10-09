@@ -19,9 +19,10 @@ export const LAYOUT_DEF: Layout = { lw: 280, rw: 400, cw: 340, lcol: false, rcol
 export const MID_MIN = 450, R_MIN = 280;
 // Stage: the chat rail's floor and the live page's floor; below 72 + 12 + C_MIN + STAGE_MIN the live view goes full-window (sfull).
 export const C_MIN = 300, STAGE_MIN = 480;
-// Stage: the live page keeps at least half of <main> (keep in step with the 50% in the Stage grid rule in bots.css); dragging the
-// rail STAGE_SHUT px past that closes Stage instead (the drag ends there: once Stage is off the same gutter is the preview's).
-export const STAGE_HALF = 0.5, STAGE_SHUT = 50;
+// Stage: the live page keeps at least half of <main> (keep in step with the 50% in the Stage grid rule in bots.css). That floor is
+// also the preview's ceiling: the right gutter drags one browser width (B, see startBrowserDrag) and the mode flips at it. Stage
+// closes when the drag comes back STAGE_BAND px under the floor, not at it: the live view would otherwise mount and unmount on jitter.
+export const STAGE_HALF = 0.5, STAGE_BAND = 8;
 // Widths below snap collapse the panel; neither handle pushes the thread below MID_MIN, except the preview drag may collapse the sidebar to make room.
 // The preview has no fixed ceiling: room (the thread floor) is the only one, and it must agree with the grid in bots.css — a lower cap in either
 // place leaves the drag collapsing the sidebar for room the pane never takes.
@@ -51,6 +52,8 @@ export function fitFlags(w: number, l: Layout, was: { lfit: boolean; rfit: boole
 
 /** Stage: the widest the chat rail may go for a <main> of `w` px — the live page keeps STAGE_MIN, and at least half of <main>. */
 export const stageRoom = (w: number): number => Math.min(w - 72 - 12 - STAGE_MIN, w * (1 - STAGE_HALF) - 72 - 12);
+/** Stage: the narrowest the live page goes (the rail at stageRoom): the browser width at which the preview becomes the live view. */
+export const stageFloor = (w: number): number => w - 72 - 12 - stageRoom(w);
 
 /** A gutter drag step: the new layout for a raw width (px) on `side`, given the room left for it. */
 export function dragStep(l: Layout, side: Side, raw: number, room: number): Layout {
@@ -209,26 +212,16 @@ export function resetSide(side: Side): void {
 /** Gutter pointerdown: track the pointer until release (pointer capture on the gutter itself). */
 export function startGutterDrag(side: Side, g: HTMLElement, e: PointerEvent): void {
   const main = mainEl(); if (!main) return;
-  side = effSide(side);
-  if (side === "c") { startRailDrag(main, g, e); return; }
-  const key = side === "l" ? "lw" : "rw", col = side === "l" ? "lcol" : "rcol", L = LIM[side];
-  const other = side === "l" ? main.querySelector(".preview") : main.querySelector(".bots");
-  // Width the far panel takes; for the sidebar, computed from layout so it can be asked "what if it were collapsed?".
-  // A hidden preview still measures its last open width (--rwlock keeps it for the slide back in) although its track is 0: count it as 0.
-  const otherW = (lcol: boolean) => side === "l" ? (previewShown() && other ? other.getBoundingClientRect().width : 0) : (lcol ? 72 : Math.min(layout.lw, main.clientWidth * 0.4));
+  if (side !== "l") { startBrowserDrag(main, g, e); return; }
+  const other = main.querySelector(".preview");
+  // Width the preview takes. A hidden preview still measures its last open width (--rwlock keeps it for the slide back in) although its track is 0: count it as 0.
+  const otherW = () => previewShown() && other ? other.getBoundingClientRect().width : 0;
   // The sidebar's track is min(--lw, 40%): cap its room the same way, or a drag saves a width the track never shows.
-  const roomFor = (lcol = layout.lcol) => Math.min(main.clientWidth - otherW(lcol) - 12 - MID_MIN, side === "l" ? main.clientWidth * 0.4 : Infinity);
+  const roomFor = () => Math.min(main.clientWidth - otherW() - 12 - MID_MIN, main.clientWidth * 0.4);
   e.preventDefault(); g.setPointerCapture(e.pointerId); g.classList.add("drag"); body().classList.add("dragging");
-  const panel = side === "l" ? main.querySelector(".bots") : main.querySelector(".preview");
-  const x0 = e.clientX, w0 = layout[col] ? L.shut : shownWidth(panel, layout[key], L.min);
-  let autoShut = false;
+  const x0 = e.clientX, w0 = layout.lcol ? LIM.l.shut : shownWidth(main.querySelector(".bots"), layout.lw, LIM.l.min);
   const move = (ev: PointerEvent) => {
-    const raw = w0 + (side === "l" ? ev.clientX - x0 : x0 - ev.clientX);
-    if (side === "r") {
-      if (!layout.lcol && raw > roomFor()) { layout = { ...layout, lcol: true }; autoShut = true; }
-      else if (autoShut && raw <= roomFor(false)) { layout = { ...layout, lcol: false }; autoShut = false; }
-    }
-    layout = dragStep(layout, side, raw, roomFor());
+    layout = dragStep(layout, "l", w0 + ev.clientX - x0, roomFor());
     applyLayout(false);
   };
   const up = () => { g.removeEventListener("pointermove", move); g.classList.remove("drag"); body().classList.remove("dragging"); applyLayout(true); };
@@ -246,28 +239,63 @@ function shownWidth(panel: Element | null, saved: number, min: number): number {
   return w >= min && w < saved ? Math.round(w) : saved;
 }
 
-// Dragging the Stage rail past the live page's half-width floor closes Stage. App registers the close (lib/cdp.ts handBack(true):
-// gives control back if you drive, then leaves Stage) — this module cannot import it without a cycle.
-let stageShut: (() => void) | null = null;
+// The right gutter crosses between the preview and Stage. App registers both ends (lib/cdp.ts: openFull opens the live view in
+// watch mode, handBack(true) gives control back if you drive and leaves Stage) — this module cannot import it without a cycle.
+let stageOpen: (() => void) | null = null, stageShut: (() => void) | null = null;
+export function onStageOpen(fn: (() => void) | null): void { stageOpen = fn; }
 export function onStageShut(fn: (() => void) | null): void { stageShut = fn; }
 
-/** Stage's right gutter: drag right widens the chat rail until the live page is down to half of <main> (stageRoom); STAGE_SHUT px
- *  further closes Stage and ends the drag — the rail is saved at the floor, not the overshoot. */
-function startRailDrag(main: HTMLElement, g: HTMLElement, e: PointerEvent): void {
+/** The right gutter drags one quantity in both modes: B, the width of the `.preview` column (the thumbnail preview, or the live page in
+ *  Stage). Sidebar + gutter + chat always sum to main − 12 − B, so the gutter sits at the same x for a given B whichever grid is up and
+ *  the flip moves nothing under the pointer. Preview: rw = B, ceiling min(room, stageFloor) — reaching it opens Stage (through
+ *  openFull, so the socket, wake and side-app swap happen as for a thumbnail click; no bot selected or an sfull window: it just caps).
+ *  Stage: cw = main − 84 − B, the rail clamps at stageRoom; STAGE_BAND px under the floor closes Stage (handBack(true): with control held
+ *  that awaits the giveback, so the gutter waits at the floor for one round trip; `switching` drops the repeat calls meanwhile). Pointer
+ *  capture stays on the gutter across either flip, so a drag that started in one mode ends wherever the pointer is let go. */
+function startBrowserDrag(main: HTMLElement, g: HTMLElement, e: PointerEvent): void {
+  const pv = main.querySelector(".preview");
+  const sidebarW = (lcol: boolean) => (lcol ? 72 : Math.min(layout.lw, main.clientWidth * 0.4));
+  // Preview room: the thread keeps MID_MIN; computed from layout so it can be asked "what if the sidebar were collapsed?".
+  const roomFor = (lcol = layout.lcol) => main.clientWidth - sidebarW(lcol) - 12 - MID_MIN;
+  const sfull = () => body().classList.contains("sfull");
   e.preventDefault(); g.setPointerCapture(e.pointerId); g.classList.add("drag"); body().classList.add("dragging");
-  const x0 = e.clientX, w0 = shownWidth(main.querySelector(".chat"), layout.cw, LIM.c.min);
-  const up = () => {
-    g.removeEventListener("pointermove", move); g.removeEventListener("pointerup", up); g.removeEventListener("pointercancel", up);
-    g.classList.remove("drag"); body().classList.remove("dragging"); applyLayout(true);
+  const cap = () => Math.min(roomFor(), stageFloor(main.clientWidth));
+  // B starts at the column's measured width, not a saved one: the saved cw / rw has no ceiling but the room at the time it was saved,
+  // so the track may clamp it (Stage never shows the live page under 50%; a preview saved before the floor existed may show above it).
+  // A preview above the cap starts at the cap and snaps to it on the first move, so a drag can only open Stage by crossing the floor.
+  const shown = pv ? pv.getBoundingClientRect().width : 0;
+  const x0 = e.clientX, b0 = staged() ? Math.round(shown) : layout.rcol ? LIM.r.shut : Math.min(Math.round(shown), cap());
+  let autoShut = false;
+  const stageStep = (b: number) => { layout = dragStep(layout, "c", main.clientWidth - 72 - 12 - b, stageRoom(main.clientWidth)); };
+  // Preview: the sidebar folds for room only when the thread floor, not the Stage floor, is the ceiling: past the Stage floor the mode flips (or caps).
+  const previewStep = (b: number) => {
+    const floor = stageFloor(main.clientWidth);
+    if (!layout.lcol && b > roomFor() && roomFor() < floor) { layout = { ...layout, lcol: true }; autoShut = true; }
+    else if (autoShut && b <= roomFor(false)) { layout = { ...layout, lcol: false }; autoShut = false; }
+    layout = dragStep(layout, "r", b, cap());
   };
   const move = (ev: PointerEvent) => {
-    const raw = w0 + ev.clientX - x0, room = stageRoom(main.clientWidth);
-    layout = dragStep(layout, "c", raw, room); applyLayout(false);
-    // up() first: it persists the clamped rail and its applyLayout settles any slide, so the close's own slide is not cut short.
-    if (raw > room + STAGE_SHUT && stageShut) { up(); stageShut(); }
+    const b = b0 + x0 - ev.clientX, floor = stageFloor(main.clientWidth);
+    if (staged()) {
+      stageStep(b);
+      if (b < floor - STAGE_BAND && stageShut) {
+        // The preview step first (rw and the sidebar fold it needs for room): with control held the close resolves after the giveback,
+        // maybe after the pointer is up, and the preview must then show at the dragged width, not the one saved before Stage opened.
+        // --rw and lcol are unused while the Stage grid is up, so this costs nothing.
+        previewStep(b);
+        stageShut();
+      }
+      if (staged()) { applyLayout(false); return; }
+    } else if (b >= Math.min(floor, roomFor(true)) && stageOpen && !sfull()) {
+      stageOpen();
+      if (staged()) { stageStep(b); applyLayout(false); return; }
+    }
+    previewStep(b);
+    applyLayout(false);
   };
+  const up = () => { g.removeEventListener("pointermove", move); g.classList.remove("drag"); body().classList.remove("dragging"); applyLayout(true); };
   g.addEventListener("pointermove", move);
-  g.addEventListener("pointerup", up); g.addEventListener("pointercancel", up);
+  g.addEventListener("pointerup", up, { once: true }); g.addEventListener("pointercancel", up, { once: true });
 }
 
 /** Boot: apply the saved layout and refit on every resize of <main>. Returns the teardown. */
