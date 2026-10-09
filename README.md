@@ -1,4 +1,4 @@
-# fused-render
+# f r
 
 **[Download for macOS, Windows, and Linux →](https://render.fused.io)**
 
