@@ -43,9 +43,9 @@
 >   (`registry.shutdown()`: every loaded bot's task and Chrome). The packaged
 >   app's quit never runs the lifespan (app.py `QUIT_CHILDREN_BUDGET_S`), so
 >   its `_stop_children` rung calls the same `registry.shutdown()` itself —
->   launch latch first (`browser.refuse_launches`), then every Chrome told to
->   close in parallel (`browsers.stop_all`). Only this process's Chromes: a
->   Fused Bot sharing the tree keeps its own.
+>   launch latch first (`browser.refuse_launches`), then every browser this
+>   process holds a handle for told to close in parallel
+>   (`browsers.stop_all`), as the lifespan path always did.
 > - CLI: `python -m fused_render.bots.botsend <bot> "<task>"` / `--list`.
 > - `claude` resolution: `fused_render/bots/claude_cli.py::runnable()` over
 >   fused-render's `claude_health.resolve()` (FusedBot's module had it built in).

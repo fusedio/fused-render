@@ -108,10 +108,13 @@ def stop_all(budget_s: float = 8.0) -> int:
     Browser.close → SIGTERM → SIGKILL with 3 + 3 + 2 s of waits, so walking the
     processes in sequence would spend the whole children budget on the first
     Chrome and never signal the second. One thread each: every Chrome gets
-    Browser.close at once, and a straggler finishes its own escalation or dies
-    with the process. Only `_procs` — the Chromes THIS process started or
-    adopted — is walked: Fused Render and Fused Bot share the bots tree, and
-    the other app's Chrome is not ours to quit. Idempotent: a process already
+    Browser.close at once. Browser.close is the load-bearing step (measured: a
+    headless Chrome is gone well inside a second); the quit terminates when
+    its 5 s children budget ends, so a Chrome that outlived close AND SIGTERM
+    is already hung and may never see the SIGKILL. The walk is `_procs`: every
+    browser this process holds a handle for, exactly what the lifespan path
+    always stopped — `stop` quits whatever pid the profile's session.json
+    names, ours or (a restart since) not. Idempotent: a process already
     stopped has no session and `stop` is a no-op on it."""
     with _lock:
         procs = list(_procs.values())
