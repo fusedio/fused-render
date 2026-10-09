@@ -972,7 +972,7 @@ button.hw-row:hover {
   grid-template-columns: repeat(auto-fill, minmax(76px, 1fr));
   gap: 8px;
   height: 100%;
-  align-content: center;
+  align-content: start;
 }
 
 .hw-icons.is-strip {
@@ -980,7 +980,7 @@ button.hw-row:hover {
   grid-auto-flow: column;
   grid-auto-columns: 76px;
   grid-template-rows: repeat(var(--hw-rows, 1), auto);
-  align-content: center;
+  align-content: start;
   overflow-x: auto;
   overscroll-behavior-x: contain;
   scrollbar-width: none;
