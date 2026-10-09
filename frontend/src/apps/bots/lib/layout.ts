@@ -6,6 +6,7 @@
 //   body.lanim / .lfast  the rail is mid-slide (rows morph and glide) / closing (quick slide)
 //   root.dragging      a gutter drag is in progress
 //   root.stage         the live view is open in the preview column (Stage: icon sidebar, chat rail --chatw, the page takes the rest)
+//   root.lstuck        the window is too narrow for the full sidebar even with the preview hidden: the expand toggle hides
 //   root.sfull         Stage, but the window is too narrow for it: the live view falls back to a fixed overlay (CSS only)
 // This module touches the DOM directly (main, .preview, #botlist, #lcol, #add, the root): it is the plumbing the
 // React tree sits on, exactly as in OpenBot. The fit is measured on the page's own <main> (ResizeObserver), never
@@ -49,6 +50,10 @@ export function fitFlags(w: number, l: Layout, was: { lfit: boolean; rfit: boole
   const sidebar = l.lcol || lfit ? 72 : Math.min(l.lw, w * 0.4);
   return { lfit, rfit: hyst(was.rfit, w - sidebar - 12 - MID_MIN - R_MIN), sfull: hyst(!!was.sfull, w - 72 - 12 - C_MIN - STAGE_MIN) };
 }
+
+/** Whether the full sidebar can show at all in a <main> of `w` px: with the preview hidden, the thread still keeps MID_MIN. Below this
+ *  the expand toggle hides (root .lstuck): a click could only fold the sidebar straight back. */
+export const sidebarFits = (w: number, l: Layout): boolean => w - Math.min(l.lw, w * 0.4) - 12 - MID_MIN >= 0;
 
 /** Stage: the widest the chat rail may go for a <main> of `w` px — the live page keeps STAGE_MIN, and at least half of <main>. */
 export const stageRoom = (w: number): number => Math.min(w - 72 - 12 - STAGE_MIN, w * (1 - STAGE_HALF) - 72 - 12);
@@ -166,6 +171,7 @@ export function fitPreview(): void {
   cl.toggle("lfit", f.lfit);
   cl.toggle("rfit", f.rfit);
   cl.toggle("sfull", f.sfull);
+  cl.toggle("lstuck", !sidebarFits(main.clientWidth, layout));
 }
 
 /** Stage on/off (the store's `fast`): the sidebar folds to icons with the same row glide as a collapse, the preview column widens into the live view. */
