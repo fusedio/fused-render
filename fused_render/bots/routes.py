@@ -561,8 +561,13 @@ def _settings(bid, body):
         b.meta["build_access"] = body["build_access"]
     if isinstance(body.get("trusted_apps"), list):
         b.meta["trusted_apps"] = _apptools().clean_trusted_apps(body["trusted_apps"])
-    if isinstance(body.get("allow_rules"), list):
-        b.meta["allow_rules"] = _tools().clean_allow_rules(body["allow_rules"])
+    if isinstance(body.get("allow_rules_remove"), list):
+        # Removals only, applied to the list as it stands now: allow_rules has a second writer (the task thread,
+        # on a card answered "don't ask again"), so a full list from the dialog would overwrite a rule written
+        # while it was open. The dialog never adds.
+        drop = {(r["kind"], r["key"]) for r in _tools().clean_allow_rules(body["allow_rules_remove"])}
+        with b.lock:
+            b.meta["allow_rules"] = [r for r in _tools().clean_allow_rules(b.meta.get("allow_rules")) if (r["kind"], r["key"]) not in drop]
     if body.get("engine") in bm.ENGINES and not bm.is_super(b.meta):
         b.meta["engine"] = body["engine"]
     if body.get("super_access") in bm.SUPER_ACCESS and bm.is_super(b.meta):

@@ -193,7 +193,7 @@ the card and beats the model's `risky: true` flag (for a click that flag is the
 only trigger). Never for `bot_create` / `bot_settings` (§12) or a phone-started
 Super Bot task (§5: no button on the card, no match), and for a built-in only
 while the task has not read the web (the posture in §6 stands). Revoked under
-Settings → Permissions → Approved forever; the `clone` copies them. Models: `haiku sonnet opus
+Settings → Permissions → Approved forever (`allow_rules_remove`: removals only, applied to the live list, since the task thread writes it too); the `clone` copies them. Models: `haiku sonnet opus
 fable local-4b local-9b`. Efforts: `low medium high xhigh`.
 
 ## 3. HTTP API (`fused_render/bots/routes.py`, prefix `/api/bots`)
@@ -223,7 +223,7 @@ POST   /api/bots/<id>/attach          {name, data: <base64>}                -> {
 POST   /api/bots/<id>/react           {seq, emoji}                          -> {ok, reactions}
 POST   /api/bots/<id>/flag            {pinned?, hidden?, face?: {shape, color, icon}} -> {ok}   (icon: a preset key = brand mark)
 POST   /api/bots/<id>/settings        {name?, model?, effort?, instructions?, memory?, approval?, build_access?,
-                                       encrypt?, imessage_handle?, imessage_to?, trusted_apps?}  -> {ok}   ("rename" in OpenBot;
+                                       encrypt?, imessage_handle?, imessage_to?, trusted_apps?, allow_rules_remove?}  -> {ok}   ("rename" in OpenBot;
                                        POST because the server has no do_PATCH)
 POST   /api/bots/<id>/profile         {profile}                             -> {ok}   (import a Chrome profile into the bot's
                                                                                          browser, every bot sharing it included; background)

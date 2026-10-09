@@ -321,7 +321,9 @@ export interface NewBotBody {
 export interface SettingsBody {
   name?: string; model?: string; effort?: string; instructions?: string; memory?: string; approval?: string;
   build_access?: string; encrypt?: boolean; imessage_handle?: string; imessage_to?: string; imessage_enabled?: boolean;
-  super_access?: string; trusted_apps?: string[]; allow_rules?: AllowRule[];
+  super_access?: string; trusted_apps?: string[];
+  /** Forever rules to drop (kind + key); applied to the live list, since the task thread also writes it. */
+  allow_rules_remove?: AllowRule[];
   /** "" or the bot's own id = a browser of its own; another bot's `browser_id` = share its logins. Refused while a task runs. */
   browser_id?: string;
 }

@@ -94,7 +94,8 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
   const bm = useMemo(() => ({ id: bot.id, name: init.name, face }), [bot.id, init.name, face]);
   const read = (): BotDialogValue => ({ name: name.trim(), model, effort, instructions, memory, approval, buildAccess, encrypt, profile,
     face: faceOf(bm), imessage: imessage.trim(), imessageEnabled, imessageTo: imessageTo.trim(), preset: "",
-    kind: isSuper ? "super" : "bot", superAccess, trustedApps, allowRules, browserId });  // the face shown is the face kept
+    kind: isSuper ? "super" : "bot", superAccess, browserId, trustedApps,
+    allowRulesRemoved: init.allowRules.filter((r) => !allowRules.some((x) => x.kind === r.kind && x.key === r.key)) });  // the face shown is the face kept
   const [initial] = useState(() => JSON.stringify(read()));
   const okDisabled = JSON.stringify(read()) === initial;
   const n = name.trim();
