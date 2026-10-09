@@ -137,6 +137,7 @@ from fused_render import (
     queue_manager,
     schedule,
     session_liveness,
+    tasks_index,
     tasks_store,
     tasks_watch,
 )
@@ -293,6 +294,7 @@ def reset_cache() -> None:
     _WINDOW.clear()
     with _GZ_LOCK:
         _GZ_CACHE.clear()
+    tasks_index.forget()
     # The builder loop ends on the flag, but it is parked in `tasks_watch.wait`
     # — so bump the watcher to wake it, and JOIN it before the snapshot is
     # nulled and the watcher reset: a build still in flight would otherwise
@@ -4572,12 +4574,18 @@ def warm() -> None:
     """
     global _builder_on
     started = time.monotonic()
+    # THE INDEX FIRST (2026-10-09, tasks_index.py): every transcript whose
+    # size and mtime the index still matches arrives in `_SCAN` and the head
+    # cache already read, so the build below reopens only what changed since
+    # the last run — a launch, not a gigabyte.
+    tasks_index.seed(_SCAN, _BUILD_LOCK)
     try:
         snap = _rebuild_snapshot()
     except Exception:  # noqa: BLE001 — a warm that fails costs nothing but the warmth
         logger.debug("tasks warm failed", exc_info=True)
         return
     logger.info("tasks warm: %d rows in %.2fs", len(snap.rows), time.monotonic() - started)
+    tasks_index.save(_SCAN, _BUILD_LOCK)
     if not tasks_watch.running():
         return
     global _builder_thread
@@ -4618,6 +4626,10 @@ def _builder_loop() -> None:
             last = gen
             continue
         last = snap.generation
+        # The transcripts this build re-read go to the index now, so the next
+        # launch starts from here. Two rows while a session is live, none
+        # otherwise; the builder thread's own time, never a request's.
+        tasks_index.save(_SCAN, _BUILD_LOCK)
 
 
 def _rebuild_snapshot() -> _Snapshot:
