@@ -971,7 +971,10 @@ def _openssl_cmd(*args):
 # do — the scheduler ticks every 20 s and the live view keeps polling through
 # the bounded drain — and a relaunch in that window is a fresh Chrome that
 # `os._exit` then orphans. `_launch` is the one place every Chrome is spawned,
-# so the flag lives here and not on the registry.
+# so the flag lives here and not on the registry. Checked on entry AND inside
+# the launch's wait loops: a launch already holding the lock when the quit
+# arrives kills its own half-started Chrome, since `stop` cannot (it blocks on
+# the lock, and there is no session.json yet for it to act on).
 _LAUNCHES_REFUSED = threading.Event()
 
 
@@ -1286,7 +1289,30 @@ class BrowserProcess:
                                     stderr=subprocess.DEVNULL, start_new_session=True, close_fds=False)
             self._proc = proc
             sess = {"port": 0, "pid": proc.pid, "started": time.time(), "origin": origin, "headed": headed}
+
+            def quitting():
+                # The latch flipped while this launch held the lock (bugbot, PR #1540): `stop` is
+                # waiting on the lock and would find no session.json to act on, so the launch ends
+                # its own Chrome here — the whole group, Chrome's helpers are in it — within one poll.
+                if not _LAUNCHES_REFUSED.is_set():
+                    return False
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except Exception:  # noqa: BLE001
+                    try:
+                        proc.kill()
+                    except Exception:  # noqa: BLE001
+                        pass
+                try:
+                    proc.wait(timeout=1)
+                except Exception:  # noqa: BLE001
+                    pass
+                self._proc = None
+                return True
+
             for _ in range(100):
+                if quitting():
+                    raise RuntimeError("the app is quitting; Chrome launch abandoned")
                 if not sess["port"]:
                     try:
                         with open(active, encoding="utf-8") as f:
@@ -1309,6 +1335,8 @@ class BrowserProcess:
             # (_page_target). The page appears a beat after DevTools answers.
             sess["launch_tab"] = ""
             for _ in range(20):
+                if quitting():
+                    raise RuntimeError("the app is quitting; Chrome launch abandoned")
                 try:
                     launch = [t for t in _http(port, "/json/list") if t.get("type") == "page"]
                 except Exception:  # noqa: BLE001
