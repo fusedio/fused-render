@@ -60,6 +60,14 @@ export function fitCount(o: { n: number; total: number; avail: number; contentH:
   return h <= avail ? next : n;
 }
 
+/** Whether the "+N more" line fits under the items shown now. False only when
+    even that line pushes the content past `avail`, which at the settled state
+    means a single item in a very short tile: the line is then left out. */
+export function moreLineFits(contentH: number, moreH: number, avail: number): boolean {
+  if (!Number.isFinite(contentH) || !Number.isFinite(avail)) return true;
+  return contentH + moreH <= avail;
+}
+
 const px = (v: string) => (Number.parseFloat(v) || 0);
 
 /**
@@ -71,6 +79,7 @@ const px = (v: string) => (Number.parseFloat(v) || 0);
 export function useFitCount(total: number, cap: number, itemSel: string, listSel?: string) {
   const ref = useRef<HTMLDivElement>(null);
   const [n, setN] = useState(() => Math.min(total, cap));
+  const [moreFits, setMoreFits] = useState(true);
   const seeded = seedCount(n, total, cap);
   const measure = () => {
     const wrap = ref.current;
@@ -91,6 +100,8 @@ export function useFitCount(total: number, cap: number, itemSel: string, listSel
     const avail = wrap.clientHeight - px(cs.paddingTop) - px(cs.paddingBottom);
     const moreH = (more ? more.offsetHeight : 0) || MORE_FALLBACK;
     const moreGap = px(cs.rowGap);
+    const fits = moreLineFits(bottom - top, moreH + moreGap, avail);
+    setMoreFits((prev) => (prev === fits ? prev : fits));
     setN((prev) => {
       const next = Math.min(total, Math.max(1, fitCount({ n: Math.min(prev, total), total, avail, contentH: bottom - top, rowH, moreH: moreH + moreGap, cols })));
       return next === prev ? prev : next;
@@ -107,11 +118,11 @@ export function useFitCount(total: number, cap: number, itemSel: string, listSel
     ro.observe(wrap);
     return () => ro.disconnect();
   });
-  return { ref, n: Math.min(seeded, total) };
+  return { ref, n: Math.min(seeded, total), moreFits };
 }
 
 export function ItemList({ items, cap, moreHref, variant }: { items: WidgetItem[]; cap: number; moreHref?: string; variant?: "tall" }) {
-  const { ref, n } = useFitCount(items.length, cap, ".hw-li", ".hw-list");
+  const { ref, n, moreFits } = useFitCount(items.length, cap, ".hw-li", ".hw-list");
   const shown = items.slice(0, n);
   const more = items.length - shown.length;
   return (
@@ -130,7 +141,7 @@ export function ItemList({ items, cap, moreHref, variant }: { items: WidgetItem[
           </li>
         ))}
       </ul>
-      <MoreLine count={more} href={moreHref} />
+      <MoreLine count={moreFits ? more : 0} href={moreHref} />
     </div>
   );
 }

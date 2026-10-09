@@ -84,7 +84,7 @@ function toItem(t: Task): WidgetItem {
 
 /** One board column. It shows as many cards as its height holds and clips the rest, so a lane never grows the tile. */
 function BoardLane({ lane, rows, cap }: { lane: { id: Lane; label: string; empty: string }; rows: Task[]; cap: number }) {
-  const { ref, n } = useFitCount(rows.length, cap, ".hw-lane-card");
+  const { ref, n, moreFits } = useFitCount(rows.length, cap, ".hw-lane-card");
   const shown = rows.slice(0, n);
   return (
     <div ref={ref} className={`hw-lane is-${lane.id}`}>
@@ -103,7 +103,7 @@ function BoardLane({ lane, rows, cap }: { lane: { id: Lane; label: string; empty
           </a>
         );
       })}
-      <MoreLine count={rows.length - shown.length} href={TASKS_HREF} />
+      <MoreLine count={moreFits ? rows.length - shown.length : 0} href={TASKS_HREF} />
     </div>
   );
 }

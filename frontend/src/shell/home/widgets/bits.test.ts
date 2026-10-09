@@ -11,7 +11,7 @@ test("seedCount: a measured count or an empty list is left alone", () => {
   expect(seedCount(0, 0, 3)).toBe(0);
 });
 
-import { fitCount } from "./bits";
+import { fitCount, moreLineFits } from "./bits";
 
 // avail 200px, rows 44px pitch, "+N more" line 20px.
 const base = { total: 10, avail: 200, rowH: 44, moreH: 20, cols: 1 };
@@ -73,4 +73,11 @@ test("fitCount: converges (no oscillation) from every start", () => {
       }
     }
   }
+});
+
+test("moreLineFits: the line renders only when items plus line fit the height", () => {
+  expect(moreLineFits(44, 24, 120)).toBe(true);
+  expect(moreLineFits(96, 24, 120)).toBe(true);
+  expect(moreLineFits(100, 24, 120)).toBe(false);
+  expect(moreLineFits(NaN, 24, 120)).toBe(true);
 });
