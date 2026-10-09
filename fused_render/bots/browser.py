@@ -425,7 +425,7 @@ class WS:
                 return True
             if main and p.get("frameId") != main:
                 return False
-            if m == "Page.frameStartedLoading":
+            if m in ("Page.frameStartedNavigating", "Page.frameStartedLoading"):  # Chrome sends both; either arms the stop
                 started = True
             elif m == "Page.frameStoppedLoading":
                 return started
