@@ -220,7 +220,7 @@ export function startGutterDrag(side: Side, g: HTMLElement, e: PointerEvent): vo
   const roomFor = (lcol = layout.lcol) => Math.min(main.clientWidth - otherW(lcol) - 12 - MID_MIN, side === "l" ? main.clientWidth * 0.4 : Infinity);
   e.preventDefault(); g.setPointerCapture(e.pointerId); g.classList.add("drag"); body().classList.add("dragging");
   const panel = side === "l" ? main.querySelector(".bots") : main.querySelector(".preview");
-  const x0 = e.clientX, w0 = layout[col] ? L.shut : shownWidth(panel, layout[key], L.shut);
+  const x0 = e.clientX, w0 = layout[col] ? L.shut : shownWidth(panel, layout[key], L.min);
   let autoShut = false;
   const move = (ev: PointerEvent) => {
     const raw = w0 + (side === "l" ? ev.clientX - x0 : x0 - ev.clientX);
@@ -238,11 +238,12 @@ export function startGutterDrag(side: Side, g: HTMLElement, e: PointerEvent): vo
 
 /** Where a drag starts: the width the grid shows for the panel, not the saved one. The saved width has no ceiling but the
  *  window's room at the time, so after the window shrinks the track is clamped below it; a drag counted from the saved
- *  value would then spend its first stretch inside that gap, moving nothing. A panel shown at its shut width or less (the fit
- *  hid it: lfit / rfit; the sidebar's forced icon rail) starts from the saved width instead, so the gutter reopens it from there as before. */
-function shownWidth(panel: Element | null, saved: number, shut = 0): number {
+ *  value would then spend its first stretch inside that gap, moving nothing. A panel shown below its floor was not resized
+ *  there (dragStep never saves less than min): the fit hid it (lfit / rfit) or it is the forced icon rail, so the drag starts from
+ *  the saved width and reopens it from there as before. The floor, not the shut width, is the bar: a 72px track measures 72.0001. */
+function shownWidth(panel: Element | null, saved: number, min: number): number {
   const w = panel?.getBoundingClientRect().width || 0;
-  return w > shut && w < saved ? Math.round(w) : saved;
+  return w >= min && w < saved ? Math.round(w) : saved;
 }
 
 // Dragging the Stage rail past the live page's half-width floor closes Stage. App registers the close (lib/cdp.ts handBack(true):
@@ -254,7 +255,7 @@ export function onStageShut(fn: (() => void) | null): void { stageShut = fn; }
  *  further closes Stage and ends the drag — the rail is saved at the floor, not the overshoot. */
 function startRailDrag(main: HTMLElement, g: HTMLElement, e: PointerEvent): void {
   e.preventDefault(); g.setPointerCapture(e.pointerId); g.classList.add("drag"); body().classList.add("dragging");
-  const x0 = e.clientX, w0 = shownWidth(main.querySelector(".chat"), layout.cw);
+  const x0 = e.clientX, w0 = shownWidth(main.querySelector(".chat"), layout.cw, LIM.c.min);
   const up = () => {
     g.removeEventListener("pointermove", move); g.removeEventListener("pointerup", up); g.removeEventListener("pointercancel", up);
     g.classList.remove("drag"); body().classList.remove("dragging"); applyLayout(true);
