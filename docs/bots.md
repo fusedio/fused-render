@@ -164,7 +164,8 @@ reactions, encrypt, chrome_profile, browser_id, imessage, imessage_to, builds,
 pending_offer, offers_declined, artifacts_dir, control, dl_pct`) plus
 `seq`, `browser: {running, url, title, headed, sealed, encrypt, shared, tabs?[{i,id,title,url,active,ws}], files?, artifacts?, artifacts_dir?}`,
 `browser_name`, `shared_with: [{id, name}]` (the other bots on this bot's browser),
-`memory` (detail only), `skills` (detail only), `shot` (the shot URL,
+`memory` (detail only), `skills` (detail only), `learning` (a learn-from-last
+worker is running; a second `learn` is refused meanwhile), `shot` (the shot URL,
 `/api/bots/<id>/shot`, or null), `shot_ts`, `viewport: [1280, 800]`, `events`
 (since the page's cursor).
 

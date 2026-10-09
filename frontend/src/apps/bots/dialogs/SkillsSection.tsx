@@ -23,17 +23,13 @@ export function SkillsSection({ b, confirm }: SectionProps) {
   const [form, setForm] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);  // the skill's name while editing an existing one
   const [title, setTitle] = useState(""), [trigger, setTrigger] = useState(""), [body, setBody] = useState("");
-  // The "progress shows in the thread" line: `learn` only starts a thread job (the card lands with a later poll, or
-  // never, if the model finds nothing to condense), so the button never locks on it; the line goes when a card lands
-  // or after a few seconds, whichever is first.
-  const [learning, setLearning] = useState(false);
+  // `learn` starts a worker in the backend, which reports it as `b.learning` and refuses a second one meanwhile; the
+  // button and the progress line follow that flag, so a failed learn frees them with the worker. `sent` bridges the
+  // gap between the click and the next poll that carries the flag.
+  const [sent, setSent] = useState(false);
+  useEffect(() => { setSent(false); }, [b.learning, b.seq]);
+  const learning = sent || !!b.learning;
   const sk = b.skills || [];
-  useEffect(() => { setLearning(false); }, [sk.length]);
-  useEffect(() => {
-    if (!learning) return;
-    const t = window.setTimeout(() => setLearning(false), 8000);
-    return () => window.clearTimeout(t);
-  }, [learning]);
   // By id, not ref: the shadcn Input forwards no ref on React 18.
   const focusTitle = () => requestAnimationFrame(() => document.getElementById("sktitle")?.focus());
 
@@ -53,7 +49,7 @@ export function SkillsSection({ b, confirm }: SectionProps) {
   };
   const learn = async () => {
     const r = await act(() => api.skills(b.id, { op: "learn" }));
-    if (r?.ok) setLearning(true);  // progress shows in the thread; the new card lands with the next poll
+    if (r?.ok) setSent(true);  // progress shows in the thread; the new card lands with a later poll
   };
   const blank = () => { setEditing(null); setTitle(""); setTrigger(""); setBody(""); setForm(true); focusTitle(); };
 
@@ -80,7 +76,7 @@ export function SkillsSection({ b, confirm }: SectionProps) {
         )) : <p className="m-0 text-sm text-muted-foreground">No skills yet. Finish a task, then click "Learn from last task", or write one by hand.</p>}
       </div>
       <div className="flex flex-wrap items-center gap-2">
-        <Button id="slearn" title="Ask the model to condense this bot's most recent finished task into a playbook" onClick={() => { void learn(); }}>Learn from last task</Button>
+        <Button id="slearn" title="Ask the model to condense this bot's most recent finished task into a playbook" disabled={learning} onClick={() => { void learn(); }}>Learn from last task</Button>
         <Button id="snew" variant="outline" onClick={blank}>Write one by hand</Button>
         {learning ? <span className="text-[13px] text-muted-foreground">Learning from the last task; progress shows in the thread.</span> : null}
       </div>
