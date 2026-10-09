@@ -11,7 +11,7 @@
           anything else X            -> .bots-page X
         `html, body { height: 100% }` became "fill the shell's #content column"; the layout classes OpenBot set on
         <body> (lcol, rfit, dragging, hasapp…) sit on the root (lib/layout.ts); 40vw / 50vw in the grid became
-        40% / 50% (the shell sidebar takes width the page cannot use); keyframes are renamed bots-* so they never
+        40% / 50% (the shell sidebar takes width the page cannot use; the preview's 50% cap is gone since, see the grid); keyframes are renamed bots-* so they never
         collide with the shell's.
      2. The port's adjustments (bottom): shadcn token mapping (scoped), [data-slot] restyles, the portal host.
    Unlayered on purpose, like the original: it must beat Tailwind's layers inside the page. */
@@ -71,11 +71,13 @@ div.bots-page { margin: 0; display: flex; flex-direction: column; font-family: "
 .bots-page button.busy::before { content: ""; width: 12px; height: 12px; flex: none; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent; animation: bots-spin .7s linear infinite; }
 @media (prefers-reduced-motion: reduce) { .bots-page, .bots-page * { animation: none !important; transition: none !important; } }
 
-/* Columns: --lw/--rw are panel widths (set by the resize handles), --mid the thread's floor, --rmin the preview's; the middle is minmax(0,1fr) so content never pushes the preview off-screen. */
+/* Columns: --lw/--rw are panel widths (set by the resize handles), --mid the thread's floor, --rmin the preview's; the middle is minmax(0,1fr) so content never pushes the preview off-screen.
+   The preview's only ceiling is the room the thread floor leaves (lib/layout.ts roomFor, LIM.r.max): OpenBot's 50vw cap here pinned it at half the window
+   while the drag went on collapsing the sidebar for room the track then never took. */
 div.bots-page { --lw: 280px; --rw: 400px; --mid: 450px; --rmin: 280px; --lweff: min(var(--lw), 40%); }
 /* .lcol = user collapsed the sidebar; .lfit = the window is too narrow for it, so it collapses itself (before the preview hides). */
 div.bots-page:is(.lcol, .lfit, .stage) { --lweff: 72px; }
-.bots-page main { flex: 1; display: grid; grid-template-columns: var(--lweff) 6px minmax(0, 1fr) 6px min(var(--rw), 50%, max(var(--rmin), calc(100% - var(--lweff) - 12px - var(--mid)))); min-height: 0; }
+.bots-page main { flex: 1; display: grid; grid-template-columns: var(--lweff) 6px minmax(0, 1fr) 6px min(var(--rw), max(var(--rmin), calc(100% - var(--lweff) - 12px - var(--mid)))); min-height: 0; }
 /* Panels slide open/shut: the tracks animate, so both states keep five of them (the hidden preview is a 0px track, clipped, not display:none). */
 .bots-page main { transition: grid-template-columns .3s cubic-bezier(.22,1,.36,1); }
 div.bots-page.dragging main { transition: none; }  /* a drag must track the pointer exactly... */
