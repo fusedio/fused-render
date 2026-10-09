@@ -268,7 +268,11 @@ def default_ignore() -> list[str]:
     in a few hours, the single most-rescanned root after the home itself. On
     the other platforms the log dir sits under the fused-render home, which
     MountGuard already refuses; the entry is harmless there and the one line
-    that makes macOS match.
+    that makes macOS match. This entry keeps log ROWS out of the index; the
+    thing that keeps the self-trigger loop shut is `watcher.make_dropped`,
+    which refuses the log dir structurally — the way it does `cfg.dir` — so
+    a saved config that never received this default, or a user clearing the
+    list, cannot reopen it.
 
     A caveat worth stating rather than fixing here: `default_ignore()` is a
     `default_factory`, consulted only when the saved config has no `ignore`
