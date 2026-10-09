@@ -87,10 +87,6 @@ function stubFetch(): void {
       }
       return jsonRes({ tasks: [] });
     }
-    if (url === "/api/schedule") {
-      scheduleReads++;
-      return jsonRes({ entries: [] });
-    }
     if (url === "/api/prefs") {
       if (holdPrefs) return new Promise<Response>(() => {});
       return jsonRes({});
@@ -111,7 +107,25 @@ function stubFetch(): void {
 }
 
 beforeEach(() => {
-  setEventsClientForTests(agentBackedEventsClient());
+  // The schedule is a `schedule` subscription now: the watcher's baseline is
+  // the snapshot that answers its subscribe, and a reset is a resync. Both
+  // count as "a read" for the T:18000 rule below.
+  const agentBacked = agentBackedEventsClient();
+  setEventsClientForTests({
+    ...agentBacked,
+    subscribe: ((topic, params, cb, opts) => {
+      if (topic === "schedule") {
+        scheduleReads++;
+        cb({ entries: [] } as never, null, { gen: null });
+        return () => {};
+      }
+      return agentBacked.subscribe!(topic, params, cb, opts);
+    }) as NonNullable<typeof agentBacked.subscribe>,
+    resync: (topic) => {
+      if (topic === "schedule") scheduleReads++;
+      return false;
+    },
+  });
   runs.length = 0;
   holdPrefs = false;
   holdPaneStat = false;
@@ -585,8 +599,9 @@ test("THE SCHEDULE RESET WAITS FOR A TRANSCRIPT REPLACEMENT (T:18000)", async ()
   // scheduled run that fired in that window.
   await mountChat({ initialAsk: "go" });
   await settle(20);
-  // ONE read: the watcher's own baseline tick. The mount is not a replacement,
-  // and neither is the session id the run's first poll just reported.
+  // ONE read: the snapshot that answers the watcher's own subscribe. The mount
+  // is not a replacement (no resync), and neither is the session id the run's
+  // first frame just reported.
   expect(started().length).toBe(1);
   expect(scheduleReads).toBe(1);
 });
