@@ -259,15 +259,24 @@ function startBrowserDrag(main: HTMLElement, g: HTMLElement, e: PointerEvent): v
   const roomFor = (lcol = layout.lcol) => main.clientWidth - sidebarW(lcol) - 12 - MID_MIN;
   const sfull = () => body().classList.contains("sfull");
   e.preventDefault(); g.setPointerCapture(e.pointerId); g.classList.add("drag"); body().classList.add("dragging");
-  const w = main.clientWidth;
-  const x0 = e.clientX, b0 = staged() ? shownWidth(pv, w - 72 - 12 - layout.cw, STAGE_MIN) : layout.rcol ? LIM.r.shut : shownWidth(pv, layout.rw, LIM.r.min);
+  const cap = () => Math.min(roomFor(), stageFloor(main.clientWidth));
+  // B starts at the column's measured width, not a saved one: the saved cw / rw has no ceiling but the room at the time it was saved,
+  // so the track may clamp it (Stage never shows the live page under 50%; a preview saved before the floor existed may show above it).
+  // A preview above the cap starts at the cap and snaps to it on the first move, so a drag can only open Stage by crossing the floor.
+  const shown = pv ? pv.getBoundingClientRect().width : 0;
+  const x0 = e.clientX, b0 = staged() ? Math.round(shown) : layout.rcol ? LIM.r.shut : Math.min(Math.round(shown), cap());
   let autoShut = false;
   const stageStep = (b: number) => { layout = dragStep(layout, "c", main.clientWidth - 72 - 12 - b, stageRoom(main.clientWidth)); };
   const move = (ev: PointerEvent) => {
     const b = b0 + x0 - ev.clientX, floor = stageFloor(main.clientWidth);
     if (staged()) {
       stageStep(b);
-      if (b < floor - STAGE_BAND && stageShut) stageShut();
+      if (b < floor - STAGE_BAND && stageShut) {
+        // rw first: with control held the close resolves after the giveback, maybe after the pointer is up, and the preview must then
+        // show at the dragged width, not the one saved before Stage opened (--rw is unused while the Stage grid is up, so this is free).
+        layout = dragStep(layout, "r", b, cap());
+        stageShut();
+      }
       if (staged()) { applyLayout(false); return; }
     } else if (b >= Math.min(floor, roomFor(true)) && stageOpen && !sfull()) {
       stageOpen();
@@ -276,7 +285,7 @@ function startBrowserDrag(main: HTMLElement, g: HTMLElement, e: PointerEvent): v
     // Preview. The sidebar folds for room only when the thread floor, not the Stage floor, is the ceiling: past the Stage floor the mode flips (or caps).
     if (!layout.lcol && b > roomFor() && roomFor() < floor) { layout = { ...layout, lcol: true }; autoShut = true; }
     else if (autoShut && b <= roomFor(false)) { layout = { ...layout, lcol: false }; autoShut = false; }
-    layout = dragStep(layout, "r", b, Math.min(roomFor(), floor));
+    layout = dragStep(layout, "r", b, cap());
     applyLayout(false);
   };
   const up = () => { g.removeEventListener("pointermove", move); g.classList.remove("drag"); body().classList.remove("dragging"); applyLayout(true); };
