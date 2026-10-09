@@ -23,7 +23,7 @@ import type { ReactNode } from "react";
 // to different conclusions about the same machine. Comfortable ones start
 // checked; a tight or too-big one is shown, unchecked, with the reason — the
 // selection rule lives in `modelPicks.ts`.
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { AlertTriangle, Check, HardDrive } from "lucide-react";
 
 import { AI_MODELS_PREFIX } from "@apps/ai_models/routes";
@@ -32,14 +32,12 @@ import { modelSizeLabel } from "@apps/ai_models/shared/modelSize";
 import { downloadAiModel, getAiCatalog } from "@platform/lib/api";
 import { formatSize } from "@platform/lib/format";
 import { navigateUrl } from "@platform/lib/router";
+import { resyncTopic, subscribeTopic } from "@platform/lib/events";
 import {
-  fetchJobs,
-  isRunning,
   isTerminal,
   jobAmount,
   jobFraction,
   jobStatusLine,
-  pollInterval,
   type Job,
 } from "@platform/lib/jobs";
 import { Button } from "@platform/shadcn/ui/button";
@@ -159,52 +157,25 @@ export function useModelPicks(): ModelPicks {
   return picks;
 }
 
-/** Jobs, polled for as long as this step is on screen, at `pollInterval`'s
- *  own cadence (fast while anything runs, slow when nothing does). The wizard
- *  has no status bar and no download manager on screen (App.tsx renders this
- *  route alone), so progress has to be drawn in the step or it is invisible
- *  until the user leaves — including progress that was already running when
- *  the step opened, which is what a return to it after a Next looks like.
+/** Jobs, followed for as long as this step is on screen over the `jobs`
+ *  topic of the events bus (every report is pushed). The wizard has no status
+ *  bar and no download manager on screen (App.tsx renders this route alone),
+ *  so progress has to be drawn in the step or it is invisible until the user
+ *  leaves — including progress that was already running when the step
+ *  opened, which the subscribe's own snapshot answers.
  *
- *  `refresh` is the out-of-band tick a click needs: the cadence is right for
- *  watching, and wrong for the moment a Download has just been sent, when the
- *  next scheduled poll may be `POLL_IDLE_MS` away. It drops the pending timer
- *  and asks now, and a reply that lands after an unmount is discarded — the
- *  epoch, not the `alive` flag of a closure a caller could be holding. */
+ *  `refresh` is the out-of-band ask a click needs: a Download has just been
+ *  sent and its first row is a beat away. One resync of the subscription. */
 function useJobs(): { jobs: Job[]; refresh: () => void } {
   const [jobs, setJobs] = useState<Job[]>([]);
-  const lastRunning = useRef(Date.now());
-  const refresh = useRef(() => {});
-  useEffect(() => {
-    let epoch = 0;
-    let alive = true;
-    let timer: number | undefined;
-    const tick = () => {
-      const mine = ++epoch;
-      fetchJobs().then(
-        ({ jobs: next }) => {
-          if (!alive || mine !== epoch) return;
-          setJobs(next);
-          if (next.some(isRunning)) lastRunning.current = Date.now();
-          timer = window.setTimeout(tick, pollInterval(next, Date.now() - lastRunning.current));
-        },
-        () => {
-          if (alive && mine === epoch) timer = window.setTimeout(tick, 4000);
-        },
-      );
-    };
-    refresh.current = () => {
-      if (!alive) return;
-      if (timer !== undefined) window.clearTimeout(timer);
-      tick();
-    };
-    tick();
-    return () => {
-      alive = false;
-      if (timer !== undefined) window.clearTimeout(timer);
-    };
-  }, []);
-  return { jobs, refresh: () => refresh.current() };
+  useEffect(
+    () =>
+      subscribeTopic<{ jobs: Job[] }>("jobs", {}, (snap) => {
+        if (snap) setJobs(snap.jobs);
+      }),
+    [],
+  );
+  return { jobs, refresh: () => resyncTopic("jobs", {}) };
 }
 
 export function ModelsStep({

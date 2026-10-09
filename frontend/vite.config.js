@@ -28,6 +28,10 @@ export default defineConfig({
       "@platform": src("platform"),
       "@apps": src("apps"),
       "@assets": src("assets"),
+      // The events-bus client is ONE plain-JS module shared with runtime.js
+      // (D12): the shell bundles it from the Python package's static dir
+      // rather than keeping a TypeScript copy in step with it.
+      "@static": fileURLToPath(new URL("../fused_render/static", import.meta.url)),
     },
   },
   base: "/static/shell-dist/",

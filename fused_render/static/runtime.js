@@ -2063,16 +2063,9 @@
   // own code.
   //
   // Shape follows the docs template's typst install (a detached worker writing
-  // progress.json, polled) — one pattern in this app, not two.
-  const INSTALL_POLL_MS = 500;
-  // The first second is polled faster. A fixed 500ms grid is invisible next to a
-  // four-minute download but dominates a short one: a ~540ms install lands
-  // mid-grid, so it is not noticed until the SECOND poll, turning ~0.5s of work
-  // into ~1.5s of blocked page. The window is bounded rather than adaptive because
-  // the only installs it can help are the ones that finish inside it, and a long
-  // download must not end up polled harder than it was before.
-  const INSTALL_POLL_FAST_MS = 100;
-  const INSTALL_FAST_POLL_WINDOW_MS = 1000;
+  // progress.json) — one pattern in this app, not two. The record is followed
+  // over the events bus (`env.progress`): the server reads it once per
+  // interval for every page waiting on it and pushes each change.
 
   // How long an install may run before the overlay appears at all.
   //
@@ -2648,56 +2641,57 @@
 
     const paint = (prog) => paintInstall(row, prog, notice);
 
-    const poll = () => {
-      // Measured from the first poll, not from `startInstall`'s own call, so the
-      // fast window is a property of the DOWNLOAD's age rather than of how long
-      // the consent question happened to sit unanswered — a user who takes ten
-      // seconds to click Install must not spend the fast-poll budget on nothing
-      // having downloaded yet.
-      const startedAt = Date.now();
-      const pollDelay = () =>
-        Date.now() - startedAt < INSTALL_FAST_POLL_WINDOW_MS
-          ? INSTALL_POLL_FAST_MS
-          : INSTALL_POLL_MS;
-      const step = () =>
-        fetch("/api/env/progress?key=" + encodeURIComponent(activeKey), {
-          headers: { "X-Fused": "1" },
-        })
-          .then((res) => res.json())
-          .then((body) => {
-            const prog = body && body.progress;
-            paint(prog);
-            if (!prog) {
-              // The record vanished (or never landed). Treat as failure rather
-              // than polling forever — a silent loader is the failure mode this
-              // whole flow exists to remove.
-              throw new Error("the installer left no progress record");
-            }
-            if (!prog.done) {
-              return new Promise((r) => setTimeout(r, pollDelay())).then(step);
-            }
-            if (prog.error) {
-              const e = new Error(prog.error);
-              // Carried on the Error object rather than re-derived from its
-              // message: `needs_build` is the worker's own classification of
-              // this failure (`_env_install_worker.py`'s `install`), and the
-              // catch below reads it as-is instead of regexing `e.message`.
-              e.needsBuild = prog.needs_build || null;
-              // Mutually exclusive with `needsBuild` on the worker's own side
-              // (`_env_install_worker.py`'s `install`): a `--no-build` refusal
-              // is EITHER a question worth asking (`needsBuild`, no wheels
-              // published anywhere) OR a platform this app can never run on
-              // (wheels exist, just not for this machine) — never both. Carried
-              // the same way, as a field on the Error rather than re-derived
-              // from `e.message`, since `e.message` stays uv's raw stderr
-              // verbatim (SPEC PY-18).
-              e.platformIncompatible = prog.platform_incompatible || null;
-              throw e;
-            }
-            return prog;
-          });
-      return step();
-    };
+    // The install's progress, over the events bus (`env.progress` for this
+    // key): the server reads the worker's progress.json once per interval for
+    // every page waiting on it, and pushes each change here. Resolves with the
+    // finished record, or rejects the way the old poll did.
+    const poll = () =>
+      new Promise((resolve, reject) => {
+        let off = () => {};
+        let settled = false;
+        const finish = (fn) => {
+          if (settled) return;
+          settled = true;
+          off();
+          fn();
+        };
+        off = subscribeTopic("env.progress", { key: activeKey }, (snap, delta, meta) => {
+          if (settled) return;
+          if (meta && meta.error !== undefined) {
+            return finish(() => reject(new Error(meta.error)));
+          }
+          if (!snap) return;
+          const prog = snap.progress;
+          paint(prog);
+          if (!prog) {
+            // The record vanished (or never landed). Treat as failure rather
+            // than waiting forever — a silent loader is the failure mode this
+            // whole flow exists to remove.
+            return finish(() => reject(new Error("the installer left no progress record")));
+          }
+          if (!prog.done) return;
+          if (prog.error) {
+            const e = new Error(prog.error);
+            // Carried on the Error object rather than re-derived from its
+            // message: `needs_build` is the worker's own classification of
+            // this failure (`_env_install_worker.py`'s `install`), and the
+            // catch below reads it as-is instead of regexing `e.message`.
+            e.needsBuild = prog.needs_build || null;
+            // Mutually exclusive with `needsBuild` on the worker's own side
+            // (`_env_install_worker.py`'s `install`): a `--no-build` refusal
+            // is EITHER a question worth asking (`needsBuild`, no wheels
+            // published anywhere) OR a platform this app can never run on
+            // (wheels exist, just not for this machine) — never both. Carried
+            // the same way, as a field on the Error rather than re-derived
+            // from `e.message`, since `e.message` stays uv's raw stderr
+            // verbatim (SPEC PY-18).
+            e.platformIncompatible = prog.platform_incompatible || null;
+            return finish(() => reject(e));
+          }
+          finish(() => resolve(prog));
+        }, { hiddenOk: false });
+        if (settled) off();
+      });
 
     // One POST + poll cycle. Split out of `runInstall` so the no-wheel retry
     // below (Task 5) can run a SECOND cycle — with `allowBuild: true` — off
@@ -3468,66 +3462,27 @@
       return function unsubscribe() {};
     }
 
+    // Over the events bus (`apps.background` for this page's folder): the
+    // server checks the child's liveness once per interval for every page
+    // watching it and pushes each change. The callback hears only CHANGES to
+    // the fields above, plus the first answer; a server error keeps the last
+    // answer rather than spamming the callback with an error it didn't ask
+    // for.
     let last = null;
-    let timer = null;
-
-    function poll() {
-      return daemonStatus().then(function (data) {
-        if (_daemonStatusChanged(last, data)) {
-          last = data;
-          callback(data);
-        } else {
-          last = data;
-        }
-      }).catch(function () {
-        // A failed status() read (offline, server restarting) must not kill
-        // the watch loop or spam the callback with an error it didn't ask
-        // for — skip this tick, the next poll or focus/visibility event
-        // tries again.
-      });
-    }
-
-    // 5s: fast enough that quitting from the tray reads as "immediate" to a
-    // human glancing at a foregrounded tab, slow enough to be free — status()
-    // is a single in-memory dict read plus one Popen.poll() server-side (no
-    // folder walk, no toml parse, see the endpoint's own docstring), and this
-    // only ever runs while the tab is visible in the first place.
-    const POLL_MS = 5000;
-
-    function stopTimer() {
-      if (timer !== null) {
-        clearInterval(timer);
-        timer = null;
+    const html = encodeURIComponent(ownQuery("path") || "");
+    const off = subscribeTopic("apps.background", { html: html }, function (snap, delta, meta) {
+      if (!snap || (meta && meta.error !== undefined)) return;
+      _noteDaemonPayload(snap);
+      if (_daemonStatusChanged(last, snap)) {
+        last = snap;
+        callback(snap);
+      } else {
+        last = snap;
       }
-    }
-
-    function startTimerIfVisible() {
-      stopTimer();
-      if (document.visibilityState === "visible") {
-        timer = setInterval(poll, POLL_MS);
-      }
-    }
-
-    function onVisibilityChange() {
-      if (document.visibilityState === "visible") {
-        poll();
-      }
-      startTimerIfVisible();
-    }
-
-    function onFocus() {
-      poll();
-    }
-
-    document.addEventListener("visibilitychange", onVisibilityChange);
-    window.addEventListener("focus", onFocus);
-    poll();
-    startTimerIfVisible();
+    }, { hiddenOk: true });
 
     return function unsubscribe() {
-      document.removeEventListener("visibilitychange", onVisibilityChange);
-      window.removeEventListener("focus", onFocus);
-      stopTimer();
+      off();
     };
   }
 
@@ -4232,13 +4187,14 @@
   }
 
   // --- Auto-reload (SPEC §13.3) ---------------------------------------------
-  // This page watches a set of files via the SSE change feed; on any change it
-  // reloads THIS frame (honest re-execution — we can't replay what the page did
-  // with a python result). All reload logic lives here so every rendered page
-  // (view, embed, standalone /render) gets it for free.
+  // This page watches a set of files through the document's events-bus socket
+  // (`fs.watch`, static/events-client.js); on any change it reloads THIS frame
+  // (honest re-execution — we can't replay what the page did with a python
+  // result). All reload logic lives here so every rendered page (view, embed,
+  // standalone /render) gets it for free.
   let autoReloadEnabled = true;
   const watched = new Set();
-  let es = null;
+  let watchOff = null;       // the bus subscription's disposer, or null
   let started = false;       // watching begins on DOMContentLoaded (LR-5)
   let resubscribeTimer = null;
   let reloadTimer = null;
@@ -4249,10 +4205,10 @@
   // re-read, append, and reload again — forever, on any viewer that doesn't opt
   // out (log_studio only does with Tail on; duckdb and tree not at all). Killing
   // the watch removes the loop at its source instead of suppressing the records,
-  // and costs nothing: the viewers that want live updates poll, and they already
-  // turn auto-reload off while doing so precisely so a reload cannot rebuild the
-  // frame mid-poll. Prefix + suffix come from /api/config, so generic templates
-  // need to know nothing about the call log.
+  // and costs nothing: the viewers that want live updates subscribe, and they
+  // already turn auto-reload off while doing so precisely so a reload cannot
+  // rebuild the frame mid-watch. Prefix + suffix come from /api/config, so
+  // generic templates need to know nothing about the call log.
   let callsDir = null;
   let callsSuffix = ".calls.jsonl";
   function isCallLog(p) {
@@ -4283,46 +4239,43 @@
     return isCallLog(p);
   }
 
+  // The events-bus client (static/events-client.js, loaded ahead of this
+  // file by /render). One socket per document for every live fact — the
+  // reload watch, `fused.tasks.watch`, `fused.watchJob`, `fused.subscribe`.
+  // A page that somehow runs without it (an export, a test) gets a client
+  // that subscribes to nothing and never calls back, rather than a throw.
+  function eventsClient() {
+    return window.fusedEvents || null;
+  }
+
+  function subscribeTopic(topic, params, cb, opts) {
+    const client = eventsClient();
+    if (!client || typeof cb !== "function") return () => {};
+    return client.subscribe(topic, params || {}, cb, opts);
+  }
+
   function resubscribe() {
-    // A reconnect timer may be pending (onclose below); a direct call must
-    // cancel it or the stale timer would close and reopen the fresh socket.
+    // A re-subscribe timer may be pending (watchPath); a direct call must
+    // cancel it or the stale timer would tear down the fresh subscription.
     clearTimeout(resubscribeTimer);
     resubscribeTimer = null;
-    if (es) {
-      const old = es;
-      es = null; // null first so old.onclose knows the close was deliberate
-      old.close();
+    if (watchOff) {
+      const off = watchOff;
+      watchOff = null;
+      off();
     }
     if (!autoReloadEnabled || watched.size === 0) return;
-    const query = [...watched].map((p) => "path=" + encodeURIComponent(p)).join("&");
-    // WebSocket, not EventSource (D74): SSE holds an HTTP/1.1 socket per open
-    // pane and Chrome caps those at 6 per origin — a 6-pane panel starved
-    // every later fetch (runPython hung forever). WS has its own, much larger
-    // connection pool.
-    const proto = window.location.protocol === "https:" ? "wss://" : "ws://";
-    const sock = new WebSocket(proto + window.location.host + "/api/fs/events?" + query);
-    es = sock;
-    sock.onmessage = (ev) => {
-      let data;
-      try {
-        data = JSON.parse(ev.data);
-      } catch (e) {
-        return;
-      }
-      if (data.keepalive) return;
-      // Any change (including deletion, mtime: null → LR-6) reloads after a
-      // 300 ms debounce that coalesces bursts.
+    // ONE subscription for the whole set (LR-4): the server's registry runs
+    // one stat ticker per path, shared with every other document watching it.
+    // Not `hiddenOk`: a reload must fire on a hidden pane too (D7).
+    watchOff = subscribeTopic("fs.watch", { paths: [...watched] }, (snap, delta) => {
+      // The snapshot is where things stand now; only a DELTA is a change. Any
+      // change (including deletion, mtime: null → LR-6) reloads after a 300 ms
+      // debounce that coalesces bursts.
+      if (snap !== null || !delta) return;
       clearTimeout(reloadTimer);
       reloadTimer = setTimeout(() => window.location.reload(), 300);
-    };
-    // Unlike EventSource, a WebSocket doesn't reconnect itself — retry unless
-    // this close was deliberate (es already points elsewhere / is null).
-    sock.onclose = () => {
-      if (es !== sock) return;
-      es = null;
-      clearTimeout(resubscribeTimer);
-      resubscribeTimer = setTimeout(resubscribe, 1000);
-    };
+    }, { hiddenOk: false });
   }
 
   function watchPath(p) {
@@ -4342,9 +4295,10 @@
     if (!autoReloadEnabled) {
       clearTimeout(resubscribeTimer);
       clearTimeout(reloadTimer);
-      if (es) {
-        es.close();
-        es = null;
+      if (watchOff) {
+        const off = watchOff;
+        watchOff = null;
+        off();
       }
     } else if (started) {
       resubscribe();
@@ -5386,34 +5340,50 @@
       const data = await res.json().catch(() => ({}));
       return (data.jobs || []).find((j) => j.id === id) || null;
     }
+    // The grace a row missing from a snapshot is given before it is called
+    // gone: a reporter's first tick may still be landing.
+    const GONE_GRACE_MS = 2500;
     return {
       get,
       // Resolves when the job reaches a terminal state; calls back on the way.
-      // Polling rather than a socket: the manager is already polling, jobs tick
-      // about once a second, and a page that navigates away simply stops.
+      // Over the events bus (`jobs` narrowed to this id): every report is
+      // pushed, so nothing here ticks.
       //
       // Resolves with NULL when the row is gone — either stop() was called, or
       // it was there and vanished. A finished record is dropped after its
       // retention window (SPEC BG-6), which a backgrounded tab can easily sleep
-      // straight through on a render that takes minutes; polling forever for a
+      // straight through on a render that takes minutes; waiting forever for a
       // row that is never coming back is a promise that never settles.
-      async watch(onUpdate, intervalMs) {
-        const every = Math.max(200, intervalMs || 700);
-        let seen = false;
-        let missing = 0;
-        for (;;) {
-          if (stopped) return null;
-          const record = await get().catch(() => null);
-          if (record) {
-            seen = true;
-            missing = 0;
-            if (typeof onUpdate === "function") onUpdate(record);
-            if (record.state !== "running") return record;
-          } else if (seen && ++missing >= 5) {
-            return null;
-          }
-          await new Promise((r) => setTimeout(r, every));
-        }
+      watch(onUpdate) {
+        return new Promise((resolve) => {
+          let settled = false;
+          let goneTimer = null;
+          let off = () => {};
+          const finish = (value) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(goneTimer);
+            off();
+            resolve(value);
+          };
+          if (stopped) return finish(null);
+          off = subscribeTopic("jobs", { id: id }, (snap, delta, meta) => {
+            if (settled) return;
+            if (stopped) return finish(null);
+            if (!snap || (meta && meta.error !== undefined)) return;
+            const record = (snap.jobs || []).find((j) => j.id === id) || null;
+            if (record) {
+              clearTimeout(goneTimer);
+              goneTimer = null;
+              if (typeof onUpdate === "function") onUpdate(record);
+              if (record.state !== "running") finish(record);
+              return;
+            }
+            if (goneTimer === null) goneTimer = setTimeout(() => finish(null), GONE_GRACE_MS);
+          }, { hiddenOk: false });
+          // A cached snapshot is replayed synchronously, inside `subscribe`.
+          if (settled) off();
+        });
       },
       stop() {
         stopped = true;
@@ -5637,10 +5607,6 @@
   // one thing that cannot be shared — "app", "all" and "under=<dir>" are
   // different server questions — so there is one loop per scope key in use
   // (see TASKS_APP_SCOPE), each refcounted the same way.
-  const TASKS_CHANGES_WAIT_S = 25;
-  const TASKS_BACKOFF_MS = 3000;
-  const TASKS_FLOOR_MS = 20000;
-  const TASKS_CATCH_UP_MS = 1000;
   // What a task is while it is still going. `done` resolves once a row says
   // anything else (done, archived) — see taskHandle for the confirm rule.
   // A task waiting on the human (a parked permission card, a question) is
@@ -5769,6 +5735,15 @@
   }
 
   // ---- the shared change feed -------------------------------------------------
+  //
+  // ONE `tasks.listing` SUBSCRIPTION PER SCOPE KEY on the document's events-bus
+  // socket: the server answers with the listing (`GET /api/tasks`'s body) and
+  // pushes `/api/tasks/changes`' answer on every change, with the cursor kept
+  // server-side. No floor read, no backoff, no hidden-tab park: the server
+  // says when something moved (D3), and the bus client drops the subscription
+  // while the document is hidden (D7). `page` carries what X-Fused-Page would
+  // (percent-encoded) — a socket cannot set headers — and is what `scope=app`
+  // resolves against.
   const taskFeeds = {};
 
   function taskFeed(scope) {
@@ -5776,15 +5751,9 @@
       taskFeeds[scope] = {
         scope: scope,
         subs: new Set(),
-        rows: null, // Map key -> row once the first listing lands, newest first
-        gen: -1,
+        rows: null, // Map key -> row once the first snapshot lands, newest first
         stopped: true,
-        run: 0, // bumped per start/stop so a stale loop can see it was replaced
-        abort: null,
-        floor: null,
-        wake: null,
-        seat: 0,
-        catchingUp: false,
+        off: null,
       };
     }
     return taskFeeds[scope];
@@ -5804,365 +5773,62 @@
     return feed.rows ? Array.from(feed.rows.values()) : [];
   }
 
-  function taskSleep(ms) {
-    return new Promise((r) => setTimeout(r, ms));
-  }
-
-  async function feedLoad(feed) {
-    const mine = ++feed.seat;
-    try {
-      const l = await tasksListing(feed.scope);
-      if (feed.stopped || feed.seat !== mine) return;
-      feed.catchingUp = false;
-      // A listing that left before a delta landed is OLDER than what is held.
-      if (typeof l.generation === "number") {
-        if (feed.rows && l.generation < feed.gen) return;
-        if (feed.gen < 0 || l.generation > feed.gen) feed.gen = l.generation;
-      }
-      const prev = feed.rows;
-      feed.rows = new Map();
-      l.rows.forEach((r) => feed.rows.set(r.key, r));
-      const gone = prev ? Array.from(prev.keys()).filter((k) => !feed.rows.has(k)) : [];
-      feedEmit(feed, { full: true, rows: l.rows, gone: gone });
-    } catch (e) {
-      // A failed read keeps what is held: the next floor read or delta catches
-      // up, and blanking a page's list on one hiccup is worse.
-      if (feed.stopped || feed.seat !== mine) return;
-      feed.catchingUp = false;
-    }
-  }
-
-  // THE LONG-POLL'S TRANSPORT: `/api/tasks/changes` over ONE WebSocket per
-  // page (routers/tasks.py `api_tasks_changes_ws`), the GET as the fallback.
-  // A plain-JS copy of the shell's platform/lib/tasksChangesSocket.ts — a page
-  // has no bundler — so keep the two in step.
-  //
-  // Why (measured 2026-10-08): the native app's WKWebView windows share one
-  // data store, and WebKit allows six HTTP/1.1 connections per host:port
-  // across all of them. Parked 25 s GETs — the shell's, every embed's, and a
-  // page's `fused.tasks.watch` — filled those six alone, and this page's own
-  // runPython then queued browser-side behind them. WebSockets are not counted
-  // against that cap (the same reason /api/fs/events is one, D74).
-  //
-  // Requests ride the socket by id; the answer is the GET's JSON exactly, and
-  // a refusal the GET would have answered with a status rejects with the same
-  // taskError, so feedWatch's backoff and abort handling cover both. A socket
-  // that fails to open, or closes before ANY reply, means this page cannot
-  // have one (a LAN peer, a sandboxed `Origin: null` frame): HTTP for the
-  // page's lifetime, and the request that found out is re-asked over its GET.
-  // One that answered and then dropped is a server restart: in-flight
-  // requests reject, and the next one reconnects after a doubling backoff.
-  //
-  // The socket cannot carry headers, so `page` is the X-Fused-Page value
-  // (percent-encoded, as callHeaders sends it) — what `scope=app` resolves
-  // against. Not in the app call log, which only sees HTTP requests.
-  const TASKS_WS = {
-    transport: "unknown", // "unknown" | "ws" | "http"
-    sock: null,
-    opening: null,
-    nextId: 0,
-    pending: new Map(),
-    retryAt: 0,
-    retryMs: 0,
-  };
-  const TASKS_WS_RETRY_MIN_MS = 1000;
-  const TASKS_WS_RETRY_MAX_MS = 30000;
-  // How long past its own `wait` a request may go unanswered: a half-open
-  // socket would otherwise park the loop for good, where a GET would error.
-  const TASKS_WS_GRACE_MS = 15000;
-
-  function tasksWsBackoff() {
-    const w = TASKS_WS;
-    w.retryMs = Math.min(TASKS_WS_RETRY_MAX_MS, w.retryMs ? w.retryMs * 2 : TASKS_WS_RETRY_MIN_MS);
-    w.retryAt = Date.now() + w.retryMs;
-  }
-
-  // Settle every request still waiting on socket `s`: re-asked over its GET
-  // (`fallback`) when the socket never worked, else rejected for the backoff.
-  function tasksWsSettle(s, fallback) {
-    TASKS_WS.pending.forEach((p, id) => {
-      if (p.sock !== s) return;
-      TASKS_WS.pending.delete(id);
-      clearTimeout(p.timer);
-      p.unabort();
-      if (fallback) p.fallback();
-      else p.reject(new Error("tasks changes socket closed"));
-    });
-  }
-
-  function tasksWsConnect() {
-    const w = TASKS_WS;
-    if (w.sock && w.sock.readyState === WebSocket.OPEN) return Promise.resolve(w.sock);
-    if (w.opening) return w.opening;
-    const attempt = new Promise((resolve, reject) => {
-      let s;
-      try {
-        const proto = window.location.protocol === "https:" ? "wss://" : "ws://";
-        s = new WebSocket(proto + window.location.host + "/api/tasks/changes/ws");
-      } catch (e) {
-        reject(e);
-        return;
-      }
-      let opened = false;
-      s.onopen = () => {
-        opened = true;
-        w.sock = s;
-        resolve(s);
-      };
-      s.onmessage = (ev) => {
-        let msg;
-        try {
-          msg = JSON.parse(ev.data);
-        } catch (e) {
-          return;
-        }
-        if (!msg || typeof msg !== "object") return;
-        // The first reply proves the transport for this page.
-        w.transport = "ws";
-        w.retryMs = 0;
-        w.retryAt = 0;
-        const p = typeof msg.id === "number" ? w.pending.get(msg.id) : null;
-        if (!p) return; // aborted or timed out while the server answered
-        w.pending.delete(msg.id);
-        clearTimeout(p.timer);
-        p.unabort();
-        if (typeof msg.error === "string") {
-          p.reject(taskError(typeof msg.status === "number" ? msg.status : 500, msg.error));
-          return;
-        }
-        delete msg.id;
-        p.resolve(msg);
-      };
-      // `error` is always followed by `close`, which does the bookkeeping.
-      s.onerror = () => {};
-      s.onclose = () => {
-        if (w.sock === s) w.sock = null;
-        if (!opened) {
-          reject(new Error("tasks changes socket did not open"));
-          return;
-        }
-        if (w.transport === "unknown") {
-          w.transport = "http";
-          tasksWsSettle(s, true);
-        } else {
-          tasksWsBackoff();
-          tasksWsSettle(s, false);
-        }
-      };
-    });
-    w.opening = attempt;
-    const clear = () => {
-      if (w.opening === attempt) w.opening = null;
-    };
-    attempt.then(clear, clear);
-    return attempt;
-  }
-
-  function tasksAbortError() {
-    try {
-      return new DOMException("The operation was aborted.", "AbortError");
-    } catch (e) {
-      const err = new Error("The operation was aborted.");
-      err.name = "AbortError";
-      return err;
-    }
-  }
-
-  // One `/api/tasks/changes` question for `scopeKey` (a feed's query string).
-  async function tasksChanges(scopeKey, since, signal) {
-    const w = TASKS_WS;
-    const http = () =>
-      taskFetch(
-        "GET",
-        "/api/tasks/changes" +
-          tasksQuery(scopeKey, { since: String(since), wait: String(TASKS_CHANGES_WAIT_S) }),
-        null,
-        signal
-      );
-    if (w.transport === "http" || typeof WebSocket !== "function" || !window.location.host) {
-      return http();
-    }
-    if (signal && signal.aborted) throw tasksAbortError();
-    if (w.transport === "ws" && !(w.sock && w.sock.readyState === WebSocket.OPEN) && Date.now() < w.retryAt) {
-      throw new Error("tasks changes socket reconnecting");
-    }
-    let s;
-    try {
-      s = await tasksWsConnect();
-    } catch (e) {
-      // Never opened: before any reply ever landed, this page has no socket —
-      // HTTP for good, and this request goes there now. After, the server is
-      // down or restarting: reject, back off, retry. `!== "ws"`, not
-      // `=== "unknown"`: callers sharing one failed open must ALL fall back,
-      // and the first of them has already flipped it to "http".
-      if (w.transport !== "ws") {
-        w.transport = "http";
-        return http();
-      }
-      tasksWsBackoff();
-      throw e;
-    }
-    if (signal && signal.aborted) throw tasksAbortError();
-    const id = ++w.nextId;
+  function feedParams(scopeKey) {
     const q = new URLSearchParams(scopeKey || "");
-    const msg = { id: id, since: since, wait: TASKS_CHANGES_WAIT_S };
-    if (q.get("under")) msg.under = q.get("under");
-    if (q.get("scope")) msg.scope = q.get("scope");
+    const params = {};
+    if (q.get("under")) params.under = q.get("under");
+    if (q.get("scope")) params.scope = q.get("scope");
     const page = ownQuery("path");
-    if (page) msg.page = encodeURIComponent(page);
-    return new Promise((resolve, reject) => {
-      const onAbort = () => {
-        if (!w.pending.delete(id)) return;
-        clearTimeout(entry.timer);
-        // Tell the server too, so its waiter goes now rather than in 25 s.
-        try {
-          if (s.readyState === WebSocket.OPEN) s.send(JSON.stringify({ cancel: id }));
-        } catch (e) {
-          /* the socket is going anyway */
-        }
-        reject(tasksAbortError());
-      };
-      const entry = {
-        sock: s,
-        resolve: resolve,
-        reject: reject,
-        fallback: () => {
-          http().then(resolve, reject);
-        },
-        timer: setTimeout(() => {
-          if (!w.pending.delete(id)) return;
-          entry.unabort();
-          try {
-            s.send(JSON.stringify({ cancel: id }));
-          } catch (e) {
-            /* already closed */
-          }
-          // No reply past its own wait + grace: the socket is half-open.
-          // Leaving it current would time out every later request too, so
-          // close it — onclose then settles the rest and backs off, and the
-          // next request redials.
-          if (w.sock === s) {
-            try {
-              s.close();
-            } catch (e) {
-              /* already closing */
-            }
-          }
-          reject(new Error("tasks changes socket: no reply"));
-        }, TASKS_CHANGES_WAIT_S * 1000 + TASKS_WS_GRACE_MS),
-        unabort: () => {
-          if (signal) signal.removeEventListener("abort", onAbort);
-        },
-      };
-      w.pending.set(id, entry);
-      if (signal) signal.addEventListener("abort", onAbort);
-      try {
-        s.send(JSON.stringify(msg));
-      } catch (e) {
-        w.pending.delete(id);
-        clearTimeout(entry.timer);
-        entry.unabort();
-        reject(e);
-      }
-    });
+    if (page) params.page = encodeURIComponent(page);
+    return params;
   }
 
-  function feedFold(feed, rows, gone) {
-    const next = new Map();
+  function feedSnapshot(feed, snap) {
+    const rows = (Array.isArray(snap && snap.tasks) ? snap.tasks : []).filter((r) => r && r.key);
+    const prev = feed.rows;
+    feed.rows = new Map();
+    rows.forEach((r) => feed.rows.set(r.key, r));
+    const gone = prev ? Array.from(prev.keys()).filter((k) => !feed.rows.has(k)) : [];
+    feedEmit(feed, { full: true, rows: rows, gone: gone });
+  }
+
+  function feedDelta(feed, r) {
+    const rows = Array.isArray(r.rows) ? r.rows.filter((x) => x && x.key) : [];
+    const gone = Array.isArray(r.gone) ? r.gone : [];
+    if (!rows.length && !gone.length) return;
+    const before = new Set(feed.rows ? feed.rows.keys() : []);
+    // The server filters `rows` by scope but not `gone`: a key this feed
+    // never held is news about somebody else's task, and is dropped here.
+    const held = gone.filter((k) => before.has(k));
+    if (!rows.length && !held.length) return;
     // Rows that moved had activity: they go to the front, newest first like
     // the listing itself.
-    rows.forEach((r) => next.set(r.key, r));
-    (feed.rows || new Map()).forEach((r, k) => {
-      if (!next.has(k) && gone.indexOf(k) === -1) next.set(k, r);
+    const next = new Map();
+    rows.forEach((x) => next.set(x.key, x));
+    (feed.rows || new Map()).forEach((x, k) => {
+      if (!next.has(k) && held.indexOf(k) === -1) next.set(k, x);
     });
     feed.rows = next;
-  }
-
-  async function feedWatch(feed, run) {
-    const live = () => !feed.stopped && feed.run === run;
-    while (live()) {
-      if (document.hidden) {
-        await new Promise((resolve) => {
-          const fire = () => {
-            document.removeEventListener("visibilitychange", fire);
-            if (feed.wake === fire) feed.wake = null;
-            resolve();
-          };
-          feed.wake = fire;
-          document.addEventListener("visibilitychange", fire);
-        });
-        continue;
-      }
-      const ctl = new AbortController();
-      feed.abort = ctl;
-      let r;
-      try {
-        // `since` is the listing's own generation when it sent one, so
-        // nothing slips between "listed at N" and "changes since N"; else -1,
-        // a handshake that only learns the generation. Over the page's socket
-        // where it has one, the GET otherwise (tasksChanges, above).
-        r = await tasksChanges(feed.scope, feed.gen, ctl.signal);
-      } catch (e) {
-        if (ctl.signal.aborted || !live()) return;
-        await taskSleep(TASKS_BACKOFF_MS);
-        continue;
-      } finally {
-        if (feed.abort === ctl) feed.abort = null;
-      }
-      if (!live()) return;
-      const handshake = feed.gen < 0;
-      if (typeof r.generation === "number") feed.gen = r.generation;
-      if (handshake) continue;
-      if (r.full) {
-        // A server that restarted counts from zero again: forget the
-        // generation FIRST or the stale guard refuses the catch-up read, and
-        // fold nothing in until that read lands.
-        feed.gen = -1;
-        feed.catchingUp = true;
-        feedLoad(feed);
-        await taskSleep(TASKS_CATCH_UP_MS);
-        continue;
-      }
-      if (feed.catchingUp) continue;
-      const rows = Array.isArray(r.rows) ? r.rows.filter((x) => x && x.key) : [];
-      const gone = Array.isArray(r.gone) ? r.gone : [];
-      if (!rows.length && !gone.length) continue;
-      const before = new Set(feed.rows ? feed.rows.keys() : []);
-      // The server filters `rows` by scope but not `gone`: a key this feed
-      // never held is news about somebody else's task, and is dropped here.
-      const held = gone.filter((k) => before.has(k));
-      if (!rows.length && !held.length) continue;
-      feedFold(feed, rows, held);
-      feedEmit(feed, { full: false, rows: rows, gone: held, before: before });
-    }
+    feedEmit(feed, { full: false, rows: rows, gone: held, before: before });
   }
 
   function feedStart(feed) {
     feed.stopped = false;
-    const run = ++feed.run;
-    feed.gen = -1;
     feed.rows = null;
-    feed.catchingUp = false;
-    feedLoad(feed).then(() => {
-      if (!feed.stopped && feed.run === run) feedWatch(feed, run);
-    });
-    // The floor: the watcher is how news arrives, this is the answer to one
-    // that missed something (a scheduled message going out on the server's
-    // own tick writes no transcript).
-    feed.floor = setInterval(() => {
-      if (!document.hidden) feedLoad(feed);
-    }, TASKS_FLOOR_MS);
+    feed.off = subscribeTopic("tasks.listing", feedParams(feed.scope), (snap, delta, meta) => {
+      if (feed.stopped) return;
+      // A refusal (a bad scope) or a server error keeps what is held; the
+      // server says again when it can.
+      if (meta && meta.error !== undefined) return;
+      if (snap !== null) feedSnapshot(feed, snap);
+      else if (delta) feedDelta(feed, delta);
+    }, { hiddenOk: true });
   }
 
   function feedStop(feed) {
     feed.stopped = true;
-    feed.run++;
-    feed.seat++;
-    if (feed.abort) feed.abort.abort();
-    feed.abort = null;
-    if (feed.floor) clearInterval(feed.floor);
-    feed.floor = null;
-    if (feed.wake) feed.wake();
+    if (feed.off) feed.off();
+    feed.off = null;
     feed.rows = null;
   }
 
@@ -7138,6 +6804,11 @@
     tasks,
     trackJob,
     watchJob,
+    // fused.subscribe(topic, params, cb) -> unsubscribe: the events bus
+    // itself, for a page that wants a live fact the server publishes
+    // (`cb(snapshot, delta, meta)`; see static/events-client.js). The one way
+    // a page follows anything live — never a timer that fetches.
+    subscribe: subscribeTopic,
     autoReload,
     // Whether THIS frame is inside a git snapshot, and what it resolved to —
     // `null` when there is none (no `_snapshot` on this frame's url, or the

@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
+import logging
 import math
 import os
 import re
@@ -512,6 +513,21 @@ class Job:
 
 
 _lock = threading.Lock()
+logger = logging.getLogger("fused_render")
+
+# THE BUS'S EAR (server/events.py `jobs` topic). Called after every write
+# that changes what GET /api/jobs would answer, OUTSIDE the lock, on the
+# writer's thread; the bus hands the wake to its loop itself. A list rather
+# than an import: this module must not import the server.
+on_change: list = []
+
+
+def _changed() -> None:
+    for fn in list(on_change):
+        try:
+            fn()
+        except Exception:  # noqa: BLE001 — a listener must never break a report
+            logger.exception("jobs: a change listener failed")
 _jobs: dict[str, Job] = {}
 # id -> when it was dismissed. Insertion-ordered, so the oldest entry is the
 # first one to drop when the cap bites.
@@ -877,7 +893,9 @@ def upsert(body: dict, *, page: str = "", source: str = "", origin: str | None =
 
         job.updated_at = now
         _sweep(now)
-        return _public(job, now)
+        public = _public(job, now)
+    _changed()
+    return public
 
 
 def request_cancel(job_id: str, *, now: float | None = None) -> dict | None:
@@ -906,7 +924,9 @@ def request_cancel(job_id: str, *, now: float | None = None) -> dict | None:
             return None
         if job.state == RUNNING:
             job.cancel_requested = True
-        return _public(job, now)
+        public = _public(job, now)
+    _changed()
+    return public
 
 
 def clear_cancel_requested(job_id: str, *, now: float | None = None) -> dict | None:
@@ -933,7 +953,9 @@ def clear_cancel_requested(job_id: str, *, now: float | None = None) -> dict | N
         if job is None:
             return None
         job.cancel_requested = False
-        return _public(job, now)
+        public = _public(job, now)
+    _changed()
+    return public
 
 
 def _forget(job_id: str, now: float) -> None:
@@ -966,7 +988,8 @@ def dismiss(job_id: str, *, now: float | None = None) -> bool:
         if job is None or (job.state == RUNNING and not is_stalled(job, now)):
             return False
         _forget(job_id, now)
-        return True
+    _changed()
+    return True
 
 
 def forget(job_id: str, *, now: float | None = None) -> bool:
@@ -1004,7 +1027,8 @@ def forget(job_id: str, *, now: float | None = None) -> bool:
         if job_id not in _jobs:
             return False
         _forget(job_id, now)
-        return True
+    _changed()
+    return True
 
 
 def clear_finished(*, now: float | None = None) -> int:
@@ -1048,7 +1072,9 @@ def clear_finished(*, now: float | None = None) -> int:
         gone = [j.id for j in _jobs.values() if j.state in TERMINAL_STATES]
         for job_id in gone:
             _forget(job_id, now)
-        return len(gone)
+    if gone:
+        _changed()
+    return len(gone)
 
 
 def reset() -> None:

@@ -611,7 +611,7 @@ class LanApp:
     """ASGI wrapper: answers lifespan itself (never forwarded — the inner app's
     startup/shutdown handlers belong to the loopback server; forwarding them
     would run engine_host's tree-kill when the LAN switch flips OFF), closes
-    websockets (``/api/fs/events`` — the page degrades to polling), serves its
+    every websocket (D9: the events bus is loopback-only), serves its
     own grid, and forwards allowlisted, scoped HTTP requests to the inner app."""
 
     def __init__(self, inner):
@@ -629,27 +629,17 @@ class LanApp:
                     return
             return
         if kind == "websocket":
-            # /api/fs/events (the runtime's change feed) is the one socket a
-            # page needs; forwarded when every watched `path` is in the roots.
-            # /api/terminal/{sid}/stream is deliberately NOT allowlisted here —
-            # a paired LAN peer gets a 1008 close instead of a shell. This is a
-            # UX/scope call, not a security barrier (/api/run already executes
-            # arbitrary Python for any client that reaches the loopback
-            # server), so the omission is intentional, not an oversight the
-            # next socket added here should "fix".
-            # /api/run/ws is refused too: POST /api/run is scoped per request
-            # from its body (`_route`), and the socket would need the same
-            # check per MESSAGE (a frame-inspecting receive wrapper). The
-            # runtime falls back to the POST when this socket never opens, and
-            # the 6-connection WebKit cap it exists for is a loopback-windows
-            # problem, not a phone's.
-            query = parse_qs(scope.get("query_string", b"").decode("utf-8", "replace"),
-                             keep_blank_values=True)
-            if (_host_ok(scope) and _paired(scope) and scope["path"] == "/api/fs/events"
-                    and query.get("path") and _args_in_scope(query)):
-                await self.inner(scope, receive, send)
-            else:
-                await send({"type": "websocket.close", "code": 1008})
+            # EVERY socket is refused (D9, 2026-10-09): the events bus
+            # (`/api/events`) carries every live fact on loopback and is
+            # origin-checked against a loopback Host a phone can never
+            # present; forwarding it would need a frame-inspecting wrapper with
+            # per-message scope checks for a feature nobody uses. A paired
+            # phone keeps working over HTTP and loses live reload (the old
+            # /api/fs/events was the one socket this forwarded).
+            # /api/terminal/{sid}/stream and /api/run/ws were never forwarded:
+            # a LAN peer gets no shell, and the run socket would need the
+            # POST's per-request scoping per MESSAGE.
+            await send({"type": "websocket.close", "code": 1008})
             return
         if kind != "http":
             return

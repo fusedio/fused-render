@@ -124,7 +124,7 @@ import uuid
 from datetime import datetime, timezone
 from urllib.parse import unquote, urlencode
 
-from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query
 from fastapi.responses import Response
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
@@ -142,7 +142,7 @@ from fused_render import (
     tasks_watch,
 )
 from fused_render._view_url_codec import canonical_fs_path
-from fused_render.server.common import _error, _require_fused, ws_origin_ok
+from fused_render.server.common import _error, _require_fused
 from fused_render.server.routers import claude_sessions as sessions
 from fused_render.server.routers import schedule as schedule_api
 from fused_render.shell import prefs as shell_prefs
@@ -5222,105 +5222,11 @@ def _changes_answer(since: int, gen: int, keys, scope_dir: str) -> dict:
             "gone": sorted(gone), "drafts": _draft_changes(keys)}
 
 
-@router.websocket("/api/tasks/changes/ws")
-async def api_tasks_changes_ws(ws: WebSocket):
-    """`/api/tasks/changes`, as requests multiplexed over one WebSocket.
-
-    WHY A SOCKET (measured 2026-10-08). The native app's WKWebView windows
-    share one data store, and WebKit allows SIX HTTP/1.1 connections per
-    host:port across all of them. Every shell document — the top window, every
-    embed pane, a page's `fused.tasks.watch` — parked one 25 s GET here, which
-    filled the six on their own and left every other fetch queued browser-side
-    behind them. WebSockets are not counted against that cap (measured, same
-    day; the reason `/api/fs/events` is one, D74). So the long-poll moves onto a
-    socket per document and the GET stays, unchanged, as the fallback.
-
-    PROTOCOL. Request/response, mirroring the GET exactly — the client keeps its
-    own generation cursor and its own loop:
-      → ``{"id", "since", "wait", "under", "scope", "page"}`` — the GET's query
-        params, plus ``page``: what `X-Fused-Page` carries (percent-encoded, as
-        the header does), because a browser WebSocket cannot set headers.
-      ← the GET's JSON answer plus ``"id"``; a refusal the GET would answer
-        with a status is ``{"id", "error", "status"}`` on the open socket.
-      → ``{"cancel": id}`` drops a request the client has stopped waiting for.
-    Every request runs as its own task, so several loops (the shell's listing
-    feed, a bots build, a page's scope) share one socket without queueing
-    behind each other's 25 s waits; the receive loop below is what learns of a
-    disconnect, and it cancels whatever is still waiting.
-
-    ORIGIN-CHECKED (`ws_origin_ok`): a cross-site page can open a WebSocket to
-    loopback with no preflight, unlike the GET's fetch, whose answer it could
-    never read."""
-    if not ws_origin_ok(ws):
-        await ws.close(code=1008)
-        return
-    await ws.accept()
-    send_lock = asyncio.Lock()
-    inflight: dict = {}
-
-    async def reply(payload: dict) -> None:
-        # Tasks finish in any order; one frame at a time on the wire.
-        async with send_lock:
-            try:
-                await ws.send_text(json.dumps(payload))
-            except Exception:  # noqa: BLE001 — the socket went away mid-answer
-                pass
-
-    async def answer(rid, msg: dict) -> None:
-        try:
-            try:
-                since = int(msg.get("since", -1))
-                wait = float(msg.get("wait", tasks_watch.MAX_WAIT_SEC))
-            except (TypeError, ValueError):
-                await reply({"id": rid, "error": "since/wait: expected numbers",
-                             "status": 400})
-                return
-            scope_dir, refusal = await run_in_threadpool(
-                _scope_dir, str(msg.get("under") or ""), str(msg.get("scope") or ""),
-                msg.get("page") or None)
-            if refusal is not None:
-                body = json.loads(bytes(refusal.body) or b"{}")
-                await reply({"id": rid, "error": body.get("error") or "refused",
-                             "status": refusal.status_code})
-                return
-            payload = await _changes(since, wait, scope_dir)
-            await reply({**payload, "id": rid})
-        except asyncio.CancelledError:
-            raise
-        except Exception:  # noqa: BLE001 — the GET would have been a 500
-            logger.exception("tasks changes socket: request %r failed", rid)
-            await reply({"id": rid, "error": "internal error", "status": 500})
-        finally:
-            if inflight.get(rid) is asyncio.current_task():
-                inflight.pop(rid, None)
-
-    try:
-        while True:
-            frame = await ws.receive()
-            if frame["type"] == "websocket.disconnect":
-                break
-            try:
-                msg = json.loads(frame.get("text") or frame.get("bytes") or "")
-            except ValueError:
-                continue
-            if not isinstance(msg, dict):
-                continue
-            if "cancel" in msg:
-                cancel = msg.get("cancel")
-                task = inflight.pop(cancel, None) if isinstance(cancel, (str, int)) else None
-                if task is not None:
-                    task.cancel()
-                continue
-            rid = msg.get("id")
-            if not isinstance(rid, (str, int)) or rid in inflight:
-                continue  # nothing to answer to, or a duplicate id
-            inflight[rid] = asyncio.create_task(answer(rid, msg))
-    except WebSocketDisconnect:
-        pass
-    finally:
-        for task in list(inflight.values()):
-            task.cancel()
-        inflight.clear()
+# `/api/tasks/changes/ws` (2026-10-08) used to live here: the long-poll above
+# as requests multiplexed over one socket. It is the `tasks.listing` topic of
+# the events bus now (server/topics.py): the client's cursor moved
+# server-side, the snapshot is `api_tasks`'s body and the deltas are
+# `_changes_answer`'s, on the one socket per document.
 
 
 # `project` rides along for the sidebar's Current apps section (D487): the

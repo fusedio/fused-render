@@ -42,11 +42,6 @@ import type { Task } from "@platform/lib/api";
 import { refreshListing, subscribeListing } from "@shell/tasksPulse";
 import type { ListingEnv } from "@shell/tasksPulse";
 
-/** The long-poll's wait and its backoff, now the shared feed's
- *  (`shell/tasksPulse`) — re-exported because they are this module's published
- *  numbers and its tests assert on them. */
-export { CHANGES_WAIT_S, CHANGES_BACKOFF_MS } from "@shell/tasksPulse";
-
 /**
  * T:13066-13072 — TWO MORE LOOKS AFTER LANDING, and they are the difference
  * between a chat you just had being in this list and not (R3-1).
@@ -86,7 +81,6 @@ export interface RecentEnv extends ListingEnv {
    */
   after?(ms: number, fn: () => void): () => void;
 }
-export type { FetchLike } from "@shell/tasksPulse";
 
 function browserAfter(ms: number, fn: () => void): () => void {
   const id = setTimeout(fn, ms);

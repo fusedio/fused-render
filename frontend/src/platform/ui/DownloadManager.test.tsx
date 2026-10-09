@@ -1113,11 +1113,10 @@ test("2+ jobs draws the numeral and a fill that is the MEAN of the running fract
 //
 // `useJobs` is exported purely for this suite (see its own comment) so the
 // hook can be driven directly, the same split `JobRow`/`retiredEngines`
-// already use elsewhere. `globalThis.fetch` is stubbed directly rather than
-// `mock.module`d for the reason this file's own header gives; `window`'s
-// timers are captured (and restored) the same way ActivityDock.test.tsx's
-// own `captureTimers` is, scoped to just this describe block.
-describe("useJobs' loaded gate: a stale response is not a first real read", () => {
+// already use elsewhere. The events client is swapped for a scripted one
+// (`setEventsClientForTests`) rather than `mock.module`d for the reason this
+// file's own header gives.
+describe("useJobs' loaded gate: a placeholder is not a first real read", () => {
   type JobsState = {
     jobs: Job[];
     now: number;
@@ -1132,94 +1131,49 @@ describe("useJobs' loaded gate: a stale response is not a first real read", () =
     return null;
   }
 
-  function captureTimers(): { fireAll: () => void; restore: () => void } {
-    const pending = new Map<number, () => void>();
-    let nextId = 1;
-    const win = (globalThis as Record<string, unknown>).window as Record<string, unknown>;
-    const realSetTimeout = win.setTimeout;
-    const realClearTimeout = win.clearTimeout;
-    win.setTimeout = ((fn: () => void) => {
-      const id = nextId++;
-      pending.set(id, fn);
-      return id;
-    }) as typeof globalThis.setTimeout;
-    win.clearTimeout = ((id: number) => void pending.delete(id)) as typeof globalThis.clearTimeout;
-    return {
-      fireAll: () => {
-        const due = [...pending.values()];
-        pending.clear();
-        for (const fn of due) fn();
+  test("a patch before the first snapshot lands leaves loaded false; the snapshot flips it", async () => {
+    const { setEventsClientForTests } = await import("@platform/lib/events");
+    let push: ((snap: unknown) => void) | null = null;
+    let resyncs = 0;
+    setEventsClientForTests({
+      subscribe: ((_t: string, _p: unknown, cb: (s: unknown, d: unknown, m: Record<string, unknown>) => void) => {
+        push = (snap) => cb(snap, null, { gen: null });
+        return () => {
+          push = null;
+        };
+      }) as never,
+      resync: () => {
+        resyncs += 1;
+        return true;
       },
-      restore: () => {
-        win.setTimeout = realSetTimeout;
-        win.clearTimeout = realClearTimeout;
-      },
-    };
-  }
-
-  function okResponse(data: unknown): Response {
-    return { ok: true, status: 200, json: async () => data } as unknown as Response;
-  }
-
-  async function flush(): Promise<void> {
-    await act(async () => {
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
     });
-  }
-
-  test("a patch that bumps the epoch before the first poll lands leaves loaded false", async () => {
-    const timers = captureTimers();
-    const realFetch = globalThis.fetch;
-    let resolveFirst!: (r: Response) => void;
-    const firstResponse = new Promise<Response>((resolve) => {
-      resolveFirst = resolve;
-    });
-    let calls = 0;
-    globalThis.fetch = (async () => {
-      calls += 1;
-      if (calls === 1) return firstResponse;
-      return okResponse({ jobs: [{ ...BASE, id: "old", state: "done" }], now: Date.now() / 1000 });
-    }) as unknown as typeof fetch;
 
     let latest!: JobsState;
     try {
       await act(async () => {
         create(<JobsHarness onState={(s) => (latest = s)} />);
       });
-      // The first /api/jobs read is still in flight (`firstResponse` has not
-      // resolved). A patch — the same call a dismiss/cancel/clear issues —
-      // bumps the epoch before that read lands, which is what makes the
-      // response about to arrive a STALE one.
+      // No snapshot yet. A patch — the same call a dismiss/cancel/clear
+      // issues — touches `jobs` but is not an observation.
       await act(async () => {
         latest.patch((jobs) => jobs);
       });
-      // Let the now-stale first response land.
-      await act(async () => {
-        resolveFirst(okResponse({ jobs: [], now: Date.now() / 1000 }));
-      });
-      await flush();
-
-      // A stale response is real, but it was dropped without ever touching
-      // `jobs` — `jobs` is still the placeholder, so `loaded` must still be
-      // false, or a consumer gated on it (DownloadManagerView's
-      // `onJobsReported` effect) forwards that placeholder as though it were
-      // a genuine first read.
       expect(latest.loaded).toBe(false);
       expect(latest.jobs).toEqual([]);
 
-      // The idle-cadence poll the stale response scheduled is the one that
-      // actually paints something for the first time — loaded must flip
-      // true on THAT read.
-      timers.fireAll();
-      await flush();
+      // The first snapshot is what paints something for the first time —
+      // loaded flips true on THAT frame.
+      await act(async () => {
+        push?.({ jobs: [{ ...BASE, id: "old", state: "done" }], now: Date.now() / 1000 });
+      });
       expect(latest.loaded).toBe(true);
       expect(latest.jobs.map((j) => j.id)).toEqual(["old"]);
+
+      // `refresh` is one resync of the subscription, never a fetch.
+      latest.refresh();
+      expect(resyncs).toBe(1);
     } finally {
-      globalThis.fetch = realFetch;
-      timers.restore();
+      setEventsClientForTests(null);
     }
   });
 });
