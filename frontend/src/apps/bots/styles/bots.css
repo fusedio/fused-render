@@ -260,18 +260,13 @@ div.bots-page.lanim .bots header #add svg { width: 20px; height: 20px; }
 .bots-page .chat header .title b { display: block; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bots-page .chat header .title small { color: var(--muted); font-size: 11px; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bots-page .chat header .title small:empty { display: none; }
-/* The rail: Stage is on (root .stage), chat is a narrow --chatw column beside the live page. Compact header (face + name),
-   full-width bubbles, no timestamps. */
-div.bots-page.stage .chat { --chatgut: 12px; }
+/* Stage (root .stage) only narrows the chat column to --chatw (the grid rule above); the chat's own styling never changes with the mode. */
 /* The chat's toast slot (#ctoast) only while the preview, which carries #toast, is hidden and Stage is off (#ftoast covers Stage). */
 .bots-page .chat > #ctoast { display: none; }
 div.bots-page:is(.rcol, .rfit):not(.stage) .chat > #ctoast { display: flex; }
 /* Stage folds the sidebar to icons by itself; the collapse toggle would flip layout.lcol unseen, so it steps aside. */
 div.bots-page.stage .bots header #lcol { display: none; }
-div.bots-page.stage .chat header { padding: 6px 12px; min-height: 44px; }
-div.bots-page.stage .chat header .title small, div.bots-page.stage .chat header #rcol { display: none; }
-div.bots-page.stage .chat .msg { max-width: 100%; }
-div.bots-page.stage .chat .msg time.when { display: none; }
+div.bots-page.stage .chat header #rcol { display: none; }  /* same: the preview toggle would flip layout.rcol unseen under Stage */
 /* While you hold the browser: the hand-back row closing the bot's live hand-over question, or the "You're driving" note
    at the end of the thread (components/HandoverCard.tsx). */
 .bots-page .msg .hbrow { display: flex; gap: 8px; align-items: center; margin-top: 10px; }
