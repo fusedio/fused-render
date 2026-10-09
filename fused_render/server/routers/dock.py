@@ -32,6 +32,7 @@ from fastapi import APIRouter, Body, Header
 from fastapi.responses import FileResponse, PlainTextResponse
 
 from fused_render import dock, window_policy
+from fused_render.server.events import bus
 from fused_render.server.common import STATIC_DIR, _error, _require_fused
 
 router = APIRouter()
@@ -126,11 +127,13 @@ def dock_pin(body: dict = Body(default=None), x_fused: str | None = Header(defau
             value = dock.set_bot_pinned(bid, pinned)
         except ValueError as e:
             return _error(str(e) or "bad request", 400)
-        return {"ok": True, "id": bid, "pinned": value}
+        bus.publish("dock")
+    return {"ok": True, "id": bid, "pinned": value}
     try:
         pins = dock.set_pinned(body.get("path"), pinned)
     except ValueError as e:
         return _error(str(e) or "bad request", 400)
+    bus.publish("dock")
     return {"ok": True, "pinned": pins}
 
 
@@ -143,6 +146,7 @@ def dock_order(body: dict = Body(default=None), x_fused: str | None = Header(def
         pins = dock.set_order(body.get("paths"))
     except ValueError as e:
         return _error(str(e) or "bad request", 400)
+    bus.publish("dock")
     return {"ok": True, "pinned": pins}
 
 
@@ -155,4 +159,5 @@ def dock_size(body: dict = Body(default=None), x_fused: str | None = Header(defa
         n = dock.set_tilesize(body.get("tilesize"))
     except ValueError as e:
         return _error(str(e) or "bad request", 400)
+    bus.publish("dock")
     return {"ok": True, "tilesize": n}

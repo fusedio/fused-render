@@ -513,6 +513,16 @@ def _live_expires_in(session_id: str, now: datetime) -> float:
     return max(0.0, active + session_liveness.RUNNING_WINDOW_SEC - now.timestamp())
 
 
+
+def _publish(topic: str, key=None) -> None:
+    """Wake the events bus (server/events.py) for `topic`. Imported lazily so
+    this module keeps importing in a process that never starts the server."""
+    try:
+        from fused_render.server.events import bus
+        bus.publish(topic, key)
+    except Exception:  # noqa: BLE001 — a missed wake is latency, never an error
+        pass
+
 def _notify(keys: set[str]) -> None:
     """Tell the Tasks long-poll which rows moved. Best-effort: a watcher that
     cannot be rung costs one poll interval, never the write that got here."""
@@ -1136,6 +1146,11 @@ def _now() -> datetime:
 
 
 def _emit(kind: str, entry: dict, detail: str = "") -> None:
+    _emit_locked(kind, entry, detail)
+    _publish("schedule.events")
+
+
+def _emit_locked(kind: str, entry: dict, detail: str = "") -> None:
     """Append one event for the shell to narrate.
 
     Ordering is by the monotonic `id`, not by `ts` — a poller tracks a
@@ -1195,7 +1210,9 @@ def ack_events(event_id: int) -> int:
     with _events_lock:
         if isinstance(event_id, int) and event_id > _delivered:
             _delivered = event_id
-        return _delivered
+        mark = _delivered
+    _publish("schedule.events")
+    return mark
 
 
 def _job_id(entry_id: str) -> str:
@@ -1275,6 +1292,8 @@ def _read() -> list[dict]:
 
 def _write(entries: list[dict]) -> None:
     storage.write_json(store_path(), {"entries": entries})
+    _publish("schedule")
+    _publish("schedule.queue")
 
 
 def _text(value) -> str:

@@ -192,6 +192,13 @@ class Sampler:
                 self.sample(record=record)
         except Exception:  # noqa: BLE001 — a failed sample keeps the last one
             logger.debug("sysmon sample failed", exc_info=True)
+        # The `system.activity` topic's event (server/topics.py): one tick,
+        # one publish, every subscribed document.
+        try:
+            from fused_render.server.events import bus
+            bus.publish("system.activity")
+        except Exception:  # noqa: BLE001
+            pass
 
     def _cmd(self, pid: int, start: int) -> list[str] | None:
         key = (pid, start)

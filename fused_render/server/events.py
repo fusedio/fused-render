@@ -79,6 +79,7 @@ DELTA_RETRY_MAX = 20
 # behind it is not built yet — ask me again shortly" (the tasks listing's
 # snapshot builder catching up with the watcher).
 RETRY = object()
+_UNSET_SIG = object()
 
 
 class TopicError(Exception):
@@ -136,6 +137,20 @@ class Topic:
         """polldiff: the value whose change means "publish". Defaults to the
         snapshot itself (and then `signature_is_snapshot` should be True)."""
         return self.snapshot(params)
+
+    # A producer that cannot read one signature for every subscriber (the
+    # bots feed: each subscriber's answer depends on its own cursors) ticks
+    # instead: every `poll_interval` it wakes every subscriber of the key, and
+    # each one's delta/snapshot is built and then DROPPED when it says nothing
+    # new (`frame_signature`). The wire carries only change.
+    tick_only: bool = False
+
+    def frame_signature(self, body: dict) -> Any:
+        """What makes two consecutive frames for one subscriber "the same":
+        a frame whose signature equals the last one sent is not sent. The
+        default is the whole body; a topic whose body carries a clock
+        (`ts`) excludes it."""
+        return canonical(body)
 
     def poll_interval(self, params: dict, age_s: float, last: Any) -> float:
         """The producer's next sleep: `poll_interval_s` by default. A topic
@@ -215,6 +230,9 @@ class _Sub:
         self.closed = False
         self.retries = 0
         self.claimed: int | None = None
+        # The signature of the last frame SENT (not merely built), so an
+        # unchanged body is never put on the wire twice.
+        self.last_sig: Any = _UNSET_SIG
 
 
 class _KeyState:
@@ -582,12 +600,33 @@ class EventBus:
             elif answer is not None:
                 body, gen = answer
                 sub.retries = 0
-                if gen is not None and gen <= sub.gen:
+                if isinstance(gen, int) and isinstance(sub.gen, int) and gen <= sub.gen:
                     return None  # nothing moved since what the client holds
+                if self._same_as_last(sub, body):
+                    sub.gen = gen
+                    return None
                 return _Frame("delta", body, gen)
         sub.retries = 0
         body, raw = await self._snapshot(state)
+        if sub.gen is not None and self._same_as_last(sub, body):
+            return None  # a re-tick that found nothing new for this subscriber
+        if sub.gen is None:
+            try:
+                sub.last_sig = topic.frame_signature(body)
+            except Exception:  # noqa: BLE001
+                sub.last_sig = _UNSET_SIG
         return _Frame("snap", body, topic.generation(body), raw=raw)
+
+    @staticmethod
+    def _same_as_last(sub: _Sub, body: dict) -> bool:
+        try:
+            sig = sub.topic.frame_signature(body)
+        except Exception:  # noqa: BLE001 — an unsignable body is always news
+            return False
+        if sub.last_sig is not _UNSET_SIG and sig == sub.last_sig:
+            return True
+        sub.last_sig = sig
+        return False
 
     async def _snapshot(self, state: _KeyState) -> tuple[dict, str]:
         """The body for the current version and its JSON, built once per key
@@ -647,6 +686,10 @@ class EventBus:
         inflight: asyncio.Future | None = None
         started = time.monotonic()
         try:
+            if topic.tick_only:
+                while True:
+                    await asyncio.sleep(topic.poll_interval(state.params, time.monotonic() - started, last_sig))
+                    self._publish_on_loop(topic.name, state.key, None)
             while True:
                 sig: Any = _UNSET
                 if inflight is not None:

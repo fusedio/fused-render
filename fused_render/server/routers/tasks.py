@@ -5119,50 +5119,11 @@ def _draft_changes(keys) -> dict:
     return {"changed": changed, "gone": gone}
 
 
-@router.get("/api/tasks/changes")
-async def api_tasks_changes(since: int = Query(-1), wait: float = Query(tasks_watch.MAX_WAIT_SEC),
-                      under: str = Query(""), scope: str = Query(""),
-                      x_fused_page: str | None = Header(default=None)):
-    """What moved since generation `since` — the Tasks page's fast lane.
-
-    Long-poll: answers the moment the watcher (tasks_watch) sees a session
-    start, resume, take a prompt or grow its transcript, and otherwise after
-    `wait` seconds with nothing. The answer is the full rows for exactly the
-    tasks that changed (`rows`), plus the keys that changed but are no longer
-    listed (`gone` — archived-into-silence, deleted, or a pending message
-    whose session id it has just been rekeyed under). A client further behind
-    than the watcher remembers gets `full: true` and reloads the listing.
-
-    The 20-second full listing stays the truth; this only makes the page hear
-    about a change without waiting for it.
-
-    `?under=` / `?scope=app` scope `rows` exactly as they scope the listing.
-    `gone` is left whole: it is noisy by construction (a key the client never
-    held is dropped client-side), and a gone key has no row left to read a
-    target off, so there is nothing to filter it by."""
-    # ASYNC, AND NOT FOR SPEED (2026-10-08). As a sync route every long-poll
-    # held one of anyio's 40 worker threads for its whole 25 s, and every shell
-    # document — every embed pane too — keeps one open. The wait is now a
-    # future (`tasks_watch.wait_async`); only the answer-building tail, which
-    # blocks on the snapshot's own Condition, goes to the threadpool, and only
-    # once there is something to answer. `_scope_dir` reads disk for
-    # `scope=app` (`_page_scope`), so it rides the threadpool too.
-    scope_dir, refusal = await run_in_threadpool(_scope_dir, under, scope, x_fused_page)
-    if refusal is not None:
-        return refusal
-    return await _changes(since, wait, scope_dir)
-
-
-async def _changes(since: int, wait: float, scope_dir: str) -> dict:
-    """The answer to one `/api/tasks/changes` question, already scoped — the
-    GET above and the WebSocket feed below both end here."""
-    gen, keys = await tasks_watch.wait_async(since, wait)
-    if keys is None:
-        return {"generation": gen, "full": True}
-    if not keys:
-        return {"generation": gen, "rows": [], "gone": [],
-                "drafts": {"changed": [], "gone": []}}
-    return await run_in_threadpool(_changes_answer, since, gen, keys, scope_dir)
+# `GET /api/tasks/changes` (the 25 s long-poll, its `wait` param and the
+# `X-Fused-Page` it scoped by) and `/api/tasks/changes/ws` are gone (events
+# bus, phase 5): the `tasks.listing` topic (server/topics.py) answers the same
+# question — `_changes_answer` below — with the client's cursor kept
+# server-side and the answer PUSHED on every bump.
 
 
 def _changes_answer(since: int, gen: int, keys, scope_dir: str) -> dict:
@@ -5229,91 +5190,10 @@ def _changes_answer(since: int, gen: int, keys, scope_dir: str) -> dict:
 # `_changes_answer`'s, on the one socket per document.
 
 
-# `project` rides along for the sidebar's Current apps section (D487): the
-# section's membership is its own store now (current_apps.py) but the running
-# dot on a row still reads the pulse — which task is under which app is a
-# listing fact, and a second GET /api/tasks poll from the sidebar is the
-# double-poll the pulse store exists to prevent.
-#
-# `task_id`, `title`, `target` and `session_id` ride along for the SAME reason,
-# one surface later (2026-09-03): the Notifications section draws a row per task
-# that is waiting on an answer, and such a row has to print which task
-# ("TASK-097") and what it is about (the title), then open the conversation —
-# which is `tasks-lib.taskHref`'s pair of `session_id` and `target`. Four short
-# strings on a row that is already being built is cheaper by every measure than
-# the second /api/tasks poll the alternative would need, and this endpoint is
-# still the compact one: it carries no entries, no messages and no description,
-# which is where a task listing's weight actually is.
-_PULSE_FIELDS = (
-    "key", "status", "unread", "last_active", "project",
-    "task_id", "title", "target", "session_id",
-    # The desk's change detector (shell/CurrentAppsSection `pulseSignal`): the
-    # sidebar refetches the projects table when a task's `happened_at` moves,
-    # since that is exactly when `current_apps.observe` can have flipped a
-    # row's unread. `last_active` cannot stand in — a recurring task whose run
-    # finished early keeps its due time there and the digest would not move.
-    "happened_at",
-    # The Tasks page paints these rows before its own listing answers
-    # (shell/tasks-lib provisionalTasks), and the Board's Upcoming lane sorts by
-    # the next run: without it a provisional card sat at the bottom of the lane
-    # and jumped into place when the listing landed. One float per row — and
-    # the entry it belongs to, because the client reads the time only when it
-    # can also name the entry (shell/tasks-lib namedNextRun): a time with no
-    # entry is one nobody can fire, and is not sorted by.
-    "next_run",
-    "next_run_entry",
-    "next_run_repeats",
-    # ...and where the row stands in its folder's line, for the same surface and
-    # the same reason: the sidebar's Current apps section says "n running, n
-    # queued", and a queued row that could not say whether it runs next would
-    # make the count the only thing it could print. Three short fields — a
-    # number, a task id and a flag — on rows that are already being built.
-    # `queue_key` and `queue_ahead_title` are deliberately NOT here: the folder
-    # is what the Tasks page groups by and the title is a whole string per row,
-    # and the sidebar draws neither.
-    "queue_position",
-    "queue_ahead",
-    "queue_priority",
-    # …and the session that name opens, because the sidebar's rows are links
-    # too: a Notifications row already carries `session_id` and `target` for its
-    # OWN thread (`taskHref`), and the row in front is the other thread a queued
-    # row can send a reader to. One short string. The target is not here for the
-    # same reason `queue_key` is not — the pulse carries the queued row's own
-    # `target`, and a folder-key-length path per row for a link the sidebar does
-    # not yet draw is weight this endpoint exists to avoid.
-    "queue_ahead_session",
-    # How many messages are waiting, for the sidebar's "n queued" line: the
-    # count of ROWS is what that number is today, and a row that could not say
-    # how much work it is holding made a task with three queued sends look like
-    # one. A single integer on a row that is already being built.
-    "queue_waiting",
-    # "cli" (interactive terminal) / "sdk-cli" (headless — what
-    # claude_agent/agent.py's spawn produces) / `None` (unknown, e.g. no
-    # transcript yet) — see `_place`'s own comment. task-status-notify.ts's
-    # finished-task notice gates on this: only an exact "cli" is treated as
-    # "started outside our own template", and anything else, including
-    # `None`, still notifies. A row missing this key entirely would be a
-    # `KeyError` here, so `_place`/`_row` always set it, even to `None`.
-    "entrypoint",
-)
-
-
-@router.get("/api/tasks/pulse")
-def api_tasks_pulse():
-    """The compact task facts used by the global sidebar's status pulse.
-
-    NO DRAFTS. The sidebar's dot, its unread count and its Notifications
-    section are about work that is happening; a form somebody has not finished
-    is not news, and design.md puts task drafts in the List and the Board only
-    — never the Cards wall, never the Calendar, and by the same reasoning never
-    here (Akshil, 2026-09-11)."""
-    return {
-        "tasks": [
-            {field: row[field] for field in _PULSE_FIELDS}
-            for row in _task_rows()
-            if row.get("kind") != "draft"
-        ]
-    }
+# `GET /api/tasks/pulse` — the listing reduced to the sidebar's fields — is
+# gone (events bus, phase 5): the sidebar reads the same rows off the one
+# `tasks.listing` subscription the Tasks page and every chat share
+# (shell/tasksPulse.ts), so there is no second, thinner poll to serve.
 
 
 class RunningPatch(BaseModel):

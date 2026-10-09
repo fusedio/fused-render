@@ -15,6 +15,11 @@ const { ClaudeChat } = await import("./ClaudeChat");
 const { createMemoryParamsStore } = await import("./params/store");
 const { resetListingFeedForTests } = await import("@shell/tasksPulse");
 const { troubleReport } = await import("@platform/lib/trouble");
+// The run stream (`claude.run`) and the live probe (`claude.live`) are events
+// bus subscriptions now; this fake client answers them with the same
+// `/api/claude/agent` POSTs (`poll` / `live_run`) the stub below scripts.
+const { setEventsClientForTests } = await import("@platform/lib/events");
+const { agentBackedEventsClient } = await import("./protocol/test-bus");
 
 /** One `/api/claude/agent` call: the action, plus the fields. */
 interface RunCall {
@@ -106,6 +111,7 @@ function stubFetch(): void {
 }
 
 beforeEach(() => {
+  setEventsClientForTests(agentBackedEventsClient());
   runs.length = 0;
   holdPrefs = false;
   holdPaneStat = false;
@@ -125,6 +131,7 @@ beforeEach(() => {
 const mounted: Array<ReturnType<typeof create>> = [];
 afterEach(() => {
   for (const r of mounted.splice(0)) act(() => r.unmount());
+  setEventsClientForTests(null);
   (globalThis as { fetch: unknown }).fetch = realFetch;
 });
 

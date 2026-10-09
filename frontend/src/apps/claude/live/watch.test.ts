@@ -1,12 +1,22 @@
 // The standing watch (D415): the pure follow rule, the order in which the two
-// questions are asked, and the four triggers — including the one that is
-// deliberately SKIPPED while nobody is looking.
+// questions are asked, the `claude.live` subscription that laps it, and the
+// event triggers that ask the bus for a fresh frame.
+//
+// The 5 s interval is gone (D3): the server pushes a frame when the answer
+// moves, so the trigger tests drive frames through `test-live-bus.ts` instead
+// of firing a fake interval. The old "interval is SKIPPED while hidden" test
+// became "visibility asks only when visible": dropping a hidden subscription
+// is the events client's job now, not this file's.
 import { installDomShim } from "@platform/lib/testDomShim";
 installDomShim();
 import { describe, expect, test } from "bun:test";
 import { TASKS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
 import { createLiveWatch, followDecision, LIVE_WATCH_MS } from "./watch";
+import { liveBus } from "./test-live-bus";
 import type { TranscriptStat } from "../protocol/types";
+
+/** Let the scripted frames land and the laps they start run. */
+const flush = () => new Promise<void>((r) => setTimeout(r, 0));
 
 const mark = (over: Partial<TranscriptStat> = {}): TranscriptStat => ({
   path: "/p/s1.jsonl",
@@ -69,6 +79,8 @@ interface Rig {
   livenessCalls: string[];
   /** A liveness read nobody has answered yet, for the across-the-await tests. */
   hold?: { resolve: () => void };
+  /** What the frame's `live` names — `""` is "nothing live". */
+  liveRun: string;
 }
 
 function rig(over: Partial<Rig> = {}) {
@@ -82,9 +94,9 @@ function rig(over: Partial<Rig> = {}) {
     refreshes: [],
     external: [],
     livenessCalls: [],
+    liveRun: "r-live",
     ...over,
   };
-  const timers: (() => void)[] = [];
   const listeners: Record<string, ((ev: unknown) => void)[]> = {};
   const target = (prefix: string) => ({
     addEventListener(type: string, fn: (ev: never) => void) {
@@ -96,6 +108,22 @@ function rig(over: Partial<Rig> = {}) {
       if (at >= 0) list.splice(at, 1);
     },
   });
+  const liveness = (path: string) => {
+    state.livenessCalls.push(path);
+    if (state.hold) {
+      return new Promise<Rig["probe"]>((res) => {
+        state.hold!.resolve = () => res(state.probe);
+      });
+    }
+    return Promise.resolve(state.probe);
+  };
+  // Each frame is one call of the rig's own script: the stat (when the key
+  // carries a path, exactly as the server reads one) and the live run.
+  const bus = liveBus(async (params) => ({
+    live: { run_id: state.liveRun },
+    liveness: params.path ? await liveness(String(params.path)) : null,
+  }));
+  let targetsChanged: (() => void) | null = null;
   const watch = createLiveWatch({
     sessionId: () => state.sessionId,
     busy: () => state.busy,
@@ -106,26 +134,22 @@ function rig(over: Partial<Rig> = {}) {
     },
     transcriptMark: () => state.markValue,
     ownRunEndedAt: () => state.ownEnd,
-    liveness: (path) => {
-      state.livenessCalls.push(path);
-      if (state.hold) {
-        return new Promise((res) => {
-          state.hold!.resolve = () => res(state.probe);
-        });
-      }
-      return Promise.resolve(state.probe);
-    },
+    liveness,
     refreshHistory: (id) => {
       state.refreshes.push(id);
       return Promise.resolve();
     },
     setExternalWorking: (on) => state.external.push(on),
     activityKey: "fused-render:chat-activity",
-    setInterval: (fn) => {
-      timers.push(fn);
-      return timers.length;
+    file: () => "/proj/app.py",
+    subscribe: bus.subscribe,
+    resync: bus.resync,
+    onTargets: (cb) => {
+      targetsChanged = cb;
+      return () => {
+        targetsChanged = null;
+      };
     },
-    clearInterval: () => {},
     isHidden: () => hidden,
     win: target("win:"),
     doc: target("doc:"),
@@ -134,7 +158,9 @@ function rig(over: Partial<Rig> = {}) {
   return {
     state,
     watch,
-    fireInterval: () => timers.forEach((fn) => fn()),
+    bus,
+    /** The controller announcing a moved target / watermark. */
+    targetsChanged: () => targetsChanged?.(),
     setHidden: (v: boolean) => {
       hidden = v;
     },
@@ -375,55 +401,193 @@ describe("liveWatchTick", () => {
 
 });
 
-describe("the triggers", () => {
-  test("the interval is 5 s and is SKIPPED while the document is hidden", async () => {
+describe("the subscription and the triggers", () => {
+  test("start() subscribes to claude.live once, and its first frame is a lap", async () => {
     const r = rig();
     const stop = r.watch.start();
+    // The backstop cadence is the server's now; the constant documents it.
     expect(LIVE_WATCH_MS).toBe(5000);
-    r.setHidden(true);
-    r.fireInterval();
-    await Promise.resolve();
-    expect(r.state.adopts).toEqual([]);
-    // Chrome nobody is looking at is worth nothing; becoming visible laps at
-    // once, and the storage poke reaches a hidden tab anyway.
-    r.setHidden(false);
-    r.fireInterval();
-    await Promise.resolve();
-    await Promise.resolve();
+    expect(r.bus.subs.map((s) => [s.topic, s.params])).toEqual([
+      ["claude.live", { file: "/proj/app.py", session_id: "s1", path: "/p/s1.jsonl" }],
+    ]);
+    await flush();
+    // Same order as a timed lap: adopt (the frame names a run), then the
+    // transcript off the frame's own stat.
     expect(r.state.adopts).toEqual(["s1"]);
+    expect(r.state.livenessCalls).toEqual(["/p/s1.jsonl"]);
+    expect(r.state.refreshes).toEqual(["s1"]);
+    expect(r.state.external).toEqual([true]);
+    stop();
+    expect(r.bus.open()).toEqual([]);
+  });
+
+  test("a frame that says NOTHING is live skips the adopt and still follows the file", async () => {
+    const r = rig({ liveRun: "" });
+    const stop = r.watch.start();
+    await flush();
+    expect(r.state.adopts).toEqual([]);
+    expect(r.state.refreshes).toEqual(["s1"]);
+    stop();
+  });
+
+  test("a frame from a key with no target cannot speak for run dirs: adopt is asked", async () => {
+    // No `deps.file` and no controller for the session: the frame's `live` is
+    // about nothing, so the lap asks the controller as a timed lap did.
+    const adopts: string[] = [];
+    const bus = liveBus(() => ({ live: { run_id: "" }, liveness: null }));
+    const watch = createLiveWatch({
+      // A session no controller on the page has claimed (`chatTargetFor`).
+      sessionId: () => "s-unclaimed",
+      busy: () => false,
+      adopt: (id) => {
+        adopts.push(id);
+        return Promise.resolve();
+      },
+      transcriptMark: () => null,
+      ownRunEndedAt: () => 0,
+      liveness: () => Promise.reject(new Error("not asked")),
+      refreshHistory: () => Promise.resolve(),
+      setExternalWorking: () => {},
+      activityKey: "k",
+      subscribe: bus.subscribe,
+      resync: bus.resync,
+      onTargets: () => () => {},
+      win: null,
+      doc: null,
+    });
+    const stop = watch.start();
+    await flush();
+    expect(bus.subs[0]!.params).toEqual({ file: "", session_id: "s-unclaimed" });
+    expect(adopts).toEqual(["s-unclaimed"]);
+    stop();
+  });
+
+  test("ONE SUBSCRIPTION: a burst of triggers asks it for frames, never opens more", async () => {
+    const r = rig();
+    const stop = r.watch.start();
+    await flush();
+    r.fire("win:focus");
+    r.fire("win:storage", { key: "fused-render:chat-activity" });
+    r.fire("win:" + TASKS_CHANGED_EVENT);
+    await flush();
+    expect(r.bus.subs.length).toBe(1);
+    expect(r.bus.resyncs.length).toBe(3);
+    stop();
+  });
+
+  test("THE KEY FOLLOWS THE WATERMARK: a transcript that lands re-subscribes with its path", async () => {
+    const r = rig({ markValue: null });
+    const stop = r.watch.start();
+    await flush();
+    expect(r.bus.subs[0]!.params).toEqual({ file: "/proj/app.py", session_id: "s1" });
+    // No watermark yet: nothing to compare, the run half still laps.
+    expect(r.state.adopts).toEqual(["s1"]);
+    expect(r.state.livenessCalls).toEqual([]);
+    // The history render writes it; the controller announces the move.
+    r.state.markValue = mark();
+    r.targetsChanged();
+    await flush();
+    expect(r.bus.subs.length).toBe(2);
+    expect(r.bus.subs[0]!.closed).toBe(true);
+    expect(r.bus.subs[1]!.params).toEqual({ file: "/proj/app.py", session_id: "s1", path: "/p/s1.jsonl" });
+    expect(r.state.livenessCalls).toEqual(["/p/s1.jsonl"]);
+    expect(r.state.refreshes).toEqual(["s1"]);
+    stop();
+  });
+
+  test("A FRAME THAT LANDS MID-LAP IS HELD, NOT DROPPED: the bus will not repeat it", async () => {
+    const adopts: string[] = [];
+    let release: (() => void) | null = null;
+    const bus = liveBus(() => ({ live: { run_id: "r1" }, liveness: null }));
+    const listeners: Record<string, (() => void)[]> = {};
+    const watch = createLiveWatch({
+      sessionId: () => "s1",
+      busy: () => false,
+      adopt: (id) => {
+        adopts.push(id);
+        // The first lap's adopt is held open; later ones answer at once.
+        if (adopts.length === 1) return new Promise<void>((r) => (release = r));
+        return Promise.resolve();
+      },
+      transcriptMark: () => null,
+      ownRunEndedAt: () => 0,
+      liveness: () => Promise.reject(new Error("not asked")),
+      refreshHistory: () => Promise.resolve(),
+      setExternalWorking: () => {},
+      activityKey: "k",
+      file: () => "/proj/app.py",
+      subscribe: bus.subscribe,
+      resync: bus.resync,
+      onTargets: () => () => {},
+      win: {
+        addEventListener(type: string, fn: (ev: never) => void) {
+          (listeners[type] ||= []).push(fn as () => void);
+        },
+        removeEventListener() {},
+      },
+      doc: null,
+    });
+    const stop = watch.start();
+    await flush();
+    expect(adopts).toEqual(["s1"]); // lap 1, parked in its adopt
+    // News lands while lap 1 is still running.
+    for (const fn of listeners["focus"] || []) fn();
+    await flush();
+    expect(adopts).toEqual(["s1"]);
+    release!();
+    await flush();
+    // Lap 1 finished, and the frame that landed under it was lapped after.
+    expect(adopts).toEqual(["s1", "s1"]);
+    stop();
+  });
+
+  test("visibility asks only when visible; hidden is the client's to handle", async () => {
+    const r = rig();
+    const stop = r.watch.start();
+    await flush();
+    r.setHidden(true);
+    r.fire("doc:visibilitychange");
+    expect(r.bus.resyncs.length).toBe(0);
+    r.setHidden(false);
+    r.fire("doc:visibilitychange");
+    expect(r.bus.resyncs.length).toBe(1);
+    await flush();
+    expect(r.state.adopts).toEqual(["s1", "s1"]);
     stop();
   });
 
   test("only the CHAT ACTIVITY key pokes: every other store's event is not news", async () => {
     const r = rig();
     const stop = r.watch.start();
+    await flush();
+    expect(r.state.adopts).toEqual(["s1"]); // the subscribe's own frame
     r.fire("win:storage", { key: "some-other-store" });
-    await Promise.resolve();
-    expect(r.state.adopts).toEqual([]);
-    r.fire("win:storage", { key: "fused-render:chat-activity" });
-    await Promise.resolve();
-    await Promise.resolve();
+    await flush();
+    expect(r.bus.resyncs.length).toBe(0);
     expect(r.state.adopts).toEqual(["s1"]);
+    r.fire("win:storage", { key: "fused-render:chat-activity" });
+    await flush();
+    expect(r.state.adopts).toEqual(["s1", "s1"]);
     stop();
   });
 
   test("visibility and focus both lap, and the disarm really removes them", async () => {
     const r = rig();
     const stop = r.watch.start();
+    await flush();
     r.fire("doc:visibilitychange");
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(r.state.adopts).toEqual(["s1"]);
+    await flush();
+    expect(r.state.adopts).toEqual(["s1", "s1"]);
     stop();
-    // Every listener goes with the watch: a disposed chat must not keep polling
-    // a session it is no longer showing.
+    // Every listener goes with the watch: a disposed chat must not keep asking
+    // about a session it is no longer showing — and the subscription goes too.
     expect(r.listeners["win:focus"]).toEqual([]);
     expect(r.listeners["win:storage"]).toEqual([]);
     expect(r.listeners["doc:visibilitychange"]).toEqual([]);
+    expect(r.bus.open()).toEqual([]);
     r.fire("win:focus");
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(r.state.adopts).toEqual(["s1"]);
+    await flush();
+    expect(r.state.adopts).toEqual(["s1", "s1"]);
   });
 });
 
@@ -485,17 +649,17 @@ describe("the sibling poke inside one document", () => {
   test("TASKS_CHANGED_EVENT on the window ticks the watch", async () => {
     const r = rig();
     const stop = r.watch.start();
+    await flush();
+    expect(r.state.adopts).toEqual(["s1"]); // the subscribe's own frame
     // T's cards/peek were separate DOCUMENTS, so a turn started in one stamped
     // localStorage and every sibling's `storage` listener fired within a
     // millisecond (T:17578-17584, 17739-17741). Native renders the cards wall,
     // Peek and the split pane in ONE document, where `storage` never fires in
     // the writing document — so tile B adopted tile A's run only on the 5 s
-    // interval.
+    // interval. Now it asks the bus for a fresh frame.
     r.fire("win:" + TASKS_CHANGED_EVENT);
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(r.state.adopts).toEqual(["s1"]);
+    await flush();
+    expect(r.state.adopts).toEqual(["s1", "s1"]);
     stop();
   });
 
@@ -505,9 +669,10 @@ describe("the sibling poke inside one document", () => {
     expect(r.listeners["win:" + TASKS_CHANGED_EVENT]?.length).toBe(1);
     stop();
     expect(r.listeners["win:" + TASKS_CHANGED_EVENT]?.length).toBe(0);
-    // And a poke after the disarm is not a lap.
+    // And a poke after the disarm is not a lap (nor is the frame the
+    // subscribe asked for, which lands after the disarm).
     r.fire("win:" + TASKS_CHANGED_EVENT);
-    await Promise.resolve();
+    await flush();
     expect(r.state.adopts).toEqual([]);
   });
 
@@ -515,12 +680,11 @@ describe("the sibling poke inside one document", () => {
     // `run-controller.ts`'s `noteChatActivity` dispatches this at both turn
     // boundaries, so the tile that STARTED the run hears its own poke. Nothing
     // new guards that: a run of this frame's is `busy`, and `busy` already
-    // refuses the interval for the same reason.
+    // refuses every frame for the same reason.
     const r = rig({ busy: true });
     const stop = r.watch.start();
     r.fire("win:" + TASKS_CHANGED_EVENT);
-    await Promise.resolve();
-    await Promise.resolve();
+    await flush();
     expect(r.state.adopts).toEqual([]);
     expect(r.state.refreshes).toEqual([]);
     stop();
@@ -541,8 +705,10 @@ describe("the sibling poke inside one document", () => {
       setExternalWorking: () => {},
       activityKey: "k",
       localEvent: null,
-      setInterval: () => 1,
-      clearInterval: () => {},
+      file: () => "/proj/app.py",
+      subscribe: () => () => {},
+      resync: () => {},
+      onTargets: () => () => {},
       win: {
         addEventListener(type: string, fn: (ev: never) => void) {
           (listeners[type] ||= []).push(fn);

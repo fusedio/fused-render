@@ -17,8 +17,10 @@
 // already shows for the same reasons (lib/home-search's `indexGap`).
 //
 // An uncovered folder — a remote mount, a package, one the ignore list
-// excludes — asks for an on-demand scan and polls while it runs
-// (listing/index-source), and a folder that stays uncovered, or that no scan
+// excludes — asks for an on-demand scan and re-asks the rank while it runs,
+// once per `index.status` snapshot the bus pushes (listing/index-source; D11:
+// a query with arguments stays a GET, re-asked when the topic that would
+// change its answer moves), and a folder that stays uncovered, or that no scan
 // will ever cover in the first place, settles for the index's own answer
 // about itself: there is no second, browser-scored path that walks the
 // filesystem directly. Every rule phase 1 established for the home page's box
@@ -27,7 +29,7 @@
 // from memory — and NEVER blank the list. The previous query's rows stay on
 // screen, dimmed and captioned, until the next answer lands.
 //
-// Neither the ranked answer nor the scan poll re-fetches on background churn.
+// Neither the ranked answer nor the scan re-ask re-fetches on background churn.
 // A dir-watch event elsewhere under the folder is RECORDED, and the results
 // stay put — silently, since nothing about the index this query was answered
 // from has moved — until a boundary where a repaint costs the user nothing:
@@ -56,9 +58,10 @@ import { shouldReconcile } from "@apps/explorer/listing/revalidate";
 import { capHits } from "@apps/explorer/listing/result-cap";
 import { hitsFromRank } from "@apps/explorer/listing/ranked-hits";
 import { nextStep, remembersAnswer, searchProgress } from "@apps/explorer/listing/index-source";
+import { INDEX_STATUS_TOPIC } from "@platform/lib/index-status";
+import { subscribeTopic } from "@platform/lib/events";
 import {
   IDLE_SEARCH,
-  SCAN_POLL_MS,
   SEARCH_GLOB_RANK_LIMIT,
   SEARCH_RANK_LIMIT,
   URL_SYNC_MS,
@@ -135,9 +138,9 @@ export function useListingSearch(
   refresh: number,
   urlSync = true,
   // Called once a covered-but-empty answer's on-demand scan (below) actually
-  // goes out — the caller's cue to shorten its own index-status poll's idle
-  // beat (Listing.tsx bumps the nonce it passes to `useIndexStatus`) rather
-  // than wait out its full idle interval before noticing the scan.
+  // goes out — the caller's cue to resync its own index-status subscription
+  // (Listing.tsx bumps the nonce it passes to `useIndexStatus`) rather than
+  // wait for the server's next push before noticing the scan.
   onScanRequested?: () => void,
   // Whether this instance ever runs the covered-but-empty scan trigger at
   // all (SPEC-empty-search-scan.md) — default true for every real search
@@ -368,7 +371,8 @@ export function useListingSearch(
   // and a fresh request for an edited query has nothing to say yet about
   // whether IT needs a scan.
   const [ourScanRunning, setOurScanRunning] = useState(false);
-  // Bumped by the poll timer to re-ask while a scan is running.
+  // Bumped by every `index.status` snapshot that lands while a scan is
+  // running, to re-ask the rank.
   const [pollTick, setPollTick] = useState(0);
   const [polling, setPolling] = useState(false);
   // Which folder+generation the async replies below still speak for. A scan
@@ -564,7 +568,8 @@ export function useListingSearch(
     }
     // The request this run would issue. Compared against the one already out,
     // so a poll tick does not abort a live request and start it again: a rank
-    // that outlasts SCAN_POLL_MS would otherwise never be allowed to finish.
+    // that outlasts the gap between two status snapshots would otherwise never
+    // be allowed to finish.
     const key = [fsPath, pinned, lifecycle, retryNonce, q, rankedPref].join(" ");
     if (inflightKey.current === key) return;
     // Reaching here means the key genuinely changed (a poll tick alone
@@ -701,16 +706,23 @@ export function useListingSearch(
     // recreated each render; everything it reads is a ref or listed here.
   }, [fsPath, q, searching, isPathQuery, pinned, lifecycle, retryNonce, pollTick, polling, rankedPref, gateNonce]);
 
-  // The poll itself: while a scan covering this folder is running, ask again
-  // on a modest cadence and repaint. The ordering WILL shift as rows land;
-  // what must not happen is the list going empty between repaints, and it
-  // cannot — the previous answer stays until the next one replaces it.
+  // The re-ask itself: while a scan covering this folder is running, follow
+  // `index.status` and ask the rank again on every snapshot the server pushes
+  // (it pushes fast while a scan runs, and the rows land in one compaction at
+  // the end — the scan FINISHING is the snapshot that matters). The ordering
+  // WILL shift as rows land; what must not happen is the list going empty
+  // between repaints, and it cannot — the previous answer stays until the next
+  // one replaces it. NO TIMER (D3): nothing here decides when to ask.
   //
-  // The TICK is what is counted against the ceiling, not the answers — see
-  // listing/index-source's MAX_SCANNING_POLLS.
+  // The SNAPSHOT is what is counted against the ceiling, not the answers — see
+  // listing/index-source's MAX_SCANNING_POLLS. A replayed (cached) snapshot
+  // is the one the subscribe answered with, not news that the scan moved, so
+  // it is not a tick. Refcounted with `useIndexStatus`'s own subscription to
+  // the same topic (Listing.tsx), so this is not a second server subscription.
   useEffect(() => {
     if (!polling || !searching) return;
-    const timer = window.setTimeout(() => {
+    return subscribeTopic(INDEX_STATUS_TOPIC, null, (snap, _delta, meta) => {
+      if (!snap || meta.replay) return;
       polls.current += 1;
       const step = nextStep({
         reason: "scanning",
@@ -725,12 +737,11 @@ export function useListingSearch(
       // Out of patience — the same rule the answer path uses, so there is one
       // definition of what running out means (listing/index-source). The
       // count is per polling EPISODE: leaving it armed would make the next
-      // scan of this folder give up on its first tick.
+      // scan of this folder give up on its first snapshot.
       polls.current = 0;
       setPolling(false);
-    }, SCAN_POLL_MS);
-    return () => window.clearTimeout(timer);
-  }, [polling, searching, pollTick]);
+    });
+  }, [polling, searching]);
 
   // First focus warms the answer in the background; focus (like typing below)
   // is also the retry gesture after a failure.

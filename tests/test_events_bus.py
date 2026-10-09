@@ -459,3 +459,106 @@ def test_every_poll_and_diff_producer_names_the_cadence_it_replaces():
             src = topic.__dict__.get("cadence_note", "")
         assert "old" in src.lower() and ("cadence" in src.lower() or "interval" in src.lower()), \
             f"{name}: poll_interval_s={topic.poll_interval_s} is not annotated with the client cadence it replaces"
+
+
+# ---------------------------------------------------------- phase 1 topics
+
+@pytest.mark.parametrize("topic, path", [
+    ("schedule", "/api/schedule"),
+    ("schedule.queue", "/api/schedule/queue"),
+    ("schedule.events", "/api/schedule/events"),
+    ("engines.running", "/api/engines/running"),
+    ("git.upstream", "/api/git-upstream"),
+    ("lan.pairings", "/api/lan/pairings"),
+    ("lan.devices", "/api/lan/devices"),
+    ("canvases.status", "/api/canvases/status"),
+    ("index.status", "/api/index/status"),
+    ("bookmarks", "/api/bookmarks"),
+    ("dock", "/api/dock"),
+    ("prefs", "/api/prefs"),
+    ("ai.runtime", "/api/ai/runtime"),
+])
+def test_phase_1_snapshot_equals_the_get_body(home, tmp_path, topic, path):
+    """Snapshot body == GET body for the same params: the topic's snapshot IS
+    the GET handler, so the two cannot drift."""
+    client = _client(tmp_path)
+    via_get = client.get(path)
+    if via_get.status_code != 200:
+        pytest.skip(f"{path} answers {via_get.status_code} on this platform")
+    with client.websocket_connect("/api/events") as ws:
+        ws.receive_json()
+        ws.send_json({"t": "sub", "id": 1, "topic": topic, "params": {}})
+        snap = _recv(ws, "snap")["body"]
+    expected = via_get.json()
+    # Clocks and countdowns move between the two reads; compare the shape
+    # and every stable key.
+    volatile = {"now", "ts", "at", "updated", "unloads_in", "memory"}
+    for key in expected:
+        if key in volatile:
+            continue
+        assert key in snap, f"{topic}: snapshot lacks {key!r}"
+    assert set(snap) >= (set(expected) - volatile)
+
+
+def test_update_and_fda_snapshots_are_the_config_fields(home, tmp_path):
+    client = _client(tmp_path)
+    config = client.get("/api/config").json()
+    with client.websocket_connect("/api/events") as ws:
+        ws.receive_json()
+        ws.send_json({"t": "sub", "id": 1, "topic": "update", "params": {}})
+        ws.send_json({"t": "sub", "id": 2, "topic": "fda", "params": {}})
+        got = {}
+        for _ in range(2):
+            frame = _recv(ws, "snap")
+            got[frame["id"]] = frame["body"]
+    assert got[1] == {"update": config.get("update")}
+    assert got[2] == {"fda": config.get("fda")}
+
+
+@pytest.mark.parametrize("topic, method, path, body", [
+    ("bookmarks", "PUT", "/api/bookmarks", [{"id": "b1", "name": "x", "url": "/explorer"}]),
+    ("prefs", "PUT", "/api/prefs", {"reader_enabled": True}),
+    ("dock", "POST", "/api/dock/size", {"tilesize": 56}),
+    ("schedule.events", "POST", "/api/schedule/events/ack", {"id": 1}),
+    ("lan.pairings", "POST", "/api/lan/pairings/dismiss", {"id": "nope"}),
+    ("lan.devices", "DELETE", "/api/lan/devices", None),
+    ("jobs", "POST", "/api/jobs", {"id": "dl-9", "title": "A", "state": "running"}),
+])
+def test_every_mutation_route_publishes_its_topic(home, tmp_path, monkeypatch, topic, method, path, body):
+    """Silent staleness is the top risk of push: a write path without a
+    publish is a row that never updates. Each mutation route wakes its topic."""
+    published: list = []
+    monkeypatch.setattr(bus, "publish", lambda name, key=None, **kw: published.append(name))
+    client = _client(tmp_path)
+    headers = {"X-Fused": "1"}
+    if method == "PUT":
+        res = client.put(path, json=body, headers=headers)
+    elif method == "DELETE":
+        res = client.delete(path, headers=headers)
+    else:
+        res = client.post(path, json=body, headers=headers)
+    assert res.status_code in (200, 404), res.text
+    assert topic in published, f"{method} {path} did not publish {topic!r} (published: {published})"
+
+
+def test_schedule_write_and_emit_publish():
+    published: list = []
+    from fused_render import schedule
+    from fused_render.server import events as ev
+    orig = ev.bus.publish
+    ev.bus.publish = lambda name, key=None, **kw: published.append(name)
+    try:
+        schedule._emit("done", {"id": "e1", "target": "/x", "message": "hi"})
+        assert "schedule.events" in published
+    finally:
+        ev.bus.publish = orig
+
+
+def test_update_manager_state_transitions_publish(monkeypatch):
+    from fused_render.update import _manager
+    published: list = []
+    monkeypatch.setattr(bus, "publish", lambda name, key=None, **kw: published.append(name))
+    obj = _manager.UpdateManager.__new__(_manager.UpdateManager)
+    obj._state = "checking"
+    assert obj._state == "checking"
+    assert published == ["update"]

@@ -1,19 +1,22 @@
 // Data hooks for the widgets whose content is fetched. The apps and sessions
 // effects are Home's former strip effects, moved here unchanged apart from
 // `rows`: a 2x2 widget draws two rows, so it asks for twice the cards a row fits.
+// The open-tasks and bots widgets are live facts: they follow the events bus
+// (the tasks listing feed, the `bots` topic) instead of re-fetching on a timer.
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   getAppsPage,
   getHomeApps,
   getHomeClaudeSessionFolders,
-  getTasks,
   type AppInfo,
   type ClaudeSessionFolder,
   type Task,
 } from "@platform/lib/api";
 import { runCommunity } from "@platform/lib/community";
-import { useCurrentAppsChanged, TASKS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
-import { api as botsApi, type Bot } from "@apps/bots/lib/api";
+import { useCurrentAppsChanged } from "@platform/lib/tasksChanged";
+import { resyncTopic, subscribeTopic } from "@platform/lib/events";
+import { refreshListing, subscribeListing } from "@shell/tasksPulse";
+import type { Bot, StatusReply } from "@apps/bots/lib/api";
 import type { AppsSort } from "./layout";
 import { MAX_ROW } from "./strip";
 import { isDraftTask } from "../tasks-lib";
@@ -164,53 +167,6 @@ export interface AsyncState<T> {
   retry: () => void;
 }
 
-/** Fetch on mount, refetch every `pollMs` and on the optional window `event`.
-    A failed fetch sets `error`, keeps the data already shown and keeps polling.
-    `retry` clears both, then refetches. */
-function useAsyncResource<T>(
-  load: () => Promise<T>,
-  opts: { pollMs: number; event?: string; errorText: string },
-): AsyncState<T> {
-  const [data, setData] = useState<T | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [nonce, setNonce] = useState(0);
-  const loadRef = useRef(load);
-  loadRef.current = load;
-  const { pollMs, event, errorText } = opts;
-  useEffect(() => {
-    const bump = () => setNonce((n) => n + 1);
-    if (event) window.addEventListener(event, bump);
-    const t = setInterval(bump, pollMs);
-    return () => {
-      if (event) window.removeEventListener(event, bump);
-      clearInterval(t);
-    };
-  }, [pollMs, event]);
-  useEffect(() => {
-    let alive = true;
-    loadRef.current().then(
-      (r) => {
-        if (!alive) return;
-        setError(null);
-        setData(r);
-      },
-      (e: Error) => alive && setError(e.message || errorText),
-    );
-    return () => {
-      alive = false;
-    };
-  }, [nonce, errorText]);
-  return {
-    data,
-    error,
-    retry: () => {
-      setData(null);
-      setError(null);
-      setNonce((n) => n + 1);
-    },
-  };
-}
-
 export interface HomeTasks {
   tasks: Task[];
   drafts: number;
@@ -233,21 +189,78 @@ export function homeTasks(all: Task[]): Task[] {
   return splitHomeTasks(all).tasks;
 }
 
-const loadHomeTasks = () => getTasks().then((r) => splitHomeTasks(r.tasks));
-const loadHomeBots = () => botsApi.status({ cursors: {}, shot_for: "", fast: true }).then((r) => r.bots ?? []);
-
-/** Recent tasks (everything but archived and drafts), newest first — refetched when anything
-    announces a task change, and on a slow beat so a run finishing in the
-    background shows up. */
+/** Recent tasks (everything but archived and drafts), newest first — the
+    shell's one `/api/tasks` listing feed (tasksPulse `subscribeListing`, the
+    `tasks.listing` topic): its snapshot on mount and every change as it lands,
+    so a run finishing in the background shows up the moment the server sees
+    it, with no slow beat and no re-read on the task-changed announcement
+    (the feed itself resyncs on those). A failed read sets `error` and keeps
+    the data already shown. `retry` clears both, then asks the feed again. */
 export function useHomeTasks(): AsyncState<HomeTasks> {
-  return useAsyncResource(loadHomeTasks, {
-    pollMs: 15000,
-    event: TASKS_CHANGED_EVENT,
-    errorText: "Couldn't load tasks.",
-  });
+  const [data, setData] = useState<HomeTasks | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(
+    () =>
+      subscribeListing((ev) => {
+        if (ev.failed) {
+          setError("Couldn't load tasks.");
+          return;
+        }
+        setError(null);
+        setData(splitHomeTasks(ev.rows));
+      }),
+    [],
+  );
+  return {
+    data,
+    error,
+    retry: () => {
+      setData(null);
+      setError(null);
+      refreshListing();
+    },
+  };
 }
 
-/** Bots from the bots status endpoint, polled gently while mounted. */
+/** The bots status stream's params for this widget: no bot on screen (no
+    screenshot, no `detail`), not the Stage's 400 ms `fast` rate — the widget
+    only reads each bot's name, status and title. */
+export const HOME_BOTS_PARAMS = { fast: false, shot_for: "" };
+
+/** Bots from the bots status stream (topic `bots`, the body of
+    `GET /api/bots`), subscribed while mounted. A refusal sets `error` and keeps
+    the data already shown; `retry` clears both, then resyncs. Hidden-ok: a
+    hidden window drops the subscription and the snapshot that answers on
+    return is the catch-up. */
 export function useHomeBots(): AsyncState<Bot[]> {
-  return useAsyncResource(loadHomeBots, { pollMs: 10000, errorText: "Couldn't reach bots." });
+  const [data, setData] = useState<Bot[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(
+    () =>
+      subscribeTopic<StatusReply, StatusReply>(
+        "bots",
+        HOME_BOTS_PARAMS,
+        (snap, delta, meta) => {
+          if (meta.error) {
+            setError(meta.error || "Couldn't reach bots.");
+            return;
+          }
+          const r = snap ?? delta;
+          if (!r) return;
+          setError(null);
+          setData(r.bots ?? []);
+        },
+        { hiddenOk: true },
+      ),
+    [],
+  );
+  return {
+    data,
+    error,
+    retry: () => {
+      setData(null);
+      setError(null);
+      resyncTopic("bots", HOME_BOTS_PARAMS);
+    },
+  };
 }

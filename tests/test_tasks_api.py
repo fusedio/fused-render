@@ -1,7 +1,7 @@
 """Tasks over HTTP (server/routers/tasks.py).
 
 `GET /api/tasks` is the List page: every task, newest first, each carrying its
-three newest messages. `GET /api/tasks/pulse` is the global sidebar's compact
+three newest messages. The global sidebar's compact pulse is the same rows reduced to a few fields (`tests/_tasks_feed.pulse`), what `/api/tasks/pulse` was
 projection. `GET /api/tasks/{key}/messages` is Show more.
 `POST /api/tasks/read` marks one message read.
 
@@ -182,9 +182,12 @@ def _by_key(client):
 
 
 def _pulse(client):
-    r = client.get("/api/tasks/pulse")
-    assert r.status_code == 200, r.text
-    return r.json()["tasks"]
+    # The pulse endpoint is gone (events bus, phase 5): the sidebar reads the
+    # same rows off the one `tasks.listing` subscription. The helper is the
+    # listing reduced to the pulse's fields, which is what the endpoint was.
+    from tests._tasks_feed import pulse
+
+    return pulse(client)
 
 
 T9 = "2026-08-16T09:00:00Z"
@@ -272,7 +275,7 @@ def test_a_cli_session_carries_its_entrypoint_on_the_row_and_the_pulse(
         client, projects_dir, state_dir):
     """"cli" (interactive terminal) — read off the transcript's own first
     `type: "user"` record, the same one `cwd`/the first prompt come from.
-    Present on BOTH `/api/tasks` and `/api/tasks/pulse`, since the pulse is a
+    Present on BOTH `/api/tasks` and the pulse reduction, since the pulse is a
     `Pick` of the task row and the notification hook (task-status-notify.ts)
     reads it off the pulse, not `/api/tasks`."""
     _already_using(state_dir)

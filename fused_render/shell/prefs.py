@@ -1190,6 +1190,10 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                 status_code=400,
             )
         storage.write_json(_path(), prefs)
+    # The `prefs` topic: every open document re-reads the record from the
+    # bus's snapshot rather than from its own re-GET.
+    from fused_render.server.events import bus
+    bus.publish("prefs")
     if launcher_changed:
         # AFTER the write, like `lan_enabled`: the app rebinds from the
         # stored preference on its main thread a tick later, so the

@@ -6843,6 +6843,24 @@
   // real failure instead of a button that looked like it worked.
   window._fusedAskClaude = noteAskClaude;
 
+  // The built-in git template's publish modal, the same internal plumbing as
+  // the two hops above and for the same reason it is not on `window.fused`
+  // (D15: no page API, and no topic name reaches a template): the modal used
+  // to re-read its four `/api/github/*` records every 1.5 s; it now follows
+  // the `github.setup` topic through this hook — `cb({status, install, login,
+  // publish})` on every change, the first call at once — and the hook returns
+  // the unsubscribe. Only runtime.js names the topic.
+  window._fusedWatchGithubSetup = function (cb) {
+    return subscribeTopic("github.setup", {}, function (snap, delta, meta) {
+      if (!snap || (meta && meta.error !== undefined)) return;
+      try {
+        cb(snap);
+      } catch (e) {
+        console.error("[fused] github setup watcher threw:", e);
+      }
+    }, { hiddenOk: true });
+  };
+
   // Error overlay: shows for unhandled runPython rejections the page didn't
   // catch itself (identified by carrying a `.traceback`).
   function showOverlay(err) {

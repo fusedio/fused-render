@@ -577,6 +577,16 @@ _install_state: dict = {"state": "idle", "detail": "", "error": None,
                         "started_at": None, "finished_at": None}
 
 
+
+def _publish_topic(topic: str, key=None) -> None:
+    """Wake the events bus (server/events.py) for `topic`. Imported lazily so
+    this module keeps importing in a process that never starts the server."""
+    try:
+        from fused_render.server.events import bus
+        bus.publish(topic, key)
+    except Exception:  # noqa: BLE001 — a missed wake is latency, never an error
+        pass
+
 def _report_install(snapshot: dict) -> None:
     """Mirror one record into the job registry. Never raises — same
     discipline as claude_install._report, and for the same reason: reporting
@@ -610,6 +620,7 @@ def _publish_install(**fields) -> None:
         _install_state.update(fields)
         snapshot = dict(_install_state)
     _report_install(snapshot)
+    _publish_topic("github.setup")
 
 
 def install_status() -> dict:
@@ -905,6 +916,7 @@ def _set_publish(**fields) -> None:
         _publish_state.update(fields)
         snapshot = dict(_publish_state)
     _report_publish(snapshot)
+    _publish_topic("github.setup")
 
 
 def publish_status() -> dict:

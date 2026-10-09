@@ -49,7 +49,6 @@ import {
 } from "@apps/ai_models/lib/hubTableView";
 import {
   cancelHfLogin,
-  getHfAuth,
   searchHubModels,
   startHfLogin,
   type HfAuth,
@@ -59,6 +58,7 @@ import {
   type HubSearchFacets,
   type HubSearchResult,
 } from "@platform/lib/api";
+import { resyncTopic, subscribeTopic, type SubscribeLike } from "@platform/lib/events";
 import { formatSize } from "@platform/lib/format";
 import { type Job } from "@platform/lib/jobs";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
@@ -108,27 +108,47 @@ export async function measureSizes(
   return out;
 }
 
+/** Calls `onMoved` each time this capability's Hub catalog build moves
+ *  (`ai.hubcache {capability}` on the events bus: `{state, pagesDone,
+ *  startedAt, blockedUntil}`, restatted server-side while anyone listens).
+ *  The first frame is only where the build stands now — the search that
+ *  reported "building" just ran — so it is the baseline, not a move; every
+ *  later snapshot that differs from the last one is. An error frame is
+ *  ignored (the server says again). Returns the unsubscribe; `subscribe` is
+ *  the test seam. */
+export function followHubCache(
+  capability: string,
+  onMoved: () => void,
+  subscribe: SubscribeLike = subscribeTopic,
+): () => void {
+  let last: string | null = null;
+  return subscribe("ai.hubcache", { capability }, (snap, _delta, meta) => {
+    if (meta.error !== undefined || snap === null) return;
+    const sig = JSON.stringify(snap);
+    const moved = last !== null && sig !== last;
+    last = sig;
+    if (moved) onMoved();
+  });
+}
+
 /** Signing in to Hugging Face — ported from `HubResults.tsx`'s `HubLogin`
- *  verbatim; see that file's own doc for the device-code flow's rationale. */
-function HubLogin({ onSignedIn }: { onSignedIn: () => void }) {
+ *  verbatim; see that file's own doc for the device-code flow's rationale.
+ *  Exported for its suite only. */
+export function HubLogin({ onSignedIn }: { onSignedIn: () => void }) {
   const [auth, setAuth] = useState<HfAuth | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Follows `hf.auth` on the events bus (the GET /api/hf/auth body) only
+  // while a login is in flight; the subscription closes once the snapshot
+  // says it is over (`pending` back to null).
   const pending = auth?.pending ?? null;
   useEffect(() => {
     if (!pending) return;
-    let alive = true;
-    const id = setInterval(() => {
-      getHfAuth().then(
-        (a) => alive && setAuth(a),
-        () => undefined,
-      );
-    }, 2000);
-    return () => {
-      alive = false;
-      clearInterval(id);
-    };
+    return subscribeTopic<HfAuth>("hf.auth", null, (snap, _delta, meta) => {
+      if (meta.error !== undefined) return; // a blip mid-login is not worth a banner
+      if (snap) setAuth(snap);
+    });
   }, [pending !== null]);
 
   useEffect(() => {
@@ -141,6 +161,9 @@ function HubLogin({ onSignedIn }: { onSignedIn: () => void }) {
     setError(null);
     try {
       setAuth(await fn());
+      // This document just moved the login: a live subscription should hear
+      // where it stands now, not at the producer's next stat.
+      resyncTopic("hf.auth");
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -653,8 +676,8 @@ export function HubSearchScreen({
   // to "hidden" — kept separate from `poolPhase` so `nextPoolPhase` stays a
   // pure hidden/building/done machine with no timing baked into it.
   const [poolCardCollapsing, setPoolCardCollapsing] = useState(false);
-  // Bumped to force a one-off refetch (see the poll effect below) without
-  // otherwise touching `settled`/`limit`/`authEpoch`.
+  // Bumped to force a one-off refetch (see the `ai.hubcache` effect below)
+  // without otherwise touching `settled`/`limit`/`authEpoch`.
   const [pollEpoch, setPollEpoch] = useState(0);
   // Round 7: the "v2 staged status" wait block replacing the plain "Asking
   // {host}…" line — see `hub-wait-variants.html`'s own `v2` block. Only a
@@ -725,7 +748,7 @@ export function HubSearchScreen({
     let alive = true;
     // Only a genuinely FIRST search (no rows on the pane at all yet) drives
     // the staged wait block — a re-search (rows already present) or a
-    // poll-while-building refetch (`pollEpoch`, below) must not restart it,
+    // re-ask while the pool builds (`pollEpoch`, below) must not restart it,
     // since `models` is already non-null in both those cases. Read once, at
     // effect-start, before this run's fetch can change it.
     const isFirstSearch = models === null;
@@ -812,9 +835,9 @@ export function HubSearchScreen({
       controller.abort();
     };
     // `pollEpoch` is intentionally in the deps: it is bumped ONLY by the
-    // poll-while-building effect below (every 15s while `poolState ===
-    // "building"`, and once more on the transition out of it), so it never
-    // fires on its own outside that loop.
+    // `ai.hubcache` effect below (each time the build's state moves while
+    // `poolState === "building"`, including the move out of it), so it never
+    // fires on its own outside a build.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settled, limit, authEpoch, pollEpoch]);
 
@@ -851,16 +874,17 @@ export function HubSearchScreen({
     return () => window.clearInterval(id);
   }, [waitPhase]);
 
-  // SPEC item 2: re-poll while the pool is building so the banner's page
-  // count moves and the pane picks up the finished catalog the moment it is
-  // ready, without the reader doing anything. `blockedUntil` isn't part of
-  // the response today, so the copy for that state just says "shortly" via
-  // `poolBuildBanner`'s own fallback.
+  // SPEC item 2: re-ask the search while the pool is building so the
+  // banner's page count moves and the pane picks up the finished catalog the
+  // moment it is ready, without the reader doing anything. The search stays
+  // a POST (D11); what says it is worth re-asking is `ai.hubcache` on the
+  // events bus moving (`followHubCache`). `blockedUntil` isn't part of the
+  // search response today, so the copy for that state just says "shortly"
+  // via `poolBuildBanner`'s own fallback.
   useEffect(() => {
     if (poolState !== "building") return;
-    const id = window.setInterval(() => setPollEpoch((e) => e + 1), 15_000);
-    return () => window.clearInterval(id);
-  }, [poolState]);
+    return followHubCache(capabilityKey, () => setPollEpoch((e) => e + 1));
+  }, [poolState, capabilityKey]);
 
   // Drives the build card's phase off `poolState`. `nextPoolPhase` is pure —
   // it decides WHETHER to move, this effect just applies it whenever

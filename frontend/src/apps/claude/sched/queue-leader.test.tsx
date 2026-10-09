@@ -278,18 +278,23 @@ describe("the session the leader's run opened", () => {
     expect(leaderSession(schedRanSessions(ENTRIES), "", "")).toBe("");
   });
 
-  it("reaches the chat through the poll it already pays for", async () => {
-    // The watcher publishes the map on the same tick as `pendingIds`, so the
-    // pair cannot disagree about an entry that fired between two reads — and on
-    // SUCCESSFUL ticks only, because "I could not ask" must never be spelled the
+  it("reaches the chat through the subscription it already pays for", async () => {
+    // The watcher publishes the map on the same frame as `pendingIds`, so the
+    // pair cannot disagree about an entry that fired between two pushes — and on
+    // SUCCESSFUL frames only, because "I could not ask" must never be spelled the
     // same way as "it has not run".
     const seen: Array<Map<string, string>> = [];
     let fail = false;
+    let frame: ((snap: { entries?: typeof ENTRIES } | null, meta: { error?: string }) => void) | null = null;
     const watcher = createScheduleWatcher({
       file: "/w/app",
-      fetchSchedule: async () => {
-        if (fail) throw new Error("offline");
-        return { entries: ENTRIES };
+      subscribe: (cb) => {
+        frame = cb;
+        return () => {};
+      },
+      resync: () => {
+        if (fail) frame?.(null, { error: "offline" });
+        else frame?.({ entries: ENTRIES }, {});
       },
       sessionId: () => "",
       inChat: () => false,
@@ -301,6 +306,7 @@ describe("the session the leader's run opened", () => {
       resumeRun: async () => {},
       shownRun: () => false,
     });
+    watcher.start();
     await watcher.tick();
     expect(seen.length).toBe(1);
     expect(seen[0].get("e1")).toBe("s9");

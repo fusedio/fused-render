@@ -37,10 +37,11 @@
 //
 // WHY THE ENGINE SOURCE STAYS HERE, NOT IN PLATFORM — the same boundary
 // argument StatusBar.tsx has always made for RepoUpdatesDock/ModelsDock:
-// `DownloadManager`'s job is to RENDER rows from data, not to fetch it, and
-// this component is the shell's one place that fetches for it.
+// `DownloadManager`'s job is to RENDER rows from data, not to follow it, and
+// this component is the shell's one place that subscribes for it.
 import { useCallback, useEffect, useRef, useState } from "react";
-import { getRunningEngines, stopEngine, type RunningEngine } from "@platform/lib/api";
+import { stopEngine, type RunningEngine } from "@platform/lib/api";
+import { resyncTopic, subscribeTopic } from "@platform/lib/events";
 import {
   EMPTY_GROUP_POPUP_STATE,
   groupPopupTick,
@@ -51,36 +52,32 @@ import {
 } from "@platform/lib/jobs";
 import { notify } from "@platform/lib/notifications";
 import { snapshotIsOpenAnywhere } from "@platform/lib/presence";
-import { pauseWhileHidden } from "@platform/lib/pause-while-hidden";
 import DownloadManager, { engineLabel } from "@platform/ui/DownloadManager";
 
 import { noteProgressMayHaveMoved } from "./onboarding/progress";
 
-// Matches the (former) Engines chip's own cadence: a "what is running" readout,
-// not progress, so it does not need to tick every second.
-const ENGINES_POLL_MS = 10_000;
-
 // How long a `markStopping` marker suppresses the retire toast for (C5 fix).
-// Comfortably more than one `ENGINES_POLL_MS` round trip, so the very next
-// poll after a Stop click — the case this exists for — still finds its
-// marker. NOT forever: a marker used to be consumed only by the first later
-// snapshot that dropped the id, so a rejected `stopEngine()` call, or an
-// engine a `main =` app's `restart()` revives, left the marker standing with
-// nothing to consume it — and the id's eventual GENUINE idle retirement,
-// possibly minutes later, silently ate the D664 toast that retirement earned.
-// Expiring the marker bounds the suppression to the window the user's own
-// click could plausibly still be resolving in, so a later real retirement is
-// never mistaken for an echo of that one click.
+// Comfortably more than the beat between a Stop click and the
+// `engines.running` snapshot the server pushes once the child is gone, so
+// the very next snapshot after a Stop click — the case this exists for —
+// still finds its marker. NOT forever: a marker used to be consumed only by
+// the first later snapshot that dropped the id, so a rejected `stopEngine()`
+// call, or an engine a `main =` app's `restart()` revives, left the marker
+// standing with nothing to consume it — and the id's eventual GENUINE idle
+// retirement, possibly minutes later, silently ate the D664 toast that
+// retirement earned. Expiring the marker bounds the suppression to the window
+// the user's own click could plausibly still be resolving in, so a later real
+// retirement is never mistaken for an echo of that one click.
 const STOPPING_GRACE_MS = 30_000;
 
 /**
  * Which engines from `prev` disappeared in `next` and were NOT a user-
  * initiated stop — the set D664's toast fires for. Pure and exported so C9's
  * gap (D664 shipped with no test at all) can be closed without mounting the
- * whole poll effect: `stopping` is mutated in place exactly as the poll loop
- * mutates its own ref, consuming a marker the moment its window is checked
- * (whether or not it still suppressed anything) so a stale one never lingers
- * to swallow a later retirement.
+ * whole subscription effect: `stopping` is mutated in place exactly as the
+ * frame handler mutates its own ref, consuming a marker the moment its window
+ * is checked (whether or not it still suppressed anything) so a stale one
+ * never lingers to swallow a later retirement.
  */
 export function retiredEngines(
   prev: RunningEngine[],
@@ -102,81 +99,66 @@ export function retiredEngines(
   return retired;
 }
 
+// Follow `/api/engines/running` as the `engines.running` topic of the events
+// bus: the server pushes a fresh snapshot whenever an engine starts, stops or
+// retires, and on its own slow tick while anything is subscribed (uptime and
+// idle ages moving). A "what is running" readout, not progress — nothing here
+// ticks.
 function useRunningEngines(): {
   engines: RunningEngine[];
   refresh: () => void;
   /** Mark an engine as being stopped BY THE USER, so the next snapshot that no
    *  longer carries it is not read as an idle retirement (below). Exposed
-   *  from the hook because the stop request and the poll that will notice the
-   *  engine gone are two different call sites. */
+   *  from the hook because the stop request and the snapshot that will notice
+   *  the engine gone are two different call sites. */
   markStopping: (engineId: string) => void;
 } {
   const [engines, setEngines] = useState<RunningEngine[]>([]);
-  const pollRef = useRef<() => void>(() => {});
   // Engine ids a user-initiated Stop is in flight for — read once, on the
-  // NEXT snapshot that drops them, then discarded. A `Set` mutated in place
-  // rather than state: it is consulted only inside the poll effect below and
-  // must never itself trigger a render.
+  // NEXT snapshot that drops them, then discarded. A `Map` mutated in place
+  // rather than state: it is consulted only inside the frame handler below
+  // and must never itself trigger a render.
   const stoppingRef = useRef<Map<string, number>>(new Map());
   // The PREVIOUS snapshot itself, so a snapshot that drops an engine can tell
   // an idle retirement (ENGINE-STOP TOAST, below) from ordinary churn. A ref,
-  // not the `engines` state variable: the poll effect below runs once (empty
-  // deps) and would otherwise always see the FIRST render's stale closure.
+  // not the `engines` state variable: the subscription effect below runs
+  // once (empty deps) and would otherwise always see the FIRST render's
+  // stale closure.
   const prevEnginesRef = useRef<RunningEngine[]>([]);
   const sawFirst = useRef(false);
 
   useEffect(() => {
-    let disposed = false;
-    let timer = 0;
-    // Only the newest invocation may schedule — the same generation guard
-    // `useRepoUpdates`/the old EnginesDock poll carry: `clearTimeout` cancels a
-    // PENDING timer, but a `refresh()` landing while an earlier poll awaits
-    // leaves both in flight, and each would assign `timer` on the way out,
-    // leaking one unclearable chain.
-    let generation = 0;
-    const poll = async () => {
-      const mine = ++generation;
-      window.clearTimeout(timer);
-      try {
-        const data = await getRunningEngines();
-        if (!disposed && mine === generation) {
-          const next = data.engines || [];
-          // AN ENGINE RETIRED ON ITS OWN GETS A TOAST (D664): the only way to
-          // learn a background daemon/worker went away idle is to notice it
-          // missing from consecutive snapshots — nothing calls this out as an
-          // event server-side. Skipped on the very FIRST snapshot (nothing to
-          // diff against yet — every engine already running would otherwise
-          // read as having just retired) and skipped for any id this hook was
-          // told a user just stopped themselves.
-          if (sawFirst.current) {
-            for (const prev of retiredEngines(prevEnginesRef.current, next, stoppingRef.current, Date.now())) {
-              notify({ title: `${engineLabel(prev)} retired (idle)`, tone: "info" });
-            }
-          }
-          sawFirst.current = true;
-          prevEnginesRef.current = next;
-          setEngines(next);
+    const off = subscribeTopic<{ engines: RunningEngine[] }>("engines.running", {}, (snap, _delta, meta) => {
+      // Best-effort: a refused read (`meta.error`) leaves the last snapshot
+      // standing; the ServerStatusBanner tells the unreachable-server story.
+      if (meta.error !== undefined || snap === null) return;
+      const next = snap.engines || [];
+      // AN ENGINE RETIRED ON ITS OWN GETS A TOAST (D664): the only way to
+      // learn a background daemon/worker went away idle is to notice it
+      // missing from consecutive snapshots — nothing calls this out as an
+      // event server-side. Skipped on the very FIRST snapshot (nothing to
+      // diff against yet — every engine already running would otherwise
+      // read as having just retired) and skipped for any id this hook was
+      // told a user just stopped themselves. A snapshot that answers a
+      // hidden window's catch-up resubscribe diffs the same way: the toast
+      // follows snapshots, not ticks.
+      if (sawFirst.current) {
+        for (const prev of retiredEngines(prevEnginesRef.current, next, stoppingRef.current, Date.now())) {
+          notify({ title: `${engineLabel(prev)} retired (idle)`, tone: "info" });
         }
-      } catch {
-        // Best-effort: a failed read leaves the last snapshot standing.
       }
-      if (!disposed && mine === generation) timer = window.setTimeout(gated, ENGINES_POLL_MS);
-    };
-    // Hidden window: the scheduled tick parks and runs once on return
-    // (pause-while-hidden.ts — the shared 6-connection WebKit pool). The
-    // retired-engine toast still fires then: it diffs snapshots, not ticks.
-    // An explicit refresh() (pollRef) is not gated.
-    const gated = pauseWhileHidden(() => void poll());
-    pollRef.current = poll;
-    poll();
-    return () => {
-      disposed = true;
-      window.clearTimeout(timer);
-      gated.cancel();
-    };
+      sawFirst.current = true;
+      prevEnginesRef.current = next;
+      setEngines(next);
+    });
+    return off;
   }, []);
 
-  const refresh = useCallback(() => pollRef.current(), []);
+  // "Ask again now": a stop this document just requested, which the bus will
+  // also announce — one resync covers the beat between the two.
+  const refresh = useCallback(() => {
+    resyncTopic("engines.running", {});
+  }, []);
   const markStopping = useCallback((engineId: string) => {
     stoppingRef.current.set(engineId, Date.now());
   }, []);
@@ -190,7 +172,7 @@ export default function ActivityDock({
   onTerminalJobs?: (jobs: Job[]) => void;
   /** A job just crossed into terminal and should pop its card (SPEC
    *  actionable-notifications) — "latest wins" is already enforced by
-   *  `popupTick` below, so this fires at most once per poll. */
+   *  `popupTick` below, so this fires at most once per snapshot. */
   onJobPopup?: (job: Job) => void;
 } = {}) {
   const { engines, refresh: refreshEngines, markStopping } = useRunningEngines();
@@ -198,9 +180,9 @@ export default function ActivityDock({
   // TERMINAL JOBS, ON THEIR WAY FROM Activity TO Notifications (D586,
   // broadened by D662 to every terminal state, not only `error`).
   // `DownloadManager` already hands this the FULL, unfiltered snapshot on
-  // every poll (`onJobsReported`); this only needs to re-derive the terminal
-  // subset and call up when the id SET actually changes, so a poll that finds
-  // nothing new does not re-render the shell.
+  // every `jobs` frame (`onJobsReported`); this only needs to re-derive the
+  // terminal subset and call up when the id SET actually changes, so a frame
+  // that carries nothing new does not re-render the shell.
   //
   // `terminalNotifications` (jobs.ts) is `mergedRows` then `jobRows` then
   // `terminalJobs` — see its own doc for why that order matters (a scheduled
@@ -223,8 +205,8 @@ export default function ActivityDock({
   // id set (already `effectiveTier`-filtered, `jobRows`) and is not the set
   // this needs: a `transient` job pops here even though `terminalIdsRef`
   // never counts it. `popupJobsSeenRef`/`popupFirstTickRef` are `popupTick`'s
-  // own state, carried across polls in a ref because this callback is
-  // memoized with `[]` deps and must not re-create on every poll.
+  // own state, carried across frames in a ref because this callback is
+  // memoized with `[]` deps and must not re-create on every frame.
   const popupJobsSeenRef = useRef<Set<string>>(new Set());
   const popupFirstTickRef = useRef(true);
   // D-C's own state (SPEC-quiet-notifications.md §3) — a MULTI-member
@@ -237,13 +219,13 @@ export default function ActivityDock({
   onJobPopupRef.current = onJobPopup;
   // The setup meter (onboarding/progress.ts) reads stage statuses the server
   // observes on each read — and a model download starting or finishing is
-  // exactly when the Models stage moves. This poll is the shell's one view of
-  // every job, so it is the cheapest place to know that moment: re-read the
-  // meter when the set of RUNNING jobs or the set of terminal ones changes,
-  // not on every tick.
+  // exactly when the Models stage moves. This subscription is the shell's one
+  // view of every job, so it is the cheapest place to know that moment:
+  // re-read the meter when the set of RUNNING jobs or the set of terminal
+  // ones changes, not on every frame.
   const runningIdsRef = useRef("");
   const onJobsReported = useCallback((next: Job[]) => {
-    // Finding 6: read the presence registry ONCE per tick rather than once
+    // Finding 6: read the presence registry ONCE per frame rather than once
     // per job (and once per group member) below. `isOpenAnywhere` itself
     // does a synchronous localStorage read + JSON.parse on every call;
     // `snapshotIsOpenAnywhere` does that read/parse a single time here and

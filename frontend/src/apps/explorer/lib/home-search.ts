@@ -941,9 +941,9 @@ export interface PendingScan {
 
 /**
  * How long a requested scan may stay unaccounted for before the note stops
- * claiming it is starting. Two idle poll intervals
- * (`INDEX_IDLE_POLL_MS`) — long enough that the poll has certainly had a turn,
- * short enough that a scan which died between two polls without moving
+ * claiming it is starting. Two of the server's idle `index.status` intervals
+ * (10 s) — long enough that a status push has certainly had a turn, short
+ * enough that a scan which died between two pushes without moving
  * `last_completed_at` cannot leave "Starting…" on screen indefinitely. That
  * failure mode is the one this whole file is about; it does not get to come
  * back as the spinner for its own fix.

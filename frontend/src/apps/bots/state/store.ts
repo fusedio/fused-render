@@ -4,10 +4,12 @@
 // changed, and per-bot event arrays keep their identity when that bot got nothing new (memo-friendly).
 // Changes made inside batch() publish once, at the end. Module code reads getState(); React reads useBots().
 //
-// Also here: the poll loop (one in flight), act(), the banner, the status toast, select() + the `?bot=` URL,
-// the UI request slots (dialog / panel / context menu) the panes open each other with, and the Builds chip.
+// Also here: the status stream (one events-bus subscription, topic `bots`), act(), the banner, the status toast,
+// select() + the `?bot=` URL, the UI request slots (dialog / panel / context menu) the panes open each other with, and
+// the Builds chip.
 import { useSyncExternalStore } from "react";
-import { api, apiHooks, type Bot, type BotEvent, type ImessageState, type SlowCall, type UsageSummary } from "../lib/api";
+import { canonicalKey, eventsClient, resyncTopic, subscribeTopic, type FusedEventsMeta } from "@platform/lib/events";
+import { api, apiHooks, type Bot, type BotEvent, type ImessageState, type SlowCall, type StatusReply, type UsageSummary } from "../lib/api";
 import { loadSeen, newMarkFor, saveSeen, unreadOf, unviewedOf } from "../lib/unread";
 import { chime, notifyEvents, notifyHandover, updateTitle } from "../lib/notify";
 import type { NewBotPick } from "../lib/presets";
@@ -47,10 +49,9 @@ export interface BotsState {
   /** The thread sits at its end (following along). */
   pinned: boolean;
   showHidden: boolean;
-  /** A poll landed while the live view was open; the thread pins to the end when it closes. */
   /** Calls slower than SLOW_MS (last 30). */
   slow: SlowCall[];
-  /** The live view is open: polls every 400 ms and ask for `fast` status. */
+  /** The live view is open: the status stream is subscribed with `fast` (400 ms server ticks, light summaries). */
   fast: boolean;
   /** Bumped by select(): OpenBot's render(true), "scroll the thread to the end on a new bot". */
   scrollThread: number;
@@ -142,14 +143,14 @@ export function onHandover(open: HandoverHook, close: () => void): void { handov
 const closeStage = (): void => { if (closeHook) closeHook(); else setFast(false); };
 /** Waiting for an open dialog / menu to close before Stage opens for this bot. */
 let pendingStage: string | null = null;
-/** The bot whose hand-over opened the current Stage by itself; the poll closes it again when that hand-over ends.
+/** The bot whose hand-over opened the current Stage by itself; a status frame closes it again when that hand-over ends.
  *  null for a Stage you opened by hand (watch mode), which only you close. Cleared whenever Stage closes (setFast). */
 let autoOpened: string | null = null;
 /** The bot asked for you in its browser (the list dot, the title prefix, the composer hint, the one-time alert). Stays
  *  true through a pop-out to a real window: that is the same hand-over, not a new one. */
 export const needsYou = (b: Bot | undefined): boolean => !!b && !!b.control && b.control_by === "bot";
 /** ...and Stage can show it: the task has not ended and the browser is not popped out (nothing to stream). The same
- *  checks that close an auto-opened Stage, so a remount never flashes one open for a poll. */
+ *  checks that close an auto-opened Stage, so a remount never flashes one open for a frame. */
 const stageable = (b: Bot | undefined): boolean => needsYou(b) && b!.status !== "idle" && b!.status !== "error" && !b!.browser?.headed;
 /** Open Stage for the selected bot `id` unless it is already open or the pref is off; with a dialog / menu up, later
  *  (closeDialog / closeMenu). Unsent composer text keeps its focus: the page does not take the keyboard then. */
@@ -160,7 +161,7 @@ function requestStage(id: string): void {
   if (S.fast) { if (autoOpened) autoOpened = id; return; }
   if (S.ui.dialog || S.ui.menu) { pendingStage = id; return; }
   pendingStage = null;
-  // Deferred: this runs inside a poll's or select()'s batch, and openFull's flushSync needs the store published first.
+  // Deferred: this runs inside a status frame's or select()'s batch, and openFull's flushSync needs the store published first.
   // botsMounted: a notification click or a late timer after the route unmounted must not open Stage on nothing.
   setTimeout(() => {
     if (!botsMounted() || S.fast || S.sel !== id || !stageable(cur()) || !handoverHook) return;
@@ -242,7 +243,7 @@ const selectListeners = new Set<(id: string | null) => void>();
 /** Called when the selection moves to another bot (before it moves): the composer drops its reply quote here. */
 export function onSelectChange(cb: (id: string | null) => void): () => void { selectListeners.add(cb); return () => { selectListeners.delete(cb); }; }
 
-/** The route this page lives on in the shell. The store outlives the route (module state), so a poll that lands
+/** The route this page lives on in the shell. The store outlives the route (module state), so a frame that lands
  *  after the reader navigated away must not write `?bot=` onto whatever page they are on now. */
 export const BOTS_PATH = "/bots";
 
@@ -259,9 +260,10 @@ const openedOnce = new Set<string>();
 const openRetryAt: Record<string, number> = {};
 const OPEN_RETRY_MS = 3_000;
 /** Tell the server the bot is open (the Bots page shows it). Once per bot per page load, except while Super Bot's first
- *  task is `pending` (Claude not linked or not measured yet) or the call failed: then it is asked again every
- *  OPEN_RETRY_MS so linking Claude later, or a measure landing, still starts it. The server rate-limits the measure
- *  itself (one a minute) and finishes a recent open on its own once it lands, so asking often is cheap and a fallback. */
+ *  task is `pending` (Claude not linked or not measured yet) or the call failed: then it is asked again on the first
+ *  status frame at least OPEN_RETRY_MS later (applyStatus calls this on every frame; no timer of its own), so linking
+ *  Claude later, or a measure landing, still starts it. The server rate-limits the measure itself (one a minute) and
+ *  finishes a recent open on its own once it lands, so the re-ask is a fallback. */
 function sendOpen(id: string): void {
   if (openedOnce.has(id) || (openRetryAt[id] || 0) > Date.now()) return;
   openedOnce.add(id);
@@ -321,37 +323,105 @@ export const closeMenu = (): void => { if (S.ui.menu) { commit({ ui: { ...S.ui, 
 /** builds/ owns the numbers; the list footer renders them. */
 export const setBuildsChip = (patch: Partial<BuildsChip>): void => commit({ buildsChip: { ...S.buildsChip, ...patch } });
 
-// ------------------------------------------------------------------ poll ----
-// One poll in flight at a time; one requested meanwhile runs after it settles, so callers never see pre-action state.
-let pollBusy: Promise<void> | null = null;
-export function poll(): Promise<void> {
-  if (pollBusy) return pollBusy.then(poll);
-  return (pollBusy = pollOnce().finally(() => { pollBusy = null; }));
+// ------------------------------------------------------------------ status stream ----
+// The page's status (`GET /api/bots`) arrives over the events bus as ONE subscription to topic `bots`, params
+// `{fast, shot_for}` (fused_render/server/topics.py BotsTopic). The subscribe answers a snapshot whose body is exactly
+// `GET /api/bots` with `cursors={}`; every later frame is a delta whose body is again the whole `/api/bots` reply,
+// computed server-side from the cursor map this subscription last saw — the same incremental `events` per bot the
+// page used to ask for with its own `cursors`. So both kinds go through applyStatus().
+//
+// The server ticks at the old cadences (400 ms with Stage open, 1.5 s while a bot runs, else 3 s) and wakes at once
+// when a bot emits or changes status; a reply that says nothing new is not sent. Not `hidden_ok`: this stream is what
+// raises the OS notification / chime for a question, approval or hand-over (notify.ts fires them precisely when the
+// window is hidden), so it must keep flowing for the window you are away from.
+//
+// The params follow the page: Stage opening/closing (`S.fast`) or another bot selected (`S.sel`) re-keys the
+// subscription (unsubscribe, subscribe). The server keeps cursors per subscription, so the snapshot that answers a
+// re-key — like the one after resyncTopic() or a socket redial — starts every bot's events from 0 again. applyStatus
+// keeps only the events past the seq this page already holds (S.cursors), so such a snapshot never duplicates a line
+// and never re-toasts or re-notifies one; what is genuinely new in it is handled like any other frame.
+const TOPIC = "bots";
+interface StatusParams { fast: boolean; shot_for: string; [k: string]: unknown }
+const paramsNow = (): StatusParams => ({ fast: S.fast, shot_for: S.sel || "" });
+/** The live subscription's teardown, the params it was opened with and their canonical key. null: not subscribed. */
+let feedOff: (() => void) | null = null, feedParams: StatusParams | null = null, feedKey = "";
+/** Bumped per (re)subscribe, so a frame of a subscription already closed is ignored. */
+let feedSeq = 0;
+/** poll() callers waiting for the next frame. */
+const frameWaiters = new Set<() => void>();
+function settleWaiters(): void { const ws = [...frameWaiters]; frameWaiters.clear(); for (const w of ws) w(); }
+
+function onStatusFrame(seq: number, snap: StatusReply | null, delta: StatusReply | null, meta: FusedEventsMeta): void {
+  if (seq !== feedSeq) return;
+  if (meta.error) showBanner("Worker unreachable: " + meta.error);
+  else { const r = snap ?? delta; if (r) applyStatus(r); }
+  settleWaiters();
 }
 
-export async function pollOnce(): Promise<void> {
-  try {
-    const r = await api.status({ cursors: S.cursors, shot_for: S.sel || "", fast: S.fast });
-    batch(() => {
-      hideBanner();
-      const first = !S.bots.length;
-      const prev = new Map(S.bots.map((b) => [b.id, b]));
-      const events = { ...S.events }, cursors = { ...S.cursors };
-      let toast: BotEvent | undefined;
-      for (const b of r.bots) {
-        let list = events[b.id] || [];
-        if (b.events.length) {
-          list = list.concat(b.events);
-          cursors[b.id] = b.seq;
-          if (!first) notifyEvents(b, b.events);
-          // Fresh system notes for the bot on screen surface as a toast; never on first load, never stale ones. Hand-off
-          // lines (docs §11) render in the thread instead, so they do not toast as well.
-          if (!first && b.id === S.sel) toast = b.events.filter((e) => e.role === "system" && e.source !== "handoff" && Date.now() / 1000 - e.ts < TOAST_FRESH_S).pop() || toast;
-        }
-        if (!(b.id in cursors)) cursors[b.id] = b.seq;
-        if (list.length > EVENT_CAP) list = list.slice(list.length - EVENT_CAP);
-        events[b.id] = list;
+/** (Re)subscribe with the page's current params; a no-op when they did not change. */
+function openFeed(): void {
+  const params = paramsNow(), key = canonicalKey(params);
+  if (feedOff && key === feedKey) return;
+  closeFeed();
+  const seq = ++feedSeq;
+  feedParams = params; feedKey = key;
+  feedOff = subscribeTopic<StatusReply, StatusReply>(TOPIC, params, (snap, delta, meta) => onStatusFrame(seq, snap, delta, meta), { hiddenOk: false });
+  // A cached snapshot is replayed synchronously, inside subscribe, before feedOff is set (so the re-key listener sat
+  // it out): if that frame moved the selection, follow it now.
+  if (canonicalKey(paramsNow()) !== key) openFeed();
+}
+function closeFeed(): void {
+  if (!feedOff) return;
+  const off = feedOff;
+  feedOff = null; feedParams = null; feedKey = "";
+  feedSeq++;
+  off();
+}
+
+/** How long poll() waits for the frame its resync asked for before resolving anyway. */
+export const POLL_WAIT_MS = 5000;
+/** Bring the page up to date now: one resync of the status subscription (an event — after a mutation, a Retry, a
+ *  Stage step — never a timer). Resolves once the next frame has been applied, or after POLL_WAIT_MS, so act() still
+ *  shows the effect of its call before it resolves. Without a live subscription (the route is not mounted, or the
+ *  socket is down) there is nothing to ask and it resolves at once. */
+export function poll(): Promise<void> {
+  if (!feedOff || !feedParams) return Promise.resolve();
+  const params = feedParams;
+  return new Promise<void>((resolve) => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const done = () => { if (timer) clearTimeout(timer); frameWaiters.delete(done); resolve(); };
+    frameWaiters.add(done);
+    if (!resyncTopic(TOPIC, params)) { done(); return; }
+    timer = setTimeout(done, POLL_WAIT_MS);
+  });
+}
+
+/** One `/api/bots` reply (a snapshot or a delta frame) folded into the page. */
+export function applyStatus(r: StatusReply): void {
+  batch(() => {
+    hideBanner();
+    const first = !S.bots.length;
+    const prev = new Map(S.bots.map((b) => [b.id, b]));
+    const events = { ...S.events }, cursors = { ...S.cursors };
+    let toast: BotEvent | undefined;
+    for (const b of r.bots) {
+      let list = events[b.id] || [];
+      // Only what this page does not hold yet: a snapshot (subscribe, re-key, resync, redial) restarts at seq 0.
+      const held = S.cursors[b.id];
+      const fresh = held === undefined ? b.events : b.events.filter((e) => e.seq > held);
+      // Never back: a replayed (older) snapshot must not lower the cursor and let held lines in a second time.
+      if (b.events.length) cursors[b.id] = Math.max(b.seq, held ?? 0);
+      if (fresh.length) {
+        list = list.concat(fresh);
+        if (!first) notifyEvents(b, fresh);
+        // Fresh system notes for the bot on screen surface as a toast; never on first load, never stale ones. Hand-off
+        // lines (docs §11) render in the thread instead, so they do not toast as well.
+        if (!first && b.id === S.sel) toast = fresh.filter((e) => e.role === "system" && e.source !== "handoff" && Date.now() / 1000 - e.ts < TOAST_FRESH_S).pop() || toast;
       }
+      if (!(b.id in cursors)) cursors[b.id] = b.seq;
+      if (list.length > EVENT_CAP) list = list.slice(list.length - EVENT_CAP);
+      events[b.id] = list;
+    }
       commit({
         bots: r.bots, events, cursors,
         ...(r.usage ? { usage: r.usage } : {}), ...(r.imessage ? { imessage: r.imessage } : {}),
@@ -361,7 +431,7 @@ export async function pollOnce(): Promise<void> {
       // stays quiet). The selected bot opens Stage, any other one gets a toast; chime + OS notification either way. On
       // first load only the selected bot reacts, silently. A hand back the server settled (handback.seq moved) arms the
       // composer's one-shot "anything to add?" placeholder.
-      // One chime per poll however many bots flipped together. No note when you handed back BY replying (a message of
+      // One chime per frame however many bots flipped together. No note when you handed back BY replying (a message of
       // yours after the question): you already said what you had to say.
       let ring = false;
       for (const b of r.bots) {
@@ -384,69 +454,40 @@ export async function pollOnce(): Promise<void> {
         const b = cur();
         if (!b || !b.control || b.status === "idle" || b.status === "error" || b.browser?.headed) closeStage();
       }
-      // A bot picked from the URL skips select(): place its "New" rule and clear its dot once, on first load. Later polls leave "seen" alone so the dot lights while you watch.
+      // A bot picked from the URL skips select(): place its "New" rule and clear its dot once, on first load. Later frames leave "seen" alone so the dot lights while you watch.
       if (first && S.sel && !document.hidden) { const c = cur(); if (c) { setNewMark(c); markSeen(c.id, c.seq); } }
       // Nothing selected yet: Super Bot (seeded on first run, registry.seed_super) is the chat a new user should land in.
       if (!S.sel && r.bots.length) select(r.bots.find((b) => b.kind === "super" && !b.hidden)?.id || r.bots.filter((b) => !b.hidden)[0]?.id || r.bots[0].id);
       if (S.sel && !r.bots.find((b) => b.id === S.sel)) select(r.bots[0]?.id || null);
       // The bot on screen is open: the Bots page shows it (by a click, a deep link or landing here). Only this page
-      // polls, so onboarding or another page never counts. Once per bot per page load; the server ignores repeats.
+      // subscribes to the status stream, so onboarding or another page never counts. Once per bot per page load; the
+      // server ignores repeats.
       if (S.sel && !document.hidden) sendOpen(S.sel);
       updateTitle();
     });
-  } catch (e) {
-    showBanner("Worker unreachable: " + errMsg(e));
-  }
 }
 
-/** Run a mutation, then poll so the page shows its effect; errors land in the banner unless silent. Resolves undefined on failure. */
+/** Run a mutation, then poll() (one resync of the status stream) so the page shows its effect; errors land in the
+ *  banner unless silent. Resolves undefined on failure. */
 export async function act<T>(call: () => Promise<T>, silent = false): Promise<T | undefined> {
   try { const r = await call(); await poll(); return r; }
   catch (e) { if (!silent) showBanner(errMsg(e)); return undefined; }
 }
 
-/** The live view (Stage) opened/closed: poll every 400 ms while open. The thread stays beside the page, so nothing re-pins. */
+/** The live view (Stage) opened/closed. `fast` is a param of the status subscription, so the change re-keys it (the
+ *  store listener startStore installs): the server streams at 400 ms while Stage is open. The thread stays beside the
+ *  page, so nothing re-pins. */
 export function setFast(on: boolean): void {
   if (S.fast === on) return;
   if (!on) autoOpened = null;
   commit({ fast: on });
-  // The pending tick may be an idle 3 s one; the live view wants its 400 ms cadence now.
-  if (on) kickLoop();
 }
 
-// Poll faster while the live view is open (tab strip, URL bar, popups), else slower (loopDelay); frames come over the live view socket.
-// `loopGen` ties a loop to one startStore(): the route can unmount and remount while a poll is in flight, and the
-// old loop must not re-arm beside the new one (two loops = twice the polls).
-let loopGen = 0, loopTimer: ReturnType<typeof setTimeout> | null = null;
-export async function loop(gen = loopGen): Promise<void> {
-  await poll();
-  if (gen > 0 && gen === loopGen) loopTimer = setTimeout(() => { loopTimer = null; void loop(gen); }, loopDelay());
-}
-// How long until the next /api/bots poll. This poll was ~40% of every request in a live log (2026-10-08), and every
-// native window shares WebKit's 6-connection HTTP/1.1 pool per host:port — so the idle cadence is a real tax on
-// every other window's calls. Live view open: 400 ms (tab strip, URL bar, popups). A bot RUNNING: 1.5 s, the old
-// rate, so steps and replies stream. Nothing running (idle / waiting on you / paused / error): 3 s — nothing moves
-// server-side without a run, and your own actions poll at once through act(). Hidden window: 5 s, NOT paused —
-// this poll is what raises the OS notification / chime for a question, approval or hand-over (notify.ts fires them
-// precisely when the tab is hidden), so stopping it would silence the alarm for the window you are away from; the
-// visibilitychange hook in startStore catches up the moment the window shows again.
-function loopDelay(): number {
-  if (typeof document !== "undefined" && document.hidden) return 5000;
-  if (S.fast) return 400;
-  return S.bots.some((b) => b.status === "running") ? 1500 : 3000;
-}
-// Poll now instead of waiting out the pending delay. Only when a timer is PENDING — mid-poll the chain re-arms on
-// its own (with the new delay), and starting another loop here would run two side by side.
-function kickLoop(): void {
-  if (loopGen <= 0 || !loopTimer) return;
-  clearTimeout(loopTimer);
-  loopTimer = null;
-  void loop(loopGen);
-}
-
-/** Boot: wire the api hooks and URL listeners, start the loop. Returns the teardown. Call once per mount (App).
- *  The state outlives a remount (leaving /bots and coming back): the URL's `?bot=` wins when it names one, else
- *  the bot that was open goes back onto the URL. */
+/** Boot: wire the api hooks and URL listeners, subscribe to the status stream. Returns the teardown. Call once per
+ *  mount (App). The state outlives a remount (leaving /bots and coming back): the URL's `?bot=` wins when it names one,
+ *  else the bot that was open goes back onto the URL. The subscription does not outlive the mount: the teardown closes
+ *  it, and a newer mount's own is left alone (`mountGen`). */
+let mountGen = 0;
 export function startStore(): () => void {
   apiHooks.onStall = showBanner;
   apiHooks.onSettle = hideBanner;
@@ -457,19 +498,22 @@ export function startStore(): () => void {
   const urlBot = initialSel();
   if (urlBot && urlBot !== S.sel) commit({ sel: urlBot, scrollThread: S.scrollThread + 1 });
   else if (!urlBot && S.sel) writeUrlBot(S.sel);
-  const gen = Math.abs(loopGen) + 1;
-  loopGen = gen;
-  void loop(gen);
-  // Shown again: poll now rather than waiting out the (up to 5 s) hidden-window delay.
-  const onVisible = () => { if (!document.hidden && loopGen === gen) kickLoop(); };
-  document.addEventListener("visibilitychange", onVisible);
+  const gen = ++mountGen;
+  openFeed();
+  // Stage opened/closed or another bot selected: the params moved, so re-key the subscription (openFeed is a no-op
+  // when they did not). A store listener rather than a call in select()/setFast(): every writer of `sel` (the URL
+  // follow, setState) moves the stream with it.
+  const offRekey = subscribe(() => { if (mountGen === gen && feedOff) openFeed(); });
+  // The socket dropped: the frames stop, so say so the way a failed request did; the snapshot that answers the
+  // redial hides it again (applyStatus).
+  const offState = eventsClient()?.onState?.((connected) => { if (!connected && mountGen === gen) showBanner("Worker unreachable: connection lost"); });
   // The store outlives the route: coming back to /bots with the selected bot still mid-hand-over reopens Stage (the
-  // poll diff only fires on the flip, which happened while you were away).
+  // frame diff only fires on the flip, which happened while you were away).
   if (stageable(cur())) requestStage(S.sel!);
   return () => {
-    if (loopGen === gen) loopGen = -gen;  // stops this loop; a newer mount has already moved loopGen on
-    if (loopTimer) { clearTimeout(loopTimer); loopTimer = null; }  // null: kickLoop reads a non-null timer as "pending"
-    document.removeEventListener("visibilitychange", onVisible);
+    offRekey();
+    offState?.();
+    if (mountGen === gen) { closeFeed(); settleWaiters(); }  // a newer mount has already opened its own
     if (S.ui.dialog || S.ui.panel || S.ui.menu) commit({ ui: { dialog: null, panel: null, menu: null } });  // a route change closes them
     pendingStage = null; if (S.fast) closeStage();  // Stage does not outlive the route (and a queued auto-open must not fire into it)
     window.removeEventListener("popstate", onUrlChange);

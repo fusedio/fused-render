@@ -10,6 +10,9 @@ installDomShim();
 import { describe, expect, test } from "bun:test";
 
 const { createChatController } = await import("./run-controller");
+// The run stream and the live probe are bus subscriptions now; this adapter
+// turns the scripted `poll` / `live_run` answers into frames, one per ask.
+const { scriptedBus } = await import("./test-bus");
 const { createMemoryParamsStore } = await import("../params/store");
 const { CONTINUE_GRACE_S, CONTINUE_PROMPT, CONTINUE_TITLE } = await import("./quota");
 
@@ -74,6 +77,7 @@ function make(handlers: Record<string, Handler>, schedule?: (body: unknown) => P
     file: "/proj/app.py",
     params: createMemoryParamsStore(),
     run,
+    subscribe: scriptedBus(run),
     sleep: () => Promise.resolve(),
     now: () => 1_000,
     hasPane: () => true,

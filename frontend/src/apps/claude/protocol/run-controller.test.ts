@@ -17,6 +17,10 @@ const {
   trimPermCards,
 } = await import("./run-controller");
 const { AgentError } = await import("./agent");
+// The run stream and the live probe are bus subscriptions now; this adapter
+// turns the scripted `poll` / `live_run` answers into frames, one per ask.
+const { scriptedBus } = await import("./test-bus");
+import type { BusLog } from "./test-bus";
 const { createMemoryParamsStore } = await import("../params/store");
 const { MARKER_VIEW } = await import("./wire");
 
@@ -129,6 +133,7 @@ function makeController(
     file: "/proj/app.py",
     params,
     run: agent.run,
+    subscribe: scriptedBus(agent.run),
     sleep: () => Promise.resolve(),
     now: () => 1_000,
     // The STAMP clock, separate from the duration clock above (review #9): a
@@ -336,6 +341,7 @@ describe("start → poll → done", () => {
       file: "/proj/app.py",
       params: createMemoryParamsStore(),
       run: agent.run,
+      subscribe: scriptedBus(agent.run),
       sleep: () => Promise.resolve(),
       now: () => 1_000,
       model: () => "sonnet",
@@ -362,6 +368,7 @@ describe("start → poll → done", () => {
       file: "/proj/app.py",
       params: createMemoryParamsStore(),
       run: agent.run,
+      subscribe: scriptedBus(agent.run),
       sleep: () => Promise.resolve(),
       now: () => ms,
       wallClock: () => ms,
@@ -3171,26 +3178,30 @@ describe("poll refusals and throws", () => {
     expect(controller.getState().turns).toEqual([]);
   });
 
-  test("dispose during the retry wait exits cleanly: no card, no further poll", async () => {
+  // Was "dispose during the retry WAIT": there is no wait to park in any more
+  // (a failed frame is followed by the next frame, not by a sleep), so the
+  // equivalent is a dispose while the loop waits on the frame after a 504.
+  test("dispose while waiting on the frame after a 504 exits cleanly: no card, no further poll", async () => {
     let release!: () => void;
     let waiting!: () => void;
     const parked = new Promise<void>((r) => (waiting = r));
     const agent = fakeAgent({
       start: () => ({ run_id: "r1" }),
-      poll: (_f, n) => (n === 0 ? poll({ segments: [text("half")] }) : Promise.reject(timeout())),
+      poll: (_f, n) => {
+        if (n === 0) return poll({ segments: [text("half")] });
+        if (n === 1) return Promise.reject(timeout());
+        // The frame after the 504 is slow to come — park until the dispose.
+        waiting();
+        return new Promise((_res, rej) => (release = () => rej(timeout())));
+      },
     });
-    let sleeps = 0;
+    const bus: BusLog[] = [];
     const controller = createChatController({
       file: "/proj/app.py",
       params: createMemoryParamsStore(),
       run: agent.run,
-      // The first sleep is the steady lap after poll 0; the second is the
-      // retry wait after the 504 — park there until the test disposes.
-      sleep: () => {
-        if (++sleeps < 2) return Promise.resolve();
-        waiting();
-        return new Promise<void>((r) => (release = r));
-      },
+      subscribe: scriptedBus(agent.run, bus),
+      sleep: () => Promise.resolve(),
       now: () => 1_000,
       wallClock: () => 1_000,
       hasPane: () => true,
@@ -3203,6 +3214,71 @@ describe("poll refusals and throws", () => {
     await sent;
     expect(agent.of("poll").length).toBe(before);
     expect(controller.getState().trouble).toBeNull();
+    // The subscription went with the controller.
+    expect(bus.filter((b) => b.topic === "claude.run").every((b) => b.closed)).toBe(true);
+  });
+
+  test("Back WAKES a loop parked on a frame that never comes, and unsubscribes it", async () => {
+    // A run blocked on a card sends no frames (nothing moves), so a loop that
+    // only noticed the generation on its next frame would sit subscribed for
+    // as long as the card stayed open.
+    let waiting!: () => void;
+    const parked = new Promise<void>((r) => (waiting = r));
+    const bus: BusLog[] = [];
+    const agent = fakeAgent({
+      start: () => ({ run_id: "r1" }),
+      poll: (_f, n) => {
+        if (n === 0) return poll({ segments: [text("half")] });
+        waiting();
+        return new Promise(() => {}); // never
+      },
+    });
+    const controller = createChatController({
+      file: "/proj/app.py",
+      params: createMemoryParamsStore(),
+      run: agent.run,
+      subscribe: scriptedBus(agent.run, bus),
+      sleep: () => Promise.resolve(),
+      now: () => 1_000,
+      wallClock: () => 1_000,
+      hasPane: () => true,
+    });
+    const sent = controller.sendMessage("go");
+    await parked;
+    controller.newChat();
+    await sent;
+    expect(controller.getState().status).toBe("idle");
+    expect(controller.getState().trouble).toBeNull();
+    expect(bus.filter((b) => b.topic === "claude.run").map((b) => b.closed)).toEqual([true]);
+  });
+
+  test("ONE SUBSCRIPTION PER TURN: every frame of a run comes off a single claude.run key", async () => {
+    const bus: BusLog[] = [];
+    const agent = fakeAgent({
+      start: () => ({ run_id: "r1" }),
+      poll: (_f, n) =>
+        n < 4
+          ? poll({ segments: [text("x".repeat(n + 1))], text: "x".repeat(n + 1) })
+          : poll({ done: true, segments: [text("xxxxx")], text: "xxxxx" }),
+    });
+    const controller = createChatController({
+      file: "/proj/app.py",
+      params: createMemoryParamsStore(),
+      run: agent.run,
+      subscribe: scriptedBus(agent.run, bus),
+      sleep: () => Promise.resolve(),
+      now: () => 1_000,
+      wallClock: () => 1_000,
+      hasPane: () => true,
+    });
+    await controller.sendMessage("go");
+    expect(agent.of("poll").length).toBe(5);
+    const runs = bus.filter((b) => b.topic === "claude.run");
+    expect(runs.length).toBe(1);
+    expect(runs[0]!.params).toEqual({ run_id: "r1", file: "/proj/app.py", native: "1", queue: runs[0]!.params.queue });
+    // …and it is closed once the turn is done.
+    expect(runs[0]!.closed).toBe(true);
+    expect(assistants(controller).map((t) => t.text)).toEqual(["xxxxx"]);
   });
 
   test("an error the user did not ask for drops the reply and is reported", async () => {

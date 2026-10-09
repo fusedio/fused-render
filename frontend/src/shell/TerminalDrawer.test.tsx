@@ -927,29 +927,52 @@ test("tab strip: claude tab is marked, has no ask, and Stop/close are mutually e
 test("claude tab: an open drawer picks a new chat's tab up from the list and Stop POSTs the stop route", async () => {
   seed(["a"]);
   const srv = fakeServer({ live: [{ id: "a" }] });
+  // The drawer follows `terminal.list` on the events bus while open; a
+  // scripted client stands in for the socket (the real one never calls back
+  // under bun) and lets the test push the frame the server would send when
+  // the chat's first command lands.
+  const { setEventsClientForTests } = await import("@platform/lib/events");
+  type Frame = (snap: unknown, delta: unknown, meta: Record<string, unknown>) => void;
+  const subs = new Map<string, Set<Frame>>();
+  setEventsClientForTests({
+    subscribe: ((topic: string, _params: unknown, cb: Frame) => {
+      let set = subs.get(topic);
+      if (!set) subs.set(topic, (set = new Set()));
+      set.add(cb);
+      cb({ sessions: [{ id: "a", alive: true, shell: "zsh" }] }, null, { gen: null });
+      return () => {
+        set.delete(cb);
+      };
+    }) as never,
+    resync: () => true,
+  });
   try {
     const r = await mountOpen();
     expect(stripProps(r).tabs.map((t: { id: string }) => t.id)).toEqual(["a"]);
-    // The chat starts a command: the next poll adds the tab (not active).
-    const real = globalThis.fetch;
-    globalThis.fetch = (async (url: string, init?: RequestInit) => {
-      if ((init?.method ?? "GET") === "GET") {
-        return {
-          ok: true, status: 200,
-          json: async () => ({ sessions: [
-            { id: "a", alive: true, shell: "zsh" },
-            { id: "claude:c1", alive: true, kind: "claude", running: true },
-          ] }),
-        } as Response;
+    // Exactly one `terminal.list` subscription for the open drawer.
+    expect(subs.get("terminal.list")?.size).toBe(1);
+    // The chat starts a command: the next snapshot adds the tab (not active).
+    await act(async () => {
+      for (const cb of subs.get("terminal.list") ?? []) {
+        cb({ sessions: [
+          { id: "a", alive: true, shell: "zsh" },
+          { id: "claude:c1", alive: true, kind: "claude", running: true },
+        ] }, null, { gen: null });
       }
-      return real(url, init);
-    }) as unknown as typeof fetch;
-    await act(async () => { await new Promise((res) => setTimeout(res, 2200)); });
+    });
+    await tick();
     expect(stripProps(r).tabs.map((t: { id: string }) => t.id)).toEqual(["a", "claude:c1"]);
     expect(stripProps(r).activeId).toBe("a");
     act(() => stripProps(r).onStop("claude:c1"));
     await tick();
     const stop = srv.calls.find((c) => c.method === "POST" && c.url === "/api/terminal/claude%3Ac1/stop");
     expect(stop).toBeDefined();
-  } finally { srv.restore(); }
+    // Closing the drawer lets the subscription go.
+    act(() => toggleTerminalDock());
+    await tick();
+    expect(subs.get("terminal.list")?.size).toBe(0);
+  } finally {
+    setEventsClientForTests(null);
+    srv.restore();
+  }
 });

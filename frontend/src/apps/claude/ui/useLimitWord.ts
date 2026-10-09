@@ -18,7 +18,7 @@ import { getTasks } from "@platform/lib/api";
 import { TASKS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
 import { usageLimitStatusWord, type UsageLimitFacts } from "@platform/lib/usage-limit";
 
-/** The floor between two reads, `useSchedule`'s `REC_REFRESH_MS` restated for
+/** The floor between two reads, the old listing floor restated for
  *  the same reason it exists: the announcement can be rung several times in one
  *  second (a turn starting, a comeback landing) and the listing is a glob over
  *  every transcript on the machine. */
