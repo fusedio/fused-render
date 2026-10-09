@@ -4,7 +4,7 @@ import { softNavigate } from "../strip";
 import { taskHref } from "../../tasks-lib";
 import { useHomeTasks, type HomeTasks } from "../data";
 import { dimsOf, itemCapacity, type TasksShow, type Widget } from "../layout";
-import { BigCount, EmptyLine, ErrorLine, ItemList, ListSkeleton, MoreLine, type WidgetItem } from "./bits";
+import { BigCount, EmptyLine, ErrorLine, ItemList, ListSkeleton, MoreLine, useFitCount, type WidgetItem } from "./bits";
 
 const TASKS_HREF = "/tasks";
 
@@ -82,6 +82,32 @@ function toItem(t: Task): WidgetItem {
   };
 }
 
+/** One board column. It shows as many cards as its height holds and clips the rest, so a lane never grows the tile. */
+function BoardLane({ lane, rows, cap }: { lane: { id: Lane; label: string; empty: string }; rows: Task[]; cap: number }) {
+  const { ref, n } = useFitCount(rows.length, cap, ".hw-lane-card");
+  const shown = rows.slice(0, n);
+  return (
+    <div ref={ref} className={`hw-lane is-${lane.id}`}>
+      <div className="hw-lane-head">
+        <span className="hw-lane-dot" aria-hidden="true" />
+        <span className="hw-lane-label">{lane.label}</span>
+        <span className="hw-lane-n">{rows.length}</span>
+      </div>
+      {shown.length === 0 && <div className="hw-lane-empty">{lane.empty}</div>}
+      {shown.map((t) => {
+        const { href, name, sub } = toItem(t);
+        return (
+          <a key={t.key} className="hw-lane-card" href={href} title={name} onClick={(e) => softNavigate(e, href!)}>
+            <span className="hw-lane-title">{name}</span>
+            <span className="hw-lane-meta">{sub}</span>
+          </a>
+        );
+      })}
+      <MoreLine count={rows.length - shown.length} href={TASKS_HREF} />
+    </div>
+  );
+}
+
 export function TasksWidget({ widget }: { widget: Widget }) {
   const { data: split, error, retry } = useHomeTasks();
   if (error && !split) return <div className="hw-body"><ErrorLine message={`Couldn't load tasks. ${error}`} onRetry={retry} /></div>;
@@ -103,35 +129,15 @@ export function TasksWidget({ widget }: { widget: Widget }) {
     );
   }
   if (widget.format === "board") {
+    // First-paint guess only; each lane measures how many cards its tile really holds.
     const cap = widget.size === "2x2" || dimsOf(widget).rows >= 4 ? 4 : 2;
     const lanes = lanesFor(show);
     return (
       <div className="hw-body">
         <div className="hw-board" style={{ "--hw-lanes": lanes.length } as React.CSSProperties}>
-          {lanes.map((lane) => {
-            const rows = data.filter((t) => laneOf(t) === lane.id);
-            const shown = rows.slice(0, cap);
-            return (
-              <div key={lane.id} className={`hw-lane is-${lane.id}`}>
-                <div className="hw-lane-head">
-                  <span className="hw-lane-dot" aria-hidden="true" />
-                  <span className="hw-lane-label">{lane.label}</span>
-                  <span className="hw-lane-n">{rows.length}</span>
-                </div>
-                {shown.length === 0 && <div className="hw-lane-empty">{lane.empty}</div>}
-                {shown.map((t) => {
-                  const { href, name, sub } = toItem(t);
-                  return (
-                    <a key={t.key} className="hw-lane-card" href={href} title={name} onClick={(e) => softNavigate(e, href!)}>
-                      <span className="hw-lane-title">{name}</span>
-                      <span className="hw-lane-meta">{sub}</span>
-                    </a>
-                  );
-                })}
-                <MoreLine count={rows.length - shown.length} href={TASKS_HREF} />
-              </div>
-            );
-          })}
+          {lanes.map((lane) => (
+            <BoardLane key={lane.id} lane={lane} rows={data.filter((t) => laneOf(t) === lane.id)} cap={cap} />
+          ))}
         </div>
       </div>
     );
