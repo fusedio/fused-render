@@ -72,7 +72,7 @@ div.bots-page { margin: 0; display: flex; flex-direction: column; font-family: "
 @media (prefers-reduced-motion: reduce) { .bots-page, .bots-page * { animation: none !important; transition: none !important; } }
 
 /* Columns: --lw/--rw are panel widths (set by the resize handles), --mid the thread's floor, --rmin the preview's; the middle is minmax(0,1fr) so content never pushes the preview off-screen.
-   The preview's only ceiling is the room the thread floor leaves (lib/layout.ts roomFor, LIM.r.max): OpenBot's 50vw cap here pinned it at half the window
+   The preview's only ceiling is the room the thread floor leaves (lib/layout.ts roomFor; LIM.r has no max): OpenBot's 50vw cap here pinned it at half the window
    while the drag went on collapsing the sidebar for room the track then never took. */
 div.bots-page { --lw: 280px; --rw: 400px; --mid: 450px; --rmin: 280px; --lweff: min(var(--lw), 40%); }
 /* .lcol = user collapsed the sidebar; .lfit = the window is too narrow for it, so it collapses itself (before the preview hides). */

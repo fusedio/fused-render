@@ -23,8 +23,10 @@ export const C_MIN = 300, STAGE_MIN = 480;
 // rail STAGE_SHUT px past that closes Stage instead (the drag ends there: once Stage is off the same gutter is the preview's).
 export const STAGE_HALF = 0.5, STAGE_SHUT = 50;
 // Widths below snap collapse the panel; neither handle pushes the thread below MID_MIN, except the preview drag may collapse the sidebar to make room.
+// The preview has no fixed ceiling: room (the thread floor) is the only one, and it must agree with the grid in bots.css — a lower cap in either
+// place leaves the drag collapsing the sidebar for room the pane never takes.
 // `c` is the chat rail in Stage (the right gutter resizes it there); it never collapses, and its only ceiling is the room the live page leaves (stageRoom).
-export const LIM = { l: { min: 180, max: 560, snap: 130, shut: 72 }, r: { min: R_MIN, max: 900, snap: 150, shut: 0 }, c: { min: C_MIN, max: Infinity, snap: 0, shut: 0 } } as const;
+export const LIM = { l: { min: 180, max: 560, snap: 130, shut: 72 }, r: { min: R_MIN, max: Infinity, snap: 150, shut: 0 }, c: { min: C_MIN, max: Infinity, snap: 0, shut: 0 } } as const;
 export const FIT_HYST = 24;
 export type Side = "l" | "r" | "c";
 
