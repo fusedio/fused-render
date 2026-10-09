@@ -5,7 +5,8 @@
 // own visible treatment; a LIVE LEVEL METER while recording, because the user
 // must see "it hears me" before they will talk to it; and words that stream in
 // rather than a spinner — the worker appends each segment to a partial JSONL
-// beside the output (runners/partial.py) and this stage tails it.
+// beside the output (runners/partial.py) and this stage re-reads it each time
+// the events bus says the file changed (`fs.watch`).
 //
 // `POST /api/ai/transcribe` takes a PATH — the transcript is a file and the
 // run outlives the page on purpose — so both inputs land bytes on disk first
@@ -15,6 +16,7 @@
 // job, visible in Activity.
 import { useEffect, useRef, useState } from "react";
 import { getConfig, mkdir, rawUrl } from "@platform/lib/api";
+import { subscribeTopic, type SubscribeLike } from "@platform/lib/events";
 import { cancelJob, type Job } from "@platform/lib/jobs";
 import {
   cancelCapture,
@@ -45,6 +47,42 @@ function clock(seconds: number | undefined): string {
   if (seconds === undefined || !isFinite(seconds)) return "";
   const s = Math.max(0, Math.floor(seconds));
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+}
+
+
+/** Follow the worker's partial transcript (a JSONL it appends one segment at
+ *  a time, runners/partial.py) through `fs.watch` on the events bus: one read
+ *  of the file when the subscription answers (where it stands now) and one
+ *  per change the server reports — the file appearing included. A failed
+ *  read keeps what is on screen, and so does an empty one; an error frame
+ *  (the watch refused) changes nothing either. Not `hiddenOk`: the words
+ *  should be there when the user comes back. Returns the unsubscribe;
+ *  `subscribe`/`read` are the test seams. */
+export function tailPartialTranscript(
+  path: string,
+  onRows: (rows: TranscriptSegment[]) => void,
+  subscribe: SubscribeLike = subscribeTopic,
+  read: (path: string) => Promise<TranscriptSegment[]> = readPartialTranscript,
+): () => void {
+  let alive = true;
+  const off = subscribe(
+    "fs.watch",
+    { paths: [path] },
+    (snap, delta, meta) => {
+      if (!alive || meta.error !== undefined || (snap === null && delta === null)) return;
+      read(path).then(
+        (rows) => {
+          if (alive && rows.length) onRows(rows);
+        },
+        () => {},
+      );
+    },
+    { hiddenOk: false },
+  );
+  return () => {
+    alive = false;
+    off();
+  };
 }
 
 export function TranscribeStage({ model }: { model: string }) {
@@ -94,7 +132,7 @@ export function TranscribeStage({ model }: { model: string }) {
   // `land()` awaits the config, the mkdir and the upload before it starts a
   // job at all, so an unmount inside that window runs the cleanup below while
   // the continuation is still queued — it would then start a watch against a
-  // controller the cleanup has already come and gone for, leaking a 1/s poll
+  // controller the cleanup has already come and gone for, leaking a job watch
   // from a dead component. The flag is what the continuation checks.
   const aliveRef = useRef(true);
   const recorderRef = useRef<MediaRecorder | null>(null);
@@ -184,22 +222,12 @@ export function TranscribeStage({ model }: { model: string }) {
     return () => window.clearInterval(timer);
   }, [phase.step]);
 
-  // Tail the partial transcript while the run is live.
+  // Tail the partial transcript while the run is live (`tailPartialTranscript`:
+  // one read per change of the file, heard on the events bus).
   const running = phase.step === "running" ? phase.started : null;
   useEffect(() => {
     if (!running) return;
-    let alive = true;
-    const tick = () =>
-      readPartialTranscript(running.outputPartial).then(
-        (rows) => alive && rows.length && setSegments(rows),
-        () => {},
-      );
-    void tick();
-    const timer = window.setInterval(tick, 1000);
-    return () => {
-      alive = false;
-      window.clearInterval(timer);
-    };
+    return tailPartialTranscript(running.outputPartial, setSegments);
   }, [running]);
 
   const transcribePath = async (path: string) => {
@@ -242,7 +270,7 @@ export function TranscribeStage({ model }: { model: string }) {
     // The final words come from the final `.json` — NOT another read of the
     // partial file: the Sink DELETES the partial on a clean exit (a finished
     // run's partial is duplicate bytes, its docstring says so), so on a short
-    // clip that finishes before the first tail tick the partial never renders
+    // clip that finishes before the first tail read the partial never renders
     // and a re-read here finds nothing. The settled record has the same
     // segments, plus the joined text.
     try {
