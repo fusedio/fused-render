@@ -26,7 +26,8 @@ const SEE_ALL: Partial<Record<WidgetModel["source"], string>> = {
   bots: "/bots",
 };
 
-function Body({ widget, edit, onRemove }: { widget: WidgetModel; edit: boolean; onRemove: () => void }) {
+/** The widget's content by source; the add sheet's gallery draws it too. */
+export function WidgetBody({ widget, edit, onRemove }: { widget: WidgetModel; edit: boolean; onRemove: () => void }) {
   switch (widget.source) {
     case "search":
       return <SearchWidget edit={edit} size={widget.size} />;
@@ -131,7 +132,7 @@ export function WidgetFrame(p: WidgetFrameProps): ReactNode {
           </a>
         ) : null}
       </div>}
-      <Body widget={widget} edit={edit} onRemove={p.onRemove} />
+      <WidgetBody widget={widget} edit={edit} onRemove={p.onRemove} />
       {edit ? (
         <span className={"hw-swap" + (bare ? " is-bare" : "")}>
           {bare ? null : (

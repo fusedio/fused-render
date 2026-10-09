@@ -1,5 +1,5 @@
-// The two pickers the edit popover and the add sheet share: size chips (layout
-// glyph + label) and format picks (scaled preview thumbnail + caption).
+// The pickers on the tile Change card: size chips (layout glyph + label) and
+// format picks (scaled preview thumbnail + caption).
 import { FormatPreview, previewKind } from "./FormatPreview";
 import { APPS_SORTS, CELL, FORMAT_LABELS, FORMAT_MIN_ROWS, SIZE_LABELS, dimsFor, TASKS_SHOWS, type AppsSort, type TasksShow, type WidgetFormat, type WidgetSize, type WidgetSource } from "./layout";
 import { SizeGlyph } from "./SizeGlyph";
@@ -101,7 +101,6 @@ export function FormatPicks({
   value,
   onChange,
   rows,
-  unfit,
 }: {
   source: WidgetSource;
   formats: WidgetFormat[];
@@ -109,8 +108,6 @@ export function FormatPicks({
   onChange: (f: WidgetFormat) => void;
   /** The tile's height in units: a format that needs more is disabled. */
   rows?: number;
-  /** Formats no size of the source can draw (the add sheet has no tile yet): disabled. */
-  unfit?: (f: WidgetFormat) => boolean;
 }) {
   return (
     <div className="hw-picks" role="radiogroup" aria-label="Show as">
@@ -121,8 +118,8 @@ export function FormatPicks({
           role="radio"
           aria-checked={f === value}
           className={"hw-pick" + (f === value ? " is-on" : "")}
-          disabled={(rows !== undefined && f !== value && rows < (FORMAT_MIN_ROWS[f] ?? 0)) || (f !== value && !!unfit?.(f))}
-          title={(rows !== undefined && f !== value && rows < (FORMAT_MIN_ROWS[f] ?? 0)) || (f !== value && unfit?.(f)) ? "Needs a taller tile" : undefined}
+          disabled={rows !== undefined && f !== value && rows < (FORMAT_MIN_ROWS[f] ?? 0)}
+          title={rows !== undefined && f !== value && rows < (FORMAT_MIN_ROWS[f] ?? 0) ? "Needs a taller tile" : undefined}
           onClick={() => onChange(f)}
         >
           <span className="hw-thumb">

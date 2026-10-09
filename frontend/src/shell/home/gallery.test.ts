@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { CELL, GRID_COLS, MAX_WIDGETS, SOURCES, addWidget, defaultLayout, sizesFor, type HomeLayout, type Widget } from "./layout";
+import { CELL, GRID_COLS, MAX_WIDGETS, SOURCES, addWidget, defaultLayout, sizesFor, type HomeLayout, type Widget, type WidgetSource } from "./layout";
 import { footprintLabel, freeSpaceNote, galleryEntries, previewPx } from "./gallery";
 
 const empty: HomeLayout = { ...defaultLayout(), widgets: [] };
@@ -26,7 +26,7 @@ test("one entry per (source, format) at the format's default size", () => {
 test("entries follow SOURCES order and sections group by source", () => {
   const es = galleryEntries(empty);
   const order = [...new Set(es.map((e) => e.source))];
-  expect(order).toEqual(Object.keys(SOURCES).filter((s) => order.includes(s as never)));
+  expect(order).toEqual((Object.keys(SOURCES) as WidgetSource[]).filter((s) => order.includes(s)));
 });
 
 test("fixed-row sources have a single entry; titles name the format only when several", () => {
