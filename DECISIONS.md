@@ -6669,3 +6669,7 @@ View mode no longer renders spacers for empty rows (they made 84px voids that sp
 Build an app takes 4 unit rows (was 3) and renders the same block in both modes: headline, a 760px centred composer and the chips row. The edit stand-in sits in a full-width card outline, like the other widgets. Stored v5 layouts grow the build in place and push the widgets below it down a row (`growFixedRows`), so no version bump is needed.
 The Build an app headline is centred explicitly (`text-align: center` on `.hw-build-headline`) so edit mode matches view mode and clears the overlaid drag grip.
 
+
+## D1338 — Claude drawer tabs close manually and vanish when the turn ends (2026-10-09, fix/claude-tab-close-and-autoquit)
+
+The read-only `claude:<chat>` tab had no close and the server listed a chat for 2 hours after its last command. Now `DELETE /api/terminal/claude:<chat>` writes a `.dismissed` marker in the chat's command-log dir (409 while a command runs, 404 for an unknown chat), and `session_host._reap_loop` writes `.turn_ended` at the turn-end edge and when the session exits. `list_chats` hides a non-running chat whose marker is at least as new as its last command activity, so a newer command brings it back; dot-prefixed files never count as activity. The 2h window and the cap of 8 stay as the fallback. The tab strip shows × only while nothing is running.

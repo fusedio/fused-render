@@ -91,7 +91,8 @@ def api_terminal_list():
 def _claude_entries(focused) -> list:
     """The read-only "claude" tabs: one per chat that has run a Bash-tool
     command (D1327). Always `alive` — a log view never exits — with `running`
-    saying whether a command is executing right now."""
+    saying whether a command is executing right now. A tab disappears once the
+    user dismisses it (DELETE) or Claude's turn ends, until a newer command."""
     out = []
     for e in claude_cmd_log.list_chats():
         cmds = claude_cmd_log.commands(e["chat"])
@@ -203,8 +204,14 @@ def api_terminal_delete(sid: str, x_fused: str | None = Header(default=None)):
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
-    if claude_cmd_log.chat_of(sid) is not None:
-        return _error("the Claude tab is read-only; use stop", status=400)
+    if sid.startswith(claude_cmd_log.PREFIX):
+        chat = claude_cmd_log.chat_of(sid)
+        if chat is None or not claude_cmd_log.command_ids(chat):
+            return _error("no such terminal session", status=404)
+        if any(c.running for c in claude_cmd_log.commands(chat)):
+            return _error("stop the running command first", status=409)
+        claude_cmd_log.mark(chat, claude_cmd_log.DISMISSED)
+        return {"ok": True}
     if not pty_session.REGISTRY.kill(sid):
         return _error("no such terminal session", status=404)
     return {"ok": True}
