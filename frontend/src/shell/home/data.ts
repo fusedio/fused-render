@@ -210,15 +210,20 @@ function useAsyncResource<T>(
   };
 }
 
-const loadOpenTasks = () =>
-  getTasks().then((r) => r.tasks.filter((t) => t.status !== "done" && t.status !== "archived" && t.kind !== "draft"));
+/** What the Home Tasks widget shows: everything but archived (done and drafts
+    included, as on the Tasks page), newest activity first. */
+export function homeTasks(tasks: Task[]): Task[] {
+  return tasks.filter((t) => t.status !== "archived").sort((a, b) => (b.last_active || 0) - (a.last_active || 0));
+}
+
+const loadHomeTasks = () => getTasks().then((r) => homeTasks(r.tasks));
 const loadHomeBots = () => botsApi.status({ cursors: {}, shot_for: "", fast: true }).then((r) => r.bots ?? []);
 
-/** Open tasks (everything but done/archived) — refetched when anything
+/** Recent tasks (everything but archived), newest first — refetched when anything
     announces a task change, and on a slow beat so a run finishing in the
     background shows up. */
-export function useOpenTasks(): AsyncState<Task[]> {
-  return useAsyncResource(loadOpenTasks, {
+export function useHomeTasks(): AsyncState<Task[]> {
+  return useAsyncResource(loadHomeTasks, {
     pollMs: 15000,
     event: TASKS_CHANGED_EVENT,
     errorText: "Couldn't load tasks.",
