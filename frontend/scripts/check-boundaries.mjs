@@ -44,6 +44,10 @@ function resolveSpec(spec, fileRel) {
   if (spec.startsWith("@shell/")) return "shell/" + spec.slice("@shell/".length);
   if (spec.startsWith("@apps/")) return "apps/" + spec.slice("@apps/".length);
   if (spec.startsWith("@assets/")) return "assets/" + spec.slice("@assets/".length);
+  // The one allowance for a path OUTSIDE frontend/src: the events-bus client
+  // (`fused_render/static/events-client.js`) is plain JS shared with
+  // runtime.js (D12). Treated as an external, importable from any layer.
+  if (spec.startsWith("@static/")) return null;
   if (spec.startsWith(".")) return posix(path.normalize(path.join(path.dirname(fileRel), spec)));
   return null; // bare import: node_modules
 }

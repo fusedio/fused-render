@@ -7,6 +7,7 @@ import { appearedKeys } from "@platform/lib/flip";
 import { notify } from "@platform/lib/notifications";
 import { ROW_NEW_MS, type ListingState } from "@apps/explorer/listing/types";
 import { subscribeFsChanged } from "@apps/explorer/listing/fsChangeBus";
+import { subscribeTopic } from "@platform/lib/events";
 
 // `listPath` is what actually gets fetched — `fsPath` itself, UNLESS this
 // folder sits under an active git snapshot, in which case it is the same
@@ -101,21 +102,18 @@ export function useDirListing(fsPath: string, listPath: string = fsPath) {
     );
   };
 
-  // WebSocket watch on the listed directory (LS-1); WS not SSE per D74 (SSE
-  // pinned one of Chrome's 6 HTTP/1.1 sockets per view). A directory's mtime
-  // changes on create/delete/rename of entries (not on child content changes
-  // — LS-2, accepted). Closed on unmount = navigating away (LS-3). On change,
-  // debounce 300 ms then re-fetch; sort params live in URL + state, so a
-  // refetch preserves them.
+  // Watch the listed directory (LS-1) through the document's events-bus
+  // socket (`fs.watch`, platform/lib/events): one subscription, no socket of
+  // its own. A directory's mtime changes on create/delete/rename of entries
+  // (not on child content changes — LS-2, accepted). Closed on unmount =
+  // navigating away (LS-3). On change, debounce 300 ms then re-fetch; sort
+  // params live in URL + state, so a refetch preserves them.
   useEffect(() => {
-    let sock: WebSocket | null = null;
-    let retry: ReturnType<typeof setTimeout> | null = null;
     let timer: ReturnType<typeof setTimeout> | null = null;
-    let closed = false;
-    // Same 300ms debounce as the socket path below, and deliberately the SAME
-    // timer variable: a stage-then-immediately-typed external `git add`
-    // (or any other pair of near-simultaneous changes) should coalesce into
-    // one refetch, not race two independent ones against each other.
+    // Same 300ms debounce for both paths, and deliberately the SAME timer
+    // variable: a stage-then-immediately-typed external `git add` (or any
+    // other pair of near-simultaneous changes) should coalesce into one
+    // refetch, not race two independent ones against each other.
     const scheduleRefresh = () => {
       if (timer !== null) clearTimeout(timer);
       timer = setTimeout(() => setRefresh((n) => n + 1), 300);
@@ -123,56 +121,40 @@ export function useDirListing(fsPath: string, listPath: string = fsPath) {
     // A write from inside a preview iframe (fused.writeFile/uploadFile/mkdir,
     // or any runPython — including the git template's stage/unstage, which
     // only rewrites `.git/index` and so never moves this directory's own
-    // mtime — see window._fusedFsChanged in main.tsx). The dir-watch socket
-    // below only ever hears about a change to `fsPath` ITSELF; this is the
-    // only way an already-mounted listing hears about a change whose origin
-    // isn't a plain filesystem write to the watched directory.
+    // mtime — see window._fusedFsChanged in main.tsx). The watch below only
+    // ever hears about a change to `fsPath` ITSELF; this is the only way an
+    // already-mounted listing hears about a change whose origin isn't a plain
+    // filesystem write to the watched directory.
     const unsubscribe = subscribeFsChanged(() => {
       clearListPrefetch();
       scheduleRefresh();
     });
-    const connect = () => {
-      const proto = location.protocol === "https:" ? "wss://" : "ws://";
-      sock = new WebSocket(proto + location.host + "/api/fs/events?path=" + encodeURIComponent(fsPath));
-      sock.onmessage = (ev) => {
-        let data;
-        try {
-          data = JSON.parse(ev.data);
-        } catch {
-          return;
-        }
-        if (data.keepalive) return;
-        // AN EXTERNAL WRITER CHANGED THIS FOLDER — drop every cached listing.
-        //
-        // api.ts's own mutation wrappers invalidate the prefetch cache themselves,
-        // so this is for changes made by something else: Claude, an editor, a git
-        // checkout. Without it this listing refreshed correctly (a refresh
-        // bypasses the cache) while a fresh MOUNT of the same folder within the 5s
-        // TTL still painted the pre-change contents.
-        //
-        // THE SCOPE IS NARROW, and no comment should imply otherwise: this socket
-        // watches only `fsPath`, and only while this component is mounted. A write
-        // to any other folder is invisible here, and a template view of a FILE
-        // mounts no listing at all — writes from inside a preview iframe are
-        // covered instead by window._fusedFsChanged (installed in main.tsx).
-        //
-        // Before the debounce, not inside it: the cache should be dead the moment
-        // we know it is wrong, whether or not this listing goes on to refetch.
-        clearListPrefetch();
-        scheduleRefresh();
-      };
-      // WebSockets don't auto-reconnect the way EventSource did.
-      sock.onclose = () => {
-        if (!closed) retry = setTimeout(connect, 1000);
-      };
-    };
-    connect();
+    const off = subscribeTopic("fs.watch", { paths: [fsPath] }, (snap, delta) => {
+      // The snapshot is where things stand now; only a DELTA is a change.
+      if (snap !== null || delta === null) return;
+      // AN EXTERNAL WRITER CHANGED THIS FOLDER — drop every cached listing.
+      //
+      // api.ts's own mutation wrappers invalidate the prefetch cache themselves,
+      // so this is for changes made by something else: Claude, an editor, a git
+      // checkout. Without it this listing refreshed correctly (a refresh
+      // bypasses the cache) while a fresh MOUNT of the same folder within the 5s
+      // TTL still painted the pre-change contents.
+      //
+      // THE SCOPE IS NARROW, and no comment should imply otherwise: this watches
+      // only `fsPath`, and only while this component is mounted. A write to any
+      // other folder is invisible here, and a template view of a FILE mounts no
+      // listing at all — writes from inside a preview iframe are covered
+      // instead by window._fusedFsChanged (installed in main.tsx).
+      //
+      // Before the debounce, not inside it: the cache should be dead the moment
+      // we know it is wrong, whether or not this listing goes on to refetch.
+      clearListPrefetch();
+      scheduleRefresh();
+    });
     return () => {
-      closed = true;
       unsubscribe();
-      if (retry !== null) clearTimeout(retry);
       if (timer !== null) clearTimeout(timer);
-      sock?.close();
+      off();
     };
   }, [fsPath]);
 

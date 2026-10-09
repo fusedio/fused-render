@@ -510,6 +510,12 @@ def _wake(fut) -> None:
 
 # ----------------------------------------------------------------- the writes
 
+# THE BUS'S EAR (server/events.py). Each is called after every bump, on the
+# watcher's own thread; the bus hands the wake to its loop itself. A list
+# rather than an import: this module must not import the server.
+listeners: list = []
+
+
 def _bump(keys: set[str] | None) -> None:
     global _generation
     with _cond:
@@ -526,6 +532,11 @@ def _bump(keys: set[str] | None) -> None:
             loop.call_soon_threadsafe(_wake, fut)
         except RuntimeError:
             pass  # that loop has closed (shutdown, a finished TestClient)
+    for fn in list(listeners):
+        try:
+            fn()
+        except Exception:  # noqa: BLE001 — a listener must never break the watcher
+            logger.exception("tasks_watch: a change listener failed")
 
 
 def notify(keys: set[str] | None = None) -> None:

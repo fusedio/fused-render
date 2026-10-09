@@ -12,7 +12,8 @@
       "@shell/*": ["./src/shell/*"],
       "@platform/*": ["./src/platform/*"],
       "@apps/*": ["./src/apps/*"],
-      "@assets/*": ["./src/assets/*"]
+      "@assets/*": ["./src/assets/*"],
+      "@static/*": ["../fused_render/static/*"]
     },
     "resolveJsonModule": true,
     "isolatedModules": true,

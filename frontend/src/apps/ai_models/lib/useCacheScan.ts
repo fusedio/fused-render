@@ -23,7 +23,8 @@ import {
   type AiModelsResult,
 } from "@platform/lib/api";
 import { useRefreshOnReturn } from "@platform/lib/hooks";
-import { activeJobByModel, fetchJobs, type Job } from "@platform/lib/jobs";
+import { activeJobByModel, type Job } from "@platform/lib/jobs";
+import { subscribeTopic } from "@platform/lib/events";
 
 export type CacheLoad =
   | { status: "loading" }
@@ -121,18 +122,10 @@ export function useCacheScan(): CacheScan {
       setJobs([]);
       return;
     }
-    let alive = true;
-    const tick = () =>
-      fetchJobs().then(
-        (s) => alive && setJobs(s.jobs),
-        () => {},
-      );
-    void tick();
-    const timer = window.setInterval(tick, 1000);
-    return () => {
-      alive = false;
-      window.clearInterval(timer);
-    };
+    // The `jobs` topic pushes every report; nothing here ticks.
+    return subscribeTopic<{ jobs: Job[] }>("jobs", {}, (snap) => {
+      if (snap) setJobs(snap.jobs);
+    });
   }, [anyBusy]);
 
   // A download that has STOPPED being reported has landed (or failed), and

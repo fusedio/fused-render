@@ -103,8 +103,6 @@ import {
   readTasksRows,
   refreshListing,
   subscribeListing,
-  TASKS_POKE_EVENT,
-  useTasksFeeder,
 } from "./tasksPulse";
 import {
   TASK_VIEWS,
@@ -292,12 +290,6 @@ export function reopenTime(seed: DraftSeed | null): Date | null {
 }
 
 export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
-  // THIS PAGE IS THE POLLER while it is open. The sidebar's Tasks entry reads the
-  // same rows (shell/tasksPulse) and would otherwise run a timer of its own
-  // alongside this one — two calls to /api/tasks for one answer, at two
-  // cadences. Holding a feeder for the page's lifetime says "take my answers,
-  // make no calls", so the shared store stands down until this unmounts.
-  useTasksFeeder();
   const [state, setState] = useState<ScheduleResult | null>(null);
   // NOT `[]`, because this page remounts on every navigation and /api/tasks is
   // 2.9s on the first call of a server process — so a bare `[]` meant List →
@@ -799,15 +791,6 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
     // reads every twenty seconds for one answer.
     const id = window.setInterval(reloadFeeds, POLL_MS);
     return () => window.clearInterval(id);
-  }, []);
-  // The corner card knows a run ended about a second after it does; this page's
-  // own clock is 20s. pokeTasks forwards that knowledge here as a window event —
-  // it has already refreshed the listing itself, so what this answers for is the
-  // schedule and the queue, and the row flips the moment the popover does rather
-  // than up to a poll later.
-  useEffect(() => {
-    window.addEventListener(TASKS_POKE_EVENT, reloadFeeds);
-    return () => window.removeEventListener(TASKS_POKE_EVENT, reloadFeeds);
   }, []);
   // THE ROWS, LIVE — one feed for the document (`tasksPulse.subscribeListing`).
   //

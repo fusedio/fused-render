@@ -24,10 +24,19 @@
 // foot of this file. Same argument one width over: every surface that wants
 // `/api/tasks` rows live was opening its own long-poll, and a wall of twelve
 // chat cards opened twelve.
+//
+// SINCE 2026-10-09 NOTHING HERE POLLS. The rows arrive over the document's
+// events-bus socket (`tasks.listing`, platform/lib/events): the server pushes
+// a snapshot on subscribe and a delta on every change, and the pulse the
+// sidebar reads is derived from those same rows — the compact
+// `/api/tasks/pulse` self-poll, its 10/30 s timer, the 20 s floor read and
+// the "feeder" contract that kept two pollers from colliding are all gone,
+// because there is one subscription and it is the server's job to say when
+// something moved (D3).
 import { useEffect, useState } from "react";
 import { queueEnabled } from "@apps/claude/feature-flag";
-import { getTasks, getTasksPulse } from "@platform/lib/api";
-import { sharedLongPollFetch } from "@platform/lib/sharedLongPoll";
+import { resyncTopic, subscribeTopic } from "@platform/lib/events";
+import type { FusedEventsCallback, FusedEventsSubscribeOptions } from "@platform/lib/events";
 import type { Task, TaskPulseTask } from "@platform/lib/api";
 import {
   EMPTY_TASKS_PULSE,
@@ -41,32 +50,15 @@ import {
 } from "./tasks-lib";
 import type { TasksPulse, TasksSeen } from "./tasks-lib";
 import { TASKS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
-import { requestTasksChanges } from "@platform/lib/tasksChangesSocket";
-import type { TasksChangesParams } from "@platform/lib/tasksChangesSocket";
-
-/** While something is running. Faster than the page's own 20s poll on purpose:
- *  this is the interval a "it finished" mark waits out. */
-const ACTIVE_MS = 10_000;
-const IDLE_MS = 30_000;
 
 let tasks: TaskPulseTask[] = [];
 let seen: TasksSeen = readSeen();
 let pulse: TasksPulse = EMPTY_TASKS_PULSE;
-let timer: number | null = null;
-let inFlight = false;
-/** Which answer is newest. Every publish bumps it; a self-poll captures it on
- *  departure and publishes only if nothing fresher landed while it was in
- *  flight (bugbot, 2026-08-18: a stale self-poll resolving after the page's
- *  own publish must lose, not overwrite). */
-let generation = 0;
 /** Has a real answer landed? `tasks` is `[]` both before the first read and on a
  *  machine with no tasks, and those two must not be treated alike — see
  *  markTasksSeen, where mistaking one for the other throws away the reader's
  *  dismissals. */
 let loaded = false;
-/** How many owners are feeding this store from their OWN poll (the Tasks page).
- *  While there is one, this module does not poll at all — see schedule. */
-let feeders = 0;
 const listeners = new Set<(p: TasksPulse) => void>();
 /** Readers of the ROWS rather than the summary (the sidebar's Current apps
  *  section). Fired on every publish, not only on a changed summary: two
@@ -107,91 +99,25 @@ function recompute() {
   for (const listener of listeners) listener(next);
 }
 
-async function poll() {
-  if (inFlight) return;
-  inFlight = true;
-  const departed = generation;
-  try {
-    const answer = (await getTasksPulse()).tasks ?? [];
-    // A feeder or the listing feed took over, or a fresher publish landed, while
-    // this request was in the air: this answer is already history. Drop it.
-    if (!fedElsewhere() && generation === departed) publishTasks(answer);
-  } catch {
-    // A failed read is not news: the sidebar keeps the last answer it had rather
-    // than dropping a dot because one poll lost a race with a restart.
-  } finally {
-    inFlight = false;
-    schedule();
-  }
-}
-
 /**
- * IS SOMEBODY ELSE THE POLLER?
- *
- * Two owners can say yes, and every guard in this module has to ask BOTH
- * (bugbot, 2026-09-15). The Tasks page's `useTasksFeeder` was the first, and
- * `schedule`/`pokeTasks` learned about the listing feed when it landed — but
- * `poll` and the two subscribe hooks were still asking only about feeders, so a
- * sidebar remounting while a CHAT held the listing (no Tasks page anywhere)
- * fired `/api/tasks/pulse` and published its thinner answer over the full rows
- * the feed had just handed us: two reads, two sources, and a dot that disagreed
- * with the rows under it until the next tick.
- *
- * One predicate so the next owner cannot be added to three of four places.
- */
-function fedElsewhere(): boolean {
-  return feeders > 0 || listingSubs.size > 0;
-}
-
-/**
- * Arm the next self-poll — or, deliberately, do not.
- *
- * NOTHING IS POLLED WHILE SOMEONE ELSE IS FEEDING US (bugbot, 2026-08-18).
- * Restarting the timer on every publish was not enough: the page polls every 20s
- * and this module re-armed at 10s whenever anything was running, so the busiest
- * case — the Tasks page open with work in flight — fired an EXTRA request between
- * the page's own, which is exactly the double-poll the shared store exists to
- * prevent. A feeder is not a hint about timing, it is a statement that this
- * module is not the poller, so the timer simply does not run.
+ * Keep the listing lane in step with the readers: open while anyone reads the
+ * pulse or the rows, closed when nobody does. Every publish and every
+ * subscribe lands here, so the lane can never outlive its last reader.
  */
 function schedule() {
-  if (timer !== null) window.clearTimeout(timer);
-  timer = null;
-  // A LISTING FEED IS A FEEDER TOO (2026-09-15). It publishes every row of
-  // every answer through publishTasks, so a pulse poll beside it is the same
-  // double-poll the feeder rule exists to prevent — just spent on the smaller
-  // endpoint.
-  // THE FAST LANE FOLLOWS THE SAME RULE AS THE TIMER, and is started and
-  // stopped from the same place so the two can never disagree about who is
-  // polling (see `syncFeedLane`).
   syncFeedLane();
-  if (listeners.size + rowListeners.size === 0 || fedElsewhere()) return;
-  timer = window.setTimeout(poll, pulse.running > 0 ? ACTIVE_MS : IDLE_MS);
 }
 
-// ---- the fast lane -----------------------------------------------------------
+// ---- the lane -----------------------------------------------------------------
 //
-// "1 running" IN THE RAIL SHOULD BE INSTANT, and on the two intervals above it
-// was not: a run that started the moment after a poll went unmentioned for ten
-// seconds, and one that started on an idle machine for thirty (Akshil,
-// 2026-09-12: "should be instant… everywhere in UI"). The number itself is
-// cheap to fetch; what was slow was WAITING to ask.
-//
-// So while this module is the poller — a pulse reader mounted and NOBODY
-// feeding it — it follows the document's own listing feed (`subscribeListing`,
-// below), which long-polls `/api/tasks/changes` against the server's change
-// watcher and answers the moment a session starts, resumes, takes a prompt,
-// grows, or any queue verb rings it. The feed publishes every answer through
-// `publishTasks`, so the rail moves on the same tick the Tasks page would; the
-// intervals above stay exactly as they were, as the floor under a watcher that
-// missed something.
-//
-// ONE POLLER, STILL. The feed counts as a feeder (`fedElsewhere`), so the pulse
-// timer stands down the moment the lane opens — one socket, one listing, and
-// the sidebar comes along without a second connection. A page that runs the
-// feed itself (Tasks, a chat) is the same subscription refcounted, not a second
-// one; `useTasksFeeder` stands the whole module down, this lane included, and
-// starting it back up is the same `schedule()` call that re-arms the timer.
+// "1 running" IN THE RAIL SHOULD BE INSTANT (Akshil, 2026-09-12: "should be
+// instant… everywhere in UI"). While a pulse reader is mounted this module
+// follows the document's own listing feed (`subscribeListing`, below), which
+// the server pushes the moment a session starts, resumes, takes a prompt,
+// grows, or any queue verb rings it. The feed publishes every frame through
+// `publishTasks`, so the rail moves on the same tick the Tasks page would. A
+// page that follows the feed itself (Tasks, a chat) is the same subscription
+// refcounted, not a second one.
 
 /** This module's own subscription to the listing feed, or null while the lane
  *  is closed. */
@@ -200,7 +126,6 @@ let feedLane: (() => void) | null = null;
 function syncFeedLane() {
   const wanted =
     listeners.size + rowListeners.size > 0 &&
-    feeders === 0 &&
     typeof document !== "undefined" &&
     typeof window !== "undefined";
   if (!wanted) {
@@ -223,44 +148,18 @@ function syncFeedLane() {
   feedLane = subscribeListing(() => {});
 }
 
-/** The window event a poke sends when a feeder page owns the poll: the store
- *  may not fetch over a feeder (that is the double-poll again), so it asks THE
- *  PAGE to run its own reload now. Scheduled.tsx listens for exactly this and
- *  publishes back through publishTasks, the same round trip as its timer. */
-export const TASKS_POKE_EVENT = "fused-render:tasks-poke";
-
 /**
  * "Something just changed — re-read NOW rather than on the next tick."
  *
- * Called by the surfaces that learn a scheduled run ended long before any timer
- * here would: the queue card's job snapshot (about a second behind the turn —
- * ActivityDock) and the schedule's own done/failed events (App wiring
- * useScheduleEvents). Without this the sidebar and the Tasks page sat out
- * their 10–30s cadences while the status bar already said finished —
- * the same run, two answers, for most of a minute (Akshil, 2026-08-19: "if
- * finished in one, finished in the other").
- *
- * The feeder contract is honoured, not bypassed: while the Tasks page is
- * feeding this store the store must not fetch (that is the double-poll the
- * feeder exists to prevent), so the poke is forwarded to the page as a window
- * event and the page's OWN reload answers. Unfed, the store polls itself
- * immediately — poll() already carries the in-flight and generation guards, so
- * a poke can never land a stale answer over a fresher one.
+ * Called by the surfaces that learn a scheduled run ended before the watcher
+ * would: the queue card's job snapshot (ActivityDock) and the schedule's own
+ * done/failed events (App wiring useScheduleEvents). Under the bus this is
+ * one `resync` of the listing subscription — the server answers with a fresh
+ * snapshot — and a no-op when nobody is following the rows (nothing on screen
+ * to update).
  */
 export function pokeTasks() {
-  // The listing feed answers for the rows — one read for the document, whoever
-  // is watching them — and the page event below still answers for the schedule
-  // and the queue, which are its own two feeds and not this module's.
   if (listingSubs.size > 0) refreshListing();
-  if (feeders > 0) {
-    window.dispatchEvent(new Event(TASKS_POKE_EVENT));
-    return;
-  }
-  if (listingSubs.size > 0) return;
-  // Nobody reading and nobody feeding: nothing on screen to update, and a
-  // fetch for an unmounted sidebar is the waste schedule() already refuses.
-  if (listeners.size + rowListeners.size === 0) return;
-  void poll();
 }
 
 /** The localStorage key the chat (apps/claude ClaudeChat `stampChatActivity`)
@@ -370,33 +269,13 @@ export function forgetListing() {
   listing = null;
 }
 
-/** Hand over a known-fresh answer — what the Tasks page's own poll returned. */
+/** Hand over a known-fresh answer — what the listing feed just received. */
 export function publishTasks(next: TaskPulseTask[]) {
-  generation += 1;
   tasks = next;
   loaded = true;
   recompute();
   for (const listener of rowListeners) listener(next);
   schedule();
-}
-
-/**
- * "I poll this endpoint myself; take my answers and do not make your own calls."
- *
- * The Tasks page holds one of these for as long as it is mounted, which is
- * exactly as long as its own poll is running. Mount/unmount rather than a
- * timestamp heuristic: the store then knows whether it is the poller instead of
- * guessing from how recently someone published.
- */
-export function useTasksFeeder() {
-  useEffect(() => {
-    feeders++;
-    schedule();
-    return () => {
-      feeders--;
-      schedule();
-    };
-  }, []);
 }
 
 /**
@@ -421,26 +300,17 @@ export function markTasksSeen() {
   writeSeen(seenAfterVisit(tasks, seen));
 }
 
-/** Subscribe to the summary. Polling starts with the first reader and stops with
- *  the last — nothing polls on behalf of a sidebar nobody has mounted. */
+/** Subscribe to the summary. The lane opens with the first reader and closes
+ *  with the last — nothing is subscribed on behalf of a sidebar nobody has
+ *  mounted. */
 export function useTasksPulse(): TasksPulse {
   const [current, setCurrent] = useState<TasksPulse>(pulse);
   useEffect(() => {
     listeners.add(setCurrent);
-    // Read immediately rather than waiting out an interval: a sidebar that has
-    // just mounted should not claim "nothing is running" for ten seconds first.
-    //
-    // UNLESS SOMEONE IS FEEDING US. The sidebar remounts on every navigation
-    // (App keys it on the nav epoch), so an unconditional read here would fire a
-    // second /api/tasks alongside the Tasks page's own on every trip to that
-    // page — the same double-poll the feeder exists to prevent, just spent per
-    // navigation instead of per tick. A feeder's answer is already on its way.
-    //
-    // AND A LISTING FEED COUNTS (`fedElsewhere`): a chat holding the feed
-    // publishes the same rows through the same door, with no Tasks page in
-    // sight, and this read would have landed a thinner answer over them.
-    if (!fedElsewhere()) void poll();
-    else schedule();
+    // The lane opens with the first reader (`schedule` → `syncFeedLane`); a
+    // sidebar remounting while a page already follows the feed is the same
+    // subscription refcounted, and the cached snapshot is replayed at once.
+    schedule();
     return () => {
       listeners.delete(setCurrent);
       schedule();
@@ -451,8 +321,8 @@ export function useTasksPulse(): TasksPulse {
 
 /** Subscribe to the compact rows themselves — `key`, `status`, `project`,
  *  `last_active` — for a reader that groups tasks rather than counts them (the
- *  sidebar's Current apps section, D487). Same store, same poll, same feeder
- *  contract as useTasksPulse: this is NOT a second /api/tasks poller.
+ *  sidebar's Current apps section, D487). Same store, same lane as
+ *  useTasksPulse: this is NOT a second subscription.
  *
  *  `enabled: false` is a reader that does not count — no listener, so no poll
  *  and no listing feed on its behalf. A hook cannot be called conditionally,
@@ -464,8 +334,7 @@ export function useTasksPulseRows(enabled = true): TaskPulseTask[] {
     if (!enabled) return;
     rowListeners.add(setRows);
     setRows(tasks);
-    if (!fedElsewhere()) void poll();
-    else schedule();
+    schedule();
     return () => {
       rowListeners.delete(setRows);
       schedule();
@@ -476,59 +345,50 @@ export function useTasksPulseRows(enabled = true): TaskPulseTask[] {
 
 // ── THE LISTING FEED ────────────────────────────────────────────────────────
 //
-// ONE `GET /api/tasks` AND ONE `/api/tasks/changes` LOOP PER DOCUMENT,
-// however many surfaces want the rows. The loop's long-poll itself rides one
-// app-wide socket (sharedLongPoll.ts): every window and same-origin iframe
-// shares it, so N documents no longer hold N of the browser's six sockets.
+// ONE `tasks.listing` SUBSCRIPTION PER DOCUMENT, however many surfaces want
+// the rows. It rides the document's one events-bus socket (platform/lib/events,
+// D1), which is outside WebKit's six-connection pool.
 //
-// Every reader of the full listing used to run the pair itself: the Tasks page
-// (its own 20s poll plus its own change loop), and `apps/claude/protocol/
-// sessions.ts` ONCE PER SUBSCRIPTION — which is once per ClaudeChat mount, and
-// a ClaudeChat mounts per card on the Tasks wall and per tile in Peek. Twelve
-// cards therefore held twelve sockets open on a 25-second wait, against a
-// browser cap of six per origin: every other request on the page — the boot
-// reads, the icons, the prefs — queued behind them for minutes, and a reload
-// only re-dealt the same hand. They also each re-GET the WHOLE listing on every
-// bump, so one `claude` typed in a terminal cost twelve full listing reads.
+// Every reader of the full listing used to run its own `GET /api/tasks` +
+// `/api/tasks/changes` long-poll pair: the Tasks page, and `apps/claude/
+// protocol/sessions.ts` ONCE PER SUBSCRIPTION — once per ClaudeChat mount, and
+// a ClaudeChat mounts per card on the Tasks wall. Twelve cards held twelve
+// sockets open on a 25-second wait against a browser cap of six per origin.
 //
 // The store already owned "one poll, many readers" for the pulse, and the
-// listing is the same question at a larger width — `readListing`/
-// `rememberListing` above were already here. So the loop moves in, refcounted:
-// it starts with the first subscriber and stops with the last, and a subscriber
-// that arrives after the rows have landed is REPLAYED the current listing
-// synchronously rather than waiting out a change that may never come.
+// listing is the same question at a larger width. So the feed lives here,
+// refcounted: it opens with the first subscriber and closes with the last,
+// and a subscriber that arrives after the rows have landed is REPLAYED the
+// current listing synchronously rather than waiting out a change that may
+// never come.
+//
+// WHAT THE SERVER SENDS. A `snap` is the whole listing (`GET /api/tasks`'s
+// body); a `delta` is `/api/tasks/changes`' answer — the rows that moved, the
+// keys that left, the draft versions that changed — computed server-side from
+// the generation THIS document was last sent. Frames arrive in order on one
+// socket, so a snapshot is never older than a delta that preceded it, and the
+// generation guard the long-poll needed (bugbot #892) has nothing left to
+// guard. No floor read exists: a watcher that missed something is a server
+// bug (D3), and the server's own builder re-derives truth on its floor.
 //
 // WHAT A SUBSCRIBER GETS is the whole machine's listing plus the delta that
 // produced it, because the two readers narrow it differently: the Tasks page
 // filters by its toolbar, the chat's list by pane (`ui/list-rows.taskInPane`),
 // and the question "is this change worth repainting MY list" can only be
 // answered where the scope is known. `delta === null` means a whole listing —
-// the first read, a refresh, a `full` answer, or a failure — and those always
-// concern everyone.
+// a snapshot, a refresh, or a failure — and those always concern everyone.
 
-/** The long-poll's own wait, in seconds (T:18367). */
-export const CHANGES_WAIT_S = 25;
-/** How long a failed change-poll waits before trying again (T:18379). */
-export const CHANGES_BACKOFF_MS = 3000;
-/**
- * The floor under the long-poll: a full re-read every 20s, which is the Tasks
- * page's own `POLL_MS` moved in here. The watcher answers the moment anything
- * moves, so this is not the way news arrives — it is the answer to a watcher
- * that missed something (a `pending` message going `sent` on the server's own
- * 30s tick writes no transcript) and to the handshake window below.
- */
-export const LISTING_FLOOR_MS = 20_000;
+/** What a `tasks.listing` snapshot carries (`GET /api/tasks`). */
+interface ListingSnapshot {
+  tasks?: Task[];
+  generation?: number;
+}
 
-/** How long the watcher sits out after a `full` answer, so the catch-up listing
- *  has the field to itself. The Tasks page's own loop waited exactly this. */
-export const CATCH_UP_SETTLE_MS = 1000;
-
-/** What `/api/tasks/changes` answers (fused_render/tasks_watch.py). */
-interface ChangesResponse {
-  generation: number;
+/** What a `tasks.listing` delta carries (`/api/tasks/changes`' answer). */
+interface ListingDeltaFrame {
+  generation?: number;
   rows?: Task[];
   gone?: string[];
-  full?: boolean;
   drafts?: DraftsDelta;
 }
 
@@ -572,53 +432,29 @@ export type DraftChangeListener = (
   certain: boolean,
 ) => void;
 
-/** Only what the feed needs off `fetch`, so a bun test can hand over a
- *  three-line stub instead of the whole DOM signature. */
-export type FetchLike = (
-  url: string,
-  init?: { signal?: AbortSignal },
-) => Promise<{ ok: boolean; status: number; json(): Promise<unknown> }>;
+/** The subscribe the feed rides — `fusedEvents.subscribe`'s shape, so a bun
+ *  test can hand over a scripted one and drive frames by hand. */
+export type SubscribeLike = (
+  topic: string,
+  params: Record<string, unknown> | null | undefined,
+  cb: FusedEventsCallback<ListingSnapshot, ListingDeltaFrame>,
+  opts?: FusedEventsSubscribeOptions,
+) => () => void;
 
-/** The browser pieces the feed reaches for — injectable for bun tests, which
- *  run every suite in ONE process and so cannot module-mock the platform api. */
+/** The pieces the feed reaches for — injectable for bun tests, which run every
+ *  suite in ONE process and so cannot module-mock the events client. */
 export interface ListingEnv {
-  fetch: FetchLike;
-  /** Hidden tabs sit the long-poll out (T:18369-18372). */
-  hidden(): boolean;
-  /** Resolves on the next `visibilitychange`. The disposer must REMOVE the
-   *  listener: a `{once:true}` listener that never fires holds the loop alive. */
-  whenVisible(): { promise: Promise<void>; cancel(): void };
-  sleep(ms: number): Promise<void>;
-  /** The listing itself (`GET /api/tasks`). */
-  tasks?: () => Promise<{ tasks?: Task[]; generation?: number }>;
+  /** The bus subscription (`tasks.listing`, no params: the whole machine). */
+  subscribe: SubscribeLike;
+  /** Ask the bus for a fresh snapshot of the subscription now. */
+  resync(): void;
   /**
-   * THE PUSH SIDE, alongside the long-poll's pull side: subscribe `fn` to every
-   * signal that says a chat just moved, and return the disposer. Attached ONCE
-   * for the document now rather than once per subscriber — twelve cards used to
-   * mean twelve listing reads per poke.
+   * THE PUSH SIDE of this document's own writes: subscribe `fn` to every local
+   * signal that says a chat just moved (a `tasks-changed` event, the chat
+   * activity stamp, a focus), and return the disposer. Attached ONCE for the
+   * document rather than once per subscriber. Each fires one `resync`.
    */
   pokes?(fn: () => void): () => void;
-  /**
-   * The FLOOR REFRESH's clock, and deliberately not `after`/`sleep`: those are
-   * a caller's own schedules (the recent list's two write-covering looks, the
-   * backoff), and a test that asserts on the timers a subscription booked must
-   * not find this one among them.
-   */
-  every?(ms: number, fn: () => void): () => void;
-  /**
-   * The long-poll's TRANSPORT: asks `/api/tasks/changes` over the document's
-   * WebSocket (`platform/lib/tasksChangesSocket`) and falls back to `http` —
-   * the GET through `fetch` above — where no socket can be had. The browser
-   * env supplies it; a test env that leaves it out drives the GET it mocks,
-   * exactly as before. Why a socket at all: WebKit's six-connection pool,
-   * shared by every native window and filled by these long-polls alone
-   * (measured 2026-10-08) — see that module's header.
-   */
-  changes?(
-    params: TasksChangesParams,
-    http: () => Promise<ChangesResponse>,
-    signal: AbortSignal,
-  ): Promise<ChangesResponse>;
 }
 
 /** The change answer a listing event folded in — RAW, exactly as the server
@@ -642,20 +478,14 @@ export interface ListingEvent {
 const listingSubs = new Set<(ev: ListingEvent) => void>();
 const goneSubs = new Set<(keys: string[]) => void>();
 const draftSubs = new Set<DraftChangeListener>();
-/** The newest server generation folded into `listing` — the guard that stops a
- *  full read which left BEFORE a delta from rolling the rows back when it
- *  lands after it (bugbot #892, the rule Scheduled.tsx used to keep itself). */
-let listingGen = -1;
 let listingFailed = false;
-/** The running feed's teardown, and its loader, or null when nobody is
+/** The running feed's teardown, and its resync, or null when nobody is
  *  subscribed. */
 let feedStop: (() => void) | null = null;
 let feedLoad: (() => void) | null = null;
-/** One refresh per tick, not one per poke: `focus`, `storage` and
+/** One resync per tick, not one per poke: `focus`, `storage` and
  *  `tasks-changed` all fire for the same turn ending, and the three used to be
- *  three listing reads. A microtask rather than a 250ms timer because the seat
- *  below already makes overlapping reads harmless — this only has to collapse
- *  the burst, not rate-limit the endpoint. */
+ *  three listing reads. */
 let refreshQueued = false;
 
 function emitDrafts(delta: DraftsDelta | undefined) {
@@ -676,28 +506,9 @@ function emitListing(ev: ListingEvent) {
 
 function browserListingEnv(): ListingEnv {
   return {
-    // The long-poll is shared across every document of this origin, see sharedLongPoll.ts.
-    fetch: (url, init) => sharedLongPollFetch(url, init),
-    hidden: () => document.hidden,
-    whenVisible: () => {
-      let fire: () => void = () => {};
-      const promise = new Promise<void>((r) => {
-        fire = r;
-      });
-      document.addEventListener("visibilitychange", fire, { once: true });
-      return {
-        promise,
-        cancel: () => {
-          document.removeEventListener("visibilitychange", fire);
-          fire(); // let the awaiting loop wake and see `stopped`
-        },
-      };
-    },
-    sleep: (ms) => new Promise<void>((r) => setTimeout(r, ms)),
-    changes: (params, http, signal) => requestTasksChanges(params, http, signal),
-    every: (ms, fn) => {
-      const id = setInterval(fn, ms);
-      return () => clearInterval(id);
+    subscribe: (topic, params, cb, opts) => subscribeTopic(topic, params, cb, opts),
+    resync: () => {
+      resyncTopic("tasks.listing", {});
     },
     pokes: (fn) => {
       const onStorage = (ev: StorageEvent) => {
@@ -719,211 +530,100 @@ function browserListingEnv(): ListingEnv {
 
 function startFeed(env: ListingEnv) {
   let stopped = false;
-  let abort: AbortController | null = null;
-  let waking: { cancel(): void } | null = null;
-  let seat = 0;
-  /** A `full` answer has asked for a whole new listing and it has not landed
-   *  yet, so the rows in hand describe a server this session has stopped
-   *  believing. See the `r.full` branch below. */
-  let catchingUp = false;
-  const read = env.tasks || getTasks;
 
-  const load = async () => {
-    const mine = ++seat;
+  const onSnapshot = (snap: ListingSnapshot) => {
+    const fresh = (Array.isArray(snap?.tasks) ? snap.tasks : []).filter(
+      (t): t is Task => !!t && !!t.key,
+    );
+    listingFailed = false;
+    // Same object for a row the snapshot did not change, so the memoised rows
+    // below it stand still (`reuseUnchangedRows`).
+    const rows = reuseUnchangedRows(readListing(), fresh);
+    rememberListing(rows);
+    publishTasks(rows);
+    emitListing({ rows, failed: false, delta: null });
+  };
+
+  const onDelta = (r: ListingDeltaFrame) => {
+    const rows = r.rows || [];
+    const gone = r.gone || [];
+    // THE DRAFT DELTA IS ANNOUNCED FIRST AND UNCONDITIONALLY. It rides the
+    // same frame as the rows but it is not about them: a frame whose rows and
+    // `gone` are both empty can still carry a version bump for a record two
+    // tabs are open on, and the fold below would return past it.
+    emitDrafts(r.drafts);
+    if (!rows.length && !gone.length) return;
+    const held = readListing();
+    if (held === null) {
+      // Nothing to fold into — the last snapshot failed. Ask for a whole one.
+      env.resync();
+      return;
+    }
+    // THE FOLD IS GUARDED. This feed is the sidebar's only heartbeat, so a
+    // subscriber that throws, or a row shape the merge cannot take, must not
+    // end it (regression review, 2026-09-16). One bad frame costs one frame.
     try {
-      const res = await read();
-      if (stopped || seat !== mine) return;
-      // The catch-up has landed (or this read superseded it): deltas count again.
-      catchingUp = false;
-      const fresh = (Array.isArray(res?.tasks) ? res.tasks : []).filter(
-        (t): t is Task => !!t && !!t.key,
+      // THE QUEUE'S REKEY IS A FOLD, NOT A DELETE AND AN INSERT (tasks-lib
+      // `mergeTaskChanges`, and the identity rule above it). A dispatched
+      // message's `pending:<entry>` row leaves in the same frame its session
+      // row arrives in, and with the flag up the merge treats the two as one
+      // task so the list never shows both and never shows neither.
+      const queueOn = queueEnabled();
+      const merged = mergeTaskChanges(
+        held, rows.filter((t) => !!t && !!t.key), gone, queueOn,
       );
-      // A full listing that left before a delta landed is OLDER than what is on
-      // screen; applying it would roll the rows back and the generation with
-      // them. The next read catches up.
-      if (typeof res?.generation === "number") {
-        if (res.generation < listingGen) return;
-        listingGen = res.generation;
+      rememberListing(merged);
+      publishTasks(merged);
+      emitListing({ rows: merged, failed: false, delta: { rows, gone } });
+      // …AND A ROW WE HELD OVER ITS OWN `gone` IS A CLAIM, not news. The merge
+      // keeps a dispatched pending row painted rather than leaving a hole, and
+      // the only thing that can settle it is the whole listing — asked for
+      // here, so the answer is one frame away.
+      if (queueOn && gone.some((key) => merged.some((row) => row.key === key))) {
+        env.resync();
       }
-      listingFailed = false;
-      // Same object for a row the read did not change, so the memoised rows
-      // below it stand still (`reuseUnchangedRows`).
-      const rows = reuseUnchangedRows(readListing(), fresh);
-      rememberListing(rows);
-      publishTasks(rows);
-      emitListing({ rows, failed: false, delta: null });
     } catch {
-      if (stopped || seat !== mine) return;
-      // A FAILED catch-up still ends it: holding deltas for ever behind a read
-      // that will never land is worse than folding them into whatever comes next,
-      // and the failure below forgets the rows anyway.
-      catchingUp = false;
-      // A listing that cannot be read is "no rows" to the chat's list and a
-      // quiet line on the Tasks page — never an error page, and never rows kept
-      // over a server that has since gone away (#1079).
-      listingFailed = true;
-      listingGen = -1;
-      forgetListing();
-      emitListing({ rows: [], failed: true, delta: null });
+      // Next frame.
     }
   };
 
-  const watch = async () => {
-    let gen = -1;
-    while (!stopped) {
-      if (env.hidden()) {
-        const wait = env.whenVisible();
-        waking = wait;
-        await wait.promise;
-        waking = null;
-        continue;
-      }
-      const ctl = new AbortController();
-      abort = ctl;
-      let r: ChangesResponse;
-      try {
-        const since = gen;
-        const viaGet = async () => {
-          const res = await env.fetch(`/api/tasks/changes?since=${since}&wait=${CHANGES_WAIT_S}`, {
-            signal: ctl.signal,
-          });
-          if (!res.ok) throw new Error(String(res.status));
-          return (await res.json()) as ChangesResponse;
-        };
-        // Over the document's socket where it has one (`env.changes`), so this
-        // wait stops holding one of WebKit's six per-host connections; the GET
-        // otherwise. Either rejects into the same backoff below.
-        r = env.changes
-          ? await env.changes({ since, wait: CHANGES_WAIT_S }, viaGet, ctl.signal)
-          : await viaGet();
-      } catch {
-        if (ctl.signal.aborted) return;
-        await env.sleep(CHANGES_BACKOFF_MS);
-        continue;
-      } finally {
-        if (abort === ctl) abort = null;
-      }
+  const off = env.subscribe(
+    "tasks.listing",
+    {},
+    (snap, delta, meta) => {
       if (stopped) return;
-      // The first call is a handshake that only learns the current generation
-      // (T:18387-18389); the floor refresh covers what moved inside it.
-      const handshake = gen < 0;
-      gen = r.generation;
-      if (handshake) continue;
-      if (r.full) {
-        // "Reload everything" includes a server that restarted and counts from
-        // zero again: forget our generation FIRST, or the stale-listing guard in
-        // `load` would refuse the very read that catches us up, forever.
-        //
-        // AND NOTHING IS FOLDED IN UNTIL THAT READ LANDS (bugbot, 2026-09-15).
-        // The rows still held are the PRE-restart listing, and a delta arriving
-        // in the window behind the catch-up GET used to be merged into them AND
-        // to write `listingGen` — which then made the catch-up listing itself
-        // look older than what was on screen, so it was dropped and the page
-        // kept a mixture of pre-restart rows and post-restart deltas until
-        // somebody reloaded. The old Tasks-page loop did not have this hole: it
-        // refused to merge at all while its generation was `-1`. `catchingUp` is
-        // that rule, restored.
-        //
-        // The pause is the old loop's too. It is not what makes this correct —
-        // `catchingUp` is — but it keeps the watcher from spinning a round trip
-        // against a server that is still handing out changes while it restarts.
-        listingGen = -1;
-        catchingUp = true;
-        void load();
-        await env.sleep(CATCH_UP_SETTLE_MS);
-        continue;
+      if (meta.error !== undefined) {
+        // A listing the server cannot answer is "no rows" to the chat's list
+        // and a quiet line on the Tasks page — never an error page, and never
+        // rows kept over a server that has since gone away (#1079).
+        listingFailed = true;
+        forgetListing();
+        emitListing({ rows: [], failed: true, delta: null });
+        return;
       }
-      const rows = r.rows || [];
-      const gone = r.gone || [];
-      // THE DRAFT DELTA IS ANNOUNCED FIRST AND UNCONDITIONALLY. It rides the
-      // same answer as the rows but it is not about them: an answer whose rows
-      // and `gone` are both empty can still carry a version bump for a record
-      // two tabs are open on, and the fold below would `continue` past it.
-      emitDrafts(r.drafts);
-      if (!rows.length && !gone.length) continue;
-      // A DELTA IS ABOUT ROWS WE NO LONGER TRUST. Dropped rather than queued: the
-      // listing on its way is read AFTER this change was recorded, so it already
-      // contains it, and the floor refresh plus every poke cover the sliver a
-      // change can land in between the server's snapshot and its arrival here.
-      if (catchingUp) continue;
-      if (typeof r.generation === "number") listingGen = r.generation;
-      const held = readListing();
-      if (held === null) {
-        // Nothing to fold into — the first read has not landed, or the last one
-        // failed. Ask for the whole thing instead.
-        void load();
-        continue;
-      }
-      // THE FOLD IS GUARDED LIKE THE FETCH. Since `syncFeedLane` this loop is
-      // the sidebar's only heartbeat too (`fedElsewhere` stands the pulse timer
-      // down while the lane is open), so a subscriber that throws, or a row
-      // shape the merge cannot take, must not end the loop: it would leave the
-      // lane "open" with nobody polling behind it, and the timer would never
-      // come back either (regression review, 2026-09-16). One bad answer costs
-      // one backoff; the next long-poll and the floor refresh carry on.
-      try {
-        // THE QUEUE'S REKEY IS A FOLD, NOT A DELETE AND AN INSERT (tasks-lib
-        // `mergeTaskChanges`, and the identity rule above it). A dispatched
-        // message's `pending:<entry>` row leaves in the same payload its session
-        // row arrives in, and with the flag up the merge treats the two as one
-        // task so the list never shows both and never shows neither.
-        const queueOn = queueEnabled();
-        const merged = mergeTaskChanges(
-          held, rows.filter((t) => !!t && !!t.key), gone, queueOn,
-        );
-        rememberListing(merged);
-        publishTasks(merged);
-        emitListing({ rows: merged, failed: false, delta: { rows, gone } });
-        // …AND A ROW WE HELD OVER ITS OWN `gone` IS A CLAIM, not news. The merge
-        // keeps a dispatched pending row painted rather than leaving a hole, and
-        // the only thing that can settle it is the whole listing — asked for
-        // here, so the answer is one round trip away instead of up to 20 s (and
-        // so a `gone` that was really a CANCEL is corrected just as fast).
-        if (queueOn && gone.some((key) => merged.some((row) => row.key === key))) {
-          void load();
-        }
-      } catch {
-        await env.sleep(CHANGES_BACKOFF_MS);
-      }
-    }
-  };
+      if (snap !== null) onSnapshot(snap);
+      else if (delta !== null) onDelta(delta);
+    },
+    { hiddenOk: true },
+  );
 
-  feedLoad = () => {
-    void load();
-  };
-  void load();
-  void watch();
-
+  feedLoad = () => env.resync();
   const unpoke = env.pokes?.(() => {
     if (!stopped) refreshListing();
-  });
-  const stopFloor = (env.every ?? ((ms, fn) => {
-    const id = setInterval(fn, ms);
-    return () => clearInterval(id);
-  }))(LISTING_FLOOR_MS, () => {
-    // A hidden tab has nothing on screen to keep fresh, and `useRefreshOnReturn`
-    // (plus the `focus` poke) reads on the way back.
-    if (!stopped && !env.hidden()) void load();
   });
 
   return () => {
     stopped = true;
     feedLoad = null;
-    if (abort) {
-      abort.abort();
-      abort = null;
-    }
-    // A hidden tab's `watch` is parked on a promise nothing else will resolve.
-    waking?.cancel();
-    waking = null;
     unpoke?.();
-    stopFloor();
+    off();
   };
 }
 
 /**
- * Follow the full `/api/tasks` listing. One poll for the document however many
- * callers there are; it starts with the first and stops with the last.
+ * Follow the full `/api/tasks` listing. One subscription for the document
+ * however many callers there are; it opens with the first and closes with the
+ * last.
  *
  * A caller that subscribes while rows are already held is REPLAYED them
  * synchronously — a card mounted five minutes into the page's life must not
@@ -948,8 +648,7 @@ export function subscribeListing(
   else if (listingFailed) cb({ rows: [], failed: true, delta: null });
   if (listingSubs.size === 1) {
     feedStop = startFeed(env);
-    // The pulse poll stands down while the feed is live, exactly as it does for
-    // a feeder: the listing carries every field the pulse does.
+    // The lane follows: the listing carries every field the pulse does.
     schedule();
   }
   return () => {
@@ -957,25 +656,13 @@ export function subscribeListing(
     if (listingSubs.size === 0) {
       feedStop?.();
       feedStop = null;
-      // AND THE GENERATION GOES WITH IT (bugbot, 2026-09-15). `listingGen` is
-      // the guard against a full read that left BEFORE a delta landing after
-      // it — a race that only exists inside one running feed. Kept across a
-      // teardown it becomes a claim about a server counter this session has
-      // stopped following: a server that restarted counts from zero again, so
-      // the next feed's very first listing would be "older" than the number we
-      // were holding, be dropped, and leave the page on the remembered rows
-      // with deltas folding into them for ever. The rows survive
-      // (`rememberListing`) because they are still the best answer we have; the
-      // number does not, because nothing is left to race it.
-      listingGen = -1;
-      // AND SO DOES THE FAILURE (bugbot, 2026-09-15). A failed read forgets the
-      // rows, so `readListing()` is null and the replay at the top of
+      // THE FAILURE GOES WITH IT (bugbot, 2026-09-15). A failed read forgets
+      // the rows, so `readListing()` is null and the replay at the top of
       // `subscribeListing` falls through to `{rows: [], failed: true}` — which
       // the Tasks page draws as "could not be loaded" over an empty list,
       // throwing away the provisional rows it had just seeded from the pulse
-      // store. That verdict was about a server we have since stopped asking; the
-      // new feed's own first read answers for the server as it is NOW, one round
-      // trip from here.
+      // store. That verdict was about a server we have since stopped asking;
+      // the new feed's own snapshot answers for the server as it is NOW.
       listingFailed = false;
       schedule();
     }
@@ -1069,8 +756,8 @@ export function onGone(cb: (keys: string[]) => void): () => void {
  * next read puts the row back, which is the right answer — the draft is still
  * there.
  *
- * `listingGen` is deliberately NOT bumped: this is not news from the server and
- * must not make the server's next answer look stale.
+ * Not news from the server, and nothing here makes the server's next frame
+ * look stale: frames are applied in the order they arrive.
  */
 export function dropListingKeys(keys: readonly string[]): void {
   const gone = keys.filter((key) => !!key);
@@ -1106,9 +793,7 @@ export function dropListingKeys(keys: readonly string[]): void {
  * listing through the same merge a change-poll uses, so they land in the right
  * order rather than at the end.
  *
- * `listingGen` is untouched for `dropListingKeys`' reason: neither of these is
- * news from the server, and neither may make the server's next answer look
- * stale.
+ * Not news from the server either, for `dropListingKeys`' reason.
  */
 export function restoreListingRows(rows: readonly Task[]): void {
   const back = rows.filter((row) => !!row && !!row.key);
@@ -1123,8 +808,10 @@ export function restoreListingRows(rows: readonly Task[]): void {
   emitListing({ rows: merged, failed: false, delta: { rows: [...back], gone: [] } });
 }
 
-/** "Something just changed — re-read the listing NOW." Collapsed to one read
- *  per tick and one per DOCUMENT; a no-op when nobody is following. */
+/** "Something just changed — ask for a fresh snapshot NOW." Collapsed to one
+ *  resync per tick and one per DOCUMENT; a no-op when nobody is following. An
+ *  event, not a timer: the server pushes every change it sees, this covers the
+ *  sliver between a write this document just made and the watcher's tick. */
 export function refreshListing() {
   if (listingSubs.size === 0 || refreshQueued) return;
   refreshQueued = true;
@@ -1134,7 +821,7 @@ export function refreshListing() {
   });
 }
 
-/** Whether the listing feed is the one polling `/api/tasks` right now. */
+/** Whether the listing feed is subscribed right now. */
 export function listingFeedLive(): boolean {
   return listingSubs.size > 0;
 }
@@ -1147,7 +834,6 @@ export function resetListingFeedForTests() {
   feedLoad = null;
   listingSubs.clear();
   goneSubs.clear();
-  listingGen = -1;
   listingFailed = false;
   refreshQueued = false;
   listing = null;

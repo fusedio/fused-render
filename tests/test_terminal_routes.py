@@ -19,6 +19,10 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
+# The terminal stream checks Origin (D10); the test client stamps
+# `Host: testserver`, so both headers name loopback explicitly.
+_LOOPBACK = {"origin": "http://127.0.0.1", "host": "127.0.0.1"}
+
 from fused_render import pty_session
 from fused_render.server import create_app
 from fused_render.terminal_profiles import TerminalProfile
@@ -43,7 +47,7 @@ def scratch_registry(monkeypatch, tmp_path):
 
 @pytest.fixture
 def client(tmp_path):
-    return TestClient(create_app(start_dir=str(tmp_path)))
+    return TestClient(create_app(start_dir=str(tmp_path)), headers=_LOOPBACK)
 
 
 def _read_until(ws, needle: bytes, tries: int = 200) -> bytes:

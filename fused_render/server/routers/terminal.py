@@ -42,7 +42,7 @@ from queue import Empty
 from fastapi import APIRouter, Body, Header, WebSocket, WebSocketDisconnect
 
 from fused_render import claude_cmd_log, pty_session
-from fused_render.server.common import _error, _require_fused
+from fused_render.server.common import ws_origin_ok, _error, _require_fused
 
 router = APIRouter()
 
@@ -250,6 +250,12 @@ async def _stream_claude(ws: WebSocket, chat: str) -> None:
 
 @router.websocket("/api/terminal/{sid}/stream")
 async def api_terminal_stream(ws: WebSocket, sid: str):
+    # Cross-site WebSocket hijacking guard (D10, closed 2026-10-09): this
+    # socket is a shell, and until now it accepted any Origin. Same rule as
+    # /api/run/ws — refused before accept, which answers the handshake 403.
+    if not ws_origin_ok(ws):
+        await ws.close(code=1008)
+        return
     if _windows():
         await ws.close(code=1008)
         return
