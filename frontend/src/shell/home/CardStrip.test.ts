@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { cappedIconRows, iconRowsThatFit, stripEdges } from "./CardStrip";
+import { iconColsThatFit, iconColsWidth, cappedIconRows, iconRowsThatFit, stripEdges } from "./CardStrip";
 
 test("stripEdges: at the start only next is available", () => {
   expect(stripEdges(0, 400, 1000)).toEqual({ canPrev: false, canNext: true });
@@ -49,4 +49,16 @@ test("cappedIconRows: 4 items with 6 columns fitting give 1 row", () => {
 });
 test("cappedIconRows: 30 items give the full fitRows", () => {
   expect(cappedIconRows(3, 30, 6)).toBe(3);
+});
+
+test("iconColsThatFit: whole columns only, at least one", () => {
+  expect(iconColsThatFit(300, 76, 8)).toBe(3); // 3*76+2*8 = 244; 4 would need 328
+  expect(iconColsThatFit(328, 76, 8)).toBe(4);
+  expect(iconColsThatFit(327, 76, 8)).toBe(3);
+  expect(iconColsThatFit(40, 76, 8)).toBe(1);
+  expect(iconColsThatFit(0, 76, 8)).toBe(1);
+});
+test("iconColsWidth: columns plus the gaps between them", () => {
+  expect(iconColsWidth(4, 76, 8)).toBe(328);
+  expect(iconColsWidth(1, 76, 8)).toBe(76);
 });

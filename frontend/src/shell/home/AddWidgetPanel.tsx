@@ -247,18 +247,26 @@ export function AddWidgetPanel({
 
   const add = () => {
     // Sizing lives on the tile card; a new tile starts at the first size its format can be drawn in.
-    const size = sizesFor(source, format)[0];
+    // A format no size fits falls back to the source's first format that has one.
+    let fmt = format;
+    let size = sizesFor(source, fmt)[0];
+    if (size === undefined) {
+      const alt = SOURCES[source].formats.find((f) => sizesFor(source, f).length > 0);
+      if (alt === undefined) return;
+      fmt = alt;
+      size = sizesFor(source, alt)[0];
+    }
     if (full || noFolders || noApps || (source === "app" && (urlMode ? !url : fileMode ? !fileOk : !chosenApp))) return;
     const opts =
       source === "folder"
-        ? { folderId: chosenFolder?.id, format, size }
+        ? { folderId: chosenFolder?.id, format: fmt, size }
         : source === "app"
-          ? { appPath: urlMode ? url! : fileMode ? filePath : chosenApp?.path, format, size }
+          ? { appPath: urlMode ? url! : fileMode ? filePath : chosenApp?.path, format: fmt, size }
           : source === "apps"
-            ? { format, size, sort }
+            ? { format: fmt, size, sort }
             : source === "tasks"
-              ? { format, size, show }
-              : { format, size };
+              ? { format: fmt, size, show }
+              : { format: fmt, size };
     if (target) {
       const { size: _size, ...tileOpts } = opts;
       if (target.kind === "swap") api.swap(target.widget.id, source, tileOpts);
@@ -509,7 +517,7 @@ export function AddWidgetPanel({
               {spec.formats.length > 1 ? (
                 <div className="hw-opt">
                   <span className="hw-label">Show as</span>
-                  <FormatPicks source={source} formats={spec.formats} value={format} onChange={setFormat} />
+                  <FormatPicks source={source} formats={spec.formats} value={format} onChange={setFormat} unfit={(f) => sizesFor(source, f).length === 0} />
                 </div>
               ) : null}
               {source === "apps" ? (

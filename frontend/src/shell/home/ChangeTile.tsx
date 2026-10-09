@@ -2,17 +2,40 @@
 // is listed; the ones that cannot fill this footprint are disabled with the
 // reason underneath. Folder and page picks need a choice, so they hand off to
 // the add sheet (onPick) instead of swapping directly.
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
+import { createPortal } from "react-dom";
 import { useDismissOnOutside } from "@platform/lib/dismissOnOutside";
 import { SourceIcon } from "./AddWidgetPanel";
 import { FormatPicks, ShowChips, SizeChips, SortChips } from "./Pickers";
 import { FIXED_ROWS, MAX_WIDGETS, SOURCES, allowedSizes, dimsOf, rectOf, sizesFor, sourceFits, type TileTarget, type WidgetSource } from "./layout";
+import { placePopover, type Box, type Placement } from "./popoverPlace";
 import type { HomeLayoutApi } from "./useHomeLayout";
 
 const NEEDS_CHOICE = new Set<WidgetSource>(["folder", "app"]);
 const SOURCE_KEYS = Object.keys(SOURCES) as WidgetSource[];
 
-/** The popover is a child of its anchor element: a press inside the anchor is
+/** The visible content area around `anchor`: the nearest scrolling or clipping
+    ancestor above the tile grid (a tile clips its own children, so it is skipped),
+    cut to the window. */
+function contentBounds(anchor: HTMLElement): Box {
+  const win: Box = { left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight };
+  let el = (anchor.closest(".hw-grid") ?? anchor).parentElement;
+  while (el && el !== document.body) {
+    const o = getComputedStyle(el).overflowY;
+    if (o === "auto" || o === "scroll" || o === "hidden" || o === "overlay") {
+      const r = el.getBoundingClientRect();
+      if (r.width > 0 && r.height > 0) {
+        return { left: Math.max(win.left, r.left), top: Math.max(win.top, r.top), right: Math.min(win.right, r.right), bottom: Math.min(win.bottom, r.bottom) };
+      }
+    }
+    el = el.parentElement;
+  }
+  return win;
+}
+
+/** The popover is rendered in a portal on the body, positioned fixed against
+    its anchor (its parent in the React tree's DOM), so no tile's overflow can
+    clip it. The anchor of its anchor element: a press inside the anchor is
     the anchor's own toggle, so only presses outside it dismiss. */
 export function ChangeTile({
   api,
@@ -32,20 +55,22 @@ export function ChangeTile({
   onPick: (source: WidgetSource) => void;
 }) {
   const root = useRef<HTMLDivElement>(null);
-  const [alignLeft, setAlignLeft] = useState(anchorAlign === "left");
-  const [up, setUp] = useState(false);
+  const marker = useRef<HTMLSpanElement>(null);
+  const [pos, setPos] = useState<Placement | null>(null);
   const { layout } = api;
   // Read the live tile so a format pick shows as chosen while the card stays open.
   const widget = target.kind === "swap" ? (layout.widgets.find((w) => w.id === target.widget.id) ?? target.widget) : null;
   const rect = target.kind === "swap" ? rectOf(widget ?? target.widget) : target.rect;
 
-  // The anchor (the popover's parent) counts as "inside" for outside-click
+  // The anchor and the portaled card both count as "inside" for outside-click
   // dismissal, so the anchor button's own click is not a dismissal.
-  const anchorRef = useRef<HTMLElement | null>(null);
-  useLayoutEffect(() => {
-    anchorRef.current = root.current?.parentElement ?? null;
-  }, []);
-  useDismissOnOutside(anchorRef, true, onClose);
+  const hostRef = useRef<HTMLElement | null>(null);
+  if (!hostRef.current) {
+    hostRef.current = {
+      contains: (n: Node | null) => !!(marker.current?.parentElement?.contains(n) || root.current?.contains(n)),
+    } as unknown as HTMLElement;
+  }
+  useDismissOnOutside(hostRef, true, onClose);
 
   // Latest onClose, so the Esc listener subscribes once. The hook does not
   // stop propagation or restore focus, so Esc stays local.
@@ -63,19 +88,29 @@ export function ChangeTile({
     return () => document.removeEventListener("keydown", key, true);
   }, []);
 
-  // Right-aligned under the anchor; one near the left edge would push the
-  // 440px card off-screen, so flip it to grow rightwards there.
-  useLayoutEffect(() => {
-    const anchor = root.current?.parentElement;
-    if (anchorAlign) setAlignLeft(anchorAlign === "left");
-    else if (anchor) setAlignLeft(anchor.getBoundingClientRect().right - 440 < 8);
+  // Hang the card from the anchor, keep it inside the visible content area, flip
+  // above when it does not fit below, and cap its height (it scrolls inside).
+  const place = () => {
+    const anchor = marker.current?.parentElement;
     const pop = root.current;
-    if (anchor && pop) {
-      const b = anchor.getBoundingClientRect();
-      const h = pop.offsetHeight;
-      setUp(b.bottom + h > window.innerHeight - 40 && b.top > window.innerHeight - b.bottom);
-    }
-  }, [anchorAlign]);
+    if (!anchor || !pop) return;
+    const next = placePopover({
+      anchor: anchor.getBoundingClientRect(),
+      bounds: contentBounds(anchor),
+      size: { width: 440, height: pop.scrollHeight + (pop.offsetHeight - pop.clientHeight) },
+      alignLeft: anchorAlign === "left",
+    });
+    setPos((p) => (p && p.left === next.left && p.top === next.top && p.maxHeight === next.maxHeight && p.width === next.width ? p : next));
+  };
+  useLayoutEffect(place);
+  useEffect(() => {
+    window.addEventListener("resize", place);
+    window.addEventListener("scroll", place, true);
+    return () => {
+      window.removeEventListener("resize", place);
+      window.removeEventListener("scroll", place, true);
+    };
+  });
 
   const pick = (s: WidgetSource) => {
     if (NEEDS_CHOICE.has(s)) {
@@ -88,13 +123,14 @@ export function ChangeTile({
   };
 
   const spec = widget ? SOURCES[widget.source] : null;
+  const style: CSSProperties = pos
+    ? { left: pos.left, top: pos.top, width: pos.width, maxHeight: pos.maxHeight }
+    : { left: 0, top: 0, visibility: "hidden" };
   return (
-    <div
-      ref={root}
-      className={"hw-pop" + (alignLeft ? " is-left" : "") + (up ? " is-up" : "")}
-      role="dialog"
-      aria-label={`Change ${title}`}
-    >
+    <>
+    <span ref={marker} hidden />
+    {createPortal(
+    <div ref={root} className="hw-pop" style={style} role="dialog" aria-label={`Change ${title}`}>
       <div className="hw-label">Show in this tile</div>
       <div className="hw-po-list">
         {SOURCE_KEYS.map((s) => {
@@ -161,6 +197,9 @@ export function ChangeTile({
           ) : null}
         </>
       ) : null}
-    </div>
+    </div>,
+    document.body,
+    )}
+    </>
   );
 }

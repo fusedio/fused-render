@@ -101,6 +101,7 @@ export function FormatPicks({
   value,
   onChange,
   rows,
+  unfit,
 }: {
   source: WidgetSource;
   formats: WidgetFormat[];
@@ -108,6 +109,8 @@ export function FormatPicks({
   onChange: (f: WidgetFormat) => void;
   /** The tile's height in units: a format that needs more is disabled. */
   rows?: number;
+  /** Formats no size of the source can draw (the add sheet has no tile yet): disabled. */
+  unfit?: (f: WidgetFormat) => boolean;
 }) {
   return (
     <div className="hw-picks" role="radiogroup" aria-label="Show as">
@@ -118,8 +121,8 @@ export function FormatPicks({
           role="radio"
           aria-checked={f === value}
           className={"hw-pick" + (f === value ? " is-on" : "")}
-          disabled={rows !== undefined && f !== value && rows < (FORMAT_MIN_ROWS[f] ?? 0)}
-          title={rows !== undefined && f !== value && rows < (FORMAT_MIN_ROWS[f] ?? 0) ? "Needs a taller tile" : undefined}
+          disabled={(rows !== undefined && f !== value && rows < (FORMAT_MIN_ROWS[f] ?? 0)) || (f !== value && !!unfit?.(f))}
+          title={(rows !== undefined && f !== value && rows < (FORMAT_MIN_ROWS[f] ?? 0)) || (f !== value && unfit?.(f)) ? "Needs a taller tile" : undefined}
           onClick={() => onChange(f)}
         >
           <span className="hw-thumb">
