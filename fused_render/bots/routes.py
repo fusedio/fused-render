@@ -103,7 +103,7 @@ def _status_bot(b, shot_for: str, fast: bool, cursors: dict) -> dict:
     idle = st in ("idle", "waiting", "paused", "error")
     running = b.thread is not None and b.thread.is_alive()
     if shot_for == b.id:
-        b.last_looked = time.time()  # a shared browser's idle sleep (bot._may_sleep) must not quit under the bot on screen
+        b.last_looked = time.time()  # idle sleep must not close the window under the bot on screen
     # A popped-out window the user closed -> back to headless. Any bot on the (possibly shared) process may notice: the
     # one that popped out gets control back, the others just carry on. Non-blocking: a poll mid-relaunch skips.
     try:
@@ -152,7 +152,7 @@ def _status_bot(b, shot_for: str, fast: bool, cursors: dict) -> dict:
     # Not while the user drives: the screenshot (a native-pixel PNG, two sips runs, a 3 s dialog probe that would
     # accept a confirm() they are looking at) holds browser.lock and stalls the screencast every 4 s; the frame they see
     # is live anyway, and hand-back takes one fresh shot for the still (bot._release).
-    if (shot_for == b.id and idle and not b.meta.get("control") and not b.shooting and b.browser.alive()
+    if (shot_for == b.id and idle and not b.meta.get("control") and not b.shooting and b.browser.running()
             and time.time() - b.browser.shot_ts() > 4):
         b.shooting = True
 
