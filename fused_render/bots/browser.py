@@ -1673,8 +1673,10 @@ class Browser:
         only: this runs on every detail poll)."""
         rows = [{"url": t.get("url") or "", "title": (t.get("title") or "")[:80]} for t in tabs]
         ids = [t.get("id") for t in tabs]
+        if main_id not in ids:  # unknown yet (a restart, then sleep before any action): the saved one stands if live
+            main_id = self.win.get("main") if self.win.get("main") in ids else None
         active = ids.index(main_id) if main_id in ids else 0
-        main = main_id if main_id in ids else None
+        main = main_id
         if rows == self.win.get("tabs") and active == self.win.get("active") and main == self.win.get("main"):
             return
         self.win["tabs"], self.win["active"], self.win["main"] = rows, active, main
@@ -2014,19 +2016,28 @@ class Browser:
                  "active": t["id"] == main.get("id"), "ws": t.get("ws") or t.get("webSocketDebuggerUrl")} for i, t in enumerate(ordered)]
 
     def _note_page(self, url, title):
-        """The driven tab's url/title into window.json's active row (after an action)."""
-        tabs = self.win.get("tabs") or []
+        """The driven tab's url/title into window.json's active row (after an action), and which tab is
+        driven: a tab switch or a new tab moves `main` (and the active row) here, so a restart with
+        Chrome still up resumes on the tab the bot was driving, not the one before it."""
+        tabs = list(self.win.get("tabs") or [])
         i = self.win.get("active") or 0
+        row = {"url": url, "title": (title or "")[:80]}
+        if self._main_tab and self._main_tab != self.win.get("main"):
+            # The driven tab changed since the last record: its row is the one on this url (tabs() keeps
+            # the rows in open order), else a new row; the full list is rewritten by the next tabs().
+            i = next((k for k, r in enumerate(tabs) if r.get("url") == url), None)
+            if i is None:
+                tabs.append(row)
+                i = len(tabs) - 1
         if not tabs:
-            tabs = [{"url": "", "title": ""}]
-            i = 0
+            tabs, i = [row], 0
         if i >= len(tabs):
             i = 0
-        row = {"url": url, "title": (title or "")[:80]}
-        if tabs[i] == row and self.win.get("active") == i:
+        main = self._main_tab or self.win.get("main")
+        if tabs[i] == row and self.win.get("active") == i and self.win.get("main") == main:
             return
         tabs[i] = row
-        self.win["tabs"], self.win["active"] = tabs, i
+        self.win["tabs"], self.win["active"], self.win["main"] = tabs, i, main
         self._write_win()
 
     def _switch_to(self, tab_id):
