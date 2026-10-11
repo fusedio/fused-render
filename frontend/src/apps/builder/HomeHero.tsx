@@ -769,11 +769,14 @@ export function HeroComposer({
                 disabled={busy}
                 spellCheck={false}
                 autoComplete="off"
-                onChange={(e) =>
-                  setNameDraft(
-                    e.target.value.toLowerCase().replace(/\s+/g, "-"),
-                  )
-                }
+                onChange={(e) => {
+                  const next = e.target.value.toLowerCase().replace(/\s+/g, "-");
+                  setNameDraft(next);
+                  // Clearing the prefill during the ask means "try haiku
+                  // again": back to idle, so send is live and the next
+                  // submit re-runs naming rather than sitting disabled.
+                  if (phase === "askName" && next === "") setPhase("idle");
+                }}
                 onKeyDown={(e) => {
                   if (e.key === "Enter") {
                     e.preventDefault();

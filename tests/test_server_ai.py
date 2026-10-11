@@ -928,13 +928,14 @@ def test_relay_usage_is_normalized_to_the_two_token_keys(monkeypatch):
 
 
 def test_relay_model_echo_prefers_the_resolved_id(monkeypatch):
-    # A model alias goes to the CLI as-is, but the response echoes the full id
-    # the CLI actually ran (the modelUsage key).
+    # A short alias resolves through _AI_SHORT_MODEL_IDS on the way to the
+    # CLI, and the response echoes the full id the CLI actually ran (the
+    # modelUsage key), which may carry a date the alias does not.
     fake = _cli_ok(monkeypatch, dict(
         _CLI_RESULT, modelUsage={"claude-sonnet-5-20250929": {}}))
     resp = _relay({"prompt": "hello", "model": "sonnet"})
     (argv, _), = fake.calls
-    assert _flag(argv, "--model") == "sonnet"
+    assert _flag(argv, "--model") == _server_ai._AI_SHORT_MODEL_IDS["sonnet"]
     assert _data(resp)["result"]["response"]["modelId"] == "claude-sonnet-5-20250929"
 
 
