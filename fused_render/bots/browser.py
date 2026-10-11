@@ -1277,7 +1277,10 @@ class BrowserProcess:
                 # dismissing the restore bubble resets; headless never can, so the bubble must never be asked for.
                 "--hide-crash-restore-bubble",
                 f"--window-size={self.viewport[0]},{self.viewport[1]}",
-                _with_scheme(restore) if headed and restore else "about:blank",
+                # Always about:blank, headed too: the asking view navigates its window itself (_restore). A profile
+                # set to "continue where you left off" (a chrome_profile import) restores its old pages at launch
+                # as well; those are nobody's, and only the blank page is taken as the launch tab below.
+                "about:blank",
             ]
             proc = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                     stderr=subprocess.DEVNULL, start_new_session=True, close_fds=False)
@@ -1335,8 +1338,9 @@ class BrowserProcess:
                     launch = [t for t in _http(port, "/json/list") if t.get("type") == "page"]
                 except Exception:  # noqa: BLE001
                     launch = []
-                if launch:
-                    sess["launch_tab"] = launch[0]["id"]
+                blank = next((t for t in launch if (t.get("url") or "about:blank") == "about:blank"), None)
+                if blank is not None:
+                    sess["launch_tab"] = blank["id"]
                     break
                 time.sleep(0.1)
             self._winmap.clear()
@@ -1361,7 +1365,7 @@ class BrowserProcess:
             # its own. Non-fatal: a view whose restore fails opens its window on its next action.
             for v in ([view] if view is not None else []) + [v for v in awake if v is not view and v in self.views]:
                 try:
-                    v._restore(port, adopt=v is view, navigate=not headed or v is not view)
+                    v._restore(port, adopt=v is view)
                 except Exception:  # noqa: BLE001
                     log.warning("restoring a bot's window after launch failed", exc_info=True)
             return sess
@@ -1451,6 +1455,10 @@ class BrowserProcess:
                 # mid-action on it, and the next sleeper asks again.
                 try:
                     if any(v._my_targets(sess["port"]) for v in self.views):
+                        return False
+                    # Before a clean registry scan a page may be an unbuilt bot's window (a torn bot.json, a
+                    # leave before the other bot is built): then any page keeps Chrome up, as the orphan sweep waits.
+                    if not self.complete and any(t.get("type") == "page" for t in _http(sess["port"], "/json/list")):
                         return False
                 except Exception:  # noqa: BLE001
                     return False
@@ -1624,7 +1632,7 @@ class Browser:
 
     # -- windows -----------------------------------------------------------
     def _read_win(self):
-        d = {"pid": None, "windows": [], "tabs": [], "active": 0, "viewport": None}
+        d = {"pid": None, "windows": [], "tabs": [], "active": 0, "viewport": None, "main": None}
         try:
             with open(self.win_path) as f:
                 saved = json.load(f)
@@ -1657,6 +1665,7 @@ class Browser:
         self._main_tab = None
         self.win["windows"] = []
         self.win["pid"] = None
+        self.win["main"] = None
         self._write_win()
 
     def _remember_tabs(self, tabs, main_id=None):
@@ -1665,9 +1674,10 @@ class Browser:
         rows = [{"url": t.get("url") or "", "title": (t.get("title") or "")[:80]} for t in tabs]
         ids = [t.get("id") for t in tabs]
         active = ids.index(main_id) if main_id in ids else 0
-        if rows == self.win.get("tabs") and active == self.win.get("active"):
+        main = main_id if main_id in ids else None
+        if rows == self.win.get("tabs") and active == self.win.get("active") and main == self.win.get("main"):
             return
-        self.win["tabs"], self.win["active"] = rows, active
+        self.win["tabs"], self.win["active"], self.win["main"] = rows, active, main
         self._write_win()
 
     def last_url(self):
@@ -1766,16 +1776,16 @@ class Browser:
             time.sleep(0.1)
         raise RuntimeError("the new tab did not appear")
 
-    def _adopt_launch_window(self, port, bws, url, blank_only=True):
-        """Chrome opens one window at launch (about:blank, or the asking bot's page when headed). The first
-        view to need a window takes it instead of opening one beside it, so the profile keeps no blank
-        window nobody drives. Only that launch window, only while still blank (`blank_only`; the launch
-        itself passes False, Chrome having opened it on the page), only when no other view owns it."""
+    def _adopt_launch_window(self, port, bws, url):
+        """Chrome opens one window on about:blank at launch. The first view to need a window takes it
+        instead of opening one beside it, so the profile keeps no blank window nobody drives. Only that
+        launch window, only while still blank, only when no other view owns it (a page a restored
+        session opened is never the launch tab: _launch picks the blank one)."""
         tid = (self.session() or {}).get("launch_tab")
         if not tid:
             return None
         t = next((x for x in _http(port, "/json/list") if x.get("id") == tid and x.get("type") == "page"), None)
-        if t is None or (blank_only and (t.get("url") or "about:blank") != "about:blank"):
+        if t is None or (t.get("url") or "about:blank") != "about:blank":
             return None
         wid = self.proc.window_of(bws, tid)
         if any(wid in (v.win.get("windows") or []) for v in self.proc.views if v is not self):
@@ -1821,10 +1831,9 @@ class Browser:
                 pws.close()
         return t
 
-    def _restore(self, port, adopt=False, navigate=True):
+    def _restore(self, port, adopt=False):
         """After a launch or relaunch: this view's window back on its remembered tabs. `adopt`: take the
-        launch window (the asking view). `navigate`: the first tab needs to be sent to the page (a headed
-        launch already opened on it)."""
+        launch window (the asking view)."""
         with self.lock:
             if self.win.get("windows") and self.win.get("pid") == (self.session() or {}).get("pid"):
                 return
@@ -1836,7 +1845,7 @@ class Browser:
             try:
                 # The window first (blank), its other tabs opened from it, the driven tab navigated LAST: a
                 # window.open evaluated in a page that is navigating away is dropped with its context.
-                t = (self._adopt_launch_window(port, bws, "", blank_only=navigate) if adopt else None) \
+                t = (self._adopt_launch_window(port, bws, "") if adopt else None) \
                     or self._new_window(port, bws, "about:blank")
                 self._main_tab = t.get("id")
                 seen = {x["id"] for x, _ in self.proc.page_targets(port, bws)}
@@ -1847,7 +1856,7 @@ class Browser:
                             seen.add(nt["id"])
                     except Exception:  # noqa: BLE001 — one tab lost; the window is up
                         pass
-                if navigate and first != "about:blank":
+                if first != "about:blank":
                     pws = WS(t["ws"], timeout=5)
                     try:
                         pws.call("Page.navigate", url=first)  # not awaited
@@ -1911,8 +1920,14 @@ class Browser:
         return main, tabs
 
     def _remembered_main(self, tabs):
-        """After a server restart `_main_tab` is unknown: the driven tab is the one window.json's active row
-        names (by url), so status, screenshot and the live view stay on the page the bot was on."""
+        """After a server restart `_main_tab` is unknown: the driven tab is the one window.json remembers,
+        by target id while the Chrome that minted it is still up (two tabs may share a url), else by the
+        active row's url, so status, screenshot and the live view stay on the page the bot was on."""
+        mid = self.win.get("main")
+        if mid and self.win.get("pid") == (self.session() or {}).get("pid"):
+            hit = next((t for t in tabs if t.get("id") == mid), None)
+            if hit is not None:
+                return hit
         url = self.last_url()
         if not url or url == "about:blank":
             return None
