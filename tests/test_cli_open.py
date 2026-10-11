@@ -153,7 +153,7 @@ def test_run_open_opens_the_embed_url_once_ready(tmp_path, monkeypatch):
     monkeypatch.setattr("fused_render.windows_process.install_no_window_policy", lambda: None)
     monkeypatch.setattr(cli_module, "setup_logging", lambda: "/dev/null")
     monkeypatch.setattr("uvicorn.Server", _FakeUvicornServer)
-    monkeypatch.setattr("uvicorn.Config", lambda app, host, port: types.SimpleNamespace(host=host, port=port))
+    monkeypatch.setattr("uvicorn.Config", lambda app, host, port, **kw: types.SimpleNamespace(host=host, port=port))
     monkeypatch.setattr(cli_module, "_wait_ready", lambda port, timeout=10.0: True)
     monkeypatch.setattr(cli_module, "threading", types.SimpleNamespace(Thread=_ImmediateThread))
 
@@ -181,7 +181,7 @@ def test_run_open_no_browser_skips_opening(tmp_path, monkeypatch):
     monkeypatch.setattr("fused_render.windows_process.install_no_window_policy", lambda: None)
     monkeypatch.setattr(cli_module, "setup_logging", lambda: "/dev/null")
     monkeypatch.setattr("uvicorn.Server", _FakeUvicornServer)
-    monkeypatch.setattr("uvicorn.Config", lambda app, host, port: types.SimpleNamespace(host=host, port=port))
+    monkeypatch.setattr("uvicorn.Config", lambda app, host, port, **kw: types.SimpleNamespace(host=host, port=port))
 
     opened = []
     monkeypatch.setattr(cli_module.webbrowser, "open", lambda url: opened.append(url))
