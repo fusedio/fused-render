@@ -4,7 +4,7 @@ import { observeStatus } from "../builds/tasks";
 import type { TaskRow } from "../builds/tasks";
 import { agoShort, anyAppOpen, appEmbed, appEmbedBase, appFromText, appOpenUrl, appStateParams, applyAppParams, clearAppParams, holdAppParams } from "./apps";
 
-const ROOT = "/Users/me/Fused/app";
+const ROOT = "/Users/me/Fused/apps";
 
 describe("appFromText", () => {
   test("plain link", () => {

@@ -201,7 +201,7 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
                   </NativeSelect>
                 </Row>
                 {!isSuper ? (
-                  <Row title="When it builds an app with Claude Code" text="Builds land under ~/Fused/app and park under Builds while a question waits." htmlFor="bmbuild">
+                  <Row title="When it builds an app with Claude Code" text="Builds land under ~/Fused/apps and park under Builds while a question waits." htmlFor="bmbuild">
                     <NativeSelect className="w-full" id="bmbuild" value={buildAccess} onChange={(e) => setBuildAccess(e.target.value)}>
                       <NativeSelectOption value="scoped">Ask before risky steps</NativeSelectOption>
                       <NativeSelectOption value="full">Run unattended</NativeSelectOption>

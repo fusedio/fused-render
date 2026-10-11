@@ -4,7 +4,7 @@ FusedBot (the fused-bot repo, `FusedBot.app`) keeps its bots under
 `~/.fused-render-app/bots/` (`FUSED_RENDER_APP_HOME` overrides); fused-render's
 Bots sub-app keeps the same tree, byte-for-byte the same layout, under
 `<home>/bots/` (`fused_render.bots.paths`). Both share the Inbox
-(`~/Fused/bots/`), the apps root (`~/Fused/app/`) and the Keychain item that
+(`~/Fused/bots/`), the apps root (`~/Fused/apps/`; FusedBot's `~/Fused/app/` is renamed by `paths.migrate_apps_root`) and the Keychain item that
 unlocks an encrypted profile (`browser.KEY_SERVICE`/`KEY_ACCOUNT` are the same
 string in both trees), so moving a user over is a rooted copy and nothing else.
 

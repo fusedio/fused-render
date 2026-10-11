@@ -12,7 +12,7 @@ JSON-action loop over `fused_ai.text`) or `agent_engine.run(bot, task, label)`
 State on disk (paths.py): `<home>/bots/data/bots/<id>/` (bot.json, events.jsonl,
 memory.md, skills/, profile/, downloads/, files/, inbox/), `<home>/bots/cache/bots/<id>/`
 (shot.png, steps/<seq>.jpg, badjson/), the Inbox `~/Fused/bots/<bot name>/`
-and the apps `~/Fused/app/` (`FUSED_RENDER_DIR` overrides `~/Fused`).
+and the apps `~/Fused/apps/` (`FUSED_RENDER_DIR` overrides `~/Fused`).
 """
 from __future__ import annotations
 

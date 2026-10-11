@@ -67,7 +67,7 @@ def test_repair_passes_none_through():
 def test_system_prompt_fills_the_apps_root(tmp_path, monkeypatch):
     monkeypatch.setenv("FUSED_RENDER_DIR", str(tmp_path / "ws"))
     sp = steps_engine.system_prompt()
-    assert "@APPS_ROOT@" not in sp and str(tmp_path / "ws" / "app") in sp
+    assert "@APPS_ROOT@" not in sp and str(tmp_path / "ws" / "apps") in sp
     assert '"action": "<goto|click|type' in sp  # the steps engine still speaks JSON actions
 
 

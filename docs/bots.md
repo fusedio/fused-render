@@ -24,7 +24,7 @@
 > - State: `<fused_render.shell.storage.home_dir()>/bots/` =
 >   **`~/.fused-render/bots/`** (`FUSED_RENDER_HOME` overrides; FusedBot used
 >   `~/.fused-render-app/bots/` and `FUSED_RENDER_APP_HOME`). Inbox
->   `~/Fused/bots/<bot>/` and apps root `~/Fused/app` are unchanged.
+>   `~/Fused/bots/<bot>/` is unchanged; the apps root is `~/Fused/apps` (was `~/Fused/app`, renamed once at startup by `paths.migrate_apps_root`).
 >   **First start on a machine with a FusedBot tree copies it in**
 >   (`fused_render/bots/fusedbot_import.py`: `data/` + `cache/`, never
 >   overwriting, never touching the source, stamped in
@@ -93,7 +93,7 @@ names.
 ```
 fused_render/bots/            the backend package (in-process; no daemon, no fused.daemon)
   __init__.py
-  paths.py        state roots: <home>/bots/data/<id>, <home>/bots/cache/<id>, ~/Fused/bots (inbox), ~/Fused/app (apps)
+  paths.py        state roots: <home>/bots/data/<id>, <home>/bots/cache/<id>, ~/Fused/bots (inbox), ~/Fused/apps (apps)
   store.py        bot dirs, bot.json (atomic write), events.jsonl, usage.jsonl ledger + summary
   browser.py      per-bot Chrome over CDP (port of OpenBot browser.py) + AX-tree snapshot + change report
   bot.py          class Bot: lifecycle, memory, skills, artifacts/inbox, routines, offers, builds, send/pause/resume/stop,
@@ -139,8 +139,8 @@ like OpenBot's `.fused/`** so moving an OpenBot install is one copy
 0.11.x shipped the bots one level up (`bots/data/<id>`, ledgers at `bots/`);
 `bots/paths.migrate_layout()` moves such a home over once at startup, before
 `onboarding.seed_for_existing_users` counts bots. The Inbox root stays
-`~/Fused/bots/<bot name>/`; the apps root stays `~/Fused/app`
-(`_config()["fused_dir"] + "/app"`; `FUSED_RENDER_DIR` overrides the
+`~/Fused/bots/<bot name>/`; the apps root is `~/Fused/apps`
+(`_config()["fused_dir"] + "/apps"`; `FUSED_RENDER_DIR` overrides the
 workspace as everywhere else).
 
 Three OpenBot fallbacks read `~/.fused-render/server.json`; here they are
@@ -341,7 +341,7 @@ The server also keeps: `/api/tasks/*` (Builds), `/api/run` (the `py` action
 and embedded apps), `/api/fs/raw` (inbox downloads, attached files),
 `/api/capture/*` + `/api/ai/transcribe` (dictation), `/api/ai` (steps
 engine), `/render?path=` (apps). `server.app_dir_for()` gains a third rule:
-a path under `~/Fused/app/<x>` belongs to that folder.
+a path under `~/Fused/apps/<x>` belongs to that folder.
 
 Routes `/`, `/index.html` serve `static/shell-dist/bots.html`. `/tasks`,
 `/chat`, `/explorer/*` keep serving `lite.html` (the Builds iframe and the
@@ -596,7 +596,7 @@ folder to add a preset.
 pyproject.toml, mcp.toml) plus an optional `starter.json`
 `{setup_tool, ready_key}`: today Google Docs Tabs and Google Sheets Tabs
 (service-account Google access) and Apple Notes (reads Notes.app). Install
-copies the folder to `~/Fused/app/<key>` and never overwrites an existing
+copies the folder to `~/Fused/apps/<key>` and never overwrites an existing
 folder; it records `{starter, version, installed_at}` in
 `<dir>/.fused/starter.json`. `update` (only on the user's ask) replaces the
 shipped files and keeps `.fused/`, `.venv` and anything not shipped; the list
@@ -1120,7 +1120,7 @@ with its own home, driven through Chrome over CDP): the new-bot chooser with
 the four blanks and all 25 presets; a GitHub preset bot (brand face, 6
 playbooks copied, read-only instructions prefilled, "created … Comes with 6
 github playbooks" line, greeting); the Starter apps strip; Apple Notes
-Install → copied to `~/Fused/app/apple-notes`, viewer opened, badge
+Install → copied to `~/Fused/apps/apple-notes`, viewer opened, badge
 "Installed"; "Pin to menu bar" from the viewer's ⋯ → `dock.json` written and
 the (then rumps-menu) dock rebuilt within one tick — that menu has since
 been replaced by the glass tray; `/favicon.ico` is the FusedBot PNG; the

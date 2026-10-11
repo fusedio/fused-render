@@ -1,6 +1,6 @@
 """Starter apps (port of OpenBot `installapp.py`, docs/bots.md §5): fused apps
 that ship inside this package under `bots/starters/<key>/`, ready to copy into
-the apps folder (`~/Fused/app`) so a bot has its tools on a fresh machine
+the apps folder (`~/Fused/apps`) so a bot has its tools on a fresh machine
 without building anything. Add a folder to add a starter; each is a complete
 fused-render app (index.html with the marker, a pyproject.toml, an mcp.toml for
 its tools) plus an optional `starter.json`:

@@ -1032,6 +1032,9 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
         try:
             await asyncio.to_thread(bots_paths.migrate_layout)
             await asyncio.to_thread(bots_import.import_once)
+            # app/ -> apps/ after the import (an imported tree's ledgers name
+            # the old folder) and before any bot loads its bot.json.
+            await asyncio.to_thread(bots_paths.migrate_apps_root)
             bots_registry.start()
         except Exception:  # noqa: BLE001 - a bots failure must not block serving
             logger.exception("could not start the bots scheduler")
