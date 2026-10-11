@@ -50,7 +50,7 @@ export function Confirm() {
           </div>
         ) : null}
         <DialogFooter className={FOOTER_CLASS}>
-          <Button id="cmcancel" variant="outline" onClick={() => c && settleConfirm(c.id, false)}>Cancel</Button>
+          <Button id="cmcancel" variant="outline" onClick={() => c && settleConfirm(c.id, false)}>{c?.cancelLabel ?? "Cancel"}</Button>
           <Button id="cmok" variant={c && !c.danger ? "default" : "destructive"} onClick={() => c && settleConfirm(c.id, true, creds())}>{c?.okLabel ?? "Delete"}</Button>
         </DialogFooter>
       </DialogContent>

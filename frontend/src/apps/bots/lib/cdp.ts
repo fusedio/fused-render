@@ -116,6 +116,7 @@ export function linkSync(): void {
       // own navigations, so the page you drive stays painted and focused.
       cdp("Page.bringToFront"); cdp("Emulation.setFocusEmulationEnabled", { enabled: true });
       void poll();  // title and tab strip
+      handlers.get(m.method)?.(p);  // and whoever rides on it (live-passkey re-adds its binding)
     } else if (m.method === "Page.navigatedWithinDocument" && (p.frameId === undefined || p.frameId === link.frame)) {
       const furl = $<HTMLInputElement>("furl");
       if (furl && document.activeElement !== furl) furl.value = showUrl(p.url as string | undefined);
