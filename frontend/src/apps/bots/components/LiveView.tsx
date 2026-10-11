@@ -6,6 +6,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api, type Bot } from "../lib/api";
 import { gotoTyped, handBack, inFull, nav, tabstripClick, takeOver, useLinked } from "../lib/cdp";
 import { installLive } from "../lib/live-input";
+import "../lib/live-passkey";  // registers on the live view's socket (passkey requests -> the real window)
 import { closeOverlay, pickerChange, pickSelect, runItem, useOverlay } from "../lib/live-overlays";
 import { statusLabel } from "../lib/derive";
 import { pageUrl, showUrl } from "../lib/live";
