@@ -11,26 +11,25 @@ import pytest
 from fused_render.bots import browser as br
 
 
-# ------------------------------------------------------------ _key_params ---
+# ------------------------------------------------------------ key_events ---
 def test_key_params_enter_carries_carriage_return():
-    down = br._key_params("Enter", "Enter", 0, True)
+    down, up = br.key_events("Enter", "Enter", 0)
     assert down["type"] == "keyDown" and down["windowsVirtualKeyCode"] == 13
     assert down["text"] == down["unmodifiedText"] == "\r"
-    up = br._key_params("Enter", "Enter", 0, False)
     assert up["type"] == "keyUp" and "text" not in up
 
 
 def test_key_params_printable_and_shift():
-    p = br._key_params("A", "KeyA", 8, True)
+    p, _ = br.key_events("A", "KeyA", 8)
     assert p["text"] == "A" and p["windowsVirtualKeyCode"] == ord("A") and p["modifiers"] == 8
 
 
 def test_key_params_ctrl_letter_is_a_command_without_text():
-    p = br._key_params("a", "KeyA", 2, True)
+    p, _ = br.key_events("a", "KeyA", 2)
     assert "text" not in p and p["commands"] == ["SelectAll"]
-    p = br._key_params("v", "KeyV", 4, True)
+    p, _ = br.key_events("v", "KeyV", 4)
     assert p["commands"] == ["Paste"]
-    assert "commands" not in br._key_params("q", "KeyQ", 4, True)
+    assert "commands" not in br.key_events("q", "KeyQ", 4)[0]
 
 
 # -------------------------------------------------------------- _find_js ---
