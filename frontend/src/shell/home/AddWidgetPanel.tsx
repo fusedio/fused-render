@@ -29,7 +29,7 @@ import { createPortal } from "react-dom";
 import { useBookmarksVersion } from "@platform/lib/hooks";
 import { isTopmost, popModal, pushModal } from "@platform/ui/modal/esc-stack";
 import { isFolder, loadBookmarks, type BookmarkFolder, type BookmarkItem } from "@platform/lib/bookmarks";
-import { GRID_COLS, MAX_WIDGETS, SOURCES, type TileTarget, type Widget, type WidgetSource } from "./layout";
+import { CELL, GRID_COLS, MAX_WIDGETS, SOURCES, type TileTarget, type Widget, type WidgetSource } from "./layout";
 import { freeSpaceNote, galleryEntries, previewPx, previewScale, type GalleryEntry } from "./gallery";
 import { WidgetBody } from "./Widget";
 import type { HomeLayoutApi } from "./useHomeLayout";
@@ -79,12 +79,15 @@ export function AddWidgetPanel({
   onClose,
   target,
   initialSource,
+  at,
 }: {
   api: HomeLayoutApi;
   onClose: () => void;
   /** Set when opened from a tile's Change popover. */
   target?: TileTarget;
   initialSource?: WidgetSource;
+  /** Set from an open-row + cell: the new widget's top-left. */
+  at?: { x: number; y: number };
 }) {
   useBookmarksVersion();
   const dialog = useRef<HTMLDivElement>(null);
@@ -97,8 +100,8 @@ export function AddWidgetPanel({
     return only.length === 1 && !only[0].disabled ? only[0] : null;
   });
   const entries = useMemo(
-    () => galleryEntries(api.layout, target, target ? (initialSource ?? "folder") : undefined),
-    [api.layout, target, initialSource],
+    () => galleryEntries(api.layout, target, target ? (initialSource ?? "folder") : undefined, at),
+    [api.layout, target, initialSource, at],
   );
   const sections = useMemo(() => {
     const out: { source: WidgetSource; entries: GalleryEntry[] }[] = [];
@@ -132,7 +135,9 @@ export function AddWidgetPanel({
     ? `Home is full (${MAX_WIDGETS} widgets)`
     : target
       ? "Pick what this tile shows"
-      : freeSpaceNote(api.layout.widgets);
+      : at
+        ? `Starts in column ${at.x / CELL + 1}`
+        : freeSpaceNote(api.layout.widgets);
 
   const source = pending?.source ?? "folder";
   const appsState = useAllApps(source === "app" && !!pending);
@@ -269,7 +274,8 @@ export function AddWidgetPanel({
       onClose();
       return;
     }
-    api.add(e.source, { ...opts, size: e.size });
+    if (at) api.addAt(e.source, at.x, at.y, { ...opts, size: e.size });
+    else api.add(e.source, { ...opts, size: e.size });
     onClose();
     // The new widget is the last one in the grid; wait a beat for it to mount.
     setTimeout(() => {

@@ -383,6 +383,25 @@ export function addWidget(
   return { ...layout, widgets: sortByPosition([...layout.widgets, { ...probe, x, y }]) };
 }
 
+/** Add `source` with its top-left at (x, y). The same object when the layout
+    is full, a second search would be added, or the footprint is off-grid or not free. */
+export function addWidgetAt(
+  layout: HomeLayout,
+  source: WidgetSource,
+  x: number,
+  y: number,
+  opts: AddOpts = {},
+): HomeLayout {
+  if (layout.widgets.length >= MAX_WIDGETS) return layout;
+  if (source === "search" && hasSearch(layout)) return layout;
+  const size = opts.size ?? (opts.format ? sizesFor(source, opts.format)[0] : undefined);
+  const w = { ...makeWidget(source, 0, 0, size ? { ...opts, size } : opts), x, y };
+  const { cols, rows } = dimsOf(w);
+  if (x + cols > GRID_COLS || y + rows > MAX_ROWS) return layout;
+  if (!canPlace(layout.widgets, { x, y, cols, rows })) return layout;
+  return { ...layout, widgets: sortByPosition([...layout.widgets, w]) };
+}
+
 export function removeWidget(layout: HomeLayout, id: string): HomeLayout {
   if (!layout.widgets.some((w) => w.id === id)) return layout;
   return { ...layout, widgets: layout.widgets.filter((w) => w.id !== id) };

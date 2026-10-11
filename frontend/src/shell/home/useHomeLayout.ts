@@ -6,6 +6,7 @@ import { getHomeLayout, putHomeLayout } from "@platform/lib/api";
 import { notify } from "@platform/lib/notifications";
 import {
   addWidget,
+  addWidgetAt,
   fillSlot,
   normalizeLayout,
   presetLayout,
@@ -42,6 +43,8 @@ export interface HomeLayoutApi {
   /** Put a new tile of `source` on exactly `rect`, an empty slot. */
   fill: (rect: Rect, source: WidgetSource, opts?: TileOpts) => void;
   add: (source: WidgetSource, opts?: AddOpts) => void;
+  /** Add with the top-left at (x, y); a no-op when the footprint does not fit there. */
+  addAt: (source: WidgetSource, x: number, y: number, opts?: AddOpts) => void;
   remove: (id: string) => void;
   reformat: (id: string, format: WidgetFormat) => void;
   /** Resize a tile to a preset; a no-op when it does not fit where the tile sits. */
@@ -100,6 +103,7 @@ export function useHomeLayout(): HomeLayoutApi {
     swap: useCallback((id, source, opts) => commit(swapSource(ref.current, id, source, opts)), [commit]),
     fill: useCallback((rect, source, opts) => commit(fillSlot(ref.current, rect, source, opts)), [commit]),
     add: useCallback((source, opts) => commit(addWidget(ref.current, source, opts)), [commit]),
+    addAt: useCallback((source, x, y, opts) => commit(addWidgetAt(ref.current, source, x, y, opts)), [commit]),
     remove: useCallback((id) => commit(removeWidget(ref.current, id)), [commit]),
     reformat: useCallback((id, format) => commit(setFormat(ref.current, id, format)), [commit]),
     resize: useCallback((id, size) => commit(setSize(ref.current, id, size)), [commit]),

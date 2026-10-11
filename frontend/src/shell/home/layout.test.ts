@@ -13,6 +13,7 @@ import {
   defaultFormat,
   SOURCES,
   addWidget,
+  addWidgetAt,
   allowedSizes,
   canPlace,
   collapseShrunkRows,
@@ -1054,4 +1055,22 @@ test("search comes in three widths: the Focus preset offers all, 2x1 keeps one r
   expect(dimsOf(s).rows).toBe(1);
   expect(dimsOf(s).cols).toBe(4);
   expect(half.widgets.some((x) => x.id !== search.id && x.y === 0 && x.x < 8 && x.x + dimsOf(x).cols > 4)).toBe(false);
+});
+
+test("addWidgetAt on an empty row lands at x 4", () => {
+  const base: HomeLayout = { ...defaultLayout(), widgets: [] };
+  const out = addWidgetAt(base, "folder", 4, 0, { size: "1x1" });
+  const added = out.widgets[0];
+  expect(out.widgets.length).toBe(1);
+  expect([added.x, added.y]).toEqual([4, 0]);
+});
+
+test("addWidgetAt refuses an overlapping spot, an off-grid spot and a second search", () => {
+  const base: HomeLayout = { ...defaultLayout(), widgets: [] };
+  const one = addWidgetAt(base, "folder", 0, 0, { size: "2x2" });
+  expect(addWidgetAt(one, "folder", 2, 2, { size: "1x1" })).toBe(one);
+  expect(addWidgetAt(base, "folder", 6, 0, { size: "2x2" })).toBe(base);
+  const withSearch = addWidgetAt(base, "search", 0, 0);
+  expect(withSearch.widgets.length).toBe(1);
+  expect(addWidgetAt(withSearch, "search", 0, 4)).toBe(withSearch);
 });

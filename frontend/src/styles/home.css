@@ -2079,6 +2079,17 @@ a.hw-more:hover {
   line-height: 1;
 }
 
+/* Open row of add cells: one dashed plus per cell column */
+.hw-add-cell {
+  display: grid;
+  place-items: center;
+  border-color: color-mix(in srgb, var(--fg-faint) 35%, transparent);
+}
+
+.hw-add-cell .hw-add-plus {
+  font-size: 22px;
+}
+
 /* Add sheet */
 .hw-scrim {
   position: fixed;

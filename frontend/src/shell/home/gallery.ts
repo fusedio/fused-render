@@ -11,6 +11,7 @@ import {
   dimsOf,
   firstFreeRect,
   FIXED_ROWS,
+  canPlace,
   hasSearch,
   occupancy,
   rectOf,
@@ -67,7 +68,12 @@ export function footprintLabel(cols: number, rows: number): string {
 /** Every variant the sheet offers, in SOURCES order. With a `target` (opened
     from a tile's Change card) only `only` is listed, and entries that do not fit
     the tile are disabled. */
-export function galleryEntries(layout: HomeLayout, target?: TileTarget, only?: WidgetSource): GalleryEntry[] {
+export function galleryEntries(
+  layout: HomeLayout,
+  target?: TileTarget,
+  only?: WidgetSource,
+  at?: { x: number; y: number },
+): GalleryEntry[] {
   const out: GalleryEntry[] = [];
   const full = (!target || target.kind === "fill") && layout.widgets.length >= MAX_WIDGETS;
   const tile = target ? (target.kind === "swap" ? { x: 0, y: 0, ...dimsOf(target.widget) } : target.rect) : null;
@@ -79,11 +85,18 @@ export function galleryEntries(layout: HomeLayout, target?: TileTarget, only?: W
       const sizes = sizesFor(source, format);
       if (sizes[0] === undefined) continue;
       // A swap keeps the tile's footprint: use the first size that fits it.
+      // Aimed at a grid spot (no target): the default size if it fits there, else the first that does.
       const size =
         (tile &&
           sizes.find((s) => {
             const d = dimsFor(source, s);
             return d.cols <= tile.cols && d.rows <= tile.rows;
+          })) ||
+        (!target &&
+          at &&
+          sizes.find((s) => {
+            const d = dimsFor(source, s);
+            return at.x + d.cols <= GRID_COLS && canPlace(layout.widgets, { x: at.x, y: at.y, ...d });
           })) ||
         sizes[0];
       const { cols, rows } = dimsFor(source, size);
@@ -96,6 +109,8 @@ export function galleryEntries(layout: HomeLayout, target?: TileTarget, only?: W
           if (!fit.ok) disabled = fit.reason;
         }
       } else if (source === "search" && hasSearch(layout)) disabled = "Already on Home";
+      else if (at && (at.x + cols > GRID_COLS || !canPlace(layout.widgets, { x: at.x, y: at.y, cols, rows })))
+        disabled = "No room here";
       out.push({
         key: `${source}:${format}`,
         source,

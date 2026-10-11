@@ -126,3 +126,21 @@ test("free space note: cells left inside the used rows, else a new row", () => {
   // A one-unit sliver cannot hold a cell.
   expect(freeSpaceNote([w("a", "index", 0, 0, 7, 4)])).toBe("Adds a new row");
 });
+
+test("at mode: an entry is disabled where no size fits and enabled where one does", () => {
+  // Build has a half-width size, so it only fits at x 2 when nothing blocks it.
+  const at = (l: HomeLayout, x: number) =>
+    galleryEntries(l, undefined, undefined, { x, y: 0 }).find((e) => e.source === "build")!;
+  expect(at(empty, 2).disabled).toBeUndefined();
+  expect(at(empty, 2).cols).toBe(2 * CELL);
+  const blocked: HomeLayout = { ...empty, widgets: [w("a", "folder", 2, 0, 2, 2)] };
+  expect(at(blocked, 2).disabled).toBe("No room here");
+  expect(at(blocked, 4).disabled).toBeUndefined();
+});
+
+test("at mode: an entry at x 6 picks a one-cell-wide size when the source has one", () => {
+  const e = galleryEntries(empty, undefined, undefined, { x: 6, y: 0 }).find((x) => x.source === "folder")!;
+  expect(e.disabled).toBeUndefined();
+  expect(e.cols).toBe(CELL);
+  expect(e.cols + 6).toBeLessThanOrEqual(GRID_COLS);
+});

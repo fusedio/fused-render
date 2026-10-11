@@ -37,7 +37,7 @@ export default function Home({ config }: { config: Config }) {
   const [edit, setEdit] = useState(false);
   // The add sheet: bare ("+ Add widget"), or aimed at one tile or slot (a
   // folder or page picked from a Change popover).
-  const [panel, setPanel] = useState<null | { target?: TileTarget; initialSource?: WidgetSource }>(null);
+  const [panel, setPanel] = useState<null | { target?: TileTarget; initialSource?: WidgetSource; at?: { x: number; y: number } }>(null);
   // The layout before the last preset click, for Undo.
   const prevLayout = useRef<HomeLayout | null>(null);
   const [canUndo, setCanUndo] = useState(false);
@@ -156,7 +156,7 @@ export default function Home({ config }: { config: Config }) {
             <div className="hw-stage">
               {layoutApi.loaded ? (
                 <div className="hw-stage-main">
-                  <WidgetGrid api={layoutApi} edit={edit} searching={searching} onAdd={() => setPanel({})}
+                  <WidgetGrid api={layoutApi} edit={edit} searching={searching} onAdd={() => setPanel({})} onAddAt={(x, y) => setPanel({ at: { x, y } })}
                     onRequestPanel={(target, initialSource) => setPanel({ target, initialSource })}
                   />
                   {!layoutApi.layout.widgets.length && !edit && !searching ? (
@@ -165,7 +165,7 @@ export default function Home({ config }: { config: Config }) {
                 </div>
               ) : null}
               {edit && panel && !searching ? (
-                <AddWidgetPanel api={layoutApi} target={panel.target} initialSource={panel.initialSource} onClose={() => setPanel(null)} />
+                <AddWidgetPanel api={layoutApi} target={panel.target} initialSource={panel.initialSource} at={panel.at} onClose={() => setPanel(null)} />
               ) : null}
             </div>
           </div>

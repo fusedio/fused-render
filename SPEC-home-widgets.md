@@ -99,7 +99,7 @@ of the four hard-coded `Section`s.
   reads "Done". Esc also exits.
 - In edit mode each widget shows: drag handle, size chip (menu of that source's allowed
   sizes, shown as "1×1 / 2×1 / 2×2 / Full row"), format segmented control (only if >1
-  format), remove (×). A trailing dashed "+ Add widget" tile opens `AddWidgetPanel`.
+  format), remove (×). At full grid width the row just below the last widget is an open row of dashed "+" cells (`.hw-add-cell`, one per cell column); a cell opens `AddWidgetPanel` aimed at that spot (`at`), and `addWidgetAt` puts the widget's top-left there. Under the narrow reflow the single "+ Add widget" tile stays.
 - Reorder with native HTML5 drag and drop (no new dependency). Also provide keyboard
   reorder: focused widget + Alt/Option+Arrow moves it one slot (accessibility; also makes
   it testable).

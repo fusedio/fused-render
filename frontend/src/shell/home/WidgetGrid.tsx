@@ -1,9 +1,10 @@
 // The widget grid. Every widget owns explicit half-cell units (x, y) on an 8-unit grid.
 // Edit mode does not move or resize anything: each tile can Change what it
 // shows (Widget.tsx), every hole the layout has shows a "Choose what goes
-// here" slot, and the trailing "+ Add widget" tile stays. Under NARROW_MAX the
-// grid shows a 4-unit reflow of the same coordinates (derived, never stored)
-// without slots.
+// here" slot, and the row just below the last widget is an open row of dashed
+// "+" cells, one per cell column, each adding a widget with its top-left there.
+// Under NARROW_MAX the grid shows a 4-unit reflow of the same coordinates
+// (derived, never stored) without slots, and the single "+ Add widget" tile stays.
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { WidgetFrame } from "./Widget";
 import { ChangeTile } from "./ChangeTile";
@@ -35,6 +36,7 @@ export function WidgetGrid({
   edit,
   searching = false,
   onAdd,
+  onAddAt,
   onRequestPanel,
 }: {
   api: HomeLayoutApi;
@@ -42,6 +44,7 @@ export function WidgetGrid({
   /** A search query is live: only the search widget renders, full width. */
   searching?: boolean;
   onAdd: () => void;
+  onAddAt: (x: number, y: number) => void;
   /** A folder or page pick from a Change popover: open the add sheet aimed at that tile or slot. */
   onRequestPanel: (target: TileTarget, source: WidgetSource) => void;
 }) {
@@ -149,7 +152,21 @@ export function WidgetGrid({
           </div>
         );
       })}
-      {showAdd ? (
+      {showSlots
+        ? Array.from({ length: GRID_COLS / CELL }, (_, i) => (
+            <button
+              key={`addcell${i}`}
+              type="button"
+              className="hw-add-tile hw-add-cell"
+              style={placement({ x: i * CELL, y: usedCells, cols: CELL, rows: CELL })}
+              aria-label={`Add widget in column ${i + 1}`}
+              onClick={() => onAddAt(i * CELL, usedCells)}
+            >
+              <span className="hw-add-plus" aria-hidden="true">+</span>
+            </button>
+          ))
+        : null}
+      {showAdd && !showSlots ? (
         <button
           type="button"
           className="hw-add-tile"
