@@ -39,7 +39,8 @@ denominator.
 The stored status is what the wizard last SAW. For the stages the server can
 check cheaply it is overruled on every read by what is true now (`_observe`):
 Full Disk Access from fda.py's TTL-cached probe, Chrome from the bots' own
-candidate paths, "first app" from the workspace's local/ folder, Claude Code
+candidate paths, git from git_tools' TTL-cached candidate walk (never the
+/usr/bin/git shim), "first app" from the workspace's local/ folder, Claude Code
 from claude_health's disk cache (never a spawn). So a grant made from the Home strip, or an app built without the
 wizard, moves the meter without the wizard being reopened.
 
@@ -82,9 +83,11 @@ _KEY = "onboarding"
 #: step (it does not build apps), so there the set is four — `_observe`
 #: keys off the same tuple, so neither stage ever enters the meter's count.
 #: `chrome` (a Google Chrome for bots to drive) is in both: Render runs the
-#: same bots behind the `bots_enabled` preference.
+#: same bots behind the `bots_enabled` preference. `git` (a usable git — the
+#: showcase clone and Claude Code's own worktrees need one) is Render's only:
+#: Fused Bot clones nothing.
 STEPS = (("about", "claude", "chrome", "fda") if _flavor.is_bot()
-         else ("about", "claude", "chrome", "fda", "models", "app"))
+         else ("about", "claude", "git", "chrome", "fda", "models", "app"))
 
 #: Stage statuses. `n/a` = the machine has no such step; it is not counted.
 STATUSES = ("pending", "partial", "complete", "n/a")
@@ -209,6 +212,28 @@ def _observe(stages: dict) -> None:
             put("chrome", "n/a", found=False, path=None)
     except Exception:  # noqa: BLE001
         log.debug("onboarding: chrome observe failed", exc_info=True)
+
+    # Git: git_tools.probe() — a walk of the places a REAL git lives (the
+    # active developer dir, the Command Line Tools, Xcode, Homebrew), memoized,
+    # and never the /usr/bin/git shim, which would pop Apple's "install the
+    # developer tools?" dialog on every read (module docstring there). Found =
+    # complete, with path + version for the step's row. Not found = pending:
+    # the showcase clone needs one, so it counts. Off macOS the step is `n/a`
+    # — the owner's call, macOS is the only platform the step is built for.
+    if "git" in STEPS:
+        try:
+            from fused_render.shell import git_tools
+
+            if not git_tools.offered():
+                put("git", "n/a", platform=sys.platform)
+            else:
+                g = git_tools.probe()
+                if g is not None:
+                    put("git", "complete", found=True, path=g["path"], version=g["version"])
+                else:
+                    put("git", "pending", found=False, path=None, version=None)
+        except Exception:  # noqa: BLE001
+            log.debug("onboarding: git observe failed", exc_info=True)
 
     # First app: any folder under <fused_dir>/local IS an app the user has.
     # Only where the wizard has the step: /api/config is read on every page
@@ -405,6 +430,21 @@ def api_onboarding_opened(x_fused: str | None = Header(default=None)):
         return guard
     _write({})
     return snapshot()
+
+
+@router.post("/api/onboarding/git/install")
+def api_onboarding_git_install(x_fused: str | None = Header(default=None)):
+    """The Git step's Install button: ask macOS for the Command Line Tools
+    (git_tools.start_install — `xcode-select --install`, which opens Apple's
+    dialog and returns). The reply carries the install verdict AND a fresh
+    snapshot, so the step renders both from one round trip."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    from fused_render.shell import git_tools
+
+    result = git_tools.start_install()
+    return {"install": result, **snapshot()}
 
 
 @router.post("/api/onboarding/stage")
