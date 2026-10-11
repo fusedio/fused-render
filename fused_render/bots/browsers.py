@@ -97,7 +97,21 @@ def get(bid: str) -> BrowserProcess:
             p = BrowserProcess(key, browser_cache_dir(bid))
             p.encrypt = bool(read_meta(bid).get("encrypt"))
             _procs[key] = p
+        # Every ask (a bot built, a bot moved on or off, a bot deleted) refreshes the on-disk user count the
+        # process's `shared()` consults, so a bot built alone still keeps to its own tabs when another bot on
+        # disk names the same browser (BrowserProcess.disk_users).
+        n = users_on_disk(bid)
+        if n is not None:
+            p.disk_users = n
         return p
+
+
+def users_on_disk(bid: str) -> int | None:
+    """How many bot.json name browser `bid` (loaded or not), None when one is unreadable."""
+    metas = _metas_on_disk()
+    if metas is None:
+        return None
+    return sum(1 for m in metas if (m.get("browser_id") or m["id"]) == bid)
 
 
 def stop_all(budget_s: float = 8.0) -> int:

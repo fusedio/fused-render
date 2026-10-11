@@ -1002,13 +1002,18 @@ class BrowserProcess:
         self.lock = threading.RLock()
         self._proc = None
         self.views = []  # Browser views attached; len > 1 = shared
+        # How many bot.json on disk name this browser (browsers.get refreshes it). The registry builds bots one at
+        # a time and some routes build just one (the thumbnail's /shot, tab ops): with only the attached views
+        # counted, the first bot built after a restart saw its browser as private and drove every tab in it,
+        # the other bot's page included (its status url, screenshot and live view all showed that page).
+        self.disk_users = 0
         # The window size, following the live view's stage (set_viewport). Its own file: session.json is
         # rewritten on every launch and removed on stop, and the size has to outlive both.
         self.viewport_path = os.path.join(cache_dir, "viewport.json")
         self.viewport = self._read_viewport()
 
     def shared(self):
-        return len(self.views) > 1
+        return len(self.views) > 1 or self.disk_users > 1
 
     # -- viewport --------------------------------------------------------------
     VIEWPORT_W = (640, 3840)
@@ -1086,22 +1091,14 @@ class BrowserProcess:
             raise RuntimeError("no bot window could be resized")
 
     def attach(self, view):
-        """Add a view. When the first view gets company, every tab open now is
-        the first view's (it drove them all while alone): claimed into its own
-        set, so turning shared never orphans a page it is working on."""
-        if view in self.views:
-            return
-        if len(self.views) == 1:
-            first = self.views[0]
-            sess = self.session()
-            try:
-                if sess and self.alive(sess):
-                    ids = [t["id"] for t in _http(sess["port"], "/json/list") if t.get("type") == "page"]
-                    first._own = [i for i in first._own if i in ids] + [i for i in ids if i not in first._own]
-                    first._write_own(url=sess.get("url") or "")
-            except Exception:  # noqa: BLE001
-                log.debug("claiming tabs for the first view failed", exc_info=True)
-        self.views.append(view)
+        """Add a view. Nothing is claimed here: a view records the tabs it drives
+        whether or not it shares (Browser._page_target), so a process turning shared
+        finds every page already in its driver's tabs.json. The claim this used to
+        make ("every tab open now is the first view's") was wrong after a restart
+        with Chrome still up: the first bot built took the other bot's tabs too,
+        and both then drove the same page."""
+        if view not in self.views:
+            self.views.append(view)
 
     def detach(self, view):
         self.views = [v for v in self.views if v is not view]
@@ -1350,8 +1347,7 @@ class BrowserProcess:
             view = view if view in self.views else (self.views[0] if self.views else None)
             for v in self.views:
                 v._main_tab = None
-                if self.shared():
-                    v._own = []
+                v._own = []  # target ids belong to the Chrome that minted them
             if headed and self.shared() and view is not None and sess["launch_tab"]:
                 # The headed window opened straight on the asking bot's page: that tab is its own, or its first
                 # action would open a second window beside it (_adopt_launch_tab only takes a blank launch tab).
@@ -1477,13 +1473,13 @@ class Browser:
         self.data_dir = data_dir
         self.cache_dir = cache_dir
         self.proc = proc or BrowserProcess(data_dir, cache_dir)
-        self.proc.attach(self)
         self.shot_path = os.path.join(cache_dir, "shot.png")
         self.downloads = os.path.join(data_dir, "downloads")
-        self.tabs_path = os.path.join(cache_dir, "tabs.json")  # own tab ids + last url, for a shared process
+        self.tabs_path = os.path.join(cache_dir, "tabs.json")  # own tab ids + last url
         self._tab_order = []      # tab ids in open order (Chrome reports newest-first)
-        self._own = self._read_own()  # target ids this view opened (shared process only)
+        self._own = self._read_own()  # target ids this view drives (recorded shared or not: a process may turn shared)
         self._main_tab = None  # target id of the tab we drive
+        self.proc.attach(self)  # after _own: the process may consult the view's tabs from here on
         self.idle = False      # set by the bot's idle sleep; cleared on the next action (stop_if_idle)
         self.idle_check = None  # bot.py sets a callable: "may this bot's browser sleep right now?" (looked at, task, control)
         self.live_seen = 0.0
@@ -1685,13 +1681,21 @@ class Browser:
         """The one tab we drive. Stays the same tab across calls (popups from
         target=_blank links would otherwise become tabs[0] and hijack us).
         On a shared process only this view's own tabs count; with none left a
-        fresh one opens in its own window, back on the bot's last page."""
+        fresh one opens in its own window, back on the bot's last page. A lone
+        view drives every tab, and records them all as its own: should the process
+        turn shared (a bot created on this browser, or a restart that builds the
+        other bot first), its pages are already in its tabs.json and nothing has
+        to guess which tabs were whose."""
         if self.shared():
             tabs = [t for t in _http(port, "/json/list") if t.get("type") == "page"]
             own = {t["targetId"] for t in self._own_targets(port)}
             tabs = [t for t in tabs if t.get("id") in own]
         else:
             tabs = [t for t in _http(port, "/json/list") if t.get("type") == "page"]
+            ids = [t.get("id") for t in tabs]
+            if set(ids) != set(self._own):
+                self._own = [i for i in self._own if i in ids] + [i for i in ids if i not in self._own]
+                self._write_own()
         if not tabs:
             if self.shared():
                 last = self.last_url()
@@ -1699,6 +1703,8 @@ class Browser:
                 tabs = [self._adopt_launch_tab(port, url) or self._new_window(port, url)]
             else:
                 tabs = [_http(port, "/json/new?about:blank", method="PUT")]
+                self._own = [tabs[0].get("id")]
+                self._write_own()
         main = next((t for t in tabs if t.get("id") == self._main_tab), None) or tabs[-1]
         self._main_tab = main.get("id")
         return main, tabs

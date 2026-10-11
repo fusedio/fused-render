@@ -420,7 +420,12 @@ its tabs in windows of their own (`Target.createTarget(newWindow)`, headless
 composites every window's foreground tab, so bots never throttle each other),
 tracks the target ids it opened plus their popups (`openerId`) in
 `cache/bots/<id>/tabs.json`, and drives only those; a bot alone on its browser
-drives every tab, as before. Encrypt-at-rest and an imported Chrome profile
+drives every tab and records them all as its own, so the process turning
+shared (a bot created on it, a restart that builds the other bot first)
+never has to guess whose tabs are whose. "Shared" is the attached views or
+the bot.json files on disk naming the browser (`BrowserProcess.disk_users`,
+refreshed by `browsers.get`), whichever says so: a bot built alone after a
+restart must not drive the other bot's page. Encrypt-at-rest and an imported Chrome profile
 belong to the browser (browser.json) and are mirrored into each bot's
 `encrypt` / `chrome_profile` for the dialog. Idle sleep quits a shared Chrome
 only once every bot on it has been idle (`Browser.sleep` →

@@ -3518,6 +3518,7 @@ def set_browser(b, target, fresh=False):
         gone = "; its old logins were removed (no other bot used them)"
     else:
         gone = ""
+        browsers.get(old)  # the bots left on it: one alone is a private browser again (disk_users)
     names = ", ".join(o["name"] for o in b.shared_with())
     b.emit("system", (f"Now sharing logins with {names}" if names else "Now on a browser of its own, logged out of everything") + gone + ".")
     return True
@@ -3539,6 +3540,8 @@ def delete(bid):
     if not shared:
         b.browser.proc.detach(b.browser)
         browsers.remove(b.browser_id)  # its logins go with it
+    else:
+        browsers.get(b.browser_id)  # refresh the on-disk user count: one bot left means a private browser again
     # A deleted Super Bot's queued hand-offs would otherwise sit at the head of each target's in-memory queue
     # forever (sweep cannot see a forgotten Super Bot), and _handoff_start refuses a queue whose head is not its own.
     for other in reg.loaded():
