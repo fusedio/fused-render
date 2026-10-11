@@ -4,7 +4,8 @@
 // headless, this socket wraps the page's passkey calls (SHIM), and a modal one asks here instead of reaching Chrome:
 // "Open real window" relaunches the same profile headed on this page (the existing popout; the bot pauses and you take
 // over), "Not now" rejects it with NotAllowedError so the page falls back ("Try another way"). Conditional calls
-// (passkey autofill, which Google starts on page load) and non-passkey credentials pass through untouched.
+// (passkey autofill, which sign-in pages such as webauthn.io start on load) and non-passkey credentials pass through
+// untouched; "immediate" ones are told no at once.
 //
 // Per CDP session, like live-page.ts: the binding and the document script are re-added on every socket (onOpen) and die
 // with it. A request lives in the page, not the socket: a re-link asks the page for the ones still waiting (pending()).
@@ -39,6 +40,8 @@ const SHIM = `(() => {
   const ask = (kind, o) => {
     const pk = o && o.publicKey;
     if (!pk || o.mediation === "conditional") return null;
+    // "immediate" asks for a credential only if one is there without any UI; this browser can show none: "nothing here".
+    if (o.mediation === "immediate") return Promise.reject(denied());
     const sig = o.signal, aborted = () => sig.reason || new DOMException("The operation was aborted.", "AbortError");
     if (sig && sig.aborted) return Promise.reject(aborted());
     const id = (++n) + "-" + Math.random().toString(36).slice(2, 10), rp = (kind === "get" ? pk.rpId : pk.rp && pk.rp.id) || location.hostname;
