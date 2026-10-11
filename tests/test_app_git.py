@@ -211,10 +211,11 @@ def test_commit_never_touches_non_app_repos(workspace, tmp_path):
 def test_new_app_is_a_repo_with_one_commit(client, workspace):
     r = client.post("/api/apps/new", json={"name": "mine"}, headers=HDRS)
     assert r.status_code == 200
-    d = workspace / "local" / "mine"
-    assert (workspace / "local" / ".git").is_dir()
-    assert not (d / ".git").exists()
-    assert _log(d, scoped=True) == ["New app from starter"]
+    d = workspace / "app" / "mine"
+    # New apps land under app/, outside the shared local repo: one repo each.
+    assert (d / ".git").is_dir()
+    assert not (workspace / "app" / ".git").exists()
+    assert _log(d) == ["New app from starter"]
 
 
 # ------------------------------------------------------------- migration
