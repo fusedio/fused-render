@@ -72,7 +72,7 @@ export function SizeChips({
           title={!allowed.includes(s) ? "No room here" : undefined}
           onClick={() => onChange(s)}
         >
-          <SizeGlyph size={s} scale={0.7} />
+          <SizeGlyph size={s} source={source} scale={0.7} />
           {SIZE_LABELS[s]}
           <span className="hw-sizechip-dims">{cellDims(source, s)}</span>
         </button>

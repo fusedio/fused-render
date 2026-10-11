@@ -167,7 +167,7 @@ export function ChangeTile({
               <FormatPicks source={widget.source} formats={spec.formats} value={widget.format} disabled={(f) => dimsOf(widget).rows < (formatMinRows(widget.source, f))} onChange={(f) => api.reformat(widget.id, f)} />
             </>
           ) : null}
-          {spec.sizes.length > 1 && !FIXED_ROWS[widget.source] ? (
+          {spec.sizes.length > 1 && (!FIXED_ROWS[widget.source] || widget.source === "search") ? (
             <>
               <div className="hw-label">Size</div>
               <SizeChips

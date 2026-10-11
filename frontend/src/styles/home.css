@@ -2580,8 +2580,18 @@ a.hw-more:hover {
 
 /* One column is too narrow for the CTA and the long placeholder; the bar
    alone still searches and the All files link lives in the sidebar. */
-.hw-widget.is-search.hw-size-1x1 .files-search-allfiles {
+.hw-widget.is-search.hw-size-1x1 .files-search-allfiles,
+.hw-widget.is-search.hw-size-2x1 .files-search-allfiles {
   display: none;
+}
+
+/* A narrow bar clips its placeholder instead of overflowing the tile. */
+.hw-widget.is-search:not(.is-edit) .files-search {
+  overflow: hidden;
+}
+.hw-widget.is-search:not(.is-edit) .files-search-input {
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* The 1-unit search tile is 52px tall: the bar itself must fit. */
