@@ -240,3 +240,27 @@ def test_reopen_opens_home_when_no_live_window():
     m, opened = _reopen_mgr(mw, [closed])
     mw.WindowManager.reopen(m)
     assert opened == [m.home_url]
+
+
+# --- launcher Home row (`app.launcher_home_action`) ------------------------
+
+
+def test_launcher_home_activates_and_focuses_or_opens_home():
+    import fused_render.app as app_mod
+
+    focused, activated = [], []
+    manager = types.SimpleNamespace(focus_or_open_home=lambda: focused.append(True))
+    nsapp = types.SimpleNamespace(activateIgnoringOtherApps_=activated.append)
+    app_mod.launcher_home_action({"windows": manager}, "http://127.0.0.1:1/", nsapp)
+    assert activated == [True] and focused == [True]
+
+
+def test_launcher_home_without_a_manager_opens_a_browser_tab(monkeypatch):
+    import fused_render.app as app_mod
+
+    opened = []
+    monkeypatch.setattr(app_mod.webbrowser, "open", opened.append)
+    nsapp = types.SimpleNamespace(
+        activateIgnoringOtherApps_=lambda _f: pytest.fail("no manager, no activate"))
+    app_mod.launcher_home_action({"windows": None}, "http://127.0.0.1:1/", nsapp)
+    assert opened == ["http://127.0.0.1:1/"]
