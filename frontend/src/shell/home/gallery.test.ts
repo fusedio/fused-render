@@ -64,6 +64,23 @@ test("target mode disables entries bigger than the tile and keeps ones that fit"
   expect(es.some((e) => e.disabled === undefined)).toBe(true);
 });
 
+test("a swap checks the first size that fits the tile, not the default", () => {
+  const tile = w("t", "playground", 0, 0, CELL, CELL);
+  const layout = { ...empty, widgets: [tile] };
+  const bm = galleryEntries(layout, { kind: "swap", widget: tile }, "folder");
+  expect(bm.some((e) => e.disabled === undefined)).toBe(true);
+  expect(bm.find((e) => e.disabled === undefined)!.cols).toBeLessThanOrEqual(CELL);
+  const slot = galleryEntries(empty, { kind: "fill", rect: { x: 0, y: 0, cols: CELL, rows: CELL } }, "folder");
+  expect(slot.some((e) => e.disabled === undefined)).toBe(true);
+});
+
+test("a Page entry is enabled in a 2x1 tile (it has a size that fits)", () => {
+  const tile = w("t", "playground", 0, 0, 4, CELL);
+  const es = galleryEntries({ ...empty, widgets: [tile] }, { kind: "swap", widget: tile }, "app");
+  expect(es[0].disabled).toBeUndefined();
+  expect(es[0].size).toBe("2x1");
+});
+
 test("target mode on an empty slot checks the slot rect", () => {
   const layout = empty;
   const es = galleryEntries(layout, { kind: "fill", rect: { x: 0, y: 0, cols: 4, rows: 4 } }, "app");

@@ -76,8 +76,16 @@ export function galleryEntries(layout: HomeLayout, target?: TileTarget, only?: W
     if (only && source !== only) continue;
     const spec = SOURCES[source];
     for (const format of spec.formats) {
-      const size = sizesFor(source, format)[0];
-      if (size === undefined) continue;
+      const sizes = sizesFor(source, format);
+      if (sizes[0] === undefined) continue;
+      // A swap keeps the tile's footprint: use the first size that fits it.
+      const size =
+        (tile &&
+          sizes.find((s) => {
+            const d = dimsFor(source, s);
+            return d.cols <= tile.cols && d.rows <= tile.rows;
+          })) ||
+        sizes[0];
       const { cols, rows } = dimsFor(source, size);
       let disabled: string | undefined;
       if (full) disabled = "Home is full";
