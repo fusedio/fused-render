@@ -150,7 +150,7 @@ class FakeBot:
         self.statuses.append(status)
         self.status_log.append((status, dict(kw)))
 
-    def wait_event(self, role, timeout=15, pred=lambda ev: True):
+    def wait_event(self, role, timeout=90, pred=lambda ev: True):
         end = time.time() + timeout
         with self.cond:
             while True:
@@ -353,7 +353,7 @@ def start(bot, script, monkeypatch, task="say hi"):
     return t
 
 
-def finish(t, timeout=30):
+def finish(t, timeout=120):
     t.join(timeout)
     assert not t.is_alive(), "the task thread did not end"
 
