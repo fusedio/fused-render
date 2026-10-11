@@ -989,8 +989,9 @@ def allow_launches() -> None:
 
 class BrowserProcess:
     """One Chrome process: profile folder, debugging port, lock, encryption at
-    rest. `views` are the `Browser`s (bots) driving it; with more than one the
-    process is shared and each view keeps to its own tabs."""
+    rest. `views` are the `Browser`s (bots) driving it. Every view keeps to its
+    own Chrome window(s) (docs/bots.md §5): the process shares the profile and
+    nothing else — no tab, no sleep, no viewport is held in common."""
 
     def __init__(self, data_dir, cache_dir):
         self.data_dir = data_dir
@@ -1001,19 +1002,15 @@ class BrowserProcess:
         self.encrypt = False  # from browser.json (browsers.py); seal the profile whenever Chrome stops
         self.lock = threading.RLock()
         self._proc = None
-        self.views = []  # Browser views attached; len > 1 = shared
-        # How many bot.json on disk name this browser (browsers.get refreshes it). The registry builds bots one at
-        # a time and some routes build just one (the thumbnail's /shot, tab ops): with only the attached views
-        # counted, the first bot built after a restart saw its browser as private and drove every tab in it,
-        # the other bot's page included (its status url, screenshot and live view all showed that page).
-        self.disk_users = 0
-        # The window size, following the live view's stage (set_viewport). Its own file: session.json is
-        # rewritten on every launch and removed on stop, and the size has to outlive both.
-        self.viewport_path = os.path.join(cache_dir, "viewport.json")
-        self.viewport = self._read_viewport()
-
-    def shared(self):
-        return len(self.views) > 1 or self.disk_users > 1
+        self.views = []  # Browser views attached (one per bot on this profile)
+        # Every bot on disk for this browser has been built (registry.all ran): only then can a window no
+        # view owns be called an orphan (Browser._sweep_orphans). Set by browsers.mark_complete.
+        self.complete = False
+        self._first_seen = {}  # targetId -> when a target unknown to every view was first noticed (orphan grace)
+        self._winmap = {}      # targetId -> windowId (a tab never changes windows in headless; closed ids fall out)
+        # The size the last launch used (`--window-size`): the asking view's. Older installs kept one size
+        # per process in viewport.json; it seeds a view that has none of its own (Browser._read_win).
+        self.viewport = self._legacy_viewport()
 
     # -- viewport --------------------------------------------------------------
     VIEWPORT_W = (640, 3840)
@@ -1024,84 +1021,73 @@ class BrowserProcess:
         return (max(cls.VIEWPORT_W[0], min(cls.VIEWPORT_W[1], int(w))),
                 max(cls.VIEWPORT_H[0], min(cls.VIEWPORT_H[1], int(h))))
 
-    def _read_viewport(self):
+    def _legacy_viewport(self):
         try:
-            with open(self.viewport_path, encoding="utf-8") as f:
+            with open(os.path.join(self.cache_dir, "viewport.json"), encoding="utf-8") as f:
                 w, h = json.load(f)["viewport"]
             return self._clamp_viewport(w, h)
-        except Exception:  # noqa: BLE001 — none saved yet (or unreadable): the default
+        except Exception:  # noqa: BLE001 — none saved (the usual): the default
             return tuple(VIEWPORT)
 
-    def set_viewport(self, w, h):
-        """Size this Chrome's windows to (w, h), clamped, and remember it for the next launch.
-        A popped-out (headed) window is the user's and is never resized; the size still applies
-        once it docks back (relaunch). Returns the stored size."""
-        size = self._clamp_viewport(w, h)
-        with self.lock:
-            if size == self.viewport:
-                return size
-            sess = self.session()
-        if sess and not sess.get("headed") and self.alive(sess):
-            # Resize first, remember after: a failed resize raises, so the caller (the live view) tries again
-            # instead of believing a size Chrome never took.
-            self._resize_windows(sess["port"], size)
-        with self.lock:
-            self.viewport = size
-            try:
-                write_json_atomic(self.viewport_path, {"viewport": list(size)})
-            except OSError:
-                log.warning("viewport not saved", exc_info=True)
-        return size
-
     @staticmethod
-    def _resize_windows(port, size):
-        """Every page window to `size`, as a CSS viewport: the window is set, the viewport measured
-        (Page.getLayoutMetrics), and any UI strip Chrome keeps between the two is added once. Raises
-        when no window could be resized."""
-        bws = WS(_http(port, "/json/version")["webSocketDebuggerUrl"], timeout=3)
-        done = 0
+    def resize_window(bws, wid, tab_ws_url, size):
+        """One window to `size`, as a CSS viewport: the window is set, the viewport measured
+        (Page.getLayoutMetrics), and any UI strip Chrome keeps between the two is added once."""
+        want = {"width": size[0], "height": size[1]}
+        bws.call("Browser.setWindowBounds", windowId=wid, bounds={**want, "windowState": "normal"})
+        pws = WS(tab_ws_url, timeout=3)
         try:
-            seen = set()
-            for t in _http(port, "/json/list"):
-                if t.get("type") != "page":
-                    continue
-                try:
-                    wid = bws.call("Browser.getWindowForTarget", targetId=t["id"])["windowId"]
-                    if wid in seen:
-                        continue
-                    seen.add(wid)
-                    want = {"width": size[0], "height": size[1]}
-                    bws.call("Browser.setWindowBounds", windowId=wid, bounds={**want, "windowState": "normal"})
-                    pws = WS(t["webSocketDebuggerUrl"], timeout=3)
-                    try:
-                        vp = (pws.call("Page.getLayoutMetrics").get("cssLayoutViewport") or {})
-                    finally:
-                        pws.close()
-                    dw = size[0] - int(vp.get("clientWidth") or size[0])
-                    dh = size[1] - int(vp.get("clientHeight") or size[1])
-                    if 0 < dw < 200 or 0 < dh < 200:
-                        bws.call("Browser.setWindowBounds", windowId=wid,
-                                 bounds={"width": size[0] + max(0, dw), "height": size[1] + max(0, dh)})
-                    done += 1
-                except Exception:  # noqa: BLE001 — a tab closing mid-loop; the others still resize
-                    log.warning("resizing a bot window failed", exc_info=True)
+            vp = (pws.call("Page.getLayoutMetrics").get("cssLayoutViewport") or {})
         finally:
-            bws.close()
-        if not done:
-            raise RuntimeError("no bot window could be resized")
+            pws.close()
+        dw = size[0] - int(vp.get("clientWidth") or size[0])
+        dh = size[1] - int(vp.get("clientHeight") or size[1])
+        if 0 < dw < 200 or 0 < dh < 200:
+            bws.call("Browser.setWindowBounds", windowId=wid,
+                     bounds={"width": size[0] + max(0, dw), "height": size[1] + max(0, dh)})
 
     def attach(self, view):
-        """Add a view. Nothing is claimed here: a view records the tabs it drives
-        whether or not it shares (Browser._page_target), so a process turning shared
-        finds every page already in its driver's tabs.json. The claim this used to
-        make ("every tab open now is the first view's") was wrong after a restart
-        with Chrome still up: the first bot built took the other bot's tabs too,
-        and both then drove the same page."""
         if view not in self.views:
             self.views.append(view)
 
     def detach(self, view):
         self.views = [v for v in self.views if v is not view]
+
+    def window_of(self, bws, tid):
+        """The windowId a page target sits in (cached: headless never moves a tab between windows)."""
+        wid = self._winmap.get(tid)
+        if wid is None:
+            wid = bws.call("Browser.getWindowForTarget", targetId=tid)["windowId"]
+            self._winmap[tid] = wid
+        return wid
+
+    def page_targets(self, port, bws=None):
+        """[(targetInfo, windowId)] for every page target, with /json/list's socket url merged in as
+        `ws`. Drops the window cache's dead ids on the way."""
+        own = bws is None
+        if own:
+            bws = WS(_http(port, "/json/version")["webSocketDebuggerUrl"], timeout=5)
+        try:
+            infos = [t for t in bws.call("Target.getTargets")["targetInfos"] if t.get("type") == "page"]
+            urls = {t.get("id"): t for t in _http(port, "/json/list")}
+            live = {t["targetId"] for t in infos}
+            for tid in [k for k in self._winmap if k not in live]:
+                self._winmap.pop(tid, None)
+                self._first_seen.pop(tid, None)
+            out = []
+            for t in infos:
+                try:
+                    wid = self.window_of(bws, t["targetId"])
+                except Exception:  # noqa: BLE001 — a target closing under the query
+                    continue
+                j = urls.get(t["targetId"]) or {}
+                wsu = j.get("webSocketDebuggerUrl") or ""
+                out.append(({**t, "id": t["targetId"], "ws": wsu, "webSocketDebuggerUrl": wsu,
+                             "title": j.get("title") or t.get("title") or "", "url": t.get("url") or j.get("url") or ""}, wid))
+            return out
+        finally:
+            if own:
+                bws.close()
 
     # -- profile at rest -----------------------------------------------------
     def sealed(self):
@@ -1186,48 +1172,53 @@ class BrowserProcess:
         except Exception:
             return False
 
-    def start(self, url="", view=None):
+    def start(self, view=None):
         """Launch headless Chrome for this profile unless it is already up with the
         live view's origin allowed; returns the session. Chrome is never relaunched
         for a take-over: the user drives the same tab from the live view. A profile
         popped out as a real window (`popout`) is left as it is: `dock` ends that.
-        `url` is the page to come back to on a cold start (the asking `view`'s last
-        page): session.json went with the quit, so a wake knows it only from the caller."""
+        `view` is the bot asking: its window comes back first (window.json remembers
+        its tabs; session.json went with the quit)."""
         origin = page_origin()
         with self.lock:
             sess = self.session()
-            restore = url or ""
+            awake = []
             if self.alive(sess):
                 if sess.get("origin") == origin or sess.get("headed"):
                     return sess
-                restore = sess.get("url") or restore  # a relaunch just to pick up the flag keeps the page
+                awake = self._awake()  # a relaunch just to pick up the flag keeps every bot's windows
                 self.stop(seal=False)
-            return self._launch(origin, False, restore, view)
+            return self._launch(origin, False, view, awake)
+
+    def _awake(self):
+        """The views with a window up right now (snapshot before a relaunch: _launch forgets every window)."""
+        return [v for v in self.views if v.running()]
 
     def headed(self):
         sess = self.session() or {}
         return bool(sess.get("headed") or sess.get("visible"))  # `visible`: a window popped out before this flag existed
 
-    def popout(self, url="", view=None):
+    def popout(self, view=None):
         """The one deliberate relaunch left: the same profile as a real Chrome window
         on the desktop, for what no screencast can carry (passkeys, the password
-        manager, print). `view` is the bot that asked: its page is the one restored.
-        Returns the session; a no-op when already headed."""
-        return self._relaunch(True, url, view)
+        manager, print). `view` is the bot that asked: its window opens first; every
+        other bot that was awake gets its own real window too (headed is a launch
+        flag, so it is process-wide). Returns the session; a no-op when already headed."""
+        return self._relaunch(True, view)
 
-    def dock(self, url="", view=None):
+    def dock(self, view=None):
         """Back to headless after `popout` (the window may already be gone). Returns the session."""
-        return self._relaunch(False, url, view)
+        return self._relaunch(False, view)
 
-    def _relaunch(self, headed, url, view):
+    def _relaunch(self, headed, view):
         with self.lock:
             sess = self.session()
             if self.alive(sess) and bool(sess.get("headed")) == headed:
                 return sess
-            url = url or (sess or {}).get("url") or ""
+            awake = self._awake() if self.alive(sess) else []
             if sess:
                 self.stop(seal=False)  # clean: Chrome unlinks its Singleton* files, so the launch is never forwarded to it
-            return self._launch(page_origin(), headed, url, view)
+            return self._launch(page_origin(), headed, view, awake)
 
     def window_closed(self):
         """A popped-out profile whose user closed the window: Chrome quit, or (macOS)
@@ -1242,14 +1233,18 @@ class BrowserProcess:
         except Exception:  # noqa: BLE001
             return False  # a slow answer is not a closed window; the next poll asks again
 
-    def _launch(self, origin, headed, restore, view=None):
-        """Start Chrome on this profile (the caller holds the lock). `restore` is the page to come back
-        to; `view` the bot whose page it is (default: the first attached), which also claims the launch
-        tab on a shared process so the window Chrome opened is driven, not orphaned beside a new one."""
+    def _launch(self, origin, headed, view=None, awake=()):
+        """Start Chrome on this profile (the caller holds the lock). `view` is the bot asking: it adopts
+        the window Chrome opens at launch (on its last page), so that window is driven, not orphaned
+        beside a new one. `awake` are the other views that had a window before a relaunch: each gets
+        its window back (headed: one real window per awake bot)."""
         with self.lock:
             if _LAUNCHES_REFUSED.is_set():
                 raise RuntimeError("the app is quitting; no Chrome is launched")
+            view = view if view in self.views else (self.views[0] if self.views else None)
+            restore = view.last_url() if view is not None else ""
             restore = restore if restore and restore != "about:blank" else ""
+            self.viewport = tuple(view.viewport) if view is not None else tuple(VIEWPORT)
             self.unseal()
             os.makedirs(self.profile, exist_ok=True)
             os.makedirs(self.cache_dir, exist_ok=True)
@@ -1344,15 +1339,10 @@ class BrowserProcess:
                     sess["launch_tab"] = launch[0]["id"]
                     break
                 time.sleep(0.1)
-            view = view if view in self.views else (self.views[0] if self.views else None)
+            self._winmap.clear()
+            self._first_seen.clear()
             for v in self.views:
-                v._main_tab = None
-                v._own = []  # target ids belong to the Chrome that minted them
-            if headed and self.shared() and view is not None and sess["launch_tab"]:
-                # The headed window opened straight on the asking bot's page: that tab is its own, or its first
-                # action would open a second window beside it (_adopt_launch_tab only takes a blank launch tab).
-                view._own = [sess["launch_tab"]]
-                view._write_own(url=restore)
+                v.forget_windows()  # window ids belong to the Chrome that minted them
             write_json_atomic(self.session_path, sess)
             # Headless Chrome has no permission prompt: every request is silently denied. Clipboard access is granted
             # browser-wide so a page's own Copy buttons work (this Chrome's clipboard is private to it, measured, so a
@@ -1366,19 +1356,14 @@ class BrowserProcess:
                     bws.close()
             except Exception:  # noqa: BLE001 — a Chrome without the permission names just keeps denying
                 log.debug("clipboard permission grant failed", exc_info=True)
-            if restore:
-                # The page comes back (headed: Chrome opened on it; headless: navigated below, not awaited). Recorded now so
-                # status / the live view's URL bar show it before the first action rewrites the session.
-                sess["url"] = restore
-                write_json_atomic(self.session_path, sess)
-            if view is not None and restore and not headed:
+            # The asking view adopts the launch window (navigated to its page, not awaited; headed: Chrome opened
+            # on it already), then its other remembered tabs come back. Every other awake view gets a window of
+            # its own. Non-fatal: a view whose restore fails opens its window on its next action.
+            for v in ([view] if view is not None else []) + [v for v in awake if v is not view and v in self.views]:
                 try:
-                    tab, _ = view._page_target(port)  # shared: adopts the launch tab on the view's last page already
-                    ws = WS(tab["webSocketDebuggerUrl"])
-                    ws.call("Page.navigate", url=restore)  # do not wait for the load
-                    ws.close()
-                except Exception:
-                    pass
+                    v._restore(port, adopt=v is view, navigate=not headed or v is not view)
+                except Exception:  # noqa: BLE001
+                    log.warning("restoring a bot's window after launch failed", exc_info=True)
             return sess
 
     def stop(self, seal=None):
@@ -1452,22 +1437,33 @@ class BrowserProcess:
                 except FileNotFoundError:
                     pass
 
-    def stop_if_idle(self):
-        """Idle sleep for a shared process: quit only once every view may sleep
-        NOW (`Browser.may_sleep()`: its bot's live check when it set one, else the
-        flag its own sleep attempt left). Returns True when Chrome was stopped."""
+    def stop_if_empty(self):
+        """Quit Chrome once no bot has a window in it (the last bot's sleep, leave or
+        delete). Headless Chrome keeps running with zero windows (measured, Chrome 155),
+        so the quit is ours to make. Returns True when Chrome was stopped."""
         with self.lock:
-            if any(not v.may_sleep() for v in self.views):
+            sess = self.session()
+            if not sess:
                 return False
+            if self.alive(sess):
+                try:
+                    if any(t.get("type") == "page" for t in _http(sess["port"], "/json/list")):
+                        return False
+                except Exception:  # noqa: BLE001 — unanswering: treat as empty, stop escalates anyway
+                    pass
             self.stop()
             return True
 
 # ---------------------------------------------------------------- browser ---
 class Browser:
-    """One bot's view of a `BrowserProcess`: its tabs, screenshots, downloads
-    and page actions. `Browser(data_dir, cache_dir)` without `proc` makes a
-    private process at the old per-bot paths (profile/ under data_dir), which
-    is what tests and a lone bot get."""
+    """One bot's view of a `BrowserProcess`: its window(s), tabs, screenshots,
+    downloads and page actions. A view owns Chrome windows, never bare tabs: a
+    tab is the view's when Chrome says it sits in one of its windows (or its
+    opener chain leads there — a popup). `window.json` under the cache dir
+    remembers the window ids (valid for one Chrome pid), the tabs in them (so a
+    wake brings the whole window back) and the view's own viewport.
+    `Browser(data_dir, cache_dir)` without `proc` makes a private process at the
+    old per-bot paths (profile/ under data_dir), which is what tests get."""
 
     def __init__(self, data_dir, cache_dir, proc=None):
         self.data_dir = data_dir
@@ -1475,13 +1471,11 @@ class Browser:
         self.proc = proc or BrowserProcess(data_dir, cache_dir)
         self.shot_path = os.path.join(cache_dir, "shot.png")
         self.downloads = os.path.join(data_dir, "downloads")
-        self.tabs_path = os.path.join(cache_dir, "tabs.json")  # own tab ids + last url
+        self.win_path = os.path.join(cache_dir, "window.json")
         self._tab_order = []      # tab ids in open order (Chrome reports newest-first)
-        self._own = self._read_own()  # target ids this view drives (recorded shared or not: a process may turn shared)
+        self.win = self._read_win()  # {"pid", "windows": [ids], "tabs": [{url, title}], "active", "viewport"}
         self._main_tab = None  # target id of the tab we drive
-        self.proc.attach(self)  # after _own: the process may consult the view's tabs from here on
-        self.idle = False      # set by the bot's idle sleep; cleared on the next action (stop_if_idle)
-        self.idle_check = None  # bot.py sets a callable: "may this bot's browser sleep right now?" (looked at, task, control)
+        self.idle = False      # set by the bot's idle sleep; cleared on the next action
         self.live_seen = 0.0
         self.thumb_bytes = None  # JPEG of the last screenshot, for step thumbnails
         # Screenshot after every `_run` action. The agent engine turns this off for its
@@ -1489,6 +1483,7 @@ class Browser:
         # PNG capture plus two sips conversions. observe/screenshot always capture.
         self.shoot_actions = True
         self._ax_warned = False  # the AX snapshot failure is logged once per browser
+        self.proc.attach(self)  # after own state: the process may consult the view's windows from here on
 
     # -- process delegation (the API bot.py and routes.py drive) -----------
     @property
@@ -1530,181 +1525,377 @@ class Browser:
     def alive(self, sess=None):
         return self.proc.alive(sess)
 
+    def running(self, sess=None):
+        """This bot's browser is up: Chrome runs and this view has a window in it. A
+        sleeping bot on a shared Chrome another bot keeps busy is not running."""
+        sess = sess or self.session()
+        if not sess or not self.win.get("windows") or self.win.get("pid") != sess.get("pid"):
+            return False
+        return self.alive(sess)
+
     def start(self):
-        """Up, or relaunched on this bot's last page. A wake after idle sleep used to come up on about:blank
-        for a lone bot: the launch tab is adopted as-is (only the shared branch of _page_target navigates it)."""
+        """Up, with this bot's window open: Chrome launched if it was down (the launch window becomes
+        this bot's, on its last page), else a window opened now when this bot has none."""
         self.idle = False
-        return self.proc.start(url=self.last_url(), view=self)
+        sess = self.proc.start(view=self)
+        if not self.running(sess):
+            with self.lock:
+                self._page_target(sess["port"])
+        return sess
 
     def headed(self):
         return self.proc.headed()
 
     @property
     def viewport(self):
-        return self.proc.viewport
+        return tuple(self.win.get("viewport") or self.proc.viewport)
 
     def set_viewport(self, w, h):
-        return self.proc.set_viewport(w, h)
+        """Size this bot's window(s) to (w, h), clamped, and remember it for the next launch. Only this
+        bot's windows: another bot's page under its bot is never resized. A popped-out (headed) window
+        is the user's and is never resized; the size still applies once it docks back. Returns the size."""
+        size = self.proc._clamp_viewport(w, h)
+        with self.lock:
+            if size == self.viewport:
+                return size
+            sess = self.session()
+            if sess and not sess.get("headed") and self.running(sess):
+                # Resize first, remember after: a failed resize raises, so the caller (the live view) tries
+                # again instead of believing a size Chrome never took.
+                port = sess["port"]
+                bws = self._browser_ws(port)
+                done = 0
+                try:
+                    seen = set()
+                    for t, wid in self._my_targets(port, bws):
+                        if wid in seen:
+                            continue
+                        seen.add(wid)
+                        try:
+                            self.proc.resize_window(bws, wid, t["ws"], size)
+                            done += 1
+                        except Exception:  # noqa: BLE001 — a tab closing mid-loop
+                            log.warning("resizing a bot window failed", exc_info=True)
+                finally:
+                    bws.close()
+                if not done:
+                    raise RuntimeError("no bot window could be resized")
+            self.win["viewport"] = list(size)
+            self._write_win()
+        return size
 
     def popout(self):
         self.idle = False
-        return self.proc.popout(url=self.last_url() if self.shared() else "", view=self)
+        return self.proc.popout(view=self)
 
     def dock(self):
         self.idle = False
-        return self.proc.dock(url=self.last_url() if self.shared() else "", view=self)
+        return self.proc.dock(view=self)
 
     def window_closed(self):
         return self.proc.window_closed()
 
     def stop(self, seal=None):
-        """Quit the process. On a shared process this closes every bot's tabs;
-        idle sleep uses `sleep()` instead."""
+        """Quit the process (every bot's windows). Idle sleep and leaving use `sleep()` / `leave()`."""
         self.proc.stop(seal)
 
     def sleep(self):
-        """Idle sleep: mark this view idle and quit Chrome once every bot on
-        the process is. Returns True when Chrome actually stopped."""
+        """Idle sleep: close this bot's windows (its tabs are remembered for the wake) and quit Chrome
+        when no bot has a window left. Returns True when something closed."""
         self.idle = True
-        return self.proc.stop_if_idle()
+        with self.lock:
+            closed = self._close_mine()
+            stopped = self.proc.stop_if_empty()
+        return closed or stopped
 
-    def may_sleep(self):
-        """Whether this view's bot would let the shared Chrome go right now: its
-        live check (set by bot.py) when there is one, else the sticky flag."""
-        if self.idle_check is not None:
+    def leave(self):
+        """This bot is leaving the process (moved to another browser, deleted): close its windows,
+        quit Chrome when that left it empty, detach."""
+        with self.lock:
+            self._close_mine()
+            self.proc.stop_if_empty()
+        self.proc.detach(self)
+
+    # -- windows -----------------------------------------------------------
+    def _read_win(self):
+        d = {"pid": None, "windows": [], "tabs": [], "active": 0, "viewport": None}
+        try:
+            with open(self.win_path) as f:
+                saved = json.load(f)
+            d.update({k: saved[k] for k in d if k in saved})
+        except Exception:
+            # Before windows (tabs.json: own tab ids + the last page) — the page carries over so the first wake
+            # after the upgrade still comes back where the bot was.
             try:
-                return bool(self.idle_check())
-            except Exception:  # noqa: BLE001
-                return False
-        return self.idle
+                with open(os.path.join(self.cache_dir, "tabs.json")) as f:
+                    old = json.load(f)
+                if old.get("url"):
+                    d["tabs"] = [{"url": old["url"], "title": old.get("title") or ""}]
+            except Exception:
+                pass
+        if not isinstance(d["windows"], list):
+            d["windows"] = []
+        if not isinstance(d["tabs"], list):
+            d["tabs"] = []
+        return d
 
-    def shared(self):
-        return self.proc.shared()
-
-    # -- own tabs (shared process) -----------------------------------------
-    def _read_own(self):
-        try:
-            with open(self.tabs_path) as f:
-                d = json.load(f)
-            return list(d.get("tabs") or [])
-        except Exception:
-            return []
-
-    def _write_own(self, url=None, title=None):
-        d = {"tabs": self._own}
-        try:
-            with open(self.tabs_path) as f:
-                old = json.load(f)
-        except Exception:
-            old = {}
-        d["url"] = url if url is not None else old.get("url")
-        d["title"] = title if title is not None else old.get("title")
+    def _write_win(self):
         try:
             os.makedirs(self.cache_dir, exist_ok=True)
-            write_json_atomic(self.tabs_path, d)
+            write_json_atomic(self.win_path, self.win)
         except Exception:
             pass
 
+    def forget_windows(self):
+        """The Chrome that minted the window ids is gone (relaunch): the tabs stay remembered."""
+        self._main_tab = None
+        self.win["windows"] = []
+        self.win["pid"] = None
+        self._write_win()
+
+    def _remember_tabs(self, tabs, main_id=None):
+        """Record the window's tabs (open order) and which is driven, for the next wake."""
+        self.win["tabs"] = [{"url": t.get("url") or "", "title": (t.get("title") or "")[:80]} for t in tabs]
+        ids = [t.get("id") for t in tabs]
+        self.win["active"] = ids.index(main_id) if main_id in ids else 0
+        self._write_win()
+
     def last_url(self):
+        tabs = self.win.get("tabs") or []
+        i = self.win.get("active") or 0
         try:
-            with open(self.tabs_path) as f:
-                return json.load(f).get("url") or ""
-        except Exception:
-            return ""
+            return tabs[i]["url"] or ""
+        except (IndexError, KeyError, TypeError):
+            return tabs[0]["url"] if tabs else ""
 
     def _browser_ws(self, port, timeout=10):
         info = _http(port, "/json/version")
         return WS(info["webSocketDebuggerUrl"], timeout=timeout)
 
-    def _own_targets(self, port):
-        """This view's page targets on a shared process: the tabs it opened plus
-        any popup whose opener chain leads to one of them. Prunes closed ids."""
-        ws = self._browser_ws(port)
+    def _my_targets(self, port, bws=None):
+        """[(target, windowId)] for this view's page targets: those in its windows, plus any popup whose
+        opener chain leads to one of them (a popup with window features gets a window of its own, which
+        is then recorded as this view's too, so it stays ours after its opener closes). Also the orphan
+        sweep (`_sweep_orphans`) when the process is complete."""
+        pid = (self.session() or {}).get("pid")
+        if self.win.get("pid") != pid:
+            self.win["windows"], self.win["pid"] = [], pid
+        own = bws is None
+        if own:
+            bws = self._browser_ws(port)
         try:
-            infos = [t for t in ws.call("Target.getTargets")["targetInfos"] if t.get("type") == "page"]
+            all_ = self.proc.page_targets(port, bws)
+            mine_w = set(self.win["windows"])
+            mine = {t["id"] for t, w in all_ if w in mine_w}
+            changed = True
+            while changed:
+                changed = False
+                for t, w in all_:
+                    if t["id"] not in mine and t.get("openerId") in mine:
+                        mine.add(t["id"])
+                        if w not in mine_w:
+                            mine_w.add(w)
+                            self.win["windows"].append(w)
+                            self._write_win()
+                        changed = True
+            out = [(t, w) for t, w in all_ if t["id"] in mine]
+            live_w = {w for _, w in out}
+            if set(self.win["windows"]) - live_w:  # a window whose tabs all closed
+                self.win["windows"] = [w for w in self.win["windows"] if w in live_w]
+                self._write_win()
+            self._sweep_orphans(bws, all_)
+            return out
         finally:
-            ws.close()
-        by_id = {t["targetId"]: t for t in infos}
-        own = set(i for i in self._own if i in by_id)
-        changed = True
-        while changed:
-            changed = False
-            for t in infos:
-                if t["targetId"] not in own and t.get("openerId") in own:
-                    own.add(t["targetId"])
-                    changed = True
-        if own != set(self._own):
-            self._own = [i for i in self._own if i in own] + [i for i in own if i not in self._own]
-            self._write_own()
-        return [by_id[i] for i in self._own]
+            if own:
+                bws.close()
 
-    def _new_window(self, port, url="about:blank"):
-        """A tab in a window of its own (headless composites each window's
-        foreground tab, so bots sharing a process never throttle each other)."""
-        ws = self._browser_ws(port)
-        try:
-            tid = ws.call("Target.createTarget", url=url or "about:blank", newWindow=True)["targetId"]
-        finally:
-            ws.close()
-        self._own.append(tid)
-        self._write_own()
+    ORPHAN_GRACE_S = 30
+
+    def _sweep_orphans(self, bws, all_):
+        """Close windows no bot owns (a bot deleted mid-run, a crash between close and record). Only once
+        every bot on this browser is built (the process is complete), never a headed (user's) window, never
+        the blank launch window (adoptable), and only after a grace period: a popup whose opener is still
+        navigating must not be taken for an orphan."""
+        if not self.proc.complete or self.headed():
+            return
+        owned = set()
+        for v in self.proc.views:
+            owned.update(v.win.get("windows") or [])
+        launch = (self.session() or {}).get("launch_tab")
+        now = time.time()
+        seen = self.proc._first_seen
+        for t, w in all_:
+            if w in owned or (t["id"] == launch and (t.get("url") or "about:blank") == "about:blank"):
+                seen.pop(t["id"], None)
+                continue
+            opener = t.get("openerId")
+            if opener and any(opener == o["id"] and ow in owned for o, ow in all_):
+                continue
+            first = seen.setdefault(t["id"], now)
+            if now - first < self.ORPHAN_GRACE_S:
+                continue
+            try:
+                bws.call("Target.closeTarget", targetId=t["id"])
+                log.info("closed an orphan bot tab %s (%s)", t["id"][:8], (t.get("url") or "")[:80])
+            except Exception:  # noqa: BLE001
+                pass
+            seen.pop(t["id"], None)
+
+    def _new_window(self, port, bws, url="about:blank"):
+        """A tab in a window of this view's own (headless composites each window's foreground tab, so
+        bots sharing a process never throttle each other). Recorded before it is looked for."""
+        tid = bws.call("Target.createTarget", url=url or "about:blank", newWindow=True)["targetId"]
+        wid = self.proc.window_of(bws, tid)
+        self.win["windows"].append(wid)
+        self.win["pid"] = (self.session() or {}).get("pid")
+        self._write_win()
         for _ in range(20):
             t = next((x for x in _http(port, "/json/list") if x.get("id") == tid), None)
             if t:
-                return t
+                return {**t, "ws": t.get("webSocketDebuggerUrl") or ""}
             time.sleep(0.1)
         raise RuntimeError("the new tab did not appear")
 
-    def _adopt_launch_tab(self, port, url):
-        """Chrome opens one window on about:blank at launch. The first view to act
-        on a shared process claims it instead of opening a window beside it,
-        so the profile does not keep a blank tab nobody drives. Only that
-        launch tab is taken (a blank tab the user opened from the live view is theirs)."""
-        with self.proc.lock:  # two views cold-starting together must not both claim it
-            tid = (self.session() or {}).get("launch_tab")
-            if not tid or any(tid in v._own for v in self.proc.views if v is not self):
-                return None
-            t = next((x for x in _http(port, "/json/list") if x.get("id") == tid and x.get("type") == "page"), None)
-            if t is None or (t.get("url") or "about:blank") != "about:blank":
-                return None
-            self._own.append(tid)
-            self._write_own()
+    def _adopt_launch_window(self, port, bws, url, blank_only=True):
+        """Chrome opens one window at launch (about:blank, or the asking bot's page when headed). The first
+        view to need a window takes it instead of opening one beside it, so the profile keeps no blank
+        window nobody drives. Only that launch window, only while still blank (`blank_only`; the launch
+        itself passes False, Chrome having opened it on the page), only when no other view owns it."""
+        tid = (self.session() or {}).get("launch_tab")
+        if not tid:
+            return None
+        t = next((x for x in _http(port, "/json/list") if x.get("id") == tid and x.get("type") == "page"), None)
+        if t is None or (blank_only and (t.get("url") or "about:blank") != "about:blank"):
+            return None
+        wid = self.proc.window_of(bws, tid)
+        if any(wid in (v.win.get("windows") or []) for v in self.proc.views if v is not self):
+            return None
+        self.win["windows"].append(wid)
+        self.win["pid"] = (self.session() or {}).get("pid")
+        self._write_win()
         if url and url != "about:blank":
             ws = WS(t["webSocketDebuggerUrl"])
             try:
                 ws.call("Page.navigate", url=url)  # do not wait for the load
             finally:
                 ws.close()
+        return {**t, "ws": t.get("webSocketDebuggerUrl") or ""}
+
+    def _open_window(self, port, bws, url):
+        """This view's window, opened on `url` (the launch window adopted when it is free)."""
+        return self._adopt_launch_window(port, bws, url) or self._new_window(port, bws, url)
+
+    def _open_in(self, port, bws, opener, url, seen):
+        """A new tab in `opener`'s window, on `url`: window.open from the page lands in the opener's window
+        (measured; Target.createTarget without newWindow lands in whatever window Chrome last focused, which
+        may be another bot's). Opened blank and navigated over CDP, since a page may not open some URLs
+        itself. `seen`: target ids present before. None when no tab appeared (blocked, no context)."""
+        ws = WS(opener["ws"], timeout=5)
+        try:
+            ws.call("Runtime.evaluate", expression="window.open('about:blank', '_blank')", userGesture=True)
+        finally:
+            ws.close()
+        for _ in range(20):
+            time.sleep(0.1)
+            fresh = [t for t, _ in self.proc.page_targets(port, bws) if t["id"] not in seen and t.get("openerId") == opener["id"]]
+            if fresh:
+                break
+        else:
+            return None
+        t = fresh[-1]
+        if url and url != "about:blank":
+            pws = WS(t["ws"], timeout=5)
+            try:
+                pws.call("Page.navigate", url=url)  # not awaited
+            finally:
+                pws.close()
         return t
+
+    def _restore(self, port, adopt=False, navigate=True):
+        """After a launch or relaunch: this view's window back on its remembered tabs. `adopt`: take the
+        launch window (the asking view). `navigate`: the first tab needs to be sent to the page (a headed
+        launch already opened on it)."""
+        with self.lock:
+            if self.win.get("windows") and self.win.get("pid") == (self.session() or {}).get("pid"):
+                return
+            tabs = list(self.win.get("tabs") or [])
+            active = self.win.get("active") or 0
+            first = self.last_url() or "about:blank"
+            rest = [t["url"] for i, t in enumerate(tabs) if i != active and t.get("url") and t["url"] != "about:blank"]
+            bws = self._browser_ws(port)
+            try:
+                # The window first (blank), its other tabs opened from it, the driven tab navigated LAST: a
+                # window.open evaluated in a page that is navigating away is dropped with its context.
+                t = (self._adopt_launch_window(port, bws, "", blank_only=navigate) if adopt else None) \
+                    or self._new_window(port, bws, "about:blank")
+                self._main_tab = t.get("id")
+                seen = {x["id"] for x, _ in self.proc.page_targets(port, bws)}
+                for u in rest:
+                    try:
+                        nt = self._open_in(port, bws, t, u, seen)
+                        if nt:
+                            seen.add(nt["id"])
+                    except Exception:  # noqa: BLE001 — one tab lost; the window is up
+                        pass
+                if navigate and first != "about:blank":
+                    pws = WS(t["ws"], timeout=5)
+                    try:
+                        pws.call("Page.navigate", url=first)  # not awaited
+                    finally:
+                        pws.close()
+                self._tab_order = [t["id"]]  # the driven tab is index 0; the others follow in open order
+            finally:
+                bws.close()
+
+    def _close_mine(self):
+        """Close this view's tabs (its windows go with their last tab) after remembering them. False when
+        there was nothing to close."""
+        sess = self.session()
+        if not sess or not self.alive(sess):
+            self.forget_windows()
+            return False
+        try:
+            bws = self._browser_ws(sess["port"])
+        except Exception:  # noqa: BLE001
+            self.forget_windows()
+            return False
+        closed = False
+        try:
+            mine = self._my_targets(sess["port"], bws)
+            if mine:
+                order = [i for i in self._tab_order if i in {t["id"] for t, _ in mine}]
+                tabs = [t for t, _ in mine]
+                tabs.sort(key=lambda t: order.index(t["id"]) if t["id"] in order else len(order))
+                self._remember_tabs(tabs, self._main_tab)
+            for t, _ in mine:
+                try:
+                    bws.call("Target.closeTarget", targetId=t["id"])
+                    closed = True
+                except Exception:  # noqa: BLE001
+                    pass
+        finally:
+            bws.close()
+        self.forget_windows()
+        return closed
 
     def _page_target(self, port):
         """The one tab we drive. Stays the same tab across calls (popups from
         target=_blank links would otherwise become tabs[0] and hijack us).
-        On a shared process only this view's own tabs count; with none left a
-        fresh one opens in its own window, back on the bot's last page. A lone
-        view drives every tab, and records them all as its own: should the process
-        turn shared (a bot created on this browser, or a restart that builds the
-        other bot first), its pages are already in its tabs.json and nothing has
-        to guess which tabs were whose."""
-        if self.shared():
-            tabs = [t for t in _http(port, "/json/list") if t.get("type") == "page"]
-            own = {t["targetId"] for t in self._own_targets(port)}
-            tabs = [t for t in tabs if t.get("id") in own]
-        else:
-            tabs = [t for t in _http(port, "/json/list") if t.get("type") == "page"]
-            ids = [t.get("id") for t in tabs]
-            if set(ids) != set(self._own):
-                self._own = [i for i in self._own if i in ids] + [i for i in ids if i not in self._own]
-                self._write_own()
-        if not tabs:
-            if self.shared():
-                last = self.last_url()
-                url = _with_scheme(last) if last and last != "about:blank" else "about:blank"
-                tabs = [self._adopt_launch_tab(port, url) or self._new_window(port, url)]
-            else:
-                tabs = [_http(port, "/json/new?about:blank", method="PUT")]
-                self._own = [tabs[0].get("id")]
-                self._write_own()
+        Only this view's own tabs count; with none, its window opens (the
+        launch window adopted when free), on the bot's last page, with its
+        other remembered tabs beside it. At most one window is opened per call."""
+        bws = self._browser_ws(port)
+        try:
+            mine = self._my_targets(port, bws)
+            tabs = [t for t, _ in mine]
+            if not tabs:
+                self._restore(port, adopt=True)
+                mine = self._my_targets(port, bws)
+                tabs = [t for t, _ in mine]
+                if not tabs:
+                    raise RuntimeError("the bot's window did not open")
+        finally:
+            bws.close()
         main = next((t for t in tabs if t.get("id") == self._main_tab), None) or tabs[-1]
         self._main_tab = main.get("id")
         return main, tabs
@@ -1721,11 +1912,9 @@ class Browser:
         # Downloads land in this bot's own folder (not ~/Downloads), so the bot
         # and the page can list what arrived.
         os.makedirs(self.downloads, exist_ok=True)
-        # On a shared process the browser-wide setting is last-writer-wins across bots, so the per-page one
-        # (older API, still honoured) goes first there; a lone bot keeps the browser-wide call.
-        order = (("Page.setDownloadBehavior", {}), ("Browser.setDownloadBehavior", {"eventsEnabled": False})) if self.shared() \
-            else (("Browser.setDownloadBehavior", {"eventsEnabled": False}), ("Page.setDownloadBehavior", {}))
-        for method, extra in order:
+        # The browser-wide setting is last-writer-wins across the bots on a process, so the per-page one
+        # (older API, still honoured) goes first; the browser-wide call is the fallback.
+        for method, extra in (("Page.setDownloadBehavior", {}), ("Browser.setDownloadBehavior", {"eventsEnabled": False})):
             try:
                 ws.call(method, behavior="allow", downloadPath=self.downloads, **extra)
                 break
@@ -1751,7 +1940,7 @@ class Browser:
             # window so the live view is sharp and the bot's screenshots match the usual viewport.
             w = ws.call("Browser.getWindowForTarget")
             b = w.get("bounds") or {}
-            vw, vh = self.proc.viewport
+            vw, vh = self.viewport
             if b.get("windowState", "normal") == "normal" and (b.get("width", 0) < vw or b.get("height", 0) < vh):
                 ws.call("Browser.setWindowBounds", windowId=w["windowId"], bounds={"width": vw, "height": vh})
         except Exception:
@@ -1768,20 +1957,37 @@ class Browser:
 
     # -- tabs --------------------------------------------------------------
     def tabs(self):
-        """[{i, title, url, active}] for every real page tab, in Chrome's order."""
+        """[{i, title, url, active}] for every tab in this bot's window(s), in open order; also the
+        record a wake restores (window.json)."""
         sess = self.session()
         if not self.alive(sess):
             return []
         try:
-            main, tabs = self._page_target(sess["port"])
+            with self.lock:
+                main, tabs = self._page_target(sess["port"])
         except Exception:
             return []
-        # Chrome lists tabs newest-first; keep our own stable open-order so a
-        # tab's index never shifts under the bot (or the strip) mid-task.
+        # Target.getTargets lists tabs oldest-first (measured; /json/list is newest-first); keep our own
+        # stable open-order so a tab's index never shifts under the bot (or the strip) mid-task.
         by_id = {t.get("id"): t for t in tabs}
-        self._tab_order = [i for i in self._tab_order if i in by_id] + [i for i in reversed(list(by_id)) if i not in self._tab_order]
-        return [{"i": i, "id": tid, "title": (by_id[tid].get("title") or "")[:80], "url": by_id[tid].get("url") or "",
-                 "active": tid == main.get("id"), "ws": by_id[tid].get("webSocketDebuggerUrl")} for i, tid in enumerate(self._tab_order)]
+        self._tab_order = [i for i in self._tab_order if i in by_id] + [i for i in by_id if i not in self._tab_order]
+        ordered = [by_id[tid] for tid in self._tab_order]
+        self._remember_tabs(ordered, main.get("id"))
+        return [{"i": i, "id": t["id"], "title": (t.get("title") or "")[:80], "url": t.get("url") or "",
+                 "active": t["id"] == main.get("id"), "ws": t.get("ws") or t.get("webSocketDebuggerUrl")} for i, t in enumerate(ordered)]
+
+    def _note_page(self, url, title):
+        """The driven tab's url/title into window.json's active row (after an action)."""
+        tabs = self.win.get("tabs") or []
+        i = self.win.get("active") or 0
+        if not tabs:
+            tabs = [{"url": "", "title": ""}]
+            i = 0
+        if i >= len(tabs):
+            i = 0
+        tabs[i] = {"url": url, "title": (title or "")[:80]}
+        self.win["tabs"], self.win["active"] = tabs, i
+        self._write_win()
 
     def _switch_to(self, tab_id):
         """Make tab_id the tab we drive; the live view, screenshots and the
@@ -1805,13 +2011,25 @@ class Browser:
         return self._switch_to(tabs[i]["id"])
 
     def tab_new(self, url="about:blank"):
+        """A new tab in this bot's window: opened from the driven tab (window.open lands in the opener's
+        window); when the page would not open one (blocked, no context), a window of this bot's own."""
         sess = self.start()
         if url and url != "about:blank":
             url = _with_scheme(url)
-        if self.shared():
-            t = self._new_window(sess["port"], url or "about:blank")
-        else:
-            t = _http(sess["port"], "/json/new?" + (url or "about:blank"), method="PUT")
+        port = sess["port"]
+        with self.lock:
+            main, before = self._page_target(port)
+            bws = self._browser_ws(port)
+            try:
+                seen = {t["id"] for t, _ in self.proc.page_targets(port, bws)}
+                try:
+                    t = self._open_in(port, bws, main, url or "about:blank", seen)
+                except Exception:  # noqa: BLE001
+                    t = None
+                if t is None:
+                    t = self._new_window(port, bws, url or "about:blank")
+            finally:
+                bws.close()
         time.sleep(0.3)
         info = self._switch_to(t["id"])
         if url and url != "about:blank" and (info.get("url") or "about:blank") == "about:blank":
@@ -2013,12 +2231,9 @@ class Browser:
                 info = self._where(ws)
                 if dialog:
                     info["dialog"] = dialog
-                sess["url"] = info.get("url")
-                sess["title"] = info.get("title")
-                write_json_atomic(self.session_path, sess)
-                # tabs.json too, lone bot included: session.json is removed with the quit, so this is the only
-                # record of the page a wake (Browser.start) brings back.
-                self._write_own(url=info.get("url") or "", title=info.get("title") or "")
+                # window.json: session.json is removed with the quit, so this is the record of the page a wake
+                # (Browser.start) brings back. The driven tab's row only; tabs() rewrites the whole window.
+                self._note_page(info.get("url") or "", info.get("title") or "")
                 if shoot:
                     self._shoot(ws)
                 return out, info
@@ -2165,7 +2380,7 @@ class Browser:
                 time.sleep(0.4)
                 return
             before = self._eval(ws, probe) or 0
-            cx, cy = self.proc.viewport[0] // 2, self.proc.viewport[1] // 2
+            cx, cy = self.viewport[0] // 2, self.viewport[1] // 2
             ws.call("Input.dispatchMouseEvent", type="mouseMoved", x=cx, y=cy)
             ws.notify("Input.dispatchMouseEvent", type="mouseWheel", x=cx, y=cy, deltaX=0, deltaY=dy)
             time.sleep(0.4)
@@ -2417,17 +2632,18 @@ class Browser:
                     pass
 
     def _status(self, probe):
+        """`running` is this bot's: Chrome up AND this view has a window in it (a sleeping bot on a Chrome
+        another bot keeps busy is asleep). url/title are the driven tab's, from window.json."""
         sess = self.session() or {}
-        url, title = sess.get("url"), sess.get("title")
-        if self.shared():  # session.json is last-writer-wins across bots; this bot's page is in its tabs.json
-            try:
-                with open(self.tabs_path) as f:
-                    own = json.load(f)
-                url, title = own.get("url") or None, own.get("title") or None
-            except Exception:
-                url = title = None
-        return {"running": self.alive(sess) if probe else bool(sess.get("pid")), "url": url,
-                "title": title, "headed": bool(sess.get("headed")), "sealed": self.sealed(), "encrypt": self.encrypt}
+        tabs = self.win.get("tabs") or []
+        try:
+            row = tabs[self.win.get("active") or 0]
+        except (IndexError, TypeError):
+            row = tabs[0] if tabs else {}
+        has_window = bool(self.win.get("windows")) and self.win.get("pid") == sess.get("pid") and bool(sess.get("pid"))
+        running = has_window and (self.alive(sess) if probe else True)
+        return {"running": running, "url": row.get("url") or None, "title": row.get("title") or None,
+                "headed": bool(sess.get("headed")), "sealed": self.sealed(), "encrypt": self.encrypt}
 
     def status(self):
         return self._status(True)

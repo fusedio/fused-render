@@ -72,11 +72,16 @@ def ids() -> list[str]:
 
 def all():  # noqa: A001 — the registry's own spelling (OpenBot `_all`)
     out = []
+    failed = False
     for bid in ids():
         try:
             out.append(get(bid))
         except Exception:  # noqa: BLE001 — a torn bot.json must not hide every other bot
+            failed = True
             logger.warning("bot %s could not be loaded", bid, exc_info=True)
+    if not failed:
+        from fused_render.bots import browsers
+        browsers.mark_complete()  # every view is attached: a window nobody owns is an orphan from here on
     return out
 
 

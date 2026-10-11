@@ -130,7 +130,7 @@ like OpenBot's `.fused/`** so moving an OpenBot install is one copy
   data/usage.jsonl       usage ledger
   data/builds.json       Builds panel list
   data/imessage*.json    iMessage cursor / state / lock
-  cache/bots/<id>/       shot.png, tabs.json (own tab ids on a shared browser), steps/ (deletable)
+  cache/bots/<id>/       shot.png, window.json (the bot's Chrome window ids, its tabs, viewport), steps/ (deletable)
   cache/browsers/<bid>/  session.json (the live Chrome handle)
   cache/slow.jsonl       slow-call log
   dock.json              ours (no OpenBot counterpart)
@@ -414,22 +414,35 @@ tokens (`--accent`, `--on-accent`) were right all along the first time this bit.
 `data/browsers/<bid>/`, named by `browser_id` in bot.json; a new bot gets one
 of its own (same id as the bot) unless it is created with `browser_id` set to
 another bot's, in which case the two share it: one Chrome process, one set of
-cookies. Chrome refuses two processes on one profile folder, so sharing is one
-`BrowserProcess` (browser.py) with one `Browser` view per bot: each view opens
-its tabs in windows of their own (`Target.createTarget(newWindow)`, headless
-composites every window's foreground tab, so bots never throttle each other),
-tracks the target ids it opened plus their popups (`openerId`) in
-`cache/bots/<id>/tabs.json`, and drives only those; a bot alone on its browser
-drives every tab and records them all as its own, so the process turning
-shared (a bot created on it, a restart that builds the other bot first)
-never has to guess whose tabs are whose. "Shared" is the attached views or
-the bot.json files on disk naming the browser (`BrowserProcess.disk_users`,
-refreshed by `browsers.get`), whichever says so: a bot built alone after a
-restart must not drive the other bot's page. Encrypt-at-rest and an imported Chrome profile
-belong to the browser (browser.json) and are mirrored into each bot's
-`encrypt` / `chrome_profile` for the dialog. Idle sleep quits a shared Chrome
-only once every bot on it has been idle (`Browser.sleep` →
-`BrowserProcess.stop_if_idle`). Chrome is always headless and is never
+cookies, and nothing else — Chrome does the sharing (cookies, storage, cache),
+the bots stay independent at runtime. Chrome refuses two processes on one
+profile folder, so sharing is one `BrowserProcess` (browser.py) with one
+`Browser` view per bot, and **a view owns Chrome windows, never bare tabs**:
+a tab is the bot's when Chrome says it sits in one of the bot's windows
+(`Browser.getWindowForTarget`, D1341) or its opener chain leads there (a
+popup; one with window features gets a window of its own, recorded as the
+bot's too). `cache/bots/<id>/window.json` holds the window ids (valid for one
+Chrome pid), the tabs in them and the bot's viewport. Every bot, alone or
+not, runs the same code: its first action adopts the blank launch window or
+opens one (`Target.createTarget(newWindow)`; headless composites every
+window's foreground tab, so bots never throttle each other); new tabs are
+opened from the driven tab (`window.open` lands in the opener's window; a
+plain `createTarget` lands in whichever window Chrome last focused, measured)
+and navigated over CDP. Nothing is ever claimed or guessed, so a server
+restart with Chrome still up changes nothing a bot sees. A window no built
+bot owns is an orphan: closed by the next action that sees it, once every
+bot on disk is built (`browsers.mark_complete`, from `registry.all`), after
+a 30 s grace, never while headed. **Sleep is per bot**: `Browser.sleep`
+closes the bot's own tabs (remembered first) and Chrome quits only when no
+bot has a window left (`BrowserProcess.stop_if_empty`; headless Chrome
+keeps running with zero windows, measured). A wake (`Browser.start`) brings
+the whole window back: the remembered tabs opened from it, the driven one
+navigated last. `browser.running` in status is the bot's: Chrome up AND its
+window exists, so a sleeping bot on a Chrome another bot keeps busy shows
+asleep. The viewport (`set_viewport`) resizes the bot's own windows only.
+Encrypt-at-rest and an imported Chrome profile belong to the browser
+(browser.json) and are mirrored into each bot's `encrypt` / `chrome_profile`
+for the dialog. Chrome is always headless and is never
 relaunched for a take-over: `takeover` pauses the bot and the user drives the
 same tab from the live view (screencast in, `Input.*` out over the tab's own
 DevTools socket; the key forwarder is `lib/live.ts keyAction`, the US-layout
@@ -439,14 +452,17 @@ prompts — select/datalist/picker popups, dialogs, the file chooser, drags,
 HTTP auth — the live view substitutes itself, `lib/cdp.ts`). One deliberate
 relaunch remains, `popout`/`dock` ("Real window" in the live view): the same
 profile as a real Chrome window for what no screencast carries (passkeys, the
-password manager, print). The stop is `Browser.close` alone (Chrome then
+password manager, print); headed is a launch flag, so it is process-wide: the
+asking bot's window opens first, every other bot that was awake gets a real
+window of its own. The stop is `Browser.close` alone (Chrome then
 unlinks its Singleton* files, so ProcessSingleton never forwards the next
 launch to the dying process), SIGTERM after 3 s, SIGKILL after 3 more; a
 closed window docks itself on the next status poll, no task starts while the
 window is out, and idle sleep never quits it. Delete keeps a browser other
 bots still use; the last bot takes it down. Settings' `browser_id` moves a bot
-(`bot.set_browser`): off a shared browser its tabs close, off a private one
-Chrome stops and the folder goes; refused mid-task. Clone shares by default.
+(`bot.set_browser`): the bot leaves (`Browser.leave`: its windows close,
+Chrome quits only if that emptied it) and the old folder goes when no other
+bot names it; refused mid-task. Clone shares by default.
 Bots from before browsers existed are adopted on first load
 (`browsers.adopt`: `bots/<id>/profile` moves to `browsers/<id>/`, nothing is
 copied). `browsers.sweep` at `registry.start` removes folders no bot names.

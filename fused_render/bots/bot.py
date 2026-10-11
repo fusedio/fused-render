@@ -486,7 +486,6 @@ class Bot:
         # Bots from before the live view was the only take-over path recorded a popped-out desktop window here.
         if self.meta.pop("visible", None) is not None:
             store.write_meta(bid, self.meta)
-        self.browser.idle_check = self._may_sleep
         self.last_looked = time.time()  # when the page last polled with this bot selected (routes._status_bot); a bot just
         # loaded counts as looked at, so a shared Chrome never sleeps under it in the first poll after a restart
         self.meta["encrypt"] = bool(self.browser.encrypt)  # mirrored from browser.json for the dialog
@@ -1580,7 +1579,7 @@ class Bot:
         """docs §2. light: skip the per-bot liveness probe (full-screen polls 2-3x/s);
         detail: the selected bot also reports its tabs, files and Inbox."""
         bs = self.browser.status_cached() if light else self.browser.status()
-        bs["shared"] = self.browser.shared()
+        bs["shared"] = bool(self.shared_with())  # logins shared; the window, tabs and sleep are this bot's own
         if detail and bs.get("running"):
             bs["tabs"] = self.browser.tabs()
         if detail:
@@ -2111,7 +2110,7 @@ class Bot:
         # control_by "user", unless a bot-asked hand-over (login) is already on: popping out to sign in with a
         # passkey still ends that question, so its card settles on hand back.
         self.set_status("paused" if self.thread and self.thread.is_alive() else "idle", control=True, **self._control_owner("user"))
-        shared = (" Every bot sharing this browser is in that window too." if self.shared_with() else "")
+        shared = (" Every awake bot sharing this browser got a real window of its own too." if self.shared_with() else "")
         self.emit("system", "Opened the browser as a real Chrome window on your desktop. Hand back (or close the window) when you are done." + shared)
 
     @staticmethod
@@ -2165,8 +2164,9 @@ class Bot:
             self.emit("system", f"{', '.join(waiting)} still {'needs' if len(waiting) == 1 else 'need'} you in this browser.")
 
     def wake_browser(self):
-        """Relaunch an asleep browser. A browser that is already up is left exactly as it is."""
-        if self.browser.alive():
+        """Relaunch an asleep browser: Chrome if it is down, else just this bot's window (a shared Chrome
+        another bot keeps up). A browser that is already up is left exactly as it is."""
+        if self.browser.running():
             return
         self.browser.start()
         # Waking restarts the idle clock (idle_sleep_due measures from meta["updated"]).
@@ -2198,12 +2198,6 @@ class Bot:
         elif on:
             self.emit("system", f"Encryption on{who}: the logins are sealed whenever the browser sleeps or closes.")
 
-    def _may_sleep(self):
-        """For a shared browser's idle sleep (Browser.may_sleep): this bot is idle,
-        not being looked at in the last little while, not driven, and has been
-        quiet long enough. Live, not a flag left by an earlier sleep attempt."""
-        return self.idle_sleep_due(time.time() - self.last_looked < 15)
-
     def idle_sleep_due(self, selected):
         """Idle for a while, not being looked at or driven -> put the browser to
         sleep. The next task, take-over or live view relaunches it."""
@@ -2213,47 +2207,27 @@ class Bot:
             return False
         if time.time() - (self.meta.get("updated") or 0) < IDLE_SLEEP_S:
             return False
-        return self.browser.alive() and not self.browser.headed()  # never quit the user's own window under them
+        return self.browser.running() and not self.browser.headed()  # never quit the user's own window under them
 
     def idle_sleep(self):
         try:
-            if self.browser.sleep():  # seals too when browser.encrypt is on; a shared browser waits for every bot
+            if self.browser.sleep():  # this bot's window; Chrome quits (and seals when encrypt is on) once no bot has one
                 self.emit("system", f"Browser closed after {IDLE_SLEEP_S // 60} minutes idle"
                           + ("; logins encrypted at rest." if self.meta.get("encrypt") else "."))
         except Exception as e:  # noqa: BLE001
             self.emit("error", f"Could not put the browser to sleep: {e}")
 
     def shutdown(self, browser=True):
-        """Stop the task and (by default) the browser. `delete()` passes
-        browser=False on a shared browser: the other bots keep their Chrome."""
+        """Stop the task and (by default) the whole browser process. `delete()` and
+        `set_browser` pass browser=False: this bot leaves (its windows close, Chrome
+        quits only if that left it empty) and the other bots keep theirs."""
         self.stop()
         if self.thread:
             self.thread.join(5)
         if browser:
             self.browser.stop()
         else:
-            self.close_tabs()
-
-    def close_tabs(self):
-        """Close this bot's own tabs on a shared browser (leaving it). Detaches
-        the view whether or not Chrome is up: a stale view would keep the
-        process "shared" and block its idle sleep."""
-        try:
-            sess = self.browser.session()
-            if not sess or not self.browser.alive(sess):
-                raise StopIteration
-            for t in self.browser._own_targets(sess["port"]):
-                try:
-                    browser_mod._http(sess["port"], f"/json/close/{t['targetId']}")
-                except Exception:  # noqa: BLE001
-                    pass
-            self.browser._own = []
-            self.browser._write_own()
-        except StopIteration:
-            pass
-        except Exception:  # noqa: BLE001
-            pass
-        self.browser.proc.detach(self.browser)
+            self.browser.leave()
 
     # -- waits the engines share --------------------------------------------
     def _wait_if_paused(self):
@@ -3497,29 +3471,21 @@ def set_browser(b, target, fresh=False):
     old = b.browser_id
     old_view = b.browser
     # Chrome first, under the process lock only (idle sleep takes proc.lock then b.lock via emit; never the reverse).
-    if old_view.shared():
-        b.close_tabs()  # others keep their Chrome
-    else:
-        old_view.stop(seal=False)
-        old_view.proc.detach(old_view)
+    old_view.leave()  # its windows close; Chrome quits only when no other bot has one; others keep theirs
     with b.lock:
         b.meta["browser_id"] = target
         if not browsers.exists(target):
             browsers.ensure(target, name=b.meta.get("name") or "", encrypt=bool(b.meta.get("encrypt")))  # keeps the bot's choice
         b.browser = Browser(b.dir, b.cache_dir, proc=browsers.get(target))
-        b.browser.idle_check = b._may_sleep
-        b.browser._own = []
-        b.browser._write_own(url="")
+        b.browser.forget_windows()
         b.meta["encrypt"] = bool(b.browser.encrypt)
         b.meta["chrome_profile"] = browsers.read_meta(target).get("chrome_profile") or ""
         b.save()
-    browsers.get(target)  # after save: the count must include this bot, or it would see a private browser and drive the other bot's tabs
     if browsers.used_on_disk(old, except_id=b.id) is False:
         browsers.remove(old)
         gone = "; its old logins were removed (no other bot used them)"
     else:
         gone = ""
-        browsers.get(old)  # the bots left on it: one alone is a private browser again (disk_users)
     names = ", ".join(o["name"] for o in b.shared_with())
     b.emit("system", (f"Now sharing logins with {names}" if names else "Now on a browser of its own, logged out of everything") + gone + ".")
     return True
@@ -3539,10 +3505,7 @@ def delete(bid):
     shutil.rmtree(bpaths.bot_dir(bid), ignore_errors=True)
     shutil.rmtree(bpaths.bot_cache_dir(bid), ignore_errors=True)
     if not shared:
-        b.browser.proc.detach(b.browser)
         browsers.remove(b.browser_id)  # its logins go with it
-    else:
-        browsers.get(b.browser_id)  # refresh the on-disk user count: one bot left means a private browser again
     # A deleted Super Bot's queued hand-offs would otherwise sit at the head of each target's in-memory queue
     # forever (sweep cannot see a forgotten Super Bot), and _handoff_start refuses a queue whose head is not its own.
     for other in reg.loaded():
@@ -3610,8 +3573,7 @@ def import_profile(b, dir_name):
                     pass  # per-file errors already swallowed
                 browsers.set_field(b.browser_id, "chrome_profile", label)
                 for v in b.browser.proc.views:
-                    v._own = []
-                    v._write_own(url="")
+                    v.forget_windows()
                 for o in [b] + [_registry().get(x["id"]) for x in b.shared_with()]:
                     o.meta["chrome_profile"] = label
                     o.save()
