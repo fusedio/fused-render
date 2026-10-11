@@ -112,14 +112,16 @@ export function ChangeTile({
       window.removeEventListener("scroll", on, true);
     };
   }, []);
-  // Move focus into the portaled card once it is placed: the checked option,
-  // else the first enabled button.
-  useLayoutEffect(() => {
+  // Move focus into the portaled card once it is placed and visible: the checked
+  // option, else the first enabled button. Before `pos` is set the card is
+  // visibility:hidden, and focus() on a hidden element is a no-op.
+  const focusedRef = useRef(false);
+  useEffect(() => {
+    if (!pos || focusedRef.current) return;
+    focusedRef.current = true;
     const pop = root.current;
-    if (!pop) return;
-    place();
-    (pop.querySelector<HTMLElement>(".hw-po.is-on:not(:disabled)") ?? pop.querySelector<HTMLElement>("button:not(:disabled)"))?.focus({ preventScroll: true });
-  }, []);
+    (pop?.querySelector<HTMLElement>(".hw-po.is-on:not(:disabled)") ?? pop?.querySelector<HTMLElement>("button:not(:disabled)"))?.focus({ preventScroll: true });
+  }, [pos]);
 
   const pick = (s: WidgetSource) => {
     if (NEEDS_CHOICE.has(s)) {
