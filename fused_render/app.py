@@ -1684,9 +1684,9 @@ def main() -> None:
     # AppKit sends applicationShouldHandleReopen:hasVisibleWindows: when the
     # user clicks the Dock icon (or double-clicks the app in Finder) while the
     # app is already running. rumps's delegate doesn't implement it, so without
-    # this patch a Dock click does nothing. The click focuses the most recent
-    # window, opening Home only when none is open (a browser tab only when
-    # the window manager failed to build); if the server is still
+    # this patch a Dock click does nothing. The click raises the Home window,
+    # opening one only when none is open (a browser tab only when the
+    # window manager failed to build); if the server is still
     # booting, queue the home URL on the same pending list the bootstrap
     # flushes.
     # Must return a BOOL — returning None here breaks the pyobjc bridge.
@@ -2109,7 +2109,8 @@ def main() -> None:
                     webbrowser.open(url)
                     return
                 NSApp.activateIgnoringOtherApps_(True)
-                manager.show_home()
+                # Same rule as the macOS Dock icon: raise Home, else open it.
+                manager.focus_or_open_home()
 
             def _open_keys() -> set[str]:
                 # Read live: the manager comes and goes with the preference.

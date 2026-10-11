@@ -1170,16 +1170,14 @@ class WindowManager:
         return self.open(self.url_for_path(fs_path))
 
     def reopen(self) -> None:
-        """A macOS Dock-icon click on the running app: raise the window the
-        user was last in (key, else front, else most recently used), like
-        other Mac apps; `show` restores it if minimized. Home opens only when
-        no window is open. A new window is File → New Window or the
-        launcher's Home row (`show_home`)."""
-        win = self._pick([w for w in self._windows if w.ns is not None])
-        if win is None:
-            self.open(self.home_url)
-        else:
-            win.show()
+        """A macOS Dock-icon click on the running app: the Home window comes
+        forward (the key/front one if several; `show` restores a minimized
+        one), else a Home window opens — the same rule as the menu-bar
+        Dock's Home tile and the launcher's Home row (`focus_or_open_home`).
+        Not the last-used window: the owner wants the app icon to mean Home
+        wherever it is clicked, so an app window on top never swallows the
+        click. A new window is File → New Window."""
+        self.focus_or_open_home()
 
     def show_tasks(self) -> None:
         """Window → Tasks (⌘⇧T): a window already on the Tasks page comes to
@@ -1214,12 +1212,6 @@ class WindowManager:
             return prefs.bots_enabled()
         return False
 
-    def show_home(self) -> None:
-        """The launcher's last row / <modifier>+0: always a fresh Home window,
-        even if one is already open — like File → New Window. Apps keep
-        focus-or-open (`focus_or_open_app`); Home is the one row that always means "another one"."""
-        self.open(self.home_url)
-
     def _pick(self, candidates: list["_Window"]) -> "_Window | None":
         """The key window among ``candidates``, else the front one, else the
         most recently used (``_windows`` is MRU, newest last)."""
@@ -1231,10 +1223,11 @@ class WindowManager:
         return candidates[-1]
 
     def focus_or_open_home(self) -> None:
-        """The menu-bar Dock's Home tile and utility menu: a Home window
-        already open (the key/front one if several) comes forward, else one
-        opens. Unlike `show_home` — the launcher's "another one" row — the
-        Dock, like the macOS Dock's own icons, raises what is there. Main
+        """The app icon's one meaning, everywhere it is clicked — the macOS
+        Dock icon (`reopen`), the menu-bar Dock's Home tile and utility menu,
+        the launcher's Home row / <modifier>+0: a Home window already open
+        (the key/front one if several) comes forward, else one opens. Never
+        a second Home while one is up — that is File → New Window. Main
         thread."""
         win = self._pick([w for w in self._windows if w.ns is not None and self._is_home(w)])
         if win is None:
