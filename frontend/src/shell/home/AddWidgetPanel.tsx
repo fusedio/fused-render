@@ -12,6 +12,7 @@ import {
   Bookmark,
   Bot,
   Clock,
+  ArrowLeft,
   Database,
   FileText,
   Folder,
@@ -25,7 +26,6 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { createPortal } from "react-dom";
-import { ArrowLeft } from "lucide-react";
 import { useBookmarksVersion } from "@platform/lib/hooks";
 import { isTopmost, popModal, pushModal } from "@platform/ui/modal/esc-stack";
 import { isFolder, loadBookmarks, type BookmarkFolder, type BookmarkItem } from "@platform/lib/bookmarks";
@@ -89,7 +89,13 @@ export function AddWidgetPanel({
   useBookmarksVersion();
   const dialog = useRef<HTMLDivElement>(null);
   // A folder or page entry waits here for its follow-up picker.
-  const [pending, setPending] = useState<GalleryEntry | null>(null);
+  // Opened from a Change card for a source that needs a picker, with one
+  // enabled entry: go straight to the picker, as a card click would.
+  const [pending, setPending] = useState<GalleryEntry | null>(() => {
+    if (!target || (initialSource !== "folder" && initialSource !== "app")) return null;
+    const only = galleryEntries(api.layout, target, initialSource);
+    return only.length === 1 && !only[0].disabled ? only[0] : null;
+  });
   const entries = useMemo(
     () => galleryEntries(api.layout, target, target ? (initialSource ?? "folder") : undefined),
     [api.layout, target, initialSource],
