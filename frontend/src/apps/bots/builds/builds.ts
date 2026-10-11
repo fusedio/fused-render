@@ -11,7 +11,7 @@ import { errMsg, getState, openPanel, closePanel, setBuildsChip, showBanner, sho
 import { tasksCreate, tasksList, tasksMarkRead, tasksUi, tasksWatch, type TaskHandle, type TaskRow } from "./tasks";
 
 // ------------------------------------------------------------------ root ----
-// <Fused workspace>/app: new apps land here, one folder per build. From /api/config (fused_dir), the same value the
+// <Fused workspace>/apps: new apps land here, one folder per build. From /api/config (fused_dir), the same value the
 // server derives. Lazy so importing this module (tests) never fetches.
 let BUILDS_ROOT = "";
 let rootP: Promise<void> | null = null;
@@ -23,7 +23,7 @@ export function setBuildsRoot(root: string): void {
 }
 export function rootReady(): Promise<void> {
   return rootP || (rootP = fetch("/api/config").then((r) => r.json())
-    .then((c: { fused_dir?: string } | null) => { if (c && c.fused_dir) setBuildsRoot(`${c.fused_dir}/app`); })
+    .then((c: { fused_dir?: string } | null) => { if (c && c.fused_dir) setBuildsRoot(`${c.fused_dir}/apps`); })
     .catch(() => {}));
 }
 /** BUILDS_ROOT for React (the panel subtitles); kicks off the /api/config read. */

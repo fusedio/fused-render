@@ -300,7 +300,7 @@ FUSED_HOME = _fused_home()
 
 
 def apps_root():
-    """`<Fused workspace>/app`, where builds land and every bot's APPS live
+    """`<Fused workspace>/apps`, where builds land and every bot's APPS live
     (`FUSED_RENDER_DIR` or `~/Fused`, see bots/paths.py)."""
     return _bpaths.apps_root()
 
