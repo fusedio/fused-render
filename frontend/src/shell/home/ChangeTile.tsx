@@ -78,7 +78,9 @@ export function ChangeTile({
       if (e.key === "Escape") {
         e.stopPropagation();
         closeRef.current();
-        root.current?.parentElement?.querySelector<HTMLElement>("button")?.focus();
+        // The card is portaled to <body>; return focus to the anchor's Change button.
+        const anchor = marker.current?.parentElement;
+        (anchor?.querySelector<HTMLElement>(".hw-swap-change") ?? anchor?.querySelector<HTMLElement>("button"))?.focus();
       }
     };
     document.addEventListener("keydown", key, true);
@@ -99,14 +101,25 @@ export function ChangeTile({
     setPos((p) => (p && p.left === next.left && p.top === next.top && p.maxHeight === next.maxHeight && p.width === next.width ? p : next));
   };
   useLayoutEffect(place);
+  const placeRef = useRef(place);
+  placeRef.current = place;
   useEffect(() => {
-    window.addEventListener("resize", place);
-    window.addEventListener("scroll", place, true);
+    const on = () => placeRef.current();
+    window.addEventListener("resize", on);
+    window.addEventListener("scroll", on, true);
     return () => {
-      window.removeEventListener("resize", place);
-      window.removeEventListener("scroll", place, true);
+      window.removeEventListener("resize", on);
+      window.removeEventListener("scroll", on, true);
     };
-  });
+  }, []);
+  // Move focus into the portaled card once it is placed: the checked option,
+  // else the first enabled button.
+  useLayoutEffect(() => {
+    const pop = root.current;
+    if (!pop) return;
+    place();
+    (pop.querySelector<HTMLElement>(".hw-po.is-on:not(:disabled)") ?? pop.querySelector<HTMLElement>("button:not(:disabled)"))?.focus({ preventScroll: true });
+  }, []);
 
   const pick = (s: WidgetSource) => {
     if (NEEDS_CHOICE.has(s)) {
