@@ -1328,6 +1328,21 @@ NS_TERMINATE_LATER = 2
 QUIT_APPKIT_REPLY_WAIT_S = QUIT_HARD_DEADLINE_S + 5.0
 
 
+def launcher_home_action(state: dict, url: str, nsapp) -> None:
+    """The launcher's Home row / <modifier>+0 (main thread): the same rule as
+    the macOS Dock icon — raise the Home window, else open one
+    (`WindowManager.focus_or_open_home`; a browser tab with the windows
+    off). ``nsapp`` is passed in so a test can drive this without AppKit.
+    With no window manager at all (its build failed) the fallback is a
+    browser tab on ``url``."""
+    manager = state["windows"]
+    if manager is None:
+        webbrowser.open(url)
+        return
+    nsapp.activateIgnoringOtherApps_(True)
+    manager.focus_or_open_home()
+
+
 def make_appkit_terminate_hook(state: dict, *, reply, start=None,
                                remove_pidfile=None, exit_now=None):
     """`applicationShouldTerminate:` for the quit surfaces AppKit owns itself.
@@ -1684,9 +1699,9 @@ def main() -> None:
     # AppKit sends applicationShouldHandleReopen:hasVisibleWindows: when the
     # user clicks the Dock icon (or double-clicks the app in Finder) while the
     # app is already running. rumps's delegate doesn't implement it, so without
-    # this patch a Dock click does nothing. The click focuses the most recent
-    # window, opening Home only when none is open (a browser tab only when
-    # the window manager failed to build); if the server is still
+    # this patch a Dock click does nothing. The click raises the Home window,
+    # opening one only when none is open (a browser tab only when the
+    # window manager failed to build); if the server is still
     # booting, queue the home URL on the same pending list the bootstrap
     # flushes.
     # Must return a BOOL — returning None here breaks the pyobjc bridge.
@@ -2104,12 +2119,7 @@ def main() -> None:
                     _open_app_native(key)
 
             def _home_from_launcher() -> None:
-                manager = state["windows"]
-                if manager is None:
-                    webbrowser.open(url)
-                    return
-                NSApp.activateIgnoringOtherApps_(True)
-                manager.show_home()
+                launcher_home_action(state, url, NSApp)
 
             def _open_keys() -> set[str]:
                 # Read live: the manager comes and goes with the preference.

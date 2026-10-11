@@ -10,6 +10,8 @@ export interface ConfirmReq {
   id: number; title: string; text: string; okLabel: string; danger: boolean;
   /** `fields`: none (a plain confirm), "auth" (user name + password) or "prompt" (one text field, prefilled with `defaultValue`). */
   fields?: "auth" | "prompt"; defaultValue?: string;
+  /** The Cancel button's label (default "Cancel"). */
+  cancelLabel?: string;
   resolve: (ok: boolean, vals?: ConfirmVals) => void;
 }
 
@@ -21,6 +23,13 @@ const subscribe = (l: () => void) => { listeners.add(l); return () => { listener
 /** Resolves true on the OK button (or Enter), false on Cancel / Escape / the backdrop. danger=false styles OK as a plain primary action. */
 export function askConfirm(title: string, text: string, okLabel = "Delete", danger = true): Promise<boolean> {
   return new Promise((resolve) => { confirms = [...confirms, { id: ++seq, title, text, okLabel, danger, resolve }]; emit(); });
+}
+/** A confirm that its asker can also take down (`dismiss` settles it as Cancel): for a question the page may withdraw
+ *  while it is up (a passkey request the page aborted). */
+export function askChoice(title: string, text: string, okLabel: string, cancelLabel: string): { done: Promise<boolean>; dismiss: () => void } {
+  const id = ++seq;
+  const done = new Promise<boolean>((resolve) => { confirms = [...confirms, { id, title, text, okLabel, cancelLabel, danger: false, resolve }]; emit(); });
+  return { done, dismiss: () => settleConfirm(id, false) };
 }
 /** A confirm with user name + password fields (an HTTP auth challenge from the live view). Resolves null on Cancel. */
 export function askAuth(title: string, text: string): Promise<Credentials | null> {

@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-// Step 3 — Full Disk Access (macOS).
+// Step 5 — Full Disk Access (macOS).
 //
 // This deliberately REVERSES FdaStrip's "not at launch" rule (FdaStrip.tsx):
 // the strip waits for a refused read because an unprompted whole-disk ask is

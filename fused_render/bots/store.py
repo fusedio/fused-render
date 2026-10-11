@@ -78,12 +78,17 @@ def write_meta(bid: str, meta: dict) -> None:
     write_json_atomic(meta_path(bid), meta)
 
 
-def list_ids() -> list[str]:
-    """Every bot id with a bot.json, sorted."""
+def list_ids(strict: bool = False) -> list[str]:
+    """Every bot id with a bot.json, sorted. `strict`: an unlistable data dir raises instead of
+    reading as "no bots" (registry.all must not call an empty scan complete)."""
     data = _bpaths.data_dir()
     try:
         names = os.listdir(data)
+    except FileNotFoundError:
+        return []
     except OSError:
+        if strict:
+            raise
         return []
     return sorted(d for d in names if os.path.isfile(os.path.join(data, d, BOT_FILE)))
 

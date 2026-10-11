@@ -187,7 +187,7 @@ class LauncherController:
     ``open_row(kind, key)``: what Enter / a click / a row shortcut does —
     the app-level callback, dispatching on the row's ``kind`` (a bot id to
     the Bots window, an app path to its window); the panel closes first.
-    ``show_home``: the last row / <modifier>+0.
+    ``show_home``: the last row / <modifier>+0 — raise Home, else open it.
     """
 
     def __init__(self, port: int, open_row, show_home) -> None:

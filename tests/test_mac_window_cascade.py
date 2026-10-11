@@ -178,6 +178,9 @@ def test_new_window_after_mru_touch_does_not_land_on_newest():
 
 
 # --- Dock click (`WindowManager.reopen`) -----------------------------------
+# The Dock icon means Home: a Home window comes forward (key, else front,
+# else MRU among Home windows), else one opens — an app window on top never
+# swallows the click.
 
 
 def _reopen_mgr(mw, windows, key=None, front=None):
@@ -188,14 +191,16 @@ def _reopen_mgr(mw, windows, key=None, front=None):
     m.key = lambda: key
     m.front = lambda: front
     m._pick = lambda c: mw.WindowManager._pick(m, c)
+    m._is_home = lambda w: getattr(w, "home", False)
+    m.focus_or_open_home = lambda: mw.WindowManager.focus_or_open_home(m)
     return m, opened
 
 
-def _shown_win(shown, name):
-    return types.SimpleNamespace(ns=object(), show=lambda: shown.append(name))
+def _shown_win(shown, name, home=True):
+    return types.SimpleNamespace(ns=object(), home=home, show=lambda: shown.append(name))
 
 
-def test_reopen_shows_the_only_window_and_opens_nothing():
+def test_reopen_shows_the_only_home_window_and_opens_nothing():
     mw = _mw()
     shown = []
     m, opened = _reopen_mgr(mw, [_shown_win(shown, "a")])
@@ -203,7 +208,7 @@ def test_reopen_shows_the_only_window_and_opens_nothing():
     assert shown == ["a"] and opened == []
 
 
-def test_reopen_picks_the_key_window_among_several():
+def test_reopen_picks_the_key_home_window_among_several():
     mw = _mw()
     shown = []
     a, b, c = (_shown_win(shown, n) for n in "abc")
@@ -212,18 +217,50 @@ def test_reopen_picks_the_key_window_among_several():
     assert shown == ["b"] and opened == []
 
 
-def test_reopen_falls_back_to_most_recent_window():
+def test_reopen_raises_home_not_the_app_window_on_top():
     mw = _mw()
     shown = []
-    a, b = _shown_win(shown, "a"), _shown_win(shown, "b")
-    m, opened = _reopen_mgr(mw, [a, b])
+    home, app = _shown_win(shown, "home"), _shown_win(shown, "app", home=False)
+    m, opened = _reopen_mgr(mw, [home, app], key=app, front=app)
     mw.WindowManager.reopen(m)
-    assert shown == ["b"] and opened == []
+    assert shown == ["home"] and opened == []
+
+
+def test_reopen_opens_home_when_only_app_windows_are_open():
+    mw = _mw()
+    shown = []
+    m, opened = _reopen_mgr(mw, [_shown_win(shown, "app", home=False)])
+    mw.WindowManager.reopen(m)
+    assert shown == [] and opened == [m.home_url]
 
 
 def test_reopen_opens_home_when_no_live_window():
     mw = _mw()
-    closed = types.SimpleNamespace(ns=None, show=lambda: pytest.fail("closed window shown"))
+    closed = types.SimpleNamespace(ns=None, home=True, show=lambda: pytest.fail("closed window shown"))
     m, opened = _reopen_mgr(mw, [closed])
     mw.WindowManager.reopen(m)
     assert opened == [m.home_url]
+
+
+# --- launcher Home row (`app.launcher_home_action`) ------------------------
+
+
+def test_launcher_home_activates_and_focuses_or_opens_home():
+    import fused_render.app as app_mod
+
+    focused, activated = [], []
+    manager = types.SimpleNamespace(focus_or_open_home=lambda: focused.append(True))
+    nsapp = types.SimpleNamespace(activateIgnoringOtherApps_=activated.append)
+    app_mod.launcher_home_action({"windows": manager}, "http://127.0.0.1:1/", nsapp)
+    assert activated == [True] and focused == [True]
+
+
+def test_launcher_home_without_a_manager_opens_a_browser_tab(monkeypatch):
+    import fused_render.app as app_mod
+
+    opened = []
+    monkeypatch.setattr(app_mod.webbrowser, "open", opened.append)
+    nsapp = types.SimpleNamespace(
+        activateIgnoringOtherApps_=lambda _f: pytest.fail("no manager, no activate"))
+    app_mod.launcher_home_action({"windows": None}, "http://127.0.0.1:1/", nsapp)
+    assert opened == ["http://127.0.0.1:1/"]

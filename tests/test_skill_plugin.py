@@ -872,7 +872,9 @@ def test_the_git_spawn_keeps_the_posix_spawn_discipline():
     assert "close_fds=False" in body
     assert "cwd=" not in body
     assert "_git_bin()" in body
-    assert "shutil.which(\"git\")" in src
+    # The resolver is shared now (shell/git_tools.git_bin): the wizard's probe
+    # on macOS, `which` elsewhere — never a bare "git" that would fork.
+    assert "git_tools.git_bin()" in src
 
 
 def test_the_override_bypasses_all_fetching(tmp_path, home, monkeypatch):

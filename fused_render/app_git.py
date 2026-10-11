@@ -70,11 +70,12 @@ _GIT_BIN = None
 
 
 def _git_bin():
-    global _GIT_BIN
-    if _GIT_BIN is None:
-        import shutil
-        _GIT_BIN = shutil.which("git") or "git"
-    return _GIT_BIN
+    # One resolver for the whole process (shell/git_tools.git_bin): the wizard's
+    # probe, so a Homebrew-only Mac launched from the Dock gets the real git and
+    # not the /usr/bin/git shim `which` finds on a stripped PATH. Not memoized:
+    # git_tools memoizes, and a git installed mid-session is picked up.
+    from fused_render.shell import git_tools
+    return git_tools.git_bin()
 
 
 logger = logging.getLogger(__name__)

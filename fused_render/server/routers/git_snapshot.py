@@ -149,11 +149,9 @@ _GIT_BIN = None
 
 
 def _git_bin():
-    global _GIT_BIN
-    if _GIT_BIN is None:
-        import shutil as _shutil
-        _GIT_BIN = _shutil.which("git") or "git"
-    return _GIT_BIN
+    # One resolver for the whole process — see app_git._git_bin.
+    from fused_render.shell import git_tools
+    return git_tools.git_bin()
 
 
 # `tar`'s own absolute path, resolved the same way and for the same reason as

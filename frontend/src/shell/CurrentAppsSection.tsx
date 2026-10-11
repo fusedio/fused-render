@@ -958,9 +958,27 @@ export function NewAppModal({ onClose }: { onClose: () => void }) {
   // and that navigation remounts the sidebar (App.tsx), which is what
   // unmounts this modal. `onCreated` closes it for the case where the
   // composer stays put (no chat run started).
+  //
+  // The heading IS the optional name field: "New app" is its placeholder,
+  // and whatever is typed over it becomes the folder name, verbatim, with
+  // the AI naming step skipped. Left alone, the composer names the app as
+  // it does everywhere else. The dialog's accessible name stays "New app"
+  // (`ariaLabel`), since an input cannot be the heading it is labelled by.
+  const [name, setName] = useState("");
   return (
     <Modal
-      title="New app"
+      title={
+        <input
+          className="current-apps-compose-name"
+          aria-label="App name (optional)"
+          placeholder="New app"
+          value={name}
+          spellCheck={false}
+          autoComplete="off"
+          onChange={(e) => setName(e.target.value)}
+        />
+      }
+      ariaLabel="New app"
       onClose={onClose}
       width={640}
       dialogClassName="current-apps-compose"
@@ -969,7 +987,7 @@ export function NewAppModal({ onClose }: { onClose: () => void }) {
       // button in it. Owner: "we should not be redesigning anything".
       plainBody
     >
-      <HeroComposer onCreated={onClose} />
+      <HeroComposer onCreated={onClose} givenName={name} />
     </Modal>
   );
 }

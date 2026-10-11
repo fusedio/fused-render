@@ -289,10 +289,9 @@ def _git_bin() -> str:
     resident (the engine's import tree reaches pyproj) and PROJ's pthread_atfork
     child handler crashes. Same discipline, and the same reasoning, as
     `app_git.py`; see `tests/test_git_posix_spawn.py`."""
-    global _GIT_BIN
-    if _GIT_BIN is None:
-        _GIT_BIN = shutil.which("git") or "git"
-    return _GIT_BIN
+    # One resolver for the whole process — see app_git._git_bin.
+    from fused_render.shell import git_tools
+    return git_tools.git_bin()
 
 
 def _git(args: list, timeout: int) -> subprocess.CompletedProcess:
