@@ -12,9 +12,9 @@
 // (resend()), and a navigation takes down each dialog whose request went with the document.
 // Not covered: an out-of-process cross-origin iframe (its own target), and a page loaded while the live view was closed.
 import { askChoice } from "../dialogs/ask";
-import { act, cur } from "../state/store";
+import { act } from "../state/store";
 import { api } from "./api";
-import { cdp, evalIn, onEvent, onOpen, onReset } from "./cdp";
+import { cdp, evalIn, linkBot, onEvent, onOpen, onReset } from "./cdp";
 
 const BINDING = "__fusedPasskey";
 
@@ -95,7 +95,8 @@ const takeDown = (id: string) => { const a = asking.get(id); asking.delete(id); 
 let shimmed = false;
 onOpen.push(() => {
   // A popped-out (headed) browser is real Chrome: its passkey picker works, so its pages are left alone.
-  shimmed = !cur()?.browser?.headed;
+  const b = linkBot();
+  shimmed = !!b && !b.browser?.headed;
   if (!shimmed) return;
   cdp("Runtime.addBinding", { name: BINDING });
   cdp("Page.addScriptToEvaluateOnNewDocument", { source: SHIM, runImmediately: true });
@@ -130,7 +131,7 @@ function settle(ctx: number | undefined, id: string): void {
 }
 
 async function ask(a: Ask, ctx: number | undefined): Promise<void> {
-  const b = cur(), k = a.id;
+  const b = linkBot(), k = a.id;  // the socket's bot, not the selection: a request is that bot's page's
   if (!b || typeof k !== "string" || asking.has(k)) return;
   const rp = a.rp || "This page", save = a.kind === "create";
   const { done, dismiss } = askChoice(

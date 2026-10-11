@@ -21,12 +21,14 @@ import { CAST, furlTarget, pageUrl, showUrl, type FrameMeta } from "./live";
 export const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T | null;
 const activeWs = (b: Bot | undefined): string | null => (b?.browser?.tabs || []).find((t) => t.active)?.ws || null;
 
-const link: { ws: WebSocket | null; url: string | null; id: number; tabs: Set<string> | null; meta: FrameMeta | null; retryAt: number; frame: string | null } =
-  { ws: null, url: null, id: 0, tabs: null, meta: null, retryAt: 0, frame: null };
+const link: { ws: WebSocket | null; url: string | null; bot: string | null; id: number; tabs: Set<string> | null; meta: FrameMeta | null; retryAt: number; frame: string | null } =
+  { ws: null, url: null, bot: null, id: 0, tabs: null, meta: null, retryAt: 0, frame: null };
 /** The driven tab's top frame: a page target's id (the tail of its socket URL) is its top frame's id. */
 const topFrame = (wsUrl: string): string | null => wsUrl.split("/").pop() || null;
 /** The last frame's viewport metadata from Chrome (CSS px the frame covers), for pointer and overlay geometry. */
 export const frameMeta = (): FrameMeta | null => link.meta;
+/** The bot whose tab the socket is linked to (fixed when the link starts; the selection may move on before the next linkSync). */
+export const linkBot = (): Bot | undefined => (link.bot ? getState().bots.find((b) => b.id === link.bot) : undefined);
 
 // ------------------------------------------------------------------ link state (for React) ----
 let linkedSnap = false;
@@ -89,7 +91,7 @@ export function linkSync(): void {
   if (link.url === want && want && !link.ws && Date.now() < link.retryAt) return;
   linkClose();
   if (!want) return;
-  link.url = want; link.frame = topFrame(want);
+  link.url = want; link.frame = topFrame(want); link.bot = cur()?.id ?? null;
   const ws = new WebSocket(want); link.ws = ws;
   ws.onopen = () => {
     if (link.ws !== ws) return;
@@ -137,7 +139,7 @@ export function linkSync(): void {
 function settleAll() { for (const r of [...pending.values()]) r(null); pending.clear(); }
 
 export function linkClose(): void {
-  const ws = link.ws; link.ws = null; link.url = null; link.meta = null; link.frame = null;
+  const ws = link.ws; link.ws = null; link.url = null; link.meta = null; link.frame = null; link.bot = null;
   if (ws) {
     ws.onclose = ws.onerror = null;  // this close is ours: reset once, below, not again from the handler
     try { if (ws.readyState === 1) ws.send(JSON.stringify({ id: ++link.id, method: "Page.stopScreencast" })); ws.close(); } catch { /* already gone */ }
