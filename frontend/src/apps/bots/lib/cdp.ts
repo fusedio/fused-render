@@ -73,9 +73,10 @@ function cdpCall(method: string, params: object = {}): Promise<Record<string, un
     link.ws!.send(JSON.stringify({ id, method, params }));
   });
 }
-/** Run an expression in the driven page and return its value (undefined on error or when not linked). */
-export async function evalIn<T = unknown>(expression: string): Promise<T | undefined> {
-  const r = await cdpCall("Runtime.evaluate", { expression, returnByValue: true });
+/** Run an expression in the driven page (or in one execution context of it) and return its value (undefined on error,
+ *  a context that is gone, or when not linked). */
+export async function evalIn<T = unknown>(expression: string, contextId?: number): Promise<T | undefined> {
+  const r = await cdpCall("Runtime.evaluate", { expression, returnByValue: true, ...(contextId !== undefined ? { contextId } : {}) });
   return (r as { result?: { value?: T } } | null)?.result?.value;
 }
 

@@ -8,7 +8,8 @@
 // untouched; "immediate" ones are told no at once.
 //
 // Per CDP session, like live-page.ts: the binding and the document script are re-added on every socket (onOpen) and die
-// with it. A request lives in the page, not the socket: a re-link asks the page for the ones still waiting (pending()).
+// with it. A request lives in the page, not the socket: a re-link has every frame report the ones still waiting again
+// (resend()), and a navigation takes down each dialog whose request went with the document.
 // Not covered: an out-of-process cross-origin iframe (its own target), and a page loaded while the live view was closed.
 import { askChoice } from "../dialogs/ask";
 import { act, cur } from "../state/store";
@@ -36,6 +37,12 @@ const SHIM = `(() => {
     if (left && !timer) timer = setInterval(flush, 250);
     if (!left && timer) { clearInterval(timer); timer = 0; }
   };
+  const MSG = "__fusedPasskeyResend";
+  function resend() {
+    for (const a of asks.values()) a.told = false;
+    flush();
+    for (let i = 0; i < window.frames.length; i++) try { window.frames[i].postMessage({ [MSG]: 1 }, "*"); } catch (e) {}
+  }
   const denied = () => new DOMException("The operation either timed out or was not allowed.", "NotAllowedError");
   const ask = (kind, o) => {
     const pk = o && o.publicKey;
@@ -69,13 +76,19 @@ const SHIM = `(() => {
   }
   Object.defineProperty(window, K, { value: {
     settle: (id) => { const a = asks.get(id); if (a) a.done(denied(), false); },
-    pending: () => [...asks].map(([id, a]) => { a.told = true; return { id, kind: a.kind, rp: a.rp }; }),  // the host asks now: no second report
+    has: (id) => asks.has(id),
+    resend,
   } });
+  // resend(): report every waiting request again (a new socket has no dialog for them), here and in every child frame,
+  // each of which passes it on to its own children. Only a frame's parent can ask it (the top frame: the host's evaluate).
+  window.addEventListener("message", (e) => { if (e.source === window.parent && e.source !== window && e.data && e.data[MSG]) resend(); });
 })()`;
 
 type Ask = { id: string; kind?: string; rp?: string; done?: boolean };
-/** The dialogs up on this socket, keyed by request id (a re-link's pending() and a late report may name the same one); dismissed with the socket. */
-const asking = new Map<string, () => void>();
+/** The dialogs up on this socket, keyed by request id (a resend may name one already up), with the execution context the
+ *  request came from; dismissed with the socket. */
+const asking = new Map<string, { dismiss: () => void; ctx: number | undefined }>();
+const takeDown = (id: string) => { const a = asking.get(id); asking.delete(id); a?.dismiss(); };
 
 // Without Runtime.enable (which would stream every console message over this socket) a binding does not outlive the
 // document it was added to (measured, Chrome 155): re-add it on every navigation, top frame and iframes alike.
@@ -86,20 +99,28 @@ onOpen.push(() => {
   if (!shimmed) return;
   cdp("Runtime.addBinding", { name: BINDING });
   cdp("Page.addScriptToEvaluateOnNewDocument", { source: SHIM, runImmediately: true });
-  // Requests still waiting from an earlier link (another bot was selected, the view was closed and reopened).
-  void evalIn<Ask[]>(`window[Symbol.for("fused.passkey")]?.pending() || []`).then((rows) => {
-    for (const a of rows || []) void ask(a, undefined);
-  });
+  // Requests still waiting from an earlier link (another bot was selected, the view was closed and reopened), iframes too.
+  cdp("Runtime.evaluate", { expression: `window[Symbol.for("fused.passkey")]?.resend()` });
 });
-onEvent("Page.frameNavigated", () => { if (shimmed) cdp("Runtime.addBinding", { name: BINDING }); });
-onReset.push(() => { shimmed = false; const all = [...asking.values()]; asking.clear(); for (const dismiss of all) dismiss(); });
+onEvent("Page.frameNavigated", () => {
+  if (!shimmed) return;
+  cdp("Runtime.addBinding", { name: BINDING });
+  // A navigation ends the document a request came from without the page reporting it: ask each dialog's own frame
+  // whether its request is still there (a gone context answers nothing) and take down the ones that are not.
+  for (const [id, a] of [...asking]) {
+    void evalIn<boolean>(`!!window[Symbol.for("fused.passkey")]?.has(${JSON.stringify(id)})`, a.ctx).then((live) => {
+      if (!live && asking.get(id) === a) takeDown(id);
+    });
+  }
+});
+onReset.push(() => { shimmed = false; const all = [...asking.values()]; asking.clear(); for (const a of all) a.dismiss(); });
 
 onEvent("Runtime.bindingCalled", (p) => {
   if (p.name !== BINDING) return;
   let a: Ask;
   try { a = JSON.parse(String(p.payload)); } catch { return; }
   const ctx = typeof p.executionContextId === "number" ? p.executionContextId : undefined;
-  if (a.done) { const dismiss = asking.get(a.id); asking.delete(a.id); dismiss?.(); return; }
+  if (a.done) { takeDown(a.id); return; }
   void ask(a, ctx);
 });
 
@@ -117,9 +138,10 @@ async function ask(a: Ask, ctx: number | undefined): Promise<void> {
     "Passkeys only open in a real Chrome window. Chrome reopens on this page in a few seconds; click the passkey option there again."
       + (b.control ? "" : ` ${b.name} pauses and you take over.`),
     "Open real window", "Not now");
-  asking.set(k, dismiss);
+  const entry = { dismiss, ctx };
+  asking.set(k, entry);
   const ok = await done;
-  if (asking.get(k) !== dismiss) return;  // dismissed: the page gave up, or the socket went away
+  if (asking.get(k) !== entry) return;  // taken down: the page gave up or navigated, or the socket went away
   asking.delete(k);
   // The relaunch ends this page, request and all; a popout that was refused (another bot mid-task on a shared browser,
   // its banner says so) leaves the page to fall back like Not now.
