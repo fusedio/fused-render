@@ -6717,3 +6717,7 @@ The user decided the Fused Apps tile should offer cards only at two-cell heights
 ## File search comes in three widths (2026-10-11, feat/home-fixed-grid)
 
 The spec already allowed a one-unit-tall search at 4x1, 2x1 and 1x1; only the Change card hid the Size group for every fixed-row source. It now shows Size for search (build stays hidden), and the size glyph for a fixed-row source draws a flat bar. At 2x1 the All files button is hidden like at 1x1 so the placeholder has room, and the bar clips its placeholder with an ellipsis. Focus posture still needs a full-width search, so a narrower one falls back to the normal grid. Presets and the search takeover are unchanged.
+
+## Focus posture holds for any search width (2026-10-11, feat/home-fixed-grid)
+
+The user decided the Focus layout is followed regardless of search bar size. `hasFocusPosture` now needs only a search widget on row 0 (any x, any width) plus the full-width build at (0,1). A Half or Small search keeps its own grid area; the 760px cap and centring in `home.css` only affect a search wider than that.

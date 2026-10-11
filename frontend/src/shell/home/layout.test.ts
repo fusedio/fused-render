@@ -1010,6 +1010,18 @@ test("hasFocusPosture: full-width search at y 0 and full-width build at y 1 lead
   expect(hasFocusPosture(moved)).toBe(false);
 });
 
+test("hasFocusPosture holds for any search width and needs a search on row 0", () => {
+  const focus = presetLayout("focus");
+  const search = focus.widgets.find((x) => x.source === "search")!;
+  const half = setSize(focus, search.id, "2x1");
+  expect(hasFocusPosture(half)).toBe(true);
+  const small = setSize(focus, search.id, "1x1");
+  const moved = { ...small, widgets: small.widgets.map((x) => (x.id === search.id ? { ...x, x: 5 } : x)) };
+  expect(moved.widgets.find((x) => x.id === search.id)!.x).toBe(5);
+  expect(hasFocusPosture(moved)).toBe(true);
+  expect(hasFocusPosture(removeWidget(focus, search.id))).toBe(false);
+});
+
 test("search comes in three widths: the Focus preset offers all, 2x1 keeps one row and frees the right half", () => {
   const l = presetLayout("focus");
   const search = l.widgets.find((x) => x.source === "search")!;

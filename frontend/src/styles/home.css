@@ -673,8 +673,8 @@
   overflow: hidden;
 }
 
-/* Focus posture, view mode: applies whenever a full-width search and a full-width
-   build lead the layout. The search stays on top and the build's four unit rows
+/* Focus posture, view mode: applies whenever a search on row 0 (any width) and a
+   full-width build lead the layout. The search stays on top and the build's four unit rows
    absorb the spare window height, so the composer centres between the search
    and any later tiles, which keep their placement and dock at the bottom. With
    no spare height the rows stay 52px and the page scrolls. Edit mode never gets
@@ -711,7 +711,8 @@
   align-self: stretch;
   box-sizing: border-box;
 }
-/* The search bar matches the Build composer width and centres above it. */
+/* A full-row search bar matches the Build composer width and centres above it;
+   a narrower one keeps its own grid area. */
 .files-home.is-focus .hw-grid > .is-search {
   max-width: 760px;
   width: 100%;
