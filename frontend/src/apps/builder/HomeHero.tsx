@@ -108,14 +108,16 @@ const NAME_MODEL = "haiku";
 // could tell that naming had failed at all.
 async function suggestAppName(prompt: string): Promise<string | null> {
   try {
+    // Lowercased before the check: a name the description states ("call it
+    // Shelf") comes back with its capital, and that is a name, not prose.
     const text = await aiComplete(prompt, NAME_SYSTEM_PROMPT, NAME_MODEL).then(
-      (t) => t.trim(),
+      (t) => t.trim().toLowerCase(),
     );
     // NAME_SYSTEM_PROMPT asks for a bare kebab-case reply; if the model added
     // prose instead (common even with "no prose" in the ask), `text` won't be
     // pure lowercase-and-hyphens. Taking the first token then would name the
     // folder after whatever word led the prose (e.g. "sure").
-    if (text.toLowerCase().replace(/[.\s]+$/, "") === NAME_NONE) return null;
+    if (text.replace(/[.\s]+$/, "") === NAME_NONE) return null;
     if (KEBAB_RE.test(text)) {
       const name = kebabName(text);
       if (name) return name;
