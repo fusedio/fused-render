@@ -1444,6 +1444,42 @@ a.bookmark-name::after {
   margin-bottom: 0;
 }
 
+/* The modal's heading is an input (CurrentAppsSection.tsx NewAppModal): it
+   wears the h2's own type and nothing else at rest — no border, no fill — so
+   the bar reads "New app" exactly as before until someone types over it. The
+   placeholder is the heading colour, not the muted one, for the same reason.
+   A faint wash on hover/focus is the only tell that the words can be edited. */
+.current-apps-compose .deploy-head h2 {
+  flex: 1;
+  min-width: 0;
+}
+
+.current-apps-compose .current-apps-compose-name {
+  width: 100%;
+  margin: -2px 0 -2px -6px;
+  padding: 2px 6px;
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  outline: none;
+}
+
+.current-apps-compose .current-apps-compose-name::placeholder {
+  color: inherit;
+  opacity: 1;
+}
+
+.current-apps-compose .current-apps-compose-name:hover,
+.current-apps-compose .current-apps-compose-name:focus {
+  background: var(--bg-alt);
+}
+
+.current-apps-compose .current-apps-compose-name:focus::placeholder {
+  color: var(--fg-muted);
+}
+
 /* -- The setup meter (shell/onboarding/SetupProgress) --------------------------
    A `.sidebar-item` row above Settings: ring glyph, "Setup", then a thin bar
    and the number in the trailing slot. The fill is the accent — this is the
