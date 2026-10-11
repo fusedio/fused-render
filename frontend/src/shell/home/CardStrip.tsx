@@ -123,7 +123,7 @@ export function CardStrip({
     <div className={"hw-strip" + (canNext && !icons ? " has-more" : "")}>
       <div
         ref={scroller}
-        className={(icons ? "hw-icons is-strip" : "home-row hw-cards") + (overflowing ? " is-overflowing" : "")}
+        className={(icons ? "hw-icons is-strip" + (rows <= 1 ? " is-one-row" : "") : "home-row hw-cards") + (overflowing ? " is-overflowing" : "")}
         style={(({ ...(icons ? { width: iconsW } : { "--hw-n": count ?? 1 }), "--hw-rows": icons ? Math.max(rows, fitRows) : rows }) as unknown) as CSSProperties}
         onScroll={update}
       >

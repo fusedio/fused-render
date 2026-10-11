@@ -1036,6 +1036,13 @@ button.hw-row:hover {
 .hw-icons.is-strip > .hw-tile { scroll-snap-align: start; }
 .hw-icons.is-strip::-webkit-scrollbar { display: none; }
 
+/* A one-cell tile is 120px: header plus one row of icons with labels must fit
+   in what is left (about 60px), so the icon shrinks and the padding tightens. */
+.hw-widget:has(.hw-icons.is-one-row) .hw-head { margin-bottom: 6px; }
+.hw-icons.is-one-row > .hw-tile { padding: 2px 4px; gap: 2px; }
+.hw-icons.is-one-row .hw-tile-icon { width: 36px; height: 36px; }
+.hw-icons.is-one-row .hw-tile-mono { font-size: 17px; }
+
 /* The icons strip fills the height its tile really has, so CardStrip can
    measure it and draw as many rows as fit. */
 .hw-body > .hw-strip:has(> .hw-icons) {

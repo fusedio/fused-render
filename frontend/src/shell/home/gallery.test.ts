@@ -18,8 +18,8 @@ test("one entry per (source, format) at the format's default size", () => {
   const es = galleryEntries(empty);
   for (const e of es) expect(e.size).toBe(sizesFor(e.source, e.format)[0]);
   const apps = es.filter((e) => e.source === "apps");
-  expect(apps.map((e) => e.format)).toEqual(["cards", "icons"]);
-  // Icons need two cells of height, so the default size is the first that fits.
+  expect(apps.map((e) => e.format)).toEqual(["icons", "cards"]);
+  // Cards need two cells of height, so their default size is the first that fits.
   expect(apps[1].rows).toBeGreaterThanOrEqual(2 * CELL);
 });
 

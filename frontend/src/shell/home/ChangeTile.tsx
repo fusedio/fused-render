@@ -7,7 +7,7 @@ import { createPortal } from "react-dom";
 import { useDismissOnOutside } from "@platform/lib/dismissOnOutside";
 import { SourceIcon } from "./AddWidgetPanel";
 import { FormatPicks, ShowChips, SizeChips, SortChips } from "./Pickers";
-import { FIXED_ROWS, FORMAT_MIN_ROWS, MAX_WIDGETS, SOURCES, allowedSizes, dimsOf, rectOf, sizesFor, sourceFits, type TileTarget, type WidgetSource } from "./layout";
+import { FIXED_ROWS, MAX_WIDGETS, SOURCES, allowedSizes, dimsOf, formatMinRows, rectOf, sizesFor, sourceFits, type TileTarget, type WidgetSource } from "./layout";
 import { placePopover, type Box, type Placement } from "./popoverPlace";
 import type { HomeLayoutApi } from "./useHomeLayout";
 
@@ -164,7 +164,7 @@ export function ChangeTile({
           {spec.formats.length > 1 ? (
             <>
               <div className="hw-label">Show as</div>
-              <FormatPicks source={widget.source} formats={spec.formats} value={widget.format} disabled={(f) => dimsOf(widget).rows < (FORMAT_MIN_ROWS[f] ?? 0)} onChange={(f) => api.reformat(widget.id, f)} />
+              <FormatPicks source={widget.source} formats={spec.formats} value={widget.format} disabled={(f) => dimsOf(widget).rows < (formatMinRows(widget.source, f))} onChange={(f) => api.reformat(widget.id, f)} />
             </>
           ) : null}
           {spec.sizes.length > 1 && !FIXED_ROWS[widget.source] ? (

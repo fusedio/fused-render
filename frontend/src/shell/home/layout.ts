@@ -118,7 +118,7 @@ export const SOURCES: Record<WidgetSource, SourceSpec> = {
     label: "Fused Apps",
     description: "Your apps, by recent use, last edit, or name.",
     sizes: ["4x1", "2x1", "1x2", "2x2"],
-    formats: ["cards", "icons"],
+    formats: ["icons", "cards"],
   },
   app: {
     label: "Page",
@@ -257,7 +257,9 @@ export function normalizeLayout(raw: unknown): HomeLayout {
       size: spec.sizes.includes(x.size as WidgetSize) ? (x.size as WidgetSize) : spec.sizes[0],
       format: spec.formats.includes(x.format as WidgetFormat)
         ? (x.format as WidgetFormat)
-        : spec.formats[0],
+        : source === "apps"
+          ? "cards" // saved tiles from before icons became the default
+          : spec.formats[0],
       x: 0,
       y: 0,
     };
@@ -291,7 +293,7 @@ export function normalizeLayout(raw: unknown): HomeLayout {
         const c = rc as number;
         // A fixed-row source takes its rows from FIXED_ROWS, whatever was stored.
         const rw = fixed ?? (rr as number);
-        // A stored icons tile too short for icons is downgraded first, so the footprint check does not move or resize it.
+        // A stored tile too short for its format (an apps cards tile one cell tall) is switched first, so the footprint check does not move or resize it.
         const min = minFootprint(w.source, formatForRows(w.source, w.format, rw));
         if (
           c >= min.cols && c <= GRID_COLS && rw >= min.rows && rw <= MAX_WIDGET_ROWS &&
@@ -301,7 +303,7 @@ export function normalizeLayout(raw: unknown): HomeLayout {
           w = preset ? { ...w, size: preset } : { ...w, size: contentSizeFor(w.source, c, rw), cols: c, rows: rw };
         }
       }
-      // A stored icons tile too short to draw icons falls back to its source's first format that fits; it is not moved or resized.
+      // A stored tile too short for its format falls back to its source's first format that fits; it is not moved or resized.
       w = { ...w, format: formatForRows(w.source, w.format, dimsOf(w).rows) };
       const { cols, rows } = dimsOf(w);
       if (!Number.isInteger(x) || !Number.isInteger(y) || !canPlace(widgets, { x, y, cols, rows })) {
@@ -424,7 +426,7 @@ export function allowedSizes(layout: HomeLayout, id: string): WidgetSize[] {
 
 export function setFormat(layout: HomeLayout, id: string, format: WidgetFormat): HomeLayout {
   return patch(layout, id, (w) =>
-    SOURCES[w.source].formats.includes(format) && w.format !== format && dimsOf(w).rows >= (FORMAT_MIN_ROWS[format] ?? 0)
+    SOURCES[w.source].formats.includes(format) && w.format !== format && dimsOf(w).rows >= formatMinRows(w.source, format)
       ? { ...w, format }
       : null,
   );
@@ -466,14 +468,20 @@ export function dimsOf(w: Pick<Widget, "source" | "size" | "cols" | "rows">): { 
     : dimsFor(w.source, w.size);
 }
 
-/** Fewest unit rows a format can be drawn in. Home is one fixed grid, so a
-    format that cannot fit a size is not offered at that size. An icon tile is
-    82px; a one-cell-tall tile body is about 64px. */
-export const FORMAT_MIN_ROWS: Partial<Record<WidgetFormat, number>> = { icons: 2 * CELL };
+/** Fewest unit rows a format can be drawn in, per source. Home is one fixed
+    grid, so a format that cannot fit a size is not offered at that size. Apps
+    cards need two cells; every other source's cards render header-only at one. */
+export const FORMAT_MIN_ROWS: Partial<Record<WidgetSource, Partial<Record<WidgetFormat, number>>>> = {
+  apps: { cards: 2 * CELL },
+};
+
+export function formatMinRows(source: WidgetSource, format?: WidgetFormat): number {
+  return (format && FORMAT_MIN_ROWS[source]?.[format]) || 0;
+}
 
 /** The source's presets that can show `format`: fixed-row sources are unaffected. */
 export function sizesFor(source: WidgetSource, format?: WidgetFormat): WidgetSize[] {
-  const min = (format && FORMAT_MIN_ROWS[format]) || 0;
+  const min = formatMinRows(source, format);
   return SOURCES[source].sizes.filter((s) => dimsFor(source, s).rows >= min);
 }
 
@@ -482,13 +490,13 @@ export function sizesFor(source: WidgetSource, format?: WidgetFormat): WidgetSiz
 export function minFootprint(source: WidgetSource, format?: WidgetFormat): { cols: number; rows: number } {
   const ds = SOURCES[source].sizes.map(dims);
   const rows = FIXED_ROWS[source] ?? Math.min(...ds.map((d) => d.rows));
-  return { cols: Math.min(...ds.map((d) => d.cols)), rows: Math.max(rows, (format && FORMAT_MIN_ROWS[format]) || 0) };
+  return { cols: Math.min(...ds.map((d) => d.cols)), rows: Math.max(rows, formatMinRows(source, format)) };
 }
 
 /** `format` unless the footprint is too short for it; then the source's first format that fits. */
 export function formatForRows(source: WidgetSource, format: WidgetFormat, rows: number): WidgetFormat {
-  if (rows >= (FORMAT_MIN_ROWS[format] ?? 0)) return format;
-  return SOURCES[source].formats.find((f) => rows >= (FORMAT_MIN_ROWS[f] ?? 0)) ?? format;
+  if (rows >= formatMinRows(source, format)) return format;
+  return SOURCES[source].formats.find((f) => rows >= formatMinRows(source, f)) ?? format;
 }
 
 /** The source's preset whose dims equal (cols, rows) exactly, else null; a
@@ -716,7 +724,7 @@ function presetRows(id: PresetId, folderId?: string): PresetRow[] {
     case "legacy":
       return [
         { source: "search", x: 0, y: 0, size: "4x1" },
-        { source: "apps", x: 0, y: 1, size: "4x1", custom: { cols: 8, rows: 4 } },
+        { source: "apps", x: 0, y: 1, size: "4x1", format: "cards", custom: { cols: 8, rows: 4 } },
         { source: "sessions", x: 0, y: 5, size: "4x1", custom: { cols: 8, rows: 4 } },
         { source: "recents", x: 0, y: 9, size: "4x1", custom: { cols: 8, rows: 4 } },
       ];
