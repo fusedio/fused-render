@@ -953,6 +953,14 @@ test("formatForRows: a one-cell folder icons tile falls back to list", () => {
   expect(formatForRows("folder", "icons", 4)).toBe("icons");
 });
 
+test("addWidget with a format and no size picks a size that meets the format's minimum", () => {
+  const w1 = addWidget(lay(), "apps", { format: "cards" }).widgets.find((x) => x.source === "apps")!;
+  expect(dimsOf(w1).rows).toBeGreaterThanOrEqual(formatMinRows("apps", "cards"));
+  expect(w1.size).toBe(sizesFor("apps", "cards")[0]);
+  const f = addWidget(lay(), "folder", { folderId: "f", format: "icons" }).widgets.find((x) => x.source === "folder")!;
+  expect(dimsOf(f).rows).toBeGreaterThanOrEqual(4);
+});
+
 test("new apps tiles default to icons, with every size allowed", () => {
   expect(SOURCES.apps.formats[0]).toBe("icons");
   const w1 = addWidget(lay(), "apps").widgets.find((x) => x.source === "apps")!;

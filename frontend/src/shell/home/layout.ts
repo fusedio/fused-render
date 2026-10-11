@@ -375,7 +375,9 @@ export function addWidget(
 ): HomeLayout {
   if (layout.widgets.length >= MAX_WIDGETS) return layout;
   if (source === "search" && hasSearch(layout)) return layout;
-  const probe = makeWidget(source, 0, 0, opts);
+  // A format with no explicit size starts at the first size that can show it.
+  const size = opts.size ?? (opts.format ? sizesFor(source, opts.format)[0] : undefined);
+  const probe = makeWidget(source, 0, 0, size ? { ...opts, size } : opts);
   const { x, y } = firstFreeSlot(layout.widgets, source, probe.size);
   if (y + dimsOf(probe).rows > MAX_ROWS) return layout;
   return { ...layout, widgets: sortByPosition([...layout.widgets, { ...probe, x, y }]) };
