@@ -1232,8 +1232,16 @@ def test_viewing_the_log_is_recorded_like_any_other_call(app_client):
     client.get(f"/api/fs/raw?path={log}",
                headers={"X-Fused-Page": "/x/log_studio/template.html",
                         "X-Fused-Target": log})
+    # Poll the real state (the read's own record landing), not the queue: the
+    # queue is already empty before the request's record is enqueued, and the
+    # writer's flush can lag well behind under a loaded runner.
     assert drain()
-    ids = [r["call_id"] for r in calls.query(limit=10)["records"]]
+    deadline = time.monotonic() + 30.0
+    while time.monotonic() < deadline:
+        ids = [r["call_id"] for r in calls.query(limit=10)["records"]]
+        if len(ids) >= 2:
+            break
+        time.sleep(0.05)
     assert "seed" in ids
     assert len(ids) == 2, "the read of the log should itself be recorded"
     read = next(r for r in calls.query(limit=10)["records"] if r["call_id"] != "seed")
