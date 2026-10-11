@@ -797,8 +797,15 @@ def test_sync_pull_poll_skips_when_up_to_date(harness, monkeypatch):
     harness.log_in()
     harness.client.post("/api/canvases/clone", json={"name": "alpha"}, headers=GUARD)
     harness.client.post("/api/canvases/sync/start", json={"name": "alpha"}, headers=GUARD)
-    time.sleep(0.6)
-    pulls = [c for c in harness.calls() if c[:3] == ["workbench", "canvas", "pull"]]
+    # Each poll is a CLI subprocess spawn; on Windows that is slow enough that a
+    # fixed sleep can end before the first probe lands, so wait for it.
+    def _pulls():
+        return [c for c in harness.calls() if c[:3] == ["workbench", "canvas", "pull"]]
+
+    deadline = time.time() + 10
+    while time.time() < deadline and not any("--dry-run" in c for c in _pulls()):
+        time.sleep(0.05)
+    pulls = _pulls()
     # Dry-run probes happened, but nothing was applied (no --force beyond the
     # initial clone) and pull_seq stayed 0.
     assert any("--dry-run" in c for c in pulls)
