@@ -3513,6 +3513,7 @@ def set_browser(b, target, fresh=False):
         b.meta["encrypt"] = bool(b.browser.encrypt)
         b.meta["chrome_profile"] = browsers.read_meta(target).get("chrome_profile") or ""
         b.save()
+    browsers.get(target)  # after save: the count must include this bot, or it would see a private browser and drive the other bot's tabs
     if browsers.used_on_disk(old, except_id=b.id) is False:
         browsers.remove(old)
         gone = "; its old logins were removed (no other bot used them)"
