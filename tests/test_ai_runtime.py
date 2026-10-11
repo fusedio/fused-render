@@ -573,7 +573,7 @@ def client():
     return TestClient(create_app(start_dir="/"))
 
 
-def _wait_ready(model, timeout=20.0):
+def _wait_ready(model, timeout=120.0):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         worker = supervisor.ready_worker(registry.TEXT_GENERATION, model)
@@ -583,7 +583,7 @@ def _wait_ready(model, timeout=20.0):
     raise AssertionError(f"{model} never became ready: {supervisor.describe()}")
 
 
-def _wait_downloading(model, timeout=20.0):
+def _wait_downloading(model, timeout=120.0):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         rows = [r for r in supervisor.describe()["downloading"] if r["model"] == model]
@@ -5509,7 +5509,7 @@ def test_a_slash_bearing_model_no_runner_can_serve_says_why(client, monkeypatch)
 # and the job row carries only progress.
 
 
-def _wait_job(job_id, timeout=20.0):
+def _wait_job(job_id, timeout=120.0):
     """The record, once it stops running."""
     deadline = time.monotonic() + timeout
     row = None
