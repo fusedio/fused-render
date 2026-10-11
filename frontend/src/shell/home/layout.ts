@@ -470,9 +470,11 @@ export function dimsOf(w: Pick<Widget, "source" | "size" | "cols" | "rows">): { 
 
 /** Fewest unit rows a format can be drawn in, per source. Home is one fixed
     grid, so a format that cannot fit a size is not offered at that size. Apps
-    cards need two cells; every other source's cards render header-only at one. */
+    cards need two cells, and folder icons draw 82px tiles that clip in one
+    cell; every other source's cards render header-only at one. */
 export const FORMAT_MIN_ROWS: Partial<Record<WidgetSource, Partial<Record<WidgetFormat, number>>>> = {
   apps: { cards: 2 * CELL },
+  folder: { icons: 2 * CELL },
 };
 
 export function formatMinRows(source: WidgetSource, format?: WidgetFormat): number {

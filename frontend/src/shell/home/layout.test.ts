@@ -911,12 +911,13 @@ test("no preset has a playground tile", () => {
   }
 });
 
-test("FORMAT_MIN_ROWS: only apps cards need two cells (4 units)", () => {
-  expect(FORMAT_MIN_ROWS).toEqual({ apps: { cards: 4 } });
+test("FORMAT_MIN_ROWS: apps cards and folder icons need two cells (4 units)", () => {
+  expect(FORMAT_MIN_ROWS).toEqual({ apps: { cards: 4 }, folder: { icons: 4 } });
   expect(formatMinRows("apps", "cards")).toBe(4);
   expect(formatMinRows("apps", "icons")).toBe(0);
   expect(formatMinRows("recents", "cards")).toBe(0);
-  expect(formatMinRows("folder", "icons")).toBe(0);
+  expect(formatMinRows("folder", "icons")).toBe(4);
+  expect(formatMinRows("folder", "list")).toBe(0);
   expect(formatMinRows("apps")).toBe(0);
 });
 
@@ -926,7 +927,8 @@ test("sizesFor: apps cards need two rows, apps icons and recents cards keep one-
   expect(sizesFor("apps", "icons")).toHaveLength(4);
   expect(sizesFor("apps")).toEqual(SOURCES.apps.sizes);
   expect(sizesFor("recents", "cards")).toEqual(SOURCES.recents.sizes);
-  expect(sizesFor("folder", "icons")).toEqual(SOURCES.folder.sizes);
+  expect(sizesFor("folder", "icons")).toEqual(["1x2", "2x2"]);
+  expect(sizesFor("folder", "list")).toEqual(SOURCES.folder.sizes);
   expect(sizesFor("search", "bar")).toEqual(SOURCES.search.sizes);
   expect(sizesFor("build", "live")).toEqual(SOURCES.build.sizes);
 });
@@ -944,6 +946,11 @@ test("formatForRows keeps a format that fits and falls back otherwise", () => {
   expect(formatForRows("apps", "cards", 2)).toBe("icons");
   expect(formatForRows("apps", "icons", 2)).toBe("icons");
   expect(formatForRows("recents", "cards", 2)).toBe("cards");
+});
+
+test("formatForRows: a one-cell folder icons tile falls back to list", () => {
+  expect(formatForRows("folder", "icons", 2)).toBe("list");
+  expect(formatForRows("folder", "icons", 4)).toBe("icons");
 });
 
 test("new apps tiles default to icons, with every size allowed", () => {
@@ -969,6 +976,13 @@ test("normalizeLayout: a stored apps cards tile one cell tall becomes icons, unm
   expect(out.widgets[0]).toMatchObject({ format: "icons", size: "2x1", x: 2, y: 1 });
   const tall = normalizeLayout({ version: 5, widgets: [{ id: "a", source: "apps", size: "2x2", format: "cards", x: 0, y: 0 }] });
   expect(tall.widgets[0].format).toBe("cards");
+});
+
+test("normalizeLayout: a stored folder icons tile one cell tall becomes list, unmoved", () => {
+  const out = normalizeLayout({ version: 5, widgets: [{ id: "f", source: "folder", folderId: "b1", size: "2x1", format: "icons", x: 2, y: 1 }] });
+  expect(out.widgets[0]).toMatchObject({ format: "list", size: "2x1", x: 2, y: 1 });
+  const tall = normalizeLayout({ version: 5, widgets: [{ id: "f", source: "folder", folderId: "b1", size: "2x2", format: "icons", x: 0, y: 0 }] });
+  expect(tall.widgets[0].format).toBe("icons");
 });
 
 test("setFormat refuses cards on a one-row apps tile but allows icons", () => {
