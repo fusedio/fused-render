@@ -113,6 +113,10 @@ def test_ready_has_no_desktop_instance_without_env(tmp_path, monkeypatch):
 
 def test_matching_server_true_for_our_token(tmp_path, desktop_env):
     with _serve(create_app(start_dir=str(tmp_path))) as port:
+        # `matching_server` is a single 0.5s shot by design (its callers poll);
+        # a loaded host's first request can miss that. The production poller
+        # is the contract under test: ready must be reached by polling.
+        assert desktop_probe.wait_until_ready(port, desktop_env, 60) is True
         assert desktop_probe.matching_server(port, desktop_env) is True
 
 
