@@ -30,8 +30,10 @@ import { StepHeader } from "./StepHeader";
 // Mirrors shell/git_tools.BREW_COMMAND. A line to copy, never run here.
 const BREW_COMMAND = "brew install git";
 
-// "/Library/Developer/CommandLineTools/usr/bin/git" → "Command Line Tools",
-// "/Applications/Xcode.app/…" → "Xcode", "/opt/homebrew/bin/git" → "Homebrew".
+/** Where a found git came from, for the "Found git 2.50.1 from …" row:
+ *  "/Library/Developer/CommandLineTools/usr/bin/git" → "Command Line Tools",
+ *  "/Applications/Xcode.app/…" → "Xcode", "/opt/homebrew/bin/git" → "Homebrew";
+ *  anything else is shown as its path. */
 function sourceName(path: string): string {
   if (path.includes("/CommandLineTools/")) return "Command Line Tools";
   if (path.includes("Xcode.app")) return "Xcode";
@@ -40,6 +42,8 @@ function sourceName(path: string): string {
   return path;
 }
 
+/** The wizard's Git step. Reads `stages.git` (server-observed; never writes a
+ *  stage), offers the Command Line Tools install, and re-reads on focus. */
 export function GitStep({
   stages,
   eyebrow,

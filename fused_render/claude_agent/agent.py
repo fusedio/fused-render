@@ -3145,8 +3145,10 @@ def _commit_turn(file: str, message: str) -> None:
     # and a fork with libproj resident dies with SIGSEGV before exec (rc -11,
     # silently; D1310). So no git on PATH is the no-git case — skip the sweep —
     # never a bare "git" that would take the fork path.
-    import shutil
-    git_bin = shutil.which("git")
+    # One resolver — see app_git._git_bin. Its "no git" answer is the bare
+    # name, which the isabs check below turns into the skip it always was.
+    from fused_render.shell import git_tools
+    git_bin = git_tools.git_bin()
     if not git_bin or not os.path.isabs(git_bin):
         return
 

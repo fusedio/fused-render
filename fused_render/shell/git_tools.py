@@ -99,6 +99,11 @@ def _version(path: str) -> str | None:
     when it cannot run — a Tools folder left half-deleted, a Homebrew git
     whose keg is gone. Nonzero exit is "unusable", no stderr matching."""
     try:
+        # posix-spawn-exempt: this IS a git spawn, and the sweep cannot read a
+        # variable argv — `path` is one of candidates(), always absolute (every
+        # entry is a full path, and the readlink one is joined onto one), and
+        # SUBPROCESS_KWARGS carries close_fds=False; no cwd=. It is the probe
+        # that DEFINES git_bin() for every other site, so it cannot call it.
         r = subprocess.run(
             [path, "--version"],
             capture_output=True, timeout=10, stdin=subprocess.DEVNULL,
@@ -139,6 +144,49 @@ def probe(force: bool = False) -> dict | None:
         found = None
     _memo = (time.monotonic(), found)
     return found
+
+
+def git_bin() -> str:
+    """THE git every spawn in this process uses — the one resolver behind each
+    module's `_git_bin()` (app_git, community, deeplink, git_upstream,
+    skill_plugin, github_setup, claude_config, the fs routes…).
+
+    On macOS it is `probe()`'s answer: the same walk that tells the wizard
+    "git is installed", so the showcase clone and the wizard can never
+    disagree. A Dock-launched app has no Homebrew on PATH, so `which("git")`
+    there finds the /usr/bin/git shim and a Homebrew-only Mac would be told
+    nothing is left to do while the clone still failed (bugbot, PR #1563).
+    Cached HERE, not at the call sites: a found git sticks for the life of the
+    process (as every site's own `_GIT_BIN` used to), but "not found" does
+    not — the next spawn asks the probe again (its own 3 s memo keeps that
+    cheap), so a git installed mid-session by the wizard's button is picked up
+    by the next clone instead of the next launch.
+
+    No real git found — or off macOS — falls back to what every site did
+    before: `which("git") or "git"`. The bare name is the known "no git" case
+    the callers already handle (and the posix-spawn sweep already allows).
+    The fallback is one string object, kept, so repeat calls return the same
+    answer until a real git appears (tests/test_git_posix_spawn pins the
+    identity)."""
+    global _resolved, _fallback
+    if _resolved is not None:
+        return _resolved
+    if offered():
+        g = probe()
+        if g is not None:
+            _resolved = g["path"]
+            return _resolved
+    if _fallback is None:
+        import shutil
+
+        _fallback = shutil.which("git") or "git"
+    return _fallback
+
+
+#: `git_bin()`'s answers: a real git once found (sticky), and the `which`
+#: fallback while none is (kept only so repeat calls return one object).
+_resolved: str | None = None
+_fallback: str | None = None
 
 
 #: Shown beside the Install button as the other way in. Not run by the app.

@@ -55,11 +55,12 @@ _GIT_BIN = None
 
 
 def _git_bin():
-    global _GIT_BIN
-    if _GIT_BIN is None:
-        import shutil
-        _GIT_BIN = shutil.which("git") or "git"
-    return _GIT_BIN
+    # One resolver for the whole process (shell/git_tools.git_bin): the SAME
+    # probe the wizard's Git step reports from, so "git is installed" there and
+    # a clone that works here are one fact. `which` alone found the
+    # /usr/bin/git shim on a Dock-launched Mac whose PATH lacks Homebrew.
+    from fused_render.shell import git_tools
+    return git_tools.git_bin()
 
 
 REPO_URL = os.environ.get(

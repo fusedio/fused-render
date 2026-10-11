@@ -798,7 +798,8 @@ def _git_run(root: str, *args: str, timeout: float = 15.0):
     credential, but a misconfigured helper asking for one anyway must fail
     instead of hang.
     """
-    git_bin = shutil.which("git") or "git"
+    from fused_render.shell import git_tools  # one resolver — see app_git._git_bin
+    git_bin = git_tools.git_bin()
     env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "",
           "SSH_ASKPASS": ""}
     try:
