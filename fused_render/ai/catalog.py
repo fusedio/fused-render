@@ -1189,6 +1189,15 @@ SUGGESTIONS: dict[str, list[dict]] = {
                     "768-dim, multilingual, but only 64 tokens of text.",
         },
         {
+            "id": "mlx-community/embeddinggemma-2-bf16",
+            "params": "740M",
+            "label": "EmbeddingGemma 2",
+            "nickname": "EmbeddingGemma 2",
+            "size_gb": 1.52,
+            "note": "Google's EmbeddingGemma 2: text and images in one "
+                    "768-dim space, 8192 tokens of context, 100+ languages.",
+        },
+        {
             "id": "mlx-community/siglip2-so400m-patch16-384",
             # 2272.20 MB safetensors + 34.36 MB tokenizer + configs = 2.31 GB,
             # the whole repo (10 files, safetensors only). Hub per-file byte

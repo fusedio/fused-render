@@ -38,6 +38,7 @@ version = "0.1.0"
 requires-python = ">=3.10"
 dependencies = [
     "mlx-embeddings>=0.1,<0.2",
+    "mlx-vlm>=0.7.7,<0.8",
     "pillow",
     # HEIC/HEIF and AVIF, which plain Pillow cannot open. iPhones have shot
     # HEIC by default since iOS 11, so without this the `paths` half of an
@@ -50,3 +51,9 @@ dependencies = [
 # Not a distribution — a folder of scripts, not something to build and install.
 [tool.uv]
 package = false
+
+[tool.uv.sources]
+mlx-vlm = { url = "https://github.com/Blaizzy/mlx-vlm/archive/fec3f50379bb2cb0760ef3c8a68ebce9585e4d97.tar.gz" }
+
+[tool.fused-render.runner]
+allow_build = true
