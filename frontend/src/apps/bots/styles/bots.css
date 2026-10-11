@@ -483,7 +483,7 @@ div.bots-page.sideapp .preview > :is(.shotwrap, .toast, .cap, .info) { display: 
    like the row itself. Hover lifts to --raised. */
 .bots-page .composer #attachbtn { width: 40px; height: 40px; padding: 0; border-radius: 50%; flex: none; background: var(--bg); color: var(--text); box-shadow: 0 0 0 1px var(--raised); display: inline-flex; align-items: center; justify-content: center; }
 .bots-page .composer #attachbtn:hover { background: var(--raised); color: var(--text); }
-.bots-page .composer #attachbtn svg { width: 24px; height: 24px; display: block; }
+.bots-page .composer #attachbtn svg { width: 20px; height: 20px; display: block; }
 .bots-page .composer #micbtn { height: 40px; min-width: 40px; padding: 0 8px; border-radius: 20px; flex: none; background: var(--bg); color: var(--text); box-shadow: 0 0 0 1px var(--raised); display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
 .bots-page .composer #micbtn:hover { background: var(--raised); }
 .bots-page .composer #micbtn svg { width: 22px; height: 22px; display: block; }

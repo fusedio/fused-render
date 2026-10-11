@@ -1,6 +1,6 @@
 // The composer (OpenBot chat.js): Pause / Resume / Stop, pending attachment chips, the reply quote, attach + dictation
 // buttons, the auto-growing textarea (Enter sends, Shift+Enter is a newline, Esc cancels the reply) and the send arrow.
-// Files arrive by the + button, paste (a pasted screenshot is renamed) or drop on the row; each goes to the bot's files
+// Files arrive by the folder button, paste (a pasted screenshot is renamed) or drop on the row; each goes to the bot's files
 // folder as base64 (8 MB each) when you send, and the task names them.
 // Dictation: push-to-talk, not live: record the mic (/api/capture), transcribe with the local speech model
 // (/api/ai/transcribe, a job), drop the text at the caret for review. Nothing is sent on its own.
@@ -306,7 +306,7 @@ export function Composer({ b, reply, setReply, threadRef }: ComposerProps) {
         <div className="line">
           <button id="attachbtn" disabled={!on} onClick={() => fileInput.current?.click()}
             title="Attach a file for the bot (or paste / drop one here). It lands in this bot's files folder, so it can upload it to a page.">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="M12 7v10M7 12h10" /></svg>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" /></svg>
           </button>
           <input type="file" id="attachfile" multiple hidden ref={fileInput}
             onChange={(e) => { if (e.target.files) addFiles(e.target.files); e.target.value = ""; }} />
