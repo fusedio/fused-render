@@ -3145,10 +3145,14 @@ def _commit_turn(file: str, message: str) -> None:
     # and a fork with libproj resident dies with SIGSEGV before exec (rc -11,
     # silently; D1310). So no git on PATH is the no-git case — skip the sweep —
     # never a bare "git" that would take the fork path.
-    # One resolver — see app_git._git_bin. Its "no git" answer is the bare
-    # name, which the isabs check below turns into the skip it always was.
-    from fused_render.shell import git_tools
-    git_bin = git_tools.git_bin()
+    # NOT the shared resolver (shell/git_tools.git_bin): this template is a
+    # standalone process and may not import fused_render (D166, `_request_sync`
+    # below). `which` it is, as before — on a Dock-launched Mac whose PATH
+    # lacks Homebrew this can be the /usr/bin/git shim, in which case the
+    # sweep fails best-effort exactly as it always did, and the server-side
+    # commit (app_git, which DOES use the resolver) still covers the turn.
+    import shutil
+    git_bin = shutil.which("git")
     if not git_bin or not os.path.isabs(git_bin):
         return
 
