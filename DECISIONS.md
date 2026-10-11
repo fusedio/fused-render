@@ -6739,3 +6739,10 @@ Two bots sharing a browser (Slack and Brainstorming) showed each other's page: s
 ## Home: add widgets in any column from an open row of + cells (2026-10-11, feat/home-fixed-grid)
 
 The user wants to place a new widget on the left or the right of the row below the last one, without being limited to column 0. Before, `addWidget` always took `firstFreeSlot` and the only add control below the last row was one 1x1 "Add widget" tile at x 0. Now, in edit mode at full grid width, that row shows one dashed "+" cell per cell column (`GRID_COLS / CELL` = 4). A cell opens the normal Add widget gallery with every source, aimed at that spot (`at`); `galleryEntries` picks the default size if it fits there, else the first size that does, and disables an entry with "No room here" when none fits; `addWidgetAt` puts the top-left at (x, y) and refuses an off-grid or occupied footprint. The sheet's note reads "Starts in column N". The single Add widget tile is gone at full width and stays under the narrow reflow, which has no slots. Holes inside the used rows keep their "Choose what goes here" slots. Rejected: a drag-to-place add (the grid does not move tiles in edit mode), and a column picker inside the sheet (one more step than clicking the spot).
+
+## Home gallery: captions follow the tile, correction on folder icons (2026-10-11, feat/home-fixed-grid)
+
+Corrects "Apps cards need two cells, icons fit one and are the default": its line that bookmark folder icons lost their two-row minimum is out of date. Commit 38cae1700 restored it (`FORMAT_MIN_ROWS.folder.icons = 2 * CELL`), and a one-cell folder-icons tile loads as list. Review round 3 on PR #1550 also changed:
+- A fixed-row source's caption names its chosen width ("Full row", "Half", "Small") instead of always "Full row".
+- With a swap or fill target, the entry's `cols`/`rows` (preview and caption) are the tile's footprint; the fit and "Too big" checks still use the chosen size.
+- `addWidget` and `addWidgetAt` return the layout unchanged for a folder without `folderId` or a page without `appPath`, which `normalizeLayout` would drop on the next load.
