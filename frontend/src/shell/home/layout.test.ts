@@ -1059,7 +1059,7 @@ test("search comes in three widths: the Focus preset offers all, 2x1 keeps one r
 
 test("addWidgetAt on an empty row lands at x 4", () => {
   const base: HomeLayout = { ...defaultLayout(), widgets: [] };
-  const out = addWidgetAt(base, "folder", 4, 0, { size: "1x1" });
+  const out = addWidgetAt(base, "folder", 4, 0, { size: "1x1", folderId: "f1" });
   const added = out.widgets[0];
   expect(out.widgets.length).toBe(1);
   expect([added.x, added.y]).toEqual([4, 0]);
@@ -1067,10 +1067,18 @@ test("addWidgetAt on an empty row lands at x 4", () => {
 
 test("addWidgetAt refuses an overlapping spot, an off-grid spot and a second search", () => {
   const base: HomeLayout = { ...defaultLayout(), widgets: [] };
-  const one = addWidgetAt(base, "folder", 0, 0, { size: "2x2" });
-  expect(addWidgetAt(one, "folder", 2, 2, { size: "1x1" })).toBe(one);
-  expect(addWidgetAt(base, "folder", 6, 0, { size: "2x2" })).toBe(base);
+  const one = addWidgetAt(base, "folder", 0, 0, { size: "2x2", folderId: "f1" });
+  expect(addWidgetAt(one, "folder", 2, 2, { size: "1x1", folderId: "f1" })).toBe(one);
+  expect(addWidgetAt(base, "folder", 6, 0, { size: "2x2", folderId: "f1" })).toBe(base);
   const withSearch = addWidgetAt(base, "search", 0, 0);
   expect(withSearch.widgets.length).toBe(1);
   expect(addWidgetAt(withSearch, "search", 0, 4)).toBe(withSearch);
+});
+
+test("addWidgetAt and addWidget refuse a folder or page with no identifier", () => {
+  const base: HomeLayout = { ...defaultLayout(), widgets: [] };
+  expect(addWidgetAt(base, "folder", 0, 0)).toBe(base);
+  expect(addWidgetAt(base, "app", 0, 0)).toBe(base);
+  expect(addWidget(base, "folder")).toBe(base);
+  expect(addWidget(base, "app")).toBe(base);
 });

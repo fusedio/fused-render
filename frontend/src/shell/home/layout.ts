@@ -375,6 +375,7 @@ export function addWidget(
 ): HomeLayout {
   if (layout.widgets.length >= MAX_WIDGETS) return layout;
   if (source === "search" && hasSearch(layout)) return layout;
+  if ((source === "folder" && !opts.folderId) || (source === "app" && !opts.appPath)) return layout;
   // A format with no explicit size starts at the first size that can show it.
   const size = opts.size ?? (opts.format ? sizesFor(source, opts.format)[0] : undefined);
   const probe = makeWidget(source, 0, 0, size ? { ...opts, size } : opts);
@@ -394,6 +395,7 @@ export function addWidgetAt(
 ): HomeLayout {
   if (layout.widgets.length >= MAX_WIDGETS) return layout;
   if (source === "search" && hasSearch(layout)) return layout;
+  if ((source === "folder" && !opts.folderId) || (source === "app" && !opts.appPath)) return layout;
   const size = opts.size ?? (opts.format ? sizesFor(source, opts.format)[0] : undefined);
   const w = { ...makeWidget(source, 0, 0, size ? { ...opts, size } : opts), x, y };
   const { cols, rows } = dimsOf(w);
