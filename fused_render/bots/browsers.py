@@ -32,6 +32,7 @@ log = logging.getLogger(__name__)
 
 _lock = threading.Lock()
 _procs: dict = {}  # browser dir -> BrowserProcess
+_complete = False  # the latest registry scan built every bot on disk (mark_complete)
 
 
 def data_dir() -> str:
@@ -96,16 +97,20 @@ def get(bid: str) -> BrowserProcess:
         if p is None:
             p = BrowserProcess(key, browser_cache_dir(bid))
             p.encrypt = bool(read_meta(bid).get("encrypt"))
+            p.complete = _complete  # a process built after the scan inherits its verdict
             _procs[key] = p
         return p
 
 
-def mark_complete() -> None:
-    """Every bot on disk is built (registry.all ran): a window no view owns is now an orphan
-    a view may close (Browser._sweep_orphans). Until then it may be an unbuilt bot's."""
+def mark_complete(complete: bool = True) -> None:
+    """Every bot on disk is built (registry.all ran clean): a window no view owns is now an orphan
+    a view may close (Browser._sweep_orphans). A scan that could not list or build a bot passes
+    False: until a clean one, a window may be an unbuilt bot's."""
+    global _complete
     with _lock:
+        _complete = complete
         for p in _procs.values():
-            p.complete = True
+            p.complete = complete
 
 
 def stop_all(budget_s: float = 8.0) -> int:

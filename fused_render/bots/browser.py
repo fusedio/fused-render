@@ -1446,11 +1446,14 @@ class BrowserProcess:
             if not sess:
                 return False
             if self.alive(sess):
+                # A view's live windows keep Chrome up; a blank launch window or an orphan nobody owns does not.
+                # Discovery failing on a Chrome that answers /json/version keeps it up too: another bot may be
+                # mid-action on it, and the next sleeper asks again.
                 try:
-                    if any(t.get("type") == "page" for t in _http(sess["port"], "/json/list")):
+                    if any(v._my_targets(sess["port"]) for v in self.views):
                         return False
-                except Exception:  # noqa: BLE001 — unanswering: treat as empty, stop escalates anyway
-                    pass
+                except Exception:  # noqa: BLE001
+                    return False
             self.stop(seal)
             return True
 
@@ -1903,9 +1906,17 @@ class Browser:
                     raise RuntimeError("the bot's window did not open")
         finally:
             bws.close()
-        main = next((t for t in tabs if t.get("id") == self._main_tab), None) or tabs[-1]
+        main = next((t for t in tabs if t.get("id") == self._main_tab), None) or self._remembered_main(tabs) or tabs[-1]
         self._main_tab = main.get("id")
         return main, tabs
+
+    def _remembered_main(self, tabs):
+        """After a server restart `_main_tab` is unknown: the driven tab is the one window.json's active row
+        names (by url), so status, screenshot and the live view stay on the page the bot was on."""
+        url = self.last_url()
+        if not url or url == "about:blank":
+            return None
+        return next((t for t in tabs if (t.get("url") or "") == url), None)
 
     def _connect(self, timeout=30):
         self.idle = False
@@ -1977,7 +1988,7 @@ class Browser:
             return []
         if not tabs:
             return []
-        main = next((t for t in tabs if t.get("id") == self._main_tab), None) or tabs[-1]
+        main = next((t for t in tabs if t.get("id") == self._main_tab), None) or self._remembered_main(tabs) or tabs[-1]
         # Target.getTargets lists tabs oldest-first (measured; /json/list is newest-first); keep our own
         # stable open-order so a tab's index never shifts under the bot (or the strip) mid-task.
         by_id = {t.get("id"): t for t in tabs}
