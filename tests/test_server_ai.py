@@ -69,7 +69,7 @@ _CLI_RESULT = {
     "total_cost_usd": 0.0011,
     "usage": {"input_tokens": 3, "output_tokens": 2,
               "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
-    "modelUsage": {"claude-haiku-4-5-20251001": {"inputTokens": 3}},
+    "modelUsage": {"claude-haiku-5-5": {"inputTokens": 3}},
 }
 
 
@@ -324,7 +324,7 @@ def _stream(body):
     ("QWEN3.5-4B-Q4_K_M.GGUF", True),        # case-insensitive, like the extension check it mirrors
     ("opus", False),
     ("sonnet", False),
-    ("claude-haiku-4-5-20251001", False),
+    ("claude-haiku-5-5", False),
 ])
 def test_is_local_model_recognises_both_id_shapes(model, expected):
     """A repo id (has a `/`) and a curated llamacpp-text id (a bare GGUF
@@ -714,7 +714,7 @@ def test_relay_happy_path(monkeypatch):
     data = _data(resp)
     assert data["ok"] is True
     assert data["result"]["text"] == "hi there"
-    assert data["result"]["response"]["modelId"] == "claude-haiku-4-5-20251001"
+    assert data["result"]["response"]["modelId"] == "claude-haiku-5-5"
     assert data["result"]["usage"] == {"inputTokens": 3, "outputTokens": 2, "totalTokens": 5}
     # One CLI spawn: stream-json in and out (the D169 persistent-instance
     # spawn shape; --verbose is mandatory with stream-json output), the
@@ -928,13 +928,14 @@ def test_relay_usage_is_normalized_to_the_two_token_keys(monkeypatch):
 
 
 def test_relay_model_echo_prefers_the_resolved_id(monkeypatch):
-    # A model alias goes to the CLI as-is, but the response echoes the full id
-    # the CLI actually ran (the modelUsage key).
+    # A short alias resolves through _AI_SHORT_MODEL_IDS on the way to the
+    # CLI, and the response echoes the full id the CLI actually ran (the
+    # modelUsage key), which may carry a date the alias does not.
     fake = _cli_ok(monkeypatch, dict(
         _CLI_RESULT, modelUsage={"claude-sonnet-5-20250929": {}}))
     resp = _relay({"prompt": "hello", "model": "sonnet"})
     (argv, _), = fake.calls
-    assert _flag(argv, "--model") == "sonnet"
+    assert _flag(argv, "--model") == _server_ai._AI_SHORT_MODEL_IDS["sonnet"]
     assert _data(resp)["result"]["response"]["modelId"] == "claude-sonnet-5-20250929"
 
 
@@ -964,7 +965,7 @@ def test_relay_streams_ndjson_chunks_and_done(monkeypatch):
     # Same result schema as the non-streaming response.
     result = done["result"]
     assert result["text"] == "hi there"
-    assert result["response"]["modelId"] == "claude-haiku-4-5-20251001"
+    assert result["response"]["modelId"] == "claude-haiku-5-5"
     assert result["usage"] == {"inputTokens": 3, "outputTokens": 2, "totalTokens": 5}
     assert result["provider"] == "claude"
     assert result["finishReason"] == "stop" and result["warnings"] == []
@@ -1310,7 +1311,7 @@ def test_relay_rejects_unknown_effort_and_bad_model(monkeypatch):
                  {"prompt": "x", "model": 42},
                  {"prompt": "x", "model": ""},
                  {"prompt": "x", "model": "   "},
-                 {"prompt": "x", "model": ["claude-haiku-4-5-20251001"]}):
+                 {"prompt": "x", "model": ["claude-haiku-5-5"]}):
         resp = _relay(body)
         assert resp.status_code == 400
         assert _data(resp)["error"]["type"] == "bad_request"

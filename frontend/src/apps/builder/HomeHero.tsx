@@ -70,30 +70,54 @@ const KEBAB_RE = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 // produce "flux-name-bot" and that passes every syntactic check.
 const NAME_NONE = "none";
 
+// The ask is a folder name, so it reads like one: the subject first, 2-3
+// words, no filler. Examples carry more of the standard than the rules do —
+// without them the model pads ("expense-tracker-app") or leads with the verb
+// ("track-my-expenses"). A name the description itself states wins outright.
 const NAME_SYSTEM_PROMPT =
   "You name software projects. Given a description of an app, reply with a " +
-  "short kebab-case name for it: 2-4 lowercase words joined by hyphens, " +
-  "letters and digits only. Use only words that appear in the description or " +
-  "plainly describe what the app does — never invented brand words. If the " +
-  "text is not a description of an app to build, reply with exactly: " +
-  NAME_NONE +
-  ". Reply with ONLY the name — no quotes, no prose.";
+  "short folder name for it in kebab-case: 2-3 lowercase words joined by " +
+  "hyphens, letters and digits only, at most 4 words when 3 cannot say it.\n" +
+  "Rules:\n" +
+  "- Lead with the subject (what it is about), then what it does: " +
+  "\"expense-tracker\", not \"track-expenses\".\n" +
+  "- Use words from the description or plain words for what the app does. " +
+  "Never invent brand words or puns.\n" +
+  "- No filler: never app, tool, my, simple, new, basic, project, helper, " +
+  "manager (unless the thing IS a manager), or the user's name.\n" +
+  "- If the description names the app itself, use that name, kebab-cased.\n" +
+  "- If the text is not a description of an app to build, reply with " +
+  "exactly: " + NAME_NONE + "\n" +
+  "Examples:\n" +
+  "\"a page that shows my monthly spending by category\" -> spending-by-category\n" +
+  "\"something to track which plants I watered and when\" -> plant-watering-log\n" +
+  "\"a kanban board for my reading list, call it Shelf\" -> shelf\n" +
+  "\"hello, what can you do?\" -> " + NAME_NONE + "\n" +
+  "Reply with ONLY the name — no quotes, no prose, no explanation.";
+
+// The relay alias the naming call pins. Named explicitly because the relay's
+// omitted-model default follows the user's default-model PREFERENCE, and a
+// pref of fable/opus turned a two-second utility call into a twenty-second
+// one. Haiku is the right model for a folder name whatever the chat runs on.
+const NAME_MODEL = "haiku";
 
 // A kebab-case folder name for an app described by `prompt`: ask the AI relay
-// (haiku, the server default — cheap and fast). null when the relay is down or
-// answers garbage — the caller then ASKS the user for a name. It used to slug
-// the prompt's own words instead, which produced folders like
-// "make-me-a-tool-that" and nobody could tell that naming had failed at all.
+// on haiku (cheap and fast). null when the relay is down or answers garbage —
+// the caller then ASKS the user for a name. It used to slug the prompt's own
+// words instead, which produced folders like "make-me-a-tool-that" and nobody
+// could tell that naming had failed at all.
 async function suggestAppName(prompt: string): Promise<string | null> {
   try {
-    const text = await aiComplete(prompt, NAME_SYSTEM_PROMPT).then((t) =>
-      t.trim(),
+    // Lowercased before the check: a name the description states ("call it
+    // Shelf") comes back with its capital, and that is a name, not prose.
+    const text = await aiComplete(prompt, NAME_SYSTEM_PROMPT, NAME_MODEL).then(
+      (t) => t.trim().toLowerCase(),
     );
     // NAME_SYSTEM_PROMPT asks for a bare kebab-case reply; if the model added
     // prose instead (common even with "no prose" in the ask), `text` won't be
     // pure lowercase-and-hyphens. Taking the first token then would name the
     // folder after whatever word led the prose (e.g. "sure").
-    if (text.toLowerCase().replace(/[.\s]+$/, "") === NAME_NONE) return null;
+    if (text.replace(/[.\s]+$/, "") === NAME_NONE) return null;
     if (KEBAB_RE.test(text)) {
       const name = kebabName(text);
       if (name) return name;
@@ -272,8 +296,9 @@ function ComposerPick<T extends string>({
 }
 
 // The hero's prompt box — the claude.ai / v0 "what do you want to build?"
-// composer. Submitting names the app (haiku via /api/ai), scaffolds it, and
-// lands in the new folder's claude chat exactly like the New-app panel does.
+// composer. Submitting names the app (`givenName` from the host if it gave one,
+// else haiku via /api/ai), scaffolds it, and lands in the new folder's claude
+// chat exactly like the New-app panel does.
 // Exported on its own (without the wordmark) for the sidebar's "Current apps"
 // + button (shell/CurrentAppsSection.tsx, D489), which opens THIS composer in a
 // modal: same naming, same scaffold, same landing in the new app's chat. One
@@ -281,10 +306,21 @@ function ComposerPick<T extends string>({
 export function HeroComposer({
   onCreated,
   autoFocus = false,
+  givenName,
 }: {
   onCreated: () => void;
   /** Focus the prompt on mount (onboarding: the focus ring IS the step's cue). */
   autoFocus?: boolean;
+  /**
+   * A name the HOST collected (the New-app modal's editable heading). Non-blank
+   * means "call it this": the folder is created under it verbatim (the server's
+   * own folder-name rules apply, nothing stricter — the user typed it on
+   * purpose) and the haiku call, the slow part of a create, is skipped. Blank
+   * or absent means name it for me, with the ask row as the fallback. The
+   * composer rendered on its own (hero, Build widget, onboarding) has no name
+   * field: naming is the AI's job there.
+   */
+  givenName?: string;
 }) {
   const [prompt, setPrompt] = useState("");
   // The chip above the box — set by the Playground's "Build an app with this
@@ -478,8 +514,15 @@ export function HeroComposer({
   // user did), so both end up in exactly the same place. `back` is where a
   // failure returns to: the ask row keeps the name the user typed (a retry
   // from idle would re-run naming and overwrite it with a fresh my-app-N),
-  // the automatic path goes back to the prompt.
-  const createNamed = async (name: string, back: "idle" | "askName") => {
+  // the automatic path goes back to the prompt. `exact` is the host-given
+  // name: a 409 there is an error to show ("'reports' already exists"),
+  // not a cue to ship reports-2 — the user chose that word; a model's or
+  // my-app-N's name is nobody's choice, so those take the suffix.
+  const createNamed = async (
+    name: string,
+    back: "idle" | "askName",
+    exact = false,
+  ) => {
     setError(null);
     setSessionError(null);
     setPhase("creating");
@@ -494,13 +537,16 @@ export function HeroComposer({
         if (alive.current) setPhase(back);
         return;
       }
-      const res = await createAppUnderFreeName(
-        name,
-        fullPrompt(),
-        model,
-        effort,
-        imagesRef.current.map((i) => i.path).filter(Boolean),
-      );
+      const images = imagesRef.current.map((i) => i.path).filter(Boolean);
+      const res = exact
+        ? await createApp(name, fullPrompt(), model, effort, images)
+        : await createAppUnderFreeName(
+            name,
+            fullPrompt(),
+            model,
+            effort,
+            images,
+          );
       // The folder exists from here on, so the Recent grid is stale — refresh it
       // now, since the task-error branch below stays on this page.
       onCreated();
@@ -544,13 +590,19 @@ export function HeroComposer({
     }
   };
 
-  // First half: name the app. Haiku names it and creation follows at once;
-  // when it cannot, the composer says so and asks for a name instead of
-  // quietly shipping a slug of the prompt.
+  // First half: name the app. A host-given name is used as-is and haiku is
+  // never asked. Otherwise haiku names it and creation follows at once; when
+  // it cannot, the composer says so and asks for a name instead of quietly
+  // shipping a slug of the prompt.
   const submit = async () => {
     if (!canSubmit) return;
     setError(null);
     setSessionError(null);
+    const given = givenName?.trim();
+    if (given) {
+      await createNamed(given, "idle", true);
+      return;
+    }
     setPhase("naming");
     const name = await suggestAppName(prompt.trim());
     if (!alive.current) return;
