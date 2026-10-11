@@ -263,7 +263,17 @@ def _write(progress_dir, stage, pct, detail="", done=False, error=None,
                    "bytes_total": bytes_total, "needs_build": needs_build,
                    "platform_incompatible": platform_incompatible,
                    "manifest_digest": manifest_digest}, f)
-    os.replace(tmp, path)
+    # Windows refuses to replace a file a poller has open for a few ms
+    # (PermissionError); ride it out rather than crash a healthy install.
+    deadline = time.monotonic() + 10.0
+    while True:
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if os.name != "nt" or time.monotonic() >= deadline:
+                raise
+            time.sleep(0.02)
 
 
 def _elapsed(seconds):

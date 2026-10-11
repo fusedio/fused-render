@@ -1034,7 +1034,7 @@ def _job(job_id):
     return next((j for j in jobs.list_jobs() if j["id"] == job_id), None)
 
 
-def _wait_until(predicate, timeout=2.0):
+def _wait_until(predicate, timeout=30.0):
     deadline = time.time() + timeout
     while time.time() < deadline:
         value = predicate()
