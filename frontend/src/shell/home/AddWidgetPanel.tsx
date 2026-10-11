@@ -114,7 +114,18 @@ export function AddWidgetPanel({
   useLayoutEffect(() => {
     if (pending) return;
     const body = dialog.current?.querySelector<HTMLElement>(".hw-gal-body");
-    if (body) setMetrics(measurePreviews(body));
+    if (!body) return;
+    const measure = () =>
+      setMetrics((prev) => {
+        const next = measurePreviews(body);
+        return prev && prev.colW === next.colW && prev.scale === next.scale ? prev : next;
+      });
+    measure();
+    // Resizing the window or sheet changes the scale, so keep measuring.
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(body);
+    return () => ro.disconnect();
   }, [pending]);
   const full = (!target || target.kind === "fill") && api.layout.widgets.length >= MAX_WIDGETS;
   const note = full
