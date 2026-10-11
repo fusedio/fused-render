@@ -784,6 +784,16 @@ export function matchPreset(layout: HomeLayout): PresetId | null {
   return null;
 }
 
+/** View-mode Focus posture: a full-width search on row 0 and a full-width build
+    directly under it lead the layout. Any tiles below keep their placement. */
+export function hasFocusPosture(layout: HomeLayout): boolean {
+  const full = (w: Widget) => dimsOf(w).cols === GRID_COLS && w.x === 0;
+  return (
+    layout.widgets.some((w) => w.source === "search" && w.y === 0 && full(w)) &&
+    layout.widgets.some((w) => w.source === "build" && w.y === 1 && full(w))
+  );
+}
+
 /** Whether `source` can fill `rect` as a tile; `replacingId` is the tile being swapped out. */
 export function sourceFits(
   layout: HomeLayout,

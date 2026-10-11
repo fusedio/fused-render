@@ -17,7 +17,7 @@ import { ClaudeHealthStrip } from "@platform/ui/ClaudeHealthStrip";
 import { FdaStrip } from "@platform/ui/FdaStrip";
 import { loadBookmarks } from "@platform/lib/bookmarks";
 import { AddWidgetPanel, allFolders } from "./home/AddWidgetPanel";
-import { PRESETS, matchPreset, type HomeLayout, type TileTarget, type WidgetSource } from "./home/layout";
+import { PRESETS, hasFocusPosture, matchPreset, type HomeLayout, type TileTarget, type WidgetSource } from "./home/layout";
 import { PresetThumb } from "./home/PresetThumb";
 import { WidgetGrid } from "./home/WidgetGrid";
 import { useHomeLayout } from "./home/useHomeLayout";
@@ -72,7 +72,7 @@ export default function Home({ config }: { config: Config }) {
   // everything else; the widget draws the box (home/widgets/SearchWidget.tsx).
   const search = useSearchHost(home);
   const searching = search.searching;
-  const focusView = !edit && !searching && active === "focus";
+  const focusView = !edit && !searching && hasFocusPosture(layoutApi.layout);
 
   return (
     <div className={"files-home" + (focusView ? " is-focus" : "")}>

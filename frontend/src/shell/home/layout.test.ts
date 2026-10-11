@@ -22,6 +22,7 @@ import {
   emptySlots,
   fillSlot,
   firstFreeSlot,
+  hasFocusPosture,
   itemCapacity,
   matchPreset,
   minFootprint,
@@ -966,4 +967,14 @@ test("normalizeLayout: a stored icons tile one cell tall keeps its footprint and
   const out = normalizeLayout(raw).widgets[0];
   expect(out).toMatchObject({ x: 2, y: 3, format: "cards" });
   expect(dimsOf(out)).toEqual({ cols: 5, rows: 2 });
+});
+
+test("hasFocusPosture: full-width search at y 0 and full-width build at y 1 lead", () => {
+  const focus = presetLayout("focus");
+  expect(hasFocusPosture(focus)).toBe(true);
+  expect(hasFocusPosture(addWidget(focus, "apps"))).toBe(true);
+  expect(hasFocusPosture(presetLayout("builder"))).toBe(false);
+  expect(hasFocusPosture(presetLayout("mission"))).toBe(false);
+  const moved = { ...focus, widgets: focus.widgets.map((x) => (x.source === "build" ? { ...x, y: 2 } : x)) };
+  expect(hasFocusPosture(moved)).toBe(false);
 });
