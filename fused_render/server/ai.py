@@ -70,7 +70,7 @@ router = APIRouter()
 # works on every model including haiku (the default, which otherwise thinks
 # by default in stream-json mode). See _AiSession.configure.
 _AI_EFFORTS = ("low", "medium", "high", "xhigh")
-_AI_DEFAULT_MODEL = "claude-haiku-4-5-20251001"
+_AI_DEFAULT_MODEL = "claude-haiku-5-5"
 # The default-model PREFERENCE (shell/prefs.py) speaks short names, because its
 # other consumer — the claude chat template's model chip — does: one preference
 # cannot have two vocabularies. This relay hands its value to the CLI, which is
@@ -80,10 +80,12 @@ _AI_DEFAULT_MODEL = "claude-haiku-4-5-20251001"
 #
 # Ids are unsuffixed aliases, not dated snapshots: a dated id pins a model
 # version the user did not choose, and "opus" in the picker meaning last
-# quarter's opus is a worse surprise than the alias moving. The hardcoded
-# `_AI_DEFAULT_MODEL` above keeps its date because it is a DIFFERENT promise —
-# the cheap, fast model this relay has always used for its small utility
-# completions when nobody has expressed a preference at all.
+# quarter's opus is a worse surprise than the alias moving. `_AI_DEFAULT_MODEL`
+# is the same alias as the mapping's "haiku" row on purpose: it is the cheap,
+# fast model this relay uses for its small utility completions (naming a new
+# app, titling a chat) when nobody has expressed a preference — and when a
+# caller asks for "haiku" by its short name, it means THIS haiku, not whatever
+# the CLI's own alias table resolves to that week.
 #
 # Keys must cover VALID_DEFAULT_MODELS minus its "" (unset) member; the values
 # are argv, so they live inside `_AI_MODEL_RE`'s charset boundary. Both are
@@ -92,7 +94,7 @@ _AI_SHORT_MODEL_IDS = {
     "fable": "claude-fable-5",
     "opus": "claude-opus-5",
     "sonnet": "claude-sonnet-5",
-    "haiku": "claude-haiku-4-5",
+    "haiku": "claude-haiku-5-5",
 }
 # The tiers a call can name (SPEC RH-11, D631) — `common.AI_PROVIDERS`, shared
 # with the four capability routes; the module-local alias keeps this file's
@@ -1497,7 +1499,11 @@ async def _ai_relay(body: dict, session: "_AiSession | None" = None, page: str =
                 _local_unavailable_reason()
                 or "no local text model is available on this machine",
                 status=409)
-    model = model or _AI_SHORT_MODEL_IDS.get(default_model()) or _AI_DEFAULT_MODEL
+    # An explicit short alias ("haiku") resolves through the same table the
+    # pref does, so the mapping stays the one place that says which haiku
+    # "haiku" is — handed raw to the CLI it would mean the CLI's pick instead.
+    model = (_AI_SHORT_MODEL_IDS.get(model, model) if model else None) \
+        or _AI_SHORT_MODEL_IDS.get(default_model()) or _AI_DEFAULT_MODEL
     # The other direction: a repo id or GGUF filename is not something the
     # Claude CLI can run, and passing it through would surface as the CLI's
     # own "unknown model" a subprocess hop later. Refused here, naming the

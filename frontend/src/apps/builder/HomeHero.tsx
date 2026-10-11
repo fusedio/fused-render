@@ -70,24 +70,46 @@ const KEBAB_RE = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 // produce "flux-name-bot" and that passes every syntactic check.
 const NAME_NONE = "none";
 
+// The ask is a folder name, so it reads like one: the subject first, 2-3
+// words, no filler. Examples carry more of the standard than the rules do —
+// without them the model pads ("expense-tracker-app") or leads with the verb
+// ("track-my-expenses"). A name the description itself states wins outright.
 const NAME_SYSTEM_PROMPT =
   "You name software projects. Given a description of an app, reply with a " +
-  "short kebab-case name for it: 2-4 lowercase words joined by hyphens, " +
-  "letters and digits only. Use only words that appear in the description or " +
-  "plainly describe what the app does — never invented brand words. If the " +
-  "text is not a description of an app to build, reply with exactly: " +
-  NAME_NONE +
-  ". Reply with ONLY the name — no quotes, no prose.";
+  "short folder name for it in kebab-case: 2-3 lowercase words joined by " +
+  "hyphens, letters and digits only, at most 4 words when 3 cannot say it.\n" +
+  "Rules:\n" +
+  "- Lead with the subject (what it is about), then what it does: " +
+  "\"expense-tracker\", not \"track-expenses\".\n" +
+  "- Use words from the description or plain words for what the app does. " +
+  "Never invent brand words or puns.\n" +
+  "- No filler: never app, tool, my, simple, new, basic, project, helper, " +
+  "manager (unless the thing IS a manager), or the user's name.\n" +
+  "- If the description names the app itself, use that name, kebab-cased.\n" +
+  "- If the text is not a description of an app to build, reply with " +
+  "exactly: " + NAME_NONE + "\n" +
+  "Examples:\n" +
+  "\"a page that shows my monthly spending by category\" -> spending-by-category\n" +
+  "\"something to track which plants I watered and when\" -> plant-watering-log\n" +
+  "\"a kanban board for my reading list, call it Shelf\" -> shelf\n" +
+  "\"hello, what can you do?\" -> " + NAME_NONE + "\n" +
+  "Reply with ONLY the name — no quotes, no prose, no explanation.";
+
+// The relay alias the naming call pins. Named explicitly because the relay's
+// omitted-model default follows the user's default-model PREFERENCE, and a
+// pref of fable/opus turned a two-second utility call into a twenty-second
+// one. Haiku is the right model for a folder name whatever the chat runs on.
+const NAME_MODEL = "haiku";
 
 // A kebab-case folder name for an app described by `prompt`: ask the AI relay
-// (haiku, the server default — cheap and fast). null when the relay is down or
-// answers garbage — the caller then ASKS the user for a name. It used to slug
-// the prompt's own words instead, which produced folders like
-// "make-me-a-tool-that" and nobody could tell that naming had failed at all.
+// on haiku (cheap and fast). null when the relay is down or answers garbage —
+// the caller then ASKS the user for a name. It used to slug the prompt's own
+// words instead, which produced folders like "make-me-a-tool-that" and nobody
+// could tell that naming had failed at all.
 async function suggestAppName(prompt: string): Promise<string | null> {
   try {
-    const text = await aiComplete(prompt, NAME_SYSTEM_PROMPT).then((t) =>
-      t.trim(),
+    const text = await aiComplete(prompt, NAME_SYSTEM_PROMPT, NAME_MODEL).then(
+      (t) => t.trim(),
     );
     // NAME_SYSTEM_PROMPT asks for a bare kebab-case reply; if the model added
     // prose instead (common even with "no prose" in the ask), `text` won't be
@@ -217,6 +239,13 @@ export const PICK_GLYPHS = {
       <path d="M12 15l3.5-4" />
     </>
   ),
+  // Name — a tag: the one glyph that says "label" without a word beside it.
+  name: (
+    <>
+      <path d="M20.6 13.4l-7.2 7.2a1.5 1.5 0 0 1-2.1 0L3 12.3V3h9.3l8.3 8.3a1.5 1.5 0 0 1 0 2.1z" />
+      <path d="M7.5 7.5h.01" />
+    </>
+  ),
 };
 
 // One borderless picker: glyph, then a native select carrying its own chevron.
@@ -272,8 +301,9 @@ function ComposerPick<T extends string>({
 }
 
 // The hero's prompt box — the claude.ai / v0 "what do you want to build?"
-// composer. Submitting names the app (haiku via /api/ai), scaffolds it, and
-// lands in the new folder's claude chat exactly like the New-app panel does.
+// composer. Submitting names the app (the optional Name field if the user
+// filled it, else haiku via /api/ai), scaffolds it, and lands in the new
+// folder's claude chat exactly like the New-app panel does.
 // Exported on its own (without the wordmark) for the sidebar's "Current apps"
 // + button (shell/CurrentAppsSection.tsx, D489), which opens THIS composer in a
 // modal: same naming, same scaffold, same landing in the new app's chat. One
@@ -322,11 +352,15 @@ export function HeroComposer({
     setEffort(next);
     void setClaudeDefaults({ effort: next });
   };
+  // "askName" is idle with a reason showing: haiku could not name the app, so
+  // the Name field has been prefilled and is waiting for the user's word.
   const [phase, setPhase] = useState<
     "idle" | "naming" | "askName" | "creating"
   >("idle");
-  // The name the user is typing while phase === "askName" — only reached when
-  // haiku could not name the app; see suggestAppName.
+  // The optional Name field in the footer. Empty means "name it for me"
+  // (haiku); anything else is the folder name, and naming is skipped. One
+  // field for both: the ask path (see suggestAppName) prefills THIS field
+  // rather than growing a second one.
   const [nameDraft, setNameDraft] = useState("");
   const nameRef = useRef<HTMLInputElement>(null);
   const [error, setError] = useState<string | null>(null);
@@ -393,8 +427,14 @@ export function HeroComposer({
     if (autoFocus) requestAnimationFrame(() => inputRef.current?.focus());
   }, [autoFocus]);
 
-  const busy = phase !== "idle";
-  const canSubmit = prompt.trim().length > 0 && !busy;
+  const busy = phase === "naming" || phase === "creating";
+  // An empty name is fine (haiku names it); a typed one must be kebab-case.
+  // In askName the field MUST carry a name — haiku already declined once.
+  const nameOk =
+    phase === "askName"
+      ? KEBAB_RE.test(nameDraft)
+      : nameDraft === "" || KEBAB_RE.test(nameDraft);
+  const canSubmit = prompt.trim().length > 0 && !busy && nameOk;
 
   // Upload each file as a task shot; the chip shows at once and is dropped
   // again if its upload fails (NewJobModal's attachFiles, minus the viewer).
@@ -544,13 +584,19 @@ export function HeroComposer({
     }
   };
 
-  // First half: name the app. Haiku names it and creation follows at once;
-  // when it cannot, the composer says so and asks for a name instead of
-  // quietly shipping a slug of the prompt.
+  // First half: name the app. A name typed in the Name field is used as-is
+  // and haiku is never asked (its call is the slow part of a create). Empty,
+  // haiku names it and creation follows at once; when it cannot, the composer
+  // says so, prefills the field with my-app-N and waits, instead of quietly
+  // shipping a slug of the prompt.
   const submit = async () => {
     if (!canSubmit) return;
     setError(null);
     setSessionError(null);
+    if (nameDraft) {
+      await createNamed(nameDraft, phase === "askName" ? "askName" : "idle");
+      return;
+    }
     setPhase("naming");
     const name = await suggestAppName(prompt.trim());
     if (!alive.current) return;
@@ -565,12 +611,11 @@ export function HeroComposer({
     requestAnimationFrame(() => nameRef.current?.select());
   };
 
-  const nameOk = KEBAB_RE.test(nameDraft);
-  const confirmName = () => {
-    if (phase !== "askName" || !nameOk) return;
-    void createNamed(nameDraft, "askName");
-  };
+  // Escape in the Name field during the ask: drop the prefill and go back to
+  // the prompt, as the old Cancel button did.
   const cancelName = () => {
+    if (phase !== "askName") return;
+    setNameDraft("");
     setPhase("idle");
     requestAnimationFrame(() => inputRef.current?.focus());
   };
@@ -683,31 +728,45 @@ export function HeroComposer({
               stay mounted while a create is in flight — disabled, like the
               starter chips — and the phase text takes the space beside them
               rather than replacing them, so nothing moves when it appears. */}
-          {/* Naming failed — say so and ask, rather than shipping a slug of the
-              prompt. The row replaces the pickers while it is up: the name is
-              the one decision left before the create, and model/effort are
-              already chosen. Enter confirms, Escape backs out to the prompt. */}
-          {phase === "askName" ? (
-            <div
-              className="home-composer-name"
-              role="group"
-              aria-label="Name your app"
+          <div className="home-composer-picks">
+            {/* The optional Name field sits first: it is the one input here,
+                and the pickers are settings on the send. Styled as a third
+                borderless pill (glyph, then the field) so the row reads as
+                one strip. Space types a hyphen: the field wants kebab-case,
+                so the key a user reaches for between words produces the
+                separator the name needs. Done on the value (not keydown) so a
+                pasted "My App" lands as "my-app" too. Enter sends, like the
+                prompt; Escape during the ask backs out. */}
+            <label
+              className={
+                "home-composer-name" +
+                (phase === "askName" ? " is-asking" : "")
+              }
             >
-              <span className="home-composer-name-why">
-                Couldn't name it automatically — pick a name:
+              <span className="home-composer-pick-glyph" aria-hidden="true">
+                <svg
+                  width="13"
+                  height="13"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  {PICK_GLYPHS.name}
+                </svg>
               </span>
               <TextInput
                 ref={nameRef}
                 className="home-composer-name-input"
-                aria-label="App name"
+                aria-label="App name (optional)"
                 aria-invalid={!nameOk}
+                placeholder={phase === "askName" ? "name it" : "Name (optional)"}
                 value={nameDraft}
+                disabled={busy}
                 spellCheck={false}
                 autoComplete="off"
-                // Space types a hyphen: the field wants kebab-case, so the key
-                // a user reaches for between words produces the separator the
-                // name needs. Done on the value (not keydown) so a pasted
-                // "My App" lands as "my-app" too.
                 onChange={(e) =>
                   setNameDraft(
                     e.target.value.toLowerCase().replace(/\s+/g, "-"),
@@ -716,56 +775,44 @@ export function HeroComposer({
                 onKeyDown={(e) => {
                   if (e.key === "Enter") {
                     e.preventDefault();
-                    confirmName();
+                    submit();
                   } else if (e.key === "Escape") {
                     e.preventDefault();
                     cancelName();
                   }
                 }}
               />
-              <button
-                type="button"
-                className="home-composer-name-cancel"
-                onClick={cancelName}
-              >
-                Cancel
-              </button>
-            </div>
-          ) : (
-            <div className="home-composer-picks">
-              <ComposerPick
-                glyph="model"
-                label="Model"
-                value={model}
-                choices={MODEL_CHOICES}
-                disabled={busy}
-                onPick={pickModel}
-              />
-              <ComposerPick
-                glyph="effort"
-                label="Effort"
-                value={effort}
-                choices={EFFORT_CHOICES}
-                disabled={busy}
-                onPick={pickEffort}
-              />
-              <span className="home-composer-hint">
-                {phase === "naming" && "Naming your app…"}
-                {phase === "creating" && "Creating the app…"}
-              </span>
-            </div>
-          )}
-          {/* In askName the send button confirms the name — same spot, same
-              arrow, so the gesture that started the create finishes it. */}
+            </label>
+            <ComposerPick
+              glyph="model"
+              label="Model"
+              value={model}
+              choices={MODEL_CHOICES}
+              disabled={busy}
+              onPick={pickModel}
+            />
+            <ComposerPick
+              glyph="effort"
+              label="Effort"
+              value={effort}
+              choices={EFFORT_CHOICES}
+              disabled={busy}
+              onPick={pickEffort}
+            />
+            <span className="home-composer-hint">
+              {phase === "naming" && "Naming your app…"}
+              {phase === "creating" && "Creating the app…"}
+              {phase === "askName" &&
+                "Couldn't name it automatically — type a name."}
+            </span>
+          </div>
           <button
             type="button"
             className="home-composer-send"
-            aria-label={
-              phase === "askName" ? "Create with this name" : "Build it"
-            }
-            title={phase === "askName" ? "Create with this name" : "Build it"}
-            disabled={phase === "askName" ? !nameOk : !canSubmit}
-            onClick={phase === "askName" ? confirmName : submit}
+            aria-label="Build it"
+            title="Build it"
+            disabled={!canSubmit}
+            onClick={submit}
           >
             <svg
               width="15"

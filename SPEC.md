@@ -223,7 +223,7 @@ const { text, usage, response, provider } = await fused.ai.text({
   prompt,                     // the question — a FIELD, like .image({prompt}) and .transcribe({path})
   provider,                   // optional "local" | "apple" | "claude" — pins the tier; omitted, a pinned id ("afm-text") or the model's shape decides
   systemPrompt,               // optional system message
-  model,                      // optional model id (default claude-haiku-4-5-20251001)
+  model,                      // optional model id or short alias (default claude-haiku-5-5)
   effort,                     // optional "low" | "medium" | "high" | "xhigh" (default low: no thinking)
   onChunk,                    // optional (text) => {} — streams deltas as they arrive
 });
@@ -271,7 +271,7 @@ const { text, usage, response, provider } = await fused.ai.text({
     "finishReason": "stop",
     "warnings": [],
     "usage": { "inputTokens": 544, "outputTokens": 73, "totalTokens": 617 },
-    "response": { "id": "srv:ai-claude:8f2a41c0", "modelId": "claude-haiku-4-5-20251001", "timestamp": "2026-09-02T09:14:02Z" },
+    "response": { "id": "srv:ai-claude:8f2a41c0", "modelId": "claude-haiku-5-5", "timestamp": "2026-09-02T09:14:02Z" },
     "providerMetadata": { "claude": { "seconds": 3.1 } }
   }
   ```
@@ -1246,10 +1246,11 @@ never imports server).
   unknown value in the file reads as unset. Two consumers rank it identically:
   an **explicit** choice always wins, the preference is next, and each keeps its
   own hardcoded fallback beneath it. For the fused.ai relay (`server/ai.py`)
-  that is a caller-supplied `model` > the pref > `claude-haiku-4-5-20251001`,
+  that is a caller-supplied `model` (a short alias resolves through the same
+  table) > the pref > `claude-haiku-5-5`,
   with the short→full-id mapping (`fable`→`claude-fable-5`,
   `opus`→`claude-opus-5`, `sonnet`→`claude-sonnet-5`,
-  `haiku`→`claude-haiku-4-5`) living in that one module. For the claude chat
+  `haiku`→`claude-haiku-5-5`) living in that one module. For the claude chat
   template it is the `model` pane param > the config detected from the
   project's sessions/settings > the pref > `sonnet`; the template reads it with
   a plain `GET /api/prefs`, like its other `/api/…` reads. Read per request, so

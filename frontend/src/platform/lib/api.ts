@@ -5591,10 +5591,18 @@ export function getGitCommits(path: string, limit = 30): Promise<GitCommits> {
 // named here would outrank the preference (that is the relay's precedence
 // rule), so every one of these call sites must keep NOT naming one for the
 // preference to mean anything.
-export function aiComplete(prompt: string, systemPrompt?: string): Promise<string> {
+// `model` is a full id or a short alias ("haiku"); omitted, the relay follows
+// the user's default-model preference, which is the right answer for a chat
+// and the wrong one for a two-word utility call — pin those.
+export function aiComplete(
+  prompt: string,
+  systemPrompt?: string,
+  model?: string,
+): Promise<string> {
   return postJson<{ ok: boolean; result: { text: string } }>("/api/ai", {
     prompt,
     ...(systemPrompt ? { systemPrompt } : {}),
+    ...(model ? { model } : {}),
   }).then((r) => r.result.text);
 }
 

@@ -580,46 +580,66 @@
   padding: 18px 0;
 }
 
-/* The ask-for-a-name row (HomeHero.tsx, phase "askName"): shown in the
-   composer footer in place of the pickers when haiku could not name the app.
-   Wraps like the picks row does, since the sidebar modal is narrow. */
+/* The optional Name field (HomeHero.tsx): a third borderless pill in the
+   picks row, before the model/effort pickers — same rest/hover/focus wash as
+   .home-composer-pick, so the strip reads as one row. Mono, because the value
+   is a folder name. When haiku could not name the app (phase "askName") the
+   field is prefilled and marked, and the hint beside the pickers says why. */
 .home-composer-name {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-  min-width: 0;
-  flex: 1;
+  gap: 4px;
+  padding-left: 6px;
+  border-radius: 999px;
+  color: var(--fg-muted);
+  cursor: text;
+  transition:
+    color 120ms ease,
+    background-color 120ms ease;
 }
 
-.home-composer-name-why {
-  font-size: 11.5px;
-  color: var(--fg-muted);
+.home-composer-name:hover:not(:has(:disabled)),
+.home-composer-name:has(:focus) {
+  color: var(--fg);
+  background-color: var(--bg-alt);
+}
+
+.home-composer-name:has(:disabled) {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .home-composer .home-composer-name-input {
   height: auto;
-  width: 180px;
-  padding: 3px 8px;
+  width: 150px;
+  padding: 3px 8px 3px 2px;
   font-size: 12px;
   font-family: var(--font-mono, ui-monospace, monospace);
+  color: inherit;
+  background-color: transparent;
+  border: none;
+  border-radius: 999px;
+  box-shadow: none;
+}
+
+.home-composer .home-composer-name-input::placeholder {
+  font-family: inherit;
+  color: var(--fg-muted);
+}
+
+.home-composer .home-composer-name-input:focus,
+.home-composer .home-composer-name-input:focus-visible {
+  outline: none;
+  box-shadow: none;
 }
 
 .home-composer .home-composer-name-input[aria-invalid="true"] {
-  border-color: var(--error);
+  color: var(--error);
 }
 
-.home-composer-name-cancel {
-  border: none;
-  background: transparent;
-  color: var(--fg-muted);
-  font-size: 11.5px;
-  cursor: pointer;
-  padding: 2px 4px;
-}
-
-.home-composer-name-cancel:hover {
+.home-composer-name.is-asking {
   color: var(--fg);
+  background-color: var(--bg-alt);
 }
 
 /* ---- Home widget grid ------------------------------------------------------ */
