@@ -135,20 +135,20 @@ export function WidgetFrame(p: WidgetFrameProps): ReactNode {
       <WidgetBody widget={widget} edit={edit} onRemove={p.onRemove} />
       {edit ? (
         <span className={"hw-swap" + (bare ? " is-bare" : "")}>
-          {bare ? null : (
+          {!bare || widget.source === "search" ? (
             <button
               type="button"
               className={"hw-swap-change" + (changeOpen ? " is-open" : "")}
               aria-haspopup="dialog"
               aria-expanded={changeOpen}
-              aria-label={compact ? `Change ${title}` : undefined}
+              aria-label={compact || bare ? `Change ${title}` : undefined}
               title="Change what this tile shows"
               onClick={() => setChangeOpen((o) => !o)}
             >
               <ArrowLeftRight size={13} strokeWidth={2} aria-hidden="true" />
-              {compact ? null : <span>Change</span>}
+              {compact || bare ? null : <span>Change</span>}
             </button>
-          )}
+          ) : null}
           <button type="button" className="hw-swap-x" aria-label={`Remove ${title}`} title={`Remove ${title}`} onClick={p.onRemove}>
             <X size={13} strokeWidth={2} aria-hidden="true" />
           </button>

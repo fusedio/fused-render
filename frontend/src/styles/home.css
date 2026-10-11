@@ -1814,7 +1814,18 @@ a.hw-more:hover {
 
 .hw-swap.is-bare > button {
   padding: 0 6px;
+}
+
+.hw-swap.is-bare > button:only-of-type {
   border-radius: 999px;
+}
+
+.hw-swap.is-bare > button:first-of-type:not(:only-of-type) {
+  border-radius: 999px 0 0 999px;
+}
+
+.hw-swap.is-bare > button:last-of-type:not(:only-of-type) {
+  border-radius: 0 999px 999px 0;
 }
 
 /* An empty hole in the layout: choose what goes there. */
