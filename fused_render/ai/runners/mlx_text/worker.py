@@ -403,6 +403,23 @@ def release():
 # ------------------------------------------------------------------ generation
 
 
+def _cache_trimmable(entries):
+    """True when every KV-cache entry can be rewound with `trim`. Duck-typed
+    (no mlx_vlm import); composite caches expose children via `.caches`."""
+    for c in entries:
+        children = getattr(c, "caches", None)
+        if children is not None:
+            if not _cache_trimmable(children):
+                return False
+            continue
+        if not callable(getattr(c, "trim", None)):
+            return False
+        is_trimmable = getattr(c, "is_trimmable", None)
+        if callable(is_trimmable) and not is_trimmable():
+            return False
+    return True
+
+
 def _messages_to_prompt(processor, messages, prompt, enable_thinking=None):
     """The model's own chat template, never a hand-rolled one.
 
@@ -723,9 +740,11 @@ def generate(body, write):
     # `stream_generate` then trims its retained KV cache back to that many
     # tokens and prefills ONLY the new suffix — the old prefix's KV states are
     # reused rather than recomputed. **The safe path is the automatic
-    # fallback, not a mode this file has to remember to choose**: a zero-length
-    # (or otherwise unusable — a wrapped rotating-window cache, e.g.) match
-    # falls straight through to `dispatch.py`'s own "ensure we have a
+    # fallback, not a mode this file has to remember to choose** (one
+    # exception, handled below: a cache with an untrimmable entry, as on
+    # hybrid models, is not caught by mlx-vlm's guard and is reset here): a
+    # zero-length (or otherwise unusable — a wrapped rotating-window cache,
+    # e.g.) match falls straight through to `dispatch.py`'s own "ensure we have a
     # prompt_cache" branch, which builds a fresh one and cold-prefills the
     # whole prompt. Getting the match wrong in the OTHER direction — reusing a
     # prefix that is not actually a match — is the failure this cannot have
@@ -774,6 +793,16 @@ def generate(body, write):
         from mlx_vlm import PromptCacheState
 
         cache_state = _loaded.get("prompt_cache_state")
+        # mlx-vlm's `_cache_fully_retained` guard treats every non-rotating
+        # cache as safe to trim, but a hybrid model (Qwen3.5: recurrent layers
+        # holding an `ArraysCache`) has entries with no `trim` at all — two
+        # prompts sharing only the chat-template prefix then crash in
+        # `dispatch.py` with "'ArraysCache' object has no attribute 'trim'".
+        # Recurrent state cannot be rewound to an earlier token, so the only
+        # correct behaviour is a cold prefill: hand over a fresh state.
+        if (cache_state is not None and cache_state.cache is not None
+                and not _cache_trimmable(cache_state.cache)):
+            cache_state = None
         if cache_state is None:
             cache_state = PromptCacheState()
             _loaded["prompt_cache_state"] = cache_state
