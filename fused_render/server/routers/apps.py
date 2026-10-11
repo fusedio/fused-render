@@ -1495,7 +1495,7 @@ def api_new_app(body: dict = Body(...), x_fused: str | None = Header(default=Non
             return _error(str(exc))
 
     root = fused_dir()
-    dest = os.path.join(root, "local", name)
+    dest = os.path.join(root, "app", name)
     if os.path.exists(dest):
         return _error(f"{name!r} already exists in the workspace", status=409)
 
@@ -1544,11 +1544,12 @@ def api_new_app(body: dict = Body(...), x_fused: str | None = Header(default=Non
 
     export_skill_plugin_env()
 
-    # Version control from birth: every new app lands in the shared `local`
-    # repo (D626) as one scoped boilerplate commit — the untouched starter,
-    # BEFORE any session runs — so the scaffolding turn's work diffs against
-    # the boilerplate, not nothing. Best-effort (no git on the machine still
-    # gets a working app).
+    # Version control from birth: one boilerplate commit — the untouched
+    # starter, BEFORE any session runs — so the scaffolding turn's work diffs
+    # against the boilerplate, not nothing. New apps land under `app/` (owner,
+    # 2026-10-11), outside the shared `local` repo (D626), so `init_repo`
+    # takes its one-repo-per-app path. Best-effort (no git on the machine
+    # still gets a working app).
     from fused_render import app_git, app_id as app_identity
 
     entry_html = os.path.abspath(os.path.join(dest, "index.html"))
