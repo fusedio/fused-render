@@ -1277,6 +1277,20 @@ def test_super_step_cap_is_larger_and_counts_builtins(server, fake_cli, monkeypa
     bot = super_bot()
     script = [{"builtin": "Read", "args": {"file_path": "/a"}, "output": "x"} for _ in range(3)]
     script += [{"tool": "observe", "args": {}}, {"result": ""}]
+    # The built-ins are counted off the stream by the engine's reader thread,
+    # while the fake's MCP call reaches handle_tool over HTTP on another
+    # thread; nothing orders the two. Hold the call until the reader has
+    # counted all three built-ins (a real condition, not a sleep).
+    real_handle = agent_engine.handle_tool
+
+    def handle_after_builtins(b, token, name, args):
+        sess = agent_engine.session(b)
+        deadline = time.monotonic() + 60
+        while sess is not None and sess.steps < 3 and time.monotonic() < deadline:
+            time.sleep(0.005)
+        return real_handle(b, token, name, args)
+
+    monkeypatch.setattr(agent_engine, "handle_tool", handle_after_builtins)
     run_task(bot, script, monkeypatch)
     calls = [r for r in fake_cli("call") if r["call"] == "observe"]
     assert calls and calls[0]["result"].startswith("STEP LIMIT: this task has used its 3 steps")
