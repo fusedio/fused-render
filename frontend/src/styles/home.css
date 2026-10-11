@@ -701,6 +701,16 @@
 .files-home.is-focus .home-strips > :not(.hw-stage) {
   flex: none;
 }
+/* Flex-column children with auto inline margins or intrinsic sizing do not
+   stretch, so pin the chain down to the grid to the full width. */
+.files-home.is-focus .home-strips,
+.files-home.is-focus .hw-stage,
+.files-home.is-focus .hw-stage-main,
+.files-home.is-focus .hw-grid {
+  width: 100%;
+  align-self: stretch;
+  box-sizing: border-box;
+}
 /* The search bar matches the Build composer width and centres above it. */
 .files-home.is-focus .hw-grid > .is-search {
   max-width: 760px;
