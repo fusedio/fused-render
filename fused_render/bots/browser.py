@@ -1437,7 +1437,7 @@ class BrowserProcess:
                 except FileNotFoundError:
                     pass
 
-    def stop_if_empty(self):
+    def stop_if_empty(self, seal=None):
         """Quit Chrome once no bot has a window in it (the last bot's sleep, leave or
         delete). Headless Chrome keeps running with zero windows (measured, Chrome 155),
         so the quit is ours to make. Returns True when Chrome was stopped."""
@@ -1451,7 +1451,7 @@ class BrowserProcess:
                         return False
                 except Exception:  # noqa: BLE001 — unanswering: treat as empty, stop escalates anyway
                     pass
-            self.stop()
+            self.stop(seal)
             return True
 
 # ---------------------------------------------------------------- browser ---
@@ -1559,27 +1559,29 @@ class Browser:
             if size == self.viewport:
                 return size
             sess = self.session()
-            if sess and not sess.get("headed") and self.running(sess):
-                # Resize first, remember after: a failed resize raises, so the caller (the live view) tries
-                # again instead of believing a size Chrome never took.
-                port = sess["port"]
-                bws = self._browser_ws(port)
-                done = 0
-                try:
-                    seen = set()
-                    for t, wid in self._my_targets(port, bws):
-                        if wid in seen:
-                            continue
-                        seen.add(wid)
-                        try:
-                            self.proc.resize_window(bws, wid, t["ws"], size)
-                            done += 1
-                        except Exception:  # noqa: BLE001 — a tab closing mid-loop
-                            log.warning("resizing a bot window failed", exc_info=True)
-                finally:
-                    bws.close()
-                if not done:
-                    raise RuntimeError("no bot window could be resized")
+        if sess and not sess.get("headed") and self.running(sess):
+            # Outside the lock: each resize takes Chrome up to seconds, and the live view sends this mid-action.
+            # Resize first, remember after: a failed resize raises, so the caller (the live view) tries
+            # again instead of believing a size Chrome never took.
+            port = sess["port"]
+            bws = self._browser_ws(port)
+            done = 0
+            try:
+                seen = set()
+                for t, wid in self._my_targets(port, bws):
+                    if wid in seen:
+                        continue
+                    seen.add(wid)
+                    try:
+                        self.proc.resize_window(bws, wid, t["ws"], size)
+                        done += 1
+                    except Exception:  # noqa: BLE001 — a tab closing mid-loop
+                        log.warning("resizing a bot window failed", exc_info=True)
+            finally:
+                bws.close()
+            if not done:
+                raise RuntimeError("no bot window could be resized")
+        with self.lock:
             self.win["viewport"] = list(size)
             self._write_win()
         return size
@@ -1608,12 +1610,13 @@ class Browser:
             stopped = self.proc.stop_if_empty()
         return closed or stopped
 
-    def leave(self):
+    def leave(self, seal=None):
         """This bot is leaving the process (moved to another browser, deleted): close its windows,
-        quit Chrome when that left it empty, detach."""
+        quit Chrome when that left it empty (`seal=False` when the folder goes next: no point sealing
+        it), detach."""
         with self.lock:
             self._close_mine()
-            self.proc.stop_if_empty()
+            self.proc.stop_if_empty(seal)
         self.proc.detach(self)
 
     # -- windows -----------------------------------------------------------
@@ -1654,10 +1657,14 @@ class Browser:
         self._write_win()
 
     def _remember_tabs(self, tabs, main_id=None):
-        """Record the window's tabs (open order) and which is driven, for the next wake."""
-        self.win["tabs"] = [{"url": t.get("url") or "", "title": (t.get("title") or "")[:80]} for t in tabs]
+        """Record the window's tabs (open order) and which is driven, for the next wake (written on change
+        only: this runs on every detail poll)."""
+        rows = [{"url": t.get("url") or "", "title": (t.get("title") or "")[:80]} for t in tabs]
         ids = [t.get("id") for t in tabs]
-        self.win["active"] = ids.index(main_id) if main_id in ids else 0
+        active = ids.index(main_id) if main_id in ids else 0
+        if rows == self.win.get("tabs") and active == self.win.get("active"):
+            return
+        self.win["tabs"], self.win["active"] = rows, active
         self._write_win()
 
     def last_url(self):
@@ -1962,11 +1969,15 @@ class Browser:
         sess = self.session()
         if not self.alive(sess):
             return []
+        # Lock-free and never opens a window: this runs on the status poll, which must not wait behind an
+        # action (_run holds the lock for its whole duration) nor change what Chrome shows.
         try:
-            with self.lock:
-                main, tabs = self._page_target(sess["port"])
+            tabs = [t for t, _ in self._my_targets(sess["port"])]
         except Exception:
             return []
+        if not tabs:
+            return []
+        main = next((t for t in tabs if t.get("id") == self._main_tab), None) or tabs[-1]
         # Target.getTargets lists tabs oldest-first (measured; /json/list is newest-first); keep our own
         # stable open-order so a tab's index never shifts under the bot (or the strip) mid-task.
         by_id = {t.get("id"): t for t in tabs}
@@ -1985,7 +1996,10 @@ class Browser:
             i = 0
         if i >= len(tabs):
             i = 0
-        tabs[i] = {"url": url, "title": (title or "")[:80]}
+        row = {"url": url, "title": (title or "")[:80]}
+        if tabs[i] == row and self.win.get("active") == i:
+            return
+        tabs[i] = row
         self.win["tabs"], self.win["active"] = tabs, i
         self._write_win()
 

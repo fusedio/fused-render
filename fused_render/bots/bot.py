@@ -2217,17 +2217,18 @@ class Bot:
         except Exception as e:  # noqa: BLE001
             self.emit("error", f"Could not put the browser to sleep: {e}")
 
-    def shutdown(self, browser=True):
+    def shutdown(self, browser=True, seal=None):
         """Stop the task and (by default) the whole browser process. `delete()` and
         `set_browser` pass browser=False: this bot leaves (its windows close, Chrome
-        quits only if that left it empty) and the other bots keep theirs."""
+        quits only if that left it empty) and the other bots keep theirs. `seal=False`
+        when the profile folder is removed next (nothing to seal)."""
         self.stop()
         if self.thread:
             self.thread.join(5)
         if browser:
-            self.browser.stop()
+            self.browser.stop(seal)
         else:
-            self.browser.leave()
+            self.browser.leave(seal)
 
     # -- waits the engines share --------------------------------------------
     def _wait_if_paused(self):
@@ -3470,8 +3471,9 @@ def set_browser(b, target, fresh=False):
         raise ValueError("that bot's browser no longer exists")
     old = b.browser_id
     old_view = b.browser
+    keep_old = browsers.used_on_disk(old, except_id=b.id) is not False  # another bot names it (or unreadable: keep)
     # Chrome first, under the process lock only (idle sleep takes proc.lock then b.lock via emit; never the reverse).
-    old_view.leave()  # its windows close; Chrome quits only when no other bot has one; others keep theirs
+    old_view.leave(seal=None if keep_old else False)  # its windows close; Chrome quits only when no other bot has one
     with b.lock:
         b.meta["browser_id"] = target
         if not browsers.exists(target):
@@ -3481,7 +3483,7 @@ def set_browser(b, target, fresh=False):
         b.meta["encrypt"] = bool(b.browser.encrypt)
         b.meta["chrome_profile"] = browsers.read_meta(target).get("chrome_profile") or ""
         b.save()
-    if browsers.used_on_disk(old, except_id=b.id) is False:
+    if not keep_old:
         browsers.remove(old)
         gone = "; its old logins were removed (no other bot used them)"
     else:
@@ -3499,7 +3501,7 @@ def delete(bid):
     # Shared = another bot.json on disk names the browser (loaded or not, this app or the other one on the same
     # home); an unreadable bot.json counts as shared, since removing logins on a partial list is the worse mistake.
     shared = browsers.used_on_disk(b.browser_id, except_id=bid) is not False
-    b.shutdown(browser=not shared)  # a shared browser stays up for the other bots
+    b.shutdown(browser=not shared, seal=None if shared else False)  # a shared browser stays up for the other bots
     # Folders go BEFORE forget(): between forget and rmtree, registry.get would find bot.json on disk and build a
     # fresh Bot with deleted=False that could save the folder back. With the folder gone, get() has nothing to load.
     shutil.rmtree(bpaths.bot_dir(bid), ignore_errors=True)
