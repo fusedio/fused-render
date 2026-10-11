@@ -29,7 +29,7 @@ function ItemLink({ item, className, children }: { item: WidgetItem; className: 
 }
 
 /** Height reserved for the more line before one has rendered. */
-const MORE_FALLBACK = 20;
+const MORE_FALLBACK = 30;
 
 /**
  * The count to render: `n`, unless nothing is shown while items exist (a list
@@ -80,6 +80,9 @@ export function useFitCount(total: number, cap: number, itemSel: string, listSel
   const ref = useRef<HTMLDivElement>(null);
   const [n, setN] = useState(() => Math.min(total, cap));
   const [moreFits, setMoreFits] = useState(true);
+  // Last measured height of the more line, reused while it is not rendered so
+  // the hidden/shown decision cannot flip on a guess.
+  const moreHRef = useRef(MORE_FALLBACK);
   const seeded = seedCount(n, total, cap);
   const measure = () => {
     const wrap = ref.current;
@@ -98,7 +101,8 @@ export function useFitCount(total: number, cap: number, itemSel: string, listSel
     const top = Math.min(...kids.map((k) => k.offsetTop));
     const bottom = Math.max(...kids.map((k) => k.offsetTop + k.offsetHeight));
     const avail = wrap.clientHeight - px(cs.paddingTop) - px(cs.paddingBottom);
-    const moreH = (more ? more.offsetHeight : 0) || MORE_FALLBACK;
+    if (more && more.offsetHeight) moreHRef.current = more.offsetHeight;
+    const moreH = moreHRef.current;
     const moreGap = px(cs.rowGap);
     const fits = moreLineFits(bottom - top, moreH + moreGap, avail);
     setMoreFits((prev) => (prev === fits ? prev : fits));

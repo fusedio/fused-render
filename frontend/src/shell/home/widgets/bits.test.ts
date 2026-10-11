@@ -81,3 +81,8 @@ test("moreLineFits: the line renders only when items plus line fit the height", 
   expect(moreLineFits(100, 24, 120)).toBe(false);
   expect(moreLineFits(NaN, 24, 120)).toBe(true);
 });
+
+test("moreLineFits: with a 30px line a gap between 20 and 30 never fits", () => {
+  for (let gap = 20; gap < 30; gap += 1) expect(moreLineFits(100, 30, 100 + gap)).toBe(false);
+  expect(moreLineFits(100, 30, 130)).toBe(true);
+});
