@@ -111,6 +111,10 @@ def fake(monkeypatch, registries):
     s = sysmon_sampler.Sampler(backend, root_pid=ROOT, roots=lambda: {},
                                clock=clock, wall=clock, threaded=False)
     monkeypatch.setattr(sysmon_sampler, "_SAMPLER", s)
+    # kill() refuses os.getpid() as "fused-render itself". The fake pids (900,
+    # ...) are small numbers a real Windows pytest worker can be handed, so pin
+    # the real pid to ROOT, which no test signals.
+    monkeypatch.setattr(os, "getpid", lambda: ROOT)
     return backend, clock, s
 
 
