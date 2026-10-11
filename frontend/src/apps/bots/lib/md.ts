@@ -7,16 +7,18 @@
 //   * links open in a new tab with rel=noopener; DOMPurify's URI allow-list drops `javascript:` hrefs.
 // Replaced the hand-rolled port of OpenBot's md() (no tables, so a comparison came out as a wall of `|`).
 import DOMPurify from "dompurify";
-import { marked } from "marked";
+import { Marked } from "marked";
 
 import { esc } from "./format";
 
 let render: ((t: string) => string) | null = null;
+let stage: Marked | null = null;
 
-/** Configured once, lazily: marked.use mutates module-wide state, and bots and the Claude chat never share a bundle. */
+/** Configured once, lazily: its OWN Marked instance: `marked.use` on the shared singleton would overwrite (or be overwritten by) the Claude chat's config
+ * whenever both modules load in one process (bun test). */
 function setup(): (t: string) => string {
   if (render) return render;
-  marked.use({
+  stage = new Marked({
     gfm: true,
     breaks: true,
     renderer: {
@@ -36,11 +38,17 @@ function setup(): (t: string) => string {
     },
   });
   render = (t) =>
-    DOMPurify.sanitize(marked.parse(t, { async: false }) as string, {
+    DOMPurify.sanitize(stage!.parse(t, { async: false }) as string, {
       FORBID_TAGS: ["style", "form", "input", "iframe"],
       ADD_ATTR: ["target", "rel"],
     });
   return render;
+}
+
+/** The marked stage alone (no sanitizer), for tests: the DOMPurify stage cannot run in bun. */
+export function parseMdStage(text: string): string {
+  setup();
+  return stage!.parse(text, { async: false }) as string;
 }
 
 export function md(src: unknown): string {

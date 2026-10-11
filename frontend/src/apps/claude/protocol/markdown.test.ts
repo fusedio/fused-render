@@ -5,10 +5,9 @@
 // tested here rather than through three mounted hosts.
 //
 // THE ASSERTIONS RUN AGAINST THE `marked` STAGE, deliberately, and reach it
-// through the shared `marked` singleton rather than through a second export:
-// `marked.use()` mutates that singleton, so one `renderMd` call installs this
-// module's config globally and `marked.parse` here is then the exact parser the
-// chat uses. The DOMPurify stage cannot run in bun (no DOM — `renderMd` takes
+// through `parseMarkdownStage`, the exact parser the chat uses. It is the
+// module's OWN `Marked` instance: configuring the shared `marked` singleton let
+// bots/lib/md.ts overwrite this config whenever both files ran in one process. The DOMPurify stage cannot run in bun (no DOM — `renderMd` takes
 // its documented `<pre>` fallback), and it is not what either report is about:
 // sanitizing is a security boundary, and these two are about what the reader
 // sees. `renderMd`'s own fallback is covered at the bottom.
@@ -16,13 +15,10 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
-import { marked } from "marked";
 
-import { renderMd, shellRunText, TABLE_WRAP_CLASS } from "./markdown";
+import { parseMarkdownStage, renderMd, shellRunText, TABLE_WRAP_CLASS } from "./markdown";
 
-/** Install this module's `marked.use()` config on the shared singleton. */
-renderMd("configure me");
-const md = (text: string) => marked.parse(text, { async: false }) as string;
+const md = parseMarkdownStage;
 
 test("a GFM table parses into a real table (#14)", () => {
   const html = md("| file | lines |\n| --- | --- |\n| a.ts | 12 |\n");

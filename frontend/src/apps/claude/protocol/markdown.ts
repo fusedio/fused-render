@@ -3,11 +3,12 @@
 // as the vendored libs (marked 12.0.2, DOMPurify 3.4.13, highlight.js 11.11.1).
 import DOMPurify from "dompurify";
 import hljs from "highlight.js/lib/common";
-import { marked } from "marked";
+import { Marked } from "marked";
 
 import { canRunInTerminal, openTerminal } from "@platform/lib/terminalDockStore";
 
 let md: ((t: string) => string) | null = null;
+let stage: Marked | null = null;
 
 /**
  * THE RAW-HTML RULE, and there is exactly one of it (Akshil, 2026-09-08, #16):
@@ -42,10 +43,12 @@ function rawHtmlAsText(html: string): string {
   return escapeHtml(html);
 }
 
-/** T:14944-14972 — configured once, lazily (marked.use mutates shared state). */
+/** T:14944-14972 — configured once, lazily (its OWN Marked instance, not the shared `marked`
+ * singleton: bots/lib/md.ts configures a different link renderer, and two
+ * `marked.use()` callers in one process silently overwrite each other). */
 function mdSetup(): (t: string) => string {
   if (md) return md;
-  marked.use({
+  stage = new Marked({
     gfm: true,
     breaks: true,
     renderer: {
@@ -61,11 +64,17 @@ function mdSetup(): (t: string) => string {
     },
   });
   md = (t) =>
-    DOMPurify.sanitize(marked.parse(t, { async: false }) as string, {
+    DOMPurify.sanitize(stage!.parse(t, { async: false }) as string, {
       FORBID_TAGS: ["style", "form", "input", "iframe"],
       ADD_ATTR: ["target", "rel"],
     });
   return md;
+}
+
+/** The marked stage alone (no sanitizer), for tests: the DOMPurify stage cannot run in bun. */
+export function parseMarkdownStage(text: string): string {
+  mdSetup();
+  return stage!.parse(text, { async: false }) as string;
 }
 
 function escapeHtml(text: string): string {
