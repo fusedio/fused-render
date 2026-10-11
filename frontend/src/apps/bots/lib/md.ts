@@ -1,42 +1,49 @@
-// Tiny markdown → HTML (text escaped first): **bold**, *italic*, `code`, ``` fences, # headings, -/1. lists, links.
-// OpenBot core.js md(), verbatim. The output is rendered with dangerouslySetInnerHTML in exactly one place (the
-// thread's bubble body); every input character is escaped before any tag is added, so it is safe for bot text.
+// Markdown → HTML for a bot bubble: marked (GFM, so pipe tables, fences, task lists, autolinks) → DOMPurify →
+// the thread's ONE dangerouslySetInnerHTML site (Thread.tsx HtmlMsg). Same pins and the same two rules as the
+// Claude chat funnel (apps/claude/protocol/markdown.ts), which is not imported because it carries highlight.js and
+// the terminal dock along with it:
+//   * raw HTML the model writes is shown as TEXT (escaped), never rendered — a stray `<table>` or an unclosed
+//     `<div>` must not lay out the transcript, and DOMPurify stays the security boundary rather than the only one;
+//   * links open in a new tab with rel=noopener; DOMPurify's URI allow-list drops `javascript:` hrefs.
+// Replaced the hand-rolled port of OpenBot's md() (no tables, so a comparison came out as a wall of `|`).
+import DOMPurify from "dompurify";
+import { marked } from "marked";
+
 import { esc } from "./format";
 
+let render: ((t: string) => string) | null = null;
+
+/** Configured once, lazily: marked.use mutates module-wide state, and bots and the Claude chat never share a bundle. */
+function setup(): (t: string) => string {
+  if (render) return render;
+  marked.use({
+    gfm: true,
+    breaks: true,
+    renderer: {
+      html: (html: string) => esc(html),
+      // Positional (href, title, text) is marked@12's signature. Escaping here only keeps the href inside its
+      // attribute; DOMPurify's document-level pass enforces which schemes survive.
+      link(href: string, _title: string | null | undefined, text: string) {
+        return `<a href="${esc(href || "")}" target="_blank" rel="noopener">${text}</a>`;
+      },
+    },
+  });
+  render = (t) =>
+    DOMPurify.sanitize(marked.parse(t, { async: false }) as string, {
+      FORBID_TAGS: ["style", "form", "input", "iframe"],
+      ADD_ATTR: ["target", "rel"],
+    });
+  return render;
+}
+
 export function md(src: unknown): string {
-  const inline = (s: string): string => {
-    const codes: string[] = [];
-    s = esc(s).replace(/`([^`\n]+)`/g, (_, c) => `\u0000${codes.push(`<code>${c}</code>`) - 1}\u0000`);
-    s = s.replace(/\[([^\]\n]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
-      .replace(/(^|[\s(])(https?:\/\/[^\s<)]+[^\s<).,;:!?])/g, '$1<a href="$2" target="_blank" rel="noopener">$2</a>')
-      .replace(/\*\*([^*\n]+?)\*\*/g, "<b>$1</b>")
-      .replace(/(^|[^\w*])\*(\S(?:[^*\n]*?\S)?)\*(?![\w*])/g, "$1<i>$2</i>")
-      .replace(/(^|[^\w_])_(\S(?:[^_\n]*?\S)?)_(?![\w_])/g, "$1<i>$2</i>");
-    return s.replace(/\u0000(\d+)\u0000/g, (_, i) => codes[Number(i)]);
-  };
-  const out: string[] = [];
-  let para: string[] = [], list: { tag: "ol" | "ul"; items: string[] } | null = null, fence: string[] | null = null;
-  const flushPara = () => { if (para.length) { out.push(`<p>${para.map(inline).join("<br>")}</p>`); para = []; } };
-  const flushList = () => { if (list) { out.push(`<${list.tag}>${list.items.map((t) => `<li>${inline(t)}</li>`).join("")}</${list.tag}>`); list = null; } };
-  for (const raw of String(src ?? "").replace(/\r/g, "").split("\n")) {
-    if (fence) { if (/^\s*```/.test(raw)) { out.push(`<pre><code>${esc(fence.join("\n"))}</code></pre>`); fence = null; } else fence.push(raw); continue; }
-    const line = raw.replace(/\s+$/, "");
-    let m: RegExpExecArray | null;
-    if (/^\s*```/.test(line)) { flushPara(); flushList(); fence = []; }
-    else if (!line.trim()) { flushPara(); flushList(); }
-    else if ((m = /^\s{0,3}(#{1,6})\s+(.+?)\s*#*$/.exec(line))) { flushPara(); flushList(); out.push(`<h${m[1].length}>${inline(m[2])}</h${m[1].length}>`); }
-    else if (/^\s{0,3}([-*_])(\s*\1){2,}$/.test(line)) { flushPara(); flushList(); out.push("<hr>"); }
-    else if ((m = /^\s*([-*•]|\d+[.)])\s+(.*)$/.exec(line))) {
-      flushPara();
-      const tag = /\d/.test(m[1]) ? "ol" : "ul";
-      if (!list || list.tag !== tag) { flushList(); list = { tag, items: [] }; }
-      list.items.push(m[2]);
-    }
-    else if (list && /^\s{2,}/.test(raw)) list.items[list.items.length - 1] += " " + line.trim();  // wrapped list item
-    else if ((m = /^\s{0,3}>\s?(.*)$/.exec(line))) { flushPara(); flushList(); out.push(`<blockquote>${inline(m[1])}</blockquote>`); }
-    else { flushList(); para.push(line); }
+  // `•` bullets (OpenBot-era bot output) read as lists; an unclosed fence mid-stream closes at EOF.
+  let text = String(src ?? "").replace(/\r/g, "").replace(/^(\s*)•\s+/gm, "$1- ");
+  if (!text.trim()) return "";
+  if (((text.match(/```/g) || []).length & 1) === 1) text += "\n```";
+  try {
+    return setup()(text);
+  } catch {
+    return `<pre>${esc(text)}</pre>`;
   }
-  if (fence) out.push(`<pre><code>${esc(fence.join("\n"))}</code></pre>`);
-  flushPara(); flushList();
-  return out.join("");
 }

@@ -293,7 +293,7 @@ div.bots-page.stage .chat header #rcol { display: none; }  /* same: the preview 
 .bots-page .msg.user.queued::after { content: "Sends when you hand back"; display: block; margin-top: 2px; font-size: 11px; color: var(--muted); }
 /* Rendered markdown: block elements do the spacing, so no pre-wrap here. */
 .bots-page .msg.md { white-space: normal; }
-.bots-page .msg.md > p, .bots-page .msg.md > ul, .bots-page .msg.md > ol, .bots-page .msg.md > pre, .bots-page .msg.md > blockquote, .bots-page .msg.md > h1, .bots-page .msg.md > h2, .bots-page .msg.md > h3, .bots-page .msg.md > h4, .bots-page .msg.md > h5, .bots-page .msg.md > h6 { margin: 0 0 .6em; }
+.bots-page .msg.md > p, .bots-page .msg.md > ul, .bots-page .msg.md > ol, .bots-page .msg.md > pre, .bots-page .msg.md > blockquote, .bots-page .msg.md > table, .bots-page .msg.md > h1, .bots-page .msg.md > h2, .bots-page .msg.md > h3, .bots-page .msg.md > h4, .bots-page .msg.md > h5, .bots-page .msg.md > h6 { margin: 0 0 .6em; }
 .bots-page .msg.md > :last-child, .bots-page .msg.md > :nth-last-child(2):has(+ .rx) { margin-bottom: 0; }
 .bots-page .msg.md h1, .bots-page .msg.md h2, .bots-page .msg.md h3, .bots-page .msg.md h4, .bots-page .msg.md h5, .bots-page .msg.md h6 { font-size: 1em; font-weight: 500; line-height: 1.4; }
 .bots-page .msg.md h1 { font-size: 1.15em; } .bots-page .msg.md h2 { font-size: 1.08em; }
@@ -305,6 +305,13 @@ div.bots-page.stage .chat header #rcol { display: none; }  /* same: the preview 
 .bots-page .msg.md pre code { background: none; padding: 0; font-size: .86em; white-space: pre; }
 .bots-page .msg.md blockquote { border-left: 3px solid var(--line); margin-left: 0; padding-left: 10px; color: var(--muted); }
 .bots-page .msg.md hr { border: 0; border-top: 1px solid var(--line); margin: .6em 0; }
+/* GFM table: full width of the bubble, hairline rows, cells wrap (a comparison table's cells are sentences). */
+.bots-page .msg.md table { width: 100%; border-collapse: collapse; font-size: .95em; }
+.bots-page .msg.md th, .bots-page .msg.md td { padding: .3em .6em; border-bottom: 1px solid var(--line); vertical-align: top; text-align: left; }
+.bots-page .msg.md th { font-weight: 500; color: var(--muted); }
+.bots-page .msg.md tr:last-child td { border-bottom: 0; }
+.bots-page .msg.md th:first-child, .bots-page .msg.md td:first-child { padding-left: 0; }
+.bots-page .msg.md th:last-child, .bots-page .msg.md td:last-child { padding-right: 0; }
 .bots-page .msg.md a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
 .bots-page .msg.thought { align-self: flex-start; background: var(--card); }
 /* Action step with its screenshot thumbnail: small strip by default, full width when open. */
