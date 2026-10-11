@@ -280,7 +280,7 @@ def test_a_chatty_git_archive_does_not_deadlock_against_tar(tmp_path, monkeypatc
         encoding="utf-8")
     fake_git.chmod(0o755)
 
-    monkeypatch.setattr(gs, "_GIT_BIN", str(fake_git))
+    monkeypatch.setattr(gs, "_git_bin", lambda: str(fake_git))
     monkeypatch.setattr(gs, "TIMEOUT_S", 5.0)
 
     dest_tmp = tmp_path / "dest"
