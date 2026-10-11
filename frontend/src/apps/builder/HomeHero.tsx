@@ -514,8 +514,15 @@ export function HeroComposer({
   // user did), so both end up in exactly the same place. `back` is where a
   // failure returns to: the ask row keeps the name the user typed (a retry
   // from idle would re-run naming and overwrite it with a fresh my-app-N),
-  // the automatic path goes back to the prompt.
-  const createNamed = async (name: string, back: "idle" | "askName") => {
+  // the automatic path goes back to the prompt. `exact` is the host-given
+  // name: a 409 there is an error to show ("'reports' already exists"),
+  // not a cue to ship reports-2 — the user chose that word; a model's or
+  // my-app-N's name is nobody's choice, so those take the suffix.
+  const createNamed = async (
+    name: string,
+    back: "idle" | "askName",
+    exact = false,
+  ) => {
     setError(null);
     setSessionError(null);
     setPhase("creating");
@@ -530,13 +537,16 @@ export function HeroComposer({
         if (alive.current) setPhase(back);
         return;
       }
-      const res = await createAppUnderFreeName(
-        name,
-        fullPrompt(),
-        model,
-        effort,
-        imagesRef.current.map((i) => i.path).filter(Boolean),
-      );
+      const images = imagesRef.current.map((i) => i.path).filter(Boolean);
+      const res = exact
+        ? await createApp(name, fullPrompt(), model, effort, images)
+        : await createAppUnderFreeName(
+            name,
+            fullPrompt(),
+            model,
+            effort,
+            images,
+          );
       // The folder exists from here on, so the Recent grid is stale — refresh it
       // now, since the task-error branch below stays on this page.
       onCreated();
@@ -590,7 +600,7 @@ export function HeroComposer({
     setSessionError(null);
     const given = givenName?.trim();
     if (given) {
-      await createNamed(given, "idle");
+      await createNamed(given, "idle", true);
       return;
     }
     setPhase("naming");
