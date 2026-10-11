@@ -1225,6 +1225,51 @@ def test_a_cancel_pressed_right_after_the_row_opens_is_not_wiped(
 
 
 @requires_fused
+def test_a_superseded_mirror_does_not_touch_the_retrys_row(
+    tmp_path, monkeypatch, _fresh_script_python
+):
+    """A mirror thread from an earlier attempt can start AFTER a retry
+    re-claimed the key and opened the row. It must notice it is superseded
+    before its opening clear+upsert, or it erases a ✕ pressed on the retry's
+    row. Forced deterministically: the claim token reads as changed the
+    moment the thread first looks."""
+    import threading
+
+    from fused_render import jobs
+
+    proj = _project(tmp_path, deps=["pip"])
+    key = "superseded-key"
+    job_id = f"sys:env-install:{key}"
+    jobs.upsert({"id": job_id, "title": "Preparing", "kind": "task",
+                 "state": jobs.RUNNING, "cancellable": True, "message": ""},
+                page="/x", server=True)
+    jobs.request_cancel(job_id)
+    assert _job(job_id)["cancel_requested"]
+
+    tokens = iter([b"old-claim"])
+    monkeypatch.setattr(
+        envinstall, "_claim_token", lambda k: next(tokens, b"new-claim")
+    )
+    touched = []
+    real_upsert, real_clear = jobs.upsert, jobs.clear_cancel_requested
+    monkeypatch.setattr(
+        jobs, "upsert", lambda *a, **kw: touched.append("upsert") or real_upsert(*a, **kw)
+    )
+    monkeypatch.setattr(
+        jobs, "clear_cancel_requested",
+        lambda *a, **kw: touched.append("clear") or real_clear(*a, **kw),
+    )
+
+    envinstall._mirror_into_jobs(key, str(proj))
+    for t in threading.enumerate():
+        if t.name == "env-install-jobs-mirror":
+            t.join(10)
+
+    assert touched == [], "a superseded mirror touched the retry's row"
+    assert _job(job_id)["cancel_requested"], "the ✕ on the retry's row was wiped"
+
+
+@requires_fused
 def test_a_needs_build_refusal_mirrors_as_waiting_not_error(
     tmp_path, monkeypatch, _fresh_script_python
 ):

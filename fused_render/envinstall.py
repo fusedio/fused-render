@@ -1864,7 +1864,22 @@ def _mirror_into_jobs(key: str, project_dir: str, downloading_python: bool = Fal
     # thread must notice.
     claim_token = _claim_token(key)
 
+    def superseded() -> bool:
+        current_token = _claim_token(key)
+        return (
+            claim_token is not None
+            and current_token is not None
+            and current_token != claim_token
+        )
+
     def run() -> None:
+        # A mirror from an earlier attempt that starts late must not touch the
+        # row a retry already owns: clearing the flag / reopening it would
+        # erase a ✕ pressed on the retry's row. (No lock serializes claim
+        # takeover — it is an O_EXCL create — so a takeover between this check
+        # and the upsert below is a residual window we accept.)
+        if superseded():
+            return
         try:
             # Disown a flag a previous attempt's dead mirror left set (see the
             # docstring) BEFORE the opening upsert, never after: once that
@@ -1894,12 +1909,7 @@ def _mirror_into_jobs(key: str, project_dir: str, downloading_python: bool = Fal
         except (jobs.JobError, ValueError):
             pass
         while True:
-            current_token = _claim_token(key)
-            if (
-                claim_token is not None
-                and current_token is not None
-                and current_token != claim_token
-            ):
+            if superseded():
                 # Superseded: a retry re-claimed this key before this thread
                 # observed a terminal record. The retry's own thread owns
                 # the row now — leave it alone. (`current_token is None` is
