@@ -9194,11 +9194,13 @@ describe("the Cards view's frame", () => {
     // the set to both views, and a row in a gone folder has no chat arm: its
     // press prints the note, and its ⌘-click has no href to open.
     const HOOK = readFileSync(join(SHELL, "useMissingFolders.ts"), "utf8");
-    expect(HOOK).toContain("if (e?.status === 404) {");
-    expect(HOOK).toContain("settled.current.delete(dir);");
+    // Since 2026-10-09 (Tasks latency D4) no hook stats the disk: the server's
+    // row carries `folder_missing` and `missingFolders` projects the rows.
+    expect(HOOK).toContain("if (!task.folder_missing) continue;");
+    expect(HOOK).not.toContain("statPath");
     expect(HOOK).toContain("This task's folder was deleted, so its chat can't be opened. Archive the task to remove it.");
     expect(HOOK).toContain('notify({ title: MISSING_FOLDER_TOAST, tone: "error" });');
-    expect(SCHEDULED).toContain("const missing = useMissingFolders(shown);");
+    expect(SCHEDULED).toContain("const missing = useMemo(() => missingFolders(shown), [shown]);");
     const board = SCHEDULED.slice(SCHEDULED.indexOf("<TaskBoard"));
     expect(board.slice(0, board.indexOf("/>"))).toContain("missing={missing}");
     expect(SCHEDULED).toContain("home={home}\n              missing={missing}");
@@ -9214,7 +9216,6 @@ describe("the Cards view's frame", () => {
     expect(VIEWS).toMatch(/if \(chat\) openChat\(chat\);\s*else if \(edit\) onEditEntry\?\.\(edit\);[\s\S]*?else if \(folderMissing\) toastMissingFolder\(\)/);
     expect(VIEWS).toContain("const to = fix || folderMissing ? null : openMessageHref(task, m);");
     expect(VIEWS).toMatch(/const openMessage = \(m: TaskMessage\) => \{[\s\S]*?if \(folderMissing\) \{\s*toastMissingFolder\(\)/);
-    expect(HOOK).toContain("}, [key, retry]);");
     // ONE detection path for three views: Cards read the page's `missing` set
     // (review, #1023) and keep no folder-gone state of their own.
     expect(CARDS).not.toContain("chatFolderMissing");
@@ -9228,8 +9229,6 @@ describe("the Cards view's frame", () => {
     expect(HOOK).toContain(
       "if (getRetainedNotifications().some((n) => n.title === MISSING_FOLDER_TOAST)) return;",
     );
-    // ...and the in-flight stats survive a retry tick: an unmount-only flag, not
-    // a per-run `cancelled` (Bugbot, round two).
     // ...and a gone folder frames nothing even when the module-level template
     // cache still holds its path (Bugbot: deleted between two visits).
     expect(CARDS.split("const gone = folderMissing;").length).toBe(3);

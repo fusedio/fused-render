@@ -12,7 +12,7 @@
 // and a host reading the flag through it would pull the chat's mount into its
 // bundle for one boolean.
 import { useEffect, useState } from "react";
-import { getPrefs, getPrefsShared } from "@platform/lib/api";
+import { getPrefs, getPrefsShared, dropSharedPrefsRead } from "@platform/lib/api";
 import { GATE_FALLBACK_MS } from "@platform/lib/clock";
 
 let reading: Promise<void> | null = null;
@@ -160,6 +160,9 @@ export function rereadFlags(): Promise<void> {
   // A NEW GENERATION, so the read this replaces cannot speak after it (Bugbot).
   generation += 1;
   reading = null;
+  // And a FRESH request: joining the shared in-flight GET would hand back the
+  // very read being replaced (which may be the one that never answers).
+  dropSharedPrefsRead();
   return read();
 }
 
@@ -231,6 +234,7 @@ export function listenerCountsForTests() {
  *  NOTIFIES, like every other write: a component already mounted would
  *  otherwise keep the answer the suite just took away. */
 export function resetFlagsForTests() {
+  dropSharedPrefsRead();
   reading = null;
   settledOnce = false;
   generation += 1;

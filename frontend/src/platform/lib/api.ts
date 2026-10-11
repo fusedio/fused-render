@@ -1604,6 +1604,15 @@ export function getPrefs(): Promise<Prefs> {
 // generation counters already cover the reverse race).
 let prefsInFlight: Promise<Prefs> | null = null;
 
+/** Forget the shared in-flight GET, so the next `getPrefsShared` asks the
+ *  server afresh. A deliberate re-read (claude's `rereadFlags`) needs this: it
+ *  must not join a read that may never settle, or "a re-read outranks the one it
+ *  replaces" is false. Tests use it too — a stubbed `fetch` that never settles
+ *  would otherwise pin `prefsInFlight` for the rest of the bun process. */
+export function dropSharedPrefsRead() {
+  prefsInFlight = null;
+}
+
 export function getPrefsShared(): Promise<Prefs> {
   if (prefsInFlight) return prefsInFlight;
   const p = getPrefs();
