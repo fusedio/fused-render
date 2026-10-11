@@ -5,6 +5,7 @@ import {
   CELL,
   FORMAT_LABELS,
   GRID_COLS,
+  SIZE_LABELS,
   MAX_WIDGETS,
   SOURCES,
   dimsFor,
@@ -39,7 +40,7 @@ export interface GalleryEntry {
   title: string;
   /** The format label alone when the source has several formats. */
   formatLabel?: string;
-  /** "2×2" in whole cells, or "Full row" for a fixed-row source. */
+  /** "2×2" in whole cells; a fixed-row source reads its width: "Full row", "Half" or "Small". */
   footprint: string;
   description: string;
   /** Why the entry cannot be picked; absent when it can. */
@@ -63,6 +64,14 @@ export function previewScale(fullRowPx: number, avail: number): number {
 export function footprintLabel(cols: number, rows: number): string {
   const f = (n: number) => (n % CELL === 0 ? String(n / CELL) : n === 1 ? "½" : `${Math.floor(n / CELL)}½`);
   return `${f(cols)}×${f(rows)}`;
+}
+
+/** A fixed-row source has one height, so its width names the size. */
+function fixedRowLabel(cols: number, rows: number): string {
+  if (cols === GRID_COLS) return "Full row";
+  if (cols === GRID_COLS / 2) return SIZE_LABELS["2x1"];
+  if (cols === CELL) return SIZE_LABELS["1x1"];
+  return footprintLabel(cols, rows);
 }
 
 /** Every variant the sheet offers, in SOURCES order. With a `target` (opened
@@ -99,11 +108,13 @@ export function galleryEntries(
             return at.x + d.cols <= GRID_COLS && canPlace(layout.widgets, { x: at.x, y: at.y, ...d });
           })) ||
         sizes[0];
-      const { cols, rows } = dimsFor(source, size);
+      const preset = dimsFor(source, size);
+      // A swap or fill covers exactly the tile, so its preview shows the tile.
+      const { cols, rows } = tile ? { cols: tile.cols, rows: tile.rows } : preset;
       let disabled: string | undefined;
       if (full) disabled = "Home is full";
       else if (tile) {
-        if (cols > tile.cols || rows > tile.rows) disabled = "Too big for this tile";
+        if (preset.cols > tile.cols || preset.rows > tile.rows) disabled = "Too big for this tile";
         else {
           const fit = sourceFits(layout, { ...tile, x: 0, y: 0 }, source, replacing);
           if (!fit.ok) disabled = fit.reason;
@@ -120,7 +131,7 @@ export function galleryEntries(
         rows,
         title: spec.formats.length > 1 ? `${spec.label} · ${FORMAT_LABELS[format]}` : spec.label,
         formatLabel: spec.formats.length > 1 ? FORMAT_LABELS[format] : undefined,
-        footprint: FIXED_ROWS[source] !== undefined ? "Full row" : footprintLabel(cols, rows),
+        footprint: FIXED_ROWS[source] !== undefined ? fixedRowLabel(cols, rows) : footprintLabel(cols, rows),
         description: spec.description,
         disabled,
       });

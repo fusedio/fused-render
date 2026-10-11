@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { CELL, GRID_COLS, MAX_WIDGETS, SOURCES, addWidget, defaultLayout, sizesFor, type HomeLayout, type Widget, type WidgetSource } from "./layout";
+import { CELL, GRID_COLS, MAX_WIDGETS, SOURCES, addWidget, defaultLayout, dimsFor, sizesFor, type HomeLayout, type Widget, type WidgetSource } from "./layout";
 import { footprintLabel, freeSpaceNote, galleryEntries, previewPx, previewScale } from "./gallery";
 
 const empty: HomeLayout = { ...defaultLayout(), widgets: [] };
@@ -58,7 +58,8 @@ test("target mode disables entries bigger than the tile and keeps ones that fit"
   const es = galleryEntries(layout, { kind: "swap", widget: tile }, "folder");
   expect(es.every((e) => e.source === "folder")).toBe(true);
   for (const e of es) {
-    const fits = e.cols <= 2 * CELL && e.rows <= CELL;
+    const d = dimsFor(e.source, e.size);
+    const fits = d.cols <= 2 * CELL && d.rows <= CELL;
     expect(e.disabled).toBe(fits ? undefined : "Too big for this tile");
   }
   expect(es.some((e) => e.disabled === undefined)).toBe(true);
@@ -143,4 +144,23 @@ test("at mode: an entry at x 6 picks a one-cell-wide size when the source has on
   expect(e.disabled).toBeUndefined();
   expect(e.cols).toBe(CELL);
   expect(e.cols + 6).toBeLessThanOrEqual(GRID_COLS);
+});
+
+test("a fixed-row caption follows the chosen width", () => {
+  const build = galleryEntries(empty, undefined, "build", { x: 2 * CELL, y: 0 })[0];
+  expect(build.footprint).toBe("Half");
+  const full = galleryEntries(empty, undefined, "build", { x: 0, y: 0 })[0];
+  expect(full.footprint).toBe("Full row");
+  const search = galleryEntries(empty, undefined, "search", { x: GRID_COLS - CELL, y: 0 })[0];
+  if (search.disabled) expect(search.disabled).toBe("No room here");
+  else expect(search.footprint).toBe("Small");
+});
+
+test("a swap previews the tile's own footprint, not the preset", () => {
+  const tile = w("t", "bots", 0, 0, 2 * CELL, 2 * CELL);
+  const es = galleryEntries({ ...empty, widgets: [tile] }, { kind: "swap", widget: tile }, "folder");
+  const list = es.find((e) => e.format === "list")!;
+  expect([list.cols, list.rows]).toEqual([2 * CELL, 2 * CELL]);
+  const fill = galleryEntries(empty, { kind: "fill", rect: { x: 0, y: 0, cols: 2 * CELL, rows: 2 * CELL } }, "folder");
+  expect(fill.every((e) => e.cols === 2 * CELL && e.rows === 2 * CELL)).toBe(true);
 });
