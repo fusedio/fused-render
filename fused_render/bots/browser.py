@@ -1671,7 +1671,7 @@ class Browser:
     def _remember_tabs(self, tabs, main_id=None):
         """Record the window's tabs (open order) and which is driven, for the next wake (written on change
         only: this runs on every detail poll)."""
-        rows = [{"url": t.get("url") or "", "title": (t.get("title") or "")[:80]} for t in tabs]
+        rows = [{"id": t.get("id"), "url": t.get("url") or "", "title": (t.get("title") or "")[:80]} for t in tabs]
         ids = [t.get("id") for t in tabs]
         if main_id not in ids:  # unknown yet (a restart, then sleep before any action): the saved one stands if live
             main_id = self.win.get("main") if self.win.get("main") in ids else None
@@ -1851,13 +1851,19 @@ class Browser:
                     or self._new_window(port, bws, "about:blank")
                 self._main_tab = t.get("id")
                 seen = {x["id"] for x, _ in self.proc.page_targets(port, bws)}
+                rows = [{"id": t["id"], "url": first if first != "about:blank" else "", "title": ""}]
                 for u in rest:
                     try:
                         nt = self._open_in(port, bws, t, u, seen)
                         if nt:
                             seen.add(nt["id"])
+                            rows.append({"id": nt["id"], "url": u, "title": ""})
                     except Exception:  # noqa: BLE001 — one tab lost; the window is up
                         pass
+                # The record now names the tabs just opened (driven one first), so the first action's _note_page
+                # updates its row in place — a redirect or a trailing slash never appends a second row.
+                self.win["tabs"], self.win["active"], self.win["main"] = rows, 0, t["id"]
+                self._write_win()
                 if first != "about:blank":
                     pws = WS(t["ws"], timeout=5)
                     try:
@@ -2016,24 +2022,22 @@ class Browser:
                  "active": t["id"] == main.get("id"), "ws": t.get("ws") or t.get("webSocketDebuggerUrl")} for i, t in enumerate(ordered)]
 
     def _note_page(self, url, title):
-        """The driven tab's url/title into window.json's active row (after an action), and which tab is
-        driven: a tab switch or a new tab moves `main` (and the active row) here, so a restart with
-        Chrome still up resumes on the tab the bot was driving, not the one before it."""
+        """The driven tab's url/title into its window.json row (after an action), and which tab is driven:
+        a tab switch or a new tab moves `main` (and the active row) here, so a restart with Chrome still
+        up resumes on the tab the bot was driving. Rows are found by target id (two tabs may share a
+        url); a driven tab with no row yet (a popup taken over) gets one, the next tabs() orders it."""
         tabs = list(self.win.get("tabs") or [])
-        i = self.win.get("active") or 0
-        row = {"url": url, "title": (title or "")[:80]}
-        if self._main_tab and self._main_tab != self.win.get("main"):
-            # The driven tab changed since the last record: its row is the one on this url (tabs() keeps
-            # the rows in open order), else a new row; the full list is rewritten by the next tabs().
-            i = next((k for k, r in enumerate(tabs) if r.get("url") == url), None)
-            if i is None:
-                tabs.append(row)
-                i = len(tabs) - 1
-        if not tabs:
-            tabs, i = [row], 0
-        if i >= len(tabs):
-            i = 0
         main = self._main_tab or self.win.get("main")
+        i = next((k for k, r in enumerate(tabs) if main and r.get("id") == main), None)
+        if i is None:
+            if tabs and (not self._main_tab or self._main_tab == self.win.get("main")):
+                i = self.win.get("active") or 0  # the row of the tab we were on (an older record without ids)
+                if i >= len(tabs):
+                    i = 0
+            else:
+                tabs.append({"id": main, "url": "", "title": ""})
+                i = len(tabs) - 1
+        row = {"id": main, "url": url, "title": (title or "")[:80]}
         if tabs[i] == row and self.win.get("active") == i and self.win.get("main") == main:
             return
         tabs[i] = row
