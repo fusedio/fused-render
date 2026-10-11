@@ -35,11 +35,11 @@ _GIT_BIN = None
 
 
 def _git_bin():
-    global _GIT_BIN
-    if _GIT_BIN is None:
-        import shutil
-        _GIT_BIN = shutil.which("git") or "git"
-    return _GIT_BIN
+    # One resolver for the whole process — see app_git._git_bin. Imported
+    # lazily: claude_health imports this package, and git_tools imports
+    # claude_health.
+    from fused_render.shell import git_tools
+    return git_tools.git_bin()
 
 
 # flock is POSIX-only and this module is imported at server-startup time (the

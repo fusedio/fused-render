@@ -9,6 +9,8 @@
 //   about    not yet opened         —                            opened once
 //   claude   not installed/unknown  runs, but outdated/signed    installed, new
 //                                   out/unknown                  enough, signed in
+//   git      no usable git          —                            a real git on disk
+//                                                                (Tools, Xcode, brew)
 //   chrome   no Chrome found        —                            a Chrome (or Chromium,
 //                                                                Edge, Brave) on disk
 //   fda      not granted            granted, relaunch pending    granted
@@ -18,10 +20,10 @@
 //                                                                app, or a showcase
 //                                                                app was opened
 //
-// plus `n/a` for a stage this machine does not have (Disk Access off macOS,
-// Models when no engine can serve anything, Chrome where no bot will run —
-// Render with bots off) — it leaves the denominator, so a Linux user is not
-// stuck at 80% over a pane they cannot open.
+// plus `n/a` for a stage this machine does not have (Disk Access and Git off
+// macOS, Models when no engine can serve anything, Chrome where no bot will
+// run — Render with bots off) — it leaves the denominator, so a Linux user is
+// not stuck at 80% over a pane they cannot open.
 //
 // The status is written to the server (shell/onboarding.py `stages`) with a
 // free-form `meta` note for reference, and read back from `config.onboarding`
@@ -57,16 +59,20 @@ export type StageStatus = OnboardingStageStatus;
 export type Stages = Record<string, OnboardingStage>;
 
 /** The stage ids, in wizard order — the server's closed set (STEPS). */
-export const STAGE_IDS = ["about", "claude", "chrome", "fda", "models", "app"] as const;
+export const STAGE_IDS = ["about", "claude", "git", "chrome", "fda", "models", "app"] as const;
 export type StageId = (typeof STAGE_IDS)[number];
 
+/** The stage ids Fused Bot's server does not have (its STEPS is
+ *  about/claude/chrome/fda): no git — it clones nothing — no model picks, no
+ *  first app. */
+const BOT_OMITS: readonly StageId[] = ["git", "models", "app"];
+
 /** The stages THIS flavor has (platform/lib/flavor). Fused Bot's server
- *  trims its STEPS to about/claude/chrome/fda — no model picks, no first app — so
- *  the meter must not count the two it will never see as pending, and the
- *  wizard must not offer them. A function, not a filtered constant: the
- *  flavor is seeded after this module is evaluated. */
+ *  trims its STEPS (BOT_OMITS), so the meter must not count the ones it will
+ *  never see as pending, and the wizard must not offer them. A function, not
+ *  a filtered constant: the flavor is seeded after this module is evaluated. */
 export function stageIds(): readonly StageId[] {
-  return isBot() ? STAGE_IDS.filter((id) => id !== "models" && id !== "app") : STAGE_IDS;
+  return isBot() ? STAGE_IDS.filter((id) => !BOT_OMITS.includes(id)) : STAGE_IDS;
 }
 
 let snapshot: OnboardingState | null = null;

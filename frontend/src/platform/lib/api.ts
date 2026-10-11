@@ -380,6 +380,19 @@ export function openedOnboarding(): Promise<OnboardingState> {
   return postJson<OnboardingState>("/api/onboarding/opened", {});
 }
 
+/** The Git step's Install button (shell/git_tools.start_install): asks macOS
+    for the Command Line Tools — Apple's dialog opens, the install happens
+    outside the app. `install` is the verdict; the rest is a fresh snapshot. */
+export interface GitInstallResult {
+  ok: boolean;
+  already: boolean;
+  message: string;
+}
+
+export function installGit(): Promise<OnboardingState & { install: GitInstallResult }> {
+  return postJson<OnboardingState & { install: GitInstallResult }>("/api/onboarding/git/install", {});
+}
+
 export function setOnboardingStage(
   stage: string,
   status: OnboardingStageStatus,

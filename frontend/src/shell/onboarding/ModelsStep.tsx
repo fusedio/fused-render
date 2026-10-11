@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-// Step 4 — local models, and a head start on downloading them.
+// Step 6 — local models, and a head start on downloading them.
 //
 // The step exists because of a timing problem, not a capability one: a model
 // this machine does not have is fetched on FIRST USE — the route answers

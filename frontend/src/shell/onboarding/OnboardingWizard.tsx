@@ -1,22 +1,23 @@
-// The first-run wizard: the `/onboarding` page, six steps, every one of them
+// The first-run wizard: the `/onboarding` page, seven steps, every one of them
 // skippable. App.tsx renders it ALONE on that route — no sidebar, no status
 // bar — and redirects a fresh install there at boot (shell/onboarding/state
 // has the rule). Leaving is a navigation like any other.
 //
 //   1 About        — what FusedRender is (download-page copy + video)
 //   2 Claude Code  — installed / new enough / signed in / on PATH, with buttons
-//   3 Chrome       — a Google Chrome for bots to drive, found or a download link
-//   4 Disk Access  — macOS Full Disk Access, why, and the one button there is
-//   5 Models       — local models that fit this machine, downloaded in the background
-//   6 First app    — the Home composer, or a showcase local-AI app
+//   3 Git          — a usable git (showcase clone, worktrees), found or one Install button
+//   4 Chrome       — a Google Chrome for bots to drive, found or a download link
+//   5 Disk Access  — macOS Full Disk Access, why, and the one button there is
+//   6 Models       — local models that fit this machine, downloaded in the background
+//   7 First app    — the Home composer, or a showcase local-AI app
 //
-// Steps 1–4 write nothing but their own STAGE STATUS for the progress meter
+// Steps 1–5 write nothing but their own STAGE STATUS for the progress meter
 // (progress.ts — the sidebar's "Setup N%" row and the pills in the bar above;
-// a reopen lands on the first step still to do; Chrome's status is the
-// server's alone, observed on every read). Step 5 starts model
+// a reopen lands on the first step still to do; Git's and Chrome's statuses
+// are the server's alone, observed on every read). Step 6 starts model
 // downloads, which
 // are server-owned jobs that outlive the wizard and block nothing in it — a
-// head start, since a model is fetched on first use anyway. Step 6's create
+// head start, since a model is fetched on first use anyway. Step 7's create
 // (or a showcase open) is the only other durable action and doubles as
 // "complete". ✕ / Escape
 // record a DISMISS — a different flag, so a later build can tell the two
@@ -52,13 +53,15 @@ import { ChromeStep } from "./ChromeStep";
 import { ClaudeStep } from "./ClaudeStep";
 import { FdaStep } from "./FdaStep";
 import { FirstAppStep } from "./FirstAppStep";
+import { GitStep } from "./GitStep";
 import { forgetModelsStep, ModelsStep, useModelPicks } from "./ModelsStep";
 
-type StepId = "about" | "claude" | "chrome" | "fda" | "models" | "app";
+type StepId = "about" | "claude" | "git" | "chrome" | "fda" | "models" | "app";
 
 const STEPS: { id: StepId; label: string }[] = [
   { id: "about", label: "About" },
   { id: "claude", label: "Claude Code" },
+  { id: "git", label: "Git" },
   { id: "chrome", label: "Chrome" },
   { id: "fda", label: "Disk Access" },
   { id: "models", label: "Models" },
@@ -140,16 +143,19 @@ export function OnboardingWizard({ config }: { config: Config }) {
     if (picks !== null && picks.length === 0) reportStage("models", "n/a", { offered: 0 });
   }, [picks]);
   const steps = STEPS.filter((s) => {
-    // Fused Bot's server has no models/app steps at all (progress.stageIds):
+    // Fused Bot's server has no git/models/app steps at all (progress.stageIds):
     // dropped before the per-machine rules, and never reported `n/a` either —
     // the server's closed set would not take the write. Chrome is in BOTH
     // flavors (Render runs the same bots behind `bots_enabled`), and always
     // shown: where no bot will run the server counts it `n/a`, but the step
     // is still the one place that says what bots need.
-    if (s.id === "models" || s.id === "app") {
+    if (s.id === "git" || s.id === "models" || s.id === "app") {
       if (isBot()) return false;
     }
-    if (s.id === "fda") return isMac(health?.platform);
+    // macOS only, both: Full Disk Access is a macOS grant, and the Git step's
+    // probe + Install button are built for the Mac's Command Line Tools alone
+    // (server git_tools) — elsewhere the server counts it `n/a`.
+    if (s.id === "fda" || s.id === "git") return isMac(health?.platform);
     // Kept while the answer is UNKNOWN (`null`), unlike the FDA step's
     // hidden-until-known: this is the only step a `?step=` resume is likely to
     // name while its own fetch is still in flight, and dropping it for those
@@ -418,6 +424,7 @@ export function OnboardingWizard({ config }: { config: Config }) {
         <div className="mx-auto w-full max-w-4xl px-6 py-10">
           {step.id === "about" && <AboutStep eyebrow={eyebrow} />}
           {step.id === "claude" && <ClaudeStep setup={setup} eyebrow={eyebrow} onWork={onWork} />}
+          {step.id === "git" && <GitStep stages={stages} eyebrow={eyebrow} onWork={onWork} />}
           {step.id === "chrome" && <ChromeStep stages={stages} eyebrow={eyebrow} onWork={onWork} />}
           {step.id === "fda" && <FdaStep config={config} eyebrow={eyebrow} onWork={onWork} />}
           {step.id === "models" && <ModelsStep picks={picks} eyebrow={eyebrow} onWork={onWork} />}

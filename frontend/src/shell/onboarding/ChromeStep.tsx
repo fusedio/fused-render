@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
-// Step 3 — Google Chrome. Bots drive a real Chrome of their own (fused_render/
+// Step 4 — Google Chrome. Bots drive a real Chrome of their own (fused_render/
 // bots/browser.py launches it over CDP), so a machine without one cannot run
 // a bot at all — and nothing before the first bot says so except the Bots
 // page's empty hero. This step says it up front, in both flavors: Fused Bot
