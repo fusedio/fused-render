@@ -83,7 +83,7 @@ export function WidgetGrid({
 
   let used = 0;
   for (const r of pos.values()) used = Math.max(used, r.y + r.rows);
-  // The add tile sits on a whole cell.
+  // The narrow single add tile sits on a whole cell; the + cells start at `used`.
   const usedCells = Math.ceil(used / CELL) * CELL;
 
   const seen = new Set<string>();
@@ -158,9 +158,9 @@ export function WidgetGrid({
               key={`addcell${i}`}
               type="button"
               className="hw-add-tile hw-add-cell"
-              style={placement({ x: i * CELL, y: usedCells, cols: CELL, rows: CELL })}
+              style={placement({ x: i * CELL, y: used, cols: CELL, rows: CELL })}
               aria-label={`Add widget in column ${i + 1}`}
-              onClick={() => onAddAt(i * CELL, usedCells)}
+              onClick={() => onAddAt(i * CELL, used)}
             >
               <span className="hw-add-plus" aria-hidden="true">+</span>
             </button>
