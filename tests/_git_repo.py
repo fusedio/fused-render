@@ -53,7 +53,7 @@ def git(cwd, *args, when=None, check=True):
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        timeout=30,
+        timeout=180,
     )
     if check and proc.returncode != 0:
         raise AssertionError(
