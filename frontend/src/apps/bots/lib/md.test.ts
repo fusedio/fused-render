@@ -19,7 +19,7 @@ describe("md", () => {
   });
   test("a GFM pipe table is a real table (the Restic vs Cryptomator report)", () => {
     const html = parse("| | A: Restic | B: Cryptomator |\n|---|---|---|\n| What it is | A backup tool | A vault |\n| S3 | Built in | Not built in |\n");
-    expect(html).toContain("<table>");
+    expect(html).toContain('<div class="tablewrap"><table>');  // the wrap is the sideways scroller (Bugbot, #1556)
     expect(html).toContain("<th>A: Restic</th>");
     expect(html).toContain("<td>What it is</td>");
     expect(html).toContain("<td>Not built in</td>");
@@ -41,6 +41,7 @@ describe("md", () => {
     expect(parse("a\nb")).toContain("a<br>b");
   });
   test("an unclosed fence at EOF still renders as a code block", () => {
+    expect(md("```js\nlet a = 1")).toBe("<pre>```js\nlet a = 1\n```</pre>");  // md() closes it; the no-DOM fallback shows that
     const html = parse("```js\nlet a = 1\n```");
     expect(html).toContain('<pre><code class="language-js">let a = 1');
   });

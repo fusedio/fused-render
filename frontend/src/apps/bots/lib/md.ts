@@ -26,6 +26,13 @@ function setup(): (t: string) => string {
       link(href: string, _title: string | null | undefined, text: string) {
         return `<a href="${esc(href || "")}" target="_blank" rel="noopener">${text}</a>`;
       },
+      // A table gets its own horizontal scroller: the bubble is a `flex: none` item in a scrolling thread, so a
+      // table whose min-content beats the bubble would push the whole transcript sideways. Done here rather than
+      // with `display: block; overflow-x: auto` on the <table>, which takes it out of table layout and makes
+      // `width: 100%` meaningless (the Claude funnel wraps in the DOM for the same reason).
+      table(header: string, body: string) {
+        return `<div class="tablewrap"><table><thead>${header}</thead>${body ? `<tbody>${body}</tbody>` : ""}</table></div>`;
+      },
     },
   });
   render = (t) =>
