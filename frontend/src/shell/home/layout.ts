@@ -118,7 +118,7 @@ export const SOURCES: Record<WidgetSource, SourceSpec> = {
     label: "Fused Apps",
     description: "Your apps, by recent use, last edit, or name.",
     sizes: ["4x1", "2x1", "1x2", "2x2"],
-    formats: ["cards", "icons"],
+    formats: ["icons", "cards"],
   },
   app: {
     label: "Page",
@@ -178,11 +178,14 @@ export function newWidgetId(): string {
   return Math.random().toString(36).slice(2, 10);
 }
 
+/** What a new widget can be created with beyond its source. */
+export type AddOpts = { id?: string; folderId?: string; appPath?: string; format?: WidgetFormat; size?: WidgetSize; sort?: AppsSort; show?: TasksShow };
+
 function makeWidget(
   source: WidgetSource,
   x: number,
   y: number,
-  opts: { id?: string; folderId?: string; appPath?: string; format?: WidgetFormat; size?: WidgetSize; sort?: AppsSort; show?: TasksShow } = {},
+  opts: AddOpts = {},
 ): Widget {
   const spec = SOURCES[source];
   const w: Widget = {
@@ -254,7 +257,9 @@ export function normalizeLayout(raw: unknown): HomeLayout {
       size: spec.sizes.includes(x.size as WidgetSize) ? (x.size as WidgetSize) : spec.sizes[0],
       format: spec.formats.includes(x.format as WidgetFormat)
         ? (x.format as WidgetFormat)
-        : spec.formats[0],
+        : source === "apps"
+          ? "cards" // saved tiles from before icons became the default
+          : spec.formats[0],
       x: 0,
       y: 0,
     };
@@ -285,10 +290,11 @@ export function normalizeLayout(raw: unknown): HomeLayout {
         oldRows.set(w.id, stored ? (rr as number) : dims(w.size).rows);
       }
       if ((r.version === 4 || r.version === LAYOUT_VERSION) && stored) {
-        const min = minFootprint(w.source);
         const c = rc as number;
         // A fixed-row source takes its rows from FIXED_ROWS, whatever was stored.
         const rw = fixed ?? (rr as number);
+        // A stored tile too short for its format (an apps cards tile one cell tall) is switched first, so the footprint check does not move or resize it.
+        const min = minFootprint(w.source, formatForRows(w.source, w.format, rw));
         if (
           c >= min.cols && c <= GRID_COLS && rw >= min.rows && rw <= MAX_WIDGET_ROWS &&
           Number.isInteger(x) && x + c <= GRID_COLS
@@ -297,9 +303,11 @@ export function normalizeLayout(raw: unknown): HomeLayout {
           w = preset ? { ...w, size: preset } : { ...w, size: contentSizeFor(w.source, c, rw), cols: c, rows: rw };
         }
       }
+      // A stored tile too short for its format falls back to its source's first format that fits; it is not moved or resized.
+      w = { ...w, format: formatForRows(w.source, w.format, dimsOf(w).rows) };
       const { cols, rows } = dimsOf(w);
       if (!Number.isInteger(x) || !Number.isInteger(y) || !canPlace(widgets, { x, y, cols, rows })) {
-        ({ x, y } = firstFreeSlot(widgets, w.size, GRID_COLS, undefined, w.source));
+        ({ x, y } = firstFreeSlot(widgets, w.source, w.size));
         // Same bound addWidget enforces: a repaired slot past MAX_ROWS drops the widget.
         if (y + dimsOf(w).rows > MAX_ROWS) continue;
       }
@@ -363,14 +371,37 @@ export function hasSearch(layout: HomeLayout): boolean {
 export function addWidget(
   layout: HomeLayout,
   source: WidgetSource,
-  opts: { id?: string; folderId?: string; appPath?: string; format?: WidgetFormat; size?: WidgetSize; sort?: AppsSort; show?: TasksShow } = {},
+  opts: AddOpts = {},
 ): HomeLayout {
   if (layout.widgets.length >= MAX_WIDGETS) return layout;
   if (source === "search" && hasSearch(layout)) return layout;
-  const probe = makeWidget(source, 0, 0, opts);
-  const { x, y } = firstFreeSlot(layout.widgets, probe.size, GRID_COLS, undefined, source);
+  if ((source === "folder" && !opts.folderId) || (source === "app" && !opts.appPath)) return layout;
+  // A format with no explicit size starts at the first size that can show it.
+  const size = opts.size ?? (opts.format ? sizesFor(source, opts.format)[0] : undefined);
+  const probe = makeWidget(source, 0, 0, size ? { ...opts, size } : opts);
+  const { x, y } = firstFreeSlot(layout.widgets, source, probe.size);
   if (y + dimsOf(probe).rows > MAX_ROWS) return layout;
   return { ...layout, widgets: sortByPosition([...layout.widgets, { ...probe, x, y }]) };
+}
+
+/** Add `source` with its top-left at (x, y). The same object when the layout
+    is full, a second search would be added, or the footprint is off-grid or not free. */
+export function addWidgetAt(
+  layout: HomeLayout,
+  source: WidgetSource,
+  x: number,
+  y: number,
+  opts: AddOpts = {},
+): HomeLayout {
+  if (layout.widgets.length >= MAX_WIDGETS) return layout;
+  if (source === "search" && hasSearch(layout)) return layout;
+  if ((source === "folder" && !opts.folderId) || (source === "app" && !opts.appPath)) return layout;
+  const size = opts.size ?? (opts.format ? sizesFor(source, opts.format)[0] : undefined);
+  const w = { ...makeWidget(source, 0, 0, size ? { ...opts, size } : opts), x, y };
+  const { cols, rows } = dimsOf(w);
+  if (x + cols > GRID_COLS || y + rows > MAX_ROWS) return layout;
+  if (!canPlace(layout.widgets, { x, y, cols, rows })) return layout;
+  return { ...layout, widgets: sortByPosition([...layout.widgets, w]) };
 }
 
 export function removeWidget(layout: HomeLayout, id: string): HomeLayout {
@@ -392,7 +423,7 @@ function patch(layout: HomeLayout, id: string, fn: (w: Widget) => Widget | null)
     width needs. Refused (same object) when the new footprint is not free. */
 export function setSize(layout: HomeLayout, id: string, size: WidgetSize): HomeLayout {
   const w = layout.widgets.find((x) => x.id === id);
-  if (!w || (w.size === size && w.cols === undefined) || !SOURCES[w.source].sizes.includes(size)) return layout;
+  if (!w || (w.size === size && w.cols === undefined) || !sizesFor(w.source, w.format).includes(size)) return layout;
   const { cols, rows } = dimsFor(w.source, size);
   const x = Math.min(w.x, GRID_COLS - cols);
   if (!canPlace(layout.widgets, { x, y: w.y, cols, rows }, id)) return layout;
@@ -409,16 +440,18 @@ export function allowedSizes(layout: HomeLayout, id: string): WidgetSize[] {
   const w = layout.widgets.find((x) => x.id === id);
   if (!w) return [];
   const occ = occupancy(layout.widgets, id);
-  return SOURCES[w.source].sizes.filter((s) => {
+  return sizesFor(w.source, w.format).filter((s) => {
     if (s === w.size) return true;
     const { cols, rows } = dimsFor(w.source, s);
-    return canPlace(layout.widgets, { x: Math.min(w.x, GRID_COLS - cols), y: w.y, cols, rows }, id, GRID_COLS, occ);
+    return canPlace(layout.widgets, { x: Math.min(w.x, GRID_COLS - cols), y: w.y, cols, rows }, id, occ);
   });
 }
 
 export function setFormat(layout: HomeLayout, id: string, format: WidgetFormat): HomeLayout {
   return patch(layout, id, (w) =>
-    SOURCES[w.source].formats.includes(format) && w.format !== format ? { ...w, format } : null,
+    SOURCES[w.source].formats.includes(format) && w.format !== format && dimsOf(w).rows >= formatMinRows(w.source, format)
+      ? { ...w, format }
+      : null,
   );
 }
 
@@ -458,10 +491,37 @@ export function dimsOf(w: Pick<Widget, "source" | "size" | "cols" | "rows">): { 
     : dimsFor(w.source, w.size);
 }
 
-/** Smallest footprint a source allows: its smallest preset on each axis. */
-export function minFootprint(source: WidgetSource): { cols: number; rows: number } {
+/** Fewest unit rows a format can be drawn in, per source. Home is one fixed
+    grid, so a format that cannot fit a size is not offered at that size. Apps
+    cards need two cells, and folder icons draw 82px tiles that clip in one
+    cell; every other source's cards render header-only at one. */
+export const FORMAT_MIN_ROWS: Partial<Record<WidgetSource, Partial<Record<WidgetFormat, number>>>> = {
+  apps: { cards: 2 * CELL },
+  folder: { icons: 2 * CELL },
+};
+
+export function formatMinRows(source: WidgetSource, format?: WidgetFormat): number {
+  return (format && FORMAT_MIN_ROWS[source]?.[format]) || 0;
+}
+
+/** The source's presets that can show `format`: fixed-row sources are unaffected. */
+export function sizesFor(source: WidgetSource, format?: WidgetFormat): WidgetSize[] {
+  const min = formatMinRows(source, format);
+  return SOURCES[source].sizes.filter((s) => dimsFor(source, s).rows >= min);
+}
+
+/** Smallest footprint a source allows: its smallest preset on each axis, and
+    tall enough for `format` when one is given. */
+export function minFootprint(source: WidgetSource, format?: WidgetFormat): { cols: number; rows: number } {
   const ds = SOURCES[source].sizes.map(dims);
-  return { cols: Math.min(...ds.map((d) => d.cols)), rows: FIXED_ROWS[source] ?? Math.min(...ds.map((d) => d.rows)) };
+  const rows = FIXED_ROWS[source] ?? Math.min(...ds.map((d) => d.rows));
+  return { cols: Math.min(...ds.map((d) => d.cols)), rows: Math.max(rows, formatMinRows(source, format)) };
+}
+
+/** `format` unless the footprint is too short for it; then the source's first format that fits. */
+export function formatForRows(source: WidgetSource, format: WidgetFormat, rows: number): WidgetFormat {
+  if (rows >= formatMinRows(source, format)) return format;
+  return SOURCES[source].formats.find((f) => rows >= formatMinRows(source, f)) ?? format;
 }
 
 /** The source's preset whose dims equal (cols, rows) exactly, else null; a
@@ -492,9 +552,10 @@ export function contentSizeFor(source: WidgetSource, cols: number, rows: number)
   return best ?? SOURCES[source].sizes[0];
 }
 
-/** How many list rows / icon tiles a widget of this size draws before it says
-    "+N more". Fixed per size: the grid's row height is fixed, so this needs no
-    measuring. A full-row list runs in two columns. */
+/** First-paint guess of how many list rows / icon tiles a widget of this size
+    draws before it says "+N more". The grid is fixed but row heights, fonts and
+    headers vary, so lists and board lanes re-measure after layout (useFitCount)
+    and settle on what really fits. A full-row list runs in two columns. */
 export function itemCapacity(size: WidgetSize, format: WidgetFormat): number {
   // Only list/icon widgets are counted here, never the fixed-row search/build,
   // so plain dims() (in units; capacity counts whole cells) is right.
@@ -547,20 +608,6 @@ export function rowsUsed(widgets: Widget[]): number {
   return n;
 }
 
-/** Rows above the last occupied row that nothing covers: the gaps the user
- *  left, which view mode must keep as tall as the edit canvas does. */
-export function emptyRows(rects: { y: number; rows: number }[]): number[] {
-  const covered = new Set<number>();
-  let end = 0;
-  for (const r of rects) {
-    for (let j = 0; j < r.rows; j++) covered.add(r.y + j);
-    end = Math.max(end, r.y + r.rows);
-  }
-  const gaps: number[] = [];
-  for (let y = 0; y < end; y++) if (!covered.has(y)) gaps.push(y);
-  return gaps;
-}
-
 /** Reading order (y, x); stable. */
 export function sortByPosition(widgets: Widget[]): Widget[] {
   return widgets.slice().sort((a, b) => a.y - b.y || a.x - b.x);
@@ -592,11 +639,10 @@ export function canPlace(
   widgets: Widget[],
   rect: Rect,
   except?: string,
-  cols = GRID_COLS,
   /** Prebuilt `occupancy(widgets, except)`, to reuse across several candidates. */
   occ: Map<string, string> = occupancy(widgets, except),
 ): boolean {
-  if (rect.x < 0 || rect.x + rect.cols > cols || rect.y < 0 || rect.y + rect.rows > MAX_ROWS) return false;
+  if (rect.x < 0 || rect.x + rect.cols > GRID_COLS || rect.y < 0 || rect.y + rect.rows > MAX_ROWS) return false;
   for (let j = 0; j < rect.rows; j++) {
     for (let i = 0; i < rect.cols; i++) if (occ.has(`${rect.x + i},${rect.y + j}`)) return false;
   }
@@ -628,13 +674,11 @@ export function firstFreeRect(rects: Rect[], cols: number, rows: number, gridCol
 
 export function firstFreeSlot(
   widgets: Widget[],
+  source: WidgetSource,
   size: WidgetSize,
-  cols = GRID_COLS,
-  except?: string,
-  source?: WidgetSource,
 ): { x: number; y: number } {
-  const { cols: c, rows } = source ? dimsFor(source, size) : dims(size);
-  return firstFreeRect(widgets.filter((w) => w.id !== except).map(rectOf), c, rows, cols);
+  const { cols, rows } = dimsFor(source, size);
+  return firstFreeRect(widgets.map(rectOf), cols, rows);
 }
 
 /** CSS `grid-auto-flow: row dense` on `cols` columns with every item
@@ -667,94 +711,12 @@ export function reflowToColumns(layout: HomeLayout, cols: number): Map<string, R
   return out;
 }
 
-/** Move to (x, y); the same object when the footprint is not free or in bounds. */
-export function placeWidget(layout: HomeLayout, id: string, x: number, y: number): HomeLayout {
-  const w = layout.widgets.find((o) => o.id === id);
-  if (!w) return layout;
-  if (w.x === x && w.y === y) return layout;
-  const { cols, rows } = dimsOf(w);
-  if (!canPlace(layout.widgets, { x, y, cols, rows }, id)) return layout;
-  const widgets = layout.widgets.map((o) => (o.id === id ? { ...o, x, y } : o));
-  return { ...layout, widgets: sortByPosition(widgets) };
-}
-
-/** Alt+Arrow: step half a cell (one unit), then keep stepping past blocked cells until a
-    free slot or the bound. Same object when nothing is possible. */
-export function moveByArrow(layout: HomeLayout, id: string, key: string): HomeLayout {
-  const w = layout.widgets.find((o) => o.id === id);
-  if (!w) return layout;
-  const delta: Record<string, [number, number]> = {
-    ArrowLeft: [-1, 0],
-    ArrowRight: [1, 0],
-    ArrowUp: [0, -1],
-    ArrowDown: [0, 1],
-  };
-  const d = delta[key];
-  if (!d) return layout;
-  const { cols, rows } = dimsOf(w);
-  const maxY = rowsUsed(layout.widgets);
-  let x = w.x + d[0];
-  let y = w.y + d[1];
-  while (x >= 0 && x <= GRID_COLS - cols && y >= 0 && y <= maxY) {
-    if (canPlace(layout.widgets, { x, y, cols, rows }, id)) return placeWidget(layout, id, x, y);
-    x += d[0];
-    y += d[1];
-  }
-  return layout;
-}
-
-/** Edge drag: set the footprint in units, top-left anchored. Same object when
-    out of bounds, below the source minimum, or not free. */
-export function resizeTo(layout: HomeLayout, id: string, cols: number, rows: number): HomeLayout {
-  const w = layout.widgets.find((o) => o.id === id);
-  if (!w || !Number.isInteger(cols) || !Number.isInteger(rows)) return layout;
-  // A fixed-row source cannot change height: any asked-for rows are its own.
-  const fixed = FIXED_ROWS[w.source];
-  if (fixed !== undefined) rows = fixed;
-  const min = minFootprint(w.source);
-  if (cols < min.cols || rows < min.rows || w.x + cols > GRID_COLS || rows > MAX_WIDGET_ROWS) return layout;
-  if (!canPlace(layout.widgets, { x: w.x, y: w.y, cols, rows }, id)) return layout;
-  const preset = presetFor(w.source, cols, rows);
-  const { cols: _c, rows: _r, ...rest } = w;
-  const next: Widget = preset
-    ? { ...rest, size: preset }
-    : { ...rest, size: contentSizeFor(w.source, cols, rows), cols, rows };
-  if (next.size === w.size && next.cols === w.cols && next.rows === w.rows) return layout;
-  const widgets = layout.widgets.map((o) => (o.id === id ? next : o));
-  return { ...layout, widgets: sortByPosition(widgets) };
-}
-
-/** Alt+Shift+Arrow: grow or shrink the footprint by one unit. */
-export function resizeByArrow(layout: HomeLayout, id: string, key: string): HomeLayout {
-  const w = layout.widgets.find((o) => o.id === id);
-  if (!w) return layout;
-  const { cols, rows } = dimsOf(w);
-  switch (key) {
-    case "ArrowRight":
-      return resizeTo(layout, id, cols + 1, rows);
-    case "ArrowLeft":
-      return resizeTo(layout, id, cols - 1, rows);
-    case "ArrowDown":
-      return resizeTo(layout, id, cols, rows + 1);
-    case "ArrowUp":
-      return resizeTo(layout, id, cols, rows - 1);
-    default:
-      return layout;
-  }
-}
-
-/** Pack everything densely in reading order. Never automatic. */
-export function compactLayout(layout: HomeLayout): HomeLayout {
-  return { ...layout, widgets: sortByPosition(packDense(sortByPosition(layout.widgets))) };
-}
-
 // ---- Presets and tile swap -------------------------------------------------
 
-export type PresetId = "legacy" | "workbench" | "builder" | "mission" | "files" | "focus";
+export type PresetId = "legacy" | "builder" | "mission" | "files" | "focus";
 
 export const PRESETS: { id: PresetId; name: string; blurb: string }[] = [
-  { id: "legacy", name: "Legacy", blurb: "Search, then your apps, playground, sessions and recent files." },
-  { id: "workbench", name: "Workbench", blurb: "Search, the build box, and what's running." },
+  { id: "legacy", name: "Legacy", blurb: "Search, then your apps, sessions and recent files." },
   { id: "builder", name: "Builder", blurb: "A big prompt box with your apps beside it." },
   { id: "mission", name: "Mission control", blurb: "Tasks board first, bots and the index at a glance." },
   { id: "files", name: "Files", blurb: "Search and recent files lead; bookmarks beside them." },
@@ -787,20 +749,9 @@ function presetRows(id: PresetId, folderId?: string): PresetRow[] {
     case "legacy":
       return [
         { source: "search", x: 0, y: 0, size: "4x1" },
-        { source: "apps", x: 0, y: 1, size: "4x1" },
-        { source: "playground", x: 0, y: 3, size: "4x1" },
-        { source: "sessions", x: 0, y: 5, size: "4x1" },
-        { source: "recents", x: 0, y: 7, size: "4x1" },
-      ];
-    case "workbench":
-      return [
-        { source: "search", x: 0, y: 0, size: "4x1" },
-        { source: "build", x: 0, y: 1, size: "4x1" },
-        { source: "bots", x: 0, y: 5, size: "1x1" },
-        { source: "index", x: 2, y: 5, size: "1x1" },
-        { source: "tasks", x: 4, y: 5, size: "2x1" },
-        { source: "apps", x: 0, y: 7, size: "4x1" },
-        { source: "recents", x: 0, y: 9, size: "4x1" },
+        { source: "apps", x: 0, y: 1, size: "4x1", format: "cards", custom: { cols: 8, rows: 4 } },
+        { source: "sessions", x: 0, y: 5, size: "4x1", custom: { cols: 8, rows: 4 } },
+        { source: "recents", x: 0, y: 9, size: "4x1", custom: { cols: 8, rows: 4 } },
       ];
     case "builder":
       return [
@@ -815,9 +766,9 @@ function presetRows(id: PresetId, folderId?: string): PresetRow[] {
         { source: "search", x: 0, y: 0, size: "4x1" },
         { source: "tasks", x: 0, y: 1, size: "2x2", format: "board", custom: { cols: 6, rows: 4 } },
         { source: "index", x: 6, y: 1, size: "1x1" },
-        { source: "bots", x: 6, y: 3, size: "1x1" },
-        { source: "sessions", x: 0, y: 5, size: "2x1", format: "list" },
-        { source: "recents", x: 4, y: 5, size: "2x1", format: "cards" },
+        { source: "bots", x: 6, y: 3, size: "1x1", format: "count" },
+        { source: "sessions", x: 0, y: 5, size: "2x2", format: "list" },
+        { source: "recents", x: 4, y: 5, size: "2x2", format: "cards" },
       ];
     case "files":
       return [
@@ -827,8 +778,8 @@ function presetRows(id: PresetId, folderId?: string): PresetRow[] {
         folderId
           ? { source: "folder", x: 6, y: 3, size: "1x1", format: "list", folderId }
           : { source: "bots", x: 6, y: 3, size: "1x1" },
-        { source: "apps", x: 0, y: 5, size: "2x1", format: "icons" },
-        { source: "tasks", x: 4, y: 5, size: "2x1" },
+        { source: "apps", x: 0, y: 5, size: "2x2", format: "icons" },
+        { source: "tasks", x: 4, y: 5, size: "2x2" },
       ];
     case "focus":
       return [
@@ -864,6 +815,17 @@ export function matchPreset(layout: HomeLayout): PresetId | null {
     if (id === "files" && shapeOf(presetLayout(id)) === mine) return id;
   }
   return null;
+}
+
+/** View-mode Focus posture: a search on row 0 (any width, any column) and a
+    full-width build directly under it lead the layout. Any tiles below keep
+    their placement. */
+export function hasFocusPosture(layout: HomeLayout): boolean {
+  const full = (w: Widget) => dimsOf(w).cols === GRID_COLS && w.x === 0;
+  return (
+    layout.widgets.some((w) => w.source === "search" && w.y === 0) &&
+    layout.widgets.some((w) => w.source === "build" && w.y === 1 && full(w))
+  );
 }
 
 /** Whether `source` can fill `rect` as a tile; `replacingId` is the tile being swapped out. */
@@ -918,7 +880,7 @@ function tileFor(id: string, source: WidgetSource, rect: Rect, opts: TileOpts, f
     id,
     source,
     size: spec.sizes[0],
-    format: f && spec.formats.includes(f) ? f : defaultFormat(source, rect.cols),
+    format: formatForRows(source, f && spec.formats.includes(f) ? f : defaultFormat(source, rect.cols), rect.rows),
     x: rect.x,
     y: rect.y,
   };

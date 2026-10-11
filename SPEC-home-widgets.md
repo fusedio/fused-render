@@ -37,7 +37,7 @@ Per-source allowed sizes / formats (first entry is the default):
 
 | source     | sizes                 | formats               | content |
 |------------|-----------------------|-----------------------|---------|
-| apps       | 4x1, 2x1, 2x2         | cards, icons          | `getHomeApps` |
+| apps       | 4x1, 2x1, 1x2, 2x2    | icons, cards          | `getHomeApps` |
 | playground | 4x1, 2x1, 2x2         | cards, list           | `PLAYGROUND_GROUPS` |
 | sessions   | 4x1, 2x1, 2x2         | cards, list           | `getHomeClaudeSessionFolders` |
 | recents    | 4x1, 2x1, 2x2         | cards, list           | `loadRecents` / `useRecentsVersion` |
@@ -88,9 +88,7 @@ New folder `frontend/src/shell/home/`:
 - `Widget.tsx` — the frame (title, meta, "See all" link in view mode; edit toolbar in edit
   mode) + a body switch on `source`/`format`. One small component per source in
   `widgets/` (e.g. `TasksWidget.tsx`, `BotsWidget.tsx`, …).
-- `AddWidgetPanel.tsx` — right-side panel in edit mode listing every source with its
-  description and format choices; for `folder`, a picker of the user's bookmark folders.
-  Choosing adds the widget at the end with that source's default size.
+- `AddWidgetPanel.tsx` — the add sheet, a macOS-style widget gallery: one card per (source, format) variant (`gallery.ts` `galleryEntries`), grouped into a section per source in `SOURCES` order. Each card draws the real widget body (`WidgetBody` from `Widget.tsx`, real data) at the variant's default size `sizesFor(source, format)[0]`, at its real tile size (the live `.hw-grid` column width by 52px rows plus 16px gaps, `previewPx`), scaled by one factor shared by every card (`previewScale`: a full-row preview fits the sheet, capped at 0.6) and inert so no preview takes focus. The section header carries the source label and its description once; each card's caption is the format label (several formats only) and the footprint ("Board · 2×2", `footprintLabel`; "Full row" for search and build), with a disabled note under it. Cards pack left to right in a grid whose captions share a baseline per row. Folder and page cards draw a stand-in. Clicking a card adds it at the first free slot (`api.add`) and closes the sheet; a folder or page card first opens its picker in the sheet (a folder or app click commits, a file path or website needs the header's Add). The sheet header carries the title, the room note (`freeSpaceNote`: "N free cells" while a one-cell tile fits inside the used rows, else "Adds a new row") and a close X; there is no Show-as row, size row, mini-map or footer, and no sort or show choice (those stay on the Change card). A second File search stays listed but disabled ("Already on Home"); a full Home disables every card ("Home is full").
 
 Home.tsx keeps the hero, strips, and search takeover, and renders `<WidgetGrid>` in place
 of the four hard-coded `Section`s.
@@ -101,7 +99,7 @@ of the four hard-coded `Section`s.
   reads "Done". Esc also exits.
 - In edit mode each widget shows: drag handle, size chip (menu of that source's allowed
   sizes, shown as "1×1 / 2×1 / 2×2 / Full row"), format segmented control (only if >1
-  format), remove (×). A trailing dashed "+ Add widget" tile opens `AddWidgetPanel`.
+  format), remove (×). At full grid width the row just below the last widget is an open row of dashed "+" cells (`.hw-add-cell`, one per cell column); a cell opens `AddWidgetPanel` aimed at that spot (`at`), and `addWidgetAt` puts the widget's top-left there. Under the narrow reflow the single "+ Add widget" tile stays.
 - Reorder with native HTML5 drag and drop (no new dependency). Also provide keyboard
   reorder: focused widget + Alt/Option+Arrow moves it one slot (accessibility; also makes
   it testable).
@@ -147,16 +145,20 @@ The Tasks widget shows recent tasks, newest first, with drafts and archived task
 Free-form resizing, multiple Homes/pages, per-widget settings beyond size/format/folder,
 widgets from third-party apps, changing the Bots front-door flag.
 
+## Fixed grid
+
+Home is one fixed grid. A unit row is exactly 52px (`--hw-unit`; two units plus the 16px gap make the 120px cell) in view and edit mode alike, and a tile's height is purely a function of its footprint. Nothing a widget renders may grow a row: grid children are `min-height: 0; overflow: hidden`, and only the search takeover (`.hw-grid.is-searching`, a page rather than a tile) keeps auto rows. A widget's content adapts to its tile instead: lists and board lanes show what fits plus "+N more" (`useFitCount` in widgets/bits.tsx, driven by the pure `fitCount`; `itemCapacity` is only the first-paint guess and the count can go below it), icons and cards measure the real tile. If a format cannot fit a size, that size is not offered for that format: `FORMAT_MIN_ROWS` (keyed by source, then format; only apps cards need 2 cells = 4 units, every other source's cards render header-only at one cell), `formatMinRows(source, format)`, `sizesFor(source, format)`, `minFootprint(source, format)`. Icons is the default apps format and fits one cell (a 120px tile is the header plus one row of whole icons, `.hw-icons.is-one-row`). A stored tile too short for its format (an apps cards tile one cell tall) falls back to the source's first fitting format on load (`normalizeLayout`, not moved or resized); a saved apps tile with no format reads as cards. The Change card lists every size of the tile's format with its cell dimensions (Large 2x2); sizes that do not fit where the tile sits are disabled ("No room here"), and the Cards format is disabled on a one-cell apps tile ("Needs a taller tile"). The add sheet has no size row: each gallery card is one format at `sizesFor(source, format)[0]`.
+
 ## Builder notes
 
 Deviations and decisions:
-- Grid rows are `minmax(120px, auto)`, not a fixed 120px: a cards widget is about 270px tall and cannot fit a fixed row.
+- Superseded: grid rows are no longer content-sized; see "Fixed grid" below.
 - The Customize/Done button sits in a toolbar row below the hero (inside `.home-strips`), not inside the hero.
 - Widget "meta" text was omitted.
 - Tasks "blocked" and "needs_attention" both map to the "Needs you" lane.
 - The welcome tour's readyWhen needs an apps widget to exist (anchors `#home-sec-apps`, first apps/playground/sessions widget carries `home-sec-<source>`).
 - Each widget measures and fetches on its own, so duplicate widgets of one source re-fetch. Cards widgets use the old measured-count logic (`useStripCount`); 2x2 uses `limit * rows`.
-- Lists and icons use a fixed item-capacity table (`itemCapacity` in layout.ts) rather than measuring.
+- `itemCapacity` (layout.ts) is only the first-paint guess; see "Fixed grid" below.
 - The apps error state now has a Retry button instead of the plain empty message.
 - Source-text pin tests (`home-performance.test.ts`, `new-task-form.test.ts`) were repointed to `home/data.ts`, `home/strip.ts`, the widget files and `skeleton.tsx`; three regexes were loosened (`[limit(?:, \w+)*]`, `cards ? (<SkeletonRow`, `count={cap}`).
 - The TDD red step was not observed for layout.ts (tests written alongside).
@@ -187,7 +189,7 @@ App embed widget: source `app`, format `live`, sizes 2x2 (default) / 2x1 / 4x1, 
 
 App picker order: the add sheet's App picker now lists apps in the shared `sortApps` order (recent, then modified, then name), memoised in the picker (not in data.ts). Each row has a muted folder line (home as `~`, via `useHome`; `appPicker.ts` `appFolderLine`), search matches title, name and folder, and the default selection is the first sorted app. Not verified without a browser: row height and icon centring.
 
-Search as a widget: source `search`, format `bar`, sizes 4x1 (default) / 2x1, at most one per Home (`hasSearch`; `normalizeLayout` drops later duplicates, `addWidget` no-ops, the add sheet hides the source once one exists). It is the FIRST widget of `DEFAULT_LAYOUT`; "File search" is first in the sheet (lucide `Search`, `FormatPreview` kind `search-bar`).
+Search as a widget: source `search`, format `bar`, sizes 4x1 (default) / 2x1 / 1x1 (the Change card shows a Size group for it; the All files button hides at 2x1 and 1x1), at most one per Home (`hasSearch`; `normalizeLayout` drops later duplicates, `addWidget` no-ops, the add sheet hides the source once one exists). It is the FIRST widget of `DEFAULT_LAYOUT`; "File search" is first in the sheet (lucide `Search`, `FormatPreview` kind `search-bar`).
 - Migration: layout `version` is now 2 (`LAYOUT_VERSION`). `normalizeLayout` accepts 1 or 2; a version-1 document gets a `search` 4x1 widget prepended (unless it somehow has one) and is stamped 2, so a user who later removes search keeps it removed. The server accepts 1 and 2 and keeps whichever it is given (no server-side migration); the next client PUT writes 2. Any other version still yields the default.
 - Takeover: `Home` owns the search state (`useSearchHost`, provided by `SearchHostContext`); while a query is live `WidgetGrid` renders only the search widget (others are skipped in the same keyed list, so the box stays mounted and keeps its query), the grid class `is-searching` makes it full width, and the health strips, Customize/edit bar, empty message and add sheet are hidden. The widget has no header or card in view mode (`.hw-widget.is-search`); edit mode shows the normal chrome with a static placeholder bar (the live box would autofocus and swallow typing). The grid waits for the layout GET, so the box mounts slightly later than the old hero. `?q=` is only read by a mounted search widget, so without one it is ignored.
 - Tour/shortcuts: the Home tour's first step now targets `#home-sec-search` (the grid anchors the first search widget like apps/playground/sessions), and `presentSteps` drops it when search was removed. The type-anywhere-to-focus shortcut and autofocus live inside `FilesSearch`, so they vanish with the widget and need no guard. `home-performance.test.ts` and `new-task-form.test.ts` needed no change (they pin data.ts/strip.ts/widgets, not the search); `registry.test.ts` was updated for the tour selector.
@@ -201,19 +203,21 @@ Presets (`PRESETS`, `presetLayout(id, { folderId? })` in `shell/home/layout.ts`;
 
 | Preset | Tiles (x,y; size in cells; custom = explicit cols x rows in units) |
 | --- | --- |
-| Workbench | exactly `defaultLayout()` |
+| Legacy | search 4x1 (0,0); apps, sessions, recents each custom 8x4 at y 1/5/9 |
 | Builder | search 4x1 (0,0); build 2x1 (0,1); apps 2x2 icons (4,1); bots 2x2 list (0,5); tasks 2x2 list (4,5) |
-| Mission control | search (0,0); tasks board custom 6x4 (0,1); index 1x1 (6,1); bots 1x1 (6,3); sessions 2x1 (0,5); recents 2x1 (4,5) |
+| Mission control | search (0,0); tasks board custom 6x4 (0,1); index 1x1 (6,1); bots 1x1 count (6,3); sessions 2x2 list (0,5); recents 2x2 cards (4,5) |
 | Files | search (0,0); recents list custom 6x4 (0,1); index 1x1 (6,1); bookmark folder 1x1 list (6,3), or sessions list custom 2x2 when no folder exists; apps 2x1 (0,5); tasks 2x1 (4,5) |
 | Focus | search (0,0); build 4x1 (0,1) |
+
+Focus posture (view mode, `hasFocusPosture`): whenever a search on row 0 (any width, any column) and a full-width build at (0,1) lead, the grid's build rows absorb spare window height so the composer centres below the search; tiles added below keep their placement and dock at the bottom, and a tall layout just scrolls.
 
 Every preset is hole-free over its used rows and survives `normalizeLayout` unchanged. `matchPreset(layout)` compares the multiset of (source, x, y, cols, rows, format) with each preset (ids, sort, folder and page choices ignored; Files also matches its no-folder variant) and returns null for a custom layout; the edit bar shows a checked "Custom" chip then. Clicking a preset replaces the layout and offers Undo (`api.restore`) until the next preset click or until edit mode closes. The Files folder is the first bookmark folder, if any.
 
 Swapping: `sourceFits(layout, rect, source, replacingId?)` decides what a tile or empty slot may show, in order: search needs a one-row strip at least 2 units wide and refuses with "Already on Home" if another search exists; build needs exactly 4 rows and 4+ columns; any other source refuses a one-row rect ("Needs a taller tile") or one under its `minFootprint` ("Needs a bigger tile"); more than `MAX_WIDGET_ROWS` rows is "Too tall". `swapSource` keeps the widget's id and rectangle, takes a size preset when one matches the footprint and an explicit cols/rows otherwise, and keeps folderId/appPath/sort only where they belong; a failed fit or an unchanged result returns the same object. `emptySlots(layout)` finds holes of at least one cell square inside the used rows, shown as "+ Choose what goes here" slots; `fillSlot` adds a tile on exactly that rectangle. Removing a tile (x) leaves such a slot.
 
-The Change popover (`ChangeTile.tsx`) lists all eleven sources with the reason under the disabled ones; folder and page rows end in "..." and open the add sheet aimed at the tile (`AddWidgetPanel` `target`, no size chips, "Put in this tile"). Swap mode also offers "Show as" and, for apps, "Sort by".
+The Change popover (`ChangeTile.tsx`) lists all eleven sources with the reason under the disabled ones; folder and page rows end in "..." and open the add sheet aimed at the tile (`AddWidgetPanel` `target`: the gallery lists only that source, a card whose default footprint exceeds the tile is disabled "Too big for this tile", and a pick swaps or fills keeping the tile's footprint). Swap mode also offers "Show as" and, for apps, "Sort by".
 
-Removed from the UI (the pure helpers `placeWidget`, `moveByArrow`, `resizeTo`, `resizeByArrow`, `compactLayout`, `setSize`, `allowedSizes` stay in layout.ts with their tests): dragging, edge resize handles and ghost, the size menu, the dashed cell lattice, Alt+arrow moves, Tidy up, Reset to default, the hint line. The hook lost `place`, `arrow`, `resizeTo`, `resizeArrow`, `tidy`, `resize`, `reset` and gained `applyPreset`, `swap`, `fill`, `restore`.
+Removed from the UI (`placeWidget`, `moveByArrow`, `resizeTo`, `resizeByArrow`, `compactLayout` and `emptyRows` are deleted from layout.ts; `setSize` and `allowedSizes` stay): dragging, edge resize handles and ghost, the size menu, the dashed cell lattice, Alt+arrow moves, Tidy up, Reset to default, the hint line. The hook lost `place`, `arrow`, `resizeTo`, `resizeArrow`, `tidy`, `resize`, `reset` and gained `applyPreset`, `swap`, `fill`, `restore`.
 
 Not verified without a browser: every visual (preset chips and thumbnails, the pill on every tile size, the bare tiles' overhanging x, slot look, popover placement and flip, the narrow chip row scrolling), Escape layering with the popover open.
 
@@ -225,3 +229,8 @@ Not verified without a browser: every visual (preset chips and thumbnails, the p
 - ChangeTile holds `onClose` in a ref so document listeners subscribe once.
 - Fill target at MAX_WIDGETS disables every source ("Home is full"); swap targets unaffected.
 - `emptySlots` splits holes taller than MAX_WIDGET_ROWS into stacked slots.
+
+Add widget gallery (feat/home-fixed-grid):
+- Not verified without a browser: preview look and legibility at 0.5 scale in both themes, bottom alignment of captions across a wrapping row, the hover lift and focus ring, three Large previews per row in the 900px sheet, live bodies inside previews (tasks, bots, apps) not stealing focus or firing requests per card, the folder and page picker view, Escape and Tab trap.
+
+Compact cards: a card fills its tile's height (`.hw-cards` rows are `minmax(0, 1fr)`, each card root `height: 100%`, `container-type: size`). The header keeps its size; the body (app thumb, playground well, folder stack) takes the rest and crops. When the tile is 120px or shorter (`@container (max-height: 120px)`) the body and share chip are hidden and the card is its header: icon, title, path, time. Presets: Legacy (apps, sessions, recents at y 1/5/9) gives cards 8x4 cells (`custom`) so previews show; a saved layout of the old 8x2 Legacy shape reads as custom and gets header-only cards. Lists and board lanes show their "+N more" line only when it fits under the shown items (`moreLineFits`).

@@ -9,7 +9,7 @@ import { SkeletonRow } from "../skeleton";
 import { MAX_ROW, appLinkProps, useStripCount } from "../strip";
 import { usePagedApps, useHomeApps } from "../data";
 import { mergeApps } from "./mergeApps";
-import { CELL, dims, itemCapacity, type Widget } from "../layout";
+import { CELL, dimsOf, itemCapacity, type Widget } from "../layout";
 import { EmptyLine, ErrorLine, ListSkeleton } from "./bits";
 
 /** An app's icon as the dock draws it: a squircle tile, the icon cover-filling it. No icon (or one that fails to load) gets the dock's solid palette tile with the app's first letter. */
@@ -47,7 +47,7 @@ function AppTile({ app }: { app: AppInfo }) {
 }
 
 export function AppsWidget({ widget }: { widget: Widget }) {
-  const rows = dims(widget.size).rows / CELL; // dims() is in half-cell units
+  const rows = dimsOf(widget).rows / CELL; // dimsOf() is in half-cell units
   const cards = widget.format === "cards";
   const { ref, count, limit } = useStripCount();
   const cap = cards ? (count ?? 0) : itemCapacity(widget.size, widget.format);

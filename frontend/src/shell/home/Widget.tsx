@@ -26,7 +26,8 @@ const SEE_ALL: Partial<Record<WidgetModel["source"], string>> = {
   bots: "/bots",
 };
 
-function Body({ widget, edit, onRemove }: { widget: WidgetModel; edit: boolean; onRemove: () => void }) {
+/** The widget's content by source; the add sheet's gallery draws it too. */
+export function WidgetBody({ widget, edit, onRemove }: { widget: WidgetModel; edit: boolean; onRemove: () => void }) {
   switch (widget.source) {
     case "search":
       return <SearchWidget edit={edit} size={widget.size} />;
@@ -131,23 +132,23 @@ export function WidgetFrame(p: WidgetFrameProps): ReactNode {
           </a>
         ) : null}
       </div>}
-      <Body widget={widget} edit={edit} onRemove={p.onRemove} />
+      <WidgetBody widget={widget} edit={edit} onRemove={p.onRemove} />
       {edit ? (
         <span className={"hw-swap" + (bare ? " is-bare" : "")}>
-          {bare ? null : (
+          {!bare || widget.source === "search" ? (
             <button
               type="button"
               className={"hw-swap-change" + (changeOpen ? " is-open" : "")}
               aria-haspopup="dialog"
               aria-expanded={changeOpen}
-              aria-label={compact ? `Change ${title}` : undefined}
+              aria-label={compact || bare ? `Change ${title}` : undefined}
               title="Change what this tile shows"
               onClick={() => setChangeOpen((o) => !o)}
             >
               <ArrowLeftRight size={13} strokeWidth={2} aria-hidden="true" />
-              {compact ? null : <span>Change</span>}
+              {compact || bare ? null : <span>Change</span>}
             </button>
-          )}
+          ) : null}
           <button type="button" className="hw-swap-x" aria-label={`Remove ${title}`} title={`Remove ${title}`} onClick={p.onRemove}>
             <X size={13} strokeWidth={2} aria-hidden="true" />
           </button>

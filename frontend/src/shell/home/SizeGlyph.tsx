@@ -1,5 +1,5 @@
 // Miniature 4x2 grid with the widget's footprint filled, used by the size menu.
-import { CELL, dims, type WidgetSize } from "./layout";
+import { CELL, dims, FIXED_ROWS, type WidgetSize, type WidgetSource } from "./layout";
 
 const COLS = 4;
 const ROWS = 2;
@@ -15,13 +15,24 @@ export function footprintCells(size: WidgetSize): boolean[] {
   return cells;
 }
 
-export function SizeGlyph({ size, scale = 1 }: { size: WidgetSize; scale?: number }) {
+export function SizeGlyph({ size, scale = 1, source }: { size: WidgetSize; scale?: number; source?: WidgetSource }) {
   const cells = footprintCells(size);
+  // A fixed-row source is one unit tall: the same widths, drawn as a flat bar.
+  const flat = source !== undefined && FIXED_ROWS[source] !== undefined;
   return (
     <svg aria-hidden="true" viewBox="0 0 42 20" width={42 * scale} height={20 * scale}>
       {cells.map((on, i) => {
         const x = (i % COLS) * 11;
         const y = Math.floor(i / COLS) * 11;
+        if (flat) {
+          // Only the first row carries the bar; it is half a cell tall.
+          if (i >= COLS) return null;
+          return on ? (
+            <rect key={i} x={x} y={y} width="9" height="4" rx="1.5" fill="currentColor" />
+          ) : (
+            <rect key={i} x={x + 0.5} y={y + 0.5} width="8" height="3" rx="1" fill="none" stroke="currentColor" strokeWidth="1" opacity="0.35" />
+          );
+        }
         return on ? (
           <rect key={i} x={x} y={y} width="9" height="9" rx="2" fill="currentColor" />
         ) : (
