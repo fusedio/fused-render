@@ -16,6 +16,7 @@ import { installDomShim } from "@platform/lib/testDomShim";
 installDomShim();
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { act, create } from "react-test-renderer";
+import { dropSharedPrefsRead } from "@platform/lib/api";
 
 const { ClaudeChat } = await import("./ClaudeChat");
 const { ShotViewer } = await import("./ui/ShotViewer");
@@ -123,6 +124,9 @@ function restoreApi(): void {
 let asFound: Record<string, unknown> = {};
 
 beforeEach(() => {
+  // A shared prefs GET pinned by an earlier file's never-settling fetch stub
+  // would starve the flag read this chat's send waits on.
+  dropSharedPrefsRead();
   runs.length = 0;
   startError = "";
   holdStart = false;
