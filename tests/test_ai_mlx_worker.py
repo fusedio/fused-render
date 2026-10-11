@@ -1010,7 +1010,7 @@ def _fake_mlx_vlm_with_cache(monkeypatch, config=None):
         response = _Response()
         response.text = f"reused={reused}"
         if state is not None:
-            state.update(new_ids, ["FAKE-KV-CACHE"])
+            state.update(new_ids, [_TrimmableEntry()])  # a real KV entry has `trim`
         yield response
 
     mlx_vlm.stream_generate = _stream_generate
@@ -1141,3 +1141,94 @@ def test_an_mlx_without_thread_local_streams_is_left_alone(monkeypatch):
 
     assert frames[-1]["type"] == "done" and frames[-1]["ok"] is True, (
         "the runner must still generate with no pin")
+
+
+# -- hybrid models: a recurrent cache cannot be trimmed -----------------------
+# mlx-vlm's `dispatch.py` calls `c.trim(n_drop)` on every retained cache entry
+# when two prompts share only a prefix; Qwen3.5-style hybrids hold an
+# `ArraysCache` (recurrent state) with no `trim`, so the worker must hand
+# those a fresh `PromptCacheState` instead of the retained one.
+
+
+class _TrimmableEntry:
+    def trim(self, n):
+        return n
+
+    def is_trimmable(self):
+        return True
+
+
+class _ArraysCacheLike:
+    """No `trim` at all, like `mlx_vlm.models.cache.ArraysCache`."""
+
+
+class _UntrimmableEntry:
+    def trim(self, n):
+        return 0
+
+    def is_trimmable(self):
+        return False
+
+
+class _CompositeEntry:
+    def __init__(self, *caches):
+        self.caches = caches
+
+
+def _stream_leaving_cache(monkeypatch, entries):
+    _fake_mlx_vlm_with_cache(monkeypatch)
+    seen = []
+
+    def _stream_generate(model, processor, text, image=None, max_tokens=None,
+                          sampler=None, **kwargs):
+        state = kwargs.get("prompt_cache_state")
+        seen.append((state, state.cache if state is not None else None))
+        if state is not None:
+            state.update(list(text), list(entries))
+
+        class _Response:
+            pass
+
+        response = _Response()
+        response.text = "ok"
+        yield response
+
+    sys.modules["mlx_vlm"].stream_generate = _stream_generate
+    return seen
+
+
+def test_cache_trimmable_helper(worker):
+    f = worker._cache_trimmable
+    assert f([_TrimmableEntry(), _TrimmableEntry()]) is True
+    assert f([_TrimmableEntry(), _ArraysCacheLike()]) is False
+    assert f([_UntrimmableEntry()]) is False
+    assert f([_CompositeEntry(_TrimmableEntry(), _TrimmableEntry())]) is True
+    assert f([_CompositeEntry(_TrimmableEntry(), _ArraysCacheLike())]) is False
+    assert f([_CompositeEntry(_CompositeEntry(_UntrimmableEntry()))]) is False
+
+
+def test_a_cache_without_trim_is_replaced_with_a_fresh_state(worker, monkeypatch):
+    seen = _stream_leaving_cache(monkeypatch, [_TrimmableEntry(), _ArraysCacheLike()])
+    worker._loaded.update(model=_FakeVlmModel(), processor=_ProcessorWrappingATokenizer(),
+                          config={"model_type": "qwen3_5"})
+
+    worker.generate(_text_only_body("hi"), lambda f: None)
+    first = seen[0][0]
+    worker.generate(_text_only_body("bye"), lambda f: None)
+
+    second, cache_at_entry = seen[1]
+    assert second is not first
+    assert cache_at_entry is None
+    assert worker._loaded["prompt_cache_state"] is second
+
+
+def test_a_fully_trimmable_cache_keeps_the_same_state(worker, monkeypatch):
+    seen = _stream_leaving_cache(monkeypatch, [_TrimmableEntry(), _TrimmableEntry()])
+    worker._loaded.update(model=_FakeVlmModel(), processor=_ProcessorWrappingATokenizer(),
+                          config={"model_type": "qwen3_5"})
+
+    worker.generate(_text_only_body("hi"), lambda f: None)
+    worker.generate(_text_only_body("bye"), lambda f: None)
+
+    assert seen[1][0] is seen[0][0]
+    assert seen[1][1] is not None
