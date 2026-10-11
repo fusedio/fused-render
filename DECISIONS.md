@@ -6617,6 +6617,8 @@ Rejected: deleting `jaraco` from the zip entirely (keyring needs `jaraco.classes
 
 A Dock-icon click on the running app (`WindowManager.reopen`) used to open a fresh Home window every time, on the theory that the Dock is a "new window" door. That is not how Mac apps behave, and it piled up windows on every click. It now raises the window the user was last in (key, else front, else most recently used; a minimized one is restored by `_Window.show`) and opens Home only when no window is open. A new window is still one gesture away: File → New Window and the launcher's Home row (`show_home`). Reverses the earlier "Dock is a new-window door" choice; SPEC DM-5 already described the focus behavior.
 
+Superseded 2026-10-11 (dock-click-focuses-home): the Dock icon raises the **Home** window (else opens one), not the last-used window; the launcher's Home row / ⌥0 does the same instead of always opening another Home. `WindowManager.show_home` is gone; `reopen` delegates to `focus_or_open_home`.
+
 ## 2026-10-08 — Home grid units are half cells (layout v4)
 
 Home grid units are half cells (layout v4): GRID_COLS 8, MAX_ROWS 128, dims() in units, v3 doubles on read; CSS gets 8 tracks with the same 16px gap so a cell is 2 tracks + 16px and old layouts render identically. Drag snaps to the nearest half inside the hovered whole cell; Alt+Arrow steps one unit; Tidy up repacks on whole cells.
