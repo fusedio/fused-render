@@ -1191,6 +1191,40 @@ def test_dismissing_the_dock_row_cancels_the_real_install(
 
 
 @requires_fused
+def test_a_cancel_pressed_right_after_the_row_opens_is_not_wiped(
+    tmp_path, monkeypatch, _fresh_script_python
+):
+    """The dock's ✕ can land in the gap between the mirror's opening upsert
+    (the row is now visible) and whatever the mirror does next. The stale-flag
+    disowning must not run in that gap, or the ✕ is wiped and the install is
+    never cancelled. Forced deterministically: the ✕ is pressed from inside
+    the opening upsert's return."""
+    from fused_render import jobs
+
+    monkeypatch.setattr(envinstall, "_JOB_MIRROR_POLL_S", 0.01)
+    proj = _project(tmp_path, deps=["pip"])
+    monkeypatch.setattr(envinstall, "_spawn", lambda *a, **kw: os.getpid())
+    monkeypatch.setattr(envinstall, "_kill", lambda pid: True)
+
+    real_upsert = jobs.upsert
+    pressed = []
+
+    def upsert_then_press(body, **kw):
+        out = real_upsert(body, **kw)
+        if body.get("title") and not pressed:
+            pressed.append(jobs.request_cancel(body["id"]))
+        return out
+
+    monkeypatch.setattr(jobs, "upsert", upsert_then_press)
+
+    rec = envinstall.start(proj)
+    job_id = f"sys:env-install:{rec['key']}"
+    row = _wait_until(lambda: (j := _job(job_id)) and j["state"] == "cancelled" and j)
+    assert row["state"] == "cancelled"
+    assert envinstall.progress(rec["key"])["error"] == "the install was cancelled"
+
+
+@requires_fused
 def test_a_needs_build_refusal_mirrors_as_waiting_not_error(
     tmp_path, monkeypatch, _fresh_script_python
 ):

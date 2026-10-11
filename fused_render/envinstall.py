@@ -1824,8 +1824,8 @@ def _mirror_into_jobs(key: str, project_dir: str, downloading_python: bool = Fal
     it on a transition INTO a terminal state, so a mirror thread that never
     got there (this thread's own `jobs.upsert` calls are best-effort) can
     leave the row `running` with the flag still set for the next attempt to
-    inherit. The opening `jobs.clear_cancel_requested` call below disowns
-    that inherited flag right after the opening upsert, on every attempt —
+    inherit. The `jobs.clear_cancel_requested` call below disowns
+    that inherited flag just BEFORE the opening upsert, on every attempt —
     a ✕ pressed after that point still sets it normally, through the same
     `jobs.request_cancel` the dock always used.
 
@@ -1866,6 +1866,12 @@ def _mirror_into_jobs(key: str, project_dir: str, downloading_python: bool = Fal
 
     def run() -> None:
         try:
+            # Disown a flag a previous attempt's dead mirror left set (see the
+            # docstring) BEFORE the opening upsert, never after: once that
+            # upsert has created/reopened the row it is visible to the dock,
+            # and a ✕ pressed in the gap before a trailing clear would be
+            # wiped and the cancel silently lost.
+            jobs.clear_cancel_requested(job_id)
             jobs.upsert(
                 {"id": job_id, "title": title, "kind": "task",
                  "state": jobs.RUNNING, "cancellable": True, "message": "",
@@ -1885,11 +1891,6 @@ def _mirror_into_jobs(key: str, project_dir: str, downloading_python: bool = Fal
                 # spelling everywhere else it is stored or read.
                 page=canonical_fs_path(str(project_dir)), server=True,
             )
-            # A flag a PREVIOUS attempt's dead mirror left set (see the
-            # docstring above) belongs to that attempt, not this one — clear
-            # it once, right after opening the row, so a fresh ✕ from here
-            # on is the only way this attempt gets cancelled.
-            jobs.clear_cancel_requested(job_id)
         except (jobs.JobError, ValueError):
             pass
         while True:
