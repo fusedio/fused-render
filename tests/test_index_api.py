@@ -960,6 +960,14 @@ def test_a_wedged_stats_or_search_request_does_not_permanently_hold_its_lane_slo
                                      base_url="http://test") as client:
             wedged_task = asyncio.create_task(
                 client.get(path, params={"root": str(tmp_path)}))
+            # Wait until the wedged request has actually ENTERED the fake (the
+            # call counter is what picks the one call that blocks): a fixed
+            # sleep lets the "second" request win that race under load and
+            # become the parked one itself.
+            deadline = time.monotonic() + 30.0
+            while calls["n"] < 1 and time.monotonic() < deadline:
+                await asyncio.sleep(0.01)
+            assert calls["n"] >= 1, "the wedged request never reached the fake"
             await asyncio.sleep(0.15)  # let the wedged request time out
 
             t0 = time.monotonic()
