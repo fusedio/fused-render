@@ -3501,7 +3501,14 @@ export function createChatController(deps: ControllerDeps): ChatController {
         const stopped = runEnding(poll, false);
         if (poll.error && !stopped.error) {
           if (await refreshFromTranscript()) appended = true;
-          if (stopped.note && !state.turns.some((t) => t.role === "note" && t.text === stopped.note)) {
+          // A restored history records a mid-reply stop as `stopped` on the
+          // last assistant turn (drawn as the same "Stopped." line), not as a
+          // note row — either one means the line is already on screen.
+          const lastTurn = state.turns[state.turns.length - 1];
+          const shown =
+            state.turns.some((t) => t.role === "note" && t.text === stopped.note) ||
+            (!!lastTurn && lastTurn.role === "assistant" && !!lastTurn.stopped);
+          if (stopped.note && !shown) {
             addNote(stopped.note, "⏹");
             appended = true;
           }

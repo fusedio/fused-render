@@ -4480,4 +4480,24 @@ describe("a stop the frame caught up with on reload", () => {
     expect(controller.getState().trouble).toBeNull();
     expect(notes(controller).map((n) => [n.glyph, n.text])).toEqual([["⏹", "Stopped."]]);
   });
+
+  test("adds no second Stopped. when the restored reply already carries stopped (Bugbot)", async () => {
+    const { controller, agent } = makeController({
+      history: () => ({
+        turns: [
+          { role: "user", text: "hi" },
+          { role: "assistant", text: "partial", stopped: true },
+        ],
+        transcript: { path: "/p/s1.jsonl", mtime: 1, size: 10 },
+      }),
+      live_run: (_f, n) => ({ run_id: n === 0 ? "r1" : "" }),
+      poll: () => poll({ done: true, cancelled: true, error: "Stopped.", message: "323ed" }),
+    });
+    await controller.openSession("s1");
+    for (let i = 0; i < 20 && agent.of("poll").length === 0; i++) await new Promise((r) => setTimeout(r, 0));
+    for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+    expect(agent.of("poll").length).toBe(1);
+    expect(notes(controller)).toEqual([]);
+    expect(controller.getState().turns.filter((t) => t.role === "error")).toEqual([]);
+  });
 });
