@@ -1,7 +1,7 @@
 """The recording pill's AppKit half — what can be proved without clicking it.
 
 The window itself (look, drag, buttons, light/dark, Spaces) needs a person; see
-the human checklist in D1344. What is checked here is the logic around it: where
+the human checklist in D1345. What is checked here is the logic around it: where
 the pill goes by default, the restored-frame sanity check, the stack that shows
 the newest recording, and that the page's messages reach the right calls.
 """

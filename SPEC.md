@@ -2429,6 +2429,19 @@ not by choice.
   `prefers-color-scheme` on its own and does **not** honour an in-app pin. The
   Linux tray icon likewise follows the *desktop's* preference, not this setting
   (D135) — the two are independent.
+- **AP-16** **View token contract (D1342).** An opted-in view (AP-8) also
+  receives the shell's live palette as a fixed set of custom properties on its
+  `<html>`: `--fused-bg`, `-bg-alt`, `-bg-panel`, `-fg`, `-fg-muted`,
+  `-fg-faint`, `-border`, `-sel`, `-accent`, `-on-accent`, `-error`,
+  `-success`, `-warning` (mapping: `VIEW_TOKENS` in `runtime.js`; each is the
+  shell token of the same name). They are copied from the nearest same-origin
+  ancestor's computed style — or, when that ancestor is itself an opted-in view
+  (the fusedapp template framing an app), from its inline `--fused-*` — and
+  follow the colour preset and light/dark live, with no reload (AP-8's attribute
+  rule). `data-fused-theme-name` carries the preset id (absent on Default).
+  Views that never opted in receive none of it. A standalone view (no shell
+  above it) gets no tokens, so authors write `var(--fused-x, fallback)` and only
+  the fallbacks apply there — accepted.
 
 ---
 
@@ -11335,10 +11348,10 @@ three platforms, one API, no field naming which one served you.
   `"mic"` (default), `"system"` or `"both"`: on macOS 14.2+ the latter two are a
   Core Audio process tap (no Screen Recording grant) and on 13.0–14.1 the
   ScreenCaptureKit stream with no video track; Windows and Linux refuse them,
-  naming the screen recording that does it (D1342). On 13.0–14.1 the grant is Screen Recording (sound only, no
+  naming the screen recording that does it (D1343). On 13.0–14.1 the grant is Screen Recording (sound only, no
   picture), the app must be quit and reopened after granting it, and the
   recording carries ALL system sound, notifications included; `stop()`'s
-  `warning` fires when nothing was heard (D1343). Audio-only `"mic"` on macOS
+  `warning` fires when nothing was heard (D1344). Audio-only `"mic"` on macOS
   records the system's current input and **refuses** `device` rather than
   ignoring it, naming where a specific microphone can be chosen (a screen
   recording's `audio: "mic"`, or audio-only `"both"`) — see D409 for why the

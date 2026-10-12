@@ -6747,7 +6747,11 @@ Corrects "Apps cards need two cells, icons fit one and are the default": its lin
 - With a swap or fill target, the entry's `cols`/`rows` (preview and caption) are the tile's footprint; the fit and "Too big" checks still use the chosen size.
 - `addWidget` and `addWidgetAt` return the layout unchanged for a folder without `folderId` or a page without `appPath`, which `normalizeLayout` would drop on the next load.
 
-## D1342 — capture.audio records system audio: a Core Audio process tap on 14.2+, ScreenCaptureKit below (2026-10-12, worktree-capture-system-audio-tap)
+## D1342 — Views get the shell palette as a fixed `--fused-*` token set (2026-10-12, view-theme-tokens)
+
+Colour presets (D1335) reached only the shell; a view iframe got `data-theme="light"|"dark"` and nothing else, so a generated app could not follow Midnight or High contrast. Now an opted-in view (`<html data-fused-theme="shell">`) receives 13 custom properties (`--fused-bg`, `-bg-alt`, `-bg-panel`, `-fg`, `-fg-muted`, `-fg-faint`, `-border`, `-sel`, `-accent`, `-on-accent`, `-error`, `-success`, `-warning`) plus `data-fused-theme-name`. `runtime.js` copies them from the nearest same-origin ancestor: the shell's computed style, or the inline `--fused-*` of an opted-in framing view (the fusedapp template), and re-applies from a MutationObserver on that ancestor (`data-theme`, `data-theme-name`, `data-fused-theme-name`, `style`), never a reload or remount (D134). An empty value is removed so the author's `var(--fused-x, fallback)` applies. This reverses D1335's "the runtime never learns about presets": it learns the token NAMES (a published mapping, pinned by tests against `tokens.css`) but holds no palette values, so there is no second copy to drift from the shell. Standalone views (no shell above) get fallbacks only; accepted, since the fallbacks plus `data-theme` still give correct light/dark. Non-opted-in views are unchanged (`color-scheme` only). The theming and authoring skills and the app starter now make "follow the app with `var(--fused-x, fallback)`" the default for simple apps.
+
+## D1343 — capture.audio records system audio: a Core Audio process tap on 14.2+, ScreenCaptureKit below (2026-10-12, worktree-capture-system-audio-tap)
 
 `fused.capture.audio({source: "mic" | "system" | "both"})`. Audio-only used to be microphone-only on macOS because system audio only came off a ScreenCaptureKit display stream, which meant a screen recording (and the Screen Recording permission) just to get a voice-call transcript.
 
@@ -6759,9 +6763,9 @@ Corrects "Apps cards need two cells, icons fit one and are the default": its lin
 - **Measured gotchas (macOS 27, pyobjc 12.2):** `kAudio...Key` constants are `bytes` and passing them in the aggregate dict SEGFAULTS `AudioHardwareCreateAggregateDevice` (convert to `str`); `AudioObjectGetPropertyData` out-params do not bridge, so `kAudioTapPropertyFormat` is read through ctypes; `AudioDeviceCreateIOProcIDWithBlock` returns an opaque pointer pyobjc's own `AudioDeviceStart` rejects, so Start/Stop/DestroyIOProcID go through ctypes; the block gets 5 arguments and its last (`outTime`, inout) MUST be returned — returning None kills the process with an uncaught `OC_PythonException`; `kAudioAggregateDeviceTapAutoStartKey: True` delivers NO callbacks while the Mac is silent (a zero-length file), so it is False and the IOProc is started explicitly (a tap-only aggregate then ticks steadily through silence); with `"both"` the buffer list is [mic, ..., tap] with the tap last; `floatChannelData()[0].as_buffer(n)` has no declared length — assigning fails on a format mismatch and reading it segfaults — use `mutableAudioBufferList()[0].mData`.
 - Not verified here: whether the tap heard real audio under a granted permission (every tap run here, with a sound playing, produced a valid file with heard_system False — most likely no grant for the terminal, though an idle output device is not excluded); the SCK fallback on this machine (no Screen Recording grant, and asking would prompt). Both are on the human verification list.
 
-## D1343 — capture.audio on macOS 13.0-14.1: hardening the ScreenCaptureKit route (2026-10-12, worktree-capture-system-audio-tap)
+## D1344 — capture.audio on macOS 13.0-14.1: hardening the ScreenCaptureKit route (2026-10-12, worktree-capture-system-audio-tap)
 
-Follow-up to D1342; a macOS 13 tester is a hard requirement, and that route is the only one 13.0-14.1 gets.
+Follow-up to D1343; a macOS 13 tester is a hard requirement, and that route is the only one 13.0-14.1 gets.
 
 - A failed tap `start` tears down with errors suppressed (`_teardown(..., raise_errors=False)`), so the real error ("no such microphone") is not replaced by a cleanup failure. `stop` still raises the first cleanup error.
 - `probe()` decides systemAudio with `_use_tap()`, not a hard-coded 14.2, so `FUSED_CAPTURE_FORCE_SCK_AUDIO=1` reports the Screen Recording preflight instead of `granted: None`.
@@ -6769,7 +6773,7 @@ Follow-up to D1342; a macOS 13 tester is a hard requirement, and that route is t
 - A missing Screen Recording grant on the audio-only SCK route raises one message in terms of sound ("macOS calls it that, but only sound is recorded, no picture"), with the 14.2 note on 14.0-14.1. It replaces whatever SCShareableContent/SCStream said, only when `CGPreflightScreenCaptureAccess` is false. Screen-mode errors are unchanged.
 - Docs state the 13.0-14.1 caveats: Screen Recording, relaunch after granting, and ALL system sound (notifications) is recorded.
 
-## D1344 — Audio recordings can pause, and a floating recording pill shows while one runs (2026-10-12, worktree-capture-system-audio-tap)
+## D1345 — Audio recordings can pause, and a floating recording pill shows while one runs (2026-10-12, worktree-capture-system-audio-tap)
 
 A Notion-style vertical pill (app icon, level meter, pause/resume, red stop) floats on macOS while a `fused.capture.audio` recording runs, and pause/resume works on every macOS audio route, including the 13.0-14.1 ScreenCaptureKit mux route (a macOS 13 user is a hard requirement). SPEC §45 CP-14.
 
@@ -6782,13 +6786,13 @@ A Notion-style vertical pill (app icon, level meter, pause/resume, red stop) flo
 - **Deviations from the plan.** (1) A page-to-native `{type: "ready"}` handshake: evaluateJavaScript before the page loads is lost, so the panel pushes the current recording only once the page says it is listening, and again when it reports `ready` after a reload. (2) `tests/test_recording_pill_panel.py` skips when WebKit is absent (it is an app extra, not in `.venv`); it was run here against a temporary WebKit install via PYTHONPATH. (3) `test_darwin_mux_audio_only_session_starts_on_audio_not_video` monkeypatches `_shifted` to identity, since its fake sample buffer is a string.
 - **Not verifiable without a person**: the panel's look, drag, position memory, buttons, light/dark, appearing over full-screen apps and on all Spaces, no focus steal, and pause/resume on the SCK mux route on a real macOS 13.0-14.1 machine.
 
-## D1345 — Review fixes on the audio pause / recording pill work (2026-10-12, worktree-capture-system-audio-tap)
+## D1346 — Review fixes on the audio pause / recording pill work (2026-10-12, worktree-capture-system-audio-tap)
 
 - **Pill pause click holds until the server agrees.** The optimistic flip was overwritten by the next 100 ms poll (old `paused`), so the button flipped back and a fast second click sent `pause` twice. `lib.resolvePaused` keeps the clicked value while the server disagrees and a 2 s deadline has not passed; the button is disabled meanwhile.
 - **Mic buffers are metered in their own format.** On the non-mixing path `_meter_sbuf` read the mic's raw int16/int24 buffers as float32. `_pause.rms_pcm(data, bits, is_float)` handles float32/int16/int24/int32, and `MuxHandle._meter_mic_sbuf` reads the ASBD (bits, IsFloat) off the first buffer and caches it as `mic_format`. System audio (SCK) and the mixing path already carry float32, so they stay on `rms_f32`.
 - **`state()` no longer wraps `level_of`.** `level_of` already swallowed everything around the hook, so the wrapper was dead; the one uncaught call was the `_backend()` lookup before it, which now sits inside `level_of`'s try.
 
-## D1346 — Tap "both" mix upmixes a mono mic per frame; pause/resume serialize per session (2026-10-12, worktree-capture-system-audio-tap)
+## D1347 — Tap "both" mix upmixes a mono mic per frame; pause/resume serialize per session (2026-10-12, worktree-capture-system-audio-tap)
 
 - **Interleaved vs planar upmix.** The CoreAudio tap's buffer is interleaved float32 stereo, but a mono mic went through `upmix_mono_to_stereo`, which concatenates the block (right only for ScreenCaptureKit's planar buffers on the `_darwin_mux` path), so the voice played at double speed. `_mixdown.upmix_mono_to_stereo_interleaved` duplicates each sample (L=R) and `_darwin_tap` uses it; the mux path keeps the planar one. `_first_two` (mic with more than two channels) already treats the buffer as interleaved, which matches the mic's layout.
 - **`_set_paused` holds a per-session `pause_lock`** around the state check, the backend call and the clock update. `_native(STOP_LOCK_WAIT_S)` alone proceeds without its lock after the timeout, so a concurrent pause and resume could both pass the check and leave the backend and `session.pauses` disagreeing. `_report` stays outside the lock: it only posts the job row's detail and must not extend the hold.

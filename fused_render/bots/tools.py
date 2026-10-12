@@ -365,7 +365,7 @@ def forever_rule(bot, act: str, d: dict, obs: dict):
         return None
     if act in ("click", "type", "press", "select"):
         host = _host(obs)
-        lbl = norm_label(what_is(element(d, obs), d.get("ref") or ""))
+        lbl = norm_label(what_is(acted_on(act, d, obs), d.get("ref") or ""))
         if not host or not lbl or REF_RE.match(lbl):
             return None
         verb = {"click": "clicks", "type": "types into", "press": "presses a key in", "select": "picks in"}[act]
@@ -797,6 +797,17 @@ def target(args: dict, obs: dict) -> tuple[str, str, dict]:
     return ref, what_is(el, ref), kw
 
 
+def acted_on(act: str, d: dict, obs: dict) -> dict:
+    """The element an action lands on. A `press` without a ref goes to whatever
+    has focus (the emoji search box the bot just typed into), so it names the
+    focused element rather than nothing: an empty name left the approval card
+    without its "don't ask again" button (forever_rule)."""
+    el = element(d, obs)
+    if el or act != "press" or (d or {}).get("ref"):
+        return el
+    return next((e for e in (obs or {}).get("elements", []) if e.get("focused")), None) or {}
+
+
 def what_is(el: dict, ref: str = "") -> str:
     """How the transcript names an element: its text, else its form name, else
     what kind of field it is. A bare `sb162` on a chip means nothing to the
@@ -816,7 +827,7 @@ def what_is(el: dict, ref: str = "") -> str:
 def describe(bot, act: str, d: dict, obs: dict) -> str:
     """The approval preview / transcript label (OpenBot `_describe`)."""
     d = d or {}
-    el = element(d, obs)
+    el = acted_on(act, d, obs)
     what = what_is(el, d.get("ref") or "")
     if act == "click":
         return f"click \"{what}\""

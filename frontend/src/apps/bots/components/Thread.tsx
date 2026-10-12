@@ -14,7 +14,7 @@ import { api, stepThumbUrl, type AppRef, type Bot, type BotEvent } from "../lib/
 import { esc, fmtDay, fmtSecs, fmtTime, fmtWhen } from "../lib/format";
 import { md } from "../lib/md";
 import { botsRoot } from "../lib/root";
-import { chosenOption, firstNewIndex, isHandoff, isNoise, liveCards, optionKey, rowKeys, searchCountText, searchHit, sessionBreak } from "../lib/thread";
+import { chosenOption, clearIndex, firstNewIndex, isHandoff, isNoise, liveCards, optionKey, rowKeys, searchCountText, searchHit, sessionBreak } from "../lib/thread";
 import { act, clearScrollSeq, cur, eventsOf, getState, jumpTo, markSeen, openDialog, select, setNewCount, setScrollToEnd, showBanner, unviewed, useBots, viewedSet } from "../state/store";
 import { END_GAP, clearSearchHighlight, gapOf, evBox, highlightSearch, pinToEnd, restoreAnchor, topVisible, updateToBottom, type Anchor } from "./threadDom";
 import { HandBackRow, HandoverNote } from "./HandoverCard";
@@ -73,6 +73,12 @@ interface RowProps {
   /** "Sent to Super Bot" line: the bot its `link` points at still exists ("Read more" is live). A prop, not a store read:
    *  Row is memoized and would keep a stale answer. */
   linkLive?: boolean;
+  /** A row before the last Clear context marker while the earlier conversation is folded: hidden. */
+  folded?: boolean;
+  /** The last Clear context marker: how many messages sit above it, whether they are shown, and the toggle. */
+  foldN?: number;
+  foldOpen?: boolean;
+  onFold?: () => void;
 }
 
 /** An action event's raw tool result as display text ("" when there is none). The wire sends a string; anything else is shown as JSON. */
@@ -167,11 +173,27 @@ function buildOpen(evs: BotEvent[], e: BotEvent): boolean {
   return !row || row.status === "needs_attention" || row.status === "blocked";
 }
 
+/** The Clear context marker (Bot.clear_context): a rule across the thread, and (on the last marker, when anything sits
+ *  above it) the toggle that unfolds the earlier conversation. Earlier rows stay for you to read; the bot no longer sees them. */
+function ClearMark({ e, n, open, onFold }: { e: BotEvent; n: number; open: boolean; onFold?: () => void }) {
+  return (
+    <div className="cleared" title={`${e.text}\n${fmtWhen(e.ts)}`}>
+      <span className="lbl">Context cleared · {fmtTime(e.ts)}</span>
+      {n && onFold ? (
+        <button aria-expanded={open} onClick={onFold}>
+          {open ? "Hide" : "Show"} earlier conversation · {n}
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
 /** Channel names in chips and "Texted" lines; a task Super Bot handed off reads "from Super Bot" (docs §11). */
 const chanLabel = (k: string) => (k === "imessage" ? "iMessage" : k === "handoff" ? "Super Bot" : k);
 
-function body({ e, botId, reaction, live, chosen, appsRoot, onBeside, hstate, targetLive, linkLive, hbSecs, hbShot, hbBot, queued, bopen }: RowProps): JSX.Element {
+function body({ e, botId, reaction, live, chosen, appsRoot, onBeside, hstate, targetLive, linkLive, hbSecs, hbShot, hbBot, queued, bopen, foldN, foldOpen, onFold }: RowProps): JSX.Element {
   const title = fmtWhen(e.ts);
+  if (e.source === "clear") return <ClearMark e={e} n={foldN || 0} open={!!foldOpen} onFold={onFold} />;
   if (e.handoff && isHandoff(e)) return <HandoffCard e={e} state={hstate || e.handoff.state} targetLive={!!targetLive} />;
   if (e.build && e.source === "build") return <BuildCard e={e} open={!!bopen} />;
   // The target bot's "Sent to Super Bot: …" (what went up): a quiet harness line.
@@ -344,9 +366,10 @@ function MultiQuestion({ e, botId, cls, title, live, chosen }: { e: BotEvent; bo
 
 const Row = memo(function Row(p: RowProps) {
   const { e, day, isNew } = p;
-  if (isNoise(p.e)) return <div className="ev" />;
+  const cls = p.folded ? "ev folded" : "ev";
+  if (isNoise(p.e)) return <div className={cls} />;
   return (
-    <div className="ev" data-seq={e.seq}>
+    <div className={cls} data-seq={e.seq}>
       {day ? <div className="day">{fmtDay(e.ts)}</div> : null}
       {isNew ? <div className="new">New</div> : null}
       {body(p)}
@@ -406,6 +429,22 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
   const rxs = b?.reactions || {};
   const onBeside = useCallback((a: AppRef) => showAppBeside(a), []);
 
+  // ---- Clear context: rows before the last marker fold behind its toggle (shown again while searching) ----
+  const ci = clearIndex(evs);
+  const foldKey = ci > 0 ? `${botId}:${evs[ci].seq}` : "";
+  const [openFold, setOpenFold] = useState("");
+  const folded = !!foldKey && openFold !== foldKey && !searchQ;
+  const foldN = ci > 0 ? evs.slice(0, ci).filter((e) => !isNoise(e)).length : 0;
+  // The toggle keeps the marker where it sits on screen: the earlier rows open (or close) above it, not under your pointer.
+  const foldRef = useRef({ key: "", anchor: null as Anchor | null });
+  foldRef.current.key = foldKey;
+  const onFold = useCallback(() => {
+    const th = threadRef.current, k = foldRef.current.key; if (!th || !k) return;
+    const seq = k.slice(k.lastIndexOf(":") + 1), box = evBox(th.querySelector(`.ev[data-seq="${seq}"]`));
+    foldRef.current.anchor = box ? { seq, y: box.getBoundingClientRect().top - th.getBoundingClientRect().top } : null;
+    setOpenFold((o) => (o === k ? "" : k));
+  }, [threadRef]);
+
   // The search tint lives in the document's highlight registry, not the DOM: drop it when the thread goes.
   useEffect(() => clearSearchHighlight, []);
 
@@ -426,9 +465,14 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
     // The page keeps the last EVENT_CAP events only: a card older than the oldest one held is gone from here, so say so
     // (the hand-off line is then the only copy) instead of leaving scrollSeq armed and the thread pinned to the end.
     const js = s.scrollSeq, jumping = !!js && js.bot === botId;
+    // A jump into the folded conversation opens it first; the next commit lands on the message.
+    if (jumping && folded && js.seq < evs[ci].seq && js.seq >= evs[0].seq) { setOpenFold(foldKey); return; }
+    const fa = foldRef.current.anchor;
+    foldRef.current.anchor = null;
     const jumpEv = jumping ? th.querySelector<HTMLElement>(`.ev[data-seq="${js.seq}"]`) : null;
     const jumpEl = jumpEv ? evBox(jumpEv) : null;
-    if (jumpEl) { jumpEl.scrollIntoView({ block: "start" }); clearScrollSeq(); }
+    if (fa) restoreAnchor(th, [fa]);
+    else if (jumpEl) { jumpEl.scrollIntoView({ block: "start" }); clearScrollSeq(); }
     else if (jumping && evs.length && js.seq < evs[0].seq) { clearScrollSeq(); showBanner("That message is older than this chat keeps on the page."); pinToEnd(th, botId || undefined); }
     else if (bumped || s.scrollToEnd || wasAtEnd) pinToEnd(th, botId || undefined);
     // Anchors only ever fall off the top, so losing all of them means you were reading history the cap has now dropped:
@@ -449,6 +493,8 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
     const io = viewer.current;
     if (io) th.querySelectorAll<HTMLElement>(".ev[data-seq]:not([data-obs])").forEach((el) => { el.dataset.obs = "1"; const m = evBox(el); if (m) io.observe(m); });
     const c = cur();
+    // Folded rows never scroll into view; they are behind the marker, not unread.
+    if (folded && botId) { const set = viewedSet(botId); for (const e of evs.slice(0, ci)) set.add(e.seq); }
     if (c) setNewCount(unviewed(c, eventsOf(c.id)).length);
     updateToBottom(th);
     // Sitting at the end with the tab visible means you are following along: keep "seen" current so a reload or re-open
@@ -547,7 +593,8 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
           linkLive={e.link ? botIds.has(e.link.bot) : undefined} bopen={e.build ? buildOpen(evs, e) : undefined}
           hbSecs={hb && e.seq === hb.seq && e.role === "question" ? hb.secs : undefined}
           hbShot={hb && e.seq === hb.seq && e.role === "question" ? hb.shot : undefined}
-          hbBot={hoSeq != null && e.seq === hoSeq ? b : undefined} queued={e.role === "user" && heldSeqs.has(e.seq)} />
+          hbBot={hoSeq != null && e.seq === hoSeq ? b : undefined} queued={e.role === "user" && heldSeqs.has(e.seq)}
+          folded={folded && i < ci} foldN={i === ci ? foldN : undefined} foldOpen={i === ci ? !folded : undefined} onFold={i === ci ? onFold : undefined} />
       );
     });
     if (b.control && hoSeq == null) content.push(<HandoverNote key="handover" b={b} />);
