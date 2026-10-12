@@ -2186,6 +2186,12 @@ def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=No
     try:
         supervisor.start_image(model, request, job, page=page, source=source,
                                requester_id=requester_id, requester_label=requester_label)
+    except supervisor.ModelSlotConflict as e:
+        # The same structured body `/api/ai` answers a conflict with — a
+        # caller branching on `code: "model_slot_conflict"` sees one shape
+        # whether the verb is synchronous or job-backed (SPEC-model-slot-
+        # conflict.md §1).
+        return _conflict_error(e)
     except supervisor.SupervisorError as e:
         # 409 for the same reason a load does: the request was well-formed and
         # the answer is a fact about this machine, not a server fault.
@@ -2421,6 +2427,8 @@ def api_ai_video(body: dict = Body(...), x_fused: str | None = Header(default=No
     try:
         supervisor.start_video(model, request, job, page=page, source=source,
                                requester_id=requester_id, requester_label=requester_label)
+    except supervisor.ModelSlotConflict as e:
+        return _conflict_error(e)
     except supervisor.SupervisorError as e:
         # 409 for the same reason a load does: the request was well-formed and
         # the answer is a fact about this machine, not a server fault.
@@ -2511,6 +2519,8 @@ def api_ai_speech(body: dict = Body(...), x_fused: str | None = Header(default=N
     try:
         supervisor.start_speech(model, request, job, page=page, source=source,
                                 requester_id=requester_id, requester_label=requester_label)
+    except supervisor.ModelSlotConflict as e:
+        return _conflict_error(e)
     except supervisor.SupervisorError as e:
         return _error(str(e), status=409)
     if "refAudio" in fields:
@@ -2731,6 +2741,8 @@ def api_ai_transcribe(body: dict = Body(...), x_fused: str | None = Header(defau
     try:
         supervisor.start_transcribe(model, request, job, page=page,
                                     requester_id=requester_id, requester_label=requester_label)
+    except supervisor.ModelSlotConflict as e:
+        return _conflict_error(e)
     except supervisor.SupervisorError as e:
         return _error(str(e), status=409)
     return {

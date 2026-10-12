@@ -204,6 +204,41 @@ def test_text_returns_result_text_on_success(monkeypatch):
     assert fused_ai.text("hi") == "hi there"
 
 
+def test_text_carries_no_requester_header_without_FUSED_RENDER_PAGE(monkeypatch):
+    """SPEC-model-slot-conflict.md §1: a caller with no resolvable identity is
+    anonymous, not the user — no header at all, never a default that could
+    be mistaken for one."""
+    payload = {"ok": True, "result": {"text": "hi there", "model": "opus", "usage": None}}
+
+    def fake_urlopen(req, timeout=None):
+        assert req.get_header("X-fused-requester") is None
+        assert req.get_header("X-fused-requester-label") is None
+        return _FakeHTTPResponse(json.dumps(payload).encode())
+
+    monkeypatch.setenv("FUSED_RENDER_ORIGIN", "http://127.0.0.1:1")
+    monkeypatch.delenv("FUSED_RENDER_PAGE", raising=False)
+    monkeypatch.setattr(fused_ai.urllib.request, "urlopen", fake_urlopen)
+    assert fused_ai.text("hi") == "hi there"
+
+
+def test_text_carries_the_requester_header_from_FUSED_RENDER_PAGE(monkeypatch):
+    """This module runs only as a page's own subprocess or a background app's
+    generated wrapper (`_child.py`/`engine.py` both set `FUSED_RENDER_PAGE`)
+    — its identity is always that script's own path, percent-encoded the
+    same way `runtime.js`'s own `X-Fused-Page` is, never `user`."""
+    payload = {"ok": True, "result": {"text": "hi there", "model": "opus", "usage": None}}
+
+    def fake_urlopen(req, timeout=None):
+        assert req.get_header("X-fused-requester") == "a%2Fb%2Fscript.py"
+        assert req.get_header("X-fused-requester-label") == "a%2Fb%2Fscript.py"
+        return _FakeHTTPResponse(json.dumps(payload).encode())
+
+    monkeypatch.setenv("FUSED_RENDER_ORIGIN", "http://127.0.0.1:1")
+    monkeypatch.setenv("FUSED_RENDER_PAGE", "a/b/script.py")
+    monkeypatch.setattr(fused_ai.urllib.request, "urlopen", fake_urlopen)
+    assert fused_ai.text("hi") == "hi there"
+
+
 def test_text_omits_thinking_from_the_body_when_unset(monkeypatch):
     """Tri-state (D886): unset must not appear in the body at all — the
     worker's own default (thinking ON) only applies when the key is absent."""

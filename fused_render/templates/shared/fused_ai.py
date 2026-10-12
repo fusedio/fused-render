@@ -54,7 +54,7 @@ import socket
 import time
 import urllib.error
 import urllib.request
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 
 def _load_sibling_appenv():
@@ -288,6 +288,28 @@ def _read_json_body(raw: bytes) -> object:
         return None
 
 
+def _requester_headers() -> dict:
+    """Who is asking (SPEC-model-slot-conflict.md §1): `FUSED_RENDER_PAGE`,
+    the same env var `_child.py` sets for a page's own subprocess and
+    `engine.py`'s generated wrapper sets for a background app — this module
+    never runs anywhere else, so it is always this caller's own identity, the
+    script path standing in for a label too. Empty (no header at all) when
+    unset, which the server reads as anonymous, never as `user` — only the
+    shell's own ModelsDock row, its notification actions, and the AI Models
+    page's own load/unload buttons (none of which run through this module)
+    ever claim that identity.
+    """
+    page = os.environ.get("FUSED_RENDER_PAGE")
+    if not page:
+        return {}
+    # Percent-encoded, matching `runtime.js`'s own `X-Fused-Page`/
+    # `X-Fused-Requester`: a header value is ISO-8859-1 only, and a script
+    # path is an arbitrary filesystem path. The server reads both headers
+    # with the same `unquote`.
+    encoded = quote(page, safe="")
+    return {"X-Fused-Requester": encoded, "X-Fused-Requester-Label": encoded}
+
+
 def _request(method: str, path: str, body: dict | None = None,
              timeout: float = _DEFAULT_TIMEOUT_S):
     """One HTTP round trip against the resolved origin. Returns the open
@@ -306,6 +328,7 @@ def _request(method: str, path: str, body: dict | None = None,
         headers["Content-Type"] = "application/json"
     if method == "POST":
         headers["X-Fused"] = "1"
+        headers.update(_requester_headers())
     req = urllib.request.Request(url, data=data, method=method, headers=headers)
     try:
         return urllib.request.urlopen(req, timeout=timeout)

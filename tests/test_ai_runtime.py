@@ -6380,7 +6380,12 @@ def test_an_image_render_respects_a_held_conflict_instead_of_evicting(
     conflict entirely, so a render for a model losing a standoff would
     silently evict the held resident instead of being refused the way
     `generate_text`'s own request-path loads already are. `_wait_ready`
-    now passes `request_path=True`."""
+    now passes `request_path=True`.
+
+    `start_image` also checks this BEFORE opening the job row at all (see
+    `_start_render`), so the standoff surfaces as a raise the HTTP route can
+    turn into the same structured 409 `/api/ai` already gives, never as a
+    row that opens and then dies — no job is ever created for `job_b`."""
     out_a = tmp_path / "kept.png"
     job_a = supervisor.image_job_id("kept")
     supervisor.start_image("org/kept", {"prompt": "x", "out": str(out_a)}, job_a)
@@ -6389,13 +6394,39 @@ def test_an_image_render_respects_a_held_conflict_instead_of_evicting(
 
     out_b = tmp_path / "other.png"
     job_b = supervisor.image_job_id("other")
-    supervisor.start_image("org/other", {"prompt": "x", "out": str(out_b)}, job_b)
-    row = _row(job_b)
-    assert row["state"] == "error"
-    assert "org/kept" in row["message"]
+    with pytest.raises(supervisor.ModelSlotConflict) as exc_info:
+        supervisor.start_image("org/other", {"prompt": "x", "out": str(out_b)}, job_b)
+    assert exc_info.value.resident == "org/kept"
+    assert exc_info.value.held is True
+    assert not any(j["id"] == job_b for j in jobs.list_jobs())
 
     # The held resident is untouched — never evicted by the refused attempt.
     assert supervisor.ready_worker(registry.IMAGE_GENERATION, "org/kept") is not None
+
+
+def test_an_image_conflict_reaches_the_route_as_the_same_structured_409(
+        client, fake_image_runner, tmp_path):
+    """The HTTP side of the test above: `/api/ai/image`'s own `start_image`
+    catch turns the raise into `_conflict_error`'s envelope, matching
+    `/api/ai`'s own 409 field for field — a caller branching on
+    `code: "model_slot_conflict"` does not need a second code path for the
+    job-backed verbs."""
+    out_a = tmp_path / "kept.png"
+    job_a = supervisor.image_job_id("kept")
+    supervisor.start_image("org/kept", {"prompt": "x", "out": str(out_a)}, job_a)
+    assert _row(job_a)["state"] == "done"
+    supervisor.resolve_conflict(registry.IMAGE_GENERATION, keep="org/kept")
+
+    response = client.post("/api/ai/image", json={"model": "org/other", "prompt": "x"},
+                           headers={"X-Fused": "1"})
+    assert response.status_code == 409
+    body = response.json()
+    assert body["ok"] is False
+    assert body["error"]["type"] == "model_slot_conflict"
+    assert body["error"]["code"] == "model_slot_conflict"
+    assert body["error"]["capability"] == registry.IMAGE_GENERATION
+    assert body["error"]["resident"] == "org/kept"
+    assert body["error"]["held"] is True
 
 
 def test_an_image_renders_to_disk_and_the_job_finishes(client, fake_image_runner):
@@ -9891,6 +9922,64 @@ def _run_ai_image(record='{state: "done"}', ticks="[]", preview='"/t/a.preview.p
                          capture_output=True, text=True, encoding="utf-8")
     assert out.returncode == 0, out.stderr
     return json.loads(out.stdout)
+
+
+def test_aiImage_surfaces_a_model_slot_conflict_the_same_way_aiText_does():
+    """`aiPost` (not stubbed here, unlike `_run_ai_image`'s harness) is the
+    client-side half of the fix: a job-backed verb's 409 is read for
+    `data.error.type === "model_slot_conflict"` — the `_conflict_error`
+    envelope the route now sends — and copies the same fields onto the
+    thrown Error that `fused.ai.text`'s own `fail()` already does, rather
+    than the generic `"unavailable"` every other 409 on this path gets."""
+    import shutil
+    import subprocess
+
+    if not shutil.which("node"):
+        pytest.skip("node is needed to run the page's own image glue")
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "fused_render", "static", "runtime.js")
+    source = open(path, encoding="utf-8").read()
+    helpers = ("  function rejectUnknownOptions(", "  function abortSignalOf(",
+               "  function cancelledError(", "  function rethrowAbort(",
+               "  function resultFrame(", "  function frameSegment(",
+               "  function startJob(", "  function cancelJob(",
+               "  async function aiPost(", "  function copyConflictFields(")
+    fn = "".join(_lift_js_fn(source, h) for h in helpers) + \
+        _lift_js_fn(source, "  function aiImage(opts)")
+
+    prelude = """
+      const window = {location: {search: "?path=/pages/p.html"}};
+      const callHeaders = (extra) => Object.assign({"X-Fused-Call": "1"}, extra);
+      const aiRequesterHeaders = () => ({});
+      globalThis.fetch = async () => ({
+        ok: false, status: 409,
+        json: async () => ({
+          ok: false,
+          error: {type: "model_slot_conflict", code: "model_slot_conflict",
+                 message: "org/kept is held", capability: "image-generation",
+                 models: ["org/kept", "org/other"], resident: "org/kept", held: true},
+        }),
+      });
+    """
+    call = """
+      aiImage({prompt: "a fox"}).then(
+        (value) => console.log(JSON.stringify({ok: true, value})),
+        (err) => console.log(JSON.stringify({
+          ok: false, message: err.message, type: err.type, capability: err.capability,
+          models: err.models, resident: err.resident, held: err.held,
+        })),
+      );
+    """
+    out = subprocess.run(["node", "-e", prelude + fn + call],
+                         capture_output=True, text=True, encoding="utf-8")
+    assert out.returncode == 0, out.stderr
+    result = json.loads(out.stdout)
+    assert result["ok"] is False
+    assert result["type"] == "model_slot_conflict"
+    assert result["message"] == "org/kept is held"
+    assert result["capability"] == "image-generation"
+    assert result["resident"] == "org/kept"
+    assert result["held"] is True
 
 
 RUNNING = '{state: "running", done: %d, total: 4}'

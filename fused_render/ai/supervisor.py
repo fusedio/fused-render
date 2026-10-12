@@ -2067,6 +2067,18 @@ def _start_render(capability: str, model: str, request: dict, job: str,
     _runner_or_raise(capability)
     _require_build_tools()
 
+    # A model-slot conflict is checked HERE too, for the reason the runner
+    # check above is: a render that loses a standoff should answer with that
+    # standoff before a job row opens, not minutes later as a generic
+    # `state="error"` once `generate(...)`'s own miss-handler (`_wait_ready`)
+    # hits the same `ModelSlotConflict` on the thread (SPEC-model-slot-
+    # conflict.md §1). `_start_resident`'s join branch makes this safe to call
+    # here AND again inside `_wait_ready` once the thread starts: the second
+    # call finds the worker this one already started or joined and returns it
+    # without re-evicting or double-spawning anything.
+    _start_resident(model, capability, request_path=True,
+                    requester_id=requester_id, requester_label=requester_label)
+
     title = str(title or request.get("prompt") or model).strip() or model
     # `model` rides as its own field (jobs.py `Job.model`), a dimmed suffix
     # JobRow draws after the title — never folded into `title` (that's the
@@ -2310,6 +2322,11 @@ def start_transcribe(model: str, request: dict, job: str, page: str = "",
     """
     _runner_or_raise(registry.SPEECH_TO_TEXT)
     _require_build_tools()
+    # See `_start_render`'s identical pre-check: a transcription that loses a
+    # standoff answers with it before the row opens, not as a generic error
+    # once `generate_transcript`'s own `_wait_ready` hits it on the thread.
+    _start_resident(model, registry.SPEECH_TO_TEXT, request_path=True,
+                    requester_id=requester_id, requester_label=requester_label)
 
     # `unit="s"` from the first tick: the row is drawn before the worker knows
     # the duration, and a bar that starts unitless and acquires seconds later

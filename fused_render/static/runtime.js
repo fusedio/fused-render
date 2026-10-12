@@ -1640,6 +1640,26 @@
     return headers;
   }
 
+  // ---- AI requester identity (SPEC-model-slot-conflict.md §1) ---------------
+  // Every call this runtime makes into the shared model supervisor — text,
+  // image, video, speech, transcribe, embed, decide, and the load/unload
+  // lifecycle calls — carries WHO is asking, so two pages fighting over one
+  // capability's slot can be told apart from one page retrying its own call.
+  // This is always the calling page's own identity: a sandboxed page is never
+  // the user settling a conflict with their own hands, no matter which of
+  // these it calls — only the shell's own ModelsDock row, its notification
+  // actions, and the AI Models page's own load/unload buttons (none of which
+  // run through this runtime) ever send `X-Fused-Requester: user`. A page with
+  // no resolvable path (an inline preview with no `path` query param) sends no
+  // header at all, which the server reads as anonymous — not a reason to fail
+  // the call.
+  function aiRequesterHeaders() {
+    const page = ownQuery("path");
+    if (!page) return {};
+    const encoded = encodeURIComponent(page);
+    return { "X-Fused-Requester": encoded, "X-Fused-Requester-Label": encoded };
+  }
+
   // ---- superseded reporting (docs/CALL_LOG_DESIGN.md §6.2, SPEC CL-5) -------
   // The server CANNOT infer that a call was abandoned: aborting the fetch does
   // not raise into the handler, so it runs to completion and gets recorded as an
@@ -4092,7 +4112,8 @@
       : promise;
     const req = fetch("/api/ai", {
       method: "POST",
-      headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" }),
+      headers: callHeaders(Object.assign(
+        { "Content-Type": "application/json", "X-Fused": "1" }, aiRequesterHeaders())),
       body: JSON.stringify(body),
       signal: signal || undefined,
     }).catch(rethrowAbort("the AI call"));
@@ -4502,7 +4523,8 @@
   async function aiPost(path, body, signal) {
     const res = await fetch(path, {
       method: "POST",
-      headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" }),
+      headers: callHeaders(Object.assign(
+        { "Content-Type": "application/json", "X-Fused": "1" }, aiRequesterHeaders())),
       body: JSON.stringify(body || {}),
       signal: signal || undefined,
     }).catch(rethrowAbort("the AI call"));
@@ -4514,8 +4536,18 @@
       return {};
     });
     if (!res.ok) {
-      const err = new Error((data && data.error) || res.statusText);
-      err.type = res.status === 409 ? "unavailable" : "bad_request";
+      // `data.error` is a plain string for every ordinary failure, but a
+      // `model_slot_conflict` (SPEC-model-slot-conflict.md) carries it as the
+      // `to_wire()` object `_conflict_error` wraps every job-backed verb's
+      // conflict in — same shape `fused.ai.text`/`.embed`/`.decide` already
+      // surface through `copyConflictFields`, so image/video/speech/
+      // transcribe share the one code path rather than inventing a second.
+      const error = data && data.error;
+      const isConflict = error && typeof error === "object" && error.type === "model_slot_conflict";
+      const message = isConflict ? error.message : error;
+      const err = new Error(message || res.statusText);
+      err.type = isConflict ? "model_slot_conflict" : (res.status === 409 ? "unavailable" : "bad_request");
+      copyConflictFields(err, error);
       throw err;
     }
     return data;
@@ -5309,7 +5341,8 @@
     if (signal && signal.aborted) return Promise.reject(cancelledError("the embedding"));
     return fetch("/api/ai/embed", {
       method: "POST",
-      headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" }),
+      headers: callHeaders(Object.assign(
+        { "Content-Type": "application/json", "X-Fused": "1" }, aiRequesterHeaders())),
       body: JSON.stringify(body),
       signal: signal || undefined,
     })
@@ -5404,7 +5437,8 @@
     if (signal && signal.aborted) return Promise.reject(cancelledError("the decision"));
     return fetch("/api/ai/decide", {
       method: "POST",
-      headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" }),
+      headers: callHeaders(Object.assign(
+        { "Content-Type": "application/json", "X-Fused": "1" }, aiRequesterHeaders())),
       body: JSON.stringify(body),
       signal: signal || undefined,
     })
