@@ -1918,14 +1918,16 @@ class Bot:
         if running and texted and self._texted_approval(shown):
             return
         with self.lock:
+            if texted and is_super(self.meta) and self.running() and chan.is_local(getattr(self, "task_via", None)):
+                # receive()'s busy hold ran before the user line, and the `running` snapshot above is unlocked: a
+                # Mac task (the chat, or a routine firing from the scheduler thread) that started in either gap
+                # must still not take a text as an instruction (docs §5 posture by origin). Judged here, under the
+                # lock every starter takes, so nothing can start between this check and the inbox write below.
+                # The user line is already written: mark it ignored so past_conversation leaves it out.
+                self.emit("system", "Texted while busy on a task from the Mac; not applied.", via=None, ignored_seq=uev.get("seq"))
+                self.emit("error", "Busy with a task from the Mac; text again when it's done.", via=dict(via))
+                return
             if not running and not self.start_task(text, label=shown, via=via) and self.running():
-                if texted and is_super(self.meta) and chan.is_local(getattr(self, "task_via", None)):
-                    # The busy hold above was checked before the user line; a Mac task (chat or routine) that
-                    # started in the gap must still not take a text as an instruction (docs §5 posture by origin).
-                    # The user line is already written: mark it ignored so past_conversation leaves it out.
-                    self.emit("system", "Texted while busy on a task from the Mac; not applied.", via=None, ignored_seq=uev.get("seq"))
-                    self.emit("error", "Busy with a task from the Mac; text again when it's done.", via=dict(via))
-                    return
                 running = True  # a hand-off started a task first: this message becomes an instruction to it
             if running:
                 # Marked as texted: approval and offer waits never take it as their verdict (channels.base.Texted).
