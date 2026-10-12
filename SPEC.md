@@ -2429,6 +2429,19 @@ not by choice.
   `prefers-color-scheme` on its own and does **not** honour an in-app pin. The
   Linux tray icon likewise follows the *desktop's* preference, not this setting
   (D135) — the two are independent.
+- **AP-16** **View token contract (D1342).** An opted-in view (AP-8) also
+  receives the shell's live palette as a fixed set of custom properties on its
+  `<html>`: `--fused-bg`, `-bg-alt`, `-bg-panel`, `-fg`, `-fg-muted`,
+  `-fg-faint`, `-border`, `-sel`, `-accent`, `-on-accent`, `-error`,
+  `-success`, `-warning` (mapping: `VIEW_TOKENS` in `runtime.js`; each is the
+  shell token of the same name). They are copied from the nearest same-origin
+  ancestor's computed style — or, when that ancestor is itself an opted-in view
+  (the fusedapp template framing an app), from its inline `--fused-*` — and
+  follow the colour preset and light/dark live, with no reload (AP-8's attribute
+  rule). `data-fused-theme-name` carries the preset id (absent on Default).
+  Views that never opted in receive none of it. A standalone view (no shell
+  above it) gets no tokens, so authors write `var(--fused-x, fallback)` and only
+  the fallbacks apply there — accepted.
 
 ---
 
