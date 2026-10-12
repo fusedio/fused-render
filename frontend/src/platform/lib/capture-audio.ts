@@ -95,6 +95,13 @@ export interface AudioRecording {
   readonly maxSeconds: number;
   readonly state: string;
   readonly url: string;
+  /** True between `pause()` and `resume()`. A getter, like `state`. */
+  readonly paused: boolean;
+  /** Stop recording until `resume()`; the file stays open and its length is
+   *  only the time spent recording. Native (macOS) recordings only: the
+   *  browser-records platforms reject `.type "unavailable"`. Idempotent. */
+  pause(): Promise<void>;
+  resume(): Promise<void>;
   /** Keeps the file. The ending a caller asks for (CP-4). */
   stop(): Promise<CaptureResult>;
   /** Stops AND DELETES — the same meaning the download manager's ✕ has,
@@ -235,6 +242,8 @@ interface StartedRecord {
   jobId: string;
   transport?: string;
   streamToken?: string;
+  /** Present on a native reply; absent on the streamed one. */
+  paused?: boolean;
 }
 
 export interface CaptureDeps {
@@ -475,6 +484,24 @@ function makeHandle(
   let state = "recording";
   let result: CaptureResult | null = null;
   let ending: Promise<CaptureResult> | null = null;
+  let paused = !!started.paused;
+
+  // The server's reply carries the new `paused`; a streamed recording has no
+  // way to hold the browser's encoder from here, so it refuses in one sentence.
+  async function toggle(action: "pause" | "resume"): Promise<void> {
+    if (streamer) {
+      throw captureError(
+        "pausing is not available when this browser does the recording",
+        "unavailable",
+      );
+    }
+    if (ending) return;
+    const reply = await captureFetch<{ paused?: boolean }>(
+      deps,
+      "/api/capture/" + encodeURIComponent(started.id) + "/" + action,
+    );
+    paused = reply && typeof reply.paused === "boolean" ? reply.paused : action === "pause";
+  }
 
   function end(action: "stop" | "cancel"): Promise<CaptureResult> {
     if (ending) return ending;
@@ -522,6 +549,11 @@ function makeHandle(
     get url() {
       return result && result.url ? result.url : rawUrl(started.path);
     },
+    get paused() {
+      return paused;
+    },
+    pause: () => toggle("pause"),
+    resume: () => toggle("resume"),
     stop: () => end("stop"),
     cancel: () => end("cancel"),
   };

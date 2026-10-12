@@ -552,3 +552,86 @@ describe("captureSources", () => {
     ]);
   });
 });
+
+describe("pause and resume", () => {
+  test("a native recording pauses and resumes through the server, and `paused` follows", async () => {
+    const calls: Call[] = [];
+    const rec = await captureAudio(
+      {},
+      {
+        fetch: fakeFetch(
+          {
+            "/api/capture": { sources: {} },
+            "/api/capture/start": { ...nativeStart, paused: false, canPause: true },
+            "/api/capture/c1/pause": { ...nativeStart, paused: true },
+            "/api/capture/c1/resume": { ...nativeStart, paused: false },
+          },
+          calls,
+        ),
+      },
+    );
+    expect(rec.paused).toBe(false);
+    await rec.pause();
+    expect(rec.paused).toBe(true);
+    await rec.resume();
+    expect(rec.paused).toBe(false);
+    expect(calls.map((c) => c.url).slice(2)).toEqual([
+      "/api/capture/c1/pause",
+      "/api/capture/c1/resume",
+    ]);
+  });
+
+  test("a recording the pill already paused starts out paused", async () => {
+    const rec = await captureAudio(
+      {},
+      {
+        fetch: fakeFetch(
+          { "/api/capture": { sources: {} }, "/api/capture/start": { ...nativeStart, paused: true } },
+          [],
+        ),
+      },
+    );
+    expect(rec.paused).toBe(true);
+  });
+
+  test("the browser-records backend refuses, typed unavailable, without a request", async () => {
+    const calls: Call[] = [];
+    const rec = await captureAudio(
+      {},
+      {
+        host: fakeHost(emptyLog()),
+        fetch: fakeFetch(
+          {
+            "/api/capture": { sources: { client: true, audio: { available: true, reason: null } } },
+            "/api/capture/start": nativeStart,
+          },
+          calls,
+        ),
+      },
+    );
+    const before = calls.length;
+    const err = (await rec.pause().catch((e: CaptureError) => e)) as CaptureError;
+    expect(err.type).toBe("unavailable");
+    expect(calls.length).toBe(before);
+    expect(rec.paused).toBe(false);
+  });
+
+  test("a platform that cannot pause says so (409) as unavailable", async () => {
+    const rec = await captureAudio(
+      {},
+      {
+        fetch: (async (url: RequestInfo | URL) => {
+          const u = String(url);
+          const json = (status: number, body: unknown) =>
+            new Response(JSON.stringify(body), { status });
+          if (u === "/api/capture") return json(200, { sources: {} });
+          if (u === "/api/capture/start") return json(200, nativeStart);
+          return json(409, { error: "pause is not available for this recording" });
+        }) as unknown as typeof fetch,
+      },
+    );
+    const err = (await rec.pause().catch((e: CaptureError) => e)) as CaptureError;
+    expect(err.type).toBe("unavailable");
+    expect(err.message).toContain("not available");
+  });
+});
