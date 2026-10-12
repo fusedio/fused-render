@@ -143,8 +143,10 @@
   transition: border-color 120ms ease;
 }
 
+/* Quiet on purpose: Home autofocuses this bar, so a bright ring would sit
+   lit on every page load. A step up from the resting border is enough. */
 .files-search:focus-within {
-  border-color: var(--fg-muted);
+  border-color: color-mix(in srgb, var(--fg-muted) 30%, var(--border));
 }
 
 .files-search-icon {
