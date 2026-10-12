@@ -3604,6 +3604,33 @@ def test_the_swap_loop_is_caught_on_its_second_swap(fake_runner):
     assert set(third.value.models) == {"org/a", "org/b", "org/c"}
 
 
+def test_a_one_way_sequence_of_three_models_is_not_a_ping_pong(fake_runner):
+    """A -> B -> C, three DISTINCT models in a row, is someone browsing
+    through models, not two callers fighting over one. B's eviction of A
+    sets `request_path_evicted`/`request_path_at`, the same bits a true
+    ping-pong (A -> B -> A) sets — so the rule has to ask not just "was
+    something evicted recently" but "is the model asking for the slot now
+    the SAME ONE that got evicted", via `Worker.evicted_model`. Without that
+    check, C's load reads as indistinguishable from A's own retry coming
+    back around and wrongly opens a conflict."""
+    with pytest.raises(supervisor.ModelNotReady):
+        list(supervisor.generate_text("org/a", {"messages": []}))
+    _wait_ready("org/a")
+
+    with pytest.raises(supervisor.ModelNotReady):
+        list(supervisor.generate_text("org/b", {"messages": []}))
+    _wait_ready("org/b")
+
+    # org/c evicts org/b within the window — but org/c is not org/a, the
+    # model that got evicted, so this is not the loop closing.
+    with pytest.raises(supervisor.ModelNotReady):
+        list(supervisor.generate_text("org/c", {"messages": []}))
+    _wait_ready("org/c")
+
+    assert supervisor.describe()["conflicts"] == []
+    assert supervisor.describe()["loaded"][0]["model"] == "org/c"
+
+
 def test_a_ping_pong_bounded_retry_loop_ends_in_a_conflict_not_forever(fake_runner):
     """The user-facing promise end to end: two callers retrying forever
     (`_retry_generate_text`, `runtime.js`'s own contract) stop evicting each

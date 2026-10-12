@@ -360,6 +360,17 @@ class Worker:
     #: worker that already displaced someone can be the ping-pong's second
     #: half.
     request_path_evicted: bool = False
+    #: The model THIS worker's own request-path load evicted, or `None` when
+    #: it started from an empty slot. `request_path_evicted` alone only says
+    #: "this worker displaced somebody" — it does not say WHO, which is what
+    #: let an A->B->C sequence (three distinct models, nobody actually
+    #: fighting) misread as a ping-pong: B evicted A within the window, so a
+    #: request for C, evicting B, looked identical to A's own request coming
+    #: back around. Recording the name lets `_request_path_conflict` ask the
+    #: question the rule is actually about — is the INCOMING model the one
+    #: that got evicted to install the worker now being evicted — rather than
+    #: merely "did somebody get evicted recently".
+    evicted_model: str | None = None
 
 
 _lock = threading.RLock()
@@ -1633,12 +1644,20 @@ def _request_path_conflict(capability: str, model: str,
     Two reasons to refuse: the capability is already held (a live conflict,
     resolved or not — see `ConflictState.held`) and `model` is not the one
     resident, or this very call is the swap loop CLOSING its loop — evicting
-    `current` would undo a REQUEST-PATH load that itself evicted a different
-    model, installed within `CONFLICT_WINDOW_S`. A worker that simply
-    started from an empty slot is not yet proof of anything (that is an
-    ordinary switch, maybe the only one that ever happens); a worker that
-    already displaced someone, evicted again this soon, is two consumers
-    taking the slot off each other — see `Worker.request_path_evicted`.
+    `current` would undo a REQUEST-PATH load that itself evicted `model`
+    (the SAME model now asking for the slot back), installed within
+    `CONFLICT_WINDOW_S`. A worker that simply started from an empty slot is
+    not yet proof of anything (that is an ordinary switch, maybe the only one
+    that ever happens); a worker that displaced `model` specifically, evicted
+    again this soon, is two consumers taking the slot off each OTHER — see
+    `Worker.evicted_model`.
+
+    Checking WHICH model `current` evicted (not merely whether it evicted
+    something) is what keeps a one-way sequence A->B->C from being misread as
+    a ping-pong: B evicting A is an ordinary switch, and C evicting B right
+    after is a SECOND ordinary switch — C is not A, so this is not the loop
+    closing, just someone else asking next. Only A asking again, within the
+    window, after B took the slot from A, is the loop.
 
     A new contender during a live conflict is folded into `conflict.models`
     rather than only the original two, so a notification or dock row raised
@@ -1654,6 +1673,8 @@ def _request_path_conflict(capability: str, model: str,
     if current is None or current.model == model:
         return None
     if not current.request_path_evicted or current.request_path_at is None:
+        return None
+    if current.evicted_model != model:
         return None
     if time.time() - current.request_path_at >= CONFLICT_WINDOW_S:
         return None
@@ -1765,7 +1786,8 @@ def _start_resident(model: str, capability: str, *,
         worker = Worker(model=model, capability=capability, runner_code=runner.code,
                         token=secrets.token_urlsafe(24),
                         request_path_at=time.time() if request_path else None,
-                        request_path_evicted=request_path and evicting)
+                        request_path_evicted=request_path and evicting,
+                        evicted_model=current.model if evicting else None)
         _workers[capability] = worker
         _worker_tokens.add(worker.token)
 
