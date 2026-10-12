@@ -23,7 +23,7 @@ import {
   setSidebarState,
   subscribeSidebarState,
 } from "@platform/lib/sidebarstate";
-import { IS_EMBED } from "@platform/lib/router";
+import { IS_EMBED, pushHistory } from "@platform/lib/router";
 
 /** The query param the peek rides on `/tasks`. */
 export const PEEK_PARAM = "peek";
@@ -1206,7 +1206,7 @@ function pushPeekUrl(key: string | null): void {
   try {
     const next = location.pathname + peekSearch(location.search, key);
     if (next === location.pathname + location.search) return;
-    history.pushState(history.state, "", next);
+    pushHistory(history.state, next);
   } catch {
     // No history (a test harness without one) — the peek is still usable.
   }

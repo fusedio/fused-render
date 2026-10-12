@@ -430,6 +430,14 @@ function guarded(go: () => void): void {
   });
 }
 
+// A foreign embed (framed by a non-explorer host, like Home's app widgets) shares the
+// host's joint session history: a pushState here would make the host's Back button
+// step through the frame's own navigations. Replace instead — the host owns history.
+export function pushHistory(state: unknown, url: string): void {
+  if (IS_FOREIGN_EMBED) history.replaceState(state, "", url);
+  else history.pushState(state, "", url);
+}
+
 // Windows fs paths are rooted at a drive letter ("C:/…"), not at "/" — the
 // shell's canonical form keeps forward slashes and adds a leading slash only
 // for POSIX paths. A bare drive ("C:", how a drive root decodes from a URL,
@@ -629,7 +637,7 @@ export function navigate(
   // reads `location.search`, which is still this page's while the question is up.
   const href = urlForFsPath(fsPath, search);
   guarded(() => {
-    history.pushState(state, "", href);
+    pushHistory(state, href);
     notifyNavigate();
   });
 }
@@ -721,7 +729,7 @@ export function navigateUrl(url: string, opts?: { isDir?: boolean }): void {
   // map here or the dispatcher won't recognize the path.
   const href = rewriteLegacyUrl(url);
   guarded(() => {
-    history.pushState(state, "", href);
+    pushHistory(state, href);
     notifyNavigate();
   });
 }
