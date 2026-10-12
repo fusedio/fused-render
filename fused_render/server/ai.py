@@ -1811,9 +1811,9 @@ async def _ai_relay(body: dict, session: "_AiSession | None" = None, page: str =
         Catches EVERYTHING, like every other reporter here
         (`supervisor._report`, `schedule._report`, `claude_install._report`):
         reporting is decoration, and a registry that refuses a write must not
-        cost the call its answer. The narrow `(JobError, ValueError)` this used
-        to catch was survivable while every caller was a one-shot on an exit
-        path; `_start_remote_beat` made it a LOOP, and there anything else
+        cost the call its answer. A narrower `(JobError, ValueError)` catch
+        would be survivable for a one-shot reporter on an exit path, but
+        `_start_remote_beat` calls this in a LOOP, where anything else
         escaping kills the heartbeat for the rest of the call — whose symptom
         is precisely the stalled row the heartbeat exists to prevent, with
         nothing else to show for it.

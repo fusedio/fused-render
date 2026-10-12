@@ -178,8 +178,8 @@ function httpError(data: { error?: unknown } | null, status: number): HttpError 
 
 // A caller's error message, for a catch block that must tell "the server
 // answered and here is why" apart from "the request never reached it at
-// all" — `ModelsDock.tsx`'s unload/conflict rows and
-// `useModelConflictNotify.ts`'s toast used to say "check your connection and
+// all" — without it, `ModelsDock.tsx`'s unload/conflict rows and
+// `useModelConflictNotify.ts`'s toast would say "check your connection and
 // retry" unconditionally, discarding the server's own reason (a held
 // conflict naming who holds it, an ownership refusal) even when the request
 // plainly did reach the server and come back with one. An `HttpError` (any

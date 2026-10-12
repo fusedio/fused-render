@@ -1653,11 +1653,16 @@
   // no resolvable path (an inline preview with no `path` query param) sends no
   // header at all, which the server reads as anonymous — not a reason to fail
   // the call.
-  function aiRequesterHeaders() {
-    const page = ownQuery("path");
-    if (!page) return {};
-    const encoded = encodeURIComponent(page);
-    return { "X-Fused-Requester": encoded, "X-Fused-Requester-Label": encoded };
+  //
+  // Takes `callHeaders`' own OUTPUT rather than deriving the page itself —
+  // `callHeaders` already reads `ownQuery("path")` and percent-encodes it
+  // into `X-Fused-Page`, so this reuses that exact encoded string instead of
+  // querying `window.location.search` and re-encoding a second time for the
+  // same value.
+  function aiRequesterHeaders(headers) {
+    const page = headers["X-Fused-Page"];
+    if (!page) return headers;
+    return Object.assign({}, headers, { "X-Fused-Requester": page, "X-Fused-Requester-Label": page });
   }
 
   // ---- superseded reporting (docs/CALL_LOG_DESIGN.md §6.2, SPEC CL-5) -------
@@ -4112,8 +4117,8 @@
       : promise;
     const req = fetch("/api/ai", {
       method: "POST",
-      headers: callHeaders(Object.assign(
-        { "Content-Type": "application/json", "X-Fused": "1" }, aiRequesterHeaders())),
+      headers: aiRequesterHeaders(callHeaders(
+        { "Content-Type": "application/json", "X-Fused": "1" })),
       body: JSON.stringify(body),
       signal: signal || undefined,
     }).catch(rethrowAbort("the AI call"));
@@ -4523,8 +4528,8 @@
   async function aiPost(path, body, signal) {
     const res = await fetch(path, {
       method: "POST",
-      headers: callHeaders(Object.assign(
-        { "Content-Type": "application/json", "X-Fused": "1" }, aiRequesterHeaders())),
+      headers: aiRequesterHeaders(callHeaders(
+        { "Content-Type": "application/json", "X-Fused": "1" })),
       body: JSON.stringify(body || {}),
       signal: signal || undefined,
     }).catch(rethrowAbort("the AI call"));
@@ -5341,8 +5346,8 @@
     if (signal && signal.aborted) return Promise.reject(cancelledError("the embedding"));
     return fetch("/api/ai/embed", {
       method: "POST",
-      headers: callHeaders(Object.assign(
-        { "Content-Type": "application/json", "X-Fused": "1" }, aiRequesterHeaders())),
+      headers: aiRequesterHeaders(callHeaders(
+        { "Content-Type": "application/json", "X-Fused": "1" })),
       body: JSON.stringify(body),
       signal: signal || undefined,
     })
@@ -5437,8 +5442,8 @@
     if (signal && signal.aborted) return Promise.reject(cancelledError("the decision"));
     return fetch("/api/ai/decide", {
       method: "POST",
-      headers: callHeaders(Object.assign(
-        { "Content-Type": "application/json", "X-Fused": "1" }, aiRequesterHeaders())),
+      headers: aiRequesterHeaders(callHeaders(
+        { "Content-Type": "application/json", "X-Fused": "1" })),
       body: JSON.stringify(body),
       signal: signal || undefined,
     })

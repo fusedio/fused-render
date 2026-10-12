@@ -781,3 +781,29 @@ reproduce — the existing ownership tests (`test_a_non_owner_requester_
 cannot_unload_someone_elses_model`, `test_an_unowned_resident_can_still_
 be_unloaded_by_anyone`) cover the same decision, now made in one place,
 and stay green.
+
+## Remaining B10 cleanup: present-tense comments and `runtime.js`'s dedupe
+
+Rewrote the history-narrating comments the review named specifically to
+present tense, describing the code as it stands rather than what it used
+to do: `ai_runtime.py`'s `_validate_load_model` docstring ("before this
+helper, `resolve` ran only..."), `ai.py`'s `_report_remote` docstring (the
+narrower `(JobError, ValueError)` catch "this used to catch"), `api.ts`'s
+`actionErrorMessage` comment ("...toast used to say..."), and two adjacent
+spots in `supervisor.py` (`load`'s `hold` branch and `_claim_for_removal`'s
+own docstring) both narrating a race `resolve_conflict` "used to leave
+open" — now phrased as what the current code prevents, not what an earlier
+version suffered.
+
+`runtime.js`'s `aiRequesterHeaders()` re-derived the calling page from
+`ownQuery("path")` and percent-encoded it itself, duplicating exactly what
+`callHeaders()` already computes for `X-Fused-Page` on the same call (every
+one of the four call sites merges both into one `headers` object). It now
+takes `callHeaders`'s own output and reads `X-Fused-Page` straight off it
+instead of querying and re-encoding the location a second time for the
+same value; all four call sites (`/api/ai`, `aiPost`, `/api/ai/embed`,
+`/api/ai/decide`) call it as `aiRequesterHeaders(callHeaders({...}))`.
+`node --check` confirms the file still parses; there is no existing test
+harness that executes `runtime.js`'s own logic (it is exercised only
+through the server-side request-header assertions in
+`tests/test_ai_runtime.py`, unaffected by this).

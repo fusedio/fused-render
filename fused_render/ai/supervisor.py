@@ -1896,9 +1896,9 @@ def _start_resident(model: str, capability: str, *,
             # locked block that evicts the old worker below — the eviction and
             # the hold land together, so no other thread's `load`/`unload` can
             # read an empty `_conflicts[capability]` in the gap between this
-            # function returning and a caller recording the hold itself (the
-            # race `resolve_conflict` used to leave open across its own
-            # ~9s-worst-case teardown).
+            # function returning and a caller recording the hold itself — a
+            # gap `_remove`'s own ~9s-worst-case teardown would otherwise
+            # leave open.
             if hold is not None:
                 _conflicts[capability] = hold
             else:
@@ -2611,10 +2611,10 @@ def unload(model: str | None = None, capability: str | None = None,
 
     `hold` is `resolve_conflict`'s own plumbing for its `keep: null` branch —
     a `ConflictState` to write ATOMICALLY with the eviction, inside
-    `_claim_for_removal`'s own locked block, instead of clearing the
-    capability here and letting a caller record the hold afterward (the race
-    `resolve_conflict` used to leave open across `_remove`'s ~9s-worst-case
-    teardown). When given, `capability` must also be given and `explicit`
+    `_claim_for_removal`'s own locked block, rather than clearing the
+    capability here and leaving a caller to record the hold afterward, which
+    would open a gap across `_remove`'s own ~9s-worst-case teardown. When
+    given, `capability` must also be given and `explicit`
     must be true — a hold is only ever written by an explicit resolve — and
     `_claim_for_removal` writes it instead of running its own `explicit`
     clear, so it cannot be overwritten by, or race, that clear.

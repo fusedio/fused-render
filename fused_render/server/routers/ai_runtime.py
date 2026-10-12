@@ -823,11 +823,10 @@ def _validate_load_model(body: dict, *, model_field: str = "model",
                          capability: str | None = None) -> tuple[str, str, object]:
     """`(model, capability, None)`, or `("", "", an error response)` — the
     three checks `/api/ai/runtime/load` runs on the model it is about to
-    load, shared with `/api/ai/runtime/conflicts/resolve`'s `keep` (item 7:
-    before this helper, `resolve` ran only the engine-gap check, so a blank
-    `keep` or one naming a repo this machine's catalog cannot place reached a
-    cold-load error page instead of the same 400/409 `/load` itself answers
-    for the identical model id).
+    load, shared with `/api/ai/runtime/conflicts/resolve`'s `keep` (item 7):
+    a blank `keep`, or one naming a repo this machine's catalog cannot place,
+    answers the same 400/409 `/load` itself answers for the identical model
+    id, rather than reaching a cold-load error page.
 
     `model_field` names which body key holds the model id (`"model"` for
     `/load`; `resolve` passes its own `keep` under `model_field="keep"`, since
