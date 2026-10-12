@@ -81,6 +81,7 @@ Resolves `audio: [{path, url, mediaType: "audio/wav"}]`, `usage: {audioGenerated
 | `.type` | Meaning |
 |---|---|
 | `model_loading` | Not resident; load started — watch `err.jobId`, retry |
+| `model_slot_conflict` | TERMINAL — never retry. Two callers want different models of one capability; the supervisor stopped evicting rather than loop forever. `err.capability`/`.models`/`.resident`/`.held` name the standoff. Resolves only via the user (Models dock, or `POST /api/ai/runtime/conflicts/resolve`\|`/release`) |
 | `ai_unavailable` | claude CLI missing / local worker won't start — friendly state, not overlay |
 | `unavailable` | Machine can't (no runner, needs Apple Silicon, claude on non-text verb, apple on image/video/speech/embed/decide or below macOS 26 / Apple Intelligence off) |
 | `bad_request` | Call wrong — read `.message` |
