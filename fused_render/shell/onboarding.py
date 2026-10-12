@@ -102,12 +102,17 @@ META_MAX_BYTES = 4096
 
 #: THE NEWSLETTER (the "Updates" step). Not a stage: it is optional, never
 #: counts toward the meter, and lives under its own `newsletter` key. The
-#: address is posted as a plain form (`email=<addr>`) to this URL — the shape
-#: HubSpot Forms, Loops and Buttondown's public subscribe endpoints all take,
-#: none of them needing a key in the app. None = no provider chosen yet: the
-#: address is recorded here with `forwarded` False, so the UI ships before the
-#: list does. `FUSED_RENDER_NEWSLETTER_URL` overrides it (a test list, a smoke).
-NEWSLETTER_ENDPOINT: str | None = None
+#: address is posted as a plain form (`<NEWSLETTER_FIELD>=<addr>`) to this URL
+#: — today the "fused-render newsletter" Google Form's `formResponse`, whose
+#: one question ("email") is `entry.970823172`; responses land in the form's
+#: sheet. No key in the app. A different list (HubSpot, Loops, Buttondown)
+#: swaps these two constants. None = record locally only, `forwarded` False.
+#: `FUSED_RENDER_NEWSLETTER_URL` overrides the URL (a test form, a smoke).
+NEWSLETTER_ENDPOINT: str | None = (
+    "https://docs.google.com/forms/d/e/"
+    "1FAIpQLSd8MnyPVXAhZF_bAHJA6yq0n6k6EBt4fUMCaBNF-c5jkFHIjw/formResponse"
+)
+NEWSLETTER_FIELD = "entry.970823172"
 NEWSLETTER_ENV = "FUSED_RENDER_NEWSLETTER_URL"
 NEWSLETTER_TIMEOUT_S = 10
 
@@ -399,15 +404,15 @@ def _forward_newsletter(email: str) -> bool:
     """Send `email` to the newsletter provider. False = no provider wired yet
     (recorded locally only); raises when the provider refuses or is down.
 
-    THE PLUG: point NEWSLETTER_ENDPOINT at the provider's public form URL. A
-    provider that wants JSON or extra fields (HubSpot's `fields` array, a
-    source tag) changes the body below and nothing else."""
+    THE PLUG: NEWSLETTER_ENDPOINT + NEWSLETTER_FIELD. A provider that wants
+    JSON or extra fields (HubSpot's `fields` array, a source tag) changes the
+    body below and nothing else."""
     url = os.environ.get(NEWSLETTER_ENV) or NEWSLETTER_ENDPOINT
     if not url:
         return False
     req = urllib.request.Request(
         url,
-        data=urllib.parse.urlencode({"email": email}).encode(),
+        data=urllib.parse.urlencode({NEWSLETTER_FIELD: email}).encode(),
         method="POST",
         headers={"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"},
     )
