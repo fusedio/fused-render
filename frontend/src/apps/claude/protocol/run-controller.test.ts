@@ -4457,3 +4457,27 @@ describe("running and idle marks can race (Bugbot #1163)", () => {
     }
   });
 });
+
+describe("a stop the frame caught up with on reload", () => {
+  test("is a note, not a failure — even before the transcript holds the prompt (Akshil 2026-10-12)", async () => {
+    // Stop pressed on a fresh chat, page reloaded moments later: the run is
+    // still live (its interrupt is on its way to the CLI), the transcript is
+    // empty, and the poll says done + cancelled with the stop's own error.
+    // `openSession`'s own watch adopts the run and repairs it; that road
+    // filed the error as a red failure and a trouble card. It is the stop's
+    // note, nothing more.
+    const { controller, agent } = makeController({
+      history: () => ({ turns: [], transcript: { path: "/p/s1.jsonl", mtime: 1, size: 0 } }),
+      live_run: (_f, n) => ({ run_id: n === 0 ? "r1" : "" }),
+      poll: () => poll({ done: true, cancelled: true, error: "Stopped before the first reply.", message: "323ed" }),
+    });
+    await controller.openSession("s1");
+    // The adoption runs in the background of `openSession`; let it finish.
+    for (let i = 0; i < 20 && agent.of("poll").length === 0; i++) await new Promise((r) => setTimeout(r, 0));
+    for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+    expect(agent.of("poll").length).toBe(1);
+    expect(controller.getState().turns.filter((t) => t.role === "error")).toEqual([]);
+    expect(controller.getState().trouble).toBeNull();
+    expect(notes(controller).map((n) => [n.glyph, n.text])).toEqual([["⏹", "Stopped."]]);
+  });
+});

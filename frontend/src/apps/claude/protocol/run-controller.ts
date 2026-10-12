@@ -3488,6 +3488,27 @@ export function createChatController(deps: ControllerDeps): ChatController {
           if (limitHit(probeQuota) && scheduleComeback(runId, message, probeQuota)) return;
           addError(message);
         };
+        // A STOP IS NOT A FAILURE, HOWEVER THIS FRAME CAUGHT UP WITH IT (Akshil,
+        // 2026-10-12: a reload moments after Stop on a fresh chat drew the
+        // run's "Stopped before the first reply." as a red error AND a
+        // "Something went wrong" card). `pollLoop` already routes its own end
+        // through `runEnding`, which swallows the error when `cancelled` says
+        // the reader asked for it; this road — a run the frame missed — filed
+        // `poll.error` as trouble without asking. Same rule here: the stop's
+        // note, the transcript's rows, no error. The file may not carry the
+        // prompt yet (the interrupt is still on its way to the CLI); the 5 s
+        // history refresh brings it in with the marker.
+        const stopped = runEnding(poll, false);
+        if (poll.error && !stopped.error) {
+          if (await refreshFromTranscript()) appended = true;
+          if (stopped.note && !state.turns.some((t) => t.role === "note" && t.text === stopped.note)) {
+            addNote(stopped.note, "⏹");
+            appended = true;
+          }
+          if (appended) emit({ repaired: state.repaired + 1 });
+          stampOwnEnd();
+          return;
+        }
         if (poll.error) {
           if (matches && windowMoved) {
             // A FAILED FOLLOW-UP HANGS UNDER ITS OWN LINE (round-4 review,
