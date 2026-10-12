@@ -11,9 +11,11 @@
 <meta name="fused-api-version" content="1" />
 <title>New app</title>
 <style>
-  :root       { color-scheme: dark;  --bg: #101318; --text: #dce2ea; --muted: #9aa0a6; --line: #2a303a; }
+  /* --fused-* come from the shell (colour preset + light/dark); the literals are
+     the standalone fallbacks. See the fused-render-theming skill. */
+  :root       { color-scheme: dark;  --bg: var(--fused-bg, #101318); --text: var(--fused-fg, #dce2ea); --muted: var(--fused-fg-muted, #9aa0a6); --line: var(--fused-border, #2a303a); }
   :root[data-theme="light"]
-              { color-scheme: light; --bg: #f7f8fa; --text: #1a1f27; --muted: #5f6672; --line: #d8dce3; }
+              { color-scheme: light; --bg: var(--fused-bg, #f7f8fa); --text: var(--fused-fg, #1a1f27); --muted: var(--fused-fg-muted, #5f6672); --line: var(--fused-border, #d8dce3); }
   * { box-sizing: border-box; }
   body {
     margin: 0;

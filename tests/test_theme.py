@@ -382,8 +382,118 @@ def test_the_bootstrap_stamps_the_preset_before_paint():
     assert "data-theme-name" in head
 
 
-def test_runtime_never_learns_about_presets():
-    assert "theme-name" not in read_repo_file("fused_render/static/runtime.js")
+# D1342 reverses D1335's "the runtime never learns about presets": an opted-in
+# view now receives the shell's live palette as a fixed `--fused-*` token set,
+# copied from the shell's computed style (no palette table in runtime.js).
+
+
+def _runtime_view_tokens():
+    src = read_repo_file("fused_render/static/runtime.js")
+    body = re.search(r"var VIEW_TOKENS\s*=\s*\[([\s\S]*?)\];", src)
+    assert body, "runtime.js must publish its view-token mapping as VIEW_TOKENS"
+    return re.findall(
+        r'\[\s*"(--fused-[\w-]+)"\s*,\s*"(--[\w-]+)"\s*\]', body.group(1)
+    )
+
+
+def test_runtime_publishes_the_view_token_contract():
+    assert dict(_runtime_view_tokens()) == {
+        "--fused-bg": "--bg",
+        "--fused-bg-alt": "--bg-alt",
+        "--fused-bg-panel": "--bg-panel",
+        "--fused-fg": "--fg",
+        "--fused-fg-muted": "--fg-muted",
+        "--fused-fg-faint": "--fg-faint",
+        "--fused-border": "--border",
+        "--fused-sel": "--sel",
+        "--fused-accent": "--accent",
+        "--fused-on-accent": "--on-accent",
+        "--fused-error": "--error",
+        "--fused-success": "--success",
+        "--fused-warning": "--warning",
+    }
+
+
+def test_every_mapped_shell_token_is_defined_in_both_palettes():
+    dark, light = palette_blocks(read_repo_file("frontend/src/styles/tokens.css"))
+    for _view, shell in _runtime_view_tokens():
+        assert shell in dark, f"{shell} missing from the dark :root in tokens.css"
+        assert shell in light, f"{shell} missing from the light block in tokens.css"
+
+
+def test_runtime_writes_view_tokens_only_for_opted_in_documents():
+    src = read_repo_file("fused_render/static/runtime.js")
+    start = src.index("function startTheme()")
+    apply_body = src[start : src.index("apply();", start)]
+    assert "if (optedIn)" in apply_body and "applyTokens" in apply_body
+    assert apply_body.index("if (optedIn)") < apply_body.index("applyTokens")
+
+
+def test_runtime_observers_follow_the_preset_attribute():
+    src = read_repo_file("fused_render/static/runtime.js")
+    section = src[src.index("function startTheme()") :][:6000]
+    filters = re.findall(r"attributeFilter:\s*\[([^\]]*)\]", section)
+    assert filters, "startTheme must observe its sources with an attributeFilter"
+    for f in filters:
+        assert '"data-theme-name"' in f, f"observer filter {f!r} misses data-theme-name"
+
+
+@pytest.fixture(scope="module")
+def tokens_probe():
+    import json
+    import shutil
+    import subprocess
+
+    if not shutil.which("node"):
+        pytest.skip("node is needed to execute runtime.js's theme block")
+    here = os.path.dirname(os.path.abspath(__file__))
+    runtime = os.path.join(REPO_ROOT, "fused_render", "static", "runtime.js")
+    out = subprocess.run(
+        ["node", os.path.join(here, "_theme_tokens_probe.mjs"), runtime],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout)
+
+
+def test_opted_in_view_receives_the_shells_tokens_and_preset(tokens_probe):
+    r = tokens_probe["optedIn"]
+    assert r["tokens"]["--fused-bg"] == "#000011"
+    assert r["tokens"]["--fused-accent"] == "#ff00ff"
+    assert r["name"] == "midnight"
+    assert r["theme"] == "dark"
+    assert r["count"] == 13
+
+
+def test_opted_in_view_follows_a_live_preset_change(tokens_probe):
+    live = tokens_probe["live"]
+    assert live["tokens"]["--fused-bg"] == "#ffffff"
+    assert live["tokens"]["--fused-accent"] == "", "an empty shell value drops the token"
+    assert live["name"] == "contrast"
+    assert tokens_probe["cleared"]["name"] is None
+
+
+def test_non_opted_in_view_gets_color_scheme_only(tokens_probe):
+    r = tokens_probe["notOptedIn"]
+    assert r["scheme"] == "dark"
+    assert r["theme"] is None and r["name"] is None
+    assert all(v == "" for v in r["tokens"].values())
+
+
+def test_standalone_view_gets_no_tokens(tokens_probe):
+    r = tokens_probe["standalone"]
+    assert all(v == "" for v in r["tokens"].values())
+    assert r["theme"] in ("light", "dark")
+
+
+def test_nested_view_copies_the_framing_views_tokens_and_follows_the_shell(tokens_probe):
+    assert tokens_probe["nested"]["tokens"]["--fused-bg"] == "#000011"
+    assert tokens_probe["nested"]["name"] == "midnight"
+    live = tokens_probe["nestedLive"]
+    assert live["tokens"]["--fused-bg"] == "#abcdef"
+    assert live["theme"] == "light"
 
 
 def test_every_non_default_preset_has_a_dark_and_a_light_block():
