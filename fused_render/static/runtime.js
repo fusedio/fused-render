@@ -7083,12 +7083,15 @@
   // says the recording is the browser's to make on this platform — the same
   // flag `captureSources` strips before a page can read it — so the decision is
   // made once, from the server's own answer, rather than by sniffing a user
-  // agent. A page calls `screen()`; what happens under it is not its business
-  // (CP-8).
+  // agent. `sources().audioNative` narrows that to audio mode on Linux, where
+  // audio records natively over PipeWire/pulse even though the screen still
+  // goes through the browser. A page calls `screen()`; what happens under it
+  // is not its business (CP-8).
   function captureStart(body) {
     return captureFetch("/api/capture", undefined, "GET").then((data) => {
       const sources = (data && data.sources) || {};
-      if (!sources.client) {
+      const native = !sources.client || (body.mode === "audio" && sources.audioNative);
+      if (native) {
         return captureFetch("/api/capture/start", captureBase(body))
           .then((started) => captureHandle(started));
       }
@@ -7106,30 +7109,37 @@
 
   // fused.capture.audio({source, path, maxSeconds, title})
   //
-  // Sound to an .m4a. `source` is "mic" (the default), "system" (what this Mac
-  // is playing) or "both" (mixed). On macOS 14.2+ system audio is a Core Audio
-  // process tap — no Screen Recording permission, its own "System Audio
-  // Recording" one; 13.0-14.1 uses ScreenCaptureKit and needs Screen Recording.
-  // On 13.0-14.1 that grant is sound only (no picture), the app must be quit and
-  // reopened after granting it, and the file holds ALL system sound, notifications
-  // included.
-  // Windows and Linux refuse "system"/"both" here, with a sentence saying to
-  // record the screen with `audio: "system"` instead.
+  // Sound to a file (.m4a on macOS, .wav on Linux when recorded natively, or
+  // whatever container the browser picks when it falls back to one). `source`
+  // is "mic" (the default), "system" (what the machine is playing) or "both"
+  // (mixed). On macOS 14.2+ system audio is a Core Audio process tap — no
+  // Screen Recording permission, its own "System Audio Recording" one;
+  // 13.0-14.1 uses ScreenCaptureKit and needs Screen Recording. On 13.0-14.1
+  // that grant is sound only (no picture), the app must be quit and reopened
+  // after granting it, and the file holds ALL system sound, notifications
+  // included. Linux records "system"/"both" natively over PipeWire/pulse —
+  // no picker, no screen-share hack — and refuses them with a sentence saying
+  // so only when that session is unreachable; "mic" there falls back to the
+  // browser in that case. Windows has no native path at all and refuses
+  // "system"/"both" here, with a sentence saying to record the screen with
+  // `audio: "system"` instead.
   //
   // `device` picks the microphone for "mic" and "both" — except that macOS
   // audio-only "mic" records the system's current input and REFUSES a `device`
   // rather than ignoring it, and "system" has no microphone to choose (also
   // refused). It is always forwarded, so the refusal is the server's one good
-  // sentence rather than two. A tap cannot tell a denied permission from an
-  // idle Mac, so a stop() on a recording that heard nothing carries a
-  // `warning` sentence next to the file — the file itself is still valid.
+  // sentence rather than two. A tap (or, on Linux, a silent monitor stream)
+  // cannot tell a denied permission from a machine that is simply quiet, so a
+  // stop() on a system/both recording that heard nothing carries a `warning`
+  // sentence next to the file — the file itself is still valid.
   //
-  // On macOS a floating recording pill (app icon, level meter, pause/resume,
-  // stop) shows for the length of an audio recording; its stop is the same
-  // request as rec.stop(), so a page's own stop() afterwards just answers with
-  // the finished record. rec.pause() / rec.resume() hold the recording (paused
-  // time is not in the file and does not count toward maxSeconds); rec.paused
-  // reads the state. Windows and Linux reject them with `.type "unavailable"`.
+  // On macOS and on native Linux audio a floating recording pill (app icon,
+  // level meter, pause/resume, stop) shows for the length of an audio
+  // recording; its stop is the same request as rec.stop(), so a page's own
+  // stop() afterwards just answers with the finished record. rec.pause() /
+  // rec.resume() hold the recording (paused time is not in the file and does
+  // not count toward maxSeconds); rec.paused reads the state. Windows, and
+  // Linux falling back to the browser, reject them with `.type "unavailable"`.
   function captureAudio(opts) {
     opts = opts || {};
     const body = { mode: "audio" };
@@ -7170,12 +7180,20 @@
   // is a fact about this browser and not about the machine — and a server route
   // cannot know which browser is asking. So the server answers `client: true`
   // and the three recording keys get replaced here, from what this window can
-  // actually do. The flag is DELETED on the way out: a page reads
-  // `{available, reason}` exactly as it does on macOS and has nothing to branch
-  // on (CP-8).
+  // actually do. Both flags are DELETED on the way out: a page reads
+  // `{available, reason}` exactly as it does on macOS and has nothing
+  // transport-shaped to branch on (CP-8).
+  //
+  // `audioNative` (Linux only) leaves `audio`/`systemAudio` exactly as the
+  // server answered them — its own truth about whether PipeWire/pulse is
+  // reachable, which this window's MediaRecorder support has nothing to say
+  // about. `video` stays unconditional: screen recording is the browser's on
+  // every `client: true` platform regardless of audio's own path.
   async function captureMerge(sources) {
     if (!sources || !sources.client) return sources;
     delete sources.client;
+    const audioNative = sources.audioNative;
+    delete sources.audioNative;
     const host = captureHost();
     const type = captureType(host, "screen");
     const ok = captureMediaOk(host) && !!type;
@@ -7183,12 +7201,14 @@
       : "this browser cannot record — it has no MediaRecorder with a container "
         + "this app can store. Chrome, Edge or a recent Firefox can";
     sources.video = { available: ok, granted: ok, reason: why };
-    sources.audio = {
-      available: ok && !!captureType(host, "audio"),
-      granted: ok,
-      reason: why,
-    };
-    sources.systemAudio = { available: ok, reason: why };
+    if (!audioNative) {
+      sources.audio = {
+        available: ok && !!captureType(host, "audio"),
+        granted: ok,
+        reason: why,
+      };
+      sources.systemAudio = { available: ok, reason: why };
+    }
     if (ok) {
       try {
         const devices = await host.navigator.mediaDevices.enumerateDevices();

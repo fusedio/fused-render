@@ -110,11 +110,13 @@ export interface AudioRecording {
 }
 
 export interface AudioOptions {
-  /** "mic" (default), "system" or "both". System audio is a macOS-only
-   *  audio-only source (a Core Audio process tap on 14.2+, ScreenCaptureKit
-   *  on 13.0-14.1); Windows and Linux refuse it here with the sentence that
-   *  says to record the screen with `audio: "system"` instead. `stop()` may
-   *  carry a `warning` when a tap heard nothing (R:5404-5411). */
+  /** "mic" (default), "system" or "both". macOS records system audio with a
+   *  Core Audio process tap (14.2+) or ScreenCaptureKit (13.0-14.1); Linux
+   *  records it natively over PipeWire/pulse when that session is reachable,
+   *  and refuses it with a sentence saying so when it is not. Windows has
+   *  neither and refuses it here with the sentence that says to record the
+   *  screen with `audio: "system"` instead. `stop()` may carry a `warning`
+   *  when nothing was heard on the system side (R:5404-5411). */
   source?: string;
   /** Forwarded, not dropped, so the refusal is the SERVER's one good sentence
    *  rather than two (R:5408-5411). */
@@ -621,7 +623,9 @@ function bodyOf(opts: AudioOptions): Record<string, unknown> {
  *
  * WHERE THE TWO PATHS FORK, and the only place they do (R:5378-5382):
  * `sources.client` — the server's own answer, never a user-agent sniff — says
- * the recording is the browser's to make on this platform.
+ * recording is the browser's to make on THIS PLATFORM; `sources.audioNative`
+ * narrows that to THIS MODE on Linux, where audio records natively over
+ * PipeWire/pulse even though the screen still goes through the browser.
  *
  * Rejects `.type "unavailable"` with the MACHINE'S OWN SENTENCE where nothing
  * can record, rather than opening a picker that cannot lead anywhere
@@ -631,14 +635,11 @@ export async function captureAudio(
   opts: AudioOptions = {},
   deps: CaptureDeps = {},
 ): Promise<AudioRecording> {
-  const data = await captureFetch<{ sources?: CaptureSources & { client?: boolean } }>(
-    deps,
-    "/api/capture",
-    undefined,
-    "GET",
-  );
+  const data = await captureFetch<
+    { sources?: CaptureSources & { client?: boolean; audioNative?: boolean } }
+  >(deps, "/api/capture", undefined, "GET");
   const sources = data.sources || {};
-  if (!sources.client) {
+  if (!sources.client || sources.audioNative) {
     const started = await captureFetch<StartedRecord>(
       deps,
       "/api/capture/start",
@@ -664,25 +665,30 @@ export async function captureAudio(
  * browser is asking — and `client` is deleted on the way out (R:5449-5461).
  */
 export async function captureSources(deps: CaptureDeps = {}): Promise<CaptureSources> {
-  const data = await captureFetch<{ sources?: CaptureSources & { client?: boolean } }>(
-    deps,
-    "/api/capture",
-    undefined,
-    "GET",
-  );
+  const data = await captureFetch<
+    { sources?: CaptureSources & { client?: boolean; audioNative?: boolean } }
+  >(deps, "/api/capture", undefined, "GET");
   return mergeSources(data.sources, deps.host);
 }
 
 /** R:5455. Exported for the test, which is the only caller that has a fake
- *  window to merge against. */
+ *  window to merge against.
+ *
+ *  `audioNative` leaves `audio`/`systemAudio` exactly as the server answered
+ *  them — Linux's own truth about whether PipeWire/pulse is reachable, which
+ *  this window's own MediaRecorder support has nothing to say about. Deleted
+ *  before this returns, same as `client`: a caller reads `{available,
+ *  reason}` and has nothing transport-shaped to branch on (CP-8). */
 export async function mergeSources(
-  sources: (CaptureSources & { client?: boolean }) | undefined,
+  sources: (CaptureSources & { client?: boolean; audioNative?: boolean }) | undefined,
   hostArg?: CaptureHost,
 ): Promise<CaptureSources> {
   if (!sources) return {};
   if (!sources.client) return sources;
-  const merged: CaptureSources & { client?: boolean } = { ...sources };
+  const merged: CaptureSources & { client?: boolean; audioNative?: boolean } = { ...sources };
   delete merged.client;
+  const audioNative = merged.audioNative;
+  delete merged.audioNative;
   const host = captureHost(hostArg);
   const type = audioType(host);
   const ok = mediaOk(host) && !!type;
@@ -690,7 +696,9 @@ export async function mergeSources(
     ? null
     : "this browser cannot record — it has no MediaRecorder with a container " +
       "this app can store. Chrome, Edge or a recent Firefox can";
-  merged.audio = { available: ok, granted: ok, reason: why };
+  if (!audioNative) {
+    merged.audio = { available: ok, granted: ok, reason: why };
+  }
   if (ok) {
     try {
       const devices = host.navigator.mediaDevices as MediaDevices;
