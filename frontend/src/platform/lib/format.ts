@@ -198,6 +198,17 @@ export function repoName(modelId: string): string {
   return parts.length ? parts[parts.length - 1] : modelId;
 }
 
+// "a and b" for two, "a, b, and c" for three or more — the same Oxford-comma
+// rule `supervisor.py`'s own `_join_names` uses for `ModelSlotConflict`'s
+// message, so a model-slot conflict's contenders read the same way whether
+// they're named by the server's own string or assembled here for a toast/
+// row that wants its OWN wording around them.
+export function joinNames(names: string[]): string {
+  if (names.length <= 1) return names.join("");
+  if (names.length === 2) return `${names[0]} and ${names[1]}`;
+  return `${names.slice(0, -1).join(", ")}, and ${names[names.length - 1]}`;
+}
+
 export function dirname(fsPath: string): string {
   const idx = fsPath.replace(/\/+$/, "").lastIndexOf("/");
   if (idx <= 0) return idx === 0 ? "/" : "";

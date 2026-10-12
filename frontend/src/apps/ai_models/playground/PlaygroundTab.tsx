@@ -56,6 +56,7 @@ import {
   type AiCatalogCapability,
   type AiCatalogModel,
 } from "@platform/lib/api";
+import { PLAYGROUND_REQUESTER } from "./client";
 import { useUrlVersion } from "@platform/lib/hooks";
 import { navigateUrl } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
@@ -472,7 +473,7 @@ export default function PlaygroundTab() {
     if (!selected) return;
     setActionError(null);
     try {
-      await loadAiModel(selected.model.id, selected.row.capability);
+      await loadAiModel(selected.model.id, selected.row.capability, PLAYGROUND_REQUESTER);
       refreshAiRuntime();
     } catch (e) {
       setActionError((e as Error).message);
@@ -482,7 +483,7 @@ export default function PlaygroundTab() {
     if (!selected) return;
     setActionError(null);
     try {
-      await unloadAiModel(selected.model.id);
+      await unloadAiModel(selected.model.id, PLAYGROUND_REQUESTER);
       refreshAiRuntime();
     } catch (e) {
       setActionError((e as Error).message);

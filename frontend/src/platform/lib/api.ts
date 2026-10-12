@@ -176,6 +176,25 @@ function httpError(data: { error?: unknown } | null, status: number): HttpError 
   return err;
 }
 
+// A caller's error message, for a catch block that must tell "the server
+// answered and here is why" apart from "the request never reached it at
+// all" — `ModelsDock.tsx`'s unload/conflict rows and
+// `useModelConflictNotify.ts`'s toast used to say "check your connection and
+// retry" unconditionally, discarding the server's own reason (a held
+// conflict naming who holds it, an ownership refusal) even when the request
+// plainly did reach the server and come back with one. An `HttpError` (any
+// response the server answered, success or not — `.status` is set either
+// way `getJson`/`postJson` throw) always has a real message; only a request
+// that never got that far (a network failure, `fetch` itself rejecting) gets
+// the connection text.
+export function actionErrorMessage(err: unknown, connectionText: string): string {
+  if (err && typeof err === "object" && "status" in err && typeof (err as HttpError).status === "number") {
+    const message = (err as HttpError).message;
+    if (message) return message;
+  }
+  return connectionText;
+}
+
 // `X-Fused-Source` (Job.source, SPEC-quiet-notifications.md bug 2): who
 // RAISED a job row, for presence suppression. Attached here — automatically,
 // on every request this module's own two transports send — rather than left
@@ -4904,6 +4923,12 @@ export interface AiConflict {
   /** True once the user has resolved it (`resolveModelConflict`) rather than
    *  the supervisor having caught the swap loop on its own. */
   held: boolean;
+  /** Each contending model's own requester label (SPEC-model-slot-conflict.md
+   *  §1) — "Notes app", "shell:playground", a page's own path — keyed by
+   *  model id, same as `supervisor.describe()`'s own `requesters` dict. A
+   *  model this page never names here was asked for by nobody the supervisor
+   *  could identify (an anonymous caller). */
+  requesters?: Record<string, string>;
 }
 
 export interface AiRuntime {
@@ -5269,8 +5294,26 @@ export interface AiLoadStarted {
   state: string;
 }
 
-export function loadAiModel(model: string, capability?: string): Promise<AiLoadStarted> {
-  return postJson<AiLoadStarted>("/api/ai/runtime/load", { model, capability });
+// Who is asking (SPEC-model-slot-conflict.md §1): `/load` and `/unload` tell
+// the AI Models page's own Load/Unload buttons apart from every other caller
+// by this header — `USER_REQUESTER` is the one reserved identity that makes
+// a load/unload EXPLICIT (never refused for contention, and settles any
+// standing conflict), and it is reserved for the shell's own controls: this
+// page's own buttons, ModelsDock's row. Every other caller of `loadAiModel`/
+// `unloadAiModel` (Playground, a future chat surface) passes its own fixed
+// id instead, so a standoff between two such callers is reported as one.
+export const USER_REQUESTER = "user";
+
+function requesterHeaders(requester: string): Record<string, string> {
+  const encoded = encodeURIComponent(requester);
+  return { "X-Fused-Requester": encoded, "X-Fused-Requester-Label": encoded };
+}
+
+export function loadAiModel(
+  model: string, capability?: string, requester?: string,
+): Promise<AiLoadStarted> {
+  return postJson<AiLoadStarted>("/api/ai/runtime/load", { model, capability },
+    requester ? { headers: requesterHeaders(requester) } : undefined);
 }
 
 export function downloadAiModel(
@@ -5283,8 +5326,11 @@ export function downloadAiModel(
   return postJson<AiLoadStarted>("/api/ai/runtime/download", { model, capability, file });
 }
 
-export function unloadAiModel(model: string): Promise<AiRuntime & { stopped: boolean }> {
-  return postJson<AiRuntime & { stopped: boolean }>("/api/ai/runtime/unload", { model });
+export function unloadAiModel(
+  model: string, requester?: string,
+): Promise<AiRuntime & { stopped: boolean }> {
+  return postJson<AiRuntime & { stopped: boolean }>("/api/ai/runtime/unload", { model },
+    requester ? { headers: requesterHeaders(requester) } : undefined);
 }
 
 /** The user's way out of a model-slot conflict (SPEC-model-slot-conflict.md

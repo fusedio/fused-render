@@ -22,6 +22,16 @@ import {
 } from "@platform/lib/api";
 import { fetchJobs, type Job, type JobState } from "@platform/lib/jobs";
 
+// Who is asking (SPEC-model-slot-conflict.md §1): this module's own fixed
+// identity, the same way the Playground claims `shell:playground` — never
+// the user settling a conflict with their own hands, so a live annotation's
+// warm-up load and transcribe call are told apart from every other caller
+// fighting over the speech-to-text slot.
+const ANN_TRANSCRIBE_REQUESTER = "shell:ann-transcribe";
+function requesterHeaders(): Record<string, string> {
+  return { "X-Fused-Requester": ANN_TRANSCRIBE_REQUESTER, "X-Fused-Requester-Label": ANN_TRANSCRIBE_REQUESTER };
+}
+
 /** The capability id the speech models sit under, server-side
  *  (`registry.SPEECH_TO_TEXT`). One spelling, used by both functions here. */
 export const ASR_CAPABILITY = "automatic-speech-recognition";
@@ -86,7 +96,7 @@ export function warmTranscriber(deps: WarmDeps = {}): Promise<void> {
       if (!asr) return;
       if ((asr.models || []).some((m) => m && m.loaded)) return;
       if (!asr.default) return;
-      await load(asr.default, ASR_CAPABILITY);
+      await load(asr.default, ASR_CAPABILITY, ANN_TRANSCRIBE_REQUESTER);
     } catch (err) {
       warn("transcriber warm-up skipped:", errText(err));
     } finally {
@@ -292,7 +302,7 @@ async function startJob(
   path: string,
   body: Record<string, unknown>,
 ): Promise<TranscribeStarted> {
-  const started = await post<TranscribeStarted>(path, body);
+  const started = await post<TranscribeStarted>(path, body, { headers: requesterHeaders() });
   if (!started || typeof started.jobId !== "string" || !started.jobId) {
     throw fail(path + " replied with no jobId", "ai_error");
   }

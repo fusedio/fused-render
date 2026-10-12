@@ -15,6 +15,19 @@
 import { postJson, rawUrl, sourceHeader } from "@platform/lib/api";
 import { fetchJobs, type Job } from "@platform/lib/jobs";
 
+// Who is asking (SPEC-model-slot-conflict.md §1): the Playground is a shell
+// surface with its own fixed identity, never the user settling a conflict
+// with their own hands — that is `ModelsDock.tsx`'s row and the AI Models
+// page's own Load/Unload buttons, none of which run through this module.
+// Every generation call this module makes (text, embed, decide, image,
+// video, speech, transcribe) carries this, so two Playground tabs — or a
+// Playground run and a page's own `fused.ai` call — fighting over one
+// capability's slot are told apart by it.
+export const PLAYGROUND_REQUESTER = "shell:playground";
+function requesterHeaders(): Record<string, string> {
+  return { "X-Fused-Requester": PLAYGROUND_REQUESTER, "X-Fused-Requester-Label": PLAYGROUND_REQUESTER };
+}
+
 // SPEC-quiet-notifications.md bug 1/bug 2: `X-Fused-Source` is who RAISED the
 // job, deliberately separate from `X-Fused-Page` (never sent by this module
 // for image/video — see `startImage`/`startVideo` below). A render's own
@@ -182,7 +195,7 @@ export async function streamChat(opts: {
   }
   const res = await fetch("/api/ai", {
     method: "POST",
-    headers: { ...sourceHeader(), "Content-Type": "application/json", "X-Fused": "1" },
+    headers: { ...sourceHeader(), ...requesterHeaders(), "Content-Type": "application/json", "X-Fused": "1" },
     body: JSON.stringify(body),
     signal: opts.signal,
   });
@@ -435,7 +448,7 @@ export interface ImageStarted {
 }
 
 export function startImage(request: ImageRequest): Promise<ImageStarted> {
-  return postJson<ImageStarted>("/api/ai/image", request, { headers: sourceHeader() });
+  return postJson<ImageStarted>("/api/ai/image", request, { headers: { ...sourceHeader(), ...requesterHeaders() } });
 }
 
 // -- Video (POST /api/ai/video, SPEC §40) --------------------------------------
@@ -483,7 +496,7 @@ export interface VideoStarted {
 }
 
 export function startVideo(request: VideoRequest): Promise<VideoStarted> {
-  return postJson<VideoStarted>("/api/ai/video", request, { headers: sourceHeader() });
+  return postJson<VideoStarted>("/api/ai/video", request, { headers: { ...sourceHeader(), ...requesterHeaders() } });
 }
 
 export interface SpeechRequest {
@@ -511,7 +524,7 @@ export interface SpeechStarted {
 }
 
 export function startSpeech(request: SpeechRequest): Promise<SpeechStarted> {
-  return postJson<SpeechStarted>("/api/ai/speech", request, { headers: sourceHeader() });
+  return postJson<SpeechStarted>("/api/ai/speech", request, { headers: { ...sourceHeader(), ...requesterHeaders() } });
 }
 
 // -- Embeddings (POST /api/ai/embed, SPEC §40) ---------------------------------
@@ -551,7 +564,7 @@ export async function embedTexts(
 ): Promise<EmbedResult> {
   const res = await fetch("/api/ai/embed", {
     method: "POST",
-    headers: { ...sourceHeader(), "Content-Type": "application/json", "X-Fused": "1" },
+    headers: { ...sourceHeader(), ...requesterHeaders(), "Content-Type": "application/json", "X-Fused": "1" },
     body: JSON.stringify(kind ? { model, texts, kind } : { model, texts }),
   });
   return readEmbedReply(res);
@@ -592,7 +605,7 @@ async function readEmbedReply(res: Response): Promise<EmbedResult> {
 export async function embedPaths(model: string, paths: string[]): Promise<EmbedResult> {
   const res = await fetch("/api/ai/embed", {
     method: "POST",
-    headers: { ...sourceHeader(), "Content-Type": "application/json", "X-Fused": "1" },
+    headers: { ...sourceHeader(), ...requesterHeaders(), "Content-Type": "application/json", "X-Fused": "1" },
     body: JSON.stringify({ model, paths }),
   });
   return readEmbedReply(res);
@@ -649,7 +662,7 @@ export async function decide(
 ): Promise<DecideResult> {
   const res = await fetch("/api/ai/decide", {
     method: "POST",
-    headers: { ...sourceHeader(), "Content-Type": "application/json", "X-Fused": "1" },
+    headers: { ...sourceHeader(), ...requesterHeaders(), "Content-Type": "application/json", "X-Fused": "1" },
     body: JSON.stringify({ model, state, questions }),
   });
   const data = (await res.json().catch(() => null)) as {
@@ -686,7 +699,7 @@ export interface TranscribeStarted {
 }
 
 export function startTranscribe(request: TranscribeRequest): Promise<TranscribeStarted> {
-  return postJson<TranscribeStarted>("/api/ai/transcribe", request);
+  return postJson<TranscribeStarted>("/api/ai/transcribe", request, { headers: requesterHeaders() });
 }
 
 // ---- native microphone capture (SPEC §45) ------------------------------------

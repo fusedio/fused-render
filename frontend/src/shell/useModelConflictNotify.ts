@@ -25,11 +25,12 @@
 // the user's OWN action a moment ago, not news to tell them.
 import { useEffect, useRef } from "react";
 import { dismissNotification, notify } from "@platform/lib/notifications";
-import { repoName } from "@platform/lib/format";
-import { resolveModelConflict } from "@platform/lib/api";
+import { repoName, joinNames } from "@platform/lib/format";
+import { resolveModelConflict, actionErrorMessage } from "@platform/lib/api";
 import { publishAiRuntime, useAiRuntime } from "@apps/ai_models/lib/aiRuntime";
 import { capabilityLabel } from "@apps/ai_models/lib/engines";
 import { IS_EMBED, IS_TOP_EMBED } from "@platform/lib/router";
+import { requestOpenSection } from "@platform/lib/statusChip";
 
 /** The hook as a LEAF, mounted once in `App`'s tree — see
  *  `TaskStatusNotifier`'s own doc for why this shape (a subscribing hook at
@@ -42,13 +43,17 @@ export function ModelConflictNotifier(): null {
 
 export function useModelConflictNotify(): void {
   const runtime = useAiRuntime();
-  // Capabilities already notified for their CURRENT standoff, mapped to the
-  // toast's own notification id — `null` for a held entry, which marks
-  // itself seen WITHOUT ever raising a toast (see below). Cleared the
-  // moment that capability drops out of `conflicts` (resolved, released, or
-  // cleared by a manual load/unload), so a later, genuinely new conflict on
-  // the same capability notifies again.
-  const notified = useRef<Map<string, number | null>>(new Map());
+  // Capabilities already notified for their CURRENT standoff — the toast's
+  // own notification id (`null` for a held entry, which marks itself seen
+  // WITHOUT ever raising a toast — see below) plus the exact contender set
+  // the toast was raised for. Cleared the moment that capability drops out
+  // of `conflicts` (resolved, released, or cleared by a manual load/unload),
+  // so a later, genuinely new conflict on the same capability notifies
+  // again. A THIRD (or later) caller joining a standoff already announced
+  // changes `models` without ever touching `held`, so it is tracked
+  // separately from the id rather than folded into the `already !== undefined`
+  // short-circuit below.
+  const notified = useRef<Map<string, { id: number | null; models: string }>>(new Map());
 
   useEffect(() => {
     // Matches `useTaskStatusNotify`'s own embed rule exactly (see its header
@@ -58,6 +63,7 @@ export function useModelConflictNotify(): void {
     const live = new Set<string>();
     for (const conflict of runtime.conflicts) {
       live.add(conflict.capability);
+      const modelsKey = conflict.models.join("\u0000");
       const already = notified.current.get(conflict.capability);
       if (already !== undefined) {
         // A standing toast must not survive the capability turning held —
@@ -66,29 +72,35 @@ export function useModelConflictNotify(): void {
         // and its resident. Withdraw the stale toast (if any) and re-mark
         // this capability seen as held, exactly like a FRESH held entry
         // does below — no new toast for it either.
-        if (conflict.held && already != null) {
-          dismissNotification(already);
-          notified.current.set(conflict.capability, null);
+        if (conflict.held) {
+          if (already.id != null) dismissNotification(already.id);
+          notified.current.set(conflict.capability, { id: null, models: modelsKey });
+          continue;
         }
-        continue;
-      }
-      // Always mark seen, held or not: a held entry is the user's own
-      // action, not a fresh standoff to announce, but it still occupies
-      // this capability's slot until cleared.
-      if (conflict.held) {
-        notified.current.set(conflict.capability, null);
+        // The contender set grew (or shrank) since this toast was raised —
+        // withdraw it and fall through to raise a fresh one naming the
+        // current set, rather than leaving a stale "A and B" toast up while
+        // a third caller is also now being refused.
+        if (already.models === modelsKey) continue;
+        if (already.id != null) dismissNotification(already.id);
+      } else if (conflict.held) {
+        // Always mark seen, held or not: a held entry is the user's own
+        // action, not a fresh standoff to announce, but it still occupies
+        // this capability's slot until cleared.
+        notified.current.set(conflict.capability, { id: null, models: modelsKey });
         continue;
       }
 
       const label = capabilityLabel(conflict.capability);
+      const requesterOf = (m: string) => conflict.requesters?.[m] || repoName(m);
       const other = conflict.models.find((m) => m !== conflict.resident) ?? conflict.models[0];
-      const names = conflict.models.map(repoName).join(" and ");
+      const names = joinNames(conflict.models.map(requesterOf));
       // A refused choice must say so rather than look like the click did
       // nothing — the same non-silent-failure contract `ModelsDock.tsx`'s
-      // `ConflictRow` already keeps for the identical two actions.
-      const onFailure = (label_: string) => () => {
+      // `ConflictRow` already keeps for the identical actions.
+      const onFailure = (label_: string) => (e: unknown) => {
         notify({
-          title: `Could not ${label_} — check your connection and retry.`,
+          title: actionErrorMessage(e, `Could not ${label_} — check your connection and retry.`),
           tone: "error",
         });
       };
@@ -99,21 +111,29 @@ export function useModelConflictNotify(): void {
       const title = residentName
         ? `${names} are fighting over the ${label.toLowerCase()}: ${residentName} stays loaded, the rest can't take over.`
         : `${names} are fighting over the ${label.toLowerCase()}.`;
+      // Only two action slots exist here (see this file's own header
+      // comment) — fine for exactly two contenders ("Keep <other>"/"Stop
+      // both"), but a third makes "Keep <other>" an arbitrary, unexplained
+      // pick among several. Three or more instead gets "Choose…" (opens the
+      // dock, which has a Keep action per contender) and "Stop all".
+      const multiway = conflict.models.length > 2;
       const id = notify({
         title,
         tone: "error",
-        action: other
-          ? {
-              label: `Keep ${repoName(other)}`,
-              onClick: () => {
-                resolveModelConflict(conflict.capability, other)
-                  .then(publishAiRuntime)
-                  .catch(onFailure(`keep ${repoName(other)}`));
-              },
-            }
-          : undefined,
+        action: multiway
+          ? { label: "Choose…", onClick: () => requestOpenSection("models") }
+          : other
+            ? {
+                label: `Keep ${repoName(other)}`,
+                onClick: () => {
+                  resolveModelConflict(conflict.capability, other)
+                    .then(publishAiRuntime)
+                    .catch(onFailure(`keep ${repoName(other)}`));
+                },
+              }
+            : undefined,
         extraAction: {
-          label: "Stop both",
+          label: multiway ? "Stop all" : "Stop both",
           onClick: () => {
             resolveModelConflict(conflict.capability, null)
               .then(publishAiRuntime)
@@ -121,15 +141,15 @@ export function useModelConflictNotify(): void {
           },
         },
       });
-      notified.current.set(conflict.capability, id);
+      notified.current.set(conflict.capability, { id, models: modelsKey });
     }
-    for (const [capability, id] of Array.from(notified.current)) {
+    for (const [capability, entry] of Array.from(notified.current)) {
       if (live.has(capability)) continue;
       // Withdraw the live toast along with its bookkeeping — a conflict
       // resolved, released, or cleared by a manual load/unload must not
       // leave its "Keep"/"Stop both" card sitting on screen offering
       // choices that no longer apply.
-      if (id != null) dismissNotification(id);
+      if (entry.id != null) dismissNotification(entry.id);
       notified.current.delete(capability);
     }
   }, [runtime.conflicts]);

@@ -52,10 +52,10 @@
 // directly with a fixed model list rather than mocking `useAiRuntime`.
 import { useState } from "react";
 import {
-  unloadAiModel, resolveModelConflict, releaseModelConflict,
-  type AiLoadedModel, type AiConflict,
+  unloadAiModel, resolveModelConflict, releaseModelConflict, actionErrorMessage,
+  USER_REQUESTER, type AiLoadedModel, type AiConflict,
 } from "@platform/lib/api";
-import { formatSize, repoName } from "@platform/lib/format";
+import { formatSize, repoName, joinNames } from "@platform/lib/format";
 import { publishAiRuntime, useAiRuntime } from "@apps/ai_models/lib/aiRuntime";
 import { useStatusChip, type StatusChipState } from "@platform/lib/statusChip";
 import { capabilityLabel } from "@apps/ai_models/lib/engines";
@@ -248,8 +248,8 @@ function ModelRow({
     setFailure(null);
     try {
       await onUnload(model.model);
-    } catch {
-      setFailure("Could not unload — check your connection and retry.");
+    } catch (e) {
+      setFailure(actionErrorMessage(e, "Could not unload — check your connection and retry."));
     } finally {
       setBusy(false);
     }
@@ -331,8 +331,8 @@ function ConflictRow({
     setFailure(null);
     try {
       await fn();
-    } catch {
-      setFailure("Could not resolve — check your connection and retry.");
+    } catch (e) {
+      setFailure(actionErrorMessage(e, "Could not resolve — check your connection and retry."));
     } finally {
       setBusy(false);
     }
@@ -368,7 +368,13 @@ function ConflictRow({
   // resident is still answering normally throughout — only the OTHER
   // contenders' loads are refused — so the tooltip says who stays loaded
   // rather than claiming nobody is making progress (B7).
-  const names = conflict.models.map(repoName).join(" and ");
+  // Requesters, not model names (SPEC-model-slot-conflict.md §1): "Notes app
+  // and Chat are both trying to use the text model" names who is fighting,
+  // not what they're fighting over — `label` already says that. A model with
+  // no entry in `requesters` was asked for by a caller the supervisor could
+  // not identify, so it falls back to its own repo name rather than leaving
+  // a blank.
+  const names = joinNames(conflict.models.map((m) => conflict.requesters?.[m] || repoName(m)));
   const tooltip = residentName
     ? `${names} are fighting over ${label.toLowerCase()} — ${residentName} stays loaded, the rest can't take over.`
     : `${names} are fighting over ${label.toLowerCase()}.`;
@@ -554,8 +560,12 @@ export default function ModelsDock() {
   const runtime = useAiRuntime();
   const chip = useStatusChip("models");
 
+  // This row IS "the shell's own conflict controls" the spec names
+  // (SPEC-model-slot-conflict.md §1) — its Unload always claims `user`,
+  // never refused for contention and clearing any standing conflict on this
+  // capability, the same as the AI Models page's own Load/Unload buttons.
   const onUnload = async (model: string) => {
-    const result = await unloadAiModel(model);
+    const result = await unloadAiModel(model, USER_REQUESTER);
     publishAiRuntime(result);
   };
 
