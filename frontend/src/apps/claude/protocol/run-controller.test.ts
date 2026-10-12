@@ -4457,3 +4457,152 @@ describe("running and idle marks can race (Bugbot #1163)", () => {
     }
   });
 });
+
+describe("a stop the frame caught up with on reload", () => {
+  test("shows the prompt and the stop's note, not a failure — before the transcript holds either (Akshil 2026-10-12)", async () => {
+    // Stop pressed on a fresh chat, page reloaded moments later: the run is
+    // still live (its interrupt is on its way to the CLI), the transcript is
+    // empty, and the poll says done + cancelled with the stop's own error.
+    // `openSession`'s own watch adopts the run and repairs it; that road
+    // filed the error as a red failure and a trouble card, and the next
+    // (still empty) history read blanked whatever it drew.
+    const { controller, agent } = makeController({
+      history: () => ({ turns: [], live_run: "r1", transcript: { path: "/p/s1.jsonl", mtime: 1, size: 0 } }),
+      live_run: (_f, n) => ({ run_id: n === 0 ? "r1" : "" }),
+      poll: () => poll({ done: true, cancelled: true, error: "Stopped before the first reply.", message: "323ed" }),
+    });
+    await controller.openSession("s1");
+    // The adoption runs in the background of `openSession`; let it finish.
+    for (let i = 0; i < 20 && agent.of("poll").length === 0; i++) await new Promise((r) => setTimeout(r, 0));
+    for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+    expect(agent.of("poll").length).toBe(1);
+    expect(controller.getState().turns.filter((t) => t.role === "error")).toEqual([]);
+    expect(controller.getState().trouble).toBeNull();
+    expect(users(controller).map((t) => t.text)).toEqual(["323ed"]);
+    expect(notes(controller).map((n) => [n.glyph, n.text])).toEqual([["⏹", "Stopped."]]);
+  });
+
+  async function reloadWith(history: any, message: string) {
+    const { controller, agent } = makeController({
+      history: () => history,
+      live_run: (_f, n) => ({ run_id: n === 0 ? "r1" : "" }),
+      poll: () => poll({ done: true, cancelled: true, error: "Stopped.", message }),
+    });
+    await controller.openSession("s1");
+    for (let i = 0; i < 20 && agent.of("poll").length === 0; i++) await new Promise((r) => setTimeout(r, 0));
+    for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 0));
+    return controller;
+  }
+
+  test("adds no second Stopped. when the restored reply already carries stopped (Bugbot)", async () => {
+    const controller = await reloadWith(
+      {
+        turns: [
+          { role: "user", text: "hi", uuid: "u1" },
+          { role: "assistant", text: "partial", stopped: true },
+        ],
+        transcript: { path: "/p/s1.jsonl", mtime: 1, size: 10 },
+      },
+      "hi",
+    );
+    expect(notes(controller)).toEqual([]);
+    expect(controller.getState().turns.filter((t) => t.role === "error")).toEqual([]);
+  });
+
+  test("an older session's rows are not this run's prompt: it is put up with its note (CodeRabbit)", async () => {
+    const controller = await reloadWith(
+      {
+        turns: [
+          { role: "user", text: "old", uuid: "u0" },
+          { role: "assistant", text: "done" },
+        ],
+        transcript: { path: "/p/s1.jsonl", mtime: 1, size: 10 },
+      },
+      "brand new",
+    );
+    expect(users(controller).map((t) => t.text)).toEqual(["old", "brand new"]);
+    expect(notes(controller).map((n) => n.text)).toEqual(["Stopped."]);
+  });
+
+  test("a prompt-only file does not drop the Stopped. note before the marker lands (Bugbot)", async () => {
+    const controller = await reloadWith(
+      {
+        turns: [{ role: "user", text: "hi", uuid: "u1" }],
+        transcript: { path: "/p/s1.jsonl", mtime: 1, size: 10 },
+      },
+      "hi",
+    );
+    expect(users(controller).map((t) => t.text)).toEqual(["hi"]);
+    expect(notes(controller).map((n) => n.text)).toEqual(["Stopped."]);
+  });
+
+  test("an empty file under a live run keeps the screen (CodeRabbit)", async () => {
+    const controller = await reloadWith(
+      { turns: [], live_run: "r1", transcript: { path: "/p/s1.jsonl", mtime: 1, size: 0 } },
+      "hi",
+    );
+    expect(users(controller).map((t) => t.text)).toEqual(["hi"]);
+    expect(notes(controller).map((n) => n.text)).toEqual(["Stopped."]);
+  });
+
+  test("a repeated message is not mistaken for an earlier identical one (Bugbot)", async () => {
+    const controller = await reloadWith(
+      {
+        turns: [
+          { role: "user", text: "hi", uuid: "u0" },
+          { role: "assistant", text: "hello" },
+        ],
+        transcript: { path: "/p/s1.jsonl", mtime: 1, size: 10 },
+      },
+      "hi",
+    );
+    expect(users(controller).map((t) => t.text)).toEqual(["hi", "hi"]);
+    expect(notes(controller).map((n) => n.text)).toEqual(["Stopped."]);
+  });
+
+  test("a stopped reply followed by the CLI's marker row is this run's prompt, not a duplicate (reviewer)", async () => {
+    const controller = await reloadWith(
+      {
+        turns: [
+          { role: "user", text: "hi", uuid: "u1" },
+          { role: "assistant", text: "partial", stopped: true },
+        ],
+        transcript: { path: "/p/s1.jsonl", mtime: 1, size: 10 },
+      },
+      " hi ",
+    );
+    expect(users(controller).map((t) => t.text)).toEqual(["hi"]);
+    expect(notes(controller)).toEqual([]);
+  });
+
+  test("prompt, partial reply, then the CLI's marker row: one prompt, no extra note", async () => {
+    const controller = await reloadWith(
+      {
+        turns: [
+          { role: "user", text: "hi", uuid: "u1" },
+          { role: "assistant", text: "partial" },
+          { role: "user", text: "[Request interrupted by user]", uuid: "u2" },
+        ],
+        transcript: { path: "/p/s1.jsonl", mtime: 1, size: 10 },
+      },
+      "hi",
+    );
+    expect(users(controller).map((t) => t.text)).toEqual(["hi", "[Request interrupted by user]"]);
+    expect(notes(controller)).toEqual([]);
+  });
+
+  test("a marker row after the prompt counts as the stop's line (reload after a mid-session stop)", async () => {
+    const controller = await reloadWith(
+      {
+        turns: [
+          { role: "user", text: "hi", uuid: "u1" },
+          { role: "user", text: "[Request interrupted by user]", uuid: "u2" },
+        ],
+        transcript: { path: "/p/s1.jsonl", mtime: 1, size: 10 },
+      },
+      "hi",
+    );
+    expect(notes(controller)).toEqual([]);
+    expect(users(controller).map((t) => t.text)).toEqual(["hi", "[Request interrupted by user]"]);
+  });
+});

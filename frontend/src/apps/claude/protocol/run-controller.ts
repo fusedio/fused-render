@@ -86,7 +86,7 @@ import type {
   StartResponse,
   SwitchableMode,
 } from "./types";
-import { composeBlocks, composeOutgoing, isMarkerOnly, stripBlocks } from "./wire";
+import { composeBlocks, composeOutgoing, isInterruptMark, isMarkerOnly, stripBlocks } from "./wire";
 /** PR2: the attachment pipeline's receipt row — carried, never built here. */
 import type { Receipt } from "../shots/types";
 
@@ -3488,6 +3488,122 @@ export function createChatController(deps: ControllerDeps): ChatController {
           if (limitHit(probeQuota) && scheduleComeback(runId, message, probeQuota)) return;
           addError(message);
         };
+        // A STOP IS NOT A FAILURE, HOWEVER THIS FRAME CAUGHT UP WITH IT (Akshil,
+        // 2026-10-12: a reload moments after Stop on a fresh chat drew the
+        // run's "Stopped before the first reply." as a red error AND a
+        // "Something went wrong" card). `pollLoop` already routes its own end
+        // through `runEnding`, which swallows the error when `cancelled` says
+        // the reader asked for it; this road — a run the frame missed — filed
+        // `poll.error` as trouble without asking. Same rule here: the stop's
+        // note, the transcript's rows, no error. The file may not carry the
+        // prompt yet (the interrupt is still on its way to the CLI); the 5 s
+        // history refresh brings it in with the marker.
+        const stopped = runEnding(poll, false);
+        if (poll.error && !stopped.error) {
+          if (await refreshFromTranscript()) appended = true;
+          // A restored history records a mid-reply stop as `stopped` on the
+          // last assistant turn (drawn as the same "Stopped." line), not as a
+          // note row — either one means the line is already on screen.
+          // THIS RUN'S prompt, not any user turn — and not an EARLIER row that
+          // happens to carry the same words (a repeated message): that one is
+          // the last prompt in the file only while this run's has not landed,
+          // and then a finished reply follows it. Compared whitespace-
+          // normalised so an attachment/spacing difference cannot re-add a
+          // duplicate on every pass. A run whose window has moved (`poll.window`
+          // > 0) is past its first message — `poll.message` is that first one —
+          // so its prompt is simply the last user row and none is ever added.
+          const norm = (x: string) => x.trim().replace(/\s+/g, " ");
+          const ownMsg = (poll.window ?? 0) > 0 ? "" : norm(probeMsg);
+          const ownPromptAt = (): number => {
+            let at = -1;
+            state.turns.forEach((t, i) => {
+              if (t.role === "user" && !isInterruptMark(t.text)) at = i;
+            });
+            if (at < 0) return -1;
+            if (!ownMsg) return at;
+            if (norm((state.turns[at] as UserTurn).text) !== ownMsg) return -1;
+            const after = state.turns.slice(at + 1);
+            // The CLI's marker after the prompt IS the stop: whatever reply
+            // sits between them was cut by it (history flags `stopped` only
+            // on the final turn, which the marker row is not).
+            if (after.some((t) => t.role === "user" && isInterruptMark(t.text))) return at;
+            const replies = after.filter((t) => t.role === "assistant");
+            const lastReply = replies[replies.length - 1];
+            return lastReply && !lastReply.stopped ? -1 : at;
+          };
+          // The stop's own line is already in the file: the CLI's marker row
+          // ("Interrupted by you") after the prompt, or `stopped` on the last
+          // reply. A restored history records a mid-reply stop the second way,
+          // not as a note row.
+          const stopInFile = (): boolean => {
+            const at = ownPromptAt();
+            const after = at >= 0 ? state.turns.slice(at + 1) : [];
+            const last = state.turns[state.turns.length - 1];
+            return (
+              after.some((t) => t.role === "user" && isInterruptMark(t.text)) ||
+              (!!last && last.role === "assistant" && !!last.stopped)
+            );
+          };
+          const noteShown = () =>
+            !!stopped.note && state.turns.some((t) => t.role === "note" && t.text === stopped.note);
+          // THE READER'S OWN WORDS, NOW. A stop pressed before the first turn
+          // opened holds its interrupt until the CLI has the prompt, and the
+          // CLI writes prompt + marker to the file only then — on a slow
+          // start (hooks, MCP servers) that is many seconds. A reload inside
+          // that window found an empty file and drew nothing (Akshil,
+          // 2026-10-12). The run knows the prompt (`poll.message`), so it goes
+          // up the way the `unseen` branch below puts it, with the note under
+          // it; the file's own rows replace both once they land.
+          if (ownMsg && ownPromptAt() < 0) {
+            addUser(probeMsg);
+            appended = true;
+          }
+          if (stopped.note && !noteShown() && !stopInFile()) {
+            addNote(stopped.note, "⏹");
+            appended = true;
+          }
+          if (appended) emit({ repaired: state.repaired + 1 });
+          stampOwnEnd();
+          // …and the file is re-read until it has them. Each read is
+          // `refreshHistory`, which keeps an optimistic screen over an empty
+          // file while the run is live and refuses to overwrite a newer
+          // transcript. Bounded like the server's own wait for the first turn
+          // (30 s). Done only when the file carries the prompt (with its
+          // transcript uuid) AND the stop itself: the echo lands BEFORE the
+          // marker, and a prompt-only read replaces the optimistic rows, so
+          // the note is put back until the marker is there.
+          const fileHasStop = () => {
+            const at = ownPromptAt();
+            return at >= 0 && !!(state.turns[at] as UserTurn).uuid && stopInFile();
+          };
+          if (!fileHasStop()) {
+            // The loop belongs to THIS chat: a session switch bumps
+            // `transcriptGen` (not `logGen`), a new send raises `sending`.
+            const loopTGen = state.transcriptGen;
+            const loopSid = state.sessionId;
+            const same = () =>
+              logGen === gen &&
+              !disposed &&
+              !activeRun &&
+              !sending &&
+              state.transcriptGen === loopTGen &&
+              state.sessionId === loopSid;
+            void (async () => {
+              for (let i = 0; i < 20; i++) {
+                await sleep(1500);
+                if (!same()) return;
+                await refreshFromTranscript();
+                if (!same() || fileHasStop()) return;
+                // The read replaced the optimistic rows with a file that does
+                // not have them yet (an older session's rows, a prompt-only
+                // echo): put back what is still missing, prompt first.
+                if (ownMsg && ownPromptAt() < 0) addUser(probeMsg);
+                if (stopped.note && !noteShown() && !stopInFile()) addNote(stopped.note, "⏹");
+              }
+            })();
+          }
+          return;
+        }
         if (poll.error) {
           if (matches && windowMoved) {
             // A FAILED FOLLOW-UP HANGS UNDER ITS OWN LINE (round-4 review,
@@ -3696,6 +3812,13 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // write — this refresh used to store the empty answer and blank the
       // conversation in silence.
       if (landDeleted(res)) return;
+      const turns = historyToTurns(res);
+      // AN EMPTY FILE UNDER A LIVE RUN DOES NOT BLANK THE SCREEN, nor get
+      // cached: the rows on screen are then the run's own (a prompt the CLI
+      // has not persisted yet, a stop's note — see the stop repair in
+      // `resumeAttach`); the file catches up within the run. A session that
+      // is genuinely gone is `landDeleted` above, not this.
+      if (!turns.length && state.turns.length && res.live_run) return;
       deps.historyCache?.set(FILE || "", sessionId, res);
       // NOTHING IS RECORDED IN `shownRuns` HERE: a `history` row is text plus a
       // transcript `uuid` (`HistoryUserTurn`) and carries no run id, so a
@@ -3710,7 +3833,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // of the session — the standing watch goes deaf on the very refresh it
       // just performed.
       emit({
-        turns: historyToTurns(res),
+        turns,
         ...(res.transcript && res.transcript.path ? { transcript: res.transcript } : {}),
         // The rows this refresh just brought in are exactly what moved the
         // window, so the meter moves with them — this is the whole refresh

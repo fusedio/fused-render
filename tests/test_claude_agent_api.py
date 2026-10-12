@@ -536,3 +536,38 @@ def test_artifacts_answers_in_process(client, monkeypatch):
     assert r.status_code == 200
     assert r.json() == {"artifacts": []}
     assert seen == {"action": "live", "file": "/x", "session_id": "s"}
+
+
+def test_a_cancel_tells_the_tasks_page_the_turn_is_over_now(client, stub, monkeypatch):
+    """The Tasks row used to flip to stopped only once the CLI wrote its
+    interrupt marker — a beat after the chat did, and later still for a stop
+    pressed before the first turn opened (the interrupt waits for the prompt
+    to land). The router marks the turn ended the instant the stop is
+    answered, so every screen says "stopped" together."""
+    from fused_render import tasks_watch
+    marked, woken = [], []
+    monkeypatch.setattr(tasks_watch, "mark_turn_ended",
+                        lambda sid, run_id="", at=None: marked.append((sid, run_id)))
+    monkeypatch.setattr(tasks_watch, "notify", lambda keys=None: woken.append(set(keys or ())))
+
+    def main(action="start", run_id="", queued=""):
+        return {"cancelled": run_id, "still_queued": [], "pending": True,
+                "session_id": "sess-1"}
+    stub["install"](main)
+    r = _post(client, {"action": "cancel", "run_id": "20261012-124914-6e5152"})
+    assert r.status_code == 200
+    assert marked == [("sess-1", "20261012-124914-6e5152")]
+    assert woken == [{"sess-1"}]
+
+
+def test_a_cancel_with_no_session_marks_nothing(client, stub, monkeypatch):
+    from fused_render import tasks_watch
+    marked = []
+    monkeypatch.setattr(tasks_watch, "mark_turn_ended",
+                        lambda sid, run_id="", at=None: marked.append(sid))
+
+    def main(action="start", run_id="", queued=""):
+        return {"cancelled": run_id}       # an unknown run: nothing to mark
+    stub["install"](main)
+    assert _post(client, {"action": "cancel", "run_id": "nope"}).status_code == 200
+    assert marked == []
