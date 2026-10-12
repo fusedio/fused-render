@@ -2276,6 +2276,7 @@ class Browser:
         with self.lock:
             ws, sess = self._connect(timeout)
             try:
+                clip = self._clipboard(ws)
                 try:
                     out = fn(ws)
                 except Exception:
@@ -2286,6 +2287,9 @@ class Browser:
                 info = self._where(ws)
                 if dialog:
                     info["dialog"] = dialog
+                copied = self._clipboard(ws) if clip is not None else None
+                if copied and copied != clip:  # a Copy / Copy link button the action pressed: the bot can see it now
+                    info["copied"] = copied
                 # window.json: session.json is removed with the quit, so this is the record of the page a wake
                 # (Browser.start) brings back. The driven tab's row only; tabs() rewrites the whole window.
                 self._note_page(info.get("url") or "", info.get("title") or "")
@@ -2334,6 +2338,18 @@ class Browser:
             return None
         ws.dialog = ws.dialog_seen = None
         return f"{d.get('type', 'dialog')}: {d.get('message', '')}".strip()
+
+    def _clipboard(self, ws):
+        """Text on headless Chrome's clipboard, None when unreadable. That clipboard is private to the bot's
+        Chrome (measured), so a page's Copy link lands where no ⌘V outside it reaches; read before and after an
+        action, a change is what the action copied. Never headed: a popped-out Chrome shares the Mac's real
+        pasteboard, and whatever the user copied there (a password) must not reach the transcript."""
+        if self.headed():
+            return None
+        try:
+            return self._eval(ws, "navigator.clipboard ? navigator.clipboard.readText().catch(() => null) : null")
+        except Exception:  # noqa: BLE001 — a page mid-navigation, an unfocused document
+            return None
 
     @staticmethod
     def _eval(ws, expr):
