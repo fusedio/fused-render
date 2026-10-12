@@ -286,7 +286,7 @@ test("setSize keeps the top-left anchor, clamps x for width, refuses when the ne
   expect(setSize(blocked, "a", "2x2")).toBe(blocked);
   expect(setSize(blocked, "a", "1x2")).toBe(blocked);
   expect(allowedSizes(blocked, "a")).toEqual(["4x1", "2x1"]);
-  expect(allowedSizes(l, "a")).toEqual(["4x1", "2x1", "1x2", "2x2"]);
+  expect(allowedSizes(l, "a")).toEqual(["4x1", "2x1", "1x2", "2x2", "1x3", "2x3"]);
   expect(setSize(l, "a", "2x1")).toBe(l);
   const ix = lay(w("c", "index", "1x1", "count"));
   expect(setSize(ix, "c", "1x2")).toBe(ix);
@@ -348,6 +348,15 @@ test("itemCapacity grows with size", () => {
   expect(itemCapacity("4x1", "icons")).toBe(12);
   expect(itemCapacity("1x2", "list")).toBe(4);
   expect(itemCapacity("1x2", "icons")).toBe(6);
+  expect(dims("2x3")).toEqual({ cols: 4, rows: 6 });
+  expect(itemCapacity("2x3", "list")).toBe(6);
+  expect(itemCapacity("1x3", "list")).toBe(6);
+  expect(itemCapacity("2x3", "icons")).toBe(18);
+});
+
+test("the Page source defaults to 2x3 and the tall sizes are offered", () => {
+  expect(SOURCES.app.sizes[0]).toBe("2x3");
+  expect(SOURCES.search.sizes).not.toContain("2x3");
 });
 
 test("setFormat", () => {
@@ -428,7 +437,7 @@ test("app widgets need an appPath and keep it; other sources drop it", () => {
 
 test("addWidget stores appPath for app widgets", () => {
   const out = addWidget(lay(), "app", { id: "p", appPath: "/w/x" });
-  expect(out.widgets[0]).toEqual({ id: "p", source: "app", size: "2x2", format: "live", appPath: "/w/x", x: 0, y: 0 });
+  expect(out.widgets[0]).toEqual({ id: "p", source: "app", size: "2x3", format: "live", appPath: "/w/x", x: 0, y: 0 });
 });
 
 test("a version-1 layout gets search prepended and is stamped current", () => {
@@ -923,12 +932,12 @@ test("FORMAT_MIN_ROWS: apps cards and folder icons need two cells (4 units)", ()
 });
 
 test("sizesFor: apps cards need two rows, apps icons and recents cards keep one-row sizes", () => {
-  expect(sizesFor("apps", "cards")).toEqual(["1x2", "2x2"]);
+  expect(sizesFor("apps", "cards")).toEqual(["1x2", "2x2", "1x3", "2x3"]);
   expect(sizesFor("apps", "icons")).toEqual(SOURCES.apps.sizes);
-  expect(sizesFor("apps", "icons")).toHaveLength(4);
+  expect(sizesFor("apps", "icons")).toHaveLength(6);
   expect(sizesFor("apps")).toEqual(SOURCES.apps.sizes);
   expect(sizesFor("recents", "cards")).toEqual(SOURCES.recents.sizes);
-  expect(sizesFor("folder", "icons")).toEqual(["1x2", "2x2"]);
+  expect(sizesFor("folder", "icons")).toEqual(["1x2", "2x2", "1x3", "2x3"]);
   expect(sizesFor("folder", "list")).toEqual(SOURCES.folder.sizes);
   expect(sizesFor("search", "bar")).toEqual(SOURCES.search.sizes);
   expect(sizesFor("build", "live")).toEqual(SOURCES.build.sizes);
@@ -970,7 +979,7 @@ test("new apps tiles default to icons, with every size allowed", () => {
 
 test("allowedSizes for an apps cards tile never offers a one-row size", () => {
   const l = lay(w("a", "apps", "2x2", "cards"));
-  expect(allowedSizes(l, "a")).toEqual(["1x2", "2x2"]);
+  expect(allowedSizes(l, "a")).toEqual(["1x2", "2x2", "1x3", "2x3"]);
 });
 
 test("normalizeLayout: a saved apps tile with no format is cards at two rows, icons at one", () => {
