@@ -1730,13 +1730,17 @@ def _start_resident(model: str, capability: str, *,
     "was unloaded before it could be used" (D266). Holding the record, a waiter
     reads the error off the very object it was waiting for.
 
-    `request_path` is True only for the miss-handling calls inside
-    `generate_text`/`_generate_sync` — never for a manual
+    `request_path` is True for every automatic load a caller's own request
+    triggers on a miss — the miss-handling calls inside
+    `generate_text`/`_generate_sync`, and `_wait_ready`'s own call on behalf
+    of image, video, speech, and transcribe — never for a manual
     `/api/ai/runtime/load`. It gates `_request_path_conflict` (an explicit
     load is never refused for contention, and clears any conflict standing on
     this capability: the user just made a choice) and stamps the new
     worker's `request_path_at`, the timestamp a LATER request-path eviction
-    checks itself against.
+    checks itself against. A `ModelSlotConflict` raised here reaches
+    `_wait_ready`'s caller the same way any other load failure already does
+    — surfaced through the record `_start_resident` hands back, not retried.
     """
     runner = _runner_or_raise(capability)
     _require_build_tools()
@@ -3226,7 +3230,7 @@ def _wait_ready(model: str, capability: str, job: str,
     Both rows have to be able to say the same failure regardless of the merge,
     which is what `_start_resident` returning the record is for (D266).
     """
-    started, pending = _start_resident(model, capability)
+    started, pending = _start_resident(model, capability, request_path=True)
     deadline = time.monotonic() + LOAD_WAIT_TIMEOUT_S
     unreadable = False
     try:

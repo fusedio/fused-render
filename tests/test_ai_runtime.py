@@ -6157,6 +6157,32 @@ def test_a_successful_image_render_with_no_caller_page_and_no_result_path_falls_
     assert row["page"] == ai_runtime.canonical_fs_path(str(out.parent))
 
 
+def test_an_image_render_respects_a_held_conflict_instead_of_evicting(
+        fake_image_runner, tmp_path):
+    """Image, video, speech, and transcribe all load their model through
+    `_wait_ready`, which used to call `_start_resident` with its default
+    `request_path=False` — bypassing `_request_path_conflict` and any held
+    conflict entirely, so a render for a model losing a standoff would
+    silently evict the held resident instead of being refused the way
+    `generate_text`'s own request-path loads already are. `_wait_ready`
+    now passes `request_path=True`."""
+    out_a = tmp_path / "kept.png"
+    job_a = supervisor.image_job_id("kept")
+    supervisor.start_image("org/kept", {"prompt": "x", "out": str(out_a)}, job_a)
+    assert _row(job_a)["state"] == "done"
+    supervisor.resolve_conflict(registry.IMAGE_GENERATION, keep="org/kept")
+
+    out_b = tmp_path / "other.png"
+    job_b = supervisor.image_job_id("other")
+    supervisor.start_image("org/other", {"prompt": "x", "out": str(out_b)}, job_b)
+    row = _row(job_b)
+    assert row["state"] == "error"
+    assert "org/kept" in row["message"]
+
+    # The held resident is untouched — never evicted by the refused attempt.
+    assert supervisor.ready_worker(registry.IMAGE_GENERATION, "org/kept") is not None
+
+
 def test_an_image_renders_to_disk_and_the_job_finishes(client, fake_image_runner):
     response = client.post("/api/ai/image", json={"prompt": "a red square"},
                            headers={"X-Fused": "1"})
