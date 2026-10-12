@@ -244,9 +244,14 @@ class MuxHandle:
     collected delegate takes the callbacks — and so the recording — with it.
     """
 
-    def __init__(self, path: str, audio: str | None):
+    def __init__(self, path: str, audio: str | None, *, audio_only: bool = False):
         self.path = path
         self.audio = audio
+        # No video track at all (the 13.0-14.1 route for audio-only system
+        # audio). The stream still has to deliver a display, so frames keep
+        # arriving; they are ignored, and the writer's session starts on the
+        # first AUDIO buffer instead.
+        self.audio_only = audio_only
         self.mixing = audio == "both"
         self.error: str | None = None
         self.dropped_frames = 0
@@ -287,7 +292,7 @@ class MuxHandle:
             if self._closing or self.error is not None:
                 return
             if not self._started:
-                if not video:
+                if video == self.audio_only:
                     return
                 self.writer.startSessionAtSourceTime_(
                     CM.CMSampleBufferGetPresentationTimeStamp(sbuf))
@@ -313,7 +318,8 @@ class MuxHandle:
     # --------------------------------------------------------------- callbacks
 
     def on_video(self, sbuf) -> None:
-        if not CM.CMSampleBufferIsValid(sbuf) or not _is_complete(sbuf):
+        if (self.audio_only or not CM.CMSampleBufferIsValid(sbuf)
+                or not _is_complete(sbuf)):
             return
         self._append(self.video_input, sbuf, video=True)
 
@@ -372,6 +378,10 @@ class MuxHandle:
             # Nothing was ever appended, so there is no session and
             # `finishWriting` would produce an unreadable file. Say so instead.
             self.writer.cancelWriting()
+            if self.audio_only:
+                raise RuntimeError(
+                    "the recording captured no audio — Screen Recording "
+                    "permission may have been revoked while it ran")
             raise RuntimeError(
                 "the recording captured no frames — the display may have gone "
                 "away, or Screen Recording permission was revoked while it ran")
@@ -495,8 +505,30 @@ def start(out: str, display, config, spec: dict) -> MuxHandle:
     the rect, cursor and Retina-scale rules stay in ONE place and this module
     only adds what is specific to writing the movie ourselves.
     """
+    return _start(out, display, config, spec, audio_only=False)
+
+
+def start_audio(out: str, display, config, spec: dict) -> MuxHandle:
+    """Record only the sound to `out` (.m4a): system audio, or system + mic.
+
+    The macOS 13.0-14.1 route for `capture.audio({source: "system"|"both"})`;
+    14.2+ uses a Core Audio process tap (`_darwin_tap`) and needs no display.
+    ScreenCaptureKit has no audio-only stream, so this is the screen stream of
+    `start` with the picture thrown away: the configuration is shrunk to a 2x2
+    frame once a second (the cheapest thing the stream will still deliver), the
+    writer gets NO video input and the `.m4a` file type, and `on_video` ignores
+    what does arrive. It needs the Screen Recording permission, like `start`.
+    """
+    config.setWidth_(2)
+    config.setHeight_(2)
+    config.setMinimumFrameInterval_(CM.CMTimeMake(1, 1))
+    return _start(out, display, config, spec, audio_only=True)
+
+
+def _start(out: str, display, config, spec: dict, *, audio_only: bool) -> MuxHandle:
     audio = spec.get("audio") or None
-    handle = MuxHandle(out, audio if audio in ("system", "mic", "both") else None)
+    handle = MuxHandle(out, audio if audio in ("system", "mic", "both") else None,
+                       audio_only=audio_only)
 
     config.setQueueDepth_(_QUEUE_DEPTH)
     if handle.mixing:
@@ -507,19 +539,21 @@ def start(out: str, display, config, spec: dict) -> MuxHandle:
 
     url = Foundation.NSURL.fileURLWithPath_(out)
     writer, error = AVF.AVAssetWriter.alloc().initWithURL_fileType_error_(
-        url, AVF.AVFileTypeQuickTimeMovie, None)
+        url, AVF.AVFileTypeAppleM4A if audio_only else AVF.AVFileTypeQuickTimeMovie,
+        None)
     if writer is None:
         raise RuntimeError(f"could not open {out} for writing: {error}")
     handle.writer = writer
 
-    video_input = AVF.AVAssetWriterInput.assetWriterInputWithMediaType_outputSettings_(
-        AVF.AVMediaTypeVideo,
-        _video_settings(int(config.width()), int(config.height())))
-    video_input.setExpectsMediaDataInRealTime_(True)
-    if not writer.canAddInput_(video_input):             # pragma: no cover
-        raise RuntimeError("the writer refused a video input")
-    writer.addInput_(video_input)
-    handle.video_input = video_input
+    if not audio_only:
+        video_input = AVF.AVAssetWriterInput.assetWriterInputWithMediaType_outputSettings_(
+            AVF.AVMediaTypeVideo,
+            _video_settings(int(config.width()), int(config.height())))
+        video_input.setExpectsMediaDataInRealTime_(True)
+        if not writer.canAddInput_(video_input):         # pragma: no cover
+            raise RuntimeError("the writer refused a video input")
+        writer.addInput_(video_input)
+        handle.video_input = video_input
 
     if handle.audio is not None:
         audio_input = AVF.AVAssetWriterInput.assetWriterInputWithMediaType_outputSettings_(
