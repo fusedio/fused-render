@@ -1,10 +1,10 @@
-// Miniature 4x2 grid with the widget's footprint filled, used by the size menu.
+// Miniature 4x3 grid with the widget's footprint filled, used by the size menu.
 import { CELL, dims, FIXED_ROWS, type WidgetSize, type WidgetSource } from "./layout";
 
 const COLS = 4;
-const ROWS = 2;
+const ROWS = 3;
 
-/** Row-major flags for the 4x2 grid: true where the widget covers the cell. */
+/** Row-major flags for the 4x3 grid: true where the widget covers the cell. */
 export function footprintCells(size: WidgetSize): boolean[] {
   const d = dims(size);
   // dims() is in half-cell units; the glyph draws whole cells.
@@ -19,8 +19,10 @@ export function SizeGlyph({ size, scale = 1, source }: { size: WidgetSize; scale
   const cells = footprintCells(size);
   // A fixed-row source is one unit tall: the same widths, drawn as a flat bar.
   const flat = source !== undefined && FIXED_ROWS[source] !== undefined;
+  // Three 9-unit rows with 2-unit gaps; a flat bar keeps the old two-row height.
+  const h = flat ? 20 : 31;
   return (
-    <svg aria-hidden="true" viewBox="0 0 42 20" width={42 * scale} height={20 * scale}>
+    <svg aria-hidden="true" viewBox={`0 0 42 ${h}`} width={42 * scale} height={h * scale}>
       {cells.map((on, i) => {
         const x = (i % COLS) * 11;
         const y = Math.floor(i / COLS) * 11;

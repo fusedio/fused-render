@@ -21,7 +21,7 @@ reference for both everyday and edit states).
 ```ts
 type WidgetSource = "apps" | "playground" | "sessions" | "recents"
                   | "tasks" | "bots" | "folder" | "index";
-type WidgetSize = "1x1" | "2x1" | "2x2" | "4x1";   // cols x rows
+type WidgetSize = "1x1" | "2x1" | "1x2" | "1x3" | "2x2" | "2x3" | "4x1";   // cols x rows
 type WidgetFormat = "cards" | "list" | "icons" | "board" | "count";
 interface Widget {
   id: string;            // random, stable
@@ -45,6 +45,10 @@ Per-source allowed sizes / formats (first entry is the default):
 | bots       | 1x1, 2x1, 2x2         | list, count           | bots `api.status` (`apps/bots/lib/api.ts`). List rows: name, status pill, `step`/`step_cap`, `title`/`note`. Click → `/bots`. |
 | folder     | 2x1, 1x1, 2x2, 4x1    | list, icons           | children of the bookmark folder `folderId`; title = folder name. Missing folder → empty state "This bookmark folder was deleted." |
 | index      | 1x1, 2x1              | count                 | `useIndexStatus` — file count + "updated N ago". |
+
+Every list-like source above (all but search, build, index) also offers 1x3 and 2x3 (appended
+last); the Page source (`app`) lists them as `2x3, 2x2, 2x1, 1x3, 1x2, 4x1`, so a new Page tile
+defaults to 2x3.
 
 **Default layout** (used when the server reports no saved layout; saved layouts are never
 touched): the Builder preset (`presetRows("builder")`) — search 4x1, build 2x1, apps 2x2
