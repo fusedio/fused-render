@@ -4481,4 +4481,67 @@ describe("a stop the frame caught up with on reload", () => {
     expect(users(controller).map((t) => t.text)).toEqual(["323ed"]);
     expect(notes(controller).map((n) => [n.glyph, n.text])).toEqual([["⏹", "Stopped."]]);
   });
+
+  async function reloadWith(history: any, message: string) {
+    const { controller, agent } = makeController({
+      history: () => history,
+      live_run: (_f, n) => ({ run_id: n === 0 ? "r1" : "" }),
+      poll: () => poll({ done: true, cancelled: true, error: "Stopped.", message }),
+    });
+    await controller.openSession("s1");
+    for (let i = 0; i < 20 && agent.of("poll").length === 0; i++) await new Promise((r) => setTimeout(r, 0));
+    for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 0));
+    return controller;
+  }
+
+  test("adds no second Stopped. when the restored reply already carries stopped (Bugbot)", async () => {
+    const controller = await reloadWith(
+      {
+        turns: [
+          { role: "user", text: "hi", uuid: "u1" },
+          { role: "assistant", text: "partial", stopped: true },
+        ],
+        transcript: { path: "/p/s1.jsonl", mtime: 1, size: 10 },
+      },
+      "hi",
+    );
+    expect(notes(controller)).toEqual([]);
+    expect(controller.getState().turns.filter((t) => t.role === "error")).toEqual([]);
+  });
+
+  test("an older session's rows are not this run's prompt: it is put up with its note (CodeRabbit)", async () => {
+    const controller = await reloadWith(
+      {
+        turns: [
+          { role: "user", text: "old", uuid: "u0" },
+          { role: "assistant", text: "done" },
+        ],
+        transcript: { path: "/p/s1.jsonl", mtime: 1, size: 10 },
+      },
+      "brand new",
+    );
+    expect(users(controller).map((t) => t.text)).toEqual(["old", "brand new"]);
+    expect(notes(controller).map((n) => n.text)).toEqual(["Stopped."]);
+  });
+
+  test("a prompt-only file does not drop the Stopped. note before the marker lands (Bugbot)", async () => {
+    const controller = await reloadWith(
+      {
+        turns: [{ role: "user", text: "hi", uuid: "u1" }],
+        transcript: { path: "/p/s1.jsonl", mtime: 1, size: 10 },
+      },
+      "hi",
+    );
+    expect(users(controller).map((t) => t.text)).toEqual(["hi"]);
+    expect(notes(controller).map((n) => n.text)).toEqual(["Stopped."]);
+  });
+
+  test("an empty file keeps the screen even when the run is no longer live (CodeRabbit)", async () => {
+    const controller = await reloadWith(
+      { turns: [], transcript: { path: "/p/s1.jsonl", mtime: 1, size: 0 } },
+      "hi",
+    );
+    expect(users(controller).map((t) => t.text)).toEqual(["hi"]);
+    expect(notes(controller).map((n) => n.text)).toEqual(["Stopped."]);
+  });
 });

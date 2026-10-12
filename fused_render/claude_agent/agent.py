@@ -7343,6 +7343,12 @@ def _join_pending_stop(run_dir: str, timeout: float | None = None) -> None:
     a turn the interrupt then ends — the reader's next message silently
     stopped — and a second Stop would interrupt nothing."""
     with _PENDING_STOPS_LOCK:
+        starting = _STOPS_STARTING.get(run_dir)
+    if starting is not None:
+        # A Stop still waiting for its host: the thread does not exist yet.
+        starting.wait(timeout if timeout is not None
+                      else _HOST_SPAWN_WAIT_SEC + 5.0)
+    with _PENDING_STOPS_LOCK:
         thread = _PENDING_STOPS.get(run_dir)
     if thread is not None and thread is not threading.current_thread():
         thread.join(timeout)
@@ -7377,8 +7383,44 @@ def _stop_pending(run_dir: str) -> bool:
     return False
 
 
+#: Runs whose Stop is waiting for the session host to spawn (`_cancel`), before
+#: any deferred-stop thread exists: run_dir -> Event set when the stop has
+#: either registered its thread or fallen through to the kill. `_send` joins
+#: it (`_join_pending_stop`) and a second Stop is answered as "already on its
+#: way", so neither can slip into the gap.
+_STOPS_STARTING: dict = {}
+
+
 def _cancel(run_id: str, interrupt_first: bool = True,
             queued: bool = False) -> dict:
+    """The STOP button's action — `_cancel_run`, plus the short wait for a
+    session host that has not spawned yet, held as a registered state so a
+    follow-up send or a second Stop cannot race it."""
+    run_dir = os.path.join(RUNS, run_id)
+    if _bad_id(run_id) or not os.path.isdir(run_dir) or not interrupt_first:
+        return _cancel_run(run_id, interrupt_first, queued)
+    with _PENDING_STOPS_LOCK:
+        if run_dir in _STOPS_STARTING:
+            return {"cancelled": run_id, "still_queued": [], "pending": True}
+    if not (_first_turn_pending(run_dir) and not _host_alive(run_dir)):
+        return _cancel_run(run_id, interrupt_first, queued)
+    event = threading.Event()
+    with _PENDING_STOPS_LOCK:
+        if run_dir in _STOPS_STARTING:
+            return {"cancelled": run_id, "still_queued": [], "pending": True}
+        _STOPS_STARTING[run_dir] = event
+    try:
+        _wait_for_host(run_dir, _HOST_SPAWN_WAIT_SEC)
+        return _cancel_run(run_id, interrupt_first, queued)
+    finally:
+        with _PENDING_STOPS_LOCK:
+            if _STOPS_STARTING.get(run_dir) is event:
+                _STOPS_STARTING.pop(run_dir, None)
+        event.set()
+
+
+def _cancel_run(run_id: str, interrupt_first: bool = True,
+                queued: bool = False) -> dict:
     """End a run — the STOP button's own action, and also `_send`'s way of
     ending a session it cannot hand a mid-session change to (a `read_dirs`
     that outgrew what was granted at spawn, or a changed `effort`).
@@ -7412,9 +7454,8 @@ def _cancel(run_id: str, interrupt_first: bool = True,
     # the marker waits for the host, briefly, and the stop then takes the
     # ordinary deferred road. A host that never comes falls through to the
     # kill it always got. The cap is well inside the cancel budget.
+    # (The wait itself lives in `_cancel`, under `_STOPS_STARTING`.)
     first_turn_pending = interrupt_first and _first_turn_pending(run_dir)
-    if first_turn_pending and not _host_alive(run_dir):
-        _wait_for_host(run_dir, _HOST_SPAWN_WAIT_SEC)
     # WHO ASKED, written down before anything is killed.
     #
     # Killing claude leaves the run dead with no `result` row, which `_poll`

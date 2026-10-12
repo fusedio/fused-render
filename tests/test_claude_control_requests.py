@@ -18,6 +18,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 
 import pytest
@@ -524,3 +525,43 @@ def test_discard_inbox_spares_only_the_opening_prompt(agent, tmp_path):
         json.dump({"text": "earlier", "at": 1}, fh)
     agent._write_inbox_entry(run_dir, "third")
     assert agent._discard_inbox(run_dir, keep_first=True) == ["third"]
+
+
+def test_the_host_wait_is_a_registered_stop_for_sends_and_second_stops(
+        agent, monkeypatch, tmp_path):
+    """Bugbot: while a Stop waits for the host to spawn, no thread exists yet —
+    a follow-up `_send` and a second Stop must still see the stop on its way."""
+    run_dir = os.path.join(agent.RUNS, "20261012-160000-ccc")
+    os.makedirs(agent._inbox_dir(run_dir))
+    agent._write_inbox_entry(run_dir, "first")
+    run_id = os.path.basename(run_dir)
+    gate = threading.Event()
+    entered = threading.Event()
+    monkeypatch.setattr(agent, "_first_turn_pending", lambda d: True)
+    monkeypatch.setattr(agent, "_host_alive", lambda d: False)
+
+    def slow_wait(d, timeout):
+        entered.set()
+        gate.wait(5)
+        return False
+
+    monkeypatch.setattr(agent, "_wait_for_host", slow_wait)
+    monkeypatch.setattr(agent, "_cancel_run", lambda *a, **k: {"cancelled": run_id})
+    results = []
+    first = threading.Thread(target=lambda: results.append(agent._cancel(run_id)))
+    first.start()
+    assert entered.wait(5)
+    # A second Stop in the gap is answered, not started again.
+    assert agent._cancel(run_id)["pending"] is True
+    # A send in the gap waits for the stop instead of writing past it.
+    joined = []
+    sender = threading.Thread(target=lambda: (agent._join_pending_stop(run_dir),
+                                              joined.append(True)))
+    sender.start()
+    time.sleep(0.2)
+    assert not joined
+    gate.set()
+    first.join(5)
+    sender.join(5)
+    assert joined and results == [{"cancelled": run_id}]
+    assert run_dir not in agent._STOPS_STARTING

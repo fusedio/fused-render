@@ -86,7 +86,7 @@ import type {
   StartResponse,
   SwitchableMode,
 } from "./types";
-import { composeBlocks, composeOutgoing, isMarkerOnly, stripBlocks } from "./wire";
+import { composeBlocks, composeOutgoing, isInterruptMark, isMarkerOnly, stripBlocks } from "./wire";
 /** PR2: the attachment pipeline's receipt row — carried, never built here. */
 import type { Receipt } from "../shots/types";
 
@@ -3517,7 +3517,11 @@ export function createChatController(deps: ControllerDeps): ChatController {
           // message"). The run knows the prompt (`poll.message`), so it goes
           // up the way the `unseen` branch below puts it, with the note under
           // it; the file's own rows replace both once they land.
-          const fileHasUser = state.turns.some((t) => t.role === "user");
+          // THIS RUN'S prompt, not any user turn: a reload of an older session
+          // whose new run has not reached the file yet holds earlier user rows.
+          const isOwnPrompt = (t: Turn) =>
+            t.role === "user" && (probeMsg ? t.text === probeMsg : true);
+          const fileHasUser = state.turns.some(isOwnPrompt);
           if (!fileHasUser && probeMsg) {
             addUser(probeMsg);
             appended = true;
@@ -3533,13 +3537,42 @@ export function createChatController(deps: ControllerDeps): ChatController {
           // file while the run is live and refuses to overwrite a newer
           // transcript, so the loop is cheap and cannot regress the screen.
           // Bounded like the server's own wait for the first turn (30 s).
-          if (!fileHasUser) {
+          // Done only when the file carries the prompt AND the stop itself (the
+          // CLI's marker row, or `stopped` on the last reply): the echo lands
+          // BEFORE the marker, and a prompt-only read replaces the optimistic
+          // rows, so the note is put back until the marker is there.
+          const fileHasStop = () => {
+            // Only rows AFTER this run's prompt count: an earlier stop in the
+            // same session must not satisfy this one.
+            let at = -1;
+            state.turns.forEach((t, i) => {
+              if (isOwnPrompt(t) && !!(t as UserTurn).uuid) at = i;
+            });
+            if (at < 0) return false;
+            const after = state.turns.slice(at + 1);
+            const last = after[after.length - 1];
+            return (
+              after.some((t) => t.role === "user" && isInterruptMark(t.text)) ||
+              (!!last && last.role === "assistant" && !!last.stopped)
+            );
+          };
+          if (!fileHasStop()) {
             void (async () => {
               for (let i = 0; i < 20; i++) {
                 await sleep(1500);
                 if (logGen !== gen || disposed || activeRun) return;
                 await refreshFromTranscript();
-                if (state.turns.some((t) => t.role === "user" && !!t.uuid)) return;
+                if (fileHasStop()) return;
+                // The read replaced the optimistic rows with a file that does
+                // not have them yet (an older session's rows, a prompt-only
+                // echo): put back what is still missing, prompt first.
+                if (probeMsg && !state.turns.some(isOwnPrompt)) addUser(probeMsg);
+                if (
+                  stopped.note &&
+                  !state.turns.some((t) => t.role === "note" && t.text === stopped.note)
+                ) {
+                  addNote(stopped.note, "⏹");
+                }
               }
             })();
           }
@@ -3772,7 +3805,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // yet, a stop's note — see the stop repair in `resumeAttach`); the file
       // catches up within the run and the next read draws its rows. A session
       // that is genuinely gone is `landDeleted` above, not this.
-      if (!turns.length && state.turns.length && res.live_run) return;
+      if (!turns.length && state.turns.length) return;
       emit({
         turns,
         ...(res.transcript && res.transcript.path ? { transcript: res.transcript } : {}),
