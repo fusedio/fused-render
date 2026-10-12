@@ -519,10 +519,31 @@ def start_audio(out: str, spec: dict):
             return _darwin_tap.start(out, spec)
         from fused_render.capture import _darwin_mux
 
-        display = _display(None)
-        return _darwin_mux.start_audio(
-            out, display, _configure(display, spec, stream_mic=False), spec)
+        try:
+            display = _display(None)
+            return _darwin_mux.start_audio(
+                out, display, _configure(display, spec, stream_mic=False), spec)
+        except Exception as exc:
+            # Whatever the SCStream/SCShareableContent error says, a missing
+            # Screen Recording grant is the cause worth naming — and in terms of
+            # sound, since nobody asked for a screen recording here.
+            if not _screen_granted():
+                raise RuntimeError(_system_audio_permission_message()) from exc
+            raise
     return _start_mic_recorder(out, spec)
+
+
+def _system_audio_permission_message() -> str:
+    """The 13.0-14.1 audio-only error for a missing Screen Recording grant."""
+    version = platform.mac_ver()[0] or "this version of macOS"
+    message = (f"recording system audio on macOS {version} needs the Screen "
+               "Recording permission — macOS calls it that, but only sound is "
+               "recorded, no picture. Grant it in System Settings → Privacy & "
+               "Security → Screen Recording, then quit and reopen the app.")
+    if (14, 0) <= _os_version() < (14, 2):
+        message += (" Updating to macOS 14.2 or later uses the narrower "
+                    "System Audio Recording permission instead.")
+    return message
 
 
 def _start_mic_recorder(out: str, spec: dict) -> _AudioHandle:
@@ -595,12 +616,15 @@ def failure(handle) -> str | None:
 def warning(handle) -> str | None:
     """Advice about a recording that is ending, or None. Optional backend hook.
 
-    Only the process tap has any: it cannot tell a denied permission from an
-    idle Mac, so it reports that nothing was heard instead of failing."""
-    from fused_render.capture import _darwin_tap
+    The process tap and the audio-only ScreenCaptureKit route have some:
+    neither can tell a denied permission from an idle Mac, so each reports that
+    nothing was heard instead of failing."""
+    from fused_render.capture import _darwin_mux, _darwin_tap
 
     if isinstance(handle, _darwin_tap.TapHandle):
         return _darwin_tap.warning(handle)
+    if isinstance(handle, _darwin_mux.MuxHandle):
+        return _darwin_mux.warning(handle)
     return None
 
 

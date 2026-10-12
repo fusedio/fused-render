@@ -1117,6 +1117,82 @@ def test_darwin_mux_audio_only_session_starts_on_audio_not_video(monkeypatch):
 
 
 @_darwin_only
+def test_darwin_mux_peak_and_system_audio_warning(monkeypatch):
+    import array
+
+    from fused_render.capture import _darwin, _darwin_mux
+
+    quiet = array.array("f", [0.0, 0.00001, -0.00002]).tobytes()
+    loud = array.array("f", [0.0, -0.5]).tobytes()
+    assert _darwin_mux._peak_f32(b"") == 0.0
+    assert _darwin_mux._peak_f32(quiet) < 1e-4
+    assert _darwin_mux._peak_f32(loud + b"\x01") == 0.5       # ragged tail ignored
+
+    now = _darwin_mux.time.monotonic()
+    handle = _darwin_mux.MuxHandle("/tmp/x.m4a", "system", audio_only=True)
+    assert _darwin.warning(handle) is None                    # never started
+    handle.started_at = now - 0.2
+    assert _darwin.warning(handle) is None                    # too short
+    handle.started_at = now - 5
+    assert "reached the recording" in _darwin.warning(handle)  # zero buffers
+    handle.system_buffers = 3
+    assert "no system audio was captured" in _darwin.warning(handle)
+    handle.system_heard = True
+    assert _darwin.warning(handle) is None
+
+    both = _darwin_mux.MuxHandle("/tmp/x.m4a", "both", audio_only=True)
+    both.started_at = now - 5
+    assert _darwin.warning(both) is not None
+    for h in (_darwin_mux.MuxHandle("/tmp/x.m4a", "mic", audio_only=True),
+              _darwin_mux.MuxHandle("/tmp/x.mp4", "system", audio_only=False)):
+        h.started_at = now - 5
+        assert _darwin.warning(h) is None
+
+    # _note_system: silence is counted, sound flips the flag, a parse failure
+    # is "unknown" (heard) and never raises.
+    h = _darwin_mux.MuxHandle("/tmp/x.m4a", "system", audio_only=True)
+    h._note_system("sbuf", bytearray(quiet))
+    assert (h.system_buffers, h.system_heard) == (1, False)
+    h._note_system("sbuf", bytearray(loud))
+    assert (h.system_buffers, h.system_heard) == (2, True)
+    h = _darwin_mux.MuxHandle("/tmp/x.m4a", "system", audio_only=True)
+    monkeypatch.setattr(_darwin_mux, "_pcm",
+                        lambda sbuf: (_ for _ in ()).throw(ValueError("bad")))
+    h._note_system("sbuf")
+    assert h.system_heard is True
+
+
+@_darwin_only
+@pytest.mark.parametrize("ver,narrower", [((13, 6), False), ((14, 1), True)])
+def test_darwin_audio_permission_message(monkeypatch, ver, narrower):
+    from fused_render.capture import _darwin
+
+    text = f"{ver[0]}.{ver[1]}"
+    monkeypatch.setattr(_darwin, "_os_version", lambda: ver)
+    monkeypatch.setattr(_darwin.platform, "mac_ver", lambda: (text, "", ""))
+    monkeypatch.setattr(_darwin, "_screen_granted", lambda: False)
+    monkeypatch.setattr(_darwin, "_use_tap", lambda: False)
+
+    def no_display(display_id):
+        raise RuntimeError("no capturable display")
+
+    monkeypatch.setattr(_darwin, "_display", no_display)
+    with pytest.raises(RuntimeError) as err:
+        _darwin.start_audio("/tmp/x.m4a", {"audio": "system"})
+    msg = str(err.value)
+    assert f"on macOS {text} needs the Screen Recording permission" in msg
+    assert "only sound is recorded, no picture" in msg
+    assert msg.endswith("then quit and reopen the app." + (
+        " Updating to macOS 14.2 or later uses the narrower System Audio "
+        "Recording permission instead." if narrower else ""))
+
+    # Granted: the original error is not rewritten.
+    monkeypatch.setattr(_darwin, "_screen_granted", lambda: True)
+    with pytest.raises(RuntimeError, match="no capturable display"):
+        _darwin.start_audio("/tmp/x.m4a", {"audio": "system"})
+
+
+@_darwin_only
 def test_darwin_tap_start_failure_is_not_masked_by_teardown_error(monkeypatch):
     from fused_render.capture import CaptureError, _darwin_tap
 

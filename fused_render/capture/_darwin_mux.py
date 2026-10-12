@@ -61,6 +61,7 @@ from __future__ import annotations
 import ctypes
 import ctypes.util
 import threading
+import time
 
 import objc
 import AVFoundation as AVF
@@ -164,6 +165,28 @@ def _pcm(sbuf):
     return block, bytearray(data), frames
 
 
+#: A system buffer whose samples all stay under this counts as silence. SCK
+#: hands float32 PCM (the same assumption the mixing path makes).
+_HEARD_PEAK = 1e-4
+#: How many buffers are inspected before giving up on hearing anything — the
+#: check copies bytes inside the callback, so it stops at the first loud one.
+_PEEK_BUFFERS = 200
+#: Shorter than this a "nothing heard" says nothing, so no warning.
+_WARN_AFTER_S = 1.0
+
+
+def _peak_f32(data) -> float:
+    """The largest absolute sample in little-endian float32 PCM bytes."""
+    import array
+
+    usable = len(data) - len(data) % 4
+    if usable <= 0:
+        return 0.0
+    samples = array.array("f")
+    samples.frombytes(bytes(data[:usable]))
+    return max((abs(x) for x in samples), default=0.0)
+
+
 # -------------------------------------------------------------------- delegates
 
 
@@ -256,6 +279,11 @@ class MuxHandle:
         self.error: str | None = None
         self.dropped_frames = 0
         self.dropped_audio = 0
+        # For `warning`: how many system buffers arrived, and whether any of the
+        # first few carried sound. `started_at` is set once the stream runs.
+        self.system_buffers = 0
+        self.system_heard = False
+        self.started_at = 0.0
 
         self.stream = None
         self.session = None
@@ -323,15 +351,33 @@ class MuxHandle:
             return
         self._append(self.video_input, sbuf, video=True)
 
+    def _note_system(self, sbuf, data=None) -> None:
+        """Count the buffer and, until one is heard, look at its samples.
+
+        Never raises: a parse failure must not cost the recording, so it is
+        treated as heard (unknown means no warning)."""
+        self.system_buffers += 1
+        if self.system_heard or self.system_buffers > _PEEK_BUFFERS:
+            return
+        try:
+            if data is None:
+                _block, data, _frames = _pcm(sbuf)
+            if data is not None and _peak_f32(data) > _HEARD_PEAK:
+                self.system_heard = True
+        except Exception:                                # noqa: BLE001
+            self.system_heard = True
+
     def on_system_audio(self, sbuf) -> None:
         if not CM.CMSampleBufferIsValid(sbuf):
             return
         if not self.mixing:
+            self._note_system(sbuf)
             self._append(self.audio_input, sbuf, video=False)
             return
         block, data, _frames = _pcm(sbuf)
         if data is None:
             return
+        self._note_system(sbuf, data)
         with self._ring_lock:
             mic = self.ring.take(len(data))
         add_clip_into(data, mic)
@@ -599,7 +645,27 @@ def _start(out: str, display, config, spec: dict, *, audio_only: bool) -> MuxHan
     except Exception:
         stop(handle, keep=False)
         raise
+    handle.started_at = time.monotonic()
     return handle
+
+
+def warning(handle: MuxHandle) -> str | None:
+    """Advice when an audio-only system recording heard nothing, else None.
+
+    The 13.0-14.1 route cannot tell "Screen Recording granted after this app
+    started" (macOS delivers silence or nothing until a relaunch) from an idle
+    Mac, so it says what it saw. Reads state; changes none."""
+    if (not handle.audio_only or handle.audio not in ("system", "both")
+            or not handle.started_at or handle.system_heard):
+        return None
+    if time.monotonic() - handle.started_at < _WARN_AFTER_S:
+        return None
+    if handle.system_buffers == 0:
+        return ("no system audio reached the recording — quit and reopen this "
+                "app after granting Screen Recording, then try again")
+    return ("no system audio was captured — either nothing was playing, or "
+            "Screen Recording was granted after this app started (quit and "
+            "reopen it, then try again)")
 
 
 def stop(handle: MuxHandle, *, keep: bool = True) -> None:
