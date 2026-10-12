@@ -171,15 +171,30 @@ def refuse(mode: str, spec: dict) -> str | None:
         return None
     if mode == "audio":
         source = spec.get("audio") or "mic"
-        if source in ("system", "both") and not _linux_audio.available():
+        if source in ("system", "both") and not _native_audio(spec):
             return _linux_audio.unavailable_reason()
         return None
     return _sink.refuse(mode, spec)
 
 
+def _native_audio(spec: dict) -> bool:
+    """Whether THIS recording uses native PipeWire/pulse capture.
+
+    Decided once and cached on `spec` (threaded by `__init__.start` through
+    `ext()`, `refuse()` and `start_audio()` for the same recording) rather than
+    asked of `_linux_audio.available()` again at each of those three call
+    sites — a session that appears or disappears between them could otherwise
+    leave the extension, the refusal and the actual backend disagreeing about
+    what is being recorded.
+    """
+    if "_audioNative" not in spec:
+        spec["_audioNative"] = _linux_audio.available()
+    return spec["_audioNative"]
+
+
 def ext(mode: str, spec: dict) -> str:
     """`.wav` for natively-recorded audio; whatever `_sink` names otherwise."""
-    if mode == "audio" and _linux_audio.available():
+    if mode == "audio" and _native_audio(spec):
         return ".wav"
     return _sink.ext(mode, spec)
 
@@ -187,7 +202,7 @@ def ext(mode: str, spec: dict) -> str:
 def start_audio(out: str, spec: dict):
     """Native whenever PipeWire/pulse is reachable; `_sink` otherwise (mic
     only — `refuse` has already turned away system/both in that case)."""
-    if _linux_audio.available():
+    if _native_audio(spec):
         return _linux_audio.start(out, spec)
     return _sink.start_audio(out, spec)
 

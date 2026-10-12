@@ -158,6 +158,36 @@ def test_refuse_blocks_system_both_when_unavailable(monkeypatch):
     assert _linux.refuse("audio", {"audio": "mic"}) is None
 
 
+def test_ext_refuse_start_audio_agree_despite_availability_flip(monkeypatch):
+    """`ext()`, `refuse()` and `start_audio()` must not each probe
+    `_linux_audio.available()` on their own: if the PipeWire/pulse socket
+    appeared or vanished between those three calls, probing independently
+    would let the extension, the refusal and the backend disagree about
+    whether this recording is native. They are threaded the same `spec` dict
+    (as `__init__.start` does) and must all go with whatever the FIRST probe
+    said, even though `available()` here flips on every call after that.
+    """
+    flips = iter([True, False, True, False, True, False])
+    monkeypatch.setattr(_linux_audio, "available", lambda: next(flips))
+    monkeypatch.setattr(_linux_audio, "unavailable_reason", lambda: "no pipewire here")
+    sentinel = object()
+    monkeypatch.setattr(_linux_audio, "start", lambda out, spec: sentinel)
+
+    # First probe says "available" -> every later call must agree, even
+    # though the mock would answer False, True, False... from here on.
+    spec = {"audio": "both"}
+    assert _linux.ext("audio", spec) == ".wav"
+    assert _linux.refuse("audio", spec) is None
+    assert _linux.start_audio("/tmp/whatever.wav", spec) is sentinel
+
+    # A fresh spec re-probes once (a new recording), and this time the first
+    # probe says "unavailable" -> ext, refuse and start_audio all agree on
+    # THAT, again regardless of what later calls to available() would say.
+    spec2 = {"audio": "both"}
+    assert _linux.ext("audio", spec2) != ".wav"
+    assert _linux.refuse("audio", spec2) == "no pipewire here"
+
+
 # ------------------------------------------------------------------- recording
 
 
