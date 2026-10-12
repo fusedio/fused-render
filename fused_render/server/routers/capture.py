@@ -15,13 +15,15 @@ which is guarded by the per-recording token from its own start reply plus an
 from __future__ import annotations
 
 import asyncio
+import os
 from urllib.parse import unquote
 
+from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi import (APIRouter, Body, Header, Response, WebSocket,
                      WebSocketDisconnect)
 
 from fused_render import capture
-from fused_render.server.common import _error, _require_fused
+from fused_render.server.common import STATIC_DIR, _error, _require_fused
 
 router = APIRouter()
 
@@ -36,6 +38,18 @@ def api_capture_list():
     which is what makes that safe (see `capture._darwin.probe`).
     """
     return {"sources": capture.sources(), "active": capture.active()}
+
+
+@router.get("/recording-pill")
+def recording_pill_page():
+    """The page the native recording pill loads (frontend/recording-pill.html)."""
+    page = os.path.join(STATIC_DIR, "shell-dist", "recording-pill.html")
+    if not os.path.isfile(page):
+        return PlainTextResponse(
+            "recording pill page not built (frontend/recording-pill.html → "
+            "shell-dist/recording-pill.html); run: cd frontend && bun run build",
+            status_code=503)
+    return FileResponse(page, headers={"Cache-Control": "no-store"})
 
 
 @router.post("/api/capture/start")
@@ -93,6 +107,44 @@ def api_capture_cancel(cid: str, x_fused: str | None = Header(default=None)):
         return _error(str(e), status=404)
     except Exception as e:                      # noqa: BLE001
         return _error(f"{e.__class__.__name__}: {e}".rstrip(": "), status=500)
+
+
+def _pause_route(action, cid: str, x_fused):
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    try:
+        return action(cid)
+    except capture.CaptureError as e:
+        return _error(str(e), status=404)
+    except capture.Unsupported as e:
+        return _error(str(e), status=409)
+    except Exception as e:                      # noqa: BLE001
+        return _error(f"{e.__class__.__name__}: {e}".rstrip(": "), status=500)
+
+
+@router.post("/api/capture/{cid}/pause")
+def api_capture_pause(cid: str, x_fused: str | None = Header(default=None)):
+    """Stop recording until resumed (audio recordings). 409 where unsupported."""
+    return _pause_route(capture.pause, cid, x_fused)
+
+
+@router.post("/api/capture/{cid}/resume")
+def api_capture_resume(cid: str, x_fused: str | None = Header(default=None)):
+    """Carry on after a pause."""
+    return _pause_route(capture.resume, cid, x_fused)
+
+
+@router.get("/api/capture/{cid}/state")
+def api_capture_state(cid: str):
+    """What the native recording pill polls: seconds, paused, loudness.
+
+    Unguarded like `GET /api/capture` — it reads, and says nothing the list does
+    not (plus a level). Every /api response is already `no-cache` (server/common.py)."""
+    try:
+        return capture.state(cid)
+    except capture.CaptureError as e:
+        return _error(str(e), status=404)
 
 
 @router.post("/api/capture/screenshot")

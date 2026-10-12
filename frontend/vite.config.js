@@ -50,6 +50,8 @@ export default defineConfig({
         lan: fileURLToPath(new URL("./lan.html", import.meta.url)),
         dock: fileURLToPath(new URL("./dock.html", import.meta.url)),
         launcher: fileURLToPath(new URL("./launcher.html", import.meta.url)),
+        // The floating recording pill: served at `/recording-pill` to its panel (fused_render/recording_pill_panel.py).
+        recpill: fileURLToPath(new URL("./recording-pill.html", import.meta.url)),
       },
       output: {
         // Third-party deps change far less often than the app itself — their

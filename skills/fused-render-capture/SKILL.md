@@ -17,14 +17,19 @@ Platform matrix:
 | survives page reload | yes | no (file kept) | no (file kept) |
 | `display`/`rect`/`cursor` on screen() | yes | refused | refused |
 | same on screenshot() | yes | yes | rect only |
-| `device` on audio() | refused (system input; use screen's `audio:"mic"`) | yes | yes |
+| `device` on audio() | `source:"mic"`: refused (system input; use screen's `audio:"mic"`); `"system"`: refused; `"both"`: yes | yes | yes |
+| `audio({source:"system"\|"both"})` | yes (14.2+: Core Audio tap, "System Audio Recording" grant; 13.0–14.1: Screen Recording grant) | refused (record the screen with `audio:"system"`) | refused (same) |
 | container | .mov/.m4a | .mp4/.webm | .mp4/.webm |
 
 So: don't hardcode extension in `path` — omit or read `rec.path`. Recordings that matter: keep page open on Windows/Linux.
 
 ## API
 
-`screen({audio: false|"mic"|"system"|"both", display, rect, cursor, device, path, maxSeconds, title})` and `audio({source: "mic", device, path, maxSeconds, title})` resolve **when recording starts**, handle = `{id, jobId, path, url, state, stop(), cancel()}`. `stop()` → `{path, url, mime, seconds, bytes}`. `cancel()` (and job row ✕) stops AND DELETES — treat as "user doesn't want it". Elapsed seconds: `fused.watchJob(rec.jobId).watch(...)` — no onTick. `maxSeconds` default 30 min; hitting it stops, keeps file.
+`screen({audio: false|"mic"|"system"|"both", display, rect, cursor, device, path, maxSeconds, title})` and `audio({source: "mic"|"system"|"both", device, path, maxSeconds, title})` resolve **when recording starts**, handle = `{id, jobId, path, url, state, paused, pause(), resume(), stop(), cancel()}`. `stop()` → `{path, url, mime, seconds, bytes}` (+ `warning` when a system-audio tap heard nothing in ≥1 s: either the Mac was silent or this app lacks System Audio Recording — macOS can't tell which, so it is a warning on a valid file, not an error; show it). `cancel()` (and job row ✕) stops AND DELETES — treat as "user doesn't want it". Elapsed seconds: `fused.watchJob(rec.jobId).watch(...)` — no onTick. `maxSeconds` default 30 min; hitting it stops, keeps file.
+
+`pause()`/`resume()` (macOS audio recordings; `paused` reads the state) hold the recording: paused time is not in the file and does not count toward `maxSeconds`. Windows/Linux and screen recordings reject with `.type "unavailable"`. On macOS a floating pill (icon, level meter, pause, stop) shows while an audio recording runs and its stop is the same as `stop()` — so a page may call `stop()` after it and just gets the finished record. Don't draw a second recording-indicator for it.
+
+macOS 13.0–14.1 system audio (`source:"system"|"both"`): needs the Screen Recording permission (only sound is recorded, no picture); the app must be quit and reopened after the grant; the file includes ALL system sound, notifications included. `warning` there also fires on silence or no audio reaching the recording.
 
 `screenshot({display, rect, cursor, path})` — no handle, no job row, native every platform (no share prompt → can shoot cross-origin panes). Filename picks png/jpeg; no `format` option.
 

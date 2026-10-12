@@ -11344,10 +11344,19 @@ three platforms, one API, no field naming which one served you.
   `task`. **System audio is what a browser cannot do on macOS at all**, and that
   is what justifies the native path there — and, read the other way, why the
   other two platforms do not need one (CP-10): Chromium shares system audio on
-  Windows and through the PipeWire portal on Linux. Audio-only on macOS records
-  the system's current input and **refuses** `device` rather than ignoring it,
-  naming where a specific microphone can be chosen (a screen recording's
-  `audio: "mic"`) — see D409 for why the API that could do both deadlocked. On
+  Windows and through the PipeWire portal on Linux. Audio-only `source` is
+  `"mic"` (default), `"system"` or `"both"`: on macOS 14.2+ the latter two are a
+  Core Audio process tap (no Screen Recording grant) and on 13.0–14.1 the
+  ScreenCaptureKit stream with no video track; Windows and Linux refuse them,
+  naming the screen recording that does it (D1343). On 13.0–14.1 the grant is Screen Recording (sound only, no
+  picture), the app must be quit and reopened after granting it, and the
+  recording carries ALL system sound, notifications included; `stop()`'s
+  `warning` fires when nothing was heard (D1344). Audio-only `"mic"` on macOS
+  records the system's current input and **refuses** `device` rather than
+  ignoring it, naming where a specific microphone can be chosen (a screen
+  recording's `audio: "mic"`, or audio-only `"both"`) — see D409 for why the
+  API that could do both deadlocked. `"system"` refuses `device` too: it
+  records no microphone. On
   the streamed platforms both paths are `getUserMedia`, so `device` is honoured
   on `audio()` too; that asymmetry is a refusal sentence on one platform, never
   a flag a page reads.
@@ -11365,7 +11374,8 @@ three platforms, one API, no field naming which one served you.
   thing native capture EXISTS for — a page can already record a screen with
   `MediaRecorder`, and system audio is the one thing it cannot do on macOS, so
   recording's floor is `SCStreamConfiguration.capturesAudio`: **macOS 13**. The
-  still's is 13 too, and audio-only never needed ScreenCaptureKit at all. Below
+  still's is 13 too, and audio-only microphone never needed ScreenCaptureKit at all (audio-only
+  system audio needs it only below 14.2). Below
   13 a Mac gets `available: false, reason: "needs macOS 13"` and a start rejects
   `"unavailable"` with the same sentence (D417). Windows and Linux get the same
   shape with their own reason (CP-10, CP-11). **That holds for a backend that will not IMPORT
@@ -11463,6 +11473,23 @@ three platforms, one API, no field naming which one served you.
   the handle exists, as is the `client` flag on `sources()`. A page reads
   `{available, reason}` and refusal sentences; it never learns which backend it
   got, and `tests/test_capture.py` fails if any of the three leaks.
+- **CP-14** **An audio recording can be paused, and macOS shows a floating
+  pill while one runs.** `POST /api/capture/{id}/pause|resume` and
+  `GET /api/capture/{id}/state` (clock, paused, a 0..1 level) are neutral: the
+  routes know nothing about a route's internals, and pause/resume/level are
+  OPTIONAL per-backend hooks, so a recording whose backend has none answers 409
+  (typed `unavailable` in the page) rather than faking a pause. Paused time is
+  excluded from `seconds` and from the `maxSeconds` cap (a paused-forever
+  recording is ended by a backstop of `MAX_MAX_SECONDS`, not left open). Mic and
+  tap hold the recorder; the ScreenCaptureKit mux route (13.0-14.1) cannot, since
+  the stream keeps delivering, so it drops buffers while paused and subtracts the
+  gap from every later timestamp — the file has no hole. Screen recordings and
+  the streamed (Windows/Linux) recorder refuse. The pill is the native
+  `recording_pill_panel.py` (a non-activating, never-key panel hosting
+  `/recording-pill`), shown on every audio start and hidden on every ending path
+  (stop, cancel, cap, a lost backend, the job row's ✕, `stop_all`); the page polls
+  `/state`, so no backend pushes anything. Its stop is the ordinary stop, so a
+  page's own `rec.stop()` afterwards gets the cached finished record.
   Local only — a hosted/exported page has no capture (docs/EXPORT.md).
 
 ## 46. Background Apps — A Folder's Own Long-Running Daemon (D500, D501, D502, D505, D506, D507, D508, D509, D510, D511, D512, D513, D514, D515)

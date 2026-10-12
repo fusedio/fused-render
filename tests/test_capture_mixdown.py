@@ -23,7 +23,8 @@ import pytest
 
 from fused_render.capture import _mixdown
 from fused_render.capture._mixdown import (FLOAT, Ring, add_clip_into, peak,
-                                           upmix_mono_to_stereo)
+                                           upmix_mono_to_stereo,
+                                           upmix_mono_to_stereo_interleaved)
 
 
 def pcm(*values: float) -> bytearray:
@@ -100,6 +101,14 @@ def test_mono_upmixes_by_duplicating_the_planar_block():
     signal IS the block twice — no interleaving, no per-sample work."""
     mono = pcm(1.0, 2.0, 3.0)
     assert upmix_mono_to_stereo(bytes(mono)) == mono + mono
+
+
+def test_mono_upmixes_interleaved_by_duplicating_each_sample():
+    """Interleaved is L R L R, so L=R means each sample twice in a row — the
+    planar block-duplicate would play the voice at double speed."""
+    mono = pcm(1.0, 2.0, 3.0)
+    assert upmix_mono_to_stereo_interleaved(bytes(mono)) == pcm(
+        1.0, 1.0, 2.0, 2.0, 3.0, 3.0)
 
 
 # -------------------------------------------------------------------- the mix

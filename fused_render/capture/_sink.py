@@ -93,6 +93,13 @@ def refuse(mode: str, spec: dict) -> str | None:
     """
     if mode == "screenshot":                                # native, not here
         return None
+    if mode == "audio" and spec.get("audio") in ("system", "both"):
+        # Audio-only records through the page's getUserMedia, and Chromium
+        # hands an audio-only request the microphone and nothing else. The
+        # screen picker's "share audio" checkbox is the only system-audio
+        # route a browser has, and it exists only on a screen recording.
+        return ("audio-only recording here captures the microphone only — "
+                "for system audio record the screen with audio: 'system'")
     if mode == "screen":
         if spec.get("display") not in (None, ""):
             return ("'display' cannot be chosen here — on this platform the "

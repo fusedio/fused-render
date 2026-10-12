@@ -299,8 +299,8 @@
  *     "unavailable" (no decision runner on this machine: Apple Silicon only).
  *   fused.capture.* -> record the screen, record the mic, grab a still
  *     screen({display, rect, audio, device, cursor, path, maxSeconds, title})
- *     -> Promise<handle> and audio({source, path, maxSeconds, title})
- *     -> Promise<handle> both RESOLVE WHEN THE
+ *     -> Promise<handle> and audio({source: "mic"|"system"|"both", device, path, maxSeconds,
+ *     title}) -> Promise<handle> both RESOLVE WHEN THE
  *     RECORDING IS RUNNING, not when it ends — a recording is a session of
  *     unknown length, so what comes back is a handle: {id, path, url, mode,
  *     jobId, state, stop(), cancel()}. `stop()` resolves with the finished file
@@ -311,9 +311,12 @@
  *     than a blob round-trip through JS.
  *     `audio` on a screen recording is false, "mic", "system" or "both", named
  *     rather than boolean and refused rather than coerced. `device` picks a
- *     microphone THERE; system audio is a property of a screen stream, so
- *     `audio()` records the microphone only, from the system's current input —
- *     it refuses a `device` rather than ignoring one.
+ *     microphone THERE. `audio({source})` is "mic" (default), "system" or
+ *     "both" on macOS; on Windows and Linux only "mic" — the other two are
+ *     refused, naming the screen recording that does it. macOS audio-only
+ *     "mic" records the system's current input and refuses a `device`;
+ *     "system" refuses one too; "both" honours it. `stop()` may add a
+ *     `warning` sentence ("no system audio was captured …") to the result.
  *     A recording is a JOB ROW, so it survives the page that started it:
  *     `list()` finds live ones (including another page's) and `attach(id)`
  *     hands the handle back. For elapsed seconds read that row —
@@ -7014,12 +7017,36 @@
         });
       return ending;
     }
+    let paused = !!started.paused;
+    // The server's reply carries the new `paused`. A recording the browser
+    // encodes has nothing here to hold, so it refuses in one sentence (typed
+    // like every "this machine cannot" error); a screen recording, or a platform
+    // with no pause, gets the server's own 409 the same way.
+    function ctl(action) {
+      if (streamer) {
+        const err = new Error(
+          "pausing is not available when this browser does the recording");
+        err.type = "unavailable";
+        return Promise.reject(err);
+      }
+      if (ending) return Promise.resolve();
+      return captureFetch(
+        "/api/capture/" + encodeURIComponent(started.id) + "/" + action)
+        .then((reply) => {
+          paused = reply && typeof reply.paused === "boolean"
+            ? reply.paused : action === "pause";
+        });
+    }
     const handle = {
       id: started.id,
       mode: started.mode,
       path: started.path,
       jobId: started.jobId,
       maxSeconds: started.maxSeconds,
+      // Stop recording until resume(); the file stays open and its length is
+      // only the time spent recording. The menu-bar pill drives the same call.
+      pause: () => ctl("pause"),
+      resume: () => ctl("resume"),
       // Keeps the file. This is the ending a page asks for.
       stop: () => end("stop"),
       // Stops AND DELETES — the same meaning the manager's ✕ has, spelled out
@@ -7027,6 +7054,7 @@
       cancel: () => end("cancel"),
     };
     Object.defineProperty(handle, "state", { get: () => state });
+    Object.defineProperty(handle, "paused", { get: () => paused });
     Object.defineProperty(handle, "url", {
       get: () => (result ? result.url : rawUrl(started.path)),
     });
@@ -7078,14 +7106,30 @@
 
   // fused.capture.audio({source, path, maxSeconds, title})
   //
-  // The microphone to an .m4a. `source` is "mic" — system audio is a property of
-  // a SCREEN recording (it is captured off the display stream), so asking for it
-  // here is refused with the sentence that says where to ask instead.
+  // Sound to an .m4a. `source` is "mic" (the default), "system" (what this Mac
+  // is playing) or "both" (mixed). On macOS 14.2+ system audio is a Core Audio
+  // process tap — no Screen Recording permission, its own "System Audio
+  // Recording" one; 13.0-14.1 uses ScreenCaptureKit and needs Screen Recording.
+  // On 13.0-14.1 that grant is sound only (no picture), the app must be quit and
+  // reopened after granting it, and the file holds ALL system sound, notifications
+  // included.
+  // Windows and Linux refuse "system"/"both" here, with a sentence saying to
+  // record the screen with `audio: "system"` instead.
   //
-  // NO `device` here: audio-only records the system's current input, and a
-  // `device` is REFUSED rather than ignored (the server's error names the way
-  // to pick one — a screen recording's `audio: "mic"`). It is still forwarded,
-  // so that refusal is the server's one good sentence rather than two.
+  // `device` picks the microphone for "mic" and "both" — except that macOS
+  // audio-only "mic" records the system's current input and REFUSES a `device`
+  // rather than ignoring it, and "system" has no microphone to choose (also
+  // refused). It is always forwarded, so the refusal is the server's one good
+  // sentence rather than two. A tap cannot tell a denied permission from an
+  // idle Mac, so a stop() on a recording that heard nothing carries a
+  // `warning` sentence next to the file — the file itself is still valid.
+  //
+  // On macOS a floating recording pill (app icon, level meter, pause/resume,
+  // stop) shows for the length of an audio recording; its stop is the same
+  // request as rec.stop(), so a page's own stop() afterwards just answers with
+  // the finished record. rec.pause() / rec.resume() hold the recording (paused
+  // time is not in the file and does not count toward maxSeconds); rec.paused
+  // reads the state. Windows and Linux reject them with `.type "unavailable"`.
   function captureAudio(opts) {
     opts = opts || {};
     const body = { mode: "audio" };
