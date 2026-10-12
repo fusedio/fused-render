@@ -1750,6 +1750,14 @@ def _request_path_conflict(capability: str, model: str, current: Worker | None,
         # The SAME caller swapping its own models — never recorded, because
         # it can never, by itself, prove two requesters are fighting.
         return None
+    if not current.requester_id or is_user_requester(current.requester_id):
+        # Nobody is fighting for a resident nobody claimed (an internal
+        # caller loaded it outside the request path) or one the user set
+        # explicitly: taking it over is an ordinary first move, not a
+        # requester "coming back". Recording it would wrongly implicate the
+        # requester who takes it over the moment anyone else later evicts
+        # THEM — a brand-new third party with no history of its own.
+        return None
     now = time.time()
     chain = [e for e in _swap_chains.get(capability, ()) if now - e[0] < CONFLICT_WINDOW_S]
     if any(rid == current.requester_id for _, rid in chain):

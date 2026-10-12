@@ -654,3 +654,43 @@ script's own retries would each look like a new stranger. It now falls
 back to `script:<sys.argv[0]'s own absolute path>` — one stable identity
 for that script across every call it makes — and only an empty
 `sys.argv[0]` (an interactive interpreter) falls through to true anonymity.
+
+## Taking over the user's own model never taints a brand-new requester
+
+`_request_path_conflict`'s chain-match rule (`fused_render/ai/supervisor.py`)
+checked `any(rid == current.requester_id for _, rid in chain)` — does the
+model's CURRENT loader appear anywhere in the capability's swap-chain
+window — with no exception for who that current loader is. That falsely
+implicated a brand-new, first-time requester the moment it took over a
+model from someone whose OWN claim on the slot was never itself a fight:
+the user explicitly setting a model on the AI Models page, or an internal
+caller loading one outside the request path (`requester_id` unset). Either
+way nobody was "fighting" for that resident, so a requester taking it over
+is making an ordinary first move, not "coming back" — yet the old rule
+would record that requester's id into the chain regardless, so the NEXT
+unrelated requester to evict them got wrongly flagged as the second half
+of a standoff that never happened.
+
+Fixed by treating an eviction of such a resident (`current.requester_id`
+empty, or `is_user_requester(current.requester_id)`) as invisible to the
+chain altogether — it returns `None` (ordinary) before the chain is even
+consulted, and nothing is appended for that eviction. A resident another
+NAMED, non-user requester loaded is unaffected: the rotation and
+retry-forever scenarios below still see every entry they always saw.
+
+This leaves every existing identity-based scenario exactly as it was:
+`test_one_requester_alternating_is_never_a_conflict` and
+`test_a_single_switch_back_is_not_a_conflict`/`test_a_one_way_sequence_of_
+three_models_is_not_a_ping_pong` short-circuit earlier (same requester, or
+no prior current); `test_two_requesters_retrying_forever_end_in_a_conflict_
+not_forever` and `test_three_requesters_rotating_end_in_a_conflict` never
+touch a user-loaded or unclaimed resident, so their chains record and
+match exactly as before. Only a resident nobody was contending for is now
+exempt.
+
+Test: `test_taking_over_the_users_own_model_never_taints_a_brand_new_
+requester` (`tests/test_ai_runtime.py`) — the user loads org/a explicitly,
+`x` takes over for org/b (an ordinary one-off takeover of an uncontested
+resident), `y` then takes over for org/c; asserts no conflict. Confirmed
+red against the unmodified rule via a stash round-trip (raised
+`ModelSlotConflict` between org/b and org/c), green after the fix.

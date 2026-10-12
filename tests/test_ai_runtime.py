@@ -3741,6 +3741,21 @@ def test_a_one_off_switch_by_another_requester_is_ordinary(fake_runner):
     assert supervisor.describe()["conflicts"] == []
 
 
+def test_taking_over_the_users_own_model_never_taints_a_brand_new_requester(fake_runner):
+    """SPEC-model-slot-conflict.md §1: the user explicitly loads org/a (not
+    through the request path); X then takes the slot for org/b, a one-off
+    takeover of something nobody was fighting over; Y, a first-time
+    requester, then takes the slot back for org/c. X was never "fighting"
+    anyone for org/a — the user just set it — so Y's takeover of X's model
+    must stay ordinary, not get retroactively implicated as "X's second
+    cross-requester eviction"."""
+    supervisor.load("org/a", registry.TEXT_GENERATION, requester_id=supervisor.USER_REQUESTER_ID)
+    _wait_ready("org/a")
+    assert _retry_generate_text("org/b", requester_id="x") == "ready"
+    assert _retry_generate_text("org/c", requester_id="y") == "ready"
+    assert supervisor.describe()["conflicts"] == []
+
+
 def test_a_single_switch_outside_the_conflict_window_still_evicts(fake_runner):
     """The other half of the rule: a one-off switch — not a tight loop — must
     keep working exactly as it does today, forever, not just on its first
