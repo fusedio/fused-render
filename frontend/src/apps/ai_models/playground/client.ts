@@ -82,6 +82,61 @@ export class ModelLoading extends Error {
   }
 }
 
+/** The 409 any request-path call answers when two different models are
+ *  fighting over one capability's resident slot (SPEC-model-slot-conflict.md).
+ *  UNLIKE `ModelLoading`, this is TERMINAL: no load it started is there to
+ *  watch, so `withModelReady` never retries it — it is not a `ModelLoading`,
+ *  so the `instanceof` check there already lets it straight through. Thrown
+ *  with its own type (rather than just the plain `Error` the generic 409
+ *  fallback throws) so a caller — the chat/embed/decide stages, and whatever
+ *  renders the Models dock's conflict row — can offer the same "keep A / keep
+ *  B / stop both" choice the AI Models page does, instead of only a sentence. */
+export class ModelSlotConflict extends Error {
+  capability: string;
+  models: string[];
+  resident: string | null;
+  held: boolean;
+  constructor(
+    message: string,
+    capability: string,
+    models: string[],
+    resident: string | null,
+    held: boolean,
+  ) {
+    super(message);
+    this.capability = capability;
+    this.models = models;
+    this.resident = resident;
+    this.held = held;
+  }
+}
+
+/** The shared 409 fork every request-path reader below makes: `ModelLoading`
+ *  to watch-and-retry, `ModelSlotConflict` to offer a choice instead, or the
+ *  generic fallback `Error` for anything else. One function rather than a
+ *  copy per reader so the three outcomes stay in lockstep across `streamChat`,
+ *  `readEmbedReply` and `decide`. */
+function throwRequestPathError(
+  status: number,
+  error: { type?: string; message?: string; jobId?: string; capability?: string;
+           models?: string[]; resident?: string | null; held?: boolean } | undefined,
+  fallback: string,
+): never {
+  if (status === 409 && error?.type === "model_loading") {
+    throw new ModelLoading(error.message || "model is loading", error.jobId ?? null);
+  }
+  if (status === 409 && error?.type === "model_slot_conflict") {
+    throw new ModelSlotConflict(
+      error.message || "two models are fighting over this capability's slot",
+      error.capability || "",
+      error.models || [],
+      error.resident ?? null,
+      error.held ?? false,
+    );
+  }
+  throw new Error(error?.message || `${fallback} (${status})`);
+}
+
 function frameError(error: unknown): Error {
   const e = error as { message?: string; type?: string } | null;
   return new Error(e?.message || (typeof error === "string" ? error : "generation failed"));
@@ -127,13 +182,10 @@ export async function streamChat(opts: {
     // Validation and the cold start both answer BEFORE any stream exists, so
     // the body here is one JSON object, not NDJSON.
     const data = (await res.json().catch(() => null)) as {
-      error?: { type?: string; message?: string; jobId?: string };
+      error?: { type?: string; message?: string; jobId?: string; capability?: string;
+                models?: string[]; resident?: string | null; held?: boolean };
     } | null;
-    const error = data?.error;
-    if (res.status === 409 && error?.type === "model_loading") {
-      throw new ModelLoading(error.message || "model is loading", error.jobId ?? null);
-    }
-    throw new Error(error?.message || `generation failed (${res.status})`);
+    throwRequestPathError(res.status, data?.error, "generation failed");
   }
   if (!res.body) throw new Error("no response body");
   const reader = res.body.getReader();
@@ -511,14 +563,11 @@ async function readEmbedReply(res: Response): Promise<EmbedResult> {
   const data = (await res.json().catch(() => null)) as {
     ok?: boolean;
     result?: EmbedResult;
-    error?: { type?: string; message?: string; jobId?: string };
+    error?: { type?: string; message?: string; jobId?: string; capability?: string;
+              models?: string[]; resident?: string | null; held?: boolean };
   } | null;
   if (!res.ok || !data?.ok) {
-    const error = data?.error;
-    if (res.status === 409 && error?.type === "model_loading") {
-      throw new ModelLoading(error.message || "model is loading", error.jobId ?? null);
-    }
-    throw new Error(error?.message || `embedding failed (${res.status})`);
+    throwRequestPathError(res.status, data?.error, "embedding failed");
   }
   if (!data.result) throw new Error("the reply carried no result");
   return data.result;
@@ -602,14 +651,11 @@ export async function decide(
   const data = (await res.json().catch(() => null)) as {
     ok?: boolean;
     result?: DecideResult;
-    error?: { type?: string; message?: string; jobId?: string };
+    error?: { type?: string; message?: string; jobId?: string; capability?: string;
+              models?: string[]; resident?: string | null; held?: boolean };
   } | null;
   if (!res.ok || !data?.ok) {
-    const error = data?.error;
-    if (res.status === 409 && error?.type === "model_loading") {
-      throw new ModelLoading(error.message || "model is loading", error.jobId ?? null);
-    }
-    throw new Error(error?.message || `decision failed (${res.status})`);
+    throwRequestPathError(res.status, data?.error, "decision failed");
   }
   if (!data.result) throw new Error("the reply carried no result");
   return data.result;

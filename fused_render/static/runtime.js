@@ -275,8 +275,11 @@
  *     no onProgress, no jobId on success. Rejects .type "bad_request" |
  *     "model_loading" (the model is not resident; .jobId is the load this
  *     call just started — watch it and retry, exactly like the first
- *     fused.ai.text(...) on a cold local model) | "ai_error" | "unavailable" (no
- *     embedding runner on this machine).
+ *     fused.ai.text(...) on a cold local model) | "model_slot_conflict"
+ *     (another model is already fighting this one over the capability's
+ *     slot; .capability/.models/.resident/.held name the standoff — this is
+ *     TERMINAL, do not retry) | "ai_error" | "unavailable" (no embedding
+ *     runner on this machine).
  *   fused.ai.decide({state, questions, model, provider, abortSignal})
  *     -> Promise<{answers, ...frame}>  usage: {inputTokens, outputTokens: 0, totalTokens}
  *     providerMetadata.local: {runner}.
@@ -295,8 +298,11 @@
  *     and state. Not job-backed: one forward pass per question, over in
  *     milliseconds, so the reply IS the result. Rejects .type "bad_request"
  *     (a malformed question, named by id) | "model_loading" (.jobId is the
- *     load this call started — watch it and retry) | "ai_error" |
- *     "unavailable" (no decision runner on this machine: Apple Silicon only).
+ *     load this call started — watch it and retry) | "model_slot_conflict"
+ *     (another model is already fighting this one over the capability's
+ *     slot; .capability/.models/.resident/.held name the standoff — this is
+ *     TERMINAL, do not retry) | "ai_error" | "unavailable" (no decision
+ *     runner on this machine: Apple Silicon only).
  *   fused.capture.* -> record the screen, record the mic, grab a still
  *     screen({display, rect, audio, device, cursor, path, maxSeconds, title})
  *     -> Promise<handle> and audio({source: "mic"|"system"|"both", device, path, maxSeconds,
@@ -4082,6 +4088,20 @@
       // load this call just started (SPEC AI-5). Carrying it through is what
       // lets a caller show that download rather than just reporting a failure.
       if (error && error.jobId) err.jobId = error.jobId;
+      // "model_slot_conflict" (SPEC-model-slot-conflict.md): two different
+      // models are fighting over this capability's one resident slot and
+      // the server has stopped auto-evicting between them. UNLIKE
+      // "model_loading", this is terminal — it is never followed by a load
+      // that will eventually finish, so a caller must not retry it the way
+      // it retries "model_loading". Carrying the competing models and the
+      // held state through is what lets a caller offer the same choice the
+      // AI Models page does, instead of just surfacing the message.
+      if (error && error.type === "model_slot_conflict") {
+        err.capability = error.capability;
+        err.models = error.models;
+        err.resident = error.resident;
+        err.held = error.held;
+      }
       throw err;
     }
     if (!onChunk) {

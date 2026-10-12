@@ -146,15 +146,28 @@ class AiError(Exception):
     call against a cold model answers 409 with the load it just started
     (`/api/ai/embed`'s `_embed_error`), and a caller wants that id to watch
     the same way `fused.ai`'s own JS reader does.
+
+    `capability`/`models`/`resident`/`held` are set only for
+    `type == "model_slot_conflict"` (SPEC-model-slot-conflict.md): two
+    different models are fighting over one capability's resident slot and
+    the server has stopped auto-evicting between them. UNLIKE
+    `"model_loading"`, this is TERMINAL — no load is in flight to watch, so a
+    caller that retries on `"model_loading"` must not retry on this one too.
     """
 
     def __init__(self, type_: str, message: str, status: int | None = None,
-                 job_id: str | None = None):
+                 job_id: str | None = None, capability: str | None = None,
+                 models: list | None = None, resident: str | None = None,
+                 held: bool | None = None):
         super().__init__(message)
         self.type = type_
         self.message = message
         self.status = status
         self.job_id = job_id
+        self.capability = capability
+        self.models = models
+        self.resident = resident
+        self.held = held
 
     def __repr__(self) -> str:  # pragma: no cover - cosmetic
         return (f"AiError(type={self.type!r}, message={self.message!r}, "
@@ -246,7 +259,9 @@ def _error_from_payload(status: int, payload: object) -> AiError:
         if isinstance(err, dict):
             return AiError(
                 err.get("type") or "error", err.get("message") or "",
-                status, job_id=err.get("jobId"))
+                status, job_id=err.get("jobId"), capability=err.get("capability"),
+                models=err.get("models"), resident=err.get("resident"),
+                held=err.get("held"))
         if isinstance(err, str) and err:
             type_ = "unavailable" if status == 409 else "bad_request"
             return AiError(type_, err, status)

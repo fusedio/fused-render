@@ -128,6 +128,25 @@ def test_ok_false_error_with_job_id_is_carried_through():
     assert err.job_id == "sys:ai-load:abc"
 
 
+def test_a_model_slot_conflict_carries_the_standoff_through():
+    """SPEC-model-slot-conflict.md §3: unlike `model_loading`, this error is
+    terminal — no load it started is there to watch — so a caller needs the
+    competing models and the held state, not just a message, to decide what
+    to do instead of retrying."""
+    err = fused_ai._error_from_payload(
+        409, {"ok": False, "error": {
+            "type": "model_slot_conflict", "code": "model_slot_conflict",
+            "message": "org/a and org/b are fighting over the text-generation slot",
+            "capability": "text-generation", "models": ["org/a", "org/b"],
+            "resident": "org/b", "held": False}})
+    assert err.type == "model_slot_conflict"
+    assert err.capability == "text-generation"
+    assert err.models == ["org/a", "org/b"]
+    assert err.resident == "org/b"
+    assert err.held is False
+    assert err.job_id is None
+
+
 def test_plain_error_string_shape_maps_to_bad_request_or_unavailable():
     bad = fused_ai._error_from_payload(400, {"error": "nope"})
     assert bad.type == "bad_request"
