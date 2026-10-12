@@ -127,6 +127,7 @@ export function Composer({ b, reply, setReply, threadRef }: ComposerProps) {
   const [cmd, setCmd] = useState<{ q: string; idx: number } | null>(null);
   const cmds: Command[] = cmd ? matchCommands(cmd.q) : [];
   const cmdIdx = cmd ? Math.min(cmd.idx, Math.max(0, cmds.length - 1)) : 0;
+  const lastVal = useRef("");  // the text the popup was last computed for (fitInput)
   const [drag, setDrag] = useState(false);
   const [micAvail, setMicAvail] = useState(false);
   // `note`: what the transcription is doing right now (jobNote), shown while busy so a first-run install is not a mute spinner.
@@ -142,8 +143,13 @@ export function Composer({ b, reply, setReply, threadRef }: ComposerProps) {
     t.style.height = "0"; t.style.height = Math.max(36, t.scrollHeight) + "px";
     if (th && th.scrollTop !== top) th.scrollTop = top;
     setHas(t.value.trim().length > 0 || pendingRef.current.length > 0);
-    const q = slashQuery(t.value);
-    setCmd((c) => q === null ? null : c && c.q === q ? c : { q, idx: 0 });
+    // The popup follows the text, not every re-fit: a width change or an attachment re-fit on the same value leaves it
+    // as it is, so Esc stays closed until the text changes.
+    if (t.value !== lastVal.current) {
+      lastVal.current = t.value;
+      const q = slashQuery(t.value);
+      setCmd((c) => q === null ? null : c && c.q === q ? c : { q, idx: 0 });
+    }
   };
   useLayoutEffect(fitInput, [pending]);
   // The pane can get wider (gutter drag, preview toggle, window resize) after the text was measured; the old, taller
@@ -260,8 +266,9 @@ export function Composer({ b, reply, setReply, threadRef }: ComposerProps) {
   const send = async () => {
     const t = ta.current; if (!t || !b) return;
     let text = t.value.trim();
-    // A command typed in full ("/clear") runs instead of sending: the Send button and Enter converge here.
-    const c = commandFor(text);
+    // A command runs instead of sending: the popup's highlighted row while it shows ("/cl" + Send), else the name typed
+    // in full ("/clear"); the Send button and Enter converge here. With attachments pending the text is a message.
+    const c = cmd && cmds.length ? cmds[cmdIdx] : commandFor(text);
     if (c && !pendingRef.current.length) { runCommand(c); return; }
     if (!text && !pendingRef.current.length) return;
     const files = pendingRef.current; setPending([]);
