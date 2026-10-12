@@ -90,7 +90,7 @@ function UsageStrip({ b }: { b: Bot }) {
         <span title="Model calls today">{row.today} today</span>
         <span title="Model calls in the last 7 days">{row.week} this week</span>
         {/* The count opens the reasons (dialogs/Failures.tsx): the same rows the ledger counted, each with its error text. */}
-        {row.errors ? <button type="button" className="warn cursor-pointer underline-offset-2 hover:underline" title="Show the failed calls and their errors"
+        {row.errors ? <button type="button" className="lnk warn" title="Show the failed calls and their errors"
           onClick={() => openDialog({ kind: "failures", id: b.id })}>{row.errors} failed</button> : null}
         <span title="Last model call">{fmtAgo(row.last)}</span>
       </div>

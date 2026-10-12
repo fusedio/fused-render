@@ -33,7 +33,7 @@ export function FailuresDialog({ id, name, onClose }: { id: string; name?: strin
           {(rows || []).map((r, i) => (
             <div key={`${r.ts}-${i}`} className="mb-3 rounded-xl border border-foreground/10 bg-foreground/[0.02] p-4">
               <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-                <span title={String(r.ts)}>{fmtWhen(r.ts)}</span>
+                <span>{fmtWhen(r.ts)}</span>
                 <i className={`chip ${r.model}`}>{r.model}</i>
                 <span>{r.origin}</span>
                 {r.task ? <span className="truncate" title={r.task}>“{r.task}”</span> : null}

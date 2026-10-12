@@ -57,10 +57,11 @@ export function UsageDialog({ onClose }: { onClose: () => void }) {
                     <span className="text-right tabular-nums text-muted-foreground">{b.today || "·"}</span>
                     <span className="text-right tabular-nums text-muted-foreground">{b.week}</span>
                     <span className="flex flex-wrap gap-1">{modelChips(b.models).map(([m, n]) => <i key={m} className={`chip ${m}`} title={`${n} on ${m}`}>{m}{n > 1 ? ` ${n}` : ""}</i>)}</span>
-                    {/* The count opens the failures dialog (its errors); stopPropagation keeps the row's own click (select the bot) out of it. */}
-                    {b.errors ? <button type="button" className="cursor-pointer text-right tabular-nums text-destructive underline-offset-2 hover:underline"
+                    {/* The count opens the failures dialog (its errors); stopPropagation keeps the row's own click (select the bot) out of
+                        it. Not for the collapsed "Deleted bots" row: its lines carry no id the failures route could match. */}
+                    {b.errors && b.id !== "_deleted" ? <button type="button" className="lnk warn text-right tabular-nums"
                       title="Show the failed calls and their errors" onClick={(e) => { e.stopPropagation(); openDialog({ kind: "failures", id: b.id, back: true }); }}>{b.errors}</button>
-                      : <span className="text-right tabular-nums text-muted-foreground">·</span>}
+                      : <span className={cn("text-right tabular-nums", b.errors ? "text-destructive" : "text-muted-foreground")}>{b.errors || "·"}</span>}
                     <span className="truncate text-xs text-muted-foreground">{fmtAgo(b.last)}</span>
                   </div>
                 ))}
