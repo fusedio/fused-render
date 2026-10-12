@@ -1,6 +1,9 @@
 // Settings › Routines (OpenBot dialogs.js routines, once its own #rmodal): the bot's routines as cards (Run, Pause or
 // Enable, delete with a confirm) and the add form (Every N min / Daily at HH:MM on chosen weekdays, default Mon–Fri /
 // Once at a date and time). Every op posts at once; the poll repaints. Hidden for Super Bot (the backend refuses).
+// The add form enforces the backend's rules before posting (bot.py routine_add / _next_run would otherwise coerce
+// silently: minutes clamp to 5, no weekdays = every day, a blank time = 09:00): a whole number of minutes, 5 or more;
+// at least one weekday and a time; a future moment for a one-shot. The reason shows under the form and Add stays off.
 import { useState } from "react";
 import { Trash2Icon } from "lucide-react";
 import { cn } from "@platform/lib/utils";
@@ -27,6 +30,27 @@ export function RoutinesSection({ b, confirm }: SectionProps) {
   const [time, setTime] = useState("09:00");
   const [days, setDays] = useState<string[]>(["0", "1", "2", "3", "4"]);
   const [at, setAt] = useState("");
+  // Mirrors ROUTINE_MIN_MINUTES / ROUTINE_MAX_FAILS in bot.py (APP_GUIDE tells the bot the same numbers).
+  const MIN_MINUTES = 5, MAX_FAILS = 3;
+  const invalid = ((): string | null => {
+    if (!task.trim()) return null; // the empty task disables Add on its own; no reason needed
+    if (kind === "interval") {
+      const n = Number(minutes);
+      if (!minutes.trim() || !Number.isInteger(n)) return "Minutes must be a whole number.";
+      if (n < MIN_MINUTES) return `Routines run at most every ${MIN_MINUTES} minutes.`;
+    }
+    if (kind === "daily") {
+      if (!time) return "Pick a time of day.";
+      if (!days.length) return "Pick at least one weekday.";
+    }
+    if (kind === "once") {
+      if (!at) return "Pick a date and time.";
+      if (new Date(at).getTime() <= Date.now()) return "That time is in the past.";
+    }
+    return null;
+  })();
+  // datetime-local `min`: now, in local time, to the minute (the picker greys out earlier days).
+  const nowLocal = ((): string => { const d = new Date(); d.setSeconds(0, 0); return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16); })();
 
   const rs = b.routines || [];
   const onOp = async (rid: string, op: "run" | "enable" | "disable" | "delete") => {
@@ -35,10 +59,11 @@ export function RoutinesSection({ b, confirm }: SectionProps) {
   };
   const add = async () => {
     const text = task.trim(); if (!text) return;
+    if (invalid) { showBanner(invalid); return; }
     const p: Extract<RoutineBody, { op: "add" }> = { op: "add", text, kind };
-    if (kind === "interval") p.minutes = Number(minutes) || 60;
-    if (kind === "daily") { p.time = time || "09:00"; p.weekdays = days.map(Number).sort((x, y) => x - y); }
-    if (kind === "once") { if (!at) { showBanner("Pick a date and time"); return; } p.at = new Date(at).getTime() / 1000; }
+    if (kind === "interval") p.minutes = Number(minutes);
+    if (kind === "daily") { p.time = time; p.weekdays = days.map(Number).sort((x, y) => x - y); }
+    if (kind === "once") p.at = new Date(at).getTime() / 1000;
     const r = await act(() => api.routines(b.id, p));
     if (r?.ok) setTask("");
   };
@@ -59,7 +84,8 @@ export function RoutinesSection({ b, confirm }: SectionProps) {
                 </div>
               </div>
               <p className="m-0 text-[13px] leading-5 text-muted-foreground">
-                {routineLabel(r)} · {tasks?.[r.task] || 0} calls today · next: {r.enabled ? fmtWhen(r.next) : "paused"}
+                {routineLabel(r)} · {tasks?.[r.task] || 0} calls today · next: {r.enabled ? fmtWhen(r.next)
+                  : (r.fails || 0) >= MAX_FAILS ? <span className="text-destructive">paused after {r.fails} failed runs in a row</span> : "paused"}
                 {r.last ? <> · last: {fmtWhen(r.last)} <span className={warn ? "text-destructive" : undefined}>({r.last_result || ""}{(r.fails || 0) > 1 ? `, ${r.fails} in a row` : ""})</span></> : null}
                 {r.last_message ? <> <span>{r.last_message}</span></> : null}
               </p>
@@ -79,7 +105,7 @@ export function RoutinesSection({ b, confirm }: SectionProps) {
             <NativeSelectOption value="once">Once at</NativeSelectOption>
           </NativeSelect>
           {kind === "interval" ? (
-            <span className="flex items-center gap-2 text-sm" id="rk-interval"><Input id="rmin" type="number" min={5} step={5} value={minutes} onChange={(e) => setMinutes(e.target.value)} className="w-20" /> min</span>
+            <span className="flex items-center gap-2 text-sm" id="rk-interval"><Input id="rmin" type="number" min={MIN_MINUTES} step={1} value={minutes} aria-invalid={kind === "interval" && !!invalid} onChange={(e) => setMinutes(e.target.value)} className="w-20" /> min</span>
           ) : null}
           {kind === "daily" ? (
             <span className="flex flex-wrap items-center gap-2" id="rk-daily">
@@ -89,10 +115,11 @@ export function RoutinesSection({ b, confirm }: SectionProps) {
               </ToggleGroup>
             </span>
           ) : null}
-          {kind === "once" ? <Input id="rat" type="datetime-local" value={at} onChange={(e) => setAt(e.target.value)} className="w-56" /> : null}
-          <Button id="radd" className="ml-auto" disabled={!task.trim()} onClick={() => { void add(); }}>Add</Button>
+          {kind === "once" ? <Input id="rat" type="datetime-local" min={nowLocal} value={at} aria-invalid={kind === "once" && !!invalid} onChange={(e) => setAt(e.target.value)} className="w-56" /> : null}
+          <Button id="radd" className="ml-auto" disabled={!task.trim() || !!invalid} onClick={() => { void add(); }}>Add</Button>
         </div>
-        <FieldDescription>Runs start only when the bot is idle; a busy bot skips that slot. The bot may still ask you questions during a scheduled run.</FieldDescription>
+        {invalid ? <p id="rwhy" className="m-0 text-[13px] text-destructive">{invalid}</p> : null}
+        <FieldDescription>Every N minutes runs at most every {MIN_MINUTES} minutes. Runs start only when the bot is idle; a busy bot skips that slot. A routine pauses itself after {MAX_FAILS} failed runs in a row; Enable starts it again. The bot may still ask you questions during a scheduled run.</FieldDescription>
       </FieldGroup>
     </div>
   );
