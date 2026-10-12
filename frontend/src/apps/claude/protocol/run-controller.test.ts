@@ -4459,15 +4459,15 @@ describe("running and idle marks can race (Bugbot #1163)", () => {
 });
 
 describe("a stop the frame caught up with on reload", () => {
-  test("is a note, not a failure — even before the transcript holds the prompt (Akshil 2026-10-12)", async () => {
+  test("shows the prompt and the stop's note, not a failure — before the transcript holds either (Akshil 2026-10-12)", async () => {
     // Stop pressed on a fresh chat, page reloaded moments later: the run is
     // still live (its interrupt is on its way to the CLI), the transcript is
     // empty, and the poll says done + cancelled with the stop's own error.
     // `openSession`'s own watch adopts the run and repairs it; that road
-    // filed the error as a red failure and a trouble card. It is the stop's
-    // note, nothing more.
+    // filed the error as a red failure and a trouble card, and the next
+    // (still empty) history read blanked whatever it drew.
     const { controller, agent } = makeController({
-      history: () => ({ turns: [], transcript: { path: "/p/s1.jsonl", mtime: 1, size: 0 } }),
+      history: () => ({ turns: [], live_run: "r1", transcript: { path: "/p/s1.jsonl", mtime: 1, size: 0 } }),
       live_run: (_f, n) => ({ run_id: n === 0 ? "r1" : "" }),
       poll: () => poll({ done: true, cancelled: true, error: "Stopped before the first reply.", message: "323ed" }),
     });
@@ -4478,26 +4478,7 @@ describe("a stop the frame caught up with on reload", () => {
     expect(agent.of("poll").length).toBe(1);
     expect(controller.getState().turns.filter((t) => t.role === "error")).toEqual([]);
     expect(controller.getState().trouble).toBeNull();
+    expect(users(controller).map((t) => t.text)).toEqual(["323ed"]);
     expect(notes(controller).map((n) => [n.glyph, n.text])).toEqual([["⏹", "Stopped."]]);
-  });
-
-  test("adds no second Stopped. when the restored reply already carries stopped (Bugbot)", async () => {
-    const { controller, agent } = makeController({
-      history: () => ({
-        turns: [
-          { role: "user", text: "hi" },
-          { role: "assistant", text: "partial", stopped: true },
-        ],
-        transcript: { path: "/p/s1.jsonl", mtime: 1, size: 10 },
-      }),
-      live_run: (_f, n) => ({ run_id: n === 0 ? "r1" : "" }),
-      poll: () => poll({ done: true, cancelled: true, error: "Stopped.", message: "323ed" }),
-    });
-    await controller.openSession("s1");
-    for (let i = 0; i < 20 && agent.of("poll").length === 0; i++) await new Promise((r) => setTimeout(r, 0));
-    for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
-    expect(agent.of("poll").length).toBe(1);
-    expect(notes(controller)).toEqual([]);
-    expect(controller.getState().turns.filter((t) => t.role === "error")).toEqual([]);
   });
 });

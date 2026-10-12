@@ -3795,9 +3795,16 @@ def _send(run_id: str, message: str, read_dirs: str = "", model: str = "",
     return {"sent": True}
 
 
-def _discard_inbox(run_dir: str) -> list:
+def _discard_inbox(run_dir: str, keep_first: bool = False) -> list:
     """Throw away every USER-TURN entry the session host has not drained yet,
     and return the messages that were in them.
+
+    `keep_first`: leave the OLDEST user entry in place when nothing has been
+    drained yet — it is the run's opening prompt, and a Stop that beat the
+    host to it must not strand the very message the chat is made of
+    (`_first_turn_pending`): the host delivers it, the CLI echoes it into the
+    transcript, and the deferred interrupt then ends the turn. Everything
+    queued behind it is still discarded — stop means stop.
 
     This is the half of a stop that `interrupt` cannot reach. `interrupt` is a
     CLI control request: it aborts the turn in flight and reports the messages
@@ -3825,6 +3832,7 @@ def _discard_inbox(run_dir: str) -> list:
         names = sorted(n for n in os.listdir(inbox) if n.endswith(".json"))
     except OSError:
         return []
+    spare_first = keep_first and not _inbox_drained_any(run_dir)
     discarded = []
     for name in names:
         path = os.path.join(inbox, name)
@@ -3834,6 +3842,9 @@ def _discard_inbox(run_dir: str) -> list:
         except (OSError, ValueError):
             continue  # raced with a drain tick, or half a write: not ours
         if not isinstance(row, dict) or row.get("type") != "user":
+            continue
+        if spare_first:
+            spare_first = False
             continue
         message = row.get("message")
         content = message.get("content") if isinstance(message, dict) else None
@@ -4110,6 +4121,47 @@ def _drained_unechoed(run_dir: str) -> list:
 #: hung startup), and then the stop falls through to the plain interrupt.
 _FIRST_TURN_WAIT_SEC = 30.0
 
+#: How long a Stop waits for a session host that has not written `host.json`
+#: yet (`_cancel`): the spawn is a few hundred ms; past this the stop ends
+#: the tree as it always did.
+_HOST_SPAWN_WAIT_SEC = 3.0
+
+
+def _wait_for_host(run_dir: str, timeout: float) -> bool:
+    deadline = time.time() + timeout
+    while not _host_alive(run_dir):
+        if time.time() >= deadline:
+            return False
+        time.sleep(0.05)
+    return True
+
+
+def _inbox_drained_any(run_dir: str) -> bool:
+    """Has the session host handed ANY entry to the CLI yet?"""
+    done = os.path.join(_inbox_dir(run_dir), "done")
+    try:
+        return any(n.endswith(".json") for n in os.listdir(done))
+    except OSError:
+        return False
+
+
+def _inbox_holds_prompt(run_dir: str) -> bool:
+    """Is a user entry still waiting in the inbox, undrained?"""
+    inbox = _inbox_dir(run_dir)
+    try:
+        names = [n for n in os.listdir(inbox) if n.endswith(".json")]
+    except OSError:
+        return False
+    for name in names:
+        try:
+            with open(os.path.join(inbox, name), encoding="utf-8") as fh:
+                row = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if isinstance(row, dict) and row.get("type") == "user":
+            return True
+    return False
+
 
 def _first_turn_pending(run_dir: str) -> bool:
     """Is the run's FIRST message still in the CLI's hands — drained off the
@@ -4141,14 +4193,21 @@ def _first_turn_pending(run_dir: str) -> bool:
     not this case — that turn's own prompt is on disk, and the stop must not
     wait on the follow-up's echo, which only comes when the turn ends),
     something drained, and no `result` row anywhere in the file."""
-    echoes, whole = _echo_texts(run_dir)
-    if echoes or not whole:
+    out_path = os.path.join(run_dir, "out.jsonl")
+    if os.path.exists(out_path):
+        echoes, whole = _echo_texts(run_dir)
+        if echoes or not whole:
+            return False
+    # (no `out.jsonl` at all: the CLI has not written a byte — nothing echoed,
+    # and `_echo_texts`'s "unreadable" answer must not read as "truncated".)
+    # Drained but not echoed — or not even drained: a Stop that beat the
+    # host's first drain tick (Akshil, 2026-10-12: "if I click fast enough
+    # the chat is not made") finds the prompt still in the inbox, and that is
+    # the same turn-not-opened case, one tick earlier.
+    if not _drained_unechoed(run_dir) and not _inbox_holds_prompt(run_dir):
         return False
-    if not _drained_unechoed(run_dir):
-        return False
-    path = os.path.join(run_dir, "out.jsonl")
     try:
-        with open(path, "rb") as fh:
+        with open(out_path, "rb") as fh:
             for raw_line in fh:
                 if b'"result"' not in raw_line:
                     continue
@@ -7345,6 +7404,17 @@ def _cancel(run_id: str, interrupt_first: bool = True,
     # the tree, and the thread's own interrupt then fails into the same kill.
     if interrupt_first and _pending_stop_alive(run_dir):
         return {"cancelled": run_id, "still_queued": [], "pending": True}
+    # A STOP THAT BEAT THE HOST ITSELF: the prompt is in the inbox, the host
+    # is still spawning (hundreds of ms). Ending the tree now strands the
+    # message the chat is made of — and so does the `cancelled` marker below
+    # on its own: a host that finds it at spawn deliberately spawns nothing
+    # (the cancel window, test_claude_cancel_window). So for this one case
+    # the marker waits for the host, briefly, and the stop then takes the
+    # ordinary deferred road. A host that never comes falls through to the
+    # kill it always got. The cap is well inside the cancel budget.
+    first_turn_pending = interrupt_first and _first_turn_pending(run_dir)
+    if first_turn_pending and not _host_alive(run_dir):
+        _wait_for_host(run_dir, _HOST_SPAWN_WAIT_SEC)
     # WHO ASKED, written down before anything is killed.
     #
     # Killing claude leaves the run dead with no `result` row, which `_poll`
@@ -7401,8 +7471,8 @@ def _cancel(run_id: str, interrupt_first: bool = True,
         # queue; a follow-up the session host has not drained yet is not in it
         # and would be delivered right AFTER the interrupt, opening a fresh
         # turn out of a Stop. See `_discard_inbox`.
-        stranded = _discard_inbox(run_dir)
-        if _first_turn_pending(run_dir):
+        stranded = _discard_inbox(run_dir, keep_first=first_turn_pending)
+        if first_turn_pending:
             # THE FIRST TURN HAS NOT OPENED YET: the interrupt has to WAIT
             # for it (`_first_turn_pending` — sent now, the CLI drops the
             # prompt), but the reader must not. The stop is already a fact

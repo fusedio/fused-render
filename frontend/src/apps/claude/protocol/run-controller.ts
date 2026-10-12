@@ -3508,12 +3508,41 @@ export function createChatController(deps: ControllerDeps): ChatController {
           const shown =
             state.turns.some((t) => t.role === "note" && t.text === stopped.note) ||
             (!!lastTurn && lastTurn.role === "assistant" && !!lastTurn.stopped);
+          // THE READER'S OWN WORDS, NOW. A stop pressed before the first turn
+          // opened holds its interrupt until the CLI has the prompt, and the
+          // CLI writes prompt + marker to the file only then — on a slow
+          // start (hooks, MCP servers) that is many seconds. A reload inside
+          // that window found an empty file and drew nothing (Akshil,
+          // 2026-10-12: "first reload shows Stopped., second shows my
+          // message"). The run knows the prompt (`poll.message`), so it goes
+          // up the way the `unseen` branch below puts it, with the note under
+          // it; the file's own rows replace both once they land.
+          const fileHasUser = state.turns.some((t) => t.role === "user");
+          if (!fileHasUser && probeMsg) {
+            addUser(probeMsg);
+            appended = true;
+          }
           if (stopped.note && !shown) {
             addNote(stopped.note, "⏹");
             appended = true;
           }
           if (appended) emit({ repaired: state.repaired + 1 });
           stampOwnEnd();
+          // …and the file is re-read until it has them. Each read is
+          // `refreshHistory`, which keeps an optimistic screen over an empty
+          // file while the run is live and refuses to overwrite a newer
+          // transcript, so the loop is cheap and cannot regress the screen.
+          // Bounded like the server's own wait for the first turn (30 s).
+          if (!fileHasUser) {
+            void (async () => {
+              for (let i = 0; i < 20; i++) {
+                await sleep(1500);
+                if (logGen !== gen || disposed || activeRun) return;
+                await refreshFromTranscript();
+                if (state.turns.some((t) => t.role === "user" && !!t.uuid)) return;
+              }
+            })();
+          }
           return;
         }
         if (poll.error) {
@@ -3737,8 +3766,15 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // `followTranscript` bails at "no render to compare against" for the rest
       // of the session — the standing watch goes deaf on the very refresh it
       // just performed.
+      const turns = historyToTurns(res);
+      // AN EMPTY FILE UNDER A LIVE RUN DOES NOT BLANK THE SCREEN. The rows on
+      // screen then are the run's own (a prompt the CLI has not persisted
+      // yet, a stop's note — see the stop repair in `resumeAttach`); the file
+      // catches up within the run and the next read draws its rows. A session
+      // that is genuinely gone is `landDeleted` above, not this.
+      if (!turns.length && state.turns.length && res.live_run) return;
       emit({
-        turns: historyToTurns(res),
+        turns,
         ...(res.transcript && res.transcript.path ? { transcript: res.transcript } : {}),
         // The rows this refresh just brought in are exactly what moved the
         // window, so the meter moves with them — this is the whole refresh

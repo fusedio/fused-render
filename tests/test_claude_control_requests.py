@@ -482,3 +482,45 @@ def test_a_stop_pending_marker_with_no_thread_behind_it_is_stale(agent, tmp_path
         f.write("1")
     assert agent._stop_pending(run_dir) is False
     assert not os.path.exists(os.path.join(run_dir, agent._STOP_PENDING))
+
+
+def test_a_stop_that_beats_the_host_still_keeps_the_prompt(
+        agent, monkeypatch, tmp_path, target):
+    """Akshil, 2026-10-12: "if I click fast enough the chat is not made" —
+    Stop before the host had even drained the inbox stranded the prompt
+    (a "not sent" row, no transcript). The prompt is spared, the host
+    delivers it, and the interrupt waits for its echo like any other
+    first-turn stop."""
+    stub = _slow_stub(tmp_path, delay=1.0)
+    run_id, run_dir = _start(agent, monkeypatch, stub, target, message="huh")
+    # No wait for host.json at all: the stop lands as early as it can.
+    result = agent._cancel(run_id)
+    assert result["still_queued"] == [], "the prompt is not stranded"
+    assert result["pending"] is True
+    assert _wait_for(lambda: not agent._stop_pending(run_dir), timeout=15)
+    kinds = [row.get("type") for row in _out_rows(run_dir)]
+    assert "user" in kinds and "control_response" in kinds, kinds
+    assert kinds.index("user") < kinds.index("control_response")
+    texts = [((r.get("message") or {}).get("content") or [{}])[0].get("text")
+             for r in _out_rows(run_dir) if r.get("type") == "user"]
+    assert texts == ["huh"]
+
+
+def test_discard_inbox_spares_only_the_opening_prompt(agent, tmp_path):
+    run_dir = os.path.join(agent.RUNS, "20261012-150000-bbb")
+    os.makedirs(agent._inbox_dir(run_dir))
+    agent._write_inbox_entry(run_dir, "first")
+    time.sleep(0.01)
+    agent._write_inbox_entry(run_dir, "second")
+    assert agent._discard_inbox(run_dir, keep_first=True) == ["second"]
+    assert agent._inbox_holds_prompt(run_dir)
+    assert agent._discard_inbox(run_dir) == ["first"]
+    assert not agent._inbox_holds_prompt(run_dir)
+    # Once anything has been drained, the oldest entry is a follow-up, not
+    # the opening prompt: nothing is spared.
+    os.makedirs(os.path.join(agent._inbox_dir(run_dir), "done"), exist_ok=True)
+    with open(os.path.join(agent._inbox_dir(run_dir), "done", "0-aaaa.json"),
+              "w", encoding="utf-8") as fh:
+        json.dump({"text": "earlier", "at": 1}, fh)
+    agent._write_inbox_entry(run_dir, "third")
+    assert agent._discard_inbox(run_dir, keep_first=True) == ["third"]
