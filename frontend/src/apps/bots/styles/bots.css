@@ -219,7 +219,10 @@ div.bots-page.lanim .bots header #add svg { width: 20px; height: 20px; }
 /* A narrow list has no room for a time beside the name; the row is just avatar, name, preview (and the unread dot). */
 @container (max-width: 220px) { .bots-page .bot .time, .bots-page .bots header #usage { display: none; } }
 .bots-page .bot .name .pin { font-size: 10px; margin-right: 3px; opacity: .8; }
-.bots-page .bot .name .rt { font-size: 11px; margin-left: 4px; color: var(--muted); }
+/* The routines clock (same line icon as the context menu): an inline SVG, not the ⟳ text glyph, which fell back to
+   a tiny off-baseline symbol font. */
+.bots-page .bot .name .rt { display: inline-block; vertical-align: -2px; margin-left: 5px; color: var(--muted); }
+.bots-page .bot .name .rt svg { width: 12px; height: 12px; display: block; }
 .bots-page .bot .name .super { font-size: 9px; font-weight: 600; margin-left: 5px; padding: 1px 5px; border-radius: 6px; background: #d97757; color: #fff; vertical-align: 1px; letter-spacing: .04em; }
 /* "nopick", not "fixed": Tailwind's .fixed utility is in this bundle and would float the avatar over the Name field. */
 .bots-page .bot .name .rt.warn, .bots-page .bot .sub .warn, .bots-page .r .s .warn { color: var(--err); }
