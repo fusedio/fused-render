@@ -190,6 +190,35 @@ def artifacts_root() -> str:
     return os.path.join(workspace_dir(), "bots")
 
 
+def is_bot_workdir(cwd: str | None) -> bool:
+    """Is `cwd` a folder the bots run `claude` in — a bot's cache dir
+    (`cache_dir()/<id>`, under this or any branch's home) or Super Bot's Inbox
+    folder (`artifacts_root()/<name>`)?
+
+    The Tasks page is derived from every transcript under `~/.claude/projects`
+    (routers/tasks `_collect`), and a bot's conversation IS a CLI session on
+    disk now (docs/bots.md §6: `--no-session-persistence` went when `--resume`
+    came). So without this test every bot turn is a task row, titled with the
+    bot's preamble. The cwd is the one fact that separates the two: nobody but
+    `agent_engine.run` works in these folders, and it works nowhere else.
+
+    Not `cache_dir()` alone: that is the ACTIVE branch's home, while the
+    projects dir holds transcripts from every branch install on the machine
+    (`~/.fused-render/branches/<ref>/bots/cache/bots/<id>`); the segment run
+    `bots/cache/bots/` under the base home covers them all. A human who opens
+    Claude Code inside a bot's Inbox folder is hidden by the second test too
+    — accepted: the Inbox is the bot's output tray, not a project."""
+    if not cwd:
+        return False
+    path = os.path.normcase(os.path.normpath(cwd))
+    home = os.path.normcase(os.path.normpath(_storage.base_home_dir()))
+    cache_run = os.path.normcase(os.path.join("", "bots", "cache", "bots", ""))
+    if path.startswith(home + os.sep) and cache_run in path + os.sep:
+        return True
+    inbox = os.path.normcase(os.path.normpath(artifacts_root()))
+    return os.path.dirname(path) == inbox
+
+
 def slug(name: str | None) -> str:
     """OpenBot `_slug`: lower-case, `-` for runs of anything else, 40 chars, `app` when empty."""
     return re.sub(r"^-+|-+$", "", re.sub(r"[^a-z0-9]+", "-", (name or "").lower()))[:40] or "app"

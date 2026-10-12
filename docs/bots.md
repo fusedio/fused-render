@@ -727,7 +727,9 @@ an over-budget rollover also writes a `note` "Conversation compacted at Nk
 tokens…". `--autocompact <window>` is passed so the CLI's own compaction
 (floor 100k) never fires first. Sessions live where the CLI keeps them,
 `~/.claude/projects/<encoded cwd>/<session_id>.jsonl` (cwd = the bot's cache
-dir, or Super Bot's Inbox).
+dir, or Super Bot's Inbox). The Tasks page skips them by that cwd
+(`paths.is_bot_workdir`, routers/tasks `_bot_session`): a bot's conversation
+is not a task.
 
 The turn's message (`first_message(bot, task, past, page, conv)` → `(text,
 sent)`): a FRESH session gets YOU (config), the changeable sections
