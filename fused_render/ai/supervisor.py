@@ -128,6 +128,16 @@ VIDEO_TIMEOUT_S = 2 * 3600.0
 # a wait with no end is a wedge, not a feature.
 LOAD_WAIT_TIMEOUT_S = 3600.0
 
+#: How recently a capability's resident model must have been installed by a
+#: REQUEST-PATH load (never a manual one) for evicting it to count as the
+#: swap loop rather than an ordinary switch. Two consumers wanting different
+#: models of one capability each evict the other on every retry with no cap
+#: otherwise — see `ModelSlotConflict`. 60s is generous against any real
+#: retry cadence (`runtime.js`'s own backoff is seconds, not minutes) while
+#: being far short of a user genuinely changing their mind between two
+#: unrelated sessions.
+CONFLICT_WINDOW_S = 60.0
+
 JOB_PREFIX = jobs.SERVER_ID_PREFIX + "ai-model:"
 #: One row per RENDER, not per model: two images from the same pipeline are two
 #: pieces of work with two progress bars, and a shared id would have the second
@@ -198,6 +208,39 @@ class ModelNotReady(SupervisorError):
     def __init__(self, message: str, job_id: str):
         super().__init__(message)
         self.job_id = job_id
+
+
+class ModelSlotConflict(SupervisorError):
+    """Two different models are contending for one capability's single slot.
+
+    Raised by a request-path load INSTEAD OF evicting, once the supervisor
+    sees the swap loop (or while a capability is held after a resolve) — see
+    `CONFLICT_WINDOW_S` and `_request_path_conflict`. Deliberately NOT a
+    `ModelNotReady`: that error means "the load started, watch its job",
+    which is exactly the retry contract that produces the ping-pong in the
+    first place. A caller must treat this as terminal — stop retrying and
+    show the message — the same way `ModelNotReady` must never be treated as
+    terminal.
+    """
+
+    def __init__(self, capability: str, models: list[str], resident: str | None,
+                *, held: bool = False):
+        others = [m for m in models if m != resident]
+        if held and resident is not None:
+            message = (f"{resident} is held for {capability}. Release it on the "
+                       f"AI Models page to let another model load.")
+        elif held:
+            message = (f"{capability} is stopped. Release it on the AI Models page "
+                       f"to let a model load again.")
+        else:
+            message = (f"{' and '.join(others) or 'two models'} are fighting over "
+                       f"the {capability} slot — neither can finish loading. Pick "
+                       f"one on the AI Models page.")
+        super().__init__(message)
+        self.capability = capability
+        self.models = list(models)
+        self.resident = resident
+        self.held = held
 
 
 def job_id_for(model: str) -> str:
@@ -300,6 +343,23 @@ class Worker:
     #: thread checks it at every step so an evicted load stops downloading
     #: instead of finishing into a table it no longer belongs to.
     stopping: bool = False
+    #: `time.time()` this worker was created by a REQUEST-PATH load (a miss
+    #: inside `generate_text`/`_generate_sync`, never `/api/ai/runtime/load`)
+    #: — `None` for a manual one. The one fact `_request_path_conflict` needs
+    #: to tell a swap loop from an ordinary switch: evicting a worker stamped
+    #: here within `CONFLICT_WINDOW_S` is the ping-pong the whole mechanism
+    #: exists to stop.
+    request_path_at: float | None = None
+    #: Whether THIS worker's own request-path load evicted a DIFFERENT model
+    #: to claim the slot — as opposed to the capability simply being empty
+    #: when it loaded. The fact `_request_path_conflict` needs to tell a
+    #: one-off switch (A, nothing resident before it, then evicted for B —
+    #: allowed) from the swap closing its loop (B, itself installed by
+    #: evicting A, now about to be evicted BACK for A — refused): the first
+    #: eviction in any sequence is always exactly that, a switch, and only a
+    #: worker that already displaced someone can be the ping-pong's second
+    #: half.
+    request_path_evicted: bool = False
 
 
 _lock = threading.RLock()
@@ -367,6 +427,38 @@ _draining: dict[str, Worker] = {}
 #: `_release_install` gives it back once per worker however many times it is
 #: called. Read and written under `_lock`.
 _install_waiters: dict[str, int] = {}
+
+
+@dataclass
+class ConflictState:
+    """One capability's model-slot conflict — the swap loop caught, or a
+    capability held by an explicit resolve. Read and written under `_lock`.
+    """
+
+    capability: str
+    #: Ordered distinct models seen contending for the slot. Grows as more
+    #: callers try while the conflict stands (`_request_path_conflict`
+    #: appends rather than replacing), so the notification and the dock row
+    #: can name everyone still asking, not just the two that first collided.
+    models: list[str]
+    #: The model actually resident right now, or `None` when the capability
+    #: is held empty (a `resolve` with `keep: null`). Requests for THIS model
+    #: are served normally even while the conflict stands — only requests for
+    #: a DIFFERENT model are refused.
+    resident: str | None
+    since: float
+    #: True once the user has resolved it (`resolve_conflict`) — as opposed
+    #: to a conflict `_request_path_conflict` detected on its own, which is
+    #: an auto-stop still waiting on a choice. Both states refuse competing
+    #: request-path loads the same way; `held` only changes the message and
+    #: how the dock row is worded ("Held for…" vs "fighting over…").
+    held: bool = False
+
+
+#: capability -> its live conflict, if any. Absent means auto-load behaves
+#: exactly as before (evict on miss). See `ConflictState` and
+#: `_request_path_conflict`.
+_conflicts: dict[str, ConflictState] = {}
 
 
 def is_worker_token(token: str) -> bool:
@@ -1532,7 +1624,47 @@ def _runner_or_raise(capability: str) -> registry.Runner:
     return runner
 
 
-def _start_resident(model: str, capability: str) -> tuple[dict, Worker]:
+def _request_path_conflict(capability: str, model: str,
+                           current: Worker | None) -> ConflictState | None:
+    """Under `_lock`. Whether a REQUEST-PATH load for `model` must be refused
+    without evicting, or `None` to let `_start_resident` make its ordinary
+    join-or-evict decision.
+
+    Two reasons to refuse: the capability is already held (a live conflict,
+    resolved or not — see `ConflictState.held`) and `model` is not the one
+    resident, or this very call is the swap loop CLOSING its loop — evicting
+    `current` would undo a REQUEST-PATH load that itself evicted a different
+    model, installed within `CONFLICT_WINDOW_S`. A worker that simply
+    started from an empty slot is not yet proof of anything (that is an
+    ordinary switch, maybe the only one that ever happens); a worker that
+    already displaced someone, evicted again this soon, is two consumers
+    taking the slot off each other — see `Worker.request_path_evicted`.
+
+    A new contender during a live conflict is folded into `conflict.models`
+    rather than only the original two, so a notification or dock row raised
+    later names everyone still asking, not just whoever collided first.
+    """
+    conflict = _conflicts.get(capability)
+    if conflict is not None:
+        if model == conflict.resident:
+            return None
+        if model not in conflict.models:
+            conflict.models.append(model)
+        return conflict
+    if current is None or current.model == model:
+        return None
+    if not current.request_path_evicted or current.request_path_at is None:
+        return None
+    if time.time() - current.request_path_at >= CONFLICT_WINDOW_S:
+        return None
+    new_conflict = ConflictState(capability=capability, models=[current.model, model],
+                                 resident=current.model, since=time.time())
+    _conflicts[capability] = new_conflict
+    return new_conflict
+
+
+def _start_resident(model: str, capability: str, *,
+                    request_path: bool = False) -> tuple[dict, Worker]:
     """`load`'s residency path, handing back the WORKER RECORD beside the reply.
 
     Two callers, two needs. `load` is answering an endpoint, so the reply is all
@@ -1543,6 +1675,14 @@ def _start_resident(model: str, capability: str) -> tuple[dict, Worker]:
     the reason it went, which is how every failed image render came back as
     "was unloaded before it could be used" (D266). Holding the record, a waiter
     reads the error off the very object it was waiting for.
+
+    `request_path` is True only for the miss-handling calls inside
+    `generate_text`/`_generate_sync` — never for a manual
+    `/api/ai/runtime/load`. It gates `_request_path_conflict` (an explicit
+    load is never refused for contention, and clears any conflict standing on
+    this capability: the user just made a choice) and stamps the new
+    worker's `request_path_at`, the timestamp a LATER request-path eviction
+    checks itself against.
     """
     runner = _runner_or_raise(capability)
     _require_build_tools()
@@ -1558,6 +1698,27 @@ def _start_resident(model: str, capability: str) -> tuple[dict, Worker]:
     job = job_id_for(model)
     with _lock:
         current = _workers.get(capability)
+        if request_path:
+            conflict = _request_path_conflict(capability, model, current)
+            if conflict is not None:
+                raise ModelSlotConflict(capability, conflict.models, conflict.resident,
+                                        held=conflict.held)
+        else:
+            # An explicit load is never refused for contention, and it settles
+            # one: the user just picked a model, so whatever conflict stood on
+            # this capability is answered, held or not.
+            _conflicts.pop(capability, None)
+            # And it clears the swap-loop HISTORY too, not only a conflict
+            # already raised — a join (the model asked for is already
+            # resident) returns below without building a new `Worker`, so
+            # without this an old `request_path_evicted` worker that a
+            # resolve merely re-confirmed would still read as "recently
+            # evicted something" the next time somebody tries to take the
+            # slot back, and re-trigger the very conflict the resolve just
+            # answered.
+            if current is not None:
+                current.request_path_at = None
+                current.request_path_evicted = False
         if (current is not None and current.model == model
                 and current.runner_code == runner.code
                 and current.state != "error"):
@@ -1602,7 +1763,9 @@ def _start_resident(model: str, capability: str) -> tuple[dict, Worker]:
             _draining[current.token] = current
 
         worker = Worker(model=model, capability=capability, runner_code=runner.code,
-                        token=secrets.token_urlsafe(24))
+                        token=secrets.token_urlsafe(24),
+                        request_path_at=time.time() if request_path else None,
+                        request_path_evicted=request_path and evicting)
         _workers[capability] = worker
         _worker_tokens.add(worker.token)
 
@@ -1652,7 +1815,7 @@ def _start_resident(model: str, capability: str) -> tuple[dict, Worker]:
 
 
 def load(model: str, capability: str, *, weights_only: bool = False,
-         file: str | None = None) -> dict:
+         file: str | None = None, request_path: bool = False) -> dict:
     """Make `model` resident for `capability`; returns `{jobId, model, state}`.
 
     `weights_only` downloads and stops — the AI Models page's "Download", which
@@ -1668,9 +1831,16 @@ def load(model: str, capability: str, *, weights_only: bool = False,
     Idempotent for the model already loading or loaded — a second call joins the
     first rather than starting a duplicate, which matters because two pages
     opening at once is the normal case, not the exotic one.
+
+    `request_path` is forwarded to `_start_resident` — see its docstring and
+    `ModelSlotConflict`. Every caller but the two miss-handlers inside
+    `generate_text`/`_generate_sync` leaves it False: `/api/ai/runtime/load`,
+    `resolve_conflict`, and this function's own `weights_only` branch (a
+    download is never a contested eviction) are all explicit actions, not
+    retries.
     """
     if not weights_only:
-        return _start_resident(model, capability)[0]
+        return _start_resident(model, capability, request_path=request_path)[0]
 
     runner = _runner_or_raise(capability)
     _require_build_tools()
@@ -2086,12 +2256,75 @@ def unload(model: str | None = None, capability: str | None = None,
     page's explicit unload, `evict_stale_engines`, a newer load claiming the
     capability, shutdown, and the idle reaper (AI-13) — can say which of them
     it was, without a parallel teardown for each.
+
+    Also clears any `ConflictState` standing on an affected capability — an
+    explicit unload is never refused for contention, and it settles one:
+    `resolve_conflict`'s `keep: null` calls this before holding the
+    capability empty, and `/api/ai/runtime/unload` is exactly the "the user
+    made a choice" action `ConflictState`'s own docstring says clears a
+    conflict. Named explicitly rather than only from `targets`' capabilities:
+    a capability held EMPTY (`resident=None`, nothing in `_workers` to find)
+    would otherwise never clear on its own unload.
     """
     targets = _claim_for_removal(
         lambda w: (model is None or w.model == model)
         and (capability is None or w.capability == capability))
     _remove(targets, reason)
+    with _lock:
+        if capability is not None:
+            _conflicts.pop(capability, None)
+        for worker in targets:
+            _conflicts.pop(worker.capability, None)
     return bool(targets)
+
+
+def resolve_conflict(capability: str, keep: str | None) -> dict:
+    """The user's explicit answer to a capability stuck in `ModelSlotConflict`
+    — `POST /api/ai/runtime/conflicts/resolve`.
+
+    `keep=<model>` loads it (joining if it is already resident or loading)
+    and HOLDS the slot: every later request-path load for a DIFFERENT model
+    on this capability keeps getting `ModelSlotConflict` — naming this held
+    model — until `release_conflict` or another manual load/unload. `keep:
+    null` stops everything instead: the capability is unloaded and held
+    EMPTY, so every request-path load for it is refused the same way.
+
+    Calling this with no conflict currently standing still works — same as a
+    manual load or unload always has — and simply starts a hold from
+    scratch, which is what lets a user pre-empt a conflict `_start_resident`
+    has not yet detected.
+    """
+    with _lock:
+        existing = _conflicts.get(capability)
+        models = list(existing.models) if existing is not None else []
+        since = existing.since if existing is not None else time.time()
+    if keep is not None:
+        if keep not in models:
+            models.append(keep)
+        reply = load(keep, capability, request_path=False)
+        with _lock:
+            _conflicts[capability] = ConflictState(
+                capability=capability, models=models, resident=keep,
+                since=since, held=True)
+        return reply
+    unload(capability=capability, reason="Stopped (model slot conflict)")
+    with _lock:
+        _conflicts[capability] = ConflictState(
+            capability=capability, models=models, resident=None,
+            since=since, held=True)
+    return {"capability": capability, "resident": None}
+
+
+def release_conflict(capability: str) -> bool:
+    """Clear a conflict or hold on `capability` — back to ordinary auto-load.
+    True if there was one to clear.
+
+    Loads nothing and unloads nothing: whatever is (or isn't) resident stays
+    exactly as it is, the same way lifting a hold must not itself evict the
+    model it was holding.
+    """
+    with _lock:
+        return _conflicts.pop(capability, None) is not None
 
 
 def evict_stale_engines() -> list[str]:
@@ -2746,7 +2979,7 @@ def generate_text(model: str, body: dict):
         if current is not None and current.model == model:
             raise ModelNotReady(
                 f"{model} is still loading ({current.state})", job_id_for(model))
-        started = load(model, registry.TEXT_GENERATION)
+        started = load(model, registry.TEXT_GENERATION, request_path=True)
         raise ModelNotReady(f"{model} is loading now", started["jobId"])
 
     with _in_use(worker):
@@ -2794,7 +3027,7 @@ def _generate_sync(capability: str, model: str, body: dict,
         if current is not None and current.model == model:
             raise ModelNotReady(
                 f"{model} is still loading ({current.state})", job_id_for(model))
-        started = load(model, capability)
+        started = load(model, capability, request_path=True)
         raise ModelNotReady(f"{model} is loading now", started["jobId"])
 
     try:
@@ -3381,6 +3614,20 @@ def describe() -> dict:
         # all and what stops a Discover card claiming "✓ downloaded" over a pull
         # that is still running.
         downloading = [dict(row) for row in _downloads.values()]
+        # One row per capability stuck in `ModelSlotConflict` (detected or
+        # resolved-and-held) — what the status-bar dock and the actionable
+        # notification both read to draw "Keep A / Keep B / Stop both" (or,
+        # once held, "Held for A — Release").
+        conflicts = [
+            {
+                "capability": c.capability,
+                "models": list(c.models),
+                "resident": c.resident,
+                "since": c.since,
+                "held": c.held,
+            }
+            for c in _conflicts.values()
+        ]
     total = sum(row["residentBytes"] or 0 for row in loaded)
     # WHAT EACH MODEL ACTUALLY COSTS, and the ceiling it has to fit under
     # (D594). `residentBytes` above is the worker process's RSS — real, but
@@ -3408,6 +3655,7 @@ def describe() -> dict:
         "runners": registry.describe(),
         "loaded": loaded,
         "downloading": downloading,
+        "conflicts": conflicts,
         "totalResidentBytes": total or None,
         # THE DENOMINATOR, once per payload rather than per row — it is a
         # per-machine constant. The WIRED limit where it applies, not raw total
@@ -3449,3 +3697,7 @@ def reset() -> None:
         # direct `_wait_for_draining` call) block for the full drain timeout
         # waiting on a `Worker` that no longer exists.
         _draining.clear()
+        # Otherwise a conflict raised in one test outlives it — the table is
+        # module-level and nothing else ever clears a capability nobody
+        # unloads or resolves.
+        _conflicts.clear()

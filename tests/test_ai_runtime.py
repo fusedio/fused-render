@@ -3540,6 +3540,201 @@ def test_loading_a_second_text_model_evicts_the_first(fake_runner):
     assert not supervisor._alive(first)
 
 
+def _retry_generate_text(model, timeout=10.0):
+    """`runtime.js`'s own retry contract, reproduced in Python: call, and on
+    `ModelNotReady` try again — forever, as far as the client is concerned.
+    Returns `"ready"`, or re-raises `ModelSlotConflict` the way a client that
+    has learned the conflict is terminal (SPEC-model-slot-conflict.md §3)
+    would stop and surface it instead of retrying."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            list(supervisor.generate_text(model, {"messages": []}))
+            return "ready"
+        except supervisor.ModelNotReady:
+            time.sleep(0.05)
+            continue
+    raise AssertionError(f"{model} never became ready within {timeout}s")
+
+
+def test_the_swap_loop_is_caught_on_its_second_swap(fake_runner):
+    """SPEC-model-slot-conflict.md: two consumers of one capability wanting
+    different models evict each other on every retry, with the request
+    path's own `ModelNotReady`/load contract giving that loop no cap. The
+    FIRST swap (nothing resident yet, then org/a) is an ordinary switch and
+    must still just work; the loop only shows itself on the SECOND swap
+    (evicting org/a's replacement to bring org/a back), which is what gets
+    caught."""
+    # org/a starts resident — the capability was empty, so this is not yet
+    # evidence of anything.
+    with pytest.raises(supervisor.ModelNotReady):
+        list(supervisor.generate_text("org/a", {"messages": []}))
+    _wait_ready("org/a")
+
+    # org/b evicts org/a — the first swap. Still just a switch.
+    with pytest.raises(supervisor.ModelNotReady):
+        list(supervisor.generate_text("org/b", {"messages": []}))
+    _wait_ready("org/b")
+
+    # org/a's retry would evict org/b, the SECOND swap — the ping-pong
+    # closing its loop. Refused instead of evicted.
+    with pytest.raises(supervisor.ModelSlotConflict) as caught:
+        list(supervisor.generate_text("org/a", {"messages": []}))
+    assert caught.value.capability == registry.TEXT_GENERATION
+    assert set(caught.value.models) == {"org/a", "org/b"}
+    assert caught.value.resident == "org/b"
+    assert caught.value.held is False
+
+    conflicts = supervisor.describe()["conflicts"]
+    assert len(conflicts) == 1
+    assert conflicts[0]["capability"] == registry.TEXT_GENERATION
+    assert set(conflicts[0]["models"]) == {"org/a", "org/b"}
+    assert conflicts[0]["resident"] == "org/b"
+    assert conflicts[0]["held"] is False
+
+    # org/b — the resident model — is unaffected: it just answers.
+    events = list(supervisor.generate_text("org/b", {"messages": []}))
+    assert events[-1]["ok"] is True
+    assert supervisor.describe()["loaded"][0]["model"] == "org/b"
+
+    # A third contender during the live conflict is folded in rather than
+    # replacing the two that first collided.
+    with pytest.raises(supervisor.ModelSlotConflict) as third:
+        list(supervisor.generate_text("org/c", {"messages": []}))
+    assert set(third.value.models) == {"org/a", "org/b", "org/c"}
+
+
+def test_a_ping_pong_bounded_retry_loop_ends_in_a_conflict_not_forever(fake_runner):
+    """The user-facing promise end to end: two callers retrying forever
+    (`_retry_generate_text`, `runtime.js`'s own contract) stop evicting each
+    other and one gets a terminal error instead of looping."""
+    assert _retry_generate_text("org/a") == "ready"
+    assert _retry_generate_text("org/b") == "ready"
+    with pytest.raises(supervisor.ModelSlotConflict):
+        _retry_generate_text("org/a")
+
+
+def test_a_single_switch_outside_the_conflict_window_still_evicts(fake_runner):
+    """The other half of the rule: a one-off switch — not a tight loop — must
+    keep working exactly as it does today, forever, not just on its first
+    hop. Simulated by backdating the resident worker's own eviction past
+    `CONFLICT_WINDOW_S` rather than sleeping the real window away."""
+    with pytest.raises(supervisor.ModelNotReady):
+        list(supervisor.generate_text("org/a", {"messages": []}))
+    _wait_ready("org/a")
+    with pytest.raises(supervisor.ModelNotReady):
+        list(supervisor.generate_text("org/b", {"messages": []}))
+    worker_b = _wait_ready("org/b")
+    worker_b.request_path_at = time.time() - supervisor.CONFLICT_WINDOW_S - 1
+
+    # org/a's retry now evicts org/b cleanly — old news, not a loop.
+    with pytest.raises(supervisor.ModelNotReady):
+        list(supervisor.generate_text("org/a", {"messages": []}))
+    _wait_ready("org/a")
+    assert supervisor.describe()["conflicts"] == []
+    assert supervisor.describe()["loaded"][0]["model"] == "org/a"
+
+
+def test_manual_load_and_unload_clear_a_live_conflict(fake_runner):
+    """SPEC-model-slot-conflict.md §1: explicit user actions are never
+    blocked and always settle a conflict standing on that capability."""
+    with pytest.raises(supervisor.ModelNotReady):
+        list(supervisor.generate_text("org/a", {"messages": []}))
+    _wait_ready("org/a")
+    with pytest.raises(supervisor.ModelNotReady):
+        list(supervisor.generate_text("org/b", {"messages": []}))
+    _wait_ready("org/b")
+    with pytest.raises(supervisor.ModelSlotConflict):
+        list(supervisor.generate_text("org/a", {"messages": []}))
+    assert supervisor.describe()["conflicts"]
+
+    # A manual load — not a retry — is never refused, and it clears the
+    # conflict it just resolved by picking a side.
+    supervisor.load("org/a", registry.TEXT_GENERATION)
+    _wait_ready("org/a")
+    assert supervisor.describe()["conflicts"] == []
+
+    # Rebuild the conflict, then prove `unload` clears it too.
+    with pytest.raises(supervisor.ModelNotReady):
+        list(supervisor.generate_text("org/b", {"messages": []}))
+    _wait_ready("org/b")
+    with pytest.raises(supervisor.ModelSlotConflict):
+        list(supervisor.generate_text("org/a", {"messages": []}))
+    assert supervisor.describe()["conflicts"]
+    supervisor.unload(capability=registry.TEXT_GENERATION)
+    assert supervisor.describe()["conflicts"] == []
+
+
+def test_resolve_keep_a_model_holds_the_slot_against_the_other(fake_runner):
+    with pytest.raises(supervisor.ModelNotReady):
+        list(supervisor.generate_text("org/a", {"messages": []}))
+    _wait_ready("org/a")
+    with pytest.raises(supervisor.ModelNotReady):
+        list(supervisor.generate_text("org/b", {"messages": []}))
+    _wait_ready("org/b")
+    with pytest.raises(supervisor.ModelSlotConflict):
+        list(supervisor.generate_text("org/a", {"messages": []}))
+
+    supervisor.resolve_conflict(registry.TEXT_GENERATION, keep="org/b")
+    _wait_ready("org/b")
+    conflicts = supervisor.describe()["conflicts"]
+    assert len(conflicts) == 1
+    assert conflicts[0]["resident"] == "org/b"
+    assert conflicts[0]["held"] is True
+
+    # The held model keeps answering normally.
+    events = list(supervisor.generate_text("org/b", {"messages": []}))
+    assert events[-1]["ok"] is True
+
+    # The other model stays refused — WITHOUT evicting — even though the
+    # conflict window has long since lapsed; a hold does not expire on its
+    # own.
+    with pytest.raises(supervisor.ModelSlotConflict) as refused:
+        list(supervisor.generate_text("org/a", {"messages": []}))
+    assert refused.value.held is True
+    assert refused.value.resident == "org/b"
+    assert supervisor.describe()["loaded"][0]["model"] == "org/b"
+
+    # `release` restores ordinary auto-load.
+    assert supervisor.release_conflict(registry.TEXT_GENERATION) is True
+    assert supervisor.describe()["conflicts"] == []
+    with pytest.raises(supervisor.ModelNotReady):
+        list(supervisor.generate_text("org/a", {"messages": []}))
+    _wait_ready("org/a")
+    assert supervisor.describe()["loaded"][0]["model"] == "org/a"
+
+
+def test_resolve_keep_none_stops_both_and_refuses_until_release(fake_runner):
+    with pytest.raises(supervisor.ModelNotReady):
+        list(supervisor.generate_text("org/a", {"messages": []}))
+    _wait_ready("org/a")
+    with pytest.raises(supervisor.ModelNotReady):
+        list(supervisor.generate_text("org/b", {"messages": []}))
+    _wait_ready("org/b")
+    with pytest.raises(supervisor.ModelSlotConflict):
+        list(supervisor.generate_text("org/a", {"messages": []}))
+
+    supervisor.resolve_conflict(registry.TEXT_GENERATION, keep=None)
+    assert supervisor.describe()["loaded"] == []
+    conflicts = supervisor.describe()["conflicts"]
+    assert len(conflicts) == 1
+    assert conflicts[0]["resident"] is None
+    assert conflicts[0]["held"] is True
+
+    # Any request-path load is refused, including for the model that was
+    # just resident — the capability is held EMPTY.
+    with pytest.raises(supervisor.ModelSlotConflict) as refused:
+        list(supervisor.generate_text("org/b", {"messages": []}))
+    assert refused.value.held is True
+    assert refused.value.resident is None
+    assert supervisor.describe()["loaded"] == []
+
+    assert supervisor.release_conflict(registry.TEXT_GENERATION) is True
+    with pytest.raises(supervisor.ModelNotReady):
+        list(supervisor.generate_text("org/a", {"messages": []}))
+    _wait_ready("org/a")
+
+
 def test_evicting_a_model_does_not_block_other_calls_while_it_terminates(fake_runner, monkeypatch):
     """B1: `_terminate` can block for ~9s (a `/quit` POST, SIGTERM+wait,
     SIGKILL+wait, `proc.wait`). If the eviction branch in `_start_resident`
