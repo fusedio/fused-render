@@ -22,8 +22,8 @@ export interface PillState {
 }
 
 export const BAR_COUNT = 5;
-/** Widths at rest as a fraction of the widest (26 px): Notion's uneven taper. */
-export const BAR_REST = [12 / 26, 16 / 26, 20 / 26, 14 / 26, 8 / 26];
+/** Widths at rest as a fraction of the widest (20 px): Notion's uneven taper. */
+export const BAR_REST = [9 / 20, 12 / 20, 15 / 20, 11 / 20, 6 / 20];
 /** How far each bar grows toward full width at level 1: the middle bars lead. */
 const BAR_GAIN = [0.7, 0.9, 1, 0.9, 0.7];
 

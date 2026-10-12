@@ -59,10 +59,10 @@ from fused_render.mac_window import USER_AGENT_MARKER, _open_external
 logger = logging.getLogger(__name__)
 
 MESSAGE_NAME = "recpill"
-#: The window: the 56x200 pill plus an 8pt margin all round for the page's CSS
+#: The window: the 44x152 pill plus a 14pt margin all round for the page's CSS
 #: shadow (the window has none of its own — see `_build_panel`).
 WIDTH = 72.0
-HEIGHT = 216.0
+HEIGHT = 180.0
 EDGE_INSET = 16.0
 FRAME_NAME = "FusedRenderRecordingPill"
 
@@ -308,7 +308,7 @@ class RecordingPillController:
         panel.setOpaque_(False)
         panel.setBackgroundColor_(NSColor.clearColor())
         # No window shadow (AppKit would trace a hairline around the opaque
-        # pixels of a non-opaque window); the page draws one in its 8pt margin.
+        # pixels of a non-opaque window); the page draws one in its 14pt margin.
         panel.setHasShadow_(False)
         panel.setLevel_(NSStatusWindowLevel)
         panel.setHidesOnDeactivate_(False)

@@ -6809,3 +6809,8 @@ A Notion-style vertical pill (app icon, level meter, pause/resume, red stop) flo
 
 - **Notion-style pill.** No elapsed-time text (it moves to the meter's `title` tooltip, "Recording m:ss"; `formatElapsed` stays). The meter is a vertical stack of five short horizontal bars whose widths animate (80 ms linear), resting on an uneven taper (12/16/20/14/8 px) and growing to 26 px with the middle bars leading. Pause and stop are 36 px tinted circles (grey pause glyph; pale-red fill with a red rounded square), with light and dark values as CSS custom properties.
 - **Perceptual curve in the frontend.** The backend `db_to_level` mapping (linear over a -50 dB floor) is unchanged, so normal speech reads 0.0-0.3. The pill applies `sqrt(level)` and fast-attack/slow-release smoothing (`max(shaped, displayed * 0.85)` per 100 ms poll) so the meter moves visibly and does not drop to zero between polls.
+
+## D1350 — Recording pill resized to Notion proportions; soft shadow (2026-10-12, worktree-capture-system-audio-tap)
+
+- **44x152 pill, contents scaled ~0.75.** Icon 24 px, meter bars 3 px tall with a 4 px gap and a 20 px maximum (rest widths 9/12/15/11/6 px, `BAR_REST` in `lib.ts`), pause and stop 28 px circles (12 px glyphs, 9 px stop square), 8 px vertical padding, 22 px radius.
+- **Soft layered shadow, 14 px window margin.** The heavy drop shadow and hard ring are replaced by a hairline plus two soft layers (light and dark values); the window is 72x180 (pill plus 14 px on every side) so the shadow is never clipped.

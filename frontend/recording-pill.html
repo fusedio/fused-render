@@ -21,7 +21,7 @@
     --stop-bg: #fde8e7;
     --stop-bg-hover: #fbd9d7;
     --stop-fg: #e5534b;
-    --shadow: 0 6px 18px rgba(0,0,0,.22), 0 0 0 .5px rgba(0,0,0,.12);
+    --shadow: 0 0 0 0.5px rgba(0,0,0,.08), 0 2px 6px rgba(0,0,0,.08), 0 6px 16px rgba(0,0,0,.06);
   }
   @media (prefers-color-scheme: dark) {
     :root {
@@ -36,7 +36,7 @@
       --stop-bg: rgba(255,69,58,.22);
       --stop-bg-hover: rgba(255,69,58,.32);
       --stop-fg: #ff453a;
-      --shadow: 0 6px 18px rgba(0,0,0,.5), 0 0 0 .5px rgba(255,255,255,.14);
+      --shadow: 0 0 0 0.5px rgba(255,255,255,.12), 0 2px 6px rgba(0,0,0,.35), 0 6px 16px rgba(0,0,0,.25);
     }
   }
   html, body { margin: 0; padding: 0; background: transparent; width: 100%; height: 100%; overflow: hidden; }
@@ -46,38 +46,38 @@
     user-select: none; -webkit-user-select: none; cursor: default;
   }
   body.dev { background: #d9dde3; }
-  /* The window is 72x216; the pill is 56x200 inside an 8px margin that holds the shadow. */
+  /* The window is 72x180; the pill is 44x152 inside a 14px margin that holds the shadow. */
   #pill {
-    position: absolute; left: 8px; top: 8px; width: 56px; height: 200px; box-sizing: border-box;
-    border-radius: 28px; background: var(--pill-bg); box-shadow: var(--shadow);
+    position: absolute; left: 14px; top: 14px; width: 44px; height: 152px; box-sizing: border-box;
+    border-radius: 22px; background: var(--pill-bg); box-shadow: var(--shadow);
     display: flex; flex-direction: column; align-items: center; justify-content: space-between;
-    padding: 12px 0;
+    padding: 8px 0;
   }
   #pill[hidden] { display: none; }
   #icon {
-    width: 32px; height: 32px; flex: none; border-radius: 8px; overflow: hidden; cursor: pointer;
+    width: 24px; height: 24px; flex: none; border-radius: 6px; overflow: hidden; cursor: pointer;
     display: flex; align-items: center; justify-content: center;
   }
   #icon img { width: 100%; height: 100%; object-fit: contain; display: block; pointer-events: none; }
   #icon.home img { width: var(--home-scale, 113.7%); height: var(--home-scale, 113.7%); max-width: none; object-fit: cover; }
-  #meter { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 5px; }
+  #meter { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; }
   #meter i {
-    display: block; width: 12px; height: 4px; border-radius: 2px; background: var(--bar);
+    display: block; width: 9px; height: 3px; border-radius: 1.5px; background: var(--bar);
     transition: width 80ms linear;
   }
   #pill.paused #meter i { opacity: .35; }
   button {
     appearance: none; border: 0; padding: 0; margin: 0; cursor: pointer;
-    width: 36px; height: 36px; flex: none; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+    width: 28px; height: 28px; flex: none; border-radius: 50%; display: flex; align-items: center; justify-content: center;
   }
-  button svg { width: 16px; height: 16px; display: block; }
+  button svg { width: 12px; height: 12px; display: block; }
   #pause { background: var(--pause-bg); color: var(--pause-fg); }
   #pause:hover { background: var(--pause-bg-hover); }
   #pause[hidden] { display: none; }
   #pill:not(.paused) .play, #pill.paused .pausebars { display: none; }
   #stop { background: var(--stop-bg); }
   #stop:hover { background: var(--stop-bg-hover); }
-  #stop i { display: block; width: 12px; height: 12px; border-radius: 3px; background: var(--stop-fg); }
+  #stop i { display: block; width: 9px; height: 9px; border-radius: 2px; background: var(--stop-fg); }
   @media (prefers-reduced-motion: reduce) { #meter i { transition: none; } }
 </style>
 </head>
