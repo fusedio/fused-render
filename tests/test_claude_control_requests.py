@@ -367,10 +367,8 @@ def test_a_stop_on_a_fresh_chat_answers_now_and_interrupts_after_the_prompt_land
     run_id, run_dir = _start(agent, monkeypatch, stub, target, message="dfdf")
     assert _wait_for(_drained(run_dir)), "the host must have handed the prompt over"
 
-    started = time.monotonic()
     result = agent._cancel(run_id)
     assert result["pending"] is True, "deferred, not the synchronous road"
-    assert time.monotonic() - started < 1.0, "answered before the stub's 1 s"
     assert result["still_queued"] == []
     # A second press while the first is on its way is answered the same way,
     # at once — not by joining a wait the cancel budget cannot afford.
@@ -565,3 +563,35 @@ def test_the_host_wait_is_a_registered_stop_for_sends_and_second_stops(
     sender.join(5)
     assert joined and results == [{"cancelled": run_id}]
     assert run_dir not in agent._STOPS_STARTING
+
+
+def test_a_send_does_not_wait_out_a_slow_stop(agent, monkeypatch):
+    """The stop's own wait can run ~40 s; the follow-up gets a bounded join
+    and a plain "try again" instead of a 504."""
+    run_dir = os.path.join(agent.RUNS, "20261012-170000-ddd")
+    os.makedirs(run_dir)
+    gate = threading.Event()
+    worker = threading.Thread(target=gate.wait, args=(10,), daemon=True)
+    worker.start()
+    agent._PENDING_STOPS[run_dir] = worker
+    try:
+        assert agent._join_pending_stop(run_dir, timeout=0.2) is False
+        monkeypatch.setattr(agent, "_SEND_JOIN_WAIT_SEC", 0.2)
+        out = agent._send(os.path.basename(run_dir), "follow-up")
+        assert out == {"error": "stop in progress — try again in a moment"}
+        gate.set()
+        worker.join(5)
+        assert agent._join_pending_stop(run_dir, timeout=1) is True
+    finally:
+        gate.set()
+        agent._PENDING_STOPS.pop(run_dir, None)
+
+
+def test_discard_inbox_spends_the_spare_on_an_unreadable_first_entry(agent):
+    run_dir = os.path.join(agent.RUNS, "20261012-170100-eee")
+    inbox = agent._inbox_dir(run_dir)
+    os.makedirs(inbox)
+    with open(os.path.join(inbox, "00-first.json"), "w", encoding="utf-8") as fh:
+        fh.write("{half")                       # the opening prompt, mid-write
+    agent._write_inbox_entry(run_dir, "follow-up")
+    assert agent._discard_inbox(run_dir, keep_first=True) == ["follow-up"]

@@ -3710,7 +3710,9 @@ def _send(run_id: str, message: str, read_dirs: str = "", model: str = "",
         return {"error": "no such run"}
     # NOT AHEAD OF A STOP STILL IN FLIGHT (`_start_pending_stop`): written
     # now, this message would be the turn the deferred interrupt ends.
-    _join_pending_stop(run_dir)
+    # Bounded: the stop's own wait can run ~40 s, past the request budget.
+    if not _join_pending_stop(run_dir, timeout=_SEND_JOIN_WAIT_SEC):
+        return {"error": "stop in progress — try again in a moment"}
     try:
         with open(os.path.join(run_dir, "host.json"), encoding="utf-8") as fh:
             host = json.load(fh)
@@ -3840,7 +3842,11 @@ def _discard_inbox(run_dir: str, keep_first: bool = False) -> list:
             with open(path, encoding="utf-8") as fh:
                 row = json.load(fh)
         except (OSError, ValueError):
-            continue  # raced with a drain tick, or half a write: not ours
+            # Raced with a drain tick, or half a write: not ours — but it WAS
+            # the oldest entry, i.e. the opening prompt the host just took, so
+            # the spare is spent on it, not handed to the next (a follow-up).
+            spare_first = False
+            continue
         if not isinstance(row, dict) or row.get("type") != "user":
             continue
         if spare_first:
@@ -7337,21 +7343,38 @@ def _finish_pending_stop(run_id: str, run_dir: str, stranded: list,
             pass
 
 
-def _join_pending_stop(run_dir: str, timeout: float | None = None) -> None:
+#: How long a `_send` waits for a Stop still on its way before answering
+#: "try again" (the stop's own wait can outlast the request budget).
+_SEND_JOIN_WAIT_SEC = 8.0
+
+
+def _join_pending_stop(run_dir: str, timeout: float | None = None) -> bool:
     """Wait for a deferred Stop on `run_dir` to reach the CLI before writing
     anything else to its stdin. A follow-up that got there first would open
     a turn the interrupt then ends — the reader's next message silently
-    stopped — and a second Stop would interrupt nothing."""
+    stopped — and a second Stop would interrupt nothing.
+
+    True when nothing is left to wait for; False when `timeout` ran out with
+    the stop still on its way."""
+    deadline = None if timeout is None else time.monotonic() + timeout
+
+    def left() -> float | None:
+        return None if deadline is None else max(0.0, deadline - time.monotonic())
+
     with _PENDING_STOPS_LOCK:
         starting = _STOPS_STARTING.get(run_dir)
     if starting is not None:
         # A Stop still waiting for its host: the thread does not exist yet.
-        starting.wait(timeout if timeout is not None
-                      else _HOST_SPAWN_WAIT_SEC + 5.0)
+        waited = starting.wait(left() if deadline is not None
+                               else _HOST_SPAWN_WAIT_SEC + 5.0)
+        if not waited and deadline is not None:
+            return False
     with _PENDING_STOPS_LOCK:
         thread = _PENDING_STOPS.get(run_dir)
     if thread is not None and thread is not threading.current_thread():
-        thread.join(timeout)
+        thread.join(left())
+        return not thread.is_alive()
+    return True
 
 
 def _pending_stop_alive(run_dir: str) -> bool:
