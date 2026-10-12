@@ -169,40 +169,6 @@ def _app_id_for(path: str, kind: str) -> str | None:
     return app_identity.app_id(entry) if entry else None
 
 
-def _dupes(path: str, app_id: str | None) -> list[str]:
-    if not app_id:
-        return []
-    from fused_render import app_listing
-    from fused_render.shell.seed import fused_dir
-
-    me = os.path.normcase(os.path.realpath(path))
-    out = []
-    for row in app_listing.discover_workspace_apps(fused_dir()):
-        if os.path.normcase(row["path"]) == me:
-            continue
-        if app_catalog.row_app_id(row) == app_id:
-            out.append(row["path"])
-    return out
-
-
-def _settle_copies(removed: str, dupes: list[str]) -> list[str]:
-    """Repoint each duplicate whose witness names `removed` at itself. Safe
-    by construction: the origin is gone, so anything recording it is a copy.
-    Best-effort — a copy that cannot be settled is caught by the tombstone
-    on its next open instead."""
-    key = os.path.normcase(os.path.abspath(removed))
-    out = []
-    for d in dupes:
-        try:
-            rec = app_fused_dir.recorded_app_dir(d)
-            if rec and os.path.normcase(os.path.abspath(rec)) == key:
-                app_fused_dir._settle_as_copy(d, rec)
-                out.append(d)
-        except Exception:  # noqa: BLE001 — the delete already happened
-            logger.exception("could not settle the copy at %s", d)
-    return out
-
-
 @router.get("/api/apps/uninstall/preflight")
 def api_uninstall_preflight(path: str = Query(...)):
     """What uninstalling `path` would cost — the confirm dialog's numbers."""
@@ -237,7 +203,7 @@ def api_uninstall_preflight(path: str = Query(...)):
             app_catalog.KIND_OWN_REPO, app_catalog.KIND_MONOREPO) else None,
         "tasks": len(tasks),
         "bots": _bots_using(path),
-        "dupes": _dupes(path, app_id) if exists else [],
+        "dupes": app_catalog.duplicates_of(path, app_id) if exists else [],
     }
 
 
@@ -263,7 +229,7 @@ def api_uninstall(body: dict = Body(...), x_fused: str | None = Header(default=N
     folder = app_state_remove.canonical(path)
     # Read while the origin is still here: a copy's witness names it, and
     # once it is gone those copies are settled below, not on their next open.
-    dupes = _dupes(path, app_id) if exists else []
+    dupes = app_catalog.duplicates_of(path, app_id) if exists else []
 
     result: dict = {"ok": True, "path": folder, "kind": kind, "mode": mode,
                     "app_id": app_id, "removed_files": False}
@@ -297,7 +263,7 @@ def api_uninstall(body: dict = Body(...), x_fused: str | None = Header(default=N
         # Every surviving copy whose meta.json still records THIS folder as
         # its origin is settled now, so the witness never fires for it — not
         # on its next open (which may come after the tombstone's TTL), now.
-        result["settled"] = _settle_copies(path, dupes)
+        result["settled"] = app_catalog.settle_copies(path, dupes)
     if kind == app_catalog.KIND_APPFILE:
         exported_apps.forget(path)
     else:

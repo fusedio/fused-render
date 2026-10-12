@@ -202,6 +202,43 @@ def tombstone(path: str, app_id: str | None) -> None:
     storage.write_json(_tombstone_path(), {"entries": entries[:500]})
 
 
+def duplicates_of(path: str, app_id: str | None) -> list[str]:
+    """Every other workspace app folder declaring `app_id`. Read while `path`
+    is still on disk: it is what the uninstall settles once `path` is gone."""
+    if not app_id:
+        return []
+    me = os.path.normcase(os.path.realpath(path))
+    out = []
+    for row in app_listing.discover_workspace_apps(fused_dir()):
+        if os.path.normcase(row["path"]) == me:
+            continue
+        if row_app_id(row) == app_id:
+            out.append(row["path"])
+    return out
+
+
+def settle_copies(removed: str, dupes: list[str]) -> list[str]:
+    """Repoint each duplicate whose `.fused/meta.json` witness names `removed`
+    at itself (app_fused_dir._settle_as_copy). Safe by construction: the
+    origin is gone, so anything recording it is a copy. Best-effort — a copy
+    not settled here is caught by the tombstone on its next open. Shared by
+    the uninstall endpoint and the explorer's Delete, which are the same
+    gesture through two doors."""
+    from fused_render import app_fused_dir
+
+    key = os.path.normcase(os.path.abspath(removed))
+    out = []
+    for d in dupes:
+        try:
+            rec = app_fused_dir.recorded_app_dir(d)
+            if rec and os.path.normcase(os.path.abspath(rec)) == key:
+                app_fused_dir._settle_as_copy(d, rec)
+                out.append(d)
+        except Exception:  # noqa: BLE001 — the delete already happened
+            logger.exception("could not settle the copy at %s", d)
+    return out
+
+
 def is_tombstoned(path: str) -> bool:
     """Was `path` uninstalled (within the TTL)? Asked by the move witness."""
     try:

@@ -1428,36 +1428,49 @@ def _compress_dest(body: dict) -> str | None:
 @router.post("/api/fs/delete")
 def api_fs_delete(body: dict = Body(...), x_fused: str | None = Header(default=None)):
     path = body.get("path")
-    was_app = _is_app_dir(path)
+    # Read before the delete: the id lives in the entry page, and the copies
+    # that record this folder as their origin are found by it.
+    app_id, dupes = _app_identity_before_delete(path)
     result = _fs_delete(body, x_fused)
     _note_index_mutation(result, path)
-    if was_app and isinstance(result, dict):
+    if app_id is not None and isinstance(result, dict):
         # The explorer's Delete on an app folder is an uninstall by another
         # door: the stores forget it the same way (app_state_remove), the
-        # tombstone goes down for a surviving duplicate, and the hub snapshot
-        # drops so the card is gone on the next fetch.
-        _forget_deleted_app(path)
+        # tombstone goes down and the surviving duplicates are settled, and
+        # the hub snapshot drops so the card is gone on the next fetch.
+        _forget_deleted_app(path, app_id, dupes)
     return result
 
 
-def _is_app_dir(path: object) -> bool:
+def _app_identity_before_delete(path: object) -> tuple[str | None, list[str]]:
+    """(app_id, duplicate folders) for an app folder about to be deleted, or
+    (None, []) when `path` is not one. The id is "" for an app whose page
+    declares none — still an app, just one with no copies to settle."""
     if not isinstance(path, str) or not os.path.isabs(path):
-        return False
+        return None, []
     try:
-        from fused_render import app_listing
+        from fused_render import app_catalog, app_listing
+        from fused_render import app_id as app_identity
 
-        return os.path.isdir(path) and app_listing.app_entry(path) is not None
-    except OSError:
-        return False
+        if not os.path.isdir(path):
+            return None, []
+        entry = app_listing.app_entry(path)
+        if entry is None:
+            return None, []
+        app_id = app_identity.app_id(entry) or ""
+        return app_id, app_catalog.duplicates_of(path, app_id)
+    except Exception:  # noqa: BLE001 — a folder we cannot read is not an app here
+        return None, []
 
 
-def _forget_deleted_app(path: str) -> None:
+def _forget_deleted_app(path: str, app_id: str, dupes: list[str]) -> None:
     try:
         from fused_render import app_catalog, app_state_remove, exported_apps
         from fused_render.server.routers import apps as apps_router
         from fused_render.server.routers import current_apps as desk_router
 
-        app_catalog.tombstone(path, None)
+        app_catalog.tombstone(path, app_id or None)
+        app_catalog.settle_copies(path, dupes)
         # The folder's tasks: pending scheduled runs cancelled, the rest
         # archived — prune_stores leaves the schedule store alone on the
         # strength of this having run (it is the task history).
