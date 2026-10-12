@@ -197,7 +197,7 @@ export function OnboardingWizard({ config }: { config: Config }) {
   // step effect that reads it.)
   // `via` names the ACTION that finished it — the composer made an app, or a
   // showcase card was opened — and is what marks the First-app STAGE
-  // complete. "I'll explore on my own" passes none: it ends the wizard but
+  // complete. "Finish setup" passes none: it ends the wizard but
   // builds nothing, and the meter must say so.
   const markComplete = useCallback((via?: "composer" | "showcase") => {
     if (via) reportStage("app", "complete", { via });
@@ -293,7 +293,8 @@ export function OnboardingWizard({ config }: { config: Config }) {
         </Button>
         {composerStep ? (
           <Button key="explore" variant="outline" size="sm" onClick={() => finish("complete")}>
-            I'll explore on my own
+            Finish setup
+            <ArrowRight data-icon="inline-end" />
           </Button>
         ) : (
           <Button
