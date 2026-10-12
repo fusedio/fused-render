@@ -11644,6 +11644,10 @@ def test_a_non_owner_requester_cannot_unload_someone_elses_model(client, fake_ru
     body = refused.json()["error"]
     assert body["code"] == "model_slot_conflict"
     assert body["resident"] == "org/mine"
+    # An ownership refusal gets its own wording, not the generic "X and Y
+    # are contending for the slot" built for an actual two-model contention.
+    assert "loaded by another requester" in body["message"]
+    assert "contending" not in body["message"]
 
     # The actual owner can still unload its own model.
     owned = client.post(

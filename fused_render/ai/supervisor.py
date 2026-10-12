@@ -254,8 +254,17 @@ class ModelSlotConflict(SupervisorError):
     """
 
     def __init__(self, capability: str, models: list[str], resident: str | None,
-                *, held: bool = False):
-        if held and resident is not None:
+                *, held: bool = False, message: str | None = None):
+        if message is not None:
+            # An override for a refusal that is not a contention LOOP at all
+            # (`unload`'s ownership check, below) — the "X and Y are
+            # contending for the slot" wording this constructor otherwise
+            # builds describes two requesters racing each other, not one
+            # requester being told a DIFFERENT requester's model is not
+            # theirs to remove, and reads as nonsense when `models` is just
+            # the one resident with nothing else contending for it.
+            pass
+        elif held and resident is not None:
             message = (f"{resident} is held for {capability}. Release it on the "
                        f"AI Models page to let another model load.")
         elif held:
@@ -2590,8 +2599,17 @@ def unload(model: str | None = None, capability: str | None = None,
             worker = foreign[0]
             conflict = _conflicts.get(worker.capability)
             models = list(conflict.models) if conflict is not None else [worker.model]
+            # This is an OWNERSHIP boundary, not a contention loop — nobody is
+            # racing anybody for the slot, one caller is just reaching for a
+            # model a DIFFERENT requester loaded — so it gets its own wording
+            # rather than the generic "X and Y are contending" message, which
+            # reads as nonsense with only one model in play.
+            message = (f"{worker.model} was loaded by another requester. Unload "
+                       f"it from the AI Models page, or load your own model to "
+                       f"take over the {worker.capability} slot.")
             raise ModelSlotConflict(worker.capability, models, worker.model,
-                                    held=conflict.held if conflict is not None else False)
+                                    held=conflict.held if conflict is not None else False,
+                                    message=message)
     targets = _claim_for_removal(match, capability,
                                  hold=hold, explicit=explicit)
     _remove(targets, reason)

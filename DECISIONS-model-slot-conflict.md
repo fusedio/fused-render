@@ -694,3 +694,35 @@ requester` (`tests/test_ai_runtime.py`) — the user loads org/a explicitly,
 resident), `y` then takes over for org/c; asserts no conflict. Confirmed
 red against the unmodified rule via a stash round-trip (raised
 `ModelSlotConflict` between org/b and org/c), green after the fix.
+
+## The Playground's own Load/Unload buttons claim `user`, not `shell:playground`
+
+`PlaygroundTab.tsx`'s sidebar Load/Unload buttons sent `PLAYGROUND_REQUESTER`
+(`shell:playground`) — the same identity every GENERATION call the
+Playground makes carries — even though these two buttons are the user
+choosing a model by hand, the identical gesture `ModelsDock.tsx`'s row and
+the AI Models page's own Load/Unload already make with `USER_REQUESTER`.
+Tagged as an ordinary requester, these buttons could be refused with
+`ModelSlotConflict` for "contention" against the Playground's own
+generation traffic, and could never clear a standing conflict the way an
+explicit user action is supposed to. They now send `USER_REQUESTER`;
+generation calls (`TextStage` and the rest, through `./client.ts`) are
+unchanged and still carry `PLAYGROUND_REQUESTER`, since telling two
+Playground runs — or a Playground run and a page's own `fused.ai` call —
+apart is exactly what that identity is for.
+
+`unload`'s ownership refusal (`fused_render/ai/supervisor.py`) built its
+message from `ModelSlotConflict`'s contention-style constructor — "X and Y
+are contending for the capability slot" — even though only one model is
+ever in play here (`models = [worker.model]`): a caller asking for
+somebody ELSE's resident to come down is an ownership boundary, not a
+race, and the old wording read as nonsense ("org/mine are contending...
+the rest can't take over" with no "rest"). `ModelSlotConflict` now takes
+an optional `message` override, and `unload` passes one that says
+whose model it is and what to do about it, while keeping the same wire
+shape (`code`, `capability`, `models`, `resident`, `held`) every other
+`model_slot_conflict` reply carries.
+
+Test: `test_a_non_owner_requester_cannot_unload_someone_elses_model`
+(`tests/test_ai_runtime.py`) now also asserts the distinct wording
+("loaded by another requester", no "contending").

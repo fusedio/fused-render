@@ -53,10 +53,10 @@ import {
   type AiUnsupportedModel,
   loadAiModel,
   unloadAiModel,
+  USER_REQUESTER,
   type AiCatalogCapability,
   type AiCatalogModel,
 } from "@platform/lib/api";
-import { PLAYGROUND_REQUESTER } from "./client";
 import { useUrlVersion } from "@platform/lib/hooks";
 import { navigateUrl } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
@@ -469,11 +469,21 @@ export default function PlaygroundTab() {
     }
     refreshAiRuntime();
   };
+  // Load/Unload here are the AI Models page's own buttons, drawn on the
+  // Playground tab's sidebar card (SPEC-model-slot-conflict.md §1) — the
+  // user choosing a model by hand, exactly like `ModelsDock.tsx`'s row, not
+  // the Playground surface itself asking for one. They carry `USER_REQUESTER`
+  // so they never get refused for contention and clear any standing
+  // conflict, the same as every other explicit Load/Unload in the app;
+  // `PLAYGROUND_REQUESTER` stays on the GENERATION calls below (`TextStage`
+  // etc., via each stage's own call into `./client.ts`), which is what two
+  // Playground runs — or a Playground run and a page's own `fused.ai` call —
+  // need to be told apart by.
   const runLoad = async () => {
     if (!selected) return;
     setActionError(null);
     try {
-      await loadAiModel(selected.model.id, selected.row.capability, PLAYGROUND_REQUESTER);
+      await loadAiModel(selected.model.id, selected.row.capability, USER_REQUESTER);
       refreshAiRuntime();
     } catch (e) {
       setActionError((e as Error).message);
@@ -483,7 +493,7 @@ export default function PlaygroundTab() {
     if (!selected) return;
     setActionError(null);
     try {
-      await unloadAiModel(selected.model.id, PLAYGROUND_REQUESTER);
+      await unloadAiModel(selected.model.id, USER_REQUESTER);
       refreshAiRuntime();
     } catch (e) {
       setActionError((e as Error).message);
