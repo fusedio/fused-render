@@ -59,7 +59,7 @@ def test_a_local_text_rows_source_comes_from_the_ambient_X_Fused_Source(
     monkeypatch.setattr(_server_ai, "_is_local_model", lambda m: True)
     monkeypatch.setattr(
         supervisor, "generate_text",
-        lambda model, request: iter([{"type": "done", "ok": True, "tokens": 1}]))
+        lambda model, request, **kwargs: iter([{"type": "done", "ok": True, "tokens": 1}]))
     reply = client.post(
         "/api/ai", json={"prompt": "hi", "model": "org/chat"},
         headers={"X-Fused": "1", "X-Fused-Source": "/ai-models/playground"})

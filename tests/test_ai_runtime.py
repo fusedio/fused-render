@@ -6102,6 +6102,34 @@ def test_an_unknown_capability_is_refused(client):
     assert response.status_code == 400
 
 
+def test_load_and_unload_answer_a_conflict_with_the_structured_body(client, fake_runner):
+    """`/load` and `/unload` must answer a `ModelSlotConflict` exactly like
+    every other `/api/ai` verb does — `_conflict_error`'s `{ok: False, error:
+    {code: "model_slot_conflict", ...}}` — not a flat `{"error": "<string>"}`
+    a caller can only tell apart from any other 409 by sniffing the message
+    text."""
+    conflict = _force_conflict("org/a", "org/b")
+
+    loaded = client.post(
+        "/api/ai/runtime/load", json={"model": "org/b"},
+        headers={"X-Fused": "1", "X-Fused-Requester": "r2"})
+    assert loaded.status_code == 409
+    body = loaded.json()
+    assert body["ok"] is False
+    assert body["error"]["code"] == "model_slot_conflict"
+    assert body["error"]["capability"] == registry.TEXT_GENERATION
+    assert set(body["error"]["models"]) == {"org/a", "org/b"}
+    assert body["error"]["resident"] == conflict.resident
+
+    unloaded = client.post(
+        "/api/ai/runtime/unload", json={"model": "org/a"},
+        headers={"X-Fused": "1", "X-Fused-Requester": "r2"})
+    assert unloaded.status_code == 409
+    body = unloaded.json()
+    assert body["ok"] is False
+    assert body["error"]["code"] == "model_slot_conflict"
+
+
 def test_ai_without_a_model_still_means_claude(client, monkeypatch):
     # The back-compat promise: every page written against fused.ai() keeps its
     # meaning, because only a slash-bearing id is local.
@@ -9716,6 +9744,38 @@ def test_a_queued_transcription_resolves_its_MODEL_only_once_it_has_the_lock(mon
     # …and once it had its turn, it resolved for itself rather than reusing a
     # handle taken before the wait.
     assert resolved == ["org/default", "org/other"], resolved
+
+
+def test_start_transcribes_precheck_does_not_evict_before_the_turn(monkeypatch):
+    """`start_transcribe`'s synchronous pre-check runs on the calling (HTTP)
+    thread, before `generate_transcript` ever takes `_TRANSCRIBE_LOCK` — it
+    must decide ONLY whether this request would lose a conflict, never evict.
+    A one-off switch to a different Whisper model with no standing conflict
+    is ordinary, and the eviction for it belongs to `generate_transcript`'s
+    own `_wait_ready` call, taken under the turn's lock, not to this
+    pre-check — otherwise a request for model B kills model A's worker (and
+    the transcription running on it) before A's turn has even ended."""
+    resident = supervisor.Worker(model="org/a", capability=registry.SPEECH_TO_TEXT,
+                                 runner_code="fake-whisper", token="resident-token",
+                                 requester_id="chat:1", requester_label="Chat")
+    with supervisor._lock:
+        supervisor._workers[registry.SPEECH_TO_TEXT] = resident
+
+    terminated = []
+    monkeypatch.setattr(supervisor, "_terminate", lambda w: terminated.append(w.model))
+    monkeypatch.setattr(supervisor, "generate_transcript",
+                        lambda *a, **k: {"text": "", "segments": []})
+
+    try:
+        job = supervisor.TRANSCRIBE_JOB_PREFIX + "b"
+        supervisor.start_transcribe("org/b", {"path": "/b.m4a"}, job,
+                                    requester_id="chat:2", requester_label="Chat 2")
+        assert terminated == [], (
+            "the pre-check evicted the resident model on the calling thread")
+        # The resident worker is untouched — still there, under its own token.
+        assert supervisor._workers[registry.SPEECH_TO_TEXT] is resident
+    finally:
+        supervisor.reset()
 
 
 def _framed(segments):

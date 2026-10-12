@@ -171,6 +171,26 @@ def test_model_slot_conflict_is_raised_by_the_request_path(monkeypatch):
     assert exc.value.resident == "org/b"
 
 
+def test_models_load_raises_model_slot_conflict(monkeypatch):
+    """`models.load` posts straight to `/api/ai/runtime/load` through
+    `_post_json`, the same `_request` path every other call goes through —
+    a standing conflict there has to surface the same `ModelSlotConflict`,
+    not a generic `AiError` a caller would have to inspect by `.type`."""
+    def fake_urlopen(req, timeout=None):
+        raise _FakeHTTPError(409, {"ok": False, "error": {
+            "type": "model_slot_conflict", "code": "model_slot_conflict",
+            "message": "org/a and org/b are fighting over the text-generation slot",
+            "capability": "text-generation", "models": ["org/a", "org/b"],
+            "resident": "org/b", "held": False}})
+
+    monkeypatch.setenv("FUSED_RENDER_ORIGIN", "http://127.0.0.1:1")
+    monkeypatch.setattr(fused_ai.urllib.request, "urlopen", fake_urlopen)
+    with pytest.raises(fused_ai.ModelSlotConflict) as exc:
+        fused_ai.models.load("org/b")
+    assert exc.value.capability == "text-generation"
+    assert exc.value.resident == "org/b"
+
+
 def test_plain_error_string_shape_maps_to_bad_request_or_unavailable():
     bad = fused_ai._error_from_payload(400, {"error": "nope"})
     assert bad.type == "bad_request"

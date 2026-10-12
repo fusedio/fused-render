@@ -1689,7 +1689,8 @@ def _runner_or_raise(capability: str) -> registry.Runner:
 
 
 def _request_path_conflict(capability: str, model: str, current: Worker | None,
-                           requester_id: str, requester_label: str,
+                           requester_id: str, requester_label: str, *,
+                           record: bool = True,
                            ) -> ConflictState | None:
     """Under `_lock`. Whether a REQUEST-PATH load for `model`, asked for by
     `requester_id`, must be refused without evicting, or `None` to let
@@ -1720,6 +1721,19 @@ def _request_path_conflict(capability: str, model: str, current: Worker | None,
     `conflict.requesters` rather than only the original two, so a
     notification or dock row raised later names everyone still asking, not
     just whoever collided first.
+
+    `record=False` (the render paths' synchronous pre-check,
+    `_check_request_path_conflict`) answers the same question — would THIS
+    request be refused — without writing a fresh `_swap_chains` entry for an
+    ordinary (non-conflicting) eviction: that pre-check runs on the calling
+    thread before the render/transcribe turn starts the REAL load, and a
+    chain entry it wrote here would already be sitting in `_swap_chains` by
+    the time that real load makes its own `_request_path_conflict` call a
+    moment later — read back the entry this same request just planted and
+    wrongly conflict with itself. A conflict that record=False DOES find
+    (the standing-conflict fold, and the chain-match branch below) is
+    written for real regardless: either is a genuine refusal this call is
+    about to raise on, not a simulation.
     """
     conflict = _conflicts.get(capability)
     if conflict is not None:
@@ -1746,10 +1760,39 @@ def _request_path_conflict(capability: str, model: str, current: Worker | None,
         _conflicts[capability] = new_conflict
         _swap_chains.pop(capability, None)
         return new_conflict
-    chain.append((now, current.requester_id))
-    chain.append((now, requester_id))
-    _swap_chains[capability] = chain
+    if record:
+        chain.append((now, current.requester_id))
+        chain.append((now, requester_id))
+        _swap_chains[capability] = chain
     return None
+
+
+def _check_request_path_conflict(model: str, capability: str, *,
+                                 requester_id: str = "",
+                                 requester_label: str = "") -> None:
+    """Under `_lock`: raise `ModelSlotConflict` if a request-path load for
+    `model` on `capability` would be refused, without evicting, loading, or
+    starting a `_terminate` on this thread.
+
+    `_start_render`/`start_transcribe`'s own synchronous pre-check — it runs
+    before the job row opens and before the render/transcribe thread starts,
+    so a losing standoff answers with that standoff right here, not minutes
+    later as a generic error. `_request_path_conflict(record=False)` makes
+    this read-only for the one case it must be: an ORDINARY one-off switch
+    (no conflict) does not raise, and is left alone for `_wait_ready`'s own
+    `_start_resident` call — made inside the render thread, or inside
+    `generate_transcript` under `_TRANSCRIBE_LOCK` — to actually evict and
+    load. Evicting HERE instead would kill a resident worker (and whatever
+    it is mid-generation for) on the calling HTTP thread, ahead of any lock
+    that serializes the turn."""
+    with _lock:
+        current = _workers.get(capability)
+        conflict = _request_path_conflict(capability, model, current,
+                                          requester_id, requester_label,
+                                          record=False)
+    if conflict is not None:
+        raise ModelSlotConflict(capability, conflict.models, conflict.resident,
+                                held=conflict.held)
 
 
 def _start_resident(model: str, capability: str, *,
@@ -2072,12 +2115,12 @@ def _start_render(capability: str, model: str, request: dict, job: str,
     # standoff before a job row opens, not minutes later as a generic
     # `state="error"` once `generate(...)`'s own miss-handler (`_wait_ready`)
     # hits the same `ModelSlotConflict` on the thread (SPEC-model-slot-
-    # conflict.md §1). `_start_resident`'s join branch makes this safe to call
-    # here AND again inside `_wait_ready` once the thread starts: the second
-    # call finds the worker this one already started or joined and returns it
-    # without re-evicting or double-spawning anything.
-    _start_resident(model, capability, request_path=True,
-                    requester_id=requester_id, requester_label=requester_label)
+    # conflict.md §1). `_check_request_path_conflict` is READ-ONLY — it never
+    # evicts, loads, or runs `_terminate` on this (the HTTP) thread; an
+    # ordinary one-off switch is left for `_wait_ready`'s own `_start_resident`
+    # call, inside the render thread, to actually evict and load.
+    _check_request_path_conflict(model, capability,
+                                 requester_id=requester_id, requester_label=requester_label)
 
     title = str(title or request.get("prompt") or model).strip() or model
     # `model` rides as its own field (jobs.py `Job.model`), a dimmed suffix
@@ -2325,8 +2368,14 @@ def start_transcribe(model: str, request: dict, job: str, page: str = "",
     # See `_start_render`'s identical pre-check: a transcription that loses a
     # standoff answers with it before the row opens, not as a generic error
     # once `generate_transcript`'s own `_wait_ready` hits it on the thread.
-    _start_resident(model, registry.SPEECH_TO_TEXT, request_path=True,
-                    requester_id=requester_id, requester_label=requester_label)
+    # Read-only (`_check_request_path_conflict`): this runs before
+    # `generate_transcript` ever takes `_TRANSCRIBE_LOCK`, so evicting here
+    # would kill a running transcription for a request that is merely QUEUED
+    # behind it — the real eviction for an ordinary one-off switch belongs to
+    # `_wait_ready`'s own `_start_resident` call, made once this request has
+    # the lock and it is actually its turn.
+    _check_request_path_conflict(model, registry.SPEECH_TO_TEXT,
+                                 requester_id=requester_id, requester_label=requester_label)
 
     # `unit="s"` from the first tick: the row is drawn before the worker knows
     # the duration, and a bar that starts unitless and acquires seconds later

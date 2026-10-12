@@ -508,3 +508,78 @@ fixed id `"shell:ann-transcribe"` on both its warm-up load and its
 transcription job start. `ModelsDock.tsx`'s own Unload button sends
 `USER_REQUESTER` as well, matching the Load button's identity on the same
 page.
+
+## Review round two: test stubs after `requester_id`/`requester_label`
+
+`generate_text`, `_local_relay`, and `_apple_relay`'s request-path callers
+carry `requester_id`/`requester_label` as keyword-only parameters. Every
+test that monkeypatches `supervisor.generate_text` with its own stand-in
+(`test_ai_text_job_row.py`, `test_job_source_ambient.py`, and
+`test_ai_metrics.py` — found by grepping `tests/` for the same
+monkeypatch shape, not originally flagged) now accepts `**kwargs` on those
+stand-ins, so a caller passing the new keywords doesn't raise `TypeError`
+on a fixture that predates them.
+
+`test_a_missing_claude_binary_is_counted` (`test_ai_metrics.py`) fails
+identically against `origin/main` — diffed `fused_render/server/ai.py` and
+the test itself against `origin/main`'s copies and found no relevant
+difference. It expects `ai_unavailable` but the route currently records
+`ai_error`; this is a pre-existing bug unrelated to model-slot conflicts,
+left unfixed here.
+
+## The render-path and transcribe pre-checks stop evicting
+
+`_start_render` and `start_transcribe` each ran their conflict check by
+calling `_start_resident(..., request_path=True, ...)` on the calling
+(HTTP) thread before the real work started — for `start_transcribe`,
+before `_TRANSCRIBE_LOCK` is ever taken. When that pre-check's model
+differed from the resident but didn't actually conflict (an ordinary
+switch), `_start_resident` did its full job: it evicted and terminated
+the resident right there, on the HTTP thread, for a request that hadn't
+even begun generating — including killing an in-progress transcription
+turn out from under a different model's caller.
+
+`_check_request_path_conflict(model, capability, *, requester_id="",
+requester_label="")` replaces that call at both sites. It takes `_lock`,
+asks `_request_path_conflict(..., record=False)` whether this request
+would be refused, and raises `ModelSlotConflict` if so — it never evicts,
+loads, or calls `_terminate`. The real load (inside `generate_image`/
+`generate_video`/`_transcribe_turn`, after `_TRANSCRIBE_LOCK` is held)
+still runs `_start_resident` itself and does the actual eviction/record
+when the switch turns out to be uncontested.
+
+`_request_path_conflict` gained a `record: bool = True` keyword. The two
+branches that represent a genuine refusal (folding into an existing
+conflict; a new conflict found via chain match) always write real state
+regardless of the flag — those are true regardless of which caller asked.
+Only the "ordinary eviction" branch's `_swap_chains` append is gated on
+`record`, so the pre-check (`record=False`) doesn't write a chain entry
+that the real load then duplicates when it calls `_start_resident` for
+real.
+
+Test: `test_start_transcribes_precheck_does_not_evict_before_the_turn`
+(`tests/test_ai_runtime.py`) seeds a resident transcription worker,
+monkeypatches `_terminate` to record calls, and asserts `start_transcribe`
+for a different model/requester leaves the resident worker untouched and
+`_terminate` uncalled.
+
+## `/load` and `/unload` answer a conflict the same way every other verb does
+
+`api_ai_load` and `api_ai_unload` (`fused_render/server/routers/
+ai_runtime.py`) caught `ModelSlotConflict` and answered with `_error(str(e),
+status=409)` — a flat `{"error": "<message>"}`, the same shape as any other
+400/409, with no way to tell a model-slot conflict apart from an unrelated
+failure except by parsing the message text. Both routes now use
+`_conflict_error(e)`, the same `{"ok": False, "error": e.to_wire()}` body
+(`code: "model_slot_conflict"`, plus `capability`/`models`/`resident`/
+`held`) every other `/api/ai` verb already answers a conflict with.
+
+Tests: `test_load_and_unload_answer_a_conflict_with_the_structured_body`
+(`tests/test_ai_runtime.py`) forces a standing conflict via `_force_conflict`
+and asserts both routes' 409 bodies carry the structured shape. Confirmed
+red against the pre-fix route code (`KeyError: 'ok'`) before restoring the
+fix. `test_models_load_raises_model_slot_conflict`
+(`tests/test_fused_ai_client.py`) asserts `fused_ai.models.load` raises
+`ModelSlotConflict` — it already went through `_post_json` →
+`_error_from_payload`, the same path `fused_ai.text` uses, so no client
+change was needed, only the test.

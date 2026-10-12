@@ -1551,6 +1551,8 @@ def api_ai_load(body: dict = Body(...), x_fused: str | None = Header(default=Non
     try:
         return supervisor.load(model, capability, request_path=not user,
                                requester_id=requester_id, requester_label=requester_label)
+    except supervisor.ModelSlotConflict as e:
+        return _conflict_error(e)
     except supervisor.SupervisorError as e:
         # 409, not 500: the request was well-formed and the answer is a fact
         # about this machine ("needs Apple Silicon") or a standing conflict,
@@ -1598,7 +1600,7 @@ def api_ai_unload(body: dict = Body(...), x_fused: str | None = Header(default=N
         stopped = supervisor.unload(model=model, capability=capability, explicit=user,
                                     requester_id=requester_id, requester_label=requester_label)
     except supervisor.ModelSlotConflict as e:
-        return _error(str(e), status=409)
+        return _conflict_error(e)
     return {"stopped": stopped, **supervisor.describe()}
 
 
