@@ -124,13 +124,18 @@ export const errMsg = (e: unknown): string => String((e as { message?: unknown }
 // Boolean page prefs in localStorage ("1" / "0"); a missing key or no storage reads as the default (on).
 const readFlag = (k: string, dflt = true): boolean => { try { const v = localStorage.getItem(k); return v === null ? dflt : v === "1"; } catch { return dflt; } };
 const writeFlag = (k: string, on: boolean): void => { try { localStorage.setItem(k, on ? "1" : "0"); } catch { /* no storage */ } };
-export const AUTOSTAGE_KEY = "browser-bot.autostage", SOUNDS_KEY = "browser-bot.sounds";
+export const AUTOSTAGE_KEY = "browser-bot.autostage", SOUNDS_KEY = "browser-bot.sounds", CLEAR_KEY = "browser-bot.clear";
 /** "Open the browser when a bot needs me": a bot-initiated hand-over on the selected bot opens Stage by itself. */
 export const autoStage = (): boolean => readFlag(AUTOSTAGE_KEY);
 export const setAutoStage = (on: boolean): void => writeFlag(AUTOSTAGE_KEY, on);
 /** The hand-over chime (lib/notify.ts chime). */
 export const soundsOn = (): boolean => readFlag(SOUNDS_KEY);
 export const setSounds = (on: boolean): void => writeFlag(SOUNDS_KEY, on);
+/** The chat header's Clear context button (ChatPane.tsx, Bot.clear_context): a feature flag, OFF by default. Off, the
+ *  button is not rendered at all; markers already in a thread still fold it (Thread.tsx). The setter republishes so
+ *  an open header follows the switch at once. */
+export const clearContextOn = (): boolean => readFlag(CLEAR_KEY, false);
+export const setClearContext = (on: boolean): void => { writeFlag(CLEAR_KEY, on); touch(); };
 
 // ------------------------------------------------------------------ hand-over ----
 // The bot asked for you in its browser (control_by flipped to "bot"): open Stage. lib/cdp.ts registers openFull here

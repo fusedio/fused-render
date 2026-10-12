@@ -7,7 +7,7 @@ import { statusLabel } from "../lib/derive";
 import { toggleRight } from "../lib/layout";
 import { isNoise, searchQuery } from "../lib/thread";
 import { api } from "../lib/api";
-import { act, cur, eventsOf, onSelectChange, openDialog, useBots } from "../state/store";
+import { act, clearContextOn, cur, eventsOf, onSelectChange, openDialog, useBots } from "../state/store";
 import { Composer, type ReplyTo } from "./Composer";
 import { Face } from "./Face";
 import { ReactionPicker, type ReactionReq } from "./ReactionPicker";
@@ -51,12 +51,15 @@ export function ChatPane() {
           </button>
         ) : null}
         {/* Clear context (Bot.clear_context): the bot starts over; the thread folds what came before under the marker.
-            Only between tasks and with the browser handed back (the backend refuses otherwise); a no-op right after a clear. */}
-        <button id="cclear" className="ptog" disabled={!clearable} onClick={() => { if (b) void act(() => api.clearContext(b.id)); }}
-          title={!b ? "Clear context" : clearable ? "Clear context: the bot starts fresh; this chat keeps the earlier messages, folded"
-            : b.control ? "Hand the browser back first, then clear the context" : b.status !== "idle" && b.status !== "error" ? "Stop the task first, then clear the context" : "Context is already clear"}>
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m7 21-4.3-4.3a2.4 2.4 0 0 1 0-3.4l9.6-9.6a2.4 2.4 0 0 1 3.4 0l5.6 5.6a2.4 2.4 0 0 1 0 3.4L13 21" /><path d="M22 21H7" /><path d="m5 11 9 9" /></svg>
-        </button>
+            Only between tasks and with the browser handed back (the backend refuses otherwise); a no-op right after a clear.
+            Behind the page-wide "Clear context button" switch (Settings, store clearContextOn; off by default): off, no button. */}
+        {clearContextOn() ? (
+          <button id="cclear" className="ptog" disabled={!clearable} onClick={() => { if (b) void act(() => api.clearContext(b.id)); }}
+            title={!b ? "Clear context" : clearable ? "Clear context: the bot starts fresh; this chat keeps the earlier messages, folded"
+              : b.control ? "Hand the browser back first, then clear the context" : b.status !== "idle" && b.status !== "error" ? "Stop the task first, then clear the context" : "Context is already clear"}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m7 21-4.3-4.3a2.4 2.4 0 0 1 0-3.4l9.6-9.6a2.4 2.4 0 0 1 3.4 0l5.6 5.6a2.4 2.4 0 0 1 0 3.4L13 21" /><path d="M22 21H7" /><path d="m5 11 9 9" /></svg>
+          </button>
+        ) : null}
         <ThreadSearch open={search.open} q={search.q} count={searchN} disabled={!b}
           onOpen={() => setSearch((s) => ({ ...s, open: true }))}
           onClose={() => setSearch({ open: false, q: "" })}
