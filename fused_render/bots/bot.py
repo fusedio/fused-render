@@ -88,11 +88,12 @@ ENGINES = ("auto", "steps", "agent")
 # "ask" (default) = the CLI's default mode, a card for every write / edit /
 # shell command; "full" = the CLI's `auto` mode (its own classifier approves
 # what it judges safe and escalates the rest), the same mode Builds' "Full
-# access" uses. Only the user starts a Super Bot task: from its chat, or by text
-# from the iMessage handle set on it (then always in "ask" posture, see
-# agent_engine.super_mode); routines and the file inbox are refused (docs §5
-# "Super Bot"). Super Bot hands browsing work to the other bots (`handoff`,
-# docs §11); a hand-off to Super Bot is refused (depth one).
+# access" uses. Only the user starts a Super Bot task: from its chat, from a
+# routine they scheduled there (both carry the bot's own posture,
+# channels.base.is_local), or by text from the iMessage handle set on it (then
+# always in "ask" posture, see agent_engine.super_mode); the file inbox is
+# refused (docs §5 "Super Bot"). Super Bot hands browsing work to the other
+# bots (`handoff`, docs §11); a hand-off to Super Bot is refused (depth one).
 KINDS = ("bot", "super")
 SUPER_ACCESS = {"ask": "default", "full": "auto"}
 SUPER_NAME = "Super Bot"
@@ -1666,32 +1667,40 @@ class Bot:
             return at if at > after and not r.get("last") else None
         return None
 
+    @staticmethod
+    def _routine_fields(kind, minutes=None, time_s="", weekdays=None, at=None):
+        """The schedule fields for `kind`, checked and clamped the one way `add` and
+        `edit` share (the dialog refuses the same inputs first, RoutinesSection.tsx)."""
+        if kind == "interval":
+            return {"minutes": max(ROUTINE_MIN_MINUTES, int(minutes or 60)), "anchor": time.time()}
+        if kind == "daily":
+            return {"time": time_s or "09:00", "weekdays": [int(d) for d in (weekdays or list(range(7)))]}
+        if kind == "once":
+            at = float(at or 0)
+            if at <= time.time():
+                raise ValueError("that time is in the past")
+            return {"at": at}
+        raise ValueError("kind must be interval|daily|once")
+
     def routine_add(self, task, kind, minutes=None, time_s="", weekdays=None, at=None):
-        if is_super(self.meta):
-            raise ValueError("Super Bot takes tasks only from your chat; routines are for the other bots")
         task = (task or "").strip()
         if not task:
             raise ValueError("routine needs a task")
         r = {"id": uuid.uuid4().hex[:6], "task": task, "kind": kind, "enabled": True, "created": time.time(), "last": None, "last_result": ""}
-        if kind == "interval":
-            r["minutes"] = max(ROUTINE_MIN_MINUTES, int(minutes or 60))
-            r["anchor"] = time.time()
-        elif kind == "daily":
-            r["time"] = time_s or "09:00"
-            r["weekdays"] = [int(d) for d in (weekdays or list(range(7)))]
-        elif kind == "once":
-            r["at"] = float(at or 0)
-            if r["at"] <= time.time():
-                raise ValueError("that time is in the past")
-        else:
-            raise ValueError("kind must be interval|daily|once")
+        r.update(self._routine_fields(kind, minutes, time_s, weekdays, at))
         r["next"] = self._next_run(r, time.time())
         with self.lock:
             self.routines().append(r)
             self.save()
         return r
 
-    def routine_update(self, rid, enabled=None, delete=False):
+    def routine_update(self, rid, enabled=None, delete=False, task=None, kind=None, minutes=None, time_s="", weekdays=None, at=None):
+        """Enable/disable, delete, or (`task` given) rewrite the task and schedule.
+        An edit keeps the id, `fails` and the run history, drops the old kind's
+        fields and recomputes `next`; a once-routine edited to a new time is live
+        again (its `last` is cleared: `_next_run` ends a fired one-shot for good).
+        The text cannot change while its run is alive: `_routine_outcome` finds
+        the routine by its task text, so the run's result would never land."""
         with self.lock:
             rs = self.routines()
             r = next((x for x in rs if x["id"] == rid), None)
@@ -1699,11 +1708,28 @@ class Bot:
                 raise ValueError("no such routine")
             if delete:
                 rs.remove(r)
+            elif task is not None:
+                task = (task or "").strip()
+                if not task:
+                    raise ValueError("routine needs a task")
+                if (task != r.get("task") and r.get("last_result") == "started"
+                        and self.thread is not None and self.thread.is_alive()):
+                    raise ValueError("this routine is running now; stop it or let it finish, then edit the task")
+                kind = kind or r.get("kind")
+                fields = self._routine_fields(kind, minutes, time_s, weekdays, at)
+                for k in ("minutes", "anchor", "time", "weekdays", "at"):
+                    r.pop(k, None)
+                r.update(fields, task=task, kind=kind)
+                if kind == "once":
+                    r["last"] = None
+                    r["enabled"] = True
+                r["next"] = self._next_run(r, time.time()) if r.get("enabled") else None
             elif enabled is not None:
                 r["enabled"] = bool(enabled)
                 if r["enabled"]:
                     r["next"] = self._next_run(r, time.time())
             self.save()
+        return r
 
     def routine_fire(self, r, manual=False):
         """Start the routine's task now if the bot is free; else skip this slot."""
@@ -1952,10 +1978,11 @@ class Bot:
             via = dict(chan.ROUTINE) if origin == "routine" else dict(chan.WEB)
         elif not chan.is_web(via):
             origin = via.get("kind") or origin
-        if is_super(self.meta) and via.get("kind") != "imessage" and not (chan.is_web(via) and origin in ("manual", "setup")):
-            # Super Bot has shell and file access: only the user's chat or their text may start it (docs §5).
-            # Judged on the via, so an origin label alone never lifts the gate (or the posture, super_mode).
-            # "setup" is the app's own first task (SUPER_SETUP, _maybe_super_setup), never an outside sender.
+        if is_super(self.meta) and via.get("kind") != "imessage" and not (
+                (chan.is_web(via) and origin in ("manual", "setup")) or via.get("kind") == chan.ROUTINE_KIND):
+            # Super Bot has shell and file access: only the user's chat, a routine they scheduled, or their text may
+            # start it (docs §5). Judged on the via, so an origin label alone never lifts the gate (or the posture,
+            # super_mode). "setup" is the app's own first task (SUPER_SETUP, _maybe_super_setup), never an outside sender.
             self.emit("system", f"Ignored a task from {origin}: Super Bot only takes tasks you type here.")
             return False
         if self.browser.headed():

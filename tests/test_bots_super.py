@@ -1,7 +1,7 @@
 """Super Bot (bot.py KINDS "super", docs/bots.md §5 "Super Bot") through the real
 server: one per install, a Claude model, `super_access`, and the trigger lockdown
-(only the user's chat starts it: routines, iMessage and the file inbox are
-refused). The harness side (argv, permission cards, action rows) is in
+(only the user starts it: its chat, a routine scheduled there, or a text from
+its handle; botsend and the file inbox are refused). The harness side (argv, permission cards, action rows) is in
 test_bots_agent_engine.py."""
 from _bots_conftest import *  # noqa: F401,F403 — FusedBot's conftest fixtures (app_home, client, …)
 import json
@@ -87,12 +87,12 @@ def test_super_settings(client, ws):
     assert st == 200 and "super_access" not in bots(client)[out["id"]]
 
 
-def test_super_refuses_routines_and_cloning(client, ws):
+def test_super_takes_routines_but_refuses_cloning(client, ws):
     st, out = j(client.post("/api/bots", {"kind": "super"}))
     bid = out["id"]
     st, out = j(client.post(f"/api/bots/{bid}/routines", {"op": "add", "text": "tidy up", "kind": "interval", "minutes": 60}))
-    assert st == 400 and "only from your chat" in out["error"]
-    assert bots(client)[bid].get("routines", []) == []
+    assert st == 200 and out["routine"]["task"] == "tidy up"
+    assert [r["task"] for r in bots(client)[bid].get("routines", [])] == ["tidy up"]
     st, out = j(client.post(f"/api/bots/{bid}/clone", {}))
     assert st == 400 and "cannot be cloned" in out["error"]
     assert len(bots(client)) == 1
@@ -104,20 +104,22 @@ def test_super_engine_is_always_the_agent_engine(client, ws):
     assert botmod._engine_for({"model": "local-4b"}) == "steps"
 
 
-def test_only_chat_starts_an_ea_task(client, ws, monkeypatch):
+def test_only_the_user_starts_an_ea_task(client, ws, monkeypatch):
     ran = []
     monkeypatch.setattr(agent_engine, "run", lambda bot, task, label=None: ran.append((task, bot.task_origin)))
     st, out = j(client.post("/api/bots", {"kind": "super"}))
     b = registry.get(out["id"])
-    b.start_task("from a routine", origin="routine")
+    b.start_task("from botsend", via={"kind": "botsend", "addr": "x.txt"})
     assert ran == []
     msgs = [e["text"] for e in b.events_since(0) if e["role"] == "system"]
-    assert any("Ignored a task from routine" in m for m in msgs)
+    assert any("Ignored a task from botsend" in m for m in msgs)
+    b.start_task("from a routine", origin="routine")  # the user's own schedule (docs §5)
+    b.thread.join(5)
     b.start_task("from a text", via={"kind": "imessage", "addr": "+15551234567"})  # a text from the handle set on Super Bot (docs §5)
     b.thread.join(5)
     b.start_task("from the chat")
     b.thread.join(5)
-    assert ran == [("from a text", "imessage"), ("from the chat", "manual")]
+    assert ran == [("from a routine", "routine"), ("from a text", "imessage"), ("from the chat", "manual")]
 
 
 def test_super_ignores_the_file_inbox(client, ws, monkeypatch):

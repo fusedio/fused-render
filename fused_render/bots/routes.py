@@ -614,6 +614,10 @@ def _routines(bid, body):
                           time_s=body.get("time") or body.get("url") or "", weekdays=body.get("weekdays"), at=body.get("at"))
         return {"ok": True, "routine": r}
     rid = body.get("rid") or ""
+    if op == "edit":
+        r = b.routine_update(rid, task=body.get("text") or "", kind=body.get("kind") or "", minutes=body.get("minutes"),
+                             time_s=body.get("time") or "", weekdays=body.get("weekdays"), at=body.get("at"))
+        return {"ok": True, "routine": r}
     if op == "delete":
         b.routine_update(rid, delete=True)
     elif op in ("enable", "disable"):
@@ -624,7 +628,7 @@ def _routines(bid, body):
             raise ValueError("no such routine")
         b.routine_fire(r, manual=True)
     else:
-        raise ValueError("op must be add|delete|enable|disable|run")
+        raise ValueError("op must be add|edit|delete|enable|disable|run")
     return {"ok": True}
 
 

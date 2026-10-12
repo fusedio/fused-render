@@ -333,6 +333,7 @@ export interface SettingsBody {
 }
 export type RoutineBody =
   | { op: "add"; text: string; kind: Routine["kind"]; minutes?: number; time?: string; weekdays?: number[]; at?: number }
+  | { op: "edit"; rid: string; text: string; kind: Routine["kind"]; minutes?: number; time?: string; weekdays?: number[]; at?: number }
   | { op: "delete" | "enable" | "disable" | "run"; rid: string };
 export type SkillBody =
   | { op: "save"; name: string; trigger: string; text: string; rid?: string }
