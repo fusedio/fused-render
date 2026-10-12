@@ -166,7 +166,7 @@ function isPreview() {
 
 ## Theming
 
-Iframe = blank canvas; shell follows OS/pref light-dark. Quick answer: `data-fused-theme="shell"` on `<html>`, two `:root` token blocks against `data-theme`. Full rules → `fused-render-theming`.
+Iframe = blank canvas; shell follows OS/pref light-dark. Quick answer: `data-fused-theme="shell"` on `<html>`, two `:root` token blocks against `data-theme`. Simple apps (forms, dashboards, tools): define colours as `var(--fused-bg, fallback)` etc. so they follow the selected colour preset too. Full rules → `fused-render-theming`.
 
 ## Cross-browser (MANDATORY for every view)
 
