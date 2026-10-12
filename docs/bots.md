@@ -245,6 +245,12 @@ GET    /api/bots/<id>/shot?t=         -> image/png (the latest screenshot; 404 w
 GET    /api/bots/<id>/steps/<n>.jpg   -> image/jpeg (a step thumbnail; 404 when gone)
 GET    /api/bots/<id>/tools?token=    -> {tools: [{name, description, inputSchema}]}   (botmcp's roster; section 6)
 POST   /api/bots/<id>/tool            {name, args, token}                   -> {content: [...], isError}   (botmcp only; section 6)
+GET    /api/bots/roster              -> {bots: [{id, name, kind, preset, description, status, busy, task, note, step, waitingOn,
+                                                 model, effort, face, hidden, pinned, updated}], ts}   (the app door, §13; 403 while Bots is off)
+POST   /api/bots/<id>/app_send        {text, addr?, files?: [{name, data: <base64>, preview?: {media_type, data}}]} + X-Fused-Page
+                                      -> {ok, addr, seq, started, files: [stored names], vision}   (409 {error, reason: busy|headed|control, task, status})
+GET    /api/bots/<id>/app_events?addr=&since=<seq>  + X-Fused-Page -> {events, live, status, seq, ts}   (this app turn's events only)
+POST   /api/bots/<id>/app_stop        {addr} + X-Fused-Page                  -> {ok}   (409 when the running task is not this addr's)
 GET    /api/bots/builds               -> {builds: [{entryId, name, dir, createdAt, doneAt?}]}   (<home>/bots/builds.json)
 POST   /api/bots/builds               {builds: [...]}                       -> {ok}
 
@@ -1194,7 +1200,12 @@ imessage.py           pure helpers only (chat.db queries, osascript send, handle
 sender's normalised handle), `routine`, `botsend` (addr = the inbox file
 stem), and `handoff` (addr = `<Super Bot id>:<hand-off id>`, unique per
 hand-off, `channels.base.handoff_via`; stamped on a task Super Bot
-handed to a bot and so on its events, label "Super Bot", §11).
+handed to a bot and so on its events, label "Super Bot", §11), and `app`
+(addr = `<app key>:<call id>`, unique per send, `channels.base.app_via`;
+stamped on a task an app page sent through `fused.bots`, label "an app",
+§13). `channels.base.is_outside(via)` = not web, not routine, not hand-off:
+a text, a botsend file, an app — a message that is never the verdict of an
+approval card or an offer (`Outside`, the marker `Texted` used to be).
 
 **Inbound.** Super Bot is the door. `Channel.door()` answers (Super Bot's id,
 its normalised handle on that surface), read from disk on every call
@@ -1557,3 +1568,112 @@ value before changing it. The OTHER bots learn the second door too
 `APP_GUIDE`): once a Super Bot exists, "change your name to X" is answered
 with both ways (Settings dialog, or ask Super Bot), never with "only you
 can, in Settings" alone; without one the old sentence stands.
+
+## 13. The app door — `fused.bots` (`static/runtime.js`, `routes.py` roster / app_send / app_events / app_stop, 2026-10-12)
+
+An app page (any `/render` or `/embed` page with the runtime injected) can see
+the bots on this Mac and give one a message, through a `fused.bots` namespace
+shaped like `fused.tasks` (D890): Promise verbs, the server's sentence as the
+Error with `.status`/`.error`, present-and-throws on a hosted page, one
+refcounted poll per document. Design page with the decisions D1–D12 and the
+owner's answers: <https://claude.ai/artifact/69FiyvXmQP4UWFgZscJreW>.
+Author-facing skill: `skills/fused-render-bots/SKILL.md`.
+
+**Not the page's routes.** `GET /api/bots` runs side effects per call (idle
+sleep, popup recovery, screenshot threads) and returns every `bot.json` key;
+`POST /send` is the web door (via None, the `forever` flag). The app door is
+four routes of its own: `GET /roster` (one row per bot, `_app_bot`: name,
+kind, preset, the first 240 chars of instructions as `description`, status,
+`busy`, the task label, note, step, `waitingOn`, model, effort, face, hidden,
+pinned, updated — never instructions in full, the url the browser is on, rules,
+routines, memory, hand-offs, phone or browser details), `POST /<id>/app_send`,
+`GET /<id>/app_events`, `POST /<id>/app_stop`. All four answer 403 while
+`bots_enabled` is off (the pref only picks the front door; the router is
+mounted regardless, so without the gate a page could drive bots the user has
+not switched on).
+
+**Who is sending.** The app is named by the `X-Fused-Page` header the runtime
+sends with every call (`callHeaders`), resolved by `routers/tasks._page_scope`
+(the one idea of "this app" `fused.tasks` uses: the registry, the nearest
+declared entry page, else the page's folder) and spelled by `apptools.norm_app`
+— never by the body, so no page can speak as another app. A send mints
+`via = {kind: "app", addr: "<app key>:<call id>"}` (`channels.base.app_via`),
+unique per send like a hand-off's, so a turn's watcher reads only its own
+task's events and a later send never lends its events to an earlier result.
+`app_events` and `app_stop` check the addr's key against the caller's
+(`_own_addr`). The first `user` line is stamped by `receive` (`stamp`), every
+task-thread line by `emit` through `task_via`; the Bots page draws a
+"from <app key>" chip on that user line (Thread.tsx `viaChip`).
+
+**Judged before anything is written** (`Bot.receive_app`, under the bot's
+lock): the user holds the browser (`meta.control`: `receive` would park the
+message in `held` with no signal to the app) → 409 `control`; a task the app
+did not start is running → 409 `busy`; the browser is a real window
+(`headed`) → 409 `headed`. Only a message that will be delivered now falls
+through to `receive`. `receive` writes the user line first and lets
+`start_task` refuse afterwards, which would leave an orphan line on every
+refusal; and the race where a task starts between the check and the delivery
+is caught in `_deliver_message` (the user line marked `ignored_seq`, an error
+event back to the app). A follow-up on the app's own live task (same addr) is
+an instruction to it, or the answer to its `ask`. No queue: the app shows the
+reason and `watch` says when the bot is idle.
+
+**Never a verdict.** `_deliver_message` marks a message from any outside sender
+(`channels.base.is_outside`: not web, not routine, not hand-off — a text, a
+botsend file, an app) as `Outside` (the marker `Texted` used to be, kept as an
+alias), and the agent engine's approval wait, `_texted_approval` and
+`_answer_pending_offer` read that mark: an app's "yes" never approves its own
+task's risky action or accepts an offer. Before this an app via would have been
+unmarked (only iMessage was). botsend loses the same power on purpose: a
+nameless local file is not the user at the Mac.
+
+**Super Bot** is listed (`kind: "super"`) and takes app tasks: the two refusal
+gates (`receive`, `start_task`) admit kind `app` beside `imessage`.
+`is_local` is unchanged (web | routine), so every consumer of it — the
+`start_task` gate, `tools.phone_super`, `agent_engine.super_mode` — gives an
+app task the phone posture: every write, edit, shell command and build asks on
+a card in Super Bot's chat whatever `super_access` says, the CLI runs in its
+asking mode. A page is not the user typing. A hand-off from an app-started
+Super Bot task works as from a texted one: the result card comes back to the
+app as a stamped `done` with `source: "handoff"`.
+
+**Images are part of the prompt.** Every file in `files` lands in the bot's
+`files/` exactly as a composer attachment does (`save_bytes`, 8 MB, clash →
+suffix) and the message gets the composer's own "Attached (in your FILES
+folder, use `upload` when a page needs them): …" line with the names as
+stored, server-side in one request (two requests would race the suffix and
+orphan files on a failed send). An image (png, jpeg, gif, webp) also goes into
+the model turn as an image block before the text: the runtime scales it
+client-side to the API's 1568 px long edge (`preview`, PNG stays PNG, the rest
+JPEG) and sends original plus preview; the server stores the original and
+pushes the preview. `start_task(images=…)` stashes them on `bot.task_images`;
+`agent_engine.run` passes them to `write_user(prompt, images)` (the first turn;
+a ResumeLost re-spawn sends them again); a follow-up's images ride the
+`Outside` message (`.images`) and go out on the next tool result
+(`_instruction` → `sess.pending_images` → `_handle`) or, when the model is
+idle, on the stdin user turn. The steps engine is text-only ("images cannot
+be shown to you here"): the file is still saved and named, and `app_send`
+answers `vision: false` so the app can say the bot could not look.
+
+**The turn's state** is derived in the runtime from the bot's own events with
+the hand-off table (§11): `done` → done (or failed for "Stopped after N steps
+without finishing."), `error` with `trace` → failed (without one it is a
+retry), `system "Stopped"` → cancelled, `question` / `approval` → blocked with
+`{kind: question|login|approval, text, options?}`, a later action / thought /
+note → working. `app_events` answers `live` (the running task's `task_via.addr`
+is this addr and its thread is alive); when it goes false with no terminal
+event the runtime polls once more, then settles failed ("ended without a
+result") — a task can end without a `done` (a declined model download). A
+404 (bot deleted) settles failed too. `t.done` never rejects. Nothing is kept
+server-side for the app: unlike hand-offs there is no row store or sweep — the
+page is alive to read, and an app that wants history keeps its own.
+
+**Poll.** One loop per document (`botsTick`): roster watchers and open turns
+share it, it starts with the first subscriber and stops with the last, backs
+off 3 s on an error, sits out a hidden tab (resumes on `visibilitychange`). A
+page that only called `list()` never starts it. `thumb` on an event is
+expanded to `thumbUrl` (`/api/bots/<id>/steps/<seq>.jpg`).
+
+**Withheld:** pause, resume, take-over, goto, tabs, settings, delete, clone,
+routines, skills, bot creation, an embedded chat. `stop` stops only the app's
+own task (`Bot.app_stop`, as `handoff_stop` stops only its hand-off).

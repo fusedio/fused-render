@@ -447,7 +447,8 @@ _CONTROL = {"pause": "pause", "resume": "resume", "stop": "stop", "takeover": "t
 
 @router.post("/api/bots/{bid}/{op}")
 @_handled
-def bot_control(bid: str, op: str, body: dict = Body(default=None), x_fused: str | None = Header(default=None)):
+def bot_control(bid: str, op: str, body: dict = Body(default=None), x_fused: str | None = Header(default=None),
+                x_fused_page: str | None = Header(default=None)):
     """pause | resume | stop | takeover | giveback | popout | dock | wake | clear (Clear context) | open (the user clicked the bot open: Super Bot's
     first task, docs §5), and the rest of the
     one-segment POSTs (goto, nav, tab, attach, react, flag, settings,
@@ -459,6 +460,9 @@ def bot_control(bid: str, op: str, body: dict = Body(default=None), x_fused: str
     if op in _CONTROL:
         out = getattr(_bot(bid), _CONTROL[op])()
         return {"ok": True, **(out if isinstance(out, dict) else {})}
+    app_fn = _APP_POSTS.get(op)
+    if app_fn is not None:
+        return app_fn(bid, body, x_fused_page)
     fn = _POSTS.get(op)
     if fn is None:
         return _error(f"unknown bot action {op!r}", 404)
@@ -675,9 +679,172 @@ def _viewport(bid, body):
     return {"ok": True, "viewport": [w, h]}
 
 
+# ------------------------------------------------------- the app door (docs §13) ---
+# `fused.bots` on an app page (static/runtime.js): a roster, a send that starts a
+# task on a bot stamped with the app's own via, that turn's events, a stop. Not
+# the page's own routes: `GET /api/bots` runs side effects per call and returns
+# every bot.json key, `POST /send` is the web door (via None, the `forever`
+# flag). The app is named by the X-Fused-Page header the runtime sends, never
+# by the body, so one page cannot speak as another app.
+
+_APP_FIELDS = ("name", "kind", "preset", "status", "task", "note", "step", "model", "effort", "face", "hidden",
+               "pinned", "updated")
+_APP_DESC = 240
+_IMAGE_EXT = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp"}
+
+
+def _bots_on():
+    """The owner's gate: an app may drive bots only while the Bots sub-app is switched on."""
+    from fused_render.shell import prefs
+    return _error("Bots are off in Preferences", 403) if not prefs.bots_enabled() else None
+
+
+def _app_key(x_fused_page):
+    """The calling page's app key, from the one idea of 'this app' `fused.tasks`
+    uses (routers/tasks._page_scope: the registry, the nearest declared entry
+    page, else the page's own folder), spelled as apptools.norm_app spells it."""
+    from fused_render.server.routers.tasks import _page_scope  # lazy: that router imports half the server
+    _page, app_dir, _entry = _page_scope(x_fused_page)
+    if not app_dir:
+        raise ValueError("fused.bots needs an X-Fused-Page header naming the calling page")
+    key = _apptools().norm_app(os.path.basename(app_dir.rstrip(os.sep)))
+    if not key:
+        raise ValueError("the calling page has no app folder")
+    return key
+
+
+def _own_addr(key, addr):
+    """An addr the caller may read or steer: its own key before the colon."""
+    addr = str(addr or "")
+    if not addr or addr.split(":", 1)[0] != key:
+        raise ValueError("addr is not this app's")
+    return addr
+
+
+def _refused(e, b):
+    from fused_render.bots.bot import AppRefused
+    if not isinstance(e, AppRefused):
+        raise e
+    return Response(json.dumps({"error": str(e), "reason": e.reason, "task": b.meta.get("task") or "",
+                                "status": b.meta.get("status") or ""}), status_code=409, media_type="application/json")
+
+
+def _app_bot(b):
+    """One roster row: what a page may know about a bot (docs §13). Withheld on
+    purpose: instructions in full, the site it is on, its rules, routines, memory,
+    hand-offs, browser and phone details."""
+    bm = _botmod()
+    m = b.meta
+    row = {k: m.get(k) for k in _APP_FIELDS}
+    row["id"] = b.id
+    row["kind"] = "super" if bm.is_super(m) else "bot"
+    row["description"] = " ".join(str(m.get("instructions") or "").split())[:_APP_DESC]
+    row["busy"] = bool(b.running()) or m.get("status") in ("running", "waiting", "paused")
+    waiting = None
+    if m.get("status") == "waiting" and m.get("waiting_on"):
+        ev = b.event_by_seq(m["waiting_on"]) or {}
+        waiting = "approval" if ev.get("role") == "approval" else ("login" if "browser window" in (ev.get("text") or "") else "question")
+    row["waitingOn"] = waiting
+    row["step"] = int(m.get("step") or 0)
+    return row
+
+
+@router.get("/api/bots/roster")
+@_handled
+def bots_roster():
+    off = _bots_on()
+    if off is not None:
+        return off
+    out = []
+    for b in registry.all():
+        try:
+            if not b.deleted:
+                out.append(_app_bot(b))
+        except Exception:  # noqa: BLE001 — one broken bot must not blank the roster
+            continue
+    return {"bots": out, "ts": time.time()}
+
+
+def _app_send(bid, body, x_fused_page=None):
+    off = _bots_on()
+    if off is not None:
+        return off
+    key = _app_key(x_fused_page)
+    b = _bot(bid)
+    bm = _botmod()
+    text = str(body.get("text") or "").strip()
+    files = body.get("files") if isinstance(body.get("files"), list) else []
+    if not text and not files:
+        raise ValueError("empty message")
+    from fused_render.bots.channels import base as chan  # lazy, like the rest of the bot layer (module docstring)
+    addr = _own_addr(key, body["addr"]) if body.get("addr") else None
+    via = chan.via(chan.APP_KIND, addr) if addr else chan.app_via(key, time.strftime("%Y%m%d-%H%M%S") + "-" + os.urandom(3).hex())
+    # Files land in files/ exactly as a composer attachment does (the same line names them); images also ride the
+    # model turn as blocks — the scaled `preview` the runtime made, else the file itself when it is an image.
+    names, images = [], []
+    for f in files:
+        if not isinstance(f, dict):
+            continue
+        name = str(f.get("name") or "attachment")
+        try:
+            data = base64.b64decode(f.get("data") or "", validate=False)
+        except (ValueError, TypeError):
+            raise ValueError(f"{name}: not base64") from None
+        if len(data) > ATTACH_MAX:
+            raise ValueError(f"{name}: too large ({len(data) // 1048576} MB; limit {ATTACH_MAX // 1048576} MB)")
+        names.append(b.save_bytes(name, data))
+        pv = f.get("preview") if isinstance(f.get("preview"), dict) else None
+        mt = _IMAGE_EXT.get(os.path.splitext(name)[1].lower())
+        if pv and pv.get("data") and pv.get("media_type"):
+            images.append({"media_type": str(pv["media_type"]), "data": str(pv["data"])})
+        elif mt:
+            images.append({"media_type": mt, "data": base64.b64encode(data).decode("ascii")})
+    if names:
+        text = (text + "\n\n" if text else "") + f"Attached (in your FILES folder, use `upload` when a page needs them): {', '.join(names)}"
+    try:
+        started = b.receive_app(text, via, images=images)
+    except Exception as e:  # noqa: BLE001
+        return _refused(e, b)
+    return {"ok": True, "addr": via["addr"], "seq": b.seq, "started": bool(started), "files": names,
+            "vision": bm._engine_for(b.meta) == "agent"}
+
+
+def _app_stop(bid, body, x_fused_page=None):
+    off = _bots_on()
+    if off is not None:
+        return off
+    key = _app_key(x_fused_page)
+    b = _bot(bid)
+    try:
+        b.app_stop(_own_addr(key, body.get("addr")))
+    except Exception as e:  # noqa: BLE001
+        return _refused(e, b)
+    return {"ok": True}
+
+
+@router.get("/api/bots/{bid}/app_events")
+@_handled
+def bot_app_events(bid: str, addr: str = Query(default=""), since: str = Query(default="0"),
+                   x_fused_page: str | None = Header(default=None)):
+    """This app turn's events after `since` (docs §13), plus `live` and the bot's status."""
+    off = _bots_on()
+    if off is not None:
+        return off
+    key = _app_key(x_fused_page)
+    b = _bot(bid)
+    try:
+        cur = int(since or 0)
+    except (TypeError, ValueError):
+        cur = 0
+    events, live = b.app_events(_own_addr(key, addr), cur)
+    return {"events": events, "live": live, "status": b.meta.get("status") or "", "seq": b.seq, "ts": time.time()}
+
+
 _POSTS = {"goto": _goto, "nav": _nav, "tab": _tab, "attach": _attach, "react": _react,
           "flag": _flag, "settings": _settings, "profile": _profile, "clone": _clone, "routines": _routines,
           "skills": _skills, "reveal": _reveal, "tool": _tool, "viewport": _viewport}
+# The app door's POSTs read the X-Fused-Page header too (docs §13).
+_APP_POSTS = {"app_send": _app_send, "app_stop": _app_stop}
 
 
 @router.delete("/api/bots/{bid}")

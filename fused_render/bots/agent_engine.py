@@ -199,6 +199,7 @@ class Turn:
         self.cur_mid, self.cur_mcp = "", 0   # the newest assistant message with bot-tool blocks, and how many
         self.steps = 0                       # tool calls handled
         self.ran_calls: dict = {}            # call key -> RESULT text, since the user last spoke
+        self.pending_images: list = []       # an app follow-up's images (docs §13), appended to the next tool result
         self.denied: set = set()             # approval previews the user said no to, since they last spoke
         self.current_result = None
         self.last_label, self.repeats = None, 0
@@ -244,8 +245,13 @@ class Turn:
             except (OSError, ValueError):
                 return False
 
-    def write_user(self, text: str) -> bool:
-        return self.write({"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": text}]}})
+    def write_user(self, text: str, images=None) -> bool:
+        """One user turn on stdin. `images` ({"media_type", "data": base64} each, an
+        app send's pictures, docs §13) go in as image blocks BEFORE the text, the
+        API's own shape, so the model sees the picture the words refer to."""
+        content = [_image_block(im) for im in (images or []) if _image_block(im)]
+        content.append({"type": "text", "text": text})
+        return self.write({"type": "user", "message": {"role": "user", "content": content}})
 
     def control(self, request: dict) -> bool:
         with self.wlock:
@@ -805,7 +811,8 @@ def _drive(bot, sess: Turn, proc) -> tuple:
                     bot.emit("thought", final)
                 sess.ran_calls.clear()
                 sess.current_result = None
-                sess.write_user("\n".join(f"USER INSTRUCTION (mid-task, overrides the task): {m}" for m in msgs))
+                sess.write_user("\n".join(f"USER INSTRUCTION (mid-task, overrides the task): {m}" for m in msgs),
+                                images=[im for m in msgs for im in channels.base.images_of(m)])
                 continue
             return ("cap" if sess.over_cap and not final else "done"), final
         # system/init, user echoes / tool_results, control_response, stream_event: nothing to show
@@ -925,7 +932,8 @@ def run(bot, task: str, label: str | None = None) -> None:
                 # --effort and thinks by default; a zero budget is the universal off
                 # switch. Sent before the first message so it covers the first turn.
                 sess.control({"subtype": "set_max_thinking_tokens", "max_thinking_tokens": 0})
-            if not sess.write_user(prompt):
+            # An app-started task's images (docs §13) ride the first turn; a ResumeLost re-spawn sends them again.
+            if not sess.write_user(prompt, images=getattr(bot, "task_images", None)):
                 raise RuntimeError("could not hand the task to Claude Code")
             if isinstance(conv, dict):
                 # The sections are in the session's history now, whatever happens to this turn.
@@ -1039,6 +1047,25 @@ def _result(text: str, notes=(), error: bool = False, image: bytes | None = None
     return {"content": content, "isError": bool(error)}
 
 
+_IMAGE_TYPES = frozenset({"image/png", "image/jpeg", "image/gif", "image/webp"})
+
+
+def _image_block(im) -> dict | None:
+    """An app send's image ({"media_type", "data": base64}, docs §13) as the API's
+    user-message block; None for anything that is not one of the four image types."""
+    if not isinstance(im, dict) or im.get("media_type") not in _IMAGE_TYPES or not im.get("data"):
+        return None
+    return {"type": "image", "source": {"type": "base64", "media_type": im["media_type"], "data": str(im["data"])}}
+
+
+def _image_result_block(im) -> dict | None:
+    """The same picture as an MCP tool-result block (a follow-up's image rides the
+    next tool result, where mid-task instructions ride)."""
+    if not isinstance(im, dict) or im.get("media_type") not in _IMAGE_TYPES or not im.get("data"):
+        return None
+    return {"type": "image", "data": str(im["data"]), "mimeType": im["media_type"]}
+
+
 def _stopped(notes=()) -> dict:
     return _result("Stopped by the user. End your turn now; do not call more tools.", notes, error=True)
 
@@ -1131,8 +1158,10 @@ def handle_tool(bot, token, name: str, args) -> dict:
 
 
 def _instruction(sess: Turn, notes: list, msg: str) -> None:
-    """A mid-task user message: it rides on this tool result."""
+    """A mid-task user message: it rides on this tool result (its images too,
+    an app follow-up's, docs §13: _handle appends them as image blocks)."""
     notes.append(f"USER INSTRUCTION (mid-task, overrides the task): {msg}")
+    sess.pending_images.extend(channels.base.images_of(msg))
     sess.ran_calls.clear()  # a new instruction may legitimately ask for the same call again
     sess.denied.clear()     # … or allow what was refused a moment ago
     sess.current_result = None
@@ -1240,6 +1269,10 @@ def _handle(bot, sess: Turn, name: str, args: dict) -> dict:
     if notes:
         blk = next(b for b in out["content"] if b.get("type") == "text")
         blk["text"] = (blk["text"] + "\n\n" + "\n".join(notes)).strip()
+    if sess.pending_images:
+        # An app follow-up's pictures (docs §13) go out with the instruction they came with, as image blocks.
+        out["content"].extend(b for b in (_image_result_block(im) for im in sess.pending_images) if b)
+        sess.pending_images = []
     return out
 
 

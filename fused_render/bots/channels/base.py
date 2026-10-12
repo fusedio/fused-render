@@ -11,7 +11,10 @@ delivery policy, option numbering and prefixes live once, in `router.py`.
              of the task it started. The web is {"kind": "web", "addr": ""}; a routine's
              task carries {"kind": "routine", "addr": ""} so policy can tell it apart; a
              task Super Bot handed to a bot carries {"kind": "handoff", "addr": "<Super Bot id>:<hand-off id>"}
-             (docs §11; handoff_via). Policy reads only the kind.
+             (docs §11; handoff_via). A task an app page sent through `fused.bots`
+             carries {"kind": "app", "addr": "<app key>:<call id>"} (docs §13; app_via):
+             the key names the app folder, the call id is unique per send, so the page
+             reads only its own turn's events. Policy reads only the kind.
     Inbound  one message a channel received, before any routing.
     Caps     what the surface can show; the engines and the router read it.
     Door     Super Bot is the one bot a channel reaches (`Channel.door`, docs §10).
@@ -25,6 +28,7 @@ import time
 WEB_KIND = "web"
 ROUTINE_KIND = "routine"
 HANDOFF_KIND = "handoff"
+APP_KIND = "app"
 WEB = {"kind": WEB_KIND, "addr": ""}
 ROUTINE = {"kind": ROUTINE_KIND, "addr": ""}
 
@@ -35,7 +39,7 @@ OUT_ROLES = ("done", "question", "error")
 
 
 LABELS = {"imessage": "iMessage", "botsend": "botsend", WEB_KIND: "the web page", ROUTINE_KIND: "a routine",
-          HANDOFF_KIND: "Super Bot"}
+          HANDOFF_KIND: "Super Bot", APP_KIND: "an app"}
 
 
 def label(kind: str) -> str:
@@ -60,6 +64,32 @@ def is_local(v) -> bool:
     return is_web(v) or (v or {}).get("kind") == ROUTINE_KIND
 
 
+def is_outside(v) -> bool:
+    """A message from a sender that is not the user at the Mac: a text, a botsend
+    file, an app page. Such a message is never the verdict of an approval card or
+    an app offer (approvals are answered at the Mac, docs §10); it still reaches
+    the model as an instruction or as the answer to its own `ask`. The negation
+    of is_local, minus the hand-off (Super Bot's own task, judged by its own
+    rules, docs §11)."""
+    return not is_local(v) and (v or {}).get("kind") != HANDOFF_KIND
+
+
+def app_via(app_key: str, call_id: str) -> dict:
+    """The via of ONE app send: addr "<app key>:<call id>" (docs §13). The key is
+    the app folder's normalised name (apptools.norm_app); the call id is minted
+    per send, so a turn's watcher reads only its own task's events and a later
+    send never lends its events to an earlier result (the hand-off rule)."""
+    return via(APP_KIND, f"{app_key}:{call_id}")
+
+
+def app_key_of(v) -> str:
+    """The app key an app via carries ("" for any other via)."""
+    v = v or {}
+    if v.get("kind") != APP_KIND:
+        return ""
+    return str(v.get("addr") or "").split(":", 1)[0]
+
+
 def handoff_via(super_id: str, handoff_id: str) -> dict:
     """The via of ONE hand-off's task: addr "<Super Bot id>:<hand-off id>", unique per
     hand-off so a watcher reads only its own task's events (docs §11). Policy reads the kind."""
@@ -67,21 +97,37 @@ def handoff_via(super_id: str, handoff_id: str) -> dict:
 
 
 
-class Texted(str):
-    """A mid-task message that arrived over a phone channel: a plain str for
-    every reader of `bot.inbox`, plus the `via` it came by. Approval and offer
-    waits never take one as their verdict (approvals are answered at the Mac,
-    docs §10); it still reaches the model as an instruction."""
+class Outside(str):
+    """A mid-task message from an outside sender (is_outside: a phone channel, a
+    botsend file, an app page): a plain str for every reader of `bot.inbox`,
+    plus the `via` it came by and, from an app, the `images` sent with it (each
+    {"media_type", "data": base64}; the agent engine pushes them into the model
+    turn beside the text, docs §13). Approval and offer waits never take one as
+    their verdict (approvals are answered at the Mac, docs §10); it still
+    reaches the model as an instruction or as the answer to its own `ask`."""
     via: dict = {}
+    images: list = []
 
-    def __new__(cls, text: str, v: dict | None = None):
+    def __new__(cls, text: str, v: dict | None = None, images=None):
         s = super().__new__(cls, text)
         s.via = dict(v or {})
+        s.images = list(images or [])
         return s
 
 
-def is_texted(s) -> bool:
-    return isinstance(s, Texted)
+Texted = Outside  # the older name: a text from the phone was the first outside sender
+
+
+def is_outside_msg(s) -> bool:
+    return isinstance(s, Outside)
+
+
+is_texted = is_outside_msg
+
+
+def images_of(s) -> list:
+    """The image blocks an inbox message carries ([] for a plain str)."""
+    return list(getattr(s, "images", None) or [])
 
 
 class Forever(str):
@@ -182,6 +228,11 @@ def prompt_section(v: dict | None, caps: Caps, kind_label: str = "") -> str:
     short paragraph (docs §11)."""
     if is_web(v) or (v or {}).get("kind") == ROUTINE_KIND:
         return ""
+    if (v or {}).get("kind") == APP_KIND:
+        return (f"APP: the app {app_key_of(v)!r} on this Mac sent this task from its own page and reads your final "
+                "message as its result (data read by code, so put the concrete findings in it, plainly). Any images it "
+                "sent are in this message. The user is at the Mac: `ask`, `login` and approval cards are answered in "
+                "your chat here (the app may answer an `ask` too); that may take a while.\n\n")
     if (v or {}).get("kind") == HANDOFF_KIND:
         return ("HAND-OFF: Super Bot (the user's assistant on this Mac) gave you this task for the user. Your final "
                 "message goes back to it as your result, so put the concrete findings in it. The user answers your "
