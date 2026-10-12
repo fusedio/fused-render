@@ -379,6 +379,15 @@ div.bots-page.stage .chat header #rcol { display: none; }  /* same: the preview 
 /* "New" rule: a thin accent line with a centered label before the first message that arrived since you last looked. */
 .bots-page .thread .new { display: flex; align-items: center; gap: 12px; width: 100%; padding: 4px 0; color: var(--accent-text); font-size: 10px; font-weight: 400; letter-spacing: .08em; text-transform: uppercase; }
 .bots-page .thread .new::before, .bots-page .thread .new::after { content: ""; flex: 1; height: 1px; background: var(--accent-text); opacity: .55; }
+/* Clear context (Thread.tsx ClearMark): a muted rule across the thread, and the toggle for the earlier conversation it
+   folds. Folded rows are hidden outright; a search shows them again (Thread drops the fold while filtering). */
+.bots-page .thread .ev.folded { display: none; }
+.bots-page .thread .cleared { display: flex; flex-direction: column; align-items: center; gap: 6px; width: 100%; padding: 10px 0 6px; color: var(--muted); font-size: 11px; }
+.bots-page .thread .cleared .lbl { display: flex; align-items: center; gap: 12px; width: 100%; }
+.bots-page .thread .cleared .lbl::before, .bots-page .thread .cleared .lbl::after { content: ""; flex: 1; height: 1px; background: var(--raised); }
+.bots-page .thread .cleared button { padding: 2px 10px; font-size: 11px; border-radius: 999px; background: var(--inset); color: var(--text); }
+.bots-page .thread .cleared button:hover { background: var(--hover); }
+.bots-page .ptog:disabled { opacity: .45; cursor: default; background: var(--bg); }
 /* Hover actions beside a message: reply (quotes it above the composer) and react (emoji picker). */
 .bots-page .msg.user, .bots-page .msg.thought, .bots-page .msg.done { position: relative; }
 .bots-page .msg .acts { position: absolute; top: 50%; transform: translateY(-50%); display: flex; gap: 6px; opacity: 0; transition: opacity .12s; }
