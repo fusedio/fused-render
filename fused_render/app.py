@@ -310,17 +310,17 @@ def _start_server_thread(port: int) -> "tuple[uvicorn.Server, threading.Thread]"
     from fused_render import community
 
     community.ensure_showcase_in_background()
-    # One-time migration: stamp `<meta name="fused-app">` into pre-existing
-    # workspace apps (meta_migration's docstring carries the rules).
-    from fused_render import meta_migration
+    # One-time migrations over the workspace's app folders, one entry point:
+    # the apps under <workspace>/local move to <workspace>/app (owner,
+    # 2026-10-12; apps_root_migration docstring carries the rules) — the
+    # renames run HERE, before serving, so the listing never sees a folder
+    # mid-move — then, on one thread, the settle + git trail, the `fused-app`
+    # meta stamp (meta_migration) and the local monorepo fold (D626,
+    # local_monorepo). Chained, not parallel: the older two walk the very
+    # folders being renamed.
+    from fused_render import apps_root_migration
 
-    meta_migration.run_once_in_background(start_dir)
-    # One-time migration: fold the per-app repos under <workspace>/local into
-    # the single shared repo at the tag root (D626; local_monorepo docstring
-    # carries the rules).
-    from fused_render import local_monorepo
-
-    local_monorepo.run_once_in_background(start_dir)
+    apps_root_migration.run_once(start_dir)
     # Probe Claude Code (found / version / signed-in) off the request path, so
     # the first-run strip's GET is a disk read. Mirrors cli._run_serve — an entry
     # point, never create_app.
