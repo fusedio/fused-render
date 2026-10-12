@@ -6,15 +6,18 @@
 // real store via its own `publishTasks` escape hatch (the same one the Tasks
 // page uses to hand the shared pulse a known-fresh answer) rather than
 // waiting out its poll timers.
-import { beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { dropSharedPrefsRead } from "@platform/lib/api";
 import { installDomShim } from "@platform/lib/testDomShim";
 
 installDomShim();
 
+const realFetch = globalThis.fetch;
+const realLocalStorage = (globalThis as unknown as { localStorage?: Storage }).localStorage;
 const presenceStore = new Map<string, string>();
 (globalThis as unknown as { localStorage: Storage }).localStorage = {
   getItem: (k: string) => (presenceStore.has(k) ? (presenceStore.get(k) as string) : null),
@@ -102,6 +105,16 @@ async function publish(rows: TaskPulseTask[]): Promise<void> {
     await Promise.resolve();
   });
 }
+
+// bun shares one process across test files: the never-settling fetch stub above
+// would otherwise stay installed, and any shared prefs GET started under it
+// (api.ts's getPrefsShared) would pin a request that never resolves for every
+// later file (ClaudeChat's flag read, so its sends never start).
+afterAll(() => {
+  globalThis.fetch = realFetch;
+  (globalThis as unknown as { localStorage?: Storage }).localStorage = realLocalStorage;
+  dropSharedPrefsRead();
+});
 
 beforeEach(() => {
   presenceStore.clear();

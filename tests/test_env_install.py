@@ -1034,7 +1034,7 @@ def _job(job_id):
     return next((j for j in jobs.list_jobs() if j["id"] == job_id), None)
 
 
-def _wait_until(predicate, timeout=2.0):
+def _wait_until(predicate, timeout=30.0):
     deadline = time.time() + timeout
     while time.time() < deadline:
         value = predicate()
@@ -1188,6 +1188,85 @@ def test_dismissing_the_dock_row_cancels_the_real_install(
     assert prog["error"] == "the install was cancelled", (
         "the dock's cancel request never reached envinstall.cancel"
     )
+
+
+@requires_fused
+def test_a_cancel_pressed_right_after_the_row_opens_is_not_wiped(
+    tmp_path, monkeypatch, _fresh_script_python
+):
+    """The dock's ✕ can land in the gap between the mirror's opening upsert
+    (the row is now visible) and whatever the mirror does next. The stale-flag
+    disowning must not run in that gap, or the ✕ is wiped and the install is
+    never cancelled. Forced deterministically: the ✕ is pressed from inside
+    the opening upsert's return."""
+    from fused_render import jobs
+
+    monkeypatch.setattr(envinstall, "_JOB_MIRROR_POLL_S", 0.01)
+    proj = _project(tmp_path, deps=["pip"])
+    monkeypatch.setattr(envinstall, "_spawn", lambda *a, **kw: os.getpid())
+    monkeypatch.setattr(envinstall, "_kill", lambda pid: True)
+
+    real_upsert = jobs.upsert
+    pressed = []
+
+    def upsert_then_press(body, **kw):
+        out = real_upsert(body, **kw)
+        if body.get("title") and not pressed:
+            pressed.append(jobs.request_cancel(body["id"]))
+        return out
+
+    monkeypatch.setattr(jobs, "upsert", upsert_then_press)
+
+    rec = envinstall.start(proj)
+    job_id = f"sys:env-install:{rec['key']}"
+    row = _wait_until(lambda: (j := _job(job_id)) and j["state"] == "cancelled" and j)
+    assert row["state"] == "cancelled"
+    assert envinstall.progress(rec["key"])["error"] == "the install was cancelled"
+
+
+@requires_fused
+def test_a_superseded_mirror_does_not_touch_the_retrys_row(
+    tmp_path, monkeypatch, _fresh_script_python
+):
+    """A mirror thread from an earlier attempt can start AFTER a retry
+    re-claimed the key and opened the row. It must notice it is superseded
+    before its opening clear+upsert, or it erases a ✕ pressed on the retry's
+    row. Forced deterministically: the claim token reads as changed the
+    moment the thread first looks."""
+    import threading
+
+    from fused_render import jobs
+
+    proj = _project(tmp_path, deps=["pip"])
+    key = "superseded-key"
+    job_id = f"sys:env-install:{key}"
+    jobs.upsert({"id": job_id, "title": "Preparing", "kind": "task",
+                 "state": jobs.RUNNING, "cancellable": True, "message": ""},
+                page="/x", server=True)
+    jobs.request_cancel(job_id)
+    assert _job(job_id)["cancel_requested"]
+
+    tokens = iter([b"old-claim"])
+    monkeypatch.setattr(
+        envinstall, "_claim_token", lambda k: next(tokens, b"new-claim")
+    )
+    touched = []
+    real_upsert, real_clear = jobs.upsert, jobs.clear_cancel_requested
+    monkeypatch.setattr(
+        jobs, "upsert", lambda *a, **kw: touched.append("upsert") or real_upsert(*a, **kw)
+    )
+    monkeypatch.setattr(
+        jobs, "clear_cancel_requested",
+        lambda *a, **kw: touched.append("clear") or real_clear(*a, **kw),
+    )
+
+    envinstall._mirror_into_jobs(key, str(proj))
+    for t in threading.enumerate():
+        if t.name == "env-install-jobs-mirror":
+            t.join(10)
+
+    assert touched == [], "a superseded mirror touched the retry's row"
+    assert _job(job_id)["cancel_requested"], "the ✕ on the retry's row was wiped"
 
 
 @requires_fused

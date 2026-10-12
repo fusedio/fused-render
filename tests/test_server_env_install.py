@@ -595,6 +595,12 @@ function watchPath(p) { watched.push(p); }
 var fsChanges = 0;
 function noteFsChanged() { fsChanges += 1; }
 globalThis.window = { location: { search: "?path=/page.html" } };
+// runPython rides a WebSocket (/api/run/ws) when the host has one, falling back
+// to the POST these tests stub via `fetch` only after the socket fails. Node 22+
+// ships a global WebSocket that dials the stub's host-less URL for real, so on
+// CI the run never reached the stubbed POST. Hide it: `new WebSocket` throws,
+// which runtime.js treats as "no sockets on this page" and flips to the POST.
+globalThis.WebSocket = undefined;
 // Real opens: false, matching every test below that never sets it. Preview-gate
 // tests reassign it (it's a bare `var`, so the sliced runtime's own `handle`
 // closes over this same binding) before calling `runPython`.

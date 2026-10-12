@@ -550,4 +550,4 @@ def test_embeddinggemma2_takes_paths_without_kind(client, monkeypatch, served):
     _families(monkeypatch, {GEMMA: "dual"})
     response = _post(client, {"paths": ["/tmp/pic.png"], "model": GEMMA})
     assert response.status_code == 200
-    assert served == [(GEMMA, {"paths": ["/tmp/pic.png"]})]
+    assert served == [(GEMMA, {"paths": [os.path.abspath("/tmp/pic.png")]})]

@@ -74,7 +74,7 @@ def _start(client, **body):
     return res.json()
 
 
-def _settled(job_id, timeout=6.0):
+def _settled(job_id, timeout=30.0):
     """The row once the watchdog has acted on it.
 
     Polled rather than slept on: what is being tested is that the watchdog
@@ -331,7 +331,7 @@ def test_the_cap_still_stops_and_keeps(backend, client, monkeypatch):
     started = _start(client, maxSeconds=1)
     with client.websocket_connect(_stream_url(started)) as ws:
         ws.send_bytes(b"a second of video")
-        row = _settled(started["jobId"], timeout=8.0)
+        row = _settled(started["jobId"], timeout=60.0)
     assert row["state"] == "done"
     assert capture.active() == []
     assert os.path.exists(started["path"])

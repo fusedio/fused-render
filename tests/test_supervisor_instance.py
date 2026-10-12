@@ -3,6 +3,7 @@ single-instance IPC thread for the rest of the supervisor's life."""
 import queue
 import struct
 import threading
+import time
 import uuid
 
 import pytest
@@ -37,6 +38,17 @@ def served():
         target=instance._serve_pipe, args=(names, requests, stop, logs.append), daemon=True
     )
     thread.start()
+    # `_serve_pipe` creates the pipe on its own thread. A client that calls
+    # before that has happened gets ERROR_FILE_NOT_FOUND, which is
+    # indistinguishable from the "transaction aborted" error the tests that
+    # expect `pywintypes.error` are asserting - so wait for the pipe to exist.
+    deadline = time.monotonic() + 30.0
+    while time.monotonic() < deadline:
+        try:
+            win32pipe.WaitNamedPipe(names.pipe, 50)
+            break
+        except pywintypes.error:
+            time.sleep(0.01)
     yield names, requests, thread, logs
     stop.set()
     try:
@@ -85,4 +97,7 @@ def test_unexpected_decode_exception_does_not_kill_the_pipe_thread(served, monke
     _serve_next_ok(requests)
     assert _call(names.pipe, protocol.encode(protocol.OpenHome())) == 0
     assert thread.is_alive()
-    assert any("pipe client handling failed" in line for line in logs)
+    deadline = time.monotonic() + 30.0
+    while not any("pipe client handling failed" in line for line in logs):
+        assert time.monotonic() < deadline, logs
+        time.sleep(0.02)

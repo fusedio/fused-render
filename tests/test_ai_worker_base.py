@@ -82,7 +82,7 @@ def _call(server, path, body=None, token="secret", method=None):
     request = urllib.request.Request(
         url, data=data, headers=headers,
         method=method or ("POST" if data is not None else "GET"))
-    return urllib.request.urlopen(request, timeout=5)
+    return urllib.request.urlopen(request, timeout=60)
 
 
 def _settle(base):

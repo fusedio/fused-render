@@ -100,6 +100,9 @@ class FakeBrowser:
     def shared(self):
         return False
 
+    def headed(self):
+        return False  # the fake is always the headless, un-popped-out window
+
     def sleep(self):
         self.calls.append(("stop",))
         return True

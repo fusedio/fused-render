@@ -1031,6 +1031,26 @@ def _claim_within_grace(claim: str) -> bool:
     return age <= _CLAIM_GRACE_S
 
 
+def _replace_retrying(tmp: str, path: str) -> None:
+    """`os.replace`, riding out Windows' sharing violation.
+
+    Windows refuses to replace a file another handle has open (WinError 5/32,
+    `PermissionError`) — and `progress.json` is polled constantly by the
+    server and the worker's own readers. The window is a few ms, so a short
+    bounded retry turns what was a dead install into a no-op. POSIX never
+    raises here.
+    """
+    deadline = time.monotonic() + 10.0
+    while True:
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if os.name != "nt" or time.monotonic() >= deadline:
+                raise
+            time.sleep(0.02)
+
+
 def _write(key: str, record: dict) -> None:
     """Atomically replace `progress.json` — a poll must never read a half-write.
 
@@ -1047,7 +1067,7 @@ def _write(key: str, record: dict) -> None:
     tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(record, f)
-    os.replace(tmp, path)
+    _replace_retrying(tmp, path)
 
 
 def _write_if_absent(key: str, record: dict) -> dict | None:
@@ -1804,8 +1824,8 @@ def _mirror_into_jobs(key: str, project_dir: str, downloading_python: bool = Fal
     it on a transition INTO a terminal state, so a mirror thread that never
     got there (this thread's own `jobs.upsert` calls are best-effort) can
     leave the row `running` with the flag still set for the next attempt to
-    inherit. The opening `jobs.clear_cancel_requested` call below disowns
-    that inherited flag right after the opening upsert, on every attempt —
+    inherit. The `jobs.clear_cancel_requested` call below disowns
+    that inherited flag just BEFORE the opening upsert, on every attempt —
     a ✕ pressed after that point still sets it normally, through the same
     `jobs.request_cancel` the dock always used.
 
@@ -1844,8 +1864,29 @@ def _mirror_into_jobs(key: str, project_dir: str, downloading_python: bool = Fal
     # thread must notice.
     claim_token = _claim_token(key)
 
+    def superseded() -> bool:
+        current_token = _claim_token(key)
+        return (
+            claim_token is not None
+            and current_token is not None
+            and current_token != claim_token
+        )
+
     def run() -> None:
+        # A mirror from an earlier attempt that starts late must not touch the
+        # row a retry already owns: clearing the flag / reopening it would
+        # erase a ✕ pressed on the retry's row. (No lock serializes claim
+        # takeover — it is an O_EXCL create — so a takeover between this check
+        # and the upsert below is a residual window we accept.)
+        if superseded():
+            return
         try:
+            # Disown a flag a previous attempt's dead mirror left set (see the
+            # docstring) BEFORE the opening upsert, never after: once that
+            # upsert has created/reopened the row it is visible to the dock,
+            # and a ✕ pressed in the gap before a trailing clear would be
+            # wiped and the cancel silently lost.
+            jobs.clear_cancel_requested(job_id)
             jobs.upsert(
                 {"id": job_id, "title": title, "kind": "task",
                  "state": jobs.RUNNING, "cancellable": True, "message": "",
@@ -1865,20 +1906,10 @@ def _mirror_into_jobs(key: str, project_dir: str, downloading_python: bool = Fal
                 # spelling everywhere else it is stored or read.
                 page=canonical_fs_path(str(project_dir)), server=True,
             )
-            # A flag a PREVIOUS attempt's dead mirror left set (see the
-            # docstring above) belongs to that attempt, not this one — clear
-            # it once, right after opening the row, so a fresh ✕ from here
-            # on is the only way this attempt gets cancelled.
-            jobs.clear_cancel_requested(job_id)
         except (jobs.JobError, ValueError):
             pass
         while True:
-            current_token = _claim_token(key)
-            if (
-                claim_token is not None
-                and current_token is not None
-                and current_token != claim_token
-            ):
+            if superseded():
                 # Superseded: a retry re-claimed this key before this thread
                 # observed a terminal record. The retry's own thread owns
                 # the row now — leave it alone. (`current_token is None` is

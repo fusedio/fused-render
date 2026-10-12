@@ -339,7 +339,7 @@ def test_new_app_happy_path_no_prompt(client, workspace, monkeypatch):
     r = client.post("/api/apps/new", json={"name": "demo", "prompt": ""}, headers=HDRS)
     assert r.status_code == 200
     body = r.json()
-    dest = workspace / "local" / "demo"
+    dest = workspace / "app" / "demo"
     assert body["path"] == str(dest)
     assert body["entry_html"] == str(dest / "index.html")
     assert body["task"] is None
@@ -349,7 +349,7 @@ def test_new_app_happy_path_no_prompt(client, workspace, monkeypatch):
     # the starter kit's entry is a valid single-entry app: it lists back
     apps = client.get("/api/apps").json()["apps"]
     assert apps[0]["entry_html"] == body["entry_html"]
-    assert apps[0]["tag"] == "local"
+    assert apps[0]["tag"] == "app"
 
 
 def test_new_app_scaffolds_the_dot_fused_state_folder(client, workspace, monkeypatch):
@@ -359,12 +359,12 @@ def test_new_app_scaffolds_the_dot_fused_state_folder(client, workspace, monkeyp
     monkeypatch.setattr(apps_mod, "_create_app_task", lambda e, p, *rest: (None, None))
     client.post("/api/apps/new", json={"name": "demo", "prompt": ""}, headers=HDRS)
 
-    dest = workspace / "local" / "demo"
+    dest = workspace / "app" / "demo"
     assert (dest / ".fused" / "data").is_dir()
     assert (dest / ".fused" / "cache").is_dir()
     meta = json.loads((dest / ".fused" / "meta.json").read_text())
     assert meta["app_dir"] == os.path.abspath(str(dest))
-    assert ".fused/" in (workspace / "local" / ".gitignore").read_text()
+    assert ".fused/" in (dest / ".gitignore").read_text()  # own repo under app/
 
 
 def test_opening_an_app_creates_its_dot_fused_folder(client, workspace):
@@ -425,7 +425,7 @@ def test_new_app_has_no_dot_claude_and_publishes_the_plugin_root(
     monkeypatch.setattr(apps_mod, "_create_app_task", lambda e, p, *rest: (None, "x"))
     client.post("/api/apps/new", json={"name": "demo", "prompt": ""}, headers=HDRS)
 
-    assert not (workspace / "local" / "demo" / ".claude").exists()
+    assert not (workspace / "app" / "demo" / ".claude").exists()
     root = os.environ[skill_plugin.PLUGIN_DIR_ENV]
     for name in skill_sources.skill_names():
         assert os.path.isfile(os.path.join(root, "skills", name, "SKILL.md"))
@@ -451,7 +451,7 @@ def test_new_app_with_prompt_starts_a_session(client, workspace, monkeypatch):
     # The scaffolding task is scheduled on the app's index.html — the FILE, not
     # the folder (D-855's `_create_app_task`), which is what lets "open this
     # task" land on the page rather than on the directory listing.
-    assert seen["target"] == str(workspace / "local" / "demo" / "index.html")
+    assert seen["target"] == str(workspace / "app" / "demo" / "index.html")
     assert seen["prompt"] == "build a todo app"
     # no pickers touched: "" both, i.e. no --model/--effort on the spawn, so the
     # session keeps whatever a chat opened by hand would have detected
@@ -494,7 +494,7 @@ def test_an_unknown_model_or_effort_is_a_400_not_a_substitution(client, workspac
     r = client.post("/api/apps/new",
                     json={"name": "demo", "prompt": "hi", **body}, headers=HDRS)
     assert r.status_code == 400
-    assert not (workspace / "local" / "demo").exists()
+    assert not (workspace / "app" / "demo").exists()
 
 
 def test_an_empty_pick_means_no_flag_and_older_clients_still_work(
@@ -566,7 +566,7 @@ def test_spawn_failure_does_not_fail_creation_and_says_why(client, workspace, mo
     assert r.status_code == 200
     assert r.json()["task"] is None
     assert r.json()["task_error"] == "claude CLI not found"
-    assert (workspace / "local" / "demo" / "index.html").is_file()
+    assert (workspace / "app" / "demo" / "index.html").is_file()
 
 
 @pytest.mark.parametrize(
@@ -580,8 +580,9 @@ def test_bad_names_are_rejected(client, workspace, bad):
 
 
 def test_collision_is_409_for_dirs_and_files(client, workspace):
-    _app_dir(workspace, "taken")
-    (workspace / "local" / "afile").write_text("x")
+    _app_dir(workspace, "taken", tag="app")
+    (workspace / "app").mkdir(exist_ok=True)
+    (workspace / "app" / "afile").write_text("x")
     for name in ("taken", "afile"):
         r = client.post("/api/apps/new", json={"name": name, "prompt": ""}, headers=HDRS)
         assert r.status_code == 409, name
@@ -590,13 +591,13 @@ def test_collision_is_409_for_dirs_and_files(client, workspace):
 def test_partial_copy_is_cleaned_up(client, workspace, monkeypatch):
     def boom(src, dst, **kw):
         os.makedirs(dst)
-        (workspace / "local" / "demo" / "index.html").write_text("partial")
+        (workspace / "app" / "demo" / "index.html").write_text("partial")
         raise OSError("disk full")
 
     monkeypatch.setattr(apps_mod.shutil, "copytree", boom)
     r = client.post("/api/apps/new", json={"name": "demo", "prompt": ""}, headers=HDRS)
     assert r.status_code == 400
-    assert not (workspace / "local" / "demo").exists()
+    assert not (workspace / "app" / "demo").exists()
 
 
 # ------------------------------------------------------------------ updated_at

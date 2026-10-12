@@ -27,6 +27,15 @@ def _clean_state(monkeypatch):
     monkeypatch.setattr(git_upstream, "_pulled_events", [])
     monkeypatch.setattr(git_upstream, "_pending", {})
     monkeypatch.setattr(git_upstream, "auto_sync_enabled", lambda: True)
+    # Production bounds every git call at 20s and treats a timeout as silence
+    # (no row, no failure). A loaded Windows runner needs minutes for one git
+    # spawn, which turns a slow check into "nothing was recorded". Widen only
+    # the bound here; behaviour and call arguments are untouched.
+    real_run = git_upstream._run
+    monkeypatch.setattr(
+        git_upstream, "_run",
+        lambda root, *args, timeout=180.0: real_run(root, *args, timeout=max(timeout, 180.0)),
+    )
     if git_upstream._check_slot.acquire(timeout=git_upstream.TIMEOUT_S + 5):
         git_upstream._check_slot.release()
 

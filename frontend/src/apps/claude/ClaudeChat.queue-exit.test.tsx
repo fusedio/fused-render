@@ -18,6 +18,7 @@ import { installDomShim } from "@platform/lib/testDomShim";
 installDomShim();
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { act, create } from "react-test-renderer";
+import { dropSharedPrefsRead } from "@platform/lib/api";
 
 const { ClaudeChat } = await import("./ClaudeChat");
 const { createMemoryParamsStore } = await import("./params/store");
@@ -86,6 +87,9 @@ function stubFetch(): void {
 const mounted: Array<ReturnType<typeof create>> = [];
 
 beforeEach(() => {
+  // A shared prefs GET pinned by an earlier file's never-settling fetch stub
+  // would starve the flag read this chat's send waits on.
+  dropSharedPrefsRead();
   cancelHold = Promise.resolve();
   releaseCancel = () => {};
   cancels.length = 0;

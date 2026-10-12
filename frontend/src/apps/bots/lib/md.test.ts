@@ -1,14 +1,11 @@
-// Assertions run against the `marked` stage through the shared singleton (one md() call installs this module's
-// marked.use config), the same way apps/claude/protocol/markdown.test.ts does: DOMPurify cannot run in bun (no DOM,
+// Assertions run against the `marked` stage through the module's own Marked instance (parseMdStage), the same way apps/claude/protocol/markdown.test.ts does: DOMPurify cannot run in bun (no DOM,
 // so md() takes its documented `<pre>` fallback there), and what these cover is what the reader sees — a table is a
 // table, the bot's raw HTML is text, links open away — not the sanitizer.
 import { describe, expect, test } from "bun:test";
-import { marked } from "marked";
 
-import { md } from "./md";
+import { md, parseMdStage } from "./md";
 
-md("configure me");
-const parse = (text: string) => marked.parse(text, { async: false }) as string;
+const parse = parseMdStage;
 
 describe("md", () => {
   test("empty and nullish input", () => {

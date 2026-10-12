@@ -8,12 +8,15 @@ installDomShim();
 import { expect, test } from "bun:test";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { createElement } from "react";
+import { dropSharedPrefsRead } from "@platform/lib/api";
 import { publishMonitorEnabled, useMonitorFeature } from "@platform/lib/monitor-flag";
 
 type Deferred = { resolve: (v: unknown) => void; reject: (e: Error) => void };
 
 function stubFetch(): Deferred[] {
   const pending: Deferred[] = [];
+  // A never-settling request from an earlier file must not be the shared read.
+  dropSharedPrefsRead();
   globalThis.fetch = (() =>
     new Promise((resolve, reject) => {
       pending.push({
