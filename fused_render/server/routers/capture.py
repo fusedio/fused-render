@@ -95,6 +95,44 @@ def api_capture_cancel(cid: str, x_fused: str | None = Header(default=None)):
         return _error(f"{e.__class__.__name__}: {e}".rstrip(": "), status=500)
 
 
+def _pause_route(action, cid: str, x_fused):
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    try:
+        return action(cid)
+    except capture.CaptureError as e:
+        return _error(str(e), status=404)
+    except capture.Unsupported as e:
+        return _error(str(e), status=409)
+    except Exception as e:                      # noqa: BLE001
+        return _error(f"{e.__class__.__name__}: {e}".rstrip(": "), status=500)
+
+
+@router.post("/api/capture/{cid}/pause")
+def api_capture_pause(cid: str, x_fused: str | None = Header(default=None)):
+    """Stop recording until resumed (audio recordings). 409 where unsupported."""
+    return _pause_route(capture.pause, cid, x_fused)
+
+
+@router.post("/api/capture/{cid}/resume")
+def api_capture_resume(cid: str, x_fused: str | None = Header(default=None)):
+    """Carry on after a pause."""
+    return _pause_route(capture.resume, cid, x_fused)
+
+
+@router.get("/api/capture/{cid}/state")
+def api_capture_state(cid: str):
+    """What the native recording pill polls: seconds, paused, loudness.
+
+    Unguarded like `GET /api/capture` — it reads, and says nothing the list does
+    not (plus a level). Every /api response is already `no-cache` (server/common.py)."""
+    try:
+        return capture.state(cid)
+    except capture.CaptureError as e:
+        return _error(str(e), status=404)
+
+
 @router.post("/api/capture/screenshot")
 def api_capture_screenshot(body: dict = Body(...),
                            x_fused: str | None = Header(default=None)):

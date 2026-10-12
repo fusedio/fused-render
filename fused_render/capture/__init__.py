@@ -44,6 +44,7 @@ import time
 import uuid
 
 from fused_render import jobs
+from fused_render.capture import _pause
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +63,12 @@ MAX_MAX_SECONDS = 4 * 60 * 60
 TICK_S = 1.5
 
 AUDIO_MODES = ("mic", "system", "both")
+
+#: A recording left paused this long is stopped (and kept). The cap does not
+#: count paused time, so without this a forgotten pause would hold a recording
+#: open forever; the longest recording is `MAX_MAX_SECONDS`, so that is the
+#: longest a pause is allowed to last too.
+PAUSE_MAX_S = MAX_MAX_SECONDS
 
 
 class CaptureError(ValueError):
@@ -192,6 +199,14 @@ class _Session:
         # the same spoof-proofing `routers/jobs.py` already uses for a
         # page-owned job's own `page` field.
         self.page = page
+        # Pause/resume (audio recordings, where the backend has the hooks): the
+        # clock excludes paused time from `seconds` and from the cap.
+        self.pauses = _pause.PauseClock()
+        self.can_pause = False
+
+    def elapsed(self) -> float:
+        """Recorded seconds — wall time minus time spent paused."""
+        return self.pauses.elapsed(self.started_at)
 
     @property
     def job(self) -> str:
@@ -203,10 +218,12 @@ class _Session:
             "mode": self.mode,
             "path": self.path,
             "state": self.state,
-            "seconds": round(max(0.0, time.time() - self.started_at), 2),
+            "seconds": round(max(0.0, self.elapsed()), 2),
             "maxSeconds": self.max_seconds,
             "jobId": self.job,
             "audio": self.spec.get("audio") or False,
+            "paused": self.pauses.paused,
+            "canPause": self.can_pause,
         }
         return record
 
@@ -474,6 +491,13 @@ def start(mode: str, body: dict, *, page: str = "") -> dict:
         handle = (backend.start_screen(out, spec) if mode == "screen"
                   else backend.start_audio(out, spec))
     session = _Session(cid, mode, out, handle, spec, page=page)
+    # Pausing is an optional backend capability, per handle: the macOS tap, mic
+    # and audio-only ScreenCaptureKit routes have it; a screen recording and the
+    # browser-fed Windows/Linux backends do not.
+    can_pause = getattr(backend, "can_pause", None)
+    session.can_pause = bool(
+        getattr(backend, "pause", None) and getattr(backend, "resume", None)
+        and (can_pause(handle) if can_pause else True))
     with _lock:
         _sessions[cid] = session
 
@@ -606,8 +630,14 @@ def _tick(session: _Session) -> bool:
     in: the user can delete a recording they have, and cannot recover one this
     threw away.
     """
-    elapsed = time.time() - session.started_at
+    elapsed = session.elapsed()          # paused time never reaches the cap
     if elapsed >= session.max_seconds:
+        try:
+            stop(session.id)
+        except (CaptureError, Unsupported):
+            pass
+        return True
+    if session.pauses.paused_for() >= PAUSE_MAX_S:
         try:
             stop(session.id)
         except (CaptureError, Unsupported):
@@ -636,6 +666,79 @@ def _tick(session: _Session) -> bool:
         return True
     _report(session, done=round(min(elapsed, session.max_seconds), 1))
     return False
+
+
+# ------------------------------------------------------- pause, resume, state
+
+
+def _live(cid: str) -> _Session:
+    with _lock:
+        session = _sessions.get(cid)
+    if session is None:
+        raise CaptureError(f"no such capture: {cid}")
+    return session
+
+
+def _set_paused(cid: str, paused: bool) -> dict:
+    session = _live(cid)
+    if not session.can_pause:
+        if session.mode == "screen":
+            raise Unsupported(
+                "pausing is not supported for screen recordings — stop it "
+                "and start a new one")
+        raise Unsupported(
+            "this recording cannot be paused on this machine (only audio "
+            "recorded by the native app can)")
+    if session.pauses.paused == paused:
+        return session.public()
+    backend = _backend()
+    with _native(STOP_LOCK_WAIT_S):
+        (backend.pause if paused else backend.resume)(session.handle)
+    if paused:
+        session.pauses.pause()
+    else:
+        session.pauses.resume()
+    _report(session, detail=("Paused — ✕ discards it" if paused
+                             else "Recording — ✕ discards it"))
+    return session.public()
+
+
+def pause(cid: str) -> dict:
+    """Stop recording until `resume`. The file stays open; its length is only
+    the time spent recording."""
+    return _set_paused(cid, True)
+
+
+def resume(cid: str) -> dict:
+    return _set_paused(cid, False)
+
+
+def level_of(session: _Session) -> float:
+    """A 0..1 loudness for the recording pill's meter, 0.0 when unknown.
+
+    NOT under `_native_lock`: the meter is polled ten times a second and must not
+    queue behind a `stop` that is finalising a file."""
+    hook = getattr(_backend(), "level", None)
+    if hook is None:
+        return 0.0
+    try:
+        return max(0.0, min(1.0, float(hook(session.handle))))
+    except Exception:                            # noqa: BLE001 - a meter
+        return 0.0
+
+
+def state(cid: str) -> dict:
+    """The small live reading the pill polls: time, paused, loudness."""
+    session = _live(cid)
+    try:
+        level = level_of(session)
+    except Exception:                            # noqa: BLE001 - never fails a poll
+        level = 0.0
+    return {"id": session.id, "state": session.state,
+            "paused": session.pauses.paused,
+            "seconds": round(max(0.0, session.elapsed()), 2),
+            "maxSeconds": session.max_seconds, "level": level,
+            "canPause": session.can_pause}
 
 
 # ------------------------------------------------------------------ stopping

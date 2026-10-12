@@ -31,6 +31,7 @@ class FakeHandle:
         self.path = path
         self.stopped = False
         self.error = None
+        self.paused = False
 
 
 class FakeBackend:
@@ -38,6 +39,9 @@ class FakeBackend:
 
     def __init__(self):
         self.handles = []
+        self.paused = []
+        self.pausable = True
+        self.lvl = 0.0
 
     def probe(self):
         return {"video": {"available": True, "granted": True, "reason": None},
@@ -73,6 +77,22 @@ class FakeBackend:
 
     def stop(self, handle):
         handle.stopped = True
+
+    def can_pause(self, handle):
+        return self.pausable
+
+    def pause(self, handle):
+        handle.paused = True
+        self.paused.append(("pause", handle))
+
+    def resume(self, handle):
+        handle.paused = False
+        self.paused.append(("resume", handle))
+
+    def level(self, handle):
+        if isinstance(self.lvl, Exception):
+            raise self.lvl
+        return self.lvl
 
     #: What `warning(handle)` answers; the real hook is the macOS tap's.
     warn = None
@@ -217,7 +237,8 @@ def test_a_request_a_typo_deserves_an_answer_about_is_refused_before_recording(
 
 def test_the_mutating_routes_carry_the_x_fused_guard(client):
     for path in ("/api/capture/start", "/api/capture/screenshot",
-                 "/api/capture/abc/stop", "/api/capture/abc/cancel"):
+                 "/api/capture/abc/stop", "/api/capture/abc/cancel",
+                 "/api/capture/abc/pause", "/api/capture/abc/resume"):
         assert client.post(path, json={}).status_code == 403, path
     # …and the read is open, like the other read-only routes.
     assert client.get("/api/capture").status_code == 200
@@ -1209,3 +1230,194 @@ def test_darwin_tap_start_failure_is_not_masked_by_teardown_error(monkeypatch):
     monkeypatch.setattr(_darwin_tap.CA, "AudioHardwareDestroyProcessTap", bad_destroy)
     with pytest.raises(CaptureError, match="no such microphone"):
         _darwin_tap.start("/tmp/x.m4a", {"audio": "both"})
+
+
+# ---------------------------------------------------------- pause and resume
+
+
+class Clock:
+    """One fake wall clock for a session's start time AND its pause clock."""
+
+    def __init__(self, session):
+        self.t = 5000.0
+        session.started_at = self.t
+        session.pauses._clock = self
+
+    def __call__(self):
+        return self.t
+
+
+def _audio(client):
+    return client.post("/api/capture/start", json={"mode": "audio"},
+                       headers=H).json()
+
+
+def _row(client, started):
+    return next(j for j in client.get("/api/jobs").json()["jobs"]
+                if j["id"] == started["jobId"])
+
+
+def test_pause_and_resume_round_trip(backend, client, home):
+    started = _audio(client)
+    assert started["paused"] is False and started["canPause"] is True
+    cid = started["id"]
+    res = client.post(f"/api/capture/{cid}/pause", headers=H)
+    assert res.status_code == 200, res.json()
+    body = res.json()
+    assert body["paused"] is True and body["canPause"] is True
+    assert body["state"] == "recording"
+    assert [kind for kind, _ in backend.paused] == ["pause"]
+    assert "Paused" in _row(client, started)["detail"]
+    assert capture.active()[0]["paused"] is True
+    body = client.post(f"/api/capture/{cid}/resume", headers=H).json()
+    assert body["paused"] is False
+    assert [kind for kind, _ in backend.paused] == ["pause", "resume"]
+    assert _row(client, started)["detail"].startswith("Recording")
+
+
+def test_pausing_an_unknown_recording_is_a_404(backend, client, home):
+    for action in ("pause", "resume"):
+        assert client.post(f"/api/capture/nope/{action}",
+                           headers=H).status_code == 404
+    assert client.get("/api/capture/nope/state").status_code == 404
+
+
+def test_pausing_a_recording_the_backend_cannot_pause_is_a_409(backend, client,
+                                                               home):
+    backend.pausable = False
+    started = client.post("/api/capture/start", json={"mode": "screen"},
+                          headers=H).json()
+    assert started["canPause"] is False
+    res = client.post(f"/api/capture/{started['id']}/pause", headers=H)
+    assert res.status_code == 409
+    assert "screen recordings" in res.json()["error"]
+    assert backend.paused == []
+    audio = _audio(client)
+    assert audio["canPause"] is False
+    res = client.post(f"/api/capture/{audio['id']}/pause", headers=H)
+    assert res.status_code == 409 and "cannot be paused" in res.json()["error"]
+
+
+def test_a_backend_without_the_hooks_cannot_pause(backend, client, home,
+                                                  monkeypatch):
+    """The Windows/Linux backends are browser-fed and define none of them."""
+    class Bare:
+        probe = staticmethod(backend.probe)
+        ext = staticmethod(backend.ext)
+        start_audio = backend.start_audio
+        stop = staticmethod(backend.stop)
+
+    bare = Bare()
+    monkeypatch.setattr(capture, "_backend", lambda: bare)
+    started = _audio(client)
+    assert started["canPause"] is False
+    assert client.post(f"/api/capture/{started['id']}/pause",
+                       headers=H).status_code == 409
+    assert client.get(f"/api/capture/{started['id']}/state").json()["level"] == 0.0
+
+
+def test_a_second_pause_or_resume_is_idempotent(backend, client, home):
+    cid = _audio(client)["id"]
+    client.post(f"/api/capture/{cid}/resume", headers=H)      # not paused: no-op
+    assert backend.paused == []
+    client.post(f"/api/capture/{cid}/pause", headers=H)
+    again = client.post(f"/api/capture/{cid}/pause", headers=H)
+    assert again.status_code == 200 and again.json()["paused"] is True
+    assert len(backend.paused) == 1                            # the backend heard once
+
+
+def test_a_failing_backend_pause_leaves_the_recording_running(backend, client,
+                                                              home, monkeypatch):
+    cid = _audio(client)["id"]
+
+    def boom(handle):
+        raise RuntimeError("the microphone did not pause")
+
+    monkeypatch.setattr(backend, "pause", boom)
+    res = client.post(f"/api/capture/{cid}/pause", headers=H)
+    assert res.status_code == 500
+    assert capture.state(cid)["paused"] is False
+
+
+def test_the_elapsed_time_freezes_while_paused(backend, client, home):
+    cid = _audio(client)["id"]
+    session = capture._sessions[cid]
+    clock = Clock(session)
+    clock.t += 10
+    assert session.public()["seconds"] == 10
+    capture.pause(cid)
+    clock.t += 500
+    assert session.public()["seconds"] == 10
+    assert capture.state(cid)["seconds"] == 10
+    capture.resume(cid)
+    clock.t += 5
+    assert session.public()["seconds"] == 15
+
+
+def test_a_paused_recording_does_not_reach_its_cap(backend, client, home,
+                                                   monkeypatch):
+    monkeypatch.setattr(capture, "_max_seconds", lambda value: 60)
+    cid = _audio(client)["id"]
+    session = capture._sessions[cid]
+    clock = Clock(session)
+    clock.t += 50
+    capture.pause(cid)
+    clock.t += 600                                  # far past the cap, but paused
+    assert capture._tick(session) is False
+    assert capture.active() != []
+    capture.resume(cid)
+    clock.t += 5
+    assert capture._tick(session) is False          # 55 s recorded
+    clock.t += 6
+    assert capture._tick(session) is True           # 61 s: the cap stops it
+    assert capture.active() == [] and backend.handles[0].stopped
+
+
+def test_a_recording_paused_forever_is_stopped_and_kept(backend, client, home,
+                                                        monkeypatch):
+    monkeypatch.setattr(capture, "PAUSE_MAX_S", 100)
+    cid = _audio(client)["id"]
+    session = capture._sessions[cid]
+    clock = Clock(session)
+    capture.pause(cid)
+    clock.t += 99
+    assert capture._tick(session) is False
+    clock.t += 2
+    assert capture._tick(session) is True
+    assert capture.active() == []
+    assert os.path.exists(session.path)             # stopped, not discarded
+
+
+def test_the_state_route_reports_the_level_from_the_hook(backend, client, home,
+                                                         monkeypatch):
+    cid = _audio(client)["id"]
+    backend.lvl = 0.37
+    res = client.get(f"/api/capture/{cid}/state")
+    assert res.status_code == 200
+    body = res.json()
+    assert body == {"id": cid, "state": "recording", "paused": False,
+                    "seconds": body["seconds"], "maxSeconds": 1800,
+                    "level": 0.37, "canPause": True}
+    backend.lvl = 7.0
+    assert client.get(f"/api/capture/{cid}/state").json()["level"] == 1.0
+    backend.lvl = RuntimeError("no meters")
+    assert client.get(f"/api/capture/{cid}/state").json()["level"] == 0.0
+    backend.lvl = 0.5
+    monkeypatch.setattr(capture, "_backend", lambda: object())
+    assert client.get(f"/api/capture/{cid}/state").json()["level"] == 0.0
+
+
+def test_state_answers_while_another_thread_holds_the_native_lock(backend,
+                                                                  client, home):
+    import threading
+
+    cid = _audio(client)["id"]
+    capture._native_lock.acquire()
+    try:
+        out = []
+        t = threading.Thread(target=lambda: out.append(capture.state(cid)))
+        t.start()
+        t.join(2)
+        assert not t.is_alive() and out and out[0]["id"] == cid
+    finally:
+        capture._native_lock.release()
