@@ -311,6 +311,23 @@ export const IS_FOREIGN_EMBED = (function foreignHost(): boolean {
   }
 })();
 
+// A cross-origin ancestor frames us: IS_FOREIGN_EMBED answers false for it (never
+// navigate an external top window), but that host still owns the joint session
+// history, so pushHistory must replace here too.
+export const IS_CROSS_ORIGIN_EMBED = (function crossOriginHost(): boolean {
+  if (!IS_EMBED || window === window.top) return false;
+  try {
+    let win: Window = window;
+    while (win !== win.parent) {
+      win = win.parent;
+      void win.location.pathname;
+    }
+    return false;
+  } catch {
+    return true;
+  }
+})();
+
 // URL prefix for this page's mode. Keeps refresh, in-listing navigation, and
 // param sync (iframe runtime's history.replaceState) inside the active prefix.
 const PREFIX = IS_EMBED ? EMBED_PREFIX : VIEW_PREFIX;
@@ -428,6 +445,15 @@ function guarded(go: () => void): void {
   void confirmLeave().then((ok) => {
     if (ok) go();
   });
+}
+
+// A foreign embed (framed by a non-explorer host, like Home's app widgets) shares the
+// host's joint session history: a pushState here would make the host's Back button
+// step through the frame's own navigations. Replace instead — the host owns history,
+// and a cross-origin host owns it too.
+export function pushHistory(state: unknown, url: string): void {
+  if (IS_FOREIGN_EMBED || IS_CROSS_ORIGIN_EMBED) history.replaceState(state, "", url);
+  else history.pushState(state, "", url);
 }
 
 // Windows fs paths are rooted at a drive letter ("C:/…"), not at "/" — the
@@ -629,7 +655,7 @@ export function navigate(
   // reads `location.search`, which is still this page's while the question is up.
   const href = urlForFsPath(fsPath, search);
   guarded(() => {
-    history.pushState(state, "", href);
+    pushHistory(state, href);
     notifyNavigate();
   });
 }
@@ -721,7 +747,7 @@ export function navigateUrl(url: string, opts?: { isDir?: boolean }): void {
   // map here or the dispatcher won't recognize the path.
   const href = rewriteLegacyUrl(url);
   guarded(() => {
-    history.pushState(state, "", href);
+    pushHistory(state, href);
     notifyNavigate();
   });
 }
