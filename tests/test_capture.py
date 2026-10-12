@@ -1635,3 +1635,52 @@ def test_describe_carries_the_apps_icon_url(tmp_path):
     assert info["icon"] is None and info["app"] == "" and info["name"] == "Fused"
     S.page = "not/absolute.html"
     assert recording_pill.describe(S())["icon"] is None
+
+
+def test_a_resume_after_stop_never_reaches_the_backend(backend, client, home):
+    """`stop` can pop the session between `_set_paused`'s `_live` and its backend
+    call; a mic `resume` on the finished recorder would overwrite the take."""
+    cid = _audio(client)["id"]
+    capture.pause(cid)
+    real_native = capture._native
+
+    class Popping(real_native):
+        def __enter__(self):
+            out = super().__enter__()
+            with capture._lock:
+                capture._sessions.pop(cid, None)     # stop got there first
+            return out
+
+    capture._native = Popping
+    try:
+        with pytest.raises(capture.CaptureError, match="no such capture"):
+            capture.resume(cid)
+    finally:
+        capture._native = real_native
+    assert [k for k, _ in backend.paused] == ["pause"]
+
+
+def test_pause_does_not_run_unserialised_when_the_native_lock_is_busy(
+        backend, client, home, monkeypatch):
+    cid = _audio(client)["id"]
+    session = capture._live(cid)
+    monkeypatch.setattr(capture, "STOP_LOCK_WAIT_S", 0.05)
+    with capture._native():
+        with pytest.raises(capture.CaptureError, match="busy"):
+            capture.pause(cid)
+    assert backend.paused == []
+    assert session.pauses.paused is False
+
+
+def test_a_stop_error_keeps_the_backends_warning(backend, client, home):
+    backend.warn = "quit and reopen this app after granting Screen Recording"
+    cid = _audio(client)["id"]
+
+    def boom(handle):
+        raise RuntimeError("the recording captured no audio")
+
+    backend.stop = boom
+    done = client.post(f"/api/capture/{cid}/stop", json={}, headers=H).json()
+    assert done["warning"] == backend.warn
+    assert done["error"].startswith(backend.warn)
+    assert "captured no audio" in done["error"]

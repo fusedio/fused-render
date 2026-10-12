@@ -283,10 +283,14 @@ STOP_LOCK_WAIT_S = 5.0
 
 class _native:
     """`with _native():` serialises a backend call. `with _native(timeout):`
-    waits at most that long and then runs unserialised (logged)."""
+    waits at most that long and then runs unserialised (logged) — right for
+    endings, which must not hang. `strict=True` is for non-endings (pause,
+    resume): after the timeout it raises `CaptureError` instead of running
+    unserialised."""
 
-    def __init__(self, timeout: float | None = None):
+    def __init__(self, timeout: float | None = None, strict: bool = False):
         self.timeout = timeout
+        self.strict = strict
         self.held = False
 
     def __enter__(self):
@@ -295,6 +299,9 @@ class _native:
             self.held = True
         else:
             self.held = _native_lock.acquire(timeout=self.timeout)
+            if not self.held and self.strict:
+                raise CaptureError(
+                    "the recorder is busy — try again in a moment")
             if not self.held:
                 logger.warning("capture: native lock busy for %.0fs; ending "
                                "the recording unserialised", self.timeout)
@@ -712,7 +719,13 @@ def _set_paused(cid: str, paused: bool) -> dict:
         if session.pauses.paused == paused:
             return session.public()
         backend = _backend()
-        with _native(STOP_LOCK_WAIT_S):
+        with _native(STOP_LOCK_WAIT_S, strict=True):
+            # `stop` pops the session BEFORE it takes the native lock, so a
+            # re-check under the lock proves the recording is not finalised:
+            # resuming a finished recorder would overwrite the take.
+            with _lock:
+                if _sessions.get(cid) is not session:
+                    raise CaptureError(f"no such capture: {cid}")
             (backend.pause if paused else backend.resume)(session.handle)
         if paused:
             session.pauses.pause()
@@ -845,6 +858,11 @@ def stop(cid: str, *, discard: bool = False) -> dict:
     result = session.public()
     result.update(_describe(session.path))
     if error:
+        if warning:
+            # The backend's own failure ("captured no audio") hides the
+            # actionable advice; lead with it.
+            result["warning"] = warning
+            error = f"{warning} ({error})"
         _report(session, state="error", message=error)
         result["error"] = error
     else:
