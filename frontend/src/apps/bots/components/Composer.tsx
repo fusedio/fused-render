@@ -295,8 +295,9 @@ export function Composer({ b, reply, setReply, threadRef }: ComposerProps) {
     } finally { setSending(false); }
   };
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    // An IME composition owns Enter/arrows/Esc (confirming a candidate must not send, nor run a command).
-    if (e.nativeEvent.isComposing) return;
+    // An IME composition owns Enter/arrows/Esc (confirming a candidate must not send, nor run a command). Safari fires the
+    // confirming keydown after compositionend with isComposing already false but keyCode 229 (same guard as live-input.ts).
+    if (e.nativeEvent.isComposing || e.keyCode === 229 || e.key === "Process") return;
     // The popup takes the keys first while it shows rows: ↑↓ move, Tab completes, Enter runs, Esc closes (the text stays).
     if (cmd && cmds.length) {
       if (e.key === "ArrowDown" || e.key === "ArrowUp") {
