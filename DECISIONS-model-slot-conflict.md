@@ -634,3 +634,23 @@ anyone` (`tests/test_ai_runtime.py`). The two pre-existing
 a resident internally (`requester_id=""`) and unload it anonymously over
 HTTP with no headers at all — and are green again now that an unclaimed
 resident is never foreign to the ownership check.
+
+## Two more frontend/client callers name themselves
+
+`Composer.tsx`'s dictation mic button (`frontend/src/apps/bots/components/
+Composer.tsx`) posted straight to `/api/ai/transcribe` with no
+`X-Fused-Requester` at all — the one direct `fetch("/api/ai/...")` call
+left bare after `playground/client.ts` and `ann/transcribe.ts` already
+named themselves. It now sends the fixed id `shell:bots-composer`
+(`COMPOSER_REQUESTER`), the same pattern as `PLAYGROUND_REQUESTER`/
+`ANN_TRANSCRIBE_REQUESTER`.
+
+`fused_ai.py`'s `_requester_headers()` returned `{}` — no header at all —
+whenever `FUSED_RENDER_PAGE` was unset, which is every bare script run
+outside a page's subprocess or a background app's generated wrapper. That
+collapsed every such script into the server's own one-off anonymous
+fallback (`ai_runtime.py`'s `_requester_identity`, above): a single
+script's own retries would each look like a new stranger. It now falls
+back to `script:<sys.argv[0]'s own absolute path>` — one stable identity
+for that script across every call it makes — and only an empty
+`sys.argv[0]` (an interactive interpreter) falls through to true anonymity.

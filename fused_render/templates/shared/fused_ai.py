@@ -51,6 +51,7 @@ import importlib.util
 import json
 import os
 import socket
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -293,13 +294,26 @@ def _requester_headers() -> dict:
     the same env var `_child.py` sets for a page's own subprocess and
     `engine.py`'s generated wrapper sets for a background app — this module
     never runs anywhere else, so it is always this caller's own identity, the
-    script path standing in for a label too. Empty (no header at all) when
-    unset, which the server reads as anonymous, never as `user` — only the
-    shell's own ModelsDock row, its notification actions, and the AI Models
-    page's own load/unload buttons (none of which run through this module)
-    ever claim that identity.
+    script path standing in for a label too.
+
+    A bare script run outside either of those — `python my_script.py`, this
+    module imported straight from a shell — has no `FUSED_RENDER_PAGE` to
+    read, but it is still one stable caller across every request it makes,
+    not nothing: `script:<the running script's own absolute path>`
+    (`sys.argv[0]`) gives it that identity instead of leaving every such
+    script to share the server's one-off anonymous fallback, which would
+    make a single script's own retries look like a new stranger on every
+    call. Only `sys.argv[0]` itself ever being empty (an interactive
+    interpreter, `python -c`) falls through to no header at all, which the
+    server reads as anonymous, never as `user` — only the shell's own
+    ModelsDock row, its notification actions, and the AI Models page's own
+    load/unload buttons (none of which run through this module) ever claim
+    that identity.
     """
     page = os.environ.get("FUSED_RENDER_PAGE")
+    if not page:
+        script = sys.argv[0]
+        page = f"script:{os.path.abspath(script)}" if script else None
     if not page:
         return {}
     # Percent-encoded, matching `runtime.js`'s own `X-Fused-Page`/

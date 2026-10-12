@@ -224,10 +224,33 @@ def test_text_returns_result_text_on_success(monkeypatch):
     assert fused_ai.text("hi") == "hi there"
 
 
-def test_text_carries_no_requester_header_without_FUSED_RENDER_PAGE(monkeypatch):
-    """SPEC-model-slot-conflict.md §1: a caller with no resolvable identity is
-    anonymous, not the user — no header at all, never a default that could
-    be mistaken for one."""
+def test_text_falls_back_to_the_running_scripts_own_path_without_FUSED_RENDER_PAGE(monkeypatch):
+    """A bare script — no `_child.py`/`engine.py` wrapper setting
+    `FUSED_RENDER_PAGE` — is still one stable caller across every request it
+    makes, not nothing: `sys.argv[0]`'s own absolute path stands in, so its
+    own retries are never mistaken for a new stranger on every call the way
+    the server's one-off anonymous fallback would read them."""
+    payload = {"ok": True, "result": {"text": "hi there", "model": "opus", "usage": None}}
+    script_path = os.path.join(os.sep, "home", "iamsdas", "my_script.py")
+
+    def fake_urlopen(req, timeout=None):
+        expected = fused_ai.quote(f"script:{script_path}", safe="")
+        assert req.get_header("X-fused-requester") == expected
+        assert req.get_header("X-fused-requester-label") == expected
+        return _FakeHTTPResponse(json.dumps(payload).encode())
+
+    monkeypatch.setenv("FUSED_RENDER_ORIGIN", "http://127.0.0.1:1")
+    monkeypatch.delenv("FUSED_RENDER_PAGE", raising=False)
+    monkeypatch.setattr(fused_ai.sys, "argv", [script_path])
+    monkeypatch.setattr(fused_ai.urllib.request, "urlopen", fake_urlopen)
+    assert fused_ai.text("hi") == "hi there"
+
+
+def test_text_carries_no_requester_header_with_no_page_and_no_script_path(monkeypatch):
+    """SPEC-model-slot-conflict.md §1: a caller with no resolvable identity at
+    all — no `FUSED_RENDER_PAGE`, and `sys.argv[0]` itself empty (an
+    interactive interpreter, `python -c`) — is anonymous, not the user: no
+    header at all, never a default that could be mistaken for one."""
     payload = {"ok": True, "result": {"text": "hi there", "model": "opus", "usage": None}}
 
     def fake_urlopen(req, timeout=None):
@@ -237,6 +260,7 @@ def test_text_carries_no_requester_header_without_FUSED_RENDER_PAGE(monkeypatch)
 
     monkeypatch.setenv("FUSED_RENDER_ORIGIN", "http://127.0.0.1:1")
     monkeypatch.delenv("FUSED_RENDER_PAGE", raising=False)
+    monkeypatch.setattr(fused_ai.sys, "argv", [""])
     monkeypatch.setattr(fused_ai.urllib.request, "urlopen", fake_urlopen)
     assert fused_ai.text("hi") == "hi there"
 
