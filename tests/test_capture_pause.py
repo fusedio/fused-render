@@ -197,6 +197,62 @@ def test_a_paused_tap_discards_its_callbacks_and_resumes():
 
 
 @_darwin_only
+def test_the_tap_both_mix_upmixes_a_mono_mic_interleaved(monkeypatch):
+    """The tap's buffer is interleaved stereo, so a mono mic must be duplicated
+    per frame (L=R), not block-wise as the planar mux path does."""
+    from fused_render.capture import _darwin_tap
+
+    class FakeBuf:
+        def __init__(self, nbytes):
+            self.raw = bytearray(nbytes)
+
+        def setFrameLength_(self, n):
+            pass
+
+        def mutableAudioBufferList(self):
+            raw = self.raw
+
+            class Slot:
+                mData = memoryview(raw)
+
+            return [Slot()]
+
+    class FakePCM:
+        @classmethod
+        def alloc(cls):
+            return cls()
+
+        def initWithPCMFormat_frameCapacity_(self, fmt, frames):
+            self.buf = FakeBuf(frames * 8)
+            made.append(self.buf)
+            return self.buf
+
+    class FakeAVF:
+        AVAudioPCMBuffer = FakePCM
+
+    made = []
+    monkeypatch.setattr(_darwin_tap, "AVF", FakeAVF)
+    handle = _darwin_tap.TapHandle("/tmp/x.m4a", True)
+    wrote = []
+    handle.write = wrote.append
+
+    class Mic:
+        mNumberChannels = 1
+        mData = memoryview(f32(0.1, 0.2, 0.3))
+
+    class Tap:
+        mNumberChannels = 2
+        mData = memoryview(f32(0.5, -0.5, 0.25, -0.25, 0.0, 0.0))
+
+    handle.on_audio([Mic(), Tap()])
+    got = array.array("f")
+    got.frombytes(bytes(made[0].raw))
+    assert list(got) == pytest.approx(
+        [0.6, -0.4, 0.45, -0.05, 0.3, 0.3])
+    assert wrote == [made[0]]
+
+
+@_darwin_only
 def test_the_tap_meter_only_runs_while_somebody_polls():
     from fused_render.capture import _darwin_tap
 

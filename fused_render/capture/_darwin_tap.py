@@ -71,7 +71,8 @@ import objc
 
 from fused_render.capture import _darwin_mux, _pause
 from fused_render.capture._darwin import _AAC, _QUALITY_HIGH
-from fused_render.capture._mixdown import add_clip_into, upmix_mono_to_stereo
+from fused_render.capture._mixdown import (add_clip_into,
+                                           upmix_mono_to_stereo_interleaved)
 
 #: `AudioHardwareCreateProcessTap` is macOS 14.2.
 TAP_MIN = (14, 2)
@@ -177,7 +178,7 @@ class TapHandle:
         mic_bytes = bytes(mic.mData)
         channels = max(1, int(mic.mNumberChannels))
         if channels == 1:
-            mic_bytes = bytes(upmix_mono_to_stereo(mic_bytes))
+            mic_bytes = upmix_mono_to_stereo_interleaved(mic_bytes)
         elif channels > 2:
             mic_bytes = _first_two(mic_bytes, channels)
         mic_bytes = mic_bytes[:frames * 8]

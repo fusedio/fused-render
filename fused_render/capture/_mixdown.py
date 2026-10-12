@@ -118,6 +118,25 @@ def upmix_mono_to_stereo(data: bytes) -> bytearray:
     return out
 
 
+def upmix_mono_to_stereo_interleaved(data: bytes) -> bytes:
+    """One interleaved mono channel as interleaved stereo (L=R).
+
+    Interleaved is L R L R, so each float32 sample is written twice in a row.
+    Contrast `upmix_mono_to_stereo`, which concatenates the block and is only
+    right for planar buffers: applied to interleaved data it plays the voice at
+    double speed across the two channels. The CoreAudio tap's buffer is
+    interleaved; ScreenCaptureKit's is planar.
+    """
+    import array
+
+    mono = array.array("f")
+    mono.frombytes(bytes(data))
+    out = array.array("f", bytes(8 * len(mono)))
+    out[0::2] = mono
+    out[1::2] = mono
+    return out.tobytes()
+
+
 def _load_vdsp():
     """Accelerate's `vDSP_vadd`/`vDSP_vclip`, or None off a Mac."""
     if sys.platform != "darwin":                         # pragma: no cover
