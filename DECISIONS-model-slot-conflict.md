@@ -269,16 +269,50 @@ generation's tool-calling loop closes one on itself — but a hold (or a
 standoff another caller already opened) now refuses their load too, instead
 of silently evicting through a side door `_request_path_conflict` never saw.
 
-A render's `ModelSlotConflict` cannot reach its HTTP route as a 409 the way
-text/embed/decide's synchronous call can: `start_image`/`start_video`/
-`start_transcribe` all open a job and load on a background thread, so the
-route itself has already returned the job id by the time the load happens.
-The exception instead reaches `_start_render`'s own catch-all the same way
-every other load failure already does, and is reported onto the job as an
-error with the conflict's own message — no new wire field, no 409 mapping
-on these four routes. This is why `ModelSlotConflict`'s message text matters
-for these paths in particular: it is the only place the standoff is
-visible.
+## A render's `ModelSlotConflict` reaches its HTTP route as the same 409 (finding 5)
+
+`start_image`/`start_video`/`start_transcribe` open a job and load on a
+background thread, so by the time `_wait_ready`'s own `request_path=True`
+load hits a standoff on that thread, the route has already answered with
+the job id — the conflict used to only reach the job as a generic
+`state="error"` row minutes later, nothing like the synchronous 409
+`/api/ai`'s text/embed/decide verbs give for the identical standoff.
+
+`_start_render` and `start_transcribe` now call `_start_resident(model,
+capability, request_path=True, requester_id=..., requester_label=...)`
+synchronously, right after their existing `_require_build_tools()` check,
+BEFORE the job row opens or the background thread starts. A losing standoff
+raises `ModelSlotConflict` straight out of the route handler, same as any
+other precondition failure these two already check synchronously. This
+relies on `_start_resident`'s own join-branch idempotency: a model already
+resident or mid-load is joined rather than re-evicted or double-spawned, so
+calling it here and then again inside `_wait_ready` once the thread starts
+is safe — the second call simply joins the worker this one already started
+or joined.
+
+`fused_render/server/routers/ai_runtime.py`'s `api_ai_image`/`api_ai_video`/
+`api_ai_speech`/`api_ai_transcribe` each gained an `except
+supervisor.ModelSlotConflict as e: return _conflict_error(e)` ahead of their
+existing `except supervisor.SupervisorError as e: return _error(str(e),
+409)` — `_conflict_error` (already used by `/load`'s own route) wraps
+`to_wire()` in the `{"ok": False, "error": {...}}` envelope these four
+routes already use for every other failure, rather than the flat `{"error":
+"<string>"}` shape `SupervisorError`'s generic branch gives. `runtime.js`'s
+`aiPost` (the one helper `fused.ai.image`/`.video`/`.speech`/`.transcribe`
+all go through) now recognizes an object-shaped `error.type ===
+"model_slot_conflict"` the same way `fused.ai.text`'s own `fail()` always
+has, and copies the conflict fields with the existing shared
+`copyConflictFields` helper rather than a second copy. `fused_ai.py`'s
+`_error_from_payload` needed no change — it already handles any dict-shaped
+`error` body for `type_ == "model_slot_conflict"` generically, regardless of
+which verb it came from.
+
+A standoff that a render load loses WITHOUT ever reaching the route
+synchronously (the thread's own `_wait_ready` call, e.g. a conflict that
+opens between the pre-check and the thread starting) still falls back to
+the job-row `state="error"` path exactly as before — this fix narrows that
+window to "between two back-to-back lock acquisitions on the same request",
+not eliminates the job-row path as a reporting mechanism entirely.
 
 ## An unheld conflict's message names every contender and the resident by role
 
@@ -320,6 +354,60 @@ row stays the one place that also names the current resident as an explicit
 choice. This is a deliberate, narrower surface for the toast, not a missed
 requirement — the full three-way choice is always one click away in the
 Models dock.
+
+With three or more contenders (finding 9), "Keep `<the other one>`" stops
+being a coherent choice — there is no longer a single "other" model to name.
+The toast's `action` slot switches to "Choose…" (`requestOpenSection
+("models")`, opening the dock, whose `ConflictRow` already renders a Keep
+button per contender via its `figures` overflow area) and `extraAction`
+switches from "Stop both" to "Stop all". Two contenders keep the original
+"Keep `<other>`"/"Stop both" pair unchanged.
+
+## Finding 6: action failures surface the server's own message
+
+`ModelsDock.tsx`'s unload/resolve catch blocks and the conflict toast's own
+action failures used to always say "check your connection and retry" even
+when the request reached the server and came back with a real error body —
+indistinguishable from an actual network failure, and useless for
+diagnosing e.g. an ownership-checked unload refusal (finding 1's
+`requester_id` ownership check) or any other 4xx the server explained.
+
+`frontend/src/platform/lib/api.ts` exports `actionErrorMessage(err,
+connectionText)`: when `err` is an `HttpError` (has a numeric `.status`,
+meaning the request reached the server) and carries a `.message`, that
+message is shown; otherwise `connectionText` is the fallback, for a genuine
+network failure (no response at all). Both `ModelsDock.tsx` (`ModelRow`'s
+unload, `ConflictRow`'s resolve) and `useModelConflictNotify.ts`'s toast
+`onFailure` now route through this one helper instead of each hardcoding
+its own "check your connection" string.
+
+## Finding 9: naming requesters, not models, and keeping pace with new contenders
+
+Two more gaps in the toast and dock row beyond B7/B3/B8 (already fixed,
+above): `conflict.models.join(" and ")`-shaped joining broke for three or
+more contenders (no Oxford comma, and nothing beyond a literal `" and "`
+between every pair), and a conflict already notified never got its
+notification updated or re-raised when a THIRD contender joined after the
+toast for the original two was already showing.
+
+`frontend/src/platform/lib/format.ts` adds `joinNames(names: string[])`: a
+plain Oxford-comma join ("A", "A and B", "A, B, and C"), used by both
+`ModelsDock.tsx`'s `ConflictRow` and the toast in place of the old
+pairwise `" and "` join. Both also now resolve each contending model to
+its REQUESTER's label (`conflict.requesters?.[m] || repoName(m)`, falling
+back to the model's own name only when no requester is recorded for it —
+e.g. an older `ConflictState` entry predating this field) rather than
+always naming the model repo itself, since the standoff is between
+requesters contending for the slot, not between the models as such.
+
+`useModelConflictNotify.ts`'s `notified` map changed from `Map<string,
+number | null>` to `Map<string, { id: number | null; models: string }>`,
+keying the "already seen" check on the contender set (`conflict.models.
+join("\u0000")`) alongside the notification id. When an already-notified,
+unheld conflict's contender set no longer matches what was recorded, the
+stale toast is dismissed and the loop falls through to raise a fresh one
+naming the current set — a third caller joining a standing two-way standoff
+now gets reflected rather than silently left out of an already-shown toast.
 
 ## Toast cadence
 
@@ -394,3 +482,29 @@ not a loaded model. The chip's only conflict-aware change is an additive
 warning tint (`.has-conflict .dl-toggle { box-shadow: inset 2px 0 0
 var(--warning); }`), layered onto whatever tone the resident count already
 produced rather than replacing it.
+
+## Finding 1: every frontend caller names itself
+
+`loadAiModel`/`unloadAiModel` (`frontend/src/platform/lib/api.ts`) take an
+optional `requester` parameter and send it as `X-Fused-Requester`/
+`X-Fused-Requester-Label` (percent-encoded via `encodeURIComponent`, the
+same pattern `fused_ai.py`'s `_requester_headers()` already uses
+server-side) when given. `resolveModelConflict`/`releaseModelConflict` were
+left unchanged: `supervisor.resolve_conflict`/`release_conflict` take no
+`requester_id` parameter at all and are, by construction, only ever the
+user's own explicit action — there is no identity for either route's
+request body to carry.
+
+Every UI surface that can load or unload a model now passes its own fixed
+identity through these two functions, so a standoff names the actual
+caller rather than falling back to a bare repo id everywhere:
+`LocalTab.tsx`'s Load button sends `USER_REQUESTER` (`"user"`) — the AI
+Models page's own explicit, never-refused control. `PlaygroundTab.tsx`
+and `playground/client.ts` send the fixed id `PLAYGROUND_REQUESTER`
+(`"shell:playground"`) on load/unload and on every request-path call
+(`startImage`/`startVideo`/`startSpeech`/`startTranscribe`/`streamChat`/
+`readEmbedReply`/`decide`). `apps/claude/ann/transcribe.ts` sends its own
+fixed id `"shell:ann-transcribe"` on both its warm-up load and its
+transcription job start. `ModelsDock.tsx`'s own Unload button sends
+`USER_REQUESTER` as well, matching the Load button's identity on the same
+page.
