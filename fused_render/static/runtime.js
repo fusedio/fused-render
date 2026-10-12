@@ -6935,12 +6935,36 @@
         });
       return ending;
     }
+    let paused = !!started.paused;
+    // The server's reply carries the new `paused`. A recording the browser
+    // encodes has nothing here to hold, so it refuses in one sentence (typed
+    // like every "this machine cannot" error); a screen recording, or a platform
+    // with no pause, gets the server's own 409 the same way.
+    function ctl(action) {
+      if (streamer) {
+        const err = new Error(
+          "pausing is not available when this browser does the recording");
+        err.type = "unavailable";
+        return Promise.reject(err);
+      }
+      if (ending) return Promise.resolve();
+      return captureFetch(
+        "/api/capture/" + encodeURIComponent(started.id) + "/" + action)
+        .then((reply) => {
+          paused = reply && typeof reply.paused === "boolean"
+            ? reply.paused : action === "pause";
+        });
+    }
     const handle = {
       id: started.id,
       mode: started.mode,
       path: started.path,
       jobId: started.jobId,
       maxSeconds: started.maxSeconds,
+      // Stop recording until resume(); the file stays open and its length is
+      // only the time spent recording. The menu-bar pill drives the same call.
+      pause: () => ctl("pause"),
+      resume: () => ctl("resume"),
       // Keeps the file. This is the ending a page asks for.
       stop: () => end("stop"),
       // Stops AND DELETES — the same meaning the manager's ✕ has, spelled out
@@ -6948,6 +6972,7 @@
       cancel: () => end("cancel"),
     };
     Object.defineProperty(handle, "state", { get: () => state });
+    Object.defineProperty(handle, "paused", { get: () => paused });
     Object.defineProperty(handle, "url", {
       get: () => (result ? result.url : rawUrl(started.path)),
     });
@@ -7016,6 +7041,13 @@
   // sentence rather than two. A tap cannot tell a denied permission from an
   // idle Mac, so a stop() on a recording that heard nothing carries a
   // `warning` sentence next to the file — the file itself is still valid.
+  //
+  // On macOS a floating recording pill (app icon, level meter, pause/resume,
+  // stop) shows for the length of an audio recording; its stop is the same
+  // request as rec.stop(), so a page's own stop() afterwards just answers with
+  // the finished record. rec.pause() / rec.resume() hold the recording (paused
+  // time is not in the file and does not count toward maxSeconds); rec.paused
+  // reads the state. Windows and Linux reject them with `.type "unavailable"`.
   function captureAudio(opts) {
     opts = opts || {};
     const body = { mode: "audio" };
