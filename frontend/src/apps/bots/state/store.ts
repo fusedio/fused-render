@@ -121,9 +121,15 @@ export const eventsOf = (id: string | null | undefined): BotEvent[] => (id && S.
 export const errMsg = (e: unknown): string => String((e as { message?: unknown })?.message || e);
 
 // ------------------------------------------------------------------ prefs ----
-// Boolean page prefs in localStorage ("1" / "0"); a missing key or no storage reads as the default (on).
-const readFlag = (k: string, dflt = true): boolean => { try { const v = localStorage.getItem(k); return v === null ? dflt : v === "1"; } catch { return dflt; } };
-const writeFlag = (k: string, on: boolean): void => { try { localStorage.setItem(k, on ? "1" : "0"); } catch { /* no storage */ } };
+// Boolean page prefs in localStorage ("1" / "0"); a missing key or no storage reads as the default (on). A value set
+// this session is also kept in memory, so a switch still governs the page when storage throws (CodeRabbit, #1586).
+const flagMem = new Map<string, boolean>();
+const readFlag = (k: string, dflt = true): boolean => {
+  const m = flagMem.get(k);
+  if (m !== undefined) return m;
+  try { const v = localStorage.getItem(k); return v === null ? dflt : v === "1"; } catch { return dflt; }
+};
+const writeFlag = (k: string, on: boolean): void => { flagMem.set(k, on); try { localStorage.setItem(k, on ? "1" : "0"); } catch { /* no storage */ } };
 export const AUTOSTAGE_KEY = "browser-bot.autostage", SOUNDS_KEY = "browser-bot.sounds", CLEAR_KEY = "browser-bot.clear";
 /** "Open the browser when a bot needs me": a bot-initiated hand-over on the selected bot opens Stage by itself. */
 export const autoStage = (): boolean => readFlag(AUTOSTAGE_KEY);
