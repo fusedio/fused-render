@@ -29,19 +29,23 @@ function sendKey(a: KeyAction): void {
 
 // A page's own Copy / Copy link button writes to the bot Chrome's private clipboard, which neither ⌘V here (the paste
 // event carries YOUR clipboard) nor any other app reaches: what a click copied is mirrored to yours. The write can land
-// late (Slack fetches the permalink first), so the clipboard is read again a few times after the release. A newer left
-// press retires the older poll, so a slow first copy can never overwrite the second.
-let mirrorGen = 0;
-async function mirrorCopy(before: Promise<string | null>, gen: number): Promise<void> {
+// late (Slack fetches the permalink first), so the clipboard is read again a few times after the release. Polls are never
+// cancelled and share one `seen` (the last value baselined or mirrored): each copies whatever Chrome holds NOW when it
+// differs, so overlapping clicks mirror every copy in order and the newest always ends on your clipboard.
+let seen: string | null = null, polls = 0;
+async function mirrorCopy(before: Promise<string | null>): Promise<void> {
   const was = await before;
-  if (was === null) return;  // unreadable before the click: nothing to tell a copy from
-  for (const ms of [150, 650, 900]) {
-    await new Promise((r) => setTimeout(r, ms));
-    if (!inCtl() || gen !== mirrorGen) return;
-    const now = await pageClipboard();
-    if (gen !== mirrorGen) return;
-    if (now && now !== was) { copyText(now); return; }
-  }
+  if (polls === 0) seen = was;  // between gestures this is the baseline; mid-poll the running one already holds it
+  if (seen === null) return;  // unreadable: nothing to tell a copy from
+  polls++;
+  try {
+    for (const ms of [150, 650, 900]) {
+      await new Promise((r) => setTimeout(r, ms));
+      if (!inCtl()) return;
+      const now = await pageClipboard();
+      if (now && now !== seen) { seen = now; copyText(now); }
+    }
+  } finally { polls--; }
 }
 
 // ------------------------------------------------------------------ drag + ghost ----
@@ -95,7 +99,7 @@ export function installLive(stage: HTMLElement): () => void {
   // --- pointer ---
   let lastDown: LastDown = { t: 0, x: 0, y: 0, n: 0 };
   /** The press in flight: sent (or not) once its hit probe answered; the release decides from this, not from the pointer. */
-  let press: { forwarded: boolean; button: string; n: number; clip: Promise<string | null>; gen: number } | null = null;
+  let press: { forwarded: boolean; button: string; n: number; clip: Promise<string | null> } | null = null;
   let pressQ: Promise<void> = Promise.resolve();
   // Moves are coalesced to one per animation frame: hover menus stay responsive without flooding the socket.
   let pendingMove: { p: { x: number; y: number }; e: MouseEvent } | null = null;
@@ -128,7 +132,7 @@ export function installLive(stage: HTMLElement): () => void {
     setOverlay(null); cancelSuggest();
     lastStage = stageXY(e); lastPage = p; lastDownPage = p;
     lastDown = nextDown(lastDown, performance.now(), p);
-    const rec = { forwarded: false, button: BTN[e.button] || "left", n: lastDown.n, clip: e.button === 0 ? pageClipboard() : Promise.resolve(null), gen: e.button === 0 ? ++mirrorGen : mirrorGen };
+    const rec = { forwarded: false, button: BTN[e.button] || "left", n: lastDown.n, clip: e.button === 0 ? pageClipboard() : Promise.resolve(null) };
     press = rec;
     pressQ = pressQ.then(async () => {
       if (!inCtl()) return;
@@ -155,7 +159,7 @@ export function installLive(stage: HTMLElement): () => void {
       endDrag();
       mouse("mouseReleased", p, e, { button: rec.button, clickCount: rec.n });
       setTimeout(poll, 700);  // a click may open a tab or change the title
-      if (rec.button === "left") void mirrorCopy(rec.clip, rec.gen);
+      if (rec.button === "left") void mirrorCopy(rec.clip);
     });
   };
   onEvent("Input.dragIntercepted", (p) => {
