@@ -204,17 +204,24 @@ def is_bot_workdir(cwd: str | None) -> bool:
 
     Not `cache_dir()` alone: that is the ACTIVE branch's home, while the
     projects dir holds transcripts from every branch install on the machine
-    (`~/.fused-render/branches/<ref>/bots/cache/bots/<id>`); the segment run
-    `bots/cache/bots/` under the base home covers them all. A human who opens
-    Claude Code inside a bot's Inbox folder is hidden by the second test too
-    — accepted: the Inbox is the bot's output tray, not a project."""
+    (`~/.fused-render/branches/<ref>/bots/cache/bots/<id>`, `_branch.branch_dir`).
+    So the test is by path component off the base home — `bots/cache/bots/<id>`,
+    optionally behind `branches/<ref>/` — and never a substring search: a
+    user project that happens to be named `.../bots/cache/bots/x` somewhere
+    under the home must stay a task (CodeRabbit, PR #1594). A human who opens
+    Claude Code inside a bot's Inbox folder is hidden by the second test —
+    accepted: the Inbox is the bot's output tray, not a project."""
     if not cwd:
         return False
     path = os.path.normcase(os.path.normpath(cwd))
     home = os.path.normcase(os.path.normpath(_storage.base_home_dir()))
-    cache_run = os.path.normcase(os.path.join("", "bots", "cache", "bots", ""))
-    if path.startswith(home + os.sep) and cache_run in path + os.sep:
-        return True
+    if path.startswith(home + os.sep):
+        parts = path[len(home) + 1:].split(os.sep)
+        if parts[:1] == [os.path.normcase("branches")]:
+            parts = parts[2:]  # branches/<ref>/…
+        cache = [os.path.normcase(s) for s in ("bots", "cache", "bots")]
+        if parts[:3] == cache and len(parts) >= 4 and parts[3]:
+            return True
     inbox = os.path.normcase(os.path.normpath(artifacts_root()))
     return os.path.dirname(path) == inbox
 
