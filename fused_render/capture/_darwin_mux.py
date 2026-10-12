@@ -504,10 +504,15 @@ class MuxHandle:
         # microphones are mono. Detected from the buffer itself rather than
         # from an `AudioStreamBasicDescription`, because bytes-per-frame is the
         # only fact the add actually needs.
-        # Planar (ScreenCaptureKit), so the block-duplicate upmix is right here.
+        # Non-interleaved (`_start_mic` configures AVCaptureAudioDataOutput that way), so the block-duplicate upmix is right here.
         if len(data) // frames < _SYSTEM_BYTES_PER_FRAME:
             data = upmix_mono_to_stereo(bytes(data))
         with self._ring_lock:
+            # Re-check under the lock: `pause()` sets the flag and then clears
+            # the ring under this same lock, so a callback that passed the
+            # early check could otherwise push after the clear.
+            if self.shifter.paused:
+                return
             self.ring.push(bytes(data))
 
     # ----------------------------------------------------------- pause/resume

@@ -439,3 +439,22 @@ def test_rms_pcm_odd_trailing_bytes_are_dropped():
     assert rms_pcm(whole + b"\x7f", 16, False) == pytest.approx(0.5)
     assert rms_pcm(b"\x7f", 16, False) == 0.0
     assert rms_pcm(b"\x00\x00\x40\x01", 24, False) == pytest.approx(0.5)   # one 3-byte sample + 1 stray
+
+
+@_darwin_only
+def test_a_mic_buffer_racing_a_pause_is_not_pushed_into_the_ring(monkeypatch):
+    """`on_mic` checks `paused` before the ring lock; a `pause()` landing in
+    between must not leave a stale buffer for the first system buffer after
+    the resume."""
+    from fused_render.capture import _darwin_mux
+
+    mux = _darwin_mux.MuxHandle("/tmp/x.m4a", "both", audio_only=True)
+    monkeypatch.setattr(_darwin_mux.CM, "CMSampleBufferIsValid", lambda s: True)
+
+    def racing_pcm(sbuf):
+        mux.shifter.pause()                # the pause lands mid-callback
+        return None, bytearray(16), 2
+
+    monkeypatch.setattr(_darwin_mux, "_pcm", racing_pcm)
+    mux.on_mic(object())
+    assert len(mux.ring) == 0
