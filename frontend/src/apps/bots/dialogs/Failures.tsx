@@ -2,7 +2,8 @@
 // should open a popup with the error logs for that failure"). Reads GET /api/bots/{id}/failures once on open: the same
 // week-long window and the same `ok` test the count came from, newest first, so the list is as long as the number
 // clicked. Each row: when, model, origin, the task, then the call's own error text; a line logged before the ledger
-// kept that text says so instead of showing nothing. Settings-sized shell (dialogs/shell.ts), scrolling body.
+// kept that text says so instead of showing nothing. Settings-sized shell (dialogs/shell.ts), scrolling body. Tailwind
+// only: the dialog portals to <body>, outside .bots-page, so bots.css (the .chip pill, .lnk) does not reach it.
 import { useEffect, useState } from "react";
 import { cn } from "@platform/lib/utils";
 import { Button } from "@platform/shadcn/ui/button";
@@ -25,7 +26,7 @@ export function FailuresDialog({ id, name, onClose }: { id: string; name?: strin
       <DialogContent showCloseButton={false} className={cn(DIALOG_CLASS, DIALOG_SIZE)}>
         <DialogHeader className={HEADER_CLASS}>
           <DialogTitle>Failed calls{name ? ` · ${name}` : ""}</DialogTitle>
-          <DialogDescription>{rows ? `${n} failed model call${n === 1 ? "" : "s"} in the last 7 days, newest first.` : "Reading the usage log…"}</DialogDescription>
+          <DialogDescription>{err ? "The usage log could not be read." : rows ? `${n} failed model call${n === 1 ? "" : "s"} in the last 7 days, newest first.` : "Reading the usage log…"}</DialogDescription>
         </DialogHeader>
         <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-5" id="failures">
           {err ? <p className="m-0 text-sm text-destructive">{err}</p> : null}
@@ -34,7 +35,7 @@ export function FailuresDialog({ id, name, onClose }: { id: string; name?: strin
             <div key={`${r.ts}-${i}`} className="mb-3 rounded-xl border border-foreground/10 bg-foreground/[0.02] p-4">
               <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
                 <span>{fmtWhen(r.ts)}</span>
-                <i className={`chip ${r.model}`}>{r.model}</i>
+                <i className="rounded-full bg-foreground/[0.06] px-1.5 py-px font-mono text-[10px] not-italic">{r.model}</i>
                 <span>{r.origin}</span>
                 {r.task ? <span className="truncate" title={r.task}>“{r.task}”</span> : null}
               </div>

@@ -568,8 +568,8 @@ div.bots-page.sideapp .preview > :is(.shotwrap, .toast, .cap, .info) { display: 
 .bots-page .info .rt.off { opacity: .55; }
 .bots-page .info a, .bots-page .info .lnk { color: var(--accent-text); cursor: pointer; text-decoration: none; background: none; padding: 0; font: inherit; border-radius: 0; }
 .bots-page .info a:hover, .bots-page .info .lnk:hover { text-decoration: underline; background: none; }
-/* A count that opens the failures dialog (the usage strip, the Usage table's Failed cell): a link in the text, not the
-   pill every .bots-page button wears; .warn keeps the error red over the link accent. */
+/* The count in the usage strip that opens the failures dialog: a link in the text, not the pill every .bots-page button
+   wears; .warn keeps the error red over the link accent. (The Usage dialog's cell is Tailwind: it portals outside .bots-page.) */
 .bots-page button.lnk { color: var(--accent-text); cursor: pointer; text-decoration: none; background: none; padding: 0; font: inherit; border-radius: 0; }
 .bots-page button.lnk:hover { text-decoration: underline; background: none; }
 .bots-page button.lnk.warn { color: var(--err); }
