@@ -180,10 +180,12 @@ def refuse(mode: str, spec: dict) -> str | None:
         source = spec.get("audio") or "mic"
         if source in ("system", "both") and not _native_audio(spec):
             return _linux_audio.unavailable_reason()
-        if _native_audio(spec) and spec.get("device"):
-            return ("choosing a microphone isn't supported on Linux — audio "
-                     "records from the default input; change it in your "
-                     "system sound settings")
+        if _native_audio(spec):
+            if spec.get("device"):
+                return ("choosing a microphone isn't supported on Linux — "
+                         "audio records from the default input; change it in "
+                         "your system sound settings")
+            return _sink.check_ext(spec, ext(mode, spec))
         return None
     return _sink.refuse(mode, spec)
 

@@ -179,6 +179,16 @@ def test_refuse_blocks_a_chosen_microphone_when_native(monkeypatch):
     assert _linux.refuse("audio", {"audio": "mic", "device": None}) is None
 
 
+def test_refuse_blocks_a_wrong_extension_path_when_native(monkeypatch):
+    monkeypatch.setattr(_linux_audio, "available", lambda: True)
+    why = _linux.refuse("audio", {"audio": "mic", "out": "/tmp/x.mp3"})
+    assert why is not None
+    assert ".wav" in why
+    assert _linux.refuse("audio", {"audio": "mic", "out": "/tmp/x.wav"}) is None
+    # No path given: nothing to check.
+    assert _linux.refuse("audio", {"audio": "mic"}) is None
+
+
 def test_refuse_ignores_device_when_falling_back_to_sink(monkeypatch):
     # Unavailable native capture means "mic" runs through `_sink`, which does
     # honour a chosen `device` (the browser's own picker) — so this refusal
