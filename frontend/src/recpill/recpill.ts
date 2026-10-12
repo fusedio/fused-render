@@ -5,7 +5,7 @@
 // newer WebKit than macOS 13 ships.
 import botHomeImg from "@assets/fusedbot-icon-1024.png";
 import renderHomeImg from "@assets/fusedrender-icon-1024.png";
-import { bars, formatElapsed, iconFor, type PillInfo, type PillState } from "./lib";
+import { bars, formatElapsed, iconFor, resolvePaused, type PendingPause, type PillInfo, type PillState } from "./lib";
 
 declare global {
   interface Window {
@@ -31,6 +31,7 @@ const stopBtn = document.getElementById("stop") as HTMLButtonElement;
 const POLL_MS = 100;
 let info: PillInfo | null = null;
 let paused = false;
+let pending: PendingPause | null = null;
 let timer: number | undefined;
 let polling = false;
 
@@ -49,7 +50,10 @@ function drawIcon(i: PillInfo) {
 }
 
 function draw(s: PillState) {
-  paused = !!s.paused;
+  const r = resolvePaused(s.paused, pending, Date.now());
+  paused = r.paused;
+  if (pending && !r.pending) pauseBtn.disabled = false;
+  pending = r.pending;
   pill.classList.toggle("paused", paused);
   pauseBtn.title = paused ? "Resume" : "Pause";
   timeEl.textContent = formatElapsed(s.seconds ?? 0);
@@ -82,6 +86,8 @@ function hideSelf() {
 window.pillShow = (i: PillInfo) => {
   info = i;
   paused = false;
+  pending = null;
+  pauseBtn.disabled = false;
   drawIcon(i);
   pauseBtn.hidden = !i.canPause;
   pill.classList.remove("paused");
@@ -92,9 +98,11 @@ window.pillShow = (i: PillInfo) => {
 window.pillHidden = hideSelf;
 
 pauseBtn.addEventListener("click", () => {
-  if (!info) return;
+  if (!info || pending) return;
   const next = !paused;
-  // Optimistic: the next poll confirms (or undoes) it.
+  // Optimistic: polls keep this value until the server agrees or the 2 s deadline passes.
+  pending = { want: next, until: Date.now() + 2000 };
+  pauseBtn.disabled = true;
   paused = next;
   pill.classList.toggle("paused", next);
   post({ type: next ? "pause" : "resume", id: info.id });

@@ -49,3 +49,18 @@ export function iconFor(info: Pick<PillInfo, "icon" | "flavor">): { kind: "app" 
   if (info.icon) return { kind: "app", src: info.icon, scale: "100%" };
   return { kind: "home", src: null, scale: info.flavor === "bot" ? "124.3%" : "113.7%" };
 }
+
+/** A pause/resume the user just asked for that the server has not confirmed yet. */
+export interface PendingPause { want: boolean; until: number }
+
+/** Decide what the pill shows for `paused`: while a click is pending and the server still reports the old value
+ *  (and the deadline has not passed) the wanted value wins; once the server agrees or time runs out, the server wins. */
+export function resolvePaused(
+  serverPaused: boolean | undefined,
+  pending: PendingPause | null,
+  now: number,
+): { paused: boolean; pending: PendingPause | null } {
+  const server = !!serverPaused;
+  if (pending && server !== pending.want && now < pending.until) return { paused: pending.want, pending };
+  return { paused: server, pending: null };
+}

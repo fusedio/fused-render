@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { BAR_COUNT, BAR_MIN, bars, formatElapsed, iconFor } from "./lib";
+import { BAR_COUNT, BAR_MIN, bars, formatElapsed, iconFor, resolvePaused } from "./lib";
 
 describe("bars", () => {
   test("silence and pause rest at the minimum", () => {
@@ -34,5 +34,24 @@ describe("iconFor", () => {
     expect(iconFor({ icon: "/x.svg", flavor: "bot" })).toEqual({ kind: "app", src: "/x.svg", scale: "100%" });
     expect(iconFor({ icon: null, flavor: "render" }).scale).toBe("113.7%");
     expect(iconFor({ icon: null, flavor: "bot" }).scale).toBe("124.3%");
+  });
+});
+
+describe("resolvePaused", () => {
+  const pending = { want: true, until: 1000 };
+  test("no pending: the server wins", () => {
+    expect(resolvePaused(false, null, 5)).toEqual({ paused: false, pending: null });
+    expect(resolvePaused(undefined, null, 5)).toEqual({ paused: false, pending: null });
+    expect(resolvePaused(true, null, 5)).toEqual({ paused: true, pending: null });
+  });
+  test("server lagging: the wanted value holds and pending stays", () => {
+    expect(resolvePaused(false, pending, 500)).toEqual({ paused: true, pending });
+  });
+  test("server agreeing clears pending", () => {
+    expect(resolvePaused(true, pending, 500)).toEqual({ paused: true, pending: null });
+  });
+  test("deadline expiry gives the server's value back", () => {
+    expect(resolvePaused(false, pending, 1000)).toEqual({ paused: false, pending: null });
+    expect(resolvePaused(false, pending, 2000)).toEqual({ paused: false, pending: null });
   });
 });
