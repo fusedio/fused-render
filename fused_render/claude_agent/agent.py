@@ -7162,18 +7162,32 @@ def _start_pending_stop(run_id: str, run_dir: str, stranded: list,
     its own, which `_cancelled_marker_state` reads as "stopped" until a
     later turn proves otherwise — the same outcome as a kill that did not
     land, and the same one as before this existed)."""
-    try:
-        with _private_open(os.path.join(run_dir, _STOP_PENDING)) as fh:
-            fh.write(str(time.time()))
-    except OSError:
-        pass
     thread = threading.Thread(
         target=_finish_pending_stop,
         args=(run_id, run_dir, list(stranded), queued),
         name="claude-stop-%s" % run_id, daemon=True)
     with _PENDING_STOPS_LOCK:
+        # Marker, registration and start are ONE step for every reader that
+        # takes this lock: `_stop_pending` must never see a marker without a
+        # live thread (it would delete it as stale), and `_join_pending_stop`
+        # must never join an unstarted one. The thread's `finally` takes the
+        # lock only after `start()`, so this cannot deadlock.
+        try:
+            with _private_open(os.path.join(run_dir, _STOP_PENDING)) as fh:
+                fh.write(str(time.time()))
+        except OSError:
+            pass
+        try:
+            thread.start()
+        except RuntimeError:
+            # No thread to retire the marker: take it back rather than
+            # leave an unstarted thread for `_join_pending_stop`.
+            try:
+                os.remove(os.path.join(run_dir, _STOP_PENDING))
+            except OSError:
+                pass
+            raise
         _PENDING_STOPS[run_dir] = thread
-    thread.start()
 
 
 def _read_interrupted_offset(run_dir: str) -> int:
@@ -7243,8 +7257,13 @@ def _finish_pending_stop(run_id: str, run_dir: str, stranded: list,
         # interrupt has landed, so the row cannot flip back to running
         # over a turn that is already over. Best effort: standalone loads
         # of this module (tests) have no package to import from.
+        # Looked up in `sys.modules`, not imported: this file is also loaded
+        # by path in children that cannot import the package (PY-15 guard);
+        # the server process that runs the stop thread has it loaded.
         try:
-            from fused_render import tasks_watch as _tw
+            _tw = sys.modules.get("fused_render.tasks_watch")
+            if _tw is None:
+                raise ImportError("tasks_watch not loaded")
             try:
                 with open(os.path.join(run_dir, "meta.json"),
                           encoding="utf-8") as fh:
