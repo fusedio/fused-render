@@ -1,20 +1,53 @@
 import { describe, expect, test } from "bun:test";
-import { BAR_COUNT, BAR_MIN, bars, formatElapsed, iconFor, resolvePaused } from "./lib";
+import { BAR_COUNT, BAR_REST, bars, formatElapsed, iconFor, resolvePaused, shapeLevel, smoothLevel } from "./lib";
 
 describe("bars", () => {
-  test("silence and pause rest at the minimum", () => {
-    expect(bars(0)).toEqual(Array(BAR_COUNT).fill(BAR_MIN));
-    expect(bars(1, true)).toEqual(Array(BAR_COUNT).fill(BAR_MIN));
+  test("silence rests on the uneven taper, widest second and third", () => {
+    const r = bars(0);
+    expect(r).toEqual(BAR_REST);
+    expect(r).toHaveLength(BAR_COUNT);
+    expect(r[1]).toBeGreaterThan(r[0]);
+    expect(r[2]).toBeGreaterThan(r[1]);
+    expect(r[2]).toBeGreaterThan(r[4]);
   });
-  test("the middle bar leads and the heights stay in range", () => {
-    const b = bars(0.6);
-    expect(b[2]).toBeGreaterThan(b[0]);
-    expect(b[0]).toBeCloseTo(b[4]);
-    for (const h of bars(5)) { expect(h).toBeLessThanOrEqual(1); expect(h).toBeGreaterThanOrEqual(BAR_MIN); }
+  test("pause rests regardless of level", () => {
+    expect(bars(1, true)).toEqual(BAR_REST);
   });
-  test("garbage levels read as silence", () => {
+  test("widths grow monotonically with level, never shrink below rest, and the middle leads", () => {
+    let prev = bars(0);
+    for (const lv of [0.1, 0.3, 0.5, 0.8, 1]) {
+      const b = bars(lv);
+      b.forEach((w, i) => { expect(w).toBeGreaterThanOrEqual(prev[i]); expect(w).toBeGreaterThanOrEqual(BAR_REST[i]); expect(w).toBeLessThanOrEqual(1); });
+      prev = b;
+    }
+    const loud = bars(1);
+    expect(loud[2]).toBeCloseTo(1);
+    expect(loud[2]).toBeGreaterThan(loud[0]);
+    expect(loud[2]).toBeGreaterThan(loud[4]);
+  });
+  test("garbage and out-of-range levels clamp", () => {
     expect(bars(NaN)).toEqual(bars(0));
     expect(bars(-3)).toEqual(bars(0));
+    expect(bars(Infinity)).toEqual(bars(0));
+    expect(bars(5)).toEqual(bars(1));
+  });
+});
+
+describe("shapeLevel", () => {
+  test("sqrt curve lifts quiet speech and clamps", () => {
+    expect(shapeLevel(0.1)).toBeCloseTo(0.316, 2);
+    expect(shapeLevel(0.3)).toBeCloseTo(0.548, 2);
+    expect(shapeLevel(NaN)).toBe(0);
+    expect(shapeLevel(-1)).toBe(0);
+    expect(shapeLevel(9)).toBe(1);
+  });
+});
+
+describe("smoothLevel", () => {
+  test("fast attack, slow release", () => {
+    expect(smoothLevel(0.8, 0.2)).toBe(0.8);
+    expect(smoothLevel(0, 1)).toBeCloseTo(0.85);
+    expect(smoothLevel(0.9, 0.5)).toBe(0.9);
   });
 });
 

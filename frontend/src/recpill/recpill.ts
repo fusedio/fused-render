@@ -5,7 +5,7 @@
 // newer WebKit than macOS 13 ships.
 import botHomeImg from "@assets/fusedbot-icon-1024.png";
 import renderHomeImg from "@assets/fusedrender-icon-1024.png";
-import { bars, formatElapsed, iconFor, resolvePaused, type PendingPause, type PillInfo, type PillState } from "./lib";
+import { bars, formatElapsed, iconFor, resolvePaused, shapeLevel, smoothLevel, type PendingPause, type PillInfo, type PillState } from "./lib";
 
 declare global {
   interface Window {
@@ -23,8 +23,8 @@ if (!INAPP) document.body.classList.add("dev");
 
 const pill = document.getElementById("pill") as HTMLElement;
 const iconEl = document.getElementById("icon") as HTMLElement;
-const meter = Array.from(document.querySelectorAll<HTMLElement>("#meter i"));
-const timeEl = document.getElementById("time") as HTMLElement;
+const meterEl = document.getElementById("meter") as HTMLElement;
+const meter = Array.from(meterEl.querySelectorAll<HTMLElement>("i"));
 const pauseBtn = document.getElementById("pause") as HTMLButtonElement;
 const stopBtn = document.getElementById("stop") as HTMLButtonElement;
 
@@ -34,6 +34,8 @@ let paused = false;
 let pending: PendingPause | null = null;
 let timer: number | undefined;
 let polling = false;
+let displayed = 0;
+const BAR_MAX_PX = 26;
 
 function drawIcon(i: PillInfo) {
   const art = iconFor(i);
@@ -56,8 +58,9 @@ function draw(s: PillState) {
   pending = r.pending;
   pill.classList.toggle("paused", paused);
   pauseBtn.title = paused ? "Resume" : "Pause";
-  timeEl.textContent = formatElapsed(s.seconds ?? 0);
-  bars(s.level ?? 0, paused).forEach((h, k) => { if (meter[k]) meter[k].style.height = Math.round(4 + h * 26) + "px"; });
+  meterEl.title = "Recording " + formatElapsed(s.seconds ?? 0);
+  displayed = smoothLevel(shapeLevel(s.level ?? 0), displayed);
+  bars(displayed, paused).forEach((w, k) => { if (meter[k]) meter[k].style.width = Math.round(w * BAR_MAX_PX) + "px"; });
 }
 
 async function poll() {
@@ -87,6 +90,7 @@ window.pillShow = (i: PillInfo) => {
   info = i;
   paused = false;
   pending = null;
+  displayed = 0;
   pauseBtn.disabled = false;
   drawIcon(i);
   pauseBtn.hidden = !i.canPause;

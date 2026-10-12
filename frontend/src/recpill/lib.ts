@@ -22,17 +22,28 @@ export interface PillState {
 }
 
 export const BAR_COUNT = 5;
-export const BAR_MIN = 0.12;
+/** Widths at rest as a fraction of the widest (26 px): Notion's uneven taper. */
+export const BAR_REST = [12 / 26, 16 / 26, 20 / 26, 14 / 26, 8 / 26];
+/** How far each bar grows toward full width at level 1: the middle bars lead. */
+const BAR_GAIN = [0.7, 0.9, 1, 0.9, 0.7];
 
-/** Turn one 0..1 level into BAR_COUNT bar heights (0..1). The middle bar leads, the outer ones trail it, so the
- *  meter breathes like a voice rather than moving as one block. A paused or silent pill rests at BAR_MIN. */
-export function bars(level: number, paused = false, count = BAR_COUNT): number[] {
-  const lv = paused || !Number.isFinite(level) ? 0 : Math.min(1, Math.max(0, level));
-  const mid = (count - 1) / 2;
-  return Array.from({ length: count }, (_, i) => {
-    const falloff = 1 - Math.abs(i - mid) / (mid + 1.5);
-    return BAR_MIN + (1 - BAR_MIN) * Math.min(1, lv * falloff * 1.25);
-  });
+const clamp01 = (n: number) => (Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : 0);
+
+/** Perceptual curve: the backend maps dB linearly over a -50 dB floor, so speech lands low; sqrt lifts it. */
+export function shapeLevel(level: number): number {
+  return Math.sqrt(clamp01(level));
+}
+
+/** Fast attack, slow release: a louder reading shows at once, a quieter one decays 15% per poll. */
+export function smoothLevel(shaped: number, displayed: number): number {
+  return Math.max(shaped, displayed * 0.85);
+}
+
+/** Turn one 0..1 (already shaped) level into BAR_COUNT bar widths (0..1 of the widest). Each bar grows from its rest
+ *  width toward full by its gain; a paused or silent pill rests on the taper. */
+export function bars(level: number, paused = false): number[] {
+  const lv = paused ? 0 : clamp01(level);
+  return BAR_REST.map((rest, i) => rest + (1 - rest) * Math.min(1, lv * BAR_GAIN[i]));
 }
 
 /** m:ss, or h:mm:ss from an hour. Garbage and negatives read 0:00. */

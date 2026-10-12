@@ -14,8 +14,13 @@
     --pill-fg: #1c1c1e;
     --pill-dim: rgba(28,28,30,.55);
     --pill-hover: rgba(0,0,0,.07);
-    --bar: #1c1c1e;
-    --stop: #ff3b30;
+    --bar: #a1a1a6;
+    --pause-bg: #ececee;
+    --pause-bg-hover: #e1e1e4;
+    --pause-fg: #8e8e93;
+    --stop-bg: #fde8e7;
+    --stop-bg-hover: #fbd9d7;
+    --stop-fg: #e5534b;
     --shadow: 0 6px 18px rgba(0,0,0,.22), 0 0 0 .5px rgba(0,0,0,.12);
   }
   @media (prefers-color-scheme: dark) {
@@ -24,7 +29,13 @@
       --pill-fg: #f2f2f5;
       --pill-dim: rgba(242,242,245,.6);
       --pill-hover: rgba(255,255,255,.12);
-      --bar: #f2f2f5;
+      --bar: rgba(242,242,245,.55);
+      --pause-bg: rgba(255,255,255,.12);
+      --pause-bg-hover: rgba(255,255,255,.19);
+      --pause-fg: rgba(242,242,245,.7);
+      --stop-bg: rgba(255,69,58,.22);
+      --stop-bg-hover: rgba(255,69,58,.32);
+      --stop-fg: #ff453a;
       --shadow: 0 6px 18px rgba(0,0,0,.5), 0 0 0 .5px rgba(255,255,255,.14);
     }
   }
@@ -40,7 +51,7 @@
     position: absolute; left: 8px; top: 8px; width: 56px; height: 200px; box-sizing: border-box;
     border-radius: 28px; background: var(--pill-bg); box-shadow: var(--shadow);
     display: flex; flex-direction: column; align-items: center; justify-content: space-between;
-    padding: 10px 0;
+    padding: 12px 0;
   }
   #pill[hidden] { display: none; }
   #icon {
@@ -49,24 +60,24 @@
   }
   #icon img { width: 100%; height: 100%; object-fit: contain; display: block; pointer-events: none; }
   #icon.home img { width: var(--home-scale, 113.7%); height: var(--home-scale, 113.7%); max-width: none; object-fit: cover; }
-  #meter { height: 34px; display: flex; align-items: center; justify-content: center; gap: 3px; }
+  #meter { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 5px; }
   #meter i {
-    display: block; width: 3px; border-radius: 2px; background: var(--bar);
-    height: 4px; transition: height 90ms linear;
+    display: block; width: 12px; height: 4px; border-radius: 2px; background: var(--bar);
+    transition: width 80ms linear;
   }
   #pill.paused #meter i { opacity: .35; }
-  #time { font-size: 10px; color: var(--pill-dim); font-variant-numeric: tabular-nums; }
   button {
-    appearance: none; border: 0; padding: 0; margin: 0; background: none; cursor: pointer; color: var(--pill-fg);
-    width: 34px; height: 34px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+    appearance: none; border: 0; padding: 0; margin: 0; cursor: pointer;
+    width: 36px; height: 36px; flex: none; border-radius: 50%; display: flex; align-items: center; justify-content: center;
   }
-  button:hover { background: var(--pill-hover); }
   button svg { width: 16px; height: 16px; display: block; }
+  #pause { background: var(--pause-bg); color: var(--pause-fg); }
+  #pause:hover { background: var(--pause-bg-hover); }
   #pause[hidden] { display: none; }
   #pill:not(.paused) .play, #pill.paused .pausebars { display: none; }
-  #stop { background: var(--stop); }
-  #stop:hover { background: #e0352b; }
-  #stop i { display: block; width: 12px; height: 12px; border-radius: 3px; background: #fff; }
+  #stop { background: var(--stop-bg); }
+  #stop:hover { background: var(--stop-bg-hover); }
+  #stop i { display: block; width: 12px; height: 12px; border-radius: 3px; background: var(--stop-fg); }
   @media (prefers-reduced-motion: reduce) { #meter i { transition: none; } }
 </style>
 </head>
@@ -74,7 +85,6 @@
 <div id="pill" hidden>
   <div id="icon" title="Open the app"></div>
   <div id="meter" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
-  <div id="time">0:00</div>
   <button id="pause" type="button" title="Pause">
     <svg class="pausebars" viewBox="0 0 16 16" fill="currentColor"><rect x="3.5" y="2.5" width="3" height="11" rx="1"/><rect x="9.5" y="2.5" width="3" height="11" rx="1"/></svg>
     <svg class="play" viewBox="0 0 16 16" fill="currentColor"><path d="M4.5 2.7v10.6a.7.7 0 0 0 1.06.6l8.6-5.3a.7.7 0 0 0 0-1.2L5.56 2.1a.7.7 0 0 0-1.06.6z"/></svg>
