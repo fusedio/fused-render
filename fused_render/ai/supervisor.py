@@ -210,6 +210,18 @@ class ModelNotReady(SupervisorError):
         self.job_id = job_id
 
 
+def _join_names(names: list[str]) -> str:
+    """"a and b" for two, "a, b, and c" for three or more — the Oxford comma
+    form `ModelSlotConflict`'s message needs for an arbitrary-length list of
+    contenders (a third, fourth, ... caller can fold into a live conflict;
+    see `_request_path_conflict`)."""
+    if len(names) <= 1:
+        return "".join(names)
+    if len(names) == 2:
+        return f"{names[0]} and {names[1]}"
+    return ", ".join(names[:-1]) + f", and {names[-1]}"
+
+
 class ModelSlotConflict(SupervisorError):
     """Two different models are contending for one capability's single slot.
 
@@ -225,16 +237,25 @@ class ModelSlotConflict(SupervisorError):
 
     def __init__(self, capability: str, models: list[str], resident: str | None,
                 *, held: bool = False):
-        others = [m for m in models if m != resident]
         if held and resident is not None:
             message = (f"{resident} is held for {capability}. Release it on the "
                        f"AI Models page to let another model load.")
         elif held:
             message = (f"{capability} is stopped. Release it on the AI Models page "
                        f"to let a model load again.")
+        elif resident is not None:
+            # The resident keeps answering throughout — it is the OTHER
+            # contenders' request-path loads that are refused, not its own
+            # service, so the message has to say which model is which rather
+            # than lumping every name together as equally stuck.
+            others = _join_names([m for m in models if m != resident])
+            message = (f"{_join_names(models)} are contending for the "
+                       f"{capability} slot — {resident} stays loaded, "
+                       f"{others or 'the rest'} can't take over. Pick one on "
+                       f"the AI Models page.")
         else:
-            message = (f"{' and '.join(others) or 'two models'} are fighting over "
-                       f"the {capability} slot — neither can finish loading. Pick "
+            message = (f"{_join_names(models)} are contending for the "
+                       f"{capability} slot and none of them can load. Pick "
                        f"one on the AI Models page.")
         super().__init__(message)
         self.capability = capability

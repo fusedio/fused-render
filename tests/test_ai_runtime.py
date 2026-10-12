@@ -3557,6 +3557,26 @@ def _retry_generate_text(model, timeout=10.0):
     raise AssertionError(f"{model} never became ready within {timeout}s")
 
 
+def test_an_unheld_conflict_names_every_contender_and_the_resident_served():
+    """The resident keeps answering while the OTHERS' loads are refused — the
+    message has to say which model is which, for two contenders and for
+    three or more, rather than naming only the non-resident ones as if
+    nobody were being served at all."""
+    two = supervisor.ModelSlotConflict(
+        registry.TEXT_GENERATION, ["org/a", "org/b"], "org/b", held=False)
+    assert str(two) == (
+        "org/a and org/b are contending for the text-generation slot — "
+        "org/b stays loaded, org/a can't take over. Pick one on the AI "
+        "Models page.")
+
+    three = supervisor.ModelSlotConflict(
+        registry.TEXT_GENERATION, ["org/a", "org/b", "org/c"], "org/b", held=False)
+    assert str(three) == (
+        "org/a, org/b, and org/c are contending for the text-generation "
+        "slot — org/b stays loaded, org/a and org/c can't take over. Pick "
+        "one on the AI Models page.")
+
+
 def test_the_swap_loop_is_caught_on_its_second_swap(fake_runner):
     """SPEC-model-slot-conflict.md: two consumers of one capability wanting
     different models evict each other on every retry, with the request
