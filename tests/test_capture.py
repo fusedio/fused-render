@@ -194,8 +194,8 @@ def test_a_probe_that_raises_is_still_an_answer(monkeypatch, client):
     ({"mode": "screen", "rect": [0, 0, 10]}, "'rect' must be"),
     ({"mode": "screen", "maxSeconds": 0}, "must be between"),
     ({"mode": "screen", "maxSeconds": "soon"}, "whole number"),
-    ({"mode": "audio", "source": "loud"}, "can only be 'mic'"),
-    ({"mode": "audio", "source": "system"}, "record the screen"),
+    ({"mode": "audio", "source": "loud"},
+     "'source' must be 'mic', 'system' or 'both', not 'loud'"),
     ({"mode": "audio", "device": "mic0"}, "cannot be chosen here"),
     ({"mode": "screen", "path": "clip.mov"}, "must be absolute"),
 ])
@@ -215,6 +215,30 @@ def test_the_mutating_routes_carry_the_x_fused_guard(client):
         assert client.post(path, json={}).status_code == 403, path
     # …and the read is open, like the other read-only routes.
     assert client.get("/api/capture").status_code == 200
+
+
+@pytest.mark.parametrize("body,want", [
+    ({"mode": "audio"}, "mic"),
+    ({"mode": "audio", "source": None}, "mic"),
+    ({"mode": "audio", "source": ""}, "mic"),
+    ({"mode": "audio", "source": True}, "mic"),
+    ({"mode": "audio", "source": "mic"}, "mic"),
+    ({"mode": "audio", "source": "system"}, "system"),
+    ({"mode": "audio", "source": "both"}, "both"),
+])
+def test_audio_only_source_reaches_the_backend(backend, client, home, body, want):
+    seen = []
+    real = backend.start_audio
+
+    def spy(out, spec):
+        seen.append(dict(spec))
+        return real(out, spec)
+
+    backend.start_audio = spy
+    res = client.post("/api/capture/start", json=body, headers=H)
+    assert res.status_code == 200, res.json()
+    assert seen[0]["audio"] == want
+    assert res.json()["path"].endswith(".m4a")
 
 
 def test_audio_only_refuses_a_device_naming_where_it_does_work(backend, client):

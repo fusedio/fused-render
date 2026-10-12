@@ -356,7 +356,7 @@ def _max_seconds(value) -> int:
     return seconds
 
 
-def _audio_mode(value, *, required: bool) -> str | None:
+def _audio_mode(value, *, required: bool, name: str = "audio") -> str | None:
     """`audio` on a screen recording: false/None, or one of AUDIO_MODES.
 
     Named values rather than a pair of booleans, and refused rather than
@@ -372,7 +372,9 @@ def _audio_mode(value, *, required: bool) -> str | None:
         return "mic"
     if value not in AUDIO_MODES:
         raise CaptureError(
-            f"'audio' must be false or {_or_list(AUDIO_MODES)}, not {value!r}")
+            (f"'audio' must be false or {_or_list(AUDIO_MODES)}, not {value!r}"
+             if name == "audio" else
+             f"'{name}' must be {_or_list(AUDIO_MODES)}, not {value!r}"))
     return value
 
 
@@ -441,17 +443,12 @@ def start(mode: str, body: dict, *, page: str = "") -> dict:
         out = _resolve_out(body.get("path"), body.get("base"),
                            _ext(backend, mode, spec))
     else:
-        # ONE check with ONE message. The first cut of this ran the shared
-        # `_audio_mode` (which names 'mic', 'system' and 'both' as valid) and
-        # then refused two of the three a line later — two sentences
-        # contradicting each other about the same argument.
-        source = body.get("source", "mic")
-        if source not in (None, "", "mic", True):
-            raise CaptureError(
-                "fused.capture.audio records the microphone, so 'source' can "
-                f"only be 'mic', not {source!r} — for system audio record the "
-                "screen with audio: 'system'")
-        spec["audio"] = "mic"
+        # `source` is the audio-only spelling of a screen recording's `audio`,
+        # so it goes through the SAME validator and there is ONE message. The
+        # first cut refused two of the three values the shared check names
+        # a line after naming them — two sentences contradicting each other.
+        spec["audio"] = _audio_mode(body.get("source", "mic"), required=False,
+                                    name="source") or "mic"
         spec["device"] = body.get("device")
         out = _resolve_out(body.get("path"), body.get("base"),
                            _ext(backend, mode, spec))

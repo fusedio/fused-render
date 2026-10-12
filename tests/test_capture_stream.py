@@ -529,3 +529,13 @@ def test_a_microphone_with_no_label_yet_still_gets_a_name():
     assert [m["name"] for m in mics] == ["Microphone 1"]
     # And a camera is not a microphone.
     assert len(mics) == 1
+
+
+@pytest.mark.parametrize("source", ["system", "both"])
+def test_audio_only_system_audio_is_refused_on_the_sink_platforms(source):
+    """Chromium gives no audio-only system audio; the sentence says where it does."""
+    for refuse in (_sink.refuse, _windows.refuse, _linux.refuse):
+        why = refuse("audio", {"audio": source})
+        assert why and "microphone only" in why and "audio: 'system'" in why
+    assert _sink.refuse("audio", {"audio": "mic"}) is None
+    assert _sink.refuse("screen", {"audio": source}) is None
