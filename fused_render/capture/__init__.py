@@ -203,6 +203,8 @@ class _Session:
         # clock excludes paused time from `seconds` and from the cap.
         self.pauses = _pause.PauseClock()
         self.can_pause = False
+        # Serialises `_set_paused`: check, backend call and clock update.
+        self.pause_lock = threading.Lock()
 
     def elapsed(self) -> float:
         """Recorded seconds — wall time minus time spent paused."""
@@ -703,15 +705,19 @@ def _set_paused(cid: str, paused: bool) -> dict:
         raise Unsupported(
             "this recording cannot be paused on this machine (only audio "
             "recorded by the native app can)")
-    if session.pauses.paused == paused:
-        return session.public()
-    backend = _backend()
-    with _native(STOP_LOCK_WAIT_S):
-        (backend.pause if paused else backend.resume)(session.handle)
-    if paused:
-        session.pauses.pause()
-    else:
-        session.pauses.resume()
+    # Held across check + backend call + clock update so a concurrent pause and
+    # resume cannot both pass the check; `_native` alone proceeds lockless after
+    # its timeout. `_report` stays outside: it only posts a detail string.
+    with session.pause_lock:
+        if session.pauses.paused == paused:
+            return session.public()
+        backend = _backend()
+        with _native(STOP_LOCK_WAIT_S):
+            (backend.pause if paused else backend.resume)(session.handle)
+        if paused:
+            session.pauses.pause()
+        else:
+            session.pauses.resume()
     _report(session, detail=("Paused — ✕ discards it" if paused
                              else "Recording — ✕ discards it"))
     return session.public()

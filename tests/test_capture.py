@@ -1275,6 +1275,36 @@ def test_pause_and_resume_round_trip(backend, client, home):
     assert _row(client, started)["detail"].startswith("Recording")
 
 
+def test_a_concurrent_resume_waits_for_the_pause_to_finish(backend, client,
+                                                          home):
+    import threading
+
+    gate, entered = threading.Event(), threading.Event()
+    real_pause = backend.pause
+
+    def slow_pause(handle):
+        entered.set()
+        assert gate.wait(5)
+        real_pause(handle)
+
+    backend.pause = slow_pause
+    cid = _audio(client)["id"]
+    session = capture._live(cid)
+    t1 = threading.Thread(target=capture.pause, args=(cid,))
+    t1.start()
+    assert entered.wait(5)
+    t2 = threading.Thread(target=capture.resume, args=(cid,))
+    t2.start()
+    t2.join(0.3)
+    assert t2.is_alive()                 # resume is queued behind the pause
+    assert backend.paused == []
+    gate.set()
+    t1.join(5)
+    t2.join(5)
+    assert [k for k, _ in backend.paused] == ["pause", "resume"]
+    assert session.pauses.paused is False
+
+
 def test_pausing_an_unknown_recording_is_a_404(backend, client, home):
     for action in ("pause", "resume"):
         assert client.post(f"/api/capture/nope/{action}",
