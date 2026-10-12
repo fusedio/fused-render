@@ -1557,9 +1557,16 @@ def api_ai_runtime_conflicts_resolve(body: dict = Body(...),
     if keep is not None and not isinstance(keep, str):
         return _error("'keep' must be a model id or null", status=400)
     try:
-        return supervisor.resolve_conflict(capability, keep)
+        reply = supervisor.resolve_conflict(capability, keep)
     except supervisor.SupervisorError as e:
         return _error(str(e), status=409)
+    # The full runtime snapshot, like `/unload` and `/release` already
+    # return — so a direct `publishAiRuntime(result)` of THIS response
+    # replaces the dock's whole pre-resolve state at once, rather than
+    # leaving it to whatever poll in flight happens to land next (which
+    # could still be carrying the stale, pre-resolve conflict for up to a
+    # full poll interval).
+    return {**reply, **supervisor.describe()}
 
 
 @router.post("/api/ai/runtime/conflicts/release")

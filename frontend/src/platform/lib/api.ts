@@ -5293,13 +5293,14 @@ export function unloadAiModel(model: string): Promise<AiRuntime & { stopped: boo
  *  `model_slot_conflict` rather than evicting it again. `keep: null` instead
  *  stops both and holds the slot empty.
  *
- *  Returns whatever `supervisor.load`/`unload` itself replies with, not a
- *  full `AiRuntime` — callers re-poll (`refreshAiRuntime`) rather than trust
- *  this reply for the dock's own state, same as `loadAiModel`. */
+ *  Replies with the full runtime beside whatever `supervisor.load`/`unload`
+ *  itself answers (`{jobId, model, state}` or `{capability, resident: null}`),
+ *  same as `releaseModelConflict` — callers `publishAiRuntime` it directly
+ *  rather than wait on a poll that may already be in flight. */
 export function resolveModelConflict(
   capability: string, keep: string | null,
-): Promise<AiLoadStarted | { capability: string; resident: null }> {
-  return postJson<AiLoadStarted | { capability: string; resident: null }>(
+): Promise<AiRuntime & (AiLoadStarted | { capability: string; resident: null })> {
+  return postJson<AiRuntime & (AiLoadStarted | { capability: string; resident: null })>(
     "/api/ai/runtime/conflicts/resolve", { capability, keep });
 }
 

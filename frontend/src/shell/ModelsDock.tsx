@@ -56,7 +56,7 @@ import {
   type AiLoadedModel, type AiConflict,
 } from "@platform/lib/api";
 import { formatSize, repoName } from "@platform/lib/format";
-import { publishAiRuntime, refreshAiRuntime, useAiRuntime } from "@apps/ai_models/lib/aiRuntime";
+import { publishAiRuntime, useAiRuntime } from "@apps/ai_models/lib/aiRuntime";
 import { useStatusChip, type StatusChipState } from "@platform/lib/statusChip";
 import { capabilityLabel } from "@apps/ai_models/lib/engines";
 import StatusChip from "@platform/ui/StatusChip";
@@ -528,18 +528,18 @@ export default function ModelsDock() {
     publishAiRuntime(result);
   };
 
-  // `resolveModelConflict`'s own reply is a load-start (or a bare
-  // `{capability, resident: null}`), not a full `AiRuntime` — unlike
-  // `onUnload`/`onReleaseConflict`, which publish their reply straight away,
-  // this re-polls instead so the dock picks up the now-held conflict and the
-  // (possibly still loading) resident model from one source of truth.
+  // `resolveModelConflict`'s reply carries the full runtime beside its own
+  // load-start (or bare `{capability, resident: null}`), same as
+  // `onUnload`/`onReleaseConflict` — published straight away rather than
+  // left to `refreshAiRuntime`, whose poll could already be in flight and
+  // land AFTER this one with the stale, pre-resolve conflict still on it.
   const onKeepConflict = async (capability: string, keep: string) => {
-    await resolveModelConflict(capability, keep);
-    refreshAiRuntime();
+    const result = await resolveModelConflict(capability, keep);
+    publishAiRuntime(result);
   };
   const onStopConflict = async (capability: string) => {
-    await resolveModelConflict(capability, null);
-    refreshAiRuntime();
+    const result = await resolveModelConflict(capability, null);
+    publishAiRuntime(result);
   };
   const onReleaseConflict = async (capability: string) => {
     const result = await releaseModelConflict(capability);
