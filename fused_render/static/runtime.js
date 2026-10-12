@@ -7003,6 +7003,9 @@
   // is playing) or "both" (mixed). On macOS 14.2+ system audio is a Core Audio
   // process tap — no Screen Recording permission, its own "System Audio
   // Recording" one; 13.0-14.1 uses ScreenCaptureKit and needs Screen Recording.
+  // On 13.0-14.1 that grant is sound only (no picture), the app must be quit and
+  // reopened after granting it, and the file holds ALL system sound, notifications
+  // included.
   // Windows and Linux refuse "system"/"both" here, with a sentence saying to
   // record the screen with `audio: "system"` instead.
   //

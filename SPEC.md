@@ -11335,7 +11335,10 @@ three platforms, one API, no field naming which one served you.
   `"mic"` (default), `"system"` or `"both"`: on macOS 14.2+ the latter two are a
   Core Audio process tap (no Screen Recording grant) and on 13.0–14.1 the
   ScreenCaptureKit stream with no video track; Windows and Linux refuse them,
-  naming the screen recording that does it (D1342). Audio-only `"mic"` on macOS
+  naming the screen recording that does it (D1342). On 13.0–14.1 the grant is Screen Recording (sound only, no
+  picture), the app must be quit and reopened after granting it, and the
+  recording carries ALL system sound, notifications included; `stop()`'s
+  `warning` fires when nothing was heard (D1343). Audio-only `"mic"` on macOS
   records the system's current input and **refuses** `device` rather than
   ignoring it, naming where a specific microphone can be chosen (a screen
   recording's `audio: "mic"`, or audio-only `"both"`) — see D409 for why the

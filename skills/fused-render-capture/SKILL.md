@@ -27,6 +27,8 @@ So: don't hardcode extension in `path` — omit or read `rec.path`. Recordings t
 
 `screen({audio: false|"mic"|"system"|"both", display, rect, cursor, device, path, maxSeconds, title})` and `audio({source: "mic"|"system"|"both", device, path, maxSeconds, title})` resolve **when recording starts**, handle = `{id, jobId, path, url, state, stop(), cancel()}`. `stop()` → `{path, url, mime, seconds, bytes}` (+ `warning` when a system-audio tap heard nothing in ≥1 s: either the Mac was silent or this app lacks System Audio Recording — macOS can't tell which, so it is a warning on a valid file, not an error; show it). `cancel()` (and job row ✕) stops AND DELETES — treat as "user doesn't want it". Elapsed seconds: `fused.watchJob(rec.jobId).watch(...)` — no onTick. `maxSeconds` default 30 min; hitting it stops, keeps file.
 
+macOS 13.0–14.1 system audio (`source:"system"|"both"`): needs the Screen Recording permission (only sound is recorded, no picture); the app must be quit and reopened after the grant; the file includes ALL system sound, notifications included. `warning` there also fires on silence or no audio reaching the recording.
+
 `screenshot({display, rect, cursor, path})` — no handle, no job row, native every platform (no share prompt → can shoot cross-origin panes). Filename picks png/jpeg; no `format` option.
 
 `fused.capture.list()` finds live recordings (incl. pre-reload); `attach(id)` returns handle. Check on load before starting second recording. Microphone names empty until browser mic permission granted once.
