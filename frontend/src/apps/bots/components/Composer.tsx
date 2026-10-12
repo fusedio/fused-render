@@ -125,7 +125,9 @@ export function Composer({ b, reply, setReply, threadRef }: ComposerProps) {
   // The command popup: the slash query the box holds (null: closed) and the highlighted row. Recomputed on every input
   // (fitInput), so dictation's dispatched input event and a paste follow the same rule as typing.
   const [cmd, setCmd] = useState<{ q: string; idx: number } | null>(null);
-  const cmds: Command[] = cmd ? matchCommands(cmd.q) : [];
+  // No popup while attachments are pending: the text is then a message naming the files ("/clear" sends as text), and
+  // every path (Enter, Send, click) must agree, so the rows are simply not there.
+  const cmds: Command[] = cmd && !pending.length ? matchCommands(cmd.q) : [];
   const cmdIdx = cmd ? Math.min(cmd.idx, Math.max(0, cmds.length - 1)) : 0;
   const lastVal = useRef("");  // the text the popup was last computed for (fitInput)
   const [drag, setDrag] = useState(false);
@@ -302,7 +304,7 @@ export function Composer({ b, reply, setReply, threadRef }: ComposerProps) {
         return;
       }
       if (e.key === "Tab") { e.preventDefault(); completeCommand(cmds[cmdIdx]); return; }
-      if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); runCommand(cmds[cmdIdx]); return; }
+      if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); return; }  // send() runs the highlighted row: one path
       if (e.key === "Escape") { e.preventDefault(); setCmd(null); return; }
     }
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); }
