@@ -266,9 +266,10 @@ def ensure_local_repo() -> bool:
         return False
 
 
-def init_repo(app_dir: str) -> bool:
+def init_repo(app_dir: str, message: str = "New app from starter") -> bool:
     """Version-control a freshly scaffolded `app_dir`, landing its contents as
-    one boilerplate commit. In the `local` tag that means a SCOPED commit into
+    one boilerplate commit (`message`: apps_root_migration passes its own — a
+    folder it moved in is not a fresh starter). In the `local` tag that means a SCOPED commit into
     the shared repo (created here if this is the first app); anywhere else it
     falls back to the legacy one-repo-per-app init. True on success; False
     (never an exception) when git is missing or any step fails — creation
@@ -287,7 +288,7 @@ def init_repo(app_dir: str) -> bool:
                     "--", _pathspec(name)).returncode == 0:
                 return False
             ok = _git_retry_lock(
-                local, "commit", "-q", "-m", "New app from starter",
+                local, "commit", "-q", "-m", message,
                 "--", _pathspec(name)).returncode == 0
             if ok:
                 _auto_sync(app_dir, "Auto-push after app create")
@@ -295,14 +296,19 @@ def init_repo(app_dir: str) -> bool:
         # Legacy: an app outside the shared tag gets its own repository.
         if _git(app_dir, "init", "-q").returncode != 0:
             return False
+        # A folder that arrives with a `.gitignore` of its own (one
+        # apps_root_migration moved in, kept by local_monorepo because it
+        # carried a user line) may predate `.venv/` in _GITIGNORE; the root
+        # file that covered it in the shared repo no longer applies here, so
+        # without this the `add -A` below sweeps the venv into history.
+        _ensure_excludes(app_dir)
         gi = os.path.join(app_dir, ".gitignore")
         if not os.path.exists(gi):
             with open(gi, "w", encoding="utf-8") as f:
                 f.write(_GITIGNORE)
         if _git(app_dir, "add", "-A").returncode != 0:
             return False
-        return _git(app_dir, "commit", "-q", "-m",
-                    "New app from starter").returncode == 0
+        return _git(app_dir, "commit", "-q", "-m", message).returncode == 0
     except Exception:
         logger.warning("init_repo failed for %s", app_dir, exc_info=True)
         return False
