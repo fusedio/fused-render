@@ -11,7 +11,9 @@ import {
   FAIL_THRESHOLD,
   initialStatus,
   probeOnTick,
+  probeOnRestartTick,
   probeWhileHidden,
+  RESTART_POLL_MS,
   reduceProbe,
   updateDialogMode,
   updateDialogPreview,
@@ -429,6 +431,16 @@ test("the poll tick probes a visible tab always, and a hidden one only mid-resta
   expect(probeOnTick("hidden", "quitting")).toBe(true);
   // A DOM with no visibilityState at all (the test shim) is not a hidden tab.
   expect(probeOnTick(undefined, "ready")).toBe(true);
+});
+
+test("the fast restart tick probes only while the app is quitting or gone", () => {
+  for (const stage of ["quitting", "restarting", "reconnecting"] as const) {
+    expect(probeOnRestartTick(stage)).toBe(true);
+  }
+  for (const stage of ["ready", "back", "gave-up", "stuck"] as const) {
+    expect(probeOnRestartTick(stage)).toBe(false);
+  }
+  expect(RESTART_POLL_MS).toBeLessThan(1000);
 });
 
 // ---- probeHealth: a NEW frontend against an OLD server ----------------------

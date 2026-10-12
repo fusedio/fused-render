@@ -562,3 +562,11 @@ export function probeWhileHidden(stage: RestartStage): boolean {
 export function probeOnTick(visibility: string | undefined, stage: RestartStage): boolean {
   return visibility !== "hidden" || probeWhileHidden(stage);
 }
+
+/** The fast poll while a restart is in flight, so the reload lands as soon as the new process answers. */
+export const RESTART_POLL_MS = 500;
+
+/** The fast tick probes only while the app is down or on its way down; `back` is a beat from its reload. */
+export function probeOnRestartTick(stage: RestartStage): boolean {
+  return stage === "quitting" || stage === "restarting" || stage === "reconnecting";
+}

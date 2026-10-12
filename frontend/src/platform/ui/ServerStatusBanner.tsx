@@ -57,6 +57,8 @@ import {
   pendingOutage,
   reduceProbe,
   probeOnTick,
+  probeOnRestartTick,
+  RESTART_POLL_MS,
   updateDialogMode,
   updateDialogPreview,
   UPDATE_DIALOG_KEY,
@@ -258,6 +260,10 @@ function useServerStatus(): {
       // (server-status.ts `probeWhileHidden`).
       if (probeOnTick(document.visibilityState, restartStageNow())) probe();
     }, POLL_MS);
+    // Mid-restart the 5s tick alone costs up to 5s after the new process is already answering.
+    const restartInterval = window.setInterval(() => {
+      if (probeOnRestartTick(restartStageNow())) probe();
+    }, RESTART_POLL_MS);
 
     const onVisible = () => {
       if (document.visibilityState === "visible") probe();
@@ -279,6 +285,7 @@ function useServerStatus(): {
     return () => {
       disposed = true;
       window.clearInterval(interval);
+      window.clearInterval(restartInterval);
       window.clearTimeout(dismissTimer);
       document.removeEventListener("visibilitychange", onVisible);
       window.removeEventListener("online", onOnline);

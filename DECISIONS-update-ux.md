@@ -39,3 +39,21 @@ The wait is teardown (`app.quit_teardown`: bounded 2 s server drain, capture
 finalise, DuckDB close, mount detach, rcd reap) plus a cold start of the new
 bundle. Nothing in it is a needless fixed sleep that is cheap to cut; the
 mount-detach ladder is the long pole and is not safe to shorten here.
+
+## Restart: probe every 0.5 s while in flight; bots start off the readiness path
+
+Measured 2026-10-12 (0.6.37 → 0.6.38, installed app): press → usable ≈ 9 s, of
+which teardown is 0.3 s. The waits that matter are the new server's startup
+(4.8 s) and the tab noticing it is back (0–5 s, the 5 s `POLL_MS` tick).
+
+- `ServerStatusBanner` adds a `RESTART_POLL_MS` (0.5 s) tick that probes only in
+  quitting / restarting / reconnecting (`probeOnRestartTick`). A/B on the dev
+  server, 6 interleaved runs per side: server back → tab notices 4.67 s → 0.13 s
+  (the A side is phase-locked near its worst case; in use it is 0–5 s).
+- `_startup_bots` awaits only `migrate_layout` and `import_once`;
+  `registry.start()` runs on a `bots-start` thread. Building every Bot imports
+  the fused SDK (0.48 s installed, 0.87 s dev) on the event loop before the
+  server accepted anything. Same A/B: restart → accepting 2.19 s → 1.38 s; bots
+  finish ~0.8 s after the server accepts.
+- The lifespan logs one `startup handlers: N in Xs (slow: …)` line per boot so
+  the next slow hook is named in the log instead of guessed at.
