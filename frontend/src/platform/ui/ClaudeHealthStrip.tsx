@@ -16,6 +16,13 @@
 //
 // The TroubleCard stays exactly as it is. Preflight is an addition, not a
 // replacement — a CLI can break between this check and the call.
+//
+// NOT MOUNTED ANY MORE (Home, Apps). Claude Code became an OPTIONAL setup
+// step (shell/onboarding/progress OPTIONAL_STAGES): the app is usable without
+// it, so a card on the front door nagging about it is wrong, and the same
+// facts live in the wizard's Claude step as a checklist. `IssueRow` is the
+// part that step still uses; the strip component stays for the day a surface
+// that truly needs the CLI wants a preflight again.
 import { useEffect, useState } from "react";
 
 import type {

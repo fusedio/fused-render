@@ -28,7 +28,6 @@ import { useNavEpoch } from "@platform/lib/hooks";
 import { navigateUrl } from "@platform/lib/router";
 import { HomeHero } from "./HomeHero";
 import { SkeletonLines } from "@platform/ui/Skeleton";
-import { ClaudeHealthStrip } from "@platform/ui/ClaudeHealthStrip";
 import { FdaStrip } from "@platform/ui/FdaStrip";
 
 // How many cards one page asks for. The server fetches its catalog from a
@@ -404,8 +403,9 @@ export default function Apps({ config }: { config: Config }) {
         {/* Same hero as Home: prompt composer that names, scaffolds, and lands
             in the new app's claude chat. Creating from here refreshes the grid. */}
         <HomeHero onCreated={() => setNonce((n) => n + 1)} />
-        {/* Shows ONLY when the Claude CLI isn't on PATH, with a one-click fix. */}
-        <ClaudeHealthStrip />
+        {/* No Claude Code card: that setup step is optional
+            (shell/onboarding/progress OPTIONAL_STAGES). The TroubleCard still
+            explains a session that fails for want of the CLI. */}
         <FdaStrip />
 
         <div className="apps-toolbar" ref={toolbarRef}>
