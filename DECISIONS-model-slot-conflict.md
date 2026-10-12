@@ -583,3 +583,54 @@ fix. `test_models_load_raises_model_slot_conflict`
 `ModelSlotConflict` — it already went through `_post_json` →
 `_error_from_payload`, the same path `fused_ai.text` uses, so no client
 change was needed, only the test.
+
+## Anonymous requesters stop sharing one identity
+
+`api_ai_load`/`unload`/`image`/`video`/`speech`/`transcribe`/`embed`/
+`decide` each computed `requester_id = unquote(x_fused_requester) if
+x_fused_requester else ""` inline — copy-pasted at all eight sites. A
+caller that omitted `X-Fused-Requester` always got the same `""`, so two
+UNRELATED header-less callers (or two callers that only ever sent
+`X-Fused-Page`, before this) looked like the SAME requester switching its
+own model — `current.requester_id == requester_id` read true on every
+eviction between them, and the contention these two routes exist to catch
+could never be seen.
+
+`_requester_identity(x_fused_requester, x_fused_requester_label,
+x_fused_page)` (`ai_runtime.py`, defined once, called from all eight
+routes) replaces every copy: `X-Fused-Requester` wins when present: a
+caller that omits it but sends `X-Fused-Page` (every page/app `runtime.js`
+reaches) gets a stable `page:<page>` identity instead of the shared `""` —
+the same page asking twice is still one requester, but a different page is
+a different one. A request with NEITHER header is genuinely anonymous —
+nothing distinguishes it from any other such request — so it gets a fresh
+`anon:<token>` each time rather than colliding with every other anonymous
+caller past or future. `/load` and `/unload` gained their own
+`x_fused_page: str | None = Header(...)` parameter to feed this (the other
+six routes already read it for `page`/`source`).
+
+This surfaced a second, pre-existing bug in `unload`'s ownership check:
+`foreign = [w for w in owned if w.requester_id != requester_id]` treated a
+resident with NO claimed owner (`requester_id == ""` — loaded by an
+internal caller, bypassing the router entirely, e.g. a test's direct
+`supervisor.load()` or the idle reaper) as foreign to every external
+caller, because external callers no longer pass through `""` themselves.
+Fixed by only counting a worker as foreign when IT has a non-empty,
+different owner: `foreign = [w for w in owned if w.requester_id and
+w.requester_id != requester_id]`. A worker nobody claims stays free for
+anyone to take; a worker a named (or one-off anonymous) requester loaded
+stays refused to everyone else, including a different anonymous caller.
+
+Tests: `test_requester_identity_with_no_headers_at_all_is_never_the_same_twice`,
+`test_requester_identity_falls_back_to_the_page_when_requester_is_absent`,
+`test_requester_identity_prefers_the_explicit_requester_header`,
+`test_two_anonymous_callers_ping_ponging_end_in_a_conflict` (drives
+`_retry_generate_text` with `_requester_identity`'s own one-off ids, the
+exact SPEC-required scenario), `test_a_non_owner_requester_cannot_unload_
+someone_elses_model`, `test_an_unowned_resident_can_still_be_unloaded_by_
+anyone` (`tests/test_ai_runtime.py`). The two pre-existing
+`test_unload_by_MODEL_ALONE_still_works_with_no_capability`/
+`test_unload_by_a_REAL_capability_still_works` went red first — they load
+a resident internally (`requester_id=""`) and unload it anonymously over
+HTTP with no headers at all — and are green again now that an unclaimed
+resident is never foreign to the ownership check.

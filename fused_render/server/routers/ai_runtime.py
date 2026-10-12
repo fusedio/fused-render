@@ -1523,8 +1523,38 @@ def _engine_gap_refusal(model: str):
     return _error(gap["reason"], status=409)
 
 
+def _requester_identity(x_fused_requester: str | None, x_fused_requester_label: str | None,
+                        x_fused_page: str | None = None) -> tuple[str, str]:
+    """`requester_id`/`requester_label` for one mutating `/api/ai` route, in
+    one place instead of copy-pasted at each of the nine call sites below
+    (SPEC-model-slot-conflict.md §1).
+
+    `X-Fused-Requester` names a caller that knows its own identity — a page,
+    an app, a shell surface, or `supervisor.USER_REQUESTER_ID`. A caller that
+    omits it but still sends `X-Fused-Page` (every page/app reached through
+    `runtime.js`, which always sets `X-Fused-Page` on `callHeaders`) still has
+    an identity: the page itself. Falling through to a single shared `""`
+    for that caller the way every OTHER header-less caller also gets is the
+    bug this guards against — it collapsed two unrelated pages into one
+    requester that could never conflict with itself, because `current.
+    requester_id == requester_id` reads as "the same caller switching
+    models," not "two callers fighting over the slot." Only a request with
+    NEITHER header is genuinely anonymous — nothing here identifies it, so
+    it gets a fresh id instead of the shared `""` every other anonymous
+    request would collide with, which is the same bug one level further
+    down: two unrelated anonymous callers must be able to conflict too.
+    """
+    if x_fused_requester:
+        requester_label = unquote(x_fused_requester_label) if x_fused_requester_label else ""
+        return unquote(x_fused_requester), requester_label
+    if x_fused_page:
+        return f"page:{unquote(x_fused_page)}", ""
+    return f"anon:{secrets.token_hex(8)}", ""
+
+
 @router.post("/api/ai/runtime/load")
 def api_ai_load(body: dict = Body(...), x_fused: str | None = Header(default=None),
+                x_fused_page: str | None = Header(default=None),
                 x_fused_requester: str | None = Header(default=None),
                 x_fused_requester_label: str | None = Header(default=None)):
     """`fused.ai.models.load` (page/app code) and the AI Models page's own
@@ -1545,8 +1575,8 @@ def api_ai_load(body: dict = Body(...), x_fused: str | None = Header(default=Non
     model, capability, refusal = _validate_load_model(body)
     if refusal is not None:
         return refusal
-    requester_id = unquote(x_fused_requester) if x_fused_requester else ""
-    requester_label = unquote(x_fused_requester_label) if x_fused_requester_label else ""
+    requester_id, requester_label = _requester_identity(
+        x_fused_requester, x_fused_requester_label, x_fused_page)
     user = supervisor.is_user_requester(requester_id)
     try:
         return supervisor.load(model, capability, request_path=not user,
@@ -1562,6 +1592,7 @@ def api_ai_load(body: dict = Body(...), x_fused: str | None = Header(default=Non
 
 @router.post("/api/ai/runtime/unload")
 def api_ai_unload(body: dict = Body(...), x_fused: str | None = Header(default=None),
+                  x_fused_page: str | None = Header(default=None),
                   x_fused_requester: str | None = Header(default=None),
                   x_fused_requester_label: str | None = Header(default=None)):
     """Same split as `/load`, just above: `X-Fused-Requester: user` (the AI
@@ -1590,8 +1621,8 @@ def api_ai_unload(body: dict = Body(...), x_fused: str | None = Header(default=N
     # unaffected.
     if capability is not None and capability not in registry.capabilities():
         return _error(f"unknown capability {capability!r}", status=400)
-    requester_id = unquote(x_fused_requester) if x_fused_requester else ""
-    requester_label = unquote(x_fused_requester_label) if x_fused_requester_label else ""
+    requester_id, requester_label = _requester_identity(
+        x_fused_requester, x_fused_requester_label, x_fused_page)
     user = supervisor.is_user_requester(requester_id)
     try:
         # The user asking to unload is exactly the "a choice was made" action
@@ -1883,8 +1914,8 @@ def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=No
     # caller that sends a distinct `X-Fused-Source` (the Playground) can make
     # the two diverge on purpose.
     source = unquote(x_fused_source) if x_fused_source else page
-    requester_id = unquote(x_fused_requester) if x_fused_requester else ""
-    requester_label = unquote(x_fused_requester_label) if x_fused_requester_label else ""
+    requester_id, requester_label = _requester_identity(
+        x_fused_requester, x_fused_requester_label, x_fused_page)
 
     # Checked first, so an unknown option is reported even when another field
     # is also wrong — see `_reject_unknown`. The wider, SERVER set: `base` is
@@ -2266,8 +2297,8 @@ def api_ai_video(body: dict = Body(...), x_fused: str | None = Header(default=No
         return guard
     page = unquote(x_fused_page) if x_fused_page else ""
     source = unquote(x_fused_source) if x_fused_source else page
-    requester_id = unquote(x_fused_requester) if x_fused_requester else ""
-    requester_label = unquote(x_fused_requester_label) if x_fused_requester_label else ""
+    requester_id, requester_label = _requester_identity(
+        x_fused_requester, x_fused_requester_label, x_fused_page)
 
     # Checked first, so an unknown option (`guidance`, say) is reported even
     # when another field is also wrong — see `_reject_unknown`. The wider,
@@ -2472,8 +2503,8 @@ def api_ai_speech(body: dict = Body(...), x_fused: str | None = Header(default=N
         return guard
     page = unquote(x_fused_page) if x_fused_page else ""
     source = unquote(x_fused_source) if x_fused_source else page
-    requester_id = unquote(x_fused_requester) if x_fused_requester else ""
-    requester_label = unquote(x_fused_requester_label) if x_fused_requester_label else ""
+    requester_id, requester_label = _requester_identity(
+        x_fused_requester, x_fused_requester_label, x_fused_page)
 
     rejection = _reject_unknown(body, _SPEECH_SERVER_OPTIONS, "/api/ai/speech")
     if rejection is not None:
@@ -2565,8 +2596,8 @@ def api_ai_transcribe(body: dict = Body(...), x_fused: str | None = Header(defau
     if guard is not None:
         return guard
     page = unquote(x_fused_page) if x_fused_page else ""
-    requester_id = unquote(x_fused_requester) if x_fused_requester else ""
-    requester_label = unquote(x_fused_requester_label) if x_fused_requester_label else ""
+    requester_id, requester_label = _requester_identity(
+        x_fused_requester, x_fused_requester_label, x_fused_page)
 
     # Checked first, same as `api_ai_image` — see `_reject_unknown`. `base` is
     # in the server's accepted set (the bridge injects it) but not the
@@ -2888,6 +2919,7 @@ def _conflict_error(e: "supervisor.ModelSlotConflict") -> JSONResponse:
 
 @router.post("/api/ai/embed")
 def api_ai_embed(body: dict = Body(...), x_fused: str | None = Header(default=None),
+                 x_fused_page: str | None = Header(default=None),
                  x_fused_requester: str | None = Header(default=None),
                  x_fused_requester_label: str | None = Header(default=None)):
     """Embed text or an image into the resident dual encoder's vector space.
@@ -2909,8 +2941,8 @@ def api_ai_embed(body: dict = Body(...), x_fused: str | None = Header(default=No
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
-    requester_id = unquote(x_fused_requester) if x_fused_requester else ""
-    requester_label = unquote(x_fused_requester_label) if x_fused_requester_label else ""
+    requester_id, requester_label = _requester_identity(
+        x_fused_requester, x_fused_requester_label, x_fused_page)
 
     # Checked first, same as `api_ai_image`/`api_ai_transcribe` — see
     # `_reject_unknown`. `request_kind` below only ever READS `body.get("kind")`,
@@ -3145,6 +3177,7 @@ def _camel_answers(answers: dict) -> dict:
 
 @router.post("/api/ai/decide")
 def api_ai_decide(body: dict = Body(...), x_fused: str | None = Header(default=None),
+                  x_fused_page: str | None = Header(default=None),
                   x_fused_requester: str | None = Header(default=None),
                   x_fused_requester_label: str | None = Header(default=None)):
     """Ask the resident typed-decision model (Laya) typed questions about a state.
@@ -3169,8 +3202,8 @@ def api_ai_decide(body: dict = Body(...), x_fused: str | None = Header(default=N
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
-    requester_id = unquote(x_fused_requester) if x_fused_requester else ""
-    requester_label = unquote(x_fused_requester_label) if x_fused_requester_label else ""
+    requester_id, requester_label = _requester_identity(
+        x_fused_requester, x_fused_requester_label, x_fused_page)
 
     rejection = _reject_unknown(body, _DECIDE_SERVER_OPTIONS, "/api/ai/decide")
     if rejection is not None:

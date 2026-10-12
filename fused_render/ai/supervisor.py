@@ -2567,7 +2567,17 @@ def unload(model: str | None = None, capability: str | None = None,
     if requester_id and not is_user_requester(requester_id):
         with _lock:
             owned = [w for w in _workers.values() if match(w)]
-            foreign = [w for w in owned if w.requester_id != requester_id]
+            # A worker with NO claimed owner (`requester_id == ""` — an
+            # internal caller loaded it, never through the router) is free
+            # for anyone to take; only a worker another NAMED requester
+            # loaded is foreign. Every external caller the router reaches
+            # now carries a non-empty requester_id of its own (see
+            # `ai_runtime.py`'s `_requester_identity` — a page, a fixed
+            # shell id, or a fresh one-off for a truly header-less
+            # request), so comparing against `requester_id` alone, without
+            # this guard, would also refuse an anonymous caller a worker
+            # nobody claims.
+            foreign = [w for w in owned if w.requester_id and w.requester_id != requester_id]
         if foreign:
             worker = foreign[0]
             conflict = _conflicts.get(worker.capability)

@@ -11549,6 +11549,111 @@ def test_unload_by_a_REAL_capability_still_works(client, fake_runner):
     assert response.json()["stopped"] is True
 
 
+# ---------------------------------------------------- requester identity
+
+
+def test_requester_identity_with_no_headers_at_all_is_never_the_same_twice():
+    """`_requester_identity` (`ai_runtime.py`): a request carrying NEITHER
+    `X-Fused-Requester` nor `X-Fused-Page` has given the server nothing to
+    tell it apart from any other such request — the literal bug this
+    guards against is the one shared `""` that made every one of these
+    callers look like the SAME requester, so two unrelated ones could
+    never conflict. A fresh id each time is the only honest answer."""
+    first, first_label = ai_runtime._requester_identity(None, None, None)
+    second, second_label = ai_runtime._requester_identity(None, None, None)
+    assert first != second
+    assert first_label == second_label == ""
+    assert first != supervisor.USER_REQUESTER_ID
+    assert second != supervisor.USER_REQUESTER_ID
+
+
+def test_requester_identity_falls_back_to_the_page_when_requester_is_absent():
+    """A caller that forgot (or cannot set) `X-Fused-Requester` but still
+    sends `X-Fused-Page` — every page/app `runtime.js` reaches — gets a
+    STABLE identity from the page instead of the one-off fallback above:
+    the same page asking twice is still one requester, not two strangers."""
+    first, _ = ai_runtime._requester_identity(None, None, "/notes")
+    second, _ = ai_runtime._requester_identity(None, None, "/notes")
+    other, _ = ai_runtime._requester_identity(None, None, "/chat")
+    assert first == second
+    assert first != other
+
+
+def test_requester_identity_prefers_the_explicit_requester_header():
+    requester, label = ai_runtime._requester_identity("shell%3Aplayground", "Playground", "/ignored")
+    assert requester == "shell:playground"
+    assert label == "Playground"
+
+
+def test_two_anonymous_callers_ping_ponging_end_in_a_conflict(fake_runner):
+    """SPEC-model-slot-conflict.md §1's required test, for the one caller
+    shape that previously defeated it entirely: two truly header-less
+    callers — `ai_runtime.api_ai`'s own `_requester_identity(None, None,
+    None)` fallback, exercised directly rather than through a full HTTP
+    job-polling round trip — each wanting their own model. Before that
+    fallback existed, both shared `requester_id=""` and so were never
+    distinguishable: `current.requester_id == requester_id` read true on
+    every eviction, so this pair could loop forever exactly like the bug
+    report describes. Each now gets its own one-off identity (never equal
+    to the other's, by the dedicated identity test above), so the second
+    cross-eviction still opens a conflict, the same bound every NAMED
+    pair already gets."""
+    r1, _ = ai_runtime._requester_identity(None, None, None)
+    r2, _ = ai_runtime._requester_identity(None, None, None)
+    assert r1 != r2
+
+    assert _retry_generate_text("org/b", requester_id=r2) == "ready"
+    assert _retry_generate_text("org/a", requester_id=r1) == "ready"
+    with pytest.raises(supervisor.ModelSlotConflict):
+        _retry_generate_text("org/b", requester_id=r2)
+
+
+def test_a_non_owner_requester_cannot_unload_someone_elses_model(client, fake_runner):
+    """SPEC-model-slot-conflict.md §1: a page cannot stop a model it never
+    asked for just by naming it. `requester_id="page:/chat"` loads
+    `org/mine` through the router (`fused.ai.models.load`'s own shape);
+    `requester_id="page:/notes"` — a DIFFERENT requester, unrelated to the
+    first — tries to unload it and is refused with the same structured
+    `model_slot_conflict` body every other conflict carries, not a silent
+    `{"stopped": false}` that reads identically to "nothing was loaded"."""
+    loaded = client.post(
+        "/api/ai/runtime/load", json={"model": "org/mine"},
+        headers={"X-Fused": "1", "X-Fused-Requester": "page:/chat"})
+    assert loaded.status_code == 200, loaded.json()
+    _wait_ready("org/mine")
+
+    refused = client.post(
+        "/api/ai/runtime/unload", json={"model": "org/mine"},
+        headers={"X-Fused": "1", "X-Fused-Requester": "page:/notes"})
+    assert refused.status_code == 409, refused.json()
+    body = refused.json()["error"]
+    assert body["code"] == "model_slot_conflict"
+    assert body["resident"] == "org/mine"
+
+    # The actual owner can still unload its own model.
+    owned = client.post(
+        "/api/ai/runtime/unload", json={"model": "org/mine"},
+        headers={"X-Fused": "1", "X-Fused-Requester": "page:/chat"})
+    assert owned.status_code == 200, owned.json()
+    assert owned.json()["stopped"] is True
+
+
+def test_an_unowned_resident_can_still_be_unloaded_by_anyone(client, fake_runner):
+    """The other half of the same rule: a resident with NO claimed owner
+    (loaded by an internal caller, never through the router's conflict
+    logic) is not foreign to anybody — any external requester, named or
+    one-off anonymous, can still unload it. Without this, giving every
+    header-less caller its own one-off identity (`_requester_identity`)
+    would also make it a stranger to a resident nobody ever claimed."""
+    supervisor.load("org/unclaimed", registry.TEXT_GENERATION)
+    _wait_ready("org/unclaimed")
+    response = client.post(
+        "/api/ai/runtime/unload", json={"model": "org/unclaimed"},
+        headers={"X-Fused": "1", "X-Fused-Requester": "page:/anyone"})
+    assert response.status_code == 200, response.json()
+    assert response.json()["stopped"] is True
+
+
 def test_a_streamed_local_reply_carries_its_result(client, fake_runner, monkeypatch):
     """`fused.ai` resolves with the done frame's `result`, so a local model that
     omitted it handed every streaming page `undefined` — and the page threw on
