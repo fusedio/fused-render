@@ -4,7 +4,7 @@
 // (cards / peek / panel / tab — what the iframe's `_fusedParamBoundary` used to
 // keep off the shell URL). Pure TS, no React; `useChatParams.ts` subscribes.
 import { splitShellSearch } from "@platform/lib/layout-codec";
-import { replaceSearch } from "@platform/lib/router";
+import { pushHistory, replaceSearch } from "@platform/lib/router";
 
 /** The 11 keys the template reads/writes (T params.set list; design.md §2),
  *  plus `queued` — the project queue's own (2026-09-12, see below).
@@ -162,7 +162,14 @@ export interface UrlEnv {
 function browserEnv(): UrlEnv {
   return {
     location,
-    history,
+    // The gesture push goes through the router's pushHistory: inside a foreign
+    // embed (a Home widget) it must replace, not land in the host's Back stack.
+    history: {
+      get state() {
+        return history.state;
+      },
+      pushState: (state, _unused, url) => pushHistory(state, url),
+    },
     replace: replaceSearch,
     events: window,
     dispatchUrlChange: () => window.dispatchEvent(new Event("fused:urlchange")),
