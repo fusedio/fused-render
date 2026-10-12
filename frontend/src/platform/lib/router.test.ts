@@ -554,7 +554,9 @@ describe("pushHistory in a foreign embed", () => {
     g.location = { ...(prevLoc as object), pathname: "/explorer/embed/w", search: "" };
     let mod: { pushHistory: (s: unknown, u: string) => void };
     try {
-      mod = await import("./router?foreign-embed");
+      // Variable specifier: a cache-busting query is not a resolvable type path.
+      const spec = "./router?foreign-embed";
+      mod = await import(spec);
     } finally {
       g.window = prevWin;
       g.location = prevLoc;
