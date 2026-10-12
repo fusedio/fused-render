@@ -94,8 +94,11 @@ export function UninstallAppModal({ request }: { request: UninstallRequest }) {
               : `${pre.name} removed from apps`,
         tone: "info",
       });
-      // Standing on the app's own page: it no longer exists, go to the hub.
-      if (location.pathname.startsWith("/apps/")) navigateUrl("/apps");
+      // Standing on THIS app's page (/apps/<folder segments>): it no longer
+      // exists, go to the hub. Another app's page is left alone.
+      const here = decodeURIComponent(location.pathname).replace(/\/+$/, "");
+      const mine = "/apps" + pre.path.replace(/^([A-Za-z]:)?/, "").replace(/\/+$/, "");
+      if (here === mine || here.startsWith(mine + "/")) navigateUrl("/apps");
     } catch (e) {
       const err = e as HttpError;
       if (err.status === 501) {

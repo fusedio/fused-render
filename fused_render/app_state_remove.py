@@ -35,7 +35,10 @@ def prune_stores(root: str) -> dict:
     for label, fn in (
             ("bookmarks", _prune_bookmarks),
             ("recents", _prune_recents),
-            ("schedule", _prune_schedule),
+            # NOT the schedule store: its entries are the task HISTORY
+            # tasks._collect lists ("one per scheduled entry"), the same rows
+            # "Hide from projects" keeps. The pending ones are cancelled by
+            # _archive_folder before this runs; the rest stay as the record.
             ("pin", _prune_pin),
             ("current_apps", _prune_current_apps),
             ("registered_apps", _prune_registered),
@@ -102,23 +105,6 @@ def _prune_recents(root: str) -> int:
         return 0
     kept = [e for e in entries
             if not (isinstance(e, dict) and _url_is_under(e.get("url"), root))]
-    dropped = len(entries) - len(kept)
-    if dropped:
-        data["entries"] = kept
-        storage.write_json(path, data)
-    return dropped
-
-
-def _prune_schedule(root: str) -> int:
-    from fused_render import schedule
-
-    path = schedule.store_path()
-    data = storage.read_json(path)
-    entries = data.get("entries") if isinstance(data, dict) else None
-    if not isinstance(entries, list):
-        return 0
-    kept = [e for e in entries
-            if not (isinstance(e, dict) and _is_under(e.get("target"), root))]
     dropped = len(entries) - len(kept)
     if dropped:
         data["entries"] = kept

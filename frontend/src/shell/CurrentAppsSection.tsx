@@ -789,7 +789,7 @@ export default function CurrentAppsSection() {
     // The ✕'s gesture, by name: off the desk, tasks archived with it.
     {
       label: "Hide from projects",
-      icon: MenuIcons.filter,
+      icon: MenuIcons.trash,
       onClick: () => {
         removeCurrentApp(app.path)
           .catch(() => {})

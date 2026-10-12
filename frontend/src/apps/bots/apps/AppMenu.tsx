@@ -36,7 +36,7 @@ function run(a: Act) {
     case "finder": api.revealApp(app.dir).catch((e) => showBanner("Could not open Finder: " + errMsg(e))); break;
     case "task": void newAppTask(app); break;
     // The shell's shared uninstall dialog (UninstallAppModal): off every list and, by kind, off disk.
-    case "uninstall": closeApps(); openUninstallApp({ path: app.dir, name: app.name || app.folder || app.dir }); break;
+    case "uninstall": openUninstallApp({ path: app.dir, name: app.name || app.folder || app.dir }); break;
   }
 }
 

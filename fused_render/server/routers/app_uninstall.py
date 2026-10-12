@@ -40,6 +40,9 @@ router = APIRouter()
 
 MODES = ("trash", "delete", "unlink", "forget", "delete_file", "hide")
 
+# Workspace tag folders that are shelves apps sit on, never an app themselves.
+_TAG_SHELVES = frozenset({"app", "local", "showcase", "bots", "sandbox"})
+
 
 def _default_mode(kind: str) -> str:
     if kind == app_catalog.KIND_LINKED:
@@ -59,6 +62,37 @@ def _allowed_modes(kind: str) -> tuple[str, ...]:
     if kind == app_catalog.KIND_SHOWCASE:
         return ("hide",)
     return ("trash", "delete")
+
+
+def _refuse_non_app(path: str, kind: str) -> JSONResponse | None:
+    """Only an APP: a folder with a declared entry page, or a `.fused` file.
+    The endpoint is reachable by any X-Fused caller and `kind_for` would
+    happily class the workspace root as `linked` (prune everything) or
+    `local/` as `own-repo` (trash the monorepo); "uninstall" promises app
+    semantics and nothing wider. The workspace root and its tag folders are
+    refused outright even when one happens to carry a page."""
+    from fused_render import app_listing
+    from fused_render.shell.seed import fused_dir
+
+    ap = os.path.abspath(path)
+    root = os.path.abspath(fused_dir())
+    # The root and the tag shelves by name — a depth-1 folder with a page is
+    # a legitimate app (app_listing lists depths 1-3), so this is a short
+    # explicit list, not "every direct child".
+    if os.path.normcase(ap) == os.path.normcase(root) or (
+            os.path.normcase(os.path.dirname(ap)) == os.path.normcase(root)
+            and os.path.basename(ap).lower() in _TAG_SHELVES):
+        return _error("that is the workspace or one of its folders, not an app", status=400)
+    if kind == app_catalog.KIND_APPFILE:
+        if not (os.path.isfile(ap) and ap.lower().endswith(".fused")):
+            return _error("not a .fused file", status=400)
+        return None
+    try:
+        if not os.path.isdir(ap) or app_listing.app_entry(ap) is None:
+            return _error("not an app folder (no page declares fused-app)", status=400)
+    except OSError:
+        return _error("cannot read that folder", status=400)
+    return None
 
 
 def _dir_size(path: str) -> tuple[int, int]:
@@ -147,6 +181,10 @@ def api_uninstall_preflight(path: str = Query(...)):
         return _error("'path' must be an absolute filesystem path")
     exists = os.path.exists(path)
     kind = app_catalog.kind_for(path)
+    if exists:
+        refused = _refuse_non_app(path, kind)
+        if refused is not None:
+            return refused
     app_id = _app_id_for(path, kind) if exists else None
     data_bytes = data_files = 0
     if exists and kind != app_catalog.KIND_APPFILE:
@@ -188,12 +226,12 @@ def api_uninstall(body: dict = Body(...), x_fused: str | None = Header(default=N
     if mode not in _allowed_modes(kind):
         return _error(f"mode {mode!r} is not allowed for a {kind} app")
     exists = os.path.exists(path)
+    if exists:
+        refused = _refuse_non_app(path, kind)
+        if refused is not None:
+            return refused
     app_id = _app_id_for(path, kind) if exists else None
     folder = app_state_remove.canonical(path)
-
-    # The tombstone goes down BEFORE the folder: a render of a duplicate
-    # racing this request must already see the deletion as deliberate.
-    app_catalog.tombstone(path, app_id)
 
     result: dict = {"ok": True, "path": folder, "kind": kind, "mode": mode,
                     "app_id": app_id, "removed_files": False}
@@ -201,10 +239,12 @@ def api_uninstall(body: dict = Body(...), x_fused: str | None = Header(default=N
         trash = mode != "delete"
         out = fs_mutate._fs_delete({"path": path, "trash": trash, "recursive": True}, x_fused)
         if isinstance(out, JSONResponse):
+            # Nothing was removed, so nothing below runs either — no
+            # tombstone, no prune: a folder still on disk is still an app.
             if trash and out.status_code == 501:
                 # No bin for this path: the client asked for the recoverable
-                # delete and only that. Nothing was removed; tell it so it can
-                # offer the hard delete behind its own second confirm.
+                # delete and only that. Tell it so it can offer the hard
+                # delete behind its own second confirm.
                 return JSONResponse({"error": "trash unsupported"}, status_code=501)
             return out
         fs_mutate._note_index_mutation(out, path)
@@ -213,6 +253,11 @@ def api_uninstall(body: dict = Body(...), x_fused: str | None = Header(default=N
             result["trashed_to"] = out["trashed_to"]
     elif mode == "hide" or (mode == "forget"):
         app_catalog.hide(path)
+    # After the delete, not before: a tombstone for a folder that is still
+    # there would turn a later hand-move of it into a "copy" and strand its
+    # sessions. The window a render of a duplicate could race is the
+    # milliseconds between the rename above and this write.
+    app_catalog.tombstone(path, app_id)
     if kind == app_catalog.KIND_APPFILE:
         exported_apps.forget(path)
     else:
