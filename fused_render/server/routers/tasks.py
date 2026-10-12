@@ -2508,7 +2508,28 @@ def _collect() -> dict[str, dict]:
     # why.
     deleted = tasks_store.deleted_state()
     return {key: task for key, task in tasks.items()
-            if _is_task(task) and not _deleted(task, deleted)}
+            if _is_task(task) and not _deleted(task, deleted)
+            and not _bot_session(task)}
+
+
+def _bot_session(task: dict) -> bool:
+    """A transcript a BOT wrote, which is a conversation, not a task.
+
+    The bots run `claude` with sessions persisted (their conversation is the
+    CLI session; `--resume` needs it on disk), in a folder nobody else works
+    in — the bot's cache dir, or Super Bot's Inbox. Read off the transcript's
+    own cwd (`tasks_store.head`, cached per path and size, and read again for
+    every row by `_place` anyway, so this costs the listing nothing). A head
+    with no cwd yet is kept: "cannot tell" must not hide a task. Dropped
+    HERE, with the other drops, so no view lists it and no number is minted
+    for it (`_numbers` runs over what this returns). A build a bot hands to
+    Claude Code (`bot.build` → `/api/tasks/create`) runs under the apps
+    root, not either folder, and stays a task — it is one."""
+    if not task["path"]:
+        return False
+    from fused_render.bots import paths as bot_paths  # noqa: PLC0415
+    cwd = tasks_store.head(task["path"])[0]
+    return bot_paths.is_bot_workdir(cwd)
 
 
 def _entries_for(keys) -> dict[str, list[dict]]:
