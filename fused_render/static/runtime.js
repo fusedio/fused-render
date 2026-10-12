@@ -7591,11 +7591,13 @@
   // `{available, reason}` exactly as it does on macOS and has nothing
   // transport-shaped to branch on (CP-8).
   //
-  // `audioNative` (Linux only) leaves `audio`/`systemAudio` exactly as the
-  // server answered them — its own truth about whether PipeWire/pulse is
-  // reachable, which this window's MediaRecorder support has nothing to say
-  // about. `video` stays unconditional: screen recording is the browser's on
-  // every `client: true` platform regardless of audio's own path.
+  // `audioNative` (Linux only) leaves `audio`/`systemAudio` and
+  // `microphones` exactly as the server answered them — its own truth about
+  // whether PipeWire/pulse is reachable and about the (empty) device list a
+  // native recording can choose from, which this window's MediaRecorder
+  // support has nothing to say about. `video` stays unconditional: screen
+  // recording is the browser's on every `client: true` platform regardless
+  // of audio's own path.
   async function captureMerge(sources) {
     if (!sources || !sources.client) return sources;
     delete sources.client;
@@ -7616,7 +7618,7 @@
       };
       sources.systemAudio = { available: ok, reason: why };
     }
-    if (ok) {
+    if (ok && !audioNative) {
       try {
         const devices = await host.navigator.mediaDevices.enumerateDevices();
         // `label` is EMPTY until the microphone permission has been granted

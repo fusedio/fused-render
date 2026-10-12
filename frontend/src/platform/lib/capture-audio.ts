@@ -674,11 +674,13 @@ export async function captureSources(deps: CaptureDeps = {}): Promise<CaptureSou
 /** R:5455. Exported for the test, which is the only caller that has a fake
  *  window to merge against.
  *
- *  `audioNative` leaves `audio`/`systemAudio` exactly as the server answered
- *  them — Linux's own truth about whether PipeWire/pulse is reachable, which
- *  this window's own MediaRecorder support has nothing to say about. Deleted
- *  before this returns, same as `client`: a caller reads `{available,
- *  reason}` and has nothing transport-shaped to branch on (CP-8). */
+ *  `audioNative` true leaves `audio`/`systemAudio` and `microphones` exactly
+ *  as the server answered them — Linux's own truth about whether
+ *  PipeWire/pulse is reachable and about the (empty) device list a native
+ *  recording can choose from, which this window's own MediaRecorder support
+ *  has nothing to say about. Deleted before this returns, same as `client`: a
+ *  caller reads `{available, reason}` and has nothing transport-shaped to
+ *  branch on (CP-8). */
 export async function mergeSources(
   sources: (CaptureSources & { client?: boolean; audioNative?: boolean }) | undefined,
   hostArg?: CaptureHost,
@@ -699,7 +701,11 @@ export async function mergeSources(
   if (!audioNative) {
     merged.audio = { available: ok, granted: ok, reason: why };
   }
-  if (ok) {
+  if (ok && !audioNative) {
+    // A native Linux recording has no microphone to choose — `device` is
+    // refused server-side — so this window's own device list would just be
+    // names nothing here can act on. Left exactly as the server answered it
+    // (empty) when `audioNative` is true.
     try {
       const devices = host.navigator.mediaDevices as MediaDevices;
       // `label` is EMPTY until the microphone permission has been granted once

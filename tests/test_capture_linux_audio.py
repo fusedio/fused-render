@@ -129,7 +129,10 @@ def test_unavailable_without_socket(monkeypatch):
 
 def test_probe_reports_audio_native_truthfully(monkeypatch):
     monkeypatch.setattr(_linux_audio, "available", lambda: True)
-    assert _linux.probe()["audioNative"] is True
+    probe = _linux.probe()
+    assert probe["audioNative"] is True
+    assert probe["audio"]["available"] is True
+    assert probe["systemAudio"]["available"] is True
 
     monkeypatch.setattr(_linux_audio, "available", lambda: False)
     monkeypatch.setattr(_linux_audio, "unavailable_reason",
@@ -137,9 +140,13 @@ def test_probe_reports_audio_native_truthfully(monkeypatch):
                                 "session — none is reachable")
     probe = _linux.probe()
     assert probe["audioNative"] is False
-    assert probe["audio"]["available"] is False
+    # The mic still has the `_sink` browser fallback, so `audio` stays
+    # truthful here — the browser merge refines it once `audioNative` is
+    # false. `systemAudio` has no such fallback, so it reports the truth.
+    assert probe["audio"]["available"] is True
+    assert probe["audio"]["reason"] is None
     assert probe["systemAudio"]["available"] is False
-    assert "PipeWire" in probe["audio"]["reason"]
+    assert "PipeWire" in probe["systemAudio"]["reason"]
 
 
 def test_refuse_no_longer_blocks_system_both_when_available(monkeypatch):

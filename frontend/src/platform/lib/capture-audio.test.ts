@@ -551,6 +551,25 @@ describe("captureSources", () => {
       { id: "usb-1", name: "Yeti", default: false },
     ]);
   });
+
+  test("native Linux audio keeps the server's audio/systemAudio and never enumerates devices", async () => {
+    const merged = (await mergeSources(
+      {
+        client: true,
+        audioNative: true,
+        audio: { available: true, granted: true, reason: null },
+        systemAudio: { available: true, reason: null },
+        microphones: [],
+      },
+      fakeHost(emptyLog()),
+    )) as Record<string, unknown>;
+    expect("audioNative" in merged).toBe(false);
+    expect(merged.audio).toEqual({ available: true, granted: true, reason: null });
+    expect(merged.systemAudio).toEqual({ available: true, reason: null });
+    // There is no microphone to choose on a native recording — the server's
+    // own (empty) list stands, rather than this window's `enumerateDevices`.
+    expect(merged.microphones).toEqual([]);
+  });
 });
 
 describe("pause and resume", () => {

@@ -119,10 +119,13 @@ def probe() -> dict:
 
     The screen half is answered `true` and refined by the browser — see
     `_windows.probe` for why that direction, not the other. The audio half is
-    answered for real: `audioNative` says whether `start_audio` will record
-    natively, and `audio`/`systemAudio` are true only when it can — no
-    MediaRecorder picker is ever shown for audio on this platform, so there is
-    nothing for the browser to refine them with when they are false.
+    split the same way whenever native capture is unavailable: `audio`
+    (the mic) is answered `true` here too, because `"mic"` still has the
+    `_sink` browser fallback to refine it with — the frontend's `audioNative:
+    false` path takes it from there. `systemAudio` has no such fallback (there
+    is no screen-share-for-audio-only hack on this platform), so it stays the
+    honest answer: true only when native capture can actually deliver it.
+    `audioNative` says whether `start_audio` will in fact record natively.
     """
     bus = _dbus()
     image = _pillow()
@@ -144,7 +147,11 @@ def probe() -> dict:
     return {
         "client": True,
         "video": {"available": True, "granted": True, "reason": None},
-        "audio": {"available": audio_ok, "granted": audio_ok, "reason": audio_reason},
+        # Always true: the mic falls back to the browser's own recording
+        # (`_sink`) when native capture is unavailable, so there is nothing to
+        # refuse here — the browser merge (`mergeSources`/`captureMerge`)
+        # refines this when `audioNative` is false.
+        "audio": {"available": True, "granted": True, "reason": None},
         "systemAudio": {"available": audio_ok, "reason": audio_reason},
         "audioNative": audio_ok,
         "screenshot": {"available": shot_reason is None, "granted": True,
