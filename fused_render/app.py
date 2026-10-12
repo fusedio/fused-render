@@ -1725,6 +1725,24 @@ def main() -> None:
         applicationShouldHandleReopen_hasVisibleWindows_
     )
 
+    # ---- Dock icon right-click menu -------------------------------------------
+    # AppKit asks the delegate for applicationDockMenu: and appends the result
+    # to the system items (window list, Hide, Quit). With native windows on it
+    # carries "New Window" (same as File → New Window); in browser-tab mode
+    # there is no manager and the system menu stays as is. The method returns
+    # an object, so None is valid here (unlike the BOOL reopen method above),
+    # and nothing may escape a delegate callback.
+    def applicationDockMenu_(self, _app):
+        try:
+            manager = state["windows"]
+            if manager is not None and manager.enabled:
+                return manager.dock_menu()
+        except Exception:
+            logger.exception("dock menu failed")
+        return None
+
+    rumps.rumps.NSApp.applicationDockMenu_ = applicationDockMenu_
+
     # ---- AppKit-initiated quit (Dock menu Quit, ⌘Q, logout/restart) ----------
     # Same delegate-patch mechanism as the three handlers above, for the quit
     # surfaces that never touch our menu item — see make_appkit_terminate_hook for

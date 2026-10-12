@@ -264,3 +264,39 @@ def test_launcher_home_without_a_manager_opens_a_browser_tab(monkeypatch):
         activateIgnoringOtherApps_=lambda _f: pytest.fail("no manager, no activate"))
     app_mod.launcher_home_action({"windows": None}, "http://127.0.0.1:1/", nsapp)
     assert opened == ["http://127.0.0.1:1/"]
+
+
+def _dock_manager(mw):
+    m = types.SimpleNamespace(home_url="http://h/", opened=[])
+    m.open = m.opened.append
+    m._menu_target = mw._MenuTarget.alloc().initWithManager_(m)
+    return m
+
+
+def test_dock_menu_is_one_new_window_item_on_the_main_menu_target():
+    mw = _mw()
+    m = _dock_manager(mw)
+    menu = mw.WindowManager.dock_menu(m)
+    items = list(menu.itemArray())
+    assert [i.title() for i in items] == ["New Window"]
+    assert items[0].action() == "newWindow:"
+    assert items[0].keyEquivalent() == ""
+    assert items[0].target() is m._menu_target
+
+
+def test_dock_menu_is_built_once():
+    mw = _mw()
+    m = _dock_manager(mw)
+    assert mw.WindowManager.dock_menu(m) is mw.WindowManager.dock_menu(m)
+
+
+def test_new_window_activates_the_app_and_opens_home(monkeypatch):
+    mw = _mw()
+    m = _dock_manager(mw)
+    calls = []
+    monkeypatch.setattr(
+        mw, "NSApp", types.SimpleNamespace(
+            activateIgnoringOtherApps_=lambda f: calls.append(("activate", f))))
+    m.open = lambda url: calls.append(("open", url))
+    m._menu_target.newWindow_(None)
+    assert calls == [("activate", True), ("open", "http://h/")]

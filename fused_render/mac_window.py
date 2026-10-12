@@ -988,6 +988,8 @@ class _MenuTarget(NSObject):
         return self
 
     def newWindow_(self, _s):
+        # Also the Dock menu's item, where the app may be inactive.
+        NSApp.activateIgnoringOtherApps_(True)
         self._m.open(self._m.home_url)
 
     def openDocument_(self, _s):
@@ -1168,6 +1170,20 @@ class WindowManager:
 
     def open_path(self, fs_path: str) -> _Window:
         return self.open(self.url_for_path(fs_path))
+
+    def dock_menu(self) -> NSMenu:
+        """The custom items of the Dock icon's right-click menu (AppKit adds
+        the window list, Hide and Quit itself): one "New Window", the same
+        action as File → New Window and the same target. Built once and kept
+        — AppKit does not retain the menu the delegate returns."""
+        if getattr(self, "_dock_menu", None) is None:
+            menu = NSMenu.alloc().init()
+            it = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                "New Window", b"newWindow:", "")
+            it.setTarget_(self._menu_target)
+            menu.addItem_(it)
+            self._dock_menu = menu
+        return self._dock_menu
 
     def reopen(self) -> None:
         """A macOS Dock-icon click on the running app. By default the Home
