@@ -233,12 +233,15 @@ def _run_serve(args: argparse.Namespace) -> None:
     from fused_render import meta_migration
 
     meta_migration.run_once_in_background(fused_ws)
-    # One-time migration: fold the per-app repos under <workspace>/local into
-    # the single shared repo at the tag root (D626; local_monorepo docstring
-    # carries the rules).
-    from fused_render import local_monorepo
+    # One-time migration: the apps under <workspace>/local move to
+    # <workspace>/app (owner, 2026-10-12; apps_root_migration docstring carries
+    # the rules). The renames run HERE, before serving — the listing must never
+    # see a folder mid-move — and the settle, git trail and stamp follow on a
+    # thread, which then chains the older local_monorepo migration (D626) so
+    # the two never race on local/.git.
+    from fused_render import apps_root_migration
 
-    local_monorepo.run_once_in_background(fused_ws)
+    apps_root_migration.run_once(fused_ws)
     # Showcase apps: clone/sync the community repo into <workspace>/showcase in
     # the background — the apps grid lists it as an ordinary tag dir once done.
     from fused_render import community
