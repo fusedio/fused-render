@@ -142,6 +142,28 @@ treats that case as a legitimate pre-emptive hold, so any engine-servable
 model remains a valid thing to hold the slot for before a conflict exists
 to belong to.
 
+## The Python client gets its own `ModelSlotConflict`, not just `AiError` fields
+
+`fused_ai.py` (the templated local client, D470-D472) already carried
+`capability`/`models`/`resident`/`held` as four extra, only-sometimes-set
+fields on the one `AiError` type, keyed on checking `.type ==
+"model_slot_conflict"` by hand (CodeRabbit's finding on this PR). A caller
+that wants to handle just this terminal case — distinct from every other
+`AiError`, which a retry loop may still legitimately retry — had no type to
+`except` for it, the same way `ServerNotRunning` already exists precisely so
+"the app isn't running" and "the call failed" need no message-text sniffing
+to tell apart.
+
+`ModelSlotConflict(AiError)` is now that type: no new fields (the four
+already on `AiError` are exactly what SPEC-model-slot-conflict.md §3
+documents), just a name `_error_from_payload` constructs instead of `AiError`
+whenever the wire's `error.type` is `"model_slot_conflict"` — the one place
+that reads that string already, so no other caller changes. `_request` (the
+one HTTP round trip every `fused_ai.text`/`embed`/... call goes through)
+raises whatever `_error_from_payload` built, so the subclass reaches a
+caller exactly where `AiError` always has, with no second wiring to keep in
+sync.
+
 ## Scope: which capabilities can raise `ModelSlotConflict`
 
 `generate_text`/`_generate_sync`'s request-path loads can hit

@@ -145,6 +145,30 @@ def test_a_model_slot_conflict_carries_the_standoff_through():
     assert err.resident == "org/b"
     assert err.held is False
     assert err.job_id is None
+    # A distinct type, not a generic AiError with these fields merely set —
+    # `except fused_ai.ModelSlotConflict` has to be reachable on its own,
+    # the same way `except fused_ai.ServerNotRunning` already is.
+    assert isinstance(err, fused_ai.ModelSlotConflict)
+
+
+def test_model_slot_conflict_is_raised_by_the_request_path(monkeypatch):
+    """The subclass has to actually reach a caller, not just exist: a 409
+    off the wire with `type: model_slot_conflict` raised through `_request`
+    (every `fused_ai.text`/`embed`/... call goes through it) must surface as
+    `ModelSlotConflict`, catchable without inspecting `.type` by hand."""
+    def fake_urlopen(req, timeout=None):
+        raise _FakeHTTPError(409, {"ok": False, "error": {
+            "type": "model_slot_conflict", "code": "model_slot_conflict",
+            "message": "org/a and org/b are fighting over the text-generation slot",
+            "capability": "text-generation", "models": ["org/a", "org/b"],
+            "resident": "org/b", "held": False}})
+
+    monkeypatch.setenv("FUSED_RENDER_ORIGIN", "http://127.0.0.1:1")
+    monkeypatch.setattr(fused_ai.urllib.request, "urlopen", fake_urlopen)
+    with pytest.raises(fused_ai.ModelSlotConflict) as exc:
+        fused_ai.text("hi")
+    assert exc.value.capability == "text-generation"
+    assert exc.value.resident == "org/b"
 
 
 def test_plain_error_string_shape_maps_to_bad_request_or_unavailable():

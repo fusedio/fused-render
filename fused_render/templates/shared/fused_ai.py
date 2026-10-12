@@ -174,6 +174,17 @@ class AiError(Exception):
                 f"status={self.status!r})")
 
 
+class ModelSlotConflict(AiError):
+    """`AiError` specifically for `type == "model_slot_conflict"`
+    (SPEC-model-slot-conflict.md §3) — a distinct type, not just the four
+    extra fields `AiError` carries for it, so a caller that only means to
+    handle THIS terminal case can write `except ModelSlotConflict` instead
+    of catching every `AiError` and checking `.type` by hand. Raised in
+    place of a bare `AiError` by `_error_from_payload`, the one place that
+    reads the wire's `type` string and decides what to build.
+    """
+
+
 # ------------------------------------------------------------- origin lookup
 
 
@@ -257,8 +268,10 @@ def _error_from_payload(status: int, payload: object) -> AiError:
     if isinstance(payload, dict):
         err = payload.get("error")
         if isinstance(err, dict):
-            return AiError(
-                err.get("type") or "error", err.get("message") or "",
+            type_ = err.get("type") or "error"
+            cls = ModelSlotConflict if type_ == "model_slot_conflict" else AiError
+            return cls(
+                type_, err.get("message") or "",
                 status, job_id=err.get("jobId"), capability=err.get("capability"),
                 models=err.get("models"), resident=err.get("resident"),
                 held=err.get("held"))
