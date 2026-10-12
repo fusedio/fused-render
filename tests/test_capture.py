@@ -1421,3 +1421,175 @@ def test_state_answers_while_another_thread_holds_the_native_lock(backend,
         assert not t.is_alive() and out and out[0]["id"] == cid
     finally:
         capture._native_lock.release()
+
+
+# ----------------------------------------------------- the recording pill hooks
+
+
+@pytest.fixture()
+def pill(monkeypatch):
+    """Recording what the native hooks are told, with the dict restored after."""
+    from fused_render import recording_pill
+
+    calls = []
+    monkeypatch.setattr(recording_pill, "native_hooks", {
+        "show": lambda info: calls.append(("show", info["id"], info)),
+        "hide": lambda cid: calls.append(("hide", cid)),
+        "hide_all": lambda: calls.append(("hide_all",)),
+    })
+    return calls
+
+
+def _kinds(calls, kind):
+    return [c for c in calls if c[0] == kind]
+
+
+def test_the_pill_shows_once_on_an_audio_recording_and_hides_on_stop(
+        backend, client, home, pill):
+    started = _audio(client)
+    assert [c[:2] for c in pill] == [("show", started["id"])]
+    info = pill[0][2]
+    assert info["canPause"] is True and info["mode"] == "audio"
+    client.post(f"/api/capture/{started['id']}/stop", headers=H)
+    assert [c[:2] for c in pill] == [("show", started["id"]),
+                                     ("hide", started["id"])]
+    # The second ending (double click) answers from the cache and hides nothing.
+    client.post(f"/api/capture/{started['id']}/stop", headers=H)
+    assert len(_kinds(pill, "hide")) == 1
+
+
+def test_a_screen_recording_gets_no_pill(backend, client, home, pill):
+    started = client.post("/api/capture/start", json={"mode": "screen"},
+                          headers=H).json()
+    assert pill == []
+    client.post(f"/api/capture/{started['id']}/stop", headers=H)
+    assert pill == []
+
+
+def test_the_pill_hides_on_cancel(backend, client, home, pill):
+    started = _audio(client)
+    client.post(f"/api/capture/{started['id']}/cancel", headers=H)
+    assert _kinds(pill, "hide") == [("hide", started["id"])]
+
+
+def test_the_pill_hides_when_the_cap_ends_the_recording(backend, client, home,
+                                                        pill, monkeypatch):
+    monkeypatch.setattr(capture, "TICK_S", 0.05)
+    monkeypatch.setattr(capture, "_max_seconds", lambda value: 0.2)
+    started = _audio(client)
+    deadline = time.monotonic() + 5
+    while capture.active() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert _kinds(pill, "hide") == [("hide", started["id"])]
+
+
+def test_the_pill_hides_when_the_backend_loses_the_recording(
+        backend, client, home, pill, monkeypatch):
+    monkeypatch.setattr(capture, "TICK_S", 0.05)
+    started = _audio(client)
+    backend.handles[0].error = "the device went away"
+    deadline = time.monotonic() + 5
+    while capture.active() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert _kinds(pill, "hide") == [("hide", started["id"])]
+
+
+def test_the_pill_hides_when_the_job_rows_cross_is_pressed(
+        backend, client, home, pill, monkeypatch):
+    monkeypatch.setattr(capture, "TICK_S", 0.05)
+    started = _audio(client)
+    client.post(f"/api/jobs/{started['jobId']}/cancel", headers=H)
+    deadline = time.monotonic() + 5
+    while capture.active() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert _kinds(pill, "hide") == [("hide", started["id"])]
+
+
+def test_stop_all_hides_every_pill(backend, client, home, pill):
+    a, b = _audio(client), _audio(client)
+    capture.stop_all()
+    assert {c[1] for c in _kinds(pill, "hide")} == {a["id"], b["id"]}
+    assert _kinds(pill, "hide_all") == [("hide_all",)]
+
+
+def test_a_start_that_raises_after_the_pill_showed_hides_it(
+        backend, client, home, pill, monkeypatch):
+    class Boom(Exception):
+        pass
+
+    def no_thread(*a, **k):
+        raise Boom("could not spawn the watchdog")
+
+    monkeypatch.setattr(capture.threading, "Thread", no_thread)
+    with pytest.raises(Boom):
+        capture.start("audio", {})
+    assert len(_kinds(pill, "show")) == 1
+    assert _kinds(pill, "hide") == [("hide", _kinds(pill, "show")[0][1])]
+
+
+def test_a_start_that_never_produced_a_recording_shows_nothing(
+        backend, client, home, pill, monkeypatch):
+    def boom(out, spec):
+        raise RuntimeError("the microphone did not start")
+
+    monkeypatch.setattr(backend, "start_audio", boom)
+    assert client.post("/api/capture/start", json={"mode": "audio"},
+                       headers=H).status_code == 500
+    assert pill == []
+
+
+def test_a_raising_pill_hook_never_breaks_start_or_stop(backend, client, home,
+                                                        monkeypatch):
+    from fused_render import recording_pill
+
+    def boom(*args):
+        raise RuntimeError("AppKit fell over")
+
+    monkeypatch.setattr(recording_pill, "native_hooks",
+                        {"show": boom, "hide": boom, "hide_all": boom})
+    started = _audio(client)
+    res = client.post(f"/api/capture/{started['id']}/stop", headers=H)
+    assert res.status_code == 200 and res.json()["state"] == "stopped"
+    capture.stop_all()
+
+
+def test_with_no_hooks_installed_the_pill_is_a_no_op(backend, client, home,
+                                                     monkeypatch):
+    from fused_render import recording_pill
+
+    monkeypatch.setattr(recording_pill, "native_hooks", {})
+    started = _audio(client)
+    assert client.post(f"/api/capture/{started['id']}/stop",
+                       headers=H).status_code == 200
+
+
+def test_the_pill_page_route_serves_the_built_page_or_says_it_is_missing(client):
+    res = client.get("/recording-pill")
+    assert res.status_code in (200, 503)
+    if res.status_code == 503:
+        assert "recording pill page not built" in res.text
+
+
+def test_describe_carries_the_apps_icon_url(tmp_path):
+    from fused_render import recording_pill
+
+    app = tmp_path / "My App"
+    app.mkdir()
+    (app / "icon.svg").write_text("<svg xmlns='http://www.w3.org/2000/svg'/>")
+    (app / "index.html").write_text("<html></html>")
+
+    class S:
+        id, mode, can_pause = "c1", "audio", True
+        page = str(app / "index.html")
+
+    info = recording_pill.describe(S())
+    assert info["id"] == "c1" and info["canPause"] is True
+    assert info["app"] == str(app) and info["name"] == "My App"
+    assert info["icon"].startswith("/api/fs/raw?path=") and "&v=" in info["icon"]
+    assert info["flavor"] in ("render", "bot")
+
+    S.page = ""
+    info = recording_pill.describe(S())
+    assert info["icon"] is None and info["app"] == "" and info["name"] == "Fused"
+    S.page = "not/absolute.html"
+    assert recording_pill.describe(S())["icon"] is None

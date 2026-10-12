@@ -43,7 +43,7 @@ import threading
 import time
 import uuid
 
-from fused_render import jobs
+from fused_render import jobs, recording_pill
 from fused_render.capture import _pause
 
 logger = logging.getLogger(__name__)
@@ -501,19 +501,31 @@ def start(mode: str, body: dict, *, page: str = "") -> dict:
     with _lock:
         _sessions[cid] = session
 
-    title = body.get("title") or (
-        "Screen recording" if mode == "screen" else "Audio recording")
-    # `origin="Capture"`: `fused.capture.*` is callable from any page's own
-    # script, so no single hosting page names this row's source honestly —
-    # "Capture" names the FEATURE that raised it instead, the same way
-    # `benchmark.py`'s own row names itself "Benchmark" rather than whatever
-    # page happened to start the run.
-    _report(session, state=jobs.RUNNING, title=str(title)[:120],
-            kind="task", unit="s", done=0, total=spec["maxSeconds"],
-            cancellable=True,
-            detail="Recording — ✕ discards it", origin="Capture")
-    threading.Thread(target=_watch, args=(session,), daemon=True,
-                     name=f"capture-{cid}").start()
+    # The floating pill (macOS audio recordings only; a no-op elsewhere). Shown
+    # as soon as the session is registered, so it can never outlive one: every
+    # ending below and in `stop`/`_tick`/`stop_all` hides it, and a start that
+    # raises from here on hides it too.
+    pill = mode == "audio"
+    if pill:
+        recording_pill.show(session)
+    try:
+        title = body.get("title") or (
+            "Screen recording" if mode == "screen" else "Audio recording")
+        # `origin="Capture"`: `fused.capture.*` is callable from any page's own
+        # script, so no single hosting page names this row's source honestly —
+        # "Capture" names the FEATURE that raised it instead, the same way
+        # `benchmark.py`'s own row names itself "Benchmark" rather than whatever
+        # page happened to start the run.
+        _report(session, state=jobs.RUNNING, title=str(title)[:120],
+                kind="task", unit="s", done=0, total=spec["maxSeconds"],
+                cancellable=True,
+                detail="Recording — ✕ discards it", origin="Capture")
+        threading.Thread(target=_watch, args=(session,), daemon=True,
+                         name=f"capture-{cid}").start()
+    except BaseException:
+        if pill:
+            recording_pill.hide(cid)
+        raise
     # `opening()`, not `public()`: this is the ONE reply allowed to carry the
     # stream token (see the method).
     return session.opening()
@@ -650,6 +662,8 @@ def _tick(session: _Session) -> bool:
     if died:
         with _lock:
             _sessions.pop(session.id, None)
+        if session.mode == "audio":
+            recording_pill.hide(session.id)
         session.state = "error"
         _report(session, state="error", message=died)
         try:
@@ -773,6 +787,8 @@ def stop(cid: str, *, discard: bool = False) -> dict:
     """
     with _lock:
         session = _sessions.pop(cid, None)
+    if session is not None and session.mode == "audio":
+        recording_pill.hide(cid)
     if session is None:
         already = _finished.get(cid)
         if already is None:
@@ -1018,6 +1034,7 @@ def stop_all() -> None:
             stop(cid)
         except Exception:                        # noqa: BLE001 - exiting anyway
             pass
+    recording_pill.hide_all()
 
 
 atexit.register(stop_all)
