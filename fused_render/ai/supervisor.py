@@ -1953,6 +1953,23 @@ def _start_resident(model: str, capability: str, *,
             # it from `_workers` — so there is no instant where the old worker
             # exists in neither table (see `_draining`'s own comment).
             _draining[current.token] = current
+            if respect_holds:
+                # The benchmark's own eviction just changed who is ACTUALLY
+                # resident. An UNHELD conflict's `resident` field (a HELD one
+                # is refused above instead, before any eviction happens) would
+                # otherwise keep naming the model this just replaced — a stale
+                # reference nothing else here corrects, since `respect_holds`
+                # deliberately touches none of `_request_path_conflict`'s own
+                # bookkeeping. Left stale, the model benchmark just installed
+                # would never match `conflict.resident` on its own later
+                # request-path call, so it would be folded into `conflict.
+                # models` and refused right back — the slot a benchmark just
+                # freed up would be unusable from the moment it finished.
+                conflict = _conflicts.get(capability)
+                if conflict is not None and not conflict.held:
+                    conflict.resident = model
+                    if model not in conflict.models:
+                        conflict.models.append(model)
 
         worker = Worker(model=model, capability=capability, runner_code=runner.code,
                         token=secrets.token_urlsafe(24),

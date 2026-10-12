@@ -3804,6 +3804,33 @@ def test_manual_load_and_unload_clear_a_live_conflict(fake_runner):
     assert supervisor.describe()["conflicts"] == []
 
 
+def test_a_benchmark_cold_load_updates_the_stale_resident_on_an_unheld_conflict(fake_runner):
+    """`ai/benchmark.py`'s own entry (`respect_holds=True`) refuses a HELD
+    conflict for a different model, but an UNHELD one does not stop it —
+    `_force_conflict` leaves one standing with `org/a` resident. Benchmark
+    then cold-loads a third model, `org/c`, which evicts `org/a`. The
+    conflict's own `resident` field must follow that eviction instead of
+    going on naming `org/a`, which is no longer loaded at all — a stale
+    `resident` would mean `org/c`'s own later request-path call never
+    matches it and gets folded into the conflict and refused right back,
+    making the slot benchmark just freed up unusable."""
+    _force_conflict("org/a", "org/b")
+    conflict = supervisor.describe()["conflicts"][0]
+    assert conflict["resident"] == "org/a"
+
+    supervisor._start_resident("org/c", registry.TEXT_GENERATION, respect_holds=True)
+    _wait_ready("org/c")
+
+    conflict = supervisor.describe()["conflicts"][0]
+    assert conflict["resident"] == "org/c"
+    assert "org/c" in conflict["models"]
+    assert conflict["held"] is False
+
+    # And org/c — the model benchmark just installed — keeps answering
+    # normally, exactly as a resident is supposed to while a conflict stands.
+    assert _retry_generate_text("org/c", requester_id="r3") == "ready"
+
+
 def test_resolve_keep_a_model_holds_the_slot_against_the_other(fake_runner):
     _force_conflict("org/a", "org/b")
 

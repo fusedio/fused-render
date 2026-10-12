@@ -726,3 +726,31 @@ shape (`code`, `capability`, `models`, `resident`, `held`) every other
 Test: `test_a_non_owner_requester_cannot_unload_someone_elses_model`
 (`tests/test_ai_runtime.py`) now also asserts the distinct wording
 ("loaded by another requester", no "contending").
+
+## A benchmark's cold load updates the conflict's stale resident
+
+`_start_resident`'s `respect_holds` branch (`ai/benchmark.py`'s own entry)
+refuses a HELD conflict for a different model, same as a request-path load,
+but an UNHELD one never stopped it — the benchmark evicts the standing
+resident and installs its own model regardless. That eviction never
+touched `_conflicts[capability].resident`, which kept naming the model
+benchmark just replaced: a stale reference nothing else corrects, since
+`respect_holds` deliberately skips `_request_path_conflict`'s own
+bookkeeping (a benchmark run is not a contender). Left stale, the model
+benchmark just installed could never match `conflict.resident` on a later
+request-path call, so it would be folded into `conflict.models` and
+refused right back — the slot a benchmark run just freed up was unusable
+from the moment it finished.
+
+Fixed in the same locked block that evicts: when `respect_holds` evicts
+under an UNHELD conflict, `conflict.resident` is updated to the new model
+and the model is added to `conflict.models` if missing. A HELD conflict is
+unaffected (refused before any eviction happens, as before).
+
+Test: `test_a_benchmark_cold_load_updates_the_stale_resident_on_an_unheld_
+conflict` (`tests/test_ai_runtime.py`) — `_force_conflict` leaves `org/a`
+resident under an unheld conflict with `org/b`; a `respect_holds=True`
+cold load of `org/c` evicts it; asserts `resident == "org/c"`, `"org/c" in
+models`, `held is False`, and that `org/c` keeps answering. Confirmed red
+against the unmodified code via a stash round-trip (`resident` stayed
+`"org/a"`), green after the fix.
