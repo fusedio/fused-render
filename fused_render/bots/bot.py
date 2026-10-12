@@ -40,7 +40,8 @@ DEFAULT_EFFORT = "low"
 MAX_STEPS = 60
 ATTACH_MAX = 8 * 1024 * 1024  # composer attachment size cap
 IDLE_SLEEP_S = 10 * 60  # close Chrome after this long idle (every bot); encrypted bots also seal the profile
-ROUTINE_MAX_FAILS = 3   # consecutive failed runs before a routine pauses itself
+ROUTINE_MAX_FAILS = 3   # consecutive failed runs before a routine pauses itself (RoutinesSection.tsx mirrors it)
+ROUTINE_MIN_MINUTES = 5  # "Every N minutes" floor; the dialog refuses less, routine_add clamps as the backstop
 MODEL_LOADING_SLEEP_S = 8
 MODEL_LOADING_MAX_WAITS = 12
 IDLE_SHOT_TIMEOUT_S = 3
@@ -1645,7 +1646,7 @@ class Bot:
     def _next_run(r, after):
         kind = r.get("kind")
         if kind == "interval":
-            m = max(5, int(r.get("minutes") or 60))
+            m = max(ROUTINE_MIN_MINUTES, int(r.get("minutes") or 60))
             base = r.get("anchor") or after
             n = base
             while n <= after:
@@ -1673,7 +1674,7 @@ class Bot:
             raise ValueError("routine needs a task")
         r = {"id": uuid.uuid4().hex[:6], "task": task, "kind": kind, "enabled": True, "created": time.time(), "last": None, "last_result": ""}
         if kind == "interval":
-            r["minutes"] = max(5, int(minutes or 60))
+            r["minutes"] = max(ROUTINE_MIN_MINUTES, int(minutes or 60))
             r["anchor"] = time.time()
         elif kind == "daily":
             r["time"] = time_s or "09:00"
