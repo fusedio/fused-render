@@ -13,11 +13,13 @@ kind (app_catalog.kind_for):
 * ``showcase`` — a subfolder of the showcase clone: deleting it dirties the
   repo and the next sync restores it, so the path is hidden instead.
 
-Every mode then prunes the stores (app_state_remove), writes a tombstone so
-a surviving duplicate is never mistaken for a move of this one
-(app_catalog.tombstone), archives the folder's tasks (the desk's own
-gesture) and drops the hub snapshot so the card is gone on the next fetch,
-not after the 20 s TTL.
+Every mode then prunes the stores (app_state_remove), archives the folder's
+tasks (the desk's own gesture) and drops the hub snapshot so the card is
+gone on the next fetch, not after the 20 s TTL. The modes that REMOVE the
+files also write a tombstone so a surviving duplicate is never mistaken for
+a move of this one (app_catalog.tombstone) and settle such duplicates on
+the spot; a folder that stays on disk (hide, unlink, forget) gets none — a
+later move of it is a real move.
 
 `preflight` is the confirm dialog's data: what the user is about to lose.
 """
@@ -25,7 +27,6 @@ from __future__ import annotations
 
 import logging
 import os
-import subprocess
 
 from fastapi import APIRouter, Body, Header, Query
 from fastapi.responses import JSONResponse
@@ -130,10 +131,10 @@ def _uncommitted(path: str, kind: str) -> int | None:
         return None
     repo, spec = scope
     try:
-        out = subprocess.run(
-            ["git", "-C", repo, "status", "--porcelain", "--", app_git._pathspec(spec)],
-            capture_output=True, text=True, timeout=10, check=False)
-    except (OSError, subprocess.SubprocessError):
+        # app_git._git, not a bare subprocess.run: the resolved binary and
+        # close_fds=False keep CPython on posix_spawn (test_git_posix_spawn).
+        out = app_git._git(repo, "status", "--porcelain", "--", app_git._pathspec(spec))
+    except Exception:  # noqa: BLE001 — a hung or missing git is "unknown", not an error
         return None
     if out.returncode != 0:
         return None
@@ -284,15 +285,19 @@ def api_uninstall(body: dict = Body(...), x_fused: str | None = Header(default=N
             result["trashed_to"] = out["trashed_to"]
     elif mode == "hide" or (mode == "forget"):
         app_catalog.hide(path)
-    # After the delete, not before: a tombstone for a folder that is still
-    # there would turn a later hand-move of it into a "copy" and strand its
-    # sessions. The window a render of a duplicate could race is the
-    # milliseconds between the rename above and this write.
-    app_catalog.tombstone(path, app_id)
-    # Every surviving copy whose meta.json still records THIS folder as its
-    # origin is settled now, so the witness never fires for it — not on its
-    # next open (which may come after the tombstone's TTL), now.
-    result["settled"] = _settle_copies(path, dupes)
+    result["settled"] = []
+    if result["removed_files"]:
+        # Only when the files are GONE, and after the delete, not before: a
+        # tombstone for a folder still on disk (hide, unlink, forget, a
+        # delete that failed, a path already missing by hand) would turn a
+        # later move of it into a "copy" and strand its sessions. The window
+        # a render of a duplicate could race is the milliseconds between the
+        # rename above and this write.
+        app_catalog.tombstone(path, app_id)
+        # Every surviving copy whose meta.json still records THIS folder as
+        # its origin is settled now, so the witness never fires for it — not
+        # on its next open (which may come after the tombstone's TTL), now.
+        result["settled"] = _settle_copies(path, dupes)
     if kind == app_catalog.KIND_APPFILE:
         exported_apps.forget(path)
     else:

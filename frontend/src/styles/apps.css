@@ -442,7 +442,7 @@
 
 .app-pcard-dupes {
   flex: 0 0 auto;
-  color: var(--warning, #b7791f);
+  color: var(--warning);
 }
 
 .app-pcard-ago {
