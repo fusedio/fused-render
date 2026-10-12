@@ -80,9 +80,42 @@ def _settle(old: str, new: str, witnessed: bool) -> None:
     if witnessed and recorded and (os.path.normcase(os.path.abspath(recorded))
                                    == os.path.normcase(old)):
         app_fused_dir.ensure(new)
-    else:
-        app_state_move.rewrite_stores(old, new)
-        claude_session_move.relocate(old, new)
+        return
+    app_state_move.rewrite_stores(old, new)
+    claude_session_move.relocate(old, new)
+    if recorded is not None and (os.path.normcase(os.path.abspath(recorded))
+                                 != os.path.normcase(old)):
+        _own_witness(new, old, recorded)
+
+
+def _own_witness(new: str, old: str, recorded: str) -> None:
+    """A copy's `meta.json` still names the folder it was copied FROM. Left
+    like that, it becomes a lie once that folder is gone — the original has
+    moved to `app/`, or `local/` itself was deleted — and the witness on the
+    copy's next open would read the stale record as a MOVE of the original,
+    handing the original's bookmarks, desk row and Claude sessions to the
+    copy (bugbot on #1592). So the record is settled here: `app_dir` becomes
+    the copy's own path, with the evidence kept in `migrations` — this hop,
+    plus `copy_of` naming what the record used to say — the shape
+    `_after_move` writes, so later readers see one history."""
+    from datetime import datetime, timezone
+
+    from fused_render import app_fused_dir
+
+    meta = app_fused_dir.read_meta(new) or {}
+    migrations = meta.get("migrations")
+    if not isinstance(migrations, list):
+        migrations = []
+    migrations.append({"from": old, "to": new,
+                       "at": datetime.now(timezone.utc).isoformat(),
+                       "sessions": 0, "copy_of": recorded})
+    meta.update(app_dir=new, migrations=migrations)
+    path = app_fused_dir.meta_path(new)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(meta, f, indent=2)
+        f.write("\n")
+    os.replace(tmp, path)
 
 
 def _git_trail(old: str, new: str) -> None:
@@ -146,8 +179,8 @@ def move_all(root: str) -> tuple[list[tuple[str, str, bool]], list[str], bool]:
             # against the original — which, if it moved earlier in this very
             # loop, is "gone" and reads as a MOVE, handing the original's
             # stores and Claude sessions to the copy. Such a folder settles by
-            # hand in phase two; its stale record is the pre-existing copy
-            # hazard the uninstall tombstone (#1576 D6) closes.
+            # hand in phase two, and its record is made its own there
+            # (`_own_witness`) so the same lie cannot fire on a later open.
             recorded = app_fused_dir.recorded_app_dir(old)
             own_meta = recorded is None or (
                 os.path.normcase(os.path.abspath(recorded)) == os.path.normcase(old))
@@ -201,6 +234,18 @@ def finish(root: str, moved: list[tuple[str, str, bool]], skipped: list[str],
             _git_trail(old, new)
         except Exception:
             logger.warning("apps root migration: git trail failed for %s", new, exc_info=True)
+    if moved:
+        # The sessions are on disk under the new paths and the stores are
+        # re-rooted, but nothing the tasks watcher ticks on changed — the
+        # same bump the two rename doors make, so an already-open Tasks
+        # listing reloads instead of sitting on dead `local/` rows until its
+        # floor refresh. Best-effort: a late listing is not a failed move.
+        try:
+            from fused_render import tasks_watch
+
+            tasks_watch.notify_all()
+        except Exception:
+            logger.warning("apps root migration: tasks listing not notified", exc_info=True)
     if not complete:
         logger.warning("apps root migration incomplete (%d moved) — will retry next start",
                        len(moved))
