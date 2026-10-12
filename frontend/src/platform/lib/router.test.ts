@@ -563,4 +563,31 @@ describe("pushHistory in a foreign embed", () => {
     }
     expect(calls(mod)).toEqual(["replace /x"]);
   });
+
+  test("a cross-origin host replaces too, yet is not a foreign embed", async () => {
+    const g = globalThis as { window?: unknown; location?: unknown };
+    const prevWin = g.window;
+    const prevLoc = g.location;
+    // A cross-origin parent: reading its location throws, like a real SecurityError.
+    const host: Record<string, unknown> = {};
+    Object.defineProperty(host, "location", {
+      get() {
+        throw new Error("SecurityError: cross-origin");
+      },
+    });
+    host.parent = host;
+    host.top = host;
+    g.window = { ...(prevWin as object), parent: host, top: host };
+    g.location = { ...(prevLoc as object), pathname: "/explorer/embed/w", search: "" };
+    let mod: { pushHistory: (s: unknown, u: string) => void; IS_FOREIGN_EMBED: boolean };
+    try {
+      const spec = "./router?cross-origin-embed";
+      mod = await import(spec);
+    } finally {
+      g.window = prevWin;
+      g.location = prevLoc;
+    }
+    expect(mod.IS_FOREIGN_EMBED).toBe(false);
+    expect(calls(mod)).toEqual(["replace /x"]);
+  });
 });

@@ -311,6 +311,23 @@ export const IS_FOREIGN_EMBED = (function foreignHost(): boolean {
   }
 })();
 
+// A cross-origin ancestor frames us: IS_FOREIGN_EMBED answers false for it (never
+// navigate an external top window), but that host still owns the joint session
+// history, so pushHistory must replace here too.
+export const IS_CROSS_ORIGIN_EMBED = (function crossOriginHost(): boolean {
+  if (!IS_EMBED || window === window.top) return false;
+  try {
+    let win: Window = window;
+    while (win !== win.parent) {
+      win = win.parent;
+      void win.location.pathname;
+    }
+    return false;
+  } catch {
+    return true;
+  }
+})();
+
 // URL prefix for this page's mode. Keeps refresh, in-listing navigation, and
 // param sync (iframe runtime's history.replaceState) inside the active prefix.
 const PREFIX = IS_EMBED ? EMBED_PREFIX : VIEW_PREFIX;
@@ -432,9 +449,10 @@ function guarded(go: () => void): void {
 
 // A foreign embed (framed by a non-explorer host, like Home's app widgets) shares the
 // host's joint session history: a pushState here would make the host's Back button
-// step through the frame's own navigations. Replace instead — the host owns history.
+// step through the frame's own navigations. Replace instead — the host owns history,
+// and a cross-origin host owns it too.
 export function pushHistory(state: unknown, url: string): void {
-  if (IS_FOREIGN_EMBED) history.replaceState(state, "", url);
+  if (IS_FOREIGN_EMBED || IS_CROSS_ORIGIN_EMBED) history.replaceState(state, "", url);
   else history.pushState(state, "", url);
 }
 
