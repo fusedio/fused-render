@@ -685,7 +685,7 @@ class Bot:
         width = self.PAST_INDEX_WIDTH if width is None else width
         keep = {"user": "USER", "question": "YOU ASKED", "approval": "YOU ASKED APPROVAL", "done": "YOU FINISHED", "system": None}
         out = []  # (seq, label, text)
-        for _, ev in _iter_events(self.events_path):
+        for _, ev in self.context_events():
             role, text = ev.get("role"), (ev.get("text") or "").strip()
             if role not in keep or not text:
                 continue
@@ -767,6 +767,41 @@ class Bot:
                      rollovers=int(c.get("rollovers") or 0) + 1)
             self.save()
 
+    # Clear context (the chat header's button): the user starts the model over without leaving the conversation.
+    # The transcript stays on the page (folded above the marker this writes), but nothing the model is handed
+    # reaches past it: the next turn opens a fresh session with no summary, and past_conversation, recall,
+    # transcript_lines and last_task_transcript all read from the floor on (context_events). memory.md is NOT
+    # touched: durable notes belong to the bot, not to this stretch of conversation. A rollover keeps `floor`.
+    def context_floor(self):
+        """The seq of the last Clear context marker: events at or before it are out of the model's reach."""
+        with self.lock:
+            return int(self.conversation().get("floor") or 0)
+
+    def context_events(self):
+        """(index, event) over the transcript the model may still see: everything after context_floor()."""
+        floor = self.context_floor()
+        for i, ev in _iter_events(self.events_path):
+            if int(ev.get("seq") or 0) > floor:
+                yield i, ev
+
+    def clear_context(self):
+        # One lock hold from the guards to the floor: start_task claims the task slot under the same lock, so no task
+        # can start between "nothing is running" and the reset (the marker would land mid-task, the reset fight its
+        # turn). self.lock is an RLock, so emit() re-enters it.
+        with self.lock:
+            if self.running():
+                raise ValueError("stop the task first, then clear the context")
+            if self.meta.get("control"):
+                raise ValueError("hand the browser back first, then clear the context")
+            ev = self.emit("note", "Context cleared. The bot starts fresh from here; what came before stays in this chat "
+                                   "for you, not for the bot.", source="clear")
+            self.conversation().update(session_id=None, tokens=0, since_seq=ev["seq"], born_at=time.time(),
+                                       summary="", sent={}, prompt_hash="", floor=ev["seq"])
+            # An unanswered app offer would stay clickable inside the folded history: the bot no longer knows of it.
+            self.meta.pop("pending_offer", None)
+            self.save()
+        return {"floor": ev["seq"]}
+
     def transcript_lines(self, since_seq=0, limit=None):
         """The conversation since `since_seq` as plain lines for the summary call:
         user lines, the bot's answers and questions in full, actions as their
@@ -775,7 +810,7 @@ class Bot:
         labels = {"user": "USER", "done": "BOT FINISHED", "question": "BOT ASKED", "approval": "BOT ASKED APPROVAL",
                   "error": "ERROR"}
         out = []
-        for _, ev in _iter_events(self.events_path):
+        for _, ev in self.context_events():
             if int(ev.get("seq") or 0) <= since_seq:
                 continue
             role, text = ev.get("role"), " ".join((ev.get("text") or "").split())
@@ -853,7 +888,7 @@ class Bot:
                 seq = int(str(seq).strip().lstrip("#"))
             except ValueError:
                 return f"recall {seq}", "error: `seq` is the number after # in a message line"
-            ev = self.event_by_seq(seq)
+            ev = self.event_by_seq(seq) if seq > self.context_floor() else None
             if not ev or ev.get("role") not in self._RECALL_LABELS:
                 return f"recall #{seq}", f"error: no message #{seq} in this conversation"
             body = (ev.get("text") or "").strip()[:self.RECALL_FULL]
@@ -866,7 +901,7 @@ class Bot:
         if not words:
             return "recall", "error: give `seq` (a message number) or `query` (keywords)"
         hits = []
-        for _, ev in _iter_events(self.events_path):
+        for _, ev in self.context_events():
             if ev.get("role") not in self._RECALL_LABELS or ev.get("role") == "note":
                 continue
             hay = " ".join(str(ev.get(k) or "") for k in ("text", "result", "detail")).lower()
@@ -1101,7 +1136,7 @@ class Bot:
     def last_task_transcript(self, width=200):
         """The most recent finished task as text: the task, each action with its
         result, questions/answers and the final message. Fuel for `learn`."""
-        evs = [ev for _, ev in _iter_events(self.events_path)]
+        evs = [ev for _, ev in self.context_events()]
         start = None
         for i in range(len(evs) - 1, -1, -1):
             if evs[i].get("role") == "system" and (evs[i].get("text") or "").startswith("Task started: "):

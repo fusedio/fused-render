@@ -58,8 +58,9 @@ export interface BotEvent {
   /** Where the message came from / which channel the bot's reply went to (docs §10). Absent = the web page. */
   via?: Via;
   /** "build": a build watcher's notice. "handoff": a hand-off line (docs §11): on Super Bot it carries `handoff` and
-   *  renders as a hand-off card; on the target bot it is the bare "Sent to Super Bot: …" line. */
-  source?: "build" | "handoff" | (string & {});
+   *  renders as a hand-off card; on the target bot it is the bare "Sent to Super Bot: …" line. "clear": the Clear context
+   *  marker (a note); the thread folds every row before the last one. */
+  source?: "build" | "handoff" | "clear" | (string & {});
   handoff?: HandoffRef;
   /** source "build": the build that stopped moving (permission card, question, failure, usage limit); renders as a build card. */
   build?: BuildRef;
@@ -356,6 +357,9 @@ export const api = {
   pause: (id: string) => post<Ok>(`${bid(id)}/pause`, {}, "pause"),
   resume: (id: string) => post<Ok>(`${bid(id)}/resume`, {}, "resume"),
   stop: (id: string) => post<Ok>(`${bid(id)}/stop`, {}, "stop"),
+  /** Clear context: the next turn starts a fresh model session that sees nothing before the marker this writes
+   *  (a `note` with source "clear"); the thread folds what came before. Refused while a task runs or you hold the browser. */
+  clearContext: (id: string) => post<Ok & { floor: number }>(`${bid(id)}/clear`, {}, "clear context"),
   takeover: (id: string) => post<Ok>(`${bid(id)}/takeover`, {}, "takeover"),
   giveback: (id: string) => post<Ok>(`${bid(id)}/giveback`, {}, "giveback"),
   /** The same profile as a real Chrome window (passkeys, password manager). dock brings it back headless with your take-over kept; giveback docks and hands back. */

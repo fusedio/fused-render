@@ -527,6 +527,13 @@
   //
   // Must stay in sync with frontend/src/lib/theme.ts and frontend/index.html;
   // tests/test_theme.py pins the three spellings of the key together.
+  //
+  // Colour presets (D1335) reach opted-in views as TOKENS (D1342, reversing
+  // D1335's "the runtime never learns about presets"): the shell's live palette
+  // is copied, by its computed style, into the fixed `--fused-*` set below on
+  // the view's <html>. There is deliberately no palette table here — the shell
+  // stays the only copy — and a standalone view (no shell above it) gets none,
+  // so the author's `var(--fused-x, fallback)` fallbacks apply.
   var THEME_KEY = "fused-render:theme";
   var DARK_QUERY = "(prefers-color-scheme: dark)";
 
@@ -567,6 +574,69 @@
       /* cross-origin ancestor — stop climbing, resolve on our own */
     }
     return null;
+  }
+
+  // PUBLIC CONTRACT (SPEC §30, skills/fused-render-theming): the custom
+  // properties an opted-in view may read, each [view token, shell token]. Adding
+  // one is additive; renaming or removing one breaks every generated app.
+  var VIEW_TOKENS = [
+    ["--fused-bg", "--bg"],
+    ["--fused-bg-alt", "--bg-alt"],
+    ["--fused-bg-panel", "--bg-panel"],
+    ["--fused-fg", "--fg"],
+    ["--fused-fg-muted", "--fg-muted"],
+    ["--fused-fg-faint", "--fg-faint"],
+    ["--fused-border", "--border"],
+    ["--fused-sel", "--sel"],
+    ["--fused-accent", "--accent"],
+    ["--fused-on-accent", "--on-accent"],
+    ["--fused-error", "--error"],
+    ["--fused-success", "--success"],
+    ["--fused-warning", "--warning"],
+  ];
+
+  // The nearest same-origin ancestor to copy tokens from: either an opted-in
+  // view that already carries its own (the fusedapp template framing an app's
+  // entry page — it has the shell's values, so copy those), or the shell itself
+  // (a `data-theme` root that is not an opted-in view — read its computed
+  // style). Same climb shape as inheritedTheme: stop at a cross-origin ancestor.
+  function tokenSource() {
+    var w = window;
+    try {
+      while (w.parent !== w) {
+        w = w.parent;
+        var el = w.document.documentElement;
+        if (el.hasAttribute("data-fused-theme")) {
+          if (el.style.getPropertyValue("--fused-bg")) return { win: w, el: el, view: true };
+        } else if (el.hasAttribute("data-theme")) {
+          return { win: w, el: el, view: false };
+        }
+      }
+    } catch (e) {
+      /* cross-origin ancestor — no tokens, the author's fallbacks apply */
+    }
+    return null;
+  }
+
+  // Copy the source's tokens and preset name onto `root`. An empty value is
+  // REMOVED (not set empty) so `var(--fused-x, fallback)` falls back.
+  function applyTokens(root) {
+    var src = tokenSource();
+    if (!src) return;
+    var name = src.view
+      ? src.el.getAttribute("data-fused-theme-name")
+      : src.el.getAttribute("data-theme-name");
+    if (name) root.setAttribute("data-fused-theme-name", name);
+    else root.removeAttribute("data-fused-theme-name");
+    var cs = src.view ? null : src.win.getComputedStyle(src.el);
+    for (var i = 0; i < VIEW_TOKENS.length; i++) {
+      var v = src.view
+        ? src.el.style.getPropertyValue(VIEW_TOKENS[i][0])
+        : cs.getPropertyValue(VIEW_TOKENS[i][1]);
+      v = (v || "").trim();
+      if (v) root.style.setProperty(VIEW_TOKENS[i][0], v);
+      else root.style.removeProperty(VIEW_TOKENS[i][0]);
+    }
   }
 
   function resolvedTheme() {
@@ -616,7 +686,10 @@
     var apply = function () {
       var theme = resolvedTheme();
       root.style.colorScheme = theme;
-      if (optedIn) root.setAttribute("data-theme", theme);
+      if (optedIn) {
+        root.setAttribute("data-theme", theme);
+        applyTokens(root);
+      }
     };
     apply();
     // Another window changed the setting (a `clear()` reports key === null).
@@ -641,7 +714,16 @@
       if (source) {
         new MutationObserver(apply).observe(source.win.document.documentElement, {
           attributes: true,
-          attributeFilter: ["data-theme", "style"],
+          attributeFilter: ["data-theme", "data-theme-name", "data-fused-theme-name", "style"],
+        });
+      }
+      // The token source can be a different window than the theme source (a
+      // preset change lands as an attribute write on the shell / framing view).
+      var tokens = optedIn ? tokenSource() : null;
+      if (tokens && (!source || tokens.win !== source.win)) {
+        new MutationObserver(apply).observe(tokens.win.document.documentElement, {
+          attributes: true,
+          attributeFilter: ["data-theme", "data-theme-name", "data-fused-theme-name", "style"],
         });
       }
     } catch (e) {

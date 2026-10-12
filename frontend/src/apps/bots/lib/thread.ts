@@ -17,6 +17,13 @@ export const isNoise = (e: BotEvent): boolean => (e.role === "system" && !isHand
 /** A `.day` divider goes above `e`: the first event, or one after more than SESSION_GAP_S of silence. `prev` is the raw previous event (system notes included). */
 export const sessionBreak = (prev: BotEvent | undefined, e: BotEvent): boolean => !prev || e.ts - prev.ts > SESSION_GAP_S;
 
+/** Index of the last Clear context marker (source "clear"); -1 when the context was never cleared, or the marker has
+ *  fallen off the page's event cap (then everything held is after it). Rows before it fold into "earlier conversation". */
+export const clearIndex = (evs: readonly BotEvent[]): number => {
+  for (let i = evs.length - 1; i >= 0; i--) if (evs[i].source === "clear") return i;
+  return -1;
+};
+
 /** Index of the first shown message past the "New" mark; -1 when there is no mark or nothing past it. */
 export const firstNewIndex = (evs: BotEvent[], mark: number | null | undefined): number =>
   mark == null ? -1 : evs.findIndex((e) => e.seq > mark && !isNoise(e));
