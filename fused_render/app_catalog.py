@@ -217,6 +217,19 @@ def duplicates_of(path: str, app_id: str | None) -> list[str]:
     return out
 
 
+def settle_candidates(path: str, app_id: str | None) -> list[str]:
+    """The folders whose witness MAY name `path` as origin — what
+    `settle_copies` is handed once `path` is gone. The id-duplicates when the
+    page declares an id; for an app without one, every other workspace app
+    (a copy of an id-less app is found only by its recorded origin, and
+    `settle_copies` checks exactly that). Read while `path` still exists."""
+    if app_id:
+        return duplicates_of(path, app_id)
+    me = os.path.normcase(os.path.realpath(path))
+    return [row["path"] for row in app_listing.discover_workspace_apps(fused_dir())
+            if os.path.normcase(row["path"]) != me]
+
+
 def settle_copies(removed: str, dupes: list[str]) -> list[str]:
     """Repoint each duplicate whose `.fused/meta.json` witness names `removed`
     at itself (app_fused_dir._settle_as_copy). Safe by construction: the

@@ -229,7 +229,7 @@ def api_uninstall(body: dict = Body(...), x_fused: str | None = Header(default=N
     folder = app_state_remove.canonical(path)
     # Read while the origin is still here: a copy's witness names it, and
     # once it is gone those copies are settled below, not on their next open.
-    dupes = app_catalog.duplicates_of(path, app_id) if exists else []
+    candidates = app_catalog.settle_candidates(path, app_id) if exists else []
 
     result: dict = {"ok": True, "path": folder, "kind": kind, "mode": mode,
                     "app_id": app_id, "removed_files": False}
@@ -263,7 +263,7 @@ def api_uninstall(body: dict = Body(...), x_fused: str | None = Header(default=N
         # Every surviving copy whose meta.json still records THIS folder as
         # its origin is settled now, so the witness never fires for it — not
         # on its next open (which may come after the tombstone's TTL), now.
-        result["settled"] = app_catalog.settle_copies(path, dupes)
+        result["settled"] = app_catalog.settle_copies(path, candidates)
     if kind == app_catalog.KIND_APPFILE:
         exported_apps.forget(path)
     else:
