@@ -1537,6 +1537,46 @@ def api_ai_unload(body: dict = Body(...), x_fused: str | None = Header(default=N
     return {"stopped": stopped, **supervisor.describe()}
 
 
+@router.post("/api/ai/runtime/conflicts/resolve")
+def api_ai_runtime_conflicts_resolve(body: dict = Body(...),
+                                     x_fused: str | None = Header(default=None)):
+    """The user's way out of a model-slot conflict (SPEC-model-slot-conflict.md
+    §2): `{capability, keep: "<model>"}` makes that model resident and HOLDS
+    the slot for it — the loser's request-path loads keep getting
+    `ModelSlotConflict` rather than evicting it again — and `{capability,
+    keep: null}` instead stops both and holds the slot empty. Either way this
+    is an explicit user action, the same standing `/load`/`/unload` already
+    have, so it is never itself refused by a conflict."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    capability = body.get("capability")
+    if not isinstance(capability, str) or capability not in registry.capabilities():
+        return _error("name a known 'capability' to resolve", status=400)
+    keep = body.get("keep")
+    if keep is not None and not isinstance(keep, str):
+        return _error("'keep' must be a model id or null", status=400)
+    try:
+        return supervisor.resolve_conflict(capability, keep)
+    except supervisor.SupervisorError as e:
+        return _error(str(e), status=409)
+
+
+@router.post("/api/ai/runtime/conflicts/release")
+def api_ai_runtime_conflicts_release(body: dict = Body(...),
+                                     x_fused: str | None = Header(default=None)):
+    """Clears a conflict/hold with no load or unload of its own — back to
+    ordinary auto-load on the next request-path call."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    capability = body.get("capability")
+    if not isinstance(capability, str) or capability not in registry.capabilities():
+        return _error("name a known 'capability' to release", status=400)
+    released = supervisor.release_conflict(capability)
+    return {"released": released, **supervisor.describe()}
+
+
 def _repo_gguf_siblings(model_id: str) -> list[str] | None:
     """Root-level GGUF filenames `model_id` actually publishes, or None when
     nothing could be learned without a network call this route is not
@@ -2708,6 +2748,22 @@ def _embed_error(type_: str, message: str, status: int,
     return JSONResponse(payload, status_code=status)
 
 
+def _conflict_error(e: "supervisor.ModelSlotConflict") -> JSONResponse:
+    """A `ModelSlotConflict` as `_embed_error`'s wire shape, with the fields a
+    caller needs to offer the user a choice rather than just retry: the
+    `code` the spec names, which competing models, and which (if any) is
+    held resident. Shared by every request-path route below `/api/ai`
+    itself (which has its own shape, `server/ai.py`'s own `generate_text`
+    handler) so the body is identical everywhere a route can raise this."""
+    return JSONResponse(
+        {"ok": False, "error": {
+            "type": "model_slot_conflict", "code": "model_slot_conflict",
+            "message": str(e), "capability": e.capability,
+            "models": e.models, "resident": e.resident, "held": e.held,
+        }},
+        status_code=409)
+
+
 @router.post("/api/ai/embed")
 def api_ai_embed(body: dict = Body(...), x_fused: str | None = Header(default=None)):
     """Embed text or an image into the resident dual encoder's vector space.
@@ -2854,6 +2910,8 @@ def api_ai_embed(body: dict = Body(...), x_fused: str | None = Header(default=No
         # `server/ai.py`): the load already started, and its job id is what
         # lets the caller show that download rather than just a rejection.
         return _embed_error("model_loading", str(e), status=409, job_id=e.job_id)
+    except supervisor.ModelSlotConflict as e:
+        return _conflict_error(e)
     except supervisor.SupervisorError as e:
         return _embed_error("ai_error", str(e), status=502)
 
@@ -3029,6 +3087,8 @@ def api_ai_decide(body: dict = Body(...), x_fused: str | None = Header(default=N
         result = supervisor.generate_decide(model, forwarded)
     except supervisor.ModelNotReady as e:
         return _decide_error("model_loading", str(e), status=409, job_id=e.job_id)
+    except supervisor.ModelSlotConflict as e:
+        return _conflict_error(e)
     except supervisor.SupervisorError as e:
         return _decide_error("ai_error", str(e), status=502)
 

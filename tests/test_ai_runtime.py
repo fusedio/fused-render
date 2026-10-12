@@ -3735,6 +3735,105 @@ def test_resolve_keep_none_stops_both_and_refuses_until_release(fake_runner):
     _wait_ready("org/a")
 
 
+def test_a_conflict_reaches_api_ai_as_a_409_with_the_models_and_no_retry_bait(
+        client, fake_runner):
+    """SPEC-model-slot-conflict.md §2: the 409 body names the code the client
+    is meant to branch on (`model_slot_conflict`, never `model_loading` — a
+    client that only retries `model_loading` must not retry this one), plus
+    the capability and the competing models."""
+    with pytest.raises(supervisor.ModelNotReady):
+        list(supervisor.generate_text("org/a", {"messages": []}))
+    _wait_ready("org/a")
+    with pytest.raises(supervisor.ModelNotReady):
+        list(supervisor.generate_text("org/b", {"messages": []}))
+    _wait_ready("org/b")
+
+    response = client.post("/api/ai", json={"model": "org/a", "prompt": "hi"},
+                           headers={"X-Fused": "1"})
+    assert response.status_code == 409
+    body = response.json()
+    assert body["ok"] is False
+    assert body["error"]["type"] == "model_slot_conflict"
+    assert body["error"]["code"] == "model_slot_conflict"
+    assert body["error"]["capability"] == registry.TEXT_GENERATION
+    assert set(body["error"]["models"]) == {"org/a", "org/b"}
+    assert body["error"]["resident"] == "org/b"
+    assert body["error"]["held"] is False
+
+
+def test_the_resolve_endpoint_keeps_a_model_and_holds_the_slot(client, fake_runner):
+    with pytest.raises(supervisor.ModelNotReady):
+        list(supervisor.generate_text("org/a", {"messages": []}))
+    _wait_ready("org/a")
+    with pytest.raises(supervisor.ModelNotReady):
+        list(supervisor.generate_text("org/b", {"messages": []}))
+    _wait_ready("org/b")
+    with pytest.raises(supervisor.ModelSlotConflict):
+        list(supervisor.generate_text("org/a", {"messages": []}))
+
+    response = client.post(
+        "/api/ai/runtime/conflicts/resolve",
+        json={"capability": registry.TEXT_GENERATION, "keep": "org/b"},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 200
+    _wait_ready("org/b")
+
+    conflicts = supervisor.describe()["conflicts"]
+    assert len(conflicts) == 1 and conflicts[0]["held"] is True
+
+    refused = client.post("/api/ai", json={"model": "org/a", "prompt": "hi"},
+                          headers={"X-Fused": "1"})
+    assert refused.status_code == 409
+    assert refused.json()["error"]["held"] is True
+
+    released = client.post("/api/ai/runtime/conflicts/release",
+                           json={"capability": registry.TEXT_GENERATION},
+                           headers={"X-Fused": "1"})
+    assert released.status_code == 200
+    assert released.json()["released"] is True
+    assert supervisor.describe()["conflicts"] == []
+
+
+def test_the_resolve_endpoint_with_keep_null_stops_both(client, fake_runner):
+    with pytest.raises(supervisor.ModelNotReady):
+        list(supervisor.generate_text("org/a", {"messages": []}))
+    _wait_ready("org/a")
+    with pytest.raises(supervisor.ModelNotReady):
+        list(supervisor.generate_text("org/b", {"messages": []}))
+    _wait_ready("org/b")
+    with pytest.raises(supervisor.ModelSlotConflict):
+        list(supervisor.generate_text("org/a", {"messages": []}))
+
+    response = client.post(
+        "/api/ai/runtime/conflicts/resolve",
+        json={"capability": registry.TEXT_GENERATION, "keep": None},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 200
+    assert supervisor.describe()["loaded"] == []
+
+    refused = client.post("/api/ai", json={"model": "org/b", "prompt": "hi"},
+                          headers={"X-Fused": "1"})
+    assert refused.status_code == 409
+    assert refused.json()["error"]["resident"] is None
+    assert refused.json()["error"]["held"] is True
+
+
+def test_the_resolve_endpoint_rejects_an_unknown_capability(client):
+    response = client.post(
+        "/api/ai/runtime/conflicts/resolve",
+        json={"capability": "telepathy", "keep": None},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 400
+
+
+def test_the_release_endpoint_rejects_an_unknown_capability(client):
+    response = client.post(
+        "/api/ai/runtime/conflicts/release",
+        json={"capability": "telepathy"},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 400
+
+
 def test_evicting_a_model_does_not_block_other_calls_while_it_terminates(fake_runner, monkeypatch):
     """B1: `_terminate` can block for ~9s (a `/quit` POST, SIGTERM+wait,
     SIGKILL+wait, `proc.wait`). If the eviction branch in `_start_resident`
@@ -5588,7 +5687,8 @@ def test_the_runtime_endpoint_reports_runners_and_nothing_loaded(client):
 def test_every_mutating_route_carries_the_guard(client):
     for path in ("/api/ai/runtime/load", "/api/ai/runtime/unload",
                  "/api/ai/runtime/download", "/api/ai/image", "/api/ai/transcribe",
-                 "/api/ai/video", "/api/ai/speech"):
+                 "/api/ai/video", "/api/ai/speech",
+                 "/api/ai/runtime/conflicts/resolve", "/api/ai/runtime/conflicts/release"):
         assert client.post(path, json={"model": "org/x", "prompt": "x"}).status_code == 403
 
 

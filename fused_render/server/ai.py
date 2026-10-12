@@ -1173,6 +1173,19 @@ def _local_relay(model: str, prompt: str, system_prompt: str, stream: bool,
             {"ok": False, "error": {"type": "model_loading", "message": str(e),
                                     "jobId": e.job_id}},
             status_code=409)
+    except supervisor.ModelSlotConflict as e:
+        # Also NOT counted (AI-12b), same rationale as ModelNotReady just
+        # above: this is the request path doing exactly what the conflict
+        # rule designed it to do — refuse to keep evicting — not the model
+        # failing to answer. Unlike ModelNotReady this is terminal: a caller
+        # that only retries on `model_loading` must not retry on this one.
+        return JSONResponse(
+            {"ok": False, "error": {
+                "type": "model_slot_conflict", "code": "model_slot_conflict",
+                "message": str(e), "capability": e.capability,
+                "models": e.models, "resident": e.resident, "held": e.held,
+            }},
+            status_code=409)
     except supervisor.SupervisorError as e:
         return _ai_failed(model, "ai_unavailable", str(e), status=502)
 
