@@ -4886,10 +4886,33 @@ export interface AiDownload {
   startedAt: number;
 }
 
+/** One capability stuck in `ModelSlotConflict` (SPEC-model-slot-conflict.md
+ *  §1) — the swap loop caught, or a capability held by an explicit resolve.
+ *  What the Models dock's conflict row and the actionable notification both
+ *  read to draw "Keep A / Keep B / Stop both" (or, once `held`, "Held for
+ *  A — Release"). */
+export interface AiConflict {
+  capability: string;
+  /** Ordered distinct models seen contending for the slot — grows as more
+   *  callers try while the conflict stands, so this can run past two. */
+  models: string[];
+  /** The model actually resident right now, or null when the capability is
+   *  held empty (a resolve with `keep: null`). */
+  resident: string | null;
+  /** Epoch seconds the conflict started standing. */
+  since: number;
+  /** True once the user has resolved it (`resolveModelConflict`) rather than
+   *  the supervisor having caught the swap loop on its own. */
+  held: boolean;
+}
+
 export interface AiRuntime {
   runners: AiRunner[];
   loaded: AiLoadedModel[];
   downloading: AiDownload[];
+  /** Capabilities currently stuck in a model-slot conflict — empty in the
+   *  overwhelmingly common case where nothing is fighting over a slot. */
+  conflicts: AiConflict[];
   totalResidentBytes: number | null;
   /** What a model has to fit under on THIS machine, in bytes — the Apple
    *  Silicon wired limit where it applies, total physical RAM otherwise, and
@@ -5262,6 +5285,34 @@ export function downloadAiModel(
 
 export function unloadAiModel(model: string): Promise<AiRuntime & { stopped: boolean }> {
   return postJson<AiRuntime & { stopped: boolean }>("/api/ai/runtime/unload", { model });
+}
+
+/** The user's way out of a model-slot conflict (SPEC-model-slot-conflict.md
+ *  §2, `POST /api/ai/runtime/conflicts/resolve`). `keep: "<model>"` loads it
+ *  and HOLDS the slot — the loser's request-path loads keep getting
+ *  `model_slot_conflict` rather than evicting it again. `keep: null` instead
+ *  stops both and holds the slot empty.
+ *
+ *  Returns whatever `supervisor.load`/`unload` itself replies with, not a
+ *  full `AiRuntime` — callers re-poll (`refreshAiRuntime`) rather than trust
+ *  this reply for the dock's own state, same as `loadAiModel`. */
+export function resolveModelConflict(
+  capability: string, keep: string | null,
+): Promise<AiLoadStarted | { capability: string; resident: null }> {
+  return postJson<AiLoadStarted | { capability: string; resident: null }>(
+    "/api/ai/runtime/conflicts/resolve", { capability, keep });
+}
+
+/** Clears a conflict/hold with no load or unload of its own — back to
+ *  ordinary auto-load on the next request-path call
+ *  (`POST /api/ai/runtime/conflicts/release`). Unlike `resolveModelConflict`
+ *  this DOES reply with the full runtime, so callers can `publishAiRuntime`
+ *  it directly. */
+export function releaseModelConflict(
+  capability: string,
+): Promise<AiRuntime & { released: boolean }> {
+  return postJson<AiRuntime & { released: boolean }>(
+    "/api/ai/runtime/conflicts/release", { capability });
 }
 
 /** Stop the generation in flight on `capability`'s resident worker, WITHOUT
