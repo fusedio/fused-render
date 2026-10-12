@@ -33,14 +33,17 @@ warning, and no way for the user to pick a winner.
 - Track, per capability, the request-path evictions: when a request-path
   `load()` would evict a *different* resident/loading model, record
   `(time, evicted_model, incoming_model)`.
-- **Conflict rule:** if a request-path load would evict a model that itself
-  was brought in by a request-path load within `CONFLICT_WINDOW_S` (60s) —
-  i.e. the slot is being swapped back and forth — do **not** evict. Instead
-  put the capability into a *conflict* state and raise a new
-  `ModelSlotConflict` error (subclass whatever the request path's errors
-  subclass; must NOT be a `ModelNotReady`, so callers don't retry).
-  The rule must catch A→B→A ping-pong on the second swap; a single
-  one-off switch (A then later B) must still just work as today.
+- **Conflict rule:** track, per capability, a chain of recent request-path
+  evictions within `CONFLICT_WINDOW_S` (60s). A single switch (A takes an
+  empty slot, or evicts something else later) is ordinary and always
+  evicts. A switch BACK (A→B→A) is still allowed on its own — one consumer
+  changing its mind twice is not a fight. Only the THIRD request-path
+  eviction that keeps the same two models alternating (closing
+  A→B→A→B) proves two consumers are fighting over the slot: do **not**
+  evict for that third attempt. Instead put the capability into a
+  *conflict* state and raise a new `ModelSlotConflict` error (subclass
+  whatever the request path's errors subclass; must NOT be a
+  `ModelNotReady`, so callers don't retry).
 - Conflict state per capability: `{capability, models: [ordered distinct
   models that contended], resident: <model or None>, since, requesters?}`.
   Include who asked (app/page/bot identity) only if the request path
@@ -110,7 +113,7 @@ In `tests/test_ai_runtime.py`, with the existing fake runner:
 1. **Ping-pong is bounded:** two clients loop on the request path
    (`generate_text` or the shared helper), one with `org/a`, one with
    `org/b`, each retrying on `ModelNotReady` like runtime.js does. Assert
-   evictions stay ≤ 2, one side gets `ModelSlotConflict`, and
+   evictions stay ≤ 3, one side gets `ModelSlotConflict`, and
    `describe()["conflicts"]` names both models.
 2. A single switch A → (later, outside the window or not ping-pong) B
    still evicts and loads B with no conflict.

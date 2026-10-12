@@ -5,29 +5,35 @@ had to make a call the spec left implicit, and why.
 
 ## Detecting the swap loop (supervisor, §1)
 
-`_request_path_conflict` (`fused_render/ai/supervisor.py`) only opens a new
-`ConflictState` when a REQUEST-PATH load evicts a worker that was *itself*
-installed by a request-path load within `CONFLICT_WINDOW_S` — see
-`Worker.request_path_evicted`/`request_path_at`. A worker that simply started
-from an empty slot is an ordinary switch, not proof of a fight; a worker that
-already displaced someone, evicted again this soon, is two callers taking the
-slot off each other. This is why the first swap of a capability never raises
-a conflict and the second (closing the loop) does — matching the spec's own
-"stop the loop, don't flag the first switch" framing.
+`_request_path_conflict` (`fused_render/ai/supervisor.py`) tracks each
+capability's recent request-path evictions in `_swap_chains`: a list of
+`(time, evicted_model, incoming_model)`, pruned to `CONFLICT_WINDOW_S` on
+every read. It opens a new `ConflictState` only on the THIRD request-path
+eviction in a row that keeps the same two models alternating —
+`_closes_an_alternating_loop` checks the last three entries of the chain for
+an A→B, B→A, A→B shape. The first eviction of a capability's slot is always
+just a switch; the second (a switch BACK) is still just one consumer
+changing its mind twice, and both are let through. The third — asking for
+the slot back a SECOND time, closing A→B→A→B — is what proves two consumers
+are fighting over it rather than one caller settling on a choice, and that
+third attempt is the one refused with `ModelSlotConflict` instead of being
+carried out.
+
+This is a per-capability chain rather than a field on `Worker` (the
+earlier shape this replaced could only see one eviction back, which could
+not tell a switch-back from the loop closing — see git history for that
+version). `_swap_chains[capability]` is popped whenever a conflict opens (the
+`ConflictState` is the record from then on) and by any explicit load/unload
+(`_start_resident`'s non-request-path branch) — the user settling the
+capability discards whatever history was building toward a conflict, and a
+model already resident when `_force_conflict`-style sequences start is why
+`reset()` and every explicit action clear the chain rather than letting it
+survive into unrelated activity on the same capability.
 
 A contender that shows up while a conflict already stands is folded into the
 existing `ConflictState.models` list rather than starting a second conflict,
 so a notification or dock row raised later names everyone still asking for
 the capability, not just whoever collided first.
-
-`Worker.evicted_model` records WHICH model a request-path load's own
-eviction displaced. `request_path_evicted`/`request_path_at` alone only say
-"this worker displaced somebody recently" — not WHO — which let a one-way
-A -> B -> C sequence (three distinct models, nobody fighting) misread as
-A -> B -> A closing its loop, since both shapes set those two fields on B
-identically. `_request_path_conflict` now also requires the model asking
-for the slot to be the SAME model `current.evicted_model` names before it
-will open a conflict.
 
 ## Atomic hold: writing a resolve's `ConflictState` with its eviction
 

@@ -3557,6 +3557,28 @@ def _retry_generate_text(model, timeout=10.0):
     raise AssertionError(f"{model} never became ready within {timeout}s")
 
 
+def _force_conflict(first, second):
+    """Run exactly the retry sequence that closes the swap loop (DECISIONS'
+    B1 rule, the THIRD request-path eviction in an alternating chain):
+    `first` claims the empty slot, `second` evicts it, `first` evicts
+    `second` right back (the switch-back alone, still allowed on its own),
+    and `second`'s retry — which would evict `first` a second time — is the
+    eviction that closes the loop. Leaves `first` resident and `second`
+    refused with a live `ModelSlotConflict`, which this returns."""
+    with pytest.raises(supervisor.ModelNotReady):
+        list(supervisor.generate_text(first, {"messages": []}))
+    _wait_ready(first)
+    with pytest.raises(supervisor.ModelNotReady):
+        list(supervisor.generate_text(second, {"messages": []}))
+    _wait_ready(second)
+    with pytest.raises(supervisor.ModelNotReady):
+        list(supervisor.generate_text(first, {"messages": []}))
+    _wait_ready(first)
+    with pytest.raises(supervisor.ModelSlotConflict) as caught:
+        list(supervisor.generate_text(second, {"messages": []}))
+    return caught.value
+
+
 def test_an_unheld_conflict_names_every_contender_and_the_resident_served():
     """The resident keeps answering while the OTHERS' loads are refused — the
     message has to say which model is which, for two contenders and for
@@ -3577,13 +3599,15 @@ def test_an_unheld_conflict_names_every_contender_and_the_resident_served():
         "one on the AI Models page.")
 
 
-def test_the_swap_loop_is_caught_on_its_second_swap(fake_runner):
+def test_the_swap_loop_is_caught_on_its_third_swap(fake_runner):
     """SPEC-model-slot-conflict.md: two consumers of one capability wanting
     different models evict each other on every retry, with the request
     path's own `ModelNotReady`/load contract giving that loop no cap. The
-    FIRST swap (nothing resident yet, then org/a) is an ordinary switch and
-    must still just work; the loop only shows itself on the SECOND swap
-    (evicting org/a's replacement to bring org/a back), which is what gets
+    FIRST swap (nothing resident yet, then org/a) is an ordinary switch, and
+    so is the SECOND (org/b evicting org/a) — a single switch-back must still
+    just work, since it is indistinguishable from someone changing their mind
+    once. The loop only shows itself on the THIRD swap (evicting org/a's
+    replacement to bring org/b back a second time), which is what gets
     caught."""
     # org/a starts resident — the capability was empty, so this is not yet
     # evidence of anything.
@@ -3596,26 +3620,33 @@ def test_the_swap_loop_is_caught_on_its_second_swap(fake_runner):
         list(supervisor.generate_text("org/b", {"messages": []}))
     _wait_ready("org/b")
 
-    # org/a's retry would evict org/b, the SECOND swap — the ping-pong
-    # closing its loop. Refused instead of evicted.
-    with pytest.raises(supervisor.ModelSlotConflict) as caught:
+    # org/a evicts org/b back — the second swap, the switch-back alone, still
+    # allowed on its own.
+    with pytest.raises(supervisor.ModelNotReady):
         list(supervisor.generate_text("org/a", {"messages": []}))
+    _wait_ready("org/a")
+    assert supervisor.describe()["conflicts"] == []
+
+    # org/b's retry would evict org/a again, the THIRD swap — the ping-pong
+    # closing its loop a second time. Refused instead of evicted.
+    with pytest.raises(supervisor.ModelSlotConflict) as caught:
+        list(supervisor.generate_text("org/b", {"messages": []}))
     assert caught.value.capability == registry.TEXT_GENERATION
     assert set(caught.value.models) == {"org/a", "org/b"}
-    assert caught.value.resident == "org/b"
+    assert caught.value.resident == "org/a"
     assert caught.value.held is False
 
     conflicts = supervisor.describe()["conflicts"]
     assert len(conflicts) == 1
     assert conflicts[0]["capability"] == registry.TEXT_GENERATION
     assert set(conflicts[0]["models"]) == {"org/a", "org/b"}
-    assert conflicts[0]["resident"] == "org/b"
+    assert conflicts[0]["resident"] == "org/a"
     assert conflicts[0]["held"] is False
 
-    # org/b — the resident model — is unaffected: it just answers.
-    events = list(supervisor.generate_text("org/b", {"messages": []}))
+    # org/a — the resident model — is unaffected: it just answers.
+    events = list(supervisor.generate_text("org/a", {"messages": []}))
     assert events[-1]["ok"] is True
-    assert supervisor.describe()["loaded"][0]["model"] == "org/b"
+    assert supervisor.describe()["loaded"][0]["model"] == "org/a"
 
     # A third contender during the live conflict is folded in rather than
     # replacing the two that first collided.
@@ -3624,15 +3655,36 @@ def test_the_swap_loop_is_caught_on_its_second_swap(fake_runner):
     assert set(third.value.models) == {"org/a", "org/b", "org/c"}
 
 
+def test_a_single_switch_back_is_not_a_conflict(fake_runner):
+    """A -> B -> A, by itself, is only two evictions — the slot settling back
+    on the first model, not proof that two consumers are fighting over it.
+    The rule needs a THIRD eviction, closing the loop a second time, before
+    it opens a conflict (see `test_the_swap_loop_is_caught_on_its_third_swap`
+    for that one)."""
+    with pytest.raises(supervisor.ModelNotReady):
+        list(supervisor.generate_text("org/a", {"messages": []}))
+    _wait_ready("org/a")
+    with pytest.raises(supervisor.ModelNotReady):
+        list(supervisor.generate_text("org/b", {"messages": []}))
+    _wait_ready("org/b")
+    with pytest.raises(supervisor.ModelNotReady):
+        list(supervisor.generate_text("org/a", {"messages": []}))
+    _wait_ready("org/a")
+
+    assert supervisor.describe()["conflicts"] == []
+    assert supervisor.describe()["loaded"][0]["model"] == "org/a"
+
+
 def test_a_one_way_sequence_of_three_models_is_not_a_ping_pong(fake_runner):
     """A -> B -> C, three DISTINCT models in a row, is someone browsing
     through models, not two callers fighting over one. B's eviction of A
-    sets `request_path_evicted`/`request_path_at`, the same bits a true
-    ping-pong (A -> B -> A) sets — so the rule has to ask not just "was
-    something evicted recently" but "is the model asking for the slot now
-    the SAME ONE that got evicted", via `Worker.evicted_model`. Without that
-    check, C's load reads as indistinguishable from A's own retry coming
-    back around and wrongly opens a conflict."""
+    and C's eviction of B are each recorded in the capability's own swap
+    chain (`_swap_chains`) the same way a true ping-pong's evictions are —
+    so the rule has to ask not just "how many evictions happened recently"
+    but whether the last three of them actually ALTERNATE between the same
+    two models. Two evictions that never repeat a model (A->B, then B->C)
+    can never satisfy that, however many of them pile up, which is what
+    keeps this sequence from reading as the loop closing."""
     with pytest.raises(supervisor.ModelNotReady):
         list(supervisor.generate_text("org/a", {"messages": []}))
     _wait_ready("org/a")
@@ -3654,25 +3706,31 @@ def test_a_one_way_sequence_of_three_models_is_not_a_ping_pong(fake_runner):
 def test_a_ping_pong_bounded_retry_loop_ends_in_a_conflict_not_forever(fake_runner):
     """The user-facing promise end to end: two callers retrying forever
     (`_retry_generate_text`, `runtime.js`'s own contract) stop evicting each
-    other and one gets a terminal error instead of looping."""
+    other and one gets a terminal error instead of looping — bounded at the
+    THIRD eviction, not the second: a lone switch-back must still succeed."""
     assert _retry_generate_text("org/a") == "ready"
     assert _retry_generate_text("org/b") == "ready"
+    assert _retry_generate_text("org/a") == "ready"
     with pytest.raises(supervisor.ModelSlotConflict):
-        _retry_generate_text("org/a")
+        _retry_generate_text("org/b")
 
 
 def test_a_single_switch_outside_the_conflict_window_still_evicts(fake_runner):
     """The other half of the rule: a one-off switch — not a tight loop — must
     keep working exactly as it does today, forever, not just on its first
-    hop. Simulated by backdating the resident worker's own eviction past
-    `CONFLICT_WINDOW_S` rather than sleeping the real window away."""
+    hop. Simulated by backdating the capability's own swap-chain entry past
+    `CONFLICT_WINDOW_S` rather than sleeping the real window away — once it
+    is pruned, the next eviction starts a fresh chain instead of continuing
+    one that would otherwise be closing its loop."""
     with pytest.raises(supervisor.ModelNotReady):
         list(supervisor.generate_text("org/a", {"messages": []}))
     _wait_ready("org/a")
     with pytest.raises(supervisor.ModelNotReady):
         list(supervisor.generate_text("org/b", {"messages": []}))
-    worker_b = _wait_ready("org/b")
-    worker_b.request_path_at = time.time() - supervisor.CONFLICT_WINDOW_S - 1
+    _wait_ready("org/b")
+    stale = time.time() - supervisor.CONFLICT_WINDOW_S - 1
+    supervisor._swap_chains[registry.TEXT_GENERATION] = [
+        (stale, "org/a", "org/b")]
 
     # org/a's retry now evicts org/b cleanly — old news, not a loop.
     with pytest.raises(supervisor.ModelNotReady):
@@ -3685,14 +3743,7 @@ def test_a_single_switch_outside_the_conflict_window_still_evicts(fake_runner):
 def test_manual_load_and_unload_clear_a_live_conflict(fake_runner):
     """SPEC-model-slot-conflict.md §1: explicit user actions are never
     blocked and always settle a conflict standing on that capability."""
-    with pytest.raises(supervisor.ModelNotReady):
-        list(supervisor.generate_text("org/a", {"messages": []}))
-    _wait_ready("org/a")
-    with pytest.raises(supervisor.ModelNotReady):
-        list(supervisor.generate_text("org/b", {"messages": []}))
-    _wait_ready("org/b")
-    with pytest.raises(supervisor.ModelSlotConflict):
-        list(supervisor.generate_text("org/a", {"messages": []}))
+    _force_conflict("org/a", "org/b")
     assert supervisor.describe()["conflicts"]
 
     # A manual load — not a retry — is never refused, and it clears the
@@ -3701,26 +3752,20 @@ def test_manual_load_and_unload_clear_a_live_conflict(fake_runner):
     _wait_ready("org/a")
     assert supervisor.describe()["conflicts"] == []
 
+    # Empty the slot first — `_force_conflict` assumes a fresh capability, and
+    # `org/a` is still resident from the load above.
+    supervisor.unload(capability=registry.TEXT_GENERATION)
+    assert supervisor.describe()["conflicts"] == []
+
     # Rebuild the conflict, then prove `unload` clears it too.
-    with pytest.raises(supervisor.ModelNotReady):
-        list(supervisor.generate_text("org/b", {"messages": []}))
-    _wait_ready("org/b")
-    with pytest.raises(supervisor.ModelSlotConflict):
-        list(supervisor.generate_text("org/a", {"messages": []}))
+    _force_conflict("org/b", "org/a")
     assert supervisor.describe()["conflicts"]
     supervisor.unload(capability=registry.TEXT_GENERATION)
     assert supervisor.describe()["conflicts"] == []
 
 
 def test_resolve_keep_a_model_holds_the_slot_against_the_other(fake_runner):
-    with pytest.raises(supervisor.ModelNotReady):
-        list(supervisor.generate_text("org/a", {"messages": []}))
-    _wait_ready("org/a")
-    with pytest.raises(supervisor.ModelNotReady):
-        list(supervisor.generate_text("org/b", {"messages": []}))
-    _wait_ready("org/b")
-    with pytest.raises(supervisor.ModelSlotConflict):
-        list(supervisor.generate_text("org/a", {"messages": []}))
+    _force_conflict("org/a", "org/b")
 
     supervisor.resolve_conflict(registry.TEXT_GENERATION, keep="org/b")
     _wait_ready("org/b")
@@ -3752,14 +3797,7 @@ def test_resolve_keep_a_model_holds_the_slot_against_the_other(fake_runner):
 
 
 def test_resolve_keep_none_stops_both_and_refuses_until_release(fake_runner):
-    with pytest.raises(supervisor.ModelNotReady):
-        list(supervisor.generate_text("org/a", {"messages": []}))
-    _wait_ready("org/a")
-    with pytest.raises(supervisor.ModelNotReady):
-        list(supervisor.generate_text("org/b", {"messages": []}))
-    _wait_ready("org/b")
-    with pytest.raises(supervisor.ModelSlotConflict):
-        list(supervisor.generate_text("org/a", {"messages": []}))
+    _force_conflict("org/a", "org/b")
 
     supervisor.resolve_conflict(registry.TEXT_GENERATION, keep=None)
     assert supervisor.describe()["loaded"] == []
@@ -3794,8 +3832,11 @@ def test_a_conflict_reaches_api_ai_as_a_409_with_the_models_and_no_retry_bait(
     with pytest.raises(supervisor.ModelNotReady):
         list(supervisor.generate_text("org/b", {"messages": []}))
     _wait_ready("org/b")
+    with pytest.raises(supervisor.ModelNotReady):
+        list(supervisor.generate_text("org/a", {"messages": []}))
+    _wait_ready("org/a")
 
-    response = client.post("/api/ai", json={"model": "org/a", "prompt": "hi"},
+    response = client.post("/api/ai", json={"model": "org/b", "prompt": "hi"},
                            headers={"X-Fused": "1"})
     assert response.status_code == 409
     body = response.json()
@@ -3804,19 +3845,12 @@ def test_a_conflict_reaches_api_ai_as_a_409_with_the_models_and_no_retry_bait(
     assert body["error"]["code"] == "model_slot_conflict"
     assert body["error"]["capability"] == registry.TEXT_GENERATION
     assert set(body["error"]["models"]) == {"org/a", "org/b"}
-    assert body["error"]["resident"] == "org/b"
+    assert body["error"]["resident"] == "org/a"
     assert body["error"]["held"] is False
 
 
 def test_the_resolve_endpoint_keeps_a_model_and_holds_the_slot(client, fake_runner):
-    with pytest.raises(supervisor.ModelNotReady):
-        list(supervisor.generate_text("org/a", {"messages": []}))
-    _wait_ready("org/a")
-    with pytest.raises(supervisor.ModelNotReady):
-        list(supervisor.generate_text("org/b", {"messages": []}))
-    _wait_ready("org/b")
-    with pytest.raises(supervisor.ModelSlotConflict):
-        list(supervisor.generate_text("org/a", {"messages": []}))
+    _force_conflict("org/a", "org/b")
 
     response = client.post(
         "/api/ai/runtime/conflicts/resolve",
@@ -3848,14 +3882,7 @@ def test_the_resolve_endpoint_keeps_a_model_and_holds_the_slot(client, fake_runn
 
 
 def test_the_resolve_endpoint_with_keep_null_stops_both(client, fake_runner):
-    with pytest.raises(supervisor.ModelNotReady):
-        list(supervisor.generate_text("org/a", {"messages": []}))
-    _wait_ready("org/a")
-    with pytest.raises(supervisor.ModelNotReady):
-        list(supervisor.generate_text("org/b", {"messages": []}))
-    _wait_ready("org/b")
-    with pytest.raises(supervisor.ModelSlotConflict):
-        list(supervisor.generate_text("org/a", {"messages": []}))
+    _force_conflict("org/a", "org/b")
 
     response = client.post(
         "/api/ai/runtime/conflicts/resolve",
@@ -3883,14 +3910,7 @@ def test_resolve_keep_writes_the_hold_atomically_with_the_eviction(fake_runner, 
     now writes `hold` in the SAME locked block that evicts, so the held
     conflict is already standing the instant `_terminate` is reached — well
     before it returns."""
-    with pytest.raises(supervisor.ModelNotReady):
-        list(supervisor.generate_text("org/a", {"messages": []}))
-    _wait_ready("org/a")
-    with pytest.raises(supervisor.ModelNotReady):
-        list(supervisor.generate_text("org/b", {"messages": []}))
-    _wait_ready("org/b")
-    with pytest.raises(supervisor.ModelSlotConflict):
-        list(supervisor.generate_text("org/a", {"messages": []}))
+    _force_conflict("org/b", "org/a")
 
     real_terminate = supervisor._terminate
     started = threading.Event()
@@ -3956,14 +3976,8 @@ def test_reap_idle_clears_an_unheld_conflict_on_its_resident(fake_runner, monkey
     resident; once that resident is gone — by the idle reaper, same as by a
     manual unload — the standoff it named is over too, not left to stand
     forever with no worker left for `/conflicts/resolve` to act on."""
-    with pytest.raises(supervisor.ModelNotReady):
-        list(supervisor.generate_text("org/a", {"messages": []}))
-    _wait_ready("org/a")
-    with pytest.raises(supervisor.ModelNotReady):
-        list(supervisor.generate_text("org/b", {"messages": []}))
+    _force_conflict("org/b", "org/a")
     worker = _wait_ready("org/b")
-    with pytest.raises(supervisor.ModelSlotConflict):
-        list(supervisor.generate_text("org/a", {"messages": []}))
     assert len(supervisor.describe()["conflicts"]) == 1
 
     worker.last_activity = time.monotonic() - 10_000
@@ -3975,14 +3989,7 @@ def test_reap_idle_does_not_clear_a_held_conflict_on_its_resident(fake_runner):
     """A held conflict is the user's own decision (`resolve_conflict`); the
     idle reaper removing the worker it is about must not silently lift it —
     only `release_conflict` does that."""
-    with pytest.raises(supervisor.ModelNotReady):
-        list(supervisor.generate_text("org/a", {"messages": []}))
-    _wait_ready("org/a")
-    with pytest.raises(supervisor.ModelNotReady):
-        list(supervisor.generate_text("org/b", {"messages": []}))
-    _wait_ready("org/b")
-    with pytest.raises(supervisor.ModelSlotConflict):
-        list(supervisor.generate_text("org/a", {"messages": []}))
+    _force_conflict("org/b", "org/a")
 
     supervisor.resolve_conflict(registry.TEXT_GENERATION, keep="org/b")
     worker = _wait_ready("org/b")

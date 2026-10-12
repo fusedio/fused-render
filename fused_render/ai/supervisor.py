@@ -375,34 +375,6 @@ class Worker:
     #: thread checks it at every step so an evicted load stops downloading
     #: instead of finishing into a table it no longer belongs to.
     stopping: bool = False
-    #: `time.time()` this worker was created by a REQUEST-PATH load (a miss
-    #: inside `generate_text`/`_generate_sync`, never `/api/ai/runtime/load`)
-    #: — `None` for a manual one. The one fact `_request_path_conflict` needs
-    #: to tell a swap loop from an ordinary switch: evicting a worker stamped
-    #: here within `CONFLICT_WINDOW_S` is the ping-pong the whole mechanism
-    #: exists to stop.
-    request_path_at: float | None = None
-    #: Whether THIS worker's own request-path load evicted a DIFFERENT model
-    #: to claim the slot — as opposed to the capability simply being empty
-    #: when it loaded. The fact `_request_path_conflict` needs to tell a
-    #: one-off switch (A, nothing resident before it, then evicted for B —
-    #: allowed) from the swap closing its loop (B, itself installed by
-    #: evicting A, now about to be evicted BACK for A — refused): the first
-    #: eviction in any sequence is always exactly that, a switch, and only a
-    #: worker that already displaced someone can be the ping-pong's second
-    #: half.
-    request_path_evicted: bool = False
-    #: The model THIS worker's own request-path load evicted, or `None` when
-    #: it started from an empty slot. `request_path_evicted` alone only says
-    #: "this worker displaced somebody" — it does not say WHO, which is what
-    #: let an A->B->C sequence (three distinct models, nobody actually
-    #: fighting) misread as a ping-pong: B evicted A within the window, so a
-    #: request for C, evicting B, looked identical to A's own request coming
-    #: back around. Recording the name lets `_request_path_conflict` ask the
-    #: question the rule is actually about — is the INCOMING model the one
-    #: that got evicted to install the worker now being evicted — rather than
-    #: merely "did somebody get evicted recently".
-    evicted_model: str | None = None
 
 
 _lock = threading.RLock()
@@ -502,6 +474,16 @@ class ConflictState:
 #: exactly as before (evict on miss). See `ConflictState` and
 #: `_request_path_conflict`.
 _conflicts: dict[str, ConflictState] = {}
+
+#: capability -> recent request-path evictions, oldest first, each
+#: `(time.time(), evicted_model, incoming_model)`. `_request_path_conflict`
+#: prunes entries older than `CONFLICT_WINDOW_S` on every read and asks
+#: `_closes_an_alternating_loop` whether the last three show two consumers
+#: bouncing the slot between the same two models. Popped once a conflict
+#: opens (the standoff itself is the record from then on, in `_conflicts`),
+#: and by any explicit load/unload (the user settled the capability, so
+#: whatever history was building toward a conflict no longer means anything).
+_swap_chains: dict[str, list[tuple[float, str, str]]] = {}
 
 
 def is_worker_token(token: str) -> bool:
@@ -1667,6 +1649,28 @@ def _runner_or_raise(capability: str) -> registry.Runner:
     return runner
 
 
+def _closes_an_alternating_loop(chain: list[tuple[float, str, str]]) -> bool:
+    """Do the last three entries of `chain` (each `(when, evicted, incoming)`)
+    show the SAME two models bouncing back and forth — A evicted for B, B
+    evicted for A, A evicted for B again — rather than three unrelated
+    switches?
+
+    Two evictions, including a plain switch-back (A evicted for B, then B
+    evicted for A), are not enough: that is the slot settling, which has to
+    stay allowed on its own (DECISIONS' B1 rule). Only the THIRD eviction
+    that keeps the same two models alternating is the loop closing a second
+    time — two consumers actually fighting over the slot, not one caller
+    changing its mind once.
+    """
+    if len(chain) < 3:
+        return False
+    _, a_evicted, a_incoming = chain[-3]
+    _, b_evicted, b_incoming = chain[-2]
+    _, c_evicted, c_incoming = chain[-1]
+    return (c_evicted, c_incoming) == (a_evicted, a_incoming) and \
+        (b_evicted, b_incoming) == (a_incoming, a_evicted)
+
+
 def _request_path_conflict(capability: str, model: str,
                            current: Worker | None) -> ConflictState | None:
     """Under `_lock`. Whether a REQUEST-PATH load for `model` must be refused
@@ -1675,21 +1679,14 @@ def _request_path_conflict(capability: str, model: str,
 
     Two reasons to refuse: the capability is already held (a live conflict,
     resolved or not — see `ConflictState.held`) and `model` is not the one
-    resident, or this very call is the swap loop CLOSING its loop — evicting
-    `current` would undo a REQUEST-PATH load that itself evicted `model`
-    (the SAME model now asking for the slot back), installed within
-    `CONFLICT_WINDOW_S`. A worker that simply started from an empty slot is
-    not yet proof of anything (that is an ordinary switch, maybe the only one
-    that ever happens); a worker that displaced `model` specifically, evicted
-    again this soon, is two consumers taking the slot off each OTHER — see
-    `Worker.evicted_model`.
-
-    Checking WHICH model `current` evicted (not merely whether it evicted
-    something) is what keeps a one-way sequence A->B->C from being misread as
-    a ping-pong: B evicting A is an ordinary switch, and C evicting B right
-    after is a SECOND ordinary switch — C is not A, so this is not the loop
-    closing, just someone else asking next. Only A asking again, within the
-    window, after B took the slot from A, is the loop.
+    resident, or this very call would be the THIRD request-path eviction
+    within `CONFLICT_WINDOW_S` to keep the same two models alternating for
+    this capability's slot (see `_closes_an_alternating_loop`) — two
+    consumers taking the slot off each OTHER, not one caller settling on a
+    choice. `_swap_chains` is the per-capability record this reads and
+    appends to; it replaces tracking the history on the `Worker` itself,
+    which could only see one eviction back and so could never tell a
+    switch-back (allowed) from the loop closing a second time (refused).
 
     A new contender during a live conflict is folded into `conflict.models`
     rather than only the original two, so a notification or dock row raised
@@ -1704,16 +1701,17 @@ def _request_path_conflict(capability: str, model: str,
         return conflict
     if current is None or current.model == model:
         return None
-    if not current.request_path_evicted or current.request_path_at is None:
-        return None
-    if current.evicted_model != model:
-        return None
-    if time.time() - current.request_path_at >= CONFLICT_WINDOW_S:
-        return None
-    new_conflict = ConflictState(capability=capability, models=[current.model, model],
-                                 resident=current.model, since=time.time())
-    _conflicts[capability] = new_conflict
-    return new_conflict
+    now = time.time()
+    chain = [e for e in _swap_chains.get(capability, ()) if now - e[0] < CONFLICT_WINDOW_S]
+    chain.append((now, current.model, model))
+    if _closes_an_alternating_loop(chain):
+        new_conflict = ConflictState(capability=capability, models=[current.model, model],
+                                     resident=current.model, since=now)
+        _conflicts[capability] = new_conflict
+        _swap_chains.pop(capability, None)
+        return new_conflict
+    _swap_chains[capability] = chain
+    return None
 
 
 def _start_resident(model: str, capability: str, *,
@@ -1736,9 +1734,9 @@ def _start_resident(model: str, capability: str, *,
     of image, video, speech, and transcribe — never for a manual
     `/api/ai/runtime/load`. It gates `_request_path_conflict` (an explicit
     load is never refused for contention, and clears any conflict standing on
-    this capability: the user just made a choice) and stamps the new
-    worker's `request_path_at`, the timestamp a LATER request-path eviction
-    checks itself against. A `ModelSlotConflict` raised here reaches
+    this capability: the user just made a choice) and whether an eviction
+    here is recorded into `_swap_chains`, the history a LATER request-path
+    eviction checks itself against. A `ModelSlotConflict` raised here reaches
     `_wait_ready`'s caller the same way any other load failure already does
     — surfaced through the record `_start_resident` hands back, not retried.
     """
@@ -1777,17 +1775,14 @@ def _start_resident(model: str, capability: str, *,
                 _conflicts[capability] = hold
             else:
                 _conflicts.pop(capability, None)
-            # And it clears the swap-loop HISTORY too, not only a conflict
-            # already raised — a join (the model asked for is already
-            # resident) returns below without building a new `Worker`, so
-            # without this an old `request_path_evicted` worker that a
-            # resolve merely re-confirmed would still read as "recently
-            # evicted something" the next time somebody tries to take the
-            # slot back, and re-trigger the very conflict the resolve just
-            # answered.
-            if current is not None:
-                current.request_path_at = None
-                current.request_path_evicted = False
+            # And it clears the capability's swap-loop HISTORY too, not only a
+            # conflict already raised — without this, an old `_swap_chains`
+            # entry a resolve merely re-confirmed (the model asked for is
+            # already resident, so the join branch below returns without
+            # building a new `Worker`) would still count toward the next
+            # alternation the next time somebody tries to take the slot back,
+            # re-triggering the very conflict the resolve just answered.
+            _swap_chains.pop(capability, None)
         if (current is not None and current.model == model
                 and current.runner_code == runner.code
                 and current.state != "error"):
@@ -1832,10 +1827,7 @@ def _start_resident(model: str, capability: str, *,
             _draining[current.token] = current
 
         worker = Worker(model=model, capability=capability, runner_code=runner.code,
-                        token=secrets.token_urlsafe(24),
-                        request_path_at=time.time() if request_path else None,
-                        request_path_evicted=request_path and evicting,
-                        evicted_model=current.model if evicting else None)
+                        token=secrets.token_urlsafe(24))
         _workers[capability] = worker
         _worker_tokens.add(worker.token)
 
@@ -3815,3 +3807,8 @@ def reset() -> None:
         # module-level and nothing else ever clears a capability nobody
         # unloads or resolves.
         _conflicts.clear()
+        # Same reasoning for the swap-loop history: a chain built up near the
+        # end of one test would count toward the NEXT test's own evictions
+        # (different models, same capability key) and close a loop that test
+        # never built.
+        _swap_chains.clear()
