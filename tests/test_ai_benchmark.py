@@ -236,7 +236,7 @@ def test_a_model_not_ready_race_that_never_settles_is_a_real_failure(
                         ai_registry.TEXT_GENERATION, pending)
     monkeypatch.setattr(
         benchmark.supervisor, "_start_resident",
-        lambda model, capability: ({"jobId": "sys:job", "model": model,
+        lambda model, capability, **_kw: ({"jobId": "sys:job", "model": model,
                                     "state": "loading"}, pending),
     )
 
@@ -385,7 +385,7 @@ def test_a_cold_model_records_the_seconds_it_took_to_load(bench, monkeypatch):
     def ready_worker(capability, model=None):
         return object() if states["ready"] else None
 
-    def start_resident(model, capability):
+    def start_resident(model, capability, **_kw):
         bench.advance(8.5)
         states["ready"] = True
         return {"jobId": "sys:ai-model:x", "model": model, "state": "loading"}, FakePending()
@@ -430,7 +430,7 @@ def test_a_load_that_never_becomes_ready_fails_the_run(bench, monkeypatch):
                         lambda cap, model=None: None)
     pending = FakePending()
     monkeypatch.setattr(benchmark.supervisor, "_start_resident",
-                        lambda model, capability: ({"jobId": "j"}, pending))
+                        lambda model, capability, **_kw: ({"jobId": "j"}, pending))
     # The record still OWNS the capability, or the eviction branch answers first
     # and this stops being a test about the timeout at all — which is exactly
     # what had quietly happened.
@@ -463,7 +463,7 @@ def _cold_ready(bench, monkeypatch):
     def ready_worker(capability, model=None):
         return object() if states["ready"] else None
 
-    def start_resident(model, capability):
+    def start_resident(model, capability, **_kw):
         bench.advance(1.0)
         states["ready"] = True
         return {"jobId": "j"}, FakePending()
@@ -897,7 +897,7 @@ def test_a_capability_with_no_runner_here_fails_without_loading(bench, monkeypat
                         lambda cap, model=None: None)
     brought_up = []
 
-    def start_resident(model, capability):
+    def start_resident(model, capability, **_kw):
         # Records AND returns the real shape, so a regression fails on the
         # assertion below rather than on a TypeError from the double — a stub
         # that cannot survive being called tests the stub, not the code.
@@ -955,7 +955,7 @@ def test_a_cold_run_opens_no_row_until_loading_ends(bench, monkeypatch):
     monkeypatch.setattr(benchmark.supervisor, "ready_worker",
                         lambda cap, model=None: object() if states["ready"] else None)
 
-    def start_resident(model, capability):
+    def start_resident(model, capability, **_kw):
         bench.advance(8.5)
         states["ready"] = True
         return {"jobId": "sys:ai-model:x", "model": model, "state": "loading"}, FakePending()
@@ -1466,7 +1466,7 @@ def loading(bench, monkeypatch):
     monkeypatch.setattr(benchmark.supervisor, "ready_worker",
                         lambda cap, model=None: None)
     monkeypatch.setattr(benchmark.supervisor, "_start_resident",
-                        lambda model, capability: ({"jobId": "j"}, pending))
+                        lambda model, capability, **_kw: ({"jobId": "j"}, pending))
     # The table says this record still owns the capability unless a test says
     # otherwise — the eviction check reads it.
     monkeypatch.setattr(benchmark.supervisor, "_workers",
@@ -1602,7 +1602,7 @@ def test_a_warm_model_never_asks_the_supervisor_to_load(bench, monkeypatch):
     would tear down the very worker about to be measured."""
     starts = []
     monkeypatch.setattr(benchmark.supervisor, "_start_resident",
-                        lambda model, capability: starts.append(model))
+                        lambda model, capability, **_kw: starts.append(model))
     record, _ = _text_run(bench, monkeypatch)
     assert record["loadSeconds"] is None
     assert starts == []

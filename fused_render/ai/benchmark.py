@@ -1083,21 +1083,16 @@ def _load_to_ready(model: str, capability: str) -> float | None:
     """
     if supervisor.ready_worker(capability, model) is not None:
         return None
-    # `_start_resident(request_path=False)` is `load()`'s own explicit path —
-    # it evicts and settles whatever conflict stands, the same as a user
-    # picking a model on the AI Models page. A HELD conflict for a DIFFERENT
-    # model, though, is a user's own `resolve_conflict` choice made through
-    # an actual dock click, not this run — refusing it is simplest and
-    # correct: this run records `ok: false` and says why, the same as every
-    # other way a cold load already fails, rather than silently evicting the
-    # model the user just chose to keep.
-    conflict = supervisor._conflicts.get(capability)
-    if conflict is not None and conflict.held and conflict.resident != model:
-        raise supervisor.SupervisorError(
-            f"{capability} is held for {conflict.resident!r} — release it "
-            f"on the AI Models page before benchmarking {model!r}")
+    # `_start_resident(respect_holds=True)` is a benchmark's own entry: it
+    # refuses a HELD conflict for a DIFFERENT model under `_lock`, the one
+    # place that check lives (SPEC-model-slot-conflict.md §1), the same as
+    # every other non-user caller — this run is neither a contender in a
+    # standoff nor the user settling one, so it must not clear a hold either.
+    # A held conflict raises `ModelSlotConflict`, which this module's `run`
+    # already records as `ok: false` with the raised message, the same as
+    # every other way a cold load already fails.
     start = _now()
-    _started, pending = supervisor._start_resident(model, capability)
+    _started, pending = supervisor._start_resident(model, capability, respect_holds=True)
     deadline = start + _LOAD_TIMEOUT_S
     error_since: float | None = None
     while True:

@@ -1100,7 +1100,8 @@ def _local_usage(event: dict) -> dict:
 
 
 def _local_relay(model: str, prompt: str, system_prompt: str, stream: bool,
-                 body: dict, warnings: list | None = None, page: str = ""):
+                 body: dict, warnings: list | None = None, page: str = "",
+                 requester_id: str = "", requester_label: str = ""):
     """One completion from a model resident on THIS machine (SPEC §40).
 
     Same wire shape as the Claude path, deliberately: `{ok, result:{text, model,
@@ -1156,7 +1157,8 @@ def _local_relay(model: str, prompt: str, system_prompt: str, stream: bool,
     request = {k: v for k, v in request.items() if v is not None}
 
     try:
-        events = supervisor.generate_text(model, request)
+        events = supervisor.generate_text(model, request, requester_id=requester_id,
+                                          requester_label=requester_label)
         first = next(events, None)
     except supervisor.ModelNotReady as e:
         # NOT counted as a failure (AI-12b). This call did exactly what AI-5
@@ -1392,7 +1394,8 @@ def _local_relay(model: str, prompt: str, system_prompt: str, stream: bool,
     return StreamingResponse(lines(), media_type="application/x-ndjson")
 
 
-async def _ai_relay(body: dict, session: "_AiSession | None" = None, page: str = ""):
+async def _ai_relay(body: dict, session: "_AiSession | None" = None, page: str = "",
+                    requester_id: str = "", requester_label: str = ""):
     """Validate an /api/ai body and run one claude CLI completion.
 
     Module-level (not a closure) so tests can drive it directly and mock the
@@ -1419,7 +1422,14 @@ async def _ai_relay(body: dict, session: "_AiSession | None" = None, page: str =
     when there is none: unlike local/apple, that row has no other page a
     caller reliably supplies (a direct module-level call, or a test, may
     never set `X-Fused-Page` at all), and Claude Code's settings page is
-    where that model is configured."""
+    where that model is configured.
+
+    `requester_id`/`requester_label` are `X-Fused-Requester`/
+    `X-Fused-Requester-Label` (SPEC-model-slot-conflict.md §1) — only the
+    local tier ever reaches the supervisor's one shared resident slot, so
+    only `_local_relay` forwards them on; a direct module-level call or a
+    test that leaves both blank is an anonymous requester, same as a page
+    that sent no header at all."""
     # The envelope is CLOSED, checked before any field (D413's rule, D633):
     # a page that mistyped an option learns about the option it does not
     # have, not about the field it also got wrong — and never watches a
@@ -1700,7 +1710,8 @@ async def _ai_relay(body: dict, session: "_AiSession | None" = None, page: str =
         # that long. (The StreamingResponse it returns is fine — Starlette
         # iterates a sync generator in a threadpool of its own.)
         return await asyncio.to_thread(
-            _local_relay, model, prompt, system_prompt, bool(stream), body, warnings, page)
+            _local_relay, model, prompt, system_prompt, bool(stream), body, warnings, page,
+            requester_id, requester_label)
 
     # Refused rather than dropped. The Claude path is one `claude -p` invocation
     # with no conversation to resume, so honouring history would mean inventing
@@ -2475,7 +2486,9 @@ async def shutdown_ai_session(app=None):
 @router.post("/api/ai")
 async def api_ai(request: Request, body: dict = Body(...),
                  x_fused: str | None = Header(default=None),
-                 x_fused_page: str | None = Header(default=None)):
+                 x_fused_page: str | None = Header(default=None),
+                 x_fused_requester: str | None = Header(default=None),
+                 x_fused_requester_label: str | None = Header(default=None)):
     # fused.ai.text() — validation and the claude CLI hop live in _ai_relay
     # (module-level so tests can drive it with the subprocess mocked).
     # `request.app.state.ai_session` is THIS app's own session, stashed by
@@ -2486,7 +2499,14 @@ async def api_ai(request: Request, body: dict = Body(...),
         return guard
     session = getattr(request.app.state, "ai_session", None)
     page = unquote(x_fused_page) if x_fused_page else ""
-    return await _ai_relay(body, session=session, page=page)
+    # `X-Fused-Requester`/`X-Fused-Requester-Label` (SPEC-model-slot-
+    # conflict.md §1) — attribution for contention detection, not
+    # authorization: a missing header is simply an anonymous requester, the
+    # same as every other caller this route never trusted further than that.
+    requester_id = unquote(x_fused_requester) if x_fused_requester else ""
+    requester_label = unquote(x_fused_requester_label) if x_fused_requester_label else ""
+    return await _ai_relay(body, session=session, page=page,
+                           requester_id=requester_id, requester_label=requester_label)
 
 
 @router.get("/api/ai/metrics")

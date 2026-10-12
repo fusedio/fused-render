@@ -3540,16 +3540,21 @@ def test_loading_a_second_text_model_evicts_the_first(fake_runner):
     assert not supervisor._alive(first)
 
 
-def _retry_generate_text(model, timeout=10.0):
+def _retry_generate_text(model, timeout=10.0, *, requester_id="", requester_label=""):
     """`runtime.js`'s own retry contract, reproduced in Python: call, and on
     `ModelNotReady` try again — forever, as far as the client is concerned.
     Returns `"ready"`, or re-raises `ModelSlotConflict` the way a client that
     has learned the conflict is terminal (SPEC-model-slot-conflict.md §3)
-    would stop and surface it instead of retrying."""
+    would stop and surface it instead of retrying. `requester_id`/
+    `requester_label` are this simulated caller's own identity — every
+    retry of the same logical request carries the same one, the way one
+    page's own retries never change who is asking."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
-            list(supervisor.generate_text(model, {"messages": []}))
+            list(supervisor.generate_text(model, {"messages": []},
+                                          requester_id=requester_id,
+                                          requester_label=requester_label))
             return "ready"
         except supervisor.ModelNotReady:
             time.sleep(0.05)
@@ -3557,25 +3562,22 @@ def _retry_generate_text(model, timeout=10.0):
     raise AssertionError(f"{model} never became ready within {timeout}s")
 
 
-def _force_conflict(first, second):
-    """Run exactly the retry sequence that closes the swap loop (DECISIONS'
-    B1 rule, the THIRD request-path eviction in an alternating chain):
-    `first` claims the empty slot, `second` evicts it, `first` evicts
-    `second` right back (the switch-back alone, still allowed on its own),
-    and `second`'s retry — which would evict `first` a second time — is the
-    eviction that closes the loop. Leaves `first` resident and `second`
-    refused with a live `ModelSlotConflict`, which this returns."""
+def _force_conflict(first, second, *, r1="r1", r2="r2"):
+    """Two distinct requesters fighting over one capability
+    (SPEC-model-slot-conflict.md §1): `second` (`r2`) claims the empty slot,
+    `first` (`r1`) evicts it — an ordinary cross-requester switch, recorded
+    but not yet a conflict — and `second`'s own retry, which would evict
+    `first` a second time, is the second cross-requester eviction that opens
+    the conflict. Leaves `first` resident and `second` refused with a live
+    `ModelSlotConflict`, which this returns."""
     with pytest.raises(supervisor.ModelNotReady):
-        list(supervisor.generate_text(first, {"messages": []}))
-    _wait_ready(first)
-    with pytest.raises(supervisor.ModelNotReady):
-        list(supervisor.generate_text(second, {"messages": []}))
+        list(supervisor.generate_text(second, {"messages": []}, requester_id=r2))
     _wait_ready(second)
     with pytest.raises(supervisor.ModelNotReady):
-        list(supervisor.generate_text(first, {"messages": []}))
+        list(supervisor.generate_text(first, {"messages": []}, requester_id=r1))
     _wait_ready(first)
     with pytest.raises(supervisor.ModelSlotConflict) as caught:
-        list(supervisor.generate_text(second, {"messages": []}))
+        list(supervisor.generate_text(second, {"messages": []}, requester_id=r2))
     return caught.value
 
 
@@ -3599,68 +3601,53 @@ def test_an_unheld_conflict_names_every_contender_and_the_resident_served():
         "one on the AI Models page.")
 
 
-def test_the_swap_loop_is_caught_on_its_third_swap(fake_runner):
-    """SPEC-model-slot-conflict.md: two consumers of one capability wanting
-    different models evict each other on every retry, with the request
-    path's own `ModelNotReady`/load contract giving that loop no cap. The
-    FIRST swap (nothing resident yet, then org/a) is an ordinary switch, and
-    so is the SECOND (org/b evicting org/a) — a single switch-back must still
-    just work, since it is indistinguishable from someone changing their mind
-    once. The loop only shows itself on the THIRD swap (evicting org/a's
-    replacement to bring org/b back a second time), which is what gets
-    caught."""
-    # org/a starts resident — the capability was empty, so this is not yet
-    # evidence of anything.
+def test_two_requesters_conflict_on_the_second_cross_requester_eviction(fake_runner):
+    """SPEC-model-slot-conflict.md §1, required test: two requesters each
+    wanting their own model conflict on the SECOND cross-requester
+    eviction — r2's org/b evicting r1's org/a is the first (an ordinary
+    switch, indistinguishable from someone changing their mind), and r1's
+    org/a trying to evict org/b right back is the one that closes it."""
     with pytest.raises(supervisor.ModelNotReady):
-        list(supervisor.generate_text("org/a", {"messages": []}))
+        list(supervisor.generate_text("org/a", {"messages": []}, requester_id="r1"))
     _wait_ready("org/a")
 
-    # org/b evicts org/a — the first swap. Still just a switch.
     with pytest.raises(supervisor.ModelNotReady):
-        list(supervisor.generate_text("org/b", {"messages": []}))
+        list(supervisor.generate_text("org/b", {"messages": []}, requester_id="r2"))
     _wait_ready("org/b")
-
-    # org/a evicts org/b back — the second swap, the switch-back alone, still
-    # allowed on its own.
-    with pytest.raises(supervisor.ModelNotReady):
-        list(supervisor.generate_text("org/a", {"messages": []}))
-    _wait_ready("org/a")
     assert supervisor.describe()["conflicts"] == []
 
-    # org/b's retry would evict org/a again, the THIRD swap — the ping-pong
-    # closing its loop a second time. Refused instead of evicted.
     with pytest.raises(supervisor.ModelSlotConflict) as caught:
-        list(supervisor.generate_text("org/b", {"messages": []}))
+        list(supervisor.generate_text("org/a", {"messages": []}, requester_id="r1"))
     assert caught.value.capability == registry.TEXT_GENERATION
     assert set(caught.value.models) == {"org/a", "org/b"}
-    assert caught.value.resident == "org/a"
+    assert caught.value.resident == "org/b"
     assert caught.value.held is False
 
     conflicts = supervisor.describe()["conflicts"]
     assert len(conflicts) == 1
     assert conflicts[0]["capability"] == registry.TEXT_GENERATION
     assert set(conflicts[0]["models"]) == {"org/a", "org/b"}
-    assert conflicts[0]["resident"] == "org/a"
+    assert conflicts[0]["resident"] == "org/b"
     assert conflicts[0]["held"] is False
 
-    # org/a — the resident model — is unaffected: it just answers.
-    events = list(supervisor.generate_text("org/a", {"messages": []}))
+    # org/b — the resident model — is unaffected: it just answers.
+    events = list(supervisor.generate_text("org/b", {"messages": []}, requester_id="r2"))
     assert events[-1]["ok"] is True
-    assert supervisor.describe()["loaded"][0]["model"] == "org/a"
+    assert supervisor.describe()["loaded"][0]["model"] == "org/b"
 
     # A third contender during the live conflict is folded in rather than
     # replacing the two that first collided.
     with pytest.raises(supervisor.ModelSlotConflict) as third:
-        list(supervisor.generate_text("org/c", {"messages": []}))
+        list(supervisor.generate_text("org/c", {"messages": []}, requester_id="r3"))
     assert set(third.value.models) == {"org/a", "org/b", "org/c"}
 
 
 def test_a_single_switch_back_is_not_a_conflict(fake_runner):
-    """A -> B -> A, by itself, is only two evictions — the slot settling back
-    on the first model, not proof that two consumers are fighting over it.
-    The rule needs a THIRD eviction, closing the loop a second time, before
-    it opens a conflict (see `test_the_swap_loop_is_caught_on_its_third_swap`
-    for that one)."""
+    """A -> B -> A, all from the SAME (anonymous) requester, is never a
+    conflict — `_request_path_conflict` returns `None` on the very first
+    check, `current.requester_id == requester_id`, before anything is even
+    recorded. See `test_one_requester_alternating_is_never_a_conflict` for
+    the same rule exercised with named requesters instead."""
     with pytest.raises(supervisor.ModelNotReady):
         list(supervisor.generate_text("org/a", {"messages": []}))
     _wait_ready("org/a")
@@ -3676,15 +3663,10 @@ def test_a_single_switch_back_is_not_a_conflict(fake_runner):
 
 
 def test_a_one_way_sequence_of_three_models_is_not_a_ping_pong(fake_runner):
-    """A -> B -> C, three DISTINCT models in a row, is someone browsing
-    through models, not two callers fighting over one. B's eviction of A
-    and C's eviction of B are each recorded in the capability's own swap
-    chain (`_swap_chains`) the same way a true ping-pong's evictions are —
-    so the rule has to ask not just "how many evictions happened recently"
-    but whether the last three of them actually ALTERNATE between the same
-    two models. Two evictions that never repeat a model (A->B, then B->C)
-    can never satisfy that, however many of them pile up, which is what
-    keeps this sequence from reading as the loop closing."""
+    """A -> B -> C, all from the SAME (anonymous) requester, is someone
+    browsing through models, never a conflict — every one of these
+    evictions returns `None` on `current.requester_id == requester_id`
+    before `_swap_chains` is ever consulted."""
     with pytest.raises(supervisor.ModelNotReady):
         list(supervisor.generate_text("org/a", {"messages": []}))
     _wait_ready("org/a")
@@ -3703,16 +3685,60 @@ def test_a_one_way_sequence_of_three_models_is_not_a_ping_pong(fake_runner):
     assert supervisor.describe()["loaded"][0]["model"] == "org/c"
 
 
-def test_a_ping_pong_bounded_retry_loop_ends_in_a_conflict_not_forever(fake_runner):
+def test_one_requester_alternating_is_never_a_conflict(fake_runner):
+    """SPEC-model-slot-conflict.md §1, required test: a router and a
+    generator (one requester) alternating org/a -> org/b -> org/a -> org/b
+    is never a conflict, however fast or however many times — the identity
+    check in `_request_path_conflict` returns `None` before anything is
+    even recorded, because `current.requester_id == requester_id` on every
+    one of these evictions."""
+    for _ in range(4):
+        assert _retry_generate_text("org/a", requester_id="solo") == "ready"
+        assert _retry_generate_text("org/b", requester_id="solo") == "ready"
+    assert supervisor.describe()["conflicts"] == []
+
+
+def test_two_requesters_retrying_forever_end_in_a_conflict_not_forever(fake_runner):
     """The user-facing promise end to end: two callers retrying forever
-    (`_retry_generate_text`, `runtime.js`'s own contract) stop evicting each
-    other and one gets a terminal error instead of looping — bounded at the
-    THIRD eviction, not the second: a lone switch-back must still succeed."""
-    assert _retry_generate_text("org/a") == "ready"
-    assert _retry_generate_text("org/b") == "ready"
-    assert _retry_generate_text("org/a") == "ready"
+    (`_retry_generate_text`, `runtime.js`'s own contract), each wanting its
+    own model, stop evicting each other and one gets a terminal error
+    instead of looping — bounded at the SECOND cross-requester eviction,
+    not the first: a lone switch to a different requester's model must
+    still succeed."""
+    assert _retry_generate_text("org/b", requester_id="r2") == "ready"
+    assert _retry_generate_text("org/a", requester_id="r1") == "ready"
     with pytest.raises(supervisor.ModelSlotConflict):
-        _retry_generate_text("org/b")
+        _retry_generate_text("org/b", requester_id="r2")
+
+
+def test_three_requesters_rotating_end_in_a_conflict(fake_runner):
+    """SPEC-model-slot-conflict.md §1, required test: three requesters
+    rotating org/a -> org/b -> org/c -> org/a. The conflict is caught as
+    soon as a requester's model comes back to evict another requester's
+    within the window — r3's eviction of r2's org/b is itself the SECOND
+    cross-requester eviction in the window (r1 evicted nobody, r2 evicted
+    r1, r3 evicts r2), so it is the one that opens the conflict; r1 never
+    literally has to come back to org/a for the loop to be caught."""
+    with pytest.raises(supervisor.ModelNotReady):
+        list(supervisor.generate_text("org/a", {"messages": []}, requester_id="r1"))
+    _wait_ready("org/a")
+    with pytest.raises(supervisor.ModelNotReady):
+        list(supervisor.generate_text("org/b", {"messages": []}, requester_id="r2"))
+    _wait_ready("org/b")
+    with pytest.raises(supervisor.ModelSlotConflict):
+        list(supervisor.generate_text("org/c", {"messages": []}, requester_id="r3"))
+
+
+def test_a_one_off_switch_by_another_requester_is_ordinary(fake_runner):
+    """SPEC-model-slot-conflict.md §1, required test: r2 replaces r1's model
+    once and never comes back — an ordinary switch, not a conflict, however
+    many times r2 itself keeps retrying afterward."""
+    with pytest.raises(supervisor.ModelNotReady):
+        list(supervisor.generate_text("org/a", {"messages": []}, requester_id="r1"))
+    _wait_ready("org/a")
+    assert _retry_generate_text("org/b", requester_id="r2") == "ready"
+    assert _retry_generate_text("org/b", requester_id="r2") == "ready"
+    assert supervisor.describe()["conflicts"] == []
 
 
 def test_a_single_switch_outside_the_conflict_window_still_evicts(fake_runner):
@@ -3723,18 +3749,17 @@ def test_a_single_switch_outside_the_conflict_window_still_evicts(fake_runner):
     is pruned, the next eviction starts a fresh chain instead of continuing
     one that would otherwise be closing its loop."""
     with pytest.raises(supervisor.ModelNotReady):
-        list(supervisor.generate_text("org/a", {"messages": []}))
+        list(supervisor.generate_text("org/a", {"messages": []}, requester_id="r1"))
     _wait_ready("org/a")
     with pytest.raises(supervisor.ModelNotReady):
-        list(supervisor.generate_text("org/b", {"messages": []}))
+        list(supervisor.generate_text("org/b", {"messages": []}, requester_id="r2"))
     _wait_ready("org/b")
     stale = time.time() - supervisor.CONFLICT_WINDOW_S - 1
-    supervisor._swap_chains[registry.TEXT_GENERATION] = [
-        (stale, "org/a", "org/b")]
+    supervisor._swap_chains[registry.TEXT_GENERATION] = [(stale, "r1")]
 
     # org/a's retry now evicts org/b cleanly — old news, not a loop.
     with pytest.raises(supervisor.ModelNotReady):
-        list(supervisor.generate_text("org/a", {"messages": []}))
+        list(supervisor.generate_text("org/a", {"messages": []}, requester_id="r1"))
     _wait_ready("org/a")
     assert supervisor.describe()["conflicts"] == []
     assert supervisor.describe()["loaded"][0]["model"] == "org/a"
@@ -3825,19 +3850,15 @@ def test_a_conflict_reaches_api_ai_as_a_409_with_the_models_and_no_retry_bait(
     """SPEC-model-slot-conflict.md §2: the 409 body names the code the client
     is meant to branch on (`model_slot_conflict`, never `model_loading` — a
     client that only retries `model_loading` must not retry this one), plus
-    the capability and the competing models."""
-    with pytest.raises(supervisor.ModelNotReady):
-        list(supervisor.generate_text("org/a", {"messages": []}))
-    _wait_ready("org/a")
-    with pytest.raises(supervisor.ModelNotReady):
-        list(supervisor.generate_text("org/b", {"messages": []}))
-    _wait_ready("org/b")
-    with pytest.raises(supervisor.ModelNotReady):
-        list(supervisor.generate_text("org/a", {"messages": []}))
-    _wait_ready("org/a")
+    the capability and the competing models. `_force_conflict` drives the
+    two requesters directly (identity is the server's own thing to attribute,
+    not something an inline anonymous retry sequence can trigger any more —
+    SPEC-model-slot-conflict.md §1), then the actual HTTP relay is exercised
+    for the conflict's own contender, carrying its own `X-Fused-Requester`."""
+    _force_conflict("org/a", "org/b")
 
     response = client.post("/api/ai", json={"model": "org/b", "prompt": "hi"},
-                           headers={"X-Fused": "1"})
+                           headers={"X-Fused": "1", "X-Fused-Requester": "r2"})
     assert response.status_code == 409
     body = response.json()
     assert body["ok"] is False
@@ -6088,7 +6109,7 @@ def test_api_ai_threads_X_Fused_Page_into__ai_relay(client, monkeypatch):
 
     captured = {}
 
-    async def fake_relay(body, session=None, page=""):
+    async def fake_relay(body, session=None, page="", requester_id="", requester_label=""):
         captured["page"] = page
         return ai_mod.JSONResponse({"ok": True, "result": {
             "text": "hi", "model": "m", "usage": None}})
@@ -6228,7 +6249,7 @@ def test_an_image_result_path_that_comes_back_windows_shaped_still_lands_canonic
     rest of the app treats a filesystem path as, the same one `/api/ai/image`
     hands back as `path` — never the raw spelling the render happened to
     report."""
-    def windows_shaped(model, request, job):
+    def windows_shaped(model, request, job, **_kw):
         return {"steps": 1, "path": r"C:\Users\runner\out\one.png"}
 
     monkeypatch.setattr(supervisor, "generate_image", windows_shaped)
@@ -6305,7 +6326,7 @@ def test_a_failed_image_render_with_no_caller_page_points_at_its_output_folder(
     row at the missing file itself would open nothing. The folder that would
     have held it still exists (the route creates it before the render
     starts), so that is the destination instead."""
-    def boom(model, request, job):
+    def boom(model, request, job, **_kw):
         raise RuntimeError("the worker choked")
 
     monkeypatch.setattr(supervisor, "generate_image", boom)
@@ -6324,7 +6345,7 @@ def test_a_successful_image_render_with_no_caller_page_and_no_result_path_falls_
     returned, but a runner that reports success without naming a `path` must
     still land somewhere real — the folder the route already created for it,
     exactly like the failure path already does."""
-    def no_path(model, request, job):
+    def no_path(model, request, job, **_kw):
         return {"steps": 1}
 
     monkeypatch.setattr(supervisor, "generate_image", no_path)
@@ -8473,7 +8494,7 @@ def test_a_video_result_path_that_comes_back_windows_shaped_still_lands_canonica
     """See the image twin of this test — `_start_render` is shared, so the
     same Windows-shaped `result["path"]` has to canonicalize the same way for
     a video render."""
-    def windows_shaped(model, request, job):
+    def windows_shaped(model, request, job, **_kw):
         return {"steps": 1, "path": r"C:\Users\runner\out\one.mp4"}
 
     monkeypatch.setattr(supervisor, "generate_video", windows_shaped)
@@ -8487,7 +8508,7 @@ def test_a_video_result_path_that_comes_back_windows_shaped_still_lands_canonica
 
 def test_a_failed_video_render_with_no_caller_page_points_at_its_output_folder(
         fake_video_runner, monkeypatch, tmp_path):
-    def boom(model, request, job):
+    def boom(model, request, job, **_kw):
         raise RuntimeError("the worker choked")
 
     monkeypatch.setattr(supervisor, "generate_video", boom)
@@ -8936,8 +8957,8 @@ def test_the_worker_is_given_the_row_identity_to_restate(
     seen = {}
     real = supervisor.generate_transcript
     monkeypatch.setattr(supervisor, "generate_transcript",
-                        lambda model, request, job: (seen.update(request),
-                                                     real(model, request, job))[1])
+                        lambda model, request, job, **kw: (seen.update(request),
+                                                           real(model, request, job, **kw))[1])
     started = _post_transcribe(client, path=recording).json()
     _wait_job(started["jobId"])
 
@@ -10885,7 +10906,7 @@ def test_history_reaches_the_worker_as_prior_turns(client, fake_runner, monkeypa
     right."""
     sent = {}
 
-    def capture(model, request):
+    def capture(model, request, *, requester_id="", requester_label=""):
         sent["request"] = request
         yield {"type": "chunk", "text": "ok"}
         yield {"type": "done", "ok": True, "tokens": 1}
@@ -10966,7 +10987,7 @@ def test_sampling_reaches_the_worker(client, fake_runner, monkeypatch):
     seen = {}
     real = supervisor.generate_text
     monkeypatch.setattr(supervisor, "generate_text",
-                        lambda model, request: (seen.update(request), real(model, request))[1])
+                        lambda model, request, **kw: (seen.update(request), real(model, request, **kw))[1])
     supervisor.load("org/chat", registry.TEXT_GENERATION)
     _wait_ready("org/chat")
 
@@ -11072,7 +11093,7 @@ def test_thinking_reaches_the_worker_as_enable_thinking(client, fake_runner, mon
     seen = {}
     real = supervisor.generate_text
     monkeypatch.setattr(supervisor, "generate_text",
-                        lambda model, request: (seen.update(request), real(model, request))[1])
+                        lambda model, request, **kw: (seen.update(request), real(model, request, **kw))[1])
     supervisor.load("org/chat", registry.TEXT_GENERATION)
     _wait_ready("org/chat")
 
@@ -11087,7 +11108,7 @@ def test_thinking_true_also_reaches_the_worker(client, fake_runner, monkeypatch)
     seen = {}
     real = supervisor.generate_text
     monkeypatch.setattr(supervisor, "generate_text",
-                        lambda model, request: (seen.update(request), real(model, request))[1])
+                        lambda model, request, **kw: (seen.update(request), real(model, request, **kw))[1])
     supervisor.load("org/chat2", registry.TEXT_GENERATION)
     _wait_ready("org/chat2")
 
@@ -11105,7 +11126,7 @@ def test_unset_thinking_is_not_sent_to_the_worker_at_all(client, fake_runner, mo
     seen = {}
     real = supervisor.generate_text
     monkeypatch.setattr(supervisor, "generate_text",
-                        lambda model, request: (seen.update(request), real(model, request))[1])
+                        lambda model, request, **kw: (seen.update(request), real(model, request, **kw))[1])
     supervisor.load("org/chat3", registry.TEXT_GENERATION)
     _wait_ready("org/chat3")
 
@@ -11161,7 +11182,7 @@ def test_images_reach_the_worker_alongside_messages(client, fake_runner, monkeyp
 
     sent = {}
 
-    def capture(model, request):
+    def capture(model, request, *, requester_id="", requester_label=""):
         sent["request"] = request
         yield {"type": "chunk", "text": "a cat"}
         yield {"type": "done", "ok": True, "tokens": 1}
@@ -11190,7 +11211,7 @@ def test_no_images_key_at_all_is_not_sent_to_the_worker(client, fake_runner, mon
     it."""
     sent = {}
 
-    def capture(model, request):
+    def capture(model, request, *, requester_id="", requester_label=""):
         sent["request"] = request
         yield {"type": "chunk", "text": "ok"}
         yield {"type": "done", "ok": True, "tokens": 1}
@@ -11371,7 +11392,7 @@ def test_a_streamed_local_reply_carries_its_result(client, fake_runner, monkeypa
     the first property it read. The shapes only LOOKED alike because the chunks
     matched.
     """
-    def fake(model, request):
+    def fake(model, request, **_kw):
         yield {"type": "chunk", "text": "he"}
         yield {"type": "chunk", "text": "llo"}
         yield {"type": "done", "ok": True, "tokens": 2, "seconds": 0.1}
@@ -11395,7 +11416,7 @@ def test_both_ai_paths_close_a_stream_the_same_way(client, fake_runner, monkeypa
     """One reader parses both, so the frame they finish with is a contract —
     pinned here rather than only described in a docstring, which is what let the
     two drift apart."""
-    def fake(model, request):
+    def fake(model, request, **_kw):
         yield {"type": "chunk", "text": "x"}
         yield {"type": "done", "ok": True, "tokens": 1, "seconds": 0.1}
 
