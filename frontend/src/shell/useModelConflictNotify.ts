@@ -24,10 +24,10 @@
 // empting detection, per `supervisor.resolve_conflict`'s own docstring) is
 // the user's OWN action a moment ago, not news to tell them.
 import { useEffect, useRef } from "react";
-import { notify } from "@platform/lib/notifications";
+import { dismissNotification, notify } from "@platform/lib/notifications";
 import { repoName } from "@platform/lib/format";
 import { resolveModelConflict } from "@platform/lib/api";
-import { refreshAiRuntime, useAiRuntime } from "@apps/ai_models/lib/aiRuntime";
+import { publishAiRuntime, useAiRuntime } from "@apps/ai_models/lib/aiRuntime";
 import { capabilityLabel } from "@apps/ai_models/lib/engines";
 import { IS_EMBED, IS_TOP_EMBED } from "@platform/lib/router";
 
@@ -42,11 +42,13 @@ export function ModelConflictNotifier(): null {
 
 export function useModelConflictNotify(): void {
   const runtime = useAiRuntime();
-  // Capabilities already notified for their CURRENT standoff — cleared the
+  // Capabilities already notified for their CURRENT standoff, mapped to the
+  // toast's own notification id — `null` for a held entry, which marks
+  // itself seen WITHOUT ever raising a toast (see below). Cleared the
   // moment that capability drops out of `conflicts` (resolved, released, or
   // cleared by a manual load/unload), so a later, genuinely new conflict on
   // the same capability notifies again.
-  const notified = useRef<Set<string>>(new Set());
+  const notified = useRef<Map<string, number | null>>(new Map());
 
   useEffect(() => {
     // Matches `useTaskStatusNotify`'s own embed rule exactly (see its header
@@ -60,33 +62,55 @@ export function useModelConflictNotify(): void {
       // Always mark seen, held or not: a held entry is the user's own
       // action, not a fresh standoff to announce, but it still occupies
       // this capability's slot until cleared.
-      notified.current.add(conflict.capability);
-      if (conflict.held) continue;
+      if (conflict.held) {
+        notified.current.set(conflict.capability, null);
+        continue;
+      }
 
       const label = capabilityLabel(conflict.capability);
       const other = conflict.models.find((m) => m !== conflict.resident) ?? conflict.models[0];
       const names = conflict.models.map(repoName).join(" and ");
-      notify({
+      // A refused choice must say so rather than look like the click did
+      // nothing — the same non-silent-failure contract `ModelsDock.tsx`'s
+      // `ConflictRow` already keeps for the identical two actions.
+      const onFailure = (label_: string) => () => {
+        notify({
+          title: `Could not ${label_} — check your connection and retry.`,
+          tone: "error",
+        });
+      };
+      const id = notify({
         title: `Two things are fighting over the ${label.toLowerCase()}: ${names}. Neither can finish loading.`,
         tone: "error",
         action: other
           ? {
               label: `Keep ${repoName(other)}`,
               onClick: () => {
-                void resolveModelConflict(conflict.capability, other).then(refreshAiRuntime);
+                resolveModelConflict(conflict.capability, other)
+                  .then(publishAiRuntime)
+                  .catch(onFailure(`keep ${repoName(other)}`));
               },
             }
           : undefined,
         extraAction: {
           label: "Stop both",
           onClick: () => {
-            void resolveModelConflict(conflict.capability, null).then(refreshAiRuntime);
+            resolveModelConflict(conflict.capability, null)
+              .then(publishAiRuntime)
+              .catch(onFailure(`stop ${label.toLowerCase()}`));
           },
         },
       });
+      notified.current.set(conflict.capability, id);
     }
-    for (const capability of Array.from(notified.current)) {
-      if (!live.has(capability)) notified.current.delete(capability);
+    for (const [capability, id] of Array.from(notified.current)) {
+      if (live.has(capability)) continue;
+      // Withdraw the live toast along with its bookkeeping — a conflict
+      // resolved, released, or cleared by a manual load/unload must not
+      // leave its "Keep"/"Stop both" card sitting on screen offering
+      // choices that no longer apply.
+      if (id != null) dismissNotification(id);
+      notified.current.delete(capability);
     }
   }, [runtime.conflicts]);
 }

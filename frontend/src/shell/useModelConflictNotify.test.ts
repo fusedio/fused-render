@@ -21,7 +21,11 @@ globalThis.fetch = (() => new Promise<Response>(() => {})) as unknown as typeof 
 
 const { useModelConflictNotify } = await import("@shell/useModelConflictNotify");
 const { publishAiRuntime } = await import("@apps/ai_models/lib/aiRuntime");
-const { _resetNotificationsForTest, getPopupNotification } = await import("@platform/lib/notifications");
+const {
+  _resetNotificationsForTest,
+  getPopupNotification,
+  getRetainedNotifications,
+} = await import("@platform/lib/notifications");
 import type { AiConflict, AiRuntime } from "@platform/lib/api";
 
 afterAll(() => {
@@ -144,6 +148,44 @@ test("a conflict clearing and later recurring on the same capability raises a fr
   const popup = getPopupNotification();
   expect(popup).not.toBeNull();
   expect(popup?.action?.label).toBe("Keep c");
+
+  mounted.unmount();
+});
+
+test("a conflict's retained toast is withdrawn once it clears, not left offering stale actions", async () => {
+  const mounted = await mountClean();
+  await publish([conflict()]);
+  // tone: "error" is always retained (notifications.ts's own `isRetained`),
+  // so the "Keep a"/"Stop both" row sits in the panel beside the popup.
+  expect(getRetainedNotifications().some((n) => n.title.includes("a and b"))).toBe(true);
+
+  await publish([]); // resolved/released/cleared by any path
+  expect(getRetainedNotifications().some((n) => n.title.includes("a and b"))).toBe(false);
+
+  mounted.unmount();
+});
+
+test("a failed resolve from the toast's own action surfaces an error instead of failing silently", async () => {
+  const mounted = await mountClean();
+  await publish([conflict()]);
+  const popup = getPopupNotification();
+  expect(popup).not.toBeNull();
+
+  const failingFetch = globalThis.fetch;
+  globalThis.fetch = (() => Promise.reject(new Error("network down"))) as unknown as typeof fetch;
+  try {
+    await act(async () => {
+      popup?.action?.onClick();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+  } finally {
+    globalThis.fetch = failingFetch;
+  }
+
+  const after = getPopupNotification();
+  expect(after).not.toBeNull();
+  expect(after?.title.toLowerCase()).toContain("could not");
 
   mounted.unmount();
 });

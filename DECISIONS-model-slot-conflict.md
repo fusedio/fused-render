@@ -150,6 +150,32 @@ enters already `held` (the user pre-empted detection via a dock action)
 marks itself seen without ever raising a toast — it is the user's own
 action moments ago, not news.
 
+## The toast withdraws itself, and its actions report failure
+
+`useModelConflictNotify.ts`'s "seen" bookkeeping now maps each notified
+capability to the `notify()` id it raised (`null` for a held entry, which
+never raises one) rather than a bare set of capability names. When a
+capability drops out of `runtime.conflicts`, the cleanup loop that already
+ran (to let a later, genuinely new standoff notify again) now also calls
+`dismissNotification(id)` on the way out — a conflict resolved, released, or
+cleared by a manual load/unload must not leave its "Keep `<model>`"/"Stop
+both" row sitting in the Notifications panel offering choices that no
+longer apply. (`dismissNotification` only ever clears a *retained* row per
+its own doc comment — `tone: "error"` is always retained, per
+`notifications.ts`'s `isRetained`, so every toast this hook raises has one.)
+
+Both actions' `resolveModelConflict(...)` calls now carry a `.catch()`,
+mirroring the dock row's own non-silent-failure contract (`ModelsDock.tsx`'s
+`ConflictRow` `run()` wrapper). The toast pipeline has no live-updating
+status slot the way `NotificationCard`'s `status` prop gives the dock row,
+so a failure instead raises a second, plain error toast ("Could not keep
+`<model>` — check your connection and retry.") rather than silently leaving
+the click looking like it did nothing. Both actions also switch from
+`refreshAiRuntime` to `publishAiRuntime` on success, for the same reason
+Finding 7 switched the dock's handlers: `resolveModelConflict` always
+replies with the full runtime now, so publishing it directly avoids a
+poll-in-flight racing the resolve and republishing stale pre-resolve state.
+
 ## Resident-dot semantics unchanged by conflicts
 
 `ModelsCardView`'s `idle`/`tone`/`StatusChip` computation stays keyed off
