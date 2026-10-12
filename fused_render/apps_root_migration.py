@@ -91,18 +91,22 @@ def _settle(old: str, new: str, witnessed: bool) -> None:
     claude_session_move.relocate(old, new)
 
 
-def _is_copy(recorded: str, app_dir: str, old_root: str) -> bool:
+def _is_copy(recorded: str, app_dir: str, old_root: str, new_root: str) -> bool:
     """Does `app_dir`'s record name a folder it was COPIED from, as against a
     folder it was MOVED from that nobody settled? Copied when the recorded
-    folder is a different one that still exists, or a sibling under `local/`
-    — present or already moved to `app/` by this run; a gone sibling would
-    otherwise read as a move. Anything else gone is an unsettled move."""
+    folder is a different one that still exists, or a `local/` sibling that
+    is now at `app/<name>` — moved by this pass, or by an earlier one that
+    left this folder behind; a gone sibling would otherwise read as a move.
+    Anything else gone is an unsettled move: a pre-start `local/foo` →
+    `local/bar` rename leaves `bar` recording a gone `local/foo` with nothing
+    at `app/foo`, and `ensure` must carry `foo`'s state in, not disown it."""
     rec = os.path.normcase(os.path.abspath(recorded))
     if rec == os.path.normcase(app_dir):
         return False
     if os.path.isdir(recorded):
         return True
-    return os.path.normcase(os.path.dirname(rec)) == os.path.normcase(old_root)
+    return (os.path.normcase(os.path.dirname(rec)) == os.path.normcase(old_root)
+            and os.path.isdir(os.path.join(new_root, os.path.basename(recorded))))
 
 
 def _own_witness(app_dir: str, recorded: str) -> None:
@@ -199,12 +203,13 @@ def move_all(root: str) -> tuple[list[tuple[str, str, bool]], list[str], bool]:
             # and `ensure(old)` settles it the normal way — carrying that
             # state and those sessions to `old` — before this hop witnesses
             # `old` in turn. "Copy" = the recorded folder still exists, or it
-            # is a `local/` sibling (present, or moved earlier in this loop,
-            # which is exactly when `_after_move` would misread it as a move).
+            # is a `local/` sibling now sitting at `app/<name>` (moved earlier
+            # in this loop — exactly when `_after_move` would misread it as a
+            # move — or by an earlier pass that left this folder behind).
             # A copy whose record cannot be repaired is NOT moved: a stale
             # record at the new path is the very misread above, waiting.
             recorded = app_fused_dir.recorded_app_dir(old)
-            if recorded is not None and _is_copy(recorded, old, old_root):
+            if recorded is not None and _is_copy(recorded, old, old_root, new_root):
                 try:
                     _own_witness(old, recorded)
                 except Exception:
