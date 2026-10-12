@@ -11460,6 +11460,23 @@ three platforms, one API, no field naming which one served you.
   the handle exists, as is the `client` flag on `sources()`. A page reads
   `{available, reason}` and refusal sentences; it never learns which backend it
   got, and `tests/test_capture.py` fails if any of the three leaks.
+- **CP-14** **An audio recording can be paused, and macOS shows a floating
+  pill while one runs.** `POST /api/capture/{id}/pause|resume` and
+  `GET /api/capture/{id}/state` (clock, paused, a 0..1 level) are neutral: the
+  routes know nothing about a route's internals, and pause/resume/level are
+  OPTIONAL per-backend hooks, so a recording whose backend has none answers 409
+  (typed `unavailable` in the page) rather than faking a pause. Paused time is
+  excluded from `seconds` and from the `maxSeconds` cap (a paused-forever
+  recording is ended by a backstop of `MAX_MAX_SECONDS`, not left open). Mic and
+  tap hold the recorder; the ScreenCaptureKit mux route (13.0-14.1) cannot, since
+  the stream keeps delivering, so it drops buffers while paused and subtracts the
+  gap from every later timestamp — the file has no hole. Screen recordings and
+  the streamed (Windows/Linux) recorder refuse. The pill is the native
+  `recording_pill_panel.py` (a non-activating, never-key panel hosting
+  `/recording-pill`), shown on every audio start and hidden on every ending path
+  (stop, cancel, cap, a lost backend, the job row's ✕, `stop_all`); the page polls
+  `/state`, so no backend pushes anything. Its stop is the ordinary stop, so a
+  page's own `rec.stop()` afterwards gets the cached finished record.
   Local only — a hosted/exported page has no capture (docs/EXPORT.md).
 
 ## 46. Background Apps — A Folder's Own Long-Running Daemon (D500, D501, D502, D505, D506, D507, D508, D509, D510, D511, D512, D513, D514, D515)
