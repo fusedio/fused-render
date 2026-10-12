@@ -1,4 +1,5 @@
-"""macOS capture: ScreenCaptureKit for pixels, AVFoundation for the microphone.
+"""macOS capture: ScreenCaptureKit for pixels, AVFoundation for the microphone,
+Core Audio process taps for audio-only system audio.
 
 **Nothing shells out and no frames pass through Python.** `SCRecordingOutput`
 (macOS 15+) writes the .mov itself and `AVAudioRecorder` writes the .m4a, so this module starts a stream, stops a stream, and never touches a
@@ -19,6 +20,12 @@ run loop on whatever thread AVFoundation would like to talk to. ScreenCaptureKit
 is fine with that — dispatch queues throughout. `AVCaptureAudioFileOutput` was
 not, and hung forever; `AVAudioRecorder` is (see `start_audio`, which records
 what that cost).
+
+**Audio-only has three recorders, picked by `source` and by OS version**
+(`start_audio`): `"mic"` is `AVAudioRecorder`; `"system"` / `"both"` is a Core
+Audio process tap on macOS 14.2+ (`_darwin_tap` — no display, no Screen
+Recording permission), and on 13.0–14.1 the audio-only stream of `_darwin_mux`
+(the Screen Recording permission, an .m4a with no video track).
 
 Every async API is bridged to a `threading.Event` with a timeout: a capture that
 never starts must raise, not hang a request forever.
@@ -48,8 +55,9 @@ _QUALITY_HIGH = 96
 #: Recording's floor is the floor of the thing that makes it worth doing
 #: natively: a page can already record a screen with `MediaRecorder`, and
 #: SYSTEM AUDIO is the one thing it cannot do on macOS. That is
-#: `SCStreamConfiguration.capturesAudio`, which is macOS 13 — below it this
-#: module has nothing to offer that the browser does not already do better.
+#: `SCStreamConfiguration.capturesAudio`, which is macOS 13 (and, from 14.2, a
+#: Core Audio process tap for audio-only) — below 13 this module has nothing to
+#: offer that the browser does not already do better.
 RECORD_MIN = (13, 0)
 #: `SCRecordingOutput` — the API that writes the movie for us — is macOS 15.
 #: Below it `_darwin_mux` supplies the `AVAssetWriter` that does the same job,
@@ -66,6 +74,11 @@ SCSHOT_MIN = (14, 0)
 #: developing it — otherwise the only code path nobody here can run is the one
 #: that was just written.
 FORCE_MUX = "FUSED_CAPTURE_FORCE_MUX"
+
+#: Same idea for audio-only system audio: force the 13.0–14.1 ScreenCaptureKit
+#: route on a Mac new enough for process taps, so the fallback can be exercised
+#: by whoever is developing it on a current machine.
+FORCE_SCK_AUDIO = "FUSED_CAPTURE_FORCE_SCK_AUDIO"
 
 #: How long to wait for a start/stop/screenshot completion handler. Generous —
 #: a first capture can sit behind the TCC prompt the user has to answer — but
@@ -84,6 +97,19 @@ def _os_version() -> tuple[int, int]:
         return (int(parts[0]), int(parts[1]) if len(parts) > 1 else 0)
     except ValueError:                                   # pragma: no cover
         return (0, 0)
+
+
+def _env_on(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes")
+
+
+def _use_tap() -> bool:
+    """Whether audio-only system audio is a Core Audio tap (14.2+) rather than
+    the ScreenCaptureKit stream — unless the fallback is deliberately forced."""
+    from fused_render.capture import _darwin_tap
+
+    return (not _env_on(FORCE_SCK_AUDIO)
+            and _os_version() >= _darwin_tap.TAP_MIN)
 
 
 def _too_old(minimum: tuple[int, int]) -> str:
@@ -120,6 +146,16 @@ def probe() -> dict:
         "" if granted else "Screen Recording permission has not been granted — "
         "the first capture asks for it, or grant it in System Settings › "
         "Privacy & Security › Screen & System Audio Recording")
+    # System audio, audio-only: a process tap from 14.2 (its own permission,
+    # which has no public preflight, so `granted` is None = "unknown"), the
+    # Screen Recording route below it (whose grant IS preflightable).
+    if record_old:
+        system_audio = {"available": False, "reason": record_old}
+    elif _os_version() >= (14, 2):
+        system_audio = {"available": True, "granted": None, "reason": None}
+    else:
+        system_audio = {"available": True, "granted": granted,
+                        "reason": None if granted else video_reason}
 
     displays = []
     err, ids, count = Quartz.CGGetActiveDisplayList(16, None, None)
@@ -150,8 +186,7 @@ def probe() -> dict:
                   "reason": None if _mic_granted() else
                   "Microphone permission has not been granted — the first "
                   "recording asks for it"},
-        "systemAudio": {"available": not record_old,
-                        "reason": record_old or None},
+        "systemAudio": system_audio,
         "screenshot": {"available": not shot_old, "granted": granted,
                        "reason": shot_old or video_reason or None},
         "displays": displays,
@@ -173,13 +208,17 @@ def refuse(mode: str, spec: dict) -> str | None:
     the neutral half because the sentence names System Settings, which is wrong
     advice on Windows and on Linux.
 
-    Audio-only records through `AVAudioRecorder`, which has no device selection.
-    The API that did — `AVCaptureAudioFileOutput` — deadlocked on a run loop
+    Audio-only MICROPHONE records through `AVAudioRecorder`, which has no device
+    selection. The API that did — `AVCaptureAudioFileOutput` — deadlocked on a run loop
     this app cannot provide (see `start_audio`), so the capability is genuinely
     gone rather than merely unimplemented. A silently-wrong microphone is a
     recording the user has to make twice, so this says where choosing one works.
     """
-    if mode == "audio" and spec.get("device"):
+    if mode == "audio" and spec.get("device") and spec.get("audio") == "system":
+        return ("source 'system' records no microphone, so 'device' does not "
+                "apply — use source: 'both' to mix a chosen microphone in")
+    if (mode == "audio" and spec.get("device")
+            and spec.get("audio") in (None, "mic")):
         return ("audio-only recording uses the system's current input device, "
                 "so 'device' cannot be chosen here — record the screen with "
                 "audio: 'mic' to pick a specific microphone, or change the "
@@ -464,7 +503,29 @@ class _AudioHandle:
         self.path = path
 
 
-def start_audio(out: str, spec: dict) -> _AudioHandle:
+def start_audio(out: str, spec: dict):
+    """Start an audio-only recording to `out` (.m4a), by `spec["audio"]`.
+
+    `"mic"` (and nothing at all) is `AVAudioRecorder`, below. `"system"` and
+    `"both"` need the system's output mix: a Core Audio process tap on 14.2+
+    (`_darwin_tap`), the audio-only ScreenCaptureKit stream on 13.0–14.1 or when
+    `FORCE_SCK_AUDIO` says so. Both are "recording", so the 13.0 floor applies.
+    """
+    if spec.get("audio") in ("system", "both"):
+        _require_record()
+        if _use_tap():
+            from fused_render.capture import _darwin_tap
+
+            return _darwin_tap.start(out, spec)
+        from fused_render.capture import _darwin_mux
+
+        display = _display(None)
+        return _darwin_mux.start_audio(
+            out, display, _configure(display, spec, stream_mic=False), spec)
+    return _start_mic_recorder(out, spec)
+
+
+def _start_mic_recorder(out: str, spec: dict) -> _AudioHandle:
     """Start recording the microphone to `out` (.m4a), via `AVAudioRecorder`.
 
     **`AVCaptureSession` + `AVCaptureAudioFileOutput` was the first attempt and
@@ -520,12 +581,26 @@ def failure(handle) -> str | None:
     that, and it is why the delegate stores the error instead of only unblocking
     `stop`.
     """
-    from fused_render.capture import _darwin_mux
+    from fused_render.capture import _darwin_mux, _darwin_tap
 
+    if isinstance(handle, _darwin_tap.TapHandle):
+        return _darwin_tap.failure(handle)
     if isinstance(handle, _darwin_mux.MuxHandle):
         return _darwin_mux.failure(handle)
     if isinstance(handle, _ScreenHandle):
         return handle.finished.error or None
+    return None
+
+
+def warning(handle) -> str | None:
+    """Advice about a recording that is ending, or None. Optional backend hook.
+
+    Only the process tap has any: it cannot tell a denied permission from an
+    idle Mac, so it reports that nothing was heard instead of failing."""
+    from fused_render.capture import _darwin_tap
+
+    if isinstance(handle, _darwin_tap.TapHandle):
+        return _darwin_tap.warning(handle)
     return None
 
 
@@ -539,8 +614,11 @@ def stop(handle) -> None:
     however quiet its delegate was. AVFoundation's callback needs a run loop
     nobody here can promise, so audio only ever watches the file.
     """
-    from fused_render.capture import _darwin_mux
+    from fused_render.capture import _darwin_mux, _darwin_tap
 
+    if isinstance(handle, _darwin_tap.TapHandle):
+        _darwin_tap.stop(handle)
+        return
     if isinstance(handle, _darwin_mux.MuxHandle):
         _darwin_mux.stop(handle)
         return

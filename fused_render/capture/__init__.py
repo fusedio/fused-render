@@ -690,6 +690,17 @@ def stop(cid: str, *, discard: bool = False) -> dict:
         return already
 
     error = ""
+    # Asked BEFORE the backend tears the recording down — the answer lives on the
+    # handle. A WARNING and not an error: a recording that captured only silence
+    # is still a valid file, and silence is also what an idle Mac sounds like
+    # (the macOS tap backend's note explains why the two cannot be told apart).
+    warning = None
+    hook = getattr(_backend(), "warning", None)
+    if hook is not None and not discard:
+        try:
+            warning = hook(session.handle) or None
+        except Exception:                       # noqa: BLE001 - advice, never fatal
+            warning = None
     try:
         with _native(STOP_LOCK_WAIT_S):
             _backend().stop(session.handle)
@@ -715,8 +726,11 @@ def stop(cid: str, *, discard: bool = False) -> dict:
         _report(session, state="error", message=error)
         result["error"] = error
     else:
-        _report(session, state="done",
-                detail=os.path.basename(session.path))
+        detail = os.path.basename(session.path)
+        if warning:
+            result["warning"] = warning
+            detail = f"{detail} — {warning}"
+        _report(session, state="done", detail=detail)
     return _remember(cid, result)
 
 

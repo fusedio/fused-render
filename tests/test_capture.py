@@ -74,6 +74,12 @@ class FakeBackend:
     def stop(self, handle):
         handle.stopped = True
 
+    #: What `warning(handle)` answers; the real hook is the macOS tap's.
+    warn = None
+
+    def warning(self, handle):
+        return self.warn
+
     def failure(self, handle):
         return handle.error
 
@@ -239,6 +245,24 @@ def test_audio_only_source_reaches_the_backend(backend, client, home, body, want
     assert res.status_code == 200, res.json()
     assert seen[0]["audio"] == want
     assert res.json()["path"].endswith(".m4a")
+
+
+def test_a_backend_warning_rides_the_stop_result_and_the_job_row(backend, client, home):
+    backend.warn = "no system audio was captured"
+    cid = client.post("/api/capture/start",
+                      json={"mode": "audio", "source": "system"},
+                      headers=H).json()["id"]
+    done = client.post(f"/api/capture/{cid}/stop", json={}, headers=H).json()
+    assert done["state"] == "stopped"
+    assert done["warning"] == "no system audio was captured"
+    assert "no system audio" in jobs.list_jobs()[0]["detail"]
+
+
+def test_no_warning_key_when_the_backend_has_nothing_to_say(backend, client, home):
+    cid = client.post("/api/capture/start", json={"mode": "audio"},
+                      headers=H).json()["id"]
+    done = client.post(f"/api/capture/{cid}/stop", json={}, headers=H).json()
+    assert "warning" not in done
 
 
 def test_audio_only_refuses_a_device_naming_where_it_does_work(backend, client):
@@ -935,3 +959,144 @@ def test_an_ending_does_not_wait_forever_behind_a_prompting_start(
     # The lock was never released by the loser: it is back to free now.
     assert capture._native_lock.acquire(timeout=1)
     capture._native_lock.release()
+
+
+# ------------------------------------------- macOS audio-only system audio
+
+
+_darwin_only = pytest.mark.skipif(sys.platform != "darwin",
+                                  reason="the macOS backend")
+
+
+@_darwin_only
+def test_darwin_refuse_device_follows_the_source():
+    from fused_render.capture import _darwin
+
+    mic = _darwin.refuse("audio", {"audio": "mic", "device": "x"})
+    assert mic and "audio: 'mic'" in mic            # the unchanged sentence
+    system = _darwin.refuse("audio", {"audio": "system", "device": "x"})
+    assert system and "source: 'both'" in system and "no microphone" in system
+    assert _darwin.refuse("audio", {"audio": "both", "device": "x"}) is None
+    assert _darwin.refuse("audio", {"audio": "system"}) is None
+
+
+@_darwin_only
+@pytest.mark.parametrize("version,forced,source,want", [
+    ((14, 2), False, "system", "tap"),
+    ((15, 0), False, "both", "tap"),
+    ((26, 6), True, "system", "sck"),
+    ((14, 1), False, "both", "sck"),
+    ((13, 0), False, "system", "sck"),
+    ((26, 6), True, "mic", "mic"),
+    ((13, 0), False, "mic", "mic"),
+])
+def test_darwin_audio_only_routes_by_os_version(monkeypatch, version, forced,
+                                                source, want):
+    from fused_render.capture import _darwin, _darwin_mux, _darwin_tap
+
+    calls = []
+    monkeypatch.setattr(_darwin, "_os_version", lambda: version)
+    monkeypatch.setattr(_darwin.platform, "mac_ver",
+                        lambda: (".".join(map(str, version)), "", ""))
+    if forced:
+        monkeypatch.setenv(_darwin.FORCE_SCK_AUDIO, "1")
+    else:
+        monkeypatch.delenv(_darwin.FORCE_SCK_AUDIO, raising=False)
+    monkeypatch.setattr(_darwin_tap, "start",
+                        lambda out, spec: calls.append("tap") or "h")
+    monkeypatch.setattr(_darwin, "_display", lambda d: "display")
+    monkeypatch.setattr(_darwin, "_configure", lambda *a, **k: "config")
+    monkeypatch.setattr(_darwin_mux, "start_audio",
+                        lambda out, display, config, spec:
+                        calls.append("sck") or "h")
+
+    class Recorder:
+        @staticmethod
+        def alloc():
+            calls.append("mic")
+            raise RuntimeError("stop here")
+
+    monkeypatch.setattr(_darwin.AVF, "AVAudioRecorder", Recorder)
+    try:
+        _darwin.start_audio("/tmp/x.m4a", {"audio": source})
+    except RuntimeError:
+        assert want == "mic"
+    assert calls == [want]
+
+
+@_darwin_only
+def test_darwin_probe_system_audio_grant_shape(monkeypatch):
+    from fused_render.capture import _darwin
+
+    monkeypatch.setattr(_darwin, "_os_version", lambda: (15, 1))
+    monkeypatch.setattr(_darwin.platform, "mac_ver", lambda: ("15.1", "", ""))
+    sa = _darwin.probe()["systemAudio"]
+    assert sa == {"available": True, "granted": None, "reason": None}
+
+    monkeypatch.setattr(_darwin, "_os_version", lambda: (14, 1))
+    monkeypatch.setattr(_darwin.platform, "mac_ver", lambda: ("14.1", "", ""))
+    monkeypatch.setattr(_darwin, "_screen_granted", lambda: False)
+    sa = _darwin.probe()["systemAudio"]
+    assert sa["available"] is True and sa["granted"] is False
+    assert "Screen Recording" in sa["reason"]
+    monkeypatch.setattr(_darwin, "_screen_granted", lambda: True)
+    assert _darwin.probe()["systemAudio"]["reason"] is None
+
+    monkeypatch.setattr(_darwin, "_os_version", lambda: (12, 4))
+    monkeypatch.setattr(_darwin.platform, "mac_ver", lambda: ("12.4", "", ""))
+    sa = _darwin.probe()["systemAudio"]
+    assert sa["available"] is False and "macOS 13" in sa["reason"]
+
+
+@_darwin_only
+def test_darwin_tap_handle_dispatch_and_warning(monkeypatch):
+    from fused_render.capture import _darwin, _darwin_tap
+
+    handle = _darwin_tap.TapHandle("/tmp/x.m4a", False)
+    seen = []
+    monkeypatch.setattr(_darwin_tap, "stop", lambda h: seen.append(("stop", h)))
+    _darwin.stop(handle)
+    assert seen == [("stop", handle)]
+    handle.error = "boom"
+    assert _darwin.failure(handle) == "boom"
+
+    # warning: silent only after >= 1 s, and never once anything was heard.
+    handle = _darwin_tap.TapHandle("/tmp/x.m4a", False)
+    assert _darwin.warning(handle) is None                  # never started
+    handle.started_at = _darwin_tap.time.monotonic() - 0.2
+    assert _darwin.warning(handle) is None                  # too short
+    handle.started_at = _darwin_tap.time.monotonic() - 2
+    assert "no system audio was captured" in _darwin.warning(handle)
+    handle.heard_system = True
+    assert _darwin.warning(handle) is None
+
+
+@_darwin_only
+def test_darwin_mux_audio_only_session_starts_on_audio_not_video(monkeypatch):
+    from fused_render.capture import _darwin_mux
+
+    monkeypatch.setattr(_darwin_mux.CM, "CMSampleBufferGetPresentationTimeStamp",
+                        lambda sbuf: "pts")
+
+    class Writer:
+        started = []
+
+        def startSessionAtSourceTime_(self, t):
+            self.started.append(t)
+
+    class Input:
+        taken = 0
+
+        def isReadyForMoreMediaData(self):
+            return True
+
+        def appendSampleBuffer_(self, sbuf):
+            self.taken += 1
+            return True
+
+    handle = _darwin_mux.MuxHandle("/tmp/x.m4a", "system", audio_only=True)
+    handle.writer, handle.audio_input = Writer(), Input()
+    handle.on_video("frame")                      # ignored: there is no video track
+    assert handle.writer.started == [] and handle.audio_input.taken == 0
+    handle._append(handle.audio_input, "a", video=False)
+    assert handle.writer.started == ["pts"] and handle.audio_input.taken == 1
