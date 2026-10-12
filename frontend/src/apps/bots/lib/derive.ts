@@ -22,7 +22,7 @@ export const handoverAsk = (b: Bot, evs: BotEvent[]): string => {
 export const activeRoutines = (b: Bot): Routine[] => (b.routines || []).filter((r) => r.enabled);
 export const routineFailing = (b: Bot): boolean => activeRoutines(b).some((r) => (r.fails || 0) > 0 || r.last_result === "error");
 
-/** The ⟳ glyph after a bot's name: null when it has no active routine. */
+/** The routines clock after a bot's name (BotList, MI.routines): null when it has no active routine. */
 export function routineGlyph(b: Bot): { warn: boolean; title: string } | null {
   const n = activeRoutines(b).length;
   if (!n) return null;
