@@ -56,9 +56,12 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import sys
 import threading
 import time
+import urllib.parse
+import urllib.request
 
 from fastapi import APIRouter, Header
 from fastapi.responses import JSONResponse
@@ -95,6 +98,27 @@ STATUSES = ("pending", "partial", "complete", "n/a")
 #: Largest `meta` a stage write may carry, in JSON bytes — prefs.json is
 #: shared state and a stage note is a note, not a log.
 META_MAX_BYTES = 4096
+
+#: THE NEWSLETTER (the "Updates" step). Not a stage: it is optional, never
+#: counts toward the meter, and lives under its own `newsletter` key. The
+#: address is posted as a plain form (`<NEWSLETTER_FIELD>=<addr>`) to this URL
+#: — today the "fused-render newsletter" Google Form's `formResponse`, whose
+#: one question ("email") is `entry.970823172`; responses land in the form's
+#: sheet. No key in the app. A different list (HubSpot, Loops, Buttondown)
+#: swaps these two constants. None = record locally only, `forwarded` False.
+#: `FUSED_RENDER_NEWSLETTER_URL` overrides the URL (a test form, a smoke).
+NEWSLETTER_ENDPOINT: str | None = (
+    "https://docs.google.com/forms/d/e/"
+    "1FAIpQLSd8MnyPVXAhZF_bAHJA6yq0n6k6EBt4fUMCaBNF-c5jkFHIjw/formResponse"
+)
+NEWSLETTER_FIELD = "entry.970823172"
+NEWSLETTER_ENV = "FUSED_RENDER_NEWSLETTER_URL"
+NEWSLETTER_TIMEOUT_S = 10
+
+#: Deliberately loose — one @, a dot in the domain, no spaces. The provider
+#: does the real check (and double opt-in, where it has one).
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+EMAIL_MAX = 254
 
 #: `FUSED_RENDER_ONBOARDING=1` forces the auto-show (state reads as fresh) so a
 #: dev server can render the wizard without deleting prefs.json; `=0` forces
@@ -339,6 +363,7 @@ def snapshot() -> dict:
             "dismissed_at": None,
             "opened_at": None,
             "stages": stages,
+            "newsletter": _newsletter(state),
             "version": VERSION,
         }
     if force == "0" and state.get("dismissed_at") is None:
@@ -357,8 +382,74 @@ def snapshot() -> dict:
         # of an open; 0 = "opened, when unknown", so an upgrade does not bounce.
         "opened_at": state.get("opened_at") if state.get("opened_at") is not None else (0 if state.get("step") else None),
         "stages": stages,
+        "newsletter": _newsletter(state),
         "version": VERSION,
     }
+
+
+def _newsletter(state: dict) -> dict:
+    """`{email, subscribed_at, forwarded}` — None/False until the Updates step
+    subscribes someone. Not a stage: it never enters the meter."""
+    raw = state.get("newsletter")
+    raw = raw if isinstance(raw, dict) else {}
+    return {
+        "email": raw.get("email") if isinstance(raw.get("email"), str) else None,
+        "subscribed_at": raw.get("subscribed_at"),
+        "forwarded": bool(raw.get("forwarded")),
+    }
+
+
+def _forward_newsletter(email: str) -> bool:
+    """Send `email` to the newsletter provider. False = no provider wired yet
+    (recorded locally only); raises when the provider refuses or is down.
+
+    THE PLUG: NEWSLETTER_ENDPOINT + NEWSLETTER_FIELD. A provider that wants
+    JSON or extra fields (HubSpot's `fields` array, a source tag) changes the
+    body below and nothing else."""
+    url = os.environ.get(NEWSLETTER_ENV) or NEWSLETTER_ENDPOINT
+    if not url:
+        return False
+    req = urllib.request.Request(
+        url,
+        data=urllib.parse.urlencode({NEWSLETTER_FIELD: email}).encode(),
+        method="POST",
+        headers={"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"},
+    )
+    # urlopen raises HTTPError on a 4xx/5xx, which the route turns into a 502.
+    with urllib.request.urlopen(req, timeout=NEWSLETTER_TIMEOUT_S):  # noqa: S310 — our own fixed URL
+        pass
+    return True
+
+
+def _suggested_email() -> str | None:
+    """A prefill for the Updates field: the global `user.email` from the
+    user's git config, if it looks like an address. A guess they can
+    overwrite; None on any failure.
+
+    READ, never spawned: on a Mac without the Command Line Tools a bare `git`
+    is the /usr/bin/git shim, and running it pops Apple's install dialog
+    (git_tools avoids it for the same reason). The global config is a plain
+    file — `~/.gitconfig`, else `$XDG_CONFIG_HOME/git/config` — and a
+    `[user]` section's `email = …` line is all a prefill needs; includes and
+    conditionals are ignored."""
+    xdg = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+    for path in (os.path.expanduser("~/.gitconfig"), os.path.join(xdg, "git", "config")):
+        try:
+            with open(path, encoding="utf-8", errors="replace") as f:
+                lines = f.read().splitlines()
+        except OSError:
+            continue
+        section = ""
+        for raw in lines:
+            line = raw.split("#", 1)[0].split(";", 1)[0].strip()
+            if line.startswith("["):
+                section = line.strip("[] ").split()[0].lower() if line.strip("[] ") else ""
+            elif section == "user" and "=" in line:
+                key, _, value = line.partition("=")
+                if key.strip().lower() == "email":
+                    value = value.strip().strip('"')
+                    return value if _EMAIL_RE.match(value) else None
+    return None
 
 
 def seed_for_existing_users(fused_ws: str) -> None:
@@ -479,4 +570,32 @@ def api_onboarding_stage(body: dict, x_fused: str | None = Header(default=None))
         prev_meta = prev.get("meta") if isinstance(prev.get("meta"), dict) else {}
         stages[stage] = {"status": status, "meta": {**prev_meta, **meta}, "updated_at": time.time()}
         _write({"stages": stages})
+    return snapshot()
+
+
+@router.get("/api/onboarding/newsletter")
+def api_onboarding_newsletter_get():
+    """The Updates step's read: what is stored, plus a prefill guess."""
+    return {**_newsletter(_read()), "suggested": _suggested_email()}
+
+
+@router.post("/api/onboarding/newsletter")
+def api_onboarding_newsletter(body: dict, x_fused: str | None = Header(default=None)):
+    """Subscribe `{email}` (`_forward_newsletter`) and record it. A provider
+    failure is a 502 and records nothing, so the step can say so and the user
+    can retry; no provider configured records the address with `forwarded`
+    False. Replies with the full snapshot."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    email = body.get("email") if isinstance(body, dict) else None
+    email = email.strip() if isinstance(email, str) else ""
+    if len(email) > EMAIL_MAX or not _EMAIL_RE.match(email):
+        return JSONResponse({"error": "That doesn't look like an email address."}, status_code=400)
+    try:
+        forwarded = _forward_newsletter(email)
+    except Exception as e:  # noqa: BLE001 — any provider failure is one answer
+        log.warning("onboarding: newsletter subscribe failed: %s", e)
+        return JSONResponse({"error": "Couldn't reach the newsletter. Try again in a moment."}, status_code=502)
+    _write({"newsletter": {"email": email, "subscribed_at": time.time(), "forwarded": forwarded}})
     return snapshot()
