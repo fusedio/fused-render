@@ -111,6 +111,21 @@ def test_tall_size_roundtrips(tmp_path, monkeypatch):
     assert client.get("/api/home/layout").json() == {"exists": True, "layout": lay}
 
 
+def test_three_cell_tall_sizes_roundtrip_and_unknown_rejected(tmp_path, monkeypatch):
+    client, _ = _client(tmp_path, monkeypatch)
+    lay = {
+        "version": 5,
+        "widgets": [
+            {"id": "a", "source": "app", "size": "2x3", "format": "live", "appPath": "/w/x", "x": 0, "y": 0},
+            {"id": "t", "source": "tasks", "size": "1x3", "format": "list", "x": 4, "y": 0},
+        ],
+    }
+    assert client.put("/api/home/layout", json=lay, headers=FUSED).status_code == 200
+    assert client.get("/api/home/layout").json() == {"exists": True, "layout": lay}
+    bad = {"version": 5, "widgets": [{"id": "t", "source": "tasks", "size": "3x3", "format": "list", "x": 0, "y": 0}]}
+    assert client.put("/api/home/layout", json=bad, headers=FUSED).status_code == 400
+
+
 def test_build_widget_roundtrips(tmp_path, monkeypatch):
     client, _ = _client(tmp_path, monkeypatch)
     lay = {"version": 2, "widgets": [{"id": "b", "source": "build", "size": "4x1", "format": "bar"}]}
