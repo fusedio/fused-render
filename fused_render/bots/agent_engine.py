@@ -653,6 +653,11 @@ def stop(bot) -> None:
 
 
 # ----------------------------------------------------------------- run ---
+def _result_error(ev: dict) -> str:
+    """A failed `result` event's own words: the result text, else its errors list, else the subtype."""
+    return str(ev.get("result") or "").strip() or ", ".join(map(str, ev.get("errors") or [])) or str(ev.get("subtype") or "error")
+
+
 def _usage(bot, sess: Turn, ev: dict, ok: bool) -> None:
     try:
         from fused_render.bots import store
@@ -670,7 +675,7 @@ def _usage(bot, sess: Turn, ev: dict, ok: bool) -> None:
     in_tok = sum(p for p in parts if isinstance(p, (int, float))) if any(isinstance(p, (int, float)) for p in parts) else None
     try:
         store.usage_log(bot.id, sess.model, getattr(bot, "task_origin", "manual"), bot.meta.get("task") or sess.task, ok,
-                        name=bot.meta.get("name"), cost=cost, input_tokens=in_tok)
+                        name=bot.meta.get("name"), cost=cost, input_tokens=in_tok, error=None if ok else _result_error(ev))
     except Exception:  # noqa: BLE001 — the ledger never sinks a task
         pass
 
@@ -774,7 +779,7 @@ def _drive(bot, sess: Turn, proc) -> tuple:
             if not ok:
                 if sess.cap_interrupted:
                     return "cap", pending or ""
-                err = str(ev.get("result") or "").strip() or ", ".join(map(str, ev.get("errors") or [])) or ev.get("subtype") or "error"
+                err = _result_error(ev)
                 if sess.resumed and strikes == 0 and sess.tool_uses == 0 and _RESUME_ERR.search(err):
                     raise ResumeLost(err[:300])
                 bot.emit("error", f"Model call failed: {err[:500]}")

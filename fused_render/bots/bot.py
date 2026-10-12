@@ -1923,16 +1923,19 @@ class Bot:
 
     def _ai_call(self, ai, prompt, **kw):
         """Every fused_ai.text call goes through here so the usage ledger sees it."""
-        ok = False
+        ok, err = False, None
         try:
             raw = ai.text(prompt, **{**kw, "model": _resolve_model(kw.get("model") or DEFAULT_MODEL)})
             ok = True
             return raw
+        except Exception as e:  # noqa: BLE001 — the ledger keeps the reason; the caller still sees the raise
+            err = str(e) or type(e).__name__
+            raise
         finally:
             try:
                 store.usage_log(self.id, kw.get("model") or DEFAULT_MODEL,
                                 getattr(self, "task_origin", "manual"), self.meta.get("task"), ok,
-                                name=self.meta.get("name"))
+                                name=self.meta.get("name"), error=err)
             except Exception:  # noqa: BLE001
                 pass
 
