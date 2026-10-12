@@ -819,6 +819,36 @@ def _resolve_capability(body: dict, model: str) -> tuple[str | None, object]:
     return capability, None
 
 
+def _validate_load_model(body: dict, *, model_field: str = "model",
+                         capability: str | None = None) -> tuple[str, str, object]:
+    """`(model, capability, None)`, or `("", "", an error response)` — the
+    three checks `/api/ai/runtime/load` runs on the model it is about to
+    load, shared with `/api/ai/runtime/conflicts/resolve`'s `keep` (item 7:
+    before this helper, `resolve` ran only the engine-gap check, so a blank
+    `keep` or one naming a repo this machine's catalog cannot place reached a
+    cold-load error page instead of the same 400/409 `/load` itself answers
+    for the identical model id).
+
+    `model_field` names which body key holds the model id (`"model"` for
+    `/load`; `resolve` passes its own `keep` under `model_field="keep"`, since
+    this is what the caller-facing error names). `capability`, when given,
+    is used as-is instead of being read from `body["capability"]` — `resolve`
+    already knows which capability it is settling and is not inferring one
+    from `keep`."""
+    model = body.get(model_field)
+    if not isinstance(model, str) or not model.strip():
+        return "", "", _error(f"'{model_field}' must be a Hugging Face repo id", status=400)
+    model = model.strip()
+    if capability is None:
+        capability, refusal = _resolve_capability(body, model)
+        if refusal is not None:
+            return "", "", refusal
+    refusal = _engine_gap_refusal(model)
+    if refusal is not None:
+        return "", "", refusal
+    return model, capability, None
+
+
 @router.get("/api/ai/runtime")
 def api_ai_runtime():
     """Loaded models, their memory, and the runners available here.
@@ -1512,13 +1542,7 @@ def api_ai_load(body: dict = Body(...), x_fused: str | None = Header(default=Non
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
-    model = _model_of(body)
-    if not model:
-        return _error("'model' must be a Hugging Face repo id", status=400)
-    capability, refusal = _resolve_capability(body, model)
-    if refusal is not None:
-        return refusal
-    refusal = _engine_gap_refusal(model)
+    model, capability, refusal = _validate_load_model(body)
     if refusal is not None:
         return refusal
     requester_id = unquote(x_fused_requester) if x_fused_requester else ""
@@ -1598,11 +1622,15 @@ def api_ai_runtime_conflicts_resolve(body: dict = Body(...),
     if keep is not None and not isinstance(keep, str):
         return _error("'keep' must be a model id or null", status=400)
     if keep is not None:
-        # The same checks `/load` runs on `model` — `resolve_conflict` hands
-        # `keep` straight to `load()`, so a request this route accepted used
-        # to reach a cold-load error page instead of the 400/409 `/load`
-        # itself would have answered with for the identical model id.
-        refusal = _engine_gap_refusal(keep)
+        # `_validate_load_model` runs the exact checks `/load` runs on
+        # `model` (`resolve_conflict` hands `keep` straight to `load()`), so
+        # a blank/whitespace `keep` or one this machine cannot serve is the
+        # same 400/409 `/load` itself would answer for the identical model
+        # id, not a cold-load error page. `capability` is passed through
+        # rather than inferred — this route already knows which one it is
+        # settling.
+        keep, _capability, refusal = _validate_load_model(
+            body, model_field="keep", capability=capability)
         if refusal is not None:
             return refusal
         # A conflict standing on `capability` is specifically a fight among

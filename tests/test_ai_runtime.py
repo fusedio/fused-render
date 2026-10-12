@@ -4204,6 +4204,20 @@ def test_the_resolve_endpoint_runs_loads_own_engine_gap_check(
     assert "no engine here reads org/a" in response.json()["error"]
 
 
+def test_the_resolve_endpoint_rejects_a_blank_or_whitespace_keep(client, fake_runner):
+    """Item 7: `keep` used to pass `isinstance(keep, str)` and nothing else,
+    so `""` or `"   "` reached `supervisor.load` as a model id instead of
+    being refused the way `/load`'s own `_model_of` refuses a blank `model` —
+    `_validate_load_model` is the one helper both routes share for this."""
+    for keep in ("", "   "):
+        response = client.post(
+            "/api/ai/runtime/conflicts/resolve",
+            json={"capability": registry.TEXT_GENERATION, "keep": keep},
+            headers={"X-Fused": "1"})
+        assert response.status_code == 400, (keep, response.json())
+        assert "keep" in response.json()["error"]
+
+
 def test_evicting_a_model_does_not_block_other_calls_while_it_terminates(fake_runner, monkeypatch):
     """B1: `_terminate` can block for ~9s (a `/quit` POST, SIGTERM+wait,
     SIGKILL+wait, `proc.wait`). If the eviction branch in `_start_resident`

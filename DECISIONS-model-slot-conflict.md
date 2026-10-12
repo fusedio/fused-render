@@ -164,15 +164,20 @@ engine here can serve reached a cold-load failure instead of the 409
 happens to resolve to the same capability — was accepted and loaded as if
 resolving the conflict, rather than refused as unrelated to it.
 
-`/conflicts/resolve` now runs `_engine_gap_refusal(keep)` itself, and reads
-the capability's own `ConflictState` first (`supervisor.conflict_for`, a
-locked read added for this) to reject a `keep` that is not one of
-`standing.models` with a 409 naming the models it could have picked instead.
-Both checks are skipped when `keep` is `null` (nothing to validate) and when
-no conflict is standing yet — `resolve_conflict`'s own docstring already
-treats that case as a legitimate pre-emptive hold, so any engine-servable
-model remains a valid thing to hold the slot for before a conflict exists
-to belong to.
+`/conflicts/resolve` now runs `_validate_load_model` — the one helper it
+shares with `/load` (item 7) — on a non-null `keep`: the same blank/whitespace
+check `/load`'s own `_model_of` makes (a `""` or `"   "` `keep` used to reach
+`supervisor.load` as a model id instead of a 400) and the same
+`_engine_gap_refusal`, with `capability` passed through rather than inferred
+since this route already knows which one it is settling. It also reads the
+capability's own `ConflictState` first (`supervisor.conflict_for`, a locked
+read added for this) to reject a `keep` that is not one of `standing.models`
+with a 409 naming the models it could have picked instead. All of this is
+skipped when `keep` is `null` (nothing to validate) and the `standing.models`
+check specifically is skipped when no conflict is standing yet —
+`resolve_conflict`'s own docstring already treats that case as a legitimate
+pre-emptive hold, so any engine-servable model remains a valid thing to hold
+the slot for before a conflict exists to belong to.
 
 ## The Python client gets its own `ModelSlotConflict`, not just `AiError` fields
 
