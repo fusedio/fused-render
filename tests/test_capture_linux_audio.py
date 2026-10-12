@@ -198,6 +198,19 @@ def test_refuse_ignores_device_when_falling_back_to_sink(monkeypatch):
     assert _linux.refuse("audio", {"audio": "mic", "device": "usb-1"}) is None
 
 
+def test_refuse_checks_extension_when_falling_back_to_sink(monkeypatch):
+    # Unavailable native capture means "mic" runs through `_sink`, which writes
+    # whatever container the page's MediaRecorder picked (`.webm` by default) —
+    # a `path` with a mismatched extension must still be refused there, the
+    # same as the native path refuses one against `.wav`.
+    monkeypatch.setattr(_linux_audio, "available", lambda: False)
+    monkeypatch.setattr(_linux_audio, "unavailable_reason", lambda: "no pipewire here")
+    why = _linux.refuse("audio", {"audio": "mic", "out": "/tmp/x.mp3"})
+    assert why is not None
+    assert ".webm" in why
+    assert _linux.refuse("audio", {"audio": "mic", "out": "/tmp/x.webm"}) is None
+
+
 def test_ext_refuse_start_audio_agree_despite_availability_flip(monkeypatch):
     """`ext()`, `refuse()` and `start_audio()` must not each probe
     `_linux_audio.available()` on their own: if the PipeWire/pulse socket

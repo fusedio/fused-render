@@ -186,7 +186,11 @@ def refuse(mode: str, spec: dict) -> str | None:
                          "audio records from the default input; change it in "
                          "your system sound settings")
             return _sink.check_ext(spec, ext(mode, spec))
-        return None
+        # Native capture is unavailable, so `"mic"` falls back to `_sink`
+        # (the browser's own recording) — let it refuse whatever it would
+        # refuse on that path, `check_ext` included, instead of waving
+        # everything through here.
+        return _sink.refuse(mode, spec)
     return _sink.refuse(mode, spec)
 
 
