@@ -11331,10 +11331,16 @@ three platforms, one API, no field naming which one served you.
   `task`. **System audio is what a browser cannot do on macOS at all**, and that
   is what justifies the native path there — and, read the other way, why the
   other two platforms do not need one (CP-10): Chromium shares system audio on
-  Windows and through the PipeWire portal on Linux. Audio-only on macOS records
-  the system's current input and **refuses** `device` rather than ignoring it,
-  naming where a specific microphone can be chosen (a screen recording's
-  `audio: "mic"`) — see D409 for why the API that could do both deadlocked. On
+  Windows and through the PipeWire portal on Linux. Audio-only `source` is
+  `"mic"` (default), `"system"` or `"both"`: on macOS 14.2+ the latter two are a
+  Core Audio process tap (no Screen Recording grant) and on 13.0–14.1 the
+  ScreenCaptureKit stream with no video track; Windows and Linux refuse them,
+  naming the screen recording that does it (D1342). Audio-only `"mic"` on macOS
+  records the system's current input and **refuses** `device` rather than
+  ignoring it, naming where a specific microphone can be chosen (a screen
+  recording's `audio: "mic"`, or audio-only `"both"`) — see D409 for why the
+  API that could do both deadlocked. `"system"` refuses `device` too: it
+  records no microphone. On
   the streamed platforms both paths are `getUserMedia`, so `device` is honoured
   on `audio()` too; that asymmetry is a refusal sentence on one platform, never
   a flag a page reads.
@@ -11352,7 +11358,8 @@ three platforms, one API, no field naming which one served you.
   thing native capture EXISTS for — a page can already record a screen with
   `MediaRecorder`, and system audio is the one thing it cannot do on macOS, so
   recording's floor is `SCStreamConfiguration.capturesAudio`: **macOS 13**. The
-  still's is 13 too, and audio-only never needed ScreenCaptureKit at all. Below
+  still's is 13 too, and audio-only microphone never needed ScreenCaptureKit at all (audio-only
+  system audio needs it only below 14.2). Below
   13 a Mac gets `available: false, reason: "needs macOS 13"` and a start rejects
   `"unavailable"` with the same sentence (D417). Windows and Linux get the same
   shape with their own reason (CP-10, CP-11). **That holds for a backend that will not IMPORT

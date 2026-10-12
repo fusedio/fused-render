@@ -17,14 +17,15 @@ Platform matrix:
 | survives page reload | yes | no (file kept) | no (file kept) |
 | `display`/`rect`/`cursor` on screen() | yes | refused | refused |
 | same on screenshot() | yes | yes | rect only |
-| `device` on audio() | refused (system input; use screen's `audio:"mic"`) | yes | yes |
+| `device` on audio() | `source:"mic"`: refused (system input; use screen's `audio:"mic"`); `"system"`: refused; `"both"`: yes | yes | yes |
+| `audio({source:"system"\|"both"})` | yes (14.2+: Core Audio tap, "System Audio Recording" grant; 13.0–14.1: Screen Recording grant) | refused (record the screen with `audio:"system"`) | refused (same) |
 | container | .mov/.m4a | .mp4/.webm | .mp4/.webm |
 
 So: don't hardcode extension in `path` — omit or read `rec.path`. Recordings that matter: keep page open on Windows/Linux.
 
 ## API
 
-`screen({audio: false|"mic"|"system"|"both", display, rect, cursor, device, path, maxSeconds, title})` and `audio({source: "mic", device, path, maxSeconds, title})` resolve **when recording starts**, handle = `{id, jobId, path, url, state, stop(), cancel()}`. `stop()` → `{path, url, mime, seconds, bytes}`. `cancel()` (and job row ✕) stops AND DELETES — treat as "user doesn't want it". Elapsed seconds: `fused.watchJob(rec.jobId).watch(...)` — no onTick. `maxSeconds` default 30 min; hitting it stops, keeps file.
+`screen({audio: false|"mic"|"system"|"both", display, rect, cursor, device, path, maxSeconds, title})` and `audio({source: "mic"|"system"|"both", device, path, maxSeconds, title})` resolve **when recording starts**, handle = `{id, jobId, path, url, state, stop(), cancel()}`. `stop()` → `{path, url, mime, seconds, bytes}` (+ `warning` when a system-audio tap heard nothing in ≥1 s: either the Mac was silent or this app lacks System Audio Recording — macOS can't tell which, so it is a warning on a valid file, not an error; show it). `cancel()` (and job row ✕) stops AND DELETES — treat as "user doesn't want it". Elapsed seconds: `fused.watchJob(rec.jobId).watch(...)` — no onTick. `maxSeconds` default 30 min; hitting it stops, keeps file.
 
 `screenshot({display, rect, cursor, path})` — no handle, no job row, native every platform (no share prompt → can shoot cross-origin panes). Filename picks png/jpeg; no `format` option.
 

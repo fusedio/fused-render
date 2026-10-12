@@ -70,6 +70,10 @@ export interface CaptureResult {
   seconds: number;
   bytes?: number;
   mime?: string;
+  /** Present only when the recording is fine but probably empty of system
+   *  audio (a Core Audio tap cannot tell a denied permission from a silent
+   *  Mac). Absent otherwise; never an error. */
+  warning?: string;
   maxSeconds: number;
   jobId: string;
   /** A stop whose file failed to write reports the failure rather than handing
@@ -99,9 +103,11 @@ export interface AudioRecording {
 }
 
 export interface AudioOptions {
-  /** "mic". System audio is a property of a SCREEN recording, and asking for
-   *  it here is refused by the server with the sentence that says where to ask
-   *  instead (R:5404-5411). */
+  /** "mic" (default), "system" or "both". System audio is a macOS-only
+   *  audio-only source (a Core Audio process tap on 14.2+, ScreenCaptureKit
+   *  on 13.0-14.1); Windows and Linux refuse it here with the sentence that
+   *  says to record the screen with `audio: "system"` instead. `stop()` may
+   *  carry a `warning` when a tap heard nothing (R:5404-5411). */
   source?: string;
   /** Forwarded, not dropped, so the refusal is the SERVER's one good sentence
    *  rather than two (R:5408-5411). */
