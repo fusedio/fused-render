@@ -3882,6 +3882,21 @@
     if (jobId) err.jobId = jobId;
     return err;
   }
+  // "model_slot_conflict" (SPEC-model-slot-conflict.md): two different models
+  // are fighting over a capability's one resident slot and the server has
+  // stopped auto-evicting between them. Carrying the competing models and
+  // the held state through is what lets a caller offer the same choice the
+  // AI Models page does, instead of just surfacing the message — every
+  // request-path verb that turns a 409 into a thrown Error (`fused.ai.text`,
+  // `.embed`, `.decide`) calls this on its way out so none of them drift
+  // from the others field by field.
+  function copyConflictFields(err, error) {
+    if (!error || error.type !== "model_slot_conflict") return;
+    err.capability = error.capability;
+    err.models = error.models;
+    err.resident = error.resident;
+    err.held = error.held;
+  }
   // fetch rejects an aborted request with a DOMException named AbortError;
   // this is the one place that name is translated into the bridge's own type.
   function rethrowAbort(what) {
@@ -4088,20 +4103,10 @@
       // load this call just started (SPEC AI-5). Carrying it through is what
       // lets a caller show that download rather than just reporting a failure.
       if (error && error.jobId) err.jobId = error.jobId;
-      // "model_slot_conflict" (SPEC-model-slot-conflict.md): two different
-      // models are fighting over this capability's one resident slot and
-      // the server has stopped auto-evicting between them. UNLIKE
-      // "model_loading", this is terminal — it is never followed by a load
-      // that will eventually finish, so a caller must not retry it the way
-      // it retries "model_loading". Carrying the competing models and the
-      // held state through is what lets a caller offer the same choice the
-      // AI Models page does, instead of just surfacing the message.
-      if (error && error.type === "model_slot_conflict") {
-        err.capability = error.capability;
-        err.models = error.models;
-        err.resident = error.resident;
-        err.held = error.held;
-      }
+      // UNLIKE "model_loading", a "model_slot_conflict" is terminal — it is
+      // never followed by a load that will eventually finish, so a caller
+      // must not retry it the way it retries "model_loading".
+      copyConflictFields(err, error);
       throw err;
     }
     if (!onChunk) {
@@ -5326,6 +5331,9 @@
           // the load this call just started — the same field `fused.ai`'s own
           // `fail()` carries through for exactly the same reason (SPEC AI-5).
           if (error.jobId) err.jobId = error.jobId;
+          // Same model_slot_conflict fields `fused.ai.text`'s own `fail()`
+          // carries through, for the same reason — see `copyConflictFields`.
+          copyConflictFields(err, error);
           throw err;
         }
         return data.result;
@@ -5410,6 +5418,7 @@
           err.type = error.type
             || (res.status === 409 ? "unavailable" : "ai_error");
           if (error.jobId) err.jobId = error.jobId;
+          copyConflictFields(err, error);
           throw err;
         }
         return data.result;

@@ -111,6 +111,15 @@ export class ModelSlotConflict extends Error {
   }
 }
 
+/** The wire shape of an `{ok: false, error}` reply's `error` object, across
+ *  every request-path route (`/api/ai`, `/api/ai/embed`, `/api/ai/decide`) —
+ *  one type rather than the same object literal spelled out again at each of
+ *  `throwRequestPathError`'s own signature and its three callers' `data` casts. */
+type RequestPathError = {
+  type?: string; message?: string; jobId?: string; capability?: string;
+  models?: string[]; resident?: string | null; held?: boolean;
+};
+
 /** The shared 409 fork every request-path reader below makes: `ModelLoading`
  *  to watch-and-retry, `ModelSlotConflict` to offer a choice instead, or the
  *  generic fallback `Error` for anything else. One function rather than a
@@ -118,8 +127,7 @@ export class ModelSlotConflict extends Error {
  *  `readEmbedReply` and `decide`. */
 function throwRequestPathError(
   status: number,
-  error: { type?: string; message?: string; jobId?: string; capability?: string;
-           models?: string[]; resident?: string | null; held?: boolean } | undefined,
+  error: RequestPathError | undefined,
   fallback: string,
 ): never {
   if (status === 409 && error?.type === "model_loading") {
@@ -181,10 +189,7 @@ export async function streamChat(opts: {
   if (!res.ok) {
     // Validation and the cold start both answer BEFORE any stream exists, so
     // the body here is one JSON object, not NDJSON.
-    const data = (await res.json().catch(() => null)) as {
-      error?: { type?: string; message?: string; jobId?: string; capability?: string;
-                models?: string[]; resident?: string | null; held?: boolean };
-    } | null;
+    const data = (await res.json().catch(() => null)) as { error?: RequestPathError } | null;
     throwRequestPathError(res.status, data?.error, "generation failed");
   }
   if (!res.body) throw new Error("no response body");
@@ -563,8 +568,7 @@ async function readEmbedReply(res: Response): Promise<EmbedResult> {
   const data = (await res.json().catch(() => null)) as {
     ok?: boolean;
     result?: EmbedResult;
-    error?: { type?: string; message?: string; jobId?: string; capability?: string;
-              models?: string[]; resident?: string | null; held?: boolean };
+    error?: RequestPathError;
   } | null;
   if (!res.ok || !data?.ok) {
     throwRequestPathError(res.status, data?.error, "embedding failed");
@@ -651,8 +655,7 @@ export async function decide(
   const data = (await res.json().catch(() => null)) as {
     ok?: boolean;
     result?: DecideResult;
-    error?: { type?: string; message?: string; jobId?: string; capability?: string;
-              models?: string[]; resident?: string | null; held?: boolean };
+    error?: RequestPathError;
   } | null;
   if (!res.ok || !data?.ok) {
     throwRequestPathError(res.status, data?.error, "decision failed");

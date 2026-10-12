@@ -176,6 +176,32 @@ Finding 7 switched the dock's handlers: `resolveModelConflict` always
 replies with the full runtime now, so publishing it directly avoids a
 poll-in-flight racing the resolve and republishing stale pre-resolve state.
 
+## Every request-path client surfaces the same conflict fields
+
+`fused_render/static/runtime.js`'s `fused.ai.embed` and `fused.ai.decide`
+now copy `capability`/`models`/`resident`/`held` onto a thrown
+`model_slot_conflict` error, exactly as `fused.ai.text`'s own `fail()`
+already did — a page handling the embed or decide verb now gets the same
+fields to build the same "keep A / keep B / stop both" choice the text path
+already offered, rather than only the bare message. Pulled into one
+`copyConflictFields(err, error)` helper (next to `cancelledError`/
+`rethrowAbort`, the other small shared-error helpers in that file) rather
+than left as three separate inline copies, so the three request-path verbs
+cannot drift apart field by field the way the 409 body itself used to
+(see the `to_wire()` entry above for the server-side half of the same
+problem).
+
+The shell's own `frontend/src/apps/ai_models/playground/client.ts` had the
+equivalent duplication on the TypeScript side: the `error` object's wire
+shape was spelled out as an inline object-literal type four times (once on
+`throwRequestPathError`'s own parameter, once per `data` cast in
+`streamChat`, `readEmbedReply`, and `decide`). Extracted to one
+`RequestPathError` type used in all four places. The `ModelSlotConflict`
+import in `client.test.ts:21` was checked against this change and is still
+exercised (two tests assert `rejects.toThrow(ModelSlotConflict)` /
+`toBeInstanceOf(ModelSlotConflict)`) — removing it, as the finding's own
+wording suggested, would have been wrong; it stays.
+
 ## Resident-dot semantics unchanged by conflicts
 
 `ModelsCardView`'s `idle`/`tone`/`StatusChip` computation stays keyed off
