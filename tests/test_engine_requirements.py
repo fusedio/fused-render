@@ -178,12 +178,12 @@ _IMPORT_TO_DIST = {
     "Cocoa": "pyobjc-framework-cocoa",
     # Native capture (SPEC §45). Same split, two more distributions: the
     # ScreenCaptureKit wheel carries only `ScreenCaptureKit`, and the
-    # AVFoundation one brings `Quartz`, `CoreMedia` and `CoreAudio` with it.
+    # AVFoundation one brings `Quartz` and `CoreMedia` with it; CoreAudio has its own wheel.
     "ScreenCaptureKit": "pyobjc-framework-screencapturekit",
     "AVFoundation": "pyobjc-framework-avfoundation",
     "Quartz": "pyobjc-framework-avfoundation",
     "CoreMedia": "pyobjc-framework-avfoundation",
-    "CoreAudio": "pyobjc-framework-avfoundation",
+    "CoreAudio": "pyobjc-framework-coreaudio",
     # The Linux half of the same feature (CP-11): the desktop portal's
     # Screenshot interface over D-Bus. linux-only, so the same harmless
     # maps-to-nothing shape as the pyobjc rows above on the other two platforms.
