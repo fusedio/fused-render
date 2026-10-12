@@ -931,7 +931,15 @@
 }
 /* Restated with `.assistant` too: a parked card sits inside `.assistant`, where
    the reply's own `pre` rule would otherwise win at equal specificity and hand
-   the payload `white-space: pre` and no height cap. */
+   the payload `white-space: pre`.
+
+   NEVER A VERTICAL SCROLLER (2026-10-12). This used to be `max-height: 190px;
+   overflow: auto`, a box that scrolled inside the pinned card — itself the one
+   scroller in the tail — and a trackpad swipe latched on the inner box, so the
+   card never moved and Allow/Deny stayed out of reach. `overflow-y: hidden`
+   and no cap: a long payload is clipped by `.is-collapsed` below and opened by
+   CollapsiblePre's button, never scrolled. `overflow-x` stays `auto` as it was
+   (pre-wrap + break-word means it practically never engages). */
 .chat-root .perm pre,
 .chat-root .assistant .perm pre {
   position: relative;
@@ -941,17 +949,83 @@
   border-radius: 10px;
   margin: 8px 0 0;
   padding: 8px 10px;
-  max-height: 190px;
-  overflow: auto;
+  overflow-x: auto;
+  overflow-y: hidden;
   white-space: pre-wrap;
   word-break: break-word;
   font-size: 12px;
+}
+/* Collapsed: `--perm-pre-lines` lines (CollapsiblePre's COLLAPSED_LINES) plus
+   the vertical padding. Applied whether or not the text is long — a short
+   payload is simply under the cap — so CollapsiblePre can MEASURE overflow
+   (`scrollHeight > clientHeight`) for a single line that wraps past it. */
+.chat-root .perm pre.is-collapsed {
+  --perm-pre-lines: 6;
+  /* `lh`, so the cap follows whatever line-height the pre inherits; the `em`
+     line before it is the fallback for an engine without `lh`. */
+  max-height: calc(var(--perm-pre-lines) * 1.6em + 16px + 2px);
+  max-height: calc(var(--perm-pre-lines) * 1lh + 16px + 2px);
+  /* `clip`, not `hidden`: a hidden box can still be scrolled by find-in-page
+     or a selection drag, which would slide the text out from under the fade. */
+  overflow: clip;
+}
+/* ...and when something IS cut off, say so: a fade into the pre's own ground
+   over the last line. The fade is the visible half of "this is not all of it";
+   the button under it is the other. */
+.chat-root .perm pre.is-clipped::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2.5em;
+  pointer-events: none;
+  background: linear-gradient(to bottom, transparent, var(--c-pre-bg) 85%);
+  border-radius: 0 0 10px 10px;
+}
+.chat-root .perm .perm-pre-toggle {
+  display: inline-block;
+  margin: 4px 0 0;
+  padding: 2px 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 12px;
+  color: var(--c-accent-text);
+  cursor: pointer;
+}
+.chat-root .perm .perm-pre-toggle:hover {
+  text-decoration: underline;
+}
+.chat-root .perm .perm-pre-toggle:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--c-accent) 60%, transparent);
+  outline-offset: 2px;
+  border-radius: 4px;
 }
 .chat-root .perm .perm-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
   margin-top: 10px;
+}
+/* THE BUTTONS NEVER SCROLL AWAY (2026-10-12). A fully expanded command can be
+   taller than the pane; the pinned tail then becomes the single scroller
+   (above), and this row sticks to its bottom edge so Allow/Deny stay in view
+   while the reader scrolls the payload past them. Scoped to the pin: in the
+   transcript proper a card is a receipt or an unanswered card the reader is
+   scrolling past, and a row stuck to the log's bottom would cover the reply.
+   The negative inline margins carry the card's own ground (opaque
+   `--c-card-bg`, both themes) to the card's border so the payload does not
+   show down the sides; the padding puts the buttons back where they were. */
+.chat-root .chat-tailpin.is-pinned .perm .perm-actions {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  background: var(--c-card-bg);
+  /* Net spacing above the row stays 10px (2 + 8), but the 8 is PAINTED, so a
+     stuck row keeps a gap of card ground between the payload and the buttons. */
+  margin: 2px -14px -6px;
+  padding: 8px 14px 6px;
 }
 .chat-root .perm .perm-btn {
   font: inherit;
