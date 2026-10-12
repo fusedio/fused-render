@@ -29,6 +29,7 @@ import {
   SWITCHABLE_MODES,
 } from "../protocol/summaries";
 import type { PermissionRow, SwitchableMode } from "../protocol/types";
+import { CollapsiblePre } from "./CollapsiblePre";
 import { MarkdownView } from "./MarkdownView";
 import { activateOnKey, guardedOpenOnClick } from "./planAffordance";
 import { PlanModal } from "./PlanModal";
@@ -167,7 +168,7 @@ export function PlanCard({ row, pickerMode, onDecide }: PlanCardProps) {
       {/* The same disclosure rule as every other card: `plan` is the body above
           when it is usable, and falls into this dump when it is not, so the
           card never implies a plan was read. */}
-      {extra ? <pre>{JSON.stringify(extra, null, 2)}</pre> : null}
+      {extra ? <CollapsiblePre text={JSON.stringify(extra, null, 2)} what="input" /> : null}
       {/* The CLI's own scratch path, quiet and separate from the disclosure
           dump above (D890 code review, finding 4) — see `PLAN_HIDDEN_INPUT_KEYS`'s
           docblock for why it is covered rather than dumped as raw JSON. */}

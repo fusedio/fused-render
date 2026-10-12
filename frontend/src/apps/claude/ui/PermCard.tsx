@@ -4,8 +4,8 @@
 // --permission-prompt-tool at an MCP server that parks each request on disk and
 // poll hands them here. Until one of these buttons is clicked the subprocess is
 // genuinely blocked — the card IS the prompt, which is why it takes the accent
-// ring, why nothing in it truncates, and why a failed send has to put the
-// buttons back.
+// ring, why nothing in it is cut off without a visible "Show full …", and why
+// a failed send has to put the buttons back.
 import { useState } from "react";
 
 import { Button } from "@platform/shadcn/ui/button";
@@ -21,6 +21,7 @@ import {
   summarizePermission,
 } from "../protocol/summaries";
 import type { Decision, DecisionScope, PermissionMode, PermissionRow, SwitchableMode } from "../protocol/types";
+import { CollapsiblePre } from "./CollapsiblePre";
 
 export interface PermCardProps {
   row: PermissionRow;
@@ -164,11 +165,14 @@ export function PermCard({ row, liveMode, onDecide }: PermCardProps) {
         </span>
       </div>
       {sub ? <div className="perm-sub">{sub}</div> : null}
-      {/* Verbatim, and NEVER truncated: an Allow hands the tool its input as it
-          stands, so a card that showed a prefix would ask the user to approve
-          bytes they never saw. */}
-      {body ? <pre>{body}</pre> : null}
-      {extra ? <pre>{JSON.stringify(extra, null, 2)}</pre> : null}
+      {/* Verbatim, and NEVER silently truncated: an Allow hands the tool its
+          input as it stands, so a card that showed a prefix would ask the user
+          to approve bytes they never saw. A long payload is CLIPPED instead —
+          a fade plus "Show full command (N more lines)", one click from the
+          whole text — so the pinned card stays the only scroller and Allow/Deny
+          stay reachable (see CollapsiblePre). */}
+      {body ? <CollapsiblePre text={body} what={toolName === "Bash" ? "command" : "input"} /> : null}
+      {extra ? <CollapsiblePre text={JSON.stringify(extra, null, 2)} what="input" /> : null}
       {resolved ? null : (
         <div className="perm-actions">
           {choices.map((c) => (

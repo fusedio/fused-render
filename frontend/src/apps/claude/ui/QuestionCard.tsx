@@ -24,6 +24,7 @@ import { cn } from "@platform/lib/utils";
 import type { ChatController } from "../protocol/controller-api";
 import { OTHER_MAX_H, questionModel, questionOptions } from "../protocol/summaries";
 import type { PermissionRow, Question, QuestionOption } from "../protocol/types";
+import { CollapsiblePre } from "./CollapsiblePre";
 /** THE QUEUE'S LATCH, shared with the approval card rather than re-derived here
  *  (project queue, prefs `queue.enabled`). A question goes through the very same
  *  door — `answerQuestion` calls the controller's one `decide`, which posts to
@@ -632,11 +633,11 @@ export function QuestionCard({ row, onAnswer, onDismiss }: QuestionCardProps) {
             This question did not arrive in a shape this window can answer — dismissing it lets
             the reply continue.
           </div>
-          <pre>{JSON.stringify(row.input, null, 2)}</pre>
+          <CollapsiblePre text={JSON.stringify(row.input, null, 2)} what="input" />
         </>
       )}
       {/* Same rule as an approval card: no input key is invisible. */}
-      {answerable && extra ? <pre>{JSON.stringify(extra, null, 2)}</pre> : null}
+      {answerable && extra ? <CollapsiblePre text={JSON.stringify(extra, null, 2)} what="input" /> : null}
       {!oneShot && !resolved ? (
         <div className="perm-actions qsend">
           <Button

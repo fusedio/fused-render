@@ -551,7 +551,9 @@ test("a payload nothing can answer offers Dismiss and shows what arrived", () =>
       onDismiss={(id) => dismissed.push(id)}
     />,
   );
-  expect(labels(r)).toEqual(["Dismiss"]);
+  // The 8-line dump collapses behind its own disclosure (CollapsiblePre); the
+  // only ANSWERING control is Dismiss.
+  expect(labels(r)).toEqual(["Show full input (2 more lines)", "Dismiss"]);
   expect(textOf(withClass(r, "perm-sub")[0])).toContain("did not arrive in a shape");
   expect(textOf(all(r, "pre")[0])).toBe(JSON.stringify(input, null, 2));
   press(r, "Dismiss");
