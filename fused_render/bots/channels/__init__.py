@@ -13,7 +13,7 @@ from fused_render.bots.channels import base
 from fused_render.bots.channels.base import WEB_CAPS, Caps
 
 KIND_LABELS = {"imessage": "iMessage", "botsend": "a local script (botsend)", "web": "the web page",
-               base.HANDOFF_KIND: "Super Bot"}
+               base.HANDOFF_KIND: "Super Bot", base.APP_KIND: "an app page (fused.bots)"}
 
 
 def available() -> list:
@@ -50,6 +50,8 @@ def origin_label(bot) -> str:
         return "chat"
     if kind == base.HANDOFF_KIND:
         return "Super Bot (a hand-off; your final message is the result it gets)"
+    if kind == base.APP_KIND:
+        return f"the app {base.app_key_of(v)!r} (its page reads your final message as the result; the user is at the Mac)"
     return f"{KIND_LABELS.get(kind, kind)} (user is on their phone, replies are texted back)"
 
 
