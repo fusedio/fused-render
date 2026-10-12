@@ -1110,6 +1110,8 @@ def test_darwin_mux_audio_only_session_starts_on_audio_not_video(monkeypatch):
 
     handle = _darwin_mux.MuxHandle("/tmp/x.m4a", "system", audio_only=True)
     handle.writer, handle.audio_input = Writer(), Input()
+    # The fake buffer has no CoreMedia timing; pause retiming has its own test.
+    monkeypatch.setattr(handle, "_shifted", lambda sbuf: sbuf)
     handle.on_video("frame")                      # ignored: there is no video track
     assert handle.writer.started == [] and handle.audio_input.taken == 0
     handle._append(handle.audio_input, "a", video=False)
