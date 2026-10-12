@@ -197,6 +197,41 @@ test("a standing conflict's toast is withdrawn the moment it becomes held, witho
   mounted.unmount();
 });
 
+test("the toast names requesters, falling back to repoName for a model the supervisor could not attribute", async () => {
+  const mounted = await mountClean();
+  await publish([conflict({ requesters: { "org/a": "Notes app" } })]); // org/b stays anonymous
+  const popup = getPopupNotification();
+  expect(popup?.title).toContain("Notes app and b");
+  expect(popup?.title).not.toContain("org/a");
+  mounted.unmount();
+});
+
+test("a third contender joining an already-announced standoff withdraws the stale toast and raises a fresh one", async () => {
+  const mounted = await mountClean();
+  await publish([conflict()]); // org/a vs org/b
+  const first = getPopupNotification();
+  expect(first).not.toBeNull();
+  expect(first?.title).toContain("a and b");
+
+  _resetNotificationsForTest(); // clears retained/popup state, not the hook's own "seen" map
+  await publish([conflict({ models: ["org/a", "org/b", "org/c"] })]); // same capability, grown set
+  const second = getPopupNotification();
+  expect(second).not.toBeNull();
+  expect(second?.title).toContain("a, b, and c");
+
+  mounted.unmount();
+});
+
+test("three or more contenders get Choose…/Stop all instead of Keep <other>/Stop both", async () => {
+  const mounted = await mountClean();
+  await publish([conflict({ models: ["org/a", "org/b", "org/c"], resident: "org/b" })]);
+  const popup = getPopupNotification();
+  expect(popup).not.toBeNull();
+  expect(popup?.action?.label).toBe("Choose…");
+  expect(popup?.extraAction?.label).toBe("Stop all");
+  mounted.unmount();
+});
+
 test("a failed resolve from the toast's own action surfaces an error instead of failing silently", async () => {
   const mounted = await mountClean();
   await publish([conflict()]);

@@ -807,3 +807,34 @@ same value; all four call sites (`/api/ai`, `aiPost`, `/api/ai/embed`,
 harness that executes `runtime.js`'s own logic (it is exercised only
 through the server-side request-header assertions in
 `tests/test_ai_runtime.py`, unaffected by this).
+
+## Part C: frontend coverage for the pieces reviewed findings touched
+
+Several spots B5-B10 touched, or that the spec calls out in §1/§4, had no
+direct test of their own — covered now rather than left to incidental
+coverage from an unrelated assertion:
+
+- `actionErrorMessage` (api.ts): an `HttpError` with a real message wins over
+  the connection fallback; one with an empty message, a plain network error
+  with no `.status`, and a non-object thrown value all fall back to the
+  connection text.
+- `joinNames` (format.ts): two names join with a bare "and"; three or more
+  get the Oxford comma; a single name or an empty list are the degenerate
+  cases.
+- Requester-label naming, in both places it is drawn — `ModelsDock.tsx`'s
+  `ConflictRow` tooltip and `useModelConflictNotify.ts`'s toast title — each
+  gets its own test naming one requester explicitly and leaving the other
+  anonymous, confirming the fallback to `repoName()` is per-model, not
+  all-or-nothing.
+- A third contender joining an already-announced standoff (`useModelConflictNotify.ts`):
+  confirmed the stale two-name toast is withdrawn and a fresh one naming all
+  three is raised, exercising the `already.models !== modelsKey` branch
+  directly (previously only the "cleared, then a different pair recurs"
+  path had a test).
+- The multiway branch: three or more contenders raise "Choose…"/"Stop all"
+  on the toast, not "Keep `<other>`"/"Stop both" (the dock row's own
+  three-contender behavior was already covered; the toast's was not).
+
+No source changes accompanied this item — every test added exercises
+already-implemented behavior from B5-B10's findings or the existing spec,
+so there was no red state to confirm first.

@@ -8,6 +8,7 @@ import {
   basename,
   dirname,
   repoName,
+  joinNames,
   labelForSource,
 } from "@platform/lib/format";
 import { ORIGIN_BY_ROUTE } from "@platform/lib/originRoutes";
@@ -68,6 +69,22 @@ describe("repoName", () => {
     expect(repoName("owner/model/")).toBe("model");
     expect(repoName("/")).toBe("/");
     expect(repoName("")).toBe("");
+  });
+});
+
+describe("joinNames", () => {
+  it("joins two names with 'and' and no Oxford comma", () => {
+    expect(joinNames(["a", "b"])).toBe("a and b");
+  });
+
+  it("joins three or more with an Oxford comma before the last", () => {
+    expect(joinNames(["a", "b", "c"])).toBe("a, b, and c");
+    expect(joinNames(["a", "b", "c", "d"])).toBe("a, b, c, and d");
+  });
+
+  it("answers a single name bare, and an empty list as an empty string", () => {
+    expect(joinNames(["a"])).toBe("a");
+    expect(joinNames([])).toBe("");
   });
 });
 

@@ -651,6 +651,26 @@ test("the unresolved row's tooltip names the resident as staying loaded", () => 
   expect(tooltip).not.toContain("neither can finish loading");
 });
 
+// Requester labels (SPEC-model-slot-conflict.md §1): the tooltip names WHO is
+// fighting ("Notes app and Chat"), not the model ids, when the supervisor
+// could identify the callers. A model with no entry in `requesters` still
+// falls back to its own repo name rather than leaving a blank.
+test("the unresolved row's tooltip names requesters, falling back to repoName for an anonymous one", () => {
+  const tree = renderView({
+    models: [],
+    conflicts: [conflict({
+      models: ["org/model-a", "org/model-b"],
+      resident: "org/model-b",
+      held: false,
+      requesters: { "org/model-a": "Notes app" },
+    })],
+  });
+  const row = findAll(tree, "dl-row-conflict")[0];
+  const tooltip = findAll(row, "dl-title")[0].props.title as string;
+  expect(tooltip).toContain("Notes app and model-b");
+  expect(tooltip).not.toContain("model-a");
+});
+
 // A third (or later) contender gets its own Keep action too (B8) —
 // `NotificationCard` only has two "Keep" slots, so anything past the first
 // two rides in the row's figures area instead of being dropped silently.
