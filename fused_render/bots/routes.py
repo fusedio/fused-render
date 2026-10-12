@@ -351,6 +351,14 @@ def bots_usage():
     return _store().usage_summary()
 
 
+@router.get("/api/bots/{bid}/failures")
+@_handled
+def bot_failures(bid: str):
+    """The failed model calls behind the bot's "N failed" usage count (this week, newest first), each with the
+    error text when it was recorded: `{failures: [{ts, model, origin, task, error?}]}`."""
+    return {"failures": _store().usage_failures(bid)}
+
+
 @router.get("/api/bots/imessage")
 @_handled
 def bots_imessage():

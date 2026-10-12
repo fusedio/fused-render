@@ -145,10 +145,13 @@ _usage_lock = threading.Lock()
 _usage_cache: tuple[float, dict | None] = (0.0, None)
 
 
-def usage_log(bid, model, origin, task, ok, name=None, cost=None, input_tokens=None) -> None:
+def usage_log(bid, model, origin, task, ok, name=None, cost=None, input_tokens=None, error=None) -> None:
     """Append one call. The name travels with the line so a bot deleted later
     still shows up by name, not by id. `cost` (USD) and `input_tokens` are
-    written only when known (the agent engine reports them; OpenBot did not)."""
+    written only when known (the agent engine reports them; OpenBot did not).
+    `error` is the failed call's own words (the CLI's result text, the API
+    exception), written only on a failure so the "N failed" count in the page
+    can open the reasons (usage_failures)."""
     global _usage_cache
     ev = {"ts": time.time(), "bot": bid, "name": name or "", "model": model, "origin": origin,
           "task": (task or "")[:80], "ok": bool(ok)}
@@ -156,12 +159,42 @@ def usage_log(bid, model, origin, task, ok, name=None, cost=None, input_tokens=N
         ev["cost"] = cost
     if input_tokens is not None:
         ev["input_tokens"] = input_tokens
+    if error and not ok:
+        ev["error"] = str(error)[:2000]
     path = _bpaths.usage_path()
     with _usage_lock:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "a") as f:
             f.write(json.dumps(ev) + "\n")
         _usage_cache = (0.0, None)
+
+
+def usage_failures(bid: str, now: float | None = None) -> list[dict]:
+    """The failed calls behind one bot's "N failed" count, newest first: the
+    same window (USAGE_KEEP_DAYS) and the same `ok` test as usage_summary, so
+    the list is exactly as long as the count the user clicked. Lines logged
+    before the error text was recorded come back without `error`."""
+    now = time.time() if now is None else now
+    keep_from = now - USAGE_KEEP_DAYS * 86400
+    out = []
+    try:
+        with open(_bpaths.usage_path()) as f:
+            for line in f:
+                try:
+                    ev = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(ev, dict) or ev.get("bot") != bid or ev.get("ok", True) or ev.get("ts", 0) < keep_from:
+                    continue
+                row = {"ts": ev.get("ts", 0), "model": ev.get("model") or "?", "origin": ev.get("origin") or "manual",
+                       "task": ev.get("task") or ""}
+                if ev.get("error"):
+                    row["error"] = ev["error"]
+                out.append(row)
+    except FileNotFoundError:
+        pass
+    out.reverse()
+    return out
 
 
 def usage_reset_cache() -> None:
