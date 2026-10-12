@@ -57,7 +57,6 @@ import json
 import logging
 import os
 import re
-import subprocess
 import sys
 import threading
 import time
@@ -425,15 +424,32 @@ def _forward_newsletter(email: str) -> bool:
 def _suggested_email() -> str | None:
     """A prefill for the Updates field: the global `user.email` from the
     user's git config, if it looks like an address. A guess they can
-    overwrite; None on any failure."""
-    try:
-        out = subprocess.run(
-            ["git", "config", "--global", "user.email"],
-            capture_output=True, text=True, timeout=2,
-        ).stdout.strip()
-    except Exception:  # noqa: BLE001 — a prefill, never a gate
-        return None
-    return out if _EMAIL_RE.match(out) else None
+    overwrite; None on any failure.
+
+    READ, never spawned: on a Mac without the Command Line Tools a bare `git`
+    is the /usr/bin/git shim, and running it pops Apple's install dialog
+    (git_tools avoids it for the same reason). The global config is a plain
+    file — `~/.gitconfig`, else `$XDG_CONFIG_HOME/git/config` — and a
+    `[user]` section's `email = …` line is all a prefill needs; includes and
+    conditionals are ignored."""
+    xdg = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+    for path in (os.path.expanduser("~/.gitconfig"), os.path.join(xdg, "git", "config")):
+        try:
+            with open(path, encoding="utf-8", errors="replace") as f:
+                lines = f.read().splitlines()
+        except OSError:
+            continue
+        section = ""
+        for raw in lines:
+            line = raw.split("#", 1)[0].split(";", 1)[0].strip()
+            if line.startswith("["):
+                section = line.strip("[] ").split()[0].lower() if line.strip("[] ") else ""
+            elif section == "user" and "=" in line:
+                key, _, value = line.partition("=")
+                if key.strip().lower() == "email":
+                    value = value.strip().strip('"')
+                    return value if _EMAIL_RE.match(value) else None
+    return None
 
 
 def seed_for_existing_users(fused_ws: str) -> None:
