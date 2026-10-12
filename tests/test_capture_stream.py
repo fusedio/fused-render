@@ -533,8 +533,11 @@ def test_a_microphone_with_no_label_yet_still_gets_a_name():
 
 @pytest.mark.parametrize("source", ["system", "both"])
 def test_audio_only_system_audio_is_refused_on_the_sink_platforms(source):
-    """Chromium gives no audio-only system audio; the sentence says where it does."""
-    for refuse in (_sink.refuse, _windows.refuse, _linux.refuse):
+    """Chromium gives no audio-only system audio; the sentence says where it
+    does. Windows has no other path and refuses this unconditionally; Linux
+    records it natively instead (`test_capture_linux_audio.py` covers both of
+    its states) and so is not a "sink platform" for audio any more."""
+    for refuse in (_sink.refuse, _windows.refuse):
         why = refuse("audio", {"audio": source})
         assert why and "microphone only" in why and "audio: 'system'" in why
     assert _sink.refuse("audio", {"audio": "mic"}) is None
