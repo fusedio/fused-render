@@ -119,6 +119,29 @@ one-line helper rather than three copies of "pop if present and not held",
 so a conflict naming a resident that is gone by ANY path is cleared the
 same way regardless of which of the four removal sites did the removing.
 
+## `/conflicts/resolve`'s `keep` gets `/load`'s own checks, plus one of its own
+
+`resolve_conflict(capability, keep)` hands a non-null `keep` straight to
+`load()`, which is exactly right internally — the SAME load a manual
+`/api/ai/runtime/load` would start — but the router in front of it used to
+validate only that `keep` was a string or `null`, not whatever `/load`
+itself checks before calling `supervisor.load`. A request naming a model no
+engine here can serve reached a cold-load failure instead of the 409
+`_engine_gap_refusal` already gives `/load` for the same model id, and a
+`keep` naming neither side of the standing conflict — a third repo that
+happens to resolve to the same capability — was accepted and loaded as if
+resolving the conflict, rather than refused as unrelated to it.
+
+`/conflicts/resolve` now runs `_engine_gap_refusal(keep)` itself, and reads
+the capability's own `ConflictState` first (`supervisor.conflict_for`, a
+locked read added for this) to reject a `keep` that is not one of
+`standing.models` with a 409 naming the models it could have picked instead.
+Both checks are skipped when `keep` is `null` (nothing to validate) and when
+no conflict is standing yet — `resolve_conflict`'s own docstring already
+treats that case as a legitimate pre-emptive hold, so any engine-servable
+model remains a valid thing to hold the slot for before a conflict exists
+to belong to.
+
 ## Scope: which capabilities can raise `ModelSlotConflict`
 
 `generate_text`/`_generate_sync`'s request-path loads can hit

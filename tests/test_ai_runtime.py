@@ -4129,6 +4129,60 @@ def test_the_release_endpoint_rejects_an_unknown_capability(client):
     assert response.status_code == 400
 
 
+def test_the_resolve_endpoint_rejects_a_keep_that_is_not_in_the_conflict(
+        client, fake_runner):
+    """`/conflicts/resolve` is this capability's answer to the conflict
+    STANDING on it — `keep` names one of the two (or more) models that are
+    actually contending, not an arbitrary third repo `supervisor.load` would
+    otherwise accept unquestioned (B6: this route used to pass any string
+    straight through, skipping every check `/load` itself makes)."""
+    _force_conflict("org/a", "org/b")
+
+    response = client.post(
+        "/api/ai/runtime/conflicts/resolve",
+        json={"capability": registry.TEXT_GENERATION, "keep": "org/c"},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 409
+    assert "org/c" in response.json()["error"]
+    # Rejected before anything happened — the standing conflict is untouched.
+    conflicts = supervisor.describe()["conflicts"]
+    assert len(conflicts) == 1 and conflicts[0]["held"] is False
+
+
+def test_the_resolve_endpoint_still_allows_a_pre_emptive_keep_with_no_conflict_standing(
+        client, fake_runner):
+    """Calling `resolve` before `_start_resident` has detected anything is
+    still a legitimate pre-emptive hold (`resolve_conflict`'s own docstring)
+    — the "keep must be one of the conflict's models" check in the test above
+    only applies once a conflict actually stands; with none standing, any
+    engine-servable model is a valid thing to hold the slot for."""
+    response = client.post(
+        "/api/ai/runtime/conflicts/resolve",
+        json={"capability": registry.TEXT_GENERATION, "keep": "org/a"},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 200
+    assert response.json()["model"] == "org/a"
+
+
+def test_the_resolve_endpoint_runs_loads_own_engine_gap_check(
+        client, fake_runner, monkeypatch):
+    """Same engine-gap refusal `/load` makes (`_engine_gap_refusal`), run here
+    too: `keep` is a load `supervisor.resolve_conflict` would otherwise start
+    unquestioned, for a model no engine on this machine can actually serve."""
+    _force_conflict("org/a", "org/b")
+
+    def gap(model):
+        return {"reason": f"no engine here reads {model}"} if model == "org/a" else None
+
+    monkeypatch.setattr(ai_runtime.catalog, "engine_gap", gap)
+    response = client.post(
+        "/api/ai/runtime/conflicts/resolve",
+        json={"capability": registry.TEXT_GENERATION, "keep": "org/a"},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 409
+    assert "no engine here reads org/a" in response.json()["error"]
+
+
 def test_evicting_a_model_does_not_block_other_calls_while_it_terminates(fake_runner, monkeypatch):
     """B1: `_terminate` can block for ~9s (a `/quit` POST, SIGTERM+wait,
     SIGKILL+wait, `proc.wait`). If the eviction branch in `_start_resident`

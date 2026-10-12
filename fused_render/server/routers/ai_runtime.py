@@ -1558,6 +1558,25 @@ def api_ai_runtime_conflicts_resolve(body: dict = Body(...),
     keep = body.get("keep")
     if keep is not None and not isinstance(keep, str):
         return _error("'keep' must be a model id or null", status=400)
+    if keep is not None:
+        # The same checks `/load` runs on `model` — `resolve_conflict` hands
+        # `keep` straight to `load()`, so a request this route accepted used
+        # to reach a cold-load error page instead of the 400/409 `/load`
+        # itself would have answered with for the identical model id.
+        refusal = _engine_gap_refusal(keep)
+        if refusal is not None:
+            return refusal
+        # A conflict standing on `capability` is specifically a fight among
+        # `standing.models` — `keep` settles THAT fight, it does not open a
+        # load for an unrelated third repo. With no conflict standing yet,
+        # this is a pre-emptive hold instead (resolve_conflict's own
+        # docstring), and any engine-servable model is fair game for it.
+        standing = supervisor.conflict_for(capability)
+        if standing is not None and keep not in standing.models:
+            return _error(
+                f"{keep!r} is not part of the conflict standing on "
+                f"{capability!r}; keep one of {standing.models!r}",
+                status=409)
     try:
         reply = supervisor.resolve_conflict(capability, keep)
     except supervisor.SupervisorError as e:

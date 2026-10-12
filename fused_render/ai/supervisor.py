@@ -2451,6 +2451,17 @@ def resolve_conflict(capability: str, keep: str | None) -> dict:
     return {"capability": capability, "resident": None}
 
 
+def conflict_for(capability: str) -> "ConflictState | None":
+    """The live `ConflictState` standing on `capability`, or `None`.
+
+    Read-only, under `_lock` — the router's own validation ahead of
+    `resolve_conflict` (B6: `keep` must name one of the models actually
+    contending) needs this BEFORE calling it, not the dict after the fact.
+    """
+    with _lock:
+        return _conflicts.get(capability)
+
+
 def release_conflict(capability: str) -> bool:
     """Clear a conflict or hold on `capability` — back to ordinary auto-load.
     True if there was one to clear.
