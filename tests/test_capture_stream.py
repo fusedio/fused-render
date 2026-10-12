@@ -554,6 +554,16 @@ def test_capture_merge_leaves_system_audio_to_the_server_when_native_is_unavaila
     assert out["sources"]["audio"]["available"] is True
 
 
+def test_capture_merge_narrows_but_never_widens_a_true_system_audio():
+    """Windows-shaped: the server hard-codes `systemAudio: {available: true}`
+    and leans on this merge to narrow it to what the browser can actually do.
+    The probe's stub browser CAN record, so `true` survives — the "a browser
+    that cannot" half of this is covered in the TS test for `mergeSources`,
+    which this merge is kept exactly in step with."""
+    out = _probe({"systemAudio": {"available": True, "reason": None}})
+    assert out["sources"]["systemAudio"] == {"available": True, "reason": None}
+
+
 def test_capture_merge_leaves_everything_to_the_server_when_native_is_available():
     """`audioNative: true` means a native Linux recording is already in
     charge of mic/system/devices — this window's own MediaRecorder support

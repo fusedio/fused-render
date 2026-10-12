@@ -7597,11 +7597,16 @@
   // native recording can choose from, which this window's MediaRecorder
   // support has nothing to say about. `video` stays unconditional: screen
   // recording is the browser's on every `client: true` platform regardless
-  // of audio's own path. `systemAudio` is never rewritten here, native or
-  // not — there is no browser API that probes "will a share picker's audio
-  // checkbox work" without opening the picker, so it stays the server's own
-  // answer (true on Windows via WASAPI loopback, the PipeWire reachability
-  // check on Linux) on every platform.
+  // of audio's own path.
+  //
+  // `systemAudio` is only ever NARROWED by this browser, never widened:
+  // Windows answers `true` unconditionally server-side (the screen share's
+  // "share audio" checkbox works there whenever the browser can record at
+  // all) and this is the only place that can catch a browser with no usable
+  // MediaRecorder. Linux's own `false` — no PipeWire/pulse session reachable,
+  // with no browser equivalent to fall back to — must survive untouched;
+  // this window's unrelated screen-recording capability has no business
+  // overriding that honest unavailability with a `true`.
   async function captureMerge(sources) {
     if (!sources || !sources.client) return sources;
     delete sources.client;
@@ -7620,6 +7625,9 @@
         granted: ok,
         reason: why,
       };
+      if (sources.systemAudio && sources.systemAudio.available) {
+        sources.systemAudio = { available: ok, reason: why };
+      }
     }
     if (ok && !audioNative) {
       try {

@@ -700,6 +700,17 @@ export async function mergeSources(
       "this app can store. Chrome, Edge or a recent Firefox can";
   if (!audioNative) {
     merged.audio = { available: ok, granted: ok, reason: why };
+    // `systemAudio` is only ever NARROWED by this browser, never widened:
+    // Windows answers `true` unconditionally server-side (the screen share's
+    // "share audio" checkbox works there whenever the browser can record at
+    // all) and this is the only place that can catch a browser with no usable
+    // MediaRecorder. Linux's own `false` — no PipeWire/pulse session reachable,
+    // with no browser equivalent to fall back to — must survive untouched;
+    // this window's unrelated screen-recording capability has no business
+    // overriding that honest unavailability with a `true`.
+    if (merged.systemAudio && merged.systemAudio.available) {
+      merged.systemAudio = { available: ok, reason: why };
+    }
   }
   if (ok && !audioNative) {
     // A native Linux recording has no microphone to choose — `device` is
