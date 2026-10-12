@@ -3708,6 +3708,9 @@ def _send(run_id: str, message: str, read_dirs: str = "", model: str = "",
     run_dir = os.path.join(RUNS, run_id)
     if _bad_id(run_id) or not os.path.isdir(run_dir):
         return {"error": "no such run"}
+    # NOT AHEAD OF A STOP STILL IN FLIGHT (`_start_pending_stop`): written
+    # now, this message would be the turn the deferred interrupt ends.
+    _join_pending_stop(run_dir)
     try:
         with open(os.path.join(run_dir, "host.json"), encoding="utf-8") as fh:
             host = json.load(fh)
@@ -4098,6 +4101,79 @@ def _drained_unechoed(run_dir: str) -> list:
         # Proven, so the walk above is skipped until the host drains again.
         _remember_capped(_echoed_done, run_dir, names[-1])
     return waiting
+
+#: How long a Stop may wait for the CLI to OPEN the first turn before the
+#: `interrupt` goes down the pipe anyway. Startup (SessionStart hooks, MCP
+#: servers) takes 1-3 s on a normal machine and can take much longer on a
+#: cold one; the wait is off the request path (`_start_pending_stop`), so
+#: the cap only matters when the CLI never opens a turn at all (a stub, a
+#: hung startup), and then the stop falls through to the plain interrupt.
+_FIRST_TURN_WAIT_SEC = 30.0
+
+
+def _first_turn_pending(run_dir: str) -> bool:
+    """Is the run's FIRST message still in the CLI's hands — drained off the
+    inbox but not yet echoed as a turn, with nothing else written since?
+
+    AN INTERRUPT THAT LANDS BEFORE THE FIRST TURN OPENS LOSES THE MESSAGE
+    (Akshil, 2026-10-12: "make a new chat, interrupt it right after, reload —
+    the first message is gone, only 'Interrupted by you'"). Measured against
+    2.1.296: the stop button pressed ~1 s into a new chat put the `interrupt`
+    control request on stdin while the CLI was still running its SessionStart
+    hooks. The CLI answered it (`still_queued: []`) BEFORE its `system/init`
+    row, then dequeued the prompt into an already-aborted turn and persisted
+    only "[Request interrupted by user]" as that turn's user row — the prompt
+    itself never reached the transcript (`queue-operation` rows carry no
+    text). Nothing on the CLI's side keeps it, so every later reader of the
+    session (reload, tasks row title, recap) sees a chat that opens with the
+    marker and nothing the reader said.
+
+    The echo is the proof the turn opened (`_read_echo_texts`): the CLI
+    writes the user row to the transcript at the same moment it replays it
+    on stdout. So `_cancel` waits for it before interrupting — the interrupt
+    then hits a turn whose prompt is already on disk, which is the ordinary
+    stop. Scoped to the FIRST turn of a run (no `result` row yet): a
+    follow-up pressed mid-session has its own echo gate (`pending_echo`) and
+    the previous turns' rows to keep the session readable either way.
+
+    True only while there is something to protect: NOTHING echoed yet in the
+    whole file (a follow-up drained into a turn that is already streaming is
+    not this case — that turn's own prompt is on disk, and the stop must not
+    wait on the follow-up's echo, which only comes when the turn ends),
+    something drained, and no `result` row anywhere in the file."""
+    echoes, whole = _echo_texts(run_dir)
+    if echoes or not whole:
+        return False
+    if not _drained_unechoed(run_dir):
+        return False
+    path = os.path.join(run_dir, "out.jsonl")
+    try:
+        with open(path, "rb") as fh:
+            for raw_line in fh:
+                if b'"result"' not in raw_line:
+                    continue
+                try:
+                    row = json.loads(raw_line.decode("utf-8", "replace"))
+                except ValueError:
+                    continue
+                if isinstance(row, dict) and row.get("type") == "result":
+                    return False
+    except OSError:
+        pass
+    return True
+
+
+def _wait_for_first_turn(run_dir: str, timeout: float) -> bool:
+    """Block until the run's first turn has opened (see
+    `_first_turn_pending`), the host dies, or `timeout` passes. True when
+    the turn opened — i.e. an interrupt sent now cannot lose the prompt."""
+    deadline = time.time() + timeout
+    while _first_turn_pending(run_dir):
+        if time.time() >= deadline or not _host_alive(run_dir):
+            return False
+        time.sleep(0.05)
+    return True
+
 
 
 def _inbox_waiting(run_dir: str) -> list:
@@ -5597,6 +5673,15 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
     # Finished: a `result` with nothing after it (the turn ended and no wake has
     # started another), or a process that is simply gone (D415).
     done = idle or not alive
+    # A STOP ANSWERED BEFORE THE FIRST TURN OPENED (`_start_pending_stop`):
+    # the interrupt is still on its way, but the reader's turn is over the
+    # moment they asked, and every screen says so at once. The error is the
+    # same shape the CLI's own interrupted `result` carries — the page
+    # swallows it into "Stopped." because `cancelled` is true (`runEnding`).
+    stop_pending = not done and _stop_pending(run_dir)
+    if stop_pending:
+        done = True
+        idle = True
 
     if not saw_result and done:
         # Dead without a `result` row = abnormal exit (crash, OOM, cancel),
@@ -5628,6 +5713,9 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
     # story even when the underlying 429 text mentions a usage limit, and
     # letting _account_error re-match inside the overload message's
     # parenthesized original would bury the retries already spent.
+    if stop_pending:
+        error = "Stopped before the first reply."
+
     rewritten = _overload_error(error, gave_up or retry)
     error = rewritten if rewritten != error else _account_error(error)
 
@@ -6948,6 +7036,269 @@ def _history_live(file: str, session_id: str, inbox: bool = True) -> dict:
             "inbox": _inbox_waiting(run_dir) if inbox else []}
 
 
+
+def _interrupt_turn(run_dir: str, stranded: list, queued: bool) -> dict | None:
+    """Queue the `interrupt` control request against a live host and settle
+    the run's markers once it answers — the half of a Stop that talks to the
+    CLI. `None` when the CLI never answered (the caller then tree-kills).
+
+    Shared by the synchronous Stop (`_cancel`) and the deferred one
+    (`_finish_pending_stop`), so the two cannot drift on what an interrupt
+    leaves on disk."""
+    run_id = os.path.basename(run_dir)
+    # Captured BEFORE the request is queued — see `_await_control_response`
+    # for why that ordering is what makes the seek safe.
+    try:
+        out_offset = os.path.getsize(os.path.join(run_dir, "out.jsonl"))
+    except OSError:
+        out_offset = 0
+    request_id = _write_control_request(run_dir, "interrupt")
+    response = _await_control_response(
+        run_dir, request_id, start_offset=out_offset)
+    if response is None:
+        return None
+    # The interrupt LANDED — the whole point of trying it first is
+    # that the session survives, so the `cancelled` marker written
+    # by `_cancel` must not outlive the turn it was asked for, or a clean
+    # turn 3 would read as "the turn finished before the stop
+    # landed" and a real error on turn 3 would be swallowed into a
+    # silent "Stopped." instead of shown.
+    #
+    # It must NOT be removed here, though: the CLI has only been told
+    # to abort, not finished aborting — its own error `result` row
+    # for the interrupted turn is written AFTER this control response
+    # comes back, and removing the marker now would leave every
+    # reader that is not the tab that pressed Stop (the tasks card, a
+    # second viewer) seeing that error with `cancelled` false, i.e.
+    # a crash. `out_offset`, captured above, is
+    # this turn's own boundary — `_poll` retires the marker itself,
+    # once its cursor proves a genuinely NEW turn has started past
+    # that offset, which is the earliest point "outliving the turn
+    # it was asked for" can actually be told apart from "still
+    # reporting the turn that was interrupted".
+    try:
+        with _private_open(
+                os.path.join(run_dir, "interrupted_offset")) as fh:
+            fh.write(str(out_offset))
+    except OSError:
+        pass
+    # A LANDED INTERRUPT RETIRES `pending_echo`, and this is the only
+    # place that can know to.
+    #
+    # `_send` writes that file to mean "a follow-up is between queued
+    # and echoed, so do not believe a trailing `result`" — and `_poll`
+    # only ever clears it by SEEING the echo (`saw_echo_since_send`).
+    # An interrupt is precisely the event that guarantees the echo will
+    # never come: the CLI drops what it had queued and reports it back
+    # in `still_queued`, and the `interrupt` control request leaves the
+    # HOST UP by design (see the block above), so `_poll`'s
+    # liveness escape (`done = idle or not alive`) never fires either.
+    # The result was a run that had visibly finished streaming and
+    # stayed `done: False` for the life of the session — the chat's
+    # status stuck on "running" with the Stop chrome still up, which is
+    # exactly what QA reported (feedback #12).
+    #
+    # Removed AFTER `interrupted_offset` is written, so a poll racing
+    # this sees the marker pair before it sees the echo gate lift.
+    try:
+        os.remove(os.path.join(run_dir, "pending_echo"))
+    except OSError:
+        pass  # never written, or already retired by a poll that saw it
+    # STOP MEANS STOP, INCLUDING WHAT WAS QUEUED. `still_queued` is
+    # the CLI naming messages it says it dropped — and it was observed
+    # ANSWERING them anyway, one after the other, after a Stop pressed
+    # with two messages queued (feedback R2-12). There is no control
+    # request that clears the CLI's queue (only `interrupt`,
+    # `set_model` and `set_permission_mode` exist), and legacy T does
+    # nothing about this at all: its `stopRun` reads `still_queued`
+    # only to paste the text back into the composer. So the session is
+    # ENDED whenever anything was queued — the one case where keeping
+    # the host alive would let the run keep talking past the stop. A
+    # stop with an empty queue keeps the gentler behaviour the
+    # interrupt exists for (a live host, background tasks intact); the
+    # next message resumes this session either way.
+    # Deduped, in order, CLI first: the two lists are disjoint by
+    # construction (a drained entry is moved into `inbox/done/`, so
+    # `_discard_inbox` cannot see one the CLI already has) — but a
+    # duplicate here would paste the same text into the composer
+    # twice, which is worse than a dropped edge case.
+    still = []
+    for item in list(response.get("still_queued") or []) + list(stranded):
+        if item and item not in still:
+            still.append(item)
+    # `queued` is the PAGE's knowledge: it had a follow-up in flight
+    # for this turn. The CLI does not reliably name a drained
+    # follow-up in `still_queued` — it answered `[]` and then went on
+    # to answer the message after the interrupt, with no poll loop
+    # watching (the page's live watch then called that turn "Running
+    # outside this app…"; owner E2E R1, F7/F8). Stop means stop
+    # everything, so a turn that had a queue ends the tree the same
+    # way a named remainder does.
+    if still or queued:
+        _kill_tree(run_dir)
+    return {"cancelled": run_id, "still_queued": still}
+
+
+#: The deferred half of a Stop pressed before the run's first turn opened —
+#: `run_dir -> Thread`, so `_send` and a second `_cancel` can wait for the
+#: interrupt to actually land before they write to the same stdin.
+_PENDING_STOPS: dict = {}
+_PENDING_STOPS_LOCK = threading.Lock()
+#: Marker file: a Stop was answered but its interrupt has not reached the CLI
+#: yet (`_start_pending_stop`). `_poll` reads it as "turn over, stopped by
+#: you"; removed by `_finish_pending_stop` whatever road it ends on.
+_STOP_PENDING = "stop_pending"
+
+
+def _start_pending_stop(run_id: str, run_dir: str, stranded: list,
+                        queued: bool) -> None:
+    """Answer the Stop now, interrupt when the CLI can take it without
+    losing the prompt — see `_first_turn_pending` for the bug this is for.
+
+    The marker goes down BEFORE the thread starts, so a poll racing the
+    return already reads the turn as stopped; the thread is a daemon because
+    a server going down mid-wait leaves `cancelled` on disk either way, and
+    that is the most any reader needs (the CLI then finishes the turn on
+    its own, which `_cancelled_marker_state` reads as "stopped" until a
+    later turn proves otherwise — the same outcome as a kill that did not
+    land, and the same one as before this existed)."""
+    try:
+        with _private_open(os.path.join(run_dir, _STOP_PENDING)) as fh:
+            fh.write(str(time.time()))
+    except OSError:
+        pass
+    thread = threading.Thread(
+        target=_finish_pending_stop,
+        args=(run_id, run_dir, list(stranded), queued),
+        name="claude-stop-%s" % run_id, daemon=True)
+    with _PENDING_STOPS_LOCK:
+        _PENDING_STOPS[run_dir] = thread
+    thread.start()
+
+
+def _read_interrupted_offset(run_dir: str) -> int:
+    try:
+        with open(os.path.join(run_dir, "interrupted_offset"),
+                  encoding="utf-8") as fh:
+            return int(fh.read().strip())
+    except (OSError, ValueError):
+        return 0
+
+
+def _await_result_row(run_dir: str, start_offset: int,
+                      timeout: float = 5.0) -> bool:
+    """Block until `out.jsonl` carries a `result` row past `start_offset`,
+    or `timeout` passes. True when it does."""
+    out_path = os.path.join(run_dir, "out.jsonl")
+    deadline = time.time() + timeout
+    while True:
+        try:
+            with open(out_path, "rb") as fh:
+                fh.seek(start_offset)
+                for raw_line in fh:
+                    if b'"result"' not in raw_line:
+                        continue
+                    try:
+                        row = json.loads(raw_line.decode("utf-8", "replace"))
+                    except ValueError:
+                        continue
+                    if isinstance(row, dict) and row.get("type") == "result":
+                        return True
+        except OSError:
+            pass
+        if time.time() >= deadline:
+            return False
+        time.sleep(0.05)
+
+
+def _finish_pending_stop(run_id: str, run_dir: str, stranded: list,
+                         queued: bool) -> None:
+    try:
+        _wait_for_first_turn(run_dir, _FIRST_TURN_WAIT_SEC)
+        response = None
+        if _host_alive(run_dir):
+            response = _interrupt_turn(run_dir, stranded, queued)
+        if response is None:
+            _kill_tree(run_dir)
+        else:
+            # THE MARKER OUTLIVES THE CONTROL RESPONSE: the CLI writes the
+            # interrupted turn's own `result` a beat after answering, and in
+            # that beat a poll (a reload re-attaching) would see a live host,
+            # no result and no marker — "running" — for a turn that is over.
+            # Held until that row lands, bounded like the response wait.
+            _await_result_row(run_dir, _read_interrupted_offset(run_dir))
+    finally:
+        try:
+            os.remove(os.path.join(run_dir, _STOP_PENDING))
+        except OSError:
+            pass
+        with _PENDING_STOPS_LOCK:
+            if _PENDING_STOPS.get(run_dir) is threading.current_thread():
+                _PENDING_STOPS.pop(run_dir, None)
+        # THE TASKS PAGE'S OWN WORD, refreshed: the router marked the turn
+        # ended the instant the Stop was answered, but the CLI's registry
+        # row may have gone `busy` in between (it opened the turn we were
+        # waiting for), and a newer `busy` outvotes an older mark
+        # (`tasks_watch.is_turn_ended`). Marked again now that the
+        # interrupt has landed, so the row cannot flip back to running
+        # over a turn that is already over. Best effort: standalone loads
+        # of this module (tests) have no package to import from.
+        try:
+            from fused_render import tasks_watch as _tw
+            try:
+                with open(os.path.join(run_dir, "meta.json"),
+                          encoding="utf-8") as fh:
+                    meta = json.load(fh)
+            except (OSError, ValueError):
+                meta = {}
+            session = _run_own_session(run_dir, meta if isinstance(meta, dict) else {})
+            if session:
+                _tw.mark_turn_ended(session, run_id)
+                _tw.notify({session})
+        except Exception:  # noqa: BLE001 - bookkeeping, never the stop itself
+            pass
+
+
+def _join_pending_stop(run_dir: str, timeout: float | None = None) -> None:
+    """Wait for a deferred Stop on `run_dir` to reach the CLI before writing
+    anything else to its stdin. A follow-up that got there first would open
+    a turn the interrupt then ends — the reader's next message silently
+    stopped — and a second Stop would interrupt nothing."""
+    with _PENDING_STOPS_LOCK:
+        thread = _PENDING_STOPS.get(run_dir)
+    if thread is not None and thread is not threading.current_thread():
+        thread.join(timeout)
+
+
+def _pending_stop_alive(run_dir: str) -> bool:
+    with _PENDING_STOPS_LOCK:
+        thread = _PENDING_STOPS.get(run_dir)
+    return thread is not None and thread.is_alive()
+
+
+def _stop_pending(run_dir: str) -> bool:
+    """Is a deferred Stop still on its way for `run_dir`?
+
+    THE FILE ALONE IS NOT THE ANSWER: the thread that owns it is a daemon of
+    THIS process, so a server restart mid-wait leaves the marker behind with
+    nobody to retire it — and a marker nobody retires would hold `_poll` at
+    "done, stopped" for the rest of the run, every later follow-up invisible.
+    A marker with no live thread is stale and removed on sight; what remains
+    then is `cancelled` with no `interrupted_offset`, which readers take as
+    "stopped" until a later turn proves otherwise — the same outcome as a
+    kill that never landed."""
+    path = os.path.join(run_dir, _STOP_PENDING)
+    if not os.path.exists(path):
+        return False
+    if _pending_stop_alive(run_dir):
+        return True
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+    return False
+
+
 def _cancel(run_id: str, interrupt_first: bool = True,
             queued: bool = False) -> dict:
     """End a run — the STOP button's own action, and also `_send`'s way of
@@ -6968,6 +7319,13 @@ def _cancel(run_id: str, interrupt_first: bool = True,
     # so reject anything that could resolve outside the runs dir.
     if _bad_id(run_id) or not os.path.isdir(run_dir):
         return {"cancelled": run_id}
+    # A STOP ALREADY ON ITS WAY: a second press is answered the way the first
+    # was — the stop is a fact, the interrupt is coming — rather than joining
+    # a wait that could outlast the cancel budget (pool.py) and 504. `_send`'s
+    # respawn cancel (`interrupt_first=False`) does not wait either: it ends
+    # the tree, and the thread's own interrupt then fails into the same kill.
+    if interrupt_first and _pending_stop_alive(run_dir):
+        return {"cancelled": run_id, "still_queued": [], "pending": True}
     # WHO ASKED, written down before anything is killed.
     #
     # Killing claude leaves the run dead with no `result` row, which `_poll`
@@ -6988,6 +7346,13 @@ def _cancel(run_id: str, interrupt_first: bool = True,
             fh.write(str(time.time()))
     except OSError:
         pass  # bookkeeping must never stand between the user and a kill
+    # An offset left by an EARLIER stop on this run would pair with the fresh
+    # marker and retire it the moment any turn was proven — this stop's own
+    # offset is written when its interrupt lands (`_interrupt_turn`).
+    try:
+        os.remove(os.path.join(run_dir, "interrupted_offset"))
+    except OSError:
+        pass
     # Answer before killing: the kill takes the whole tree (the MCP server
     # included) on both platforms, but if it fails, a parked approval would
     # otherwise sit there holding the subprocess open for the full timeout.
@@ -7011,102 +7376,33 @@ def _cancel(run_id: str, interrupt_first: bool = True,
         # started earlier in the SAME session outlives a stop pressed on a
         # later turn, and the next message continues this session instead of
         # resuming a dead one.
-        # Captured BEFORE the request is queued — see `_await_control_response`
-        # for why that ordering is what makes the seek safe.
-        try:
-            out_offset = os.path.getsize(os.path.join(run_dir, "out.jsonl"))
-        except OSError:
-            out_offset = 0
+        #
         # THE INBOX FIRST, and before the interrupt row is queued so the scan
         # cannot see (or race) it. `interrupt` only reaches the CLI's OWN
         # queue; a follow-up the session host has not drained yet is not in it
         # and would be delivered right AFTER the interrupt, opening a fresh
         # turn out of a Stop. See `_discard_inbox`.
         stranded = _discard_inbox(run_dir)
-        request_id = _write_control_request(run_dir, "interrupt")
-        response = _await_control_response(
-            run_dir, request_id, start_offset=out_offset)
-        if response is not None:
-            # The interrupt LANDED — the whole point of trying it first is
-            # that the session survives, so the `cancelled` marker written
-            # above must not outlive the turn it was asked for, or a clean
-            # turn 3 would read as "the turn finished before the stop
-            # landed" and a real error on turn 3 would be swallowed into a
-            # silent "Stopped." instead of shown.
-            #
-            # It must NOT be removed here, though: the CLI has only been told
-            # to abort, not finished aborting — its own error `result` row
-            # for the interrupted turn is written AFTER this control response
-            # comes back, and removing the marker now would leave every
-            # reader that is not the tab that pressed Stop (the tasks card, a
-            # second viewer) seeing that error with `cancelled` false, i.e.
-            # a crash. `out_offset`, captured above, is
-            # this turn's own boundary — `_poll` retires the marker itself,
-            # once its cursor proves a genuinely NEW turn has started past
-            # that offset, which is the earliest point "outliving the turn
-            # it was asked for" can actually be told apart from "still
-            # reporting the turn that was interrupted".
-            try:
-                with _private_open(
-                        os.path.join(run_dir, "interrupted_offset")) as fh:
-                    fh.write(str(out_offset))
-            except OSError:
-                pass
-            # A LANDED INTERRUPT RETIRES `pending_echo`, and this is the only
-            # place that can know to.
-            #
-            # `_send` writes that file to mean "a follow-up is between queued
-            # and echoed, so do not believe a trailing `result`" — and `_poll`
-            # only ever clears it by SEEING the echo (`saw_echo_since_send`).
-            # An interrupt is precisely the event that guarantees the echo will
-            # never come: the CLI drops what it had queued and reports it back
-            # in `still_queued`, and the `interrupt` control request leaves the
-            # HOST UP by design (see the block above), so `_poll`'s
-            # liveness escape (`done = idle or not alive`) never fires either.
-            # The result was a run that had visibly finished streaming and
-            # stayed `done: False` for the life of the session — the chat's
-            # status stuck on "running" with the Stop chrome still up, which is
-            # exactly what QA reported (feedback #12).
-            #
-            # Removed AFTER `interrupted_offset` is written, so a poll racing
-            # this sees the marker pair before it sees the echo gate lift.
-            try:
-                os.remove(os.path.join(run_dir, "pending_echo"))
-            except OSError:
-                pass  # never written, or already retired by a poll that saw it
-            # STOP MEANS STOP, INCLUDING WHAT WAS QUEUED. `still_queued` is
-            # the CLI naming messages it says it dropped — and it was observed
-            # ANSWERING them anyway, one after the other, after a Stop pressed
-            # with two messages queued (feedback R2-12). There is no control
-            # request that clears the CLI's queue (only `interrupt`,
-            # `set_model` and `set_permission_mode` exist), and legacy T does
-            # nothing about this at all: its `stopRun` reads `still_queued`
-            # only to paste the text back into the composer. So the session is
-            # ENDED whenever anything was queued — the one case where keeping
-            # the host alive would let the run keep talking past the stop. A
-            # stop with an empty queue keeps the gentler behaviour the
-            # interrupt exists for (a live host, background tasks intact); the
-            # next message resumes this session either way.
-            # Deduped, in order, CLI first: the two lists are disjoint by
-            # construction (a drained entry is moved into `inbox/done/`, so
-            # `_discard_inbox` cannot see one the CLI already has) — but a
-            # duplicate here would paste the same text into the composer
-            # twice, which is worse than a dropped edge case.
+        if _first_turn_pending(run_dir):
+            # THE FIRST TURN HAS NOT OPENED YET: the interrupt has to WAIT
+            # for it (`_first_turn_pending` — sent now, the CLI drops the
+            # prompt), but the reader must not. The stop is already a fact
+            # (`cancelled` above), so it is answered at once and the wait +
+            # interrupt finish on a thread; `_poll` reads `stop_pending` as
+            # "this turn is over, stopped by you" meanwhile, and `_send` /
+            # a second `_cancel` join the thread before touching the pipe
+            # (`_join_pending_stop`), so nothing can reach the CLI ahead of
+            # the interrupt it was promised.
+            _start_pending_stop(run_id, run_dir, stranded, queued)
             still = []
-            for item in list(response.get("still_queued") or []) + stranded:
+            for item in stranded:
                 if item and item not in still:
                     still.append(item)
-            # `queued` is the PAGE's knowledge: it had a follow-up in flight
-            # for this turn. The CLI does not reliably name a drained
-            # follow-up in `still_queued` — it answered `[]` and then went on
-            # to answer the message after the interrupt, with no poll loop
-            # watching (the page's live watch then called that turn "Running
-            # outside this app…"; owner E2E R1, F7/F8). Stop means stop
-            # everything, so a turn that had a queue ends the tree the same
-            # way a named remainder does.
-            if still or queued:
-                _kill_tree(run_dir)
-            return {"cancelled": run_id, "still_queued": still}
+            return {"cancelled": run_id, "still_queued": still,
+                    "pending": True}
+        response = _interrupt_turn(run_dir, stranded, queued)
+        if response is not None:
+            return response
         # No answer inside the timeout — the host may be stuck, or died
         # between the liveness check above and now. Falls through to the
         # tree-kill below exactly as if no host had ever been found: ending
@@ -7285,7 +7581,21 @@ def main(action: str = "start", file: str = "", message: str = "",
     if action == "terminal_command":
         return _terminal_command(file, session_id)
     if action == "cancel":
-        return _cancel(run_id, queued=queued == "1")
+        result = _cancel(run_id, queued=queued == "1")
+        # The session the stop was for, so the router can tell the Tasks page
+        # the turn is over the instant the stop is answered (its own
+        # liveness readers only notice once the CLI writes something).
+        run_dir = os.path.join(RUNS, run_id)
+        if isinstance(result, dict) and not _bad_id(run_id):
+            try:
+                with open(os.path.join(run_dir, "meta.json"),
+                          encoding="utf-8") as fh:
+                    meta = json.load(fh)
+            except (OSError, ValueError):
+                meta = {}
+            result["session_id"] = _run_own_session(
+                run_dir, meta if isinstance(meta, dict) else {})
+        return result
     if action == "live_host":
         # "Is there a session I can hand a follow-up to?" — asked BEFORE
         # every send (see template.html's sendMessage): a host answering

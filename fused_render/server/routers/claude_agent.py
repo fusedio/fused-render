@@ -54,6 +54,7 @@ from fastapi.responses import JSONResponse
 
 from fused_render import calls as shell_calls
 from fused_render import claude_agent
+from fused_render import tasks_watch
 from fused_render._binding import ParamError, bind_params
 from fused_render.claude_agent import gate, pool
 from fused_render.executor import dumps_result
@@ -325,6 +326,19 @@ async def api_claude_agent(request: Request, body: dict = Body(default={}),
         # handler never ran, so it is filed now as the failure it is (the
         # placeholder dropped, a send's spent claim restored) with no `_late`.
         gate._file_owner(params, envelope, body)
+    if action == "cancel" and status == 200:
+        # THE TASKS PAGE HEARS THE STOP NOW. Its own readers (the CLI's
+        # registry row, the transcript tail) only notice a stop once the CLI
+        # writes its interrupt marker — a beat later, and later still for a
+        # stop pressed before the first turn opened (`agent._start_pending_stop`,
+        # whose interrupt deliberately waits). The chat already flipped; the
+        # row flips with it. `mark_turn_ended` is the queue manager's own
+        # word, the same one the session host files on a `result` row.
+        result = envelope.get("result") or {}
+        session_id = str(result.get("session_id") or "") if isinstance(result, dict) else ""
+        if session_id:
+            tasks_watch.mark_turn_ended(session_id, str(bound.get("run_id") or ""))
+            tasks_watch.notify({session_id})
     # A turn writes files (and `_poll` commits them at turn end), so the git
     # status cache is dropped after every call, success or failure — the same
     # unconditional drop /api/run made after every script.
