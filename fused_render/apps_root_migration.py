@@ -33,9 +33,9 @@ that are about to leave the shared repo anyway.
 Two phases, because the server starts right after the startup hook calls
 this: the RENAMES run synchronously (`move_all`, milliseconds for a few dozen
 same-volume renames — the listing must never see a folder mid-move), and the
-settle + git trail + stamp run on a daemon thread (`finish_in_background`,
-which then chains `local_monorepo.run_once` so the two never race on
-`local/.git`). Runs once per machine, recorded in a stamp file under
+settle + git trail + stamp run on a daemon thread, which then chains the two
+older folder-walking migrations (`meta_migration`, `local_monorepo`) so none
+of the three races another. Runs once per machine, recorded in a stamp file under
 ~/.fused-render (the local_monorepo idiom). A rename that raised is NOT
 stamped, so the next start retries; a retry that finds `local/<name>` gone
 treats it as done. Every step is idempotent. Never raises past run_once.
@@ -79,38 +79,41 @@ def _settle(old: str, new: str, witnessed: bool) -> None:
     recorded = app_fused_dir.recorded_app_dir(new)
     if witnessed and recorded and (os.path.normcase(os.path.abspath(recorded))
                                    == os.path.normcase(old)):
+        # `_after_move` owns the retry: a live session it could not carry is
+        # recorded as pending in meta.json and the witness refires on the
+        # app's next open, so the stamp below never has to track it.
         app_fused_dir.ensure(new)
         return
+    # No witness could be written (read-only folder): the same standing an
+    # out-of-band move of such a folder has — a live session's transcript
+    # stays under the old cwd, with nowhere to record that it is owed.
     app_state_move.rewrite_stores(old, new)
     claude_session_move.relocate(old, new)
-    if recorded is not None and (os.path.normcase(os.path.abspath(recorded))
-                                 != os.path.normcase(old)):
-        _own_witness(new, old, recorded)
 
 
-def _own_witness(new: str, old: str, recorded: str) -> None:
-    """A copy's `meta.json` still names the folder it was copied FROM. Left
-    like that, it becomes a lie once that folder is gone — the original has
-    moved to `app/`, or `local/` itself was deleted — and the witness on the
-    copy's next open would read the stale record as a MOVE of the original,
-    handing the original's bookmarks, desk row and Claude sessions to the
-    copy (bugbot on #1592). So the record is settled here: `app_dir` becomes
-    the copy's own path, with the evidence kept in `migrations` — this hop,
-    plus `copy_of` naming what the record used to say — the shape
-    `_after_move` writes, so later readers see one history."""
+def _own_witness(app_dir: str, recorded: str) -> None:
+    """A copy's `meta.json` names the folder it was copied FROM. Witnessing it
+    as it stands would fire `_after_move` against THAT folder — which, having
+    moved earlier in the same loop (or `local/` deleted), reads as gone, i.e. a
+    MOVE of the original, handing the original's bookmarks, desk row and Claude
+    sessions to the copy (bugbot on #1592). So before the copy is witnessed
+    its record is made its own: `app_dir` = the copy's current path, the old
+    claim kept under `migrations[].copy_of` as evidence. From here on the copy
+    moves like any other app — `_after_move`'s full machinery, pending live
+    sessions included. Raises on a write failure; the caller then skips the
+    witness for this folder rather than fire it against the original."""
     from datetime import datetime, timezone
 
     from fused_render import app_fused_dir
 
-    meta = app_fused_dir.read_meta(new) or {}
+    meta = app_fused_dir.read_meta(app_dir) or {}
     migrations = meta.get("migrations")
     if not isinstance(migrations, list):
         migrations = []
-    migrations.append({"from": old, "to": new,
-                       "at": datetime.now(timezone.utc).isoformat(),
-                       "sessions": 0, "copy_of": recorded})
-    meta.update(app_dir=new, migrations=migrations)
-    path = app_fused_dir.meta_path(new)
+    migrations.append({"copy_of": recorded, "to": app_dir,
+                       "at": datetime.now(timezone.utc).isoformat()})
+    meta.update(app_dir=app_dir, migrations=migrations)
+    path = app_fused_dir.meta_path(app_dir)
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
@@ -173,17 +176,22 @@ def move_all(root: str) -> tuple[list[tuple[str, str, bool]], list[str], bool]:
             # Witness the OLD path before the move, so the settle in phase two
             # runs through `_after_move`'s full machinery (pending live
             # sessions included). False when the folder cannot be written to.
-            # ONLY when the folder's meta is its own, though: a COPY carries
-            # the original's `.fused/` wholesale (`audio-to-text-2` records
-            # `audio-to-text`), and `ensure` on it would fire the witness
-            # against the original — which, if it moved earlier in this very
-            # loop, is "gone" and reads as a MOVE, handing the original's
-            # stores and Claude sessions to the copy. Such a folder settles by
-            # hand in phase two, and its record is made its own there
-            # (`_own_witness`) so the same lie cannot fire on a later open.
+            # A COPY carries the original's `.fused/` wholesale
+            # (`audio-to-text-2` records `audio-to-text`); its record is made
+            # its own first (`_own_witness`), or the witness would fire
+            # against the original. If that write fails the folder is moved
+            # unwitnessed and settles by hand — never through a record that
+            # names someone else's folder.
             recorded = app_fused_dir.recorded_app_dir(old)
             own_meta = recorded is None or (
                 os.path.normcase(os.path.abspath(recorded)) == os.path.normcase(old))
+            if not own_meta:
+                try:
+                    _own_witness(old, recorded)
+                    own_meta = True
+                except Exception:
+                    logger.warning("apps root migration: could not own %s's record "
+                                   "(copy of %s)", old, recorded, exc_info=True)
             witnessed = app_fused_dir.ensure(old) if own_meta else False
             shutil.move(old, new)
         except Exception:
@@ -261,29 +269,43 @@ def finish(root: str, moved: list[tuple[str, str, bool]], skipped: list[str],
                     len(moved), len(skipped), NEW_TAG)
 
 
-def run_once(root: str) -> None:
-    """The startup entry point. The renames happen HERE, before the caller
-    starts serving; everything after them runs on a daemon thread, which
-    then chains `local_monorepo.run_once` (same `local/.git`, so never in
-    parallel). Never raises."""
-    from fused_render import local_monorepo
+def _older_migrations(root: str) -> None:
+    """The two startup migrations that walk the same app folders, run AFTER
+    the renames and never beside them: `meta_migration` (the `fused-app`
+    meta stamp — a walk that recorded a folder's old path mid-rename would
+    skip it and stamp itself done, leaving that app unmarked for good) and
+    `local_monorepo` (same `local/.git` as the git trail). Each is its own
+    once-per-machine stamp and never raises."""
+    from fused_render import local_monorepo, meta_migration
 
+    meta_migration.run_once(root)
+    local_monorepo.run_once(root)
+
+
+def run_once(root: str) -> None:
+    """The startup entry point — the one call both startup sites make for
+    the three app-folder migrations. The renames happen HERE, before the
+    caller starts serving; everything after them runs on a daemon thread,
+    which then chains `_older_migrations`. Never raises."""
+    moved: list[tuple[str, str, bool]] = []
+    skipped: list[str] = []
+    complete = True
+    done = False
     try:
-        if os.path.exists(_stamp_path()):
-            local_monorepo.run_once_in_background(root)
-            return
-        moved, skipped, complete = move_all(root)
+        done = os.path.exists(_stamp_path())
+        if not done:
+            moved, skipped, complete = move_all(root)
     except Exception:
         logger.warning("apps root migration failed", exc_info=True)
-        local_monorepo.run_once_in_background(root)
-        return
+        done = True  # nothing to finish; the older migrations still run
 
     def _background() -> None:
-        try:
-            finish(root, moved, skipped, complete)
-        except Exception:
-            logger.warning("apps root migration: finish failed", exc_info=True)
-        local_monorepo.run_once(root)
+        if not done:
+            try:
+                finish(root, moved, skipped, complete)
+            except Exception:
+                logger.warning("apps root migration: finish failed", exc_info=True)
+        _older_migrations(root)
 
     threading.Thread(target=_background, name="apps-root-migration",
                      daemon=True).start()
