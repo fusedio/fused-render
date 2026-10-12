@@ -232,7 +232,9 @@ def start(out: str, spec: dict) -> TapHandle:
     try:
         _start(handle, out, spec)
     except BaseException:
-        _teardown(handle)
+        # A cleanup failure here must not mask the error that got us here
+        # (say, "no such microphone").
+        _teardown(handle, raise_errors=False)
         raise
     return handle
 
@@ -307,7 +309,7 @@ def _start(handle: TapHandle, out: str, spec: dict) -> None:
         "starting the capture device")
 
 
-def _teardown(handle: TapHandle) -> None:
+def _teardown(handle: TapHandle, raise_errors: bool = True) -> None:
     """Undo whatever `start` got through. Every step runs even if one raises, so
     a failed stop never leaks a tap or an aggregate device (they outlive the
     process otherwise)."""
@@ -331,7 +333,7 @@ def _teardown(handle: TapHandle) -> None:
     if handle.tap:
         step(CA.AudioHardwareDestroyProcessTap, handle.tap)
         handle.tap = 0
-    if first is not None:
+    if first is not None and raise_errors:
         raise first
 
 

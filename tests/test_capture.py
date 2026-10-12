@@ -1100,3 +1100,20 @@ def test_darwin_mux_audio_only_session_starts_on_audio_not_video(monkeypatch):
     assert handle.writer.started == [] and handle.audio_input.taken == 0
     handle._append(handle.audio_input, "a", video=False)
     assert handle.writer.started == ["pts"] and handle.audio_input.taken == 1
+
+
+@_darwin_only
+def test_darwin_tap_start_failure_is_not_masked_by_teardown_error(monkeypatch):
+    from fused_render.capture import CaptureError, _darwin_tap
+
+    def bad_start(handle, out, spec):
+        handle.tap = 7
+        raise CaptureError("no such microphone: 'x'")
+
+    def bad_destroy(tap):
+        raise RuntimeError("destroy failed")
+
+    monkeypatch.setattr(_darwin_tap, "_start", bad_start)
+    monkeypatch.setattr(_darwin_tap.CA, "AudioHardwareDestroyProcessTap", bad_destroy)
+    with pytest.raises(CaptureError, match="no such microphone"):
+        _darwin_tap.start("/tmp/x.m4a", {"audio": "both"})
