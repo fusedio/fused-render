@@ -744,7 +744,7 @@ def _app_bot(b):
     waiting = None
     if m.get("status") == "waiting" and m.get("waiting_on"):
         ev = b.event_by_seq(m["waiting_on"]) or {}
-        waiting = "approval" if ev.get("role") == "approval" else ("login" if "browser window" in (ev.get("text") or "") else "question")
+        waiting = "approval" if ev.get("role") == "approval" else ("login" if ev.get("login") else "question")
     row["waitingOn"] = waiting
     row["step"] = int(m.get("step") or 0)
     return row
@@ -780,9 +780,9 @@ def _app_send(bid, body, x_fused_page=None):
     from fused_render.bots.channels import base as chan  # lazy, like the rest of the bot layer (module docstring)
     addr = _own_addr(key, body["addr"]) if body.get("addr") else None
     via = chan.via(chan.APP_KIND, addr) if addr else chan.app_via(key, time.strftime("%Y%m%d-%H%M%S") + "-" + os.urandom(3).hex())
-    # Files land in files/ exactly as a composer attachment does (the same line names them); images also ride the
-    # model turn as blocks — the scaled `preview` the runtime made, else the file itself when it is an image.
-    names, images = [], []
+    # Decoded and checked first (a bad file is a 400 before anything is stored); saved only in `before`, which
+    # receive_app runs once its checks pass, so a refused send (409) leaves no orphan file in files/.
+    decoded = []
     for f in files:
         if not isinstance(f, dict):
             continue
@@ -793,19 +793,27 @@ def _app_send(bid, body, x_fused_page=None):
             raise ValueError(f"{name}: not base64") from None
         if len(data) > ATTACH_MAX:
             raise ValueError(f"{name}: too large ({len(data) // 1048576} MB; limit {ATTACH_MAX // 1048576} MB)")
-        names.append(b.save_bytes(name, data))
-        pv = f.get("preview") if isinstance(f.get("preview"), dict) else None
-        mt = _IMAGE_EXT.get(os.path.splitext(name)[1].lower())
-        if pv and pv.get("data") and pv.get("media_type"):
-            images.append({"media_type": str(pv["media_type"]), "data": str(pv["data"])})
-        elif mt and len(data) <= _IMAGE_PUSH_MAX:
-            # No preview (the runtime's canvas scale failed, or a script-made body): the original goes in only while
-            # it is small enough for the API; a bigger one is saved and named, not pushed (D1351).
-            images.append({"media_type": mt, "data": base64.b64encode(data).decode("ascii")})
-    if names:
-        text = (text + "\n\n" if text else "") + f"Attached (in your FILES folder, use `upload` when a page needs them): {', '.join(names)}"
+        decoded.append((name, data, f.get("preview") if isinstance(f.get("preview"), dict) else None))
+    names = []
+
+    def before():
+        # Files land in files/ exactly as a composer attachment does (the same line names them); images also ride
+        # the model turn as blocks — the scaled `preview` the runtime made, else the file itself when it is an image.
+        images = []
+        for name, data, pv in decoded:
+            names.append(b.save_bytes(name, data))
+            mt = _IMAGE_EXT.get(os.path.splitext(name)[1].lower())
+            if pv and pv.get("data") and pv.get("media_type"):
+                images.append({"media_type": str(pv["media_type"]), "data": str(pv["data"])})
+            elif mt and len(data) <= _IMAGE_PUSH_MAX:
+                # No preview (the runtime's canvas scale failed, or a script-made body): the original goes in only
+                # while it is small enough for the API; a bigger one is saved and named, not pushed (D1351).
+                images.append({"media_type": mt, "data": base64.b64encode(data).decode("ascii")})
+        line = f"Attached (in your FILES folder, use `upload` when a page needs them): {', '.join(names)}" if names else ""
+        return ((text + "\n\n" if text else "") + line if line else text), images
+
     try:
-        started = b.receive_app(text, via, images=images)
+        started = b.receive_app(text, via, follow_up=bool(addr), before=before)
     except Exception as e:  # noqa: BLE001
         return _refused(e, b)
     return {"ok": True, "addr": via["addr"], "seq": b.seq, "started": bool(started), "files": names,

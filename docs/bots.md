@@ -248,7 +248,7 @@ POST   /api/bots/<id>/tool            {name, args, token}                   -> {
 GET    /api/bots/roster              -> {bots: [{id, name, kind, preset, description, status, busy, task, note, step, waitingOn,
                                                  model, effort, face, hidden, pinned, updated}], ts}   (the app door, §13; 403 while Bots is off)
 POST   /api/bots/<id>/app_send        {text, addr?, files?: [{name, data: <base64>, preview?: {media_type, data}}]} + X-Fused-Page
-                                      -> {ok, addr, seq, started, files: [stored names], vision}   (409 {error, reason: busy|headed|control, task, status})
+                                      -> {ok, addr, seq, started, files: [stored names], vision}   (409 {error, reason: busy|headed|control|ended, task, status}; files stored only after the checks pass)
 GET    /api/bots/<id>/app_events?addr=&since=<seq>  + X-Fused-Page -> {events, live, status, seq, ts}   (this app turn's events only)
 POST   /api/bots/<id>/app_stop        {addr} + X-Fused-Page                  -> {ok}   (409 when the running task is not this addr's)
 GET    /api/bots/builds               -> {builds: [{entryId, name, dir, createdAt, doneAt?}]}   (<home>/bots/builds.json)

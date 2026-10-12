@@ -40,7 +40,7 @@ t.stop()                  // stop THIS task only
 t.done                    // Promise<{state, text, summary, seq, artifacts, events}>, never rejects
 ```
 
-Every verb returns a Promise; a failure rejects with an Error carrying the server's sentence plus `.status` and `.error`. A refused send is 409 with `.reason`: `busy` (a task the app did not start is running), `headed` (the browser is popped out as a real window), `control` (the user is driving it). Not a queue: show the reason, and `watch` tells you when the bot is idle again.
+Every verb returns a Promise; a failure rejects with an Error carrying the server's sentence plus `.status` and `.error`. A refused send is 409 with `.reason`: `busy` (a task the app did not start is running), `headed` (the browser is popped out as a real window), `control` (the user is driving it), `ended` (a `t.send` after the turn settled: an addr is never reused for a new task). Not a queue: show the reason, and `watch` tells you when the bot is idle again.
 
 ## Images and files
 

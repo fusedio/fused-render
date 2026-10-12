@@ -1473,6 +1473,7 @@ def _ask(bot, sess: Turn, args: dict):
         return None
     answer, lines, page = got
     lines.extend(f"USER ANSWER: {a}" for a in answer)
+    sess.pending_images.extend(im for a in answer for im in channels.base.images_of(a))  # an app's picture with its answer
     if not answer:
         lines.append("USER ANSWER: (none; the user handed the browser back without a reply)")
     if page:
@@ -1551,7 +1552,9 @@ def _ask_builtin(bot, sess: Turn, args: dict):
 def _login(bot, sess: Turn, args: dict):
     q = (args.get("message") or "").strip() or "This page needs you to sign in."
     bot.takeover(note=False, by="bot")  # the user signs in from the live view; the bot waits paused on this same tab
-    ev = bot.emit("question", channels.login_text(bot, q))
+    # `login: True` marks the card for readers that branch on it (the hand-off board, the app door's `waitingOn` /
+    # `blocked.kind`): the text alone is the channel's wording and changes.
+    ev = bot.emit("question", channels.login_text(bot, q), login=True)
     bot.set_status("waiting", waiting_on=_seq(ev))
     bot.asking = True
     try:
@@ -1571,6 +1574,7 @@ def _login(bot, sess: Turn, args: dict):
     lines = [f"Handed the page to the user to sign in ({q}); the user is done with it. Do not assume the sign-in "
              "succeeded; act on the page below."]
     lines.extend(f"USER ANSWER: {a}" for a in answer)
+    sess.pending_images.extend(im for a in answer for im in channels.base.images_of(a))  # an app's picture with its answer
     lines.append("\n" + tools.format_observation(_observe(bot, sess), compact=True))
     return _result("\n".join(lines))
 

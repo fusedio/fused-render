@@ -1986,25 +1986,44 @@ class Bot:
         self.emit("system", "Approvals are answered here at the Mac, not by text or by an app: use Approve or Deny on the card.", via=None)
         return True
 
-    def receive_app(self, text, via, images=None):
+    def receive_app(self, text, via, images=None, follow_up=False, before=None):
         """The app door (docs §13, `fused.bots.send`): judged BEFORE anything is
         written, under the lock every starter takes, so a refusal leaves no orphan
         user line in the chat (receive writes the line first and lets start_task
         refuse afterwards). Raises AppRefused(reason) for the route's 409:
         `headed` (the browser is a real window on the desktop), `control` (the user
         holds the browser: receive would park the message in `held` with no signal
-        to the app), `busy` (a task the app did not start is running). A follow-up
-        on the app's own live task (same via addr) is an instruction to it."""
+        to the app), `busy` (a task the app did not start is running), `ended` (a
+        `follow_up` whose turn is no longer the running task: a turn's addr is
+        never reused for a new task, so a later app_events read stays one turn's).
+        `before()`, when given, runs once the checks pass and returns (text, images)
+        — the route saves the attachments there, so a refused send stores nothing."""
         with self.lock:
             if self.deleted:
                 raise ValueError("no such bot")
             if self.meta.get("control"):
                 raise AppRefused("control", "the user is driving this bot's browser; send again when it's handed back")
             running = self.thread is not None and self.thread.is_alive()
-            if running and (getattr(self, "task_via", None) or {}).get("addr") != via.get("addr"):
+            mine = running and (getattr(self, "task_via", None) or {}).get("addr") == via.get("addr")
+            if running and not mine:
                 raise AppRefused("busy", f"busy with another task: {self.meta.get('task') or ''}".rstrip(": "))
+            if follow_up:
+                if not mine:
+                    raise AppRefused("ended", "that turn has ended; send a new message to start another task")
+                # Written and queued under this same lock (an RLock; emit takes it again): the task cannot end between
+                # the check and the inbox write, so a follow-up never becomes a new task under an old addr.
+                if before is not None:
+                    text, images = before()
+                self.emit("user", text, via=dict(via))
+                self.inbox.append(chan.Outside(text, via, images))
+                self.wake.set()
+                if self.meta.get("status") == "waiting":
+                    self.set_status("running")  # as _deliver_message: waiting_on stays, the engine settles the card
+                return True
         if not running and self.browser.headed():
             raise AppRefused("headed", "the browser is open as a real window on the desktop; dock it first")
+        if before is not None:
+            text, images = before()
         self.receive(text, via=via, images=images)
         with self.lock:
             return bool(self.thread is not None and self.thread.is_alive()

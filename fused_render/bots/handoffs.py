@@ -119,7 +119,8 @@ def _apply(sb, t, hid, ev):
                 hd["state"] = "working"
             hd.setdefault("started_at", time.time())
         elif role in ("question", "approval"):
-            kind = "approval" if role == "approval" else ("login" if "browser window" in text else "question")
+            # `login: True` is the card's own mark (agent_engine._login); the text test is the older wording.
+            kind = "approval" if role == "approval" else ("login" if ev.get("login") or "browser window" in text else "question")
             hd.update(state="blocked", blocked={"kind": kind, "text": _flat(text, BLOCKED_CAP)})
             if hid not in _asked:  # one "needs you at the laptop" card per hand-off
                 _asked.add(hid)

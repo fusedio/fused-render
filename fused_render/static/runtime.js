@@ -6919,7 +6919,8 @@
         finish("cancelled", ev, "Stopped before it finished.");
       } else if (role === "question") {
         t.state = "blocked";
-        t.blocked = { kind: text.indexOf("browser window") !== -1 || text.indexOf("Sign in") === 0 ? "login" : "question", text: text, seq: ev.seq, options: ev.options || null };
+        // `login` is the card's own mark (agent_engine._login), not a reading of its wording.
+        t.blocked = { kind: ev.login ? "login" : "question", text: text, seq: ev.seq, options: ev.options || null };
       } else if (role === "approval") {
         t.state = "blocked";
         t.blocked = { kind: "approval", text: text, seq: ev.seq };
@@ -6967,7 +6968,14 @@
     // bot's `ask` — never to an approval card (the server marks it outside).
     t.send = function (text, opts) {
       return Promise.resolve()
-        .then(() => botsReadFiles(opts))
+        .then(() => {
+          if (finished) {
+            const err = taskError(409, "that turn has ended; use fused.bots.send to start another task");
+            err.reason = "ended";
+            throw err;
+          }
+          return botsReadFiles(opts);
+        })
         .then((files) => taskFetch("POST", "/api/bots/" + encodeURIComponent(botId) + "/app_send", { text: String(text || ""), addr: addr, files: files }))
         .then((d) => {
           if (t.state === "blocked" && t.blocked && t.blocked.kind === "question") {
