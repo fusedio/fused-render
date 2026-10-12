@@ -255,9 +255,10 @@ data = [
 #   * pyobjc-framework-Cocoa: the macOS half of the OS clipboard bridge
 #     (shell/pasteboard/_darwin.py reads and writes NSPasteboard file URLs).
 #     Without it the clipboard route reports `supported: false`.
-#   * pyobjc ScreenCaptureKit + AVFoundation, pillow and dbus-fast: native
-#     capture (SPEC §45). macOS records through ScreenCaptureKit and
-#     AVFoundation; the Windows still is a `BitBlt` that pillow encodes; the
+#   * pyobjc ScreenCaptureKit + AVFoundation + CoreAudio, pillow and dbus-fast:
+#     native capture (SPEC §45). macOS records through ScreenCaptureKit and
+#     AVFoundation, and audio-only system audio (14.2+) through a Core Audio
+#     process tap (CoreAudio); the Windows still is a `BitBlt` that pillow encodes; the
 #     Linux still goes through the `org.freedesktop.portal.Screenshot` D-Bus
 #     call (dbus-fast, pure Python, no GTK) and pillow crops or converts what
 #     the portal wrote. Without them `fused.capture` reports
@@ -270,6 +271,7 @@ desktop = [
     "pyobjc-framework-Cocoa; sys_platform == 'darwin'",
     "pyobjc-framework-ScreenCaptureKit; sys_platform == 'darwin'",
     "pyobjc-framework-AVFoundation; sys_platform == 'darwin'",
+    "pyobjc-framework-CoreAudio; sys_platform == 'darwin'",
     "pillow; sys_platform == 'win32'",
     "pillow; sys_platform == 'linux'",
     "dbus-fast; sys_platform == 'linux'",
