@@ -6814,3 +6814,7 @@ A Notion-style vertical pill (app icon, level meter, pause/resume, red stop) flo
 
 - **44x152 pill, contents scaled ~0.75.** Icon 24 px, meter bars 3 px tall with a 4 px gap and a 20 px maximum (rest widths 9/12/15/11/6 px, `BAR_REST` in `lib.ts`), pause and stop 28 px circles (12 px glyphs, 9 px stop square), 8 px vertical padding, 22 px radius.
 - **Soft layered shadow, 14 px window margin.** The heavy drop shadow and hard ring are replaced by a hairline plus two soft layers (light and dark values); the window is 72x180 (pill plus 14 px on every side) so the shadow is never clipped.
+
+## D1351 — Recording pill light stop glyph darkened to #d93d35 (2026-10-12, worktree-capture-system-audio-tap)
+
+- **Stop glyph `--stop-fg` light value `#e5534b` -> `#d93d35`.** Against the hover background `--stop-bg-hover` (#fbd9d7) the old value gave 2.82:1, below the WCAG 3:1 non-text contrast minimum; the new value gives ~3.4:1. Dark theme unchanged.
