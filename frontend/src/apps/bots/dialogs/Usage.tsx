@@ -61,7 +61,8 @@ export function UsageDialog({ onClose }: { onClose: () => void }) {
                         it. Not for the collapsed "Deleted bots" row: its lines carry no id the failures route could match. Tailwind only:
                         the dialog portals to <body>, outside .bots-page, so neither its button pill nor .lnk reach here. */}
                     {b.errors && b.id !== "_deleted" ? <button type="button" className="cursor-pointer text-right tabular-nums text-destructive underline-offset-2 hover:underline"
-                      title="Show the failed calls and their errors" onClick={(e) => { e.stopPropagation(); openDialog({ kind: "failures", id: b.id, back: true }); }}>{b.errors}</button>
+                      title="Show the failed calls and their errors" aria-label={`Show ${b.errors} failed call${b.errors === 1 ? "" : "s"} for ${b.name}`}
+                      onClick={(e) => { e.stopPropagation(); openDialog({ kind: "failures", id: b.id, back: true }); }}>{b.errors}</button>
                       : <span className={cn("text-right tabular-nums", b.errors ? "text-destructive" : "text-muted-foreground")}>{b.errors || "·"}</span>}
                     <span className="truncate text-xs text-muted-foreground">{fmtAgo(b.last)}</span>
                   </div>

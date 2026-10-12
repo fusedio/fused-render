@@ -193,7 +193,9 @@ def usage_failures(bid: str, now: float | None = None) -> list[dict]:
                 out.append(row)
     except FileNotFoundError:
         pass
-    out.reverse()
+    # By ts, not file position: usage_log stamps the line before it takes the lock, so two overlapping calls can land
+    # in the file out of order.
+    out.sort(key=lambda r: r["ts"], reverse=True)
     return out
 
 
