@@ -310,3 +310,114 @@ def test_handoff_sweep_closes_dead_timed_out_and_orphaned_rows(pair):
     gate.set()
     registry.delete(t.id)  # deletion sweeps at once
     assert hd3["state"] == "failed" and "was deleted" in hd3["result"]
+
+
+# ---- a finished hand-off carries the user's request on (docs §11 rule 5) ----
+
+def _carry_on_turns(sb):
+    return [e for e in sb.events_since(0) if e["role"] == "system" and e["text"].startswith("Task started: Carrying on:")]
+
+
+def _record_starts(sb, monkeypatch):
+    """start_task's (origin, via) per call: the task may end (and reset task_via) before the test looks."""
+    seen, real = [], sb.start_task
+
+    def start_task(task, label=None, origin="manual", via=None):
+        seen.append((origin, dict(via) if via else None))
+        return real(task, label=label, origin=origin, via=via)
+    monkeypatch.setattr(sb, "start_task", start_task)
+    return seen
+
+
+def test_handoff_done_carries_the_request_on(pair, monkeypatch):
+    sb, t, gate = pair
+    starts = _record_starts(sb, monkeypatch)
+    sb.meta["task"] = "summarize my X timeline and email it to me"
+    label, out = sb.handoff("scout", "read the timeline")
+    assert out.startswith("started")
+    (hd,) = rows(sb).values()
+    assert hd["asked_for"] == "summarize my X timeline and email it to me" and hd["asked_seq"] >= 0
+    t.emit("done", "Five posts about Claude.", via=chan.handoff_via(sb.id, hd["id"]))
+    release(t, gate)
+    assert hd["state"] == "done" and hd["continued"] is True
+    # Super Bot started a turn of its own: the note, the task label, the engine's first line
+    assert any(e["role"] == "note" and e["text"] == "Scout is done; carrying on with your request." for e in sb.events_since(0))
+    assert starts == [(botmod.HANDOFF_CONTINUE_ORIGIN, None)]  # the chat's own channel
+    if sb.thread is not None:
+        gate.set(); sb.thread.join(5)
+    assert len(_carry_on_turns(sb)) == 1
+    # the result stays on the board for that turn (the engine marks it seen once the preamble is written)
+    assert "Five posts about Claude." in handoffs.handoffs_section(sb)
+
+
+def test_handoff_chain_keeps_the_whole_request(pair):
+    sb, t, gate = pair
+    sb.meta["task"] = "summarize my X timeline and email it to me at a very long address so the label is cut short"
+    sb.handoff("scout", "read X")
+    (hd,) = rows(sb).values()
+    t.emit("done", "Five posts.", via=chan.handoff_via(sb.id, hd["id"]))
+    release(t, gate)
+    assert hd["continued"] is True and sb.meta["task"].startswith("Carrying on: ")
+    # a hop made from the carry-on turn remembers the user's request, not the turn's label
+    sb.handoff("scout", "email the summary")
+    hop = [h for h in rows(sb).values() if h["task"] == "email the summary"][0]
+    assert hop["asked_for"] == "summarize my X timeline and email it to me at a very long address so the label is cut short"
+    if sb.thread is not None:
+        gate.set(); sb.thread.join(5)
+
+
+def test_handoff_from_the_phone_carries_on_over_the_phone(pair, monkeypatch):
+    sb, t, gate = pair
+    starts = _record_starts(sb, monkeypatch)
+    sb.meta["task"] = "text me my X digest"
+    sb.task_via = {"kind": "imessage", "addr": "+15550100"}  # the asking task came in by text
+    sb.handoff("scout", "read X")
+    (hd,) = rows(sb).values()
+    assert hd["origin_via"] == {"kind": "imessage", "addr": "+15550100"}
+    t.emit("done", "Three posts.", via=chan.handoff_via(sb.id, hd["id"]))
+    release(t, gate)
+    assert hd["continued"] is True
+    # the carry-on runs on the phone's channel (replies go back there) under its own ledger origin
+    assert starts == [(botmod.HANDOFF_CONTINUE_ORIGIN, {"kind": "imessage", "addr": "+15550100"})]
+    if sb.thread is not None:
+        gate.set(); sb.thread.join(5)
+    assert len(_carry_on_turns(sb)) == 1
+
+
+def test_handoff_does_not_carry_on_when_the_user_spoke_or_it_failed(pair):
+    sb, t, gate = pair
+    sb.meta["task"] = "find flights"
+    sb.handoff("scout", "find the cheapest flight")
+    (hd,) = rows(sb).values()
+    sb.emit("user", "actually, never mind")  # the user's own message is the way on from here
+    t.emit("done", "TAP, 212 EUR.", via=chan.handoff_via(sb.id, hd["id"]))
+    release(t, gate)
+    assert hd["state"] == "done" and hd["continued"] is True and not _carry_on_turns(sb)
+    assert not any(e["role"] == "note" and "carrying on" in e["text"] for e in sb.events_since(0))
+    # a failed hand-off only lands its card
+    sb.meta["task"] = "find hotels"
+    sb.handoff("scout", "find a hotel")
+    hd2 = [h for h in rows(sb).values() if h["task"] == "find a hotel"][0]
+    t.emit("error", "boom", trace="x", via=chan.handoff_via(sb.id, hd2["id"]))
+    release(t, gate)
+    assert hd2["state"] == "failed" and "continued" not in hd2 and not _carry_on_turns(sb)
+
+
+def test_handoff_siblings_carry_on_once_when_the_last_lands(pair, monkeypatch):
+    sb, t, gate = pair
+    t2 = registry.create(name="Mailer")
+    sb.meta["task"] = "digest X and Gmail"
+    sb.task_started = time.time()  # both hand-offs come from this one turn
+    sb.handoff("scout", "read X")
+    sb.handoff("mailer", "read Gmail")
+    a, b = rows(sb).values()
+    t.emit("done", "X: five posts.", via=chan.handoff_via(sb.id, a["id"]))
+    release(t, gate)
+    assert a["state"] == "done" and "continued" not in a and not _carry_on_turns(sb)  # a sibling is still open
+    t2.emit("done", "Gmail: two mails.", via=chan.handoff_via(sb.id, b["id"]))
+    if t2.thread is not None:
+        gate.set(); t2.thread.join(5); gate.clear()
+    assert b["continued"] is True
+    if sb.thread is not None:
+        gate.set(); sb.thread.join(5)
+    assert len(_carry_on_turns(sb)) == 1
