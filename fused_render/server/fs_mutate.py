@@ -1455,8 +1455,13 @@ def _forget_deleted_app(path: str) -> None:
     try:
         from fused_render import app_catalog, app_state_remove, exported_apps
         from fused_render.server.routers import apps as apps_router
+        from fused_render.server.routers import current_apps as desk_router
 
         app_catalog.tombstone(path, None)
+        # The folder's tasks: pending scheduled runs cancelled, the rest
+        # archived — prune_stores leaves the schedule store alone on the
+        # strength of this having run (it is the task history).
+        desk_router._archive_folder(app_state_remove.canonical(path))
         app_state_remove.prune_stores(path)
         apps_router._reset_snapshot()
         exported_apps.reset_cache()

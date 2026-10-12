@@ -7,7 +7,8 @@
 //                                       behind a second confirm)
 //   linked                            → the folder stays; only the link goes
 //   appfile                           → the .fused leaves the hub; "Delete
-//                                       file too" trashes it
+//                                       file too" trashes it (same no-Trash
+//                                       → delete-forever fallback)
 //   showcase                          → hidden from the hub; the showcase
 //                                       repo is left alone
 //
@@ -57,7 +58,7 @@ export function UninstallAppModal({ request }: { request: UninstallRequest }) {
       .then((p) => {
         if (!live) return;
         setPre(p);
-        if (p.kind !== "appfile" && p.kind !== "linked" && p.kind !== "showcase" && !p.trash_supported) {
+        if (p.kind !== "linked" && p.kind !== "showcase" && !p.trash_supported) {
           setHardDelete(true);
         }
       })
@@ -71,7 +72,9 @@ export function UninstallAppModal({ request }: { request: UninstallRequest }) {
     ? undefined
     : pre.kind === "appfile"
       ? deleteFileToo
-        ? "delete_file"
+        ? hardDelete
+          ? "delete"
+          : "delete_file"
         : "forget"
       : hardDelete
         ? "delete"
@@ -103,7 +106,9 @@ export function UninstallAppModal({ request }: { request: UninstallRequest }) {
       const err = e as HttpError;
       if (err.status === 501) {
         setHardDelete(true);
-        setError("No Trash is available for this folder. Delete it forever instead?");
+        setError(
+          `No Trash is available for this ${pre.kind === "appfile" ? "file" : "folder"}. Delete it forever instead?`,
+        );
       } else {
         setError(err.message);
       }
@@ -121,9 +126,11 @@ export function UninstallAppModal({ request }: { request: UninstallRequest }) {
       lines.push(`${pre.name} is part of the showcase checkout. It is hidden from the apps list; the files stay.`);
     } else if (pre.kind === "appfile") {
       lines.push(
-        deleteFileToo
-          ? `${pre.path} moves to the Trash and leaves the apps list.`
-          : `${pre.path} leaves the apps list. The file stays where it is.`,
+        !deleteFileToo
+          ? `${pre.path} leaves the apps list. The file stays where it is.`
+          : hardDelete
+            ? `${pre.path} is deleted permanently and leaves the apps list. There is no undo.`
+            : `${pre.path} moves to the Trash and leaves the apps list.`,
       );
     } else {
       lines.push(
@@ -181,7 +188,7 @@ export function UninstallAppModal({ request }: { request: UninstallRequest }) {
             checked={deleteFileToo}
             onChange={(e) => setDeleteFileToo(e.target.checked)}
           />
-          Move the .fused file to the Trash too
+          {hardDelete ? "Delete the .fused file too" : "Move the .fused file to the Trash too"}
         </label>
       )}
       {error && (

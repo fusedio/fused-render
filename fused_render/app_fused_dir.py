@@ -177,6 +177,33 @@ def _ensure_meta(app_dir: str) -> None:
         pass
 
 
+def _settle_as_copy(app_dir: str, recorded: str) -> None:
+    """Make `app_dir` its own origin: `app_dir` repointed, the uninstalled
+    origin kept in `migrations` as evidence (`sessions: 0`, `uninstalled`)."""
+    new = os.path.abspath(app_dir)
+    meta = read_meta(app_dir) or {}
+    migrations = meta.get("migrations")
+    if not isinstance(migrations, list):
+        migrations = []
+    migrations.append({
+        "from": recorded,
+        "to": new,
+        "at": datetime.now(timezone.utc).isoformat(),
+        "sessions": 0,
+        "uninstalled": True,
+    })
+    meta.update(app_dir=new, migrations=migrations)
+    _write_meta(app_dir, meta)
+
+
+def _write_meta(app_dir: str, meta: dict) -> None:
+    tmp = meta_path(app_dir) + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(meta, f, indent=2)
+        f.write("\n")
+    os.replace(tmp, meta_path(app_dir))
+
+
 def _after_move(app_dir: str, recorded: str) -> None:
     """The witness fired. Decide copy from move, and settle a move.
 
@@ -198,8 +225,12 @@ def _after_move(app_dir: str, recorded: str) -> None:
         # The recorded folder was UNINSTALLED, not moved: this is the
         # surviving copy of a duplicate pair, and the original's desk row,
         # bookmarks and sessions were pruned with it on purpose. Settling it
-        # as a move would hand this copy whatever prune missed.
+        # as a move would hand this copy whatever prune missed — so the
+        # record is repointed HERE with nothing carried, and the witness
+        # stops firing. Leaving the record alone would only defer the move
+        # to the first open after the tombstone's TTL.
         logger.info("%s was uninstalled — %s is a copy, not a move", recorded, app_dir)
+        _settle_as_copy(app_dir, recorded)
         return
     from fused_render import app_state_move, claude_session_move
 
@@ -263,8 +294,4 @@ def _after_move(app_dir: str, recorded: str) -> None:
         meta.update(app_dir=new, migrations=migrations)
         logger.info("app moved %s -> %s: %d Claude session(s) carried over",
                     recorded, app_dir, len(moved))
-    tmp = meta_path(app_dir) + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(meta, f, indent=2)
-        f.write("\n")
-    os.replace(tmp, meta_path(app_dir))
+    _write_meta(app_dir, meta)
