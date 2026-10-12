@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import array
 import math
+import sys
 import time
 from typing import Callable, Optional
 
@@ -94,6 +95,34 @@ def rms_f32(data) -> float:
         return 0.0
     total = math.fsum(x * x for x in samples)
     return min(1.0, math.sqrt(total / len(samples)))
+
+
+def rms_pcm(data, bits: int, is_float: bool) -> float:
+    """RMS of little-endian PCM bytes in the device's own format, clamped to 1.0.
+
+    float32; signed int16 (/2**15); signed int24 packed in 3 bytes (/2**23);
+    signed int32 (/2**31). Anything else is 0.0, and a trailing partial sample
+    is ignored."""
+    if is_float:
+        return rms_f32(data) if bits == 32 else 0.0
+    width = {16: 2, 24: 3, 32: 4}.get(bits)
+    if width is None:
+        return 0.0
+    count = len(data) // width
+    if count <= 0:
+        return 0.0
+    raw = bytes(data[:count * width])
+    if width == 3:
+        samples = [int.from_bytes(raw[i:i + 3], "little", signed=True) for i in range(0, len(raw), 3)]
+    else:
+        samples = array.array("h" if width == 2 else "i")
+        if samples.itemsize != width:                    # pragma: no cover - exotic platform
+            return 0.0
+        samples.frombytes(raw)
+        if sys.byteorder == "big":                       # pragma: no cover
+            samples.byteswap()
+    total = math.fsum(float(x) * float(x) for x in samples)
+    return min(1.0, math.sqrt(total / count) / float(2 ** (bits - 1)))
 
 
 def db_to_level(db: float, floor: float = -50.0) -> float:

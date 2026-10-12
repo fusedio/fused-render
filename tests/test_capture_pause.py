@@ -16,7 +16,7 @@ import pytest
 
 from fused_render.capture import _pause
 from fused_render.capture._pause import (PauseClock, PtsShifter, amp_to_level,
-                                         db_to_level, rms_f32)
+                                         db_to_level, rms_f32, rms_pcm)
 
 
 class Now:
@@ -358,3 +358,28 @@ def test_a_resumed_mux_retimes_real_buffers_back_over_the_gap():
     got = CM.CMTimeGetSeconds(CM.CMSampleBufferGetPresentationTimeStamp(again))
     assert got == pytest.approx(end + 256 / 44100, abs=1e-3)
     assert mux.error is None
+
+
+def test_rms_pcm_silence_and_unsupported():
+    for bits, flt in ((32, True), (16, False), (24, False), (32, False)):
+        assert rms_pcm(bytes(24), bits, flt) == 0.0
+    assert rms_pcm(b"", 16, False) == 0.0
+    assert rms_pcm(b"\x01\x02\x03\x04", 8, False) == 0.0     # unsupported width
+    assert rms_pcm(b"\x01" * 16, 64, True) == 0.0              # float64 is not handled
+    assert rms_pcm(b"\x01" * 16, 24, True) == 0.0
+
+
+def test_rms_pcm_full_scale_each_format():
+    assert rms_pcm(struct.pack("<4f", 1, -1, 1, -1), 32, True) == pytest.approx(1.0)
+    assert rms_pcm(struct.pack("<4h", 32767, -32768, 32767, -32768), 16, False) == pytest.approx(1.0, abs=1e-4)
+    assert rms_pcm(struct.pack("<2h", 16384, -16384), 16, False) == pytest.approx(0.5)
+    full24 = (0x7FFFFF).to_bytes(3, "little") + (-0x800000 & 0xFFFFFF).to_bytes(3, "little")
+    assert rms_pcm(full24, 24, False) == pytest.approx(1.0, abs=1e-6)
+    assert rms_pcm(struct.pack("<2i", 2**30, -2**30), 32, False) == pytest.approx(0.5)
+
+
+def test_rms_pcm_odd_trailing_bytes_are_dropped():
+    whole = struct.pack("<2h", 16384, -16384)
+    assert rms_pcm(whole + b"\x7f", 16, False) == pytest.approx(0.5)
+    assert rms_pcm(b"\x7f", 16, False) == 0.0
+    assert rms_pcm(b"\x00\x00\x40\x01", 24, False) == pytest.approx(0.5)   # one 3-byte sample + 1 stray

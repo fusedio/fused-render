@@ -6785,3 +6785,4 @@ A Notion-style vertical pill (app icon, level meter, pause/resume, red stop) flo
 ## D1345 — Review fixes on the audio pause / recording pill work (2026-10-12, worktree-capture-system-audio-tap)
 
 - **Pill pause click holds until the server agrees.** The optimistic flip was overwritten by the next 100 ms poll (old `paused`), so the button flipped back and a fast second click sent `pause` twice. `lib.resolvePaused` keeps the clicked value while the server disagrees and a 2 s deadline has not passed; the button is disabled meanwhile.
+- **Mic buffers are metered in their own format.** On the non-mixing path `_meter_sbuf` read the mic's raw int16/int24 buffers as float32. `_pause.rms_pcm(data, bits, is_float)` handles float32/int16/int24/int32, and `MuxHandle._meter_mic_sbuf` reads the ASBD (bits, IsFloat) off the first buffer and caches it as `mic_format`. System audio (SCK) and the mixing path already carry float32, so they stay on `rms_f32`.

@@ -75,6 +75,8 @@ from fused_render.capture._mixdown import Ring, add_clip_into, upmix_mono_to_ste
 
 #: `kAudioFormatLinearPCM` — a FourCC ('lpcm'), which pyobjc does not name.
 _LPCM = 1819304813
+#: `kAudioFormatFlagIsFloat` in an ASBD's mFormatFlags.
+_FLAG_IS_FLOAT = 1
 
 #: `SCStreamOutputType`. Screen is 0 and audio is 1; microphone (2) is macOS 15
 #: and is exactly what this module exists to work around.
@@ -292,6 +294,8 @@ class MuxHandle:
         # The pill's meter: computed only while somebody polled in the last 2 s.
         self.last_level = 0.0
         self.level_polled_at = 0.0
+        #: (bits per channel, is-float) of the mic's own format, parsed off the first buffer.
+        self.mic_format = None
 
         self.stream = None
         self.session = None
@@ -441,6 +445,26 @@ class MuxHandle:
         except Exception:                                # noqa: BLE001
             pass
 
+    def _meter_mic_sbuf(self, sbuf) -> None:
+        """Meter a mic buffer in the device's own format (int16/int24/float32).
+
+        `_meter_sbuf` assumes float32, which is true of SCK's system audio but not
+        of a raw mic buffer. Never raises; on any failure `last_level` stays."""
+        if time.monotonic() - self.level_polled_at >= 2.0:
+            return
+        try:
+            if self.mic_format is None:
+                fd = CM.CMSampleBufferGetFormatDescription(sbuf)
+                asbd = CM.CMAudioFormatDescriptionGetStreamBasicDescription(fd)
+                self.mic_format = (int(asbd.mBitsPerChannel),
+                                   bool(int(asbd.mFormatFlags) & _FLAG_IS_FLOAT))
+            _block, data, _frames = _pcm(sbuf)
+            if data is not None:
+                bits, is_float = self.mic_format
+                self.last_level = _pause.amp_to_level(_pause.rms_pcm(data, bits, is_float))
+        except Exception:                                # noqa: BLE001
+            pass
+
     def on_system_audio(self, sbuf) -> None:
         if self.shifter.paused or not CM.CMSampleBufferIsValid(sbuf):
             return
@@ -470,7 +494,7 @@ class MuxHandle:
         if not self.mixing:
             # Straight through, in whatever format the device gave — the writer
             # converts. No ring, no rewrite, no format to agree on.
-            self._meter_sbuf(sbuf)
+            self._meter_mic_sbuf(sbuf)
             self._append(self.audio_input, sbuf, video=False)
             return
         _block, data, frames = _pcm(sbuf)
