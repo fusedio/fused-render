@@ -294,9 +294,13 @@ def _start(handle: Handle, out: str, source: str) -> None:
         thread.start()
     else:
         handle._ring = _mixdown.Ring(RING_HIGH_WATER)
+        # Appended right after each open, not batched after both succeed — so
+        # a monitor open that raises still finds the mic stream in
+        # `handle._streams` and `_teardown` closes it rather than leaking it.
         mic = _open_stream(pasimple_mod, None, "Fused microphone")
+        handle._streams.append(mic)
         monitor = _open_stream(pasimple_mod, MONITOR_DEVICE, "Fused system audio")
-        handle._streams.extend([mic, monitor])
+        handle._streams.append(monitor)
         mic_thread = threading.Thread(
             target=_pull_mic_into_ring, args=(handle, mic),
             daemon=True, name="fused-capture-mic")

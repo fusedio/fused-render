@@ -279,6 +279,41 @@ def test_both_mixes_mic_into_the_monitor_master_clock(monkeypatch, tmp_path):
     assert handle.heard_system is False
 
 
+def test_both_closes_the_mic_stream_when_the_monitor_open_raises(monkeypatch, tmp_path):
+    """A fake `PaSimple` whose MONITOR open raises: the mic stream was
+    already open at that point, so `_start`'s `BaseException` handler must
+    find it in `handle._streams` and close it — not leak it to PipeWire."""
+    opened: list = []
+
+    class _RaisingPaSimple:
+        def __init__(self, direction, fmt, channels, rate, app_name="python",
+                     stream_name=None, server_name=None, device_name=None,
+                     maxlength=-1, tlength=-1, prebuf=-1, minreq=-1, fragsize=-1):
+            if device_name == _linux_audio.MONITOR_DEVICE:
+                raise RuntimeError("the monitor source is gone")
+            self._stream = FakeStream(silence)
+            opened.append(self)
+
+        def read(self, num_bytes):
+            return self._stream.read(num_bytes)
+
+        def close(self):
+            self._stream.close()
+
+    class _Module:
+        PA_STREAM_RECORD = 1
+        PA_SAMPLE_FLOAT32LE = 3
+        PaSimple = _RaisingPaSimple
+
+    monkeypatch.setattr(_linux_audio, "_pasimple", lambda: _Module())
+    out = tmp_path / "both.wav"
+    with pytest.raises(RuntimeError, match="monitor source is gone"):
+        _linux_audio.start(str(out), {"audio": "both"})
+
+    assert len(opened) == 1
+    assert opened[0]._stream.closed is True
+
+
 def test_pause_drops_samples(monkeypatch, tmp_path):
     monkeypatch.setattr(_linux_audio, "_pasimple",
                         lambda: fake_pasimple({None: sine()}))
