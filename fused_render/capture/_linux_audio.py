@@ -141,7 +141,7 @@ class Handle:
 
     def __init__(self, path: str, source: str):
         self.path = path
-        self.source = source                          # "mic" | "system" | "both"
+        self.audio_source = source                    # "mic" | "system" | "both"
         self.error: str | None = None
         self.heard_system = False
         self.started_at = time.monotonic()
@@ -372,7 +372,7 @@ def warning(handle: Handle) -> str | None:
     way, and a muted or idle output is indistinguishable from here. Never
     raises; paused time still counts toward the heard-nothing timer, the same
     documented limitation the macOS tap has."""
-    if handle.source not in ("system", "both"):
+    if handle.audio_source not in ("system", "both"):
         return None
     if handle.heard_system:
         return None
