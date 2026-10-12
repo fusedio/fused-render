@@ -56,6 +56,7 @@ import time
 from urllib.parse import urlparse
 
 from fused_render.bots import apptools
+from fused_render.bots.channels import base as chan
 
 # Element refs the model may use look like sb12 (browser.py stamps them).
 REF_RE = re.compile(r"^sb\d+$")
@@ -298,10 +299,10 @@ def is_super(bot) -> bool:
 
 
 def phone_super(bot) -> bool:
-    """Super Bot running a task that did not start in its chat (a text): its
-    posture is "ask" whatever its settings say (docs §5)."""
-    v = getattr(bot, "task_via", None) or {}
-    return is_super(bot) and (v.get("kind") or "web") != "web"
+    """Super Bot running a task from an outside sender (a text): its posture is
+    "ask" whatever its settings say (docs §5). A routine is the user's own task
+    from the Mac (channels.base.is_local), so it keeps the bot's settings."""
+    return is_super(bot) and not chan.is_local(getattr(bot, "task_via", None))
 
 
 def effective_approval(bot) -> str:

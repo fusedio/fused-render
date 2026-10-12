@@ -236,6 +236,7 @@ POST   /api/bots/<id>/clone           {name?, share?}                       -> {
                                                                                          the source's browser; false copies the profile)
 DELETE /api/bots/<id>                                                       -> {ok}
 POST   /api/bots/<id>/routines        {op: add, text, kind, minutes?, time?, weekdays?, at?} -> {ok, routine}
+                                      {op: edit, rid, text, kind, minutes?, time?, weekdays?, at?} -> {ok, routine}
                                       {op: delete|enable|disable|run, rid}  -> {ok}
 POST   /api/bots/<id>/skills          {op: save, name, trigger, text, rid?} | {op: delete, rid} | {op: learn} -> {ok, skills}
 GET    /api/bots/<id>/export          -> {ok, name, text}  (transcript as Markdown)
@@ -516,10 +517,13 @@ not apply. Trigger lockdown (amended 2026-10-06): Super Bot is the ONLY bot
 reachable over iMessage (§10), and only from the handle set on it
 (`meta.imessage`). `receive` accepts the web and `imessage` vias and refuses
 every other (botsend, …) with a system line; `start_task` accepts a web via
-with origin `manual` or an `imessage` via (judged on the via, never on the
-origin label) and ignores everything else; `routine_add` raises;
+with origin `manual`, a `routine` via (the user's own schedule, amended
+2026-10-12: Super Bot has Routines like any bot) or an `imessage` via (judged
+on the via, never on the origin label) and ignores everything else;
 `drain_file_inbox` reads every inbox file, on every bot, as botsend and so
-Super Bot drops it (its thread shows only the refusal, no "Task received" line). Posture by origin: a phone-started task always runs in
+Super Bot drops it (its thread shows only the refusal, no "Task received" line). Posture by origin
+(`channels.base.is_local`: web or routine = set up at the Mac, keeps the bot's
+settings): a phone-started task always runs in
 CLI permission mode `default` (ask before every write, edit and shell command,
 answered at the Mac), whatever `super_access` says (`agent_engine.super_mode`;
 `_permission` reads the same answer), and with approvals `ask` and Builds
@@ -533,7 +537,7 @@ instruction), a texted yes/no while a card is up gets a system line
 open after a task (`_answer_pending_offer` is skipped), and offer questions
 are not numbered on the phone ("Answer it in the app."). Numbered options on
 Super Bot's own `ask` still map back. A text that arrives while Super Bot runs
-a task started in its chat is not applied (that task may run unattended and
+a task started at the Mac (its chat, or a routine) is not applied (that task may run unattended and
 never texts back): no user line is written (a later task's CONVERSATION SO FAR
 would present it as asked), only a system line and one texted line "Busy with
 a task from the Mac; text again when it's done." When a task ends its thread
@@ -550,7 +554,7 @@ the other bots (§11). The harness side
 is in §6 ("The Super Bot on the harness"). Page: the chooser's Super Bot card
 (shown while no Super Bot exists), Settings hides local models and Builds
 for it, shows its Phone section (and only for it) and "On this Mac",
-the list shows a Super Bot badge, the menu drops Routines and Clone.
+the list shows a Super Bot badge, the menu drops Clone.
 
 **Seeded by default** (`registry.seed_super`, 2026-10-07). `registry.start()`
 first makes Super Bot when none exists and `<home>/bots/super-seeded.json`
@@ -578,7 +582,7 @@ General (avatar, name, instructions, model, thinking), Permissions (On this Mac
 for Super Bot; before it buys/deletes/posts; builds for ordinary bots; apps it
 may use without asking), Browser (Chrome profile, encryption), Skills
 (`SkillsSection.tsx`, the playbooks: edit, delete, learn from the last task,
-write by hand), Routines (`RoutinesSection.tsx`, not on Super Bot), Memory, and
+write by hand), Routines (`RoutinesSection.tsx`: add, edit in place, run, pause, delete), Memory, and
 Phone on Super Bot (`PhoneSection.tsx`, §10). Skills and Routines post every op
 at once and never touch Save; the Skills… and Routines… menu rows and the
 preview pane's routines links open Settings on that section. The avatar picker

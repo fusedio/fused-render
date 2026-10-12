@@ -525,11 +525,13 @@ def argv(bin_path: str, model: str, effort: str, sp_file: str, mcp_file: str,
 
 def super_mode(bot) -> str | None:
     """The CLI permission mode for this bot's task, None for an ordinary bot.
-    A task that did not start in the user's chat (a text from the phone) always
-    runs in `default`: every write and command asks, at the Mac (docs §5)."""
+    A task from an outside sender (a text from the phone) always runs in
+    `default`: every write and command asks, at the Mac (docs §5). A routine is
+    the user's own task from the Mac (channels.base.is_local), so it runs with
+    the bot's `super_access` like a chat task."""
     if not tools.is_super(bot):
         return None
-    if not channels.base.is_web(getattr(bot, "task_via", None)):
+    if not channels.base.is_local(getattr(bot, "task_via", None)):
         return "default"
     botmod = _botmod()
     modes = getattr(botmod, "SUPER_ACCESS", None) or {"ask": "default", "full": "auto"}

@@ -51,6 +51,15 @@ def is_web(v) -> bool:
     return not v or (v.get("kind") or WEB_KIND) == WEB_KIND
 
 
+def is_local(v) -> bool:
+    """A task the user set up at the Mac: typed in the chat (web) or scheduled
+    there (a routine). The one predicate behind Super Bot's "started here" tests
+    (bot.start_task, tools.phone_super, agent_engine.super_mode): a routine is the
+    user's own task, so it runs with Super Bot's own settings; only an outside
+    sender (a text) is forced to ask."""
+    return is_web(v) or (v or {}).get("kind") == ROUTINE_KIND
+
+
 def handoff_via(super_id: str, handoff_id: str) -> dict:
     """The via of ONE hand-off's task: addr "<Super Bot id>:<hand-off id>", unique per
     hand-off so a watcher reads only its own task's events (docs §11). Policy reads the kind."""

@@ -1,6 +1,6 @@
 // Settings (edit an existing bot), on shadcn/ui (owner's ask, 2026-10-07: "the entire settings modal black, use
 // shadcn"): a Dialog with a rail of sections — General · Permissions · Browser · Skills · Routines · Memory, plus
-// Phone on Super Bot (the one bot reachable over iMessage, docs §10; Super Bot has no Routines) — and one setting per
+// Phone on Super Bot (the one bot reachable over iMessage, docs §10) — and one setting per
 // row (SettingsRow.tsx): its name and one line of why on the left, the control on the right. Skills and Routines
 // (once their own dialogs behind the ☰ menu, folded in 2026-10-09) are lists whose every op posts at once, like the
 // page-wide switches on Browser; they never touch the snapshot or Save.
@@ -49,7 +49,7 @@ export interface BotSettingsProps {
 export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
   const isSuper = bot.kind === "super";
   const tabs: [SettingsTab, string][] = [["general", "General"], ["permissions", "Permissions"], ["browser", "Browser"], ["skills", "Skills"],
-    ...(isSuper ? [] : [["routines", "Routines"] as [SettingsTab, string]]), ["memory", "Memory"],
+    ["routines", "Routines"], ["memory", "Memory"],
     ...(isSuper ? [["phone", "Phone"] as [SettingsTab, string]] : [])];
   const [tab, setTab] = useState<SettingsTab>(() => (tabs.some(([t]) => t === tab0) ? (tab0 as SettingsTab) : "general"));
   // What the dialog opened with (OpenBot's botDialog arguments).
@@ -139,7 +139,7 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
       <DialogContent showCloseButton={false} className={cn(DIALOG_CLASS, DIALOG_SIZE)}>
         <DialogHeader className={HEADER_CLASS}>
           <DialogTitle>Settings · {n || init.name}</DialogTitle>
-          <DialogDescription className="sr-only">How this bot thinks, what it may do without asking, its browser, its playbooks{isSuper ? "" : ", its routines"}, its memory{isSuper ? " and your phone" : ""}.</DialogDescription>
+          <DialogDescription className="sr-only">How this bot thinks, what it may do without asking, its browser, its playbooks, its routines, its memory{isSuper ? " and your phone" : ""}.</DialogDescription>
         </DialogHeader>
         <div className="flex min-h-0 flex-1 gap-6 px-6 pb-5">
           <nav className="-ml-2.5 flex w-36 shrink-0 flex-col gap-0.5 self-start" aria-label="Settings sections">
@@ -273,7 +273,7 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
             ) : null}
 
             {tab === "skills" ? <SkillsSection b={bot} confirm={confirm} /> : null}
-            {tab === "routines" && !isSuper ? <RoutinesSection b={bot} confirm={confirm} /> : null}
+            {tab === "routines" ? <RoutinesSection b={bot} confirm={confirm} /> : null}
 
             {tab === "memory" ? (
               <Rows>

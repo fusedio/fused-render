@@ -88,11 +88,12 @@ ENGINES = ("auto", "steps", "agent")
 # "ask" (default) = the CLI's default mode, a card for every write / edit /
 # shell command; "full" = the CLI's `auto` mode (its own classifier approves
 # what it judges safe and escalates the rest), the same mode Builds' "Full
-# access" uses. Only the user starts a Super Bot task: from its chat, or by text
-# from the iMessage handle set on it (then always in "ask" posture, see
-# agent_engine.super_mode); routines and the file inbox are refused (docs §5
-# "Super Bot"). Super Bot hands browsing work to the other bots (`handoff`,
-# docs §11); a hand-off to Super Bot is refused (depth one).
+# access" uses. Only the user starts a Super Bot task: from its chat, from a
+# routine they scheduled there (both carry the bot's own posture,
+# channels.base.is_local), or by text from the iMessage handle set on it (then
+# always in "ask" posture, see agent_engine.super_mode); the file inbox is
+# refused (docs §5 "Super Bot"). Super Bot hands browsing work to the other
+# bots (`handoff`, docs §11); a hand-off to Super Bot is refused (depth one).
 KINDS = ("bot", "super")
 SUPER_ACCESS = {"ask": "default", "full": "auto"}
 SUPER_NAME = "Super Bot"
@@ -692,7 +693,7 @@ class Bot:
                 continue
             if role == "system":
                 if ev.get("ignored_seq") is not None:
-                    # A texted line that was held back (receive: busy on a chat task) is not something the user
+                    # A texted line that was held back (receive: busy on a task from the Mac) is not something the user
                     # asked this bot to do; drop it from the history so a later task cannot read it as an ask.
                     out = [p for p in out if p[0] != ev["ignored_seq"]]
                     continue
@@ -1666,32 +1667,51 @@ class Bot:
             return at if at > after and not r.get("last") else None
         return None
 
+    @staticmethod
+    def _routine_fields(kind, minutes=None, time_s="", weekdays=None, at=None):
+        """The schedule fields for `kind`, checked and clamped the one way `add` and
+        `edit` share (the dialog refuses the same inputs first, RoutinesSection.tsx)."""
+        if kind == "interval":
+            return {"minutes": max(ROUTINE_MIN_MINUTES, int(minutes or 60)), "anchor": time.time()}
+        if kind == "daily":
+            t = (time_s or "09:00").strip()
+            try:
+                hh, mm = [int(x) for x in t.split(":")[:2]]
+            except ValueError:
+                hh = mm = -1
+            if not (0 <= hh < 24 and 0 <= mm < 60):
+                raise ValueError("time must be HH:MM")
+            # Omitted = every day; an explicit empty list or a day outside Mon..Sun would leave _next_run with no slot.
+            days = sorted({int(d) for d in weekdays}) if weekdays is not None else list(range(7))
+            if not days or any(d < 0 or d > 6 for d in days):
+                raise ValueError("pick at least one weekday, 0 (Mon) to 6 (Sun)")
+            return {"time": f"{hh:02d}:{mm:02d}", "weekdays": days}
+        if kind == "once":
+            at = float(at or 0)
+            if at <= time.time():
+                raise ValueError("that time is in the past")
+            return {"at": at}
+        raise ValueError("kind must be interval|daily|once")
+
     def routine_add(self, task, kind, minutes=None, time_s="", weekdays=None, at=None):
-        if is_super(self.meta):
-            raise ValueError("Super Bot takes tasks only from your chat; routines are for the other bots")
         task = (task or "").strip()
         if not task:
             raise ValueError("routine needs a task")
         r = {"id": uuid.uuid4().hex[:6], "task": task, "kind": kind, "enabled": True, "created": time.time(), "last": None, "last_result": ""}
-        if kind == "interval":
-            r["minutes"] = max(ROUTINE_MIN_MINUTES, int(minutes or 60))
-            r["anchor"] = time.time()
-        elif kind == "daily":
-            r["time"] = time_s or "09:00"
-            r["weekdays"] = [int(d) for d in (weekdays or list(range(7)))]
-        elif kind == "once":
-            r["at"] = float(at or 0)
-            if r["at"] <= time.time():
-                raise ValueError("that time is in the past")
-        else:
-            raise ValueError("kind must be interval|daily|once")
+        r.update(self._routine_fields(kind, minutes, time_s, weekdays, at))
         r["next"] = self._next_run(r, time.time())
         with self.lock:
             self.routines().append(r)
             self.save()
         return r
 
-    def routine_update(self, rid, enabled=None, delete=False):
+    def routine_update(self, rid, enabled=None, delete=False, task=None, kind=None, minutes=None, time_s="", weekdays=None, at=None):
+        """Enable/disable, delete, or (`task` given) rewrite the task and schedule.
+        An edit keeps the id, `fails` and the run history, drops the old kind's
+        fields and recomputes `next`; a once-routine edited to a new time is live
+        again (its `last` is cleared: `_next_run` ends a fired one-shot for good).
+        The text cannot change while its run is alive: `_routine_outcome` finds
+        the routine by its task text, so the run's result would never land."""
         with self.lock:
             rs = self.routines()
             r = next((x for x in rs if x["id"] == rid), None)
@@ -1699,11 +1719,28 @@ class Bot:
                 raise ValueError("no such routine")
             if delete:
                 rs.remove(r)
+            elif task is not None:
+                task = (task or "").strip()
+                if not task:
+                    raise ValueError("routine needs a task")
+                if (task != r.get("task") and r.get("last_result") == "started"
+                        and self.thread is not None and self.thread.is_alive()):
+                    raise ValueError("this routine is running now; stop it or let it finish, then edit the task")
+                kind = kind or r.get("kind")
+                fields = self._routine_fields(kind, minutes, time_s, weekdays, at)
+                for k in ("minutes", "anchor", "time", "weekdays", "at"):
+                    r.pop(k, None)
+                r.update(fields, task=task, kind=kind)
+                if kind == "once":
+                    r["last"] = None
+                    r["enabled"] = True
+                r["next"] = self._next_run(r, time.time()) if r.get("enabled") else None
             elif enabled is not None:
                 r["enabled"] = bool(enabled)
                 if r["enabled"]:
                     r["next"] = self._next_run(r, time.time())
             self.save()
+        return r
 
     def routine_fire(self, r, manual=False):
         """Start the routine's task now if the bot is free; else skip this slot."""
@@ -1838,11 +1875,12 @@ class Bot:
             return
         if via.get("kind") == "imessage" and is_super(self.meta):
             with self.lock:
-                busy_on_chat = self.running() and chan.is_web(getattr(self, "task_via", None))
+                busy_on_chat = self.running() and chan.is_local(getattr(self, "task_via", None))
             if busy_on_chat:
-                # A chat task may run unattended and its replies are never texted: a text must not steer it,
-                # and is not written as a user line (a later task's CONVERSATION SO FAR would present it as asked).
-                self.emit("system", "Texted while busy on a chat task; not applied.", via=None)
+                # A task from the Mac (the chat, or a routine) may run unattended and its replies are never texted:
+                # a text must not steer it, and is not written as a user line (a later task's CONVERSATION SO FAR
+                # would present it as asked).
+                self.emit("system", "Texted while busy on a task from the Mac; not applied.", via=None)
                 self.emit("error", "Busy with a task from the Mac; text again when it's done.", via=dict(via))
                 return
         quoted = self.event_by_seq(int(reply_to)) if reply_to else None
@@ -1880,14 +1918,16 @@ class Bot:
         if running and texted and self._texted_approval(shown):
             return
         with self.lock:
+            if texted and is_super(self.meta) and self.running() and chan.is_local(getattr(self, "task_via", None)):
+                # receive()'s busy hold ran before the user line, and the `running` snapshot above is unlocked: a
+                # Mac task (the chat, or a routine firing from the scheduler thread) that started in either gap
+                # must still not take a text as an instruction (docs §5 posture by origin). Judged here, under the
+                # lock every starter takes, so nothing can start between this check and the inbox write below.
+                # The user line is already written: mark it ignored so past_conversation leaves it out.
+                self.emit("system", "Texted while busy on a task from the Mac; not applied.", via=None, ignored_seq=uev.get("seq"))
+                self.emit("error", "Busy with a task from the Mac; text again when it's done.", via=dict(via))
+                return
             if not running and not self.start_task(text, label=shown, via=via) and self.running():
-                if texted and is_super(self.meta) and chan.is_web(getattr(self, "task_via", None)):
-                    # The busy-on-chat hold above was checked before the user line; a chat task that started in
-                    # the gap must still not take a text as an instruction (docs §5 posture by origin). The user
-                    # line is already written: mark it ignored so past_conversation leaves it out.
-                    self.emit("system", "Texted while busy on a chat task; not applied.", via=None, ignored_seq=uev.get("seq"))
-                    self.emit("error", "Busy with a task from the Mac; text again when it's done.", via=dict(via))
-                    return
                 running = True  # a hand-off started a task first: this message becomes an instruction to it
             if running:
                 # Marked as texted: approval and offer waits never take it as their verdict (channels.base.Texted).
@@ -1952,10 +1992,11 @@ class Bot:
             via = dict(chan.ROUTINE) if origin == "routine" else dict(chan.WEB)
         elif not chan.is_web(via):
             origin = via.get("kind") or origin
-        if is_super(self.meta) and via.get("kind") != "imessage" and not (chan.is_web(via) and origin in ("manual", "setup")):
-            # Super Bot has shell and file access: only the user's chat or their text may start it (docs §5).
-            # Judged on the via, so an origin label alone never lifts the gate (or the posture, super_mode).
-            # "setup" is the app's own first task (SUPER_SETUP, _maybe_super_setup), never an outside sender.
+        if is_super(self.meta) and via.get("kind") != "imessage" and not (
+                (chan.is_web(via) and origin in ("manual", "setup")) or via.get("kind") == chan.ROUTINE_KIND):
+            # Super Bot has shell and file access: only the user's chat, a routine they scheduled, or their text may
+            # start it (docs §5). Judged on the via, so an origin label alone never lifts the gate (or the posture,
+            # super_mode). "setup" is the app's own first task (SUPER_SETUP, _maybe_super_setup), never an outside sender.
             self.emit("system", f"Ignored a task from {origin}: Super Bot only takes tasks you type here.")
             return False
         if self.browser.headed():
