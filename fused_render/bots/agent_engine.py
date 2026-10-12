@@ -1198,6 +1198,20 @@ def _batched_stale(sess: Turn, name: str, args: dict) -> bool:
 
 
 def _handle(bot, sess: Turn, name: str, args: dict) -> dict:
+    """One tool call's result. Every return path of _handle_core (the step cap,
+    an unknown tool, a paused or stale-batch skip, the normal result) goes out
+    with the images queued by the instructions it carried (docs §13), so a
+    picture never lands on a later result than the words it came with."""
+    out = _handle_core(bot, sess, name, args)
+    # Never on Super Bot's permission answer: that must stay ONE JSON text block (the messages were re-queued).
+    if (sess.pending_images and not (name == tools.PERMISSION_TOOL and sess.is_super)
+            and isinstance(out, dict) and isinstance(out.get("content"), list)):
+        out["content"].extend(b for b in (_image_result_block(im) for im in sess.pending_images) if b)
+        sess.pending_images = []
+    return out
+
+
+def _handle_core(bot, sess: Turn, name: str, args: dict) -> dict:
     if bot.stop_flag.is_set():
         return _stopped()
     was_paused = _wait_pause(bot)
@@ -1270,11 +1284,7 @@ def _handle(bot, sess: Turn, name: str, args: dict) -> dict:
     if notes:
         blk = next(b for b in out["content"] if b.get("type") == "text")
         blk["text"] = (blk["text"] + "\n\n" + "\n".join(notes)).strip()
-    if sess.pending_images:
-        # An app follow-up's pictures (docs §13) go out with the instruction they came with, as image blocks.
-        out["content"].extend(b for b in (_image_result_block(im) for im in sess.pending_images) if b)
-        sess.pending_images = []
-    return out
+    return out  # _handle appends the queued images
 
 
 # ------------------------------------------------------- Super Bot's built-ins ---

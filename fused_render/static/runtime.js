@@ -6683,6 +6683,25 @@
     return taskFetch("GET", "/api/bots/roster").then((d) => (Array.isArray(d && d.bots) ? d.bots : []));
   }
 
+  // The app door's POSTs: like taskFetch, plus the 409's `reason` (busy |
+  // headed | control | ended) and `task` on the Error, so a page branches
+  // without parsing the sentence. Every send and stop goes through here.
+  async function botsPost(url, body) {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" }),
+      body: JSON.stringify(body || {}),
+    });
+    const d = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const err = taskError(res.status, (d && typeof d.error === "string" && d.error) || "HTTP " + res.status);
+      if (d && d.reason) err.reason = d.reason;
+      if (d && d.task) err.task = d.task;
+      throw err;
+    }
+    return d;
+  }
+
   // A bot by id, else by exact name (case-insensitive). Two bots with one
   // name is an error naming both, never a guess.
   function botsResolve(who, rows) {
@@ -6976,7 +6995,7 @@
           }
           return botsReadFiles(opts);
         })
-        .then((files) => taskFetch("POST", "/api/bots/" + encodeURIComponent(botId) + "/app_send", { text: String(text || ""), addr: addr, files: files }))
+        .then((files) => botsPost("/api/bots/" + encodeURIComponent(botId) + "/app_send", { text: String(text || ""), addr: addr, files: files }))
         .then((d) => {
           if (t.state === "blocked" && t.blocked && t.blocked.kind === "question") {
             t.blocked = null;
@@ -6987,7 +7006,7 @@
     };
 
     t.stop = function () {
-      return Promise.resolve().then(() => taskFetch("POST", "/api/bots/" + encodeURIComponent(botId) + "/app_stop", { addr: addr })).then(() => undefined);
+      return Promise.resolve().then(() => botsPost("/api/bots/" + encodeURIComponent(botId) + "/app_stop", { addr: addr })).then(() => undefined);
     };
 
     botsTurns.add(t);
@@ -7004,20 +7023,9 @@
       .then((rows) => botsResolve(who, rows))
       .then((bot) => botsReadFiles(opts).then((files) => ({ bot: bot, files: files })))
       .then(({ bot, files }) =>
-        fetch("/api/bots/" + encodeURIComponent(bot.id) + "/app_send", {
-          method: "POST",
-          headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" }),
-          body: JSON.stringify({ text: String(text || ""), files: files }),
-        }).then(async (res) => {
-          const d = await res.json().catch(() => ({}));
-          if (!res.ok) {
-            const err = taskError(res.status, (d && typeof d.error === "string" && d.error) || "HTTP " + res.status);
-            if (d && d.reason) err.reason = d.reason;
-            if (d && d.task) err.task = d.task;
-            throw err;
-          }
-          return botTurn(bot.id, d.addr, d.vision);
-        }),
+        botsPost("/api/bots/" + encodeURIComponent(bot.id) + "/app_send", { text: String(text || ""), files: files }).then((d) =>
+          botTurn(bot.id, d.addr, d.vision),
+        ),
       );
   }
 
