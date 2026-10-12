@@ -2549,11 +2549,12 @@ def resolve_conflict(capability: str, keep: str | None) -> dict:
             models.append(keep)
         hold = ConflictState(capability=capability, models=models, resident=keep,
                              since=since, held=True)
-        return load(keep, capability, request_path=False, hold=hold)
+        return load(keep, capability, request_path=False, hold=hold,
+                   requester_id=USER_REQUESTER_ID)
     hold = ConflictState(capability=capability, models=models, resident=None,
                          since=since, held=True)
     unload(capability=capability, reason="Stopped (model slot conflict)",
-          hold=hold, explicit=True)
+          hold=hold, explicit=True, requester_id=USER_REQUESTER_ID)
     return {"capability": capability, "resident": None}
 
 

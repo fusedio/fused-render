@@ -3,37 +3,52 @@
 Notes kept alongside `SPEC-model-slot-conflict.md`: places the implementation
 had to make a call the spec left implicit, and why.
 
-## Detecting the swap loop (supervisor, §1)
+## Detecting contention by identity, not by the shape of a sequence (supervisor, §1)
 
-`_request_path_conflict` (`fused_render/ai/supervisor.py`) tracks each
-capability's recent request-path evictions in `_swap_chains`: a list of
-`(time, evicted_model, incoming_model)`, pruned to `CONFLICT_WINDOW_S` on
-every read. It opens a new `ConflictState` only on the THIRD request-path
-eviction in a row that keeps the same two models alternating —
-`_closes_an_alternating_loop` checks the last three entries of the chain for
-an A→B, B→A, A→B shape. The first eviction of a capability's slot is always
-just a switch; the second (a switch BACK) is still just one consumer
-changing its mind twice, and both are let through. The third — asking for
-the slot back a SECOND time, closing A→B→A→B — is what proves two consumers
-are fighting over it rather than one caller settling on a choice, and that
-third attempt is the one refused with `ModelSlotConflict` instead of being
-carried out.
+`_request_path_conflict` (`fused_render/ai/supervisor.py`) keys contention on
+WHO is asking, carried end to end as `requester_id`/`requester_label`
+(`X-Fused-Requester`/`X-Fused-Requester-Label`, mirroring the existing
+`X-Fused-Page`/`X-Fused-Source` two-header pattern — plain strings, not a new
+dataclass, since this is attribution for contention detection, not
+authorization). `Worker.requester_id` remembers who loaded it.
 
-This is a per-capability chain rather than a field on `Worker` (the
-earlier shape this replaced could only see one eviction back, which could
-not tell a switch-back from the loop closing — see git history for that
-version). `_swap_chains[capability]` is popped whenever a conflict opens (the
+The rule: a request-path eviction by the SAME requester that already holds
+the slot (`current.requester_id == requester_id`) is never contention — it
+returns `None` before anything is recorded, which is what makes one
+requester's own router+generator alternation (A→B→A→B, however fast) never a
+conflict. A cross-requester eviction is checked against
+`_swap_chains[capability]`, a pruned (`CONFLICT_WINDOW_S`) list of
+`(time, requester_id)` entries recorded only from PRIOR ordinary
+cross-requester evictions (both the evictor's and the evictee's id, so a
+later eviction of EITHER one's model is caught). If the evicted model's
+requester already appears in that history, the eviction opens a
+`ConflictState` instead of being carried out; otherwise it is let through and
+both ids are appended to the chain.
+
+This catches two requesters fighting on the SECOND cross-requester eviction
+(r2 evicts r1's model — ordinary, recorded; r1 tries to evict r2's model back
+— r2 is in the chain since it is, trivially, its own entry — conflict), and
+three requesters rotating A→B→C→A on the THIRD eviction (r3 evicting r2's
+model conflicts because r2 already appears in the chain from evicting r1),
+never waiting for an exact alternation or a literal return to the first
+model. A one-off switch by a requester who never comes back stays ordinary
+forever — its chain entry is never matched against because nothing ever asks
+for ITS evicted model again.
+
+`_swap_chains[capability]` is popped whenever a conflict opens (the
 `ConflictState` is the record from then on) and by any explicit load/unload
 (`_start_resident`'s non-request-path branch) — the user settling the
-capability discards whatever history was building toward a conflict, and a
-model already resident when `_force_conflict`-style sequences start is why
-`reset()` and every explicit action clear the chain rather than letting it
-survive into unrelated activity on the same capability.
+capability discards whatever history was building toward a conflict.
 
 A contender that shows up while a conflict already stands is folded into the
-existing `ConflictState.models` list rather than starting a second conflict,
-so a notification or dock row raised later names everyone still asking for
-the capability, not just whoever collided first.
+existing `ConflictState.models`/`requesters` (model -> label) rather than
+starting a second conflict, so a notification or dock row raised later names
+everyone still asking for the capability, not just whoever collided first.
+
+(This replaces an earlier version keyed on the alternating SHAPE of a
+`(time, evicted_model, incoming_model)` chain rather than on identity — it
+could not tell one caller's own retry loop from two callers fighting, which
+is exactly the distinction SPEC-model-slot-conflict.md §1 now requires.)
 
 ## Atomic hold: writing a resolve's `ConflictState` with its eviction
 
@@ -91,14 +106,12 @@ site edit needed for any of them — and still clears an UNHELD conflict on a
 worker it actually removes, through `_claim_for_removal`'s existing
 per-worker clear, which also now runs before the loop-less `return` leaves
 the locked block to begin with (unchanged from the previous entry; `explicit`
-is additive to it, not a replacement). Only the two places `SPEC-model-slot-
-conflict.md` names as "the user made a choice" — `/api/ai/runtime/unload`
-and `resolve_conflict`'s own `unload()` call for `keep: null` — pass
-`explicit=True`, and `_claim_for_removal` clears EVERY conflict (held or
-not) on the matched capability in that same locked block, atomically with
-the eviction, instead of after `_remove`'s ~9s-worst-case teardown. `hold`
-still requires `explicit=True` (asserted): a hold is only ever written by an
-explicit resolve, never by an internal caller.
+is additive to it, not a replacement). `_claim_for_removal` clears EVERY
+conflict (held or not) on the matched capability in that same locked block,
+atomically with the eviction, instead of after `_remove`'s ~9s-worst-case
+teardown, whenever `explicit=True`. `hold` still requires `explicit=True`
+(asserted): a hold is only ever written by an explicit resolve, never by an
+internal caller.
 
 A default rather than a required keyword (the alternative this feature
 first considered) was the simpler correct shape here: the three internal
@@ -106,6 +119,25 @@ callers' bug was never "they forgot to say what they were doing", it was
 `unload()` treating the ABSENCE of `hold` as proof of user intent. A default
 that means "not the user" fixes that reading directly and costs zero edits
 to call sites that were already behaving correctly in every other respect.
+
+`/api/ai/runtime/unload` is no longer unconditionally `explicit=True`: app
+code reaches the same route via `fused.ai.models.unload`
+(SPEC-model-slot-conflict.md §1), so the route reads `X-Fused-Requester` and
+passes `explicit=supervisor.is_user_requester(requester_id)` — true only for
+the AI Models page's own "Unload"/"Stop" control (`X-Fused-Requester: user`).
+Every other requester's unload is the ordinary, non-explicit path above
+(never clears a hold or conflict), and is additionally ownership-checked by
+`unload()` itself: a non-empty, non-user `requester_id` may only remove a
+worker IT loaded, and gets a 409 `ModelSlotConflict` instead of evicting
+someone else's model by naming it. `/api/ai/runtime/load` mirrors this split
+the other way: `X-Fused-Requester: user` is the one explicit, never-refused
+load (`request_path=False`, clears any standing conflict); every other
+requester's load is `request_path=True`, the same ordinary, contestable path
+`generate_text`'s own miss-handling takes, so a background app calling
+`fused.ai.models.load` cannot silently win a standoff just by using the
+button's own route. `resolve_conflict`'s own `load`/`unload` calls pass
+`requester_id=USER_REQUESTER_ID` explicitly, so the `Worker` a resolve leaves
+resident is attributed to the user the same way a direct `/load` is.
 
 ## Clearing an unheld conflict on removal by a path other than `_claim_for_removal`
 

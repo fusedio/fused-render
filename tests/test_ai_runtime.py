@@ -3934,7 +3934,7 @@ def test_the_unload_route_clears_a_held_conflict(client, fake_runner):
     response = client.post(
         "/api/ai/runtime/unload",
         json={"capability": registry.TEXT_GENERATION},
-        headers={"X-Fused": "1"})
+        headers={"X-Fused": "1", "X-Fused-Requester": "user"})
     assert response.status_code == 200
     assert response.json()["stopped"] is True
     assert supervisor.describe()["conflicts"] == []
@@ -6419,7 +6419,7 @@ def test_the_worker_is_told_where_to_write_the_preview(client, fake_image_runner
     captured = {}
     real_start = supervisor.start_image
 
-    def spy(model, request, job, page="", source=""):
+    def spy(model, request, job, page="", source="", **_kw):
         captured.update(request)
         return real_start(model, request, job, page=page, source=source)
 
@@ -7098,7 +7098,7 @@ def test_the_request_the_WORKER_gets_carries_image_ONLY_when_asked(
     captured = []
     real_start = supervisor.start_image
 
-    def spy(model, request, job, page="", source=""):
+    def spy(model, request, job, page="", source="", **_kw):
         captured.append(dict(request))
         return real_start(model, request, job, page=page, source=source)
 
@@ -7127,7 +7127,7 @@ def test_an_edits_DEFAULTS_are_the_PROTOTYPES_not_the_generate_defaults(
     captured = []
     real_start = supervisor.start_image
     monkeypatch.setattr(supervisor, "start_image",
-                        lambda model, request, job, page="", source="": (captured.append(dict(request)),
+                        lambda model, request, job, page="", source="", **_kw: (captured.append(dict(request)),
                                                       real_start(model, request, job, page=page, source=source))[1])
 
     edit = client.post(
@@ -8629,7 +8629,7 @@ def test_the_partial_path_reaches_the_WORKER_as_well_as_the_page(
     seen = {}
     real = supervisor.start_transcribe
     monkeypatch.setattr(supervisor, "start_transcribe",
-                        lambda model, request, job, page="": (seen.update(request),
+                        lambda model, request, job, page="", **_kw: (seen.update(request),
                                                      real(model, request, job, page=page)))
 
     reply = _post_transcribe(client, path=recording).json()
@@ -8694,7 +8694,7 @@ def test_an_explicit_null_vad_reaches_the_worker_as_the_default(
     seen = {}
     real = supervisor.start_transcribe
     monkeypatch.setattr(supervisor, "start_transcribe",
-                        lambda model, request, job, page="": (seen.update(request),
+                        lambda model, request, job, page="", **_kw: (seen.update(request),
                                                      real(model, request, job, page=page)))
     for sent, expected in (({}, True), ({"vad": None}, True),
                            ({"vad": True}, True), ({"vad": False}, False)):
@@ -8739,7 +8739,7 @@ def test_diarizing_WITHOUT_a_count_is_accepted_and_estimates_it(
     seen = {}
     real = supervisor.start_transcribe
     monkeypatch.setattr(supervisor, "start_transcribe",
-                        lambda model, request, job, page="": (seen.update(request),
+                        lambda model, request, job, page="", **_kw: (seen.update(request),
                                                      real(model, request, job, page=page)))
     for sent in ({"diarize": True}, {"diarize": True, "speakers": None},
                  {"diarize": True, "speakers": ""}):
@@ -8839,7 +8839,7 @@ def test_diarize_and_speakers_reach_the_worker_and_default_to_OFF(
     seen = {}
     real = supervisor.start_transcribe
     monkeypatch.setattr(supervisor, "start_transcribe",
-                        lambda model, request, job, page="": (seen.update(request),
+                        lambda model, request, job, page="", **_kw: (seen.update(request),
                                                      real(model, request, job, page=page)))
     for sent, expected in (({}, None), ({"diarize": False}, None),
                            ({"diarize": None}, None),
@@ -8864,7 +8864,7 @@ def test_words_reaches_the_worker_and_defaults_to_OFF(
     seen = {}
     real = supervisor.start_transcribe
     monkeypatch.setattr(supervisor, "start_transcribe",
-                        lambda model, request, job, page="": (seen.update(request),
+                        lambda model, request, job, page="", **_kw: (seen.update(request),
                                                      real(model, request, job, page=page)))
     for sent, expected in (({}, False), ({"words": False}, False),
                            ({"words": None}, False), ({"words": True}, True)):
@@ -11483,7 +11483,7 @@ def dispatched(monkeypatch):
     """
     calls = []
 
-    def fake_load(model, capability, *, weights_only=False, file=None):
+    def fake_load(model, capability, *, weights_only=False, file=None, **_kw):
         entry = {"model": model, "capability": capability,
                  "weightsOnly": weights_only}
         if file is not None:
