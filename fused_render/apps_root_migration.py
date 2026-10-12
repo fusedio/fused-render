@@ -91,6 +91,20 @@ def _settle(old: str, new: str, witnessed: bool) -> None:
     claude_session_move.relocate(old, new)
 
 
+def _is_copy(recorded: str, app_dir: str, old_root: str) -> bool:
+    """Does `app_dir`'s record name a folder it was COPIED from, as against a
+    folder it was MOVED from that nobody settled? Copied when the recorded
+    folder is a different one that still exists, or a sibling under `local/`
+    — present or already moved to `app/` by this run; a gone sibling would
+    otherwise read as a move. Anything else gone is an unsettled move."""
+    rec = os.path.normcase(os.path.abspath(recorded))
+    if rec == os.path.normcase(app_dir):
+        return False
+    if os.path.isdir(recorded):
+        return True
+    return os.path.normcase(os.path.dirname(rec)) == os.path.normcase(old_root)
+
+
 def _own_witness(app_dir: str, recorded: str) -> None:
     """A copy's `meta.json` names the folder it was copied FROM. Witnessing it
     as it stands would fire `_after_move` against THAT folder — which, having
@@ -176,23 +190,30 @@ def move_all(root: str) -> tuple[list[tuple[str, str, bool]], list[str], bool]:
             # Witness the OLD path before the move, so the settle in phase two
             # runs through `_after_move`'s full machinery (pending live
             # sessions included). False when the folder cannot be written to.
-            # A COPY carries the original's `.fused/` wholesale
-            # (`audio-to-text-2` records `audio-to-text`); its record is made
-            # its own first (`_own_witness`), or the witness would fire
-            # against the original. If that write fails the folder is moved
-            # unwitnessed and settles by hand — never through a record that
-            # names someone else's folder.
+            # A record naming another folder is one of two things. A COPY
+            # carries the original's `.fused/` wholesale (`audio-to-text-2`
+            # records `audio-to-text`): its record is made its own first
+            # (`_own_witness`), or the witness would fire against the
+            # original. Or it is an EARLIER MOVE into `local/` that never
+            # settled (the app was closed since): the recorded folder is gone,
+            # and `ensure(old)` settles it the normal way — carrying that
+            # state and those sessions to `old` — before this hop witnesses
+            # `old` in turn. "Copy" = the recorded folder still exists, or it
+            # is a `local/` sibling (present, or moved earlier in this loop,
+            # which is exactly when `_after_move` would misread it as a move).
+            # A copy whose record cannot be repaired is NOT moved: a stale
+            # record at the new path is the very misread above, waiting.
             recorded = app_fused_dir.recorded_app_dir(old)
-            own_meta = recorded is None or (
-                os.path.normcase(os.path.abspath(recorded)) == os.path.normcase(old))
-            if not own_meta:
+            if recorded is not None and _is_copy(recorded, old, old_root):
                 try:
                     _own_witness(old, recorded)
-                    own_meta = True
                 except Exception:
                     logger.warning("apps root migration: could not own %s's record "
-                                   "(copy of %s)", old, recorded, exc_info=True)
-            witnessed = app_fused_dir.ensure(old) if own_meta else False
+                                   "(copy of %s) — left in place, will retry "
+                                   "next start", old, recorded, exc_info=True)
+                    complete = False
+                    continue
+            witnessed = app_fused_dir.ensure(old)
             shutil.move(old, new)
         except Exception:
             logger.warning("apps root migration: could not move %s -> %s "
