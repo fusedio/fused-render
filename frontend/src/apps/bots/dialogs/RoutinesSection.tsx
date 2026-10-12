@@ -44,6 +44,7 @@ function RoutineForm({ initial, onSubmit, onCancel }: { initial?: Routine; onSub
   const [time, setTime] = useState(initial?.time || "09:00");
   const [days, setDays] = useState<string[]>((initial?.weekdays || [0, 1, 2, 3, 4]).map(String));
   const [at, setAt] = useState(initial?.at ? toLocal(initial.at) : "");
+  const [pending, setPending] = useState(false);  // one post at a time: a second Add before the first answers would make a twin
   const invalid = ((): string | null => {
     if (!task.trim()) return null; // the empty task disables the button on its own; no reason needed
     if (kind === "interval") {
@@ -64,13 +65,18 @@ function RoutineForm({ initial, onSubmit, onCancel }: { initial?: Routine; onSub
   // datetime-local `min`: now, in local time, to the minute (the picker greys out earlier days).
   const nowLocal = toLocal(Date.now() / 1000);
   const submit = async () => {
-    const text = task.trim(); if (!text) return;
+    const text = task.trim(); if (!text || pending) return;
     if (invalid) { showBanner(invalid); return; }
     const p: Schedule = { text, kind };
     if (kind === "interval") p.minutes = Number(minutes);
     if (kind === "daily") { p.time = time; p.weekdays = days.map(Number).sort((x, y) => x - y); }
     if (kind === "once") p.at = new Date(at).getTime() / 1000;
-    if (await onSubmit(p) && !initial) setTask("");
+    setPending(true);
+    try {
+      if (await onSubmit(p) && !initial) setTask("");
+    } finally {
+      setPending(false);
+    }
   };
   const sfx = initial ? `-${initial.id}` : "";
   return (
@@ -99,7 +105,7 @@ function RoutineForm({ initial, onSubmit, onCancel }: { initial?: Routine; onSub
         {kind === "once" ? <Input id={`rat${sfx}`} type="datetime-local" min={nowLocal} value={at} aria-invalid={kind === "once" && !!invalid} onChange={(e) => setAt(e.target.value)} className="w-56" /> : null}
         <span className="ml-auto flex items-center gap-2">
           {onCancel ? <Button variant="ghost" data-op="cancel" onClick={onCancel}>Cancel</Button> : null}
-          <Button id={initial ? `rsave${sfx}` : "radd"} data-op={initial ? "save" : "add"} disabled={!task.trim() || !!invalid} onClick={() => { void submit(); }}>{initial ? "Save" : "Add"}</Button>
+          <Button id={initial ? `rsave${sfx}` : "radd"} data-op={initial ? "save" : "add"} disabled={!task.trim() || !!invalid || pending} onClick={() => { void submit(); }}>{initial ? "Save" : "Add"}</Button>
         </span>
       </div>
       {invalid ? <p id={`rwhy${sfx}`} className="m-0 text-[13px] text-destructive">{invalid}</p> : null}

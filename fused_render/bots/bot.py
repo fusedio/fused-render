@@ -693,7 +693,7 @@ class Bot:
                 continue
             if role == "system":
                 if ev.get("ignored_seq") is not None:
-                    # A texted line that was held back (receive: busy on a chat task) is not something the user
+                    # A texted line that was held back (receive: busy on a task from the Mac) is not something the user
                     # asked this bot to do; drop it from the history so a later task cannot read it as an ask.
                     out = [p for p in out if p[0] != ev["ignored_seq"]]
                     continue
@@ -1674,7 +1674,18 @@ class Bot:
         if kind == "interval":
             return {"minutes": max(ROUTINE_MIN_MINUTES, int(minutes or 60)), "anchor": time.time()}
         if kind == "daily":
-            return {"time": time_s or "09:00", "weekdays": [int(d) for d in (weekdays or list(range(7)))]}
+            t = (time_s or "09:00").strip()
+            try:
+                hh, mm = [int(x) for x in t.split(":")[:2]]
+            except ValueError:
+                hh = mm = -1
+            if not (0 <= hh < 24 and 0 <= mm < 60):
+                raise ValueError("time must be HH:MM")
+            # Omitted = every day; an explicit empty list or a day outside Mon..Sun would leave _next_run with no slot.
+            days = sorted({int(d) for d in weekdays}) if weekdays is not None else list(range(7))
+            if not days or any(d < 0 or d > 6 for d in days):
+                raise ValueError("pick at least one weekday, 0 (Mon) to 6 (Sun)")
+            return {"time": f"{hh:02d}:{mm:02d}", "weekdays": days}
         if kind == "once":
             at = float(at or 0)
             if at <= time.time():
@@ -1864,11 +1875,12 @@ class Bot:
             return
         if via.get("kind") == "imessage" and is_super(self.meta):
             with self.lock:
-                busy_on_chat = self.running() and chan.is_web(getattr(self, "task_via", None))
+                busy_on_chat = self.running() and chan.is_local(getattr(self, "task_via", None))
             if busy_on_chat:
-                # A chat task may run unattended and its replies are never texted: a text must not steer it,
-                # and is not written as a user line (a later task's CONVERSATION SO FAR would present it as asked).
-                self.emit("system", "Texted while busy on a chat task; not applied.", via=None)
+                # A task from the Mac (the chat, or a routine) may run unattended and its replies are never texted:
+                # a text must not steer it, and is not written as a user line (a later task's CONVERSATION SO FAR
+                # would present it as asked).
+                self.emit("system", "Texted while busy on a task from the Mac; not applied.", via=None)
                 self.emit("error", "Busy with a task from the Mac; text again when it's done.", via=dict(via))
                 return
         quoted = self.event_by_seq(int(reply_to)) if reply_to else None
@@ -1907,11 +1919,11 @@ class Bot:
             return
         with self.lock:
             if not running and not self.start_task(text, label=shown, via=via) and self.running():
-                if texted and is_super(self.meta) and chan.is_web(getattr(self, "task_via", None)):
-                    # The busy-on-chat hold above was checked before the user line; a chat task that started in
-                    # the gap must still not take a text as an instruction (docs §5 posture by origin). The user
-                    # line is already written: mark it ignored so past_conversation leaves it out.
-                    self.emit("system", "Texted while busy on a chat task; not applied.", via=None, ignored_seq=uev.get("seq"))
+                if texted and is_super(self.meta) and chan.is_local(getattr(self, "task_via", None)):
+                    # The busy hold above was checked before the user line; a Mac task (chat or routine) that
+                    # started in the gap must still not take a text as an instruction (docs §5 posture by origin).
+                    # The user line is already written: mark it ignored so past_conversation leaves it out.
+                    self.emit("system", "Texted while busy on a task from the Mac; not applied.", via=None, ignored_seq=uev.get("seq"))
                     self.emit("error", "Busy with a task from the Mac; text again when it's done.", via=dict(via))
                     return
                 running = True  # a hand-off started a task first: this message becomes an instruction to it

@@ -537,7 +537,7 @@ instruction), a texted yes/no while a card is up gets a system line
 open after a task (`_answer_pending_offer` is skipped), and offer questions
 are not numbered on the phone ("Answer it in the app."). Numbered options on
 Super Bot's own `ask` still map back. A text that arrives while Super Bot runs
-a task started in its chat is not applied (that task may run unattended and
+a task started at the Mac (its chat, or a routine) is not applied (that task may run unattended and
 never texts back): no user line is written (a later task's CONVERSATION SO FAR
 would present it as asked), only a system line and one texted line "Busy with
 a task from the Mac; text again when it's done." When a task ends its thread
