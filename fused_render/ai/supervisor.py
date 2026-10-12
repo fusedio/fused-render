@@ -2468,6 +2468,7 @@ def _clear_unheld_conflict_locked(capability: str) -> None:
 def _claim_for_removal(match, capability: str | None = None, *,
                        hold: "ConflictState | None" = None,
                        explicit: bool = False,
+                       requester_id: str = "",
                        ) -> list[Worker]:
     """Atomically find-and-pop every worker `match(worker)` accepts.
 
@@ -2479,6 +2480,16 @@ def _claim_for_removal(match, capability: str | None = None, *,
     by mistake, or let a worker's `in_flight`/`last_activity` change between
     being decided and being removed (see `reap_idle`'s docstring for the
     concrete failure that gap caused).
+
+    `requester_id`, when given (non-empty, non-user), is `unload`'s own
+    ownership check — see there — run HERE, against the very `targets` this
+    same locked block is about to pop, rather than in a separate locked
+    read `unload` did first and handed down as a decision already made. A
+    separate check-then-act left a window between the two lock holds where
+    a DIFFERENT worker (a fresh load claiming the same capability, loaded by
+    someone else entirely) could replace whatever `unload`'s own read saw,
+    so the targets this function went on to remove were not necessarily the
+    ones the ownership check actually approved.
 
     `hold`, when given, writes it into `_conflicts` (keyed by its own
     `capability` field) in the SAME locked block that pops the targets —
@@ -2503,6 +2514,21 @@ def _claim_for_removal(match, capability: str | None = None, *,
     """
     with _lock:
         targets = [w for w in _workers.values() if match(w)]
+        if requester_id and not is_user_requester(requester_id):
+            # A worker with NO claimed owner is free for anyone to take; only
+            # one another NAMED requester loaded is foreign — see `unload`'s
+            # own comment on why the empty-owner case is exempt.
+            foreign = [w for w in targets if w.requester_id and w.requester_id != requester_id]
+            if foreign:
+                worker = foreign[0]
+                conflict = _conflicts.get(worker.capability)
+                models = list(conflict.models) if conflict is not None else [worker.model]
+                message = (f"{worker.model} was loaded by another requester. Unload "
+                           f"it from the AI Models page, or load your own model to "
+                           f"take over the {worker.capability} slot.")
+                raise ModelSlotConflict(worker.capability, models, worker.model,
+                                        held=conflict.held if conflict is not None else False,
+                                        message=message)
         for worker in targets:
             worker.stopping = True
             _workers.pop(worker.capability, None)
@@ -2598,37 +2624,16 @@ def unload(model: str | None = None, capability: str | None = None,
         assert explicit, "a hold is only ever written by an explicit resolve"
     match = (lambda w: (model is None or w.model == model)
              and (capability is None or w.capability == capability))
-    if requester_id and not is_user_requester(requester_id):
-        with _lock:
-            owned = [w for w in _workers.values() if match(w)]
-            # A worker with NO claimed owner (`requester_id == ""` — an
-            # internal caller loaded it, never through the router) is free
-            # for anyone to take; only a worker another NAMED requester
-            # loaded is foreign. Every external caller the router reaches
-            # now carries a non-empty requester_id of its own (see
-            # `ai_runtime.py`'s `_requester_identity` — a page, a fixed
-            # shell id, or a fresh one-off for a truly header-less
-            # request), so comparing against `requester_id` alone, without
-            # this guard, would also refuse an anonymous caller a worker
-            # nobody claims.
-            foreign = [w for w in owned if w.requester_id and w.requester_id != requester_id]
-        if foreign:
-            worker = foreign[0]
-            conflict = _conflicts.get(worker.capability)
-            models = list(conflict.models) if conflict is not None else [worker.model]
-            # This is an OWNERSHIP boundary, not a contention loop — nobody is
-            # racing anybody for the slot, one caller is just reaching for a
-            # model a DIFFERENT requester loaded — so it gets its own wording
-            # rather than the generic "X and Y are contending" message, which
-            # reads as nonsense with only one model in play.
-            message = (f"{worker.model} was loaded by another requester. Unload "
-                       f"it from the AI Models page, or load your own model to "
-                       f"take over the {worker.capability} slot.")
-            raise ModelSlotConflict(worker.capability, models, worker.model,
-                                    held=conflict.held if conflict is not None else False,
-                                    message=message)
+    # The ownership check itself — a worker with no claimed owner is free for
+    # anyone, only one another NAMED requester loaded is foreign — runs
+    # inside `_claim_for_removal`'s own locked block, against the very
+    # targets that block is about to pop, rather than as a separate locked
+    # read here: a check-then-act split across two lock holds leaves a
+    # window where a different worker could claim the capability in between,
+    # so what got checked would not be what got removed.
     targets = _claim_for_removal(match, capability,
-                                 hold=hold, explicit=explicit)
+                                 hold=hold, explicit=explicit,
+                                 requester_id=requester_id)
     _remove(targets, reason)
     return bool(targets)
 

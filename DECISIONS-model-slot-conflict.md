@@ -754,3 +754,30 @@ cold load of `org/c` evicts it; asserts `resident == "org/c"`, `"org/c" in
 models`, `held is False`, and that `org/c` keeps answering. Confirmed red
 against the unmodified code via a stash round-trip (`resident` stayed
 `"org/a"`), green after the fix.
+
+## The unload ownership check moves inside `_claim_for_removal`'s own lock
+
+`unload`'s ownership check read `_workers` under one `_lock` hold, decided
+whether the match was foreign, released the lock, and only then called
+`_claim_for_removal` — which re-scans `_workers` and pops under a SECOND,
+separate `_lock` hold. Between the two, a different worker could claim the
+same capability (a fresh load, by anyone), so the targets the second lock
+hold went on to remove were not necessarily the ones the first one's
+ownership check actually approved — a classic check-then-act race, even
+though each half was individually atomic.
+
+`_claim_for_removal` now takes `requester_id` itself and runs the
+ownership check against the very `targets` list it is about to pop,
+inside the one locked block that does both — the same `ModelSlotConflict`
+it always raised, same wording, just decided and acted on under a single
+lock hold instead of two. `unload` forwards `requester_id` straight
+through and no longer does a check of its own. `reap_idle`'s call is
+unaffected: it passes no `requester_id`, so the check is skipped exactly
+as before.
+
+No new test: covering the actual race would need two threads synchronized
+on the gap between the two lock holds, which no longer exists to
+reproduce — the existing ownership tests (`test_a_non_owner_requester_
+cannot_unload_someone_elses_model`, `test_an_unowned_resident_can_still_
+be_unloaded_by_anyone`) cover the same decision, now made in one place,
+and stay green.
