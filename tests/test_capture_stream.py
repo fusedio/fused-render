@@ -451,8 +451,13 @@ RUNTIME = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
                        "fused_render", "static", "runtime.js")
 
 
-def _probe():
-    """Run `runtime.js`'s capture bridge against a DOM/media stub, via node."""
+def _probe(sources_override=None):
+    """Run `runtime.js`'s capture bridge against a DOM/media stub, via node.
+
+    `sources_override` merges into the `GET /api/capture` reply's `sources`
+    before `captureMerge` runs on it — the only way to drive the
+    `audioNative` branch without a second copy of the harness.
+    """
     import json
     import shutil
     import subprocess
@@ -460,8 +465,10 @@ def _probe():
     node = shutil.which("node")
     if node is None:                                     # pragma: no cover
         pytest.skip("node is required to run the bridge")
-    done = subprocess.run([node, PROBE, RUNTIME], capture_output=True,
-                          text=True)
+    args = [node, PROBE, RUNTIME]
+    if sources_override is not None:
+        args.append(json.dumps(sources_override))
+    done = subprocess.run(args, capture_output=True, text=True)
     assert done.returncode == 0, f"the probe crashed:\n{done.stderr[-3000:]}"
     out = json.loads(done.stdout)
     assert out["error"] is None, out["error"]
@@ -531,10 +538,54 @@ def test_a_microphone_with_no_label_yet_still_gets_a_name():
     assert len(mics) == 1
 
 
+def test_capture_merge_leaves_system_audio_to_the_server_when_native_is_unavailable():
+    """`captureMerge`'s `audioNative: false` branch is Linux with no PipeWire
+    session reachable — `"mic"` still falls back to the browser, but
+    `systemAudio` has no browser equivalent at all (no screen-share-for-
+    audio-only hack), so the server's own `false` must survive the merge
+    rather than being overwritten by this window's unrelated screen-recording
+    capability."""
+    out = _probe({"audioNative": False,
+                   "systemAudio": {"available": False, "reason": "no pipewire"}})
+    assert out["sources"]["audioNativeStripped"] is True
+    assert out["sources"]["systemAudio"] == {"available": False, "reason": "no pipewire"}
+    # `audio` (the mic) IS rewritten in this branch — it has the `_sink`
+    # fallback the probe's stub can actually satisfy.
+    assert out["sources"]["audio"]["available"] is True
+
+
+def test_capture_merge_narrows_but_never_widens_a_true_system_audio():
+    """Windows-shaped: the server hard-codes `systemAudio: {available: true}`
+    and leans on this merge to narrow it to what the browser can actually do.
+    The probe's stub browser CAN record, so `true` survives — the "a browser
+    that cannot" half of this is covered in the TS test for `mergeSources`,
+    which this merge is kept exactly in step with."""
+    out = _probe({"systemAudio": {"available": True, "reason": None}})
+    assert out["sources"]["systemAudio"] == {"available": True, "reason": None}
+
+
+def test_capture_merge_leaves_everything_to_the_server_when_native_is_available():
+    """`audioNative: true` means a native Linux recording is already in
+    charge of mic/system/devices — this window's own MediaRecorder support
+    has nothing to add, so `audio`, `systemAudio` and `microphones` all pass
+    through untouched."""
+    out = _probe({"audioNative": True,
+                   "audio": {"available": True, "granted": True, "reason": None},
+                   "systemAudio": {"available": True, "reason": None},
+                   "microphones": []})
+    assert out["sources"]["audioNativeStripped"] is True
+    assert out["sources"]["audio"] == {"available": True, "granted": True, "reason": None}
+    assert out["sources"]["systemAudio"] == {"available": True, "reason": None}
+    assert out["sources"]["microphones"] == []
+
+
 @pytest.mark.parametrize("source", ["system", "both"])
 def test_audio_only_system_audio_is_refused_on_the_sink_platforms(source):
-    """Chromium gives no audio-only system audio; the sentence says where it does."""
-    for refuse in (_sink.refuse, _windows.refuse, _linux.refuse):
+    """Chromium gives no audio-only system audio; the sentence says where it
+    does. Windows has no other path and refuses this unconditionally; Linux
+    records it natively instead (`test_capture_linux_audio.py` covers both of
+    its states) and so is not a "sink platform" for audio any more."""
+    for refuse in (_sink.refuse, _windows.refuse):
         why = refuse("audio", {"audio": source})
         assert why and "microphone only" in why and "audio: 'system'" in why
     assert _sink.refuse("audio", {"audio": "mic"}) is None
