@@ -2749,19 +2749,12 @@ def _embed_error(type_: str, message: str, status: int,
 
 
 def _conflict_error(e: "supervisor.ModelSlotConflict") -> JSONResponse:
-    """A `ModelSlotConflict` as `_embed_error`'s wire shape, with the fields a
-    caller needs to offer the user a choice rather than just retry: the
-    `code` the spec names, which competing models, and which (if any) is
-    held resident. Shared by every request-path route below `/api/ai`
-    itself (which has its own shape, `server/ai.py`'s own `generate_text`
-    handler) so the body is identical everywhere a route can raise this."""
-    return JSONResponse(
-        {"ok": False, "error": {
-            "type": "model_slot_conflict", "code": "model_slot_conflict",
-            "message": str(e), "capability": e.capability,
-            "models": e.models, "resident": e.resident, "held": e.held,
-        }},
-        status_code=409)
+    """A `ModelSlotConflict` as `_embed_error`'s wire shape: `e.to_wire()`
+    wrapped in the `{"ok": False, "error": ...}` envelope every route below
+    `/api/ai` shares. `to_wire` itself is the one place the field list lives,
+    so this and `server/ai.py`'s own `_local_relay` handler — which has its
+    own envelope but needs the identical `error` body — can't drift apart."""
+    return JSONResponse({"ok": False, "error": e.to_wire()}, status_code=409)
 
 
 @router.post("/api/ai/embed")

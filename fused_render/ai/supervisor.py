@@ -263,6 +263,17 @@ class ModelSlotConflict(SupervisorError):
         self.resident = resident
         self.held = held
 
+    def to_wire(self) -> dict:
+        """The 409 body's `error` object — one shape, so a route and the
+        relay that proxies it (`server/ai.py`'s `_local_relay`,
+        `server/routers/ai_runtime.py`'s `_conflict_error`) can't drift from
+        each other field by field."""
+        return {
+            "type": "model_slot_conflict", "code": "model_slot_conflict",
+            "message": str(self), "capability": self.capability,
+            "models": self.models, "resident": self.resident, "held": self.held,
+        }
+
 
 def job_id_for(model: str) -> str:
     """The download-manager row for this model's bring-up.
