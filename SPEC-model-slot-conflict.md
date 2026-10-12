@@ -33,27 +33,64 @@ warning, and no way for the user to pick a winner.
 - Track, per capability, the request-path evictions: when a request-path
   `load()` would evict a *different* resident/loading model, record
   `(time, evicted_model, incoming_model)`.
-- **Conflict rule:** track, per capability, a chain of recent request-path
-  evictions within `CONFLICT_WINDOW_S` (60s). A single switch (A takes an
-  empty slot, or evicts something else later) is ordinary and always
-  evicts. A switch BACK (A→B→A) is still allowed on its own — one consumer
-  changing its mind twice is not a fight. Only the THIRD request-path
-  eviction that keeps the same two models alternating (closing
-  A→B→A→B) proves two consumers are fighting over the slot: do **not**
-  evict for that third attempt. Instead put the capability into a
-  *conflict* state and raise a new `ModelSlotConflict` error (subclass
-  whatever the request path's errors subclass; must NOT be a
-  `ModelNotReady`, so callers don't retry).
-- Conflict state per capability: `{capability, models: [ordered distinct
-  models that contended], resident: <model or None>, since, requesters?}`.
-  Include who asked (app/page/bot identity) only if the request path
-  already has that cheaply; don't plumb new identity through for it.
-- While a capability is in conflict, request-path loads for any model other
-  than the resident one raise `ModelSlotConflict` immediately (no eviction).
-  Requests for the resident model are served normally.
-- Explicit user actions are never blocked: `POST /api/ai/runtime/load`
-  (manual load) and `/unload` keep working and **clear** the conflict for
-  that capability (the user made a choice).
+- **Caller identity (requester).** Every model request carries WHO is
+  asking: a stable `requester` id plus a human label. Sources:
+  - pages/apps through `runtime.js` (`fused.ai.*`, `fused.ai.models.*`):
+    the app/page the runtime is running in (its folder/route — whatever
+    the runtime already knows about itself), sent as a header on every AI
+    call;
+  - Python apps / background apps through `templates/shared/fused_ai.py`:
+    the app folder (or background-app engine id), same header;
+  - chat / bots / Playground / other shell surfaces: their own fixed ids
+    (e.g. `shell:playground`, `chat:<id>`), same header;
+  - **the user**: only the shell's own conflict controls (dock row,
+    notification actions, AI Models page load/unload buttons) send
+    `requester: user`. Server-side, a request with no header is an
+    anonymous requester (never "user").
+  The header must be set by our clients, not trusted as authorization —
+  it's attribution for contention detection, nothing more.
+- **Conflict rule (identity-based):** per capability, keep a short history
+  of request-path evictions within `CONFLICT_WINDOW_S` (60s), each as
+  `(time, evicted_model, evicted_requester, incoming_model,
+  incoming_requester)` where a worker remembers the requester that loaded
+  it. A conflict opens when a non-user request would evict a model that a
+  **different requester** loaded, and that requester's model was itself
+  evicted by (or evicted) another requester within the window — i.e. two
+  or more distinct requesters are taking the slot from each other.
+  Consequences that must hold (tests):
+  - one requester alternating A→B→A→B (router + generator) is NEVER a
+    conflict, however fast;
+  - two requesters each wanting their own model: conflict on the second
+    cross-requester eviction (A by r1, B by r2 evicts A, A by r1 tries to
+    evict B → conflict);
+  - three requesters rotating A→B→C→A: conflict caught as soon as a
+    requester's model comes back to evict another requester's within the
+    window (no exact-alternation pattern needed);
+  - a one-off switch by a different requester (r2 replaces r1's model
+    once, r1 never comes back) is ordinary.
+  On conflict: do **not** evict; put the capability into a *conflict*
+  state and raise `ModelSlotConflict` (must NOT be a `ModelNotReady`).
+- Conflict state per capability: `{capability, models, requesters (id +
+  label per model), resident, since, held}`. The notification and dock row
+  name the requesters ("Notes app and Chat are both trying to use the text
+  model").
+- **Every non-user path goes through the conflict logic.** That includes
+  `fused.ai.models.load`/`unload` from app/page code (runtime.js and
+  fused_ai.py) — `/api/ai/runtime/load` and `/unload` called with a
+  non-user requester are treated as request-path: a load may be refused
+  with `ModelSlotConflict` and counts toward detection; an unload by a
+  non-user requester never clears a hold or conflict (it may unload only
+  if the resident model was loaded by that same requester — otherwise
+  409 conflict). Render paths (image/video/speech/transcribe) included.
+- While a capability is in conflict or held, any non-user load for a model
+  other than the resident one raises `ModelSlotConflict` immediately (no
+  eviction). Requests for the resident model are served normally.
+- Only `requester: user` actions clear or override a conflict/hold:
+  `/load`, `/unload`, `/conflicts/resolve`, `/conflicts/release` from the
+  shell's controls. Internal server callers (benchmark, evict_stale_engines,
+  reaper, Monitor stop) never clear a held conflict. Hold enforcement lives
+  in ONE place under `_lock` in `_start_resident` (a `respect_holds`-style
+  check), not copied into callers like benchmark.py.
 - Expose conflicts in `supervisor.describe()` (new `conflicts` list) so
   the existing runtime status endpoint/stream carries them.
 
