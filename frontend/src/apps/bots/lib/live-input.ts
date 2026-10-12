@@ -34,11 +34,13 @@ function sendKey(a: KeyAction): void {
 // differs, so overlapping clicks mirror every copy in order and the newest always ends on your clipboard.
 let seen: string | null = null, polls = 0;
 async function mirrorCopy(before: Promise<string | null>): Promise<void> {
-  const was = await before;
-  if (polls === 0) seen = was;  // between gestures this is the baseline; mid-poll the running one already holds it
-  if (seen === null) return;  // unreadable: nothing to tell a copy from
-  polls++;
+  // Counted before the first await: releases arrive in order, so only the first poll of a burst baselines; a later
+  // one's snapshot may already hold the first click's copy and must not become `seen`.
+  const first = polls++ === 0;
   try {
+    const was = await before;
+    if (first) seen = was;
+    if (seen === null) return;  // unreadable: nothing to tell a copy from
     for (const ms of [150, 650, 900]) {
       await new Promise((r) => setTimeout(r, ms));
       if (!inCtl()) return;
