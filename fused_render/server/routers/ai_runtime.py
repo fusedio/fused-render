@@ -1533,7 +1533,9 @@ def api_ai_unload(body: dict = Body(...), x_fused: str | None = Header(default=N
     # unaffected.
     if capability is not None and capability not in registry.capabilities():
         return _error(f"unknown capability {capability!r}", status=400)
-    stopped = supervisor.unload(model=model, capability=capability)
+    # The user asking to unload is exactly the "a choice was made" action
+    # that settles a conflict on this capability — held or not.
+    stopped = supervisor.unload(model=model, capability=capability, explicit=True)
     return {"stopped": stopped, **supervisor.describe()}
 
 

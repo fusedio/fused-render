@@ -1506,6 +1506,7 @@ def _bring_up(runner: registry.Runner, worker: Worker, job: str) -> None:
             worker.error = message
             if _workers.get(worker.capability) is worker:
                 del _workers[worker.capability]
+                _clear_unheld_conflict_locked(worker.capability)
         _terminate(worker)
         # `tier=jobs.TRAIL`, restated explicitly the same way the success
         # report above restates `SILENT`: `job_id_for(model)` is shared
@@ -2263,8 +2264,27 @@ def start_transcribe(model: str, request: dict, job: str, page: str = "") -> Non
     threading.Thread(target=run, name="ai-transcribe", daemon=True).start()
 
 
+def _clear_unheld_conflict_locked(capability: str) -> None:
+    """Pop `capability`'s `ConflictState` if one stands and it is UNHELD.
+    Caller must already hold `_lock`.
+
+    An unheld conflict names a standoff over a slot that still has a
+    resident; once that resident leaves `_workers` by ANY path — an
+    eviction, a manual unload, the idle reaper, a bring-up that fails, or a
+    process `_drop_gone` finds already dead — the standoff it named is over.
+    A HELD conflict is the user's own `resolve_conflict` decision and
+    survives removal of the very worker it is about; only `release_conflict`
+    lifts it.
+    """
+    conflict = _conflicts.get(capability)
+    if conflict is not None and not conflict.held:
+        _conflicts.pop(capability, None)
+
+
 def _claim_for_removal(match, *,
                        set_conflict: "tuple[str, ConflictState] | None" = None,
+                       explicit: bool = False,
+                       capability: str | None = None,
                        ) -> list[Worker]:
     """Atomically find-and-pop every worker `match(worker)` accepts.
 
@@ -2283,6 +2303,16 @@ def _claim_for_removal(match, *,
     conflict lands atomically with the eviction it is holding against,
     instead of after `_remove`'s ~9s-worst-case teardown returns.
 
+    `explicit`, when true, is `unload`'s own signal that THIS call is a
+    user action (`/unload`, or `resolve_conflict`'s `keep: null` by way of
+    `set_conflict` instead — the two never both apply at once): every
+    conflict on an affected capability is cleared, held or not, in the same
+    locked block rather than only the unheld ones `_clear_unheld_conflict_
+    locked` would leave standing. `capability`, given alongside it, covers
+    the capability named on the call even when `match` finds no worker to
+    remove — a capability already held EMPTY has nothing in `targets` for
+    the per-worker clearing below to ever reach.
+
     Deliberately does NOT terminate or report here: `_terminate` does network
     I/O (a `/quit` POST, a process wait) and must run OUTSIDE `_lock`, or
     reaping one idle worker would block every other table operation for as
@@ -2293,19 +2323,15 @@ def _claim_for_removal(match, *,
         for worker in targets:
             worker.stopping = True
             _workers.pop(worker.capability, None)
-            # An UNHELD conflict names a standoff over a slot that still had
-            # a resident; once that resident is gone — reaped idle, or
-            # unloaded by any other path — the standoff it named is over too,
-            # whether or not anybody ever visited the dock to say so. A HELD
-            # conflict is the user's own decision (`resolve_conflict`) and
-            # survives removal of the very worker it is about: lifting it is
-            # `release_conflict`'s job, never a side effect of teardown.
-            conflict = _conflicts.get(worker.capability)
-            if conflict is not None and not conflict.held:
+            if explicit:
                 _conflicts.pop(worker.capability, None)
+            else:
+                _clear_unheld_conflict_locked(worker.capability)
+        if explicit and capability is not None:
+            _conflicts.pop(capability, None)
         if set_conflict is not None:
-            capability, state = set_conflict
-            _conflicts[capability] = state
+            set_capability, state = set_conflict
+            _conflicts[set_capability] = state
         return targets
 
 
@@ -2338,7 +2364,8 @@ def _remove(targets: list[Worker], reason: str) -> None:
 
 def unload(model: str | None = None, capability: str | None = None,
           reason: str = "Unloaded", *,
-          hold: "ConflictState | None" = None) -> bool:
+          hold: "ConflictState | None" = None,
+          explicit: bool = False) -> bool:
     """Stop a resident worker. True if there was one to stop.
 
     `reason` lands verbatim in the job row's `detail`, so every caller — a
@@ -2346,36 +2373,38 @@ def unload(model: str | None = None, capability: str | None = None,
     capability, shutdown, and the idle reaper (AI-13) — can say which of them
     it was, without a parallel teardown for each.
 
-    Also clears any `ConflictState` standing on an affected capability — an
-    explicit unload is never refused for contention, and it settles one:
-    `/api/ai/runtime/unload` is exactly the "the user made a choice" action
-    `ConflictState`'s own docstring says clears a conflict. Named explicitly
-    rather than only from `targets`' capabilities: a capability held EMPTY
-    (`resident=None`, nothing in `_workers` to find) would otherwise never
-    clear on its own unload.
+    `explicit` is this call's own "the user made a choice" flag — true only
+    for `/api/ai/runtime/unload` and `resolve_conflict`'s `keep: null`
+    branch. Every OTHER caller (`evict_stale_engines`, the benchmark
+    teardown, Monitor's Stop, shutdown's `unload_all`) is reacting to
+    something that is not the user settling a conflict, and defaults to
+    false: it must not silently lift a hold the user wrote moments ago, the
+    way clearing every conflict on an affected capability unconditionally
+    used to. A false `explicit` still clears an UNHELD conflict on a worker
+    it actually removes (`_claim_for_removal`'s own job, same as the idle
+    reaper) — only a HELD one is reserved for an explicit call or
+    `release_conflict`.
 
     `hold` is `resolve_conflict`'s own plumbing for its `keep: null` branch —
     a `ConflictState` to write ATOMICALLY with the eviction, inside
     `_claim_for_removal`'s own locked block, instead of clearing the
     capability here and letting a caller record the hold afterward (the race
     `resolve_conflict` used to leave open across `_remove`'s ~9s-worst-case
-    teardown). When given, `capability` must also be given, and the usual
-    post-teardown clear below is skipped so it cannot overwrite the hold just
-    written under lock.
+    teardown). When given, `capability` must also be given and `explicit`
+    must be true — a hold is only ever written by an explicit resolve — and
+    `_claim_for_removal` writes it instead of running its own `explicit`
+    clear, so it cannot be overwritten by, or race, that clear.
     """
     if hold is not None:
         assert capability is not None, "hold requires a capability"
+        assert explicit, "a hold is only ever written by an explicit resolve"
     targets = _claim_for_removal(
         lambda w: (model is None or w.model == model)
         and (capability is None or w.capability == capability),
-        set_conflict=(capability, hold) if hold is not None else None)
+        set_conflict=(capability, hold) if hold is not None else None,
+        explicit=explicit and hold is None,
+        capability=capability)
     _remove(targets, reason)
-    if hold is None:
-        with _lock:
-            if capability is not None:
-                _conflicts.pop(capability, None)
-            for worker in targets:
-                _conflicts.pop(worker.capability, None)
     return bool(targets)
 
 
@@ -2417,7 +2446,8 @@ def resolve_conflict(capability: str, keep: str | None) -> dict:
         return load(keep, capability, request_path=False, hold=hold)
     hold = ConflictState(capability=capability, models=models, resident=None,
                          since=since, held=True)
-    unload(capability=capability, reason="Stopped (model slot conflict)", hold=hold)
+    unload(capability=capability, reason="Stopped (model slot conflict)",
+          hold=hold, explicit=True)
     return {"capability": capability, "resident": None}
 
 
@@ -2995,6 +3025,7 @@ def _drop_gone(worker: Worker) -> None:
         owned = _workers.get(worker.capability) is worker
         if owned:
             del _workers[worker.capability]
+            _clear_unheld_conflict_locked(worker.capability)
     if code is not None:
         desc = (report_child_exit("ai-worker", worker.pid, code, _log_path(worker))
                 if owned else describe_exit(code))

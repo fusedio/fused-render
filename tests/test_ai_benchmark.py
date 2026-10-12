@@ -397,6 +397,27 @@ def test_a_cold_model_records_the_seconds_it_took_to_load(bench, monkeypatch):
     assert record["loadSeconds"] == pytest.approx(8.5)
 
 
+def test_a_held_conflict_refuses_to_benchmark_a_different_model(bench, monkeypatch):
+    """A `resolve_conflict` hold is the user's own choice of which model
+    keeps the slot; a benchmark run must not silently evict it the way an
+    ordinary explicit load would. It refuses instead, the same way a load
+    timeout or a crash already turns into an `ok: false` record rather than
+    an exception reaching whoever called `run()`."""
+    from fused_render.ai import supervisor as ai_supervisor
+
+    monkeypatch.setattr(benchmark.supervisor, "ready_worker",
+                        lambda cap, model=None: None)
+    monkeypatch.setattr(benchmark.supervisor, "_conflicts", {
+        ai_registry.TEXT_GENERATION: ai_supervisor.ConflictState(
+            capability=ai_registry.TEXT_GENERATION,
+            models=["org/held", "some/text-model"],
+            resident="org/held", since=0.0, held=True),
+    })
+    record = benchmark.run("some/text-model", ai_registry.TEXT_GENERATION)
+    assert record["ok"] is False
+    assert "org/held" in record["error"]
+
+
 def test_an_already_resident_model_records_a_null_load(bench, monkeypatch):
     """`null`, not `0.0`: nothing was loaded, and a zero would read as an
     impossibly fast load rather than as a load that did not happen."""

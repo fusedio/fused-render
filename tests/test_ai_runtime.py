@@ -3901,6 +3901,24 @@ def test_the_resolve_endpoint_with_keep_null_stops_both(client, fake_runner):
     assert refused.json()["error"]["held"] is True
 
 
+def test_the_unload_route_clears_a_held_conflict(client, fake_runner):
+    """`/api/ai/runtime/unload` is as much the user settling a conflict as
+    `/conflicts/resolve` is — it must clear a HELD conflict too, not just an
+    unheld one left over from an un-resolved standoff."""
+    _force_conflict("org/a", "org/b")
+    supervisor.resolve_conflict(registry.TEXT_GENERATION, keep="org/a")
+    _wait_ready("org/a")
+    assert supervisor.describe()["conflicts"][0]["held"] is True
+
+    response = client.post(
+        "/api/ai/runtime/unload",
+        json={"capability": registry.TEXT_GENERATION},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 200
+    assert response.json()["stopped"] is True
+    assert supervisor.describe()["conflicts"] == []
+
+
 def test_resolve_keep_writes_the_hold_atomically_with_the_eviction(fake_runner, monkeypatch):
     """`resolve_conflict(keep=<model>)` evicts the loser before the new held
     `ConflictState` is visible if the two are written in separate `_lock`
@@ -4001,6 +4019,98 @@ def test_reap_idle_does_not_clear_a_held_conflict_on_its_resident(fake_runner):
     assert len(conflicts) == 1
     assert conflicts[0]["held"] is True
     assert conflicts[0]["resident"] == "org/b"
+
+
+def test_a_failed_bring_up_clears_an_unheld_conflict_on_its_resident(
+        fake_runner, monkeypatch):
+    """An unheld conflict names a standoff over a slot that still has a
+    resident; `_bring_up`'s own failure path pops a worker from `_workers`
+    the same as `_claim_for_removal` does on an eviction/unload/reap, and
+    must clear the standoff the same way, not just those other paths."""
+    _force_conflict("org/b", "org/a")
+    assert len(supervisor.describe()["conflicts"]) == 1
+
+    runner = registry.for_capability(registry.TEXT_GENERATION)
+    worker = supervisor.Worker(model="org/b", capability=registry.TEXT_GENERATION,
+                               runner_code=runner.code, token="t")
+    with supervisor._lock:
+        supervisor._workers[registry.TEXT_GENERATION] = worker
+
+    def doomed_ensure_venv(r, w, j):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(supervisor, "_ensure_venv", doomed_ensure_venv)
+    supervisor._bring_up(runner, worker, "some-job")
+
+    assert supervisor._workers.get(registry.TEXT_GENERATION) is None
+    assert supervisor.describe()["conflicts"] == []
+
+
+def test_drop_gone_clears_an_unheld_conflict_on_its_resident(fake_runner):
+    """Same guarantee as the reap/unload/bring-up-failure paths, for a
+    worker whose PROCESS simply died — `refresh_memory`/`ready_worker`'s own
+    removal path (`_drop_gone`)."""
+    _force_conflict("org/b", "org/a")
+    worker = _wait_ready("org/b")
+    assert len(supervisor.describe()["conflicts"]) == 1
+
+    supervisor._drop_gone(worker)
+
+    assert supervisor._workers.get(registry.TEXT_GENERATION) is None
+    assert supervisor.describe()["conflicts"] == []
+
+
+def test_an_internal_unload_does_not_clear_a_held_conflict(fake_runner):
+    """`unload()` defaults to `explicit=False` — an internal caller
+    (`evict_stale_engines`, the benchmark teardown, Monitor's Stop) must not
+    silently lift the user's own `resolve_conflict` hold just because it
+    happens to remove the worker the hold is about."""
+    _force_conflict("org/b", "org/a")
+    supervisor.resolve_conflict(registry.TEXT_GENERATION, keep="org/b")
+    _wait_ready("org/b")
+    assert supervisor.describe()["conflicts"][0]["held"] is True
+
+    assert supervisor.unload(capability=registry.TEXT_GENERATION) is True
+
+    conflicts = supervisor.describe()["conflicts"]
+    assert len(conflicts) == 1
+    assert conflicts[0]["held"] is True
+    assert conflicts[0]["resident"] == "org/b"
+
+
+def test_an_explicit_unload_clears_a_held_conflict_atomically_with_the_eviction(
+        fake_runner, monkeypatch):
+    """`/api/ai/runtime/unload` (`explicit=True`) IS the user settling a
+    conflict, held or not — and the clear has to land in the same locked
+    block that pops the worker, not after `_remove`'s ~9s-worst-case
+    teardown returns, or a caller racing into that gap would still see the
+    stale held conflict standing over a worker that is already gone."""
+    _force_conflict("org/b", "org/a")
+    supervisor.resolve_conflict(registry.TEXT_GENERATION, keep="org/b")
+    _wait_ready("org/b")
+    assert supervisor.describe()["conflicts"][0]["held"] is True
+
+    real_terminate = supervisor._terminate
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_terminate(worker):
+        started.set()
+        release.wait(timeout=5)
+        real_terminate(worker)
+
+    monkeypatch.setattr(supervisor, "_terminate", slow_terminate)
+
+    t = threading.Thread(
+        target=supervisor.unload,
+        kwargs={"capability": registry.TEXT_GENERATION, "explicit": True})
+    t.start()
+    try:
+        assert started.wait(timeout=5), "unload's eviction never reached _terminate"
+        assert supervisor.describe()["conflicts"] == []
+    finally:
+        release.set()
+        t.join(timeout=5)
 
 
 def test_the_resolve_endpoint_rejects_an_unknown_capability(client):

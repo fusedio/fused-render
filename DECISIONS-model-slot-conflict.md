@@ -71,6 +71,54 @@ unheld conflicts are cleared on removal rather than on a timer, matching
 how every other piece of this feature already reacts to table changes
 rather than wall-clock deadlines.
 
+## Clearing a conflict on removal, held or not: `explicit` vs internal callers
+
+`_claim_for_removal` already popped an UNHELD conflict for every worker it
+removed (the entry above), but `unload()`'s OWN post-`_remove` block used to
+pop every conflict on an affected capability unconditionally whenever no
+`hold` was given — including a HELD one — and did it after `_remove`'s
+teardown returns, outside `_lock`. That made every caller of bare `unload()`
+indistinguishable from `/api/ai/runtime/unload` itself: `evict_stale_engines`
+(an engine preference changing under a resident model), the benchmark
+teardown, and Monitor's Stop button all silently lifted a user's own
+`resolve_conflict` hold just because they happened to remove the worker it
+was about, and a caller racing into the gap between the eviction and the
+clear could see a conflict that was about to vanish as still standing.
+
+`unload()` now takes an `explicit: bool = False` parameter instead. Default
+false matches every one of those three internal callers unchanged — no call
+site edit needed for any of them — and still clears an UNHELD conflict on a
+worker it actually removes, through `_claim_for_removal`'s existing
+per-worker clear, which also now runs before the loop-less `return` leaves
+the locked block to begin with (unchanged from the previous entry; `explicit`
+is additive to it, not a replacement). Only the two places `SPEC-model-slot-
+conflict.md` names as "the user made a choice" — `/api/ai/runtime/unload`
+and `resolve_conflict`'s own `unload()` call for `keep: null` — pass
+`explicit=True`, and `_claim_for_removal` clears EVERY conflict (held or
+not) on the matched capability in that same locked block, atomically with
+the eviction, instead of after `_remove`'s ~9s-worst-case teardown. `hold`
+still requires `explicit=True` (asserted): a hold is only ever written by an
+explicit resolve, never by an internal caller.
+
+A default rather than a required keyword (the alternative this feature
+first considered) was the simpler correct shape here: the three internal
+callers' bug was never "they forgot to say what they were doing", it was
+`unload()` treating the ABSENCE of `hold` as proof of user intent. A default
+that means "not the user" fixes that reading directly and costs zero edits
+to call sites that were already behaving correctly in every other respect.
+
+## Clearing an unheld conflict on removal by a path other than `_claim_for_removal`
+
+Two more places pop a worker straight out of `_workers` without going
+through `_claim_for_removal` at all: `_bring_up`'s own exception handler
+(a cold load that crashes or is cancelled) and `_drop_gone` (a process
+`refresh_memory`/`ready_worker` finds already dead). Both now call the same
+`_clear_unheld_conflict_locked(capability)` helper `_claim_for_removal`
+itself calls, inside the SAME locked block that pops the worker — a shared
+one-line helper rather than three copies of "pop if present and not held",
+so a conflict naming a resident that is gone by ANY path is cleared the
+same way regardless of which of the four removal sites did the removing.
+
 ## Scope: which capabilities can raise `ModelSlotConflict`
 
 `generate_text`/`_generate_sync`'s request-path loads can hit

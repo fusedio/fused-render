@@ -1083,6 +1083,19 @@ def _load_to_ready(model: str, capability: str) -> float | None:
     """
     if supervisor.ready_worker(capability, model) is not None:
         return None
+    # `_start_resident(request_path=False)` is `load()`'s own explicit path —
+    # it evicts and settles whatever conflict stands, the same as a user
+    # picking a model on the AI Models page. A HELD conflict for a DIFFERENT
+    # model, though, is a user's own `resolve_conflict` choice made through
+    # an actual dock click, not this run — refusing it is simplest and
+    # correct: this run records `ok: false` and says why, the same as every
+    # other way a cold load already fails, rather than silently evicting the
+    # model the user just chose to keep.
+    conflict = supervisor._conflicts.get(capability)
+    if conflict is not None and conflict.held and conflict.resident != model:
+        raise supervisor.SupervisorError(
+            f"{capability} is held for {conflict.resident!r} — release it "
+            f"on the AI Models page before benchmarking {model!r}")
     start = _now()
     _started, pending = supervisor._start_resident(model, capability)
     deadline = start + _LOAD_TIMEOUT_S
