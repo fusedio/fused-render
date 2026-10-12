@@ -1003,11 +1003,12 @@ function NativeWindowsSection({ prefs, onChange }: { prefs: Prefs; onChange: (p:
           onChange={toggleInHome}
         />
         <span>
-          <b>Open apps in the Home window</b>
+          <b>Single window experience</b>
           <br />
           <span className="deploy-muted">
             Apps open inside the Home window's file explorer, like in a browser, instead of each in
-            its own window.
+            its own window. On macOS, clicking the Dock icon brings back the window you last used
+            instead of going to Home.
           </span>
         </span>
       </label>
