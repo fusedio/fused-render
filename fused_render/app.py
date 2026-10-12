@@ -1582,6 +1582,7 @@ def main() -> None:
         "dock": None,        # menubar_dock.DockController, the default status-item surface
         "windows": None,     # mac_window.WindowManager, built after run loop start
         "launcher": None,    # launcher_panel.LauncherController, after the windows
+        "pill": None,        # recording_pill_panel.RecordingPillController
         "restored": [],      # relaunch placeholders [(url, window)] awaiting the server
     }
 
@@ -1841,6 +1842,12 @@ def main() -> None:
             AppHelper.callAfter(launcher_ctl.server_ready)
             AppHelper.callAfter(launcher_ctl.bind_hotkey)
             AppHelper.callAfter(launcher_ctl.bind_pinned)
+        if state["pill"] is not None:
+            # The recording pill loads its page off the live server too; a
+            # recording that began before this is shown once it has.
+            from PyObjCTools import AppHelper
+
+            AppHelper.callAfter(state["pill"].server_ready)
         pending, state["pending"] = state["pending"], []
         for target in pending:
             _open_target(target)
@@ -2164,6 +2171,28 @@ def main() -> None:
         except Exception:
             logger.exception("launcher unavailable")
             state["launcher"] = None
+
+        # ---- the recording pill: a floating panel while audio is recorded ----
+        # Not behind `native_windows_enabled`: it is a status surface like the
+        # menu-bar item, and a recording must show it whatever the window
+        # preference says. Its click ("open the recording app") reuses the
+        # launcher's `_open_app_native`, which already falls back to the browser.
+        try:
+            from PyObjCTools import AppHelper
+
+            from fused_render import recording_pill
+            from fused_render.recording_pill_panel import RecordingPillController
+
+            pill_ctl = RecordingPillController(port, _open_app_native)
+            state["pill"] = pill_ctl
+            recording_pill.native_hooks.update({
+                "show": lambda info: AppHelper.callAfter(pill_ctl.show, info),
+                "hide": lambda cid: AppHelper.callAfter(pill_ctl.hide, cid),
+                "hide_all": lambda: AppHelper.callAfter(pill_ctl.hide_all),
+            })
+        except Exception:
+            logger.exception("recording pill unavailable")
+            state["pill"] = None
 
         # ---- the status item's surface: Dock (default) or pinned-file popover ----
         # Both controllers take the status item over the same way
