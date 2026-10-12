@@ -295,6 +295,8 @@ export function Composer({ b, reply, setReply, threadRef }: ComposerProps) {
     } finally { setSending(false); }
   };
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    // An IME composition owns Enter/arrows/Esc (confirming a candidate must not send, nor run a command).
+    if (e.nativeEvent.isComposing) return;
     // The popup takes the keys first while it shows rows: ↑↓ move, Tab completes, Enter runs, Esc closes (the text stays).
     if (cmd && cmds.length) {
       if (e.key === "ArrowDown" || e.key === "ArrowUp") {
@@ -305,7 +307,8 @@ export function Composer({ b, reply, setReply, threadRef }: ComposerProps) {
       }
       if (e.key === "Tab") { e.preventDefault(); completeCommand(cmds[cmdIdx]); return; }
       if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); return; }  // send() runs the highlighted row: one path
-      if (e.key === "Escape") { e.preventDefault(); setCmd(null); return; }
+      // Esc while the mic records belongs to the recording (the document listener above discards it); the popup stays.
+      if (e.key === "Escape") { if (micRec.current) return; e.preventDefault(); setCmd(null); return; }
     }
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); }
     if (e.key === "Escape" && reply) { e.preventDefault(); setReply(null); }
@@ -355,7 +358,7 @@ export function Composer({ b, reply, setReply, threadRef }: ComposerProps) {
             {cmds.map((c, i) => {
               const gate = c.name === "clear" ? canClear(b, eventsOf(b.id)) : { ok: true, why: "" };
               return (
-                <button key={c.name} role="option" aria-selected={i === cmdIdx} className={`${i === cmdIdx ? "sel" : ""}${gate.ok ? "" : " off"}`.trim() || undefined}
+                <button key={c.name} id={`ccmd-${c.name}`} role="option" aria-selected={i === cmdIdx} className={`${i === cmdIdx ? "sel" : ""}${gate.ok ? "" : " off"}`.trim() || undefined}
                   onMouseDown={(e) => e.preventDefault()} onMouseEnter={() => setCmd({ q: cmd.q, idx: i })} onClick={() => runCommand(c)}>
                   <code>/{c.name}</code><b>{c.title}</b><span>{gate.ok ? c.hint : gate.why}</span>
                 </button>
@@ -384,6 +387,9 @@ export function Composer({ b, reply, setReply, threadRef }: ComposerProps) {
           </button>
           <textarea id="input" ref={ta} rows={1} placeholder={placeholder} disabled={!on}
             data-gramm="false" data-gramm_editor="false" data-enable-grammarly="false"
+            // The command popup is a combobox listbox the box drives: the highlighted row is announced as the active descendant.
+            role="combobox" aria-autocomplete="list" aria-expanded={!!(cmd && cmds.length)} aria-controls="ccmds"
+            aria-activedescendant={cmd && cmds.length ? `ccmd-${cmds[cmdIdx].name}` : undefined}
             onInput={fitInput} onKeyDown={onKeyDown} onPaste={onPaste} />
           <button id="send" className="primary" title="Send (Enter)" disabled={!on || sending} onClick={() => void send()}>Send</button>
         </div>
