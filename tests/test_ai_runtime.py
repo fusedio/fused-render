@@ -3865,6 +3865,128 @@ def test_the_resolve_endpoint_with_keep_null_stops_both(client, fake_runner):
     assert refused.json()["error"]["held"] is True
 
 
+def test_resolve_keep_writes_the_hold_atomically_with_the_eviction(fake_runner, monkeypatch):
+    """`resolve_conflict(keep=<model>)` evicts the loser before the new held
+    `ConflictState` is visible if the two are written in separate `_lock`
+    holds — a caller racing into the gap (another request-path load, or a
+    second resolve/release) would see the capability as conflict-free while
+    the loser's worker is still (slowly) tearing down. `_start_resident`
+    now writes `hold` in the SAME locked block that evicts, so the held
+    conflict is already standing the instant `_terminate` is reached — well
+    before it returns."""
+    with pytest.raises(supervisor.ModelNotReady):
+        list(supervisor.generate_text("org/a", {"messages": []}))
+    _wait_ready("org/a")
+    with pytest.raises(supervisor.ModelNotReady):
+        list(supervisor.generate_text("org/b", {"messages": []}))
+    _wait_ready("org/b")
+    with pytest.raises(supervisor.ModelSlotConflict):
+        list(supervisor.generate_text("org/a", {"messages": []}))
+
+    real_terminate = supervisor._terminate
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_terminate(worker):
+        started.set()
+        release.wait(timeout=5)
+        real_terminate(worker)
+
+    monkeypatch.setattr(supervisor, "_terminate", slow_terminate)
+
+    t = threading.Thread(
+        target=supervisor.resolve_conflict, args=(registry.TEXT_GENERATION, "org/a"))
+    t.start()
+    try:
+        assert started.wait(timeout=5), "resolve's eviction never reached _terminate"
+        conflicts = supervisor.describe()["conflicts"]
+        assert len(conflicts) == 1
+        assert conflicts[0]["held"] is True
+        assert conflicts[0]["resident"] == "org/a"
+    finally:
+        release.set()
+        t.join(timeout=5)
+
+
+def test_resolve_keep_none_holds_the_capability_empty_atomically_with_the_unload(
+        fake_runner, monkeypatch):
+    """Same race as the `keep=<model>` case above, for `keep: null`: the
+    empty hold has to be standing before `_remove`'s teardown of the stopped
+    worker returns, not only after."""
+    with pytest.raises(supervisor.ModelNotReady):
+        list(supervisor.generate_text("org/a", {"messages": []}))
+    _wait_ready("org/a")
+
+    real_terminate = supervisor._terminate
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_terminate(worker):
+        started.set()
+        release.wait(timeout=5)
+        real_terminate(worker)
+
+    monkeypatch.setattr(supervisor, "_terminate", slow_terminate)
+
+    t = threading.Thread(
+        target=supervisor.resolve_conflict, args=(registry.TEXT_GENERATION, None))
+    t.start()
+    try:
+        assert started.wait(timeout=5), "resolve's unload never reached _terminate"
+        conflicts = supervisor.describe()["conflicts"]
+        assert len(conflicts) == 1
+        assert conflicts[0]["held"] is True
+        assert conflicts[0]["resident"] is None
+    finally:
+        release.set()
+        t.join(timeout=5)
+
+
+def test_reap_idle_clears_an_unheld_conflict_on_its_resident(fake_runner, monkeypatch):
+    """An unheld conflict names a standoff over a slot that still has a
+    resident; once that resident is gone — by the idle reaper, same as by a
+    manual unload — the standoff it named is over too, not left to stand
+    forever with no worker left for `/conflicts/resolve` to act on."""
+    with pytest.raises(supervisor.ModelNotReady):
+        list(supervisor.generate_text("org/a", {"messages": []}))
+    _wait_ready("org/a")
+    with pytest.raises(supervisor.ModelNotReady):
+        list(supervisor.generate_text("org/b", {"messages": []}))
+    worker = _wait_ready("org/b")
+    with pytest.raises(supervisor.ModelSlotConflict):
+        list(supervisor.generate_text("org/a", {"messages": []}))
+    assert len(supervisor.describe()["conflicts"]) == 1
+
+    worker.last_activity = time.monotonic() - 10_000
+    assert supervisor.reap_idle(time.monotonic()) == ["org/b"]
+    assert supervisor.describe()["conflicts"] == []
+
+
+def test_reap_idle_does_not_clear_a_held_conflict_on_its_resident(fake_runner):
+    """A held conflict is the user's own decision (`resolve_conflict`); the
+    idle reaper removing the worker it is about must not silently lift it —
+    only `release_conflict` does that."""
+    with pytest.raises(supervisor.ModelNotReady):
+        list(supervisor.generate_text("org/a", {"messages": []}))
+    _wait_ready("org/a")
+    with pytest.raises(supervisor.ModelNotReady):
+        list(supervisor.generate_text("org/b", {"messages": []}))
+    _wait_ready("org/b")
+    with pytest.raises(supervisor.ModelSlotConflict):
+        list(supervisor.generate_text("org/a", {"messages": []}))
+
+    supervisor.resolve_conflict(registry.TEXT_GENERATION, keep="org/b")
+    worker = _wait_ready("org/b")
+    assert supervisor.describe()["conflicts"][0]["held"] is True
+
+    worker.last_activity = time.monotonic() - 10_000
+    assert supervisor.reap_idle(time.monotonic()) == ["org/b"]
+    conflicts = supervisor.describe()["conflicts"]
+    assert len(conflicts) == 1
+    assert conflicts[0]["held"] is True
+    assert conflicts[0]["resident"] == "org/b"
+
+
 def test_the_resolve_endpoint_rejects_an_unknown_capability(client):
     response = client.post(
         "/api/ai/runtime/conflicts/resolve",
