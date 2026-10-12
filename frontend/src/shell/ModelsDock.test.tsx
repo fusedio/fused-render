@@ -636,6 +636,62 @@ test("an unresolved conflict row offers Keep A, Keep B, and Stop both", () => {
   expect(text(findAll(row, "dl-row-cancel")[0])).toBe("Stop both");
 });
 
+// The resident keeps answering while the standoff stands — the row's own
+// tooltip must say so, not claim neither side is making progress (B7: the
+// old wording, "neither can finish loading", was wrong the moment one side
+// is in fact resident and serving).
+test("the unresolved row's tooltip names the resident as staying loaded", () => {
+  const tree = renderView({
+    models: [],
+    conflicts: [conflict({ models: ["org/model-a", "org/model-b"], resident: "org/model-b", held: false })],
+  });
+  const row = findAll(tree, "dl-row-conflict")[0];
+  const tooltip = findAll(row, "dl-title")[0].props.title as string;
+  expect(tooltip).toContain("model-b stays loaded");
+  expect(tooltip).not.toContain("neither can finish loading");
+});
+
+// A third (or later) contender gets its own Keep action too (B8) —
+// `NotificationCard` only has two "Keep" slots, so anything past the first
+// two rides in the row's figures area instead of being dropped silently.
+test("a third contender still gets its own Keep action", () => {
+  const tree = renderView({
+    models: [],
+    conflicts: [conflict({
+      models: ["org/model-a", "org/model-b", "org/model-c"],
+      resident: "org/model-b",
+      held: false,
+    })],
+  });
+  const row = findAll(tree, "dl-row-conflict")[0];
+  const keeps = findAll(row, "q-all").map((n) => text(n));
+  expect(new Set(keeps)).toEqual(new Set(["Keep model-a", "Keep model-b", "Keep model-c"]));
+  // "Stop both" only makes sense for exactly two — three or more contenders
+  // call for the honest "Stop all".
+  expect(text(findAll(row, "dl-row-cancel")[0])).toBe("Stop all");
+});
+
+test("a third contender's Keep calls onKeepConflict the same as the first two", async () => {
+  const seen: Array<[string, string]> = [];
+  const instance = renderInstance({
+    models: [],
+    conflicts: [conflict({
+      capability: "text-generation",
+      models: ["org/a", "org/b", "org/c"],
+    })],
+    onKeepConflict: async (capability, keep) => {
+      seen.push([capability, keep]);
+    },
+  });
+  const tree = instance.toJSON() as ReactTestRendererJSON;
+  const row = findAll(tree, "dl-row-conflict")[0];
+  const thirdKeep = findAll(row, "q-all").find((n) => text(n) === "Keep c");
+  await act(async () => {
+    (thirdKeep!.props as { onClick: () => void }).onClick();
+  });
+  expect(seen).toEqual([["text-generation", "org/c"]]);
+});
+
 test("Keep calls onKeepConflict with the capability and the chosen model", async () => {
   const seen: Array<[string, string]> = [];
   const instance = renderInstance({

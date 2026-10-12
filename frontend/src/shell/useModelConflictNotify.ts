@@ -58,7 +58,20 @@ export function useModelConflictNotify(): void {
     const live = new Set<string>();
     for (const conflict of runtime.conflicts) {
       live.add(conflict.capability);
-      if (notified.current.has(conflict.capability)) continue;
+      const already = notified.current.get(conflict.capability);
+      if (already !== undefined) {
+        // A standing toast must not survive the capability turning held —
+        // a resolve (this tab's own, or another one's) can land without the
+        // capability ever leaving `conflicts` at all, just flipping `held`
+        // and its resident. Withdraw the stale toast (if any) and re-mark
+        // this capability seen as held, exactly like a FRESH held entry
+        // does below — no new toast for it either.
+        if (conflict.held && already != null) {
+          dismissNotification(already);
+          notified.current.set(conflict.capability, null);
+        }
+        continue;
+      }
       // Always mark seen, held or not: a held entry is the user's own
       // action, not a fresh standoff to announce, but it still occupies
       // this capability's slot until cleared.
@@ -79,8 +92,15 @@ export function useModelConflictNotify(): void {
           tone: "error",
         });
       };
+      // The resident keeps answering normally throughout — only the OTHER
+      // contenders' loads are refused — so the title says who stays loaded
+      // instead of claiming nobody is making progress (B7).
+      const residentName = conflict.resident ? repoName(conflict.resident) : null;
+      const title = residentName
+        ? `${names} are fighting over the ${label.toLowerCase()}: ${residentName} stays loaded, the rest can't take over.`
+        : `${names} are fighting over the ${label.toLowerCase()}.`;
       const id = notify({
-        title: `Two things are fighting over the ${label.toLowerCase()}: ${names}. Neither can finish loading.`,
+        title,
         tone: "error",
         action: other
           ? {

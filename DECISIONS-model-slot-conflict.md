@@ -164,6 +164,52 @@ raises whatever `_error_from_payload` built, so the subclass reaches a
 caller exactly where `AiError` always has, with no second wiring to keep in
 sync.
 
+## Frontend wording and withdrawal fixes (B3, B7, B8, B10)
+
+**B7 — "stays loaded", not "neither can finish loading".** Both the toast
+(`useModelConflictNotify.ts`) and the dock row's tooltip
+(`ModelsDock.tsx`'s `ConflictRow`) used to say nobody was making progress,
+which was never true: the resident keeps answering every request normally
+throughout the standoff, only the OTHER contenders' loads are refused. Both
+now name the resident ("`<names>` are fighting over `<capability>`: `<resident>`
+stays loaded, the rest can't take over.") when one exists, falling back to
+the plain "are fighting over" sentence for the one case with no resident at
+all (a `keep: null` hold reached via `conflict_for`'s pre-emptive path —
+`resident` is `null` there, not a contender).
+
+**B3 — the toast withdraws on `held`, not only on disappearing.**
+`useModelConflictNotify`'s own `notified` map used to check `conflict.held`
+only the FIRST time a capability was seen; once a toast existed, every later
+poll short-circuited on "already notified" before ever looking at `held`
+again. A resolve that lands without the capability ever leaving
+`runtime.conflicts` — it stays listed, just `held: true` with a new resident
+— left the stale toast's "Keep"/"Stop both" choices sitting in the
+Notifications panel after they had already been acted on. The loop now
+re-checks `held` on every poll for an already-seen capability too, and
+withdraws the RETAINED row (`dismissNotification`, the same call the
+"conflict cleared" path already made) the moment that happens. The live
+POPUP, if one is still showing, is left to its own normal timeout — exactly
+how a disappearing conflict already behaved before this fix, since
+`dismissNotification` has never touched the popup (see its own doc comment);
+only `_resetNotificationsForTest`/the natural exit timer ever does.
+
+**B8 — a third (or later) contender still gets its own Keep.**
+`NotificationCard` has exactly two "Keep"-shaped slots (`navAction`/
+`extraAction`) beside its one `liveAction`, so `ConflictRow` used to destructure
+only `[first, second]` out of `conflict.models` — a third contender had no
+way to be kept from this row at all. Rather than growing `NotificationCard`
+a third+ slot (a component six other call sites share, for a case only this
+row needs), the overflow rides in the row's existing `figures` slot instead,
+as plain `.q-all`-styled buttons, one per remaining contender. `liveAction`'s
+label also switches from "Stop both" to "Stop all" once there is a third
+contender — "both" promises a pair.
+
+**B10 — `releaseModelConflict`'s doc comment.** It claimed "Unlike
+`resolveModelConflict` this DOES reply with the full runtime", directly
+contradicting `resolveModelConflict`'s OWN comment two functions above it
+("same as `releaseModelConflict`") — both routes answer with the full
+runtime; there is no "unlike" left to describe. Reworded to say so plainly.
+
 ## Scope: which capabilities can raise `ModelSlotConflict`
 
 `generate_text`/`_generate_sync`'s request-path loads can hit

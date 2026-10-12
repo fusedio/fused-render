@@ -5306,9 +5306,10 @@ export function resolveModelConflict(
 
 /** Clears a conflict/hold with no load or unload of its own — back to
  *  ordinary auto-load on the next request-path call
- *  (`POST /api/ai/runtime/conflicts/release`). Unlike `resolveModelConflict`
- *  this DOES reply with the full runtime, so callers can `publishAiRuntime`
- *  it directly. */
+ *  (`POST /api/ai/runtime/conflicts/release`). Replies with the full
+ *  runtime, same as `resolveModelConflict`, so callers can
+ *  `publishAiRuntime` it directly rather than wait on a poll that may
+ *  already be in flight. */
 export function releaseModelConflict(
   capability: string,
 ): Promise<AiRuntime & { released: boolean }> {

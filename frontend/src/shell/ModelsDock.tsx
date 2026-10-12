@@ -323,7 +323,8 @@ function ConflictRow({
   // looking like they did nothing.
   const [failure, setFailure] = useState<string | null>(null);
   const label = capabilityLabel(conflict.capability);
-  const [first, second] = conflict.models;
+  const [first, second, ...rest] = conflict.models;
+  const residentName = conflict.resident ? repoName(conflict.resident) : null;
 
   const run = (fn: () => Promise<void>) => async () => {
     setBusy(true);
@@ -363,14 +364,24 @@ function ConflictRow({
     );
   }
 
-  // NOT YET RESOLVED: the swap loop the supervisor caught on its own.
+  // NOT YET RESOLVED: the swap loop the supervisor caught on its own. The
+  // resident is still answering normally throughout — only the OTHER
+  // contenders' loads are refused — so the tooltip says who stays loaded
+  // rather than claiming nobody is making progress (B7).
+  const names = conflict.models.map(repoName).join(" and ");
+  const tooltip = residentName
+    ? `${names} are fighting over ${label.toLowerCase()} — ${residentName} stays loaded, the rest can't take over.`
+    : `${names} are fighting over ${label.toLowerCase()}.`;
   return (
     <NotificationCard
       className="dl-row-conflict"
       title={label}
-      titleTooltip={`${conflict.models.map(repoName).join(" and ")} are fighting over ${label.toLowerCase()} — neither can finish loading.`}
+      titleTooltip={tooltip}
       liveAction={{
-        label: busy ? "Stopping…" : "Stop both",
+        // "Stop both" only reads right for exactly two contenders — three or
+        // more calls for the honest "Stop all" instead of a word that
+        // promises a pair.
+        label: busy ? "Stopping…" : rest.length > 0 ? "Stop all" : "Stop both",
         onClick: run(() => onStopBoth(conflict.capability)),
         disabled: busy,
       }}
@@ -383,6 +394,26 @@ function ConflictRow({
         second
           ? { label: `Keep ${repoName(second)}`, onClick: run(() => onKeep(conflict.capability, second)), disabled: busy }
           : undefined
+      }
+      // `NotificationCard` has only two "Keep" slots — a third (or later)
+      // contender still needs its own Keep action (B8), so overflow rides
+      // here instead of being silently dropped.
+      figures={
+        rest.length > 0 ? (
+          <span className="dl-row-conflict-extra">
+            {rest.map((m) => (
+              <button
+                key={m}
+                type="button"
+                className="q-all"
+                onClick={run(() => onKeep(conflict.capability, m))}
+                disabled={busy}
+              >
+                {`Keep ${repoName(m)}`}
+              </button>
+            ))}
+          </span>
+        ) : undefined
       }
       status={failure || undefined}
     />

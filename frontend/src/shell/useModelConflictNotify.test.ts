@@ -165,6 +165,38 @@ test("a conflict's retained toast is withdrawn once it clears, not left offering
   mounted.unmount();
 });
 
+test("a freshly detected conflict's toast names the resident as staying loaded", async () => {
+  // B7: the old wording ("Neither can finish loading") was wrong the moment
+  // one side actually is resident and still answering normally.
+  const mounted = await mountClean();
+  await publish([conflict()]); // resident is org/b
+  const popup = getPopupNotification();
+  expect(popup?.title).toContain("b stays loaded");
+  expect(popup?.title.toLowerCase()).not.toContain("neither can finish loading");
+  mounted.unmount();
+});
+
+test("a standing conflict's toast is withdrawn the moment it becomes held, without waiting for it to clear", async () => {
+  // B3: a conflict can be resolved (held) WITHOUT dropping out of
+  // `runtime.conflicts` at all — the capability stays listed, just with
+  // `held: true` and a new resident/since. The old code only ever checked
+  // `conflict.held` the first time a capability was seen, so a toast raised
+  // before the resolve kept sitting there offering "Keep"/"Stop both"
+  // choices that had already been acted on.
+  const mounted = await mountClean();
+  await publish([conflict()]);
+  expect(getRetainedNotifications().some((n) => n.title.includes("a and b"))).toBe(true);
+
+  // Same `dismissNotification` the "it clears entirely" path already uses
+  // (see the test above) — it withdraws the RETAINED row; the live popup,
+  // if still showing, plays out its own normal timeout, exactly as it does
+  // when a conflict clears outright.
+  await publish([conflict({ held: true, resident: "org/b" })]);
+  expect(getRetainedNotifications().some((n) => n.title.includes("a and b"))).toBe(false);
+
+  mounted.unmount();
+});
+
 test("a failed resolve from the toast's own action surfaces an error instead of failing silently", async () => {
   const mounted = await mountClean();
   await publish([conflict()]);
