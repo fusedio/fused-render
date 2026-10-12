@@ -1205,18 +1205,19 @@ def _handle(bot, sess: Turn, name: str, args: dict) -> dict:
         return _stopped()
     notes = []
     msgs = bot._drain_inbox()
-    for m in msgs:
-        _instruction(sess, notes, m)
     if name == tools.PERMISSION_TOOL and sess.is_super:
         # Claude Code asking, not the model acting: no step, no page, and the
         # answer must be ONE JSON text block, so mid-task messages cannot ride
         # on it. They go back to the inbox for the next real tool result (and
-        # are not mistaken for the card's answer).
+        # are not mistaken for the card's answer). Before _instruction, which
+        # would also queue their images (docs §13) a second time on the re-drain.
         out = _permission(bot, sess, args)
         if msgs:
             with bot.lock:
                 bot.inbox[:0] = msgs
         return out if out is not None else _permission_answer(False, args, "Stopped by the user.")
+    for m in msgs:
+        _instruction(sess, notes, m)
     sess.steps += 1
     n = sess.steps
     if n > sess.max_steps:
@@ -1780,7 +1781,9 @@ def _act(bot, sess: Turn, name: str, args: dict, notes: list | None = None) -> d
         if bot.stop_flag.is_set():
             return None
         parts.append(f"ASKED (stuck): {q}")
-        parts.extend(f"USER ANSWER: {a}" for a in bot._drain_inbox())
+        answer = bot._drain_inbox()
+        parts.extend(f"USER ANSWER: {a}" for a in answer)
+        sess.pending_images.extend(im for a in answer for im in channels.base.images_of(a))  # an app's picture with its answer
         sess.recent.clear()
         bot.set_status("running", waiting_on=None)
     return _result("\n\n".join(p for p in parts if p), error=result.startswith("error:"), image=image,

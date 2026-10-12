@@ -691,6 +691,7 @@ _APP_FIELDS = ("name", "kind", "preset", "status", "task", "note", "step", "mode
                "pinned", "updated")
 _APP_DESC = 240
 _IMAGE_EXT = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp"}
+_IMAGE_PUSH_MAX = 3 * 1024 * 1024  # an un-previewed original may ride the model turn only up to this (the API's ~5 MB decoded cap, with room)
 
 
 def _bots_on():
@@ -797,7 +798,9 @@ def _app_send(bid, body, x_fused_page=None):
         mt = _IMAGE_EXT.get(os.path.splitext(name)[1].lower())
         if pv and pv.get("data") and pv.get("media_type"):
             images.append({"media_type": str(pv["media_type"]), "data": str(pv["data"])})
-        elif mt:
+        elif mt and len(data) <= _IMAGE_PUSH_MAX:
+            # No preview (the runtime's canvas scale failed, or a script-made body): the original goes in only while
+            # it is small enough for the API; a bigger one is saved and named, not pushed (D1351).
             images.append({"media_type": mt, "data": base64.b64encode(data).decode("ascii")})
     if names:
         text = (text + "\n\n" if text else "") + f"Attached (in your FILES folder, use `upload` when a page needs them): {', '.join(names)}"

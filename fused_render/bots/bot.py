@@ -1887,11 +1887,12 @@ class Bot:
             return
         if via.get("kind") == "imessage" and is_super(self.meta):
             with self.lock:
-                busy_on_chat = self.running() and chan.is_local(getattr(self, "task_via", None))
+                busy_on_chat = self.running() and (getattr(self, "task_via", None) or {}).get("kind") != "imessage"
             if busy_on_chat:
-                # A task from the Mac (the chat, or a routine) may run unattended and its replies are never texted:
-                # a text must not steer it, and is not written as a user line (a later task's CONVERSATION SO FAR
-                # would present it as asked).
+                # A task not started by text (the chat, a routine, an app page, docs §13) may run unattended and
+                # its replies are never texted: a text must not steer it, and is not written as a user line (a
+                # later task's CONVERSATION SO FAR would present it as asked). Judged phone-vs-not, not is_local:
+                # an app task is not local either, yet a text steering it would be the same silent misroute.
                 self.emit("system", "Texted while busy on a task from the Mac; not applied.", via=None)
                 self.emit("error", "Busy with a task from the Mac; text again when it's done.", via=dict(via))
                 return
@@ -1941,7 +1942,7 @@ class Bot:
                           ignored_seq=uev.get("seq"))
                 self.emit("error", "Busy with another task; send again when it's done.", via=dict(via))
                 return
-            if texted and is_super(self.meta) and self.running() and chan.is_local(getattr(self, "task_via", None)):
+            if texted and is_super(self.meta) and self.running() and (getattr(self, "task_via", None) or {}).get("kind") != "imessage":
                 # receive()'s busy hold ran before the user line, and the `running` snapshot above is unlocked: a
                 # Mac task (the chat, or a routine firing from the scheduler thread) that started in either gap
                 # must still not take a text as an instruction (docs §5 posture by origin). Judged here, under the
