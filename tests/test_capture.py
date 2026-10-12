@@ -1407,6 +1407,18 @@ def test_the_state_route_reports_the_level_from_the_hook(backend, client, home,
     assert client.get(f"/api/capture/{cid}/state").json()["level"] == 0.0
 
 
+def test_state_answers_with_level_zero_when_the_backend_lookup_raises(
+        backend, client, home, monkeypatch):
+    cid = _audio(client)["id"]
+
+    def boom():
+        raise capture.Unsupported("no backend")
+
+    monkeypatch.setattr(capture, "_backend", boom)
+    body = capture.state(cid)
+    assert body["level"] == 0.0 and body["id"] == cid
+
+
 def test_state_answers_while_another_thread_holds_the_native_lock(backend,
                                                                   client, home):
     import threading

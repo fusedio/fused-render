@@ -732,10 +732,10 @@ def level_of(session: _Session) -> float:
 
     NOT under `_native_lock`: the meter is polled ten times a second and must not
     queue behind a `stop` that is finalising a file."""
-    hook = getattr(_backend(), "level", None)
-    if hook is None:
-        return 0.0
     try:
+        hook = getattr(_backend(), "level", None)
+        if hook is None:
+            return 0.0
         return max(0.0, min(1.0, float(hook(session.handle))))
     except Exception:                            # noqa: BLE001 - a meter
         return 0.0
@@ -744,10 +744,7 @@ def level_of(session: _Session) -> float:
 def state(cid: str) -> dict:
     """The small live reading the pill polls: time, paused, loudness."""
     session = _live(cid)
-    try:
-        level = level_of(session)
-    except Exception:                            # noqa: BLE001 - never fails a poll
-        level = 0.0
+    level = level_of(session)                    # never raises: a meter cannot fail a poll
     return {"id": session.id, "state": session.state,
             "paused": session.pauses.paused,
             "seconds": round(max(0.0, session.elapsed()), 2),
