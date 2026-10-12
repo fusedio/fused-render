@@ -3823,6 +3823,12 @@ def test_the_resolve_endpoint_keeps_a_model_and_holds_the_slot(client, fake_runn
         json={"capability": registry.TEXT_GENERATION, "keep": "org/b"},
         headers={"X-Fused": "1"})
     assert response.status_code == 200
+    # The full runtime comes back on this response, not just the load-start
+    # — the same shape `/unload` and `/release` already answer with, so a
+    # caller can publish it directly instead of waiting on a separate poll.
+    body = response.json()
+    assert body["model"] == "org/b"
+    assert len(body["conflicts"]) == 1 and body["conflicts"][0]["held"] is True
     _wait_ready("org/b")
 
     conflicts = supervisor.describe()["conflicts"]
@@ -3856,6 +3862,9 @@ def test_the_resolve_endpoint_with_keep_null_stops_both(client, fake_runner):
         json={"capability": registry.TEXT_GENERATION, "keep": None},
         headers={"X-Fused": "1"})
     assert response.status_code == 200
+    body = response.json()
+    assert body["resident"] is None
+    assert body["loaded"] == []
     assert supervisor.describe()["loaded"] == []
 
     refused = client.post("/api/ai", json={"model": "org/b", "prompt": "hi"},
