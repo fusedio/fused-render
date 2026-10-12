@@ -35,7 +35,7 @@ let pending: PendingPause | null = null;
 let timer: number | undefined;
 let polling = false;
 let displayed = 0;
-const BAR_MAX_PX = 26;
+const BAR_MAX_PX = 20;
 
 function drawIcon(i: PillInfo) {
   const art = iconFor(i);
