@@ -183,6 +183,75 @@ def test_available_true_with_pulse_server_naming_a_reachable_unix_socket(
         server.close()
 
 
+@_needs_af_unix
+def test_available_true_with_pulse_server_naming_a_bare_absolute_path(
+        monkeypatch, tmp_path):
+    # libpulse treats a bare absolute path (no `unix:` prefix) as a local
+    # unix socket too — not just the `unix:` form.
+    sock_path = str(tmp_path / "native")
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server.bind(sock_path)
+    server.listen(1)
+    try:
+        monkeypatch.setattr(_linux_audio, "_pasimple", lambda: fake_pasimple({}))
+        monkeypatch.setattr(_linux_audio, "_lib_loads", lambda: True)
+        monkeypatch.setenv("PULSE_SERVER", sock_path)
+        assert _linux_audio.available() is True
+    finally:
+        server.close()
+
+
+@_needs_af_unix
+def test_available_true_with_pulse_server_machine_id_prefixed_unix_path(
+        monkeypatch, tmp_path):
+    # An entry may carry an optional `{machine-id}` prefix ahead of the
+    # `unix:/path` form — it must be stripped, not treated as part of the
+    # path or as making the entry unrecognized (and so "remote").
+    sock_path = str(tmp_path / "native")
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server.bind(sock_path)
+    server.listen(1)
+    try:
+        monkeypatch.setattr(_linux_audio, "_pasimple", lambda: fake_pasimple({}))
+        monkeypatch.setattr(_linux_audio, "_lib_loads", lambda: True)
+        monkeypatch.setenv("PULSE_SERVER", "{deadbeef}unix:" + sock_path)
+        assert _linux_audio.available() is True
+    finally:
+        server.close()
+
+
+@_needs_af_unix
+def test_available_true_with_pulse_server_list_tcp_first_then_local_path(
+        monkeypatch, tmp_path):
+    # `$PULSE_SERVER` may be a whitespace-separated list of entries tried in
+    # order; a remote entry ahead of a local one must not make the whole
+    # thing "remote" — the first local entry anywhere in the list wins.
+    sock_path = str(tmp_path / "native")
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server.bind(sock_path)
+    server.listen(1)
+    try:
+        monkeypatch.setattr(_linux_audio, "_pasimple", lambda: fake_pasimple({}))
+        monkeypatch.setattr(_linux_audio, "_lib_loads", lambda: True)
+        monkeypatch.setenv(
+            "PULSE_SERVER", "tcp:example.org:4713 unix:" + sock_path)
+        assert _linux_audio.available() is True
+    finally:
+        server.close()
+
+
+@_needs_af_unix
+def test_unavailable_when_pulse_server_names_only_tcp_entries(monkeypatch):
+    # A server string with no local entry at all is still correctly reported
+    # as remote/unsupported, not probed.
+    monkeypatch.setattr(_linux_audio, "_pasimple", lambda: fake_pasimple({}))
+    monkeypatch.setattr(_linux_audio, "_lib_loads", lambda: True)
+    monkeypatch.setenv(
+        "PULSE_SERVER", "tcp:example.org:4713 tcp6:[::1]:4713")
+    assert _linux_audio.available() is False
+    assert "local" in _linux_audio.unavailable_reason()
+
+
 def test_probe_reports_audio_native_truthfully(monkeypatch):
     monkeypatch.setattr(_linux_audio, "available", lambda: True)
     probe = _linux.probe()

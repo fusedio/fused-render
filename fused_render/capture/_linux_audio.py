@@ -113,23 +113,59 @@ def _lib_loads() -> bool:
         return False
 
 
-def _remote_server() -> bool:
-    """True when `$PULSE_SERVER` names something other than a local unix
-    socket (a `tcp:host:port` form, most commonly) — this module only speaks
-    to a local PipeWire/pulse session, so a remote one is unsupported
-    regardless of whether it would actually answer."""
+def _local_unix_path(entry: str) -> str | None:
+    """The socket path when a single `$PULSE_SERVER` entry names a local unix
+    socket, else None. Per libpulse's server-string rules, an entry may carry
+    an optional `{machine-id}` prefix (stripped here, unused — this module
+    never needs to tell sessions apart by it); what is left names a local
+    socket only as `unix:/path` or a bare absolute `/path`. Anything else
+    (`tcp:`, `tcp4:`, `tcp6:`, a hostname) is remote."""
+    if entry.startswith("{"):
+        end = entry.find("}")
+        if end != -1:
+            entry = entry[end + 1:]
+    if entry.startswith("unix:"):
+        return entry[len("unix:"):]
+    if entry.startswith("/"):
+        return entry
+    return None
+
+
+def _first_local_entry() -> str | None:
+    """`$PULSE_SERVER` may be a whitespace-separated list of entries, tried
+    in order by libpulse itself; this returns the path of the first one that
+    names a local unix socket (see `_local_unix_path`), skipping remote
+    entries ahead of it rather than giving up at the first one. None when
+    `$PULSE_SERVER` is unset or every entry is remote."""
     pulse_server = os.environ.get("PULSE_SERVER")
-    return bool(pulse_server) and not pulse_server.startswith("unix:")
+    if not pulse_server:
+        return None
+    for entry in pulse_server.split():
+        path = _local_unix_path(entry)
+        if path is not None:
+            return path
+    return None
+
+
+def _remote_server() -> bool:
+    """True when `$PULSE_SERVER` is set but none of its entries name a local
+    unix socket (see `_first_local_entry`) — this module only speaks to a
+    local PipeWire/pulse session, so a server string with only remote
+    entries (`tcp:host:port`, most commonly) is unsupported regardless of
+    whether it would actually answer."""
+    pulse_server = os.environ.get("PULSE_SERVER")
+    return bool(pulse_server) and _first_local_entry() is None
 
 
 def _socket_path() -> str | None:
-    """Where a local session's socket should be: `$PULSE_SERVER`'s `unix:`
-    form when set, else the default `$XDG_RUNTIME_DIR/pulse/native`. None
-    when neither names anything (`$PULSE_SERVER` naming a remote server is
-    `_remote_server()`'s call, not this one's)."""
+    """Where a local session's socket should be: the first local unix-socket
+    entry in `$PULSE_SERVER` when one is set (see `_first_local_entry`), else
+    the default `$XDG_RUNTIME_DIR/pulse/native`. None when `$PULSE_SERVER` is
+    set but names no local entry (that is `_remote_server()`'s call, not this
+    one's) and `$XDG_RUNTIME_DIR` is unset."""
     pulse_server = os.environ.get("PULSE_SERVER")
     if pulse_server:
-        return pulse_server[len("unix:"):] if pulse_server.startswith("unix:") else None
+        return _first_local_entry()
     runtime = os.environ.get("XDG_RUNTIME_DIR")
     return os.path.join(runtime, "pulse", "native") if runtime else None
 
