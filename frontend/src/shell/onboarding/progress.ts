@@ -116,6 +116,8 @@ function merge(reply: OnboardingState): void {
     completed_at: reply.completed_at ?? cur.completed_at,
     dismissed_at: reply.dismissed_at ?? cur.dismissed_at,
     opened_at: reply.opened_at ?? cur.opened_at,
+    // Like the flags: a subscription only ever gains a value.
+    newsletter: reply.newsletter?.subscribed_at != null ? reply.newsletter : (cur.newsletter ?? reply.newsletter),
     stages,
   });
 }

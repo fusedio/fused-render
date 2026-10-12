@@ -348,7 +348,17 @@ export interface OnboardingState {
   // overruled server-side where the truth is cheap to see. Optional: an older
   // server does not send it. Rules live in shell/onboarding/progress.ts.
   stages?: Record<string, OnboardingStage>;
+  // The optional Updates step (newsletter). Not a stage — never in the meter.
+  // Optional: an older server does not send it.
+  newsletter?: OnboardingNewsletter;
   version: number;
+}
+
+export interface OnboardingNewsletter {
+  email: string | null;
+  subscribed_at: number | null;
+  /** False = recorded locally only (no provider wired yet, server-side). */
+  forwarded: boolean;
 }
 
 /** `n/a` = this machine has no such step; it leaves the denominator. */
@@ -391,6 +401,18 @@ export interface GitInstallResult {
 
 export function installGit(): Promise<OnboardingState & { install: GitInstallResult }> {
   return postJson<OnboardingState & { install: GitInstallResult }>("/api/onboarding/git/install", {});
+}
+
+/** The Updates step: what is stored, plus `suggested` — a prefill guess (the
+    global git `user.email`), or null. */
+export function getNewsletter(): Promise<OnboardingNewsletter & { suggested: string | null }> {
+  return getJson<OnboardingNewsletter & { suggested: string | null }>("/api/onboarding/newsletter");
+}
+
+/** Subscribe an address. Throws with the server's message on a bad address
+    (400) or an unreachable provider (502); replies with the full snapshot. */
+export function subscribeNewsletter(email: string): Promise<OnboardingState> {
+  return postJson<OnboardingState>("/api/onboarding/newsletter", { email });
 }
 
 export function setOnboardingStage(
