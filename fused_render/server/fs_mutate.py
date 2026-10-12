@@ -4,6 +4,7 @@ import logging
 import errno
 import json
 import os
+import re
 import shutil
 import stat as stat_mod
 import subprocess
@@ -1261,6 +1262,7 @@ def _fs_copy(body: dict, x_fused: str | None):
                 else:
                     os.remove(dst)
             shutil.copytree(src, dst)
+            _remint_copied_app(dst)
         else:
             # copy2 onto an existing dir would drop the file inside it; a
             # dir dst must be replaced wholesale to mean "become this file".
@@ -1270,6 +1272,48 @@ def _fs_copy(body: dict, x_fused: str | None):
     except OSError as e:
         return _error(f"cannot copy {src} -> {dst}: {e}")
     return _stat_payload(dst, os.path.isdir(dst))
+
+
+_APP_ID_TAG_RE = re.compile(
+    r"""(<meta\s[^>]*name\s*=\s*["']?fused-app-id["']?[^>]*content\s*=\s*["'])([^"']*)(["'])""",
+    re.IGNORECASE)
+
+
+def _remint_copied_app(dst: str) -> None:
+    """A copied APP FOLDER (explorer Duplicate) is a fork, not the same app:
+    give it its own `fused-app-id` (D884's parked follow-up, taken 2026-10-12)
+    and its own `.fused/meta.json` witness, so it never lists as a "2 copies"
+    duplicate of its source and never reads as a MOVE of it once the source
+    is uninstalled. Best-effort: a page that cannot take an id keeps the old
+    one, exactly as before."""
+    try:
+        from fused_render import app_fused_dir, app_id as app_identity, app_listing
+
+        entry = app_listing.app_entry(dst)
+        if not entry:
+            return
+        old = app_identity.app_id(entry)
+        if old is None:
+            return
+        fresh = app_identity.mint(os.path.basename(dst))
+        with open(entry, encoding="utf-8") as fh:
+            text = fh.read()
+        # The tag's own `content`, nothing else in the page: the old id may
+        # also appear in a title or a script, and those are the app's to keep.
+        head = text[:app_identity._META_SCAN_BYTES]
+        replaced, n = _APP_ID_TAG_RE.subn(lambda m: m.group(1) + fresh + m.group(3), head, count=1)
+        if n == 0:
+            return
+        with open(entry, "w", encoding="utf-8") as fh:
+            fh.write(replaced + text[app_identity._META_SCAN_BYTES:])
+        # The copied meta.json still names the SOURCE folder; drop it so the
+        # next render records this folder as the copy's own home.
+        try:
+            os.remove(app_fused_dir.meta_path(dst))
+        except OSError:
+            pass
+    except Exception:  # noqa: BLE001 — a copy that keeps its id is the old behaviour
+        logger.debug("could not re-mint the copied app's id at %s", dst, exc_info=True)
 
 
 def _note_index_mutation(result, *paths: str | None) -> None:
@@ -1383,9 +1427,41 @@ def _compress_dest(body: dict) -> str | None:
 
 @router.post("/api/fs/delete")
 def api_fs_delete(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    path = body.get("path")
+    was_app = _is_app_dir(path)
     result = _fs_delete(body, x_fused)
-    _note_index_mutation(result, body.get("path"))
+    _note_index_mutation(result, path)
+    if was_app and isinstance(result, dict):
+        # The explorer's Delete on an app folder is an uninstall by another
+        # door: the stores forget it the same way (app_state_remove), the
+        # tombstone goes down for a surviving duplicate, and the hub snapshot
+        # drops so the card is gone on the next fetch.
+        _forget_deleted_app(path)
     return result
+
+
+def _is_app_dir(path: object) -> bool:
+    if not isinstance(path, str) or not os.path.isabs(path):
+        return False
+    try:
+        from fused_render import app_listing
+
+        return os.path.isdir(path) and app_listing.app_entry(path) is not None
+    except OSError:
+        return False
+
+
+def _forget_deleted_app(path: str) -> None:
+    try:
+        from fused_render import app_catalog, app_state_remove, exported_apps
+        from fused_render.server.routers import apps as apps_router
+
+        app_catalog.tombstone(path, None)
+        app_state_remove.prune_stores(path)
+        apps_router._reset_snapshot()
+        exported_apps.reset_cache()
+    except Exception:  # noqa: BLE001 — the delete already happened
+        logger.exception("could not forget the deleted app at %s", path)
 
 @router.post("/api/fs/trash-move")
 def api_fs_trash_move(body: dict = Body(...), x_fused: str | None = Header(default=None)):

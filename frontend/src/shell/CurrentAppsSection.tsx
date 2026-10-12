@@ -43,6 +43,7 @@ import {
 import { navigate, navigateUrl } from "@platform/lib/router";
 import { notify } from "@platform/lib/notifications";
 import { exportAppFileOnly, openShareApp } from "@platform/lib/share-app";
+import { openUninstallApp } from "@platform/lib/uninstall-app";
 import { useAppSharingFeature } from "@platform/lib/share-app-flag";
 import ContextMenu, { type MenuEntry } from "@platform/ui/ContextMenu";
 import { MenuIcons } from "@platform/ui/MenuIcons";
@@ -788,8 +789,7 @@ export default function CurrentAppsSection() {
     // The ✕'s gesture, by name: off the desk, tasks archived with it.
     {
       label: "Hide from projects",
-      icon: MenuIcons.trash,
-      danger: true,
+      icon: MenuIcons.filter,
       onClick: () => {
         removeCurrentApp(app.path)
           .catch(() => {})
@@ -798,6 +798,14 @@ export default function CurrentAppsSection() {
             refetch();
           });
       },
+    },
+    // Off EVERY list and, by kind, off disk — the shared dialog says which
+    // first (UninstallAppModal, same entry as the app card menu).
+    {
+      label: "Uninstall…",
+      icon: MenuIcons.trash,
+      danger: true,
+      onClick: () => openUninstallApp({ path: app.path, name: app.name }),
     },
   ];
 

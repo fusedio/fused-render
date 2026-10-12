@@ -19,6 +19,7 @@ import { openApp } from "./appEntry";
 import { exportAppFileOnly, openShareApp } from "./share-app";
 import { appSharingEnabled } from "./share-app-flag";
 import { copyToClipboard } from "./clipboard";
+import { openUninstallApp } from "./uninstall-app";
 import { navigate } from "./router";
 import { notify } from "./notifications";
 import { MenuIcons } from "@platform/ui/MenuIcons";
@@ -97,6 +98,16 @@ export function appCardMenu(app: AppInfo): MenuEntry[] {
           if (ok) notify({ title: "Path copied", tone: "info" });
         });
       },
+    },
+    "separator",
+    // Off every list and, by kind, off disk — the dialog (UninstallAppModal)
+    // says which before anything happens. The same entry on the sidebar's
+    // Projects menu and the bots app menu.
+    {
+      label: "Uninstall…",
+      icon: MenuIcons.trash,
+      danger: true,
+      onClick: () => openUninstallApp({ path: app.path, name: app.title || app.name }),
     },
   ];
 }

@@ -440,6 +440,11 @@
   white-space: nowrap;
 }
 
+.app-pcard-dupes {
+  flex: 0 0 auto;
+  color: var(--warning, #b7791f);
+}
+
 .app-pcard-ago {
   flex: 0 0 auto;
   margin-left: auto;

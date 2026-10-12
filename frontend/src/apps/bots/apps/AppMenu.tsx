@@ -9,6 +9,7 @@ import { errMsg, showBanner } from "../state/store";
 import { buildsOn, newAppTask } from "../builds/builds";
 import { appEmbedBase, appOpenUrl, appStateParams, closeApps, copyAppState, getViewedApp, viewFrameSrc } from "./apps";
 import { showAppBeside } from "./side";
+import { openUninstallApp } from "@platform/lib/uninstall-app";
 
 const mi = (d: ReactNode) => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{d}</svg>
@@ -20,6 +21,7 @@ const AMI = {
   tab: mi(<><path d="M14 4h6v6" /><path d="M20 4 10 14" /><path d="M18 13v5a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h5" /></>),
   task: mi(<path d="M12 5v14M5 12h14" />),
   finder: mi(<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />),
+  uninstall: mi(<><path d="M3 6h18" /><path d="M8 6V4h8v2" /><path d="M19 6l-1 14H6L5 6" /><path d="M10 11v6M14 11v6" /></>),
 };
 type Act = keyof typeof AMI;
 
@@ -33,6 +35,8 @@ function run(a: Act) {
     case "tab": window.open(appOpenUrl(app.dir, params), "_blank", "noopener"); break;
     case "finder": api.revealApp(app.dir).catch((e) => showBanner("Could not open Finder: " + errMsg(e))); break;
     case "task": void newAppTask(app); break;
+    // The shell's shared uninstall dialog (UninstallAppModal): off every list and, by kind, off disk.
+    case "uninstall": closeApps(); openUninstallApp({ path: app.dir, name: app.name || app.folder || app.dir }); break;
   }
 }
 
@@ -63,6 +67,7 @@ export function AppMenu({ anchor, onClose }: { anchor: DOMRect | null; onClose: 
         {item("tab", "Open in tab")}
         {item("finder", "Open in Finder")}
         {buildsOn() ? <><hr />{item("task", "New task…")}</> : null}
+        <hr />{item("uninstall", "Uninstall…")}
       </>) : null}
     </div>
   );

@@ -833,7 +833,11 @@ def clone_target(fused_path: str) -> dict:
     # the file's id, so the button offers to open it instead of cloning a
     # second copy beside it. Slug presence stays the answer for files with
     # no id (exports before the tag existed).
-    by_id = _local_app_with_id(app_id) if app_id else None
+    # The WHOLE workspace, not `local/` alone: a new app is created under
+    # `app/`, and a probe that only looked here offered to clone the user's
+    # own export beside its source (the duplicate the uninstall work started
+    # from, 2026-10-12).
+    by_id = _workspace_app_with_id(app_id) if app_id else None
     if by_id is not None:
         dest = by_id
     return {
@@ -846,16 +850,19 @@ def clone_target(fused_path: str) -> dict:
     }
 
 
-def _local_app_with_id(app_id: str) -> str | None:
-    """The folder directly under ``clone_dir()`` whose entry page declares
-    ``app_id``, or None. One 4 KiB head read per local app — bounded by the
-    number of apps the user keeps in ``local/``, so it stays fit for the
-    unguarded GET probe (D397). Never joins the id into a path."""
+def _workspace_app_with_id(app_id: str) -> str | None:
+    """The workspace folder whose entry page declares ``app_id``, or None.
+    `local/` is checked first (one listdir, the common case for a clone) and
+    then the whole workspace walk (app_catalog) — one 4 KiB head read per
+    app, bounded by the workspace, still fit for the unguarded GET probe
+    (D397). Never joins the id into a path."""
+    from fused_render import app_catalog
+
     local = clone_dir()
     try:
         names = sorted(os.listdir(local))
     except OSError:
-        return None
+        names = []
     for n in names:
         if n.startswith("."):
             continue
@@ -868,7 +875,7 @@ def _local_app_with_id(app_id: str) -> str | None:
             continue
         if entry and app_identity.app_id(entry) == app_id:
             return d
-    return None
+    return app_catalog.workspace_app_with_id(app_id)
 
 
 def clone_app_file(fused_path: str) -> dict:

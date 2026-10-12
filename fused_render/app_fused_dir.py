@@ -192,6 +192,15 @@ def _after_move(app_dir: str, recorded: str) -> None:
     if os.path.isdir(recorded):
         logger.info("%s still exists — a copy, not a move; record left intact", recorded)
         return
+    from fused_render import app_catalog
+
+    if app_catalog.is_tombstoned(recorded):
+        # The recorded folder was UNINSTALLED, not moved: this is the
+        # surviving copy of a duplicate pair, and the original's desk row,
+        # bookmarks and sessions were pruned with it on purpose. Settling it
+        # as a move would hand this copy whatever prune missed.
+        logger.info("%s was uninstalled — %s is a copy, not a move", recorded, app_dir)
+        return
     from fused_render import app_state_move, claude_session_move
 
     new = os.path.abspath(app_dir)

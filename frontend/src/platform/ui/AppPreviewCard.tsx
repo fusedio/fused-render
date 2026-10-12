@@ -273,6 +273,14 @@ export function AppPreviewCard({
               {app.tag}/{app.name}
             </span>
             {badge && <span className="app-pcard-name">{badge}</span>}
+            {/* Another folder carries this app's id (app_catalog `dupes`): a
+                clone beside its source, an explorer duplicate. Shown, never
+                merged — the user picks which copy to uninstall. */}
+            {app.dupes && app.dupes.length > 0 && (
+              <span className="app-pcard-name app-pcard-dupes" title={app.dupes.join("\n")}>
+                {app.dupes.length + 1} copies
+              </span>
+            )}
             {ago && <span className="app-pcard-ago">{ago}</span>}
           </span>
         </span>

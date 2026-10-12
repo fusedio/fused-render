@@ -2438,7 +2438,64 @@ export interface AppInfo {
   // must not offer folder actions (open-folder, export) on it, and it
   // contributes no Folders chip (repoChips). Undefined for every folder-shaped
   // app and on older backends.
-  kind?: "appfile";
+  kind?: "appfile" | AppKind;
+  // The entry page's declared identity (`<meta name="fused-app-id">`), or
+  // null. Two rows with one id are two FOLDERS of one app — a clone beside
+  // its source, an explorer duplicate — and `dupes` names the others, so a
+  // card can say "2 copies" and the uninstall dialog can show which. Both
+  // undefined on backends that predate app_catalog.
+  app_id?: string | null;
+  dupes?: string[];
+}
+
+// The uninstall policy class the server assigned the row (app_catalog.kind_for).
+export type AppKind = "own-repo" | "monorepo" | "workspace" | "linked" | "appfile" | "showcase";
+
+export type UninstallMode = "trash" | "delete" | "unlink" | "forget" | "delete_file" | "hide";
+
+// What uninstalling an app costs — the confirm dialog's numbers.
+export interface UninstallPreflight {
+  path: string;
+  name: string;
+  exists: boolean;
+  kind: AppKind;
+  app_id: string | null;
+  mode: UninstallMode;
+  modes: UninstallMode[];
+  trash_supported: boolean;
+  // `<app>/.fused/data` — the one thing a folder delete loses for good.
+  data_bytes: number;
+  data_files: number;
+  // Changed paths git reports for the app, null when no repo owns it.
+  uncommitted: number | null;
+  // Tasks under the folder (archived by the uninstall, not erased).
+  tasks: number;
+  // Bot builds whose folder this is.
+  bots: string[];
+  // Other folders carrying the same app id.
+  dupes: string[];
+}
+
+export function getUninstallPreflight(path: string): Promise<UninstallPreflight> {
+  return getJson<UninstallPreflight>(
+    `/api/apps/uninstall/preflight?path=${encodeURIComponent(path)}`,
+  );
+}
+
+export interface UninstallResult {
+  ok: boolean;
+  path: string;
+  kind: AppKind;
+  mode: UninstallMode;
+  removed_files: boolean;
+  trashed_to?: string;
+  archived?: number;
+}
+
+/** Remove the app from every list — and, by `mode`, from disk. 501 means
+ *  the OS has no bin for this path and nothing was removed: offer `delete`. */
+export function uninstallApp(path: string, mode?: UninstallMode): Promise<UninstallResult> {
+  return postJson<UninstallResult>("/api/apps/uninstall", mode ? { path, mode } : { path });
 }
 
 export function getApps(): Promise<{ apps: AppInfo[] }> {

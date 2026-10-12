@@ -65,7 +65,7 @@ from typing import Literal
 from fastapi import APIRouter, Body, File, Form, Header, UploadFile
 from fastapi.responses import JSONResponse
 
-from fused_render import app_listing, fused_api_version, schedule
+from fused_render import app_catalog, app_listing, fused_api_version, schedule
 from fused_render.server.common import _error, _require_fused
 from fused_render.shell.prefs import VALID_DEFAULT_MODELS
 from fused_render.shell.seed import fused_dir
@@ -96,7 +96,7 @@ def _workspace_apps() -> list[dict]:
     opened = _opened_at_by_app()
     for a in apps:
         a["opened_at"] = opened.get(_workspace_rel(root, a["path"]))
-    return apps
+    return app_catalog.annotate(apps)
 
 
 # -- The paged listing's snapshot -----------------------------------------
@@ -149,6 +149,10 @@ def _discovery_rows(fresh: bool) -> list[dict]:
             r["opened_at"] = opened.get(_workspace_rel(root, r["path"]))
         rows.extend(registered_apps.registered_apps())
         rows.extend(exported_apps.exported_apps())
+        # Identity, kind and duplicates on every row, hidden rows dropped
+        # (app_catalog): the one place the hub learns that two folders are
+        # one app.
+        rows = app_catalog.annotate(rows)
         _snapshot = (root, now, rows)
         return rows
 
@@ -228,6 +232,7 @@ def api_apps(offset: int = 0, limit: int | None = None, tag: str | None = None,
     from fused_render import exported_apps
 
     apps.extend(exported_apps.exported_apps())
+    apps = app_catalog.annotate(apps)
     apps.sort(key=lambda a: (a["tag"].lower(), a["name"].lower()))
     return {"apps": apps}
 
@@ -321,6 +326,7 @@ def recent_apps(limit: int) -> list[dict]:
     # Opened .fused files (D396): their recents store is already newest-first
     # and every entry carries openedAt, so they merge exactly as the other two.
     recent.extend(exported_apps.recent_exported_apps(limit))
+    recent = app_catalog.annotate(recent)
     recent.sort(
         key=lambda a: (-_app_recency(a), a["tag"].lower(), a["name"].lower())
     )

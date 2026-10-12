@@ -56,6 +56,7 @@ import NotificationHost from "@platform/ui/NotificationHost";
 import RestartOverlay from "@platform/ui/RestartOverlay";
 import UpdateNotifier from "@platform/ui/UpdateNotifier";
 import { ShareAppHost } from "@platform/ui/ShareAppModal";
+import { UninstallAppHost } from "@platform/ui/UninstallAppModal";
 import EditAppFileBoot from "@shell/EditAppFileBoot";
 import FetchAppFileBoot from "@shell/FetchAppFileBoot";
 import { ShareFileHost } from "@platform/ui/ShareFileModal";
@@ -1220,6 +1221,7 @@ export default function App({ config }: { config: Config }) {
           explorer kebab): the menu entries cannot own a dialog, so they post
           a request to platform/lib/share-app and this host renders it. */}
       <ShareAppHost />
+      <UninstallAppHost />
       {/* Same shape, for any file the Fused catalog can render rather than
           just a .fused app — platform/lib/share-file's openShareFile store. */}
       <ShareFileHost />

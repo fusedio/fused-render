@@ -163,6 +163,29 @@ def _note_hub_opened(cfg) -> None:
                      exc_info=True)
 
 
+def reset_cache() -> None:
+    """Drop the index-query cache so the next listing re-queries — the
+    uninstall path's hook, so a forgotten `.fused` is gone on the next fetch
+    rather than after the TTL."""
+    global _cache
+    with _cache_lock:
+        _cache = None
+
+
+def forget(path: str) -> bool:
+    """Drop the ``.fused`` at `path` from the recents store. True when it was
+    there. The hub's index-discovered row is hidden by app_catalog.hide, which
+    the uninstall router writes beside this."""
+    path = os.path.abspath(path)
+    key = os.path.normcase(path)
+    entries = read_recents()
+    kept = [e for e in entries if os.path.normcase(os.path.abspath(e["path"])) != key]
+    if len(kept) == len(entries):
+        return False
+    storage.write_json(_recents_path(), {"entries": kept})
+    return True
+
+
 def _indexed_fused_files(cfg) -> list[tuple[str, float]]:
     """(path, mtime) for every indexed ``.fused`` file, TTL-cached. Any
     index condition that prevents an answer — never built, unreadable,
