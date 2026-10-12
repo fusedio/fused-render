@@ -165,6 +165,29 @@ def test_refuse_blocks_system_both_when_unavailable(monkeypatch):
     assert _linux.refuse("audio", {"audio": "mic"}) is None
 
 
+def test_refuse_blocks_a_chosen_microphone_when_native(monkeypatch):
+    monkeypatch.setattr(_linux_audio, "available", lambda: True)
+    why = _linux.refuse("audio", {"audio": "mic", "device": "usb-1"})
+    assert why is not None
+    assert "microphone" in why
+    assert "system sound settings" in why
+    # "system"/"both" refuse on the unavailability check first, but a device
+    # on them is just as unsupported once native capture is reachable.
+    assert _linux.refuse("audio", {"audio": "both", "device": "usb-1"}) is not None
+    # No device named: nothing to refuse.
+    assert _linux.refuse("audio", {"audio": "mic"}) is None
+    assert _linux.refuse("audio", {"audio": "mic", "device": None}) is None
+
+
+def test_refuse_ignores_device_when_falling_back_to_sink(monkeypatch):
+    # Unavailable native capture means "mic" runs through `_sink`, which does
+    # honour a chosen `device` (the browser's own picker) — so this refusal
+    # must not fire in that case.
+    monkeypatch.setattr(_linux_audio, "available", lambda: False)
+    monkeypatch.setattr(_linux_audio, "unavailable_reason", lambda: "no pipewire here")
+    assert _linux.refuse("audio", {"audio": "mic", "device": "usb-1"}) is None
+
+
 def test_ext_refuse_start_audio_agree_despite_availability_flip(monkeypatch):
     """`ext()`, `refuse()` and `start_audio()` must not each probe
     `_linux_audio.available()` on their own: if the PipeWire/pulse socket
