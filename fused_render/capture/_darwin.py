@@ -151,7 +151,7 @@ def probe() -> dict:
     # Screen Recording route below it (whose grant IS preflightable).
     if record_old:
         system_audio = {"available": False, "reason": record_old}
-    elif _os_version() >= (14, 2):
+    elif _use_tap():
         system_audio = {"available": True, "granted": None, "reason": None}
     else:
         system_audio = {"available": True, "granted": granted,

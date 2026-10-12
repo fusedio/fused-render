@@ -1049,6 +1049,20 @@ def test_darwin_probe_system_audio_grant_shape(monkeypatch):
 
 
 @_darwin_only
+def test_darwin_probe_forced_sck_on_14_2_reports_screen_grant(monkeypatch):
+    from fused_render.capture import _darwin
+
+    monkeypatch.setenv(_darwin.FORCE_SCK_AUDIO, "1")
+    monkeypatch.setattr(_darwin, "_os_version", lambda: (14, 5))
+    monkeypatch.setattr(_darwin.platform, "mac_ver", lambda: ("14.5", "", ""))
+    monkeypatch.setattr(_darwin, "_screen_granted", lambda: False)
+    sa = _darwin.probe()["systemAudio"]
+    assert sa["granted"] is False and "Screen Recording" in sa["reason"]
+    monkeypatch.setattr(_darwin, "_screen_granted", lambda: True)
+    assert _darwin.probe()["systemAudio"]["granted"] is True
+
+
+@_darwin_only
 def test_darwin_tap_handle_dispatch_and_warning(monkeypatch):
     from fused_render.capture import _darwin, _darwin_tap
 
