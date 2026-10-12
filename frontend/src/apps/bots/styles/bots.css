@@ -488,7 +488,15 @@ div.bots-page.sideapp .preview > :is(.shotwrap, .toast, .cap, .info) { display: 
 /* Beside Pause / Stop: the bot's state and how long since its last step (components/Composer.tsx). */
 .bots-page .composer .ctl .stat { min-width: 0; display: inline-flex; align-items: center; gap: 7px; font-size: 12px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 3px 4px; margin-right: auto; }
 .bots-page .composer .ctl .stat .dot { width: 8px; height: 8px; }
-.bots-page .composer .row { display: flex; flex-direction: column; gap: 6px; background: var(--card); border-radius: 28px; padding: 7px; box-shadow: inset 0 0 0 1px var(--line); transition: box-shadow .15s; }
+.bots-page .composer .row { position: relative; display: flex; flex-direction: column; gap: 6px; background: var(--card); border-radius: 28px; padding: 7px; box-shadow: inset 0 0 0 1px var(--line); transition: box-shadow .15s; }
+/* The slash-command popup (Composer.tsx, lib/commands): a card floating above the row; the highlighted row follows ↑↓ and hover. */
+.bots-page .composer .cmds { position: absolute; left: 0; right: 0; bottom: calc(100% + 8px); z-index: 5; display: flex; flex-direction: column; gap: 2px; padding: 6px; background: var(--card); border-radius: 16px; box-shadow: var(--shadow), 0 0 0 1px var(--line); }
+.bots-page .composer .cmds button { display: flex; align-items: baseline; gap: 10px; width: 100%; padding: 8px 12px; border-radius: 10px; background: transparent; color: var(--text); font-size: 13px; text-align: left; cursor: pointer; }
+.bots-page .composer .cmds button.sel { background: var(--raised); }
+.bots-page .composer .cmds button code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--text); flex: none; }
+.bots-page .composer .cmds button b { font-weight: 500; flex: none; }
+.bots-page .composer .cmds button span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--muted); }
+.bots-page .composer .cmds button.off b, .bots-page .composer .cmds button.off code { color: var(--muted); }
 .bots-page .composer .line { display: flex; gap: 6px; align-items: flex-end; }
 /* Reply: the message being answered sits above the input until sent or cancelled. */
 .bots-page .composer .quote { display: flex; align-items: center; gap: 8px; background: var(--raised); border-radius: 20px; padding: 7px 8px 7px 14px; font-size: 12px; color: var(--muted); }
