@@ -250,7 +250,11 @@ def apps_open_in_home() -> bool:
     """Whether the desktop app (macOS and Linux) opens an app inside the Home
     window's explorer, like the browser shell, instead of in a window of its
     own (default OFF — opt-in). Read at open time by the click route, the
-    launcher and the window hooks; there is no live hook to apply."""
+    launcher and the window hooks; there is no live hook to apply.
+
+    Shown as "Single window experience". On macOS it also governs the Dock
+    icon click: ON, it brings back the window last used (an app's own run
+    window excepted) instead of always going to Home (`WindowManager.reopen`)."""
     return read_prefs().get("apps_open_in_home") is True
 
 
@@ -704,7 +708,9 @@ def _prefs_response() -> dict:
         # the macOS app (the hook is installed), not a `fused-render serve`.
         "menubar": _menubar_state(),
         # Apps open inside the Home window's explorer instead of per-app
-        # native windows (desktop app only; opt-in, default off).
+        # native windows (desktop app only; opt-in, default off). This is the
+        # "Single window experience" pref; on macOS it also makes a Dock click
+        # bring back the last-used window instead of Home.
         "apps_open_in_home": {"enabled": apps_open_in_home()},
         # A task on the Tasks page opens in a side panel beside the list —
         # always, since 2026-09-20 (`task_peek_enabled`). Still sent, because

@@ -1701,7 +1701,9 @@ def main() -> None:
     # app is already running. rumps's delegate doesn't implement it, so without
     # this patch a Dock click does nothing. The click raises the Home window,
     # opening one only when none is open (a browser tab only when the
-    # window manager failed to build); if the server is still
+    # window manager failed to build) — or, with "Single window experience"
+    # on (`prefs.apps_open_in_home`), the window last used instead
+    # (`WindowManager.reopen` picks); if the server is still
     # booting, queue the home URL on the same pending list the bootstrap
     # flushes.
     # Must return a BOOL — returning None here breaks the pyobjc bridge.
