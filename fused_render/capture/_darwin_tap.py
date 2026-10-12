@@ -69,7 +69,7 @@ import CoreAudio as CA
 import Foundation
 import objc
 
-from fused_render.capture import _darwin_mux
+from fused_render.capture import _darwin_mux, _pause
 from fused_render.capture._darwin import _AAC, _QUALITY_HIGH
 from fused_render.capture._mixdown import add_clip_into, upmix_mono_to_stereo
 
@@ -132,6 +132,13 @@ class TapHandle:
         self.fmt = None
         self._lock = threading.Lock()
         self._closing = False
+        # Pause: the IOProc keeps running (stopping the device would tear the
+        # tap down), the callback just discards what arrives.
+        self.paused = False
+        # The pill's meter: the callback only computes a level while somebody
+        # asked for one in the last 2 s, so an unwatched recording pays nothing.
+        self.last_level = 0.0
+        self.level_polled_at = 0.0
 
     def note_error(self, message: str) -> None:
         with self._lock:
@@ -148,7 +155,10 @@ class TapHandle:
 
     def on_audio(self, data) -> None:
         """One IOProc callback. `data` is the input `AudioBufferList`."""
+        if self.paused:
+            return
         if not self.both:
+            self._meter(data[0].mData)
             if not self.heard_system:
                 self.heard_system = any(data[0].mData.cast("f"))
             buf = AVF.AVAudioPCMBuffer.alloc() \
@@ -173,6 +183,7 @@ class TapHandle:
         mic_bytes = mic_bytes[:frames * 8]
         mix = bytearray(tap_bytes)
         add_clip_into(mix, mic_bytes)
+        self._meter(mix)
         buf = AVF.AVAudioPCMBuffer.alloc().initWithPCMFormat_frameCapacity_(
             self.fmt, frames)
         buf.setFrameLength_(frames)
@@ -182,6 +193,15 @@ class TapHandle:
         # assignment fails on a format mismatch and reading it segfaults.)
         buf.mutableAudioBufferList()[0].mData[:len(mix)] = bytes(mix)
         self.write(buf)
+
+
+    def _meter(self, data) -> None:
+        if time.monotonic() - self.level_polled_at >= 2.0:
+            return
+        try:
+            self.last_level = _pause.amp_to_level(_pause.rms_f32(data))
+        except Exception:                                # noqa: BLE001
+            pass
 
 
 def _first_two(data: bytes, channels: int) -> bytes:
@@ -356,6 +376,22 @@ def stop(handle: TapHandle) -> None:
         raise RuntimeError(handle.error)
 
 
+def pause(handle: TapHandle) -> None:
+    """Stop writing; the tap and the aggregate device keep running."""
+    handle.paused = True
+    handle.last_level = 0.0
+
+
+def resume(handle: TapHandle) -> None:
+    handle.paused = False
+
+
+def level(handle: TapHandle) -> float:
+    """0..1 loudness of the most recent buffer; asking turns metering on."""
+    handle.level_polled_at = time.monotonic()
+    return 0.0 if handle.paused else handle.last_level
+
+
 def failure(handle: TapHandle) -> str | None:
     """The callback or write error this recording has ALREADY died of."""
     return handle.error
@@ -364,7 +400,9 @@ def failure(handle: TapHandle) -> str | None:
 def warning(handle: TapHandle) -> str | None:
     """A sentence when a recording that ran long enough heard no system audio.
 
-    A warning, not a failure: see the header. Reads state; changes none."""
+    A warning, not a failure: see the header. Reads state; changes none. Paused
+    time counts toward the heard-nothing timer (a known limitation: a recording
+    paused before anything played can warn)."""
     if handle.heard_system or not handle.started_at:
         return None
     if time.monotonic() - handle.started_at < _WARN_AFTER_S:

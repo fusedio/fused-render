@@ -169,3 +169,192 @@ def test_amp_to_level_is_monotonic_and_bounded():
     assert levels == sorted(levels)
     assert levels[0] == 0.0 and levels[-1] == 1.0
     assert amp_to_level(10 ** (-25 / 20)) == pytest.approx(0.5)
+
+
+# --------------------------------------------------- the macOS backends (Mac)
+
+_darwin_only = pytest.mark.skipif(sys.platform != "darwin",
+                                  reason="the macOS backend")
+
+
+@_darwin_only
+def test_a_paused_tap_discards_its_callbacks_and_resumes():
+    from fused_render.capture import _darwin_tap
+
+    handle = _darwin_tap.TapHandle("/tmp/x.m4a", False)
+    wrote = []
+    handle.write = wrote.append
+
+    class Buf:
+        mData = memoryview(f32(0.5, 0.5))
+
+    _darwin_tap.pause(handle)
+    handle.on_audio([Buf()])                       # returns before touching AVF
+    assert wrote == [] and not handle.heard_system
+    assert _darwin_tap.level(handle) == 0.0
+    _darwin_tap.resume(handle)
+    assert handle.paused is False
+
+
+@_darwin_only
+def test_the_tap_meter_only_runs_while_somebody_polls():
+    from fused_render.capture import _darwin_tap
+
+    handle = _darwin_tap.TapHandle("/tmp/x.m4a", False)
+    handle._meter(f32(0.5, 0.5))
+    assert handle.last_level == 0.0                # never polled: no work
+    assert _darwin_tap.level(handle) == 0.0        # this poll arms the meter
+    handle._meter(f32(0.5, 0.5))
+    assert _darwin_tap.level(handle) == pytest.approx(amp_to_level(0.5))
+    _darwin_tap.pause(handle)
+    assert _darwin_tap.level(handle) == 0.0
+
+
+@_darwin_only
+def test_darwin_can_pause_dispatches_by_handle_kind():
+    from fused_render.capture import _darwin, _darwin_mux, _darwin_tap
+
+    assert _darwin.can_pause(_darwin._AudioHandle(object(), "/tmp/x.m4a"))
+    assert _darwin.can_pause(_darwin_tap.TapHandle("/tmp/x.m4a", False))
+    assert _darwin.can_pause(
+        _darwin_mux.MuxHandle("/tmp/x.m4a", "system", audio_only=True))
+    assert not _darwin.can_pause(_darwin_mux.MuxHandle("/tmp/x.mp4", "system"))
+    assert not _darwin.can_pause(object())
+    with pytest.raises(RuntimeError, match="screen recordings"):
+        _darwin.pause(_darwin_mux.MuxHandle("/tmp/x.mp4", "system"))
+    with pytest.raises(RuntimeError, match="screen recordings"):
+        _darwin.resume(object())
+
+
+@_darwin_only
+def test_darwin_pause_resume_level_on_the_microphone_recorder():
+    from fused_render.capture import _darwin
+
+    class Recorder:
+        def __init__(self):
+            self.calls = []
+            self.record_ok = True
+            self.power = -25.0
+
+        def pause(self):
+            self.calls.append("pause")
+
+        def record(self):
+            self.calls.append("record")
+            return self.record_ok
+
+        def updateMeters(self):
+            self.calls.append("meters")
+
+        def averagePowerForChannel_(self, ch):
+            return self.power
+
+    rec = Recorder()
+    handle = _darwin._AudioHandle(rec, "/tmp/x.m4a")
+    assert _darwin.level(handle) == pytest.approx(0.5)
+    _darwin.pause(handle)
+    assert handle.paused and rec.calls[-1] == "pause"
+    assert _darwin.level(handle) == 0.0
+    rec.record_ok = False
+    with pytest.raises(RuntimeError, match="did not resume"):
+        _darwin.resume(handle)
+    assert handle.paused                          # still paused: it did not resume
+    rec.record_ok = True
+    _darwin.resume(handle)
+    assert not handle.paused
+
+    def boom(ch):
+        raise RuntimeError("no meters")
+
+    rec.averagePowerForChannel_ = boom
+    assert _darwin.level(handle) == 0.0           # never raises
+
+
+@_darwin_only
+def test_darwin_dispatch_reaches_the_tap_and_mux_hooks(monkeypatch):
+    from fused_render.capture import _darwin, _darwin_mux, _darwin_tap
+
+    tap = _darwin_tap.TapHandle("/tmp/x.m4a", False)
+    _darwin.pause(tap)
+    assert tap.paused
+    _darwin.resume(tap)
+    assert not tap.paused
+    mux = _darwin_mux.MuxHandle("/tmp/x.m4a", "both", audio_only=True)
+    mux.ring.push(b"\x00" * 64)
+    _darwin.pause(mux)
+    assert mux.shifter.paused and len(mux.ring) == 0       # stale mic dropped
+    assert _darwin.level(mux) == 0.0
+    _darwin.resume(mux)
+    assert not mux.shifter.paused
+
+
+@_darwin_only
+def test_a_paused_mux_discards_audio_before_the_writer():
+    from fused_render.capture import _darwin_mux
+
+    mux = _darwin_mux.MuxHandle("/tmp/x.m4a", "system", audio_only=True)
+    appended = []
+
+    class Input:
+        def isReadyForMoreMediaData(self):
+            return True
+
+        def appendSampleBuffer_(self, sbuf):
+            appended.append(sbuf)
+            return True
+
+    mux.audio_input = Input()
+    mux.shifter.pause()
+    mux._append(mux.audio_input, object(), video=False)   # would blow up if reached
+    mux.on_system_audio(object())                          # returns before anything
+    mux.on_mic(object())
+    assert appended == [] and not mux._started
+
+
+def _real_audio_buffer(start_s: float, frames: int = 256, rate: int = 44100):
+    """A genuine CMSampleBuffer of mono float32 silence at `start_s`.
+
+    Built through CoreMedia (not faked) because the thing being proved is how
+    pyobjc marshals the timing-info array in `_shifted`."""
+    import CoreMedia as CM
+    from CoreAudio import AudioStreamBasicDescription
+
+    asbd = AudioStreamBasicDescription(float(rate), 0x6C70636D, 0x29, 4, 1, 4, 1,
+                                       32, 0)
+    status, fmt = CM.CMAudioFormatDescriptionCreate(None, asbd, 0, None, 0, None,
+                                                    None, None)
+    assert status == 0
+    size = frames * 4
+    status, block = CM.CMBlockBufferCreateWithMemoryBlock(
+        None, None, size, None, None, 0, size,
+        CM.kCMBlockBufferAssureMemoryNowFlag, None)
+    assert status == 0
+    CM.CMBlockBufferReplaceDataBytes(bytes(size), block, 0, size)
+    pts = CM.CMTimeMake(int(start_s * rate), rate)
+    status, sbuf = CM.CMAudioSampleBufferCreateReadyWithPacketDescriptions(
+        None, block, fmt, frames, pts, None, None)
+    assert status == 0
+    return sbuf
+
+
+@_darwin_only
+def test_a_resumed_mux_retimes_real_buffers_back_over_the_gap():
+    import CoreMedia as CM
+    from fused_render.capture import _darwin_mux
+
+    mux = _darwin_mux.MuxHandle("/tmp/x.m4a", "system", audio_only=True)
+    first = _real_audio_buffer(100.0)
+    assert mux._shifted(first) is first              # nothing paused: untouched
+    end = 100.0 + 256 / 44100
+    mux.shifter.pause()
+    assert mux._shifted(_real_audio_buffer(101.0)) is None
+    mux.shifter.resume()
+    later = _real_audio_buffer(110.0)
+    moved = mux._shifted(later)
+    assert moved is not None and moved is not later
+    got = CM.CMTimeGetSeconds(CM.CMSampleBufferGetPresentationTimeStamp(moved))
+    assert got == pytest.approx(end, abs=1e-3)       # butts against the last end
+    again = mux._shifted(_real_audio_buffer(110.0 + 256 / 44100))
+    got = CM.CMTimeGetSeconds(CM.CMSampleBufferGetPresentationTimeStamp(again))
+    assert got == pytest.approx(end + 256 / 44100, abs=1e-3)
+    assert mux.error is None

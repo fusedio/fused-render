@@ -44,6 +44,8 @@ import Foundation
 import Quartz
 import ScreenCaptureKit as SCK
 
+from fused_render.capture import _pause
+
 #: `kAudioFormatMPEG4AAC` and `AVAudioQualityHigh`. Spelled out because pyobjc
 #: exposes neither as a name: the CoreAudio format is a FourCC ('aac ') and the
 #: quality is a plain enum.
@@ -501,6 +503,7 @@ class _AudioHandle:
     def __init__(self, recorder, path: str):
         self.recorder = recorder
         self.path = path
+        self.paused = False
 
 
 def start_audio(out: str, spec: dict):
@@ -581,6 +584,9 @@ def _start_mic_recorder(out: str, spec: dict) -> _AudioHandle:
         url, settings, None)
     if recorder is None:
         raise RuntimeError(f"could not open the microphone: {error}")
+    # Metering costs next to nothing and is what the recording pill's meter
+    # reads (`level`); it has to be on before `record()`.
+    recorder.setMeteringEnabled_(True)
     if not recorder.record():
         # The most common cause by far, and the one worth naming: microphone
         # permission. `record()` answers False rather than raising.
@@ -626,6 +632,69 @@ def warning(handle) -> str | None:
     if isinstance(handle, _darwin_mux.MuxHandle):
         return _darwin_mux.warning(handle)
     return None
+
+
+def can_pause(handle) -> bool:
+    """Whether this recording can be paused. Optional backend hook.
+
+    Every audio recording can: the microphone recorder, the process tap, and the
+    audio-only ScreenCaptureKit route (the only one macOS 13.0-14.1 gets). A
+    screen recording cannot — pausing a video would need frame retiming too."""
+    from fused_render.capture import _darwin_mux, _darwin_tap
+
+    if isinstance(handle, (_AudioHandle, _darwin_tap.TapHandle)):
+        return True
+    return isinstance(handle, _darwin_mux.MuxHandle) and handle.audio_only
+
+
+def pause(handle) -> None:
+    """Stop recording until `resume`; the file stays open and keeps its audio."""
+    from fused_render.capture import _darwin_mux, _darwin_tap
+
+    if isinstance(handle, _AudioHandle):
+        handle.recorder.pause()
+        handle.paused = True
+    elif isinstance(handle, _darwin_tap.TapHandle):
+        _darwin_tap.pause(handle)
+    elif isinstance(handle, _darwin_mux.MuxHandle) and handle.audio_only:
+        _darwin_mux.pause(handle)
+    else:
+        raise RuntimeError("pausing is not supported for screen recordings")
+
+
+def resume(handle) -> None:
+    from fused_render.capture import _darwin_mux, _darwin_tap
+
+    if isinstance(handle, _AudioHandle):
+        if not handle.recorder.record():
+            raise RuntimeError("the microphone did not resume")
+        handle.paused = False
+    elif isinstance(handle, _darwin_tap.TapHandle):
+        _darwin_tap.resume(handle)
+    elif isinstance(handle, _darwin_mux.MuxHandle) and handle.audio_only:
+        _darwin_mux.resume(handle)
+    else:
+        raise RuntimeError("pausing is not supported for screen recordings")
+
+
+def level(handle) -> float:
+    """A 0..1 loudness for the recording pill's meter. Never raises."""
+    try:
+        from fused_render.capture import _darwin_mux, _darwin_tap
+
+        if isinstance(handle, _AudioHandle):
+            if handle.paused:
+                return 0.0
+            handle.recorder.updateMeters()
+            return _pause.db_to_level(
+                float(handle.recorder.averagePowerForChannel_(0)))
+        if isinstance(handle, _darwin_tap.TapHandle):
+            return _darwin_tap.level(handle)
+        if isinstance(handle, _darwin_mux.MuxHandle):
+            return _darwin_mux.level(handle)
+    except Exception:                                    # noqa: BLE001
+        pass
+    return 0.0
 
 
 def stop(handle) -> None:

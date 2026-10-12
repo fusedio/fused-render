@@ -69,6 +69,7 @@ import CoreMedia as CM
 import Foundation
 import ScreenCaptureKit as SCK
 
+from fused_render.capture import _pause
 from fused_render.capture._darwin import _AAC, _Wait
 from fused_render.capture._mixdown import Ring, add_clip_into, upmix_mono_to_stereo
 
@@ -284,6 +285,13 @@ class MuxHandle:
         self.system_buffers = 0
         self.system_heard = False
         self.started_at = 0.0
+        # Pause (audio-only recordings): while paused the callbacks discard
+        # what arrives and the stream keeps running; after a resume every kept
+        # audio buffer is retimed back by the gap, so the file has no hole.
+        self.shifter = _pause.PtsShifter()
+        # The pill's meter: computed only while somebody polled in the last 2 s.
+        self.last_level = 0.0
+        self.level_polled_at = 0.0
 
         self.stream = None
         self.session = None
@@ -319,12 +327,18 @@ class MuxHandle:
         with self._lock:
             if self._closing or self.error is not None:
                 return
+            if not video and self.shifter.paused:
+                return
             if not self._started:
                 if video == self.audio_only:
                     return
                 self.writer.startSessionAtSourceTime_(
                     CM.CMSampleBufferGetPresentationTimeStamp(sbuf))
                 self._started = True
+            if not video:
+                sbuf = self._shifted(sbuf)
+                if sbuf is None:
+                    return
             if not target.isReadyForMoreMediaData():
                 # Backpressure, not an error — the encoder is behind. Counted
                 # so it is visible; see the header on why silence is the wrong
@@ -336,6 +350,47 @@ class MuxHandle:
                 return
             if not target.appendSampleBuffer_(sbuf):
                 self.error = self._writer_error() or "the writer rejected a sample"
+
+    def _shifted(self, sbuf):
+        """The buffer to append after the pause offset: the buffer itself while
+        nothing was paused, a retimed copy afterwards, None to drop it.
+
+        Called under `self._lock`. A failed retime is recorded as the
+        recording's error rather than appended at a stale timestamp, which
+        would put the audio out of place."""
+        pts = CM.CMSampleBufferGetPresentationTimeStamp(sbuf)
+        dur = CM.CMSampleBufferGetDuration(sbuf)
+        seconds = CM.CMTimeGetSeconds(pts)
+        length = CM.CMTimeGetSeconds(dur)
+        if length != length or length < 0:               # invalid duration
+            length = 0.0
+        if self.shifter.shift(seconds, length) is None:
+            return None
+        if self.shifter.offset == 0.0:
+            return sbuf
+        status, infos, count = CM.CMSampleBufferGetSampleTimingInfoArray(
+            sbuf, 0, None, None)
+        if count:
+            status, infos, count = CM.CMSampleBufferGetSampleTimingInfoArray(
+                sbuf, count, None, None)
+        if status != 0 or not count:
+            self.error = f"could not retime audio after a pause (OSStatus {status})"
+            return None
+        offset = CM.CMTimeMakeWithSeconds(self.shifter.offset, pts.timescale)
+        shifted = []
+        for info in infos:
+            info.presentationTimeStamp = CM.CMTimeSubtract(
+                info.presentationTimeStamp, offset)
+            if info.decodeTimeStamp.flags & 1:           # kCMTimeFlags_Valid
+                info.decodeTimeStamp = CM.CMTimeSubtract(
+                    info.decodeTimeStamp, offset)
+            shifted.append(info)
+        status, new = CM.CMSampleBufferCreateCopyWithNewTiming(
+            None, sbuf, count, shifted, None)
+        if status != 0 or new is None:
+            self.error = f"could not retime audio after a pause (OSStatus {status})"
+            return None
+        return new
 
     def _writer_error(self) -> str | None:
         error = self.writer.error() if self.writer is not None else None
@@ -367,11 +422,31 @@ class MuxHandle:
         except Exception:                                # noqa: BLE001
             self.system_heard = True
 
+    def _meter(self, data) -> None:
+        if time.monotonic() - self.level_polled_at >= 2.0:
+            return
+        try:
+            if len(data) % 4 == 0:
+                self.last_level = _pause.amp_to_level(_pause.rms_f32(data))
+        except Exception:                                # noqa: BLE001
+            pass
+
+    def _meter_sbuf(self, sbuf) -> None:
+        if time.monotonic() - self.level_polled_at >= 2.0:
+            return
+        try:
+            _block, data, _frames = _pcm(sbuf)
+            if data is not None:
+                self._meter(data)
+        except Exception:                                # noqa: BLE001
+            pass
+
     def on_system_audio(self, sbuf) -> None:
-        if not CM.CMSampleBufferIsValid(sbuf):
+        if self.shifter.paused or not CM.CMSampleBufferIsValid(sbuf):
             return
         if not self.mixing:
             self._note_system(sbuf)
+            self._meter_sbuf(sbuf)
             self._append(self.audio_input, sbuf, video=False)
             return
         block, data, _frames = _pcm(sbuf)
@@ -381,6 +456,7 @@ class MuxHandle:
         with self._ring_lock:
             mic = self.ring.take(len(data))
         add_clip_into(data, mic)
+        self._meter(data)
         # Mutate BEFORE appending, never after: the writer retains the buffer
         # and encodes off it asynchronously, so a rewrite that lands later is a
         # race against the encoder rather than an edit.
@@ -389,11 +465,12 @@ class MuxHandle:
         self._append(self.audio_input, sbuf, video=False)
 
     def on_mic(self, sbuf) -> None:
-        if not CM.CMSampleBufferIsValid(sbuf):
+        if self.shifter.paused or not CM.CMSampleBufferIsValid(sbuf):
             return
         if not self.mixing:
             # Straight through, in whatever format the device gave — the writer
             # converts. No ring, no rewrite, no format to agree on.
+            self._meter_sbuf(sbuf)
             self._append(self.audio_input, sbuf, video=False)
             return
         _block, data, frames = _pcm(sbuf)
@@ -407,6 +484,19 @@ class MuxHandle:
             data = upmix_mono_to_stereo(bytes(data))
         with self._ring_lock:
             self.ring.push(bytes(data))
+
+    # ----------------------------------------------------------- pause/resume
+
+    def pause(self) -> None:
+        self.shifter.pause()
+        self.last_level = 0.0
+        # Mic samples that arrived before the pause would otherwise be mixed
+        # into the first system buffer after the resume, seconds out of place.
+        with self._ring_lock:
+            self.ring.clear()
+
+    def resume(self) -> None:
+        self.shifter.resume()
 
     # ------------------------------------------------------------------- close
 
@@ -703,3 +793,18 @@ def failure(handle: MuxHandle) -> str | None:
             handle.writer.status() == AVF.AVAssetWriterStatusFailed:
         return handle._writer_error() or "the writer failed"
     return None
+
+
+def pause(handle: MuxHandle) -> None:
+    """Stop appending; the stream and the writer keep running."""
+    handle.pause()
+
+
+def resume(handle: MuxHandle) -> None:
+    handle.resume()
+
+
+def level(handle: MuxHandle) -> float:
+    """0..1 loudness of the most recent audio; asking turns metering on."""
+    handle.level_polled_at = time.monotonic()
+    return 0.0 if handle.shifter.paused else handle.last_level

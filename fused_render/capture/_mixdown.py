@@ -88,6 +88,11 @@ class Ring:
             del self._buf[:excess]
             self.dropped += excess
 
+    def clear(self) -> None:
+        """Forget what is buffered (a pause: stale samples must not be mixed
+        into the first buffer after the resume). Counters are left alone."""
+        del self._buf[:]
+
     def take(self, count: int) -> bytearray:
         """`count` bytes, padded with silence if the microphone is behind."""
         have = min(count, len(self._buf))
