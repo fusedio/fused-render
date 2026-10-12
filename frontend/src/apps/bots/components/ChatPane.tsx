@@ -5,7 +5,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { statusLabel } from "../lib/derive";
 import { toggleRight } from "../lib/layout";
-import { searchQuery } from "../lib/thread";
+import { isNoise, searchQuery } from "../lib/thread";
 import { api } from "../lib/api";
 import { act, cur, eventsOf, onSelectChange, openDialog, useBots } from "../state/store";
 import { Composer, type ReplyTo } from "./Composer";
@@ -30,8 +30,9 @@ export function ChatPane() {
 
   // Subtitle only while something is happening; an idle bot is just its name.
   const sub = !b || b.status === "idle" ? "" : (b.status === "running" && b.note ? b.note : statusLabel(b)) + (b.title ? " · " + b.title : "");
-  // Something to clear: an idle bot whose newest message is not already a Clear context marker.
-  const evs = b ? eventsOf(b.id) : [], last = evs[evs.length - 1];
+  // Something to clear: an idle bot whose newest shown message is not already a Clear context marker (system and
+  // delivery rows after it, an idle-sleep toast say, render nothing and do not count).
+  const shown = b ? eventsOf(b.id).filter((e) => !isNoise(e)) : [], last = shown[shown.length - 1];
   const clearable = !!b && !!last && (b.status === "idle" || b.status === "error") && !b.control && last.source !== "clear";
   return (
     <section className="chat">

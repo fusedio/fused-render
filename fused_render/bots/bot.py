@@ -785,13 +785,16 @@ class Bot:
                 yield i, ev
 
     def clear_context(self):
-        if self.running():
-            raise ValueError("stop the task first, then clear the context")
-        if self.meta.get("control"):
-            raise ValueError("hand the browser back first, then clear the context")
-        ev = self.emit("note", "Context cleared. The bot starts fresh from here; what came before stays in this chat "
-                               "for you, not for the bot.", source="clear")
+        # One lock hold from the guards to the floor: start_task claims the task slot under the same lock, so no task
+        # can start between "nothing is running" and the reset (the marker would land mid-task, the reset fight its
+        # turn). self.lock is an RLock, so emit() re-enters it.
         with self.lock:
+            if self.running():
+                raise ValueError("stop the task first, then clear the context")
+            if self.meta.get("control"):
+                raise ValueError("hand the browser back first, then clear the context")
+            ev = self.emit("note", "Context cleared. The bot starts fresh from here; what came before stays in this chat "
+                                   "for you, not for the bot.", source="clear")
             self.conversation().update(session_id=None, tokens=0, since_seq=ev["seq"], born_at=time.time(),
                                        summary="", sent={}, prompt_hash="", floor=ev["seq"])
             # An unanswered app offer would stay clickable inside the folded history: the bot no longer knows of it.
