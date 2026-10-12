@@ -27,7 +27,7 @@ import { Trash2Icon } from "lucide-react";
 import { api, type AllowRule, type AppRow, type Bot, type ChromeProfile, type Face as FaceT } from "../lib/api";
 import { EFFORTS, loginGroups, loginHint, loginLabel, loginValue, modelsFor, normApp } from "../lib/botform";
 import { faceOf } from "../lib/face";
-import { act, autoStage, getState, setAutoStage, setSounds, soundsOn } from "../state/store";
+import { act, autoStage, clearContextOn, getState, setAutoStage, setClearContext, setSounds, soundsOn } from "../state/store";
 import type { BotDialogValue } from "./actions";
 import { askConfirm } from "./ask";
 import { FacePopover } from "./FacePopover";
@@ -72,6 +72,7 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
   // Page-wide prefs (localStorage, every bot): they apply at once, not on Save.
   const [autoOpen, setAutoOpen] = useState(autoStage);
   const [sounds, setSoundsState] = useState(soundsOn);
+  const [clearBtn, setClearBtn] = useState(clearContextOn);
   const [imessage, setImessage] = useState(init.imessage);
   const [imessageEnabled, setImessageEnabled] = useState(init.imessageEnabled);
   const [imessageTo, setImessageTo] = useState(init.imessageTo);
@@ -264,6 +265,9 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
                 </Row>
                 <Row title="Sounds" text="A short chime when a bot hands you its browser. Applies to every bot on this page." htmlFor="bmsounds">
                   <span title="Page-wide: applies to every bot, saved at once"><Switch id="bmsounds" checked={sounds} onCheckedChange={(c) => { setSounds(!!c); setSoundsState(!!c); }} /></span>
+                </Row>
+                <Row title="Clear context button" text="A button in the chat header that starts the bot over without leaving the conversation; the earlier messages fold under a marker. Off by default. Applies to every bot on this page." htmlFor="bmclear">
+                  <span title="Page-wide: applies to every bot, saved at once"><Switch id="bmclear" checked={clearBtn} onCheckedChange={(c) => { setClearContext(!!c); setClearBtn(!!c); }} /></span>
                 </Row>
               </Rows>
             ) : null}
