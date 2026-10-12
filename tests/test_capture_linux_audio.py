@@ -7,12 +7,19 @@ from __future__ import annotations
 
 import array
 import math
+import socket
 import time
 import wave
 
 import pytest
 
 from fused_render.capture import _linux, _linux_audio
+
+#: AF_UNIX exists on Linux and macOS (and modern Windows), but a test that
+#: needs a real listening socket should skip cleanly rather than fail on a
+#: platform where it is simply absent.
+_HAS_AF_UNIX = hasattr(socket, "AF_UNIX")
+_needs_af_unix = pytest.mark.skipif(not _HAS_AF_UNIX, reason="no AF_UNIX on this platform")
 
 RATE = _linux_audio.RATE
 CHUNK_SAMPLES = _linux_audio.CHUNK_SAMPLES
@@ -106,11 +113,26 @@ def _rms(pcm16: bytes) -> float:
 # ----------------------------------------------------------------------- probe
 
 
-def test_available_true_when_pasimple_lib_and_socket_all_present(monkeypatch):
+@_needs_af_unix
+def test_available_true_when_pasimple_lib_and_a_real_socket_are_reachable(
+        monkeypatch, tmp_path):
+    # A real listening unix socket at the default
+    # `$XDG_RUNTIME_DIR/pulse/native` path, not just a path that exists —
+    # `available()` must actually connect to it, not merely stat it.
     monkeypatch.setattr(_linux_audio, "_pasimple", lambda: fake_pasimple({}))
     monkeypatch.setattr(_linux_audio, "_lib_loads", lambda: True)
-    monkeypatch.setattr(_linux_audio, "_socket_present", lambda: True)
-    assert _linux_audio.available() is True
+    monkeypatch.delenv("PULSE_SERVER", raising=False)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    pulse_dir = tmp_path / "pulse"
+    pulse_dir.mkdir()
+    sock_path = str(pulse_dir / "native")
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server.bind(sock_path)
+    server.listen(1)
+    try:
+        assert _linux_audio.available() is True
+    finally:
+        server.close()
 
 
 def test_unavailable_without_pasimple(monkeypatch):
@@ -119,12 +141,46 @@ def test_unavailable_without_pasimple(monkeypatch):
     assert "pasimple" in _linux_audio.unavailable_reason()
 
 
-def test_unavailable_without_socket(monkeypatch):
+@_needs_af_unix
+def test_unavailable_when_the_socket_path_has_nothing_listening(monkeypatch, tmp_path):
+    # A dead path: exists on disk as a concept (the directory does), but
+    # nothing bound a socket there — the old `os.path.exists` check would have
+    # called this available; `available()` must actually try to connect.
     monkeypatch.setattr(_linux_audio, "_pasimple", lambda: fake_pasimple({}))
     monkeypatch.setattr(_linux_audio, "_lib_loads", lambda: True)
-    monkeypatch.setattr(_linux_audio, "_socket_present", lambda: False)
+    monkeypatch.delenv("PULSE_SERVER", raising=False)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    (tmp_path / "pulse").mkdir()
     assert _linux_audio.available() is False
     assert "PipeWire" in _linux_audio.unavailable_reason()
+
+
+@_needs_af_unix
+def test_unavailable_when_pulse_server_names_a_remote_host(monkeypatch, tmp_path):
+    # `tcp:` (or anything else non-`unix:`) is a remote server — this module
+    # only supports a local PipeWire/pulse session, so this is unsupported
+    # without even trying to reach it.
+    monkeypatch.setattr(_linux_audio, "_pasimple", lambda: fake_pasimple({}))
+    monkeypatch.setattr(_linux_audio, "_lib_loads", lambda: True)
+    monkeypatch.setenv("PULSE_SERVER", "tcp:example.org:4713")
+    assert _linux_audio.available() is False
+    assert "local" in _linux_audio.unavailable_reason()
+
+
+@_needs_af_unix
+def test_available_true_with_pulse_server_naming_a_reachable_unix_socket(
+        monkeypatch, tmp_path):
+    sock_path = str(tmp_path / "native")
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server.bind(sock_path)
+    server.listen(1)
+    try:
+        monkeypatch.setattr(_linux_audio, "_pasimple", lambda: fake_pasimple({}))
+        monkeypatch.setattr(_linux_audio, "_lib_loads", lambda: True)
+        monkeypatch.setenv("PULSE_SERVER", "unix:" + sock_path)
+        assert _linux_audio.available() is True
+    finally:
+        server.close()
 
 
 def test_probe_reports_audio_native_truthfully(monkeypatch):

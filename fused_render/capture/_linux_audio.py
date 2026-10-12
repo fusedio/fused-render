@@ -49,6 +49,7 @@ import array
 import ctypes.util
 import logging
 import os
+import socket
 import threading
 import time
 import wave
@@ -84,6 +85,12 @@ _WARN_AFTER_S = 1.0
 #: the same loudness.
 _HEAR_RMS = 1e-4
 
+#: How long `available()`'s reachability check waits for `connect()` before
+#: giving up — long enough for a live local socket to accept instantly (it is
+#: not doing any work yet), short enough that a dead path does not make a
+#: probe feel stuck.
+_REACHABLE_TIMEOUT_S = 0.2
+
 
 # ------------------------------------------------------------------- the probe
 
@@ -106,17 +113,52 @@ def _lib_loads() -> bool:
         return False
 
 
-def _socket_present() -> bool:
-    if os.environ.get("PULSE_SERVER"):
-        return True
+def _remote_server() -> bool:
+    """True when `$PULSE_SERVER` names something other than a local unix
+    socket (a `tcp:host:port` form, most commonly) — this module only speaks
+    to a local PipeWire/pulse session, so a remote one is unsupported
+    regardless of whether it would actually answer."""
+    pulse_server = os.environ.get("PULSE_SERVER")
+    return bool(pulse_server) and not pulse_server.startswith("unix:")
+
+
+def _socket_path() -> str | None:
+    """Where a local session's socket should be: `$PULSE_SERVER`'s `unix:`
+    form when set, else the default `$XDG_RUNTIME_DIR/pulse/native`. None
+    when neither names anything (`$PULSE_SERVER` naming a remote server is
+    `_remote_server()`'s call, not this one's)."""
+    pulse_server = os.environ.get("PULSE_SERVER")
+    if pulse_server:
+        return pulse_server[len("unix:"):] if pulse_server.startswith("unix:") else None
     runtime = os.environ.get("XDG_RUNTIME_DIR")
-    return bool(runtime and os.path.exists(os.path.join(runtime, "pulse", "native")))
+    return os.path.join(runtime, "pulse", "native") if runtime else None
+
+
+def _reachable(path: str) -> bool:
+    """A cheap, non-prompting proof that something is actually listening —
+    an existing path (or a set `$PULSE_SERVER`) is not proof of that: a
+    socket left behind by a session that crashed looks identical to a live
+    one until something connects to it. `connect()` and an immediate
+    `close()` is the whole check: no pulse frame is ever sent, so this can
+    never be mistaken for starting a stream (CP-7)."""
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+            sock.settimeout(_REACHABLE_TIMEOUT_S)
+            sock.connect(path)
+        return True
+    except OSError:
+        return False
 
 
 def available() -> bool:
-    """Cheap and honest: no stream opened, nobody prompted (there is nothing
-    to prompt for — see the header)."""
-    return _pasimple() is not None and _lib_loads() and _socket_present()
+    """Cheap and honest: no pulse stream opened, nobody prompted (there is
+    nothing to prompt for — see the header). "Cheap" still means a real
+    reachability check, not just a path or an env var existing — see
+    `_reachable`."""
+    if _pasimple() is None or not _lib_loads() or _remote_server():
+        return False
+    path = _socket_path()
+    return bool(path) and _reachable(path)
 
 
 def unavailable_reason() -> str:
@@ -127,7 +169,11 @@ def unavailable_reason() -> str:
     if not _lib_loads():
         return ("audio recording needs libpulse-simple.so.0 — install the "
                 "pulseaudio or pipewire-pulse client libraries")
-    if not _socket_present():
+    if _remote_server():
+        return ("audio recording only supports a local PipeWire or "
+                "PulseAudio session — $PULSE_SERVER names a remote one")
+    path = _socket_path()
+    if not path or not _reachable(path):
         return ("audio recording needs a PipeWire (or PulseAudio) session — "
                 "none is reachable")
     return "audio recording is unavailable"                # pragma: no cover
