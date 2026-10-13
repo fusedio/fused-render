@@ -72,7 +72,8 @@ function RunsTable({ botId, r }: { botId: string; r: Routine }) {
       <tbody>
         {rows.map((run, i) => {
           const err = run.result === "error";
-          const took = run.done && run.result !== "skipped" ? fmtDur(run.done - run.started) : run.result === "started" ? "…" : "";
+          // No length for a stop: the owner's reconcile walk stamps "stopped: the app quit" at the next launch, hours later.
+          const took = run.done && (run.result === "done" || run.result === "error") ? fmtDur(run.done - run.started) : run.result === "started" ? "…" : "";
           return (
             <tr key={`${run.started}-${i}`} data-result={run.result} role={run.seq ? "button" : undefined} tabIndex={run.seq ? 0 : undefined}
               title={run.seq ? "Open the chat at this run" : undefined}
