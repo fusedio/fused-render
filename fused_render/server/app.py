@@ -311,6 +311,10 @@ def _export_bundled_uv_path() -> None:
     os.environ["PATH"] = (uv_dir + os.pathsep + path) if path else uv_dir
 
 
+# A startup handler at least this slow is named in the boot log line.
+STARTUP_HANDLER_SLOW_S = 0.05
+
+
 def _lifespan(startup_handlers: list, shutdown_handlers: list):
     """The startup/shutdown contract `on_event` used to provide.
 
@@ -336,8 +340,16 @@ def _lifespan(startup_handlers: list, shutdown_handlers: list):
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        began = time.monotonic()
+        slow = []
         for handler in startup_handlers:
+            t0 = time.monotonic()
             await handler()
+            took = time.monotonic() - t0
+            if took >= STARTUP_HANDLER_SLOW_S:
+                slow.append(f"{getattr(handler, '__name__', handler)} {took:.2f}s")
+        logger.info("startup handlers: %d in %.2fs%s", len(startup_handlers),
+                    time.monotonic() - began, f" (slow: {', '.join(slow)})" if slow else "")
         try:
             yield
         finally:
@@ -1032,9 +1044,20 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
         try:
             await asyncio.to_thread(bots_paths.migrate_layout)
             await asyncio.to_thread(bots_import.import_once)
-            bots_registry.start()
         except Exception:  # noqa: BLE001 - a bots failure must not block serving
             logger.exception("could not start the bots scheduler")
+            return
+
+        def _start():
+            try:
+                bots_registry.start()
+            except Exception:  # noqa: BLE001
+                logger.exception("could not start the bots scheduler")
+
+        # Off the readiness path: building every Bot imports the fused SDK, ~0.5-1s per boot.
+        thread = threading.Thread(target=_start, daemon=True, name="bots-start")
+        thread.start()
+        app.state.bots_start = thread
 
     # Every loaded bot's task and Chrome stop with the server. `_always`: a
     # request can start a bot's Chrome in a lean app too (the rule above
