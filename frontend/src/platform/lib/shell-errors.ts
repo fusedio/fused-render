@@ -16,6 +16,13 @@
  * the first few are the diagnosis. Fire-and-forget with a swallowed
  * rejection: a failed report must never itself hit the unhandledrejection
  * path it is listening on.
+ *
+ * What a report carries is the minimum that names a failure: the PATH (not
+ * the query — a `?path=` or a token in the search string has no business in
+ * a session log that ends up in diagnostic bundles), the message, the source
+ * position and the stack. A rejection value that is not an Error is reduced
+ * to a short string, never serialised whole: an object rejected by some
+ * fetch wrapper may be a response body.
  */
 
 const SHELL_ERROR_CAP = 5;
@@ -38,7 +45,7 @@ export function reportShellError(fields: ShellErrorFields): void {
       headers: { "Content-Type": "application/json", "X-Fused": "1" },
       body: JSON.stringify({
         kind: "shell-error",
-        page: location.pathname + location.search,
+        page: location.pathname,
         ...fields,
       }),
       // keepalive, NOT navigator.sendBeacon: a beacon cannot set the X-Fused
@@ -50,14 +57,18 @@ export function reportShellError(fields: ShellErrorFields): void {
   }
 }
 
+const NON_ERROR_CAP = 200;
+
 function describe(err: unknown): { message: string; stack?: string } {
   if (err instanceof Error) return { message: err.message || String(err), stack: err.stack };
-  if (typeof err === "string") return { message: err };
+  if (typeof err === "string") return { message: err.slice(0, NON_ERROR_CAP) };
+  let text: string;
   try {
-    return { message: JSON.stringify(err) };
+    text = String(err);
   } catch {
-    return { message: String(err) };
+    text = "(unprintable rejection value)";
   }
+  return { message: text.slice(0, NON_ERROR_CAP) };
 }
 
 /**

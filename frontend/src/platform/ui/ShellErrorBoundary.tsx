@@ -56,7 +56,7 @@ export class ShellErrorBoundary extends Component<
               "disk, or the app was restarting while it loaded. Reloading the page " +
               "fetches the current one."
             }
-            facts={{ page: location.pathname + location.search }}
+            facts={{ page: location.pathname }}
             onRetry={() => location.reload()}
             retryLabel="Reload the page"
           />
@@ -69,7 +69,7 @@ export class ShellErrorBoundary extends Component<
               "Something broke while the page was drawing. Reloading the page is " +
               "the only way to bring it back; nothing on disk is affected."
             }
-            facts={{ page: location.pathname + location.search }}
+            facts={{ page: location.pathname }}
             onRetry={() => location.reload()}
             retryLabel="Reload the page"
           />

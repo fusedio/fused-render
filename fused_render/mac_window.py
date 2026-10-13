@@ -355,6 +355,11 @@ def _private(selector: bytes, signature: bytes):
 _NAV_RETRY_MAX = 8
 _NAV_RETRY_BASE_S = 1.0
 _NAV_RETRY_CAP_S = 4.0
+#: A dead content process is reloaded at most this many times in a row, on a
+#: growing delay, before the window is left as it is for the user's ⌘R — a
+#: page that kills its renderer on every load must not reload forever.
+_TERMINATE_RELOAD_MAX = 3
+_TERMINATE_RELOAD_BASE_S = 1.0
 
 
 class _WebDelegate(NSObject):
@@ -377,6 +382,13 @@ class _WebDelegate(NSObject):
         self._window = window  # the _Window record, not the NSWindow
         self._downloads = []   # strong refs: a WKDownload's delegate is weak too
         self._nav_retries = 0  # failed main-frame loads since the last commit
+        # Navigation generation: bumped on every provisional start, captured
+        # by a scheduled retry, checked before it fires — so a retry queued
+        # for a load that was since superseded (⌘R, Home, an in-page link)
+        # never drags the window back to the URL that failed.
+        self._nav_gen = 0
+        self._retry_pending = False  # the next start is our own retry
+        self._terminations = 0  # content-process deaths since the last commit
         return self
 
     # ---- navigation policy -------------------------------------------------
@@ -448,6 +460,7 @@ class _WebDelegate(NSObject):
         except Exception:  # noqa: BLE001 — diagnostics only
             failing = None
         url = str(failing) if failing else (self._window.current_url() if self._window else None)
+        gen = self._nav_gen
         self._nav_retries += 1
         if url is None or self._nav_retries > _NAV_RETRY_MAX:
             logger.warning("navigation failed (%s), giving up after %d retries: %s",
@@ -464,26 +477,64 @@ class _WebDelegate(NSObject):
         # unbound-selector trap (menubar_pin.py learned it the hard way, PR #1609).
         def retry():
             window = self._window
-            if window is None or window.webview is None:
+            if window is None or window.webview is None or getattr(window, "_torn", False):
                 return
+            if self._nav_gen != gen:
+                return  # something else navigated meanwhile; it owns the view now
+            self._retry_pending = True
             window.webview.loadRequest_(NSURLRequest.requestWithURL_(_nsurl(url)))
 
         AppHelper.callLater(delay, retry)
 
+    def webView_didStartProvisionalNavigation_(self, webview, nav):
+        """Every main-frame load starts here: our own retry included.
+
+        Bumps the generation (stale retries check it), and when the load is
+        NOT our retry — ⌘R, Home, a link — gives it a fresh retry budget, so a
+        window that spent its eight on one outage is not mute on the next."""
+        self._nav_gen += 1
+        if self._retry_pending:
+            self._retry_pending = False
+        else:
+            self._nav_retries = 0
+
     def webView_didCommitNavigation_(self, webview, nav):
-        # A document arrived: the retry budget belongs to the next failure.
+        """A document arrived: both recovery budgets belong to the next failure."""
         self._nav_retries = 0
+        self._terminations = 0
 
     def webViewWebContentProcessDidTerminate_(self, webview):
-        # WebKit's content process died under this window — memory pressure,
-        # a renderer crash — and WebKit's own response is to show NOTHING: the
-        # view is empty at the same URL until somebody reloads it. Apple's
-        # documented handling is exactly that reload, done here so a dead
-        # process is a brief flash, not a dead window waiting for ⌘R.
+        """WebKit's content process died under this window — memory pressure,
+        a renderer crash — and WebKit's own response is to show NOTHING: the
+        view is empty at the same URL until somebody reloads it. Apple's
+        documented handling is exactly that reload, done here so a dead
+        process is a brief flash, not a dead window waiting for ⌘R.
+
+        Bounded: a page that kills its renderer on every load gets
+        `_TERMINATE_RELOAD_MAX` reloads on a growing delay, then is left as it
+        is (the count resets when a load commits)."""
         window = self._window
-        logger.warning("web content process terminated under window %s; reloading",
-                       (window.key or "home") if window is not None else "?")
-        webview.reload()
+        label = (window.key or "home") if window is not None else "?"
+        self._terminations += 1
+        if self._terminations > _TERMINATE_RELOAD_MAX:
+            logger.warning("web content process terminated under window %s again; "
+                           "not reloading after %d attempts", label, _TERMINATE_RELOAD_MAX)
+            return
+        delay = _TERMINATE_RELOAD_BASE_S * self._terminations
+        logger.warning("web content process terminated under window %s; reload %d/%d in %.0fs",
+                       label, self._terminations, _TERMINATE_RELOAD_MAX, delay)
+        gen = self._nav_gen
+        from PyObjCTools import AppHelper
+
+        def reload():
+            w = self._window
+            if w is None or w.webview is None or getattr(w, "_torn", False):
+                return
+            if self._nav_gen != gen:
+                return  # the user already navigated; nothing left to recover
+            w.webview.reload()
+
+        AppHelper.callLater(delay, reload)
 
     # ---- downloads (WKDownloadDelegate) ------------------------------------
 
