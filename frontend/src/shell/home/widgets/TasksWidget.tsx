@@ -130,7 +130,7 @@ function BoardLane({ lane, rows, cap }: { lane: { id: Lane; label: string; empty
 }
 
 export function TasksWidget({ widget }: { widget: Widget }) {
-  const { data: split, error, retry } = useHomeTasks();
+  const { data: split, error, retry, refresh } = useHomeTasks();
   if (error && !split) return <div className="hw-body"><ErrorLine message={`Couldn't load tasks. ${error}`} onRetry={retry} /></div>;
   if (!split) return <div className="hw-body"><ListSkeleton rows={3} label="Loading tasks" /></div>;
   const data = split.tasks;
@@ -167,7 +167,7 @@ export function TasksWidget({ widget }: { widget: Widget }) {
   if (!rows.length) return <div className="hw-body"><EmptyLine>Nothing open</EmptyLine></div>;
   return (
     <div className="hw-body">
-      <TaskRows rows={rows} cap={itemCapacity(widget.size, "list")} onReload={retry} />
+      <TaskRows rows={rows} cap={itemCapacity(widget.size, "list")} onReload={refresh} />
     </div>
   );
 }

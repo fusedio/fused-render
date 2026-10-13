@@ -162,6 +162,8 @@ export interface AsyncState<T> {
   data: T | null;
   error: string | null;
   retry: () => void;
+  /** Refetch, keeping the data and error already shown. */
+  refresh: () => void;
 }
 
 /** Fetch on mount, refetch every `pollMs` and on the optional window `event`.
@@ -208,6 +210,7 @@ function useAsyncResource<T>(
       setError(null);
       setNonce((n) => n + 1);
     },
+    refresh: () => setNonce((n) => n + 1),
   };
 }
 

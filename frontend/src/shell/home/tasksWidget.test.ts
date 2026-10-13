@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { homeTasks, splitHomeTasks } from "./data";
 import { emptyMessage, lanesFor, listFor, laneOf, listOrder, openCount, taskPill } from "./widgets/TasksWidget";
 
@@ -96,4 +97,10 @@ test("TaskRows reserves no more line and renders none", async () => {
   const body = src.slice(start, src.indexOf("function BoardLane"));
   expect(body).toContain("{ more: false }");
   expect(body).not.toContain("MoreLine");
+});
+
+test("TasksWidget reloads rows with refresh, which keeps the data, not retry, which blanks it", () => {
+  const src = readFileSync(new URL("./widgets/TasksWidget.tsx", import.meta.url), "utf8");
+  expect(src).toContain("onReload={refresh}");
+  expect(src).not.toContain("onReload={retry}");
 });
