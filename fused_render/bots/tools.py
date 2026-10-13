@@ -779,8 +779,8 @@ def ui_detail(name: str, result: str, summary: str, change: str = "") -> str | N
     raw = (result or "").strip()
     if name == "show":
         return None
-    if name in SUPER_TOOLS and not raw.startswith("error"):
-        return None  # the chip says it all; the rest is written to the model
+    if name in SUPER_TOOLS and name not in READ_TOOLS and not raw.startswith("error"):
+        return None  # the chip says it all; the rest is written to the model (a bot_chat read stays expandable)
     if name == "build":
         raw = _NOW_DONE.sub("", raw).strip()
     elif name in BROWSER_ACTIONS and name not in _DETAIL_ALWAYS and raw.startswith("ok"):
@@ -1163,7 +1163,7 @@ def execute(bot, act: str, d: dict, obs: dict) -> tuple[str, str]:
             from fused_render.bots import bot as botmod
             if not is_super(bot):
                 return "bot_chat", "error: only Super Bot reads other bots' chats"
-            return "bot_chat", botmod.bot_chat(bot, d.get("bot") or d.get("name") or "", d.get("last"))
+            return describe(bot, act, d, obs), botmod.bot_chat(bot, d.get("bot") or d.get("name") or "", d.get("last"))
         if act == "note":
             text = " ".join(str(d.get("text") or d.get("message") or "").split())[:300]
             if not text:

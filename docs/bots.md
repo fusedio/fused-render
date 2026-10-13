@@ -1441,7 +1441,8 @@ app roster's `busy` / `waitingOn` (§13, `routes._app_bot`): a live Bot
 assembly) answers with its thread (a "running" word on disk that outlived
 the thread reads as `ended`) and its browser; a bot this process has not
 built is read from disk, the card behind `waiting_on` off its events file.
-Idle bots fold into one `- idle: A, B, C` line (nothing to act on there).
+Idle bots, and bots whose last task failed over `FOLD_FAILED_S` (a day)
+ago, fold into one `- idle: A, B (last task failed), C` line.
 `SUPER_PROMPT` says to answer "what is X doing / is X stuck / who is busy"
 from the block and never to try to unstick a bot (rule 2 above).
 
@@ -1453,7 +1454,10 @@ bot's chat themselves: the bot's activity line, where its browser is
 (`CHAT_LINES` 30, max 80, `CHAT_CHARS` 6000, newest win) from
 `transcript_lines(notes=True)`: TASK / USER / BOT DID (chip + 160 chars of
 result) / BOT NOTED / BOT ASKED / BOT ASKED APPROVAL / BOT FINISHED / ERROR,
-after the bot's context floor. No card, no `call_key` (repeatable), target
+after the bot's context floor, oldest first, without the `[#n]` prefixes
+(those are `recall`'s numbers for Super Bot's own transcript). The chip is
+`read "X"'s chat · N lines read` and, unlike the other `SUPER_TOOLS`, keeps
+its detail (the user can expand what Super Bot read). No card, no `call_key` (repeatable), target
 resolved by `_handoff_target` (Super Bot's own name refused). Read-only on
 purpose: no answer to a card, no message into that chat (rule 2, one writer
 per bot chat); a new task is a `handoff`. The agent engine flips
