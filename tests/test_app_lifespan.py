@@ -384,3 +384,44 @@ def test_lean_app_shuts_down_an_ai_session_started_by_an_ordinary_request(tmp_pa
 
     assert shutdown_calls, (
         "lean shutdown never reached the on-demand AI session's shutdown()")
+
+
+def test_a_slow_startup_handler_is_named_in_the_log(monkeypatch, caplog):
+    """The desktop app quits itself when startup outlasts its readiness
+    cutoff; the one fact that incident needs is WHICH handler was still
+    running (2026-10-13: six silent self-quits on a busy Mac). Every handler
+    at or over `STARTUP_SLOW_HANDLER_S` gets a line with its name, the fast
+    ones stay quiet, and one summary line always closes the startup."""
+    import logging
+
+    from fused_render.server import app as server_app
+
+    monkeypatch.setattr(server_app, "STARTUP_SLOW_HANDLER_S", 0.3)
+
+    async def _startup_quick():
+        pass
+
+    async def _startup_slow():
+        await asyncio.sleep(0.6)
+
+    with caplog.at_level(logging.INFO, logger=server_app.logger.name):
+        _drive([_startup_quick, _startup_slow], [])
+
+    lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("startup:")]
+    # The line that matters for the incident: written while the handler is
+    # still running, so a handler that never returns is still named.
+    assert "startup: _startup_slow still running after 0s" in lines, lines
+    assert any(l.startswith("startup: _startup_slow took ") for l in lines), lines
+    assert not any("_startup_quick" in l for l in lines), lines
+    assert lines[-1].startswith("startup: 2 handler(s) in "), lines
+
+
+def test_relauncher_outlives_a_slow_but_healthy_successor():
+    """The relauncher's deadline covers a relaunch teardown plus a successor
+    that takes every second of SERVER_READY_TIMEOUT_S, and still ends before
+    the page gives up on the restart (RESTART_GIVE_UP_MS, 120 s)."""
+    from fused_render import app as app_mod
+
+    assert (app_mod.RELAUNCH_DEADLINE_S
+            >= app_mod.QUIT_FAST_HARD_DEADLINE_S + app_mod.SERVER_READY_TIMEOUT_S + 5)
+    assert app_mod.RELAUNCH_DEADLINE_S < 120
