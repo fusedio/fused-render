@@ -2749,8 +2749,59 @@ def test_download_snapshots_kwargs_fallback_sweeps_orphans_too(base, monkeypatch
                         lambda *a, **kw: (COMMIT, [("config.json", 7)]))
     monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
 
-    assert base.download_snapshot("u/x", revision="abc123") == snapshot
+    assert base.download_snapshot("u/x", max_workers=2) == snapshot
     assert not orphan.exists(), "the kwargs fallback did not sweep orphan parts"
+
+
+def test_a_pinned_revision_reaches_the_cache_lookup_the_listing_and_the_fetch(
+        base, monkeypatch, tmp_path):
+    # A recipe that runs repo code pins a commit; every path must ask for that commit.
+    pin = "a" * 40
+    folder = _cache_folder(tmp_path)
+    snapshot = _snapshot_dir(tmp_path, "config.json")
+    hub = _LocalHub(cached=[], snapshot=snapshot)
+    asked = []
+
+    def spy(model_id, allow_patterns=None, ignore_patterns=None,
+            local_files_only=False, **kw):
+        asked.append((local_files_only, kw.get("revision")))
+        if local_files_only:
+            raise hub.LocalEntryNotFoundError(model_id)
+        return snapshot
+
+    hub.snapshot_download = spy
+    _local_hub(monkeypatch, base, hub, folder=folder)
+    listed = []
+    monkeypatch.setattr(base, "_repo_files", lambda *a, **kw: listed.append(
+        kw.get("revision")) or (pin, [("config.json", 7)]))
+    monkeypatch.setattr(base, "_mirror_snapshot", lambda *a, **kw: None)
+    monkeypatch.setattr(base, "_segmented_fetch", _raiser(RuntimeError("no ranges")))
+    monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
+
+    assert base.download_snapshot("u/x", revision=pin) == snapshot
+    assert listed == [pin]
+    assert all(revision == pin for _local, revision in asked), asked
+
+
+def test_a_mirror_manifest_at_another_commit_is_a_miss_for_a_pinned_download(
+        base, monkeypatch):
+    reached = []
+
+    class Mirror:
+        allowed = staticmethod(lambda model_id: True)
+        manifest = staticmethod(lambda model_id: {
+            "commit": "b" * 40, "files": [{"name": "config.json", "size": 7}]})
+
+        @staticmethod
+        def file_meta(model_id, manifest):
+            reached.append(manifest["commit"])
+            raise RuntimeError("stop before any fetch")
+
+    monkeypatch.setattr(base, "_mirror_module", lambda: Mirror)
+    assert base._mirror_snapshot("u/x", revision="a" * 40) is None
+    assert reached == []
+    assert base._mirror_snapshot("u/x", revision="b" * 40) is None
+    assert reached == ["b" * 40]
 
 
 def test_a_TORN_record_left_by_a_crashed_write_is_not_read_as_a_record(
@@ -2955,7 +3006,9 @@ def test_a_caller_supplied_REVISION_wins_over_the_pin(base, monkeypatch, tmp_pat
 
     hub.snapshot_download = spy
     _local_hub(monkeypatch, base, hub, folder=folder)
-    monkeypatch.setattr(base, "_repo_files", lambda *a, **kw: (COMMIT, []))
+    # `revision` is first-class now: the listing resolves the caller's revision.
+    monkeypatch.setattr(base, "_repo_files",
+                        lambda *a, **kw: (kw.get("revision", COMMIT), []))
     monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
 
     assert base.download_snapshot("u/x", revision="theirs") == snapshot

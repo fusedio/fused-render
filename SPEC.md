@@ -10224,8 +10224,10 @@ an AI Models page that could say what was on disk but not what was *running*.
   `formats.VISION_TORCH_RECIPES` only: both Hub tags it serves
   (`image-to-text`, `zero-shot-object-detection`) are format-gated, and the
   loader claims a snapshot by curated repo id, not by layout. Two families,
-  both through transformers' `from_pretrained`: Moondream 2 at the Hub's
-  `main` (its model is the repo's own Python, `trust_remote_code`; its
+  both through transformers' `from_pretrained`: Moondream 2 at a pinned,
+  reviewed commit (its model is the repo's own Python, `trust_remote_code`;
+  the pin is `download_snapshot`'s first-class `revision`, so the cache fast
+  path and the mirror still serve it, the mirror only at that commit; its
   tokenizer `moondream/starmie-v1` is a `COMPONENT_REPOS` file fetched with
   it) and Grounding DINO. The catalog lists Grounding DINO Tiny and Base
   (detect) and Moondream 2 (caption, query, detect, point; recommended). A new

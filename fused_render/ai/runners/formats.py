@@ -1928,7 +1928,8 @@ def is_laya_snapshot(names, dirnames) -> bool:
 
 #: Image-understanding checkpoints `vision-torch` opens (SPEC AI-33), by repo id.
 #: An allow-list, not a format test: which tasks a model answers is a fact about
-#: the model, and no file in the repo says it.
+#: the model, and no file in the repo says it. A recipe whose `allow` fetches
+#: Python pins `revision` to a reviewed commit.
 VISION_TORCH_RECIPES = {
     "IDEA-Research/grounding-dino-tiny": {
         "family": "grounding-dino",
@@ -1942,7 +1943,9 @@ VISION_TORCH_RECIPES = {
     },
     "vikhyatk/moondream2": {
         "family": "moondream",
-        # Its model is the Python in the repo, loaded with `trust_remote_code`.
+        # Its model is the Python in the repo (`trust_remote_code`), so the commit is
+        # pinned: "Support transformers 5" (2026-09-23), the code read before shipping.
+        "revision": "5d6c926f44e26b07957b0dd315bbedcb4c17a5fe",
         "allow": ["*.py", "*.json", "model.safetensors"],
         "tasks": ("caption", "query", "detect", "point"),
     },

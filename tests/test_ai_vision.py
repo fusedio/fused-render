@@ -258,10 +258,11 @@ def test_every_vision_suggestion_is_a_recipe_and_the_catalog_publishes_its_tasks
         assert set(model["tasks"]) <= set(ai_runtime._VISION_TASKS)
 
 
-def test_a_recipe_carries_no_download_arguments():
-    # A revision or any other kwarg takes download_snapshot off its cache fast path and the mirror.
+def test_a_recipe_that_fetches_python_pins_a_reviewed_commit():
     for repo_id, recipe in formats.VISION_TORCH_RECIPES.items():
-        assert set(recipe) == {"family", "allow", "tasks"}, repo_id
+        assert set(recipe) <= {"family", "allow", "tasks", "revision"}, repo_id
+        if any(p.endswith(".py") for p in recipe["allow"]):
+            assert re.fullmatch(r"[0-9a-f]{40}", recipe.get("revision") or ""), repo_id
 
 
 def test_moondreams_tokenizer_is_a_registered_component():
@@ -363,7 +364,7 @@ class _FakeBase(types.ModuleType):
 
     def download_snapshot(self, model_id, allow_patterns=None, ignore_patterns=None, **kwargs):
         self.downloads.append((model_id, allow_patterns, kwargs))
-        return f"/snap/{model_id}/main"
+        return f"/snap/{model_id}/{kwargs.get('revision') or 'main'}"
 
     def download_file(self, repo_id, filename, detail=None, job=None, row=None):
         self.downloads.append(("file", repo_id, filename))
@@ -398,18 +399,25 @@ def test_the_worker_refuses_a_repo_it_has_no_recipe_for(worker):
         worker.download("someone/moondream-ft")
 
 
-def test_moondream_downloads_its_tokenizer_file_then_its_snapshot(worker):
+def test_moondream_downloads_its_tokenizer_file_then_its_pinned_snapshot(worker):
+    recipe = formats.VISION_TORCH_RECIPES[MOONDREAM]
     path = worker.download(MOONDREAM)
     assert worker._base.downloads == [
         ("file", "moondream/starmie-v1", "tokenizer.json"),
-        (MOONDREAM, formats.VISION_TORCH_RECIPES[MOONDREAM]["allow"], {}),
+        (MOONDREAM, recipe["allow"], {"revision": recipe["revision"]}),
     ]
-    assert path == f"/snap/{MOONDREAM}/main"
+    assert path == f"/snap/{MOONDREAM}/{recipe['revision']}"
 
 
 def test_grounding_dino_takes_the_ordinary_download(worker):
     worker.download(DINO)
-    assert worker._base.downloads == [(DINO, ["*.json", "model.safetensors"], {})]
+    assert worker._base.downloads == [(DINO, ["*.json", "model.safetensors"], {"revision": None})]
+
+
+def test_moondream_refuses_a_snapshot_that_is_not_its_pinned_commit(worker):
+    spec = formats.vision_torch_recipe(MOONDREAM)
+    with pytest.raises(RuntimeError, match="not the pinned commit"):
+        worker._Moondream(MOONDREAM, spec, f"/snap/{MOONDREAM}/{'c' * 40}")
 
 
 @pytest.mark.parametrize("body, needle", [

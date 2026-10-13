@@ -2178,7 +2178,7 @@ def test_an_extra_argument_skips_the_mirror_outright(base, monkeypatch, tmp_path
     fell_back = _hub_answers(base, monkeypatch, payload)
 
     assert base.download_snapshot(
-        "org/m", revision="refs/pr/3") == "/cache/snapshots/from-the-hub"
+        "org/m", max_workers=2) == "/cache/snapshots/from-the-hub"
     assert fell_back == ["org/m"]
     assert state["requests"] == []
 

@@ -67,6 +67,9 @@ class _Moondream:
     """Moondream 2 as its model card loads it: transformers running the repo's own code."""
 
     def __init__(self, model_id, spec, path):
+        # The repo's Python runs here, so only the reviewed commit may.
+        if os.path.basename(os.path.normpath(path)) != spec["revision"]:
+            raise RuntimeError(f"{model_id} resolved to {path}, not the pinned commit {spec['revision']}")
         from transformers import AutoModelForCausalLM
 
         self.device, dtype = _device(half=True)
@@ -150,7 +153,8 @@ def download(model_id):
         worker_base.download_file(
             MOONDREAM_TOKENIZER, formats.COMPONENT_REPOS[MOONDREAM_TOKENIZER]["file"],
             detail="Fetching Moondream's tokenizer…")
-    return worker_base.download_snapshot(model_id, allow_patterns=spec["allow"])
+    return worker_base.download_snapshot(model_id, allow_patterns=spec["allow"],
+                                         revision=spec.get("revision"))
 
 
 def load(model_id, path):
