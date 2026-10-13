@@ -1,14 +1,18 @@
 import { describe, expect, test } from "bun:test";
-import { BAR_COUNT, BAR_REST, bars, formatElapsed, iconFor, resolvePaused, shapeLevel, smoothLevel } from "./lib";
+import { BAR_COUNT, BAR_REST, bars, combineStates, formatElapsed, iconFor, MAX_ICONS, shapeLevel, smoothLevel, visibleApps } from "./lib";
 
 describe("bars", () => {
-  test("silence rests on the uneven taper, widest second and third", () => {
+  test("silence rests as five 2px dots of a 24px max", () => {
     const r = bars(0);
     expect(r).toEqual(BAR_REST);
     expect(r).toHaveLength(BAR_COUNT);
-    expect(r[1]).toBeGreaterThan(r[0]);
-    expect(r[2]).toBeGreaterThan(r[1]);
-    expect(r[2]).toBeGreaterThan(r[4]);
+    r.forEach((w) => expect(w).toBeCloseTo(2 / 24));
+  });
+  test("normal speech brings the middle bar to full width", () => {
+    const b = bars(0.6);
+    expect(b[2]).toBeCloseTo(1);
+    expect(b[2]).toBeGreaterThan(b[0]);
+    expect(b[0]).toBeLessThan(1);
   });
   test("pause rests regardless of level", () => {
     expect(bars(1, true)).toEqual(BAR_REST);
@@ -22,8 +26,8 @@ describe("bars", () => {
     }
     const loud = bars(1);
     expect(loud[2]).toBeCloseTo(1);
-    expect(loud[2]).toBeGreaterThan(loud[0]);
-    expect(loud[2]).toBeGreaterThan(loud[4]);
+    expect(loud[2]).toBeGreaterThanOrEqual(loud[0]);
+    expect(loud[2]).toBeGreaterThanOrEqual(loud[4]);
   });
   test("garbage and out-of-range levels clamp", () => {
     expect(bars(NaN)).toEqual(bars(0));
@@ -70,21 +74,44 @@ describe("iconFor", () => {
   });
 });
 
-describe("resolvePaused", () => {
-  const pending = { want: true, until: 1000 };
-  test("no pending: the server wins", () => {
-    expect(resolvePaused(false, null, 5)).toEqual({ paused: false, pending: null });
-    expect(resolvePaused(undefined, null, 5)).toEqual({ paused: false, pending: null });
-    expect(resolvePaused(true, null, 5)).toEqual({ paused: true, pending: null });
+const pi = (id: string) => ({ id, name: id, app: "", icon: null, flavor: "render" as const, canPause: true, mode: "audio" });
+
+describe("visibleApps", () => {
+  test("up to MAX_ICONS show all, newest first", () => {
+    expect(visibleApps([pi("a")])).toEqual({ shown: [pi("a")], extra: 0 });
+    expect(visibleApps([pi("a"), pi("b"), pi("c")]).shown.map((x) => x.id)).toEqual(["c", "b", "a"]);
+    expect(visibleApps([pi("a"), pi("b"), pi("c")]).extra).toBe(0);
   });
-  test("server lagging: the wanted value holds and pending stays", () => {
-    expect(resolvePaused(false, pending, 500)).toEqual({ paused: true, pending });
+  test("over MAX_ICONS the last slot becomes a +N chip", () => {
+    const r4 = visibleApps([pi("a"), pi("b"), pi("c"), pi("d")]);
+    expect(r4.shown.map((x) => x.id)).toEqual(["d", "c"]);
+    expect(r4.extra).toBe(2);
+    const r6 = visibleApps(["a", "b", "c", "d", "e", "f"].map(pi));
+    expect(r6.shown.map((x) => x.id)).toEqual(["f", "e"]);
+    expect(r6.extra).toBe(4);
+    expect(MAX_ICONS).toBe(3);
   });
-  test("server agreeing clears pending", () => {
-    expect(resolvePaused(true, pending, 500)).toEqual({ paused: true, pending: null });
+});
+
+describe("combineStates", () => {
+  const m = (o: Record<string, { level?: number; paused?: boolean; seconds?: number }>) => new Map(Object.entries(o));
+  test("level is the max over non-paused states", () => {
+    expect(combineStates(["a", "b", "c"], m({ a: { level: 0.2, seconds: 3 }, b: { level: 0.7, paused: true, seconds: 9 }, c: { level: 0.5, seconds: 1 } })))
+      .toEqual({ level: 0.5, paused: false, seconds: 9 });
   });
-  test("deadline expiry gives the server's value back", () => {
-    expect(resolvePaused(false, pending, 1000)).toEqual({ paused: false, pending: null });
-    expect(resolvePaused(false, pending, 2000)).toEqual({ paused: false, pending: null });
+  test("all paused", () => {
+    expect(combineStates(["a", "b"], m({ a: { level: 0.4, paused: true, seconds: 2 }, b: { paused: true, seconds: 5 } })))
+      .toEqual({ level: 0, paused: true, seconds: 5 });
+  });
+  test("a recording with no state yet counts as live", () => {
+    expect(combineStates(["a", "b"], m({ a: { paused: true } })).paused).toBe(false);
+    expect(combineStates(["a", "b"], m({})).paused).toBe(false);
+    expect(combineStates(["a", "b"], m({ b: { level: 0.3 } })).level).toBe(0.3);
+  });
+  test("empty", () => {
+    expect(combineStates([], m({}))).toEqual({ level: 0, paused: false, seconds: 0 });
+  });
+  test("states of removed ids are ignored", () => {
+    expect(combineStates(["a"], m({ a: { level: 0.1 }, z: { level: 0.9 } })).level).toBe(0.1);
   });
 });

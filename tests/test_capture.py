@@ -1637,6 +1637,74 @@ def test_describe_carries_the_apps_icon_url(tmp_path):
     assert recording_pill.describe(S())["icon"] is None
 
 
+def _pill_session(page):
+    class S:
+        id, mode, can_pause = "c1", "audio", True
+
+    S.page = str(page)
+    return S
+
+
+def _pill_repo(tmp_path, monkeypatch):
+    """A parent repo whose pyproject.toml declares deps, so it is the project root."""
+    from fused_render import projectenv
+
+    monkeypatch.setattr(projectenv, "_ceiling", lambda: str(tmp_path))
+    repo = tmp_path / "repo"
+    (repo / "apps" / "foo" / "sub").mkdir(parents=True)
+    (repo / "pyproject.toml").write_text(
+        '[project]\nname = "r"\nversion = "0"\ndependencies = ["requests"]\n')
+    (repo / "apps" / "foo" / "index.html").write_text("<html></html>")
+    (repo / "apps" / "foo" / "sub" / "page.html").write_text("<html></html>")
+    return repo
+
+
+_SVG = "<svg xmlns='http://www.w3.org/2000/svg'/>"
+
+
+def test_describe_uses_the_nearest_icon_below_a_parent_project_root(tmp_path, monkeypatch):
+    from urllib.parse import unquote
+    from fused_render import recording_pill
+
+    repo = _pill_repo(tmp_path, monkeypatch)
+    foo = repo / "apps" / "foo"
+    (foo / "icon.svg").write_text(_SVG)
+
+    info = recording_pill.describe(_pill_session(foo / "sub" / "page.html"))
+    assert info["icon"] is not None
+    assert unquote(info["icon"]).split("path=")[1].split("&")[0] == str(foo / "icon.svg")
+    assert info["name"] == "foo"
+    assert info["app"].replace("\\", "/").endswith("apps/foo")
+
+
+def test_describe_falls_back_to_the_root_icon(tmp_path, monkeypatch):
+    from fused_render import recording_pill
+
+    repo = _pill_repo(tmp_path, monkeypatch)
+    (repo / "icon.svg").write_text(_SVG)
+
+    info = recording_pill.describe(_pill_session(repo / "apps" / "foo" / "sub" / "page.html"))
+    assert info["icon"] is not None
+    assert info["name"] == "repo" and info["app"] == str(repo)
+
+
+def test_describe_without_any_icon_keeps_the_root(tmp_path, monkeypatch):
+    from fused_render import recording_pill
+
+    repo = _pill_repo(tmp_path, monkeypatch)
+
+    info = recording_pill.describe(_pill_session(repo / "apps" / "foo" / "index.html"))
+    assert info["icon"] is None
+    assert info["app"] == str(repo) and info["name"] == "repo"
+
+
+def test_describe_with_no_page_is_the_generic_fused_pill():
+    from fused_render import recording_pill
+
+    info = recording_pill.describe(_pill_session(""))
+    assert info["icon"] is None and info["name"] == "Fused" and info["app"] == ""
+
+
 def test_a_resume_after_stop_never_reaches_the_backend(backend, client, home):
     """`stop` can pop the session between `_set_paused`'s `_live` and its backend
     call; a mic `resume` on the finished recorder would overwrite the take."""

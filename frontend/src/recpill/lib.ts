@@ -22,10 +22,10 @@ export interface PillState {
 }
 
 export const BAR_COUNT = 5;
-/** Widths at rest as a fraction of the widest (20 px): Notion's uneven taper. */
-export const BAR_REST = [9 / 20, 12 / 20, 15 / 20, 11 / 20, 6 / 20];
+/** Widths at rest as a fraction of the widest (24 px): small dots, so silence and sound read differently. */
+export const BAR_REST = [2 / 24, 2 / 24, 2 / 24, 2 / 24, 2 / 24];
 /** How far each bar grows toward full width at level 1: the middle bars lead. */
-const BAR_GAIN = [0.7, 0.9, 1, 0.9, 0.7];
+const BAR_GAIN = [1.1, 1.5, 1.8, 1.5, 1.1];
 
 const clamp01 = (n: number) => (Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : 0);
 
@@ -40,7 +40,7 @@ export function smoothLevel(shaped: number, displayed: number): number {
 }
 
 /** Turn one 0..1 (already shaped) level into BAR_COUNT bar widths (0..1 of the widest). Each bar grows from its rest
- *  width toward full by its gain; a paused or silent pill rests on the taper. */
+ *  width toward full by its gain; a paused or silent pill rests on the dots. */
 export function bars(level: number, paused = false): number[] {
   const lv = paused ? 0 : clamp01(level);
   return BAR_REST.map((rest, i) => rest + (1 - rest) * Math.min(1, lv * BAR_GAIN[i]));
@@ -61,17 +61,27 @@ export function iconFor(info: Pick<PillInfo, "icon" | "flavor">): { kind: "app" 
   return { kind: "home", src: null, scale: info.flavor === "bot" ? "124.3%" : "113.7%" };
 }
 
-/** A pause/resume the user just asked for that the server has not confirmed yet. */
-export interface PendingPause { want: boolean; until: number }
+/** Most icons the pill stacks; past this the last slot is a "+N" chip. */
+export const MAX_ICONS = 3;
 
-/** Decide what the pill shows for `paused`: while a click is pending and the server still reports the old value
- *  (and the deadline has not passed) the wanted value wins; once the server agrees or time runs out, the server wins. */
-export function resolvePaused(
-  serverPaused: boolean | undefined,
-  pending: PendingPause | null,
-  now: number,
-): { paused: boolean; pending: PendingPause | null } {
-  const server = !!serverPaused;
-  if (pending && server !== pending.want && now < pending.until) return { paused: pending.want, pending };
-  return { paused: server, pending: null };
+/** Which recordings get an icon. `infos` is newest-last (as the panel sends it); `shown` is newest-first. */
+export function visibleApps(infos: PillInfo[]): { shown: PillInfo[]; extra: number } {
+  const newestFirst = infos.slice().reverse();
+  if (infos.length <= MAX_ICONS) return { shown: newestFirst, extra: 0 };
+  return { shown: newestFirst.slice(0, MAX_ICONS - 1), extra: infos.length - (MAX_ICONS - 1) };
+}
+
+/** One meter for all recordings: the loudest non-paused level; paused only when every current recording has a polled state and all are paused. A recording not polled yet counts as live. */
+export function combineStates(ids: string[], states: Map<string, PillState>): { level: number; paused: boolean; seconds: number } {
+  let level = 0;
+  let seconds = 0;
+  let allPaused = ids.length > 0;
+  for (const id of ids) {
+    const s = states.get(id);
+    if (!s || !s.paused) allPaused = false;
+    if (!s) continue;
+    if (!s.paused) level = Math.max(level, s.level ?? 0);
+    seconds = Math.max(seconds, s.seconds ?? 0);
+  }
+  return { level, paused: allPaused, seconds };
 }
