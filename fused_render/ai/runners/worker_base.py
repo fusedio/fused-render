@@ -4172,10 +4172,8 @@ def download_snapshot(model_id, allow_patterns=None, ignore_patterns=None,
     `snapshot_download` would fetch a tenth of a repo behind a bar priced at all
     of it.
 
-    `revision` (a commit sha) is first-class for the same reason: it pins the
-    cache lookup, the mirror (a manifest at any other commit is a miss), the
-    listing and the fetch alike — a recipe that runs repo code (`trust_remote_code`)
-    must load the commit it was reviewed at, not whatever `main` became.
+    `revision` (a commit sha) is first-class too, so a pin reaches the cache
+    lookup, the mirror, the listing and the fetch alike.
     """
     pin = {"revision": revision} if revision else {}
 

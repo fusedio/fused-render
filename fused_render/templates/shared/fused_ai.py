@@ -892,17 +892,10 @@ def vision(image: str, task: str, prompt: str | None = None, *,
            max_objects: int | None = None, model: str | None = None,
            provider: str | None = None,
            timeout: float = _DEFAULT_TIMEOUT_S) -> dict:
-    """`POST /api/ai/vision` (SPEC AI-33). Caption, query, detect or point at
-    what is in one image, on a local model.
+    """`POST /api/ai/vision` (SPEC AI-33): caption, query, detect or point on one image.
 
-    `task` is `"caption"` (no prompt; `length` short/normal/long), `"query"`
-    (`prompt` is the question; `reasoning=True` thinks first), `"detect"` or
-    `"point"` (`prompt` names what to look for; `max_objects` caps the count).
-    Returns the D632 frame with `task`, `imageSize` and one of `text`,
-    `objects` (`[{xMin, yMin, xMax, yMax, label, score}]`) or `points`;
-    coordinates are 0–1 of the image. Each model answers a subset
-    of the tasks; with no `model` the first suggested one that can is used.
-    `image` is made absolute here, like `embed`'s paths.
+    Returns the D632 frame with `task`, `imageSize` and `text`, `objects` or
+    `points` (0–1 coordinates). `image` is made absolute here, like `embed`'s paths.
     """
     body: dict = {"image": os.path.abspath(os.path.expanduser(image)), "task": task}
     for key, value in (("prompt", prompt), ("length", length), ("reasoning", reasoning),

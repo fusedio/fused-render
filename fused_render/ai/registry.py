@@ -145,9 +145,7 @@ VIDEO_GENERATION = "text-to-video"
 #:   how HS-0 ("everything on this tab is runnable here") keeps holding.
 DECISIONS = "text-classification"
 TEXT_TO_SPEECH = "text-to-speech"
-#: Image understanding (SPEC AI-33, `fused.ai.vision`): caption, query, detect,
-#: point and segment, each model answering a subset. The Hub's `image-to-text`
-#: tag, gated like DECISIONS: only `formats.VISION_TORCH_RECIPES` repos qualify.
+#: `fused.ai.vision` (SPEC AI-33); format-gated like DECISIONS to `formats.VISION_TORCH_RECIPES`.
 VISION = "image-to-text"
 
 # --------------------------------------------------------------- SPEC AI-28

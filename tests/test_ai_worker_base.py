@@ -1421,23 +1421,13 @@ def test_a_bar_survives_the_rate_postfix_call_hf_makes_on_it(base, monkeypatch):
     bar.update(100)
 
     _set_aggregate_rate_postfix(bar)  # must not raise AttributeError
+    # huggingface_hub 2.x ends a finished download with these two (hub 2.2.0).
+    bar.set_description_str("Download complete")
+    bar.clear()
 
     assert bar.format_dict["rate"] is None
     assert bar.format_dict["n"] == 100
     assert bar.format_dict["total"] == 1000
-
-
-def test_a_bar_survives_the_calls_huggingface_hub_2_makes_on_it(base):
-    """huggingface_hub 2.x ends `snapshot_download` with
-    `transfer_progress.set_description_str("Download complete")` and clears a
-    xet bar; on `_Bar` both raised AttributeError after every byte had landed,
-    failing a finished download (seen loading vikhyatk/moondream2, hub 2.2.0)."""
-    ticker = base._HubByteTicker()
-    bar = _bytes_bar(ticker, "Downloading bytes", total=10)
-    bar.update(10)
-    bar.set_description_str("Download complete")
-    bar.clear()
-    assert ticker.value == 10
 
 
 def test_a_bars_own_n_is_updated_under_the_same_lock_as_the_ticker(base):
@@ -2753,89 +2743,47 @@ def test_download_snapshots_kwargs_fallback_sweeps_orphans_too(base, monkeypatch
     assert not orphan.exists(), "the kwargs fallback did not sweep orphan parts"
 
 
-def test_a_pinned_revision_reaches_the_cache_lookup_the_listing_and_the_fetch(
+def test_a_pinned_download_asks_for_its_commit_everywhere_and_leaves_refs_main(
         base, monkeypatch, tmp_path):
-    # A recipe that runs repo code pins a commit; every path must ask for that commit.
-    pin = "a" * 40
+    # A recipe that runs repo code pins a commit (D1353).
+    pin, other = "a" * 40, "b" * 40
+    asked, refs = [], []
     folder = _cache_folder(tmp_path)
     snapshot = _snapshot_dir(tmp_path, "config.json")
     hub = _LocalHub(cached=[], snapshot=snapshot)
-    asked = []
 
-    def spy(model_id, allow_patterns=None, ignore_patterns=None,
-            local_files_only=False, **kw):
-        asked.append((local_files_only, kw.get("revision")))
+    def spy(model_id, local_files_only=False, revision=None, **kw):
+        asked.append(revision)
         if local_files_only:
             raise hub.LocalEntryNotFoundError(model_id)
         return snapshot
 
+    def fetch(model_id, names, revision, ref=base.DEFAULT_REVISION, **kw):
+        refs.append(ref)
+        raise RuntimeError("fall back")
+
+    class Mirror:
+        commit = other
+        allowed = staticmethod(lambda model_id: True)
+        manifest = classmethod(lambda cls, model_id: {
+            "commit": cls.commit, "files": [{"name": "config.json", "size": 7}]})
+        file_meta = staticmethod(lambda model_id, manifest: {})
+
     hub.snapshot_download = spy
     _local_hub(monkeypatch, base, hub, folder=folder)
-    listed = []
-    monkeypatch.setattr(base, "_repo_files", lambda *a, **kw: listed.append(
-        kw.get("revision")) or (pin, [("config.json", 7)]))
-    monkeypatch.setattr(base, "_mirror_snapshot", lambda *a, **kw: None)
-    monkeypatch.setattr(base, "_segmented_fetch", _raiser(RuntimeError("no ranges")))
+    monkeypatch.setattr(base, "_mirror_module", lambda: Mirror)
+    monkeypatch.setattr(base, "_repo_files", lambda *a, **kw: (kw["revision"], [("config.json", 7)]))
+    monkeypatch.setattr(base, "_segmented_fetch", fetch)
     monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
 
     assert base.download_snapshot("u/x", revision=pin) == snapshot
-    assert listed == [pin]
-    assert all(revision == pin for _local, revision in asked), asked
-
-
-def test_a_pinned_fetch_names_the_commit_as_its_ref_so_refs_main_is_left_alone(
-        base, monkeypatch, tmp_path):
-    pin = "a" * 40
-    refs = []
-
-    def fetch(model_id, names, revision, ref=base.DEFAULT_REVISION, **kw):
-        refs.append(ref)
-        raise RuntimeError("stop after the call")
-
-    class Mirror:
-        allowed = staticmethod(lambda model_id: True)
-        manifest = staticmethod(lambda model_id: {
-            "commit": pin, "files": [{"name": "config.json", "size": 7}]})
-        file_meta = staticmethod(lambda model_id, manifest: {})
-
-    monkeypatch.setattr(base, "_mirror_module", lambda: Mirror)
-    monkeypatch.setattr(base, "_segmented_fetch", fetch)
-    monkeypatch.setattr(base, "fetch_with_progress", lambda model_id, fn, **kw: fn())
-    assert base._mirror_snapshot("u/x", revision=pin) is None
-
-    folder = _cache_folder(tmp_path)
-    snapshot = _snapshot_dir(tmp_path, "config.json")
-    _local_hub(monkeypatch, base, _LocalHub(cached=[], snapshot=snapshot), folder=folder)
-    monkeypatch.setattr(base, "_mirror_snapshot", lambda *a, **kw: None)
-    monkeypatch.setattr(base, "_repo_files", lambda *a, **kw: (pin, [("config.json", 7)]))
-    monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
+    assert asked == [pin] and refs == [pin]  # the Hub fallback; a mirror at another commit is not tried
+    Mirror.commit = pin
+    asked.clear(), refs.clear()
     base.download_snapshot("u/x", revision=pin)
-    base.download_snapshot("u/x")
-    assert refs == [pin, pin, base.DEFAULT_REVISION]
-    # And a sha-named ref writes no file at all.
+    assert refs == [pin, pin]  # mirror, then the Hub listing, both name the pin as ref
     base._write_ref(str(folder), pin, pin)
     assert not (folder / "refs" / pin).exists()
-
-
-def test_a_mirror_manifest_at_another_commit_is_a_miss_for_a_pinned_download(
-        base, monkeypatch):
-    reached = []
-
-    class Mirror:
-        allowed = staticmethod(lambda model_id: True)
-        manifest = staticmethod(lambda model_id: {
-            "commit": "b" * 40, "files": [{"name": "config.json", "size": 7}]})
-
-        @staticmethod
-        def file_meta(model_id, manifest):
-            reached.append(manifest["commit"])
-            raise RuntimeError("stop before any fetch")
-
-    monkeypatch.setattr(base, "_mirror_module", lambda: Mirror)
-    assert base._mirror_snapshot("u/x", revision="a" * 40) is None
-    assert reached == []
-    assert base._mirror_snapshot("u/x", revision="b" * 40) is None
-    assert reached == ["b" * 40]
 
 
 def test_a_TORN_record_left_by_a_crashed_write_is_not_read_as_a_record(

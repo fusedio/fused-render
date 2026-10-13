@@ -1,9 +1,4 @@
-// The vision stage (SPEC AI-33): one picture, one task, the answer drawn on it.
-//
-// A vision model answers a SUBSET of `fused.ai.vision`'s tasks (the catalog
-// row's `tasks`), so the task switch offers only those. Boxes and points come
-// back in 0–1 image coordinates and are drawn as an SVG over the picture.
-// Picture, task and prompt are session state, never URL state.
+// The vision stage (SPEC AI-33): one picture, one task (from the model's `tasks`), the answer drawn on it.
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Card } from "@platform/shadcn/ui/card";
 import { pickFile, rawUrl, type AiCatalogModel } from "@platform/lib/api";

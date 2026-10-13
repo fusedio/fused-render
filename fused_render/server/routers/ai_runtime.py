@@ -204,8 +204,7 @@ _DECIDE_SERVER_OPTIONS = _DECIDE_OPTIONS
 #: The three question types Laya's decision heads answer. Closed: a fourth
 #: type is a 400 here, not a worker traceback.
 _DECIDE_TYPES = frozenset({"choice", "score", "noul"})
-#: `/api/ai/vision`'s caller-facing option names (SPEC AI-33). Pinned against
-#: `runtime.js`'s `visionKeys` and `fused_ai.py`'s `_VISION_WIRE_KEYS`.
+#: `/api/ai/vision`'s options (SPEC AI-33); tests pin `visionKeys` and `_VISION_WIRE_KEYS` to it.
 _VISION_OPTIONS = frozenset({"image", "task", "prompt", "length", "reasoning",
                              "maxObjects", "model", "provider"})
 #: `base` is bridge-injected so a relative `image` resolves beside the page (RH-1).
@@ -3329,13 +3328,9 @@ def api_ai_vision(body: dict = Body(...), x_fused: str | None = Header(default=N
                   x_fused_page: str | None = Header(default=None),
                   x_fused_requester: str | None = Header(default=None),
                   x_fused_requester_label: str | None = Header(default=None)):
-    """Caption, query, detect or point at what is in one image (SPEC AI-33).
+    """Caption, query, detect or point on one image (SPEC AI-33), synchronous like decide.
 
-    Synchronous like decide: a call is seconds, a cold model is `model_loading`
-    with the load's job id. Each model answers a subset of the tasks (its
-    recipe's `tasks`, shown on its catalog row); with no `model`, the first
-    suggested model that answers the task is used. Coordinates come back
-    normalized to 0–1.
+    With no `model`, the first suggested model whose recipe answers the task is used.
     """
     guard = _require_fused(x_fused)
     if guard is not None:

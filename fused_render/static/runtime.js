@@ -305,24 +305,13 @@
  *     runner on this machine: Apple Silicon only).
  *   fused.ai.vision({image, task, prompt, length, reasoning, maxObjects, model,
  *                    provider, abortSignal})  (SPEC AI-33)
- *     -> Promise<{task, imageSize: {width, height}, text?, reasoning?,
- *                 objects?, points?, ...frame}>
- *     providerMetadata.local: {runner, seconds}.
- *     Image understanding on a local model. `image`: one path, resolved
- *     beside this page when relative. `task`: "caption" (no prompt; `length`
- *     "short" | "normal" | "long") | "query" (`prompt` is the question,
- *     `reasoning: true` thinks first; reply `text`, maybe `reasoning`) |
- *     "detect" (`prompt` names what to find; reply `objects: [{xMin, yMin,
- *     xMax, yMax, label, score}]`, score null when the model gives none) |
- *     "point" (reply `points: [{x, y, label}]`).
- *     Coordinates are 0–1 of the image. `maxObjects` caps detect/point.
- *     Each model answers a subset — its catalog entry's `tasks`; with no
- *     `model`, the first suggested model that answers `task` is used. Not
- *     job-backed. Rejects .type "bad_request" (bad option, or a model that
- *     cannot do `task` — the message names one that can) | "model_loading"
- *     (.jobId is the load this call started — watch it and retry) |
- *     "model_slot_conflict" (terminal, as for decide) | "ai_error" |
- *     "unavailable" (no vision runner here: Apple Silicon only).
+ *     -> Promise<{task, imageSize, text?, reasoning?, objects?, points?, ...frame}>
+ *     `image`: one path (relative = beside this page). `task`: "caption"
+ *     (`length`) | "query" (`prompt`, `reasoning`) | "detect" (`prompt`; reply
+ *     `objects: [{xMin, yMin, xMax, yMax, label, score}]`) | "point" (reply
+ *     `points: [{x, y, label}]`). Coordinates 0–1; `maxObjects` caps
+ *     detect/point. A model answers its catalog `tasks`; no `model` = first
+ *     that can. Rejects like decide ("bad_request" names a model that can).
  *   fused.capture.* -> record the screen, record the mic, grab a still
  *     screen({display, rect, audio, device, cursor, path, maxSeconds, title})
  *     -> Promise<handle> and audio({source: "mic"|"system"|"both", device, path, maxSeconds,

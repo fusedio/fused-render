@@ -24,9 +24,8 @@
 // reader can find, not as a checkbox on day one.
 import type { AiCatalogCapability, AiCatalogModel } from "@platform/lib/api";
 
-/** `registry.VIDEO_GENERATION` and `registry.DECISIONS`, plus Vision
- *  (`image-to-text`, SPEC AI-33) until onboarding has a reason to offer it.
- *  Left out of the step — see the header. */
+/** `registry.VIDEO_GENERATION`, `registry.DECISIONS` and Vision. Left out of
+ *  the step — see the header. */
 const EXCLUDED_CAPABILITIES = new Set([
   "text-to-video", "text-classification", "text-to-speech", "image-to-text",
 ]);

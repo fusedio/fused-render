@@ -10206,34 +10206,21 @@ an AI Models page that could say what was on disk but not what was *running*.
   default is `Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16` (2.50 GB); each row has
   `voiceMode`, and a downloaded row adds `voices`/`languages`. Onboarding and
   the benchmark leave it out.
-- **AI-33** **`image-to-text` capability ("Vision") and `fused.ai.vision({image,
-  task, prompt, ...})` verb (D1353).** One verb for every image-understanding
-  task: `caption` (no prompt; `length`), `query` (`prompt` is the question;
-  `reasoning`), `detect` and `point` (`prompt` names what to find;
-  `maxObjects`). Each model answers a subset, fixed by its recipe and published
-  as its catalog entry's `tasks`; with no `model` the route uses the first
-  suggested model that answers the task, and a model that cannot do it is a
-  `bad_request` naming one that can. The payload is `task`, `imageSize` and one
-  of `text` (+ `reasoning`), `objects: [{xMin, yMin, xMax, yMax, label, score}]`
-  (score null when the model gives none) or `points: [{x, y, label}]`;
-  coordinates are 0–1 of the image as a browser shows it (EXIF orientation
-  applied). `POST /api/ai/vision` is decide's shape (closed options, local
-  only, synchronous, `model_loading` + job id on a cold model) with `image`
-  resolved beside the page named by `base`. One runner today, `vision-torch`
-  (Apple Silicon, own venv, torch MPS), running repos from
-  `formats.VISION_TORCH_RECIPES` only: both Hub tags it serves
-  (`image-to-text`, `zero-shot-object-detection`) are format-gated, and the
-  loader claims a snapshot by curated repo id, not by layout. Two families,
-  both through transformers' `from_pretrained`: Moondream 2 at a pinned,
-  reviewed commit (its model is the repo's own Python, `trust_remote_code`;
-  the pin is `download_snapshot`'s first-class `revision`, so the cache fast
-  path and the mirror still serve it, the mirror only at that commit; its
-  tokenizer `moondream/starmie-v1` is a `COMPONENT_REPOS` file fetched with
-  it) and Grounding DINO. The catalog lists Grounding DINO Tiny and Base
-  (detect) and Moondream 2 (caption, query, detect, point; recommended). A new
-  family is a recipe plus a family class, or a runner of its own on the same
-  capability; a new task (a segmenter's masks) is added with the first model
-  that answers it. Onboarding and the benchmark leave it out.
+- **AI-33** **`image-to-text` ("Vision") and `fused.ai.vision({image, task,
+  prompt, ...})` (D1353).** Tasks: `caption` (`length`), `query` (`prompt`,
+  `reasoning`), `detect` and `point` (`prompt`, `maxObjects`). A model answers
+  the tasks its recipe lists (catalog `tasks`); with no `model` the first
+  suggestion that answers the task is used, and an unable model is a
+  `bad_request` naming one that can. Reply: `task`, `imageSize`, then `text`
+  (+ `reasoning`), `objects: [{xMin, yMin, xMax, yMax, label, score}]` or
+  `points: [{x, y, label}]`, in 0–1 coordinates of the upright image.
+  `POST /api/ai/vision` has decide's shape (closed options, local only,
+  synchronous, `model_loading` + job id). Runner `vision-torch` (Apple
+  Silicon, torch MPS) runs only `formats.VISION_TORCH_RECIPES`: Grounding DINO
+  Tiny/Base (detect) and Moondream 2 (caption, query, detect, point;
+  recommended), both via transformers; Moondream at a pinned commit. A new
+  model is a recipe (plus a family class for a new kind). Not in onboarding or
+  the benchmark.
 
 ## 41. Scheduled Messages — Sending Claude a Message Later (D289, D290, D291)
 

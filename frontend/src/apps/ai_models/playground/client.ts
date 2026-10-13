@@ -720,9 +720,7 @@ export interface VisionResult {
   providerMetadata: Record<string, { runner?: string; seconds?: number | null }>;
 }
 
-/** One vision request. Absolute `image` (the shell has no `?path=` to resolve
- *  against, like `embedPaths`); a cold model throws `ModelLoading`, a contended
- *  slot `ModelSlotConflict`. */
+/** One vision request (absolute `image`); a cold model throws `ModelLoading`. */
 export async function vision(
   model: string,
   request: VisionRequest,

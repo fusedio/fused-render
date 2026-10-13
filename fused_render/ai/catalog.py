@@ -1524,11 +1524,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
                     "instructions and options.",
         },
     ],
-    # **Image understanding (SPEC AI-33).** Which tasks each model answers is its
-    # `formats.VISION_TORCH_RECIPES` row (added as `tasks` by `/api/ai/catalog`);
-    # the route picks the first model here that answers a request's task, so the
-    # detect-only rows leading the list never strand a bare caption request.
-    # Sizes are the fetched files' blob totals (HF API, 2026-10-13).
+    # Vision (SPEC AI-33): each model's tasks come from its recipe. Sizes: HF API, 2026-10-13.
     "vision-torch": [
         {
             "id": "IDEA-Research/grounding-dino-tiny",

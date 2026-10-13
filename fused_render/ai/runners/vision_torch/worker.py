@@ -1,10 +1,5 @@
-"""Image understanding on torch (SPEC AI-33): caption, query, detect, point.
-
-Started by `fused_render.ai.supervisor` on the interpreter built from this
-folder's `pyproject.toml`; the HTTP contract and download reporting are
-`worker_base`'s. Which repos load, and which tasks each answers, is
-`formats.VISION_TORCH_RECIPES`; a family class below runs each kind, both
-through transformers' own `from_pretrained`.
+"""Image understanding on torch (SPEC AI-33): one family class per kind of model in
+`formats.VISION_TORCH_RECIPES`, both through transformers. Served by `worker_base`.
 """
 
 import os
