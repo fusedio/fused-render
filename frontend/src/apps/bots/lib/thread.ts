@@ -118,7 +118,8 @@ export interface FoldStretch {
 /** A row the fold may hide: the bot's process, unless something made it part of the exchange. */
 const hideable = (e: BotEvent, rx: Record<number, string>, quoted: Set<number>): boolean =>
   (e.role === "thought" || e.role === "action" || e.role === "note")
-  && !e.app?.dir && !e.build && !isHandoff(e) && !rx[e.seq] && !quoted.has(e.seq);
+  // The Clear marker is a `note` too (source "clear"): the other fold's own boundary, never a step.
+  && e.source !== "clear" && !e.app?.dir && !e.build && !isHandoff(e) && !rx[e.seq] && !quoted.has(e.seq);
 
 /**
  * The fold stretches of a thread. `live`: the bot is mid-task, so a stretch that runs to the END of the list is still
