@@ -23,6 +23,7 @@ from __future__ import annotations
 import logging
 import queue
 import threading
+import time
 
 from fused_render.bots.channels import base
 from fused_render.bots.channels.base import OUT_ROLES, Caps, Channel, Inbound
@@ -94,9 +95,11 @@ class Router:
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
         self._pending: dict[str, tuple] = {}  # bot id -> (seq, options) of the numbered question still awaiting a texted answer
-        # bot id -> (seq, options) of the approval card texted with its Approve / Deny numbering. Kept apart from
-        # _pending, which any user event pops: a Mac-typed instruction ("wait, check the price") leaves the card up,
-        # and the phone's later "1" must still map and still count for that card. Cleared when the task ends.
+        # bot id -> (seq, options, sent_at) of the approval card texted with its Approve / Deny numbering. Kept apart
+        # from _pending, which any user event pops: a Mac-typed instruction ("wait, check the price") leaves the card
+        # up, and the phone's later "1" must still map and still count for that card. `sent_at` is the clock the
+        # reply's own time is held against: a reply written before the card went out answers an older one, not this.
+        # Cleared when the task ends.
         self._texted_card: dict[str, tuple] = {}
         self._errors: dict[str, str] = {}         # kind -> last router-side error for Settings
         self._lock = threading.Lock()
@@ -162,10 +165,13 @@ class Router:
         if seq is not None and waiting != seq:
             opts = []
         via = base.via(ch.kind, m.addr)
-        if card and waiting == card[0]:
-            # The bot still waits on the card this sender was texted: the reply is that card's answer and nothing
-            # else's (docs §10). "1" maps to Approve even after a Mac instruction popped _pending; the words are
-            # then read by the gate as the web's are (YES approves, NO denies, anything else is an instruction).
+        if card and waiting == card[0] and (m.ts or 0) >= card[2]:
+            # The bot still waits on the card this sender was texted, and the reply was written after the card went
+            # out: it is that card's answer and nothing else's (docs §10). A reply older than the card (typed for an
+            # earlier card the Mac then answered, delivered late) is left unstamped, so the gate treats it as an
+            # instruction and _texted_approval holds a bare yes/no. "1" maps to Approve even after a Mac instruction
+            # popped _pending; the words are then read by the gate as the web's are (YES approves, NO denies,
+            # anything else is an instruction).
             opts = opts or list(card[1])
             via["answers"] = card[0]
         text = map_answer(text, opts)
@@ -237,7 +243,8 @@ class Router:
             with self._lock:
                 self._pending[bot.id] = (ev.get("seq"), numbered)
                 if ev.get("role") == "approval":
-                    self._texted_card[bot.id] = (ev.get("seq"), numbered)  # the one card a texted yes may settle
+                    # The one card a texted yes may settle, and the clock a reply must postdate (dispatch).
+                    self._texted_card[bot.id] = (ev.get("seq"), numbered, time.time())
         return sent
 
     def _send_loop(self) -> None:

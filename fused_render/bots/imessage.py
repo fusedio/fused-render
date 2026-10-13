@@ -235,7 +235,7 @@ def open_db():
 
 
 def new_messages(db, after_rowid):
-    """[(rowid, handle, text, service, is_group)] for texts from others after
+    """[(rowid, handle, text, service, is_group, ts)] for texts from others after
     `after_rowid`, one row per message that still has text to show — the
     channel's `_tick` is the policy layer that decides what to skip (group
     chats, SMS, whoever isn't its owner), the same way it already decides
@@ -243,26 +243,35 @@ def new_messages(db, after_rowid):
     even when the channel goes on to skip it, so a group chat (or any other
     skipped row) at the tip of the log can never leave the cursor stuck
     replaying rows the channel has already looked at and declined.
-    `service` is the handle's ("iMessage", "SMS", "RCS"); the channel trusts only iMessage."""
+    `service` is the handle's ("iMessage", "SMS", "RCS"); the channel trusts only iMessage.
+    `ts` is the message's own time (`message.date`, unix seconds; 0 when unset), not
+    the poll's: the router compares it with the time it texted an approval card."""
     rows = db.execute(
-        """select m.ROWID, h.id, m.text, m.attributedBody, c.chat_identifier, h.service
+        """select m.ROWID, h.id, m.text, m.attributedBody, c.chat_identifier, h.service, m.date
            from message m
            left join handle h on h.ROWID = m.handle_id
            left join chat_message_join j on j.message_id = m.ROWID
            left join chat c on c.ROWID = j.chat_id
            where m.ROWID > ? and m.is_from_me = 0 order by m.ROWID""", (after_rowid,)).fetchall()
     out, seen = [], set()
-    for rowid, handle, text, body, chat_id, service in rows:
+    for rowid, handle, text, body, chat_id, service, date in rows:
         if rowid in seen:
             continue
         seen.add(rowid)
         t = (text or "").strip() or decode_attributed_body(body).strip()
         if t and t != "￼":  # U+FFFC = attachment-only message
-            out.append((rowid, norm_handle(handle), t, service or "", (chat_id or "").startswith("chat")))
+            out.append((rowid, norm_handle(handle), t, service or "", (chat_id or "").startswith("chat"), apple_ts(date)))
     return out
 
 
 _APPLE_EPOCH = 978307200  # chat.db dates: ns since 2001-01-01
+
+
+def apple_ts(date) -> float:
+    """A chat.db `date` (ns, or s on old databases, since 2001-01-01) as unix seconds; 0.0 when unset."""
+    if not date:
+        return 0.0
+    return (date / 1e9 if date > 1e12 else float(date)) + _APPLE_EPOCH
 
 
 def recent_texts(handle, limit=20, after_rowid=0):

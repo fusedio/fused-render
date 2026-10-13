@@ -2100,8 +2100,10 @@ class Bot:
             return False
         self.emit("system", "This approval card is answered here at the Mac: use Approve or Deny on the card.", via=None)
         if (via or {}).get("kind") == "imessage":
+            # source="hold": the router reads a sourceless error as the task's end (it would forget the texted card
+            # and the numbered question); this one is a reply to the phone while the task goes on.
             self.emit("error", "That one needs your OK at the Mac: it was answered there already, or it did not fit in a text.",
-                      via=dict(via))
+                      via=dict(via), source="hold")
         return True
 
     def receive_app(self, text, via, images=None, follow_up=False, before=None):

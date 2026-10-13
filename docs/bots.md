@@ -545,7 +545,8 @@ router stamped it as the answer to that very card (`via["answers"]`,
 `channels.base.answers_card`: the card was texted to the sender as "Reply 1
 Approve · 2 Deny" and the bot still waited on it; amended 2026-10-13, §10
 "Approve by text"). Any other texted yes/no while a card is up is held with
-a system line and one text back (`Bot._texted_approval`); a texted reply never
+a system line and one text back (`Bot._texted_approval`; once nothing waits,
+a late "yes" is an ordinary instruction to the model); a texted reply never
 settles an app offer left open after a task (`_answer_pending_offer` is
 skipped), and offer questions are not numbered on the phone ("Answer it in
 the app."). Numbered options on Super Bot's own `ask` still map back. A text that arrives while Super Bot runs
@@ -1327,7 +1328,10 @@ The reply counts only for that card: `Router.deliver` records
 `_texted_card[bot] = (seq, options)` (kept apart from `_pending`, which any
 user event pops, so a Mac-typed instruction does not strip the phone's later
 "1"); `Router.dispatch` maps the number from it and stamps
-`via["answers"] = seq` only while `meta.waiting_on` is still that seq;
+`via["answers"] = seq` only while `meta.waiting_on` is still that seq and
+the reply's own time (`message.date`, carried on `Inbound.ts`) is not before
+the card's send (`sent_at` on the record: a "yes" typed for an earlier card
+and delivered late must not land on the next one);
 `_deliver_message` wraps the message as `Outside` with that via, and
 `_gate` reads `channels.base.answers_card(msg, seq)` beside its
 `not is_texted` test, so "1", "approve", "ok" and "no, too expensive" are

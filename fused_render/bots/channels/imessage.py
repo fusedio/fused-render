@@ -149,7 +149,7 @@ class ImessageChannel(Channel):
         sent = {t: ts for t, ts in (cur.get("sent") or {}).items() if now - ts < ECHO_WINDOW_S}
         cur["sent"] = sent
         out = []
-        for rowid, handle, text, service, is_group in im.new_messages(self.db, int(cur["rowid"])):
+        for rowid, handle, text, service, is_group, ts in im.new_messages(self.db, int(cur["rowid"])):
             cur["rowid"] = rowid
             if is_group:
                 continue  # group chat
@@ -160,7 +160,9 @@ class ImessageChannel(Channel):
             if text.strip() in sent or self._is_echo(text, sent):
                 self.state["echoes"] = self.state.get("echoes", 0) + 1
                 continue
-            out.append(Inbound(addr=handle, text=text, service=service or "", ts=now, ext_id=str(rowid)))
+            # ts is the message's own time: the router stamps a reply as an approval card's answer only when the
+            # reply postdates the card's send (a "yes" typed before the card went out was meant for something else).
+            out.append(Inbound(addr=handle, text=text, service=service or "", ts=ts or now, ext_id=str(rowid)))
             self.state["last_in"] = now
         im.save_cursor(cur)
         return out
