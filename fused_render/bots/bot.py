@@ -1800,6 +1800,7 @@ class Bot:
             busy = held or (self.thread is not None and self.thread.is_alive())
             prev_last = r.get("last")
             r["last"] = time.time()
+            run = None  # the row this fire adds when it starts the task; the refusal below patches that one
             if busy:
                 why = "you had the browser" if held else "bot was busy"
                 # The busy task may be this routine's own run ("started"): that stays, or `_routine_outcome` (which
@@ -1811,7 +1812,7 @@ class Bot:
             else:
                 r["last_result"] = "started"
                 ev = self.emit("system", f"Routine {'run now' if manual else 'fired'}: {r['task']}")
-                self._run_add(r, "started", "", seq=ev.get("seq"), manual=manual)
+                run = self._run_add(r, "started", "", seq=ev.get("seq"), manual=manual)
             if busy and r["kind"] == "once":
                 # A one-shot is not a slot to lose: a `last` would end it for good (_next_run), so it is not
                 # stamped. A due one retries in a minute until the bot is free and you have handed back; a
@@ -1828,9 +1829,9 @@ class Bot:
             # line is already in the thread; one short note says what happened to it, not a second "skipped" line.
             with self.lock:
                 r["last_result"] = "skipped: bot was busy"
-                # The row this fire added (a concurrent fire may have put a skip above it meanwhile).
-                run = next((x for x in r.get("runs") or [] if x.get("result") == "started"), None)
-                if run is not None:
+                # This fire's own row, by reference: an overlapping fire may have put a skip above it, or be the live
+                # run itself (its "started" row must not be the one marked skipped).
+                if run is not None and run.get("result") == "started":
                     run.update(result="skipped", message="another task took the bot first", done=time.time())
                 # Undo the fire record: a once-routine with `last` set never gets a `next` again (_next_run),
                 # and `next` was computed as if this slot had run.
