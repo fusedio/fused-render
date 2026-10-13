@@ -1661,12 +1661,17 @@ class Bot:
 
     @staticmethod
     def _run_add(r, result, message="", seq=None, manual=False):
-        """Prepend a run to `r["runs"]` (capped). A skip identical to the newest row is folded into it (`count`)."""
+        """Prepend a run to `r["runs"]` (capped). A scheduled skip identical to the newest row (same reason, also
+        scheduled) is folded into it: `count` up, `started` and `seq` move to this newest attempt (the first line
+        may already have left the chat). A Run now is always its own row."""
         runs = r.setdefault("runs", [])
         top = runs[0] if runs else None
-        if result == "skipped" and top and top.get("result") == "skipped" and top.get("message") == message:
+        if (result == "skipped" and not manual and top and top.get("result") == "skipped" and not top.get("manual")
+                and top.get("message") == message):
             top["count"] = int(top.get("count") or 1) + 1
             top["started"] = time.time()
+            if seq is not None:
+                top["seq"] = seq
             return top
         run = {"started": time.time(), "result": result, "message": message, "manual": bool(manual)}
         if seq is not None:
@@ -1797,7 +1802,10 @@ class Bot:
             r["last"] = time.time()
             if busy:
                 why = "you had the browser" if held else "bot was busy"
-                r["last_result"] = f"skipped: {why}"
+                # The busy task may be this routine's own run ("started"): that stays, or `_routine_outcome` (which
+                # finds the routine by last_result == "started") never lands the result and the row runs forever.
+                if r.get("last_result") != "started":
+                    r["last_result"] = f"skipped: {why}"
                 ev = self.emit("system", f"Routine \"{r['task'][:60]}\" skipped: {'you had the browser' if held else 'bot busy'}")
                 self._run_add(r, "skipped", why, seq=ev.get("seq"), manual=manual)
             else:
@@ -1820,9 +1828,10 @@ class Bot:
             # line is already in the thread; one short note says what happened to it, not a second "skipped" line.
             with self.lock:
                 r["last_result"] = "skipped: bot was busy"
-                runs = r.get("runs") or []
-                if runs and runs[0].get("result") == "started":
-                    runs[0].update(result="skipped", message="another task took the bot first", done=time.time())
+                # The row this fire added (a concurrent fire may have put a skip above it meanwhile).
+                run = next((x for x in r.get("runs") or [] if x.get("result") == "started"), None)
+                if run is not None:
+                    run.update(result="skipped", message="another task took the bot first", done=time.time())
                 # Undo the fire record: a once-routine with `last` set never gets a `next` again (_next_run),
                 # and `next` was computed as if this slot had run.
                 r["last"] = prev_last

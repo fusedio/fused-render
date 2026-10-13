@@ -66,10 +66,13 @@ function Routines({ b }: { b: Bot }) {
               failed. The poll (1.5–3 s) repaints the countdown. */}
           {rs.slice(0, 4).map((r) => {
             const bad = r.enabled && (r.last_result === "error" || (r.fails || 0) > 0);
+            // `last_message` is the newest FINISHED run's; a start or a skip since leaves it behind, so the tip
+            // quotes it only while `last_result` is still that run's outcome.
+            const ended = r.last_result === "done" || r.last_result === "error" || r.last_result === "stopped";
             return (
               <div key={r.id} className={`rt ${r.enabled ? "" : "off"}`}>
                 <span title={r.task}>{r.task}</span>
-                <small className={bad ? "warn" : undefined} title={r.enabled ? `${fmtWhen(r.next)}${r.last_message ? `\nlast run: ${r.last_result} — ${r.last_message}` : ""}` : "paused"}>
+                <small className={bad ? "warn" : undefined} title={r.enabled ? `${fmtWhen(r.next)}${ended && r.last_message ? `\nlast run: ${r.last_result} — ${r.last_message}` : ""}` : "paused"}>
                   {r.enabled ? (r.last_result === "started" ? "running" : fmtIn(r.next) || "soon") : "paused"}
                 </small>
               </div>

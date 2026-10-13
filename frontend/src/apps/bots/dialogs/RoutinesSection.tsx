@@ -77,7 +77,7 @@ function RunsTable({ botId, r }: { botId: string; r: Routine }) {
           return (
             <tr key={`${run.started}-${i}`} data-result={run.result} role={run.seq ? "button" : undefined} tabIndex={run.seq ? 0 : undefined}
               title={run.seq ? "Open the chat at this run" : undefined}
-              className={cn("border-t border-foreground/10 align-top", run.seq && "cursor-pointer hover:bg-foreground/[0.04]")}
+              className={cn("border-t border-foreground/10 align-top", run.seq && "cursor-pointer hover:bg-foreground/[0.04] focus-visible:bg-foreground/[0.04] focus-visible:outline-2 focus-visible:outline-ring")}
               onClick={() => open(run)} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(run); } }}>
               <td className="whitespace-nowrap py-1.5 pr-3 tabular-nums text-muted-foreground" title={fmtWhen(run.started)}>{fmtDay(run.started)}{run.manual ? <span title="Run now"> ·&nbsp;manual</span> : null}</td>
               <td className="whitespace-nowrap py-1.5 pr-3 tabular-nums text-muted-foreground">{took || "—"}</td>
