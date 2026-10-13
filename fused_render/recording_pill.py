@@ -30,20 +30,52 @@ logger = logging.getLogger(__name__)
 native_hooks: dict = {}
 
 
+def _nearest_app(page: str, root: str) -> tuple[str, dict | None]:
+    """`(folder, icon)` for the closest folder from `page` up to `root` that has
+    an icon; `(root, None)` when none does. A page outside `root` checks `root`."""
+    from fused_render import app_listing
+
+    def norm(p: str) -> str:
+        return os.path.normcase(os.path.abspath(p))
+
+    nroot = norm(root)
+    d = os.path.dirname(page)
+    nd = norm(d)
+    if nd != nroot and not nd.startswith(nroot.rstrip(os.sep) + os.sep):
+        found = app_listing.app_icon(root)
+        return (root, found) if found else (root, None)
+    while True:
+        found = app_listing.app_icon(d)
+        if found:
+            return d, found
+        if norm(d) == nroot:
+            return root, None
+        parent = os.path.dirname(d)
+        if parent == d:
+            return root, None
+        d = parent
+
+
 def describe(session) -> dict:
     """What the pill needs to draw itself for `session`, JSON-safe.
 
-    The app is the folder of the page that started the recording (the same
-    mapping the job rows use), its icon the folder's `icon.svg`/`icon.png` when
-    it has one. No page, or one that is not an app, falls back to the Fused
-    artwork on the page side (`flavor` picks which)."""
+    The icon is the nearest `icon.svg`/`icon.png` from the page's folder up to
+    its project root (the same mapping the job rows use). The walk is needed
+    because a project root can be a parent repo with a `pyproject.toml`, which
+    sits above the app folder that actually carries the icon; the name and
+    click-to-open folder follow the icon's folder. No icon keeps the root. No
+    page, or one that is not an app, falls back to the Fused artwork on the
+    page side (`flavor` picks which)."""
     app = ""
     icon = None
     try:
         from fused_render import app_listing, jobs, launcher
 
-        app = jobs.app_for_page(getattr(session, "page", "") or "")
-        found = app_listing.app_icon(app) if app else None
+        page = getattr(session, "page", "") or ""
+        root = jobs.app_for_page(page)
+        found = None
+        if root:
+            app, found = _nearest_app(page, root)
         if found:
             icon = launcher._icon_url(found.get("icon"), found.get("mtime"))
     except Exception:                            # noqa: BLE001 - decoration only
