@@ -141,6 +141,7 @@ async function poll() {
       if (!infos.length) { hideSelf(); return; }
       render();
     }
+    applyPaused();
     drawMeter();
   } finally { polling = false; }
 }
