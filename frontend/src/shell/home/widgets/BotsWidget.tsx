@@ -1,6 +1,7 @@
 import type { Bot } from "@apps/bots/lib/api";
 import { Face } from "@apps/bots/components/Face";
 import { useHomeBots } from "../data";
+import { homeBots } from "../bots";
 import { itemCapacity, type Widget } from "../layout";
 import { BigCount, EmptyLine, ErrorLine, ItemList, ListSkeleton, type WidgetItem } from "./bits";
 
@@ -23,14 +24,12 @@ const STATUS_PHRASE: Record<string, string> = {
 };
 
 export function toItem(b: Bot): WidgetItem {
-  // step/step_cap/title are left over from the last run once a bot settles, so only a running bot shows them.
-  let sub: string | undefined;
-  if (b.status === "running") {
-    const step = b.step && b.step_cap ? `step ${b.step}/${b.step_cap}` : "";
-    sub = [step, b.title || b.note || ""].filter(Boolean).join(" · ") || STATUS_PHRASE[b.status] || undefined;
-  } else {
-    sub = b.note || STATUS_PHRASE[b.status] || undefined;
-  }
+  // step/title survive a run, and a settled bot's note can be a stale running-phase one, so only running, waiting and error show detail.
+  // A run start resets step and note but not title: a step-0 running bot shows its note (e.g. a model download), not the last run's page.
+  const step = b.step && b.step_cap ? `step ${b.step}/${b.step_cap}` : "";
+  const detail = b.status === "running" ? (step ? `${step} · ${b.title || b.note || ""}`.replace(/ · $/, "") : b.note)
+    : b.status === "waiting" || b.status === "error" ? b.note : "";
+  const sub = detail || STATUS_PHRASE[b.status] || undefined;
   return {
     key: b.id,
     name: b.name,
@@ -67,7 +66,7 @@ export function BotsWidget({ widget }: { widget: Widget }) {
   }
   return (
     <div className="hw-body">
-      <ItemList items={data.map(toItem)} cap={itemCapacity(widget.size, "list")} moreHref={BOTS_HREF} variant="tall" />
+      <ItemList items={homeBots(data).map(toItem)} cap={itemCapacity(widget.size, "list")} moreHref={BOTS_HREF} variant="tall" />
     </div>
   );
 }

@@ -14,7 +14,6 @@ import {
 import { runCommunity } from "@platform/lib/community";
 import { useCurrentAppsChanged, TASKS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
 import { api as botsApi, type Bot } from "@apps/bots/lib/api";
-import { botOrder } from "@apps/bots/lib/order";
 import type { AppsSort } from "./layout";
 import { MAX_ROW } from "./strip";
 import { isDraftTask } from "../tasks-lib";
@@ -235,15 +234,7 @@ export function homeTasks(all: Task[]): Task[] {
 }
 
 const loadHomeTasks = () => getTasks().then((r) => splitHomeTasks(r.tasks));
-/** Bots for the Home widget: hidden ones dropped, ordered like the Bots list (pinned, waiting on you, then
-    latest activity — `updated`, since the widget has no per-bot event history). Returns a new array. */
-export function homeBots(bots: Bot[]): Bot[] {
-  return bots
-    .filter((b) => !b.hidden)
-    .sort(botOrder((b) => b.status === "waiting", (b) => b.updated || b.created || 0));
-}
-
-const loadHomeBots = () => botsApi.status({ cursors: {}, shot_for: "", fast: true }).then((r) => homeBots(r.bots ?? []));
+const loadHomeBots = () => botsApi.status({ cursors: {}, shot_for: "", fast: true }).then((r) => r.bots ?? []);
 
 /** Recent tasks (everything but archived and drafts), newest first — refetched when anything
     announces a task change, and on a slow beat so a run finishing in the
