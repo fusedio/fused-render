@@ -67,6 +67,8 @@ test("the card menu offers Finder-order entries, Open in Explorer second", () =>
     // this test turns it on, so the entry is the plain export.
     "Export App File",
     "Copy Path",
+    "separator",
+    "Uninstall…",
   ]);
 });
 

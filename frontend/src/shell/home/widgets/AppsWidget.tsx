@@ -1,4 +1,6 @@
 import { useState } from "react";
+import { appCardMenu } from "@platform/lib/appCardMenu";
+import ContextMenu, { type MenuEntry } from "@platform/ui/ContextMenu";
 import { appIconUrl } from "@platform/lib/api";
 import { isRasterIconUrl, useThemedIconSrc } from "@platform/lib/app-icon-src";
 import { AppPreviewCard } from "@platform/ui/AppPreviewCard";
@@ -56,8 +58,16 @@ export function AppsWidget({ widget }: { widget: Widget }) {
   const { apps, appsError, retry } = useHomeApps(cards ? limit : Math.min(cap * 2, MAX_ROW), 1, widget.sort ?? "opened");
   const { all, loadMore } = usePagedApps(!cards);
   const merged = cards ? [] : mergeApps((apps ?? []).slice(0, MAX_ROW), all);
+  // One context-menu portal for the strip, at the cursor — the hub's own
+  // card menu (appCardMenu: Open, Explorer, Reveal, Share, Uninstall…).
+  const [menu, setMenu] = useState<{ x: number; y: number; items: MenuEntry[] } | null>(null);
+  const openCardMenu = (e: React.MouseEvent, app: AppInfo) => {
+    e.preventDefault();
+    setMenu({ x: e.clientX, y: e.clientY, items: appCardMenu(app) });
+  };
   return (
     <div ref={ref} className="hw-body">
+      {menu && <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={() => setMenu(null)} />}
       {apps === null ? (
         cards ? (
           <SkeletonRow count={cap} label="Loading apps" variant="app" />
@@ -68,7 +78,7 @@ export function AppsWidget({ widget }: { widget: Widget }) {
         cards ? (
           <CardStrip count={count} rows={1} total={Math.min(apps.length, MAX_ROW)}>
             {apps.slice(0, MAX_ROW).map((app) => (
-              <AppPreviewCard key={app.path} app={app} />
+              <AppPreviewCard key={app.path} app={app} onContextMenu={openCardMenu} />
             ))}
           </CardStrip>
         ) : (

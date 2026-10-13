@@ -79,6 +79,7 @@ from fused_render.server.routers.schedule import router as schedule_router
 from fused_render.server.routers.search import router as search_router
 from fused_render.server.routers.shell import router as shell_router
 from fused_render.server.routers.current_apps import router as current_apps_router
+from fused_render.server.routers.app_uninstall import router as app_uninstall_router
 from fused_render.server.routers.launcher import router as launcher_router
 from fused_render.server.routers.windows import router as windows_router
 from fused_render.server.routers.dock import router as dock_router
@@ -911,6 +912,9 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # The Current apps desk (fused_render/current_apps.py): GET the table,
     # DELETE one app (archiving its tasks). Fed by the tasks listing above.
     app.include_router(current_apps_router)
+    # Uninstall (AF-15): off every list and, by the user's choice, off disk —
+    # with or without the app's own `.fused/` data.
+    app.include_router(app_uninstall_router)
     # The macOS launcher panel's page at /launcher and its search
     # (fused_render/launcher.py): the desk, the workspace, linked and exported
     # apps ranked by a query; bots under Fused Bot.

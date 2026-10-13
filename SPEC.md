@@ -11057,7 +11057,34 @@ an ordinary editable app folder of their own.
   offers "Open installed copy". After a successful write the page navigates
   as AF-8 says. v1 zips install too (zip_import's extractor) but carry no
   per-file hashes, so a copy installed from one reads `unknown` on the next
-  file. Uninstalling the copy is the app folder's own Uninstall (#1576).
+  file. Uninstalling the copy is AF-15.
+- **AF-15** **Uninstall (owner, 2026-10-13).** "Uninstall…" on the hub card
+  menu, the Home card menu, the sidebar's Projects menu and the bots app menu
+  (one `UninstallAppHost` dialog, `platform/lib/uninstall-app` store), and on
+  the install page of an installed app. `GET /api/apps/uninstall/preflight`
+  is the dialog's data: `.fused/` size and file count, uncommitted git
+  changes, tasks to archive, bots whose build this is. `POST
+  /api/apps/uninstall {path, keep_data, mode}` (X-Fused; the workspace root
+  and its tag shelves refused by name, an existing path must be an app
+  folder) acts by kind: a **workspace folder** with the dialog's "Also
+  delete the app's data" ON (the default) goes whole to the OS Trash (`mode:
+  "trash"`; 501 when the OS has no bin → the client offers `mode: "delete"`
+  behind a second confirm); with it OFF the app's files and `.git` are
+  removed outright and `<app>/.fused/` is left where it is — a **husk**
+  whose stamp (`appfile.write_husk`: no files, the app's id) the install
+  page finds by id wherever the copy sat (`husk_with_id`) or by slug, reads
+  as `new`, and installs back into, so the app finds its data where it left
+  it; a husk recording a DIFFERENT id under the slug is a `clash`;
+  **linked** (outside the workspace) → the registry entry goes, the folder
+  stays; **showcase** → hidden (`app_hidden.py`, `hidden_apps.json`, dropped
+  from every listing; nothing un-hides yet). Every kind then archives the
+  folder's tasks (the desk's gesture, cancelling pending scheduled runs),
+  prunes the stores (`app_state_remove.prune_stores`: bookmarks, recents,
+  pin, desk, registered apps, app_recents, autostart, bot builds' `dir`; the
+  schedule store is task history and stays) and drops the hub snapshot. The
+  explorer's Delete on an app folder does the archive + prune too. Explorer
+  Duplicate of an app folder re-mints its `fused-app-id` and drops the copied
+  `meta.json`, so a copy is a fork, never "the installed copy" of its source.
 
 ## 44. MCP App Template — An App's Entrypoints as Claude Tools (D401)
 

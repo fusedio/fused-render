@@ -774,6 +774,86 @@ def _workspace_spelling(path: str) -> str:
     return path
 
 
+def _is_husk(app_dir: str) -> bool:
+    """A folder holding nothing but `.fused/` (and the odd `.DS_Store`): what
+    a keep-data uninstall leaves (AF-15). Not an app — the place the app's
+    data waits for the next install."""
+    try:
+        names = [n for n in os.listdir(app_dir) if n not in (".DS_Store",)]
+    except OSError:
+        return False
+    from fused_render import app_fused_dir
+
+    return names == [app_fused_dir.DIRNAME] and os.path.isdir(os.path.join(app_dir, app_fused_dir.DIRNAME))
+
+
+def write_husk(app_dir: str, app_id: str | None, name: str | None) -> dict:
+    """The stamp a keep-data uninstall leaves in the husk's `.fused/`: no
+    files (they are gone), but the app's identity, so the next install of
+    THIS app finds the husk wherever it sits (`husk_with_id`) and an install
+    of a different app sharing the slug is refused rather than handed the
+    data."""
+    from fused_render import app_fused_dir
+
+    old = read_stamp(app_dir) or {}
+    stamp = {
+        "version": 1,
+        "husk": True,
+        "app_id": app_id,
+        "name": name,
+        "exported_at": old.get("exported_at"),
+        "uninstalled_at": _utc_now(),
+        "files": {},
+    }
+    os.makedirs(app_fused_dir.dot_fused(app_dir), exist_ok=True)
+    tmp = stamp_path(app_dir) + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(stamp, f, indent=2)
+        f.write("\n")
+    os.replace(tmp, stamp_path(app_dir))
+    return stamp
+
+
+def _husk_identity(app_dir: str) -> str | None:
+    """The app id a husk's stamp records, None for a husk without one (an
+    app that never had an id, or a `.fused/` left by hand)."""
+    stamp = read_stamp(app_dir)
+    if not stamp or not stamp.get("husk"):
+        return None
+    v = stamp.get("app_id")
+    return v if app_identity.is_valid(v) else None
+
+
+def husk_with_id(app_id: str) -> str | None:
+    """The husk recording `app_id`, wherever the uninstall left it — a
+    renamed or moved copy is still this app's data. The same ground the
+    app listing covers (folders at depths 1–3 under the workspace, dotted
+    and machinery names skipped), one stamp read per husk; never joins the
+    id into a path."""
+    from fused_render.shell.seed import fused_dir
+
+    def scan(d: str, depth: int) -> str | None:
+        try:
+            names = sorted(os.listdir(d))
+        except OSError:
+            return None
+        for n in names:
+            if n.startswith(".") or n in ("node_modules", "__pycache__", "showcase"):
+                continue
+            p = os.path.join(d, n)
+            if os.path.islink(p) or not os.path.isdir(p):
+                continue
+            if _is_husk(p) and _husk_identity(p) == app_id:
+                return p
+            if depth < 3:
+                found = scan(p, depth + 1)
+                if found:
+                    return found
+        return None
+
+    return scan(fused_dir(), 1)
+
+
 def _installed_identity(app_dir: str) -> str | None:
     try:
         entry = app_listing.app_entry(app_dir)
@@ -864,18 +944,38 @@ def install_target(fused_path: str, *, light: bool = False) -> dict:
 
     dest = os.path.join(install_dir(), slug)
     found_by: str | None = None
+    husk = False
+    husk_clash = False
     by_id = workspace_app_with_id(app_id) if app_id else None
+    husk_by_id = husk_with_id(app_id) if app_id and by_id is None else None
     if by_id is not None:
         dest, found_by = by_id, "id"
+    elif husk_by_id is not None:
+        # A keep-data uninstall left this app's `.fused/` behind (AF-15),
+        # wherever the copy sat: the app is gone, its data is not, and the
+        # install lands in that folder.
+        dest, husk = husk_by_id, True
     elif os.path.isdir(dest):
-        found_by = "slug"
+        if _is_husk(dest):
+            other_husk = _husk_identity(dest)
+            if other_husk and other_husk != app_id:
+                # Another app's data waits under this slug: never hand it
+                # to this file.
+                husk_clash = True
+            else:
+                husk = True
+        else:
+            found_by = "slug"
     installed = found_by is not None
 
     state = STATE_NEW
     changed: list[str] = []
     stamp: dict | None = None
     other_name: str | None = None
-    if installed:
+    if husk_clash:
+        state = STATE_CLASH
+        other_name = os.path.basename(dest)
+    elif installed:
         stamp = read_stamp(dest)
         other = _installed_identity(dest) if found_by == "slug" else None
         if other and other != app_id:
@@ -920,6 +1020,7 @@ def install_target(fused_path: str, *, light: bool = False) -> dict:
         "path": dest.replace(os.sep, "/"),
         "installed": installed,
         "found_by": found_by,
+        "husk": husk,
         "state": state,
         "needs_force": state in WARN_STATES,
         "exported_at": incoming_at,
@@ -1050,7 +1151,12 @@ def install_app_file(fused_path: str, *, force: bool = False) -> dict:
             # the lost-rename branch runs the `finally` that deletes the
             # staging dir, and the user's state must not go with it.
             try:
-                os.rename(payload, dest)
+                if target.get("husk"):
+                    # The folder is there with the app's data in it (a
+                    # keep-data uninstall): the files land beside `.fused/`.
+                    _merge_tree(payload, dest, skip=_INSTALL_KEEP)
+                else:
+                    os.rename(payload, dest)
             except OSError:
                 if not os.path.isdir(dest):
                     raise AppFileError(f"could not place the installed app at {dest}")

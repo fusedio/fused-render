@@ -2445,6 +2445,55 @@ export interface AppInfo {
   kind?: "appfile";
 }
 
+// The uninstall policy class the server assigned (routers/app_uninstall.kind_for).
+export type UninstallKind = "folder" | "linked" | "showcase";
+
+// What uninstalling an app costs — the confirm dialog's numbers (AF-15).
+export interface UninstallPreflight {
+  path: string;
+  name: string;
+  exists: boolean;
+  kind: UninstallKind;
+  trash_supported: boolean;
+  // `<app>/.fused` — the app's own data, kept or deleted by the user's choice.
+  data_bytes: number;
+  data_files: number;
+  // Changed paths git reports for the app, null when no repo owns it.
+  uncommitted: number | null;
+  // Tasks under the folder (archived by the uninstall, not erased).
+  tasks: number;
+  // Bot builds whose folder this is.
+  bots: string[];
+}
+
+export function getUninstallPreflight(path: string): Promise<UninstallPreflight> {
+  return getJson<UninstallPreflight>(
+    `/api/apps/uninstall/preflight?path=${encodeURIComponent(path)}`,
+  );
+}
+
+export interface UninstallResult {
+  ok: boolean;
+  path: string;
+  kind: UninstallKind;
+  keep_data: boolean;
+  removed_files: boolean;
+  data_kept_at: string | null;
+  trashed_to?: string;
+  archived?: number;
+}
+
+/** Remove the app from every list and, for a workspace folder, from disk:
+ *  the whole folder (`keep_data: false`, Trash — 501 means the OS has no bin
+ *  for this path and nothing was removed: offer `mode: "delete"`), or its
+ *  files and git only, leaving `.fused/` (`keep_data: true`). */
+export function uninstallApp(
+  path: string,
+  opts: { keep_data?: boolean; mode?: "trash" | "delete" } = {},
+): Promise<UninstallResult> {
+  return postJson<UninstallResult>("/api/apps/uninstall", { path, ...opts });
+}
+
 export function getApps(): Promise<{ apps: AppInfo[] }> {
   return getJson<{ apps: AppInfo[] }>("/api/apps");
 }

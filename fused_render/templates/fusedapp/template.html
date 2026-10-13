@@ -292,6 +292,7 @@
       }
       hero.appendChild(actions);
       hero.appendChild(status);
+      if (t.installed && t.state !== "clash") hero.appendChild(uninstallRow(t, status));
       const where = document.createElement("div"); where.className = "sub";
       where.innerHTML = (t.installed ? "Installed at " : "Installs to ") + "<code>" + esc(t.path) + "</code>";
       hero.appendChild(where);
@@ -325,6 +326,55 @@
     });
     details.append(sum, table);
     page.appendChild(details);
+  }
+
+  // Uninstall from the page the app was installed from (AF-15): the same
+  // POST the shell's dialog makes. "Also delete the app's data" is on by
+  // default; unticked, the app's files and git go and `.fused/` stays for
+  // the next install. Two clicks on the one button, like Overwrite.
+  function uninstallRow(t, status) {
+    const row = document.createElement("div"); row.className = "sub";
+    row.style.marginTop = "14px";
+    const label = document.createElement("label");
+    label.style.cssText = "display:inline-flex;gap:6px;align-items:center;margin-right:10px";
+    const box = document.createElement("input"); box.type = "checkbox"; box.checked = true; box.id = "uninstall-data";
+    label.append(box, document.createTextNode("Also delete the app's data (.fused)"));
+    const btn = document.createElement("button"); btn.className = "danger"; btn.textContent = "Uninstall";
+    btn.style.padding = "6px 14px";
+    let armed = false;
+    btn.onclick = async () => {
+      if (!armed) { armed = true; btn.textContent = "Uninstall — are you sure?"; return; }
+      btn.disabled = true;
+      let resp, data;
+      try {
+        resp = await fetch("/api/apps/uninstall", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Fused": "1" },
+          body: JSON.stringify({ path: t.path, keep_data: !box.checked, mode: "trash" }),
+        });
+        data = await resp.json();
+      } catch (e) { status.textContent = "Uninstall failed: " + e; btn.disabled = false; return; }
+      if (resp.status === 501) {
+        // No bin for this folder: offer the hard delete behind one more click.
+        btn.disabled = false; armed = false; btn.textContent = "Delete forever";
+        btn.onclick = async () => {
+          btn.disabled = true;
+          const r2 = await fetch("/api/apps/uninstall", {
+            method: "POST", headers: { "Content-Type": "application/json", "X-Fused": "1" },
+            body: JSON.stringify({ path: t.path, keep_data: !box.checked, mode: "delete" }),
+          });
+          const d2 = await r2.json();
+          if (!r2.ok) { status.textContent = (d2 && d2.error) || "Uninstall failed."; btn.disabled = false; return; }
+          load();
+        };
+        return;
+      }
+      if (!resp.ok) { status.textContent = (data && data.error) || "Uninstall failed."; btn.disabled = false; return; }
+      status.textContent = data.keep_data ? "Uninstalled. Its data stays in .fused." : "Uninstalled.";
+      load();
+    };
+    row.append(label, btn);
+    return row;
   }
 
   function placeholderMark() {
