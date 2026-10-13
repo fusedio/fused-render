@@ -9,9 +9,13 @@ first) filling any gap below them; typing searches every app this machine
 knows — those, every app in the workspace (``app_listing.workspace_apps``,
 which covers the ``showcase`` and ``local`` tags), the linked folders
 (``registered_apps``). The same set the /apps hub shows — a ``.fused`` file
-is an installer, not an app (AF-14), and is not listed. Under the app rows, a non-empty query also lists files
+is an installer, not an app (AF-14), and is not listed — and, by typing only,
+every bot (`_bot_registry`, ``kind: "bot"``, opened on the Bots page as the
+Dock opens one). Under the app rows, a non-empty query also lists files
 and folders from the file index (``file_results``): the home search box's
-engine, a handful of rows, opened in the explorer.
+engine, a handful of rows, opened in the explorer. The bottom rows
+(`home_rows`: the shell home, and under Render the Bots page) sit under the
+list when the query is empty and rank with everything else when it is not.
 
 Under Fused Bot (``_flavor.is_bot()``) the same panel lists BOTS instead:
 the bots page's list, read through ``dock._bot_rows`` (the menu-bar Dock's
@@ -200,9 +204,24 @@ def notify_settings_changed(hotkey_spec: str | None) -> None:
 
 # ---- registry ------------------------------------------------------------------------
 
-HOME_ROW = {"home": True, "path": "", "url": "/", "name": _flavor.display_name(),
-            "title": _flavor.display_name(), "kind": "home", "pinned": False,
+#: The Bots page's row under Fused Render: a second bottom row beside Home
+#: (`home_rows`). ``kind: "bots"`` is what the native side dispatches on
+#: (app.py ``_open_bots_native``): no key, the page itself.
+BOTS_ROW = {"home": True, "path": "", "url": "/bots", "name": "Fused Bot",
+            "title": "Fused Bot", "kind": "bots", "pinned": False,
             "recent": False, "running": False, "icon": None}
+
+
+def home_rows() -> list[dict]:
+    """The bottom rows: the shell home (``kind: "home"``, ``<modifier>+0``)
+    and, under Fused Render, the Bots page (`BOTS_ROW`) after it. Under
+    Fused Bot the home IS the bots page, so only the one row. Computed per
+    call: the display name is the flavor's, and the flavor can change under
+    a test."""
+    name = _flavor.display_name()
+    home = {"home": True, "path": "", "url": "/", "name": name, "title": name, "kind": "home",
+            "pinned": False, "recent": False, "running": False, "icon": None}
+    return [home] if _flavor.is_bot() else [home, dict(BOTS_ROW)]
 
 _CACHE_TTL_S = 2.0
 _cache_lock = threading.Lock()
@@ -298,14 +317,17 @@ def desk_rows() -> list[dict]:
     return rows
 
 
-def _bot_registry() -> list[dict]:
-    """The bot flavor's rows: every listed bot (``dock._bot_rows``, the one
-    bot.json reader the Dock uses too), pinned first by name (casefold, the
-    Dock's order), then the rest most recently updated first, marked
-    ``recent`` so the empty query lists them all (`search`'s one-list rule,
-    so ``nth_pinned`` and the panel agree). ``path`` is the bot id: the key
-    the open callback receives. Never raises: a bots store that cannot be
-    read is zero rows."""
+def _bot_registry(*, listed: bool = True) -> list[dict]:
+    """The bot rows: every listed bot (``dock._bot_rows``, the one bot.json
+    reader the Dock uses too), pinned first by name (casefold, the Dock's
+    order), then the rest most recently updated first. Under Fused Bot
+    (``listed``) they are marked ``recent``/``pinned`` so the empty query
+    lists them all (`search`'s one-list rule, so ``nth_pinned`` and the
+    panel agree). Under Fused Render (``listed=False``) neither flag is set:
+    bots are found by TYPING only — the empty list, and so the nine global
+    digit shortcuts, stay the recently opened apps. ``path`` is the bot id:
+    the key the open callback receives. Never raises: a bots store that
+    cannot be read is zero rows."""
     from fused_render import dock
 
     try:
@@ -319,8 +341,8 @@ def _bot_registry() -> list[dict]:
     def row(b: dict, *, pinned: bool) -> dict:
         return {"kind": "bot", "id": b["id"], "path": b["id"], "url": dock.bot_view_path(b["id"]),
                 "name": b["name"], "title": b["name"], "icon": None, "face": b["face"],
-                "status": b["status"], "running": b["running"], "pinned": pinned,
-                "recent": not pinned}
+                "status": b["status"], "running": b["running"],
+                "pinned": pinned and listed, "recent": listed and not pinned}
 
     return [row(b, pinned=True) for b in pinned] + [row(b, pinned=False) for b in rest]
 
@@ -360,6 +382,9 @@ def _registry_uncached() -> list[dict]:
             continue
         seen.add(k)
         rows.append(_folder_row(a, pinned=False))
+    # Bots last, search-only (`_bot_registry`): a bot id is not a path, so it
+    # is not run through the realpath dedupe above.
+    rows.extend(_bot_registry(listed=False))
     return rows
 
 
@@ -457,12 +482,17 @@ def search(query: str, rows: list[dict], limit: int = MAX_RESULTS) -> list[dict]
 
 
 def results(query: str, running=frozenset()) -> list[dict]:
-    """``search`` over the live registry, the home row always last — never
-    counted against the limit, never filtered by the query: the shell
-    itself, on ``<modifier>+0``."""
-    out = list(search(query, registry(running)))
-    out.append(dict(HOME_ROW))
-    return out
+    """``search`` over the live registry plus the bottom rows (`home_rows`).
+    An empty query: the list, then the bottom rows after it, never counted
+    against the limit — the shell itself on ``<modifier>+0``, the Bots page
+    beside it. A typed query: the bottom rows take part in the search like
+    any row, ranked by `_score` and counted against the limit, so "fus"
+    finds Fused Bot where it ranks rather than pinning it last; they come
+    after the registry in the scored list, so an app with the same match
+    outranks them on the index tiebreak."""
+    if not str(query or "").strip():
+        return list(search(query, registry(running))) + home_rows()
+    return list(search(query, registry(running) + home_rows()))
 
 
 # ---- files -----------------------------------------------------------------------------

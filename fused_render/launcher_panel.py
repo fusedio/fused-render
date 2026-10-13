@@ -23,9 +23,10 @@ Both flavors build it: Fused Render's rows are apps, Fused Bot's are bots
 (⌥Space / ⌥⇧Space, `launcher.hotkey_key`) so the two apps side by side do
 not fight over one Carbon registration. A pick reaches the app as
 ``open_row(kind, key)``: ``kind`` is the row's (``app``/``appfile``/
-``bot``), ``key`` its ``path`` (a folder or ``.fused`` path, or a bot id),
-and app.py routes a bot to the Bots window and anything else to the app's
-own window. The page posts ``{type: "open", kind, key}``.
+``bot``/``bots``), ``key`` its ``path`` (a folder or ``.fused`` path, a bot
+id, or nothing for ``bots`` — the Bots page row under Fused Render), and
+app.py routes a bot to the Bots window and anything else to the app's own
+window. The page posts ``{type: "open", kind, key}``.
 
 Row shortcuts: ``<rowModifier>+1`` … ``+9`` (⌥ by default, ⌥⇧ under Fused
 Bot) are global shortcuts too, opening the Nth row of the launcher's
@@ -245,7 +246,9 @@ class LauncherController:
 
     def open_row(self, kind: str, key: str) -> None:
         self.close()
-        if key:
+        # The Bots page row (`kind: "bots"`) has no key: the page itself is
+        # the target. Every other kind needs one (a path or a bot id).
+        if key or kind == "bots":
             self._open_row(kind, key)
 
     def open_home(self) -> None:
