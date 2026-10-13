@@ -68,6 +68,8 @@ def _redirect(tmp_path, src):
 # ---- parsing -----------------------------------------------------------------
 
 
+@pytest.mark.skipif(sys.platform == "win32",
+                    reason="asserts posix-shaped paths; the deeplink URL path carries os.sep on Windows (pre-existing, #1383)")
 def test_file_link_decodes_the_path_once():
     path = "/Users/me/My Apps/a&b #1 100%.fused"
     assert app_file_path_from(link(path)) == os.path.normpath(path)
