@@ -103,14 +103,19 @@ async function poll() {
   const ids = infos.map((i) => i.id);
   try {
     const gone: string[] = [];
+    const fresh = new Map<string, PillState>();
     await Promise.all(ids.map(async (id) => {
       try {
         const r = await fetch("/api/capture/" + encodeURIComponent(id) + "/state", { cache: "no-store" });
         if (r.status === 404) gone.push(id);
-        else if (r.ok) states.set(id, (await r.json()) as PillState);
+        else if (r.ok) fresh.set(id, (await r.json()) as PillState);
       } catch { /* the server is restarting: keep the last frame */ }
     }));
     if (!infos.length) return;
+    // pillSet / hideSelf may have dropped ids during the await: ignore their results.
+    const current = new Set(infos.map((i) => i.id));
+    for (const [id, st] of fresh) if (current.has(id)) states.set(id, st);
+    for (let k = gone.length - 1; k >= 0; k--) if (!current.has(gone[k])) gone.splice(k, 1);
     if (gone.length) {
       for (const id of gone) { post({ type: "gone", id }); states.delete(id); }
       infos = infos.filter((i) => !gone.includes(i.id));
