@@ -804,6 +804,13 @@
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  container-type: inline-size;
+}
+/* A narrow Tasks tile spends its width on the title: the message count goes. */
+@container (max-width: 360px) {
+  .hw-task-rows .tasks-row-msgs {
+    display: none;
+  }
 }
 
 /* Cards strip: one scrolling grid, `--hw-rows` tall. Cards are always 330px
