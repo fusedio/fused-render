@@ -90,3 +90,62 @@ export function rowKeys(evs: readonly BotEvent[], botId: string): string[] {
     return n === 1 ? `${botId}:${e.seq}` : `${botId}:${e.seq}#${n}`;
   });
 }
+
+// ---- turn fold: a settled task's steps fold behind its result (the cloud transcript's "show more", design.md §A) ----
+/**
+ * One task's stretch of the thread, as the fold sees it. The stream has no turn object: a turn is derived from its
+ * CLOSER, the `done` / `error` row that ends it (routine and hand-off tasks have no `user` opener, only a noise
+ * `system "Task started"` line, so openers are no boundary). `hidden` are the indices of the rows between the previous
+ * closer and this one that fold away: the bot's process. What stays visible, in the order the thread draws it:
+ *   - approval / question cards and the `user` answer under them (the exchange is part of the conversation);
+ *   - a `thought` or `note` carrying an app card (an outcome, bot.py `Here's <app>:`), one with a reaction, or one a
+ *     later message quotes (`reply.seq`): hiding it hides the reader's own mark;
+ *   - hand-off cards, build cards, the Clear marker, "Sent to Super Bot" lines: cross-bot state with its own door.
+ * A closer with nothing to hide above it is not a turn (no entry, no trigger drawn).
+ */
+export interface TurnFold {
+  /** Index of the `done` / `error` row that carries the trigger. */
+  closer: number;
+  /** Indices (into `evs`) hidden while the turn is folded. */
+  hidden: number[];
+  /** How many `action` rows the fold hides, and the seconds from the first hidden row to the closer: the trigger's hover. */
+  steps: number;
+  secs: number;
+}
+
+/** Is `e` the row a task ends on? A `done` / `error` drawn as a bubble; the cards (hand-off result, build notice) and
+ *  the seeded greeting are not closers. */
+const isCloser = (e: BotEvent): boolean =>
+  (e.role === "done" || e.role === "error") && !isHandoff(e) && e.source !== "build" && e.source !== "seed";
+
+export function turnFolds(evs: readonly BotEvent[], reactions: Record<number, string> | undefined): TurnFold[] {
+  const quoted = new Set<number>();
+  for (const e of evs) if (e.reply?.seq != null) quoted.add(e.reply.seq);
+  const rx = reactions || {};
+  const out: TurnFold[] = [];
+  let start = 0;
+  for (let i = 0; i < evs.length; i++) {
+    const e = evs[i];
+    if (e.source === "clear") { start = i + 1; continue; }  // the Clear marker is the other fold's boundary
+    if (!isCloser(e)) continue;
+    const hidden: number[] = [];
+    let steps = 0;
+    for (let j = start; j < i; j++) {
+      const m = evs[j];
+      if (m.role !== "thought" && m.role !== "action" && m.role !== "note") continue;
+      if (m.app?.dir || m.build || isHandoff(m) || rx[m.seq] || quoted.has(m.seq)) continue;
+      hidden.push(j);
+      if (m.role === "action") steps++;
+    }
+    if (hidden.length) out.push({ closer: i, hidden, steps, secs: Math.max(0, e.ts - evs[hidden[0]].ts) });
+    start = i + 1;
+  }
+  return out;
+}
+
+/** The trigger's hover: "12 steps · 48s", "1 step", "3 messages · 5s". */
+export function turnFoldHint(t: TurnFold): string {
+  const n = t.steps ? `${t.steps} step${t.steps === 1 ? "" : "s"}` : `${t.hidden.length} message${t.hidden.length === 1 ? "" : "s"}`;
+  return t.secs >= 1 ? `${n} · ${fmtSecsShort(t.secs)}` : n;
+}
+const fmtSecsShort = (s: number): string => (s < 60 ? `${Math.round(s)}s` : s < 3600 ? `${Math.floor(s / 60)}m ${Math.round(s % 60)}s` : `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`);

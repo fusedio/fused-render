@@ -915,6 +915,15 @@ Control flow inside the tools (the harness's job, in the server process):
   assistant turn (`_usage_log`), with `total_cost_usd` from `result`.
 - The engine ends the task when the turn's `result` arrives and no tool is
   blocking; `collect_task_artifacts(final)` runs as in OpenBot.
+- Turn fold (Thread.tsx, `lib/thread.ts turnFolds`): the page derives a turn
+  from its closer (`done` / `error` drawn as a bubble) and folds the
+  `thought` / `action` / `note` rows above it behind a `show more` at the
+  bubble's foot; cards and the answers under them, rows with an app card, a
+  reaction or a reply quoting them, hand-off and build cards stay visible.
+  Seeded once per bot on open (every turn but the newest closed, never one
+  with a row past the New mark), then only a click moves a fold; search opens
+  everything, a jump at a hidden row opens its turn. View-only: no event
+  field, nothing server-side.
 
 `botmcp.py` (spawned by claude; stdlib; UTF-8 stdio; copies the framing of
 `claude_agent/permission_server.py`): argv = `<server origin> <bot id>

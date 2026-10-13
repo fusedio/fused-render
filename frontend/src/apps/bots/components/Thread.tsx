@@ -6,7 +6,7 @@
 // Rows are keyed by bot + seq and memoized on primitive props, so a poll only mounts what arrived; DOM nodes (and any
 // text selection) survive. Markdown goes through md() into ONE dangerouslySetInnerHTML site (HtmlMsg); its buttons
 // (react / reply / offer options) are handled by the thread's delegated click handler, exactly like OpenBot.
-import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type RefObject } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type RefObject } from "react";
 import { AppCard } from "../apps/AppCard";
 import { appFromText, showAppBeside, useAppsRoot } from "../apps/apps";
 import { openBuilds, getBuildRows } from "../builds/builds";
@@ -14,7 +14,7 @@ import { api, stepThumbUrl, type AppRef, type Bot, type BotEvent } from "../lib/
 import { esc, fmtDay, fmtSecs, fmtTime, fmtWhen } from "../lib/format";
 import { md } from "../lib/md";
 import { botsRoot } from "../lib/root";
-import { chosenOption, clearIndex, firstNewIndex, isHandoff, isNoise, liveCards, optionKey, rowKeys, searchCountText, searchHit, sessionBreak } from "../lib/thread";
+import { chosenOption, clearIndex, firstNewIndex, isHandoff, isNoise, liveCards, optionKey, rowKeys, searchCountText, searchHit, sessionBreak, turnFoldHint, turnFolds } from "../lib/thread";
 import { act, clearScrollSeq, cur, eventsOf, getState, jumpTo, markSeen, openDialog, select, setNewCount, setScrollToEnd, showBanner, unviewed, useBots, viewedSet } from "../state/store";
 import { END_GAP, clearSearchHighlight, gapOf, evBox, highlightSearch, pinToEnd, restoreAnchor, topVisible, updateToBottom, type Anchor } from "./threadDom";
 import { HandBackRow, HandoverNote } from "./HandoverCard";
@@ -22,6 +22,7 @@ import { SetupLines } from "./SetupLines";
 
 const EMPTY: BotEvent[] = [];
 const NO_SEQS: ReadonlySet<number> = new Set();
+const NO_RX: Record<number, string> = {};
 
 // ---- the bubble's markup (built as escaped strings: it shares one innerHTML with the markdown) ----
 const REACT_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M8.5 14.5a4.5 4.5 0 0 0 7 0"/><path d="M9 9.5h.01M15 9.5h.01"/></svg>';
@@ -79,6 +80,11 @@ interface RowProps {
   foldN?: number;
   foldOpen?: boolean;
   onFold?: () => void;
+  /** A `done` / `error` row that ends a task with steps above it (lib/thread `turnFolds`): whether those steps are
+   *  shown, and the trigger's hover text. The click is the thread's delegated handler (`data-fold`), so the row needs
+   *  no callback prop and its memo holds. Absent on every other row. */
+  turnFold?: "open" | "closed";
+  turnHint?: string;
 }
 
 /** An action event's raw tool result as display text ("" when there is none). The wire sends a string; anything else is shown as JSON. */
@@ -191,7 +197,7 @@ function ClearMark({ e, n, open, onFold }: { e: BotEvent; n: number; open: boole
 /** Channel names in chips and "Texted" lines; a task Super Bot handed off reads "from Super Bot" (docs §11). */
 const chanLabel = (k: string) => (k === "imessage" ? "iMessage" : k === "handoff" ? "Super Bot" : k);
 
-function body({ e, botId, reaction, live, chosen, appsRoot, onBeside, hstate, targetLive, linkLive, hbSecs, hbShot, hbBot, queued, bopen, foldN, foldOpen, onFold }: RowProps): JSX.Element {
+function body({ e, botId, reaction, live, chosen, appsRoot, onBeside, hstate, targetLive, linkLive, hbSecs, hbShot, hbBot, queued, bopen, foldN, foldOpen, onFold, turnFold, turnHint }: RowProps): JSX.Element {
   const title = fmtWhen(e.ts);
   if (e.source === "clear") return <ClearMark e={e} n={foldN || 0} open={!!foldOpen} onFold={onFold} />;
   if (e.handoff && isHandoff(e)) return <HandoffCard e={e} state={hstate || e.handoff.state} targetLive={!!targetLive} />;
@@ -291,8 +297,14 @@ function body({ e, botId, reaction, live, chosen, appsRoot, onBeside, hstate, ta
   // The seeded Super Bot's greeting (registry.seed_super, source "seed") carries the door to Settings > Phone.
   const seedBtn = e.role === "done" && e.source === "seed"
     ? '<div class="opts"><button class="opt seed" data-dialog="phone">Connect your phone</button></div>' : "";
+  // THE TURN'S TRIGGER (lib/thread `turnFolds`): the cloud transcript's two words, `show more` / `show less`, muted at
+  // the foot of the result bubble, never a count (the count and the duration are the hover). The result is the
+  // summary the reader scans for; the steps that produced it open above it on demand.
+  const foldBtn = turnFold
+    ? `<button class="fold" data-fold="${e.seq}" aria-expanded="${turnFold === "open"}" title="${esc(turnHint || "")}">${turnFold === "open" ? "show less" : "show more"}</button>`
+    : "";
   const html = (actable ? actsHtml(e.seq) + `<time class="when">${esc(fmtTime(e.ts))}</time>` : "")
-    + (e.role === "user" ? esc(e.text) : md(e.text)) + seedBtn + viaChip
+    + (e.role === "user" ? esc(e.text) : md(e.text)) + seedBtn + viaChip + foldBtn
     + (actable ? `<span class="rx" data-react="${e.seq}" title="Change reaction">${esc(reaction)}</span>` : "");
   const cls = `msg ${e.role}${e.role === "user" ? "" : " md"}${actable && reaction ? " has-rx" : ""}${queued ? " queued" : ""}`;
   const bubble = <HtmlMsg className={cls} title={queued ? "Queued: sent when you hand the browser back" : title} seq={actable ? e.seq : undefined} html={html} />;
@@ -429,7 +441,7 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
   };
   const mark = S.newMark?.id === botId ? S.newMark.seq : null;
   const firstNew = firstNewIndex(evs, mark);  // first shown message you have not seen
-  const rxs = b?.reactions || {};
+  const rxs = b?.reactions || NO_RX;
   const onBeside = useCallback((a: AppRef) => showAppBeside(a), []);
 
   // ---- Clear context: rows before the last marker fold behind its toggle (shown again while searching) ----
@@ -446,6 +458,51 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
     const seq = k.slice(k.lastIndexOf(":") + 1), box = evBox(th.querySelector(`.ev[data-seq="${seq}"]`));
     foldRef.current.anchor = box ? { seq, y: box.getBoundingClientRect().top - th.getBoundingClientRect().top } : null;
     setOpenFold((o) => (o === k ? "" : k));
+  }, [threadRef]);
+
+  // ---- turn fold: every settled task's steps fold behind its result (lib/thread `turnFolds`) ----
+  //
+  // SEEDED ONCE PER BOT, THEN THE READER'S. The cloud transcript learnt this the hard way (2026-09-17): a fold that
+  // re-derives every render shuts the minute-old answer under a reader who is mid-conversation. So on the first paint
+  // with this bot's events, every turn but the newest lands closed, and from then on nothing here moves a fold except a
+  // click. A turn that finishes while you watch arrives open and stays open. Switching bots is a fresh seed.
+  //
+  // AND THE SEED NEVER HIDES WHAT YOU HAVE NOT SEEN: a turn with a row past the New mark (a routine that ran overnight)
+  // stays open, so the New rule and the unread count still point at rows that are on screen.
+  //
+  // A REF PLUS A BUMP, like the Clear fold's anchor: the map is read during render, and every row's props must stay
+  // identical across a click for Row's memo to hold.
+  const folds = useMemo(() => turnFolds(evs, rxs), [evs, rxs]);
+  const turnRef = useRef({ bot: "\u0000", seeded: false, open: new Map<number, boolean>() });
+  const [, bumpTurn] = useState(0);
+  if (turnRef.current.bot !== botId) turnRef.current = { bot: botId, seeded: false, open: new Map() };
+  // THE SEED WAITS FOR THE EVENTS: a bot's first paint can be an empty list (not loaded yet), and a seed burnt on it
+  // would leave every turn of the history open once it lands.
+  if (!turnRef.current.seeded && evs.length) {
+    const open = turnRef.current.open;
+    const newest = folds.length ? folds[folds.length - 1].closer : -1;
+    for (const t of folds) {
+      const unread = mark != null && (evs[t.closer].seq > mark || t.hidden.some((j) => evs[j].seq > mark));
+      open.set(evs[t.closer].seq, t.closer === newest || unread);
+    }
+    turnRef.current.seeded = true;
+  }
+  // A closer first seen after the seed (the task that just ended) is open: only a click closes it.
+  const turnOf = new Map<number, "open" | "closed">(), turnHint = new Map<number, string>(), turnHidden = new Set<number>();
+  for (const t of folds) {
+    const seq = evs[t.closer].seq, isOpen = turnRef.current.open.get(seq) ?? true;
+    turnOf.set(t.closer, isOpen ? "open" : "closed");
+    turnHint.set(t.closer, turnFoldHint(t));
+    if (!isOpen && !searchQ) for (const j of t.hidden) turnHidden.add(j);
+  }
+  // The toggle keeps the result bubble where it sits: the steps open (or close) above it, not under your pointer.
+  const onFoldTurn = useCallback((seq: number) => {
+    const th = threadRef.current; if (!th) return;
+    const box = evBox(th.querySelector(`.ev[data-seq="${seq}"]`));
+    foldRef.current.anchor = box ? { seq: String(seq), y: box.getBoundingClientRect().top - th.getBoundingClientRect().top } : null;
+    const m = turnRef.current.open;
+    m.set(seq, !(m.get(seq) ?? true));
+    bumpTurn((n) => n + 1);
   }, [threadRef]);
 
   // The search tint lives in the document's highlight registry, not the DOM: drop it when the thread goes.
@@ -470,6 +527,11 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
     const js = s.scrollSeq, jumping = !!js && js.bot === botId;
     // A jump into the folded conversation opens it first; the next commit lands on the message.
     if (jumping && folded && js.seq < evs[ci].seq && js.seq >= evs[0].seq) { setOpenFold(foldKey); return; }
+    // …and a jump at a step hidden behind its turn's result opens that turn first, the same way.
+    if (jumping) {
+      const hit = folds.find((t) => turnHidden.has(t.hidden[0]) && t.hidden.some((j) => evs[j].seq === js.seq));
+      if (hit) { turnRef.current.open.set(evs[hit.closer].seq, true); bumpTurn((n) => n + 1); return; }
+    }
     const fa = foldRef.current.anchor;
     foldRef.current.anchor = null;
     const jumpEv = jumping ? th.querySelector<HTMLElement>(`.ev[data-seq="${js.seq}"]`) : null;
@@ -496,8 +558,10 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
     const io = viewer.current;
     if (io) th.querySelectorAll<HTMLElement>(".ev[data-seq]:not([data-obs])").forEach((el) => { el.dataset.obs = "1"; const m = evBox(el); if (m) io.observe(m); });
     const c = cur();
-    // Folded rows never scroll into view; they are behind the marker, not unread.
+    // Folded rows never scroll into view; they are behind the marker, not unread. Steps folded behind a result the
+    // same: the seed only ever folds what was already seen, and a click that folds is a reader who has read them.
     if (folded && botId) { const set = viewedSet(botId); for (const e of evs.slice(0, ci)) set.add(e.seq); }
+    if (turnHidden.size && botId) { const set = viewedSet(botId); for (const j of turnHidden) set.add(evs[j].seq); }
     if (c) setNewCount(unviewed(c, eventsOf(c.id)).length);
     updateToBottom(th);
     // Sitting at the end with the tab visible means you are following along: keep "seen" current so a reload or re-open
@@ -534,6 +598,8 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
     const t = ev.target as Element, sel = getState().sel;
     const jump = t.closest<HTMLElement>("[data-jump-bot]");
     if (jump) { jumpTo(jump.dataset.jumpBot || "", Number(jump.dataset.jumpSeq)); return; }
+    const fold = t.closest("[data-fold]");
+    if (fold) { onFoldTurn(Number(fold.getAttribute("data-fold"))); return; }
     const rc = t.closest("[data-react]");
     if (rc) { onReact(rc, Number(rc.getAttribute("data-react"))); return; }
     const dlg = t.closest("[data-dialog]");
@@ -597,7 +663,8 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
           hbSecs={hb && e.seq === hb.seq && e.role === "question" ? hb.secs : undefined}
           hbShot={hb && e.seq === hb.seq && e.role === "question" ? hb.shot : undefined}
           hbBot={hoSeq != null && e.seq === hoSeq ? b : undefined} queued={e.role === "user" && heldSeqs.has(e.seq)}
-          folded={folded && i < ci} foldN={i === ci ? foldN : undefined} foldOpen={i === ci ? !folded : undefined} onFold={i === ci ? onFold : undefined} />
+          folded={(folded && i < ci) || turnHidden.has(i)} foldN={i === ci ? foldN : undefined} foldOpen={i === ci ? !folded : undefined} onFold={i === ci ? onFold : undefined}
+          turnFold={turnOf.get(i)} turnHint={turnHint.get(i)} />
       );
     });
     if (b.control && hoSeq == null) content.push(<HandoverNote key="handover" b={b} />);

@@ -340,6 +340,11 @@ div.bots-page.stage .chat header #rcol { display: none; }  /* same: the preview 
 .bots-page .msg.note .readmore:hover:not(:disabled) { background: var(--hover); }
 .bots-page .msg.note .readmore:disabled { opacity: .5; cursor: default; }
 .bots-page .msg.done { align-self: flex-start; background: var(--card); }
+/* The turn fold's trigger (Thread.tsx foldBtn): a settled task's steps hide behind its result bubble; two muted words at
+   the bubble's foot open them above it. Reading type, muted colour, no chevron, no count (the hover has it). */
+.bots-page .msg .fold { display: block; margin: 2px 0 -3px auto; padding: 0; width: fit-content; background: none; border: 0;
+  font: inherit; font-size: 11.5px; color: var(--muted); cursor: pointer; }
+.bots-page .msg .fold:hover, .bots-page .msg .fold:focus-visible { color: var(--text); text-decoration: underline; text-underline-offset: 2px; outline: 0; }
 .bots-page .msg.question { align-self: flex-start; background: var(--card); }
 /* The one card still waiting on you keeps the stripe; answered ones lose it. */
 .bots-page .msg.error { align-self: flex-start; background: var(--card); box-shadow: inset 3px 0 0 var(--err); color: var(--err); }
