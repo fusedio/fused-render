@@ -925,6 +925,12 @@ RELAUNCH_WINDOWS_FILE = os.path.join(APP_SUPPORT_DIR, "relaunch-windows.json")
 # unrelated launch would be a surprise.
 RELAUNCH_SNAPSHOT_MAX_AGE_S = 2 * RELAUNCH_DEADLINE_S
 
+#: Where the menu-bar icon is seeded the FIRST time a flavor ever launches, in
+#: points from the right edge of the screen (see the autosave-name block in
+#: main()). Small = the rightmost slot a third-party item may take; the user's
+#: ⌘-drag then overrides it for good.
+STATUS_ITEM_FIRST_POSITION_PT = 1.0
+
 
 def bundle_executable(bundle: str) -> str:
     """The bundle's MAIN binary name — `CFBundleExecutable`, e.g. FusedRender
@@ -1790,6 +1796,35 @@ def main() -> None:
         return _appkit_terminate()
 
     install_terminate_hook(rumps.rumps.NSApp, _appkit_terminate_with_windows)
+
+    # ---- the status item's spot in the menu bar ------------------------------
+    # macOS keeps every status item's position in the app's defaults under
+    # "NSStatusItem Preferred Position <autosaveName>", as a distance in
+    # points from the RIGHT edge of the screen (lower = further right; AppKit
+    # clamps past Control Center and the clock). rumps never sets an autosave
+    # name, so AppKit mints one per launch and a new item lands LEFTMOST —
+    # which on a notched MacBook with a busy bar is the slot that is never
+    # drawn: the icon is simply not there. A fixed name makes AppKit read and
+    # write that key, so the spot the user ⌘-drags it to survives restarts;
+    # seeding the key once, before the item exists, is what places it the
+    # first time. The name must be set BEFORE the item is first laid out:
+    # rumps' run() creates it (initializeStatusBar), then emits before_start,
+    # then enters the run loop — so the hook goes there, not in the _kickoff
+    # timer below, which fires after the first run-loop pass.
+    from Foundation import NSUserDefaults
+
+    status_item_name = _flavor.app_name()  # FusedRender / FusedBot
+    position_key = f"NSStatusItem Preferred Position {status_item_name}"
+    defaults = NSUserDefaults.standardUserDefaults()
+    if defaults.objectForKey_(position_key) is None:
+        defaults.setDouble_forKey_(STATUS_ITEM_FIRST_POSITION_PT, position_key)
+
+    @rumps.events.before_start.register
+    def _name_status_item():
+        try:
+            status_app._nsapp.nsstatusitem.setAutosaveName_(status_item_name)
+        except Exception:
+            logger.exception("status item autosave name failed")
 
     def _bootstrap_server() -> None:
         logger.info("starting server on port %s", port)
