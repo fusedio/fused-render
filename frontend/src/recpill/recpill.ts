@@ -146,6 +146,13 @@ async function poll() {
   } finally { polling = false; }
 }
 
+// Back to rest: no eased level carried over into the next recording's first frames.
+function resetMeter() {
+  displayed = 0;
+  meterEl.classList.remove("live");
+  meter.forEach((b) => { b.style.width = ""; });
+}
+
 function startPolling() {
   if (timer === undefined) timer = window.setInterval(poll, POLL_MS);
   void poll();
@@ -154,6 +161,7 @@ function hideSelf() {
   if (timer !== undefined) { window.clearInterval(timer); timer = undefined; }
   infos = [];
   states.clear();
+  resetMeter();
   pill.hidden = true;
 }
 
@@ -161,6 +169,9 @@ window.pillSet = (list: PillInfo[]) => {
   if (!list.length) { hideSelf(); return; }
   const keep = new Set(list.map((i) => i.id));
   for (const id of Array.from(states.keys())) if (!keep.has(id)) states.delete(id);
+  // A list sharing no id with the previous one is a fresh show: start the meter at rest.
+  const prev = new Set(infos.map((i) => i.id));
+  if (!list.some((i) => prev.has(i.id))) resetMeter();
   infos = list.slice();
   pill.hidden = false;
   render();
