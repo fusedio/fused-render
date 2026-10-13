@@ -2098,63 +2098,55 @@ when one exists, else the folder itself.
   exists but is not a clone of that repo is refused, never overwritten.
 - **DL-6** Open target: `<dest>/<subpath>/index.html` when present, else the
   subdirectory itself, via the standard `/view/` URL codec.
-- **DL-7** Local app file payload (D889): `fused-render://open?file=<absolute
+- **DL-7** Local app file payload: `fused-render://open?file=<absolute
   .fused path>`, the path percent-encoded once by the sender (Render App's
   title-bar Edit button, `quote(path, safe="")`) and decoded once here; the
   value is taken verbatim to end-of-string like `git=`. Only an absolute
   `.fused` path is accepted. The OS handlers ferry it to `GET /clone` like
-  every link (DL-2 unchanged), but a file link gets **no page of its own**:
-  the route answers a 303 INTO the shell with the path as `?_edit_appfile=`
-  — to the existing local copy's entry page (`app_listing.app_entry`, else
-  the folder) when `appfile.clone_target` says one is there, else to Home; a
-  path it cannot read goes to Home too, carrying the path verbatim, so the
-  shell is the one error surface. Nothing is written on the GET (D3). The
-  shell's `EditAppFileBoot` (top document, `!IS_EMBED`) reads the param once,
-  strips it before any async work (a reload or Back never replays the
-  hand-off), then: **no copy** → `POST /api/appfile/clone` and move to the
-  copy's entry page (**no confirm**: the file is already on this machine and
-  was just open in Render App, the same trust posture as a Finder
-  double-click on a `.fused`); **copy exists** → the copy is already on
-  screen underneath, and a modal over it asks "A local copy of `<name>`
-  already exists — overwrite it with the files in `<file>.fused`?" with
-  *Overwrite* (`POST /api/appfile/overwrite`, the preview header's merge
-  overwrite: payload files replace their counterparts, `.venv`, `.fused` data
-  and files the payload does not carry stay; then a reload of the copy's
-  entry page) and *Cancel* / close (nothing written, keep working on the
-  copy). `/api/clone/info` and `POST /api/clone` stay git-only.
+  every link (DL-2 unchanged), and the route answers a 303 to the file's own
+  INSTALL PAGE (AF-14) — `/explorer/embed/<path>.fused`, the same place a
+  Finder double-click lands — where the user installs or updates the app.
+  Nothing is written on the GET (D3); the page says whether a copy is
+  installed, newer, older or diverged, and the install is its X-Fused POST.
+  A malformed payload (relative, not `.fused`) goes to Home carrying it under
+  `?_edit_appfile=`, which the shell's `FetchAppFileBoot` reads once, strips,
+  and reports as a toast — one error surface. `/api/clone/info` and
+  `POST /api/clone` stay git-only. *(Supersedes D889's clone-unasked +
+  overwrite-modal shape, 2026-10-13.)*
 - **DL-8** Hosted app file payload: `fused-render://open?url=<http(s) link to
   a .fused>`, the link percent-encoded once by the sender and decoded once
   here, verbatim to end-of-string like `git=`/`file=`. Render App's
-  `render-app://open?url=` ported one-to-one (fused-render-lite PRs #27/#30):
-  a web page's "Open in fused-render" link. Same no-page shape as DL-7:
-  `GET /clone` answers a 303 to Home with the link as `?_fetch_appfile=`
-  (nothing is on disk yet, and nothing is written on the GET, D3; a non-http(s)
+  `render-app://open?url=` ported (fused-render-lite PRs #27/#30): a web
+  page's "Open in fused-render" link. Same no-page shape as DL-7: `GET
+  /clone` answers a 303 to Home with the link as `?_fetch_appfile=` (nothing
+  is on disk yet, and nothing is written on the GET, D3; a non-http(s)
   payload rides along verbatim so the shell reports it). The shell's
-  `FetchAppFileBoot` (top document, `!IS_EMBED`, beside `EditAppFileBoot`)
-  reads the param once, strips it before any async work, then **downloads
-  without a confirm step** (owner call; the link click is the gesture) through
-  the X-Fused `POST /api/appfile/fetch {url} → {file}` (`appfetch.py`: http(s)
-  only, every redirect hop re-checked, 1 GB cap by `Content-Length` and while
-  streaming, temp file validated with `appfile.read_manifest` then
-  `os.replace`d, nothing left on disk on failure) into
-  `~/.fused-render/downloads/<app_id>.fused` — keyed on the app's stable id
-  (D884) so every link to one app updates one file and one Apps-hub row;
+  `FetchAppFileBoot` (top document, `!IS_EMBED`) reads the param once, strips
+  it before any async work, then **downloads without a confirm step** (the
+  link click is the gesture) through the X-Fused `POST /api/appfile/fetch
+  {url} → {file}` (`appfetch.py`: http(s) only, every redirect hop
+  re-checked, 1 GB cap by `Content-Length` and while streaming, temp file
+  validated with `appfile.read_manifest` then `os.replace`d, nothing left on
+  disk on failure) into `~/.fused-render/downloads/<app_id>.fused` — keyed on
+  the app's stable id (D884) so every link to one app updates one file;
   `<name>-<url sha 8>.fused` for files that predate the id — and opens the
-  saved file **as an app**, the Finder double-click shape (D390), never the
-  explorer's view of it: the top document hard-loads the file's embed URL
-  (a full load, since the embed/view prefix is read once at module init),
-  where the `fusedapp` template runs it and `exported_apps.record_open`
-  lists it under recents. Deliberately not `POST /api/windows/open`: a deep
-  link always arrives in a fresh native window parked on Home by the 303, and
-  loading the embed there makes that window the app's own (the URL observer
-  re-keys it, the title-bar Edit button is the way into the explorer) instead
-  of leaving it orphaned beside a second one. In a browser tab the same load
-  lands under the EmbedStrip, whose "Open in explorer" is the way out. A re-click on a link to
-  a NEW version of the same app overwrites the one saved file, extracts the
-  new bytes, and keeps everything the app saved in `.fused` (AF-13's shared
-  state dir): app files replaced, state retained. Recorded cost of the
-  missing gate: a web page that can navigate the browser to this origin with
-  `?_fetch_appfile=` gets a remote `.fused` downloaded and opened unprompted.
+  saved file's **install page** (AF-14): the top document hard-loads the
+  file's embed URL (a full load, since the embed/view prefix is read once at
+  module init), where the `fusedapp` template shows what installing would do
+  and installs on one click; nothing in the file runs before that. A re-click
+  on a link to a NEW version of an installed app lands on the same page
+  reading "Update": one click replaces the copy's files and keeps everything
+  in `.fused` — the page warns first when the copy was edited since install.
+  Deliberately not `POST /api/windows/open`: a deep link always arrives in a
+  fresh native window parked on Home by the 303, and loading the page there
+  makes that window the file's own, and the install's navigation the app's
+  (the URL observer re-keys it, the title-bar Edit button is the way into the
+  explorer) instead of leaving it orphaned beside a second one. In a browser
+  tab the same load lands under the EmbedStrip, whose "Open in explorer" is
+  the way out. Recorded cost of the missing download gate: a web page that
+  can navigate the browser to this origin with `?_fetch_appfile=` gets a
+  remote `.fused` downloaded into the managed downloads dir unprompted — and
+  nothing more, since the install page is the gate before anything runs.
 
 ---
 
@@ -10873,7 +10865,7 @@ our vocabulary, with nowhere to go. Four failures, one answer.
   its own state has reason to discount the rest of the brief, so the line says
   only what holds everywhere.
 
-## 43. Single-File App Export — the `.fused` App File (D385, D386, D387, D396, D397)
+## 43. Single-File App Export — the `.fused` App File (D385, D386, D387, D396, D397; install page AF-14, 2026-10-13)
 
 One app, one double-clickable file. Exporting a fused app produces
 `<app name>.fused` — since D870 an OPAQUE CONTAINER (`appfile_container`:
@@ -10881,14 +10873,16 @@ magic `FUSEDAPP`, versioned header, deflated JSON index carrying
 `fused_app_file: 2`, the app's name, its entry page resolved by the shared
 entry rule `app_listing.app_entry`, an `exported_at` UTC ISO-8601 stamp
 (`2026-09-14T10:05:12Z`; absent on files exported before it existed, and
-`open_app_file`/`clone_target` answer it as `exported_at`, None when missing),
+`install_target` answers it as `exported_at`, None when missing),
 and every member's path/size/sha256; then one deflate stream per file). It is deliberately NOT a zip: v1 (D385) was a
 zip with its extension renamed, and mail scanners classify by bytes — Gmail
 walked the members and flagged the `.html`/`.py` inside as suspicious. v1
-files stay READABLE (`read_manifest`/`open_app_file` branch on the magic) so
-every already-exported and indexed `.fused` keeps opening; nothing writes v1
-anymore. Opening one lands the recipient in the app experience and nothing
-else: no editor, no Claude, no explorer chrome.
+files stay READABLE (`read_manifest`/`install_app_file` branch on the magic)
+so every already-exported `.fused` keeps installing; nothing writes v1
+anymore. **A `.fused` is an installer, not an app** (owner, 2026-10-13):
+opening one shows its install page (AF-14), and the app the recipient uses
+is the one working copy that install puts under `<workspace>/app/<slug>` —
+an ordinary editable app folder of their own.
 
 - **AF-1** Export walks the app FOLDER (`appfile.export_app_file`), not a
   per-page dependency scan: every page, `.py`, asset and `pyproject.toml`/
@@ -10925,16 +10919,21 @@ else: no editor, no Claude, no explorer chrome.
   The route (GET `/api/appfile/export?path=`) builds into a per-request temp
   dir, deleted after the response; non-destructive everywhere.
 - **AF-5** A `.fused` renders at its own explorer URL — there is no dedicated
-  open route and no gate (D389/D390). `.fused` is a preview template binding
-  (`registry.json` → `templates/fusedapp`): the template reads `_file`, calls
-  the internal X-Fused-guarded `POST /api/appfile/open` (extract-or-reuse),
-  and fills the viewport with an iframe of the entry page's embed URL the
-  POST answers. An in-explorer open is `/explorer/view/<path>.fused` (shell
-  chrome kept); an OS double-click maps via the shared view-URL codec
+  open route and no gate (D389/D390), and what renders there is its INSTALL
+  PAGE (AF-14). `.fused` is a preview template binding (`registry.json` →
+  `templates/fusedapp`): the template reads `_file`, asks the read-only
+  `GET /api/appfile/install?path=` what installing would do (never an
+  extraction: one bounded index read, the workspace walk for the app id, and
+  the hash of the installed copy's stamped files), draws the file's icon
+  (`/api/appfile/icon`), screenshot (`/api/appfile/preview`), README and
+  member list, and its one button POSTs the X-Fused `/api/appfile/install`.
+  An in-explorer open is `/explorer/view/<path>.fused` (shell chrome kept);
+  an OS double-click maps via the shared view-URL codec
   (`_view_url_codec.view_url_path`) to `/explorer/embed/<path>.fused` —
-  chrome-free, the app experience. Errors render as the template's own fail
-  state. The accepted trade: a `.fused` from an untrusted source runs its
-  Python on first render, like any folder of pages someone sent you.
+  chrome-free. Under `_preview=1` (a card thumbnail, a listing peek) the page
+  asks the `light=1` probe (no hashing) and shows the mark and name only.
+  Errors render as the template's own fail state. Nothing in the file runs
+  until the user installs it.
 - **AF-6** Open extracts through a hardened extractor — the container's own
   for v2 (`appfile_container.read_index` validates the WHOLE index before a
   byte lands: bounded inflate of the index, relative forward-slash paths
@@ -10943,62 +10942,50 @@ else: no editor, no Claude, no explorer chrome.
   `extract` then checks every body's written length and sha256 against the
   index and removes the stage on any disagreement), `zip_import`'s for a v1
   zip (zip-slip, symlink entries, count/size caps on bytes actually written)
-  — into a content-addressed dir under `~/.fused-render/appfiles/`
-  (`<name-slug>-<sha256[:16]>` — same bytes re-use the extract, a re-export
-  lands fresh). The manifest's entry must exist in the payload and still carry
-  the fused-app marker, or the open is refused.
-- **AF-7** Every extracted file is chmod 0444 (RO-7's bit): `stat` answers
-  `writable: false`, `/api/fs/write` refuses, `fused.writeFile` rejects with
-  the existing `readonly` type. The no-edit contract is enforced by the
-  read-only machinery of §13.5, not a new mode.
-- **AF-8** The open answers the entry's **embed** URL
-  (`/explorer/embed/<entry>`): chrome-free by page-load mode — the app as it
-  is. *(Revised by D396)* The hub identity of an opened `.fused` is the FILE,
-  not its extract dir: `POST /api/appfile/open` records the source path into
-  `~/.fused-render/appfile_recents.json` (the fusedapp template skips the POST
-  under `_preview=1`, so thumbnails never record), and `registered_apps`
-  refuses paths under the extract cache — rendering the extracted entry no
-  longer registers a `linked` card.
-- **AF-10** (D396) Exported `.fused` files are DISCOVERABLE: `/api/apps`
-  merges in every indexed `.fused` on the machine (one duckdb query over the
-  file index's files table, `ext='fused'`, TTL-cached; `git_repos.py`'s
-  screening — `junk_path`, MountGuard, per-row isfile — and its freshness
-  nudge, but NO not-ready states: an unanswerable index is zero exported rows,
-  never a failed listing), unioned with the appfile recents so a just-opened
-  export appears before any rescan. Rows carry the reserved virtual tag
-  `Fused-App` and `kind: "appfile"`; `entry` is the `.fused` path itself
-  (a card click lands on the fusedapp view), `entry_html` null (never
-  live-iframed). The tag prints on the card's own tag line but is NOT a Repo
-  facet chip — that facet groups by source and an app file has none
-  (`repoChips` excludes `kind: "appfile"`; an explicit `?tag=` URL and the
-  search box still reach the rows). Opened exports join Home's recents row
-  (`exported_apps.recent_exported_apps`, recents-only — no duckdb on the
-  Home path).
-- **AF-11** (D396) The exported card's thumbnail is the payload's
-  `preview.png`, streamed by `GET /api/appfile/preview?path=` — a bounded
-  single-member zip read (never an extraction). Without one, a file the user
-  has OPENED before live-renders instead: the card iframes its own fusedapp
-  view under `_preview=1`, whose preview contract is `preview: true` on
-  `POST /api/appfile/open` — reuse an existing extract only (`reuse_only`:
-  never extract fresh, never rebuild, never record recency; the entry iframe
-  carries `_preview=1&_nofocus=1`). A never-opened file stays the empty
-  thumb — a peek must not be the first run of a stranger's pages.
-  The payload's `preview.png` is the folder's AUTHORED one or none. Share
-  never photographs the screen (retired 2026-09-18): from D396 until then a
-  folder without a still got a native screen shot baked in at export time —
-  `POST /api/capture/shot-region` on the /apps card thumb or a full-viewport
-  stage — and each of its preconditions (Screen Recording granted, window on
-  one display, page zoom 100%, a pointer-learned viewport origin, overlay UI
-  hidden before the frame was read) failed at least once, baking a WRONG
-  picture into a permanent artifact that no downstream check can catch. App
-  Doctor's `preview` check surfaces the missing thumbnail as a fact the
-  owner fixes on purpose; the one capture left is the explorer's explicit
-  "Set Current View as Preview" (`appShot.captureAppPreview`, the shown
-  frame or nothing), which writes the folder's preview.png via
-  `POST /api/apps/preview`. The export and publish routes still accept an
-  optional `preview` upload (PNG magic + 8 MiB cap; the authored still
-  always wins; an over-cap upload is dropped rather than failing the
-  download) — no shell caller sends one any more.
+  — into a staging dir INSIDE `<workspace>/app/` (`.install-<slug>-*`, so the
+  claim is a same-filesystem rename; stale ones are swept after 24 h). The
+  manifest's entry must exist in the payload and still carry the fused-app
+  marker, or the install is refused. *(The content-addressed extract cache
+  under `~/.fused-render/appfiles/` is retired by AF-14; an install deletes
+  the extracts of the app it installs.)*
+- **AF-7** An installed copy is the user's own: every payload file is lifted
+  to 0644 in staging before the rename (an extractor's 0444 never reaches
+  `app/`). *(The run-in-place era's read-only posture is retired by AF-14;
+  RO-7's machinery still governs genuinely read-only folders.)*
+- **AF-8** The install answers the copy's entry page as BOTH URLs — its
+  explorer view (`/explorer/view/<entry>`) and its chrome-free embed
+  (`/explorer/embed/<entry>`) — and the install page opens the one matching
+  where it sits: the explorer's view when the page is inside the explorer,
+  the embed when the page IS the window (a double-click, a deeplink, the
+  CLI), so that window becomes the app's. The hub identity of an app is its
+  installed FOLDER, never the file: `registered_apps` still refuses paths
+  under the old extract cache so a stale entry never double-lists one.
+- **AF-10** *(D396, retired by AF-14)* `.fused` files are NOT hub rows: an app
+  file is an installer, and the hub lists the installed copy under `app/`
+  like any workspace app. The index-backed `exported_apps` listing, the
+  `Fused-App` virtual tag, the `kind: "appfile"` rows and the
+  `appfile_recents.json` open-recency store are gone; the launcher and Home
+  list installed apps only. A `.fused` pinned to the Dock or the menubar
+  before this keeps working — it opens the file's install page.
+- **AF-11** (D396) The payload's `preview.png` is streamed by
+  `GET /api/appfile/preview?path=` — a bounded single-member read (never an
+  extraction) — and is the install page's screenshot; `/api/appfile/icon`
+  serves the payload's `icon.svg`/`icon.png` the same way. The `preview.png`
+  is the folder's AUTHORED one or none. Share never photographs the screen
+  (retired 2026-09-18): from D396 until then a folder without a still got a
+  native screen shot baked in at export time — `POST /api/capture/shot-region`
+  on the /apps card thumb or a full-viewport stage — and each of its
+  preconditions (Screen Recording granted, window on one display, page zoom
+  100%, a pointer-learned viewport origin, overlay UI hidden before the frame
+  was read) failed at least once, baking a WRONG picture into a permanent
+  artifact that no downstream check can catch. App Doctor's `preview` check
+  surfaces the missing thumbnail as a fact the owner fixes on purpose; the one
+  capture left is the explorer's explicit "Set Current View as Preview"
+  (`appShot.captureAppPreview`, the shown frame or nothing), which writes the
+  folder's preview.png via `POST /api/apps/preview`. The export and publish
+  routes still accept an optional `preview` upload (PNG magic + 8 MiB cap;
+  the authored still always wins; an over-cap upload is dropped rather than
+  failing the download) — no shell caller sends one any more.
 - **AF-9** `.fused` is an owned file type on all three platforms: macOS
   Owner-rank document type + exported UTI `io.fused.render.app` (conforms to
   `public.data`, not the zip UTI, so archive tools don't claim it); Windows
@@ -11006,49 +10993,71 @@ else: no editor, no Claude, no explorer chrome.
   previewable extension — `.fused` IS a registry key now (D390 made it the
   `fusedapp` template's binding), so the D387-era `winopen.extensions()`
   hardcoded seed is gone.
-- **AF-12** (D397) A `.fused` CLONES into the workspace: an "Export App"-style
-  preview-header button copies the payload to `<workspace>/local/<slug>` as an
-  ordinary editable app folder and navigates to it. `GET /api/appfile/clone`
-  is the read-only probe the button reads on mount (one bounded manifest read
-  + one isdir → `{name, slug, path, cloned}`); the X-Fused
-  `POST /api/appfile/clone` does the copy. The source is `open_app_file`'s
-  extract, so the one hardened extractor runs (a never-opened file extracts on
-  the way through) and the 0444 payload bits are lifted to 0644 IN STAGING —
-  a clone that shipped them read-only would be an uneditable development copy.
-  Staged inside the destination tag dir so the claim is a same-filesystem
-  rename. **The destination folder EXISTING is what "already cloned" means** —
-  no records file — so the button reads "Go to local version" and only
-  navigates, a second Clone is a reporting no-op that never overwrites the
-  user's edits and never makes a suffixed second folder, and the answer
-  survives a restart, a moved `.fused` and a re-export. Named cost: an
-  unrelated `local/<slug>` folder reads as this app's clone. The manifest
-  `name` is attacker-controlled zip data and reaches the filesystem only
-  through `appfile._slug` (no separator, dot or drive letter survives it,
-  shared with the extract cache key); an empty name falls back to the FILE
-  STEM, not a shared `app` literal, so two unnamed app files do not collide on
-  one folder. Plain files — no repo of its own (D626: `local/` is one shared
-  repo; the clone lands untracked and the first turn commit about it adopts
-  it), and no upstream to diff against, unlike the showcase Clone.
-  Header-only, so an embed-opened `.fused`
-  (a Finder double-click) shows no Clone: reaching it means opening the file
-  in the explorer.
-- **AF-13** Shared `.fused` state per app id (port of Render App's lite PR
-  #32). Extracts are content-addressed (AF-6), so every re-export of an app
-  lands in a fresh dir and the state the app saved under `<extract>/.fused`
-  (D548, §47) used to stay behind. Now `open_app_file` makes
-  `<extract>/.fused` a symlink (a directory junction on Windows) to
-  `~/.fused-render/fused_data/<app_id>` for every file carrying a stable id
-  (D884): every extract of one app reads and writes one state dir, and
-  `app_fused_dir.ensure` scaffolds `data`/`cache`/`meta.json` through the
-  link on render exactly as before. **An update to the same app replaces the
-  app's files and keeps everything inside `.fused`** — the DL-8 contract. An
-  older extract that holds a real `.fused` dir is migrated on its next
-  non-preview open: its contents move into the shared dir when that is still
-  the bare scaffold, else the shared state wins and the local copy goes.
-  Files without an id keep local state, as before. Best-effort: a link that
-  cannot be made leaves the state local rather than failing the open.
-  `rmtree` of a damaged extract does not follow the link, so a rebuild never
-  touches the shared dir.
+- **AF-12** *(D397, retired by AF-14)* Clone, "Clone & overwrite" and the
+  preview-header/EmbedStrip `CloneAppFileButton`, with `GET/POST
+  /api/appfile/clone` and `POST /api/appfile/overwrite`, are gone: install IS
+  the editable copy, and the install page is the one surface. Nothing lands
+  in `local/` any more (#1592 moved that tag's apps to `app/`).
+- **AF-13** *(retired by AF-14)* The shared `.fused` state per app id
+  (`~/.fused-render/fused_data/<app_id>`, symlinked from every extract) is
+  replaced by the installed copy's own `.fused/` (D548, §47): one copy, one
+  state dir, nothing to share. The first install of an app whose id has a
+  shared dir MOVES it into the copy (`.fused/meta.json` repointed, the origin
+  kept in `migrations` as `installed: true`); a file without an id adopts the
+  `.fused` of the extract an earlier open of that file made. The extracts of
+  the installed app under `appfiles/` are then deleted. An id never
+  installed keeps its `fused_data` dir untouched.
+- **AF-14** **Install (owner, 2026-10-13).** The one working copy of an app
+  lives at `<workspace>/app/<slug>` — `appfile._slug(manifest name)`, the
+  file stem when the name is empty, so two unnamed files never share a
+  folder; the slug is the only thing that turns attacker-controlled index
+  data into a path. **Identity** is the file's `app_id` (D884) first: the
+  workspace folder whose entry page declares it is the installed copy
+  wherever it sits (`app/`, a `local/` the migration skipped, a folder the
+  user renamed — `appfile.workspace_app_with_id`, the whole walk), else
+  `app/<slug>` existing. `app/<slug>` held by a folder declaring a DIFFERENT
+  id is a `clash`: refused, named, never overwritten (owner: no `-2` suffix,
+  D397's stance kept). **The install stamp** `<app>/.fused/appfile.json`
+  (`appfile.read_stamp`/`write_stamp`) records `exported_at`, `installed_at`,
+  `source`, `app_id` and the sha256 of every file written, straight from the
+  container index. `GET /api/appfile/install?path=` (`install_target`,
+  read-only, unguarded like the preview GET; `light=1` skips the hashing)
+  answers one `state`: `new` (no copy); `update` (file newer by
+  `exported_at`, every stamped file still hashing to the stamp); `diverged`
+  (newer, but N stamped files changed or missing — the user's work; listed);
+  `same`; `downgrade` (older); `unknown` (a copy with no stamp — a clone, a
+  hand copy, a moved folder — or a file/stamp without a date, or a copy over
+  the 256 MB hashing budget); `clash`. Files the user ADDED are never
+  divergence. `exported_at` compares lexically: `_utc_now` writes one fixed
+  UTC-Z shape. **`POST /api/appfile/install {file, force}`** (X-Fused):
+  `new`/`update` go through; every other state answers **409** with the
+  fresh probe under `target` until `force: true` (the page's second click
+  on the same button, reworded "— are you sure?"); `clash` answers 400.
+  **A new install** unpacks through the one hardened extractor per format
+  (AF-6) into `app/.install-<slug>-<rand>/files`, lifts 0444 to 0644 there,
+  adopts the run-in-place state (AF-13), renames into place, scaffolds
+  `.fused/` (`app_fused_dir.ensure`), writes the stamp and `init_repo`s the
+  copy — "Installed from `<file>`" — so it heads its own repo like a newly
+  created `app/` app. **An update / overwrite** merges the payload over the
+  copy (`_merge_tree`: payload files replace their counterparts; `.venv`,
+  `.fused`, `.git` and anything the payload does not name stay), then
+  removes files the OLD stamp named that the new index does not carry — only
+  when their bytes still match the old stamp, i.e. the author deleted them
+  and the user never touched them (D397's "deleted files linger" cost is
+  gone; empty parents go too) — rewrites the stamp and commits "Updated from
+  `<file>` (`<exported_at>`)", so a diverged user can diff their work
+  against the author's version afterwards. Not atomic (a merge over a live
+  folder has no staging trick that avoids copying the `.venv`); a retry
+  finishes. **`.fused/` is never written, listed or deleted by an install or
+  update**: the merge skips it, the prune touches only stamped paths (an
+  export never carries a dotted name), and the stamp lives there because it
+  is state about this copy, like `meta.json`. The page's primary action per
+  state: Install / Update / Overwrite (danger, two clicks) / Open + Reinstall
+  (`same`) / nothing (`clash`); an installed copy in any other state also
+  offers "Open installed copy". After a successful write the page navigates
+  as AF-8 says. v1 zips install too (zip_import's extractor) but carry no
+  per-file hashes, so a copy installed from one reads `unknown` on the next
+  file. Uninstalling the copy is the app folder's own Uninstall (#1576).
 
 ## 44. MCP App Template — An App's Entrypoints as Claude Tools (D401)
 

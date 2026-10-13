@@ -350,11 +350,10 @@ def _open_target(path: str) -> str:
       command IS the user's consent. A dirty/diverged tree or an auth
       failure surfaces git's own message and exits non-zero. The clone
       target is then resolved exactly like a folder argument, below.
-    - A `.fused` file: used exactly as given. It is not extracted here —
-      `/explorer/embed/<path>.fused` renders through the `fusedapp` preview
-      template client-side, which extracts (or reuses a prior extract of)
-      the file via the guarded `/api/appfile/open` route and frames the
-      extracted entry page's own embed URL (D390).
+    - A `.fused` file: used exactly as given. It is not installed here —
+      `/explorer/embed/<path>.fused` renders through the `fusedapp` template,
+      the file's install page (AF-14), and the user installs from there via
+      the guarded `/api/appfile/install` route (D390).
     - An app folder, or a file inside one: a folder resolves to its app
       entry page (`app_listing.app_entry` — the same rule the Home grid's
       "Open app" button and the explorer's app card use), so `fused-render

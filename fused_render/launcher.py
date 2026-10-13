@@ -8,8 +8,8 @@ newest open first, with the sidebar's desk (``current_apps``, newest-added
 first) filling any gap below them; typing searches every app this machine
 knows — those, every app in the workspace (``app_listing.workspace_apps``,
 which covers the ``showcase`` and ``local`` tags), the linked folders
-(``registered_apps``) and the exported ``.fused`` files the index knows
-(``exported_apps``). The same set the /apps hub shows. Under the app rows, a non-empty query also lists files
+(``registered_apps``). The same set the /apps hub shows — a ``.fused`` file
+is an installer, not an app (AF-14), and is not listed. Under the app rows, a non-empty query also lists files
 and folders from the file index (``file_results``): the home search box's
 engine, a handful of rows, opened in the explorer.
 
@@ -328,7 +328,7 @@ def _bot_registry() -> list[dict]:
 def _registry_uncached() -> list[dict]:
     if _flavor.is_bot():
         return _bot_registry()
-    from fused_render import app_listing, exported_apps, registered_apps
+    from fused_render import app_listing, registered_apps
     from fused_render.shell.seed import fused_dir
 
     rows: list[dict] = []
@@ -360,24 +360,13 @@ def _registry_uncached() -> list[dict]:
             continue
         seen.add(k)
         rows.append(_folder_row(a, pinned=False))
-    try:
-        files = exported_apps.exported_apps()
-    except Exception:  # noqa: BLE001
-        logger.debug("exported apps failed", exc_info=True)
-        files = []
-    for a in files:
-        k = key_of(a["path"])
-        if k in seen:
-            continue
-        seen.add(k)
-        rows.append(_appfile_row(a))
     return rows
 
 
 def registry(running=frozenset()) -> list[dict]:
     """Every app the launcher can open: the recently opened ones first
     (newest open first), then the rest of the desk (newest-added first),
-    then the workspace + linked apps, then exported ``.fused`` files. Cached
+    then the workspace + linked apps. Cached
     for a couple of seconds: the workspace walk is not free and a query
     arrives per keystroke. ``running`` marks the rows whose path a window
     shows. Ties in a search keep this order, so a recent app outranks a

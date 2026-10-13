@@ -1,7 +1,8 @@
-"""The .fused single-file app export/open (SPEC §43, D385-D387): export walks
-the whole app folder into a manifest+payload zip, open extracts it hardened,
-read-only, content-addressed, and the shared view-URL codec routes a
-double-clicked .fused through the /openfused confirm page."""
+"""The .fused single-file app export/install (SPEC §43): export walks the
+whole app folder into an opaque container, install unpacks it hardened into
+the workspace's `app/` (AF-14, tests/test_appfile_install.py has the install
+semantics), and the shared view-URL codec routes a double-clicked .fused to
+its own embed URL, where the fusedapp template shows the install page."""
 
 import io
 import json
@@ -18,14 +19,11 @@ MARKER = '<meta charset="utf-8" />\n<meta name="fused-app" />'
 
 @pytest.fixture(autouse=True)
 def isolated_home(tmp_path, monkeypatch):
-    """Per-test shell home, the same way test_registered_apps.py does it.
-
-    conftest allocates ONE FUSED_RENDER_HOME per process, so without this the
-    AF-8 route test's `/render` of an extracted app writes a `linked` entry for
-    `<tmp>/cache/demo-<hash>` into a registered_apps.json shared with every
-    later test on the same xdist worker — where it surfaced as a phantom
-    `demo-<hash>` card in other modules' /api/apps listing assertions."""
+    """Per-test shell home and workspace, the same way test_registered_apps.py
+    does it: conftest allocates ONE FUSED_RENDER_HOME per process, and an
+    install writes into the WORKSPACE."""
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("FUSED_RENDER_DIR", str(tmp_path / "workspace"))
 
 
 def make_app(tmp_path, name="demo"):
@@ -40,8 +38,7 @@ def make_app(tmp_path, name="demo"):
     return d
 
 
-def test_export_then_open_round_trip(tmp_path, monkeypatch):
-    monkeypatch.setattr(appfile, "appfiles_root", lambda: str(tmp_path / "cache"))
+def test_export_then_install_round_trip(tmp_path):
     app = make_app(tmp_path)
     out = tmp_path / "demo.fused"
     manifest = appfile.export_app_file(str(app), str(out))
@@ -58,18 +55,17 @@ def test_export_then_open_round_trip(tmp_path, monkeypatch):
     names = {f["path"] for f in appfile.read_manifest(str(out))["files"]}
     assert names == {"index.html", "data.py", "assets/logo.svg"}
 
-    result = appfile.open_app_file(str(out))
-    assert result["reused"] is False
+    result = appfile.install_app_file(str(out))
+    assert result["action"] == "installed"
     assert os.path.isfile(result["entry"])
-    assert result["entry"].startswith(result["dir"])
-    # RO-7 posture: every extracted file is read-only.
-    assert not os.access(result["entry"], os.W_OK)
-    assert not os.access(os.path.join(result["dir"], "data.py"), os.W_OK)
+    dest = str(tmp_path / "workspace" / "app" / "demo")
+    assert result["entry"] == os.path.join(dest, "index.html").replace(os.sep, "/")
+    # The copy is the user's own: writable, never 0444.
+    assert os.access(result["entry"], os.W_OK)
+    assert os.access(os.path.join(dest, "data.py"), os.W_OK)
 
-    # Same bytes, same content key: the second open re-uses the extract.
-    again = appfile.open_app_file(str(out))
-    assert again["reused"] is True
-    assert again["dir"] == result["dir"]
+    # Same bytes again: the same version is installed, nothing to update.
+    assert appfile.install_target(str(out))["state"] == "same"
 
 
 def test_export_skips_machinery_and_hidden(tmp_path):
@@ -152,8 +148,7 @@ def _zip_bytes(entries: dict[str, str]) -> bytes:
     return buf.getvalue()
 
 
-def test_open_rejects_zip_slip(tmp_path, monkeypatch):
-    monkeypatch.setattr(appfile, "appfiles_root", lambda: str(tmp_path / "cache"))
+def test_install_rejects_zip_slip(tmp_path):
     bad = tmp_path / "evil.fused"
     bad.write_bytes(
         _zip_bytes(
@@ -167,11 +162,12 @@ def test_open_rejects_zip_slip(tmp_path, monkeypatch):
         )
     )
     with pytest.raises(appfile.AppFileError, match="escape|rejected"):
-        appfile.open_app_file(str(bad))
+        appfile.install_app_file(str(bad))
     assert not (tmp_path / "escape.txt").exists()
+    assert not (tmp_path / "workspace" / "app" / "evil").exists()
 
 
-def test_open_rejects_manifest_traversal_entry(tmp_path):
+def test_install_rejects_manifest_traversal_entry(tmp_path):
     bad = tmp_path / "evil.fused"
     bad.write_bytes(
         _zip_bytes(
@@ -186,8 +182,7 @@ def test_open_rejects_manifest_traversal_entry(tmp_path):
         appfile.read_manifest(str(bad))
 
 
-def test_open_rejects_markerless_entry(tmp_path, monkeypatch):
-    monkeypatch.setattr(appfile, "appfiles_root", lambda: str(tmp_path / "cache"))
+def test_install_rejects_markerless_entry(tmp_path):
     bad = tmp_path / "nomarker.fused"
     bad.write_bytes(
         _zip_bytes(
@@ -200,10 +195,11 @@ def test_open_rejects_markerless_entry(tmp_path, monkeypatch):
         )
     )
     with pytest.raises(appfile.AppFileError, match="fused-app"):
-        appfile.open_app_file(str(bad))
+        appfile.install_app_file(str(bad))
+    assert not (tmp_path / "workspace" / "app" / "n").exists()
 
 
-def test_open_rejects_backslash_entry(tmp_path):
+def test_install_rejects_backslash_entry(tmp_path):
     # `..\..\x.html` passes a `/`-split ".." check but joins as traversal on
     # Windows; backslashes are rejected outright (the exporter never writes them).
     bad = tmp_path / "evil.fused"
@@ -232,59 +228,29 @@ def test_manifest_read_is_size_capped(tmp_path):
         appfile.read_manifest(str(bomb))
 
 
-def test_open_rejects_non_fused_zip(tmp_path):
+def test_install_rejects_non_fused_zip(tmp_path):
     plain = tmp_path / "plain.fused"
     plain.write_bytes(_zip_bytes({"readme.txt": "hello"}))
     with pytest.raises(appfile.AppFileError, match="manifest"):
         appfile.read_manifest(str(plain))
 
 
-def test_sweep_never_evicts_live_extracts(tmp_path, monkeypatch):
-    # The staging sweep runs on every open against dirs whose mtime never
-    # advances — it must only ever see .staging/, or a day-old extracted app
-    # would be rmtree'd out from under its hub card and open tabs.
-    monkeypatch.setattr(appfile, "appfiles_root", lambda: str(tmp_path / "cache"))
-    app = make_app(tmp_path)
-    out = tmp_path / "demo.fused"
-    appfile.export_app_file(str(app), str(out))
-    first = appfile.open_app_file(str(out))
-    # Age the extract (and a leftover staging dir) past the TTL.
-    old = 1_000_000_000
-    os.utime(first["dir"], (old, old))
-    stale = os.path.join(str(tmp_path / "cache"), ".staging", "open-stale")
-    os.makedirs(stale)
-    os.utime(stale, (old, old))
-
-    other = make_app(tmp_path, name="other")
-    out2 = tmp_path / "other.fused"
-    appfile.export_app_file(str(other), str(out2))
-    appfile.open_app_file(str(out2))
-
-    assert os.path.isfile(first["entry"])  # the live extract survived
-    assert not os.path.isdir(stale)  # the stale staging dir did not
-
-
 def test_codec_routes_os_opened_fused_to_embed():
     # A Finder/Explorer double-click lands on the file's own EMBED url — the
-    # fusedapp template renders the app chrome-free (D390). In-explorer clicks
-    # use the ordinary view prefix and need no special case.
+    # fusedapp template renders the install page chrome-free (D390, AF-14).
+    # In-explorer clicks use the ordinary view prefix and need no special case.
     assert view_url_path("/tmp/My App.fused") == "/explorer/embed/tmp/My%20App.fused"
     # Extension check is case-insensitive.
     assert view_url_path("/a/B.FUSED") == "/explorer/embed/a/B.FUSED"
-    # And the embed path the template iframes the entry into is the same codec.
+    # And the embed path the install answers for the entry is the same codec.
     assert embed_url_path("/x/demo/index.html") == "/explorer/embed/x/demo/index.html"
 
 
-def test_routes_export_and_gateless_open(tmp_path, monkeypatch):
+def test_routes_export_and_install(tmp_path):
     from fastapi.testclient import TestClient
 
     from fused_render.server.app import create_app
 
-    monkeypatch.setattr(appfile, "appfiles_root", lambda: str(tmp_path / "cache"))
-    # Isolated home: the open below records into appfile_recents.json (D396),
-    # and a write into the session-shared home would leak a "Fused-App" row
-    # into every later /api/apps assertion.
-    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
     client = TestClient(create_app(start_dir=str(tmp_path)))
     app_dir = make_app(tmp_path)
 
@@ -294,17 +260,16 @@ def test_routes_export_and_gateless_open(tmp_path, monkeypatch):
     fused_path = tmp_path / "demo.fused"
     fused_path.write_bytes(r.content)
 
-    # D390: no user-facing open route — the fusedapp template calls the
-    # X-Fused-guarded POST and iframes the answered embed URL.
-    r = client.post("/api/appfile/open", json={"file": str(fused_path)})
+    # D390 / AF-14: no user-facing open route — the fusedapp template reads
+    # the probe and POSTs the X-Fused-guarded install.
+    r = client.post("/api/appfile/install", json={"file": str(fused_path)})
     assert r.status_code == 403
     r = client.post(
-        "/api/appfile/open", json={"file": str(fused_path)}, headers={"X-Fused": "1"}
+        "/api/appfile/install", json={"file": str(fused_path)}, headers={"X-Fused": "1"}
     )
     assert r.status_code == 200
-    assert r.json()["view"].startswith("/explorer/embed/")
-    extracted = appfile.open_app_file(str(fused_path))
-    assert extracted["reused"] is True  # the POST above already extracted
+    assert r.json()["entry_embed"].startswith("/explorer/embed/")
+    assert appfile.install_target(str(fused_path))["state"] == "same"
 
     # A bad export target answers 400 with the reason.
     r = client.get("/api/appfile/export", params={"path": str(tmp_path / "nope")})
@@ -314,9 +279,7 @@ def test_routes_export_and_gateless_open(tmp_path, monkeypatch):
     # A junk .fused answers the error the template renders as its fail state.
     junk = tmp_path / "junk.fused"
     junk.write_bytes(b"not a zip")
-    r = client.post(
-        "/api/appfile/open", json={"file": str(junk)}, headers={"X-Fused": "1"}
-    )
+    r = client.get("/api/appfile/install", params={"path": str(junk)})
     assert r.status_code == 400
     assert "error" in r.json()
 
@@ -327,22 +290,6 @@ def test_routes_export_and_gateless_open(tmp_path, monkeypatch):
     modes = [t["mode"] for t in r.json().get("templates") or []]
     assert "fusedapp" in modes
 
-    # AF-8 (revised by D396): the hub identity of an opened app file is the
-    # .fused FILE — POST /api/appfile/open recorded it into appfile_recents —
-    # and the extract dir is refused by the registered-apps store, so
-    # rendering the extracted entry does NOT register the cache dir.
-    r = client.get("/render", params={"path": extracted["entry"]})
-    assert r.status_code == 200
-    from fused_render import exported_apps, registered_apps
-
-    assert not any(
-        os.path.abspath(e["path"]) == extracted["dir"]
-        for e in registered_apps.read_entries()
-    )
-    assert any(
-        os.path.abspath(e["path"]) == str(fused_path)
-        for e in exported_apps.read_recents()
-    )
 
 
 def test_export_to_disk_writes_the_real_file_and_notes_the_mutation(tmp_path, monkeypatch):

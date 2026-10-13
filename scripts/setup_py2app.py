@@ -354,8 +354,8 @@ DOCUMENT_TYPES = [
     {
         # `.fused` is our own single-file app format (SPEC §43, D385): declare
         # the UTI below and claim Owner rank so a Finder double-click always
-        # opens FusedRender on the /openfused confirm page. Render only: a
-        # bot build declares no document types at all (see the plist).
+        # opens FusedRender on the file's install page (AF-14). Render only:
+        # a bot build declares no document types at all (see the plist).
         "CFBundleTypeName": "FusedRender app",
         "CFBundleTypeRole": "Viewer",
         "LSHandlerRank": "Owner",

@@ -20,11 +20,10 @@ external apps' recents: `openedAt` here is what `opened_at` reports for these
 entries, where a workspace app's comes from ``app_recents.json``. One folder,
 one entry: a re-open updates `openedAt` in place.
 
-One carve-out (D396): a ``.fused`` extract dir (under ``appfile.appfiles_root``)
-is refused on write and filtered on read. Rendering an opened app file's entry
-still hits the D301 recorder, but its identity on the hub is the ``.fused``
-FILE (exported_apps.py, tag ``Fused-App``) — registering the cache dir too would
-double-list the app under ``linked`` with a path the user never chose.
+One carve-out (D396, kept after AF-14): a ``.fused`` extract dir of the
+run-in-place era (under ``appfile.appfiles_root``) is refused on write and
+filtered on read — a stale entry from before installs existed must not
+double-list an app under ``linked`` with a path the user never chose.
 
 A registry over a symlink into the workspace, for the same reasons as before:
 `app_git.app_dir_for` scopes auto-commits by path prefix and a symlink would
@@ -156,8 +155,7 @@ def record_open(path: str) -> bool:
     if _in_or_over_workspace(path):
         return False
     if _in_appfiles_cache(path):
-        # An opened .fused's extract dir: its hub identity is the .fused FILE
-        # (exported_apps.record_open, fed by POST /api/appfile/open — D396).
+        # A run-in-place extract dir (retired by AF-14): never an app row.
         return False
     # BEFORE any syscall on the candidate, same ordering as the walk: the guard
     # answers with pure string work, so it runs before any stat.

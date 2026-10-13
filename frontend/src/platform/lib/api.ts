@@ -2269,50 +2269,12 @@ export async function saveAppFileToDisk(
   return data.path as string;
 }
 
-// Where a `.fused` would clone to in the workspace, and whether it already has
-// (D397). `cloned` is decided by the destination folder EXISTING — there is no
-// records file — so it survives a restart, a moved .fused and a re-export, at
-// the named cost that an unrelated `local/<slug>` folder reads as this app's
-// clone. The GET touches nothing; the POST does the copy and answers the same
-// shape, with `cloned: true` meaning "was already there, nothing copied".
-export interface AppFileCloneTarget {
-  /** The app's manifest name, or the file's stem when it has none. */
-  name: string;
-  /** That name reduced to one path-safe segment — the folder under local/. */
-  slug: string;
-  /** Absolute destination, forward-slashed. When the file carries an
-   *  `app_id` and a folder under local/ already declares it (a renamed
-   *  clone), this is THAT folder rather than local/<slug>. */
-  path: string;
-  cloned: boolean;
-  /** The app's stable identity (`<meta name="fused-app-id">`, minted at
-   *  creation, or on first export for older apps); null for files exported
-   *  before it existed. */
-  app_id?: string | null;
-}
-
-export function getAppFileCloneTarget(path: string): Promise<AppFileCloneTarget> {
-  return getJson<AppFileCloneTarget>(
-    "/api/appfile/clone?path=" + encodeURIComponent(path),
-  );
-}
-
-export function cloneAppFile(file: string): Promise<AppFileCloneTarget> {
-  return postJson<AppFileCloneTarget>("/api/appfile/clone", { file });
-}
-
 // Download the `.fused` at an http(s) `url` into ~/.fused-render/downloads
 // (keyed on the app id, so a re-click updates one file) and answer the saved
-// absolute path (DL-8). Caller opens it like any other .fused. No confirm.
+// absolute path (DL-8). Caller opens it like any other .fused: on its install
+// page (AF-14) — the download has no confirm, the install page is one.
 export function fetchAppFile(url: string): Promise<{ file: string }> {
   return postJson<{ file: string }>("/api/appfile/fetch", { url });
-}
-
-// Re-copy the `.fused` OVER its existing local copy: payload files replace
-// their counterparts; `.venv`, `.fused`, `.git` and anything the export left
-// home stay. Destroys the user's edits to those files — callers confirm first.
-export function overwriteAppFile(file: string): Promise<AppFileCloneTarget & { overwritten: boolean }> {
-  return postJson<AppFileCloneTarget & { overwritten: boolean }>("/api/appfile/overwrite", { file });
 }
 
 // Delete one USER template folder (core templates are read-only, 404 here).
@@ -2474,11 +2436,12 @@ export interface AppInfo {
   // (~/.fused-render/app_recents.json). Null for an app never opened, and
   // undefined on older backends — both fall back to updated_at in sortApps.
   opened_at?: number | null;
-  // "appfile" for an exported `.fused` FILE discovered via the file index
-  // (tag "Fused-App", D396) — `path`/`entry` are the file itself, so surfaces
-  // must not offer folder actions (open-folder, export) on it, and it
-  // contributes no Folders chip (repoChips). Undefined for every folder-shaped
-  // app and on older backends.
+  // "appfile" for a `.fused` FILE row — `path`/`entry` are the file itself,
+  // so surfaces must not offer folder actions (open-folder, export) on it,
+  // and it contributes no Folders chip (repoChips). The hub no longer lists
+  // such rows (AF-14: an app file is an installer); the kind survives for a
+  // dock/menubar pin of a `.fused` and for older backends. Undefined for
+  // every folder-shaped app.
   kind?: "appfile";
 }
 

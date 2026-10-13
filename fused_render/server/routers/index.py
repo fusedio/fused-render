@@ -1411,7 +1411,7 @@ def note_folder_opened(path: str) -> bool:
 
     Returns immediately, starting nothing, while indexing is disabled — this
     is the ONE gate for every caller of this function (fs_read.py,
-    git_repos.py, exported_apps.py), so a rescan-if-stale check never turns
+    git_repos.py), so a rescan-if-stale check never turns
     into a scan behind the pref's back."""
     if not index_gate.indexing_allowed():
         return False
