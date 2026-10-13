@@ -168,3 +168,30 @@ def test_a_fifo_meta_is_skipped_not_opened(agent, tmp_path, monkeypatch):
         _side(_asst([{"type": "text", "text": "late"}]))])
     _os.mkfifo(str(sub / "agent-fifo.meta.json"))
     assert _agent_seg(agent, target)["children"][0]["text"] == "late"
+
+
+def test_grandchild_subagents_fold_into_the_chip(agent, tmp_path, monkeypatch):
+    """A subagent's own subagent lives in its own file; the chip shows one
+    flat group, transitively (Bugbot, PR #1635)."""
+    target, sub = _setup(agent, tmp_path, monkeypatch)
+    _write_agent(sub, "child", "toolu_P", [
+        _side(_asst([{"type": "tool_use", "id": "toolu_C", "name": "Agent",
+                      "input": {"prompt": "go deeper"}}])),
+    ])
+    _write_agent(sub, "grandchild", "toolu_C", [
+        _side(_asst([{"type": "text", "text": "from the grandchild"}]))])
+    seg = _agent_seg(agent, target)
+    texts = [c.get("text") for c in seg["children"] if c.get("kind") == "text"]
+    assert "from the grandchild" in texts
+
+
+def test_a_second_meta_for_one_call_falls_through_to_the_readable_one(
+        agent, tmp_path, monkeypatch):
+    """Two metas naming the same call: the unreadable one (its transcript
+    missing) must not hide the readable one (Bugbot, PR #1635)."""
+    target, sub = _setup(agent, tmp_path, monkeypatch)
+    (sub / "agent-aaa.meta.json").write_text(
+        '{"agentType": "x", "toolUseId": "toolu_P"}')  # no .jsonl beside it
+    _write_agent(sub, "bbb", "toolu_P", [
+        _side(_asst([{"type": "text", "text": "readable"}]))])
+    assert _agent_seg(agent, target)["children"][0]["text"] == "readable"

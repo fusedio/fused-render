@@ -7947,7 +7947,7 @@ class _SubagentIndex:
 
     def __init__(self, folder: str, metas: dict):
         self.folder = folder
-        self.metas = metas        # toolUseId -> (stem, agent_type)
+        self.metas = metas        # toolUseId -> [(stem, agent_type), ...]
         self.cache = {}           # toolUseId -> (agent_type, rows) | None
         self.parsed = 0
 
@@ -7988,25 +7988,44 @@ class _SubagentIndex:
             return None
         return rows, tool_ids
 
+    def _first_readable(self, tool_use_id: str):
+        """`(agent_type, rows, own tool ids)` from the first meta for this id
+        whose transcript reads — two metas can name one call (a retried
+        spawn), and the readable one is the one to show (Bugbot)."""
+        for stem, agent_type in self.metas.get(tool_use_id) or ():
+            got = self._rows(stem)
+            if got is not None:
+                return agent_type, got[0], got[1]
+        return None
+
     def get(self, tool_use_id):
         if tool_use_id in self.cache:
             return self.cache[tool_use_id]
-        meta = self.metas.get(tool_use_id)
-        if meta is None:
-            return None
-        got = self._rows(meta[0])
-        if got is None:
+        found = self._first_readable(tool_use_id)
+        if found is None:
             self.cache[tool_use_id] = None
             return None
-        rows, tool_ids = got
-        # Fold the subagents this one spawned (one level).
-        for nested_id in sorted(tool_ids & set(self.metas)):
-            nested = self._rows(self.metas[nested_id][0])
-            if nested is not None:
-                rows.extend(nested[0])
-                self.cache[nested_id] = None
+        agent_type, rows, tool_ids = found
+        # Fold the subagents this one spawned, and theirs, and so on: every
+        # deeper sidechain lives in its own file, and the chip shows ONE flat
+        # group of rows (the poll flattens grandchildren the same way).
+        # Breadth-first, bounded by the parse cap and by never visiting an
+        # id twice.
+        seen = {tool_use_id}
+        frontier = sorted(tool_ids & set(self.metas))
+        while frontier:
+            nested_id = frontier.pop(0)
+            if nested_id in seen:
+                continue
+            seen.add(nested_id)
+            nested = self._first_readable(nested_id)
+            self.cache[nested_id] = None
+            if nested is None:
+                continue
+            rows.extend(nested[1])
+            frontier.extend(sorted((nested[2] & set(self.metas)) - seen))
         rows.sort(key=lambda r: str(r.get("timestamp") or ""))
-        self.cache[tool_use_id] = (meta[1], rows)
+        self.cache[tool_use_id] = (agent_type, rows)
         return self.cache[tool_use_id]
 
 
@@ -8043,8 +8062,9 @@ def _subagent_transcripts(transcript_path: str) -> _SubagentIndex:
             tool_use_id = str(meta.get("toolUseId") or "")
         except (OSError, ValueError, AttributeError, TypeError):
             continue
-        if tool_use_id and tool_use_id not in metas:
-            metas[tool_use_id] = (stem, str(meta.get("agentType") or ""))
+        if tool_use_id:
+            metas.setdefault(tool_use_id, []).append(
+                (stem, str(meta.get("agentType") or "")))
     return _SubagentIndex(folder, metas)
 
 
