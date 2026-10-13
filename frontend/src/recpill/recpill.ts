@@ -35,7 +35,7 @@ let pending: PendingPause | null = null;
 let timer: number | undefined;
 let polling = false;
 let displayed = 0;
-const BAR_MAX_PX = 20;
+const BAR_MAX_PX = 24;
 
 function drawIcon(i: PillInfo) {
   const art = iconFor(i);
@@ -60,6 +60,7 @@ function draw(s: PillState) {
   pauseBtn.title = paused ? "Resume" : "Pause";
   meterEl.title = "Recording " + formatElapsed(s.seconds ?? 0);
   displayed = smoothLevel(shapeLevel(s.level ?? 0), displayed);
+  meterEl.classList.toggle("live", !paused && displayed > 0.12);
   bars(displayed, paused).forEach((w, k) => { if (meter[k]) meter[k].style.width = Math.round(w * BAR_MAX_PX) + "px"; });
 }
 

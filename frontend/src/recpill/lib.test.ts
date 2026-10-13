@@ -2,13 +2,17 @@ import { describe, expect, test } from "bun:test";
 import { BAR_COUNT, BAR_REST, bars, formatElapsed, iconFor, resolvePaused, shapeLevel, smoothLevel } from "./lib";
 
 describe("bars", () => {
-  test("silence rests on the uneven taper, widest second and third", () => {
+  test("silence rests as five 2px dots of a 24px max", () => {
     const r = bars(0);
     expect(r).toEqual(BAR_REST);
     expect(r).toHaveLength(BAR_COUNT);
-    expect(r[1]).toBeGreaterThan(r[0]);
-    expect(r[2]).toBeGreaterThan(r[1]);
-    expect(r[2]).toBeGreaterThan(r[4]);
+    r.forEach((w) => expect(w).toBeCloseTo(2 / 24));
+  });
+  test("normal speech brings the middle bar to full width", () => {
+    const b = bars(0.6);
+    expect(b[2]).toBeCloseTo(1);
+    expect(b[2]).toBeGreaterThan(b[0]);
+    expect(b[0]).toBeLessThan(1);
   });
   test("pause rests regardless of level", () => {
     expect(bars(1, true)).toEqual(BAR_REST);
@@ -22,8 +26,8 @@ describe("bars", () => {
     }
     const loud = bars(1);
     expect(loud[2]).toBeCloseTo(1);
-    expect(loud[2]).toBeGreaterThan(loud[0]);
-    expect(loud[2]).toBeGreaterThan(loud[4]);
+    expect(loud[2]).toBeGreaterThanOrEqual(loud[0]);
+    expect(loud[2]).toBeGreaterThanOrEqual(loud[4]);
   });
   test("garbage and out-of-range levels clamp", () => {
     expect(bars(NaN)).toEqual(bars(0));

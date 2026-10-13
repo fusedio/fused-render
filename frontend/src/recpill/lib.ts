@@ -22,10 +22,10 @@ export interface PillState {
 }
 
 export const BAR_COUNT = 5;
-/** Widths at rest as a fraction of the widest (20 px): Notion's uneven taper. */
-export const BAR_REST = [9 / 20, 12 / 20, 15 / 20, 11 / 20, 6 / 20];
+/** Widths at rest as a fraction of the widest (24 px): small dots, so silence and sound read differently. */
+export const BAR_REST = [2 / 24, 2 / 24, 2 / 24, 2 / 24, 2 / 24];
 /** How far each bar grows toward full width at level 1: the middle bars lead. */
-const BAR_GAIN = [0.7, 0.9, 1, 0.9, 0.7];
+const BAR_GAIN = [1.1, 1.5, 1.8, 1.5, 1.1];
 
 const clamp01 = (n: number) => (Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : 0);
 
@@ -40,7 +40,7 @@ export function smoothLevel(shaped: number, displayed: number): number {
 }
 
 /** Turn one 0..1 (already shaped) level into BAR_COUNT bar widths (0..1 of the widest). Each bar grows from its rest
- *  width toward full by its gain; a paused or silent pill rests on the taper. */
+ *  width toward full by its gain; a paused or silent pill rests on the dots. */
 export function bars(level: number, paused = false): number[] {
   const lv = paused ? 0 : clamp01(level);
   return BAR_REST.map((rest, i) => rest + (1 - rest) * Math.min(1, lv * BAR_GAIN[i]));
