@@ -27,6 +27,7 @@ export function FailuresDialog({ id, name, onClose }: { id: string; name?: strin
     return () => { live = false; };
   }, [id]);
   const clear = (row: UsageFailure) => {
+    setErr("");  // a new attempt starts clean: a stale refusal would outlive a later success and hide the empty-state line
     setRows((cur) => (cur || []).filter((r) => r.ts !== row.ts));
     api.dismissFailure(id, row.ts).catch((e: unknown) => {
       // Back where it was: newest first, like the server's order.

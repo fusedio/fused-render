@@ -209,8 +209,8 @@ def usage_dismiss_failure(bid: str, ts: float) -> bool:
     the model mix keep counting it; only the "N failed" count (usage_summary) and this dialog's list
     (usage_failures) drop it, together, so the count and the list stay the same length. Keyed by bot + ts: ts is
     time.time() at the call and round-trips JSON -> JS -> JSON exactly, so equality is the match, no epsilon (an
-    epsilon could catch two overlapping calls at once). Read + rewrite inside _usage_lock, unlike the prune in
-    usage_summary, so a usage_log landing meanwhile is not lost. Idempotent: an unknown ts is a no-op (False)."""
+    epsilon could catch two overlapping calls at once). Read + rewrite inside _usage_lock, like the prune in
+    usage_summary, so a line landing meanwhile is not lost. Idempotent: an unknown ts is a no-op (False)."""
     global _usage_cache
     path = _bpaths.usage_path()
     hit = False
@@ -265,23 +265,25 @@ def usage_summary(now: float | None = None) -> dict:
     midnight = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1))
     keep_from = now - USAGE_KEEP_DAYS * 86400
     rows, stale = [], 0
-    try:
-        with open(path) as f:
-            for line in f:
-                try:
-                    ev = json.loads(line)
-                except ValueError:
-                    continue
-                if not isinstance(ev, dict):
-                    continue
-                if ev.get("ts", 0) < keep_from:
-                    stale += 1
-                    continue
-                rows.append(ev)
-    except FileNotFoundError:
-        pass
-    if stale > USAGE_PRUNE_AT:  # prune old lines now and then; the file is append-only otherwise
-        with _usage_lock:
+    # Read and prune under the one lock: a snapshot taken outside it and written back after a usage_log or a
+    # usage_dismiss_failure landed in between would drop that line (the cleared failure comes back, the call vanishes).
+    with _usage_lock:
+        try:
+            with open(path) as f:
+                for line in f:
+                    try:
+                        ev = json.loads(line)
+                    except ValueError:
+                        continue
+                    if not isinstance(ev, dict):
+                        continue
+                    if ev.get("ts", 0) < keep_from:
+                        stale += 1
+                        continue
+                    rows.append(ev)
+        except FileNotFoundError:
+            pass
+        if stale > USAGE_PRUNE_AT:  # prune old lines now and then; the file is append-only otherwise
             tmp = f"{path}.{os.getpid()}-{threading.get_ident()}.tmp"
             with open(tmp, "w") as f:
                 f.writelines(json.dumps(ev) + "\n" for ev in rows)
