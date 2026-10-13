@@ -580,6 +580,7 @@ div.bots-page.sideapp .preview > :is(.shotwrap, .toast, .cap, .info) { display: 
 .bots-page .info .rt > a:first-child { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bots-page .info .rt span { flex: 1; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bots-page .info .rt small { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.bots-page .info .rt small.warn { color: var(--err); }
 .bots-page .info .rt.off { opacity: .55; }
 .bots-page .info a, .bots-page .info .lnk { color: var(--accent-text); cursor: pointer; text-decoration: none; background: none; padding: 0; font: inherit; border-radius: 0; }
 .bots-page .info a:hover, .bots-page .info .lnk:hover { text-decoration: underline; background: none; }

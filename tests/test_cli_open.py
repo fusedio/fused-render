@@ -47,26 +47,27 @@ def test_open_target_missing_path_exits(tmp_path):
 
 def test_open_target_fused_file_used_as_is(tmp_path):
     """A `.fused` file is handed to the embed URL unchanged: the `fusedapp`
-    preview template extracts it (and lands on its entry page) client-side,
-    via the guarded `/api/appfile/open` route — `_open_target` does not need
-    to extract it up front."""
+    template renders its INSTALL PAGE there (AF-14) — `_open_target` neither
+    unpacks nor installs anything up front."""
     f = tmp_path / "my-app.fused"
     f.write_bytes(b"not a real .fused payload, just a path to resolve")
     assert cli_module._open_target(str(f)) == str(f)
 
 
-def test_fused_file_end_to_end_extracts_and_renders(tmp_path, monkeypatch):
+def test_fused_file_end_to_end_installs_and_renders(tmp_path, monkeypatch):
     """A real `.fused`, exported from a real app folder: the lean server's
-    embed URL for the `.fused` file itself answers 200, and the entry page
-    the `fusedapp` template's `/api/appfile/open` call resolves to also
-    answers 200 with the app's own markup — not an error page or a listing.
+    embed URL for the `.fused` file itself answers 200 (the install page),
+    the page's `/api/appfile/install` POST lands the app under the
+    workspace's `app/`, and the entry page it answers also answers 200 with
+    the app's own markup — not an error page or a listing.
     """
     from starlette.testclient import TestClient
 
     from fused_render import appfile
     from fused_render.server import create_app
 
-    monkeypatch.setattr(appfile, "appfiles_root", lambda: str(tmp_path / "appfiles"))
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("FUSED_RENDER_DIR", str(tmp_path / "workspace"))
 
     app_dir = tmp_path / "src-app"
     app_dir.mkdir()
@@ -86,16 +87,17 @@ def test_fused_file_end_to_end_extracts_and_renders(tmp_path, monkeypatch):
         embed_resp = client.get(f"/explorer/embed{fused_path}")
         assert embed_resp.status_code == 200
 
-        opened = client.post(
-            "/api/appfile/open", json={"file": fused_path}, headers={"X-Fused": "1"}
+        installed = client.post(
+            "/api/appfile/install", json={"file": fused_path}, headers={"X-Fused": "1"}
         )
-        assert opened.status_code == 200
-        entry = opened.json()["entry"]
+        assert installed.status_code == 200
+        entry = installed.json()["entry"]
+        assert entry.startswith(str(tmp_path / "workspace" / "app" / "src-app").replace("\\", "/"))
 
-        entry_resp = client.get(f"/explorer/embed{entry}")
+        entry_resp = client.get(installed.json()["entry_embed"])
         assert entry_resp.status_code == 200
 
-    # The extracted entry is the actual app content, not an error page or a
+    # The installed entry is the actual app content, not an error page or a
     # directory listing dressed up as one.
     with open(entry, encoding="utf-8") as fh:
         assert "MARKER-1234" in fh.read()

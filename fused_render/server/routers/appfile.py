@@ -1,22 +1,22 @@
-"""Routes behind the ``.fused`` single-file app export/open (SPEC §43, D385-D389).
+"""Routes behind the ``.fused`` single-file app export/install (SPEC §43).
 
 Export is a GET download (the card menu navigates to it, so the browser's own
-download UI handles the file) of a zip built into a per-request temp dir and
-deleted after the response — read-only against the app folder, nothing
-persisted server-side, same unguarded-GET posture as the template-pack export.
+download UI handles the file) of a container built into a per-request temp
+dir and deleted after the response — read-only against the app folder,
+nothing persisted server-side, same unguarded-GET posture as the
+template-pack export.
 
-Open has no user-facing route at all (D390, which removed D389's /openfused
-redirect hop): a ``.fused`` renders at its own ``/explorer/view|embed/<path>``
-URL through the ``fusedapp`` preview template (``templates/fusedapp``), and
-that template calls the internal X-Fused-guarded ``POST /api/appfile/open``
-here — extract-or-reuse (hardened, content-addressed, read-only; see
-``appfile.open_app_file``) — then iframes the entry page's embed URL it
-answers with. No gate anywhere (D389's owner call stands).
-
-Clone (D397) is the way OUT of the read-only artifact: GET reports where the
-file would land in the workspace and whether it is already there, POST does the
-copy. The pair backs one button in the preview header, which flips between
-"Clone" and "Go to local version" on the GET's ``cloned``.
+Opening has no user-facing route (D390): a ``.fused`` renders at its own
+``/explorer/view|embed/<path>`` URL through the ``fusedapp`` template, which
+is the INSTALL PAGE (AF-14, owner 2026-10-13): nothing in a file runs until
+it is installed. The page reads ``GET /api/appfile/install`` (what installing
+would do: new / update / diverged / same / downgrade, the README, the member
+list — read-only, never an extraction), ``/api/appfile/icon`` and
+``/api/appfile/preview`` for its pictures, and its one button POSTs the
+X-Fused ``/api/appfile/install``, which unpacks the app into
+``<workspace>/app/<slug>`` — the one working copy — or updates the copy
+already there (``appfile.install_app_file``). A state that loses the user's
+work (``needs_force``) answers 409 until the client sends ``force``.
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from starlette.background import BackgroundTask
 
 from fused_render import appfetch, appfile, jobs
-from fused_render._view_url_codec import canonical_fs_path, embed_url_path
+from fused_render._view_url_codec import canonical_fs_path, embed_url_path, view_url_path
 from fused_render.server.index_touch import note_index_mutation
 
 router = APIRouter()
@@ -265,29 +265,49 @@ def api_appfile_preview(path: str = ""):
                     headers={"Cache-Control": "no-cache"})
 
 
-@router.get("/api/appfile/clone")
-def api_appfile_clone_state(path: str = ""):
-    """Where the ``.fused`` at ``path`` would clone to, and whether it already
-    has: ``{name, slug, path, cloned}`` (D397). The preview header's Clone
-    button reads this on mount to pick its label — "Clone" or "Go to local
-    version" — so it must stay a cheap read-only probe: one bounded manifest
-    read and one isdir, no extraction. Unguarded like the preview GET; it
-    reports a path and touches nothing."""
+@router.get("/api/appfile/icon")
+def api_appfile_icon(path: str = ""):
+    """The payload's ``icon.svg``/``icon.png`` as bytes — the install page's
+    mark. Bounded single-member read, no extraction; 404 without one."""
     if not path or not os.path.isabs(path):
         return _error("path must be an absolute .fused file path")
     try:
-        return appfile.clone_target(path)
+        icon = appfile.read_icon(path)
+    except appfile.AppFileError as exc:
+        return _error(str(exc))
+    if icon is None:
+        return _error("this app file has no icon", status=404)
+    mime, raw = icon
+    return Response(raw, media_type=mime, headers={"Cache-Control": "no-cache"})
+
+
+@router.get("/api/appfile/install")
+def api_appfile_install_state(path: str = "", light: str = ""):
+    """What installing the ``.fused`` at ``path`` would do (AF-14): the
+    install page's data — ``state`` (new / update / diverged / same /
+    downgrade / unknown / clash), where the copy is or would be, the file's
+    README and member list. Read-only: one bounded manifest read, the
+    workspace walk for the app id, and the hash of the installed copy's
+    stamped files — skipped under ``light=1`` (a card thumbnail, D396).
+    Unguarded like the preview GET; it reports and touches nothing."""
+    if not path or not os.path.isabs(path):
+        return _error("path must be an absolute .fused file path")
+    try:
+        return appfile.install_target(path, light=light == "1")
     except appfile.AppFileError as exc:
         return _error(str(exc))
 
 
-@router.post("/api/appfile/clone")
-def api_appfile_clone(body: dict = Body(...), x_fused: str | None = Header(default=None)):
-    """Copy the ``.fused`` at ``file`` into ``<workspace>/local/<slug>`` as an
-    editable app folder and answer where it landed (D397). ``cloned: true``
-    means the folder was ALREADY there and nothing was copied — the caller
-    navigates to it either way, so a second Clone is a no-op that opens the
-    existing copy rather than an error or a second folder.
+@router.post("/api/appfile/install")
+def api_appfile_install(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    """Install the ``.fused`` at ``file`` into ``<workspace>/app/<slug>``, or
+    update the copy already there (``appfile.install_app_file``). A state
+    that would lose the user's work — the copy diverged, the file is older
+    or the same version, no install record — answers 409 with the fresh
+    probe under ``target`` until the client sends ``force: true`` (the
+    page's second click); a slug held by a different app answers 400.
+    Answers the probe shape after the write plus ``action``, ``entry`` and
+    the entry page's view and embed URLs for the page to open.
 
     X-Fused-guarded, unlike the GET beside it: this one writes."""
     guard = _require_fused(x_fused)
@@ -296,44 +316,46 @@ def api_appfile_clone(body: dict = Body(...), x_fused: str | None = Header(defau
     file = str(body.get("file") or "")
     if not file or not os.path.isabs(file):
         return _error("file must be an absolute .fused file path")
+    force = body.get("force") is True
     try:
-        return appfile.clone_app_file(file)
+        target = appfile.install_target(file)
     except appfile.AppFileError as exc:
         return _error(str(exc))
-
-
-@router.post("/api/appfile/overwrite")
-def api_appfile_overwrite(body: dict = Body(...), x_fused: str | None = Header(default=None)):
-    """Re-copy the ``.fused`` at ``file`` OVER its existing local copy — the
-    preview header's "Clone & overwrite", shown only once a copy exists and
-    only after the user confirmed. Merge semantics: payload files replace
-    their counterparts, everything else in the copy (``.venv``, ``.fused``,
-    ``.git``, anything the export left home) stays. Answers the clone shape
-    plus ``overwritten``. X-Fused-guarded: it writes over the user's edits."""
-    guard = _require_fused(x_fused)
-    if guard is not None:
-        return guard
-    file = str(body.get("file") or "")
-    if not file or not os.path.isabs(file):
-        return _error("file must be an absolute .fused file path")
+    if target["needs_force"] and not force:
+        return JSONResponse({"error": f"install state {target['state']!r} needs confirmation",
+                             "target": target}, status_code=409)
     try:
-        return appfile.overwrite_app_file(file)
+        result = appfile.install_app_file(file, force=force)
+    except appfile.InstallNeedsConfirm as exc:
+        # A warn state that appeared between the probe above and the write
+        # (a copy claimed the folder meanwhile): the same 409 as the probe's.
+        return JSONResponse({"error": str(exc), "target": exc.target}, status_code=409)
     except appfile.AppFileError as exc:
         return _error(str(exc))
+    # The paged hub's snapshot is at most 20 s behind the disk; the one folder
+    # it must never be behind on is the one just installed (the create path
+    # and #1576's uninstall reset it the same way).
+    from fused_render.server.routers import apps as apps_router
+
+    apps_router._reset_snapshot()
+    entry = result["entry"]
+    return {**result, "entry_view": view_url_path(entry), "entry_embed": embed_url_path(entry)}
 
 
 @router.post("/api/appfile/fetch")
 def api_appfile_fetch(body: dict = Body(...), x_fused: str | None = Header(default=None)):
     """Download the ``.fused`` at the http(s) ``url`` into the managed
     downloads dir and answer ``{file}`` — the saved absolute path, which the
-    caller then opens like any other ``.fused`` (DL-8). The one caller is the
-    shell's ``FetchAppFileBoot``, fed by a ``fused-render://open?url=`` link.
+    caller then opens like any other ``.fused`` (DL-8): on its install page.
+    The one caller is the shell's ``FetchAppFileBoot``, fed by a
+    ``fused-render://open?url=`` link.
 
-    X-Fused-guarded: it writes. There is deliberately NO confirm step before
-    it (owner call, same as Render App's lite PR #30): the deep-link click is
-    the gesture. The recorded cost is that a web page which can navigate the
-    browser to this origin with ``?_fetch_appfile=`` gets a remote ``.fused``
-    downloaded and opened without a prompt."""
+    X-Fused-guarded: it writes (a file into the downloads dir, nothing
+    else). There is no confirm before the DOWNLOAD (the deep-link click is
+    the gesture); the install page is the confirm before anything runs. The
+    recorded cost is that a web page which can navigate the browser to this
+    origin with ``?_fetch_appfile=`` gets a remote ``.fused`` downloaded
+    without a prompt."""
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
@@ -345,39 +367,3 @@ def api_appfile_fetch(body: dict = Body(...), x_fused: str | None = Header(defau
     except appfetch.FetchError as exc:
         return _error(str(exc))
     return JSONResponse({"file": file.replace(os.sep, "/")})
-
-
-@router.post("/api/appfile/open")
-def api_appfile_open(body: dict = Body(...), x_fused: str | None = Header(default=None)):
-    """Extract the ``.fused`` at ``file`` (or re-use its cached extract) and
-    answer the entry page's embed URL. The one caller is the ``fusedapp``
-    preview template — there is no user-facing open route (D390)."""
-    guard = _require_fused(x_fused)
-    if guard is not None:
-        return guard
-    file = str(body.get("file") or "")
-    if not file or not os.path.isabs(file):
-        return _error("file must be an absolute .fused file path")
-    # Preview contract (D396): a card thumbnail / listing peek may RE-USE an
-    # existing extract to live-render the app, but must never extract fresh
-    # (reuse_only) and must never count as an open (no recency below).
-    preview = body.get("preview") is True
-    try:
-        result = appfile.open_app_file(file, reuse_only=preview)
-    except appfile.AppFileError as exc:
-        return _error(str(exc))
-    # The open IS the recency signal for the .fused file itself (D396): this
-    # is the one moment the SOURCE path is known (rendering the extracted
-    # entry only knows the cache dir, which registered_apps now refuses).
-    # Best-effort — a failed write must not fail the open. Previews never
-    # record: a card thumbnail counting as an open would reshuffle the very
-    # recency order the grid is sorted by (the D301 rule, held server-side
-    # because the flag is what the template's preview branch sends).
-    if not preview:
-        try:
-            from fused_render import exported_apps
-
-            exported_apps.record_open(file)
-        except Exception:  # noqa: BLE001 - recency is telemetry, not the answer
-            pass
-    return {**result, "view": embed_url_path(result["entry"])}

@@ -80,7 +80,7 @@ export interface BotEvent {
 
 export interface Tab { i: number; id: string; title: string; url: string; active: boolean; ws: string }
 export interface FileRow { name: string; path: string; size: number; kind: string; ts?: number }
-export interface Artifact { ts: number; kind: "save" | "download" | "build" | string; name: string; path: string; size?: number; task?: string; link?: string; title?: string }
+export interface Artifact { ts: number; kind: "save" | "download" | "build" | string; name: string; path: string; size?: number; task?: string; title?: string }
 
 export interface BrowserState {
   running: boolean;
@@ -112,7 +112,22 @@ export interface Routine {
   last?: number;
   last_result?: string;
   last_message?: string;
+  last_done?: number;
   fails?: number;
+  /** Run history, newest first (bot.py _run_add): every slot reached, skips included. */
+  runs?: RoutineRun[];
+}
+
+/** One run of a routine. `seq` is the transcript line the slot wrote (the chat opens there); `count` folds consecutive
+ *  identical skips; `done` is set once the task ended (result no longer "started"). */
+export interface RoutineRun {
+  started: number;
+  result: "started" | "done" | "error" | "stopped" | "skipped" | (string & {});
+  message?: string;
+  done?: number;
+  seq?: number;
+  manual?: boolean;
+  count?: number;
 }
 
 /** Bot.skills(): one playbook file. `name` is the file stem (the rid in /skills calls). */
@@ -131,7 +146,7 @@ export interface Bot {
   created?: number;
   task?: string;
   step?: number;
-  /** The step budget of the current task; the status line shows "step 12/60" when present. */
+  /** The step budget of the current task; the Home widget shows "step 12/200" when present. */
   step_cap?: number;
   /** While `status === "waiting"`: the seq of the approval / question card the bot is blocked on (null: unknown, fall back to the last ask). */
   waiting_on?: number | null;
@@ -139,7 +154,11 @@ export interface Bot {
   title?: string;
   note?: string;
   updated?: number;
+  /** ts of the newest message you sent this bot (0 if none); unlike `updated`, idle-sleep and download ticks never bump it. */
+  last_user_ts?: number;
   approval?: "ask" | "auto";
+  /** Steps (tool calls) one task may take before the bot is stopped; absent = the default (200, Super Bot 1000). */
+  max_steps?: number;
   build_access?: "scoped" | "full";
   /** App folders (normalised) whose tools and scripts never raise an approval card for this bot. */
   trusted_apps?: string[];
@@ -204,7 +223,8 @@ export interface Bot {
 
 export interface UsageBotRow { id: string; name: string; today: number; week: number; models: Record<string, number>; errors: number; last: number; live: boolean }
 /** One failed model call behind a bot's `errors` count (GET /api/bots/{id}/failures, newest first, this week).
- *  `error` is the call's own words when the ledger recorded them (lines from before that stay without one). */
+ *  `error` is the call's own words when the ledger recorded them (lines from before that stay without one). `ts` is
+ *  also the row's key for `dismissFailure`. */
 export interface UsageFailure { ts: number; model: string; origin: string; task: string; error?: string }
 export interface UsageSummary {
   today: number;
@@ -332,6 +352,8 @@ export interface NewBotBody {
 }
 export interface SettingsBody {
   name?: string; model?: string; effort?: string; instructions?: string; memory?: string; approval?: string;
+  /** 0 clears the per-bot override (back to the default). */
+  max_steps?: number;
   build_access?: string; encrypt?: boolean; imessage_handle?: string; imessage_to?: string; imessage_enabled?: boolean;
   super_access?: string; trusted_apps?: string[];
   /** Forever rules to drop (kind + key); applied to the live list, since the task thread also writes it. */
@@ -360,6 +382,9 @@ export const api = {
   presets: () => get<{ ok: true; presets: Preset[] }>(`${B}/presets`, "presets"),
   usage: () => get<UsageSummary>(`${B}/usage`, "usage"),
   failures: (id: string) => get<{ failures: UsageFailure[] }>(`${bid(id)}/failures`, "failures"),
+  /** The row's clear icon: the ledger line is flagged dismissed (still a call in the totals), so it leaves this list and
+   *  the "N failed" count together. `found` false = no such line (already cleared, or pruned). */
+  dismissFailure: (id: string, ts: number) => post<Ok & { found: boolean }>(`${bid(id)}/failures`, { op: "dismiss", ts }, "clear failure"),
   imessage: () => get<ImessageState>(`${B}/imessage`, "imessage"),
   /** Settings > Phone "Send a test text": one text from this Mac to Super Bot's handle (the Automation consent lands here). */
   imessageTest: () => post<{ ok: true; handle: string }>(`${B}/imessage/test`, {}, "test text"),

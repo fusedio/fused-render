@@ -1,10 +1,10 @@
-// The `?_edit_appfile=<path>` hand-off (SPEC §26 DL-7, D889): the server's
-// GET /clone turns a `fused-render://open?file=` deep link — Render App's Edit
-// button — into a redirect INTO the shell with the .fused's absolute path in
-// this param. `EditAppFileBoot` reads it exactly once at boot and strips it,
-// so a reload or Back never re-runs the hand-off. Pure string work here so it
-// is testable without a DOM; the name is mirrored in deeplink.py
-// (`EDIT_APPFILE_PARAM`).
+// The `?_edit_appfile=<payload>` hand-off (SPEC §26 DL-7): the server's
+// GET /clone sends a well-formed `fused-render://open?file=` deep link
+// straight to the file's install page (AF-14), and a MALFORMED one to Home
+// with the raw payload in this param so the shell can report it.
+// `FetchAppFileBoot` reads it exactly once at boot and strips it, so a reload
+// or Back never re-runs the hand-off. Pure string work here so it is testable
+// without a DOM; the name is mirrored in deeplink.py (`EDIT_APPFILE_PARAM`).
 export const EDIT_APPFILE_PARAM = "_edit_appfile";
 // The `?_fetch_appfile=<http(s) url>` hand-off (DL-8): a
 // `fused-render://open?url=` link, redirected into the shell the same way.

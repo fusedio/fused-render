@@ -5,13 +5,20 @@ folder's `pyproject.toml`. The HTTP contract, the download reporting and the
 state machine are `worker_base`'s; what lives here is only what is true of
 `mlx-embeddings`' own ports in particular.
 
-**TWO SHAPES OF CHECKPOINT, one folder.** A DUAL ENCODER (`siglip`) has a text
-tower and a vision tower and answers both `texts` and `paths`. A PROSE ENCODER
-(`bert`, `xlm-roberta`, `modernbert`) has one tower, is read through a different
-call, and refuses `paths` by name. `mlx-embeddings` 0.1.0 ships modules for all
-of those and dispatches on `model_type` itself, so ONE install serves both; the
-fork here is decided once, in `load()`, off `formats.embed_model_type` over the
-cached `config.json`.
+**THREE SHAPES OF CHECKPOINT, one folder.** A DUAL ENCODER (`siglip`) has a
+text tower and a vision tower and answers both `texts` and `paths`. A PROSE
+ENCODER (`bert`, `xlm-roberta`, `modernbert`) has one tower, is read through a
+different call, and refuses `paths` by name. `mlx-embeddings` 0.1.0 ships
+modules for all of those and dispatches on `model_type` itself, so ONE install
+serves both; the fork here is decided once, in `load()`, off
+`formats.embed_model_type` over the cached `config.json`. The third, a UNIFIED
+ENCODER (`embedding_gemma2`), is one language model with a vision tower AND an
+audio tower hung off it, read through `mlx-vlm` rather than `mlx-embeddings`
+(`_mlx_vlm_load`): its `paths` may be pictures, sound files or videos, sorted
+by extension (`embed_common.media_kind`) and embedded into the same 768-dim
+space as its texts. Which kinds a loaded checkpoint reads is
+`_FAMILY_MEDIA`'s answer, and a path of any other kind is refused by name
+before a decoder sees it.
 
 **ONE FOLDER, and that is a decision rather than an omission.** PR #780 put the
 text encoders in a second folder, `mlx_text_embed/`, and was right to: text
@@ -71,8 +78,32 @@ _DUAL = "dual"
 _TEXT = "text"
 _UNIFIED = "unified"
 
+#: Which kinds of file `paths` may name, per family — pictures on a SigLIP,
+#: pictures/sound/video on EmbeddingGemma 2, nothing on a prose encoder. The
+#: same answer the route publishes as `acceptsPaths`/`acceptsAudio`/
+#: `acceptsVideo` (`hub_cache.embed_media`, off `embed_common.EMBED_MEDIA`),
+#: keyed here by the family `load()` decided because that is the one fact
+#: about the checkpoint this worker keeps.
+_FAMILY_MEDIA = {
+    _DUAL: embed_common.EMBED_MEDIA["siglip"],
+    _UNIFIED: embed_common.EMBED_MEDIA["embedding_gemma2"],
+    _TEXT: (),
+}
+
 _TOKEN_BUDGET = 32768
+
+#: How many of each media kind go through the unified encoder in one forward.
+#: Images: 8, each 280 soft tokens over a 2520-patch tensor — measured at
+#: ~5.1 GB peak for eight 1024x768 pictures with the audio tower loaded. Audio:
+#: 8, each clip at most `audio_seq_length` (280) tokens over a 128-bin mel
+#: tensor, and a batch of eight 2 s clips peaked no higher than the image
+#: batch. Video: ONE — a clip is `max_frames` (32) frames of 140 soft tokens
+#: each, so a single video is already up to four images' worth of patches, and
+#: the frames are sampled at 1 fps by the processor's own `video_processor`
+#: config, so a long clip costs the same as a 32 s one.
 _IMAGE_CHUNK = 8
+_AUDIO_CHUNK = 8
+_VIDEO_CHUNK = 1
 
 #: The field on `mlx_embeddings`' `BaseModelOutput` that carries the pooled,
 #: normalized sentence vector — the single seam the prose path rests on. Ported
@@ -206,7 +237,14 @@ def _mlx_vlm_load(path):
 
     root = Path(path)
     config = load_config(root)
-    config["audio_config"] = None
+    # The config is passed WHOLE — `audio_config` included. PR #1553 nulled it
+    # here, which dropped the 300M-parameter audio tower at load and made
+    # `get_audio_features` raise "Audio inputs require audio_config" on any
+    # sound file; keeping it costs 0.61 GB resident (0.88 → 1.49 GB measured
+    # on the bf16 checkpoint, 2026-10-13) and is what makes `paths` to a
+    # `.wav` or `.mp4` embed at all. The processor side needs nothing: its
+    # `Gemma4AudioFeatureExtractor` and `EmbeddingGemma2VideoProcessor` are
+    # built from `processor_config.json` by `from_pretrained` regardless.
     model = load_embedding_model(root, config=config)
     return model, EmbeddingGemma2Processor.from_pretrained(root)
 
@@ -611,18 +649,98 @@ def _unified_text_vectors(model, tokenizer, texts, kind):
     return vectors
 
 
-def _unified_image_vectors(model, processor, paths):
+def _unified_inputs(processor, kind, paths):
+    """The processor's tensors for one chunk of `paths`, all of one `kind`.
+
+    One placeholder token per item is the whole prompt — `processor.image_token`,
+    `.audio_token` or `.video_token` — and the processor expands it into the
+    `<|boi|>…<|eoi|>` / `<|boa|>…<|eoa|>` run the checkpoint was trained on
+    (`replace_image_token` and siblings in mlx-vlm's
+    `processing_embedding_gemma2.py`). Pictures are opened here through
+    `embed_common.open_image` so a HEIC or an RGBA screenshot reaches the
+    processor as RGB; sound and video are handed over as PATHS, because the
+    processor's own loaders (`mlx_vlm.utils.load_audio`, which resamples to
+    the extractor's 16 kHz, and `load_video`, which samples frames at the
+    video processor's configured fps) do the decoding this runner would
+    otherwise have to re-implement.
+
+    **A decoder failure names the FILE.** The processor decodes a chunk as one
+    call and raises whatever its decoder raised (a `RuntimeError` from
+    mlx-audio, a `ValueError` from OpenCV, …), so on a failure each path is
+    retried ALONE — up to eight extra decodes, paid only on the error path —
+    to find the one that cannot be read, and `embed_common.media_error` turns
+    that into a sentence: `open_image`'s rule, extended to the two kinds PIL
+    never sees. A batch that fails only as a batch, every member decoding fine
+    on its own, is reported as that rather than pinned on its first file.
+    """
+    if kind == embed_common.IMAGE:
+        images = [embed_common.open_image(path) for path in paths]
+        return processor(text=[processor.image_token] * len(images),
+                         images=[[image] for image in images],
+                         padding=True, return_tensors="np")
+    for path in paths:
+        embed_common.check_media_path(path)
+    try:
+        return _unified_media_call(processor, kind, paths)
+    except Exception as error:
+        if len(paths) == 1:
+            raise embed_common.media_error(paths[0], kind, error) from error
+        for path in paths:
+            try:
+                _unified_media_call(processor, kind, [path])
+            except Exception as single:
+                raise embed_common.media_error(path, kind, single) from single
+        first = str(error).strip().splitlines()[0] if str(error).strip() else ""
+        raise ValueError(
+            f"{len(paths)} {kind} files each decode alone but not together "
+            f"({error.__class__.__name__}: {first}); paths: {', '.join(paths)}"
+        ) from error
+
+
+def _unified_media_call(processor, kind, paths):
+    """The processor call for one chunk of sound or video, by path."""
+    if kind == embed_common.AUDIO:
+        return processor(text=[processor.audio_token] * len(paths),
+                         audio=list(paths), padding=True, return_tensors="np")
+    return processor(text=[processor.video_token] * len(paths),
+                     videos=list(paths), padding=True, return_tensors="np")
+
+
+def _unified_media_vectors(model, processor, paths):
+    """One vector per path, in the CALLER's order, from the unified encoder.
+
+    Sorted into pictures, sound and video by extension
+    (`embed_common.media_kind`) and embedded kind by kind, each in chunks of
+    its own size (`_IMAGE_CHUNK` and siblings), because the three go through
+    three different preprocessors and the processor takes one kind per call
+    when `text` is a bare placeholder. The vectors are scattered back to the
+    positions the paths came in at — a page that zips `paths` with
+    `vectors` must get them aligned whatever mix it sent.
+    """
     import mlx.core as mx
 
-    images = [embed_common.open_image(path) for path in paths]
-    vectors = []
-    for start in range(0, len(images), _IMAGE_CHUNK):
-        chunk = images[start:start + _IMAGE_CHUNK]
-        inputs = processor(text=[processor.image_token] * len(chunk),
-                           images=[[image] for image in chunk],
-                           padding=True, return_tensors="np")
-        output = model(**{key: mx.array(value) for key, value in inputs.items()})
-        vectors.extend(_pooled(output))
+    chunk_sizes = {embed_common.IMAGE: _IMAGE_CHUNK,
+                   embed_common.AUDIO: _AUDIO_CHUNK,
+                   embed_common.VIDEO: _VIDEO_CHUNK}
+    groups = {kind: [] for kind in chunk_sizes}
+    for index, path in enumerate(paths):
+        groups[embed_common.media_kind(path)].append(index)
+    vectors = [None] * len(paths)
+    for kind, indices in groups.items():
+        size = chunk_sizes[kind]
+        for start in range(0, len(indices), size):
+            chunk = indices[start:start + size]
+            inputs = _unified_inputs(processor, kind, [paths[i] for i in chunk])
+            output = model(**{key: mx.array(value)
+                              for key, value in inputs.items()})
+            rows = _pooled(output)
+            if len(rows) != len(chunk):
+                raise RuntimeError(
+                    f"the model returned {len(rows)} vectors for {len(chunk)} "
+                    f"{kind} inputs — a None would otherwise be scattered "
+                    f"into the result silently")
+            for index, row in zip(chunk, rows):
+                vectors[index] = row
     return vectors
 
 
@@ -653,8 +771,16 @@ def generate(body):
             f"{_loaded['model_id']} is a text encoder — it has no vision tower, "
             f"so 'paths' is not something it can read. Pass 'texts' instead, or "
             f"pick a dual encoder (a SigLIP checkpoint) to embed images.")
+    if source == "paths":
+        # The same refusal for a kind of file this checkpoint has no encoder
+        # for — a sound on a SigLIP — as the route makes; see
+        # `embed_common.unaccepted_media` for why it is one function.
+        refusal = embed_common.unaccepted_media(
+            _loaded["model_id"], _FAMILY_MEDIA[family], items)
+        if refusal is not None:
+            raise ValueError(refusal)
     if source == "paths" and family == _UNIFIED:
-        vectors = _unified_image_vectors(model, second, items)
+        vectors = _unified_media_vectors(model, second, items)
     elif source == "paths":
         vectors = _image_vectors(model, second, items)
     elif family == _UNIFIED:

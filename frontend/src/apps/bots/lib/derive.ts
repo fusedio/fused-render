@@ -1,7 +1,7 @@
 // Per-bot derived values shared by the list, the chat header, the preview and the live view (OpenBot core.js
 // helpers). Pure: each takes the bot and, where needed, its merged event list from the store.
 import type { Bot, BotEvent, Handoff, Routine } from "./api";
-import { fmtWhenShort } from "./format";
+import { fmtIn } from "./format";
 
 /** The newest event of `role`'s seq, or -1. */
 export const lastSeqOf = (evs: BotEvent[], role: BotEvent["role"]): number => {
@@ -30,14 +30,14 @@ export function routineGlyph(b: Bot): { warn: boolean; title: string } | null {
   return { warn, title: `${n} scheduled routine${n > 1 ? "s" : ""}${warn ? " · last run failed" : ""}` };
 }
 
-/** The idle subtitle's routine suffix: " · routine failed ×N" (warn) or " · next run 9:00 AM"; null when none. */
+/** The idle subtitle's routine suffix: " · routine failed ×N" (warn) or " · next run in 53 min"; null when none. */
 export function routineNote(b: Bot): { warn: true; text: string } | { warn: false; text: string } | null {
   const rs = activeRoutines(b);
   if (!rs.length) return null;
   const next = Math.min(...rs.map((r) => r.next || Infinity));
   const bad = rs.find((r) => (r.fails || 0) > 0 || r.last_result === "error");
   if (bad) return { warn: true, text: `routine failed ×${bad.fails || 1}` };
-  return isFinite(next) ? { warn: false, text: `next run ${fmtWhenShort(next)}` } : null;
+  return isFinite(next) ? { warn: false, text: `next run ${fmtIn(next)}` } : null;
 }
 
 /** Super Bot's newest hand-off still in flight (received / working / blocked), or null: the list row says "waiting on <Bot>". */
@@ -59,8 +59,12 @@ export const lastTs = (evs: BotEvent[]): number => {
   return 0;
 };
 // List order follows what you last did, not what the bot did, so rows stay put while agents work. lastTs still drives the row time + "New" marker.
+// A `user` row you sent yourself. A routine's prompt is a user row too (bot.py routine_fire, via routine) but the schedule's
+// doing, not yours: never the thing you last did, nor your answer to a card (thread answerTo), nor a reply after a hand back.
+export const sentByYou = (e: BotEvent): boolean => e.role === "user" && e.via?.kind !== "routine";
+// Routine prompts skipped here as the server's last_user_ts skips them.
 export const lastUserTs = (evs: BotEvent[]): number => {
-  for (let i = evs.length - 1; i >= 0; i--) if (evs[i].role === "user") return evs[i].ts;
+  for (let i = evs.length - 1; i >= 0; i--) if (sentByYou(evs[i])) return evs[i].ts;
   return 0;
 };
 // Card subtitle: the bot's latest message (not yours, not system noise), flattened to one plain line.

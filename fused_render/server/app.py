@@ -79,6 +79,7 @@ from fused_render.server.routers.schedule import router as schedule_router
 from fused_render.server.routers.search import router as search_router
 from fused_render.server.routers.shell import router as shell_router
 from fused_render.server.routers.current_apps import router as current_apps_router
+from fused_render.server.routers.app_uninstall import router as app_uninstall_router
 from fused_render.server.routers.launcher import router as launcher_router
 from fused_render.server.routers.windows import router as windows_router
 from fused_render.server.routers.dock import router as dock_router
@@ -911,6 +912,9 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # The Current apps desk (fused_render/current_apps.py): GET the table,
     # DELETE one app (archiving its tasks). Fed by the tasks listing above.
     app.include_router(current_apps_router)
+    # Uninstall (AF-15): off every list and, by the user's choice, off disk —
+    # with or without the app's own `.fused/` data.
+    app.include_router(app_uninstall_router)
     # The macOS launcher panel's page at /launcher and its search
     # (fused_render/launcher.py): the desk, the workspace, linked and exported
     # apps ranked by a query; bots under Fused Bot.
@@ -994,9 +998,9 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     from fused_render.deeplink import router as deeplink_router
 
     app.include_router(deeplink_router)
-    # .fused single-file app export/open (SPEC §43, D385-D390): GET
-    # /api/appfile/export download + the internal POST /api/appfile/open the
-    # fusedapp preview template calls (no user-facing open route).
+    # .fused single-file app export/install (SPEC §43, AF-14): GET
+    # /api/appfile/export download + the GET/POST /api/appfile/install pair
+    # the fusedapp template (the install page) calls (no user-facing open route).
     from fused_render.server.routers.appfile import router as appfile_router
 
     app.include_router(appfile_router)

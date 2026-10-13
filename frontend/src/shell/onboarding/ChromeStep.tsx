@@ -3,14 +3,12 @@ import { useEffect, useState, type ReactNode } from "react";
 // bots/browser.py launches it over CDP), so a machine without one cannot run
 // a bot at all — and nothing before the first bot says so except the Bots
 // page's empty hero. This step says it up front, in both flavors: Fused Bot
-// is nothing but bots, and Render runs the same ones behind `bots_enabled`.
+// is nothing but bots, and Render runs the same ones from its Bots page.
 //
 // NOTHING TO WRITE. Whether a Chrome is on disk is the server's to know
 // (shell/onboarding.py `_observe` walks the bots' own candidate list on every
 // read, the same walk a starting bot does), so this step only READS its
-// stage: `complete` with `meta.path` = found; `pending` = not found where a
-// bot could run; `n/a` = not found and no bot will run here (Render, bots
-// off) — the meter leaves it out, but the step still explains. A found
+// stage: `complete` with `meta.path` = found; `pending` = not found. A found
 // Chromium / Edge / Brave counts too: the candidate list is the bots' own.
 //
 // Installing Chrome happens outside this window, so the step re-reads when

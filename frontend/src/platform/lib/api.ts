@@ -51,10 +51,6 @@ export interface Config {
   // `dismiss` are distinct writes (reached the end vs "skip for now").
   // Server-side, not localStorage: a port drift is a new origin.
   onboarding?: OnboardingState;
-  /** Bots as the front door (prefs `bots_enabled`, default off): `/` lands on
-   *  `/bots` and the sidebar's Home row gives way to Bots. In config so the
-   *  shell can decide the front door synchronously at first render. */
-  bots_enabled?: boolean;
   /** Which app this build is wearing (fused_render/flavor.py): "render" is
    *  Fused Render, "bot" is Fused Bot, built from the same repo. Read through
    *  platform/lib/flavor.ts, seeded before the first render. Absent on an
@@ -1336,8 +1332,6 @@ export interface Prefs {
   // the shell's entry points to it (the sidebar row and the Settings menu
   // entry), not the /canvases routes, which keep answering a deep link.
   canvases: { enabled: boolean };
-  /** Bots sub-app as the front door (default off); see shell/prefs.bots_enabled. */
-  bots: { enabled: boolean };
   // Whether the unified Share sheet (public link + .fused file) is OFFERED in
   // place of the plain Export / Download action (opt-in, default off). Gates
   // the five share surfaces, not the /api/share routes.
@@ -1632,7 +1626,7 @@ export function getPrefs(): Promise<Prefs> {
 }
 
 // Single-flight prefs GET for the feature-flag modules' first reads. Each
-// flag module (bots, canvases, claude queue, share, live previews, monitor,
+// flag module (canvases, claude queue, share, live previews, monitor,
 // task peek, …) does its own one read on first subscribe, and they all
 // subscribe in the same mount commit — five-plus identical GETs per window
 // open. Every native window shares WebKit's 6-connection HTTP/1.1 pool per
@@ -1675,10 +1669,6 @@ export function putReaderEnabled(enabled: boolean): Promise<Prefs> {
 
 export function putCanvasesEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { canvases_enabled: enabled });
-}
-
-export function putBotsEnabled(enabled: boolean): Promise<Prefs> {
-  return putJson<Prefs>("/api/prefs", { bots_enabled: enabled });
 }
 
 /** The launcher's panel shortcut, as a `hotkey.py` spec (`"alt+space"`,
@@ -2269,50 +2259,12 @@ export async function saveAppFileToDisk(
   return data.path as string;
 }
 
-// Where a `.fused` would clone to in the workspace, and whether it already has
-// (D397). `cloned` is decided by the destination folder EXISTING — there is no
-// records file — so it survives a restart, a moved .fused and a re-export, at
-// the named cost that an unrelated `local/<slug>` folder reads as this app's
-// clone. The GET touches nothing; the POST does the copy and answers the same
-// shape, with `cloned: true` meaning "was already there, nothing copied".
-export interface AppFileCloneTarget {
-  /** The app's manifest name, or the file's stem when it has none. */
-  name: string;
-  /** That name reduced to one path-safe segment — the folder under local/. */
-  slug: string;
-  /** Absolute destination, forward-slashed. When the file carries an
-   *  `app_id` and a folder under local/ already declares it (a renamed
-   *  clone), this is THAT folder rather than local/<slug>. */
-  path: string;
-  cloned: boolean;
-  /** The app's stable identity (`<meta name="fused-app-id">`, minted at
-   *  creation, or on first export for older apps); null for files exported
-   *  before it existed. */
-  app_id?: string | null;
-}
-
-export function getAppFileCloneTarget(path: string): Promise<AppFileCloneTarget> {
-  return getJson<AppFileCloneTarget>(
-    "/api/appfile/clone?path=" + encodeURIComponent(path),
-  );
-}
-
-export function cloneAppFile(file: string): Promise<AppFileCloneTarget> {
-  return postJson<AppFileCloneTarget>("/api/appfile/clone", { file });
-}
-
 // Download the `.fused` at an http(s) `url` into ~/.fused-render/downloads
 // (keyed on the app id, so a re-click updates one file) and answer the saved
-// absolute path (DL-8). Caller opens it like any other .fused. No confirm.
+// absolute path (DL-8). Caller opens it like any other .fused: on its install
+// page (AF-14) — the download has no confirm, the install page is one.
 export function fetchAppFile(url: string): Promise<{ file: string }> {
   return postJson<{ file: string }>("/api/appfile/fetch", { url });
-}
-
-// Re-copy the `.fused` OVER its existing local copy: payload files replace
-// their counterparts; `.venv`, `.fused`, `.git` and anything the export left
-// home stay. Destroys the user's edits to those files — callers confirm first.
-export function overwriteAppFile(file: string): Promise<AppFileCloneTarget & { overwritten: boolean }> {
-  return postJson<AppFileCloneTarget & { overwritten: boolean }>("/api/appfile/overwrite", { file });
 }
 
 // Delete one USER template folder (core templates are read-only, 404 here).
@@ -2474,12 +2426,62 @@ export interface AppInfo {
   // (~/.fused-render/app_recents.json). Null for an app never opened, and
   // undefined on older backends — both fall back to updated_at in sortApps.
   opened_at?: number | null;
-  // "appfile" for an exported `.fused` FILE discovered via the file index
-  // (tag "Fused-App", D396) — `path`/`entry` are the file itself, so surfaces
-  // must not offer folder actions (open-folder, export) on it, and it
-  // contributes no Folders chip (repoChips). Undefined for every folder-shaped
-  // app and on older backends.
+  // "appfile" for a `.fused` FILE row — `path`/`entry` are the file itself,
+  // so surfaces must not offer folder actions (open-folder, export) on it,
+  // and it contributes no Folders chip (repoChips). The hub no longer lists
+  // such rows (AF-14: an app file is an installer); the kind survives for a
+  // dock/menubar pin of a `.fused` and for older backends. Undefined for
+  // every folder-shaped app.
   kind?: "appfile";
+}
+
+// The uninstall policy class the server assigned (routers/app_uninstall.kind_for).
+export type UninstallKind = "folder" | "linked" | "showcase";
+
+// What uninstalling an app costs — the confirm dialog's numbers (AF-15).
+export interface UninstallPreflight {
+  path: string;
+  name: string;
+  exists: boolean;
+  kind: UninstallKind;
+  trash_supported: boolean;
+  // `<app>/.fused` — the app's own data, kept or deleted by the user's choice.
+  data_bytes: number;
+  data_files: number;
+  // Changed paths git reports for the app, null when no repo owns it.
+  uncommitted: number | null;
+  // Tasks under the folder (archived by the uninstall, not erased).
+  tasks: number;
+  // Bot builds whose folder this is.
+  bots: string[];
+}
+
+export function getUninstallPreflight(path: string): Promise<UninstallPreflight> {
+  return getJson<UninstallPreflight>(
+    `/api/apps/uninstall/preflight?path=${encodeURIComponent(path)}`,
+  );
+}
+
+export interface UninstallResult {
+  ok: boolean;
+  path: string;
+  kind: UninstallKind;
+  keep_data: boolean;
+  removed_files: boolean;
+  data_kept_at: string | null;
+  trashed_to?: string;
+  archived?: number;
+}
+
+/** Remove the app from every list and, for a workspace folder, from disk:
+ *  the whole folder (`keep_data: false`, Trash — 501 means the OS has no bin
+ *  for this path and nothing was removed: offer `mode: "delete"`), or its
+ *  files and git only, leaving `.fused/` (`keep_data: true`). */
+export function uninstallApp(
+  path: string,
+  opts: { keep_data?: boolean; mode?: "trash" | "delete" } = {},
+): Promise<UninstallResult> {
+  return postJson<UninstallResult>("/api/apps/uninstall", { path, ...opts });
 }
 
 export function getApps(): Promise<{ apps: AppInfo[] }> {
@@ -5140,8 +5142,18 @@ export interface AiCatalogModel {
    *  one. Optional on the wire only because an older server does not send it. */
   acceptsPaths?: boolean;
   /** Vision models only (`image-to-text`, SPEC AI-33): which `fused.ai.vision`
-   *  tasks this model answers — `caption`, `query`, `detect`, `point`, `segment`. */
+   *  tasks this model answers — `caption`, `query`, `detect`, `point`. */
   tasks?: string[];
+  /** Finer than `acceptsPaths`: may those paths be SOUND files (wav, mp3,
+   *  flac, ogg; m4a/aac/opus with ffmpeg on PATH), and may they be VIDEOS
+   *  (mp4, mov, mkv, webm, …)? True today only for EmbeddingGemma 2, which has
+   *  an audio tower beside its vision tower and embeds all of it into the one
+   *  space its texts land in. Same fail-closed rule as `acceptsPaths`: false
+   *  for a model not on this disk yet, and false on every non-embeddings
+   *  capability. Optional on the wire because an older server does not send
+   *  them. */
+  acceptsAudio?: boolean;
+  acceptsVideo?: boolean;
   /** Which retrieval prompt scheme this model wants — `"bge"`, `"e5"`,
    *  `"nomic"`, … — or **null when it has none**, which is the case for every
    *  dual encoder and for any repo whose convention the server does not

@@ -1052,6 +1052,17 @@ def generate(body):
             f"{_loaded['model_id']} is a text encoder — it has no vision tower, "
             f"so 'paths' is not something it can read. Pass 'texts' instead, or "
             f"pick a dual encoder (a SigLIP or CLIP export) to embed images.")
+    if source == "paths":
+        # A sound or a video on a SigLIP export: refused by name, as the route
+        # does and as `mlx_embed` does for its own SigLIP rows — this runner
+        # reads pictures only, and the sentence says where the other kinds do
+        # work. See `embed_common.unaccepted_media`.
+        refusal = embed_common.unaccepted_media(
+            _loaded["model_id"],
+            embed_common.EMBED_MEDIA["siglip"] if _loaded["family"] == _DUAL else (),
+            items)
+        if refusal is not None:
+            raise ValueError(refusal)
     if source == "texts":
         vectors = (_text_vectors(items, kind) if _loaded["family"] == _DUAL
                    else _prose_vectors(items, kind))

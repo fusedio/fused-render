@@ -56,6 +56,7 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
   const [init] = useState(() => ({
     name: bot.name, model: bot.model || "sonnet", effort: bot.effort || "low", instructions: bot.instructions || "", memory: bot.memory || "",
     approval: bot.approval || "ask", buildAccess: bot.build_access || "scoped", encrypt: !!bot.encrypt,
+    maxSteps: bot.max_steps ? String(bot.max_steps) : "",
     imessage: bot.imessage || "", imessageEnabled: !!bot.imessage_enabled, imessageTo: bot.imessage_to || "",
     superAccess: bot.super_access || "ask", trustedApps: bot.trusted_apps || [], allowRules: bot.allow_rules || [],
     browserId: isSuper ? "" : loginValue(bot),
@@ -63,6 +64,7 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
   const [name, setName] = useState(init.name);
   const [model, setModel] = useState(init.model);
   const [effort, setEffort] = useState(init.effort);
+  const [maxSteps, setMaxSteps] = useState(init.maxSteps);
   const [instructions, setInstructions] = useState(init.instructions);
   const [memory, setMemory] = useState(init.memory);
   const [approval, setApproval] = useState<string>(init.approval);
@@ -93,7 +95,7 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
   const holdFor = (open: boolean) => { if (open) busy.current = true; else window.setTimeout(() => { busy.current = false; }, 0); };
 
   const bm = useMemo(() => ({ id: bot.id, name: init.name, face }), [bot.id, init.name, face]);
-  const read = (): BotDialogValue => ({ name: name.trim(), model, effort, instructions, memory, approval, buildAccess, encrypt, profile,
+  const read = (): BotDialogValue => ({ name: name.trim(), model, effort, instructions, memory, approval, buildAccess, encrypt, profile, maxSteps,
     face: faceOf(bm), imessage: imessage.trim(), imessageEnabled, imessageTo: imessageTo.trim(), preset: "",
     kind: isSuper ? "super" : "bot", superAccess, browserId, trustedApps,
     allowRulesRemoved: init.allowRules.filter((r) => !allowRules.some((x) => x.kind === r.kind && x.key === r.key)) });  // the face shown is the face kept
@@ -180,6 +182,10 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
                   <NativeSelect className="w-full" id="bmeffort" value={effort} onChange={(e) => setEffort(e.target.value)}>
                     {EFFORTS.map(([v, l]) => <NativeSelectOption key={v} value={v}>{l}</NativeSelectOption>)}
                   </NativeSelect>
+                </Row>
+                <Row title="Steps per task" text={`Tool calls one task may take before it is stopped. Blank keeps the default (${isSuper ? 1000 : 200}). Applies from the next task.`} htmlFor="bmsteps">
+                  <Input id="bmsteps" type="text" inputMode="numeric" pattern="[0-9]*" maxLength={5} className="w-full" value={maxSteps}
+                    placeholder={isSuper ? "1000" : "200"} onChange={(e) => { if (/^\d*$/.test(e.target.value)) setMaxSteps(e.target.value); }} />
                 </Row>
               </Rows>
             ) : null}

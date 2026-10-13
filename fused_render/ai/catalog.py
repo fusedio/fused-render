@@ -1194,8 +1194,9 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "label": "EmbeddingGemma 2",
             "nickname": "EmbeddingGemma 2",
             "size_gb": 1.52,
-            "note": "Google's EmbeddingGemma 2: text and images in one "
-                    "768-dim space, 8192 tokens of context, 100+ languages.",
+            "note": "Google's EmbeddingGemma 2: text, images, sound and video "
+                    "in one 768-dim space, 8192 tokens of context, 100+ "
+                    "languages.",
         },
         {
             "id": "mlx-community/siglip2-so400m-patch16-384",

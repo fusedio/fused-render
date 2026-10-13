@@ -9,6 +9,7 @@
 import { useSyncExternalStore } from "react";
 import { api, apiHooks, type Bot, type BotEvent, type ImessageState, type SlowCall, type UsageSummary } from "../lib/api";
 import { loadSeen, newMarkFor, saveSeen, unreadOf, unviewedOf } from "../lib/unread";
+import { sentByYou } from "../lib/derive";
 import { chime, notifyEvents, notifyHandover, updateTitle } from "../lib/notify";
 import type { NewBotPick } from "../lib/presets";
 import { botsMounted } from "../lib/root";
@@ -383,7 +384,7 @@ export async function pollOnce(): Promise<void> {
           if (!first) { ring = true; notifyHandover(b); }
         }
         if (!first && b.handback && b.handback.seq !== was?.handback?.seq) {
-          const hb = b.handback.seq, replied = (events[b.id] || []).some((e) => e.role === "user" && e.seq > hb);
+          const hb = b.handback.seq, replied = (events[b.id] || []).some((e) => sentByYou(e) && e.seq > hb);
           if (!replied) commit({ noteFor: { id: b.id, until: Date.now() + 15_000 } });
         }
       }

@@ -115,7 +115,6 @@ def _reopen_manager(windows, monkeypatch, pref, key=None):
     from fused_render.shell import prefs
 
     monkeypatch.setattr(prefs, "apps_open_in_home", lambda: pref)
-    monkeypatch.setattr(prefs, "bots_enabled", lambda: False)
     WM = mac_window.WindowManager
     m = types.SimpleNamespace(port=1234, _windows=windows, opened=[], home_url="http://127.0.0.1:1234/")
     m.key = lambda: key

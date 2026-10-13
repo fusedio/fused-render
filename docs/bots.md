@@ -490,7 +490,9 @@ them all. `logins_from` takes a bot's name or a browser's name.
 
 Everything in `agents.py` that is not the model loop: create/clone/delete,
 greet, rename/settings, flag, react, routines (`_next_run`, spacing from
-disk, circuit breaker after 3 fails), skills (`learn`, `skills_for`), memory
+disk, a fire writes "Routine fired" then the prompt as a `user` line via `routine` (chip "from a routine"; recency skips it), circuit breaker after 3 fails, run history `runs[]` per routine:
+`_run_add` writes one row per slot reached, skips included, `_routine_outcome`
+lands the result on it; ROUTINE_RUNS kept, newest first), skills (`learn`, `skills_for`), memory
 (`remember`, caps), artifacts/Inbox (`save_file`, `collect_task_artifacts`,
 README.md per task, `index.jsonl`), attachments (`save_bytes`,
 `resolve_file`), file inbox (`drain_file_inbox`, botsend / iMessage), offers
@@ -590,7 +592,10 @@ General (avatar, name, instructions, model, thinking), Permissions (On this Mac
 for Super Bot; before it buys/deletes/posts; builds for ordinary bots; apps it
 may use without asking), Browser (Chrome profile, encryption), Skills
 (`SkillsSection.tsx`, the playbooks: edit, delete, learn from the last task,
-write by hand), Routines (`RoutinesSection.tsx`: add, edit in place, run, pause, delete), Memory, and
+write by hand), Routines (`RoutinesSection.tsx`: add, edit in place, run, pause, delete; each card
+says "next in 53 min" and tables its last 5 runs — when, how long, result pill, the bot's closing
+message or the error, a row opens the chat at that run; the preview pane's routine rows and the
+list's idle subtitle use the same countdown, `fmtIn`), Memory, and
 Phone on Super Bot (`PhoneSection.tsx`, §10). Skills and Routines post every op
 at once and never touch Save; the Skills… and Routines… menu rows and the
 preview pane's routines links open Settings on that section. The avatar picker
@@ -695,7 +700,7 @@ ride on the next real tool result. `web_touched` flips on any browser action and
 WebFetch / WebSearch; from then on every write and command asks whatever
 `super_access` says. Built-in calls never reach `handle_tool`: `_drive` sees the
 `tool_use` (`_builtin_use`: remember id → label, count a step, interrupt
-past SUPER_MAX_STEPS = 200) and the echoed `user` tool_result (`_builtin_results`:
+past the step cap, SUPER_MAX_STEPS = 1000 by default) and the echoed `user` tool_result (`_builtin_results`:
 one `action` row, `builtin_label` text such as "run `make test`" / "write
 ~/x.md", `result` the first line via `tools.ui_summary`, the whole output
 as `detail`, like every other chip).
@@ -704,8 +709,9 @@ The fake CLI plays a built-in with `{"builtin": "Read", "args", "output"}`.
 Process model: ONE `claude` process per bot per TURN (one incoming message,
 answered), spawned by `start_task`, killed when the turn ends (`done`, Stop,
 error, step cap); `--max-turns` does not exist on this CLI, so the engine
-counts `tool_use` blocks itself (MAX_STEPS = 60, same as OpenBot) and
-interrupts past the cap. The per-turn bookkeeping is `agent_engine.Turn`
+counts `tool_use` blocks itself against `bot.step_cap(meta)` (the bot's own
+`max_steps`, Settings > General "Steps per task", else MAX_STEPS = 200 /
+SUPER_MAX_STEPS = 1000) and interrupts past the cap. The per-turn bookkeeping is `agent_engine.Turn`
 (token, process, one-run ledger, repeat/stuck state, last observation).
 
 **Bot threads** (2026-10-07, design <https://claude.ai/artifact/6ZFS5kHjxiL7efGPxVxuph>).
@@ -858,7 +864,7 @@ Control flow inside the tools (the harness's job, in the server process):
 - Pause: every tool waits on `pause_flag` before and after running. A call
   that waited is skipped (the user may have changed the page) with a `note`
   event saying so.
-- Status: `set_status("running", step=n, step_cap=MAX_STEPS)` per call; every
+- Status: `set_status("running", step=n, step_cap=<bot.step_cap(meta)>)` per call; every
   wait on a card (`ask`, `login`, approval, the stuck question; `offer` in
   bot.py) sets `waiting` with `waiting_on=<the card's seq>` and clears it with
   `waiting_on=None` when the wait ends (Stop included: `run()`'s finally).
@@ -1649,10 +1655,7 @@ kind, preset, the first 240 chars of instructions as `description`, status,
 `busy`, the task label, note, step, `waitingOn`, model, effort, face, hidden,
 pinned, updated — never instructions in full, the url the browser is on, rules,
 routines, memory, hand-offs, phone or browser details), `POST /<id>/app_send`,
-`GET /<id>/app_events`, `POST /<id>/app_stop`. All four answer 403 while
-`bots_enabled` is off (the pref only picks the front door; the router is
-mounted regardless, so without the gate a page could drive bots the user has
-not switched on).
+`GET /<id>/app_events`, `POST /<id>/app_stop`.
 
 **Who is sending.** The app is named by the `X-Fused-Page` header the runtime
 sends with every call (`callHeaders`), resolved by `routers/tasks._page_scope`

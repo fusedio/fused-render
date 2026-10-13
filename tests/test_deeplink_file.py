@@ -1,8 +1,8 @@
-"""`fused-render://open?file=<.fused path>` (SPEC §26 DL-7, D889): the deep
-link Render App's Edit button sends. Parsing (one percent-decode, absolute
-`.fused` only) and the `GET /clone` redirect that lands it INSIDE the shell —
-no page of its own: the shell clones through the guarded /api/appfile routes
-and asks in a modal when a local copy already exists.
+"""`fused-render://open?file=<.fused path>` (SPEC §26 DL-7): the deep link
+Render App's Edit button sends. Parsing (one percent-decode, absolute `.fused`
+only) and the `GET /clone` redirect that lands it on the file's own INSTALL
+PAGE (AF-14) — no page of its own here, nothing written on the GET; a
+malformed payload goes to Home for the shell to report.
 """
 import os
 import sys
@@ -28,11 +28,8 @@ MARKER = '<meta charset="utf-8" />\n<meta name="fused-app" />'
 
 @pytest.fixture(autouse=True)
 def isolated_home(tmp_path, monkeypatch):
-    # Same isolation as test_appfile_clone: the extract cache lives under the
-    # home, a clone lands in the WORKSPACE (never the developer's ~/Fused).
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
     monkeypatch.setenv("FUSED_RENDER_DIR", str(tmp_path / "workspace"))
-    monkeypatch.setattr(appfile, "appfiles_root", lambda: str(tmp_path / "cache"))
 
 
 def export(tmp_path, name="demo", out_name=None):
@@ -56,16 +53,16 @@ def _client(tmp_path):
     return TestClient(create_app(start_dir=str(tmp_path)))
 
 
-def _view(p) -> str:
-    return "/explorer/view/" + canonical_fs_path(str(p)).lstrip("/")
+def _embed(p) -> str:
+    return "/explorer/embed/" + canonical_fs_path(str(p)).lstrip("/")
 
 
 def _redirect(tmp_path, src):
     resp = _client(tmp_path).get("/clone", params={"src": src}, follow_redirects=False)
     assert resp.status_code == 303
     parts = urlsplit(resp.headers["location"])
-    q = dict(kv.split("=", 1) for kv in parts.query.split("&"))
-    return parts.path, {k: unquote(v) for k, v in q.items()}
+    q = dict(kv.split("=", 1) for kv in parts.query.split("&")) if parts.query else {}
+    return unquote(parts.path), {k: unquote(v) for k, v in q.items()}
 
 
 # ---- parsing -----------------------------------------------------------------
@@ -103,52 +100,46 @@ def test_file_link_rejects_non_absolute_or_non_fused(bad):
 # ---- the redirect -----------------------------------------------------------
 
 
-def test_no_copy_yet_lands_on_home_with_the_file(tmp_path):
+@pytest.mark.skipif(sys.platform == "win32",
+                    reason="asserts posix-shaped paths; the deeplink URL path carries os.sep on Windows (pre-existing, #1383)")
+def test_a_file_link_lands_on_the_files_install_page(tmp_path):
     fused = export(tmp_path)
     path, q = _redirect(tmp_path, link(fused))
-    assert path == "/"
-    assert q == {EDIT_APPFILE_PARAM: canonical_fs_path(str(fused))}
-    # Read-only: the GET cloned nothing (the shell does, behind X-Fused).
-    assert not os.path.exists(tmp_path / "workspace" / "local" / "demo")
+    assert path == _embed(fused)
+    assert q == {}
+    # Read-only: the GET installed nothing (the page does, behind X-Fused).
+    assert not (tmp_path / "workspace" / "app" / "demo").exists()
 
 
 @pytest.mark.skipif(sys.platform == "win32",
                     reason="asserts posix-shaped paths; the deeplink URL path carries os.sep on Windows (pre-existing, #1383)")
-def test_an_existing_copy_lands_on_its_entry_page_with_the_file(tmp_path):
+def test_an_installed_app_still_lands_on_the_install_page(tmp_path):
+    """The page is where "already installed / update / diverged" is said; the
+    GET never decides for the user."""
     fused = export(tmp_path)
-    _client(tmp_path).post("/api/appfile/clone", json={"file": str(fused)}, headers=FUSED)
-    path, q = _redirect(tmp_path, link(fused))
-    assert path == _view(tmp_path / "workspace" / "local" / "demo" / "index.html")
-    assert q == {EDIT_APPFILE_PARAM: canonical_fs_path(str(fused))}
+    _client(tmp_path).post("/api/appfile/install", json={"file": str(fused)}, headers=FUSED)
+    path, _q = _redirect(tmp_path, link(fused))
+    assert path == _embed(fused)
 
 
-@pytest.mark.skipif(sys.platform == "win32",
-                    reason="asserts posix-shaped paths; the deeplink URL path carries os.sep on Windows (pre-existing, #1383)")
-def test_a_copy_without_an_entry_page_lands_on_the_folder(tmp_path):
-    fused = export(tmp_path)
-    dest = tmp_path / "workspace" / "local" / "demo"
-    dest.mkdir(parents=True)
-    (dest / "notes.txt").write_text("not an app any more")
-    path, q = _redirect(tmp_path, link(fused))
-    assert path == _view(dest)
-
-
-def test_a_missing_file_still_lands_on_home_for_the_shell_to_report(tmp_path):
+def test_a_missing_file_still_lands_on_its_page_which_reports_it(tmp_path):
     gone = tmp_path / "gone.fused"
-    path, q = _redirect(tmp_path, link(gone))
-    assert path == "/"
-    assert q == {EDIT_APPFILE_PARAM: canonical_fs_path(str(gone))}
+    path, _q = _redirect(tmp_path, link(gone))
+    assert path == _embed(gone)
 
 
-def test_a_malformed_payload_is_ferried_verbatim(tmp_path):
+def test_a_malformed_payload_is_ferried_verbatim_to_home(tmp_path):
     path, q = _redirect(tmp_path, "fused-render://open?file=relative.zip")
     assert path == "/"
     assert q == {EDIT_APPFILE_PARAM: "relative.zip"}
 
 
-def test_the_param_round_trips_a_spicy_path(tmp_path):
+def test_the_redirect_round_trips_a_spicy_path(tmp_path):
+    from fused_render._view_url_codec import view_url_path
+
     spicy = "/Users/me/My Apps/a&b #1 100%.fused"
-    assert unquote(edit_appfile_redirect(spicy).split("=", 1)[1]) == spicy
+    assert edit_appfile_redirect(spicy) == view_url_path(os.path.abspath(spicy))
+    assert unquote(edit_appfile_redirect(spicy)).endswith("My Apps/a&b #1 100%.fused")
 
 
 def test_git_links_still_get_the_confirm_page(tmp_path):

@@ -60,7 +60,8 @@ from fused_render.server.common import (
 # re-derived: see `_inferred_capability` and `_catalog_with_downloads`. It imports
 # nothing from here.
 from fused_render.ai.hub_cache import (
-    CachedModel, cached_capability, cached_models, embed_family, has_cached_snapshot,
+    CachedModel, cached_capability, cached_models, embed_family, embed_media,
+    has_cached_snapshot,
     has_vision_tower, is_downloaded, speech_traits,
 )
 from fused_render.ai import hub_metadata
@@ -1223,6 +1224,12 @@ def _catalog_with_downloads() -> list[dict]:
             # one, and a picker filtering on absence would offer it anyway.
             entry["acceptsPaths"] = _accepts_paths(row["capability"],
                                                    entry["id"])
+            # …and, finer than `acceptsPaths`, which KINDS of file those paths
+            # may be. Same fail-closed rule: a cold checkpoint claims nothing.
+            media = (embed_media(entry["id"])
+                     if row["capability"] == registry.EMBEDDINGS else None) or ()
+            entry["acceptsAudio"] = embed_common.AUDIO in media
+            entry["acceptsVideo"] = embed_common.VIDEO in media
             entry["promptScheme"] = _prompt_scheme(row["capability"],
                                                    entry["id"])
             # The vision tasks this entry answers (SPEC AI-33), from its recipe.
@@ -3044,6 +3051,18 @@ def api_ai_embed(body: dict = Body(...), x_fused: str | None = Header(default=No
             f"is not something it can read. Pass 'texts' instead, or name a "
             f"dual encoder (a SigLIP or CLIP model) to embed images.",
             status=400)
+    if source == "paths":
+        # The finer refusal — a sound or a video on a model with a vision
+        # tower only — on the same positive-evidence footing: `embed_media`
+        # answers None for a cold checkpoint and the call falls through to
+        # `model_loading`, exactly as the text-encoder refusal above does.
+        # The worker makes the identical refusal for a caller reaching
+        # `/generate` directly; see `embed_common.unaccepted_media`.
+        media = embed_media(model)
+        refusal = (embed_common.unaccepted_media(model, media, items)
+                   if media is not None else None)
+        if refusal is not None:
+            return _embed_error("bad_request", refusal, status=400)
     if "kind" in body and body.get("kind") is not None:
         scheme = formats.text_embed_scheme(model)
         if scheme == "none":

@@ -1161,3 +1161,20 @@ def test_every_prose_output_read_goes_through_output_index(prose, monkeypatch):
     assert result["vectors"], "the prose path must still produce vectors"
     assert calls, "_prose_vectors read an output without _output_index"
     assert all(name in prose._PROSE_OUTPUTS for name in calls), calls
+
+
+def test_a_sound_or_video_path_is_refused_BY_NAME_on_the_onnx_siglip(worker, tmp_path):
+    """This runner reads pictures only; the sentence names the file and the
+    model that does read sound — the same `embed_common.unaccepted_media` the
+    route and the MLX runner use, so all three refuse identically."""
+    sound = tmp_path / "voice.wav"
+    sound.write_bytes(b"RIFF")
+    with pytest.raises(ValueError) as info:
+        worker.generate({"paths": [str(sound)]})
+    message = str(info.value)
+    assert str(sound) in message
+    assert "an audio file" in message
+    assert worker._loaded["model_id"] in message
+    assert "embeddinggemma-2" in message
+    with pytest.raises(ValueError, match="a video file"):
+        worker.generate({"paths": [str(tmp_path / "clip.mp4")]})

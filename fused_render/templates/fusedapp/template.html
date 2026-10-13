@@ -1,107 +1,404 @@
 <!DOCTYPE html>
-<!-- The .fused app-file template (SPEC §43, D390). Opening a .fused IS the
-     ordinary template path: /explorer/view/<path>.fused renders this inside
-     the explorer shell, /explorer/embed/<path>.fused (what a Finder
-     double-click maps to via the view-URL codec) renders it chrome-free.
-     There is no gate (D389): on load it POSTs the internal
-     /api/appfile/open (extract-or-reuse, hardened + read-only, appfile.py)
-     and fills the viewport with an iframe of the entry page's embed URL.
-     Extraction stays server-side, single implementation — this page must not
-     re-implement any of it (and must not import fused_render, SPEC PY-15). -->
+<!-- The .fused app-file template (SPEC §43, AF-5/AF-14). Opening a .fused IS
+     the ordinary template path: /explorer/view/<path>.fused renders this
+     inside the explorer shell, /explorer/embed/<path>.fused (what a Finder
+     double-click, a deeplink download and the CLI map to via the view-URL
+     codec) renders it chrome-free. Either way this page is the INSTALL PAGE:
+     nothing in the file runs here. It reads the file's index, README, icon
+     and screenshot through read-only routes (GET /api/appfile/install,
+     /api/appfile/icon, /api/appfile/preview — never an extraction), says
+     what installing would do (new / update / diverged / same / downgrade),
+     and the one button POSTs the X-Fused /api/appfile/install, which unpacks
+     the app into <workspace>/app/<slug> and opens it. Extraction stays
+     server-side, single implementation — this page must not re-implement
+     any of it (and must not import fused_render, SPEC PY-15). -->
 <html data-fused-theme="shell">
 <head>
 <meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Fused app</title>
 <style>
   :root {
     color-scheme: dark;
-    --fg: #e8eaed; --fg-muted: #9aa0a6; --bg: #131417; --error: #ff6b6b;
+    --fg: #e8eaed; --fg-muted: #9aa0a6; --bg: #131417; --panel: #1b1c20;
+    --line: #2a2c31; --accent: #d1e550; --accent-fg: #141414; --error: #ff6b6b;
+    --warn: #f0b429; --warn-bg: #2a2410; --ok: #7ed491; --ok-bg: #12261a;
+    --code: #1f2024;
   }
   :root[data-theme="light"] {
     color-scheme: light;
-    --fg: #1f2023; --fg-muted: #61656c; --bg: #ffffff; --error: #c62828;
+    --fg: #1f2023; --fg-muted: #61656c; --bg: #ffffff; --panel: #f6f6f7;
+    --line: #e3e4e8; --accent: #4a5a00; --accent-fg: #ffffff; --error: #c62828;
+    --warn: #8a5a00; --warn-bg: #fff4d6; --ok: #1f6b2f; --ok-bg: #e4f5e8;
+    --code: #f0f1f3;
   }
+  * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; }
   body {
-    font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    color: var(--fg); background: var(--bg);
+    font: 14px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    color: var(--fg); background: var(--bg); overflow: auto;
   }
-  iframe { display: block; width: 100%; height: 100%; border: 0; }
-  .state { padding: 40px; }
-  .state h1 { font-size: 16px; margin: 0 0 10px; }
-  .muted { color: var(--fg-muted); }
-  .error { color: var(--error); white-space: pre-wrap;
-           font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+  .page { max-width: 720px; margin: 0 auto; padding: 48px 24px 96px; }
+  .hero { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 12px; }
+  .mark { width: 64px; height: 64px; border-radius: 15px; object-fit: contain; background: var(--panel); padding: 7px; }
+  .mark.ph { display: flex; align-items: center; justify-content: center; padding: 0; color: var(--accent);
+             font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
+  h1 { font-size: 1.9em; font-weight: 650; letter-spacing: -.02em; margin: 0; line-height: 1.15; }
+  .meta { color: var(--fg-muted); font-size: .9em; margin: -4px 0 2px; }
+  .meta code { font-size: .92em; }
+  .state { border: 1px solid var(--line); border-radius: 10px; padding: 12px 16px; max-width: 520px;
+           text-align: left; width: 100%; background: var(--panel); }
+  .state[data-tone="warn"] { border-color: var(--warn); background: var(--warn-bg); }
+  .state[data-tone="ok"] { border-color: var(--ok); background: var(--ok-bg); }
+  .state[hidden] { display: none; }
+  .state b { display: block; margin-bottom: 2px; }
+  .state p { margin: 0; color: var(--fg); }
+  .state ul { margin: 6px 0 0; padding-left: 18px; color: var(--fg-muted); font-family: ui-monospace, Menlo, monospace; font-size: .85em; }
+  .actions { display: flex; gap: 10px; align-items: center; justify-content: center; flex-wrap: wrap; margin-top: 4px; }
+  button { font: inherit; cursor: pointer; border-radius: 8px; padding: 10px 22px; border: 1px solid var(--line);
+           background: var(--panel); color: var(--fg); }
+  button.primary { background: var(--accent); color: var(--accent-fg); border-color: transparent; font-weight: 600; }
+  button.danger { border-color: var(--error); color: var(--error); }
+  button[disabled] { opacity: .55; cursor: default; }
+  .sub { color: var(--fg-muted); font-size: .85em; }
+  .sub code { font-family: ui-monospace, Menlo, monospace; }
+  .shot { display: block; width: 100%; margin: 40px 0 8px; border-radius: 12px; border: 1px solid var(--line); }
+  .doc { margin-top: 40px; }
+  .doc > :first-child { margin-top: 0; }
+  .doc h1, .doc h2, .doc h3, .doc h4 { font-weight: 600; letter-spacing: -.01em; margin: 28px 0 10px; line-height: 1.3; }
+  .doc h1 { font-size: 1.4em; } .doc h2 { font-size: 1.2em; } .doc h3 { font-size: 1.05em; }
+  .doc a { color: var(--accent); }
+  .doc code { background: var(--code); padding: 2px 6px; border-radius: 4px; font-family: ui-monospace, Menlo, monospace; font-size: .88em; }
+  .doc pre { background: var(--code); border: 1px solid var(--line); padding: 12px 14px; border-radius: 8px; overflow-x: auto; }
+  .doc pre code { background: none; padding: 0; }
+  .doc ul, .doc ol { padding-left: 22px; }
+  .doc blockquote { border-left: 3px solid var(--line); margin: 14px 0; padding: 2px 0 2px 14px; color: var(--fg-muted); }
+  .empty { color: var(--fg-muted); font-style: italic; }
+  .files { margin-top: 48px; border-top: 1px solid var(--line); padding-top: 6px; }
+  .files summary { cursor: pointer; color: var(--fg-muted); font-size: .9em; padding: 10px 0; list-style: none; user-select: none; }
+  .files summary::-webkit-details-marker { display: none; }
+  .files summary::before { content: "▸ "; } .files[open] summary::before { content: "▾ "; }
+  table.list { border-collapse: collapse; width: 100%; font-size: .87em; }
+  table.list td { border-bottom: 1px solid var(--line); padding: 6px 2px; }
+  td.n { font-family: ui-monospace, Menlo, monospace; word-break: break-all; }
+  td.n.entry { color: var(--accent); }
+  td.s { text-align: right; color: var(--fg-muted); white-space: nowrap; width: 1%; }
+  .error { color: var(--error); white-space: pre-wrap; font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
+  .preview .page { padding: 16px; } .preview .doc, .preview .files, .preview .actions, .preview .state, .preview .shot { display: none; }
+  .preview h1 { font-size: 1.2em; }
 </style>
 </head>
 <body>
-<div class="state" id="state"><span class="muted">Opening app…</span></div>
+<div class="page" id="page"><div class="sub">Reading app file…</div></div>
 <script>
-  const state = document.getElementById("state");
-  const file = fused.params.get("_file");
+  const page = document.getElementById("page");
+  const FILE = fused.params.get("_file");
   // A listing-pane peek / card thumbnail renders this template with
-  // `_preview=1` (a reserved shell param, read off the URL — it is not a
-  // page param). A preview must not COUNT as an open and must not extract:
-  // it asks the server for an existing extract only (`preview: true` →
-  // reuse_only + no recency, D396). A file the user HAS opened before
-  // live-renders from that cache — the same look the /apps card shows —
-  // and one they never opened gets the inert placeholder (extracting and
-  // running a never-opened file's pages from a peek is exactly what
-  // `_preview` exists to prevent, D301 / D390).
-  const isPreview =
-    new URLSearchParams(location.search).get("_preview") === "1";
+  // `_preview=1` (a reserved shell param, read off the URL). A preview shows
+  // the mark and the name only, asks the light probe (no hashing of the
+  // installed copy), and never installs (D396 / D301).
+  const isPreview = new URLSearchParams(location.search).get("_preview") === "1";
+  if (isPreview) document.body.classList.add("preview");
 
-  function placeholder() {
-    state.innerHTML = "";
-    const h = document.createElement("h1");
-    h.textContent = "Fused app";
-    const p = document.createElement("div");
-    p.className = "muted";
-    p.textContent = "Open this file to unpack and run the app.";
-    state.append(h, p);
+  const esc = (s) => String(s).replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+  const human = (n) => {
+    const u = ["B", "KB", "MB", "GB"]; let i = 0;
+    while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+    return (i === 0 ? n : n.toFixed(1)) + " " + u[i];
+  };
+  const api = (q) => "/api/appfile/" + q + "?path=" + encodeURIComponent(FILE);
+  // The export stamp is UTC ISO-8601 with seconds (`2026-10-13T07:34:59Z`);
+  // shown as the viewer's local date AND time — two exports of one app on
+  // the same day are told apart by the minute. A stamp the browser cannot
+  // parse is shown as written; none is null.
+  const fmtStamp = (s) => {
+    if (!s || !/^\d{4}-\d{2}-\d{2}/.test(s)) return null;
+    const d = new Date(s);
+    if (isNaN(d.getTime())) return s;
+    return d.toLocaleString(undefined, {
+      year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
+    });
+  };
+
+  // A small, safe Markdown subset for the README: text is escaped FIRST, then
+  // headings, fenced code, lists, quotes, paragraphs, and inline code / bold /
+  // italic / links (http(s) only). No raw HTML ever reaches the DOM — the
+  // README is untrusted file content.
+  function md(src) {
+    const inline = (t) => t
+      .replace(/`([^`]+)`/g, (_, c) => "<code>" + c + "</code>")
+      .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
+      .replace(/(^|[^*])\*([^*]+)\*/g, "$1<i>$2</i>")
+      .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g,
+        '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+    const lines = esc(src).replace(/\r\n?/g, "\n").split("\n");
+    const out = []; let i = 0;
+    const para = [];
+    const flush = () => { if (para.length) { out.push("<p>" + inline(para.join(" ")) + "</p>"); para.length = 0; } };
+    while (i < lines.length) {
+      const l = lines[i];
+      let m;
+      if ((m = l.match(/^```/))) {
+        flush(); const buf = []; i++;
+        while (i < lines.length && !/^```/.test(lines[i])) buf.push(lines[i++]);
+        i++; out.push("<pre><code>" + buf.join("\n") + "</code></pre>"); continue;
+      }
+      if ((m = l.match(/^(#{1,4})\s+(.*)$/))) { flush(); out.push("<h" + m[1].length + ">" + inline(m[2]) + "</h" + m[1].length + ">"); i++; continue; }
+      if (/^\s*[-*]\s+/.test(l)) {
+        flush(); const items = [];
+        while (i < lines.length && /^\s*[-*]\s+/.test(lines[i])) items.push("<li>" + inline(lines[i++].replace(/^\s*[-*]\s+/, "")) + "</li>");
+        out.push("<ul>" + items.join("") + "</ul>"); continue;
+      }
+      if (/^\s*\d+\.\s+/.test(l)) {
+        flush(); const items = [];
+        while (i < lines.length && /^\s*\d+\.\s+/.test(lines[i])) items.push("<li>" + inline(lines[i++].replace(/^\s*\d+\.\s+/, "")) + "</li>");
+        out.push("<ol>" + items.join("") + "</ol>"); continue;
+      }
+      if (/^>\s?/.test(l)) { flush(); out.push("<blockquote>" + inline(l.replace(/^>\s?/, "")) + "</blockquote>"); i++; continue; }
+      if (/^\s*$/.test(l)) { flush(); i++; continue; }
+      para.push(l); i++;
+    }
+    flush();
+    return out.join("\n");
+  }
+
+  // What the page says per state. `needs_force` states carry a warning and
+  // the button asks twice (the second click sends force).
+  function describe(t) {
+    const when = (s) => fmtStamp(s) || "an unknown date";
+    switch (t.state) {
+      case "new": return { tone: "ok", title: "Not installed yet",
+        body: "Install puts the app at " + t.path + " as an editable app of your own.", button: "Install" };
+      case "update": return { tone: "ok", title: "Update available",
+        body: "Installed version from " + when(t.installed_exported_at) + "; this file is from " + when(t.exported_at) +
+              ". Your copy is unchanged since it was installed. Updating replaces its files and keeps everything in .fused.", button: "Update" };
+      case "diverged": return { tone: "warn", title: "Your copy has changed since it was installed",
+        body: "This file (" + when(t.exported_at) + ") is newer than what you installed (" + when(t.installed_exported_at) +
+              "), but " + t.changed.length + " installed file" + (t.changed.length === 1 ? "" : "s") +
+              " differ from the install. Overwriting replaces them; .fused, .venv and files the app file does not carry stay. The previous state is in the copy's git history.",
+        list: t.changed.slice(0, 12), more: Math.max(0, t.changed.length - 12), button: "Overwrite" };
+      case "same": return { tone: "ok", title: "This version is installed",
+        body: "Installed at " + t.path + " from a file exported " + when(t.exported_at) + ". Open it, or reinstall to reset its files.",
+        button: "Reinstall", open: true };
+      case "downgrade": return { tone: "warn", title: "Older than the installed version",
+        body: "This file is from " + when(t.exported_at) + "; the installed copy is from " + when(t.installed_exported_at) +
+              ". Overwriting goes back to this older version. .fused, .venv and files the app file does not carry stay.", button: "Overwrite" };
+      case "unknown": return { tone: "warn", title: "Installed copy of unknown version",
+        body: "A copy is at " + t.path + " but it carries no install record (a clone, a copy by hand, or an export without a date), so this file cannot be compared with it. Overwriting replaces its files; .fused, .venv and files the app file does not carry stay.", button: "Overwrite" };
+      case "clash": return { tone: "warn", title: "A different app is installed under this name",
+        body: t.path + " holds another app. Rename or uninstall it, then install this file.", button: null };
+    }
+    return { tone: "warn", title: "Unknown state", body: t.state, button: null };
   }
 
   function fail(msg) {
-    state.innerHTML = "";
-    const h = document.createElement("h1");
-    h.textContent = "Could not open app";
-    const pre = document.createElement("div");
-    pre.className = "error";
-    pre.textContent = msg;
-    state.append(h, pre);
+    page.innerHTML = "";
+    const h = document.createElement("h1"); h.textContent = "Could not read app file";
+    const pre = document.createElement("div"); pre.className = "error"; pre.textContent = msg;
+    page.append(h, pre);
   }
 
-  async function open() {
-    if (!file) return fail("No .fused file selected.");
+  // Where the installed app opens: the explorer's view of its entry page when
+  // this page sits inside the explorer, the chrome-free embed when THIS page
+  // is the window (a double-click, a deeplink, the CLI) — the same rule the
+  // old run-in-place open followed, so the window becomes the app's.
+  function go(urls) {
+    let top = window;
+    try { void window.top.location.href; top = window.top; } catch (e) { /* cross-origin host: stay here */ }
+    const embedded = top.location.pathname.startsWith("/explorer/embed/");
+    try { top.location.href = embedded ? urls.entry_embed : urls.entry_view; }
+    catch (e) { location.href = urls.entry_view; }
+  }
+
+  async function install(force, btn, status) {
+    btn.disabled = true;
+    const was = btn.textContent;
+    btn.textContent = force ? "Overwriting…" : (was === "Update" ? "Updating…" : "Installing…");
     let resp, data;
     try {
-      resp = await fetch("/api/appfile/open", {
+      resp = await fetch("/api/appfile/install", {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-Fused": "1" },
-        body: JSON.stringify(isPreview ? { file, preview: true } : { file }),
+        body: JSON.stringify({ file: FILE, force: !!force }),
       });
       data = await resp.json();
     } catch (e) {
-      return isPreview ? placeholder() : fail("Open request failed: " + e);
+      status.textContent = "Install request failed: " + e; btn.disabled = false; btn.textContent = was; return;
     }
-    if (!resp.ok) {
-      // A preview 400 is the normal "never opened" answer — inert card, not
-      // an error surface.
-      if (isPreview) return placeholder();
-      return fail(data.error || "Not a valid .fused file.");
+    if (resp.status === 409 && data && data.target) {
+      // The copy changed between the probe and the click: show the fresh
+      // state and let the user decide again.
+      render(data.target); return;
     }
-    const frame = document.createElement("iframe");
-    // The entry page's chrome-free embed URL. A preview forwards the two
-    // picture-not-use stamps to the inner page: `_preview=1` (no open
-    // recorded by anything downstream, D301) and `_nofocus=1` (a thumbnail
-    // must not take the keyboard, D348).
-    frame.src = data.view + (isPreview ? "?_preview=1&_nofocus=1" : "");
-    frame.allow = "clipboard-read; clipboard-write; fullscreen";
-    state.remove();
-    document.body.appendChild(frame);
+    if (!resp.ok) { status.textContent = (data && data.error) || "Install failed."; btn.disabled = false; btn.textContent = was; return; }
+    status.textContent = data.action === "updated" ? "Updated. Opening…" : "Installed. Opening…";
+    go(data);
   }
 
-  open();
+  function render(t) {
+    page.innerHTML = "";
+    const hero = document.createElement("div"); hero.className = "hero";
+    if (t.has_icon) {
+      const img = document.createElement("img"); img.className = "mark"; img.alt = ""; img.src = api("icon");
+      img.onerror = () => { img.replaceWith(placeholderMark()); };
+      hero.appendChild(img);
+    } else hero.appendChild(placeholderMark());
+    const h1 = document.createElement("h1"); h1.textContent = t.name; hero.appendChild(h1);
+    const meta = document.createElement("div"); meta.className = "meta";
+    const bits = [t.files.length + " files", human(t.bytes)];
+    if (fmtStamp(t.exported_at)) bits.push("exported " + fmtStamp(t.exported_at));
+    meta.textContent = bits.join(" · ");
+    hero.appendChild(meta);
+
+    if (!isPreview) {
+      const d = describe(t);
+      const box = document.createElement("div"); box.className = "state"; box.dataset.tone = d.tone;
+      const b = document.createElement("b"); b.textContent = d.title;
+      const p = document.createElement("p"); p.textContent = d.body;
+      box.append(b, p);
+      if (d.list && d.list.length) {
+        const ul = document.createElement("ul");
+        d.list.forEach((f) => { const li = document.createElement("li"); li.textContent = f; ul.appendChild(li); });
+        if (d.more) { const li = document.createElement("li"); li.textContent = "… and " + d.more + " more"; ul.appendChild(li); }
+        box.appendChild(ul);
+      }
+      hero.appendChild(box);
+
+      const actions = document.createElement("div"); actions.className = "actions";
+      const status = document.createElement("div"); status.className = "sub";
+      if (d.open && t.entry_path) {
+        const open = document.createElement("button"); open.className = "primary"; open.textContent = "Open";
+        open.onclick = () => go({ entry_view: viewUrl(t.entry_path), entry_embed: embedUrl(t.entry_path) });
+        actions.appendChild(open);
+      }
+      if (d.button) {
+        const btn = document.createElement("button");
+        btn.className = t.needs_force ? "danger" : "primary";
+        btn.textContent = d.button;
+        if (t.needs_force) {
+          let armed = false;
+          btn.onclick = () => {
+            if (!armed) { armed = true; btn.textContent = d.button + " — are you sure?"; return; }
+            install(true, btn, status);
+          };
+        } else btn.onclick = () => install(false, btn, status);
+        actions.appendChild(btn);
+      }
+      if (t.installed && t.state !== "same" && t.state !== "clash" && t.entry_path) {
+        const open = document.createElement("button"); open.textContent = "Open installed copy";
+        open.onclick = () => go({ entry_view: viewUrl(t.entry_path), entry_embed: embedUrl(t.entry_path) });
+        actions.appendChild(open);
+      }
+      hero.appendChild(actions);
+      hero.appendChild(status);
+      if (t.installed && t.state !== "clash") hero.appendChild(uninstallRow(t, status));
+      const where = document.createElement("div"); where.className = "sub";
+      where.innerHTML = (t.installed ? "Installed at " : "Installs to ") + "<code>" + esc(t.path) + "</code>";
+      hero.appendChild(where);
+    }
+    page.appendChild(hero);
+
+    if (t.has_preview) {
+      const shot = document.createElement("img"); shot.className = "shot"; shot.alt = t.name + " screenshot";
+      shot.src = api("preview"); shot.onerror = () => shot.remove();
+      page.appendChild(shot);
+    }
+    const doc = document.createElement("div"); doc.className = "doc";
+    if (t.readme) {
+      doc.innerHTML = md(t.readme);
+      // Nearly every README opens by repeating the app's name; the hero said it.
+      const lead = doc.firstElementChild;
+      if (lead && lead.tagName === "H1" && lead.textContent.trim().toLowerCase() === t.name.trim().toLowerCase()) lead.remove();
+    } else {
+      doc.innerHTML = '<span class="empty">This app file has no README.</span>';
+    }
+    page.appendChild(doc);
+
+    const details = document.createElement("details"); details.className = "files";
+    const sum = document.createElement("summary"); sum.textContent = t.files.length + " files · " + human(t.bytes);
+    const table = document.createElement("table"); table.className = "list";
+    t.files.slice(0, 500).forEach((f) => {
+      const tr = document.createElement("tr");
+      const n = document.createElement("td"); n.className = "n" + (f.path === t.entry ? " entry" : ""); n.textContent = f.path;
+      const s = document.createElement("td"); s.className = "s"; s.textContent = human(f.size);
+      tr.append(n, s); table.appendChild(tr);
+    });
+    details.append(sum, table);
+    page.appendChild(details);
+  }
+
+  // Uninstall from the page the app was installed from (AF-15): the same
+  // POST the shell's dialog makes. "Also delete the app's data" is on by
+  // default; unticked, the app's files and git go and `.fused/` stays for
+  // the next install. Two clicks on the one button, like Overwrite.
+  function uninstallRow(t, status) {
+    const row = document.createElement("div"); row.className = "sub";
+    row.style.marginTop = "14px";
+    const label = document.createElement("label");
+    label.style.cssText = "display:inline-flex;gap:6px;align-items:center;margin-right:10px";
+    const box = document.createElement("input"); box.type = "checkbox"; box.checked = true; box.id = "uninstall-data";
+    label.append(box, document.createTextNode("Also delete the app's data (.fused)"));
+    const btn = document.createElement("button"); btn.className = "danger"; btn.textContent = "Uninstall";
+    btn.style.padding = "6px 14px";
+    let armed = false;
+    btn.onclick = async () => {
+      if (!armed) { armed = true; btn.textContent = "Uninstall — are you sure?"; return; }
+      btn.disabled = true;
+      let resp, data;
+      try {
+        resp = await fetch("/api/apps/uninstall", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Fused": "1" },
+          body: JSON.stringify({ path: t.path, keep_data: !box.checked, mode: "trash" }),
+        });
+        data = await resp.json();
+      } catch (e) { status.textContent = "Uninstall failed: " + e; btn.disabled = false; return; }
+      if (resp.status === 501) {
+        // No bin for this folder: offer the hard delete behind one more click.
+        btn.disabled = false; armed = false; btn.textContent = "Delete forever";
+        btn.onclick = async () => {
+          btn.disabled = true;
+          const r2 = await fetch("/api/apps/uninstall", {
+            method: "POST", headers: { "Content-Type": "application/json", "X-Fused": "1" },
+            body: JSON.stringify({ path: t.path, keep_data: !box.checked, mode: "delete" }),
+          });
+          const d2 = await r2.json();
+          if (!r2.ok) { status.textContent = (d2 && d2.error) || "Uninstall failed."; btn.disabled = false; return; }
+          load();
+        };
+        return;
+      }
+      if (!resp.ok) { status.textContent = (data && data.error) || "Uninstall failed."; btn.disabled = false; return; }
+      status.textContent = data.keep_data ? "Uninstalled. Its data stays in .fused." : "Uninstalled.";
+      load();
+    };
+    row.append(label, btn);
+    return row;
+  }
+
+  function placeholderMark() {
+    const d = document.createElement("div"); d.className = "mark ph"; d.textContent = ".fused"; return d;
+  }
+  // The explorer's URL codec for an absolute fs path (the same rule the
+  // server's _view_url_codec applies): every segment percent-encoded.
+  const encodePath = (p) => p.replace(/\\/g, "/").replace(/^\/+/, "").split("/").map(encodeURIComponent).join("/");
+  const viewUrl = (p) => "/explorer/view/" + encodePath(p);
+  const embedUrl = (p) => "/explorer/embed/" + encodePath(p);
+
+  async function load() {
+    if (!FILE) return fail("No .fused file selected.");
+    let resp, data;
+    try {
+      resp = await fetch(api("install") + (isPreview ? "&light=1" : ""));
+      data = await resp.json();
+    } catch (e) {
+      return fail("Could not read the app file: " + e);
+    }
+    if (!resp.ok) return fail((data && data.error) || "Not a valid .fused file.");
+    render(data);
+  }
+  load();
 </script>
 </body>
 </html>

@@ -56,13 +56,12 @@ import NotificationHost from "@platform/ui/NotificationHost";
 import RestartOverlay from "@platform/ui/RestartOverlay";
 import UpdateNotifier from "@platform/ui/UpdateNotifier";
 import { ShareAppHost } from "@platform/ui/ShareAppModal";
-import EditAppFileBoot from "@shell/EditAppFileBoot";
+import { UninstallAppHost } from "@platform/ui/UninstallAppModal";
 import FetchAppFileBoot from "@shell/FetchAppFileBoot";
 import { ShareFileHost } from "@platform/ui/ShareFileModal";
 import OnboardingWizard from "@shell/onboarding/OnboardingWizard";
 import { ONBOARDING_PATH, shouldAutoShow } from "@shell/onboarding/state";
 import { onboardingUrl } from "@shell/onboarding/progress";
-import { botsFrontDoor, seedBotsEnabled } from "@apps/bots/feature-flag";
 import StatusBar from "@platform/ui/StatusBar";
 import ModelsDock from "@shell/ModelsDock";
 import SystemDock from "@shell/SystemDock";
@@ -649,18 +648,13 @@ export default function App({ config }: { config: Config }) {
     return () => document.removeEventListener("keydown", onKey, { capture: true });
   }, []);
 
-  // The FRONT DOOR — "/" lands on Home, or on Bots when the `bots_enabled`
-  // preference swaps it in (shell/prefs.py; the flag rides /api/config so this
-  // render-time decision never waits on a prefs fetch, and the Preferences
-  // page publishes a toggle into the same store, so no reload is needed).
-  // Render-time write is safe — it changes pathname, so the re-render (via
-  // fused:urlchange) derives the real route. (Legacy /view/_home,
-  // /view/_account, and the whole /view//embed namespaces are rewritten at
-  // boot by router.ts.) With the flag on, /home still answers by URL: it is
-  // the pinned Home bookmark's door (shell/bookmarks.py seeds that pin), and
-  // a bare /home used to bounce to Bots before that pin existed.
-  seedBotsEnabled(config.bots_enabled);
-  const frontDoor = botsFrontDoor() ? "/bots" : "/home";
+  // The FRONT DOOR — "/" lands on Home, or on Bots under the Fused Bot
+  // flavor (platform/lib/flavor, seeded before the first render), which has
+  // no Home page. Render-time write is safe — it changes pathname, so the
+  // re-render (via fused:urlchange) derives the real route. (Legacy
+  // /view/_home, /view/_account, and the whole /view//embed namespaces are
+  // rewritten at boot by router.ts.)
+  const frontDoor = isBot() ? "/bots" : "/home";
   if (location.pathname === "/") {
     history.replaceState(null, "", frontDoor);
   }
@@ -1103,13 +1097,11 @@ export default function App({ config }: { config: Config }) {
             this branch's own condition might change later. */}
         {!IS_EMBED && <UpdateNotifier />}
         {!IS_EMBED && <RestartOverlay />}
-        {/* A fresh install routes Home to this wizard, and a Render App user's
-            very first fused-render action can be its Edit button: the
-            `?_edit_appfile=` hand-off must not die here unread. The boot
-            handler clones and moves to the copy (the wizard re-offers
-            itself next launch, `shouldAutoShow`); over an existing copy it
-            navigates there first, so its modal never sits on the wizard. */}
-        {!IS_EMBED && <EditAppFileBoot />}
+        {/* A fresh install routes Home to this wizard, and a deep link's
+            `?_fetch_appfile=` / malformed `?_edit_appfile=` hand-off must
+            not die here unread: the boot handler downloads and moves to the
+            file's install page (the wizard re-offers itself next launch,
+            `shouldAutoShow`). */}
         {!IS_EMBED && <FetchAppFileBoot />}
         {/* Mod+K is App-wide (the listener above runs here too), so the sheet
             must be renderable here — or the flag flips with nothing shown and
@@ -1210,18 +1202,18 @@ export default function App({ config }: { config: Config }) {
           duplicate work, never add coverage. */}
       {!IS_EMBED && <UpdateNotifier />}
       {!IS_EMBED && <RestartOverlay />}
-      {/* Render App's Edit button hand-off (`?_edit_appfile=`, DL-7): clones
-          the .fused into local/ or, over an existing copy, asks whether to
-          overwrite it. Once, top document, same guard as UpdateNotifier. */}
-      {!IS_EMBED && <EditAppFileBoot />}
       {/* `fused-render://open?url=` hand-off (`?_fetch_appfile=`, DL-8):
           downloads the hosted .fused into ~/.fused-render/downloads and opens
-          it. No confirm. Same mount rules as EditAppFileBoot. */}
+          its install page (AF-14). Also reports a malformed `?file=` link
+          (DL-7). Once, top document, same guard as UpdateNotifier. */}
       {!IS_EMBED && <FetchAppFileBoot />}
       {/* One dialog for every "Share" entry (card chip, card menu, app page,
           explorer kebab): the menu entries cannot own a dialog, so they post
           a request to platform/lib/share-app and this host renders it. */}
       <ShareAppHost />
+      {/* Same shape for "Uninstall…" (card menu, Projects menu, bots menu):
+          platform/lib/uninstall-app's store, one dialog here. */}
+      <UninstallAppHost />
       {/* Same shape, for any file the Fused catalog can render rather than
           just a .fused app — platform/lib/share-file's openShareFile store. */}
       <ShareFileHost />

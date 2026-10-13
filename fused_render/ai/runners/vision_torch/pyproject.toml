@@ -1,5 +1,5 @@
 # The vision runner's environment (SPEC AI-33). No `accelerate`: its import costs
-# more than it saves (D1353). torch from the CPU index, as in `diffusers_image/`.
+# more than it saves (D1354). torch from the CPU index, as in `diffusers_image/`.
 [project]
 name = "fused-render-runner-vision-torch"
 version = "0.1.0"

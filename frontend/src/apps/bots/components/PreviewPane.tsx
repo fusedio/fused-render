@@ -3,11 +3,12 @@
 // (model download, task, Inbox, attached files, routines, usage). In Stage (root .stage) all of that but the header steps
 // aside and the live view (#full, always mounted here) fills the column.
 import { useEffect, type MouseEvent } from "react";
+import { appOpenUrl } from "../apps/apps";
 import { SideApp } from "../apps/SideApp";
 import { embedUrlForFsPath } from "@platform/lib/router";
 import { api, rawFileUrl, shotUrl, type Artifact, type Bot } from "../lib/api";
 import { mirrorThumb, openFull } from "../lib/cdp";
-import { fmtAgo, fmtBytes, fmtWhenShort } from "../lib/format";
+import { fmtAgo, fmtBytes, fmtIn, fmtWhen, fmtWhenShort } from "../lib/format";
 import { closePreview } from "../lib/layout";
 import { LiveView } from "./LiveView";
 import { act, closeMenu, getState, openDialog, openMenu, useBotsSelector } from "../state/store";
@@ -20,14 +21,16 @@ const ext = (n: string) => (/\.([a-z0-9]{1,5})$/i.exec(n)?.[1] || "").toUpperCas
 // A file card opens the file in the explorer's chrome-free embed (/explorer/embed/<path>) in a new tab: bots run
 // inside fused-render, so an .html artifact renders as a fused view and every other kind gets the explorer's own
 // file template (CSV grid, image, PDF, text) instead of the browser's bare /api/fs/raw bytes (owner, 2026-10-07).
-// A small ↓ beside each file card keeps the raw download. Built-app cards open the app, as before.
-// "Open folder" reveals the bot's Inbox in Finder.
+// A small ↓ beside each file card keeps the raw download. A built-app card opens the app through the same relative
+// `/render?path=<dir>/index.html` URL the gallery and viewer use (apps.ts appOpenUrl), derived from the row's `path`:
+// the absolute link the bot once recorded carried the server's host:port of that launch, which changes every start,
+// so every older card opened a dead origin (owner, 2026-10-13). "Open folder" reveals the bot's Inbox in Finder.
 function InboxCard({ a }: { a: Artifact }) {
   const build = a.kind === "build";
   const sub = build ? "Built app" : `${KIND_LABEL[a.kind] || a.kind}${a.size ? " · " + fmtBytes(a.size) : ""}`;
   return (
     <span className="cardrow">
-      <a className="card" href={build ? a.link || "#" : embedUrlForFsPath(a.path)} target="_blank" rel="noopener" title={a.task || ""}>
+      <a className="card" href={build ? appOpenUrl(a.path) : embedUrlForFsPath(a.path)} target="_blank" rel="noopener" title={a.task || ""}>
         <span className="ico">{build ? "⧉" : ext(a.name) || "•"}</span>
         <span className="body">
           <span className="nm">{build ? a.title || a.name : a.name}</span>
@@ -62,12 +65,24 @@ function Routines({ b }: { b: Bot }) {
       {rs.length ? <h4>Routines</h4> : null}
       {rs.length ? (
         <>
-          {rs.slice(0, 4).map((r) => (
-            <div key={r.id} className={`rt ${r.enabled ? "" : "off"}`}>
-              <span title={r.task}>{r.task}</span>
-              <small>{r.enabled ? fmtWhenShort(r.next) || "soon" : "paused"}</small>
-            </div>
-          ))}
+          {/* "in 53 min" at a glance (owner, 2026-10-13); the clock time sits in the tooltip. Red when the newest run
+              failed. The poll (1.5–3 s) repaints the countdown. */}
+          {rs.slice(0, 4).map((r) => {
+            const bad = r.enabled && (r.last_result === "error" || (r.fails || 0) > 0);
+            // `last_message` is the newest FINISHED run's; a start or a skip since leaves it behind, so the tip
+            // quotes it only while `last_result` is still that run's outcome.
+            const ended = r.last_result === "done" || r.last_result === "error" || r.last_result === "stopped";
+            // A fired one-shot is disabled while it runs: "running" comes before every enabled check (label, fade, tip).
+            const running = r.last_result === "started", paused = !r.enabled && !running;
+            return (
+              <div key={r.id} className={`rt ${paused ? "off" : ""}`}>
+                <span title={r.task}>{r.task}</span>
+                <small className={bad ? "warn" : undefined} title={running ? "Running now" : paused ? "paused" : `${fmtWhen(r.next)}${ended && r.last_message ? `\nlast run: ${r.last_result} — ${r.last_message}` : ""}`}>
+                  {running ? "running" : paused ? "paused" : fmtIn(r.next) || "soon"}
+                </small>
+              </div>
+            );
+          })}
           <div className="fine" style={{ marginTop: 6 }}>
             <button className="lnk" data-open="routines" onClick={open}>{rs.length > 4 ? `All ${rs.length} routines` : "Manage routines"}</button>
           </div>

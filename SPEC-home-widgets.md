@@ -11,8 +11,8 @@ reference for both everyday and edit states).
   width, and is NOT a widget. While a search is live, the grid hides and results take over
   the page, exactly as today.
 - `ClaudeHealthStrip` and `FdaStrip` stay between the hero and the grid.
-- The `bots_enabled` front-door logic in `shell/App.tsx` and `shell/GlobalSidebar.tsx` is
-  untouched. Do not edit it.
+- The front-door logic in `shell/App.tsx` and `shell/GlobalSidebar.tsx` is untouched. Do
+  not edit it.
 - Existing card components (`AppPreviewCard`, `PlaygroundPreviewCard`, `FolderPreviewCard`,
   `RecentPreviewCard`) and their data loaders are reused, not rewritten.
 

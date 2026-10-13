@@ -2745,7 +2745,7 @@ def test_download_snapshots_kwargs_fallback_sweeps_orphans_too(base, monkeypatch
 
 def test_a_pinned_download_asks_for_its_commit_everywhere_and_leaves_refs_main(
         base, monkeypatch, tmp_path):
-    # A recipe that runs repo code pins a commit (D1353).
+    # A recipe that runs repo code pins a commit (D1354).
     pin, other = "a" * 40, "b" * 40
     asked, refs = [], []
     folder = _cache_folder(tmp_path)

@@ -62,8 +62,6 @@ Present on exported pages and THROWS (like `fused.tasks`). The exporter does not
 if (fused.env === "local") drawBots(); else hideBots();
 ```
 
-403 "Bots are off in Preferences" while the Bots sub-app is switched off.
-
 ## Minimal use
 
 ```html

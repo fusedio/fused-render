@@ -4,15 +4,18 @@
 // the footer shortcut recorder (PUT /api/prefs + POST /api/launcher/suspend), the keyboard, the size report and the
 // bridge to the native panel (fused_render/launcher_panel.py).
 //
-// What the rows ARE is the server's call, by flavor: under Fused Render apps (app/appfile), then files and folders,
-// then the home row; under Fused Bot bots (`kind: "bot"`, `files` always empty), then the home row. The page's copy
-// keys off `settings.kind` ("apps" | "bots"), which arrives with the launcher prefs.
+// What the rows ARE is the server's call, by flavor: under Fused Render apps (app/appfile) and, by typing, bots,
+// then files and folders, then the bottom rows (the shell home and the Bots page, `home: true`, kinds "home" and
+// "bots"); under Fused Bot bots (`kind: "bot"`, `files` always empty), then its one home row. The bottom rows sit
+// under the list while the query is empty; a typed query ranks them with everything else (launcher.py `results`),
+// so the page keeps the server's `apps` order as it came. The page's copy keys off `settings.kind`
+// ("apps" | "bots"), which arrives with the launcher prefs.
 import { faceSvg, type DockFace } from "../dock/lib";
 import botHomeImg from "@assets/fusedbot-icon-1024.png";
 import renderHomeImg from "@assets/fusedrender-icon-1024.png";
 
 interface LauncherRow {
-  kind?: "app" | "appfile" | "file" | "folder" | "bot";
+  kind?: "app" | "appfile" | "file" | "folder" | "bot" | "home" | "bots";
   home?: boolean;
   id?: string;
   path: string;
@@ -90,11 +93,14 @@ async function query(text: string) {
     state.apps = Array.isArray(data.apps) ? data.apps : [];
     state.files = Array.isArray(data.files) ? data.files : [];
     state.filesReason = String(data.files_reason || "");
-    // One list to select from: apps (or bots), then files, then the home row —
-    // the home row stays last so <modifier>+0 and the footer read the same.
-    const home = state.apps.filter((a) => a.home);
-    // Under Fused Bot the server sends no files; the section never draws even if one slips through.
-    state.rows = state.apps.filter((a) => !a.home).concat(bots() ? [] : state.files, home);
+    // One list to select from. Empty query: apps (or bots), then files, then the bottom rows — last, so
+    // <modifier>+0 and the footer read the same. Typed query: the server already ranked the bottom rows among
+    // the apps, so its order stands, then files. Under Fused Bot the server sends no files; the section never
+    // draws even if one slips through.
+    const files = bots() ? [] : state.files;
+    state.rows = text.trim()
+      ? state.apps.concat(files)
+      : state.apps.filter((a) => !a.home).concat(files, state.apps.filter((a) => a.home));
     state.sel = 0;
     render();
   } catch (e) { console.warn("launcher query failed", e); }
@@ -108,7 +114,7 @@ async function loadSettings() {
 function setSettings(h: LauncherSettings) {
   const flavorChanged = (state.settings?.kind === "bots") !== (h.kind === "bots");
   state.settings = h;
-  q.placeholder = bots() ? "Search bots…" : "Search apps and files…";
+  q.placeholder = bots() ? "Search bots…" : "Search apps, bots and files…";
   if (flavorChanged) render();
   if (h.row_modifier) {
     state.rowMods = h.row_modifier.split("+");
@@ -134,15 +140,19 @@ function monogram(name: string) {
 }
 function tilde(p: string) { return (p || "").replace(/^\/Users\/[^/]+/, "~"); }
 function subtitle(app: LauncherRow) {
-  if (app.home) return "Open the shell";
+  if (app.home) return app.kind === "bots" ? "Open your bots" : "Open the shell";
   // A bot has no path to show: its status when it is not idle (the Dock bubble's rule, dock/lib bubbleText).
   if (app.kind === "bot") return app.status && app.status !== "idle" ? app.status : "";
   // A file row names its folder: the name is already the title.
   if (app.kind === "file" || app.kind === "folder") return tilde(app.path.replace(/\/[^/]*$/, "") || "/");
   return tilde(app.path);
 }
+// The digit a row answers to. Under an empty query the shell home is <modifier>+0 (the global shortcut too), the
+// Bots row has none, and the rest count 1–9 by position. Under a typed query every row — the bottom rows included,
+// wherever they ranked — is its position: the keydown handler opens `rows[digit - 1]`, so the hint says the same.
 function rowHint(i: number) {
-  if (state.rows[i]?.home) return state.rowSym + "0";
+  const row = state.rows[i];
+  if (row?.home && !q.value.trim()) return row.kind === "bots" ? "" : state.rowSym + "0";
   return i < 9 ? state.rowSym + (i + 1) : "";
 }
 const hintOf = (li: HTMLElement) => li.querySelector(".hint") as HTMLElement;
@@ -150,11 +160,11 @@ const FILE_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" str
   + '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></svg>';
 const FOLDER_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">'
   + '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>';
-// The home row wears the flavor's app icon, as the Dock's Home tile does (src/dock/dock.ts setHome): Fused Bot's
-// 1024 px artwork (scale 1024/824) or Fused Render's sparkle card (scale 1/0.88), scaled so the card fills the box
-// and the box's radius clips the transparent margin. Render's until the settings say otherwise.
-function homeIcon(icon: HTMLElement) {
-  const b = bots();
+// A bottom row wears its app's icon, as the Dock's Home tile does (src/dock/dock.ts setHome): Fused Bot's 1024 px
+// artwork (scale 1024/824) for the Bots row and the bot flavor's home, Fused Render's sparkle card (scale 1/0.88)
+// for Render's home, scaled so the card fills the box and the box's radius clips the transparent margin.
+function homeIcon(icon: HTMLElement, row: LauncherRow) {
+  const b = row.kind === "bots" || bots();
   icon.classList.add("home");
   icon.style.setProperty("--home-scale", b ? "124.3%" : "113.7%");
   const img = document.createElement("img");
@@ -173,9 +183,9 @@ function emptyCopy(text: string): { line: string; tip: string } {
       ? { line: `No bot matches “${text}”`, tip: "" }
       : { line: "No bots yet", tip: "Type to search your bots." };
   }
-  const line = text ? `No app or file matches “${text}”` : "Nothing opened yet";
+  const line = text ? `No app, bot or file matches “${text}”` : "Nothing opened yet";
   let tip = "";
-  if (!text) tip = "Type to search every app in your workspace, and the files and folders in your home.";
+  if (!text) tip = "Type to search every app in your workspace, your bots, and the files and folders in your home.";
   else if (state.filesReason === "scanning") tip = "The file index is still scanning — files appear once it has covered your home folder.";
   else if (state.filesReason) tip = "Files are searched from the index; your home folder is not indexed yet (Preferences → Index).";
   return { line, tip };
@@ -185,8 +195,11 @@ function render() {
   empty.textContent = "";
   state.els = [];
   const rows = state.rows;
-  if (!rows.some((a) => !a.home)) {
-    const { line, tip } = emptyCopy(q.value.trim());
+  // Nothing to show: under an empty query the bottom rows are always there, so "nothing" is nothing but them;
+  // under a typed query they are ranked results like any other, so only a bare list is empty.
+  const text = q.value.trim();
+  if (text ? rows.length === 0 : !rows.some((a) => !a.home)) {
+    const { line, tip } = emptyCopy(text);
     empty.textContent = line;
     if (tip) {
       const span = document.createElement("span");
@@ -214,7 +227,7 @@ function render() {
     const icon = document.createElement("div");
     icon.className = "icon";
     if (app.home) {
-      homeIcon(icon);
+      homeIcon(icon, app);
     } else if (app.kind === "bot") {
       icon.innerHTML = faceSvg({ id: app.id || app.path, name: app.name, face: app.face });
     } else if (kind === "files") {
@@ -272,10 +285,16 @@ function openHome() {
   if (b) b.postMessage({ type: "home" });
   else location.href = "/";
 }
+// The Bots page row (Fused Render only): the native side opens the page itself on `kind: "bots"`, no key.
+function openBots() {
+  const b = bridge();
+  if (b) b.postMessage({ type: "open", kind: "bots", key: "" });
+  else location.href = "/bots";
+}
 function open(i: number) {
   const app = state.rows[i];
   if (!app) return;
-  if (app.home) { openHome(); return; }
+  if (app.home) { if (app.kind === "bots") openBots(); else openHome(); return; }
   // The native side opens by (kind, key): a bot's key is its id (the row's `path`), anything else its real path.
   const b = bridge();
   if (b) b.postMessage({ type: "open", kind: app.kind, key: app.path });

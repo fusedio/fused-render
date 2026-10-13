@@ -39,6 +39,30 @@ export const fmtAgo = (ts: number | null | undefined, nowMs: number = Date.now()
   return fmtWhenShort(ts, nowMs);
 };
 
+/** Time until a routine's next run, fmtAgo's mirror: "now", "in 53 min", "in 2 h 10 min", "in 2 d"; a slot the
+ *  scheduler has not reached yet reads "due"; a week out falls back to the date. Empty for a falsy ts. */
+export const fmtIn = (ts: number | null | undefined, nowMs: number = Date.now()): string => {
+  if (!ts) return "";
+  const s = ts - nowMs / 1000;
+  if (s < -60) return "due";
+  if (s < 60) return "now";
+  const m = Math.floor(s / 60);
+  if (s < 3600) return `in ${m} min`;
+  if (s < 86400) { const h = Math.floor(m / 60), r = m % 60; return `in ${h} h${h < 10 && r ? ` ${r} min` : ""}`; }
+  if (s < 7 * 86400) return `in ${Math.floor(s / 86400)} d`;
+  return fmtWhenShort(ts, nowMs);
+};
+
+/** A run's length: "12 s", "3 min", "1 h 05 min". Empty under a second. */
+export const fmtDur = (secs: number): string => {
+  const s = Math.max(0, Math.round(secs));
+  if (s < 1) return "";
+  if (s < 60) return `${s} s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m} min`;
+  return `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, "0")} min`;
+};
+
 /** Full tooltip time: "Mon, Sep 8, 3:00 PM"; "—" for a falsy ts. */
 export const fmtWhen = (ts: number | null | undefined): string =>
   ts ? new Date(ts * 1000).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit", month: "short", day: "numeric" }) : "—";

@@ -19,15 +19,14 @@ Keeping `.git` makes a re-click an update: an existing destination whose
 `origin` matches is `git pull --ff-only`'d; a dirty/diverged tree fails with
 git's own message rather than clobbering local edits (owner call, D110).
 
-`fused-render://open?file=<path>` (D889) is how Render App's title-bar Edit
-button hands over a `.fused` it is showing, for editing: the path is
-percent-encoded once by the sender and unquoted once here. It gets NO page of
-its own — `GET /clone` answers a redirect INTO the shell carrying the path as
-`?_edit_appfile=`: to the existing local copy's entry page when there is one
-(the app is on screen while the shell's modal asks "overwrite it with this
-.fused, or keep it?"), else to Home, where the shell clones through the
-X-Fused `/api/appfile/clone` and moves to the copy. Nothing is written on the
-GET (D3), and nothing the user edited is replaced without the modal's Overwrite.
+`fused-render://open?file=<path>` (DL-7) is how Render App's title-bar Edit
+button hands over a `.fused` it is showing: the path is percent-encoded once
+by the sender and unquoted once here. It gets NO page of its own — `GET
+/clone` answers a redirect to the file's INSTALL PAGE (AF-14), the same
+place a double-click lands, where the user installs or updates the app
+behind the X-Fused `/api/appfile/install`. Nothing is written on the GET
+(D3). A malformed payload goes to Home under `?_edit_appfile=` for the shell
+to report.
 
 `fused-render://open?url=<http(s) link>` (DL-8) is Render App's
 `render-app://open?url=` ported: a web page's "Open in fused-render" link to
@@ -626,54 +625,24 @@ def clone_or_pull(spec: dict) -> dict:
     }
 
 
-#: The query param a file link is handed to the shell under (DL-7). Underscore
-#: like `_preview`: shell-internal, stripped by the shell on first read.
+#: The query param a MALFORMED file link is handed to the shell under (DL-7),
+#: so the shell can report it in-app; a well-formed one goes straight to the
+#: file's install page. Underscore like `_preview`: shell-internal, stripped
+#: by the shell on first read.
 EDIT_APPFILE_PARAM = "_edit_appfile"
 #: Same for a url link (DL-8): the http(s) link, for the shell to download.
 FETCH_APPFILE_PARAM = "_fetch_appfile"
 
 
 def edit_appfile_redirect(path: str) -> str:
-    """Where the OS-delivered ``file=`` link sends the browser: INTO the
-    shell, never a page of its own. The shell's ``EditAppFileBoot`` reads
-    ``?_edit_appfile=<path>`` once and does the rest through the X-Fused
-    ``/api/appfile/*`` routes — the D3 posture is why nothing is cloned here
-    on a GET.
-
-    A copy already under ``local/`` → that copy's entry page, so the app the
-    user knows is on screen while the shell's modal asks "overwrite it with
-    this .fused, or keep it?". No copy yet → Home; the shell clones and moves
-    to the copy (a brief Home flash is the price of keeping the write behind
-    the guarded POST). A path ``clone_target`` cannot read (missing file, bad
-    manifest) still goes to Home: the shell's probe fails the same way and
-    reports it in-app, one error surface."""
-    from fused_render import appfile
-
-    q = f"?{EDIT_APPFILE_PARAM}=" + quote(path, safe="")
-    try:
-        target = appfile.clone_target(path)
-    except appfile.AppFileError:
-        return "/" + q
-    if not target["cloned"]:
-        return "/" + q
-    return _local_copy_view(target["path"]) + q
-
-
-def _local_copy_view(dest: str) -> str:
-    """The explorer URL of a local copy: its entry page when the folder
-    declares one (``app_listing.app_entry``), else the folder — what the
-    preview header's Clone button lands on too (Preview.tsx ``land``)."""
-    from fused_render import app_listing
-
-    open_path = dest
-    if os.path.isdir(dest):
-        try:
-            entry = app_listing.app_entry(dest)
-        except OSError:
-            entry = None
-        if entry:
-            open_path = entry
-    return _view_url_path(os.path.abspath(open_path))
+    """Where the OS-delivered ``file=`` link sends the browser: the file's
+    own INSTALL PAGE (AF-14) — the ``fusedapp`` template at the `.fused`'s
+    embed URL, the same place a double-click lands. The page says whether
+    the app is installed, updated or diverged and installs behind the
+    X-Fused POST; nothing is written on this GET (D3). A missing or
+    unreadable file lands on the same page, whose own read reports it —
+    one error surface."""
+    return _view_url_path(os.path.abspath(path))
 
 
 # ---- Routes (included by server.create_app) ---------------------------------
@@ -682,11 +651,10 @@ def _local_copy_view(dest: str) -> str:
 @router.get("/clone")
 def clone_page(src: str = ""):
     # Every OS-delivered fused-render: link lands here. A ?file= link (DL-7)
-    # is redirected straight into the shell — no page of its own; the shell
-    # asks in a modal when there is something to ask. A link whose file
-    # payload is malformed goes to Home carrying it verbatim, so the shell
-    # reports the parse error in-app rather than this route serving a page
-    # for a link that was never a git one.
+    # is redirected to the file's install page — no page of its own here. A
+    # link whose file payload is malformed goes to Home carrying it under
+    # `?_edit_appfile=`, so the shell reports the parse error in-app rather
+    # than this route serving a page for a link that was never a git one.
     raw = file_payload_from(src)
     if raw is not None:
         try:

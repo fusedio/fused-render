@@ -103,14 +103,9 @@ def api_config(
     from fused_render.shell import onboarding as shell_onboarding
 
     config["onboarding"] = shell_onboarding.snapshot()
-    # Bots as the front door (shell/prefs.bots_enabled, default off). In the
-    # CONFIG payload and not only in /api/prefs because the shell decides where
-    # `/` lands at its first render, before any prefs fetch could answer — a
-    # redirect that waited on prefs would paint Home and then hop to Bots.
-    config["bots_enabled"] = shell_prefs.bots_enabled()
     # Which app this is (fused_render/_flavor.py): "render" or "bot", with the
-    # deep-link scheme and the name the shell shows for it. The bot flavor
-    # also reads bots_enabled as true above (prefs.bots_enabled).
+    # deep-link scheme and the name the shell shows for it. Under the bot
+    # flavor `/` lands on /bots instead of /home (shell/App.tsx).
     config["flavor"] = _flavor.flavor()
     config["scheme"] = _flavor.scheme()
     config["display_name"] = _flavor.display_name()

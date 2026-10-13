@@ -8,9 +8,9 @@ with ``appfile.read_manifest`` before answering the path. The saved name is
 keyed on the app's STABLE IDENTITY (``appfile.app_id_of``, the
 ``<meta name="fused-app-id">`` tag, D884): ``<app_id>.fused``. Two URLs
 serving the same app (a mirror, a moved file, a new version) land on one
-path, so the Apps hub keeps one row and the content-addressed extract cache
-(``appfile.open_app_file``) decides whether the extract is re-used or
-rebuilt. A file exported before the id existed falls back to
+path, and the install page (``appfile.install_target``) decides whether
+the file is new, an update or a downgrade of the installed copy. A file
+exported before the id existed falls back to
 ``<name>-<url hash>.fused`` — stable per URL, the best identity such a file
 offers.
 
@@ -20,8 +20,9 @@ open) is refused. Size is capped both by ``Content-Length`` and while
 streaming — servers lie.
 
 Ported from Render App's ``fetch.py`` (fused-render-lite PRs #27/#30) so a
-``fused-render://open?url=`` link behaves exactly like ``render-app://open?url=``
-there: no confirm step, the link click is the gesture.
+``fused-render://open?url=`` link downloads like ``render-app://open?url=``
+there: no confirm step before the download, the link click is the gesture.
+The install page is the step before anything runs (AF-14).
 """
 from __future__ import annotations
 

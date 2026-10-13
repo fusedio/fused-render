@@ -149,7 +149,26 @@ function buildAppSeedDetail(model: AiCatalogModel, capability: string): string {
         "Vectors come back unit-length, so the dot product of two of them scores " +
         "how alike their meanings are.",
     );
-    if (takesPaths) {
+    const takesAudio = model.acceptsAudio === true;
+    const takesVideo = model.acceptsVideo === true;
+    if (takesPaths && (takesAudio || takesVideo)) {
+      // The one model that reads more than pictures by path: say which kinds,
+      // by extension, because the route sorts a path by its extension and a
+      // session guessing at `.pdf` or `.docx` gets a 400 naming the file.
+      const kinds = ["pictures"];
+      if (takesAudio) kinds.push("sound files (wav, mp3, flac, ogg)");
+      if (takesVideo) kinds.push("videos (mp4, mov, mkv, webm)");
+      lines.push(
+        "This model is a UNIFIED ENCODER: it also embeds " + kinds.join(", ") +
+          ", all into the same space as the text, so a typed phrase can rank " +
+          "photographs, recordings and clips alike — and a recording can rank " +
+          "pictures. Pass { paths } instead of { texts } — absolute paths, or " +
+          "relative to the page, any mix of those kinds in one list, sorted by " +
+          "extension — and compare the two sets of vectors with the same dot " +
+          "product. Not PDFs or documents: turn those into text or page " +
+          "pictures first.",
+      );
+    } else if (takesPaths) {
       lines.push(
         "This model is a DUAL ENCODER: it also embeds pictures, into the same " +
           "space as the text, so a typed phrase can rank photographs. Pass " +

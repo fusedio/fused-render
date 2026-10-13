@@ -2262,7 +2262,7 @@ def test_the_freshness_check_runs_at_most_one_at_a_time(
 def test_note_folder_opened_starts_nothing_while_indexing_is_off(
         home, tmp_path, monkeypatch):
     """The one gate for every caller of this function (fs_read.py,
-    git_repos.py, exported_apps.py): a listing must never turn into a check,
+    git_repos.py): a listing must never turn into a check,
     let alone a scan, while the pref is off."""
     threads = []
     monkeypatch.setattr(index_router.threading, "Thread",

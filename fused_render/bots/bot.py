@@ -37,11 +37,14 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "sonnet"
 DEFAULT_EFFORT = "low"
-MAX_STEPS = 60
+MAX_STEPS = 200          # tool calls per task before the bot is stopped; Settings > General "Steps per task" overrides it per bot
+SUPER_MAX_STEPS = 1000   # Super Bot's default: Claude Code tasks (read, edit, run, re-run) take many more calls than browsing
+MAX_STEPS_CEILING = 10000
 ATTACH_MAX = 8 * 1024 * 1024  # composer attachment size cap
 IDLE_SLEEP_S = 10 * 60  # close Chrome after this long idle (every bot); encrypted bots also seal the profile
 ROUTINE_MAX_FAILS = 3   # consecutive failed runs before a routine pauses itself (RoutinesSection.tsx mirrors it)
 ROUTINE_MIN_MINUTES = 5  # "Every N minutes" floor; the dialog refuses less, routine_add clamps as the backstop
+ROUTINE_RUNS = 10        # run rows kept per routine (Settings › Routines shows the newest 5)
 
 
 class AppRefused(Exception):
@@ -165,7 +168,7 @@ def _artifacts_root() -> str:
 # and feature without paying for the text on ordinary browsing steps. `@APPS_ROOT@`
 # is substituted when the prompt is built (app_guide()), so FUSED_RENDER_DIR applies.
 APP_GUIDE = """APP GUIDE (Browser Bots, a local desktop app; every bot has its own settings and its own Chrome unless it was made to share another bot's logins):
-- Settings (menu on the preview pane, or the bot's avatar): name and avatar; Model (Haiku fastest, Sonnet balanced, Opus strongest, Fable most capable, plus Gemma 4B and 12B, local models that run on this Mac) and Effort (low/medium/high/xhigh, how long you think per step), both apply from the next task; Instructions (your STANDING INSTRUCTIONS); @SETTINGS_DOORS@Approvals: "Ask before irreversible actions" (default; the gate pauses on risky actions and on upload) or "Never ask"; Logins: "This bot only" or "Same as <bot>" (bots sharing logins drive one Chrome, each in its own tabs: log in once, all stay in); Browser profile: import one of the user's own Chrome profiles (its logins, cookies, extensions) into your browser; Encrypt browser profile at rest (AES-256 file while Chrome is closed, key in the macOS Keychain); Memory: the user can read and edit your MEMORY there (it caps at 200 notes, then `remember` fails until they trim it).
+- Settings (menu on the preview pane, or the bot's avatar): name and avatar; Model (Haiku fastest, Sonnet balanced, Opus strongest, Fable most capable, plus Gemma 4B and 12B, local models that run on this Mac) and Effort (low/medium/high/xhigh, how long you think per step), both apply from the next task; Steps per task (the tool-call cap of one task: 200 by default, Super Bot 1000, blank keeps the default), applies from the next task; Instructions (your STANDING INSTRUCTIONS); @SETTINGS_DOORS@Approvals: "Ask before irreversible actions" (default; the gate pauses on risky actions and on upload) or "Never ask"; Logins: "This bot only" or "Same as <bot>" (bots sharing logins drive one Chrome, each in its own tabs: log in once, all stay in); Browser profile: import one of the user's own Chrome profiles (its logins, cookies, extensions) into your browser; Encrypt browser profile at rest (AES-256 file while Chrome is closed, key in the macOS Keychain); Memory: the user can read and edit your MEMORY there (it caps at 200 notes, then `remember` fails until they trim it).
 - Routines (same menu): scheduled tasks, "Every N minutes" (min 5), "Daily at HH:MM" on chosen weekdays, or "Once at" a date-time. Each can be enabled, disabled, run now or deleted. A run only starts when you are idle; a busy bot skips that slot. A routine pauses itself after 3 failed runs in a row. You cannot create routines yourself: tell the user how to add one.
 - Skills (same menu): the PLAYBOOKS. The user can write one by hand, click "Learn from last task" (the model condenses your last finished task), or you save one with `learn`. Up to 40 per bot; each mounts into your prompt only when one of its trigger words appears in the task.
 - Chat: the user can pause, resume or stop you at any time; a message sent while you work arrives as USER INSTRUCTION and overrides the task; they can reply to or react with an emoji on one of your messages (you see reactions in CONVERSATION SO FAR); they can search the thread; "Export" saves the whole transcript as Markdown. Attaching, pasting or dropping a file on the composer puts it in FILES so you can `upload` it.
@@ -177,7 +180,7 @@ APP_GUIDE = """APP GUIDE (Browser Bots, a local desktop app; every bot has its o
 - App tools: local apps that expose MCP tools (an `mcp.toml` curated in fused-render's MCP panel) are available to you through the `tool` action; the APP TOOLS section of your prompt lists them by app. Reading tools run at once; tools that change something ask the user first. Cards in the Apps panel show a tools badge when an app exposes any. Nothing has to be attached: every app with a manifest is available to every bot.
 - App skills: an app that ships a SKILL.md (marked [py] in APPS) tells you what each of its .py files does and how to call it; the `py` action runs one (its main(**args), exactly as the app's page would run it). Skills load only when needed: apps you built this task and apps the task names are mounted under APP SKILLS; `py` with an app and no file loads any other. Apps you build get a SKILL.md as part of the build; an older app without one can get it from an update build. Your own builds run at once; other apps' files ask the user first, showing the file's line from its SKILL.md.
 - Bots list: New bot, search, pin or hide a bot (pinned first, then bots waiting on the user, then most recent); "Clone" makes a new bot on your logins (sharing them, not a copy) with your memory, instructions and skills; "Delete" removes a bot, and its logins unless another bot shares them. The Usage button shows model calls per hour, day and bot. Other local scripts can hand you tasks through botsend.py; they show up as normal tasks.
-- Limits: a task ends after 60 steps; your browser closes after 10 minutes idle (and reopens on the next task, logins kept); model calls time out after 3 minutes."""
+- Limits: a task ends after its step cap (Settings > General > "Steps per task"; 200 by default, Super Bot 1000); your browser closes after 10 minutes idle (and reopens on the next task, logins kept); model calls time out after 3 minutes."""
 APP_GUIDE_TRIGGER = re.compile(
     r"\b(setting|settings|routine|schedule|scheduled|daily|every (day|morning|hour|\d+ ?min)|cron|remind|skill|playbook|memory|remember|forget|model|haiku|sonnet|opus|fable|effort|faster|slower|smarter|approval|approve|permission|encrypt|keychain|profile|login|cookie|export|transcript|clone|copy of you|delete you|rename|avatar|take ?over|live view|pop out|window|dock|download|upload|attach|file|save|usage|calls|steps|limit|timeout|sleep|pause|resume|stop|botsend|build|builds|app|apps|tool|tools|mcp|dashboard|tracker|how do (i|you)|can you|what can you|help|who are you|your (name|settings|config))\b", re.I)
 
@@ -403,7 +406,8 @@ def _app_at(url_or_path):
 def _app_in_text(text):
     """First built app linked from a message, or None."""
     for m in re.finditer(r"https?://\S*?/render\?path=[^\s)\]>\"']+", text or ""):
-        a = _app_at(m.group(0))
+        # A link ending a sentence keeps no period/comma: `<dir>.` is not the app.
+        a = _app_at(m.group(0).rstrip(".,;:!?"))
         if a:
             return a
     return None
@@ -459,6 +463,16 @@ def _engine_for(meta) -> str:
     return "agent"
 
 
+def step_cap(meta) -> int:
+    """The tool-call budget of one task: the bot's own `max_steps` (Settings > General),
+    else MAX_STEPS / SUPER_MAX_STEPS by kind. Read once when a task starts."""
+    try:
+        n = int((meta or {}).get("max_steps") or 0)
+    except (TypeError, ValueError):
+        n = 0
+    return n if n > 0 else (SUPER_MAX_STEPS if is_super(meta) else MAX_STEPS)
+
+
 def is_super(meta) -> bool:
     """The one bot with Claude Code's own tools (KINDS)."""
     return (meta or {}).get("kind") == "super"
@@ -487,6 +501,7 @@ class Bot:
         self.cache_dir = bpaths.bot_cache_dir(bid)
         self.events_path = os.path.join(self.dir, "events.jsonl")
         self.lock = threading.RLock()
+        self._last_user_ts = None  # ts of the newest user event; lazily read from events.jsonl (last_user_ts)
         self.meta = _read_meta(bid)
         # The browser (its logins) is a folder of its own, maybe shared with other bots (browsers.py).
         # A bot from before browsers existed is adopted: its profile moves, nothing is copied.
@@ -630,8 +645,23 @@ class Bot:
             os.makedirs(self.dir, exist_ok=True)
             with open(self.events_path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(ev) + "\n")
+            if role == "user" and (ev.get("via") or {}).get("kind") != chan.ROUTINE_KIND:
+                self._last_user_ts = ev["ts"]  # a routine's prompt is the schedule's doing, not the user's (last_user_ts)
         _registry().on_event(self, ev)
         return ev
+
+    def last_user_ts(self):
+        """ts of the newest message the user sent (0 if none): one pass over events.jsonl, then kept current by
+        emit(). A routine's prompt line (via routine) is not counted: the Home widget and the sidebar order bots by
+        what YOU last did, and a routine firing overnight must not move a row."""
+        with self.lock:
+            if getattr(self, "_last_user_ts", None) is None:
+                ts = 0
+                for _i, ev in _iter_events(self.events_path):
+                    if isinstance(ev, dict) and ev.get("role") == "user" and (ev.get("via") or {}).get("kind") != chan.ROUTINE_KIND:
+                        ts = ev.get("ts") or 0
+                self._last_user_ts = ts
+            return self._last_user_ts
 
     # -- step thumbnails -------------------------------------------------------
     # One small JPEG per action, under cache/<id>/steps/, referenced from the
@@ -1638,7 +1668,7 @@ class Bot:
             meta = dict(self.meta)
             if meta.get("handoffs"):
                 meta["handoffs"] = [dict(h) for h in meta["handoffs"]]
-        return {**meta, "id": self.id, "seq": self.seq, "browser": bs, "browser_id": self.browser_id,
+        return {**meta, "id": self.id, "seq": self.seq, "last_user_ts": self.last_user_ts(), "browser": bs, "browser_id": self.browser_id,
                 "browser_name": browsers.read_meta(self.browser_id).get("name") or self.meta.get("name") or "",
                 "shared_with": self.shared_with(), "encrypt": bool(self.browser.encrypt),
                 "memory": self.memory() if detail else None,
@@ -1649,9 +1679,35 @@ class Bot:
 
     # -- routines ------------------------------------------------------------
     # meta["routines"]: [{id, task, kind: interval|daily|once, minutes, time "HH:MM",
-    #   weekdays [0-6, Mon=0], at (ts), enabled, next, last, last_result}]
+    #   weekdays [0-6, Mon=0], at (ts), enabled, next, last, last_result, last_message, last_done, fails,
+    #   runs: [{started, result: started|done|error|stopped|skipped, message, done (ts), seq, manual, count}]}]
+    # `runs` is the run history Settings › Routines tables (newest first, ROUTINE_RUNS kept): every slot the scheduler
+    # or Run now reached, skips included (`seq` is the transcript line the slot wrote, so a row opens the chat there;
+    # `count` folds consecutive identical skips: a due one-shot retries every minute while the bot is busy). The
+    # `last*` fields stay the sidebar's and the reconcile walk's one-glance summary of the newest run.
     def routines(self):
         return self.meta.setdefault("routines", [])
+
+    @staticmethod
+    def _run_add(r, result, message="", seq=None, manual=False):
+        """Prepend a run to `r["runs"]` (capped). A scheduled skip identical to the newest row (same reason, also
+        scheduled) is folded into it: `count` up, `started` and `seq` move to this newest attempt (the first line
+        may already have left the chat). A Run now is always its own row."""
+        runs = r.setdefault("runs", [])
+        top = runs[0] if runs else None
+        if (result == "skipped" and not manual and top and top.get("result") == "skipped" and not top.get("manual")
+                and top.get("message") == message):
+            top["count"] = int(top.get("count") or 1) + 1
+            top["started"] = time.time()
+            if seq is not None:
+                top["seq"] = seq
+            return top
+        run = {"started": time.time(), "result": result, "message": message, "manual": bool(manual)}
+        if seq is not None:
+            run["seq"] = seq
+        runs.insert(0, run)
+        del runs[ROUTINE_RUNS:]
+        return run
 
     @staticmethod
     def _next_run(r, after):
@@ -1772,13 +1828,20 @@ class Bot:
             held = bool(self.meta.get("control"))
             busy = held or (self.thread is not None and self.thread.is_alive())
             prev_last = r.get("last")
-            r["last"] = time.time()
+            r["last"] = fired_at = time.time()  # `fired_at` is this fire's stamp: the refusal below checks it is still r["last"]
+            run = None  # the row this fire adds when it starts the task; the refusal below patches that one
             if busy:
-                r["last_result"] = "skipped: you had the browser" if held else "skipped: bot was busy"
-                self.emit("system", f"Routine \"{r['task'][:60]}\" skipped: {'you had the browser' if held else 'bot busy'}")
+                why = "you had the browser" if held else "bot was busy"
+                # The busy task may be this routine's own run ("started"): that stays, or `_routine_outcome` (which
+                # finds the routine by last_result == "started") never lands the result and the row runs forever.
+                if r.get("last_result") != "started":
+                    r["last_result"] = f"skipped: {why}"
+                ev = self.emit("system", f"Routine \"{r['task'][:60]}\" skipped: {'you had the browser' if held else 'bot busy'}")
+                self._run_add(r, "skipped", why, seq=ev.get("seq"), manual=manual)
             else:
                 r["last_result"] = "started"
-                self.emit("system", f"Routine {'run now' if manual else 'fired'}: {r['task']}")
+                ev = self.emit("system", f"Routine {'run now' if manual else 'fired'}")
+                run = self._run_add(r, "started", "", seq=ev.get("seq"), manual=manual)
             if busy and r["kind"] == "once":
                 # A one-shot is not a slot to lose: a `last` would end it for good (_next_run), so it is not
                 # stamped. A due one retries in a minute until the bot is free and you have handed back; a
@@ -1790,17 +1853,46 @@ class Bot:
             if r["kind"] == "once" and not busy:
                 r["enabled"] = False
             self.save()
-        if not busy and not self.start_task(r["task"], origin="routine"):
+        started = False
+        if not busy:
+            # The prompt is a user line, as a typed task is: the thread shows what the routine sent (chip "from a
+            # routine"), the fold opens a stretch on it, and CONVERSATION SO FAR reads it as USER. Written only once the
+            # task has started (a refused routine is not something the user asked: past_conversation would read the line
+            # as a request), and under the lock, as the hand-off does: the engine thread's first emit ("Task started")
+            # waits on it, so the prompt lands first. Not the user's own doing, so recency (last_user_ts, lastUserTs) and
+            # answerTo (a card's reply) skip it.
+            with self.lock:
+                started = self.start_task(r["task"], origin="routine")
+                if started:
+                    self.emit("user", r["task"], via=dict(chan.ROUTINE))
+        if not busy and not started:
             # Someone (a hand-off, a message) started a task between the busy check and the start. The "fired"
             # line is already in the thread; one short note says what happened to it, not a second "skipped" line.
             with self.lock:
-                r["last_result"] = "skipped: bot was busy"
-                # Undo the fire record: a once-routine with `last` set never gets a `next` again (_next_run),
-                # and `next` was computed as if this slot had run.
-                r["last"] = prev_last
-                if r["kind"] == "once":
-                    r["enabled"] = True
-                r["next"] = self._next_run(r, time.time()) if r.get("enabled") else None
+                now = time.time()
+                # Who owns the routine's state now. A Run now that fired meanwhile (outside the lock, before
+                # start_task) and WON the start put its own "started" row above ours and owns last_result: its
+                # outcome would never land if "started" were overwritten. One that only skipped (busy) put a skip
+                # row above ours and left "started" to us. Older leftover "started" rows sit below ours and count
+                # for nothing. The row itself is patched by reference: this fire's, never the live run's.
+                newest_started = next((x for x in r.get("runs") or [] if x.get("result") == "started"), None)
+                mine = run is not None and newest_started is run and r.get("last_result") == "started"
+                if run is not None and run.get("result") == "started":
+                    run.update(result="skipped", message="another task took the bot first", done=now)
+                if mine:
+                    r["last_result"] = "skipped: bot was busy"
+                    if r["kind"] == "once":
+                        r["enabled"] = True
+                    # The schedule is undone only while `last` is still this fire's stamp: a newer skipped fire
+                    # re-stamped it and set its own `next`, which stands. A once-routine with `last` set never gets
+                    # a `next` again (_next_run), and `next` was computed as if this slot had run; a due one-shot
+                    # whose time has passed retries in a minute, like the busy path (a refused Run now keeps its time).
+                    if r.get("last") == fired_at:
+                        r["last"] = prev_last
+                        if r["kind"] == "once":
+                            r["next"] = self._next_run(r, now) if manual else now + 60
+                        else:
+                            r["next"] = self._next_run(r, now) if r.get("enabled") else None
                 self.save()
             self.emit("system", "That routine did not start: another task took the bot first. It keeps its schedule.")
         self._sync_wake()
@@ -1854,6 +1946,10 @@ class Bot:
             hit["last_result"] = result
             hit["last_message"] = (message or "")[:300]
             hit["last_done"] = time.time()
+            # The run row the fire wrote (the newest one still "started"); a routine from before run history has none.
+            run = next((x for x in hit.get("runs") or [] if x.get("result") == "started"), None)
+            if run is not None:
+                run.update(result=result, message=(message or "")[:300], done=hit["last_done"])
             hit["fails"] = 0 if result == "done" else int(hit.get("fails") or 0) + (1 if result == "error" else 0)
             tripped = hit["fails"] >= ROUTINE_MAX_FAILS and hit.get("enabled")
             if tripped:
@@ -2560,7 +2656,7 @@ class Bot:
         self.emit("system", f"{verb} started: {name}. Follow it under Builds.")
         if not update:
             try:
-                self._record_artifact(d, "build", link=link, title=name)  # the app folder shows up in the Inbox list
+                self._record_artifact(d, "build", title=name)  # the Inbox card derives its URL from the path (PreviewPane)
             except Exception:  # noqa: BLE001
                 pass
         self._watch_build(bd)
@@ -3223,15 +3319,27 @@ def bots_section(bot) -> str:
             + ("\n".join(lines) if lines else "none yet"))
 
 
-def check_settings(meta, model="", effort=""):
+def check_settings(meta, model="", effort="", max_steps=None):
     """The Settings dialog's and `bot_settings`' shared checks (ValueError with the
-    sentence the user / model reads)."""
+    sentence the user / model reads). `max_steps`: None leaves the cap alone; 0 / ""
+    clears the override; else 1..MAX_STEPS_CEILING."""
     if model and model not in MODELS:
         raise ValueError(f"unknown model {model!r}; choose one of {', '.join(MODELS)}")
     if model and model in LOCAL_MODELS and is_super(meta):
         raise ValueError("Super Bot runs on Claude Code; pick a Claude model")
     if effort and effort not in EFFORTS:
         raise ValueError(f"unknown effort {effort!r}; choose one of {', '.join(EFFORTS)}")
+    if isinstance(max_steps, bool):
+        raise ValueError("steps per task must be a whole number")
+    if max_steps not in (None, "", 0):
+        try:
+            if isinstance(max_steps, float) and not max_steps.is_integer():
+                raise ValueError
+            n = int(max_steps)
+        except (TypeError, ValueError):
+            raise ValueError("steps per task must be a whole number") from None
+        if not 1 <= n <= MAX_STEPS_CEILING:
+            raise ValueError(f"steps per task must be between 1 and {MAX_STEPS_CEILING}")
 
 
 def check_face(meta, face, strict=False):
@@ -3625,6 +3733,8 @@ def clone(src_id, name="", share=True):
             "status": "idle", "created": time.time(), "task": "", "step": 0, "url": None, "title": None}
     if src.meta.get("engine"):
         meta["engine"] = src.meta["engine"]
+    if src.meta.get("max_steps"):
+        meta["max_steps"] = src.meta["max_steps"]
     _write_new_meta(bid, meta)
     b = reg.get(bid)
     if src.memory():

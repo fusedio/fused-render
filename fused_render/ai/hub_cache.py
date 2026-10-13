@@ -105,7 +105,7 @@ from fused_render._view_url_codec import canonical_fs_path
 from fused_render.ai import catalog as _catalog
 from fused_render.ai import registry as _ai_registry
 from fused_render.ai import tasks as _tasks
-from fused_render.ai.runners import formats
+from fused_render.ai.runners import embed_common, formats
 
 # Directory-name prefix -> the kind reported to the UI. This is also the
 # allowlist: a hub-cache entry that starts with none of these is not a repo,
@@ -1492,6 +1492,34 @@ def embed_family(repo_id: str) -> str | None:
     if family is None:
         return None
     return "dual" if family in formats.DUAL_EMBED_MODEL_TYPES else "text"
+
+
+def embed_media(repo_id: str) -> tuple[str, ...] | None:
+    """Which kinds of file `paths` may name on `repo_id` — a tuple drawn from
+    `embed_common.IMAGE`/`AUDIO`/`VIDEO` — or None when the cached snapshot
+    cannot say.
+
+    `embed_family`'s finer-grained sibling, and read the same two ways for the
+    same two reasons: the catalog publishes `acceptsAudio`/`acceptsVideo`
+    failing CLOSED (None → False, no control drawn), and the embed route
+    refuses a sound file on a picture-only model only on POSITIVE evidence
+    (None → fall through to `model_loading`). Same snapshot, same
+    `config.json`, same `model_type` reading — through
+    `embed_common.EMBED_MEDIA`, which is the one table both workers' own
+    refusals are consistent with. An embedding family absent from that table
+    (the prose encoders) reads nothing by path, so the answer is `()`, and
+    `embed_family`'s `"text"` refusal stays the sentence those get.
+    """
+    snapshot_dir = _embed_snapshot_dir(repo_id)
+    if snapshot_dir is None:
+        return None
+    config = _read_json(os.path.join(snapshot_dir, "config.json"))
+    if not config:
+        return None
+    family = formats.embed_model_type(config)
+    if family is None:
+        return None
+    return tuple(embed_common.EMBED_MEDIA.get(family, ()))
 
 
 def _embed_snapshot_dir(repo_id: str) -> str | None:
