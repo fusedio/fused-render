@@ -495,10 +495,11 @@ button.tasks-caret,
   font-weight: 100;
 }
 
-/* With a reply in the row, the row's one spacer stops growing: the reply is the
-   element that takes the free width, the spacer keeps only its minimum. */
+/* With a reply in the row the reply is the element that takes the free width, so
+   the spacer is dropped entirely: its 8px minimum and its own flex gap read as a
+   hole before the message count. */
 .tasks-row:has(.tasks-title-reply) .tasks-grow {
-  flex-grow: 0;
+  display: none;
 }
 
 /* A task whose work has not happened yet (tasks-lib.isUpcomingTask, 2026-08-18).
