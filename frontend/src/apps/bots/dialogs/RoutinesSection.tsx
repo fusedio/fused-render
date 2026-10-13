@@ -6,7 +6,7 @@
 // The form enforces the backend's rules before posting (bot.py _routine_fields / _next_run would otherwise coerce
 // silently: minutes clamp to 5, no weekdays = every day, a blank time = 09:00): a whole number of minutes, 5 or more;
 // at least one weekday and a time; a future moment for a one-shot. The reason shows under the form and Add stays off.
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { PencilIcon, Trash2Icon } from "lucide-react";
 import { cn } from "@platform/lib/utils";
 import { Button } from "@platform/shadcn/ui/button";
@@ -15,9 +15,10 @@ import { Input } from "@platform/shadcn/ui/input";
 import { NativeSelect, NativeSelectOption } from "@platform/shadcn/ui/native-select";
 import { Textarea } from "@platform/shadcn/ui/textarea";
 import { ToggleGroup, ToggleGroupItem } from "@platform/shadcn/ui/toggle-group";
-import { api, type Routine, type RoutineBody } from "../lib/api";
+import { api, type Routine, type RoutineBody, type SetupReply } from "../lib/api";
 import { fmtWhen } from "../lib/format";
 import { DAYS, routineLabel } from "../lib/live";
+import { ownerLine } from "../lib/setup";
 import { act, showBanner, useBotsSelector } from "../state/store";
 import { CARD_CLASS } from "./shell";
 import type { SectionProps } from "./SkillsSection";
@@ -117,6 +118,15 @@ function RoutineForm({ initial, onSubmit, onCancel }: { initial?: Routine; onSub
 export function RoutinesSection({ b, confirm }: SectionProps) {
   const tasks = useBotsSelector((s) => s.usage?.tasks);
   const [editing, setEditing] = useState<string | null>(null);  // the routine's id while its card is the edit form
+  // Who ticks these (one owner process per Mac, bots/registry.py): a routine added here runs in the owner, and a
+  // card that says "next 10:00" while nothing runs the bots was the "never fired" report this line answers.
+  const [setup, setSetup] = useState<SetupReply | null>(null);
+  useEffect(() => {
+    let live = true;
+    api.setup().then((r) => { if (live) setSetup(r); }, () => { /* no check, no line */ });
+    return () => { live = false; };
+  }, []);
+  const owner = ownerLine(setup);
 
   const rs = b.routines || [];
   const onOp = async (rid: string, op: "run" | "enable" | "disable" | "delete") => {
@@ -132,6 +142,7 @@ export function RoutinesSection({ b, confirm }: SectionProps) {
 
   return (
     <div className="flex flex-col gap-4">
+      {owner ? <p id="rowner" className={cn("m-0 text-[13px] leading-5", owner.warn ? "text-destructive" : "text-muted-foreground")}>{owner.text}</p> : null}
       <div className="flex flex-col gap-3" id="rlist">
         {rs.length ? rs.map((r) => {
           const warn = r.last_result === "error" || (r.fails || 0) > 0;
