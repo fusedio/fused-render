@@ -14,7 +14,10 @@ delivery policy, option numbering and prefixes live once, in `router.py`.
              (docs §11; handoff_via). A task an app page sent through `fused.bots`
              carries {"kind": "app", "addr": "<app key>:<call id>"} (docs §13; app_via):
              the key names the app folder, the call id is unique per send, so the page
-             reads only its own turn's events. Policy reads only the kind.
+             reads only its own turn's events. The Fused Render iOS app's Bots screens
+             carry {"kind": "phone", "addr": "<paired device id>"} (docs §14; phone_via):
+             the user's own paired device, outside like a text, but it may settle the
+             approval card it shows (the route stamps `answers`). Policy reads only the kind.
     Inbound  one message a channel received, before any routing.
     Caps     what the surface can show; the engines and the router read it.
     Door     Super Bot is the one bot a channel reaches (`Channel.door`, docs §10).
@@ -29,6 +32,7 @@ WEB_KIND = "web"
 ROUTINE_KIND = "routine"
 HANDOFF_KIND = "handoff"
 APP_KIND = "app"
+PHONE_KIND = "phone"  # the iOS app's Bots screens over the LAN listener (docs §14); "imessage" is a text
 WEB = {"kind": WEB_KIND, "addr": ""}
 ROUTINE = {"kind": ROUTINE_KIND, "addr": ""}
 
@@ -52,7 +56,7 @@ def approvals_by_text(meta) -> bool:
 
 
 LABELS = {"imessage": "iMessage", "botsend": "botsend", WEB_KIND: "the web page", ROUTINE_KIND: "a routine",
-          HANDOFF_KIND: "Super Bot", APP_KIND: "an app"}
+          HANDOFF_KIND: "Super Bot", APP_KIND: "an app", PHONE_KIND: "the phone"}
 
 
 def label(kind: str) -> str:
@@ -79,7 +83,7 @@ def is_local(v) -> bool:
 
 def is_outside(v) -> bool:
     """A message from a sender that is not the user at the Mac: a text, a botsend
-    file, an app page. Such a message is never the verdict of an app offer and,
+    file, an app page, the iOS app (PHONE_KIND). Such a message is never the verdict of an app offer and,
     unless the router stamped it for the one card it answers (`answers_card`),
     not of an approval card either (docs §10); it still reaches the model as an
     instruction or as the answer to its own `ask`. The negation of is_local,
@@ -101,6 +105,14 @@ def app_key_of(v) -> str:
     if v.get("kind") != APP_KIND:
         return ""
     return str(v.get("addr") or "").split(":", 1)[0]
+
+
+def phone_via(device_id: str) -> dict:
+    """The via of a message sent from the iOS app's Bots screens (docs §14): addr
+    is the paired device's id (lan.py stamps X-Fused-Device from the pairing
+    record; "" on loopback). Outside like a text (is_outside), so Super Bot runs
+    it under the phone posture."""
+    return via(PHONE_KIND, device_id)
 
 
 def handoff_via(super_id: str, handoff_id: str) -> dict:
@@ -141,9 +153,10 @@ is_texted = is_outside_msg
 
 
 def answers_card(s, seq) -> bool:
-    """True when an outside message was stamped by the router as the answer to the
-    approval card `seq` (Router.dispatch: the card was texted to this sender and
-    the bot still waits on it). The one way a texted yes or no is a verdict."""
+    """True when an outside message was stamped as the answer to the approval card
+    `seq`: by the router (Router.dispatch: the card was texted to this sender and
+    the bot still waits on it), or by the phone route (bots/phone.py: the iOS app
+    showed this very card, docs §14). The one way an outside yes or no is a verdict."""
     return seq is not None and (getattr(s, "via", None) or {}).get("answers") == seq
 
 

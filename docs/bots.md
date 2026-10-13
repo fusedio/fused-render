@@ -1273,9 +1273,12 @@ hand-off, `channels.base.handoff_via`; stamped on a task Super Bot
 handed to a bot and so on its events, label "Super Bot", §11), and `app`
 (addr = `<app key>:<call id>`, unique per send, `channels.base.app_via`;
 stamped on a task an app page sent through `fused.bots`, label "an app",
-§13). `channels.base.is_outside(via)` = not web, not routine, not hand-off:
-a text, a botsend file, an app — a message that is never the verdict of an
-approval card or an offer (`Outside`, the marker `Texted` used to be).
+§13), and `phone` (addr = the paired device's id, `channels.base.phone_via`;
+the iOS app's Bots screens, label "the phone", §14).
+`channels.base.is_outside(via)` = not web, not routine, not hand-off:
+a text, a botsend file, an app, the phone — a message that is never the
+verdict of an offer, nor of an approval card unless stamped for it
+(`answers_card`; `Outside`, the marker `Texted` used to be).
 
 **Inbound.** Super Bot is the door. `Channel.door()` answers (Super Bot's id,
 its normalised handle on that surface), read from disk on every call
@@ -1832,3 +1835,80 @@ expanded to `thumbUrl` (`/api/bots/<id>/steps/<seq>.jpg`).
 **Withheld:** pause, resume, take-over, goto, tabs, settings, delete, clone,
 routines, skills, bot creation, an embedded chat. `stop` stops only the app's
 own task (`Bot.app_stop`, as `handoff_stop` stops only its hand-off).
+
+## 14. The phone — the iOS app's Bots screens (`bots/phone.py`, `lan.py`, `frontend/src/lan/`, 2026-10-13)
+
+The Fused Render iOS app (`ios/`) is a thin native shell around the LAN
+listener's page (`lan.py`, `frontend/lan.html`). Beside the apps grid it now
+shows the bots: a list at `/bots` and one bot's chat at `/bots/<id>`, both
+the same lan page (its own pathname router), phone-first and small. The
+desktop Bots page is not reused (three panes, the CDP screencast, the whole
+shell bundle).
+
+**A channel of its own.** A message from the phone carries
+`via = {kind: "phone", addr: "<paired device id>"}` (`channels.base.PHONE_KIND`,
+`phone_via`, label "the phone"). It is outside (`is_outside`): Super Bot takes
+it (the `receive` and `start_task` gates admit it beside `imessage` and `app`,
+`bot._SUPER_OUTSIDE`) and runs it under the phone posture — every write, edit,
+shell command and build asks on a card, whatever `super_access` says.
+Ordinary bots keep their own `approval` setting. `caps_for` gives it
+`PHONE_CAPS`: cards, chips and media show on the phone, but a `login` still
+means walking to the Mac (`can_login` false; the phone never takes the
+browser over). The router has no phone channel object: the phone reads the
+chat itself, so nothing is pushed.
+
+**The phone answers the card it shows.** The phone is the user's own paired
+device (QR pairing), not a stranger's text. A send carrying `answer: <seq>`
+is checked — the bot waits on that seq right now (`status` waiting,
+`waiting_on` = seq) and the event there is an `approval` — and its text must
+be a yes or a no (agent_engine `YES` / `NO`; the page sends "approve" /
+"deny"). Then the route stamps `via["answers"] = seq`, exactly the texted-card
+mechanism (§10, `channels.base.answers_card`): `_texted_approval` lets it
+through and the gate takes it as the verdict. Any other `answer` is a 400
+("that card is not waiting on an answer"); a plain "yes" without the stamp is
+held back with the usual "answered here at the Mac" line. It holds for a card
+of any task, Mac-started too: the user is looking at it. "Approve, don't ask
+again" (`Forever`) is never offered from the phone.
+
+**The phone may steer a running task, too.** A phone message while a bot —
+Super Bot included, on a task started at the Mac — is busy reaches it as a
+mid-task instruction, as the chat's own would. iMessage holds such a text
+back ("Busy with a task from the Mac") and an app page may steer only the
+task it started; the phone gets neither hold, for the same reason it may
+answer a Mac-started card: it is the user's own paired device, and the user
+who typed the task at the Mac is the one holding the phone. What the phone
+posture still governs is what a phone-STARTED task may do unasked (nothing
+that writes, runs or builds). Decided 2026-10-13 (D1355), reviewer's question.
+
+**Routes** (`/api/phone/bots`, its own router in `bots/phone.py`, included
+beside the bots router and listed in `routes.OWNED_PREFIXES`, so a non-owner
+process forwards it). Every POST/DELETE needs `X-Fused: 1`; errors are
+`{"error": "<sentence>"}` (400 from the bot layer, 404 unknown bot or op).
+
+| Route | Does |
+|---|---|
+| `GET /api/phone/bots` | `{bots: [PhoneBot], ts, setup: {claude, owner, models, efforts}}`; Super Bot first, then `updated` desc. PhoneBot: id, name, kind, status, busy, waitingOn, step, task, last (the newest user/done/question/approval/error line), seq, updated, control, routines (count), face (the bot.json `face`: with id, name and status all the desktop's `faceOf` / `moodOf` read), hidden, pinned |
+| `GET /api/phone/bots/presets` | `/api/bots/presets`' answer |
+| `GET /api/phone/bots/{id}?since&before&limit&detail` | `{bot, events, seq, first_seq, ts}`. `since=0`: the last `limit` (80, max 400); with `before=<seq>` the `limit` before it; `since=<seq>`: everything after (`events_since`). Events keep the desktop's keys minus `trace`, `artifacts`, `forever`; `thumb` becomes `/api/phone/bots/{id}/steps/<n>.jpg`, `detail` is cut to 600 chars. The bot adds instructions, model, effort, approval, engine, max_steps, `waiting_seq` (the one card whose buttons are live), shot, shot_ts, viewport, browser {running, url, title}, routines, and memory / skills with `detail=1` |
+| `GET …/{id}/shot`, `…/{id}/steps/{name}` | the PNG / JPEG, as under `/api/bots` |
+| `POST /api/phone/bots` | create `{name, preset?, instructions?, model?, effort?, approval?}`: always an ordinary bot, never encrypted |
+| `POST …/{id}/send` | `{text, reply_to?, answer?, files?}` → `receive(via=phone_via)`; files through `routes.decode_files` / `save_files`, the app door's own (§13: files/, the "Attached (…)" line, images as blocks). `{ok, seq, held, files}`; `held` when the user holds the browser at the Mac (`receive` parks it) |
+| `POST …/{id}/pause\|resume\|stop\|clear` | the bot methods (`clear` = `clear_context`) |
+| `POST …/{id}/settings` | name, instructions, model, effort, approval, max_steps, memory through `routes._settings`; any other key is ignored |
+| `POST …/{id}/routines` | `routes._routines` as is, except Super Bot's `add` / `edit` (400: a routine runs as the user's own Mac task, with Super Bot's own access, so its text is written at the Mac) |
+| `DELETE /api/phone/bots/{id}` | delete; Super Bot → 400 |
+
+Not on the phone: take-over, give-back, pop-out, dock, wake, profile import,
+reveal, browsers, encryption, trusted apps, allow rules, build access, Super
+Bot's access, the engine, iMessage settings, clone, skills, reactions, flags —
+the Mac's screen and the desktop's settings. An unknown op is a 404.
+
+**On the LAN** (`lan.py`): `/bots` and `/bots/<id>` (one segment, GET, paired)
+serve `shell-dist/lan.html` as `/` does (503 when it is not built; an unpaired
+browser gets the pairing page). The `/api/phone/bots` prefix is forwarded for
+a paired device on GET/POST/DELETE (`_AsDevice`): a copy of the scope with
+any client `x-fused-device` header dropped and `X-Fused-Device: <id>` set from
+the pairing record (`_paired_record`, the cookie lookup `_paired` now wraps;
+the `last_seen` bump unchanged). `/api/bots` itself stays a 404 on the LAN.
+On loopback (D3: trusted) the routes answer too; without the header the via
+addr is "".

@@ -137,6 +137,10 @@ ENGINES = ("auto", "steps", "agent")
 KINDS = ("bot", "super")
 SUPER_ACCESS = {"ask": "default", "full": "auto"}
 SUPER_NAME = "Super Bot"
+# The outside senders Super Bot takes a task from (receive / start_task): a text from its handle, an app page on
+# this Mac (docs §13), the iOS app on a paired phone (docs §14). Each runs under the phone posture (not is_local).
+# A botsend file is outside too and is refused.
+_SUPER_OUTSIDE = ("imessage", chan.APP_KIND, chan.PHONE_KIND)
 # Super Bot's avatar is the Claude mark (frontend lib/face.ts BRANDS["claude"], a
 # locked brand): the face picker does not offer it, `_flag` refuses it for any
 # other bot and refuses any face change for Super Bot.
@@ -2033,10 +2037,11 @@ class Bot:
         A running task gets it as an instruction or an answer; an idle bot starts
         a task from it, tagged with the channel so replies go back there."""
         via = dict(via) if via else dict(chan.WEB)
-        if not chan.is_web(via) and via.get("kind") not in ("imessage", chan.APP_KIND) and is_super(self.meta):
+        if not chan.is_web(via) and via.get("kind") not in _SUPER_OUTSIDE and is_super(self.meta):
             # Super Bot has shell and file access: only the user's own chat, a text from the handle set
-            # on it (the router lets no other sender through), or an app page on this Mac (docs §13: it
-            # runs under the phone posture, every write and command asks) may drive it (docs §5).
+            # on it (the router lets no other sender through), an app page on this Mac (docs §13), or the
+            # iOS app from a paired device (docs §14) may drive it (docs §5). The last three run under the
+            # phone posture: every write and command asks.
             self.emit("system", f"Ignored a task from {chan.label(via['kind'])}: Super Bot only takes tasks you type here.")
             return
         if via.get("kind") == "imessage" and is_super(self.meta):
@@ -2248,11 +2253,11 @@ class Bot:
             via = dict(chan.ROUTINE) if origin == "routine" else dict(chan.WEB)
         elif not chan.is_web(via):
             origin = via.get("kind") or origin
-        if is_super(self.meta) and via.get("kind") not in ("imessage", chan.APP_KIND) and not (
+        if is_super(self.meta) and via.get("kind") not in _SUPER_OUTSIDE and not (
                 (chan.is_web(via) and origin in ("manual", "setup")) or via.get("kind") == chan.ROUTINE_KIND):
-            # Super Bot has shell and file access: only the user's chat, a routine they scheduled, their text, or an
-            # app page on this Mac (docs §13; like a text it is not is_local, so super_mode runs it asking) may
-            # start it (docs §5). Judged on the via, so an origin label alone never lifts the gate (or the posture,
+            # Super Bot has shell and file access: only the user's chat, a routine they scheduled, their text, an
+            # app page on this Mac (docs §13) or the iOS app (docs §14; like a text neither is is_local, so
+            # super_mode runs them asking) may start it (docs §5). Judged on the via, so an origin label alone never lifts the gate (or the posture,
             # super_mode). "setup" is the app's own first task (SUPER_SETUP, _maybe_super_setup), never an outside sender.
             self.emit("system", f"Ignored a task from {origin}: Super Bot only takes tasks you type here.")
             return False

@@ -6864,3 +6864,13 @@ SPEC AI-33.
 - **No MLX, GGUF or Photon.** mlx-vlm and llama.cpp/Ollama drop Moondream's region head (no detect/point); Grounding DINO has neither. Photon 2.x gave corrupted output on an M5, and Moondream 3.1 ships only for Photon.
 - **Load time (M5):** ~4.5 s to ready, ~7 s cold click-to-answer. `accelerate` saves ~1 s of loading but costs ~1.7 s of import, so it is out. Requests run under `torch.inference_mode()` (grad mode is per thread).
 - Apple Silicon only; not in onboarding or the benchmark. Mirror publishing for the three suggestions is pending.
+
+## D1355 — Bots on the phone: the iOS app gets a bots list and chat, as a channel of its own (2026-10-13, claude/inspiring-franklin-n9cx9e)
+
+docs/bots.md §14.
+
+- **The phone is a channel** (`via {kind: "phone", addr: <paired device id>}`), outside like a text: Super Bot takes its tasks and runs them under the phone posture (every write and command asks). Ordinary bots keep their own `approval`.
+- **The phone may answer the approval card it shows**, for any task, Mac-started too: the user's own paired device, not a stranger's text. The route checks the bot waits on that very `approval` card and stamps `via["answers"] = seq`, the texted-card mechanism (`answers_card`); a wrong seq is a 400, an unstamped yes is held back as before. `Forever` is never available from the phone.
+- **Own prefix, own router**: `/api/phone/bots` (`bots/phone.py`), an owned prefix (forwarded to the bots' owner), and the only bots prefix the LAN listener forwards; it stamps `X-Fused-Device` from the pairing record and drops a client-sent one. `/api/bots` stays a 404 on the LAN: it holds the Mac-screen operations (take-over, pop-out, profiles, reveal, browsers, encryption, access settings), none of which the phone gets.
+- **The app door's attachment handling is shared** (`routes.decode_files` / `save_files`), so a phone file lands in files/ with the same "Attached (…)" line and image rules (D1351).
+- **Phone UI is web inside the lan page** (`/bots`, `/bots/<id>`), not the desktop Bots page; Swift stays a thin shell (top-level pages, deep link `page=bots` / `bot=<id>`, a "Bots" quick action).

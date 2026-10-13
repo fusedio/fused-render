@@ -370,7 +370,11 @@ def run(bot, task, label=None):
                     break
                 answers = bot._drain_inbox()
                 bot.set_status("running", waiting_on=None)
-                yes = [a for a in answers if botmod._YES.match(a)]
+                # An outside message (a text, an app, the phone) is the verdict only when stamped for THIS card
+                # (channels.base.answers_card), as in the agent engine's gate: bot._texted_approval checks the card
+                # before the inbox write, and a yes stamped for a card settled in between must not approve the next.
+                yes = [a for a in answers if botmod._YES.match(a)
+                       and (not channels.base.is_texted(a) or channels.base.answers_card(a, ev["seq"]))]
                 if not yes:
                     history.append(f"DENIED by the user: {preview}. Do not retry it; " + " ".join(f"USER: {a}" for a in answers if not botmod._NO.match(a)))
                     bot.emit("system", "Denied; the bot will try something else.")

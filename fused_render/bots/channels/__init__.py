@@ -13,7 +13,13 @@ from fused_render.bots.channels import base
 from fused_render.bots.channels.base import WEB_CAPS, Caps
 
 KIND_LABELS = {"imessage": "iMessage", "botsend": "a local script (botsend)", "web": "the web page",
-               base.HANDOFF_KIND: "Super Bot", base.APP_KIND: "an app page (fused.bots)"}
+               base.HANDOFF_KIND: "Super Bot", base.APP_KIND: "an app page (fused.bots)",
+               base.PHONE_KIND: "the Fused Render app on their phone"}
+
+# The iOS app's Bots screens (docs §14) show the whole chat: cards with buttons, option chips, thumbnails, the live
+# shot. What the phone cannot do is drive the bot's browser on the Mac (no take-over there), so a `login` still
+# means walking to the Mac.
+PHONE_CAPS = Caps(can_login=False)
 
 
 def available() -> list:
@@ -31,6 +37,8 @@ def caps_for(via) -> Caps:
     if kind == "imessage":
         from fused_render.bots.channels.imessage import CAPS
         return CAPS
+    if kind == base.PHONE_KIND:
+        return PHONE_CAPS
     return WEB_CAPS
 
 
@@ -53,6 +61,8 @@ def origin_label(bot) -> str:
         return "Super Bot (a hand-off; your final message is the result it gets)"
     if kind == base.APP_KIND:
         return f"the app {base.app_key_of(v)!r} (its page reads your final message as the result; the user is at the Mac)"
+    if kind == base.PHONE_KIND:
+        return f"{KIND_LABELS[kind]} (user is on their phone, reading this chat there, not at the Mac)"
     return f"{KIND_LABELS.get(kind, kind)} (user is on their phone, replies are texted back)"
 
 

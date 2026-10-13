@@ -33,7 +33,7 @@ router = APIRouter()
 
 # One owner per machine (registry module docstring): every request under these prefixes is answered by the
 # process that holds the bots and forwarded there by every other one (`forward_middleware`).
-OWNED_PREFIXES = ("/api/bots", "/api/bot-apps")
+OWNED_PREFIXES = ("/api/bots", "/api/bot-apps", "/api/phone/bots")  # the last: bots/phone.py, the iOS app's door (docs §14)
 FORWARD_TIMEOUT_S = 120.0  # a tool call or an app send may wait on the model; the page's own timeouts are shorter
 _SKIP_REQUEST_HEADERS = {"host", "content-length", "connection", "transfer-encoding"}
 _SKIP_RESPONSE_HEADERS = {"content-length", "connection", "transfer-encoding", "content-encoding"}
@@ -58,6 +58,11 @@ async def forward_middleware(request: Request, call_next):
     page's next poll lands on the new owner. `/api/bots/setup` is the one reply the forwarder edits: its
     `owner` must describe THIS process's view (docs §3)."""
     path = request.url.path
+    if path.startswith(OWNED_PREFIXES) and any(seg in (".", "..") for seg in path.split("/")):
+        # httpx resolves dot segments when it builds the forward's URL: `/api/phone/bots/../../bots/<id>/takeover`
+        # (the prefix the LAN listener lets through, lan.py) would reach the desktop door on the owner. No route
+        # has a dot segment, so the owner answers 404 to it as well.
+        return _error("not found", 404)
     if not path.startswith(OWNED_PREFIXES) or registry.owns():
         return await call_next(request)
     if request.headers.get("x-fused-forwarded"):
@@ -865,6 +870,44 @@ def bots_roster():
     return {"bots": out, "ts": time.time()}
 
 
+def decode_files(files) -> list:
+    """`[(name, bytes, preview | None)]` from a send's `files` ({name, data (base64), preview?: {media_type, data}}),
+    checked against ATTACH_MAX. Shared by the app door (`_app_send`) and the phone (bots/phone.py), so a file is
+    a 400 for the same reasons on both before anything is stored. Non-dict rows are skipped."""
+    decoded = []
+    for f in files or []:
+        if not isinstance(f, dict):
+            continue
+        name = str(f.get("name") or "attachment")
+        try:
+            data = base64.b64decode(f.get("data") or "", validate=False)
+        except (ValueError, TypeError):
+            raise ValueError(f"{name}: not base64") from None
+        if len(data) > ATTACH_MAX:
+            raise ValueError(f"{name}: too large ({len(data) // 1048576} MB; limit {ATTACH_MAX // 1048576} MB)")
+        decoded.append((name, data, f.get("preview") if isinstance(f.get("preview"), dict) else None))
+    return decoded
+
+
+def save_files(b, text, decoded, names) -> tuple:
+    """Store `decode_files`' rows in the bot's files/ and return (message text, image blocks); the stored names
+    are appended to `names` (the caller's list, so a route can answer them after `receive_app` ran this)."""
+    # Files land in files/ exactly as a composer attachment does (the same line names them); images also ride
+    # the model turn as blocks — the scaled `preview` the runtime made, else the file itself when it is an image.
+    images = []
+    for name, data, pv in decoded:
+        names.append(b.save_bytes(name, data))
+        mt = _IMAGE_EXT.get(os.path.splitext(name)[1].lower())
+        if pv and pv.get("data") and pv.get("media_type"):
+            images.append({"media_type": str(pv["media_type"]), "data": str(pv["data"])})
+        elif mt and len(data) <= _IMAGE_PUSH_MAX:
+            # No preview (the runtime's canvas scale failed, or a script-made body): the original goes in only
+            # while it is small enough for the API; a bigger one is saved and named, not pushed (D1351).
+            images.append({"media_type": mt, "data": base64.b64encode(data).decode("ascii")})
+    line = f"Attached (in your FILES folder, use `upload` when a page needs them): {', '.join(names)}" if names else ""
+    return ((text + "\n\n" if text else "") + line if line else text), images
+
+
 def _app_send(bid, body, x_fused_page=None):
     key = _app_key(x_fused_page)
     b = _bot(bid)
@@ -878,35 +921,11 @@ def _app_send(bid, body, x_fused_page=None):
     via = chan.via(chan.APP_KIND, addr) if addr else chan.app_via(key, time.strftime("%Y%m%d-%H%M%S") + "-" + os.urandom(3).hex())
     # Decoded and checked first (a bad file is a 400 before anything is stored); saved only in `before`, which
     # receive_app runs once its checks pass, so a refused send (409) leaves no orphan file in files/.
-    decoded = []
-    for f in files:
-        if not isinstance(f, dict):
-            continue
-        name = str(f.get("name") or "attachment")
-        try:
-            data = base64.b64decode(f.get("data") or "", validate=False)
-        except (ValueError, TypeError):
-            raise ValueError(f"{name}: not base64") from None
-        if len(data) > ATTACH_MAX:
-            raise ValueError(f"{name}: too large ({len(data) // 1048576} MB; limit {ATTACH_MAX // 1048576} MB)")
-        decoded.append((name, data, f.get("preview") if isinstance(f.get("preview"), dict) else None))
+    decoded = decode_files(files)
     names = []
 
     def before():
-        # Files land in files/ exactly as a composer attachment does (the same line names them); images also ride
-        # the model turn as blocks — the scaled `preview` the runtime made, else the file itself when it is an image.
-        images = []
-        for name, data, pv in decoded:
-            names.append(b.save_bytes(name, data))
-            mt = _IMAGE_EXT.get(os.path.splitext(name)[1].lower())
-            if pv and pv.get("data") and pv.get("media_type"):
-                images.append({"media_type": str(pv["media_type"]), "data": str(pv["data"])})
-            elif mt and len(data) <= _IMAGE_PUSH_MAX:
-                # No preview (the runtime's canvas scale failed, or a script-made body): the original goes in only
-                # while it is small enough for the API; a bigger one is saved and named, not pushed (D1351).
-                images.append({"media_type": mt, "data": base64.b64encode(data).decode("ascii")})
-        line = f"Attached (in your FILES folder, use `upload` when a page needs them): {', '.join(names)}" if names else ""
-        return ((text + "\n\n" if text else "") + line if line else text), images
+        return save_files(b, text, decoded, names)
 
     try:
         started = b.receive_app(text, via, follow_up=bool(addr), before=before)

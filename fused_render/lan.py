@@ -14,7 +14,9 @@ the live microphone and clipboard READ; everything server-side works.
 127.0.0.1 — stays exactly as it is for the desktop; this module never calls
 ``set_server_origin_env``/``write_server_json``, so runPython children keep
 talking to loopback. The LAN listener serves ``LanApp``, an ASGI wrapper
-around the same FastAPI app that admits ONLY what an app page needs and
+around the same FastAPI app that admits ONLY what an app page needs, plus
+the phone bots door ``/api/phone/bots`` (docs/bots.md §14: the bots' chat,
+stamped with the paired device's id; never the desktop's ``/api/bots``), and
 refuses everything else with 404 — the explorer, the shell, Claude sessions,
 the file index, git, config writes, and any path outside
 ``~/Fused/local`` or the app state dir ``~/.fused-render`` (``allowed_roots``;
@@ -293,6 +295,15 @@ _EXACT: dict[str, frozenset[str]] = {
 #: assets, the engine proxy (the daemon behind it is validated by
 #: engine_host, and the browser never sees its port), job cancel/dismiss.
 _PREFIXES = ("/static/", "/template-assets/", "/template-shared/", "/api/engines/", "/api/jobs/")
+#: The phone bots door (bots/phone.py, docs/bots.md §14): the bots as the iOS
+#: app shows them — a chat, the live shot, pause/stop, a small settings sheet,
+#: routines. Forwarded with ``X-Fused-Device`` stamped from the pairing record
+#: (``_AsDevice``). The desktop's own ``/api/bots`` stays a 404 here: it holds
+#: the Mac-screen operations (take-over, pop-out, profiles, reveal, …).
+_PHONE_BOTS = "/api/phone/bots"
+_PHONE_BOTS_METHODS = frozenset({"GET", "POST", "DELETE"})
+#: The lan page's own routes beside ``/``: the bots list and one bot's chat.
+_BOTS_PAGE = re.compile(r"^/bots(?:/[^/]+)?$")
 
 
 def _not_found() -> Response:
@@ -471,14 +482,21 @@ def _cookie_secret(scope) -> str | None:
 
 
 def _paired(scope) -> bool:
-    """True when the request carries a cookie for a stored device; bumps that
-    device's last_seen at most every ten minutes (a write per request would
-    churn the file on every asset)."""
+    """True when the request carries a cookie for a stored device (see
+    ``_paired_record``)."""
+    return _paired_record(scope) is not None
+
+
+def _paired_record(scope) -> dict | None:
+    """The stored device record (a copy) the request's cookie belongs to, else
+    None. Bumps that device's last_seen at most every ten minutes (a write per
+    request would churn the file on every asset). The phone bots door
+    (``_AsDevice``) reads the record's ``id``."""
     import time
 
     secret = _cookie_secret(scope)
     if not secret:
-        return False
+        return None
     digest = _hash(secret)
     with _devices_lock:
         devices = _read_devices()
@@ -491,8 +509,8 @@ def _paired(scope) -> bool:
                         _write_devices(devices)
                     except OSError:
                         pass
-                return True
-    return False
+                return dict(d)
+    return None
 
 
 def _host_ok(scope) -> bool:
@@ -527,7 +545,7 @@ def _pair_page(title: str, line: str, hint: str = "") -> Response:
 def _unauthorized(scope) -> Response:
     """An unpaired request: the grid explains how to pair; everything else is a
     bare 401 (a page's fetches must not get an HTML document back)."""
-    if scope["path"] in ("/", "/index.html"):
+    if scope["path"] in ("/", "/index.html") or _BOTS_PAGE.match(scope["path"]):
         return _pair_page(
             "Scan to pair this device",
             "On the computer, open Preferences → Render local network and scan the QR code "
@@ -706,19 +724,33 @@ class LanApp:
 
             return JSONResponse({"https_port": _controller.tls_port,
                                  "ca_fingerprint": fingerprint})
-        if not _paired(scope):
+        device = _paired_record(scope)
+        if device is None:
             return _unauthorized(scope)
 
-        if path == "/" or path == "/index.html":
+        if path == "/" or path == "/index.html" or (method == "GET" and _BOTS_PAGE.match(path)):
             # The grid is a second Vite page (frontend/lan.html → shell-dist/
             # lan.html); its assets resolve under /static/shell-dist/, which the
-            # /static/ prefix below already forwards.
+            # /static/ prefix below already forwards. `/bots` and `/bots/<id>`
+            # are the same page: its own router draws the bots list and a chat
+            # (docs/bots.md §14).
             page = os.path.join(os.path.dirname(_STATIC_DIR), "shell-dist", "lan.html")
             if not os.path.isfile(page):
                 return PlainTextResponse(
                     "phone grid not built (frontend/lan.html → shell-dist/lan.html); "
                     "run: cd frontend && npm run build", status_code=503)
             return FileResponse(page, headers={"Cache-Control": "no-store"})
+        if (path == _PHONE_BOTS or path.startswith(_PHONE_BOTS + "/")) and method in _PHONE_BOTS_METHODS:
+            # The phone bots door (bots/phone.py): no path arguments to scope, but
+            # the inner routes learn WHICH paired device is talking from the
+            # pairing record, never from the client. No dot segment: the inner
+            # app forwards this owned prefix to the process holding the bots
+            # (bots/routes.forward_middleware), whose client normalises the URL,
+            # so `/api/phone/bots/../../bots/<id>/takeover` would land on the
+            # desktop door.
+            if any(seg in (".", "..") for seg in path.split("/")):
+                return _not_found()
+            return _AsDevice(self.inner, str(device.get("id") or ""))
         if path == "/api/lan/apps" and method == "GET":
             return JSONResponse({"apps": lan_apps(), "host": HOSTNAME})
         if path.startswith("/a/"):
@@ -783,6 +815,21 @@ class LanApp:
         if not _inside_root(target) or not os.path.isfile(target):
             return _not_found()
         return RedirectResponse("/render?" + urlencode({"path": target}), status_code=302)
+
+
+class _AsDevice:
+    """Forward to the inner app with ``X-Fused-Device: <device id>`` set from
+    the pairing record and any client-sent ``x-fused-device`` dropped, on a copy
+    of the scope (the caller's stays as the request arrived)."""
+
+    def __init__(self, inner, device_id: str):
+        self.inner = inner
+        self.device_id = device_id
+
+    async def __call__(self, scope, receive, send):
+        headers = [(k, v) for k, v in scope.get("headers", []) if k.lower() != b"x-fused-device"]
+        headers.append((b"x-fused-device", self.device_id.encode("latin-1", "replace")))
+        await self.inner({**scope, "headers": headers}, receive, send)
 
 
 class _Forward:
