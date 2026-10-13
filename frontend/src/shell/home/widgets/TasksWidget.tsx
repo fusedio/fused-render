@@ -1,10 +1,12 @@
 import type { Task } from "@platform/lib/api";
 import { basename } from "@platform/lib/format";
+import { navigateUrl } from "@platform/lib/router";
+import { TaskRowItem } from "@shell/ScheduleTaskViews";
 import { softNavigate } from "../strip";
 import { taskHref } from "../../tasks-lib";
 import { useHomeTasks, type HomeTasks } from "../data";
 import { dimsOf, itemCapacity, type TasksShow, type Widget } from "../layout";
-import { BigCount, EmptyLine, ErrorLine, ItemList, ListSkeleton, MoreLine, useFitCount, type WidgetItem } from "./bits";
+import { BigCount, EmptyLine, ErrorLine, ListSkeleton, MoreLine, useFitCount, type WidgetItem } from "./bits";
 
 const TASKS_HREF = "/tasks";
 
@@ -82,6 +84,25 @@ function toItem(t: Task): WidgetItem {
   };
 }
 
+/** The list format: the Tasks page's own rows (`TaskRowItem` in the page's
+    `.tasks-list-frame`), as many as the tile's height holds — a list never
+    grows the tile. No "+N more" line: the header's See all is the way to the
+    rest, so that space goes to rows. */
+function TaskRows({ rows, cap, onReload }: { rows: Task[]; cap: number; onReload: () => void }) {
+  const { ref, n } = useFitCount(rows.length, cap, ".tasks-node", undefined, { more: false });
+  const shown = rows.slice(0, n);
+  return (
+    <div ref={ref} className="hw-task-rows">
+      <div className="tasks-list-frame">
+        {shown.map((t) => {
+          const href = taskHref(t) ?? TASKS_HREF;
+          return <TaskRowItem key={t.key} task={t} href={href} onPress={() => navigateUrl(href)} onReload={onReload} />;
+        })}
+      </div>
+    </div>
+  );
+}
+
 /** One board column. It shows as many cards as its height holds and clips the rest, so a lane never grows the tile. */
 function BoardLane({ lane, rows, cap }: { lane: { id: Lane; label: string; empty: string }; rows: Task[]; cap: number }) {
   const { ref, n, moreFits } = useFitCount(rows.length, cap, ".hw-lane-card");
@@ -109,7 +130,7 @@ function BoardLane({ lane, rows, cap }: { lane: { id: Lane; label: string; empty
 }
 
 export function TasksWidget({ widget }: { widget: Widget }) {
-  const { data: split, error, retry } = useHomeTasks();
+  const { data: split, error, retry, refresh } = useHomeTasks();
   if (error && !split) return <div className="hw-body"><ErrorLine message={`Couldn't load tasks. ${error}`} onRetry={retry} /></div>;
   if (!split) return <div className="hw-body"><ListSkeleton rows={3} label="Loading tasks" /></div>;
   const data = split.tasks;
@@ -146,7 +167,7 @@ export function TasksWidget({ widget }: { widget: Widget }) {
   if (!rows.length) return <div className="hw-body"><EmptyLine>Nothing open</EmptyLine></div>;
   return (
     <div className="hw-body">
-      <ItemList items={rows.map(toItem)} cap={itemCapacity(widget.size, "list")} moreHref={TASKS_HREF} />
+      <TaskRows rows={rows} cap={itemCapacity(widget.size, "list")} onReload={refresh} />
     </div>
   );
 }

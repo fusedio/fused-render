@@ -783,6 +783,7 @@
    capacity. The body must be a flex column, or the strip's flex: 1 does
    nothing and size-contained cards collapse to 0 height. */
 .hw-body:has(> .hw-list-wrap),
+.hw-body:has(> .hw-task-rows),
 .hw-body:has(> .hw-strip) {
   display: flex;
   flex-direction: column;
@@ -793,6 +794,23 @@
   flex: 1 1 auto;
   min-height: 0;
   overflow: hidden;
+}
+
+/* The Tasks list: the Tasks page's own rows, clipped at the tile's height and
+   measured, so a row past it never grows the tile. */
+.hw-body > .hw-task-rows {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  container-type: inline-size;
+}
+/* A narrow Tasks tile spends its width on the title: the message count goes. */
+@container (max-width: 360px) {
+  .hw-task-rows .tasks-row-msgs {
+    display: none;
+  }
 }
 
 /* Cards strip: one scrolling grid, `--hw-rows` tall. Cards are always 330px

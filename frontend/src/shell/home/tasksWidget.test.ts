@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { homeTasks, splitHomeTasks } from "./data";
 import { emptyMessage, lanesFor, listFor, laneOf, listOrder, openCount, taskPill } from "./widgets/TasksWidget";
 
@@ -78,4 +79,28 @@ test("listFor: open only drops done; open_done lists open first", () => {
   expect(listFor(ts, "open").map((x) => x.key)).toEqual(["o"]);
   expect(listFor(ts, "open_done").map((x) => x.key)).toEqual(["o", "d"]);
   expect(listFor([t({})], "open")).toEqual([]);
+});
+
+test("the list format draws the Tasks page's own rows, not ItemList", async () => {
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(new URL("./widgets/TasksWidget.tsx", import.meta.url), "utf8");
+  expect(src).toContain('className="tasks-list-frame"');
+  expect(src).toContain("<TaskRowItem");
+  expect(src).not.toContain("showProject");
+  expect(src).not.toContain("ItemList");
+});
+
+test("TaskRows reserves no more line and renders none", async () => {
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(new URL("./widgets/TasksWidget.tsx", import.meta.url), "utf8");
+  const start = src.indexOf("function TaskRows");
+  const body = src.slice(start, src.indexOf("function BoardLane"));
+  expect(body).toContain("{ more: false }");
+  expect(body).not.toContain("MoreLine");
+});
+
+test("TasksWidget reloads rows with refresh, which keeps the data, not retry, which blanks it", () => {
+  const src = readFileSync(new URL("./widgets/TasksWidget.tsx", import.meta.url), "utf8");
+  expect(src).toContain("onReload={refresh}");
+  expect(src).not.toContain("onReload={retry}");
 });

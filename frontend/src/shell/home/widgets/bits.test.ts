@@ -86,3 +86,10 @@ test("moreLineFits: with a 30px line a gap between 20 and 30 never fits", () => 
   for (let gap = 20; gap < 30; gap += 1) expect(moreLineFits(100, 30, 100 + gap)).toBe(false);
   expect(moreLineFits(100, 30, 130)).toBe(true);
 });
+
+test("fitCount: the Tasks list tile fits a 5th row once no more line is reserved", () => {
+  // measured: 204px tile, 36px rows, 4 rows = 149px, more line + gap = 31px
+  const m = { n: 4, total: 230, avail: 204, contentH: 149, rowH: 36, cols: 1 };
+  expect(fitCount({ ...m, moreH: 31 })).toBe(4);
+  expect(fitCount({ ...m, moreH: 0 })).toBe(5);
+});

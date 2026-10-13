@@ -75,8 +75,10 @@ const px = (v: string) => (Number.parseFloat(v) || 0);
  * is only the first-paint guess; the count can go below it (a short tile) or
  * above it (a tall one). Items are `itemSel` inside the container; `listSel`
  * (optional) names the grid whose columns set how many items share a line.
+ * `opts.more: false` means the caller renders no "+N more" line, so no room is reserved for it.
  */
-export function useFitCount(total: number, cap: number, itemSel: string, listSel?: string) {
+export function useFitCount(total: number, cap: number, itemSel: string, listSel?: string, opts: { more?: boolean } = {}) {
+  const reserveMore = opts.more !== false;
   const ref = useRef<HTMLDivElement>(null);
   const [n, setN] = useState(() => Math.min(total, cap));
   const [moreFits, setMoreFits] = useState(true);
@@ -87,7 +89,9 @@ export function useFitCount(total: number, cap: number, itemSel: string, listSel
   const measure = () => {
     const wrap = ref.current;
     if (!wrap) return;
-    const item = wrap.querySelector<HTMLElement>(itemSel);
+    const items = wrap.querySelectorAll<HTMLElement>(itemSel);
+    // The last item, because in a bordered list (the Tasks frame) only rows after the first carry the hairline, so the last row's height is the real pitch.
+    const item = items[items.length - 1];
     if (!item) return;
     const parent = item.parentElement as HTMLElement;
     const more = wrap.querySelector<HTMLElement>(".hw-more");
@@ -102,9 +106,9 @@ export function useFitCount(total: number, cap: number, itemSel: string, listSel
     const bottom = Math.max(...kids.map((k) => k.offsetTop + k.offsetHeight));
     const avail = wrap.clientHeight - px(cs.paddingTop) - px(cs.paddingBottom);
     if (more && more.offsetHeight) moreHRef.current = more.offsetHeight;
-    const moreH = moreHRef.current;
-    const moreGap = px(cs.rowGap);
-    const fits = moreLineFits(bottom - top, moreH + moreGap, avail);
+    const moreH = reserveMore ? moreHRef.current : 0;
+    const moreGap = reserveMore ? px(cs.rowGap) : 0;
+    const fits = reserveMore ? moreLineFits(bottom - top, moreH + moreGap, avail) : true;
     setMoreFits((prev) => (prev === fits ? prev : fits));
     setN((prev) => {
       const next = Math.min(total, Math.max(1, fitCount({ n: Math.min(prev, total), total, avail, contentH: bottom - top, rowH, moreH: moreH + moreGap, cols })));
