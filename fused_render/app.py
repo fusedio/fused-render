@@ -2118,6 +2118,20 @@ def main() -> None:
             NSApp.activateIgnoringOtherApps_(True)
             manager.show_bot(bid)
 
+        def _open_bots_native() -> None:
+            """The launcher's Fused Bot row (launcher.BOTS_ROW): the Bots
+            page itself, no bot picked — a window already on it comes
+            forward, else one opens (`WindowManager.show_page`); a browser
+            tab with the windows off. Main thread."""
+            manager = state["windows"]
+            if manager is None or not manager.enabled:
+                webbrowser.open(url.rstrip("/") + "/bots")
+                return
+            from AppKit import NSApp
+
+            NSApp.activateIgnoringOtherApps_(True)
+            manager.show_page("/bots")
+
         # The launcher (launcher_panel.py): a Spotlight-like panel on a
         # global shortcut that opens any known app (Fused Render, ⌥Space by
         # default) or any bot (Fused Bot, ⌥⇧Space by default: the two apps
@@ -2142,6 +2156,8 @@ def main() -> None:
                 # Main thread (the panel's script handler / a row hotkey).
                 if kind == "bot":
                     _open_bot_native(key)
+                elif kind == "bots":
+                    _open_bots_native()
                 else:
                     _open_app_native(key)
 
