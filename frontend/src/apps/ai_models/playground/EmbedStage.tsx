@@ -297,6 +297,9 @@ export function EmbedStage({
   // Adds can overlap — a dialog open while a drop uploads — so "Adding…" is
   // held by a COUNT of operations in flight, not the last one to finish.
   const activeAdds = useRef(0);
+  // Slots claimed by uploads still in flight, so two overlapping Finder
+  // drops cannot both read "room for three" off the list and copy six.
+  const reservedSlots = useRef(0);
   const beginAdd = () => {
     activeAdds.current += 1;
     setAttaching(true);
@@ -507,9 +510,11 @@ export function EmbedStage({
     let refused: string | null = null;
     // The cap is applied BEFORE any upload, not after in `mergePaths`: a
     // Finder drop of forty videos with two slots left must copy two files
-    // into the cache, not forty that then sit there unlisted.
-    let room = Math.max(0, MAX_PICTURES - picturesRef.current.length - landed.length);
+    // into the cache, not forty that then sit there unlisted. Each upload
+    // claims its slot up front (`reservedSlots`), so a second drop landing
+    // mid-upload sees the slots the first one is still filling.
     let over = 0;
+    let claimed = 0;
     try {
       for (const file of files) {
         // Refused BEFORE the upload: a PDF should not be copied into the
@@ -522,11 +527,13 @@ export function EmbedStage({
           refused ??= no;
           continue;
         }
+        const room = MAX_PICTURES - picturesRef.current.length - reservedSlots.current - landed.length;
         if (room <= 0) {
           over += 1;
           continue;
         }
-        room -= 1;
+        reservedSlots.current += 1;
+        claimed += 1;
         landed.push(await saveDropped(file));
       }
       if (over) refused ??= `Up to ${MAX_PICTURES} files — ${over} not added.`;
@@ -537,6 +544,7 @@ export function EmbedStage({
       // The upload error outranks an earlier refusal: it is the newer news.
       takePaths(landed, (err as Error).message);
     } finally {
+      reservedSlots.current = Math.max(0, reservedSlots.current - claimed);
       endAdd();
     }
   };
