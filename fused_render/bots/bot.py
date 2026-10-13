@@ -37,7 +37,9 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "sonnet"
 DEFAULT_EFFORT = "low"
-MAX_STEPS = 60
+MAX_STEPS = 200          # tool calls per task before the bot is stopped; Settings > General "Steps per task" overrides it per bot
+SUPER_MAX_STEPS = 1000   # Super Bot's default: Claude Code tasks (read, edit, run, re-run) take many more calls than browsing
+MAX_STEPS_CEILING = 10000
 ATTACH_MAX = 8 * 1024 * 1024  # composer attachment size cap
 IDLE_SLEEP_S = 10 * 60  # close Chrome after this long idle (every bot); encrypted bots also seal the profile
 ROUTINE_MAX_FAILS = 3   # consecutive failed runs before a routine pauses itself (RoutinesSection.tsx mirrors it)
@@ -458,6 +460,16 @@ def _engine_for(meta) -> str:
     except Exception:  # noqa: BLE001
         return "steps"
     return "agent"
+
+
+def step_cap(meta) -> int:
+    """The tool-call budget of one task: the bot's own `max_steps` (Settings > General),
+    else MAX_STEPS / SUPER_MAX_STEPS by kind. Read once when a task starts."""
+    try:
+        n = int((meta or {}).get("max_steps") or 0)
+    except (TypeError, ValueError):
+        n = 0
+    return n if n > 0 else (SUPER_MAX_STEPS if is_super(meta) else MAX_STEPS)
 
 
 def is_super(meta) -> bool:
@@ -3306,15 +3318,23 @@ def bots_section(bot) -> str:
             + ("\n".join(lines) if lines else "none yet"))
 
 
-def check_settings(meta, model="", effort=""):
+def check_settings(meta, model="", effort="", max_steps=None):
     """The Settings dialog's and `bot_settings`' shared checks (ValueError with the
-    sentence the user / model reads)."""
+    sentence the user / model reads). `max_steps`: None leaves the cap alone; 0 / ""
+    clears the override; else 1..MAX_STEPS_CEILING."""
     if model and model not in MODELS:
         raise ValueError(f"unknown model {model!r}; choose one of {', '.join(MODELS)}")
     if model and model in LOCAL_MODELS and is_super(meta):
         raise ValueError("Super Bot runs on Claude Code; pick a Claude model")
     if effort and effort not in EFFORTS:
         raise ValueError(f"unknown effort {effort!r}; choose one of {', '.join(EFFORTS)}")
+    if max_steps not in (None, "", 0):
+        try:
+            n = int(max_steps)
+        except (TypeError, ValueError):
+            raise ValueError("steps per task must be a whole number") from None
+        if not 1 <= n <= MAX_STEPS_CEILING:
+            raise ValueError(f"steps per task must be between 1 and {MAX_STEPS_CEILING}")
 
 
 def check_face(meta, face, strict=False):
@@ -3708,6 +3728,8 @@ def clone(src_id, name="", share=True):
             "status": "idle", "created": time.time(), "task": "", "step": 0, "url": None, "title": None}
     if src.meta.get("engine"):
         meta["engine"] = src.meta["engine"]
+    if src.meta.get("max_steps"):
+        meta["max_steps"] = src.meta["max_steps"]
     _write_new_meta(bid, meta)
     b = reg.get(bid)
     if src.memory():

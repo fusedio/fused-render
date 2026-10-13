@@ -20,6 +20,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import pytest
 
 from fused_render.bots import agent_engine, apptools, tools
+from fused_render.bots import bot as botmod
 
 from _claude_stub_cli import write_stub_cli
 
@@ -423,7 +424,7 @@ def test_actions_carry_change_report_and_compact_page(server, fake_cli, monkeypa
     assert bot.action_obs == [2, 3]
     # The action's own screenshot is off for the task (the observe takes one), and back on after.
     assert bot.browser.shoot_seen == [False] and bot.browser.shoot_actions is True
-    assert bot.meta["step"] == 2 and bot.meta["step_cap"] == agent_engine.MAX_STEPS
+    assert bot.meta["step"] == 2 and bot.meta["step_cap"] == botmod.MAX_STEPS
     assert bot.events[-1]["text"] == "Widget costs $5."
     calls = fake_cli("call")
     assert "CHANGE: url changed to https://shop.test/" in calls[0]["result"]
@@ -662,7 +663,7 @@ def test_process_death_is_an_error(server, fake_cli, monkeypatch):
 
 
 def test_step_cap(server, fake_cli, monkeypatch):
-    monkeypatch.setattr(agent_engine, "MAX_STEPS", 2)
+    monkeypatch.setattr(botmod, "MAX_STEPS", 2)
     bot = FakeBot()
     run_task(bot, [{"tool": "goto", "args": {"url": "https://shop.test/"}}] * 3 + [{"result": "Partial."}], monkeypatch)
     calls = fake_cli("call")
@@ -1273,7 +1274,7 @@ def test_super_builtin_calls_become_action_rows(server, fake_cli, monkeypatch):
 
 
 def test_super_step_cap_is_larger_and_counts_builtins(server, fake_cli, monkeypatch):
-    monkeypatch.setattr(agent_engine, "SUPER_MAX_STEPS", 3)
+    monkeypatch.setattr(botmod, "SUPER_MAX_STEPS", 3)
     bot = super_bot()
     script = [{"builtin": "Read", "args": {"file_path": "/a"}, "output": "x"} for _ in range(3)]
     script += [{"tool": "observe", "args": {}}, {"result": ""}]

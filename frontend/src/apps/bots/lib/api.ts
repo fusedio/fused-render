@@ -157,6 +157,8 @@ export interface Bot {
   /** ts of the newest message you sent this bot (0 if none); unlike `updated`, idle-sleep and download ticks never bump it. */
   last_user_ts?: number;
   approval?: "ask" | "auto";
+  /** Steps (tool calls) one task may take before the bot is stopped; absent = the default (200, Super Bot 1000). */
+  max_steps?: number;
   build_access?: "scoped" | "full";
   /** App folders (normalised) whose tools and scripts never raise an approval card for this bot. */
   trusted_apps?: string[];
@@ -350,6 +352,8 @@ export interface NewBotBody {
 }
 export interface SettingsBody {
   name?: string; model?: string; effort?: string; instructions?: string; memory?: string; approval?: string;
+  /** 0 clears the per-bot override (back to the default). */
+  max_steps?: number;
   build_access?: string; encrypt?: boolean; imessage_handle?: string; imessage_to?: string; imessage_enabled?: boolean;
   super_access?: string; trusted_apps?: string[];
   /** Forever rules to drop (kind + key); applied to the live list, since the task thread also writes it. */

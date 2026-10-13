@@ -640,7 +640,8 @@ def _settings(bid, body):
     b = _bot(bid)
     name = (body.get("name") or "").strip()
     model, effort = body.get("model") or "", body.get("effort") or ""
-    bm.check_settings(b.meta, model, effort)  # shared with Super Bot's `bot_settings` (docs §12)
+    max_steps = body.get("max_steps")
+    bm.check_settings(b.meta, model, effort, max_steps)  # shared with Super Bot's `bot_settings` (docs §12)
     if name and name != b.meta.get("name") and b.meta.get("artifacts_dir") and not os.path.isdir(b.meta["artifacts_dir"]):
         b.meta.pop("artifacts_dir", None)  # never used on disk: let the new name pick the folder
     b.meta["name"] = name or b.meta.get("name")
@@ -682,6 +683,12 @@ def _settings(bid, body):
         b.meta["model"] = model
     if effort:
         b.meta["effort"] = effort
+    if max_steps is not None:
+        # An override only: blank / 0 pops the key so the bot follows the default (and any future bump of it).
+        if max_steps in ("", 0):
+            b.meta.pop("max_steps", None)
+        else:
+            b.meta["max_steps"] = int(max_steps)
     b.save()
     return {"ok": True}
 

@@ -75,8 +75,8 @@ from urllib.parse import quote
 
 from fused_render.bots import apptools, channels, claude_cli, paths, tools
 
-MAX_STEPS = 60                 # OpenBot's cap; --max-turns does not exist on this CLI, so tool calls are counted here
-SUPER_MAX_STEPS = 200             # Super Bot's cap: Claude Code tasks (read, edit, run, re-run) take many more calls than browsing
+# The step cap (bot.MAX_STEPS / SUPER_MAX_STEPS, or the bot's own `max_steps`): --max-turns does not exist on this
+# CLI, so tool calls are counted here against bot.step_cap(meta), read once per turn.
 BUILTIN_WEB = frozenset({"WebFetch", "WebSearch"})   # built-in tools that read the web (web_touched)
 BUILTIN_SAFE = frozenset({"Read", "Glob", "Grep", "LS", "TodoWrite", "Task", "WebSearch", "WebFetch", "NotebookRead"})
 CAP_GRACE = 3                  # refused calls past the cap before the turn is interrupted
@@ -221,7 +221,7 @@ class Turn:
         self.stderr = deque(maxlen=40)
         # Super Bot (docs §5): built-in Claude Code tool calls seen on the stream, and whether the task has read the web.
         self.is_super = tools.is_super(bot)
-        self.max_steps = SUPER_MAX_STEPS if self.is_super else MAX_STEPS
+        self.max_steps = _botmod().step_cap(bot.meta)
         self.web_touched = False
         self.pending_builtin: dict = {}      # tool_use_id -> (tool name, transcript label)
         # Conversation accounting (docs §6 "Bot threads"): the CLI session this turn runs in, whether it
