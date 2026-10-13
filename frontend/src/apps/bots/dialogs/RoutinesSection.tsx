@@ -217,7 +217,7 @@ export function RoutinesSection({ b, confirm }: SectionProps) {
             );
           }
           return (
-            <section key={r.id} className={cn(CARD_CLASS, !r.enabled && "opacity-60")} data-rid={r.id}>
+            <section key={r.id} className={cn(CARD_CLASS, !r.enabled && r.last_result !== "started" && "opacity-60")} data-rid={r.id}>
               <div className="flex items-start justify-between gap-4">
                 <div className="min-w-0 whitespace-pre-wrap text-[15px] font-medium">{r.task}</div>
                 <div className="flex shrink-0 items-center gap-1">

@@ -1799,7 +1799,7 @@ class Bot:
             held = bool(self.meta.get("control"))
             busy = held or (self.thread is not None and self.thread.is_alive())
             prev_last = r.get("last")
-            r["last"] = time.time()
+            r["last"] = fired_at = time.time()  # `fired_at` is this fire's stamp: the refusal below checks it is still r["last"]
             run = None  # the row this fire adds when it starts the task; the refusal below patches that one
             if busy:
                 why = "you had the browser" if held else "bot was busy"
@@ -1832,11 +1832,12 @@ class Bot:
                 # run itself (its "started" row must not be the one marked skipped).
                 if run is not None and run.get("result") == "started":
                     run.update(result="skipped", message="another task took the bot first", done=time.time())
-                # The routine's state is rolled back only while it is still this fire's: a Run now that fired
-                # meanwhile (outside the lock, before start_task) and won the start owns last_result/next now, and
-                # its row is the newest "started" one. Its outcome would never land if "started" were overwritten.
-                newest_started = next((x for x in r.get("runs") or [] if x.get("result") == "started"), None)
-                if newest_started is None:
+                # The routine's state is rolled back only while it is still this fire's: `last` is still this
+                # fire's stamp and `last_result` the "started" it wrote. A Run now that fired meanwhile (outside the
+                # lock, before start_task) stamped its own `last` and owns last_result / next, finished or not; its
+                # outcome would never land if "started" were overwritten. (Leftover rows are not consulted: an old
+                # "started" row from a run that never settled must not block the rollback.)
+                if r.get("last") == fired_at and r.get("last_result") == "started":
                     r["last_result"] = "skipped: bot was busy"
                     # Undo the fire record: a once-routine with `last` set never gets a `next` again (_next_run),
                     # and `next` was computed as if this slot had run.

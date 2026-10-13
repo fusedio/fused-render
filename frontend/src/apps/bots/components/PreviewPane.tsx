@@ -69,12 +69,13 @@ function Routines({ b }: { b: Bot }) {
             // `last_message` is the newest FINISHED run's; a start or a skip since leaves it behind, so the tip
             // quotes it only while `last_result` is still that run's outcome.
             const ended = r.last_result === "done" || r.last_result === "error" || r.last_result === "stopped";
+            // A fired one-shot is disabled while it runs: "running" comes before every enabled check (label, fade, tip).
+            const running = r.last_result === "started", paused = !r.enabled && !running;
             return (
-              <div key={r.id} className={`rt ${r.enabled ? "" : "off"}`}>
+              <div key={r.id} className={`rt ${paused ? "off" : ""}`}>
                 <span title={r.task}>{r.task}</span>
-                <small className={bad ? "warn" : undefined} title={r.enabled ? `${fmtWhen(r.next)}${ended && r.last_message ? `\nlast run: ${r.last_result} — ${r.last_message}` : ""}` : "paused"}>
-                  {/* A fired one-shot is disabled while it runs: "running" comes before the enabled check. */}
-                  {r.last_result === "started" ? "running" : r.enabled ? fmtIn(r.next) || "soon" : "paused"}
+                <small className={bad ? "warn" : undefined} title={running ? "Running now" : paused ? "paused" : `${fmtWhen(r.next)}${ended && r.last_message ? `\nlast run: ${r.last_result} — ${r.last_message}` : ""}`}>
+                  {running ? "running" : paused ? "paused" : fmtIn(r.next) || "soon"}
                 </small>
               </div>
             );
