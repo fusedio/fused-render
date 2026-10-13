@@ -61,17 +61,24 @@ export function iconFor(info: Pick<PillInfo, "icon" | "flavor">): { kind: "app" 
   return { kind: "home", src: null, scale: info.flavor === "bot" ? "124.3%" : "113.7%" };
 }
 
-/** A pause/resume the user just asked for that the server has not confirmed yet. */
-export interface PendingPause { want: boolean; until: number }
+/** Most icons the pill stacks; past this the last slot is a "+N" chip. */
+export const MAX_ICONS = 3;
 
-/** Decide what the pill shows for `paused`: while a click is pending and the server still reports the old value
- *  (and the deadline has not passed) the wanted value wins; once the server agrees or time runs out, the server wins. */
-export function resolvePaused(
-  serverPaused: boolean | undefined,
-  pending: PendingPause | null,
-  now: number,
-): { paused: boolean; pending: PendingPause | null } {
-  const server = !!serverPaused;
-  if (pending && server !== pending.want && now < pending.until) return { paused: pending.want, pending };
-  return { paused: server, pending: null };
+/** Which recordings get an icon. `infos` is newest-last (as the panel sends it); `shown` is newest-first. */
+export function visibleApps(infos: PillInfo[]): { shown: PillInfo[]; extra: number } {
+  const newestFirst = infos.slice().reverse();
+  if (infos.length <= MAX_ICONS) return { shown: newestFirst, extra: 0 };
+  return { shown: newestFirst.slice(0, MAX_ICONS - 1), extra: infos.length - (MAX_ICONS - 1) };
+}
+
+/** One meter for all recordings: the loudest non-paused level; paused only when every polled one is paused. */
+export function combineStates(states: (PillState | undefined)[]): { level: number; paused: boolean; seconds: number } {
+  const live = states.filter((s): s is PillState => !!s);
+  let level = 0;
+  let seconds = 0;
+  for (const s of live) {
+    if (!s.paused) level = Math.max(level, s.level ?? 0);
+    seconds = Math.max(seconds, s.seconds ?? 0);
+  }
+  return { level, paused: live.length > 0 && live.every((s) => !!s.paused), seconds };
 }

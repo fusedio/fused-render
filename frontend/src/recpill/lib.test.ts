@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { BAR_COUNT, BAR_REST, bars, formatElapsed, iconFor, resolvePaused, shapeLevel, smoothLevel } from "./lib";
+import { BAR_COUNT, BAR_REST, bars, combineStates, formatElapsed, iconFor, MAX_ICONS, shapeLevel, smoothLevel, visibleApps } from "./lib";
 
 describe("bars", () => {
   test("silence rests as five 2px dots of a 24px max", () => {
@@ -74,21 +74,38 @@ describe("iconFor", () => {
   });
 });
 
-describe("resolvePaused", () => {
-  const pending = { want: true, until: 1000 };
-  test("no pending: the server wins", () => {
-    expect(resolvePaused(false, null, 5)).toEqual({ paused: false, pending: null });
-    expect(resolvePaused(undefined, null, 5)).toEqual({ paused: false, pending: null });
-    expect(resolvePaused(true, null, 5)).toEqual({ paused: true, pending: null });
+const pi = (id: string) => ({ id, name: id, app: "", icon: null, flavor: "render" as const, canPause: true, mode: "audio" });
+
+describe("visibleApps", () => {
+  test("up to MAX_ICONS show all, newest first", () => {
+    expect(visibleApps([pi("a")])).toEqual({ shown: [pi("a")], extra: 0 });
+    expect(visibleApps([pi("a"), pi("b"), pi("c")]).shown.map((x) => x.id)).toEqual(["c", "b", "a"]);
+    expect(visibleApps([pi("a"), pi("b"), pi("c")]).extra).toBe(0);
   });
-  test("server lagging: the wanted value holds and pending stays", () => {
-    expect(resolvePaused(false, pending, 500)).toEqual({ paused: true, pending });
+  test("over MAX_ICONS the last slot becomes a +N chip", () => {
+    const r4 = visibleApps([pi("a"), pi("b"), pi("c"), pi("d")]);
+    expect(r4.shown.map((x) => x.id)).toEqual(["d", "c"]);
+    expect(r4.extra).toBe(2);
+    const r6 = visibleApps(["a", "b", "c", "d", "e", "f"].map(pi));
+    expect(r6.shown.map((x) => x.id)).toEqual(["f", "e"]);
+    expect(r6.extra).toBe(4);
+    expect(MAX_ICONS).toBe(3);
   });
-  test("server agreeing clears pending", () => {
-    expect(resolvePaused(true, pending, 500)).toEqual({ paused: true, pending: null });
+});
+
+describe("combineStates", () => {
+  test("level is the max over non-paused states", () => {
+    expect(combineStates([{ level: 0.2, seconds: 3 }, { level: 0.7, paused: true, seconds: 9 }, { level: 0.5, seconds: 1 }]))
+      .toEqual({ level: 0.5, paused: false, seconds: 9 });
   });
-  test("deadline expiry gives the server's value back", () => {
-    expect(resolvePaused(false, pending, 1000)).toEqual({ paused: false, pending: null });
-    expect(resolvePaused(false, pending, 2000)).toEqual({ paused: false, pending: null });
+  test("all paused", () => {
+    expect(combineStates([{ level: 0.4, paused: true, seconds: 2 }, { paused: true, seconds: 5 }]))
+      .toEqual({ level: 0, paused: true, seconds: 5 });
+  });
+  test("empty and undefined entries", () => {
+    expect(combineStates([])).toEqual({ level: 0, paused: false, seconds: 0 });
+    expect(combineStates([undefined, undefined])).toEqual({ level: 0, paused: false, seconds: 0 });
+    expect(combineStates([undefined, { paused: true }])).toEqual({ level: 0, paused: true, seconds: 0 });
+    expect(combineStates([undefined, { level: 0.3 }]).level).toBe(0.3);
   });
 });
