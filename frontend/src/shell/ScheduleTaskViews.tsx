@@ -2768,6 +2768,7 @@ export function TaskList({
 export function TaskRowItem({
   task,
   home = "",
+  showProject = false,
   href = null,
   onPress,
   onQueued,
@@ -2776,6 +2777,8 @@ export function TaskRowItem({
   task: Task;
   /** For the marks that spell a path with `~` (the file mark's caption). */
   home?: string;
+  /** Draws the folder chip as a plain label, because a borrowed list has no `onPickProject` filter to arm. */
+  showProject?: boolean;
   /** Where a ⌘-click, a middle click or "Open in new tab" goes, or null when the
    *  press has no URL because it stays on this page. */
   href?: string | null;
@@ -2804,7 +2807,7 @@ export function TaskRowItem({
     <TaskNode
       task={task}
       home={home}
-      showProject={false}
+      showProject={showProject}
       folderMissing={false}
       open={false}
       selected={false}
@@ -2964,7 +2967,8 @@ function TaskNode({
    * on any row of the list there is no rail for the empty slot to hold open),
    * the folder chip and the draft chip's filter arm
    * (`showProject`/`onPickProject`/`onPickDraft` are the List's own, and the
-   * borrowed list has no filters to set), and the side peek (`peekOn`, off by
+   * borrowed list has no filters to set; a host may opt the folder chip back in
+   * as a plain label through `TaskRowItem`'s `showProject`), and the side peek (`peekOn`, off by
    * default).
    *
    * It takes NOTHING ELSE off: the id chip, the status ring, the outcome pill,

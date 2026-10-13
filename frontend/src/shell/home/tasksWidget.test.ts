@@ -79,3 +79,11 @@ test("listFor: open only drops done; open_done lists open first", () => {
   expect(listFor(ts, "open_done").map((x) => x.key)).toEqual(["o", "d"]);
   expect(listFor([t({})], "open")).toEqual([]);
 });
+
+test("the list format draws the Tasks page's own rows, not ItemList", async () => {
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(new URL("./widgets/TasksWidget.tsx", import.meta.url), "utf8");
+  expect(src).toContain('className="tasks-list-frame"');
+  expect(src).toMatch(/<TaskRowItem[^>]*\bshowProject\b/);
+  expect(src).not.toContain("ItemList");
+});
