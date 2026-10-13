@@ -161,8 +161,13 @@ describe("a picture's display name survives a native path", () => {
     // `pickFile` returns a NATIVE path, so on Windows `C:\\photos\\cat.png` has no
     // "/" to find and the whole drive path became the "name" — in the corpus
     // list and in every ranked row.
-    expect(STAGE).toContain("function basename(");
-    expect(STAGE).toContain('path.lastIndexOf("\\\\")');
+    // `basename` moved to embedAttach.ts with the rest of the file-in rules;
+    // the stage imports it rather than keeping a second copy.
+    const ATTACH = readFileSync(join(import.meta.dir, "embedAttach.ts"), "utf8");
+    expect(ATTACH).toContain("export function basename(");
+    expect(ATTACH).toContain('path.lastIndexOf("\\\\")');
+    expect(STAGE).toMatch(/import \{[^}]*\bbasename\b[^}]*\} from "\.\/embedAttach"/s);
+    expect(STAGE).not.toContain("function basename(");
     // …and no caller left on the old one-separator split.
     expect(STAGE).not.toContain('path.split("/").pop()');
   });

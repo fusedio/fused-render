@@ -565,7 +565,10 @@ def _file_types(raw) -> list[str] | None:
     if not isinstance(raw, list):
         return None
     kept = []
-    for item in raw[:24]:
+    # 40, not the 24 this started at: the embed Playground's unified-model
+    # filter is 27 extensions (pictures + sound + video), and a clamp below
+    # the longest honest list greys out real formats in the dialog.
+    for item in raw[:40]:
         ext = str(item).lstrip(".").lower()
         # DROPPED past 8 characters, not truncated: a real extension is short,
         # and slicing a long one invents a filter the caller never asked for and
@@ -611,3 +614,33 @@ def api_fs_pick_file(body: dict = Body(...), x_fused: str | None = Header(defaul
         logger.warning("file chooser failed: %s", exc)
         return _error(str(exc) or "the file chooser failed", status=500)
     return JSONResponse({"path": chosen})
+
+
+@router.post("/api/fs/pick-files")
+def api_fs_pick_files(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    """`/api/fs/pick-file` with multi-select on: `{"paths": [<abs>, …]}` on a
+    choice (never an empty list), `{"paths": null}` on a cancel, and the same
+    409/501/500 for busy / no dialog / it broke. A separate route rather than
+    a flag on the other, so an older page's `{"path"}` reading never meets a
+    list. Same `title`, `start` and `types` handling — see
+    `dirpicker.pick_files` for which backends can actually pick several.
+    """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+
+    start = body.get("start") or None
+    if start is not None and not os.path.isabs(start):
+        return _error("'start' must be an absolute filesystem path")
+    title = str(body.get("title") or "Choose files")[:120]
+    types = _file_types(body.get("types"))
+    try:
+        chosen = dirpicker.pick_files(start=start, title=title, types=types)
+    except dirpicker.PickerBusy as exc:
+        return _error(str(exc), status=409)
+    except dirpicker.PickerUnavailable as exc:
+        return _error(str(exc), status=501)
+    except (dirpicker.PickerFailed, TimeoutError) as exc:
+        logger.warning("file chooser failed: %s", exc)
+        return _error(str(exc) or "the file chooser failed", status=500)
+    return JSONResponse({"paths": chosen})

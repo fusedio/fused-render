@@ -2758,6 +2758,47 @@
   align-items: flex-start;
 }
 
+/* The door into Files mode: the transcribe stage's dropzone, one row high,
+   under the composer. The whole stage takes a drop (EmbedStage's root), and
+   `.pg-embed.dragging` lights this row so the eye lands where the file goes. */
+.pg-embed-attach {
+  padding: 10px 14px;
+  gap: 12px;
+}
+
+.pg-embed.dragging .pg-embed-attach {
+  border-color: var(--accent);
+  background: rgba(var(--accent-rgb), 0.06);
+}
+
+.pg-drop-hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+/* "sound" / "video" beside a filename — pictures carry no tag, the thumbnail
+   is theirs. */
+.pg-embed-kind {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(var(--tint), 0.08);
+  color: var(--fg-muted);
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* A sound file has no frame to show; the note sits where the thumbnail would. */
+.pg-embed-thumb-audio {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-muted);
+  font-size: 18px;
+}
+
 .pg-embed-picture-row {
   display: flex;
   align-items: center;
