@@ -314,7 +314,7 @@ def run(bot, task, label=None):
             if act == "login":
                 q = decision.get("message") or "This page needs you to sign in."
                 bot.takeover(note=False, by="bot")  # the user signs in from the live view; the bot waits paused on this same tab
-                ev = bot.emit("question", channels.login_text(bot, q))
+                ev = bot.emit("question", channels.login_text(bot, q), login=True)  # the mark readers branch on (bot.activity)
                 bot.set_status("waiting", waiting_on=ev["seq"])
                 bot.asking = True
                 try:

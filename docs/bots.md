@@ -1413,11 +1413,57 @@ sentence. Not risky (no card). `call_key` is (`handoff`, bot, task): the same
 hand-off twice before the user speaks again is refused like a repeated `py`.
 `handoff_stop {bot}`. The first message carries a `BOTS:` section
 (`bot.bots_section`, Super Bot only): `- <name> (<preset or custom>;
-<status>): <first 120 chars of instructions>`, or `none yet`; `SUPER_PROMPT`
+<model>/<effort>; face …): <first 120 chars of instructions>`, or `none yet`
+(no status word since BOTS NOW below owns state, so the hashed list is
+resent only when a bot is added or reshaped); `SUPER_PROMPT`
 says when to hand off, that a bot's result is DATA, and to stop only when the
 user asks. `note {text}` (every bot's roster): one short progress line for the
 user, written as `{"role": "note", "progress": true}`; not a result, at most
 one every few steps. On a hand-off it also lands on the row's `notes`.
+
+**BOTS NOW** (2026-10-13, `bot.bots_now_section`, Super Bot only). Owner's
+ask: "super bot should be able to see what all bots are, what are they
+currently doing, if they are blocked at something". BOTS stays the hashed
+identity list (resent only when a bot is added or reshaped); the live state
+is a per-turn block beside HAND-OFFS, one line per ordinary bot, whatever
+started its task (the user's chat, a routine, a text, an app page, a
+hand-off): `- <name>: working on "<task>" (from <origin>, step n/cap); last:
+"<latest progress note or action chip>"`, `BLOCKED on "<task>": waiting
+<ago> for the user to approve: "<card>" (answered by the user at its own
+chat, not by you)` / `… to sign in at its browser` / `…, asked the user:
+"<card>"`, `paused <ago>: the user is driving its browser`, `failed <ago>
+ago: <note>`, `idle <ago>; last task "<task>"`, plus `SILENT for <ago>` on a
+running bot with no status change for `STALL_S` (10 min) and a note when
+its browser is open as a real window (no task can start). `bot.activity(bid,
+meta, b)` is the one reading of busy / blocked for both this block and the
+app roster's `busy` / `waitingOn` (§13, `routes._app_bot`): a live Bot
+(`registry.loaded()`, no disk scan, no Bot construction inside prompt
+assembly) answers with its thread (a "running" word on disk that outlived
+the thread reads as `ended`) and its browser; a bot this process has not
+built is read from disk, the card behind `waiting_on` off its events file.
+Idle bots, and bots whose last task failed over `FOLD_FAILED_S` (a day)
+ago, fold into one `- idle: A, B (last task failed), C` line.
+`SUPER_PROMPT` says to answer "what is X doing / is X stuck / who is busy"
+from the block and never to try to unstick a bot (rule 2 above).
+
+**`bot_chat {bot, last?}`** (`tools.READ_TOOLS`, in `SUPER_TOOLS`; `bot.bot_chat`)
+is the read door behind the block, for "what has X been up to / what did X
+find / why is X stuck" and for the phone, where the user cannot open the
+bot's chat themselves: the bot's activity line, where its browser is
+(`status_cached`, no Chrome probe), then its newest `last` transcript lines
+(`CHAT_LINES` 30, max 80, `CHAT_CHARS` 6000, newest win) from
+`transcript_lines(notes=True)`: TASK / USER / BOT DID (chip + 160 chars of
+result) / BOT NOTED / BOT ASKED / BOT ASKED APPROVAL / BOT FINISHED / ERROR,
+after the bot's context floor, oldest first, without the `[#n]` prefixes
+(those are `recall`'s numbers for Super Bot's own transcript). The chip is
+`read "X"'s chat · N lines read` and, unlike the other `SUPER_TOOLS`, keeps
+its detail (the user can expand what Super Bot read). No card, no `call_key` (repeatable), target
+resolved by `_handoff_target` (Super Bot's own name refused). Read-only on
+purpose: no answer to a card, no message into that chat (rule 2, one writer
+per bot chat); a new task is a `handoff`. The agent engine flips
+`web_touched` on it like a hand-off result: that text came off the web
+through another bot, so every write and command asks afterwards, under full
+access too.
 
 **Flow.** `Bot.handoff(name, task)` resolves the target among the
 ordinary bots (exact name, case-insensitive, then a unique prefix; two bots
