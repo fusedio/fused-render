@@ -90,3 +90,89 @@ export function rowKeys(evs: readonly BotEvent[], botId: string): string[] {
     return n === 1 ? `${botId}:${e.seq}` : `${botId}:${e.seq}#${n}`;
   });
 }
+
+// ---- step fold: the bot's process folds behind the exchange (the cloud transcript's "show more", design.md §A) ----
+/**
+ * One STRETCH of the thread that folds: consecutive `thought` / `action` / `note` rows between two BOUNDARIES. A
+ * boundary is any row that is part of the exchange and stays visible: your message, an approval / question card, the
+ * `done` / `error` that ends a task, the Clear marker, a hand-off or build card, and a thought or note that carries an
+ * app card (an outcome, bot.py `Here's <app>:`), a reaction, or a reply quoting it (hiding it hides your own mark).
+ * So a task with three back-and-forths is three folds, each opening only the steps between that question and its
+ * answer, not one lid over the whole task (owner, 2026-10-13).
+ *
+ * WHERE THE TRIGGER SITS: always a muted line of its own IN PLACE of the stretch, drawn by the stretch's first hidden
+ * row (Thread.tsx Row). The cloud transcript seats its two words on the prose that ends the run; here that was tried
+ * and dropped (owner, 2026-10-13): a thread of bubbles has the steps BETWEEN the bubbles, and a word hanging off the
+ * end of a result sentence read as two kinds of control for one thing.
+ * `key` is the seq of the first hidden row: the fold's identity, stable across appends and the 600-row trim.
+ */
+export interface FoldStretch {
+  key: number;
+  /** Indices (into `evs`) hidden while folded. The first one draws the trigger line and is never hidden itself. */
+  hidden: number[];
+  /** How many `action` rows hide, and the seconds the stretch spans: the trigger's hover. */
+  steps: number;
+  secs: number;
+}
+
+/** The `done` / `error` bubble a task ends on. A retried `error` ("Model call failed", no `trace`: the engine carries
+ *  on) is a step, not an end; only one with a `trace` (process death, three strikes) closes the task. Cards (hand-off
+ *  result, build notice) and the seeded greeting are not closers. */
+export const isTaskEnd = (e: BotEvent): boolean =>
+  (e.role === "done" || (e.role === "error" && e.trace != null)) && !isHandoff(e) && e.source !== "build" && e.source !== "seed";
+
+/** The one `error` that is a step: a model call the engine retries past (agent_engine.py `Model call failed`,
+ *  steps_engine.py `Model returned no usable JSON; retrying`). Every other error (a channel rejection, "Busy with
+ *  another task", a playbook that would not learn) is a line to you and stays visible. */
+const isRetryError = (e: BotEvent): boolean =>
+  e.role === "error" && e.trace == null && /^Model (call failed|returned no usable JSON)/.test(e.text || "");
+
+/** A row the fold may hide: the bot's process, unless something made it part of the exchange. `keep` is the thread's
+ *  own extra test (a note whose text links an app the thread draws a card for, apps.ts `appFromText`). */
+const hideable = (e: BotEvent, rx: Record<number, string>, quoted: Set<number>, keep: (e: BotEvent) => boolean): boolean =>
+  (e.role === "thought" || e.role === "action" || e.role === "note" || isRetryError(e))
+  // The Clear marker is a `note` too (source "clear"): the other fold's own boundary, never a step.
+  && e.source !== "clear" && !e.app?.dir && !e.build && !isHandoff(e) && !rx[e.seq] && !quoted.has(e.seq) && !keep(e);
+
+export interface FoldOpts {
+  reactions?: Record<number, string>;
+  /** The bot is mid-task, so a stretch that runs to the END of the list is still growing and is left alone (its
+   *  progress is the point; a lid that goes on per step comes straight back off). */
+  live: boolean;
+  /** Rows the thread draws something for beyond their text (an app card inferred from the text): never hidden. */
+  keep?: (e: BotEvent) => boolean;
+}
+
+/** The fold stretches of a thread. */
+export function foldStretches(evs: readonly BotEvent[], { reactions, live, keep = () => false }: FoldOpts): FoldStretch[] {
+  const quoted = new Set<number>();
+  for (const e of evs) if (e.reply?.seq != null) quoted.add(e.reply.seq);
+  const rx = reactions || {};
+  const out: FoldStretch[] = [];
+  let run: number[] = [];
+  const close = (end: number) => {
+    if (!run.length) return;
+    const first = evs[run[0]], last = evs[end >= 0 ? end : run[run.length - 1]];
+    out.push({
+      key: first.seq, hidden: run,
+      steps: run.filter((j) => evs[j].role === "action").length, secs: Math.max(0, last.ts - first.ts),
+    });
+    run = [];
+  };
+  for (let i = 0; i < evs.length; i++) {
+    const e = evs[i];
+    if (isNoise(e)) continue;  // draws nothing; neither hides nor bounds
+    if (hideable(e, rx, quoted, keep)) { run.push(i); continue; }
+    close(i);
+  }
+  if (!live) close(-1);
+  return out;
+}
+
+/** The trigger's hover: "12 steps · 48s", "1 step", "3 messages · 5s". */
+export function foldHint(t: FoldStretch): string {
+  const n = t.steps ? `${t.steps} step${t.steps === 1 ? "" : "s"}` : `${t.hidden.length} message${t.hidden.length === 1 ? "" : "s"}`;
+  return t.secs >= 1 ? `${n} · ${fmtSecsShort(t.secs)}` : n;
+}
+const fmtSecsShort = (s: number): string => (s < 60 ? `${Math.round(s)}s` : s < 3600 ? `${Math.floor(s / 60)}m ${Math.round(s % 60)}s` : `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`);
+

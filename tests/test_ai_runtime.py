@@ -3540,6 +3540,726 @@ def test_loading_a_second_text_model_evicts_the_first(fake_runner):
     assert not supervisor._alive(first)
 
 
+def _retry_generate_text(model, timeout=10.0, *, requester_id="", requester_label=""):
+    """`runtime.js`'s own retry contract, reproduced in Python: call, and on
+    `ModelNotReady` try again — forever, as far as the client is concerned.
+    Returns `"ready"`, or re-raises `ModelSlotConflict` the way a client that
+    has learned the conflict is terminal (SPEC-model-slot-conflict.md §3)
+    would stop and surface it instead of retrying. `requester_id`/
+    `requester_label` are this simulated caller's own identity — every
+    retry of the same logical request carries the same one, the way one
+    page's own retries never change who is asking."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            list(supervisor.generate_text(model, {"messages": []},
+                                          requester_id=requester_id,
+                                          requester_label=requester_label))
+            return "ready"
+        except supervisor.ModelNotReady:
+            time.sleep(0.05)
+            continue
+    raise AssertionError(f"{model} never became ready within {timeout}s")
+
+
+def _force_conflict(first, second, *, r1="r1", r2="r2"):
+    """Two distinct requesters fighting over one capability
+    (SPEC-model-slot-conflict.md §1): `second` (`r2`) claims the empty slot,
+    `first` (`r1`) evicts it — an ordinary cross-requester switch, recorded
+    but not yet a conflict — and `second`'s own retry, which would evict
+    `first` a second time, is the second cross-requester eviction that opens
+    the conflict. Leaves `first` resident and `second` refused with a live
+    `ModelSlotConflict`, which this returns."""
+    with pytest.raises(supervisor.ModelNotReady):
+        list(supervisor.generate_text(second, {"messages": []}, requester_id=r2))
+    _wait_ready(second)
+    with pytest.raises(supervisor.ModelNotReady):
+        list(supervisor.generate_text(first, {"messages": []}, requester_id=r1))
+    _wait_ready(first)
+    with pytest.raises(supervisor.ModelSlotConflict) as caught:
+        list(supervisor.generate_text(second, {"messages": []}, requester_id=r2))
+    return caught.value
+
+
+def test_an_unheld_conflict_names_every_contender_and_the_resident_served():
+    """The resident keeps answering while the OTHERS' loads are refused — the
+    message has to say which model is which, for two contenders and for
+    three or more, rather than naming only the non-resident ones as if
+    nobody were being served at all."""
+    two = supervisor.ModelSlotConflict(
+        registry.TEXT_GENERATION, ["org/a", "org/b"], "org/b", held=False)
+    assert str(two) == (
+        "org/a and org/b are contending for the text-generation slot — "
+        "org/b stays loaded, org/a can't take over. Pick one on the AI "
+        "Models page.")
+
+    three = supervisor.ModelSlotConflict(
+        registry.TEXT_GENERATION, ["org/a", "org/b", "org/c"], "org/b", held=False)
+    assert str(three) == (
+        "org/a, org/b, and org/c are contending for the text-generation "
+        "slot — org/b stays loaded, org/a and org/c can't take over. Pick "
+        "one on the AI Models page.")
+
+
+def test_two_requesters_conflict_on_the_second_cross_requester_eviction(fake_runner):
+    """SPEC-model-slot-conflict.md §1, required test: two requesters each
+    wanting their own model conflict on the SECOND cross-requester
+    eviction — r2's org/b evicting r1's org/a is the first (an ordinary
+    switch, indistinguishable from someone changing their mind), and r1's
+    org/a trying to evict org/b right back is the one that closes it."""
+    with pytest.raises(supervisor.ModelNotReady):
+        list(supervisor.generate_text("org/a", {"messages": []}, requester_id="r1"))
+    _wait_ready("org/a")
+
+    with pytest.raises(supervisor.ModelNotReady):
+        list(supervisor.generate_text("org/b", {"messages": []}, requester_id="r2"))
+    _wait_ready("org/b")
+    assert supervisor.describe()["conflicts"] == []
+
+    with pytest.raises(supervisor.ModelSlotConflict) as caught:
+        list(supervisor.generate_text("org/a", {"messages": []}, requester_id="r1"))
+    assert caught.value.capability == registry.TEXT_GENERATION
+    assert set(caught.value.models) == {"org/a", "org/b"}
+    assert caught.value.resident == "org/b"
+    assert caught.value.held is False
+
+    conflicts = supervisor.describe()["conflicts"]
+    assert len(conflicts) == 1
+    assert conflicts[0]["capability"] == registry.TEXT_GENERATION
+    assert set(conflicts[0]["models"]) == {"org/a", "org/b"}
+    assert conflicts[0]["resident"] == "org/b"
+    assert conflicts[0]["held"] is False
+
+    # org/b — the resident model — is unaffected: it just answers.
+    events = list(supervisor.generate_text("org/b", {"messages": []}, requester_id="r2"))
+    assert events[-1]["ok"] is True
+    assert supervisor.describe()["loaded"][0]["model"] == "org/b"
+
+    # A third contender during the live conflict is folded in rather than
+    # replacing the two that first collided.
+    with pytest.raises(supervisor.ModelSlotConflict) as third:
+        list(supervisor.generate_text("org/c", {"messages": []}, requester_id="r3"))
+    assert set(third.value.models) == {"org/a", "org/b", "org/c"}
+
+
+def test_a_single_switch_back_is_not_a_conflict(fake_runner):
+    """A -> B -> A, all from the SAME (anonymous) requester, is never a
+    conflict — `_request_path_conflict` returns `None` on the very first
+    check, `current.requester_id == requester_id`, before anything is even
+    recorded. See `test_one_requester_alternating_is_never_a_conflict` for
+    the same rule exercised with named requesters instead."""
+    with pytest.raises(supervisor.ModelNotReady):
+        list(supervisor.generate_text("org/a", {"messages": []}))
+    _wait_ready("org/a")
+    with pytest.raises(supervisor.ModelNotReady):
+        list(supervisor.generate_text("org/b", {"messages": []}))
+    _wait_ready("org/b")
+    with pytest.raises(supervisor.ModelNotReady):
+        list(supervisor.generate_text("org/a", {"messages": []}))
+    _wait_ready("org/a")
+
+    assert supervisor.describe()["conflicts"] == []
+    assert supervisor.describe()["loaded"][0]["model"] == "org/a"
+
+
+def test_a_one_way_sequence_of_three_models_is_not_a_ping_pong(fake_runner):
+    """A -> B -> C, all from the SAME (anonymous) requester, is someone
+    browsing through models, never a conflict — every one of these
+    evictions returns `None` on `current.requester_id == requester_id`
+    before `_swap_chains` is ever consulted."""
+    with pytest.raises(supervisor.ModelNotReady):
+        list(supervisor.generate_text("org/a", {"messages": []}))
+    _wait_ready("org/a")
+
+    with pytest.raises(supervisor.ModelNotReady):
+        list(supervisor.generate_text("org/b", {"messages": []}))
+    _wait_ready("org/b")
+
+    # org/c evicts org/b within the window — but org/c is not org/a, the
+    # model that got evicted, so this is not the loop closing.
+    with pytest.raises(supervisor.ModelNotReady):
+        list(supervisor.generate_text("org/c", {"messages": []}))
+    _wait_ready("org/c")
+
+    assert supervisor.describe()["conflicts"] == []
+    assert supervisor.describe()["loaded"][0]["model"] == "org/c"
+
+
+def test_one_requester_alternating_is_never_a_conflict(fake_runner):
+    """SPEC-model-slot-conflict.md §1, required test: a router and a
+    generator (one requester) alternating org/a -> org/b -> org/a -> org/b
+    is never a conflict, however fast or however many times — the identity
+    check in `_request_path_conflict` returns `None` before anything is
+    even recorded, because `current.requester_id == requester_id` on every
+    one of these evictions."""
+    for _ in range(4):
+        assert _retry_generate_text("org/a", requester_id="solo") == "ready"
+        assert _retry_generate_text("org/b", requester_id="solo") == "ready"
+    assert supervisor.describe()["conflicts"] == []
+
+
+def test_two_requesters_retrying_forever_end_in_a_conflict_not_forever(fake_runner):
+    """The user-facing promise end to end: two callers retrying forever
+    (`_retry_generate_text`, `runtime.js`'s own contract), each wanting its
+    own model, stop evicting each other and one gets a terminal error
+    instead of looping — bounded at the SECOND cross-requester eviction,
+    not the first: a lone switch to a different requester's model must
+    still succeed."""
+    assert _retry_generate_text("org/b", requester_id="r2") == "ready"
+    assert _retry_generate_text("org/a", requester_id="r1") == "ready"
+    with pytest.raises(supervisor.ModelSlotConflict):
+        _retry_generate_text("org/b", requester_id="r2")
+
+
+def test_three_requesters_rotating_end_in_a_conflict(fake_runner):
+    """SPEC-model-slot-conflict.md §1, required test: three requesters
+    rotating org/a -> org/b -> org/c -> org/a. The conflict is caught as
+    soon as a requester's model comes back to evict another requester's
+    within the window — r3's eviction of r2's org/b is itself the SECOND
+    cross-requester eviction in the window (r1 evicted nobody, r2 evicted
+    r1, r3 evicts r2), so it is the one that opens the conflict; r1 never
+    literally has to come back to org/a for the loop to be caught."""
+    with pytest.raises(supervisor.ModelNotReady):
+        list(supervisor.generate_text("org/a", {"messages": []}, requester_id="r1"))
+    _wait_ready("org/a")
+    with pytest.raises(supervisor.ModelNotReady):
+        list(supervisor.generate_text("org/b", {"messages": []}, requester_id="r2"))
+    _wait_ready("org/b")
+    with pytest.raises(supervisor.ModelSlotConflict):
+        list(supervisor.generate_text("org/c", {"messages": []}, requester_id="r3"))
+
+
+def test_a_one_off_switch_by_another_requester_is_ordinary(fake_runner):
+    """SPEC-model-slot-conflict.md §1, required test: r2 replaces r1's model
+    once and never comes back — an ordinary switch, not a conflict, however
+    many times r2 itself keeps retrying afterward."""
+    with pytest.raises(supervisor.ModelNotReady):
+        list(supervisor.generate_text("org/a", {"messages": []}, requester_id="r1"))
+    _wait_ready("org/a")
+    assert _retry_generate_text("org/b", requester_id="r2") == "ready"
+    assert _retry_generate_text("org/b", requester_id="r2") == "ready"
+    assert supervisor.describe()["conflicts"] == []
+
+
+def test_taking_over_the_users_own_model_never_taints_a_brand_new_requester(fake_runner):
+    """SPEC-model-slot-conflict.md §1: the user explicitly loads org/a (not
+    through the request path); X then takes the slot for org/b, a one-off
+    takeover of something nobody was fighting over; Y, a first-time
+    requester, then takes the slot back for org/c. X was never "fighting"
+    anyone for org/a — the user just set it — so Y's takeover of X's model
+    must stay ordinary, not get retroactively implicated as "X's second
+    cross-requester eviction"."""
+    supervisor.load("org/a", registry.TEXT_GENERATION, requester_id=supervisor.USER_REQUESTER_ID)
+    _wait_ready("org/a")
+    assert _retry_generate_text("org/b", requester_id="x") == "ready"
+    assert _retry_generate_text("org/c", requester_id="y") == "ready"
+    assert supervisor.describe()["conflicts"] == []
+
+
+def test_a_single_switch_outside_the_conflict_window_still_evicts(fake_runner):
+    """The other half of the rule: a one-off switch — not a tight loop — must
+    keep working exactly as it does today, forever, not just on its first
+    hop. Simulated by backdating the capability's own swap-chain entry past
+    `CONFLICT_WINDOW_S` rather than sleeping the real window away — once it
+    is pruned, the next eviction starts a fresh chain instead of continuing
+    one that would otherwise be closing its loop."""
+    with pytest.raises(supervisor.ModelNotReady):
+        list(supervisor.generate_text("org/a", {"messages": []}, requester_id="r1"))
+    _wait_ready("org/a")
+    with pytest.raises(supervisor.ModelNotReady):
+        list(supervisor.generate_text("org/b", {"messages": []}, requester_id="r2"))
+    _wait_ready("org/b")
+    stale = time.time() - supervisor.CONFLICT_WINDOW_S - 1
+    supervisor._swap_chains[registry.TEXT_GENERATION] = [(stale, "r1")]
+
+    # org/a's retry now evicts org/b cleanly — old news, not a loop.
+    with pytest.raises(supervisor.ModelNotReady):
+        list(supervisor.generate_text("org/a", {"messages": []}, requester_id="r1"))
+    _wait_ready("org/a")
+    assert supervisor.describe()["conflicts"] == []
+    assert supervisor.describe()["loaded"][0]["model"] == "org/a"
+
+
+def test_manual_load_and_unload_clear_a_live_conflict(fake_runner):
+    """SPEC-model-slot-conflict.md §1: explicit user actions are never
+    blocked and always settle a conflict standing on that capability."""
+    _force_conflict("org/a", "org/b")
+    assert supervisor.describe()["conflicts"]
+
+    # A manual load — not a retry — is never refused, and it clears the
+    # conflict it just resolved by picking a side.
+    supervisor.load("org/a", registry.TEXT_GENERATION)
+    _wait_ready("org/a")
+    assert supervisor.describe()["conflicts"] == []
+
+    # Empty the slot first — `_force_conflict` assumes a fresh capability, and
+    # `org/a` is still resident from the load above.
+    supervisor.unload(capability=registry.TEXT_GENERATION)
+    assert supervisor.describe()["conflicts"] == []
+
+    # Rebuild the conflict, then prove `unload` clears it too.
+    _force_conflict("org/b", "org/a")
+    assert supervisor.describe()["conflicts"]
+    supervisor.unload(capability=registry.TEXT_GENERATION)
+    assert supervisor.describe()["conflicts"] == []
+
+
+def test_a_benchmark_cold_load_updates_the_stale_resident_on_an_unheld_conflict(fake_runner):
+    """`ai/benchmark.py`'s own entry (`respect_holds=True`) refuses a HELD
+    conflict for a different model, but an UNHELD one does not stop it —
+    `_force_conflict` leaves one standing with `org/a` resident. Benchmark
+    then cold-loads a third model, `org/c`, which evicts `org/a`. The
+    conflict's own `resident` field must follow that eviction instead of
+    going on naming `org/a`, which is no longer loaded at all — a stale
+    `resident` would mean `org/c`'s own later request-path call never
+    matches it and gets folded into the conflict and refused right back,
+    making the slot benchmark just freed up unusable."""
+    _force_conflict("org/a", "org/b")
+    conflict = supervisor.describe()["conflicts"][0]
+    assert conflict["resident"] == "org/a"
+
+    supervisor._start_resident("org/c", registry.TEXT_GENERATION, respect_holds=True)
+    _wait_ready("org/c")
+
+    conflict = supervisor.describe()["conflicts"][0]
+    assert conflict["resident"] == "org/c"
+    assert "org/c" in conflict["models"]
+    assert conflict["held"] is False
+
+    # And org/c — the model benchmark just installed — keeps answering
+    # normally, exactly as a resident is supposed to while a conflict stands.
+    assert _retry_generate_text("org/c", requester_id="r3") == "ready"
+
+
+def test_resolve_keep_a_model_holds_the_slot_against_the_other(fake_runner):
+    _force_conflict("org/a", "org/b")
+
+    supervisor.resolve_conflict(registry.TEXT_GENERATION, keep="org/b")
+    _wait_ready("org/b")
+    conflicts = supervisor.describe()["conflicts"]
+    assert len(conflicts) == 1
+    assert conflicts[0]["resident"] == "org/b"
+    assert conflicts[0]["held"] is True
+
+    # The held model keeps answering normally.
+    events = list(supervisor.generate_text("org/b", {"messages": []}))
+    assert events[-1]["ok"] is True
+
+    # The other model stays refused — WITHOUT evicting — even though the
+    # conflict window has long since lapsed; a hold does not expire on its
+    # own.
+    with pytest.raises(supervisor.ModelSlotConflict) as refused:
+        list(supervisor.generate_text("org/a", {"messages": []}))
+    assert refused.value.held is True
+    assert refused.value.resident == "org/b"
+    assert supervisor.describe()["loaded"][0]["model"] == "org/b"
+
+    # `release` restores ordinary auto-load.
+    assert supervisor.release_conflict(registry.TEXT_GENERATION) is True
+    assert supervisor.describe()["conflicts"] == []
+    with pytest.raises(supervisor.ModelNotReady):
+        list(supervisor.generate_text("org/a", {"messages": []}))
+    _wait_ready("org/a")
+    assert supervisor.describe()["loaded"][0]["model"] == "org/a"
+
+
+def test_resolve_keep_none_stops_both_and_refuses_until_release(fake_runner):
+    _force_conflict("org/a", "org/b")
+
+    supervisor.resolve_conflict(registry.TEXT_GENERATION, keep=None)
+    assert supervisor.describe()["loaded"] == []
+    conflicts = supervisor.describe()["conflicts"]
+    assert len(conflicts) == 1
+    assert conflicts[0]["resident"] is None
+    assert conflicts[0]["held"] is True
+
+    # Any request-path load is refused, including for the model that was
+    # just resident — the capability is held EMPTY.
+    with pytest.raises(supervisor.ModelSlotConflict) as refused:
+        list(supervisor.generate_text("org/b", {"messages": []}))
+    assert refused.value.held is True
+    assert refused.value.resident is None
+    assert supervisor.describe()["loaded"] == []
+
+    assert supervisor.release_conflict(registry.TEXT_GENERATION) is True
+    with pytest.raises(supervisor.ModelNotReady):
+        list(supervisor.generate_text("org/a", {"messages": []}))
+    _wait_ready("org/a")
+
+
+def test_a_conflict_reaches_api_ai_as_a_409_with_the_models_and_no_retry_bait(
+        client, fake_runner):
+    """SPEC-model-slot-conflict.md §2: the 409 body names the code the client
+    is meant to branch on (`model_slot_conflict`, never `model_loading` — a
+    client that only retries `model_loading` must not retry this one), plus
+    the capability and the competing models. `_force_conflict` drives the
+    two requesters directly (identity is the server's own thing to attribute,
+    not something an inline anonymous retry sequence can trigger any more —
+    SPEC-model-slot-conflict.md §1), then the actual HTTP relay is exercised
+    for the conflict's own contender, carrying its own `X-Fused-Requester`."""
+    _force_conflict("org/a", "org/b")
+
+    response = client.post("/api/ai", json={"model": "org/b", "prompt": "hi"},
+                           headers={"X-Fused": "1", "X-Fused-Requester": "r2"})
+    assert response.status_code == 409
+    body = response.json()
+    assert body["ok"] is False
+    assert body["error"]["type"] == "model_slot_conflict"
+    assert body["error"]["code"] == "model_slot_conflict"
+    assert body["error"]["capability"] == registry.TEXT_GENERATION
+    assert set(body["error"]["models"]) == {"org/a", "org/b"}
+    assert body["error"]["resident"] == "org/a"
+    assert body["error"]["held"] is False
+
+
+def test_the_resolve_endpoint_keeps_a_model_and_holds_the_slot(client, fake_runner):
+    _force_conflict("org/a", "org/b")
+
+    response = client.post(
+        "/api/ai/runtime/conflicts/resolve",
+        json={"capability": registry.TEXT_GENERATION, "keep": "org/b"},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 200
+    # The full runtime comes back on this response, not just the load-start
+    # — the same shape `/unload` and `/release` already answer with, so a
+    # caller can publish it directly instead of waiting on a separate poll.
+    body = response.json()
+    assert body["model"] == "org/b"
+    assert len(body["conflicts"]) == 1 and body["conflicts"][0]["held"] is True
+    _wait_ready("org/b")
+
+    conflicts = supervisor.describe()["conflicts"]
+    assert len(conflicts) == 1 and conflicts[0]["held"] is True
+
+    refused = client.post("/api/ai", json={"model": "org/a", "prompt": "hi"},
+                          headers={"X-Fused": "1"})
+    assert refused.status_code == 409
+    assert refused.json()["error"]["held"] is True
+
+    released = client.post("/api/ai/runtime/conflicts/release",
+                           json={"capability": registry.TEXT_GENERATION},
+                           headers={"X-Fused": "1"})
+    assert released.status_code == 200
+    assert released.json()["released"] is True
+    assert supervisor.describe()["conflicts"] == []
+
+
+def test_the_resolve_endpoint_with_keep_null_stops_both(client, fake_runner):
+    _force_conflict("org/a", "org/b")
+
+    response = client.post(
+        "/api/ai/runtime/conflicts/resolve",
+        json={"capability": registry.TEXT_GENERATION, "keep": None},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["resident"] is None
+    assert body["loaded"] == []
+    assert supervisor.describe()["loaded"] == []
+
+    refused = client.post("/api/ai", json={"model": "org/b", "prompt": "hi"},
+                          headers={"X-Fused": "1"})
+    assert refused.status_code == 409
+    assert refused.json()["error"]["resident"] is None
+    assert refused.json()["error"]["held"] is True
+
+
+def test_the_unload_route_clears_a_held_conflict(client, fake_runner):
+    """`/api/ai/runtime/unload` is as much the user settling a conflict as
+    `/conflicts/resolve` is — it must clear a HELD conflict too, not just an
+    unheld one left over from an un-resolved standoff."""
+    _force_conflict("org/a", "org/b")
+    supervisor.resolve_conflict(registry.TEXT_GENERATION, keep="org/a")
+    _wait_ready("org/a")
+    assert supervisor.describe()["conflicts"][0]["held"] is True
+
+    response = client.post(
+        "/api/ai/runtime/unload",
+        json={"capability": registry.TEXT_GENERATION},
+        headers={"X-Fused": "1", "X-Fused-Requester": "user"})
+    assert response.status_code == 200
+    assert response.json()["stopped"] is True
+    assert supervisor.describe()["conflicts"] == []
+
+
+def test_resolve_keep_writes_the_hold_atomically_with_the_eviction(fake_runner, monkeypatch):
+    """`resolve_conflict(keep=<model>)` evicts the loser before the new held
+    `ConflictState` is visible if the two are written in separate `_lock`
+    holds — a caller racing into the gap (another request-path load, or a
+    second resolve/release) would see the capability as conflict-free while
+    the loser's worker is still (slowly) tearing down. `_start_resident`
+    now writes `hold` in the SAME locked block that evicts, so the held
+    conflict is already standing the instant `_terminate` is reached — well
+    before it returns."""
+    _force_conflict("org/b", "org/a")
+
+    real_terminate = supervisor._terminate
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_terminate(worker):
+        started.set()
+        release.wait(timeout=5)
+        real_terminate(worker)
+
+    monkeypatch.setattr(supervisor, "_terminate", slow_terminate)
+
+    t = threading.Thread(
+        target=supervisor.resolve_conflict, args=(registry.TEXT_GENERATION, "org/a"))
+    t.start()
+    try:
+        assert started.wait(timeout=5), "resolve's eviction never reached _terminate"
+        conflicts = supervisor.describe()["conflicts"]
+        assert len(conflicts) == 1
+        assert conflicts[0]["held"] is True
+        assert conflicts[0]["resident"] == "org/a"
+    finally:
+        release.set()
+        t.join(timeout=5)
+
+
+def test_resolve_keep_none_holds_the_capability_empty_atomically_with_the_unload(
+        fake_runner, monkeypatch):
+    """Same race as the `keep=<model>` case above, for `keep: null`: the
+    empty hold has to be standing before `_remove`'s teardown of the stopped
+    worker returns, not only after."""
+    with pytest.raises(supervisor.ModelNotReady):
+        list(supervisor.generate_text("org/a", {"messages": []}))
+    _wait_ready("org/a")
+
+    real_terminate = supervisor._terminate
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_terminate(worker):
+        started.set()
+        release.wait(timeout=5)
+        real_terminate(worker)
+
+    monkeypatch.setattr(supervisor, "_terminate", slow_terminate)
+
+    t = threading.Thread(
+        target=supervisor.resolve_conflict, args=(registry.TEXT_GENERATION, None))
+    t.start()
+    try:
+        assert started.wait(timeout=5), "resolve's unload never reached _terminate"
+        conflicts = supervisor.describe()["conflicts"]
+        assert len(conflicts) == 1
+        assert conflicts[0]["held"] is True
+        assert conflicts[0]["resident"] is None
+    finally:
+        release.set()
+        t.join(timeout=5)
+
+
+def test_reap_idle_clears_an_unheld_conflict_on_its_resident(fake_runner, monkeypatch):
+    """An unheld conflict names a standoff over a slot that still has a
+    resident; once that resident is gone — by the idle reaper, same as by a
+    manual unload — the standoff it named is over too, not left to stand
+    forever with no worker left for `/conflicts/resolve` to act on."""
+    _force_conflict("org/b", "org/a")
+    worker = _wait_ready("org/b")
+    assert len(supervisor.describe()["conflicts"]) == 1
+
+    worker.last_activity = time.monotonic() - 10_000
+    assert supervisor.reap_idle(time.monotonic()) == ["org/b"]
+    assert supervisor.describe()["conflicts"] == []
+
+
+def test_reap_idle_does_not_clear_a_held_conflict_on_its_resident(fake_runner):
+    """A held conflict is the user's own decision (`resolve_conflict`); the
+    idle reaper removing the worker it is about must not silently lift it —
+    only `release_conflict` does that."""
+    _force_conflict("org/b", "org/a")
+
+    supervisor.resolve_conflict(registry.TEXT_GENERATION, keep="org/b")
+    worker = _wait_ready("org/b")
+    assert supervisor.describe()["conflicts"][0]["held"] is True
+
+    worker.last_activity = time.monotonic() - 10_000
+    assert supervisor.reap_idle(time.monotonic()) == ["org/b"]
+    conflicts = supervisor.describe()["conflicts"]
+    assert len(conflicts) == 1
+    assert conflicts[0]["held"] is True
+    assert conflicts[0]["resident"] == "org/b"
+
+
+def test_a_failed_bring_up_clears_an_unheld_conflict_on_its_resident(
+        fake_runner, monkeypatch):
+    """An unheld conflict names a standoff over a slot that still has a
+    resident; `_bring_up`'s own failure path pops a worker from `_workers`
+    the same as `_claim_for_removal` does on an eviction/unload/reap, and
+    must clear the standoff the same way, not just those other paths."""
+    _force_conflict("org/b", "org/a")
+    assert len(supervisor.describe()["conflicts"]) == 1
+
+    runner = registry.for_capability(registry.TEXT_GENERATION)
+    worker = supervisor.Worker(model="org/b", capability=registry.TEXT_GENERATION,
+                               runner_code=runner.code, token="t")
+    with supervisor._lock:
+        supervisor._workers[registry.TEXT_GENERATION] = worker
+
+    def doomed_ensure_venv(r, w, j):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(supervisor, "_ensure_venv", doomed_ensure_venv)
+    supervisor._bring_up(runner, worker, "some-job")
+
+    assert supervisor._workers.get(registry.TEXT_GENERATION) is None
+    assert supervisor.describe()["conflicts"] == []
+
+
+def test_drop_gone_clears_an_unheld_conflict_on_its_resident(fake_runner):
+    """Same guarantee as the reap/unload/bring-up-failure paths, for a
+    worker whose PROCESS simply died — `refresh_memory`/`ready_worker`'s own
+    removal path (`_drop_gone`)."""
+    _force_conflict("org/b", "org/a")
+    worker = _wait_ready("org/b")
+    assert len(supervisor.describe()["conflicts"]) == 1
+
+    supervisor._drop_gone(worker)
+
+    assert supervisor._workers.get(registry.TEXT_GENERATION) is None
+    assert supervisor.describe()["conflicts"] == []
+
+
+def test_an_internal_unload_does_not_clear_a_held_conflict(fake_runner):
+    """`unload()` defaults to `explicit=False` — an internal caller
+    (`evict_stale_engines`, the benchmark teardown, Monitor's Stop) must not
+    silently lift the user's own `resolve_conflict` hold just because it
+    happens to remove the worker the hold is about."""
+    _force_conflict("org/b", "org/a")
+    supervisor.resolve_conflict(registry.TEXT_GENERATION, keep="org/b")
+    _wait_ready("org/b")
+    assert supervisor.describe()["conflicts"][0]["held"] is True
+
+    assert supervisor.unload(capability=registry.TEXT_GENERATION) is True
+
+    conflicts = supervisor.describe()["conflicts"]
+    assert len(conflicts) == 1
+    assert conflicts[0]["held"] is True
+    assert conflicts[0]["resident"] == "org/b"
+
+
+def test_an_explicit_unload_clears_a_held_conflict_atomically_with_the_eviction(
+        fake_runner, monkeypatch):
+    """`/api/ai/runtime/unload` (`explicit=True`) IS the user settling a
+    conflict, held or not — and the clear has to land in the same locked
+    block that pops the worker, not after `_remove`'s ~9s-worst-case
+    teardown returns, or a caller racing into that gap would still see the
+    stale held conflict standing over a worker that is already gone."""
+    _force_conflict("org/b", "org/a")
+    supervisor.resolve_conflict(registry.TEXT_GENERATION, keep="org/b")
+    _wait_ready("org/b")
+    assert supervisor.describe()["conflicts"][0]["held"] is True
+
+    real_terminate = supervisor._terminate
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_terminate(worker):
+        started.set()
+        release.wait(timeout=5)
+        real_terminate(worker)
+
+    monkeypatch.setattr(supervisor, "_terminate", slow_terminate)
+
+    t = threading.Thread(
+        target=supervisor.unload,
+        kwargs={"capability": registry.TEXT_GENERATION, "explicit": True})
+    t.start()
+    try:
+        assert started.wait(timeout=5), "unload's eviction never reached _terminate"
+        assert supervisor.describe()["conflicts"] == []
+    finally:
+        release.set()
+        t.join(timeout=5)
+
+
+def test_the_resolve_endpoint_rejects_an_unknown_capability(client):
+    response = client.post(
+        "/api/ai/runtime/conflicts/resolve",
+        json={"capability": "telepathy", "keep": None},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 400
+
+
+def test_the_release_endpoint_rejects_an_unknown_capability(client):
+    response = client.post(
+        "/api/ai/runtime/conflicts/release",
+        json={"capability": "telepathy"},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 400
+
+
+def test_the_resolve_endpoint_rejects_a_keep_that_is_not_in_the_conflict(
+        client, fake_runner):
+    """`/conflicts/resolve` is this capability's answer to the conflict
+    STANDING on it — `keep` names one of the two (or more) models that are
+    actually contending, not an arbitrary third repo `supervisor.load` would
+    otherwise accept unquestioned (B6: this route used to pass any string
+    straight through, skipping every check `/load` itself makes)."""
+    _force_conflict("org/a", "org/b")
+
+    response = client.post(
+        "/api/ai/runtime/conflicts/resolve",
+        json={"capability": registry.TEXT_GENERATION, "keep": "org/c"},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 409
+    assert "org/c" in response.json()["error"]
+    # Rejected before anything happened — the standing conflict is untouched.
+    conflicts = supervisor.describe()["conflicts"]
+    assert len(conflicts) == 1 and conflicts[0]["held"] is False
+
+
+def test_the_resolve_endpoint_still_allows_a_pre_emptive_keep_with_no_conflict_standing(
+        client, fake_runner):
+    """Calling `resolve` before `_start_resident` has detected anything is
+    still a legitimate pre-emptive hold (`resolve_conflict`'s own docstring)
+    — the "keep must be one of the conflict's models" check in the test above
+    only applies once a conflict actually stands; with none standing, any
+    engine-servable model is a valid thing to hold the slot for."""
+    response = client.post(
+        "/api/ai/runtime/conflicts/resolve",
+        json={"capability": registry.TEXT_GENERATION, "keep": "org/a"},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 200
+    assert response.json()["model"] == "org/a"
+
+
+def test_the_resolve_endpoint_runs_loads_own_engine_gap_check(
+        client, fake_runner, monkeypatch):
+    """Same engine-gap refusal `/load` makes (`_engine_gap_refusal`), run here
+    too: `keep` is a load `supervisor.resolve_conflict` would otherwise start
+    unquestioned, for a model no engine on this machine can actually serve."""
+    _force_conflict("org/a", "org/b")
+
+    def gap(model):
+        return {"reason": f"no engine here reads {model}"} if model == "org/a" else None
+
+    monkeypatch.setattr(ai_runtime.catalog, "engine_gap", gap)
+    response = client.post(
+        "/api/ai/runtime/conflicts/resolve",
+        json={"capability": registry.TEXT_GENERATION, "keep": "org/a"},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 409
+    assert "no engine here reads org/a" in response.json()["error"]
+
+
+def test_the_resolve_endpoint_rejects_a_blank_or_whitespace_keep(client, fake_runner):
+    """Item 7: `keep` used to pass `isinstance(keep, str)` and nothing else,
+    so `""` or `"   "` reached `supervisor.load` as a model id instead of
+    being refused the way `/load`'s own `_model_of` refuses a blank `model` —
+    `_validate_load_model` is the one helper both routes share for this."""
+    for keep in ("", "   "):
+        response = client.post(
+            "/api/ai/runtime/conflicts/resolve",
+            json={"capability": registry.TEXT_GENERATION, "keep": keep},
+            headers={"X-Fused": "1"})
+        assert response.status_code == 400, (keep, response.json())
+        assert "keep" in response.json()["error"]
+
+
 def test_evicting_a_model_does_not_block_other_calls_while_it_terminates(fake_runner, monkeypatch):
     """B1: `_terminate` can block for ~9s (a `/quit` POST, SIGTERM+wait,
     SIGKILL+wait, `proc.wait`). If the eviction branch in `_start_resident`
@@ -5393,7 +6113,8 @@ def test_the_runtime_endpoint_reports_runners_and_nothing_loaded(client):
 def test_every_mutating_route_carries_the_guard(client):
     for path in ("/api/ai/runtime/load", "/api/ai/runtime/unload",
                  "/api/ai/runtime/download", "/api/ai/image", "/api/ai/transcribe",
-                 "/api/ai/video", "/api/ai/speech", "/api/ai/vision"):
+                 "/api/ai/video", "/api/ai/speech", "/api/ai/vision",
+                 "/api/ai/runtime/conflicts/resolve", "/api/ai/runtime/conflicts/release"):
         assert client.post(path, json={"model": "org/x", "prompt": "x"}).status_code == 403
 
 
@@ -5423,6 +6144,34 @@ def test_an_unknown_capability_is_refused(client):
     assert response.status_code == 400
 
 
+def test_load_and_unload_answer_a_conflict_with_the_structured_body(client, fake_runner):
+    """`/load` and `/unload` must answer a `ModelSlotConflict` exactly like
+    every other `/api/ai` verb does — `_conflict_error`'s `{ok: False, error:
+    {code: "model_slot_conflict", ...}}` — not a flat `{"error": "<string>"}`
+    a caller can only tell apart from any other 409 by sniffing the message
+    text."""
+    conflict = _force_conflict("org/a", "org/b")
+
+    loaded = client.post(
+        "/api/ai/runtime/load", json={"model": "org/b"},
+        headers={"X-Fused": "1", "X-Fused-Requester": "r2"})
+    assert loaded.status_code == 409
+    body = loaded.json()
+    assert body["ok"] is False
+    assert body["error"]["code"] == "model_slot_conflict"
+    assert body["error"]["capability"] == registry.TEXT_GENERATION
+    assert set(body["error"]["models"]) == {"org/a", "org/b"}
+    assert body["error"]["resident"] == conflict.resident
+
+    unloaded = client.post(
+        "/api/ai/runtime/unload", json={"model": "org/a"},
+        headers={"X-Fused": "1", "X-Fused-Requester": "r2"})
+    assert unloaded.status_code == 409
+    body = unloaded.json()
+    assert body["ok"] is False
+    assert body["error"]["code"] == "model_slot_conflict"
+
+
 def test_ai_without_a_model_still_means_claude(client, monkeypatch):
     # The back-compat promise: every page written against fused.ai() keeps its
     # meaning, because only a slash-bearing id is local.
@@ -5444,7 +6193,7 @@ def test_api_ai_threads_X_Fused_Page_into__ai_relay(client, monkeypatch):
 
     captured = {}
 
-    async def fake_relay(body, session=None, page=""):
+    async def fake_relay(body, session=None, page="", requester_id="", requester_label=""):
         captured["page"] = page
         return ai_mod.JSONResponse({"ok": True, "result": {
             "text": "hi", "model": "m", "usage": None}})
@@ -5584,7 +6333,7 @@ def test_an_image_result_path_that_comes_back_windows_shaped_still_lands_canonic
     rest of the app treats a filesystem path as, the same one `/api/ai/image`
     hands back as `path` — never the raw spelling the render happened to
     report."""
-    def windows_shaped(model, request, job):
+    def windows_shaped(model, request, job, **_kw):
         return {"steps": 1, "path": r"C:\Users\runner\out\one.png"}
 
     monkeypatch.setattr(supervisor, "generate_image", windows_shaped)
@@ -5661,7 +6410,7 @@ def test_a_failed_image_render_with_no_caller_page_points_at_its_output_folder(
     row at the missing file itself would open nothing. The folder that would
     have held it still exists (the route creates it before the render
     starts), so that is the destination instead."""
-    def boom(model, request, job):
+    def boom(model, request, job, **_kw):
         raise RuntimeError("the worker choked")
 
     monkeypatch.setattr(supervisor, "generate_image", boom)
@@ -5680,7 +6429,7 @@ def test_a_successful_image_render_with_no_caller_page_and_no_result_path_falls_
     returned, but a runner that reports success without naming a `path` must
     still land somewhere real — the folder the route already created for it,
     exactly like the failure path already does."""
-    def no_path(model, request, job):
+    def no_path(model, request, job, **_kw):
         return {"steps": 1}
 
     monkeypatch.setattr(supervisor, "generate_image", no_path)
@@ -5691,6 +6440,63 @@ def test_a_successful_image_render_with_no_caller_page_and_no_result_path_falls_
     row = _row(job)
     assert row["state"] == "done"
     assert row["page"] == ai_runtime.canonical_fs_path(str(out.parent))
+
+
+def test_an_image_render_respects_a_held_conflict_instead_of_evicting(
+        fake_image_runner, tmp_path):
+    """Image, video, speech, and transcribe all load their model through
+    `_wait_ready`, which used to call `_start_resident` with its default
+    `request_path=False` — bypassing `_request_path_conflict` and any held
+    conflict entirely, so a render for a model losing a standoff would
+    silently evict the held resident instead of being refused the way
+    `generate_text`'s own request-path loads already are. `_wait_ready`
+    now passes `request_path=True`.
+
+    `start_image` also checks this BEFORE opening the job row at all (see
+    `_start_render`), so the standoff surfaces as a raise the HTTP route can
+    turn into the same structured 409 `/api/ai` already gives, never as a
+    row that opens and then dies — no job is ever created for `job_b`."""
+    out_a = tmp_path / "kept.png"
+    job_a = supervisor.image_job_id("kept")
+    supervisor.start_image("org/kept", {"prompt": "x", "out": str(out_a)}, job_a)
+    assert _row(job_a)["state"] == "done"
+    supervisor.resolve_conflict(registry.IMAGE_GENERATION, keep="org/kept")
+
+    out_b = tmp_path / "other.png"
+    job_b = supervisor.image_job_id("other")
+    with pytest.raises(supervisor.ModelSlotConflict) as exc_info:
+        supervisor.start_image("org/other", {"prompt": "x", "out": str(out_b)}, job_b)
+    assert exc_info.value.resident == "org/kept"
+    assert exc_info.value.held is True
+    assert not any(j["id"] == job_b for j in jobs.list_jobs())
+
+    # The held resident is untouched — never evicted by the refused attempt.
+    assert supervisor.ready_worker(registry.IMAGE_GENERATION, "org/kept") is not None
+
+
+def test_an_image_conflict_reaches_the_route_as_the_same_structured_409(
+        client, fake_image_runner, tmp_path):
+    """The HTTP side of the test above: `/api/ai/image`'s own `start_image`
+    catch turns the raise into `_conflict_error`'s envelope, matching
+    `/api/ai`'s own 409 field for field — a caller branching on
+    `code: "model_slot_conflict"` does not need a second code path for the
+    job-backed verbs."""
+    out_a = tmp_path / "kept.png"
+    job_a = supervisor.image_job_id("kept")
+    supervisor.start_image("org/kept", {"prompt": "x", "out": str(out_a)}, job_a)
+    assert _row(job_a)["state"] == "done"
+    supervisor.resolve_conflict(registry.IMAGE_GENERATION, keep="org/kept")
+
+    response = client.post("/api/ai/image", json={"model": "org/other", "prompt": "x"},
+                           headers={"X-Fused": "1"})
+    assert response.status_code == 409
+    body = response.json()
+    assert body["ok"] is False
+    assert body["error"]["type"] == "model_slot_conflict"
+    assert body["error"]["code"] == "model_slot_conflict"
+    assert body["error"]["capability"] == registry.IMAGE_GENERATION
+    assert body["error"]["resident"] == "org/kept"
+    assert body["error"]["held"] is True
 
 
 def test_an_image_renders_to_disk_and_the_job_finishes(client, fake_image_runner):
@@ -5728,7 +6534,7 @@ def test_the_worker_is_told_where_to_write_the_preview(client, fake_image_runner
     captured = {}
     real_start = supervisor.start_image
 
-    def spy(model, request, job, page="", source=""):
+    def spy(model, request, job, page="", source="", **_kw):
         captured.update(request)
         return real_start(model, request, job, page=page, source=source)
 
@@ -6407,7 +7213,7 @@ def test_the_request_the_WORKER_gets_carries_image_ONLY_when_asked(
     captured = []
     real_start = supervisor.start_image
 
-    def spy(model, request, job, page="", source=""):
+    def spy(model, request, job, page="", source="", **_kw):
         captured.append(dict(request))
         return real_start(model, request, job, page=page, source=source)
 
@@ -6436,7 +7242,7 @@ def test_an_edits_DEFAULTS_are_the_PROTOTYPES_not_the_generate_defaults(
     captured = []
     real_start = supervisor.start_image
     monkeypatch.setattr(supervisor, "start_image",
-                        lambda model, request, job, page="", source="": (captured.append(dict(request)),
+                        lambda model, request, job, page="", source="", **_kw: (captured.append(dict(request)),
                                                       real_start(model, request, job, page=page, source=source))[1])
 
     edit = client.post(
@@ -7803,7 +8609,7 @@ def test_a_video_result_path_that_comes_back_windows_shaped_still_lands_canonica
     """See the image twin of this test — `_start_render` is shared, so the
     same Windows-shaped `result["path"]` has to canonicalize the same way for
     a video render."""
-    def windows_shaped(model, request, job):
+    def windows_shaped(model, request, job, **_kw):
         return {"steps": 1, "path": r"C:\Users\runner\out\one.mp4"}
 
     monkeypatch.setattr(supervisor, "generate_video", windows_shaped)
@@ -7817,7 +8623,7 @@ def test_a_video_result_path_that_comes_back_windows_shaped_still_lands_canonica
 
 def test_a_failed_video_render_with_no_caller_page_points_at_its_output_folder(
         fake_video_runner, monkeypatch, tmp_path):
-    def boom(model, request, job):
+    def boom(model, request, job, **_kw):
         raise RuntimeError("the worker choked")
 
     monkeypatch.setattr(supervisor, "generate_video", boom)
@@ -7938,7 +8744,7 @@ def test_the_partial_path_reaches_the_WORKER_as_well_as_the_page(
     seen = {}
     real = supervisor.start_transcribe
     monkeypatch.setattr(supervisor, "start_transcribe",
-                        lambda model, request, job, page="": (seen.update(request),
+                        lambda model, request, job, page="", **_kw: (seen.update(request),
                                                      real(model, request, job, page=page)))
 
     reply = _post_transcribe(client, path=recording).json()
@@ -8003,7 +8809,7 @@ def test_an_explicit_null_vad_reaches_the_worker_as_the_default(
     seen = {}
     real = supervisor.start_transcribe
     monkeypatch.setattr(supervisor, "start_transcribe",
-                        lambda model, request, job, page="": (seen.update(request),
+                        lambda model, request, job, page="", **_kw: (seen.update(request),
                                                      real(model, request, job, page=page)))
     for sent, expected in (({}, True), ({"vad": None}, True),
                            ({"vad": True}, True), ({"vad": False}, False)):
@@ -8048,7 +8854,7 @@ def test_diarizing_WITHOUT_a_count_is_accepted_and_estimates_it(
     seen = {}
     real = supervisor.start_transcribe
     monkeypatch.setattr(supervisor, "start_transcribe",
-                        lambda model, request, job, page="": (seen.update(request),
+                        lambda model, request, job, page="", **_kw: (seen.update(request),
                                                      real(model, request, job, page=page)))
     for sent in ({"diarize": True}, {"diarize": True, "speakers": None},
                  {"diarize": True, "speakers": ""}):
@@ -8148,7 +8954,7 @@ def test_diarize_and_speakers_reach_the_worker_and_default_to_OFF(
     seen = {}
     real = supervisor.start_transcribe
     monkeypatch.setattr(supervisor, "start_transcribe",
-                        lambda model, request, job, page="": (seen.update(request),
+                        lambda model, request, job, page="", **_kw: (seen.update(request),
                                                      real(model, request, job, page=page)))
     for sent, expected in (({}, None), ({"diarize": False}, None),
                            ({"diarize": None}, None),
@@ -8173,7 +8979,7 @@ def test_words_reaches_the_worker_and_defaults_to_OFF(
     seen = {}
     real = supervisor.start_transcribe
     monkeypatch.setattr(supervisor, "start_transcribe",
-                        lambda model, request, job, page="": (seen.update(request),
+                        lambda model, request, job, page="", **_kw: (seen.update(request),
                                                      real(model, request, job, page=page)))
     for sent, expected in (({}, False), ({"words": False}, False),
                            ({"words": None}, False), ({"words": True}, True)):
@@ -8266,8 +9072,8 @@ def test_the_worker_is_given_the_row_identity_to_restate(
     seen = {}
     real = supervisor.generate_transcript
     monkeypatch.setattr(supervisor, "generate_transcript",
-                        lambda model, request, job: (seen.update(request),
-                                                     real(model, request, job))[1])
+                        lambda model, request, job, **kw: (seen.update(request),
+                                                           real(model, request, job, **kw))[1])
     started = _post_transcribe(client, path=recording).json()
     _wait_job(started["jobId"])
 
@@ -8982,6 +9788,38 @@ def test_a_queued_transcription_resolves_its_MODEL_only_once_it_has_the_lock(mon
     assert resolved == ["org/default", "org/other"], resolved
 
 
+def test_start_transcribes_precheck_does_not_evict_before_the_turn(monkeypatch):
+    """`start_transcribe`'s synchronous pre-check runs on the calling (HTTP)
+    thread, before `generate_transcript` ever takes `_TRANSCRIBE_LOCK` — it
+    must decide ONLY whether this request would lose a conflict, never evict.
+    A one-off switch to a different Whisper model with no standing conflict
+    is ordinary, and the eviction for it belongs to `generate_transcript`'s
+    own `_wait_ready` call, taken under the turn's lock, not to this
+    pre-check — otherwise a request for model B kills model A's worker (and
+    the transcription running on it) before A's turn has even ended."""
+    resident = supervisor.Worker(model="org/a", capability=registry.SPEECH_TO_TEXT,
+                                 runner_code="fake-whisper", token="resident-token",
+                                 requester_id="chat:1", requester_label="Chat")
+    with supervisor._lock:
+        supervisor._workers[registry.SPEECH_TO_TEXT] = resident
+
+    terminated = []
+    monkeypatch.setattr(supervisor, "_terminate", lambda w: terminated.append(w.model))
+    monkeypatch.setattr(supervisor, "generate_transcript",
+                        lambda *a, **k: {"text": "", "segments": []})
+
+    try:
+        job = supervisor.TRANSCRIBE_JOB_PREFIX + "b"
+        supervisor.start_transcribe("org/b", {"path": "/b.m4a"}, job,
+                                    requester_id="chat:2", requester_label="Chat 2")
+        assert terminated == [], (
+            "the pre-check evicted the resident model on the calling thread")
+        # The resident worker is untouched — still there, under its own token.
+        assert supervisor._workers[registry.SPEECH_TO_TEXT] is resident
+    finally:
+        supervisor.reset()
+
+
 def _framed(segments):
     """File-shape transcript segments -> the frame's shape `onChunk` and
     `rec.segments` speak since D632 (`runtime.js`'s `frameSegment`)."""
@@ -9186,6 +10024,64 @@ def _run_ai_image(record='{state: "done"}', ticks="[]", preview='"/t/a.preview.p
                          capture_output=True, text=True, encoding="utf-8")
     assert out.returncode == 0, out.stderr
     return json.loads(out.stdout)
+
+
+def test_aiImage_surfaces_a_model_slot_conflict_the_same_way_aiText_does():
+    """`aiPost` (not stubbed here, unlike `_run_ai_image`'s harness) is the
+    client-side half of the fix: a job-backed verb's 409 is read for
+    `data.error.type === "model_slot_conflict"` — the `_conflict_error`
+    envelope the route now sends — and copies the same fields onto the
+    thrown Error that `fused.ai.text`'s own `fail()` already does, rather
+    than the generic `"unavailable"` every other 409 on this path gets."""
+    import shutil
+    import subprocess
+
+    if not shutil.which("node"):
+        pytest.skip("node is needed to run the page's own image glue")
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "fused_render", "static", "runtime.js")
+    source = open(path, encoding="utf-8").read()
+    helpers = ("  function rejectUnknownOptions(", "  function abortSignalOf(",
+               "  function cancelledError(", "  function rethrowAbort(",
+               "  function resultFrame(", "  function frameSegment(",
+               "  function startJob(", "  function cancelJob(",
+               "  async function aiPost(", "  function copyConflictFields(")
+    fn = "".join(_lift_js_fn(source, h) for h in helpers) + \
+        _lift_js_fn(source, "  function aiImage(opts)")
+
+    prelude = """
+      const window = {location: {search: "?path=/pages/p.html"}};
+      const callHeaders = (extra) => Object.assign({"X-Fused-Call": "1"}, extra);
+      const aiRequesterHeaders = () => ({});
+      globalThis.fetch = async () => ({
+        ok: false, status: 409,
+        json: async () => ({
+          ok: false,
+          error: {type: "model_slot_conflict", code: "model_slot_conflict",
+                 message: "org/kept is held", capability: "image-generation",
+                 models: ["org/kept", "org/other"], resident: "org/kept", held: true},
+        }),
+      });
+    """
+    call = """
+      aiImage({prompt: "a fox"}).then(
+        (value) => console.log(JSON.stringify({ok: true, value})),
+        (err) => console.log(JSON.stringify({
+          ok: false, message: err.message, type: err.type, capability: err.capability,
+          models: err.models, resident: err.resident, held: err.held,
+        })),
+      );
+    """
+    out = subprocess.run(["node", "-e", prelude + fn + call],
+                         capture_output=True, text=True, encoding="utf-8")
+    assert out.returncode == 0, out.stderr
+    result = json.loads(out.stdout)
+    assert result["ok"] is False
+    assert result["type"] == "model_slot_conflict"
+    assert result["message"] == "org/kept is held"
+    assert result["capability"] == "image-generation"
+    assert result["resident"] == "org/kept"
+    assert result["held"] is True
 
 
 RUNNING = '{state: "running", done: %d, total: 4}'
@@ -10215,7 +11111,7 @@ def test_history_reaches_the_worker_as_prior_turns(client, fake_runner, monkeypa
     right."""
     sent = {}
 
-    def capture(model, request):
+    def capture(model, request, *, requester_id="", requester_label=""):
         sent["request"] = request
         yield {"type": "chunk", "text": "ok"}
         yield {"type": "done", "ok": True, "tokens": 1}
@@ -10296,7 +11192,7 @@ def test_sampling_reaches_the_worker(client, fake_runner, monkeypatch):
     seen = {}
     real = supervisor.generate_text
     monkeypatch.setattr(supervisor, "generate_text",
-                        lambda model, request: (seen.update(request), real(model, request))[1])
+                        lambda model, request, **kw: (seen.update(request), real(model, request, **kw))[1])
     supervisor.load("org/chat", registry.TEXT_GENERATION)
     _wait_ready("org/chat")
 
@@ -10402,7 +11298,7 @@ def test_thinking_reaches_the_worker_as_enable_thinking(client, fake_runner, mon
     seen = {}
     real = supervisor.generate_text
     monkeypatch.setattr(supervisor, "generate_text",
-                        lambda model, request: (seen.update(request), real(model, request))[1])
+                        lambda model, request, **kw: (seen.update(request), real(model, request, **kw))[1])
     supervisor.load("org/chat", registry.TEXT_GENERATION)
     _wait_ready("org/chat")
 
@@ -10417,7 +11313,7 @@ def test_thinking_true_also_reaches_the_worker(client, fake_runner, monkeypatch)
     seen = {}
     real = supervisor.generate_text
     monkeypatch.setattr(supervisor, "generate_text",
-                        lambda model, request: (seen.update(request), real(model, request))[1])
+                        lambda model, request, **kw: (seen.update(request), real(model, request, **kw))[1])
     supervisor.load("org/chat2", registry.TEXT_GENERATION)
     _wait_ready("org/chat2")
 
@@ -10435,7 +11331,7 @@ def test_unset_thinking_is_not_sent_to_the_worker_at_all(client, fake_runner, mo
     seen = {}
     real = supervisor.generate_text
     monkeypatch.setattr(supervisor, "generate_text",
-                        lambda model, request: (seen.update(request), real(model, request))[1])
+                        lambda model, request, **kw: (seen.update(request), real(model, request, **kw))[1])
     supervisor.load("org/chat3", registry.TEXT_GENERATION)
     _wait_ready("org/chat3")
 
@@ -10491,7 +11387,7 @@ def test_images_reach_the_worker_alongside_messages(client, fake_runner, monkeyp
 
     sent = {}
 
-    def capture(model, request):
+    def capture(model, request, *, requester_id="", requester_label=""):
         sent["request"] = request
         yield {"type": "chunk", "text": "a cat"}
         yield {"type": "done", "ok": True, "tokens": 1}
@@ -10520,7 +11416,7 @@ def test_no_images_key_at_all_is_not_sent_to_the_worker(client, fake_runner, mon
     it."""
     sent = {}
 
-    def capture(model, request):
+    def capture(model, request, *, requester_id="", requester_label=""):
         sent["request"] = request
         yield {"type": "chunk", "text": "ok"}
         yield {"type": "done", "ok": True, "tokens": 1}
@@ -10695,13 +11591,122 @@ def test_unload_by_a_REAL_capability_still_works(client, fake_runner):
     assert response.json()["stopped"] is True
 
 
+# ---------------------------------------------------- requester identity
+
+
+def test_requester_identity_with_no_headers_at_all_is_never_the_same_twice():
+    """`_requester_identity` (`ai_runtime.py`): a request carrying NEITHER
+    `X-Fused-Requester` nor `X-Fused-Page` has given the server nothing to
+    tell it apart from any other such request — the literal bug this
+    guards against is the one shared `""` that made every one of these
+    callers look like the SAME requester, so two unrelated ones could
+    never conflict. A fresh id each time is the only honest answer."""
+    first, first_label = ai_runtime._requester_identity(None, None, None)
+    second, second_label = ai_runtime._requester_identity(None, None, None)
+    assert first != second
+    assert first_label == second_label == ""
+    assert first != supervisor.USER_REQUESTER_ID
+    assert second != supervisor.USER_REQUESTER_ID
+
+
+def test_requester_identity_falls_back_to_the_page_when_requester_is_absent():
+    """A caller that forgot (or cannot set) `X-Fused-Requester` but still
+    sends `X-Fused-Page` — every page/app `runtime.js` reaches — gets a
+    STABLE identity from the page instead of the one-off fallback above:
+    the same page asking twice is still one requester, not two strangers."""
+    first, _ = ai_runtime._requester_identity(None, None, "/notes")
+    second, _ = ai_runtime._requester_identity(None, None, "/notes")
+    other, _ = ai_runtime._requester_identity(None, None, "/chat")
+    assert first == second
+    assert first != other
+
+
+def test_requester_identity_prefers_the_explicit_requester_header():
+    requester, label = ai_runtime._requester_identity("shell%3Aplayground", "Playground", "/ignored")
+    assert requester == "shell:playground"
+    assert label == "Playground"
+
+
+def test_two_anonymous_callers_ping_ponging_end_in_a_conflict(fake_runner):
+    """SPEC-model-slot-conflict.md §1's required test, for the one caller
+    shape that previously defeated it entirely: two truly header-less
+    callers — `ai_runtime.api_ai`'s own `_requester_identity(None, None,
+    None)` fallback, exercised directly rather than through a full HTTP
+    job-polling round trip — each wanting their own model. Before that
+    fallback existed, both shared `requester_id=""` and so were never
+    distinguishable: `current.requester_id == requester_id` read true on
+    every eviction, so this pair could loop forever exactly like the bug
+    report describes. Each now gets its own one-off identity (never equal
+    to the other's, by the dedicated identity test above), so the second
+    cross-eviction still opens a conflict, the same bound every NAMED
+    pair already gets."""
+    r1, _ = ai_runtime._requester_identity(None, None, None)
+    r2, _ = ai_runtime._requester_identity(None, None, None)
+    assert r1 != r2
+
+    assert _retry_generate_text("org/b", requester_id=r2) == "ready"
+    assert _retry_generate_text("org/a", requester_id=r1) == "ready"
+    with pytest.raises(supervisor.ModelSlotConflict):
+        _retry_generate_text("org/b", requester_id=r2)
+
+
+def test_a_non_owner_requester_cannot_unload_someone_elses_model(client, fake_runner):
+    """SPEC-model-slot-conflict.md §1: a page cannot stop a model it never
+    asked for just by naming it. `requester_id="page:/chat"` loads
+    `org/mine` through the router (`fused.ai.models.load`'s own shape);
+    `requester_id="page:/notes"` — a DIFFERENT requester, unrelated to the
+    first — tries to unload it and is refused with the same structured
+    `model_slot_conflict` body every other conflict carries, not a silent
+    `{"stopped": false}` that reads identically to "nothing was loaded"."""
+    loaded = client.post(
+        "/api/ai/runtime/load", json={"model": "org/mine"},
+        headers={"X-Fused": "1", "X-Fused-Requester": "page:/chat"})
+    assert loaded.status_code == 200, loaded.json()
+    _wait_ready("org/mine")
+
+    refused = client.post(
+        "/api/ai/runtime/unload", json={"model": "org/mine"},
+        headers={"X-Fused": "1", "X-Fused-Requester": "page:/notes"})
+    assert refused.status_code == 409, refused.json()
+    body = refused.json()["error"]
+    assert body["code"] == "model_slot_conflict"
+    assert body["resident"] == "org/mine"
+    # An ownership refusal gets its own wording, not the generic "X and Y
+    # are contending for the slot" built for an actual two-model contention.
+    assert "loaded by another requester" in body["message"]
+    assert "contending" not in body["message"]
+
+    # The actual owner can still unload its own model.
+    owned = client.post(
+        "/api/ai/runtime/unload", json={"model": "org/mine"},
+        headers={"X-Fused": "1", "X-Fused-Requester": "page:/chat"})
+    assert owned.status_code == 200, owned.json()
+    assert owned.json()["stopped"] is True
+
+
+def test_an_unowned_resident_can_still_be_unloaded_by_anyone(client, fake_runner):
+    """The other half of the same rule: a resident with NO claimed owner
+    (loaded by an internal caller, never through the router's conflict
+    logic) is not foreign to anybody — any external requester, named or
+    one-off anonymous, can still unload it. Without this, giving every
+    header-less caller its own one-off identity (`_requester_identity`)
+    would also make it a stranger to a resident nobody ever claimed."""
+    supervisor.load("org/unclaimed", registry.TEXT_GENERATION)
+    _wait_ready("org/unclaimed")
+    response = client.post(
+        "/api/ai/runtime/unload", json={"model": "org/unclaimed"},
+        headers={"X-Fused": "1", "X-Fused-Requester": "page:/anyone"})
+    assert response.status_code == 200, response.json()
+    assert response.json()["stopped"] is True
+
+
 def test_a_streamed_local_reply_carries_its_result(client, fake_runner, monkeypatch):
     """`fused.ai` resolves with the done frame's `result`, so a local model that
     omitted it handed every streaming page `undefined` — and the page threw on
     the first property it read. The shapes only LOOKED alike because the chunks
     matched.
     """
-    def fake(model, request):
+    def fake(model, request, **_kw):
         yield {"type": "chunk", "text": "he"}
         yield {"type": "chunk", "text": "llo"}
         yield {"type": "done", "ok": True, "tokens": 2, "seconds": 0.1}
@@ -10725,7 +11730,7 @@ def test_both_ai_paths_close_a_stream_the_same_way(client, fake_runner, monkeypa
     """One reader parses both, so the frame they finish with is a contract —
     pinned here rather than only described in a docstring, which is what let the
     two drift apart."""
-    def fake(model, request):
+    def fake(model, request, **_kw):
         yield {"type": "chunk", "text": "x"}
         yield {"type": "done", "ok": True, "tokens": 1, "seconds": 0.1}
 
@@ -10792,7 +11797,7 @@ def dispatched(monkeypatch):
     """
     calls = []
 
-    def fake_load(model, capability, *, weights_only=False, file=None):
+    def fake_load(model, capability, *, weights_only=False, file=None, **_kw):
         entry = {"model": model, "capability": capability,
                  "weightsOnly": weights_only}
         if file is not None:

@@ -1,12 +1,38 @@
 """The bot registry and the bots' background threads (docs/bots.md §1, §7).
 
-One process, one registry: `get(bid)` builds a `Bot` the first time it is
-asked for and keeps it (its task thread, seq counter and inbox live on it).
-`start()` (from the server's `@on_startup _startup_bots`) runs the scheduler — every 20 s each bot's
-`tick_routines()`, which also drains its file inbox (botsend / iMessage), plus
-`handoffs.sweep` (docs §11) on every pass — and
-the iMessage bridge thread. `shutdown()` (from `@on_shutdown_always
-_shutdown_bots`) stops every bot's task and Chrome. Both hooks live in
+One MACHINE, one owner (2026-10-13, the owner-process design): Fused Render,
+Fused Bot and a dev checkout on main all share `<home>/bots`, and before this
+each of them built its own `Bot` per bot, ran engines on it and wrote bot.json
+from its own memory — a routine added in one app never fired (the other app
+owned the scheduler and never re-read the file), two engines could land on one
+Chrome, and the losing app showed a card that said "next 10:00" while nothing
+ticked. Now the flock on `<home>/bots/data/routines.lock` (its old name, so an
+installed older app still contends for the same file) elects the ONE process
+that holds every Bot, every engine, every Chrome, the scheduler and the
+channels. Every other process forwards `/api/bots/*` and `/api/bot-apps/*` to
+it over local HTTP (`routes.forward_middleware`) and never constructs a Bot:
+`get()` / `all()` / `create()` refuse with `NotOwner`. The winner writes
+`{pid, origin, app, version, boot_id, ticked_at}` into the lock file so a
+forwarder knows where to send and the page can say who runs the bots
+(`owner_info()`, `/api/bots/setup`). A lean `fused-render open` never elects
+(`set_lean`): with an owner it forwards, without one it answers 503.
+
+Within the owner: `get(bid)` builds a `Bot` the first time it is asked for and
+keeps it (its task thread, seq counter and inbox live on it). `start()` (from
+the server's `@on_startup _startup_bots`) starts the scheduler thread, whose
+every pass first makes sure this process owns (re-trying the flock while it
+does not), then runs `handoffs.sweep` (docs §11) and every bot's
+`tick_routines()` (routines plus the file inbox) every 20 s. Becoming owner
+(`_become_owner`) runs what used to run at every start: the layout migration,
+the FusedBot import, the Super Bot seed, the orphan-browser sweep, the
+channels router, plus the takeover walk (`_reconcile`: a bot whose bot.json
+still says running from an owner that quit goes idle, a routine stuck on
+"started" gets its outcome) and the routines wake agent (`sync_wake`, the
+LaunchAgent `schedule_wake` keeps for Tasks: daily and once routines relaunch
+a quit app; interval ones wait for the next launch, owner's call Q1).
+`shutdown()` (from `@on_shutdown_always _shutdown_bots`) stops every bot's
+task and Chrome and drops the lock LAST, so a successor never builds Bots
+while this process's engines still write. Both hooks live in
 fused_render/server/app.py beside the router include.
 
 `bot.py` is imported lazily so importing this module (and `routes.py`, and so
@@ -28,11 +54,36 @@ logger = logging.getLogger(__name__)
 
 SCHED_EVERY_S = 20
 SLOW_CALL_MS = 1500
+STALL_S = 90               # an owner whose `ticked_at` is older than this while its pid lives is "stalled" (page banner only)
+OLD_OWNER_WAIT_S = 10.0    # after winning the flock: wait this long for the previous owner's pid to be gone (an older
+                           # app dropped the lock BEFORE stopping its engines; see shutdown())
 
 _lock = threading.Lock()
 _bots: dict = {}           # bot dir -> Bot (keyed by dir so a redirected home never serves a stale Bot)
 _sched = {"thread": None, "stop": None}
 _chan = {"router": None}   # the channels router (bots/channels/router.py); None until start()
+# Ownership (module docstring). `fh`: the flock'd lock file while this process owns; `lean`: never elect;
+# `ready`: _become_owner ran (seed, import, sweep, router, reconcile) — get() in a test process that never
+# called start() elects lazily and skips that, so tests see the registry they always did.
+_OWNER = {"fh": None, "lean": False, "ready": False, "elect_lock": threading.Lock()}
+
+
+class NotOwner(RuntimeError):
+    """This process does not own the bots (another Fused app does, or none does).
+    `info` is the owner's lock-file record when one is readable, else None."""
+
+    def __init__(self, info: dict | None):
+        self.info = info
+        who = _owner_words(info)
+        super().__init__(f"the bots run in {who}" if info else "no Fused app is running the bots")
+
+
+def _owner_words(info: dict | None) -> str:
+    if not info:
+        return "another Fused app"
+    app = info.get("app") or "another Fused app"
+    ver = info.get("version") or ""
+    return f"{app} {ver}".strip()
 
 
 def _botmod():
@@ -45,10 +96,13 @@ def _key(bid: str) -> str:
 
 
 def get(bid: str):
-    """The Bot for `bid`; ValueError when there is no such bot."""
+    """The Bot for `bid`; ValueError when there is no such bot; NotOwner when this
+    process may not hold Bots (the forward middleware answers that before any
+    route reaches here, so a NotOwner out of a route is a bug, not a state)."""
     bid = os.path.basename(bid or "")
     if not bid:
         raise ValueError("no bot id given")
+    require_owner()
     key = _key(bid)
     with _lock:
         b = _bots.get(key)
@@ -72,6 +126,7 @@ def ids() -> list[str]:
 
 def all():  # noqa: A001 — the registry's own spelling (OpenBot `_all`)
     from fused_render.bots import browsers, store
+    require_owner()
     out = []
     try:
         bids = store.list_ids(strict=True)
@@ -96,15 +151,303 @@ def loaded() -> list:
 
 
 def create(name="", model="", effort="", instructions="", preset="", kind="", browser=""):
-    return _botmod().create(name, model, effort, instructions, preset=preset, kind=kind, browser=browser)
+    require_owner()
+    b = _botmod().create(name, model, effort, instructions, preset=preset, kind=kind, browser=browser)
+    sync_wake()
+    return b
 
 
 def clone(src_id, name="", share=True):
-    return _botmod().clone(src_id, name, share=share)
+    require_owner()
+    b = _botmod().clone(src_id, name, share=share)
+    sync_wake()
+    return b
 
 
 def delete(bid):
+    require_owner()
     _botmod().delete(bid)
+    sync_wake()
+
+
+# ------------------------------------------------------------ ownership ---
+def set_lean(lean: bool) -> None:
+    """A lean `fused-render open` (server/app.py create_app) never elects: it
+    forwards when an owner exists and answers 503 when none does."""
+    _OWNER["lean"] = bool(lean)
+
+
+def owns() -> bool:
+    return _OWNER["fh"] is not None
+
+
+def require_owner() -> None:
+    """Elect lazily when nothing forbids it, then insist. Lazy: a process that
+    never ran start() (every test; a route hit before the startup hook) still
+    gets a registry on the first touch, exactly as before; a lean server and a
+    process another app beat to the flock get NotOwner instead of a Bot."""
+    if owns():
+        return
+    if not _OWNER["lean"]:
+        _elect()
+    if not owns():
+        raise NotOwner(owner_info())
+
+
+def retry_election() -> None:
+    """A forward was refused (the owner just quit): try the flock now rather
+    than on the scheduler's next pass, so the page's next poll lands here."""
+    if not _OWNER["lean"]:
+        _elect()
+
+
+def _elect() -> bool:
+    """Try the flock. True when this process owns afterwards. On a win: wait for
+    the previous owner's pid to be gone (an older app drops the lock before its
+    engines stop), write our record, and in a process that runs start() the
+    scheduler pass does the rest (`_become_owner`)."""
+    with _OWNER["elect_lock"]:
+        if owns():
+            return True
+        if not _take_routines_lock():
+            return False
+        prev = _read_lock_record()
+        _wait_for_pid(prev.get("pid") if prev else None)
+        _write_lock_record()
+        logger.info("bots: this process owns the bots now (pid %d)", os.getpid())
+        return True
+
+
+def _wait_for_pid(pid, budget_s: float = OLD_OWNER_WAIT_S) -> None:
+    """Block until `pid` is gone, up to `budget_s`. The pid comes from the
+    record the previous owner wrote; an older app wrote none (nothing to wait
+    for) and our own pid is never waited on."""
+    try:
+        pid = int(pid or 0)
+    except (TypeError, ValueError):
+        return
+    if pid <= 0 or pid == os.getpid():
+        return
+    end = time.monotonic() + budget_s
+    while time.monotonic() < end:
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return
+        time.sleep(0.2)
+    logger.warning("bots: previous owner pid %d still alive after %.0fs; proceeding", pid, budget_s)
+
+
+def _record() -> dict:
+    from fused_render import __version__, _flavor
+    try:
+        origin = bpaths.server_origin_quiet()
+    except Exception:  # noqa: BLE001
+        origin = ""
+    try:
+        from fused_render.health import boot_id
+        bid = boot_id()
+    except Exception:  # noqa: BLE001
+        bid = ""
+    return {"pid": os.getpid(), "origin": origin, "app": _flavor.display_name(), "version": __version__,
+            "boot_id": bid, "ticked_at": time.time()}
+
+
+def _write_lock_record() -> None:
+    fh = _OWNER["fh"]
+    if fh is None:
+        return
+    try:
+        fh.seek(0)
+        fh.truncate()
+        fh.write(json.dumps(_record()))
+        fh.flush()
+    except OSError:
+        logger.debug("bots: could not write the lock record", exc_info=True)
+
+
+def _read_lock_record() -> dict | None:
+    """The owner's record from the lock file; None when the file is empty or
+    unreadable (no owner, or an owner from before records existed)."""
+    try:
+        with open(os.path.join(bpaths.data_root(), "routines.lock"), encoding="utf-8") as f:
+            raw = f.read().strip()
+    except OSError:
+        return None
+    if not raw:
+        return None
+    try:
+        rec = json.loads(raw)
+    except ValueError:
+        return None
+    return rec if isinstance(rec, dict) else None
+
+
+def _pid_alive(pid) -> bool:
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except (OSError, TypeError, ValueError):
+        return False
+
+
+def owner_info() -> dict | None:
+    """Who owns the bots, for a forwarder and for `/api/bots/setup.owner`:
+    `{this, pid, origin, app, version, stalled, known}` or None when nobody
+    does. `known` False = an older app holds the flock but wrote no record
+    (we know someone owns, not who or where). `stalled` = the owner's pid
+    lives but its last pass is older than STALL_S: flagged, never taken over
+    (a flock cannot be stolen from a live process, and should not be)."""
+    if owns():
+        rec = _record()
+        return {**rec, "this": True, "stalled": False, "known": True}
+    if _try_probe_lock():
+        return None  # the flock is free: whatever record is in the file is from an owner that is gone
+    rec = _read_lock_record()
+    if rec is None or not _pid_alive(rec.get("pid")):
+        # Held, but no usable record: an older app (wrote nothing), or a record left by a crashed owner while
+        # a different, older process holds the flock now.
+        return {"this": False, "pid": None, "origin": "", "app": "", "version": "", "stalled": False, "known": False}
+    ticked = float(rec.get("ticked_at") or 0)
+    return {**rec, "this": False, "stalled": (time.time() - ticked) > STALL_S, "known": True}
+
+
+def _try_probe_lock() -> bool:
+    """True when the flock is free right now (nobody owns). Takes and releases
+    it without keeping it: a probe, not an election — a lean server asks this."""
+    try:
+        import fcntl
+    except ImportError:
+        return False
+    try:
+        fh = open(os.path.join(bpaths.data_root(), "routines.lock"), "a+")
+    except OSError:
+        return False
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        fh.close()
+        return False
+    try:
+        fcntl.flock(fh, fcntl.LOCK_UN)
+    finally:
+        fh.close()
+    return True
+
+
+def _become_owner() -> None:
+    """What every start() used to do, now once, in the winner, before its first
+    tick: layout migration, the FusedBot import, the Super Bot seed, the orphan
+    browser sweep, the channels router, the takeover walk, the wake agent.
+    Idempotent per ownership; errors in one step never block the next."""
+    if _OWNER["ready"]:
+        return
+    _OWNER["ready"] = True
+    # Router BEFORE anything that builds a Bot (the takeover walk, the sweep): a Bot's __init__ may emit an
+    # interrupted hand-off's result card that must reach the phone, and on_event skips a router that is None.
+    for label, step in (("layout migration", lambda: bpaths.migrate_layout()),
+                        ("FusedBot import", _import_fusedbot),
+                        ("Super Bot seed", seed_super),
+                        ("channels router", _start_router),
+                        ("takeover walk", _reconcile),
+                        ("browser sweep", _sweep_browsers),
+                        ("routines wake agent", sync_wake)):
+        try:
+            step()
+        except Exception:  # noqa: BLE001 — a missing piece is not a broken owner
+            logger.warning("bots owner: %s failed", label, exc_info=True)
+
+
+def _import_fusedbot() -> None:
+    from fused_render.bots import fusedbot_import
+    fusedbot_import.import_once()
+
+
+def _sweep_browsers() -> None:
+    from fused_render.bots import browsers
+    n = browsers.sweep(all())
+    if n:
+        logger.info("removed %d orphan browser folder(s)", n)
+
+
+def _start_router() -> None:
+    with _lock:
+        need = _chan["router"] is None
+    if not need:
+        return
+    from fused_render.bots import channels
+    from fused_render.bots.channels.router import Router
+    import fused_render.bots.registry as me
+    r = Router(me)
+    for ch in channels.available():
+        r.add(ch)
+    with _lock:
+        if _chan["router"] is None:
+            _chan["router"] = r
+        else:
+            r = None  # a concurrent start won
+    if r is not None:
+        r.start()
+
+
+def _reconcile() -> None:
+    """The takeover walk: disk state an owner that quit left behind. A bot.json
+    that still says running / waiting with no thread here goes idle with a
+    system line; a routine stuck on "started" gets outcome "stopped" so its
+    card and the breaker tell the truth. Runs on every ownership, which also
+    covers a plain restart after a crash."""
+    for b in all():
+        try:
+            meta = b.meta
+            stale_task = meta.get("status") in ("running", "waiting") and not (b.thread and b.thread.is_alive())
+            stuck = [r for r in meta.get("routines") or [] if r.get("last_result") == "started"]
+            if not stale_task and not stuck:
+                continue
+            if stale_task:
+                b.emit("system", "Stopped: the app quit while this task ran.")
+                b.set_status("idle", note="", waiting_on=None, task_via=None)
+            for r in stuck:
+                b._routine_outcome(r.get("task") or "", "stopped", "the app quit")
+        except Exception:  # noqa: BLE001
+            logger.debug("reconcile failed for %s", getattr(b, "id", "?"), exc_info=True)
+
+
+def sync_wake() -> None:
+    """Point the routines' share of the wake agent (schedule_wake, the
+    LaunchAgent Tasks already keep) at the soonest due daily and once routines
+    across every bot. Interval routines are left out on purpose (Q1, 2026-10-13):
+    a 5-minute routine would relaunch a quit app five minutes after every Quit.
+    Owner only; best-effort; never raises into a route or a tick."""
+    if not owns():
+        return
+    try:
+        from fused_render import schedule_wake
+        schedule_wake.sync(routines_due(), source="bots")
+    except Exception:  # noqa: BLE001
+        logger.debug("bots: could not sync the routines wake agent", exc_info=True)
+
+
+def routines_due() -> list:
+    """Every enabled daily / once routine's `next` across every bot ON DISK, as
+    UTC datetimes. Disk, not `loaded()`: a bot nobody has built yet (right after
+    a takeover, before the first tick) has routines too, and every writer saves
+    bot.json before syncing. Needs no ownership — schedule_wake seeds the bots'
+    share of the plist from here in any process that syncs the Tasks share."""
+    from datetime import datetime, timezone
+    from fused_render.bots import store
+    due = []
+    for bid in store.list_ids():
+        try:
+            meta = store.read_meta(bid)
+        except (OSError, ValueError):
+            continue
+        for r in meta.get("routines") or []:
+            if r.get("enabled") and r.get("kind") in ("daily", "once") and r.get("next"):
+                try:
+                    due.append(datetime.fromtimestamp(float(r["next"]), tz=timezone.utc))
+                except (TypeError, ValueError, OverflowError, OSError):
+                    continue
+    return due
 
 
 # ------------------------------------------------------------- threads ---
@@ -119,32 +462,33 @@ def _sweep_handoffs() -> None:
 
 
 def _scheduler(stop: threading.Event) -> None:
-    # One scheduler per machine: Fused Render and Fused Bot share the bots
-    # tree, so each pass first makes sure this process holds the routines
-    # flock. The loser keeps looping and re-trying, so when the owner quits
-    # the lock falls to it on its next pass and routines carry on.
+    # One owner per machine (module docstring). Each pass first makes sure this
+    # process owns; a forwarder keeps looping and re-trying the flock, so when
+    # the owner quits the bots fall to it on its next pass. Every outcome is an
+    # INFO line: "did the scheduler run" must be answerable from the log.
     standing_down = False
     while not stop.is_set():
-        # Hand-offs first, lock or not: a hand-off's queue lives in THIS process's Bot (docs §11).
-        _sweep_handoffs()
-        if _ROUTINES_LOCK["fh"] is None and not _take_routines_lock():
+        if not owns() and not _elect():
             if not standing_down:
                 standing_down = True
-                logger.info("bots routines: another Fused app owns the scheduler on this "
-                            "machine; serving the bots without ticking them until it quits")
+                logger.info("bots: %s owns the bots on this machine; forwarding until it quits",
+                            _owner_words(_read_lock_record()))
             stop.wait(SCHED_EVERY_S)
             continue
         if standing_down:
             standing_down = False
-            logger.info("bots routines: scheduler lock acquired, ticking routines")
+            logger.info("bots: took over the bots (the previous owner quit)")
         try:
+            _become_owner()
+            _write_lock_record()  # the heartbeat (`ticked_at`), read by owner_info() in other processes
+            _sweep_handoffs()
             for b in all():
                 try:
                     b.tick_routines()
                 except Exception:  # noqa: BLE001
-                    logger.debug("routine tick failed for %s", getattr(b, "id", "?"), exc_info=True)
+                    logger.warning("routine tick failed for %s", getattr(b, "id", "?"), exc_info=True)
         except Exception:  # noqa: BLE001
-            logger.debug("scheduler pass failed", exc_info=True)
+            logger.warning("scheduler pass failed", exc_info=True)
         stop.wait(SCHED_EVERY_S)
 
 
@@ -180,40 +524,18 @@ def seed_super() -> str | None:
 
 
 def start() -> None:
-    """Start the channels router, then the scheduler (idempotent). Router first:
-    the scheduler's first pass builds every Bot, and a Bot's __init__ may emit
-    (an interrupted hand-off's result card) that must reach the phone.
-    Before either: the seeded Super Bot (seed_super), so the first pass sees it."""
-    try:
-        seed_super()
-    except Exception:  # noqa: BLE001 — a missing default bot is not a broken server
-        logger.warning("Super Bot was not seeded", exc_info=True)
-    with _lock:
-        need_router = _chan["router"] is None
-    if need_router:  # outside the lock: a channel may look bots up as it starts
-        try:
-            from fused_render.bots import channels
-            from fused_render.bots.channels.router import Router
-            import fused_render.bots.registry as me
-            r = Router(me)
-            for ch in channels.available():
-                r.add(ch)
-            with _lock:
-                if _chan["router"] is None:
-                    _chan["router"] = r
-                else:
-                    r = None  # a concurrent start() won
-            if r is not None:
-                r.start()
-        except Exception:  # noqa: BLE001 — no channels is a missing feature, not a broken server
-            logger.warning("channels router not started", exc_info=True)
-    try:  # browsers no bot names any more (a delete that crashed half-way) go now, before any Chrome starts
-        from fused_render.bots import browsers
-        n = browsers.sweep(all())
-        if n:
-            logger.info("removed %d orphan browser folder(s)", n)
-    except Exception:  # noqa: BLE001
-        logger.debug("browser sweep failed", exc_info=True)
+    """Start the scheduler thread (idempotent). Its first pass elects; the
+    winner then runs `_become_owner` (seed, import, sweep, router, takeover
+    walk, wake agent) before its first tick, a loser forwards and keeps trying.
+    Nothing that touches the shared tree runs here any more: a process that
+    never wins never writes. A lean server never calls this (server/app.py)."""
+    if _OWNER["lean"]:
+        return
+    # One synchronous election first (the startup hook awaits this off the loop): a win runs _become_owner
+    # BEFORE the first request can pass require_owner() and build Bots mid-migration, and the page's first
+    # paint sees an owner that is ready rather than one up to 20 s away.
+    if _elect():
+        _become_owner()
     with _lock:
         t = _sched["thread"]
         if t is None or not t.is_alive():
@@ -223,19 +545,18 @@ def start() -> None:
             t.start()
 
 
-_ROUTINES_LOCK = {"fh": None}
-
-
 def _take_routines_lock() -> bool:
-    """One routines scheduler per machine. Fused Render and Fused Bot share the
-    bots tree (`<home>/bots`), so without this both would tick every routine
-    on their 20 s pass. Same flock the iMessage channel uses
-    (bots/channels/imessage.py), re-tried by `_scheduler` every pass while
-    not held; the fd is kept until shutdown(). Windows has no fcntl and only
-    one app, so it just proceeds."""
+    """The ballot: one owner per machine (module docstring). The file keeps its
+    pre-2026-10-13 name so an installed older app, which takes the same flock
+    to tick routines, and this one never both own. Same flock pattern the
+    iMessage channel uses (bots/channels/imessage.py; the owner holds that one
+    too, through the router). The fd is kept until shutdown(). Windows has no
+    fcntl and only one app, so it just proceeds (macOS is the target; owner's
+    call, 2026-10-13)."""
     try:
         import fcntl
     except ImportError:
+        _OWNER["fh"] = open(os.devnull, "a+")  # "owns" with nothing to hold
         return True
     path = os.path.join(bpaths.data_root(), "routines.lock")
     try:
@@ -247,14 +568,21 @@ def _take_routines_lock() -> bool:
     except OSError:
         fh.close()  # re-tried every pass while standing down: never leak the fd
         return False
-    _ROUTINES_LOCK["fh"] = fh
+    _OWNER["fh"] = fh
     return True
 
 
 def _drop_routines_lock() -> None:
-    fh, _ROUTINES_LOCK["fh"] = _ROUTINES_LOCK["fh"], None
+    fh, _OWNER["fh"] = _OWNER["fh"], None
+    _OWNER["ready"] = False
     if fh is None:
         return
+    try:  # an empty file reads as "no owner" to the next reader; our record must not outlive us
+        fh.seek(0)
+        fh.truncate()
+        fh.flush()
+    except Exception:  # noqa: BLE001
+        pass
     try:
         import fcntl
         fcntl.flock(fh, fcntl.LOCK_UN)
@@ -342,7 +670,8 @@ def shutdown(budget_s: float = 8.0) -> None:
             pass
     with _lock:
         _sched.update(thread=None, stop=None)
-    _drop_routines_lock()
+    # The lock is dropped LAST (below): a successor that wins it builds Bots from disk at once, and this
+    # process's engines are still writing statuses and routine outcomes until the joins below are done.
     started = time.monotonic()
     bots = loaded()
     for b in bots:
@@ -360,6 +689,7 @@ def shutdown(budget_s: float = 8.0) -> None:
         if t is not None and t.is_alive():
             t.join(max(0.0, started + budget_s - time.monotonic()))
     logger.info("bots shutdown: %d Chrome process(es) told to quit in %.1fs", n, time.monotonic() - started)
+    _drop_routines_lock()
 
 
 def reset_for_tests() -> None:
@@ -380,6 +710,10 @@ def reset_for_tests() -> None:
             r.stop()
         except Exception:  # noqa: BLE001
             pass
+    # The flock too: the next test's home is a new path, and a flock this process still holds on the
+    # old file would be harmless, but a test that re-uses a home must be able to elect again.
+    _drop_routines_lock()
+    _OWNER["lean"] = False
 
 
 # ------------------------------------------------------------ slow log ---

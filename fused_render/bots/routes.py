@@ -22,13 +22,96 @@ import os
 import threading
 import time
 
-from fastapi import APIRouter, Body, Header, Query, Response
+from fastapi import APIRouter, Body, Header, Query, Request, Response
+from starlette.responses import StreamingResponse
 
 from fused_render.bots import paths as bpaths
 from fused_render.bots import registry
 from fused_render.server.common import _error, _require_fused
 
 router = APIRouter()
+
+# One owner per machine (registry module docstring): every request under these prefixes is answered by the
+# process that holds the bots and forwarded there by every other one (`forward_middleware`).
+OWNED_PREFIXES = ("/api/bots", "/api/bot-apps")
+FORWARD_TIMEOUT_S = 120.0  # a tool call or an app send may wait on the model; the page's own timeouts are shorter
+_SKIP_REQUEST_HEADERS = {"host", "content-length", "connection", "transfer-encoding"}
+_SKIP_RESPONSE_HEADERS = {"content-length", "connection", "transfer-encoding", "content-encoding"}
+_fwd = {"client": None}
+
+
+def _forward_client():
+    import httpx
+    c = _fwd["client"]
+    if c is None:
+        c = _fwd["client"] = httpx.AsyncClient(timeout=httpx.Timeout(FORWARD_TIMEOUT_S, connect=2.0))
+    return c
+
+
+async def forward_middleware(request: Request, call_next):
+    """`app.middleware("http")` from server/app.py: a request under OWNED_PREFIXES in a process that does not
+    own the bots goes to the owner (its origin from the lock record), same method, path, query, body and
+    headers (`X-Fused`, `X-Fused-Page` included; there is no auth token to carry — `_require_fused` is the
+    header), and the reply streams back with its status and headers. Not owner and nobody to forward to
+    (no owner, an older owner that wrote no record, a lean server with no app running): 503 with the
+    sentence the page shows. A refused forward (the owner just quit) re-tries the election at once, so the
+    page's next poll lands on the new owner. `/api/bots/setup` is the one reply the forwarder edits: its
+    `owner` must describe THIS process's view (docs §3)."""
+    path = request.url.path
+    if not path.startswith(OWNED_PREFIXES) or registry.owns():
+        return await call_next(request)
+    if request.headers.get("x-fused-forwarded"):
+        # A forward landed on a process that does not own either (a record whose origin is stale): stop here
+        # rather than bounce it on until the timeout.
+        return _error("this Fused app does not run the bots and was forwarded to by mistake; try again", 503)
+    import asyncio
+    import httpx
+    try:
+        # Elects when allowed (not lean); a win serves locally from here on. Off the loop: a win may wait on the
+        # previous owner's pid (registry._wait_for_pid).
+        await asyncio.to_thread(registry.require_owner)
+    except registry.NotOwner as e:
+        info = e.info
+    else:
+        return await call_next(request)
+    origin = (info or {}).get("origin") or ""
+    if not origin and path == "/api/bots/setup":
+        # The one route that must answer in EVERY process: it builds no Bot, and its `owner` (null, or an older
+        # holder with `known` false) is exactly what the hero and Settings › Routines show when nothing can be
+        # forwarded. A 503 here would hide the "nothing is running the bots" line behind a swallowed error.
+        return await call_next(request)
+    if not origin:
+        return _error(str(registry.NotOwner(info)) + ("; update it" if info and not info.get("known") else
+                                                     ". Open Fused Render (or Fused Bot) to run them."), 503)
+    body = await request.body()
+    headers = {k: v for k, v in request.headers.items() if k.lower() not in _SKIP_REQUEST_HEADERS}
+    headers["X-Fused-Forwarded"] = "1"
+    client = _forward_client()
+    try:
+        req = client.build_request(request.method, origin + path + (("?" + request.url.query) if request.url.query else ""),
+                                   content=body, headers=headers)
+        resp = await client.send(req, stream=True)
+    except httpx.HTTPError:
+        registry.retry_election()
+        return _error("the Fused app that ran the bots just quit; retrying", 503)
+    out_headers = {k: v for k, v in resp.headers.items() if k.lower() not in _SKIP_RESPONSE_HEADERS}
+    if path == "/api/bots/setup" and resp.status_code == 200:
+        try:
+            data = json.loads(await resp.aread())
+        finally:
+            await resp.aclose()
+        if isinstance(data, dict):
+            data["owner"] = registry.owner_info()
+        return Response(json.dumps(data), status_code=200, media_type="application/json", headers=out_headers)
+
+    async def body_iter():
+        try:
+            async for chunk in resp.aiter_raw():
+                yield chunk
+        finally:
+            await resp.aclose()
+
+    return StreamingResponse(body_iter(), status_code=resp.status_code, headers=out_headers)
 
 ATTACH_MAX = 8 * 1024 * 1024
 APP_IMPORT_MAX = 64 * 1024 * 1024
@@ -341,8 +424,11 @@ def _claude_snapshot() -> dict:
 @_handled
 def bots_setup():
     """What a bot needs on this Mac, reported only (replaces FusedBot's
-    `/api/onboarding` chrome probe): `{chrome: {found, path}, claude: {...}}`."""
-    return {"chrome": _chrome_snapshot(), "claude": _claude_snapshot()}
+    `/api/onboarding` chrome probe): `{chrome: {found, path}, claude: {...}, owner}`.
+    `owner` (registry.owner_info): who runs the bots on this machine — `this`
+    true here; a forwarder overwrites it with its own view (forward_middleware);
+    null when no process does."""
+    return {"chrome": _chrome_snapshot(), "claude": _claude_snapshot(), "owner": registry.owner_info()}
 
 
 @router.get("/api/bots/usage")

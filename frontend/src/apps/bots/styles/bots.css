@@ -340,6 +340,13 @@ div.bots-page.stage .chat header #rcol { display: none; }  /* same: the preview 
 .bots-page .msg.note .readmore:hover:not(:disabled) { background: var(--hover); }
 .bots-page .msg.note .readmore:disabled { opacity: .5; cursor: default; }
 .bots-page .msg.done { align-self: flex-start; background: var(--card); }
+/* The step fold's trigger line (Thread.tsx Row, lib/thread foldStretches): a stretch of the bot's steps hides behind
+   the exchange, and one muted line in the action chip's family stands in for it; two words, no chevron, no count (the
+   hover has it). Always its own line, never seated on a bubble (owner, 2026-10-13). */
+.bots-page .msg.foldline { align-self: flex-start; background: transparent; border-radius: 0; padding: 0 12px; font-size: 12px; line-height: 1.4; color: var(--muted); }
+.bots-page .msg.foldline .fold { margin: 0; padding: 0; background: none; border: 0; font: inherit; color: inherit; cursor: pointer; }
+.bots-page .msg.foldline .fold::before { content: "·"; margin-right: 6px; opacity: .7; }
+.bots-page .msg.foldline .fold:hover, .bots-page .msg.foldline .fold:focus-visible { color: var(--text); text-decoration: underline; text-underline-offset: 2px; outline: 0; }
 .bots-page .msg.question { align-self: flex-start; background: var(--card); }
 /* The one card still waiting on you keeps the stripe; answered ones lose it. */
 .bots-page .msg.error { align-self: flex-start; background: var(--card); box-shadow: inset 3px 0 0 var(--err); color: var(--err); }

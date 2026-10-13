@@ -10207,7 +10207,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   `voiceMode`, and a downloaded row adds `voices`/`languages`. Onboarding and
   the benchmark leave it out.
 - **AI-33** **`image-to-text` capability ("Vision") and `fused.ai.vision({image,
-  task, prompt, ...})` verb (D1352).** One verb for every image-understanding
+  task, prompt, ...})` verb (D1353).** One verb for every image-understanding
   task: `caption` (no prompt; `length`), `query` (`prompt` is the question;
   `reasoning`), `detect`, `point` and `segment` (`prompt` names what to find;
   `maxObjects`). Each model answers a subset, published as its catalog row's

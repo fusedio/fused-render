@@ -1713,7 +1713,17 @@ class Bot:
         with self.lock:
             self.routines().append(r)
             self.save()
+        self._sync_wake()
         return r
+
+    def _sync_wake(self):
+        """The routines' share of the wake agent follows every change to a `next`
+        (registry.sync_wake: daily and once routines relaunch a quit app).
+        Outside `self.lock`: it may run launchctl."""
+        try:
+            _registry().sync_wake()
+        except Exception:  # noqa: BLE001
+            logger.debug("bot %s: wake sync failed", self.id, exc_info=True)
 
     def routine_update(self, rid, enabled=None, delete=False, task=None, kind=None, minutes=None, time_s="", weekdays=None, at=None):
         """Enable/disable, delete, or (`task` given) rewrite the task and schedule.
@@ -1750,6 +1760,7 @@ class Bot:
                 if r["enabled"]:
                     r["next"] = self._next_run(r, time.time())
             self.save()
+        self._sync_wake()
         return r
 
     def routine_fire(self, r, manual=False):
@@ -1792,6 +1803,7 @@ class Bot:
                 r["next"] = self._next_run(r, time.time()) if r.get("enabled") else None
                 self.save()
             self.emit("system", "That routine did not start: another task took the bot first. It keeps its schedule.")
+        self._sync_wake()
 
     def _spacing_ok(self, r):
         """Refuse to fire inside the routine's own interval, judged from disk.
@@ -1853,6 +1865,7 @@ class Bot:
         if tripped:
             self.emit("system", f"Routine \"{task[:60]}\" paused after {hit['fails']} failed runs in a row. "
                                 "Fix the cause, then re-enable it under Routines.")
+            self._sync_wake()
 
     # -- control -----------------------------------------------------------
     def event_by_seq(self, seq):

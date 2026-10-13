@@ -51,10 +51,14 @@
 // no `window`/`document`, so ModelsDock.test.tsx can render the view
 // directly with a fixed model list rather than mocking `useAiRuntime`.
 import { useState } from "react";
-import { unloadAiModel, type AiLoadedModel } from "@platform/lib/api";
-import { formatSize, repoName } from "@platform/lib/format";
+import {
+  unloadAiModel, resolveModelConflict, releaseModelConflict, actionErrorMessage,
+  USER_REQUESTER, type AiLoadedModel, type AiConflict,
+} from "@platform/lib/api";
+import { formatSize, repoName, joinNames } from "@platform/lib/format";
 import { publishAiRuntime, useAiRuntime } from "@apps/ai_models/lib/aiRuntime";
 import { useStatusChip, type StatusChipState } from "@platform/lib/statusChip";
+import { capabilityLabel } from "@apps/ai_models/lib/engines";
 import StatusChip from "@platform/ui/StatusChip";
 import NotificationCard from "@platform/ui/NotificationCard";
 
@@ -244,8 +248,8 @@ function ModelRow({
     setFailure(null);
     try {
       await onUnload(model.model);
-    } catch {
-      setFailure("Could not unload — check your connection and retry.");
+    } catch (e) {
+      setFailure(actionErrorMessage(e, "Could not unload — check your connection and retry."));
     } finally {
       setBusy(false);
     }
@@ -285,6 +289,143 @@ function ModelRow({
   );
 }
 
+// A conflicted capability's row (SPEC-model-slot-conflict.md §4). Drawn
+// through the same `NotificationCard` as a model row, but using all THREE of
+// its action slots at once — the one row shape on this bar that needs more
+// than `liveAction` alone: `liveAction` ("Stop both") is the row's one verb
+// that acts on BOTH contenders, so it keeps the prominent treatment, and the
+// two "Keep <model>" choices ride `navAction`/`extraAction` since each is a
+// choice between destinations rather than a single live action.
+//
+// NOT THE SAME SHAPE AS THE CLIENT NOTIFICATION (see `DECISIONS-model-slot-
+// conflict.md`): `notify()`'s own `NotificationInput` only carries two action
+// slots (`action`/`extraAction`), not three, so the toast this capability
+// also raises offers "Keep <the model that just lost>" and "Stop both" —
+// dismissing it is equivalent to keeping whichever model is still resident,
+// since the supervisor already refuses the other one on every retry with or
+// without an explicit hold. This dock row has no such ceiling — it talks
+// straight to `NotificationCard`, which already has a third slot — so it
+// offers the full three choices the spec asks for.
+function ConflictRow({
+  conflict,
+  onKeep,
+  onStopBoth,
+  onRelease,
+}: {
+  conflict: AiConflict;
+  onKeep: (capability: string, keep: string) => Promise<void>;
+  onStopBoth: (capability: string) => Promise<void>;
+  onRelease: (capability: string) => Promise<void>;
+}) {
+  const [busy, setBusy] = useState(false);
+  // Same non-silent-failure contract as `ModelRow`'s own Unload — a refused
+  // resolve/release says so in the row rather than leaving the three buttons
+  // looking like they did nothing.
+  const [failure, setFailure] = useState<string | null>(null);
+  const label = capabilityLabel(conflict.capability);
+  const [first, second, ...rest] = conflict.models;
+  const residentName = conflict.resident ? repoName(conflict.resident) : null;
+
+  const run = (fn: () => Promise<void>) => async () => {
+    setBusy(true);
+    setFailure(null);
+    try {
+      await fn();
+    } catch (e) {
+      setFailure(actionErrorMessage(e, "Could not resolve — check your connection and retry."));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // HELD: the user (or an earlier resolve) already answered. One action
+  // only — Release — back to ordinary auto-load; no re-litigating the choice
+  // from this row.
+  if (conflict.held) {
+    return (
+      <NotificationCard
+        className="dl-row-conflict"
+        title={label}
+        titleTooltip={conflict.resident
+          ? `${repoName(conflict.resident)} is held resident for ${label} — other models are refused until released.`
+          : `${label} is held stopped — every request-path load is refused until released.`}
+        liveAction={{
+          label: busy ? "Releasing…" : "Release",
+          onClick: run(() => onRelease(conflict.capability)),
+          disabled: busy,
+        }}
+        figures={
+          <span className="dl-amount">
+            {conflict.resident ? `Held for ${repoName(conflict.resident)}` : "Held stopped"}
+          </span>
+        }
+        status={failure || undefined}
+      />
+    );
+  }
+
+  // NOT YET RESOLVED: the swap loop the supervisor caught on its own. The
+  // resident is still answering normally throughout — only the OTHER
+  // contenders' loads are refused — so the tooltip says who stays loaded
+  // rather than claiming nobody is making progress (B7).
+  // Requesters, not model names (SPEC-model-slot-conflict.md §1): "Notes app
+  // and Chat are both trying to use the text model" names who is fighting,
+  // not what they're fighting over — `label` already says that. A model with
+  // no entry in `requesters` was asked for by a caller the supervisor could
+  // not identify, so it falls back to its own repo name rather than leaving
+  // a blank.
+  const names = joinNames(conflict.models.map((m) => conflict.requesters?.[m] || repoName(m)));
+  const tooltip = residentName
+    ? `${names} are fighting over ${label.toLowerCase()} — ${residentName} stays loaded, the rest can't take over.`
+    : `${names} are fighting over ${label.toLowerCase()}.`;
+  return (
+    <NotificationCard
+      className="dl-row-conflict"
+      title={label}
+      titleTooltip={tooltip}
+      liveAction={{
+        // "Stop both" only reads right for exactly two contenders — three or
+        // more calls for the honest "Stop all" instead of a word that
+        // promises a pair.
+        label: busy ? "Stopping…" : rest.length > 0 ? "Stop all" : "Stop both",
+        onClick: run(() => onStopBoth(conflict.capability)),
+        disabled: busy,
+      }}
+      navAction={
+        first
+          ? { label: `Keep ${repoName(first)}`, onClick: run(() => onKeep(conflict.capability, first)), disabled: busy }
+          : undefined
+      }
+      extraAction={
+        second
+          ? { label: `Keep ${repoName(second)}`, onClick: run(() => onKeep(conflict.capability, second)), disabled: busy }
+          : undefined
+      }
+      // `NotificationCard` has only two "Keep" slots — a third (or later)
+      // contender still needs its own Keep action (B8), so overflow rides
+      // here instead of being silently dropped.
+      figures={
+        rest.length > 0 ? (
+          <span className="dl-row-conflict-extra">
+            {rest.map((m) => (
+              <button
+                key={m}
+                type="button"
+                className="q-all"
+                onClick={run(() => onKeep(conflict.capability, m))}
+                disabled={busy}
+              >
+                {`Keep ${repoName(m)}`}
+              </button>
+            ))}
+          </span>
+        ) : undefined
+      }
+      status={failure || undefined}
+    />
+  );
+}
+
 /**
  * The pure, props-in half — see DownloadManagerView's own doc for why this
  * split exists. Every entry the caller hands in is drawn, whatever its own
@@ -293,14 +434,22 @@ function ModelRow({
  */
 export function ModelsCardView({
   models,
+  conflicts = [],
   ceilingBytes = null,
   collapsed,
   onToggle,
   pinned = false,
   hostProps,
   onUnload,
+  onKeepConflict = async () => {},
+  onStopConflict = async () => {},
+  onReleaseConflict = async () => {},
 }: {
   models: AiLoadedModel[];
+  /** Capabilities currently fighting over a slot (`AiRuntime.conflicts`,
+   *  SPEC-model-slot-conflict.md §4). Optional and empty-defaulted — the
+   *  overwhelmingly common case draws no conflict row at all. */
+  conflicts?: AiConflict[];
   /** This machine's memory ceiling (`AiRuntime.memoryCeilingBytes`), for the
    *  rows' colour coding. Optional and null-defaulted: with no ceiling the
    *  figures simply render uncoloured. */
@@ -313,6 +462,16 @@ export function ModelsCardView({
    *  `useStatusChip`. Optional: a test that mounts the view bare needs none. */
   hostProps?: StatusChipState["hostProps"];
   onUnload: (model: string) => Promise<void>;
+  /** "Keep `<model>`" on a conflict row — resolves with that model and holds
+   *  the slot for it. Optional: a test exercising only the model rows needs
+   *  none, same as `onUnload`'s siblings below. */
+  onKeepConflict?: (capability: string, keep: string) => Promise<void>;
+  /** "Stop both" on a conflict row — resolves with `keep: null`, holding the
+   *  slot empty. */
+  onStopConflict?: (capability: string) => Promise<void>;
+  /** "Release" on a held conflict row — clears the hold, back to ordinary
+   *  auto-load. */
+  onReleaseConflict?: (capability: string) => Promise<void>;
 }) {
   // NO AGGREGATE MEMORY ON THE CHIP (D589, user: "the memory gb next to the
   // models isn't even accurate"): `residentBytes` is worker RSS, not model
@@ -324,6 +483,11 @@ export function ModelsCardView({
   //             name is what you actually want to know; a model still loading
   //             carries the indeterminate sweep under it
   //   2+ models "Models 2"
+  // RESIDENT-DOT SEMANTICS UNCHANGED (spec constraint): `idle`/`tone` key off
+  // `models` alone, exactly as before a conflict existed — a held-empty
+  // conflict (`keep: null`) holds no model resident, so the dot stays
+  // outlined precisely because nothing IS resident, not because a conflict
+  // is masking it either way.
   const idle = models.length === 0;
   const only = models.length === 1 ? models[0] : null;
   const label = only ? repoName(only.model) : "Models";
@@ -334,9 +498,18 @@ export function ModelsCardView({
     : only
       ? `Model loaded: ${repoName(only.model)}`
       : `Models, ${models.length} loaded`;
+  const hasConflict = conflicts.length > 0;
+  // A conflict earns the empty panel no slack: even with nothing resident
+  // (a held-empty capability) the row naming the standoff is itself the
+  // content, so "No models loaded" would be actively wrong here.
+  const empty = idle && !hasConflict;
 
   return (
-    <div className="dl-host" {...hostProps}>
+    // `has-conflict` ADDS a warning tint (notifications.css) — it never
+    // substitutes for `tone`'s own idle/on class above, per the spec's own
+    // constraint: the dot's filled-vs-outlined meaning stays exactly
+    // "something is resident", a conflict or not.
+    <div className={"dl-host" + (hasConflict ? " has-conflict" : "")} {...hostProps}>
       <StatusChip
         label={label}
         count={count}
@@ -350,10 +523,19 @@ export function ModelsCardView({
       />
       {!collapsed && (
         <div className="dl-panel">
-          {idle ? (
+          {empty ? (
             <div className="dl-panel-empty">No models loaded</div>
           ) : (
             <div className="dl-rows">
+              {conflicts.map((c) => (
+                <ConflictRow
+                  key={c.capability}
+                  conflict={c}
+                  onKeep={onKeepConflict}
+                  onStopBoth={onStopConflict}
+                  onRelease={onReleaseConflict}
+                />
+              ))}
               {models.map((m) => (
                 <ModelRow
                   key={m.model}
@@ -378,20 +560,46 @@ export default function ModelsDock() {
   const runtime = useAiRuntime();
   const chip = useStatusChip("models");
 
+  // This row IS "the shell's own conflict controls" the spec names
+  // (SPEC-model-slot-conflict.md §1) — its Unload always claims `user`,
+  // never refused for contention and clearing any standing conflict on this
+  // capability, the same as the AI Models page's own Load/Unload buttons.
   const onUnload = async (model: string) => {
-    const result = await unloadAiModel(model);
+    const result = await unloadAiModel(model, USER_REQUESTER);
+    publishAiRuntime(result);
+  };
+
+  // `resolveModelConflict`'s reply carries the full runtime beside its own
+  // load-start (or bare `{capability, resident: null}`), same as
+  // `onUnload`/`onReleaseConflict` — published straight away rather than
+  // left to `refreshAiRuntime`, whose poll could already be in flight and
+  // land AFTER this one with the stale, pre-resolve conflict still on it.
+  const onKeepConflict = async (capability: string, keep: string) => {
+    const result = await resolveModelConflict(capability, keep);
+    publishAiRuntime(result);
+  };
+  const onStopConflict = async (capability: string) => {
+    const result = await resolveModelConflict(capability, null);
+    publishAiRuntime(result);
+  };
+  const onReleaseConflict = async (capability: string) => {
+    const result = await releaseModelConflict(capability);
     publishAiRuntime(result);
   };
 
   return (
     <ModelsCardView
       models={runtime.loaded}
+      conflicts={runtime.conflicts}
       ceilingBytes={runtime.memoryCeilingBytes}
       collapsed={!chip.open}
       onToggle={chip.toggle}
       pinned={chip.pinned}
       hostProps={chip.hostProps}
       onUnload={onUnload}
+      onKeepConflict={onKeepConflict}
+      onStopConflict={onStopConflict}
+      onReleaseConflict={onReleaseConflict}
     />
   );
 }

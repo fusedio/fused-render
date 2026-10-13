@@ -275,8 +275,11 @@
  *     no onProgress, no jobId on success. Rejects .type "bad_request" |
  *     "model_loading" (the model is not resident; .jobId is the load this
  *     call just started — watch it and retry, exactly like the first
- *     fused.ai.text(...) on a cold local model) | "ai_error" | "unavailable" (no
- *     embedding runner on this machine).
+ *     fused.ai.text(...) on a cold local model) | "model_slot_conflict"
+ *     (another model is already fighting this one over the capability's
+ *     slot; .capability/.models/.resident/.held name the standoff — this is
+ *     TERMINAL, do not retry) | "ai_error" | "unavailable" (no embedding
+ *     runner on this machine).
  *   fused.ai.decide({state, questions, model, provider, abortSignal})
  *     -> Promise<{answers, ...frame}>  usage: {inputTokens, outputTokens: 0, totalTokens}
  *     providerMetadata.local: {runner}.
@@ -295,8 +298,11 @@
  *     and state. Not job-backed: one forward pass per question, over in
  *     milliseconds, so the reply IS the result. Rejects .type "bad_request"
  *     (a malformed question, named by id) | "model_loading" (.jobId is the
- *     load this call started — watch it and retry) | "ai_error" |
- *     "unavailable" (no decision runner on this machine: Apple Silicon only).
+ *     load this call started — watch it and retry) | "model_slot_conflict"
+ *     (another model is already fighting this one over the capability's
+ *     slot; .capability/.models/.resident/.held name the standoff — this is
+ *     TERMINAL, do not retry) | "ai_error" | "unavailable" (no decision
+ *     runner on this machine: Apple Silicon only).
  *   fused.ai.vision({image, task, prompt, length, reasoning, maxObjects, model,
  *                    provider, abortSignal})  (SPEC AI-33)
  *     -> Promise<{task, imageSize: {width, height}, text?, reasoning?,
@@ -315,7 +321,8 @@
  *     job-backed. Rejects .type "bad_request" (bad option, or a model that
  *     cannot do `task` — the message names one that can) | "model_loading"
  *     (.jobId is the load this call started — watch it and retry) |
- *     "ai_error" | "unavailable" (no vision runner here: Apple Silicon only).
+ *     "model_slot_conflict" (terminal, as for decide) | "ai_error" |
+ *     "unavailable" (no vision runner here: Apple Silicon only).
  *   fused.capture.* -> record the screen, record the mic, grab a still
  *     screen({display, rect, audio, device, cursor, path, maxSeconds, title})
  *     -> Promise<handle> and audio({source: "mic"|"system"|"both", device, path, maxSeconds,
@@ -1680,6 +1687,31 @@
     const abandoned = takePendingSupersedes();
     if (abandoned) headers["X-Fused-Supersedes"] = abandoned;
     return headers;
+  }
+
+  // ---- AI requester identity (SPEC-model-slot-conflict.md §1) ---------------
+  // Every call this runtime makes into the shared model supervisor — text,
+  // image, video, speech, transcribe, embed, decide, and the load/unload
+  // lifecycle calls — carries WHO is asking, so two pages fighting over one
+  // capability's slot can be told apart from one page retrying its own call.
+  // This is always the calling page's own identity: a sandboxed page is never
+  // the user settling a conflict with their own hands, no matter which of
+  // these it calls — only the shell's own ModelsDock row, its notification
+  // actions, and the AI Models page's own load/unload buttons (none of which
+  // run through this runtime) ever send `X-Fused-Requester: user`. A page with
+  // no resolvable path (an inline preview with no `path` query param) sends no
+  // header at all, which the server reads as anonymous — not a reason to fail
+  // the call.
+  //
+  // Takes `callHeaders`' own OUTPUT rather than deriving the page itself —
+  // `callHeaders` already reads `ownQuery("path")` and percent-encodes it
+  // into `X-Fused-Page`, so this reuses that exact encoded string instead of
+  // querying `window.location.search` and re-encoding a second time for the
+  // same value.
+  function aiRequesterHeaders(headers) {
+    const page = headers["X-Fused-Page"];
+    if (!page) return headers;
+    return Object.assign({}, headers, { "X-Fused-Requester": page, "X-Fused-Requester-Label": page });
   }
 
   // ---- superseded reporting (docs/CALL_LOG_DESIGN.md §6.2, SPEC CL-5) -------
@@ -3924,6 +3956,21 @@
     if (jobId) err.jobId = jobId;
     return err;
   }
+  // "model_slot_conflict" (SPEC-model-slot-conflict.md): two different models
+  // are fighting over a capability's one resident slot and the server has
+  // stopped auto-evicting between them. Carrying the competing models and
+  // the held state through is what lets a caller offer the same choice the
+  // AI Models page does, instead of just surfacing the message — every
+  // request-path verb that turns a 409 into a thrown Error (`fused.ai.text`,
+  // `.embed`, `.decide`) calls this on its way out so none of them drift
+  // from the others field by field.
+  function copyConflictFields(err, error) {
+    if (!error || error.type !== "model_slot_conflict") return;
+    err.capability = error.capability;
+    err.models = error.models;
+    err.resident = error.resident;
+    err.held = error.held;
+  }
   // fetch rejects an aborted request with a DOMException named AbortError;
   // this is the one place that name is translated into the bridge's own type.
   function rethrowAbort(what) {
@@ -4119,7 +4166,8 @@
       : promise;
     const req = fetch("/api/ai", {
       method: "POST",
-      headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" }),
+      headers: aiRequesterHeaders(callHeaders(
+        { "Content-Type": "application/json", "X-Fused": "1" })),
       body: JSON.stringify(body),
       signal: signal || undefined,
     }).catch(rethrowAbort("the AI call"));
@@ -4130,6 +4178,10 @@
       // load this call just started (SPEC AI-5). Carrying it through is what
       // lets a caller show that download rather than just reporting a failure.
       if (error && error.jobId) err.jobId = error.jobId;
+      // UNLIKE "model_loading", a "model_slot_conflict" is terminal — it is
+      // never followed by a load that will eventually finish, so a caller
+      // must not retry it the way it retries "model_loading".
+      copyConflictFields(err, error);
       throw err;
     }
     if (!onChunk) {
@@ -4525,7 +4577,8 @@
   async function aiPost(path, body, signal) {
     const res = await fetch(path, {
       method: "POST",
-      headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" }),
+      headers: aiRequesterHeaders(callHeaders(
+        { "Content-Type": "application/json", "X-Fused": "1" })),
       body: JSON.stringify(body || {}),
       signal: signal || undefined,
     }).catch(rethrowAbort("the AI call"));
@@ -4537,8 +4590,18 @@
       return {};
     });
     if (!res.ok) {
-      const err = new Error((data && data.error) || res.statusText);
-      err.type = res.status === 409 ? "unavailable" : "bad_request";
+      // `data.error` is a plain string for every ordinary failure, but a
+      // `model_slot_conflict` (SPEC-model-slot-conflict.md) carries it as the
+      // `to_wire()` object `_conflict_error` wraps every job-backed verb's
+      // conflict in — same shape `fused.ai.text`/`.embed`/`.decide` already
+      // surface through `copyConflictFields`, so image/video/speech/
+      // transcribe share the one code path rather than inventing a second.
+      const error = data && data.error;
+      const isConflict = error && typeof error === "object" && error.type === "model_slot_conflict";
+      const message = isConflict ? error.message : error;
+      const err = new Error(message || res.statusText);
+      err.type = isConflict ? "model_slot_conflict" : (res.status === 409 ? "unavailable" : "bad_request");
+      copyConflictFields(err, error);
       throw err;
     }
     return data;
@@ -5332,7 +5395,8 @@
     if (signal && signal.aborted) return Promise.reject(cancelledError("the embedding"));
     return fetch("/api/ai/embed", {
       method: "POST",
-      headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" }),
+      headers: aiRequesterHeaders(callHeaders(
+        { "Content-Type": "application/json", "X-Fused": "1" })),
       body: JSON.stringify(body),
       signal: signal || undefined,
     })
@@ -5354,6 +5418,9 @@
           // the load this call just started — the same field `fused.ai`'s own
           // `fail()` carries through for exactly the same reason (SPEC AI-5).
           if (error.jobId) err.jobId = error.jobId;
+          // Same model_slot_conflict fields `fused.ai.text`'s own `fail()`
+          // carries through, for the same reason — see `copyConflictFields`.
+          copyConflictFields(err, error);
           throw err;
         }
         return data.result;
@@ -5424,7 +5491,8 @@
     if (signal && signal.aborted) return Promise.reject(cancelledError("the decision"));
     return fetch("/api/ai/decide", {
       method: "POST",
-      headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" }),
+      headers: aiRequesterHeaders(callHeaders(
+        { "Content-Type": "application/json", "X-Fused": "1" })),
       body: JSON.stringify(body),
       signal: signal || undefined,
     })
@@ -5438,6 +5506,7 @@
           err.type = error.type
             || (res.status === 409 ? "unavailable" : "ai_error");
           if (error.jobId) err.jobId = error.jobId;
+          copyConflictFields(err, error);
           throw err;
         }
         return data.result;
@@ -5481,7 +5550,8 @@
     if (signal && signal.aborted) return Promise.reject(cancelledError("the vision request"));
     return fetch("/api/ai/vision", {
       method: "POST",
-      headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" }),
+      headers: aiRequesterHeaders(callHeaders(
+        { "Content-Type": "application/json", "X-Fused": "1" })),
       body: JSON.stringify(body),
       signal: signal || undefined,
     })
@@ -5495,6 +5565,7 @@
           err.type = error.type
             || (res.status === 409 ? "unavailable" : "ai_error");
           if (error.jobId) err.jobId = error.jobId;
+          copyConflictFields(err, error);
           throw err;
         }
         return data.result;
@@ -7567,12 +7638,15 @@
   // says the recording is the browser's to make on this platform — the same
   // flag `captureSources` strips before a page can read it — so the decision is
   // made once, from the server's own answer, rather than by sniffing a user
-  // agent. A page calls `screen()`; what happens under it is not its business
-  // (CP-8).
+  // agent. `sources().audioNative` narrows that to audio mode on Linux, where
+  // audio records natively over PipeWire/pulse even though the screen still
+  // goes through the browser. A page calls `screen()`; what happens under it
+  // is not its business (CP-8).
   function captureStart(body) {
     return captureFetch("/api/capture", undefined, "GET").then((data) => {
       const sources = (data && data.sources) || {};
-      if (!sources.client) {
+      const native = !sources.client || (body.mode === "audio" && sources.audioNative);
+      if (native) {
         return captureFetch("/api/capture/start", captureBase(body))
           .then((started) => captureHandle(started));
       }
@@ -7590,30 +7664,37 @@
 
   // fused.capture.audio({source, path, maxSeconds, title})
   //
-  // Sound to an .m4a. `source` is "mic" (the default), "system" (what this Mac
-  // is playing) or "both" (mixed). On macOS 14.2+ system audio is a Core Audio
-  // process tap — no Screen Recording permission, its own "System Audio
-  // Recording" one; 13.0-14.1 uses ScreenCaptureKit and needs Screen Recording.
-  // On 13.0-14.1 that grant is sound only (no picture), the app must be quit and
-  // reopened after granting it, and the file holds ALL system sound, notifications
-  // included.
-  // Windows and Linux refuse "system"/"both" here, with a sentence saying to
-  // record the screen with `audio: "system"` instead.
+  // Sound to a file (.m4a on macOS, .wav on Linux when recorded natively, or
+  // whatever container the browser picks when it falls back to one). `source`
+  // is "mic" (the default), "system" (what the machine is playing) or "both"
+  // (mixed). On macOS 14.2+ system audio is a Core Audio process tap — no
+  // Screen Recording permission, its own "System Audio Recording" one;
+  // 13.0-14.1 uses ScreenCaptureKit and needs Screen Recording. On 13.0-14.1
+  // that grant is sound only (no picture), the app must be quit and reopened
+  // after granting it, and the file holds ALL system sound, notifications
+  // included. Linux records "system"/"both" natively over PipeWire/pulse —
+  // no picker, no screen-share hack — and refuses them with a sentence saying
+  // so only when that session is unreachable; "mic" there falls back to the
+  // browser in that case. Windows has no native path at all and refuses
+  // "system"/"both" here, with a sentence saying to record the screen with
+  // `audio: "system"` instead.
   //
   // `device` picks the microphone for "mic" and "both" — except that macOS
   // audio-only "mic" records the system's current input and REFUSES a `device`
   // rather than ignoring it, and "system" has no microphone to choose (also
   // refused). It is always forwarded, so the refusal is the server's one good
-  // sentence rather than two. A tap cannot tell a denied permission from an
-  // idle Mac, so a stop() on a recording that heard nothing carries a
-  // `warning` sentence next to the file — the file itself is still valid.
+  // sentence rather than two. A tap (or, on Linux, a silent monitor stream)
+  // cannot tell a denied permission from a machine that is simply quiet, so a
+  // stop() on a system/both recording that heard nothing carries a `warning`
+  // sentence next to the file — the file itself is still valid.
   //
-  // On macOS a floating recording pill (app icon, level meter, pause/resume,
-  // stop) shows for the length of an audio recording; its stop is the same
-  // request as rec.stop(), so a page's own stop() afterwards just answers with
-  // the finished record. rec.pause() / rec.resume() hold the recording (paused
-  // time is not in the file and does not count toward maxSeconds); rec.paused
-  // reads the state. Windows and Linux reject them with `.type "unavailable"`.
+  // On macOS and on native Linux audio a floating recording pill (app icon,
+  // level meter, pause/resume, stop) shows for the length of an audio
+  // recording; its stop is the same request as rec.stop(), so a page's own
+  // stop() afterwards just answers with the finished record. rec.pause() /
+  // rec.resume() hold the recording (paused time is not in the file and does
+  // not count toward maxSeconds); rec.paused reads the state. Windows, and
+  // Linux falling back to the browser, reject them with `.type "unavailable"`.
   function captureAudio(opts) {
     opts = opts || {};
     const body = { mode: "audio" };
@@ -7654,12 +7735,31 @@
   // is a fact about this browser and not about the machine — and a server route
   // cannot know which browser is asking. So the server answers `client: true`
   // and the three recording keys get replaced here, from what this window can
-  // actually do. The flag is DELETED on the way out: a page reads
-  // `{available, reason}` exactly as it does on macOS and has nothing to branch
-  // on (CP-8).
+  // actually do. Both flags are DELETED on the way out: a page reads
+  // `{available, reason}` exactly as it does on macOS and has nothing
+  // transport-shaped to branch on (CP-8).
+  //
+  // `audioNative` (Linux only) leaves `audio`/`systemAudio` and
+  // `microphones` exactly as the server answered them — its own truth about
+  // whether PipeWire/pulse is reachable and about the (empty) device list a
+  // native recording can choose from, which this window's MediaRecorder
+  // support has nothing to say about. `video` stays unconditional: screen
+  // recording is the browser's on every `client: true` platform regardless
+  // of audio's own path.
+  //
+  // `systemAudio` is only ever NARROWED by this browser, never widened:
+  // Windows answers `true` unconditionally server-side (the screen share's
+  // "share audio" checkbox works there whenever the browser can record at
+  // all) and this is the only place that can catch a browser with no usable
+  // MediaRecorder. Linux's own `false` — no PipeWire/pulse session reachable,
+  // with no browser equivalent to fall back to — must survive untouched;
+  // this window's unrelated screen-recording capability has no business
+  // overriding that honest unavailability with a `true`.
   async function captureMerge(sources) {
     if (!sources || !sources.client) return sources;
     delete sources.client;
+    const audioNative = sources.audioNative;
+    delete sources.audioNative;
     const host = captureHost();
     const type = captureType(host, "screen");
     const ok = captureMediaOk(host) && !!type;
@@ -7667,13 +7767,17 @@
       : "this browser cannot record — it has no MediaRecorder with a container "
         + "this app can store. Chrome, Edge or a recent Firefox can";
     sources.video = { available: ok, granted: ok, reason: why };
-    sources.audio = {
-      available: ok && !!captureType(host, "audio"),
-      granted: ok,
-      reason: why,
-    };
-    sources.systemAudio = { available: ok, reason: why };
-    if (ok) {
+    if (!audioNative) {
+      sources.audio = {
+        available: ok && !!captureType(host, "audio"),
+        granted: ok,
+        reason: why,
+      };
+      if (sources.systemAudio && sources.systemAudio.available) {
+        sources.systemAudio = { available: ok, reason: why };
+      }
+    }
+    if (ok && !audioNative) {
       try {
         const devices = await host.navigator.mediaDevices.enumerateDevices();
         // `label` is EMPTY until the microphone permission has been granted

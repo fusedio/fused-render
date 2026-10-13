@@ -1153,6 +1153,23 @@
   padding-left: 7px;
 }
 
+/* MODEL-SLOT CONFLICT (SPEC-model-slot-conflict.md §4): the dock's own
+   conflict row gets the same left-border device, `--warning` rather than
+   `--error` — a standoff waiting on a choice, not a failure. */
+.dl-row.dl-row-conflict {
+  border-left: 3px solid var(--warning);
+  padding-left: 7px;
+}
+
+/* A warning tint ADDED to the Models chip when a conflict stands — never
+   substituting for `.is-idle`/plain tone, which still answers "is anything
+   resident" alone (ModelsDock.tsx's own comment at `has-conflict`). Same
+   left-border device as the row above, so the chip visually points at the
+   panel that explains it. */
+.has-conflict .dl-toggle {
+  box-shadow: inset 2px 0 0 var(--warning);
+}
+
 .dl-row-head {
   display: flex;
   align-items: baseline;

@@ -347,7 +347,7 @@ def test_the_snapshot_says_when_the_last_completion_landed():
 
 def _local(monkeypatch, events):
     monkeypatch.setattr(supervisor, "generate_text",
-                        lambda model, request: iter(events))
+                        lambda model, request, **kwargs: iter(events))
 
 
 def test_the_claude_tier_records_what_the_caller_was_told(monkeypatch):
@@ -513,7 +513,7 @@ def test_a_model_that_is_still_loading_is_not_a_failure(monkeypatch):
     for the page to watch. Counting it is how "3 failed" comes to mean "one
     model is downloading" — and a number that means two things is one nobody
     can act on."""
-    def cold(model, request):
+    def cold(model, request, **kwargs):
         raise supervisor.ModelNotReady("org/chat is loading now", "sys:ai-model:orgchat")
         yield  # pragma: no cover - generator function, never reached
 

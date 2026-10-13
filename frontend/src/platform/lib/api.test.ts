@@ -20,7 +20,8 @@ import { installDomShim } from "@platform/lib/testDomShim";
 // in the file). `await import(...)` defers the import past `installDomShim()`.
 installDomShim();
 
-const { getJson, postJson, saveAppFileToDisk } = await import("@platform/lib/api");
+const { getJson, postJson, saveAppFileToDisk, actionErrorMessage } = await import("@platform/lib/api");
+import type { HttpError } from "@platform/lib/api";
 
 function recordFetch(): {
   calls: { url: string; init: RequestInit }[];
@@ -136,4 +137,39 @@ test("a JSON failure body's own error message wins over the status fallback", as
   ) as unknown as typeof fetch;
 
   await expect(saveAppFileToDisk("/apps/myapp", "myapp")).rejects.toThrow("not a fused app");
+});
+
+describe("actionErrorMessage", () => {
+  // `ModelsDock.tsx`'s unload/conflict rows and `useModelConflictNotify.ts`'s
+  // toast both call this to tell "the server answered and here is why" (a
+  // held conflict naming who holds it, an ownership refusal) apart from a
+  // request that never reached the server at all.
+  test("an HttpError's own message wins over the connection fallback", () => {
+    const err = Object.assign(new Error("org/mine was loaded by another requester."), {
+      status: 409,
+    }) as HttpError;
+    expect(actionErrorMessage(err, "Could not resolve — check your connection and retry.")).toBe(
+      "org/mine was loaded by another requester.",
+    );
+  });
+
+  test("a plain network failure (no .status) falls back to the connection text", () => {
+    expect(actionErrorMessage(new Error("fetch failed"), "Could not resolve — check your connection and retry.")).toBe(
+      "Could not resolve — check your connection and retry.",
+    );
+    expect(actionErrorMessage(new TypeError("Failed to fetch"), "check your connection")).toBe(
+      "check your connection",
+    );
+  });
+
+  test("an HttpError with an empty message still falls back, rather than surfacing nothing", () => {
+    const err = Object.assign(new Error(""), { status: 500 }) as HttpError;
+    expect(actionErrorMessage(err, "check your connection")).toBe("check your connection");
+  });
+
+  test("a non-object/non-Error thrown value falls back to the connection text", () => {
+    expect(actionErrorMessage("just a string", "check your connection")).toBe("check your connection");
+    expect(actionErrorMessage(null, "check your connection")).toBe("check your connection");
+    expect(actionErrorMessage(undefined, "check your connection")).toBe("check your connection");
+  });
 });

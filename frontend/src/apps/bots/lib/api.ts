@@ -262,6 +262,14 @@ export interface Ok { ok: true }
 export interface SetupReply {
   chrome: { found: boolean | null; path: string | null };
   claude: { found?: boolean | null; signed_in?: boolean | null; version?: string | null; [k: string]: unknown };
+  /** Who runs the bots on this machine (one owner process, bots/registry.py): `this` = the server this page
+   *  talks to; else that app forwards here from the named one. `known` false = an older app holds the lock
+   *  and wrote no record. null = no process runs them. Absent from an older server. */
+  owner?: BotsOwner | null;
+}
+export interface BotsOwner {
+  this: boolean; known: boolean; stalled: boolean;
+  pid: number | null; origin: string; app: string; version: string;
 }
 
 // ------------------------------------------------------------------ instrumentation ----

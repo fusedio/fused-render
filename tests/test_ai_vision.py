@@ -55,7 +55,7 @@ def photo(tmp_path):
 def served(monkeypatch):
     calls = []
 
-    def fake(model, body):
+    def fake(model, body, **requester):
         calls.append((model, body))
         reply = {"task": body["task"], "width": 640, "height": 480, "seconds": 0.25}
         if body["task"] in ("caption", "query"):
@@ -171,7 +171,7 @@ def test_an_uncurated_model_is_refused_by_name(client, photo, served):
 
 
 def test_a_cold_model_answers_model_loading_with_its_job(client, photo, monkeypatch):
-    def cold(model, body):
+    def cold(model, body, **requester):
         raise supervisor.ModelNotReady(f"{model} is loading now", supervisor.job_id_for(model))
 
     monkeypatch.setattr(supervisor, "generate_vision", cold)
@@ -182,8 +182,33 @@ def test_a_cold_model_answers_model_loading_with_its_job(client, photo, monkeypa
     assert error["jobId"] == supervisor.job_id_for(MOONDREAM)
 
 
+def test_a_slot_conflict_is_terminal_and_names_the_contenders(client, photo, monkeypatch):
+    def contended(model, body, **requester):
+        raise supervisor.ModelSlotConflict(registry.VISION, [MOONDREAM, DINO], DINO, held=False)
+
+    monkeypatch.setattr(supervisor, "generate_vision", contended)
+    response = _post(client, {"image": photo, "task": "caption"})
+    assert response.status_code == 409
+    error = _error(response)
+    assert error["type"] == "model_slot_conflict"
+    assert MOONDREAM in error["message"] and DINO in error["message"]
+
+
+def test_the_page_is_the_requester(client, photo, monkeypatch):
+    seen = []
+
+    def fake(model, body, **requester):
+        seen.append(requester)
+        return {"task": "caption", "width": 1, "height": 1, "text": "x"}
+
+    monkeypatch.setattr(supervisor, "generate_vision", fake)
+    client.post("/api/ai/vision", json={"image": photo, "task": "caption"},
+                headers={"X-Fused": "1", "X-Fused-Page": "/apps/demo/index.html"})
+    assert seen and seen[0]["requester_id"]
+
+
 def test_a_worker_failure_is_an_ai_error(client, photo, monkeypatch):
-    def broken(model, body):
+    def broken(model, body, **requester):
         raise supervisor.SupervisorError("image not readable")
 
     monkeypatch.setattr(supervisor, "generate_vision", broken)
