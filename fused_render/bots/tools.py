@@ -56,6 +56,7 @@ import time
 from urllib.parse import urlparse
 
 from fused_render.bots import apptools
+from fused_render.bots.channels import base as chan
 
 # Element refs the model may use look like sb12 (browser.py stamps them).
 REF_RE = re.compile(r"^sb\d+$")
@@ -298,10 +299,10 @@ def is_super(bot) -> bool:
 
 
 def phone_super(bot) -> bool:
-    """Super Bot running a task that did not start in its chat (a text): its
-    posture is "ask" whatever its settings say (docs §5)."""
-    v = getattr(bot, "task_via", None) or {}
-    return is_super(bot) and (v.get("kind") or "web") != "web"
+    """Super Bot running a task from an outside sender (a text): its posture is
+    "ask" whatever its settings say (docs §5). A routine is the user's own task
+    from the Mac (channels.base.is_local), so it keeps the bot's settings."""
+    return is_super(bot) and not chan.is_local(getattr(bot, "task_via", None))
 
 
 def effective_approval(bot) -> str:
@@ -1020,6 +1021,15 @@ def call_key(bot, act: str, d: dict):
     return json.dumps([act, ref], sort_keys=True, default=str, ensure_ascii=False)
 
 
+def _copied(info: dict, cap: int = 500) -> str:
+    """What the action put on the browser's clipboard (a Copy link button), for the model to use: ⌘V into
+    the page works too, but nothing outside the bot's browser can paste it."""
+    text = info.get("copied") or ""
+    if not text:
+        return ""
+    return f"; COPIED to the browser clipboard: \"{text[:cap]}\"" + (f" …[{len(text) - cap} more chars]" if len(text) > cap else "")
+
+
 # --------------------------------------------------------------- execute ---
 def execute(bot, act: str, d: dict, obs: dict) -> tuple[str, str]:
     """Run one tool (OpenBot `_execute`); never raises. Control-flow tools
@@ -1043,7 +1053,7 @@ def execute(bot, act: str, d: dict, obs: dict) -> tuple[str, str]:
         if act == "click":
             ref, what, at = target(d, obs)
             info = b.click(**at)
-            return f"click \"{what}\"", f"ok, now at {info.get('url')}" + (f"; POPUP appeared and was accepted: {info['dialog']}" if info.get("dialog") else "")
+            return f"click \"{what}\"", f"ok, now at {info.get('url')}" + (f"; POPUP appeared and was accepted: {info['dialog']}" if info.get("dialog") else "") + _copied(info)
         if act == "type":
             text, submit = d.get("text") or "", bool(d.get("submit"))
             ref, what, at = target(d, obs)
@@ -1068,12 +1078,12 @@ def execute(bot, act: str, d: dict, obs: dict) -> tuple[str, str]:
             ref, what, at = target(d, obs)
             info = b.press(key, **at)
             where = f" in \"{what}\"" if ref else ""
-            return f"press {key}{where}", f"ok, now at {info.get('url')}"
+            return f"press {key}{where}", f"ok, now at {info.get('url')}" + _copied(info)
         if act == "select":
             value = d.get("value") or d.get("text") or ""
             _, what, at = target(d, obs)
             info = b.select(value, **at)
-            return f"select \"{value}\" in {what}", f"ok, chose \"{info.get('chosen')}\""
+            return f"select \"{value}\" in {what}", f"ok, chose \"{info.get('chosen')}\"" + _copied(info)
         if act == "read":
             ref, what, at = target(d, obs)
             info = b.read(limit=READ_CAP, **at)

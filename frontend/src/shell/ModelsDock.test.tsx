@@ -20,7 +20,7 @@ import { join } from "node:path";
 import { readFileSync } from "node:fs";
 
 import { memoryBand, ModelsCardView } from "@shell/ModelsDock";
-import type { AiLoadedModel } from "@platform/lib/api";
+import type { AiConflict, AiLoadedModel } from "@platform/lib/api";
 
 // Read once, at module scope — several tests below assert against the actual
 // CSS text rather than computed style, since react-test-renderer never runs a
@@ -94,16 +94,29 @@ function toggleClasses(tree: ReactTestRendererJSON | null): string[] {
   return ((toggles[0].props.className as string) ?? "").split(" ");
 }
 
+const conflict = (over: Partial<AiConflict> = {}): AiConflict => ({
+  capability: "text-generation",
+  models: ["org/a", "org/b"],
+  resident: "org/b",
+  since: 0,
+  held: false,
+  ...over,
+});
+
 function renderInstance(
   props: Partial<Parameters<typeof ModelsCardView>[0]> = {},
 ): ReactTestRenderer {
   return create(
     <ModelsCardView
       models={props.models ?? [model()]}
+      conflicts={props.conflicts ?? []}
       ceilingBytes={props.ceilingBytes ?? null}
       collapsed={props.collapsed ?? false}
       onToggle={props.onToggle ?? (() => {})}
       onUnload={props.onUnload ?? (async () => {})}
+      onKeepConflict={props.onKeepConflict ?? (async () => {})}
+      onStopConflict={props.onStopConflict ?? (async () => {})}
+      onReleaseConflict={props.onReleaseConflict ?? (async () => {})}
     />,
   );
 }
@@ -566,4 +579,223 @@ test("the failure tint cannot reach the Models chip", () => {
       "is-failure",
     );
   }
+});
+
+// ------------------------------------------------ model-slot conflicts
+// (SPEC-model-slot-conflict.md §4)
+
+// RESIDENT-DOT SEMANTICS UNCHANGED: a conflict never flips the chip's own
+// idle/on tone — that still answers "is anything resident" alone, a
+// conflict or not. The chip instead carries a SEPARATE `has-conflict`
+// wrapper class (a warning tint, notifications.css), additive to whatever
+// `is-idle`/plain tone already applies.
+test("a conflict adds a warning wrapper class without touching the dot's idle/on tone", () => {
+  const resident = renderView({ models: [model()], conflicts: [conflict()] });
+  expect((findAll(resident, "dl-toggle")[0].props.className as string).split(" ")).not.toContain(
+    "is-idle",
+  );
+  expect(findAll(resident, "dl-host")[0].props.className as string).toContain("has-conflict");
+
+  // Held empty (`keep: null`): nothing resident, so the dot is correctly
+  // outlined — the conflict row's own content, not the dot, carries the news.
+  const heldEmpty = renderView({
+    models: [],
+    conflicts: [conflict({ held: true, resident: null })],
+  });
+  expect((findAll(heldEmpty, "dl-toggle")[0].props.className as string).split(" ")).toContain(
+    "is-idle",
+  );
+  expect(findAll(heldEmpty, "dl-host")[0].props.className as string).toContain("has-conflict");
+
+  // No conflict at all: no wrapper class.
+  const plain = renderView({ models: [model()] });
+  expect(findAll(plain, "dl-host")[0].props.className as string).not.toContain("has-conflict");
+});
+
+// A held-empty conflict with no models resident must still draw its own row
+// rather than falling back to "No models loaded" — the row IS the content.
+test("a held-empty conflict with nothing resident still draws its own row, not the idle sentence", () => {
+  const tree = renderView({
+    models: [],
+    conflicts: [conflict({ held: true, resident: null })],
+  });
+  expect(findAll(tree, "dl-panel-empty")).toHaveLength(0);
+  expect(findAll(tree, "dl-row-conflict")).toHaveLength(1);
+});
+
+// The unresolved conflict row carries all three choices the spec asks for:
+// Keep <first>, Keep <second>, Stop both.
+test("an unresolved conflict row offers Keep A, Keep B, and Stop both", () => {
+  const tree = renderView({
+    models: [],
+    conflicts: [conflict({ models: ["org/model-a", "org/model-b"], held: false })],
+  });
+  const row = findAll(tree, "dl-row-conflict")[0];
+  expect(text(findAll(row, "q-all")[0])).toBe("Keep model-a");
+  expect(text(findAll(row, "q-all")[1])).toBe("Keep model-b");
+  expect(text(findAll(row, "dl-row-cancel")[0])).toBe("Stop both");
+});
+
+// The resident keeps answering while the standoff stands — the row's own
+// tooltip must say so, not claim neither side is making progress (B7: the
+// old wording, "neither can finish loading", was wrong the moment one side
+// is in fact resident and serving).
+test("the unresolved row's tooltip names the resident as staying loaded", () => {
+  const tree = renderView({
+    models: [],
+    conflicts: [conflict({ models: ["org/model-a", "org/model-b"], resident: "org/model-b", held: false })],
+  });
+  const row = findAll(tree, "dl-row-conflict")[0];
+  const tooltip = findAll(row, "dl-title")[0].props.title as string;
+  expect(tooltip).toContain("model-b stays loaded");
+  expect(tooltip).not.toContain("neither can finish loading");
+});
+
+// Requester labels (SPEC-model-slot-conflict.md §1): the tooltip names WHO is
+// fighting ("Notes app and Chat"), not the model ids, when the supervisor
+// could identify the callers. A model with no entry in `requesters` still
+// falls back to its own repo name rather than leaving a blank.
+test("the unresolved row's tooltip names requesters, falling back to repoName for an anonymous one", () => {
+  const tree = renderView({
+    models: [],
+    conflicts: [conflict({
+      models: ["org/model-a", "org/model-b"],
+      resident: "org/model-b",
+      held: false,
+      requesters: { "org/model-a": "Notes app" },
+    })],
+  });
+  const row = findAll(tree, "dl-row-conflict")[0];
+  const tooltip = findAll(row, "dl-title")[0].props.title as string;
+  expect(tooltip).toContain("Notes app and model-b");
+  expect(tooltip).not.toContain("model-a");
+});
+
+// A third (or later) contender gets its own Keep action too (B8) —
+// `NotificationCard` only has two "Keep" slots, so anything past the first
+// two rides in the row's figures area instead of being dropped silently.
+test("a third contender still gets its own Keep action", () => {
+  const tree = renderView({
+    models: [],
+    conflicts: [conflict({
+      models: ["org/model-a", "org/model-b", "org/model-c"],
+      resident: "org/model-b",
+      held: false,
+    })],
+  });
+  const row = findAll(tree, "dl-row-conflict")[0];
+  const keeps = findAll(row, "q-all").map((n) => text(n));
+  expect(new Set(keeps)).toEqual(new Set(["Keep model-a", "Keep model-b", "Keep model-c"]));
+  // "Stop both" only makes sense for exactly two — three or more contenders
+  // call for the honest "Stop all".
+  expect(text(findAll(row, "dl-row-cancel")[0])).toBe("Stop all");
+});
+
+test("a third contender's Keep calls onKeepConflict the same as the first two", async () => {
+  const seen: Array<[string, string]> = [];
+  const instance = renderInstance({
+    models: [],
+    conflicts: [conflict({
+      capability: "text-generation",
+      models: ["org/a", "org/b", "org/c"],
+    })],
+    onKeepConflict: async (capability, keep) => {
+      seen.push([capability, keep]);
+    },
+  });
+  const tree = instance.toJSON() as ReactTestRendererJSON;
+  const row = findAll(tree, "dl-row-conflict")[0];
+  const thirdKeep = findAll(row, "q-all").find((n) => text(n) === "Keep c");
+  await act(async () => {
+    (thirdKeep!.props as { onClick: () => void }).onClick();
+  });
+  expect(seen).toEqual([["text-generation", "org/c"]]);
+});
+
+test("Keep calls onKeepConflict with the capability and the chosen model", async () => {
+  const seen: Array<[string, string]> = [];
+  const instance = renderInstance({
+    models: [],
+    conflicts: [conflict({ capability: "text-generation", models: ["org/a", "org/b"] })],
+    onKeepConflict: async (capability, keep) => {
+      seen.push([capability, keep]);
+    },
+  });
+  const tree = instance.toJSON() as ReactTestRendererJSON;
+  const row = findAll(tree, "dl-row-conflict")[0];
+  await act(async () => {
+    (findAll(row, "q-all")[0].props as { onClick: () => void }).onClick();
+  });
+  expect(seen).toEqual([["text-generation", "org/a"]]);
+});
+
+test("Stop both calls onStopConflict with the capability", async () => {
+  const seen: string[] = [];
+  const instance = renderInstance({
+    models: [],
+    conflicts: [conflict({ capability: "text-generation" })],
+    onStopConflict: async (capability) => {
+      seen.push(capability);
+    },
+  });
+  const tree = instance.toJSON() as ReactTestRendererJSON;
+  const row = findAll(tree, "dl-row-conflict")[0];
+  await act(async () => {
+    (findAll(row, "dl-row-cancel")[0].props as { onClick: () => void }).onClick();
+  });
+  expect(seen).toEqual(["text-generation"]);
+});
+
+// Held: exactly one action (Release), and the row says who/what it is held
+// for — never the three-choice layout again, which would re-litigate a
+// question the user already answered.
+test("a held conflict row offers only Release, and names what it holds", () => {
+  const held = renderView({
+    models: [],
+    conflicts: [conflict({ held: true, resident: "org/model-a" })],
+  });
+  const row = findAll(held, "dl-row-conflict")[0];
+  expect(findAll(row, "q-all")).toHaveLength(0);
+  expect(text(findAll(row, "dl-row-cancel")[0])).toBe("Release");
+  expect(text(findAll(row, "dl-amount")[0])).toContain("Held for");
+  expect(text(findAll(row, "dl-amount")[0])).toContain("model-a");
+});
+
+test("Release calls onReleaseConflict with the capability", async () => {
+  const seen: string[] = [];
+  const instance = renderInstance({
+    models: [],
+    conflicts: [conflict({ capability: "text-generation", held: true })],
+    onReleaseConflict: async (capability) => {
+      seen.push(capability);
+    },
+  });
+  const tree = instance.toJSON() as ReactTestRendererJSON;
+  const row = findAll(tree, "dl-row-conflict")[0];
+  await act(async () => {
+    (findAll(row, "dl-row-cancel")[0].props as { onClick: () => void }).onClick();
+  });
+  expect(seen).toEqual(["text-generation"]);
+});
+
+// A failed resolve says so on the row rather than leaving the buttons
+// looking like they did nothing — the same non-silent-failure contract
+// `ModelRow`'s own Unload carries.
+test("a failed Stop both says so on the conflict row", async () => {
+  const tree = renderInstance({
+    models: [],
+    conflicts: [conflict()],
+    onStopConflict: async () => {
+      throw new Error("network down");
+    },
+  });
+  const before = tree.toJSON() as ReactTestRendererJSON;
+  const row = findAll(before, "dl-row-conflict")[0];
+  await act(async () => {
+    (findAll(row, "dl-row-cancel")[0].props as { onClick: () => void }).onClick();
+  });
+  const after = tree.toJSON() as ReactTestRendererJSON;
+  const afterRow = findAll(after, "dl-row-conflict")[0];
+  expect(findAll(afterRow, "dl-status")).toHaveLength(1);
+  expect(text(findAll(afterRow, "dl-status")[0]).length).toBeGreaterThan(0);
 });

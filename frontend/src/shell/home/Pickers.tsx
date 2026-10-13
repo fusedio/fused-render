@@ -30,7 +30,7 @@ export function ShowChips({ value, onChange }: { value: TasksShow; onChange: (s:
   );
 }
 
-const SIZE_ORDER: WidgetSize[] = ["1x1", "2x1", "1x2", "2x2", "4x1"];
+const SIZE_ORDER: WidgetSize[] = ["1x1", "2x1", "1x2", "1x3", "2x2", "2x3", "4x1"];
 
 /** Chips always read Small, Half, Large, Full row, whatever order a source lists
     its sizes in (the first entry is only the default). */

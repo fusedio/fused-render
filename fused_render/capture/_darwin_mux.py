@@ -61,6 +61,7 @@ from __future__ import annotations
 import ctypes
 import ctypes.util
 import threading
+import time
 
 import objc
 import AVFoundation as AVF
@@ -68,11 +69,14 @@ import CoreMedia as CM
 import Foundation
 import ScreenCaptureKit as SCK
 
+from fused_render.capture import _pause
 from fused_render.capture._darwin import _AAC, _Wait
 from fused_render.capture._mixdown import Ring, add_clip_into, upmix_mono_to_stereo
 
 #: `kAudioFormatLinearPCM` — a FourCC ('lpcm'), which pyobjc does not name.
 _LPCM = 1819304813
+#: `kAudioFormatFlagIsFloat` in an ASBD's mFormatFlags.
+_FLAG_IS_FLOAT = 1
 
 #: `SCStreamOutputType`. Screen is 0 and audio is 1; microphone (2) is macOS 15
 #: and is exactly what this module exists to work around.
@@ -164,6 +168,28 @@ def _pcm(sbuf):
     return block, bytearray(data), frames
 
 
+#: A system buffer whose samples all stay under this counts as silence. SCK
+#: hands float32 PCM (the same assumption the mixing path makes).
+_HEARD_PEAK = 1e-4
+#: How many buffers are inspected before giving up on hearing anything — the
+#: check copies bytes inside the callback, so it stops at the first loud one.
+_PEEK_BUFFERS = 200
+#: Shorter than this a "nothing heard" says nothing, so no warning.
+_WARN_AFTER_S = 1.0
+
+
+def _peak_f32(data) -> float:
+    """The largest absolute sample in little-endian float32 PCM bytes."""
+    import array
+
+    usable = len(data) - len(data) % 4
+    if usable <= 0:
+        return 0.0
+    samples = array.array("f")
+    samples.frombytes(bytes(data[:usable]))
+    return max((abs(x) for x in samples), default=0.0)
+
+
 # -------------------------------------------------------------------- delegates
 
 
@@ -244,13 +270,32 @@ class MuxHandle:
     collected delegate takes the callbacks — and so the recording — with it.
     """
 
-    def __init__(self, path: str, audio: str | None):
+    def __init__(self, path: str, audio: str | None, *, audio_only: bool = False):
         self.path = path
         self.audio = audio
+        # No video track at all (the 13.0-14.1 route for audio-only system
+        # audio). The stream still has to deliver a display, so frames keep
+        # arriving; they are ignored, and the writer's session starts on the
+        # first AUDIO buffer instead.
+        self.audio_only = audio_only
         self.mixing = audio == "both"
         self.error: str | None = None
         self.dropped_frames = 0
         self.dropped_audio = 0
+        # For `warning`: how many system buffers arrived, and whether any of the
+        # first few carried sound. `started_at` is set once the stream runs.
+        self.system_buffers = 0
+        self.system_heard = False
+        self.started_at = 0.0
+        # Pause (audio-only recordings): while paused the callbacks discard
+        # what arrives and the stream keeps running; after a resume every kept
+        # audio buffer is retimed back by the gap, so the file has no hole.
+        self.shifter = _pause.PtsShifter()
+        # The pill's meter: computed only while somebody polled in the last 2 s.
+        self.last_level = 0.0
+        self.level_polled_at = 0.0
+        #: (bits per channel, is-float) of the mic's own format, parsed off the first buffer.
+        self.mic_format = None
 
         self.stream = None
         self.session = None
@@ -286,12 +331,18 @@ class MuxHandle:
         with self._lock:
             if self._closing or self.error is not None:
                 return
+            if not video and self.shifter.paused:
+                return
             if not self._started:
-                if not video:
+                if video == self.audio_only:
                     return
                 self.writer.startSessionAtSourceTime_(
                     CM.CMSampleBufferGetPresentationTimeStamp(sbuf))
                 self._started = True
+            if not video:
+                sbuf = self._shifted(sbuf)
+                if sbuf is None:
+                    return
             if not target.isReadyForMoreMediaData():
                 # Backpressure, not an error — the encoder is behind. Counted
                 # so it is visible; see the header on why silence is the wrong
@@ -304,6 +355,47 @@ class MuxHandle:
             if not target.appendSampleBuffer_(sbuf):
                 self.error = self._writer_error() or "the writer rejected a sample"
 
+    def _shifted(self, sbuf):
+        """The buffer to append after the pause offset: the buffer itself while
+        nothing was paused, a retimed copy afterwards, None to drop it.
+
+        Called under `self._lock`. A failed retime is recorded as the
+        recording's error rather than appended at a stale timestamp, which
+        would put the audio out of place."""
+        pts = CM.CMSampleBufferGetPresentationTimeStamp(sbuf)
+        dur = CM.CMSampleBufferGetDuration(sbuf)
+        seconds = CM.CMTimeGetSeconds(pts)
+        length = CM.CMTimeGetSeconds(dur)
+        if length != length or length < 0:               # invalid duration
+            length = 0.0
+        if self.shifter.shift(seconds, length) is None:
+            return None
+        if self.shifter.offset == 0.0:
+            return sbuf
+        status, infos, count = CM.CMSampleBufferGetSampleTimingInfoArray(
+            sbuf, 0, None, None)
+        if count:
+            status, infos, count = CM.CMSampleBufferGetSampleTimingInfoArray(
+                sbuf, count, None, None)
+        if status != 0 or not count:
+            self.error = f"could not retime audio after a pause (OSStatus {status})"
+            return None
+        offset = CM.CMTimeMakeWithSeconds(self.shifter.offset, pts.timescale)
+        shifted = []
+        for info in infos:
+            info.presentationTimeStamp = CM.CMTimeSubtract(
+                info.presentationTimeStamp, offset)
+            if info.decodeTimeStamp.flags & 1:           # kCMTimeFlags_Valid
+                info.decodeTimeStamp = CM.CMTimeSubtract(
+                    info.decodeTimeStamp, offset)
+            shifted.append(info)
+        status, new = CM.CMSampleBufferCreateCopyWithNewTiming(
+            None, sbuf, count, shifted, None)
+        if status != 0 or new is None:
+            self.error = f"could not retime audio after a pause (OSStatus {status})"
+            return None
+        return new
+
     def _writer_error(self) -> str | None:
         error = self.writer.error() if self.writer is not None else None
         if error is None:
@@ -313,22 +405,82 @@ class MuxHandle:
     # --------------------------------------------------------------- callbacks
 
     def on_video(self, sbuf) -> None:
-        if not CM.CMSampleBufferIsValid(sbuf) or not _is_complete(sbuf):
+        if (self.audio_only or not CM.CMSampleBufferIsValid(sbuf)
+                or not _is_complete(sbuf)):
             return
         self._append(self.video_input, sbuf, video=True)
 
+    def _note_system(self, sbuf, data=None) -> None:
+        """Count the buffer and, until one is heard, look at its samples.
+
+        Never raises: a parse failure must not cost the recording, so it is
+        treated as heard (unknown means no warning)."""
+        self.system_buffers += 1
+        if self.system_heard or self.system_buffers > _PEEK_BUFFERS:
+            return
+        try:
+            if data is None:
+                _block, data, _frames = _pcm(sbuf)
+            if data is not None and _peak_f32(data) > _HEARD_PEAK:
+                self.system_heard = True
+        except Exception:                                # noqa: BLE001
+            self.system_heard = True
+
+    def _meter(self, data) -> None:
+        if time.monotonic() - self.level_polled_at >= 2.0:
+            return
+        try:
+            if len(data) % 4 == 0:
+                self.last_level = _pause.amp_to_level(_pause.rms_f32(data))
+        except Exception:                                # noqa: BLE001
+            pass
+
+    def _meter_sbuf(self, sbuf) -> None:
+        if time.monotonic() - self.level_polled_at >= 2.0:
+            return
+        try:
+            _block, data, _frames = _pcm(sbuf)
+            if data is not None:
+                self._meter(data)
+        except Exception:                                # noqa: BLE001
+            pass
+
+    def _meter_mic_sbuf(self, sbuf) -> None:
+        """Meter a mic buffer in the device's own format (int16/int24/float32).
+
+        `_meter_sbuf` assumes float32, which is true of SCK's system audio but not
+        of a raw mic buffer. Never raises; on any failure `last_level` stays."""
+        if time.monotonic() - self.level_polled_at >= 2.0:
+            return
+        try:
+            if self.mic_format is None:
+                fd = CM.CMSampleBufferGetFormatDescription(sbuf)
+                asbd = CM.CMAudioFormatDescriptionGetStreamBasicDescription(fd)
+                self.mic_format = (int(asbd.mBitsPerChannel),
+                                   bool(int(asbd.mFormatFlags) & _FLAG_IS_FLOAT))
+            _block, data, _frames = _pcm(sbuf)
+            if data is not None:
+                bits, is_float = self.mic_format
+                self.last_level = _pause.amp_to_level(_pause.rms_pcm(data, bits, is_float))
+        except Exception:                                # noqa: BLE001
+            pass
+
     def on_system_audio(self, sbuf) -> None:
-        if not CM.CMSampleBufferIsValid(sbuf):
+        if self.shifter.paused or not CM.CMSampleBufferIsValid(sbuf):
             return
         if not self.mixing:
+            self._note_system(sbuf)
+            self._meter_sbuf(sbuf)
             self._append(self.audio_input, sbuf, video=False)
             return
         block, data, _frames = _pcm(sbuf)
         if data is None:
             return
+        self._note_system(sbuf, data)
         with self._ring_lock:
             mic = self.ring.take(len(data))
         add_clip_into(data, mic)
+        self._meter(data)
         # Mutate BEFORE appending, never after: the writer retains the buffer
         # and encodes off it asynchronously, so a rewrite that lands later is a
         # race against the encoder rather than an edit.
@@ -337,11 +489,12 @@ class MuxHandle:
         self._append(self.audio_input, sbuf, video=False)
 
     def on_mic(self, sbuf) -> None:
-        if not CM.CMSampleBufferIsValid(sbuf):
+        if self.shifter.paused or not CM.CMSampleBufferIsValid(sbuf):
             return
         if not self.mixing:
             # Straight through, in whatever format the device gave — the writer
             # converts. No ring, no rewrite, no format to agree on.
+            self._meter_mic_sbuf(sbuf)
             self._append(self.audio_input, sbuf, video=False)
             return
         _block, data, frames = _pcm(sbuf)
@@ -351,10 +504,29 @@ class MuxHandle:
         # microphones are mono. Detected from the buffer itself rather than
         # from an `AudioStreamBasicDescription`, because bytes-per-frame is the
         # only fact the add actually needs.
+        # Non-interleaved (`_start_mic` configures AVCaptureAudioDataOutput that way), so the block-duplicate upmix is right here.
         if len(data) // frames < _SYSTEM_BYTES_PER_FRAME:
             data = upmix_mono_to_stereo(bytes(data))
         with self._ring_lock:
+            # Re-check under the lock: `pause()` sets the flag and then clears
+            # the ring under this same lock, so a callback that passed the
+            # early check could otherwise push after the clear.
+            if self.shifter.paused:
+                return
             self.ring.push(bytes(data))
+
+    # ----------------------------------------------------------- pause/resume
+
+    def pause(self) -> None:
+        self.shifter.pause()
+        self.last_level = 0.0
+        # Mic samples that arrived before the pause would otherwise be mixed
+        # into the first system buffer after the resume, seconds out of place.
+        with self._ring_lock:
+            self.ring.clear()
+
+    def resume(self) -> None:
+        self.shifter.resume()
 
     # ------------------------------------------------------------------- close
 
@@ -372,6 +544,10 @@ class MuxHandle:
             # Nothing was ever appended, so there is no session and
             # `finishWriting` would produce an unreadable file. Say so instead.
             self.writer.cancelWriting()
+            if self.audio_only:
+                raise RuntimeError(
+                    "the recording captured no audio — Screen Recording "
+                    "permission may have been revoked while it ran")
             raise RuntimeError(
                 "the recording captured no frames — the display may have gone "
                 "away, or Screen Recording permission was revoked while it ran")
@@ -495,8 +671,30 @@ def start(out: str, display, config, spec: dict) -> MuxHandle:
     the rect, cursor and Retina-scale rules stay in ONE place and this module
     only adds what is specific to writing the movie ourselves.
     """
+    return _start(out, display, config, spec, audio_only=False)
+
+
+def start_audio(out: str, display, config, spec: dict) -> MuxHandle:
+    """Record only the sound to `out` (.m4a): system audio, or system + mic.
+
+    The macOS 13.0-14.1 route for `capture.audio({source: "system"|"both"})`;
+    14.2+ uses a Core Audio process tap (`_darwin_tap`) and needs no display.
+    ScreenCaptureKit has no audio-only stream, so this is the screen stream of
+    `start` with the picture thrown away: the configuration is shrunk to a 2x2
+    frame once a second (the cheapest thing the stream will still deliver), the
+    writer gets NO video input and the `.m4a` file type, and `on_video` ignores
+    what does arrive. It needs the Screen Recording permission, like `start`.
+    """
+    config.setWidth_(2)
+    config.setHeight_(2)
+    config.setMinimumFrameInterval_(CM.CMTimeMake(1, 1))
+    return _start(out, display, config, spec, audio_only=True)
+
+
+def _start(out: str, display, config, spec: dict, *, audio_only: bool) -> MuxHandle:
     audio = spec.get("audio") or None
-    handle = MuxHandle(out, audio if audio in ("system", "mic", "both") else None)
+    handle = MuxHandle(out, audio if audio in ("system", "mic", "both") else None,
+                       audio_only=audio_only)
 
     config.setQueueDepth_(_QUEUE_DEPTH)
     if handle.mixing:
@@ -507,19 +705,21 @@ def start(out: str, display, config, spec: dict) -> MuxHandle:
 
     url = Foundation.NSURL.fileURLWithPath_(out)
     writer, error = AVF.AVAssetWriter.alloc().initWithURL_fileType_error_(
-        url, AVF.AVFileTypeQuickTimeMovie, None)
+        url, AVF.AVFileTypeAppleM4A if audio_only else AVF.AVFileTypeQuickTimeMovie,
+        None)
     if writer is None:
         raise RuntimeError(f"could not open {out} for writing: {error}")
     handle.writer = writer
 
-    video_input = AVF.AVAssetWriterInput.assetWriterInputWithMediaType_outputSettings_(
-        AVF.AVMediaTypeVideo,
-        _video_settings(int(config.width()), int(config.height())))
-    video_input.setExpectsMediaDataInRealTime_(True)
-    if not writer.canAddInput_(video_input):             # pragma: no cover
-        raise RuntimeError("the writer refused a video input")
-    writer.addInput_(video_input)
-    handle.video_input = video_input
+    if not audio_only:
+        video_input = AVF.AVAssetWriterInput.assetWriterInputWithMediaType_outputSettings_(
+            AVF.AVMediaTypeVideo,
+            _video_settings(int(config.width()), int(config.height())))
+        video_input.setExpectsMediaDataInRealTime_(True)
+        if not writer.canAddInput_(video_input):         # pragma: no cover
+            raise RuntimeError("the writer refused a video input")
+        writer.addInput_(video_input)
+        handle.video_input = video_input
 
     if handle.audio is not None:
         audio_input = AVF.AVAssetWriterInput.assetWriterInputWithMediaType_outputSettings_(
@@ -565,7 +765,27 @@ def start(out: str, display, config, spec: dict) -> MuxHandle:
     except Exception:
         stop(handle, keep=False)
         raise
+    handle.started_at = time.monotonic()
     return handle
+
+
+def warning(handle: MuxHandle) -> str | None:
+    """Advice when an audio-only system recording heard nothing, else None.
+
+    The 13.0-14.1 route cannot tell "Screen Recording granted after this app
+    started" (macOS delivers silence or nothing until a relaunch) from an idle
+    Mac, so it says what it saw. Reads state; changes none."""
+    if (not handle.audio_only or handle.audio not in ("system", "both")
+            or not handle.started_at or handle.system_heard):
+        return None
+    if time.monotonic() - handle.started_at < _WARN_AFTER_S:
+        return None
+    if handle.system_buffers == 0:
+        return ("no system audio reached the recording — quit and reopen this "
+                "app after granting Screen Recording, then try again")
+    return ("no system audio was captured — either nothing was playing, or "
+            "Screen Recording was granted after this app started (quit and "
+            "reopen it, then try again)")
 
 
 def stop(handle: MuxHandle, *, keep: bool = True) -> None:
@@ -603,3 +823,18 @@ def failure(handle: MuxHandle) -> str | None:
             handle.writer.status() == AVF.AVAssetWriterStatusFailed:
         return handle._writer_error() or "the writer failed"
     return None
+
+
+def pause(handle: MuxHandle) -> None:
+    """Stop appending; the stream and the writer keep running."""
+    handle.pause()
+
+
+def resume(handle: MuxHandle) -> None:
+    handle.resume()
+
+
+def level(handle: MuxHandle) -> float:
+    """0..1 loudness of the most recent audio; asking turns metering on."""
+    handle.level_polled_at = time.monotonic()
+    return 0.0 if handle.shifter.paused else handle.last_level

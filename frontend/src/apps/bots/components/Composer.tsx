@@ -1,11 +1,14 @@
 // The composer (OpenBot chat.js): Pause / Resume / Stop, pending attachment chips, the reply quote, attach + dictation
 // buttons, the auto-growing textarea (Enter sends, Shift+Enter is a newline, Esc cancels the reply) and the send arrow.
-// Files arrive by the folder button, paste (a pasted screenshot is renamed) or drop on the row; each goes to the bot's files
+// Files arrive by the attach (document + paperclip) button, paste (a pasted screenshot is renamed) or drop on the row; each goes to the bot's files
 // folder as base64 (8 MB each) when you send, and the task names them.
+// Slash commands (lib/commands): a lone "/" word opens the command popup above the row (↑↓ move, Tab completes, Enter /
+// click runs, Esc closes); "/clear" runs Clear context instead of sending. Unknown "/foo" sends as plain text.
 // Dictation: push-to-talk, not live: record the mic (/api/capture), transcribe with the local speech model
 // (/api/ai/transcribe, a job), drop the text at the caret for review. Nothing is sent on its own.
 import { useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent, type RefObject } from "react";
 import { api, rawFileUrl, request, type Bot } from "../lib/api";
+import { canClear, commandFor, matchCommands, slashQuery, type Command } from "../lib/commands";
 import { jobNote } from "../lib/dictation";
 import { statusLabel } from "../lib/derive";
 import { fmtAgo, fmtBytes, fmtSecs } from "../lib/format";
@@ -70,13 +73,20 @@ async function watchJob(id: string, stopped: () => boolean = () => false, tick?:
   }
 }
 
+// Who is asking (SPEC-model-slot-conflict.md §1): the Composer's own mic
+// button is a shell surface with a fixed identity, the same way
+// `playground/client.ts`'s `PLAYGROUND_REQUESTER` is — not the user settling
+// a conflict with their own hands, and not another bot's page, so two bots
+// dictating into their own composers at once are told apart from each other.
+const COMPOSER_REQUESTER = "shell:bots-composer";
+
 /**
  * POST /api/ai/transcribe, reading the error body itself: request() keeps only the message, and a `model_loading`
  * reply ({error: {type, message}, jobId}) names the download job to wait on. Transcribe's usual 409 is the plain
  * {error: "…"} (no model or no runner) and stays an error.
  */
 async function transcribeStart(path: string): Promise<{ jobId: string; output: string }> {
-  const r = await fetch("/api/ai/transcribe", { method: "POST", headers: { "X-Fused": "1", "Content-Type": "application/json" }, body: JSON.stringify({ path }), cache: "no-store" });
+  const r = await fetch("/api/ai/transcribe", { method: "POST", headers: { "X-Fused": "1", "X-Fused-Requester": COMPOSER_REQUESTER, "X-Fused-Requester-Label": COMPOSER_REQUESTER, "Content-Type": "application/json" }, body: JSON.stringify({ path }), cache: "no-store" });
   const data = await r.json().catch(() => ({})) as { jobId?: string; output?: string; job_id?: string; error?: string | { type?: string; message?: string; jobId?: string } };
   if (!r.ok) {
     const e = data.error;
@@ -119,6 +129,14 @@ export function Composer({ b, reply, setReply, threadRef }: ComposerProps) {
   const setPending = (f: File[]) => { pendingRef.current = f; setPendingState(f); };
   const [has, setHas] = useState(false);
   const [sending, setSending] = useState(false);
+  // The command popup: the slash query the box holds (null: closed) and the highlighted row. Recomputed on every input
+  // (fitInput), so dictation's dispatched input event and a paste follow the same rule as typing.
+  const [cmd, setCmd] = useState<{ q: string; idx: number } | null>(null);
+  // No popup while attachments are pending: the text is then a message naming the files ("/clear" sends as text), and
+  // every path (Enter, Send, click) must agree, so the rows are simply not there.
+  const cmds: Command[] = cmd && !pending.length ? matchCommands(cmd.q) : [];
+  const cmdIdx = cmd ? Math.min(cmd.idx, Math.max(0, cmds.length - 1)) : 0;
+  const lastVal = useRef("");  // the text the popup was last computed for (fitInput)
   const [drag, setDrag] = useState(false);
   const [micAvail, setMicAvail] = useState(false);
   // `note`: what the transcription is doing right now (jobNote), shown while busy so a first-run install is not a mute spinner.
@@ -134,6 +152,13 @@ export function Composer({ b, reply, setReply, threadRef }: ComposerProps) {
     t.style.height = "0"; t.style.height = Math.max(36, t.scrollHeight) + "px";
     if (th && th.scrollTop !== top) th.scrollTop = top;
     setHas(t.value.trim().length > 0 || pendingRef.current.length > 0);
+    // The popup follows the text, not every re-fit: a width change or an attachment re-fit on the same value leaves it
+    // as it is, so Esc stays closed until the text changes.
+    if (t.value !== lastVal.current) {
+      lastVal.current = t.value;
+      const q = slashQuery(t.value);
+      setCmd((c) => q === null ? null : c && c.q === q ? c : { q, idx: 0 });
+    }
   };
   useLayoutEffect(fitInput, [pending]);
   // The pane can get wider (gutter drag, preview toggle, window resize) after the text was measured; the old, taller
@@ -231,10 +256,29 @@ export function Composer({ b, reply, setReply, threadRef }: ComposerProps) {
     return () => { document.removeEventListener("keydown", onKey); if (micTimer.current) clearInterval(micTimer.current); };
   }, []);
 
+  // ---- slash commands ----
+  // Run a command: the box empties (the text never reaches the bot as a message), the popup closes, the route runs.
+  // The server is the real guard (Bot.clear_context refuses mid-task); act() banners its reason if the UI was stale.
+  const runCommand = (c: Command) => {
+    const t = ta.current; if (!t || !b) return;
+    t.value = ""; fitInput(); setCmd(null);
+    if (c.name === "clear") { setReply(null); setScrollToEnd(true); void act(() => api.clearContext(b.id)); }
+    t.focus();
+  };
+  // Tab: complete the box to the highlighted command's name (the popup stays open on the exact name; Enter runs it).
+  const completeCommand = (c: Command) => {
+    const t = ta.current; if (!t) return;
+    t.value = "/" + c.name; t.setSelectionRange(t.value.length, t.value.length); fitInput();
+  };
+
   // ---- send ----
   const send = async () => {
     const t = ta.current; if (!t || !b) return;
     let text = t.value.trim();
+    // A command runs instead of sending: the popup's highlighted row while it shows ("/cl" + Send), else the name typed
+    // in full ("/clear"); the Send button and Enter converge here. With attachments pending the text is a message.
+    const c = cmd && cmds.length ? cmds[cmdIdx] : commandFor(text);
+    if (c && !pendingRef.current.length) { runCommand(c); return; }
     if (!text && !pendingRef.current.length) return;
     const files = pendingRef.current; setPending([]);
     const r = reply; setReply(null);
@@ -258,6 +302,22 @@ export function Composer({ b, reply, setReply, threadRef }: ComposerProps) {
     } finally { setSending(false); }
   };
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    // An IME composition owns Enter/arrows/Esc (confirming a candidate must not send, nor run a command). Safari fires the
+    // confirming keydown after compositionend with isComposing already false but keyCode 229 (same guard as live-input.ts).
+    if (e.nativeEvent.isComposing || e.keyCode === 229 || e.key === "Process") return;
+    // The popup takes the keys first while it shows rows: ↑↓ move, Tab completes, Enter runs, Esc closes (the text stays).
+    if (cmd && cmds.length) {
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        const d = e.key === "ArrowDown" ? 1 : -1;
+        setCmd({ q: cmd.q, idx: (cmdIdx + d + cmds.length) % cmds.length });
+        return;
+      }
+      if (e.key === "Tab") { e.preventDefault(); completeCommand(cmds[cmdIdx]); return; }
+      if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); return; }  // send() runs the highlighted row: one path
+      // Esc while the mic records belongs to the recording (the document listener above discards it); the popup stays.
+      if (e.key === "Escape") { if (micRec.current) return; e.preventDefault(); setCmd(null); return; }
+    }
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); }
     if (e.key === "Escape" && reply) { e.preventDefault(); setReply(null); }
   };
@@ -298,6 +358,22 @@ export function Composer({ b, reply, setReply, threadRef }: ComposerProps) {
       </div>
       <div className={`row${has ? " has" : ""}${reply ? " replying" : ""}${drag ? " drag" : ""}`} id="crow"
         onDragOver={(e) => { e.preventDefault(); setDrag(true); }} onDragLeave={() => setDrag(false)} onDrop={onDrop}>
+        {/* The command popup (lib/commands): rows for the commands the slash word matches; the Clear context row carries
+            canClear's reason when it cannot run now (still runnable: the server decides, act() banners its reason).
+            mousedown is swallowed so the box keeps focus and the row runs on click. */}
+        {cmd && cmds.length && b ? (
+          <div className="cmds" id="ccmds" role="listbox">
+            {cmds.map((c, i) => {
+              const gate = c.name === "clear" ? canClear(b, eventsOf(b.id)) : { ok: true, why: "" };
+              return (
+                <button key={c.name} id={`ccmd-${c.name}`} role="option" aria-selected={i === cmdIdx} className={`${i === cmdIdx ? "sel" : ""}${gate.ok ? "" : " off"}`.trim() || undefined}
+                  onMouseDown={(e) => e.preventDefault()} onMouseEnter={() => setCmd({ q: cmd.q, idx: i })} onClick={() => runCommand(c)}>
+                  <code>/{c.name}</code><b>{c.title}</b><span>{gate.ok ? c.hint : gate.why}</span>
+                </button>
+              );
+            })}
+          </div>
+        ) : null}
         <div className="quote" id="cquote" hidden={!reply}>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M9 17H5a4 4 0 0 1 0-8h14" /><path d="m15 5 4 4-4 4" /></svg>
           <span id="cquotetext">{reply ? reply.text : ""}</span>
@@ -306,7 +382,7 @@ export function Composer({ b, reply, setReply, threadRef }: ComposerProps) {
         <div className="line">
           <button id="attachbtn" disabled={!on} onClick={() => fileInput.current?.click()}
             title="Attach a file for the bot (or paste / drop one here). It lands in this bot's files folder, so it can upload it to a page.">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" /></svg>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-7" /><path d="M8 13h5M8 17h6" /><path d="M20.5 9V4a2.5 2.5 0 0 0-5 0v8a3.5 3.5 0 0 0 7 0V5" /></svg>
           </button>
           <input type="file" id="attachfile" multiple hidden ref={fileInput}
             onChange={(e) => { if (e.target.files) addFiles(e.target.files); e.target.value = ""; }} />
@@ -319,6 +395,9 @@ export function Composer({ b, reply, setReply, threadRef }: ComposerProps) {
           </button>
           <textarea id="input" ref={ta} rows={1} placeholder={placeholder} disabled={!on}
             data-gramm="false" data-gramm_editor="false" data-enable-grammarly="false"
+            // The command popup is a combobox listbox the box drives: the highlighted row is announced as the active descendant.
+            role="combobox" aria-autocomplete="list" aria-expanded={!!(cmd && cmds.length)} aria-controls="ccmds"
+            aria-activedescendant={cmd && cmds.length ? `ccmd-${cmds[cmdIdx].name}` : undefined}
             onInput={fitInput} onKeyDown={onKeyDown} onPaste={onPaste} />
           <button id="send" className="primary" title="Send (Enter)" disabled={!on || sending} onClick={() => void send()}>Send</button>
         </div>

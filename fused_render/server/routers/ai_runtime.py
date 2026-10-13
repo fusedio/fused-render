@@ -819,6 +819,35 @@ def _resolve_capability(body: dict, model: str) -> tuple[str | None, object]:
     return capability, None
 
 
+def _validate_load_model(body: dict, *, model_field: str = "model",
+                         capability: str | None = None) -> tuple[str, str, object]:
+    """`(model, capability, None)`, or `("", "", an error response)` — the
+    three checks `/api/ai/runtime/load` runs on the model it is about to
+    load, shared with `/api/ai/runtime/conflicts/resolve`'s `keep` (item 7):
+    a blank `keep`, or one naming a repo this machine's catalog cannot place,
+    answers the same 400/409 `/load` itself answers for the identical model
+    id, rather than reaching a cold-load error page.
+
+    `model_field` names which body key holds the model id (`"model"` for
+    `/load`; `resolve` passes its own `keep` under `model_field="keep"`, since
+    this is what the caller-facing error names). `capability`, when given,
+    is used as-is instead of being read from `body["capability"]` — `resolve`
+    already knows which capability it is settling and is not inferring one
+    from `keep`."""
+    model = body.get(model_field)
+    if not isinstance(model, str) or not model.strip():
+        return "", "", _error(f"'{model_field}' must be a Hugging Face repo id", status=400)
+    model = model.strip()
+    if capability is None:
+        capability, refusal = _resolve_capability(body, model)
+        if refusal is not None:
+            return "", "", refusal
+    refusal = _engine_gap_refusal(model)
+    if refusal is not None:
+        return "", "", refusal
+    return model, capability, None
+
+
 @router.get("/api/ai/runtime")
 def api_ai_runtime():
     """Loaded models, their memory, and the runners available here.
@@ -1493,30 +1522,88 @@ def _engine_gap_refusal(model: str):
     return _error(gap["reason"], status=409)
 
 
+def _requester_identity(x_fused_requester: str | None, x_fused_requester_label: str | None,
+                        x_fused_page: str | None = None) -> tuple[str, str]:
+    """`requester_id`/`requester_label` for one mutating `/api/ai` route, in
+    one place instead of copy-pasted at each of the nine call sites below
+    (SPEC-model-slot-conflict.md §1).
+
+    `X-Fused-Requester` names a caller that knows its own identity — a page,
+    an app, a shell surface, or `supervisor.USER_REQUESTER_ID`. A caller that
+    omits it but still sends `X-Fused-Page` (every page/app reached through
+    `runtime.js`, which always sets `X-Fused-Page` on `callHeaders`) still has
+    an identity: the page itself. Falling through to a single shared `""`
+    for that caller the way every OTHER header-less caller also gets is the
+    bug this guards against — it collapsed two unrelated pages into one
+    requester that could never conflict with itself, because `current.
+    requester_id == requester_id` reads as "the same caller switching
+    models," not "two callers fighting over the slot." Only a request with
+    NEITHER header is genuinely anonymous — nothing here identifies it, so
+    it gets a fresh id instead of the shared `""` every other anonymous
+    request would collide with, which is the same bug one level further
+    down: two unrelated anonymous callers must be able to conflict too.
+    """
+    if x_fused_requester:
+        requester_label = unquote(x_fused_requester_label) if x_fused_requester_label else ""
+        return unquote(x_fused_requester), requester_label
+    if x_fused_page:
+        return f"page:{unquote(x_fused_page)}", ""
+    return f"anon:{secrets.token_hex(8)}", ""
+
+
 @router.post("/api/ai/runtime/load")
-def api_ai_load(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+def api_ai_load(body: dict = Body(...), x_fused: str | None = Header(default=None),
+                x_fused_page: str | None = Header(default=None),
+                x_fused_requester: str | None = Header(default=None),
+                x_fused_requester_label: str | None = Header(default=None)):
+    """`fused.ai.models.load` (page/app code) and the AI Models page's own
+    "Load" button both reach this one route — `X-Fused-Requester` is how it
+    tells them apart (SPEC-model-slot-conflict.md §1). The AI Models page's
+    own control sends `X-Fused-Requester: user`
+    (`supervisor.USER_REQUESTER_ID`), which keeps this an EXPLICIT load — the
+    user's choice, never refused for contention, and it clears any conflict
+    standing on this capability. Every other requester — a named page/app, or
+    none at all — goes through `request_path` instead: an ordinary load that
+    can be refused with `ModelSlotConflict` exactly like the automatic loads
+    `generate_text`'s miss-handling triggers, so a background app calling
+    `fused.ai.models.load` cannot silently evict another requester's model
+    out from under a standing conflict."""
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
-    model = _model_of(body)
-    if not model:
-        return _error("'model' must be a Hugging Face repo id", status=400)
-    capability, refusal = _resolve_capability(body, model)
+    model, capability, refusal = _validate_load_model(body)
     if refusal is not None:
         return refusal
-    refusal = _engine_gap_refusal(model)
-    if refusal is not None:
-        return refusal
+    requester_id, requester_label = _requester_identity(
+        x_fused_requester, x_fused_requester_label, x_fused_page)
+    user = supervisor.is_user_requester(requester_id)
     try:
-        return supervisor.load(model, capability)
+        return supervisor.load(model, capability, request_path=not user,
+                               requester_id=requester_id, requester_label=requester_label)
+    except supervisor.ModelSlotConflict as e:
+        return _conflict_error(e)
     except supervisor.SupervisorError as e:
         # 409, not 500: the request was well-formed and the answer is a fact
-        # about this machine ("needs Apple Silicon"), not a server fault.
+        # about this machine ("needs Apple Silicon") or a standing conflict,
+        # not a server fault.
         return _error(str(e), status=409)
 
 
 @router.post("/api/ai/runtime/unload")
-def api_ai_unload(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+def api_ai_unload(body: dict = Body(...), x_fused: str | None = Header(default=None),
+                  x_fused_page: str | None = Header(default=None),
+                  x_fused_requester: str | None = Header(default=None),
+                  x_fused_requester_label: str | None = Header(default=None)):
+    """Same split as `/load`, just above: `X-Fused-Requester: user` (the AI
+    Models page's own "Unload"/"Stop") is the one caller whose unload is a
+    choice that settles a conflict — `explicit=True`, clearing a held or
+    unheld conflict on this capability regardless of who loaded it. Every
+    other requester — `fused.ai.models.unload` from page/app code, or none at
+    all — is NOT explicit: it never clears a hold or conflict
+    (`supervisor.unload`'s `explicit=False` default), and `supervisor.unload`
+    itself refuses (409 `ModelSlotConflict`) a non-user, non-empty requester
+    trying to unload a model some OTHER requester loaded — a page cannot stop
+    a model it never asked for just by naming it."""
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
@@ -1533,8 +1620,88 @@ def api_ai_unload(body: dict = Body(...), x_fused: str | None = Header(default=N
     # unaffected.
     if capability is not None and capability not in registry.capabilities():
         return _error(f"unknown capability {capability!r}", status=400)
-    stopped = supervisor.unload(model=model, capability=capability)
+    requester_id, requester_label = _requester_identity(
+        x_fused_requester, x_fused_requester_label, x_fused_page)
+    user = supervisor.is_user_requester(requester_id)
+    try:
+        # The user asking to unload is exactly the "a choice was made" action
+        # that settles a conflict on this capability — held or not. Any other
+        # requester is an ordinary, ownership-checked unload instead.
+        stopped = supervisor.unload(model=model, capability=capability, explicit=user,
+                                    requester_id=requester_id, requester_label=requester_label)
+    except supervisor.ModelSlotConflict as e:
+        return _conflict_error(e)
     return {"stopped": stopped, **supervisor.describe()}
+
+
+@router.post("/api/ai/runtime/conflicts/resolve")
+def api_ai_runtime_conflicts_resolve(body: dict = Body(...),
+                                     x_fused: str | None = Header(default=None)):
+    """The user's way out of a model-slot conflict (SPEC-model-slot-conflict.md
+    §2): `{capability, keep: "<model>"}` makes that model resident and HOLDS
+    the slot for it — the loser's request-path loads keep getting
+    `ModelSlotConflict` rather than evicting it again — and `{capability,
+    keep: null}` instead stops both and holds the slot empty. Either way this
+    is an explicit user action, the same standing `/load`/`/unload` already
+    have, so it is never itself refused by a conflict."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    capability = body.get("capability")
+    if not isinstance(capability, str) or capability not in registry.capabilities():
+        return _error("name a known 'capability' to resolve", status=400)
+    keep = body.get("keep")
+    if keep is not None and not isinstance(keep, str):
+        return _error("'keep' must be a model id or null", status=400)
+    if keep is not None:
+        # `_validate_load_model` runs the exact checks `/load` runs on
+        # `model` (`resolve_conflict` hands `keep` straight to `load()`), so
+        # a blank/whitespace `keep` or one this machine cannot serve is the
+        # same 400/409 `/load` itself would answer for the identical model
+        # id, not a cold-load error page. `capability` is passed through
+        # rather than inferred — this route already knows which one it is
+        # settling.
+        keep, _capability, refusal = _validate_load_model(
+            body, model_field="keep", capability=capability)
+        if refusal is not None:
+            return refusal
+        # A conflict standing on `capability` is specifically a fight among
+        # `standing.models` — `keep` settles THAT fight, it does not open a
+        # load for an unrelated third repo. With no conflict standing yet,
+        # this is a pre-emptive hold instead (resolve_conflict's own
+        # docstring), and any engine-servable model is fair game for it.
+        standing = supervisor.conflict_for(capability)
+        if standing is not None and keep not in standing.models:
+            return _error(
+                f"{keep!r} is not part of the conflict standing on "
+                f"{capability!r}; keep one of {standing.models!r}",
+                status=409)
+    try:
+        reply = supervisor.resolve_conflict(capability, keep)
+    except supervisor.SupervisorError as e:
+        return _error(str(e), status=409)
+    # The full runtime snapshot, like `/unload` and `/release` already
+    # return — so a direct `publishAiRuntime(result)` of THIS response
+    # replaces the dock's whole pre-resolve state at once, rather than
+    # leaving it to whatever poll in flight happens to land next (which
+    # could still be carrying the stale, pre-resolve conflict for up to a
+    # full poll interval).
+    return {**reply, **supervisor.describe()}
+
+
+@router.post("/api/ai/runtime/conflicts/release")
+def api_ai_runtime_conflicts_release(body: dict = Body(...),
+                                     x_fused: str | None = Header(default=None)):
+    """Clears a conflict/hold with no load or unload of its own — back to
+    ordinary auto-load on the next request-path call."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    capability = body.get("capability")
+    if not isinstance(capability, str) or capability not in registry.capabilities():
+        return _error("name a known 'capability' to release", status=400)
+    released = supervisor.release_conflict(capability)
+    return {"released": released, **supervisor.describe()}
 
 
 def _repo_gguf_siblings(model_id: str) -> list[str] | None:
@@ -1704,7 +1871,9 @@ def api_ai_cancel(body: dict = Body(...), x_fused: str | None = Header(default=N
 @router.post("/api/ai/image")
 def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=None),
                  x_fused_page: str | None = Header(default=None),
-                 x_fused_source: str | None = Header(default=None)):
+                 x_fused_source: str | None = Header(default=None),
+                 x_fused_requester: str | None = Header(default=None),
+                 x_fused_requester_label: str | None = Header(default=None)):
     """Render one image. Returns everything about it except the pixels.
 
     **Job-backed, like a download, and for the same reason**: this runs for
@@ -1744,6 +1913,8 @@ def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=No
     # caller that sends a distinct `X-Fused-Source` (the Playground) can make
     # the two diverge on purpose.
     source = unquote(x_fused_source) if x_fused_source else page
+    requester_id, requester_label = _requester_identity(
+        x_fused_requester, x_fused_requester_label, x_fused_page)
 
     # Checked first, so an unknown option is reported even when another field
     # is also wrong — see `_reject_unknown`. The wider, SERVER set: `base` is
@@ -2045,7 +2216,14 @@ def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=No
         # pick the inpaint mode over the edit one.
         request["mask"] = mask_path
     try:
-        supervisor.start_image(model, request, job, page=page, source=source)
+        supervisor.start_image(model, request, job, page=page, source=source,
+                               requester_id=requester_id, requester_label=requester_label)
+    except supervisor.ModelSlotConflict as e:
+        # The same structured body `/api/ai` answers a conflict with — a
+        # caller branching on `code: "model_slot_conflict"` sees one shape
+        # whether the verb is synchronous or job-backed (SPEC-model-slot-
+        # conflict.md §1).
+        return _conflict_error(e)
     except supervisor.SupervisorError as e:
         # 409 for the same reason a load does: the request was well-formed and
         # the answer is a fact about this machine, not a server fault.
@@ -2095,7 +2273,9 @@ def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=No
 @router.post("/api/ai/video")
 def api_ai_video(body: dict = Body(...), x_fused: str | None = Header(default=None),
                  x_fused_page: str | None = Header(default=None),
-                 x_fused_source: str | None = Header(default=None)):
+                 x_fused_source: str | None = Header(default=None),
+                 x_fused_requester: str | None = Header(default=None),
+                 x_fused_requester_label: str | None = Header(default=None)):
     """Render one video (with audio). Returns everything about it except the
     bytes. `api_ai_image`'s twin — job-backed for the same reason, minus
     `guidance` (the engine is CFG-distilled) and `previewPath` (no live
@@ -2116,6 +2296,8 @@ def api_ai_video(body: dict = Body(...), x_fused: str | None = Header(default=No
         return guard
     page = unquote(x_fused_page) if x_fused_page else ""
     source = unquote(x_fused_source) if x_fused_source else page
+    requester_id, requester_label = _requester_identity(
+        x_fused_requester, x_fused_requester_label, x_fused_page)
 
     # Checked first, so an unknown option (`guidance`, say) is reported even
     # when another field is also wrong — see `_reject_unknown`. The wider,
@@ -2275,7 +2457,10 @@ def api_ai_video(body: dict = Body(...), x_fused: str | None = Header(default=No
         # `image=` to `generate_and_save` at all.
         request["image"] = image_path
     try:
-        supervisor.start_video(model, request, job, page=page, source=source)
+        supervisor.start_video(model, request, job, page=page, source=source,
+                               requester_id=requester_id, requester_label=requester_label)
+    except supervisor.ModelSlotConflict as e:
+        return _conflict_error(e)
     except supervisor.SupervisorError as e:
         # 409 for the same reason a load does: the request was well-formed and
         # the answer is a fact about this machine, not a server fault.
@@ -2309,12 +2494,16 @@ def api_ai_video(body: dict = Body(...), x_fused: str | None = Header(default=No
 @router.post("/api/ai/speech")
 def api_ai_speech(body: dict = Body(...), x_fused: str | None = Header(default=None),
                   x_fused_page: str | None = Header(default=None),
-                  x_fused_source: str | None = Header(default=None)):
+                  x_fused_source: str | None = Header(default=None),
+                 x_fused_requester: str | None = Header(default=None),
+                 x_fused_requester_label: str | None = Header(default=None)):
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
     page = unquote(x_fused_page) if x_fused_page else ""
     source = unquote(x_fused_source) if x_fused_source else page
+    requester_id, requester_label = _requester_identity(
+        x_fused_requester, x_fused_requester_label, x_fused_page)
 
     rejection = _reject_unknown(body, _SPEECH_SERVER_OPTIONS, "/api/ai/speech")
     if rejection is not None:
@@ -2360,7 +2549,10 @@ def api_ai_speech(body: dict = Body(...), x_fused: str | None = Header(default=N
     path = os.path.join(_speech_dir(), f"{time.strftime('%Y%m%d-%H%M%S')}-{uid}.wav")
     request = {"text": text.strip(), "out": path, **fields}
     try:
-        supervisor.start_speech(model, request, job, page=page, source=source)
+        supervisor.start_speech(model, request, job, page=page, source=source,
+                                requester_id=requester_id, requester_label=requester_label)
+    except supervisor.ModelSlotConflict as e:
+        return _conflict_error(e)
     except supervisor.SupervisorError as e:
         return _error(str(e), status=409)
     if "refAudio" in fields:
@@ -2378,7 +2570,9 @@ _TRANSCRIBE_TASKS = ("transcribe", "translate")
 
 @router.post("/api/ai/transcribe")
 def api_ai_transcribe(body: dict = Body(...), x_fused: str | None = Header(default=None),
-                      x_fused_page: str | None = Header(default=None)):
+                      x_fused_page: str | None = Header(default=None),
+                      x_fused_requester: str | None = Header(default=None),
+                      x_fused_requester_label: str | None = Header(default=None)):
     """Transcribe one audio or video file. Returns where the words will land.
 
     **Job-backed like `/api/ai/image`, not streamed like chat**, and for the
@@ -2401,6 +2595,8 @@ def api_ai_transcribe(body: dict = Body(...), x_fused: str | None = Header(defau
     if guard is not None:
         return guard
     page = unquote(x_fused_page) if x_fused_page else ""
+    requester_id, requester_label = _requester_identity(
+        x_fused_requester, x_fused_requester_label, x_fused_page)
 
     # Checked first, same as `api_ai_image` — see `_reject_unknown`. `base` is
     # in the server's accepted set (the bridge injects it) but not the
@@ -2575,7 +2771,10 @@ def api_ai_transcribe(body: dict = Body(...), x_fused: str | None = Header(defau
         "outPartial": partial.partial_path(out_base + ".json"),
     }
     try:
-        supervisor.start_transcribe(model, request, job, page=page)
+        supervisor.start_transcribe(model, request, job, page=page,
+                                    requester_id=requester_id, requester_label=requester_label)
+    except supervisor.ModelSlotConflict as e:
+        return _conflict_error(e)
     except supervisor.SupervisorError as e:
         return _error(str(e), status=409)
     return {
@@ -2708,8 +2907,20 @@ def _embed_error(type_: str, message: str, status: int,
     return JSONResponse(payload, status_code=status)
 
 
+def _conflict_error(e: "supervisor.ModelSlotConflict") -> JSONResponse:
+    """A `ModelSlotConflict` as `_embed_error`'s wire shape: `e.to_wire()`
+    wrapped in the `{"ok": False, "error": ...}` envelope every route below
+    `/api/ai` shares. `to_wire` itself is the one place the field list lives,
+    so this and `server/ai.py`'s own `_local_relay` handler — which has its
+    own envelope but needs the identical `error` body — can't drift apart."""
+    return JSONResponse({"ok": False, "error": e.to_wire()}, status_code=409)
+
+
 @router.post("/api/ai/embed")
-def api_ai_embed(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+def api_ai_embed(body: dict = Body(...), x_fused: str | None = Header(default=None),
+                 x_fused_page: str | None = Header(default=None),
+                 x_fused_requester: str | None = Header(default=None),
+                 x_fused_requester_label: str | None = Header(default=None)):
     """Embed text or an image into the resident dual encoder's vector space.
 
     **Not job-backed, unlike `/api/ai/image` and `/api/ai/transcribe`.** Both
@@ -2729,6 +2940,8 @@ def api_ai_embed(body: dict = Body(...), x_fused: str | None = Header(default=No
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
+    requester_id, requester_label = _requester_identity(
+        x_fused_requester, x_fused_requester_label, x_fused_page)
 
     # Checked first, same as `api_ai_image`/`api_ai_transcribe` — see
     # `_reject_unknown`. `request_kind` below only ever READS `body.get("kind")`,
@@ -2848,12 +3061,15 @@ def api_ai_embed(body: dict = Body(...), x_fused: str | None = Header(default=No
         return _embed_error("unavailable", gap["reason"], status=409)
 
     try:
-        result = supervisor.generate_embed(model, forwarded)
+        result = supervisor.generate_embed(model, forwarded, requester_id=requester_id,
+                                          requester_label=requester_label)
     except supervisor.ModelNotReady as e:
         # NOT a failure (see `_ai_failed`'s own comment on the same fork in
         # `server/ai.py`): the load already started, and its job id is what
         # lets the caller show that download rather than just a rejection.
         return _embed_error("model_loading", str(e), status=409, job_id=e.job_id)
+    except supervisor.ModelSlotConflict as e:
+        return _conflict_error(e)
     except supervisor.SupervisorError as e:
         return _embed_error("ai_error", str(e), status=502)
 
@@ -2959,7 +3175,10 @@ def _camel_answers(answers: dict) -> dict:
 
 
 @router.post("/api/ai/decide")
-def api_ai_decide(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+def api_ai_decide(body: dict = Body(...), x_fused: str | None = Header(default=None),
+                  x_fused_page: str | None = Header(default=None),
+                  x_fused_requester: str | None = Header(default=None),
+                  x_fused_requester_label: str | None = Header(default=None)):
     """Ask the resident typed-decision model (Laya) typed questions about a state.
 
     Laya is not a chat model: a bidirectional encoder with decision heads turns
@@ -2982,6 +3201,8 @@ def api_ai_decide(body: dict = Body(...), x_fused: str | None = Header(default=N
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
+    requester_id, requester_label = _requester_identity(
+        x_fused_requester, x_fused_requester_label, x_fused_page)
 
     rejection = _reject_unknown(body, _DECIDE_SERVER_OPTIONS, "/api/ai/decide")
     if rejection is not None:
@@ -3026,9 +3247,12 @@ def api_ai_decide(body: dict = Body(...), x_fused: str | None = Header(default=N
 
     forwarded = {"state": state, "questions": body["questions"]}
     try:
-        result = supervisor.generate_decide(model, forwarded)
+        result = supervisor.generate_decide(model, forwarded, requester_id=requester_id,
+                                           requester_label=requester_label)
     except supervisor.ModelNotReady as e:
         return _decide_error("model_loading", str(e), status=409, job_id=e.job_id)
+    except supervisor.ModelSlotConflict as e:
+        return _conflict_error(e)
     except supervisor.SupervisorError as e:
         return _decide_error("ai_error", str(e), status=502)
 

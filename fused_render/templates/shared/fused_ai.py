@@ -51,10 +51,11 @@ import importlib.util
 import json
 import os
 import socket
+import sys
 import time
 import urllib.error
 import urllib.request
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 
 def _load_sibling_appenv():
@@ -146,19 +147,43 @@ class AiError(Exception):
     call against a cold model answers 409 with the load it just started
     (`/api/ai/embed`'s `_embed_error`), and a caller wants that id to watch
     the same way `fused.ai`'s own JS reader does.
+
+    `capability`/`models`/`resident`/`held` are set only for
+    `type == "model_slot_conflict"` (SPEC-model-slot-conflict.md): two
+    different models are fighting over one capability's resident slot and
+    the server has stopped auto-evicting between them. UNLIKE
+    `"model_loading"`, this is TERMINAL — no load is in flight to watch, so a
+    caller that retries on `"model_loading"` must not retry on this one too.
     """
 
     def __init__(self, type_: str, message: str, status: int | None = None,
-                 job_id: str | None = None):
+                 job_id: str | None = None, capability: str | None = None,
+                 models: list | None = None, resident: str | None = None,
+                 held: bool | None = None):
         super().__init__(message)
         self.type = type_
         self.message = message
         self.status = status
         self.job_id = job_id
+        self.capability = capability
+        self.models = models
+        self.resident = resident
+        self.held = held
 
     def __repr__(self) -> str:  # pragma: no cover - cosmetic
         return (f"AiError(type={self.type!r}, message={self.message!r}, "
                 f"status={self.status!r})")
+
+
+class ModelSlotConflict(AiError):
+    """`AiError` specifically for `type == "model_slot_conflict"`
+    (SPEC-model-slot-conflict.md §3) — a distinct type, not just the four
+    extra fields `AiError` carries for it, so a caller that only means to
+    handle THIS terminal case can write `except ModelSlotConflict` instead
+    of catching every `AiError` and checking `.type` by hand. Raised in
+    place of a bare `AiError` by `_error_from_payload`, the one place that
+    reads the wire's `type` string and decides what to build.
+    """
 
 
 # ------------------------------------------------------------- origin lookup
@@ -244,9 +269,13 @@ def _error_from_payload(status: int, payload: object) -> AiError:
     if isinstance(payload, dict):
         err = payload.get("error")
         if isinstance(err, dict):
-            return AiError(
-                err.get("type") or "error", err.get("message") or "",
-                status, job_id=err.get("jobId"))
+            type_ = err.get("type") or "error"
+            cls = ModelSlotConflict if type_ == "model_slot_conflict" else AiError
+            return cls(
+                type_, err.get("message") or "",
+                status, job_id=err.get("jobId"), capability=err.get("capability"),
+                models=err.get("models"), resident=err.get("resident"),
+                held=err.get("held"))
         if isinstance(err, str) and err:
             type_ = "unavailable" if status == 409 else "bad_request"
             return AiError(type_, err, status)
@@ -258,6 +287,41 @@ def _read_json_body(raw: bytes) -> object:
         return json.loads(raw.decode("utf-8"))
     except (ValueError, UnicodeDecodeError):
         return None
+
+
+def _requester_headers() -> dict:
+    """Who is asking (SPEC-model-slot-conflict.md §1): `FUSED_RENDER_PAGE`,
+    the same env var `_child.py` sets for a page's own subprocess and
+    `engine.py`'s generated wrapper sets for a background app — this module
+    never runs anywhere else, so it is always this caller's own identity, the
+    script path standing in for a label too.
+
+    A bare script run outside either of those — `python my_script.py`, this
+    module imported straight from a shell — has no `FUSED_RENDER_PAGE` to
+    read, but it is still one stable caller across every request it makes,
+    not nothing: `script:<the running script's own absolute path>`
+    (`sys.argv[0]`) gives it that identity instead of leaving every such
+    script to share the server's one-off anonymous fallback, which would
+    make a single script's own retries look like a new stranger on every
+    call. Only `sys.argv[0]` itself ever being empty (an interactive
+    interpreter, `python -c`) falls through to no header at all, which the
+    server reads as anonymous, never as `user` — only the shell's own
+    ModelsDock row, its notification actions, and the AI Models page's own
+    load/unload buttons (none of which run through this module) ever claim
+    that identity.
+    """
+    page = os.environ.get("FUSED_RENDER_PAGE")
+    if not page:
+        script = sys.argv[0]
+        page = f"script:{os.path.abspath(script)}" if script else None
+    if not page:
+        return {}
+    # Percent-encoded, matching `runtime.js`'s own `X-Fused-Page`/
+    # `X-Fused-Requester`: a header value is ISO-8859-1 only, and a script
+    # path is an arbitrary filesystem path. The server reads both headers
+    # with the same `unquote`.
+    encoded = quote(page, safe="")
+    return {"X-Fused-Requester": encoded, "X-Fused-Requester-Label": encoded}
 
 
 def _request(method: str, path: str, body: dict | None = None,
@@ -278,6 +342,7 @@ def _request(method: str, path: str, body: dict | None = None,
         headers["Content-Type"] = "application/json"
     if method == "POST":
         headers["X-Fused"] = "1"
+        headers.update(_requester_headers())
     req = urllib.request.Request(url, data=data, method=method, headers=headers)
     try:
         return urllib.request.urlopen(req, timeout=timeout)

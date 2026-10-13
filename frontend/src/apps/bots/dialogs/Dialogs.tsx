@@ -14,6 +14,7 @@ import { BotSettings } from "./BotSettings";
 import { BrowsersDialog } from "./Browsers";
 import { Confirm } from "./Confirm";
 import { CreateBot } from "./CreateBot";
+import { FailuresDialog } from "./Failures";
 import { PresetPicker } from "./PresetPicker";
 import { UsageDialog } from "./Usage";
 
@@ -56,6 +57,9 @@ export function Dialogs() {
   }
   if (req?.kind === "usage") dialog = <UsageDialog key={key} onClose={closeDialog} />;
   if (req?.kind === "browsers") dialog = <BrowsersDialog key={key} onClose={closeDialog} />;
+  // "N failed" in the usage strip or the Usage table: the bot's failed calls with their errors. `back` = reopen Usage on
+  // close (one dialog slot, so the table's cell hands over and takes back).
+  if (req?.kind === "failures" && id) dialog = <FailuresDialog key={key} id={id} name={b?.name} onClose={() => (req.back ? openDialog({ kind: "usage" }) : closeDialog())} />;
   return (
     <>
       {dialog}

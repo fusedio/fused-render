@@ -988,6 +988,8 @@ class _MenuTarget(NSObject):
         return self
 
     def newWindow_(self, _s):
+        # Also the Dock menu's item, where the app may be inactive.
+        NSApp.activateIgnoringOtherApps_(True)
         self._m.open(self._m.home_url)
 
     def openDocument_(self, _s):
@@ -1169,15 +1171,51 @@ class WindowManager:
     def open_path(self, fs_path: str) -> _Window:
         return self.open(self.url_for_path(fs_path))
 
+    def dock_menu(self) -> NSMenu:
+        """The custom items of the Dock icon's right-click menu (AppKit adds
+        the window list, Hide and Quit itself): one "New Window", the same
+        action as File → New Window and the same target. Built once and kept
+        — AppKit does not retain the menu the delegate returns."""
+        if getattr(self, "_dock_menu", None) is None:
+            menu = NSMenu.alloc().init()
+            it = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                "New Window", b"newWindow:", "")
+            it.setTarget_(self._menu_target)
+            menu.addItem_(it)
+            self._dock_menu = menu
+        return self._dock_menu
+
     def reopen(self) -> None:
-        """A macOS Dock-icon click on the running app: the Home window comes
-        forward (the key/front one if several; `show` restores a minimized
-        one), else a Home window opens — the same rule as the menu-bar
-        Dock's Home tile and the launcher's Home row (`focus_or_open_home`).
-        Not the last-used window: the owner wants the app icon to mean Home
+        """A macOS Dock-icon click on the running app. By default the Home
+        window comes forward (the key/front one if several; `show` restores a
+        minimized one), else a Home window opens — the same rule as the
+        menu-bar Dock's Home tile and the launcher's Home row
+        (`focus_or_open_home`): the owner wants the app icon to mean Home
         wherever it is clicked, so an app window on top never swallows the
-        click. A new window is File → New Window."""
-        self.focus_or_open_home()
+        click. With "Single window experience" on (`prefs.apps_open_in_home`)
+        it is the standard macOS behaviour instead: the window last used
+        comes forward (`focus_or_open_recent`). A new window is File → New
+        Window."""
+        from fused_render.shell import prefs
+
+        if prefs.apps_open_in_home():
+            self.focus_or_open_recent()
+        else:
+            self.focus_or_open_home()
+
+    def focus_or_open_recent(self) -> None:
+        """The Dock icon under "Single window experience": the most recently
+        used fused-render window comes forward (the key/front one, else the
+        MRU — `_pick`), the opt-in standard macOS Dock behaviour; with none,
+        Home (`focus_or_open_home`). An app's own run window (view "embed")
+        is skipped — it is the native app's window, not fused-render's — and
+        so is a popup. Main thread."""
+        win = self._pick([w for w in self._windows
+                          if w.ns is not None and w.view != "embed" and not w._popup])
+        if win is None:
+            self.focus_or_open_home()
+        else:
+            win.show()
 
     def show_tasks(self) -> None:
         """Window → Tasks (⌘⇧T): a window already on the Tasks page comes to

@@ -199,6 +199,7 @@ class Turn:
         self.cur_mid, self.cur_mcp = "", 0   # the newest assistant message with bot-tool blocks, and how many
         self.steps = 0                       # tool calls handled
         self.ran_calls: dict = {}            # call key -> RESULT text, since the user last spoke
+        self.pending_images: list = []       # an app follow-up's images (docs §13), appended to the next tool result
         self.denied: set = set()             # approval previews the user said no to, since they last spoke
         self.current_result = None
         self.last_label, self.repeats = None, 0
@@ -244,8 +245,13 @@ class Turn:
             except (OSError, ValueError):
                 return False
 
-    def write_user(self, text: str) -> bool:
-        return self.write({"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": text}]}})
+    def write_user(self, text: str, images=None) -> bool:
+        """One user turn on stdin. `images` ({"media_type", "data": base64} each, an
+        app send's pictures, docs §13) go in as image blocks BEFORE the text, the
+        API's own shape, so the model sees the picture the words refer to."""
+        content = [_image_block(im) for im in (images or []) if _image_block(im)]
+        content.append({"type": "text", "text": text})
+        return self.write({"type": "user", "message": {"role": "user", "content": content}})
 
     def control(self, request: dict) -> bool:
         with self.wlock:
@@ -525,11 +531,13 @@ def argv(bin_path: str, model: str, effort: str, sp_file: str, mcp_file: str,
 
 def super_mode(bot) -> str | None:
     """The CLI permission mode for this bot's task, None for an ordinary bot.
-    A task that did not start in the user's chat (a text from the phone) always
-    runs in `default`: every write and command asks, at the Mac (docs §5)."""
+    A task from an outside sender (a text from the phone) always runs in
+    `default`: every write and command asks, at the Mac (docs §5). A routine is
+    the user's own task from the Mac (channels.base.is_local), so it runs with
+    the bot's `super_access` like a chat task."""
     if not tools.is_super(bot):
         return None
-    if not channels.base.is_web(getattr(bot, "task_via", None)):
+    if not channels.base.is_local(getattr(bot, "task_via", None)):
         return "default"
     botmod = _botmod()
     modes = getattr(botmod, "SUPER_ACCESS", None) or {"ask": "default", "full": "auto"}
@@ -653,6 +661,11 @@ def stop(bot) -> None:
 
 
 # ----------------------------------------------------------------- run ---
+def _result_error(ev: dict) -> str:
+    """A failed `result` event's own words: the result text, else its errors list, else the subtype."""
+    return str(ev.get("result") or "").strip() or ", ".join(map(str, ev.get("errors") or [])) or str(ev.get("subtype") or "error")
+
+
 def _usage(bot, sess: Turn, ev: dict, ok: bool) -> None:
     try:
         from fused_render.bots import store
@@ -670,7 +683,7 @@ def _usage(bot, sess: Turn, ev: dict, ok: bool) -> None:
     in_tok = sum(p for p in parts if isinstance(p, (int, float))) if any(isinstance(p, (int, float)) for p in parts) else None
     try:
         store.usage_log(bot.id, sess.model, getattr(bot, "task_origin", "manual"), bot.meta.get("task") or sess.task, ok,
-                        name=bot.meta.get("name"), cost=cost, input_tokens=in_tok)
+                        name=bot.meta.get("name"), cost=cost, input_tokens=in_tok, error=None if ok else _result_error(ev))
     except Exception:  # noqa: BLE001 — the ledger never sinks a task
         pass
 
@@ -774,7 +787,7 @@ def _drive(bot, sess: Turn, proc) -> tuple:
             if not ok:
                 if sess.cap_interrupted:
                     return "cap", pending or ""
-                err = str(ev.get("result") or "").strip() or ", ".join(map(str, ev.get("errors") or [])) or ev.get("subtype") or "error"
+                err = _result_error(ev)
                 if sess.resumed and strikes == 0 and sess.tool_uses == 0 and _RESUME_ERR.search(err):
                     raise ResumeLost(err[:300])
                 bot.emit("error", f"Model call failed: {err[:500]}")
@@ -798,7 +811,8 @@ def _drive(bot, sess: Turn, proc) -> tuple:
                     bot.emit("thought", final)
                 sess.ran_calls.clear()
                 sess.current_result = None
-                sess.write_user("\n".join(f"USER INSTRUCTION (mid-task, overrides the task): {m}" for m in msgs))
+                sess.write_user("\n".join(f"USER INSTRUCTION (mid-task, overrides the task): {m}" for m in msgs),
+                                images=[im for m in msgs for im in channels.base.images_of(m)])
                 continue
             return ("cap" if sess.over_cap and not final else "done"), final
         # system/init, user echoes / tool_results, control_response, stream_event: nothing to show
@@ -918,7 +932,8 @@ def run(bot, task: str, label: str | None = None) -> None:
                 # --effort and thinks by default; a zero budget is the universal off
                 # switch. Sent before the first message so it covers the first turn.
                 sess.control({"subtype": "set_max_thinking_tokens", "max_thinking_tokens": 0})
-            if not sess.write_user(prompt):
+            # An app-started task's images (docs §13) ride the first turn; a ResumeLost re-spawn sends them again.
+            if not sess.write_user(prompt, images=getattr(bot, "task_images", None)):
                 raise RuntimeError("could not hand the task to Claude Code")
             if isinstance(conv, dict):
                 # The sections are in the session's history now, whatever happens to this turn.
@@ -1032,6 +1047,25 @@ def _result(text: str, notes=(), error: bool = False, image: bytes | None = None
     return {"content": content, "isError": bool(error)}
 
 
+_IMAGE_TYPES = frozenset({"image/png", "image/jpeg", "image/gif", "image/webp"})
+
+
+def _image_block(im) -> dict | None:
+    """An app send's image ({"media_type", "data": base64}, docs §13) as the API's
+    user-message block; None for anything that is not one of the four image types."""
+    if not isinstance(im, dict) or im.get("media_type") not in _IMAGE_TYPES or not im.get("data"):
+        return None
+    return {"type": "image", "source": {"type": "base64", "media_type": im["media_type"], "data": str(im["data"])}}
+
+
+def _image_result_block(im) -> dict | None:
+    """The same picture as an MCP tool-result block (a follow-up's image rides the
+    next tool result, where mid-task instructions ride)."""
+    if not isinstance(im, dict) or im.get("media_type") not in _IMAGE_TYPES or not im.get("data"):
+        return None
+    return {"type": "image", "data": str(im["data"]), "mimeType": im["media_type"]}
+
+
 def _stopped(notes=()) -> dict:
     return _result("Stopped by the user. End your turn now; do not call more tools.", notes, error=True)
 
@@ -1124,8 +1158,10 @@ def handle_tool(bot, token, name: str, args) -> dict:
 
 
 def _instruction(sess: Turn, notes: list, msg: str) -> None:
-    """A mid-task user message: it rides on this tool result."""
+    """A mid-task user message: it rides on this tool result (its images too,
+    an app follow-up's, docs §13: _handle appends them as image blocks)."""
     notes.append(f"USER INSTRUCTION (mid-task, overrides the task): {msg}")
+    sess.pending_images.extend(channels.base.images_of(msg))
     sess.ran_calls.clear()  # a new instruction may legitimately ask for the same call again
     sess.denied.clear()     # … or allow what was refused a moment ago
     sess.current_result = None
@@ -1162,6 +1198,20 @@ def _batched_stale(sess: Turn, name: str, args: dict) -> bool:
 
 
 def _handle(bot, sess: Turn, name: str, args: dict) -> dict:
+    """One tool call's result. Every return path of _handle_core (the step cap,
+    an unknown tool, a paused or stale-batch skip, the normal result) goes out
+    with the images queued by the instructions it carried (docs §13), so a
+    picture never lands on a later result than the words it came with."""
+    out = _handle_core(bot, sess, name, args)
+    # Never on Super Bot's permission answer: that must stay ONE JSON text block (the messages were re-queued).
+    if (sess.pending_images and not (name == tools.PERMISSION_TOOL and sess.is_super)
+            and isinstance(out, dict) and isinstance(out.get("content"), list)):
+        out["content"].extend(b for b in (_image_result_block(im) for im in sess.pending_images) if b)
+        sess.pending_images = []
+    return out
+
+
+def _handle_core(bot, sess: Turn, name: str, args: dict) -> dict:
     if bot.stop_flag.is_set():
         return _stopped()
     was_paused = _wait_pause(bot)
@@ -1169,18 +1219,19 @@ def _handle(bot, sess: Turn, name: str, args: dict) -> dict:
         return _stopped()
     notes = []
     msgs = bot._drain_inbox()
-    for m in msgs:
-        _instruction(sess, notes, m)
     if name == tools.PERMISSION_TOOL and sess.is_super:
         # Claude Code asking, not the model acting: no step, no page, and the
         # answer must be ONE JSON text block, so mid-task messages cannot ride
         # on it. They go back to the inbox for the next real tool result (and
-        # are not mistaken for the card's answer).
+        # are not mistaken for the card's answer). Before _instruction, which
+        # would also queue their images (docs §13) a second time on the re-drain.
         out = _permission(bot, sess, args)
         if msgs:
             with bot.lock:
                 bot.inbox[:0] = msgs
         return out if out is not None else _permission_answer(False, args, "Stopped by the user.")
+    for m in msgs:
+        _instruction(sess, notes, m)
     sess.steps += 1
     n = sess.steps
     if n > sess.max_steps:
@@ -1233,7 +1284,7 @@ def _handle(bot, sess: Turn, name: str, args: dict) -> dict:
     if notes:
         blk = next(b for b in out["content"] if b.get("type") == "text")
         blk["text"] = (blk["text"] + "\n\n" + "\n".join(notes)).strip()
-    return out
+    return out  # _handle appends the queued images
 
 
 # ------------------------------------------------------- Super Bot's built-ins ---
@@ -1432,6 +1483,7 @@ def _ask(bot, sess: Turn, args: dict):
         return None
     answer, lines, page = got
     lines.extend(f"USER ANSWER: {a}" for a in answer)
+    sess.pending_images.extend(im for a in answer for im in channels.base.images_of(a))  # an app's picture with its answer
     if not answer:
         lines.append("USER ANSWER: (none; the user handed the browser back without a reply)")
     if page:
@@ -1510,7 +1562,9 @@ def _ask_builtin(bot, sess: Turn, args: dict):
 def _login(bot, sess: Turn, args: dict):
     q = (args.get("message") or "").strip() or "This page needs you to sign in."
     bot.takeover(note=False, by="bot")  # the user signs in from the live view; the bot waits paused on this same tab
-    ev = bot.emit("question", channels.login_text(bot, q))
+    # `login: True` marks the card for readers that branch on it (the hand-off board, the app door's `waitingOn` /
+    # `blocked.kind`): the text alone is the channel's wording and changes.
+    ev = bot.emit("question", channels.login_text(bot, q), login=True)
     bot.set_status("waiting", waiting_on=_seq(ev))
     bot.asking = True
     try:
@@ -1530,6 +1584,7 @@ def _login(bot, sess: Turn, args: dict):
     lines = [f"Handed the page to the user to sign in ({q}); the user is done with it. Do not assume the sign-in "
              "succeeded; act on the page below."]
     lines.extend(f"USER ANSWER: {a}" for a in answer)
+    sess.pending_images.extend(im for a in answer for im in channels.base.images_of(a))  # an app's picture with its answer
     lines.append("\n" + tools.format_observation(_observe(bot, sess), compact=True))
     return _result("\n".join(lines))
 
@@ -1740,7 +1795,9 @@ def _act(bot, sess: Turn, name: str, args: dict, notes: list | None = None) -> d
         if bot.stop_flag.is_set():
             return None
         parts.append(f"ASKED (stuck): {q}")
-        parts.extend(f"USER ANSWER: {a}" for a in bot._drain_inbox())
+        answer = bot._drain_inbox()
+        parts.extend(f"USER ANSWER: {a}" for a in answer)
+        sess.pending_images.extend(im for a in answer for im in channels.base.images_of(a))  # an app's picture with its answer
         sess.recent.clear()
         bot.set_status("running", waiting_on=None)
     return _result("\n\n".join(p for p in parts if p), error=result.startswith("error:"), image=image,

@@ -40,7 +40,17 @@ DEFAULT_EFFORT = "low"
 MAX_STEPS = 60
 ATTACH_MAX = 8 * 1024 * 1024  # composer attachment size cap
 IDLE_SLEEP_S = 10 * 60  # close Chrome after this long idle (every bot); encrypted bots also seal the profile
-ROUTINE_MAX_FAILS = 3   # consecutive failed runs before a routine pauses itself
+ROUTINE_MAX_FAILS = 3   # consecutive failed runs before a routine pauses itself (RoutinesSection.tsx mirrors it)
+ROUTINE_MIN_MINUTES = 5  # "Every N minutes" floor; the dialog refuses less, routine_add clamps as the backstop
+
+
+class AppRefused(Exception):
+    """The app door (receive_app / app_stop, docs §13) could not take the message
+    now: `reason` is `busy` | `headed` | `control`, the route answers 409 with it."""
+
+    def __init__(self, reason, message):
+        super().__init__(message)
+        self.reason = reason
 MODEL_LOADING_SLEEP_S = 8
 MODEL_LOADING_MAX_WAITS = 12
 IDLE_SHOT_TIMEOUT_S = 3
@@ -87,11 +97,12 @@ ENGINES = ("auto", "steps", "agent")
 # "ask" (default) = the CLI's default mode, a card for every write / edit /
 # shell command; "full" = the CLI's `auto` mode (its own classifier approves
 # what it judges safe and escalates the rest), the same mode Builds' "Full
-# access" uses. Only the user starts a Super Bot task: from its chat, or by text
-# from the iMessage handle set on it (then always in "ask" posture, see
-# agent_engine.super_mode); routines and the file inbox are refused (docs §5
-# "Super Bot"). Super Bot hands browsing work to the other bots (`handoff`,
-# docs §11); a hand-off to Super Bot is refused (depth one).
+# access" uses. Only the user starts a Super Bot task: from its chat, from a
+# routine they scheduled there (both carry the bot's own posture,
+# channels.base.is_local), or by text from the iMessage handle set on it (then
+# always in "ask" posture, see agent_engine.super_mode); the file inbox is
+# refused (docs §5 "Super Bot"). Super Bot hands browsing work to the other
+# bots (`handoff`, docs §11); a hand-off to Super Bot is refused (depth one).
 KINDS = ("bot", "super")
 SUPER_ACCESS = {"ask": "default", "full": "auto"}
 SUPER_NAME = "Super Bot"
@@ -500,6 +511,7 @@ class Bot:
         self.last_task_dir = None  # (task_via, folder) of the task that ended last (collect_task_artifacts)
         self.task_started = 0.0   # downloads newer than this belong to the running task
         self.task_origin = "manual"
+        self.task_images = []  # image blocks of an app-started task (docs §13), consumed by the agent engine
         self.task_via = dict(chan.WEB)  # where the running task came from (channels/base.py Via); web by default
         self.engine = None        # "steps" | "agent" while a task runs
         self.wake = threading.Event()
@@ -691,7 +703,7 @@ class Bot:
                 continue
             if role == "system":
                 if ev.get("ignored_seq") is not None:
-                    # A texted line that was held back (receive: busy on a chat task) is not something the user
+                    # A texted line that was held back (receive: busy on a task from the Mac) is not something the user
                     # asked this bot to do; drop it from the history so a later task cannot read it as an ask.
                     out = [p for p in out if p[0] != ev["ignored_seq"]]
                     continue
@@ -1645,7 +1657,7 @@ class Bot:
     def _next_run(r, after):
         kind = r.get("kind")
         if kind == "interval":
-            m = max(5, int(r.get("minutes") or 60))
+            m = max(ROUTINE_MIN_MINUTES, int(r.get("minutes") or 60))
             base = r.get("anchor") or after
             n = base
             while n <= after:
@@ -1665,32 +1677,61 @@ class Bot:
             return at if at > after and not r.get("last") else None
         return None
 
+    @staticmethod
+    def _routine_fields(kind, minutes=None, time_s="", weekdays=None, at=None):
+        """The schedule fields for `kind`, checked and clamped the one way `add` and
+        `edit` share (the dialog refuses the same inputs first, RoutinesSection.tsx)."""
+        if kind == "interval":
+            return {"minutes": max(ROUTINE_MIN_MINUTES, int(minutes or 60)), "anchor": time.time()}
+        if kind == "daily":
+            t = (time_s or "09:00").strip()
+            try:
+                hh, mm = [int(x) for x in t.split(":")[:2]]
+            except ValueError:
+                hh = mm = -1
+            if not (0 <= hh < 24 and 0 <= mm < 60):
+                raise ValueError("time must be HH:MM")
+            # Omitted = every day; an explicit empty list or a day outside Mon..Sun would leave _next_run with no slot.
+            days = sorted({int(d) for d in weekdays}) if weekdays is not None else list(range(7))
+            if not days or any(d < 0 or d > 6 for d in days):
+                raise ValueError("pick at least one weekday, 0 (Mon) to 6 (Sun)")
+            return {"time": f"{hh:02d}:{mm:02d}", "weekdays": days}
+        if kind == "once":
+            at = float(at or 0)
+            if at <= time.time():
+                raise ValueError("that time is in the past")
+            return {"at": at}
+        raise ValueError("kind must be interval|daily|once")
+
     def routine_add(self, task, kind, minutes=None, time_s="", weekdays=None, at=None):
-        if is_super(self.meta):
-            raise ValueError("Super Bot takes tasks only from your chat; routines are for the other bots")
         task = (task or "").strip()
         if not task:
             raise ValueError("routine needs a task")
         r = {"id": uuid.uuid4().hex[:6], "task": task, "kind": kind, "enabled": True, "created": time.time(), "last": None, "last_result": ""}
-        if kind == "interval":
-            r["minutes"] = max(5, int(minutes or 60))
-            r["anchor"] = time.time()
-        elif kind == "daily":
-            r["time"] = time_s or "09:00"
-            r["weekdays"] = [int(d) for d in (weekdays or list(range(7)))]
-        elif kind == "once":
-            r["at"] = float(at or 0)
-            if r["at"] <= time.time():
-                raise ValueError("that time is in the past")
-        else:
-            raise ValueError("kind must be interval|daily|once")
+        r.update(self._routine_fields(kind, minutes, time_s, weekdays, at))
         r["next"] = self._next_run(r, time.time())
         with self.lock:
             self.routines().append(r)
             self.save()
+        self._sync_wake()
         return r
 
-    def routine_update(self, rid, enabled=None, delete=False):
+    def _sync_wake(self):
+        """The routines' share of the wake agent follows every change to a `next`
+        (registry.sync_wake: daily and once routines relaunch a quit app).
+        Outside `self.lock`: it may run launchctl."""
+        try:
+            _registry().sync_wake()
+        except Exception:  # noqa: BLE001
+            logger.debug("bot %s: wake sync failed", self.id, exc_info=True)
+
+    def routine_update(self, rid, enabled=None, delete=False, task=None, kind=None, minutes=None, time_s="", weekdays=None, at=None):
+        """Enable/disable, delete, or (`task` given) rewrite the task and schedule.
+        An edit keeps the id, `fails` and the run history, drops the old kind's
+        fields and recomputes `next`; a once-routine edited to a new time is live
+        again (its `last` is cleared: `_next_run` ends a fired one-shot for good).
+        The text cannot change while its run is alive: `_routine_outcome` finds
+        the routine by its task text, so the run's result would never land."""
         with self.lock:
             rs = self.routines()
             r = next((x for x in rs if x["id"] == rid), None)
@@ -1698,11 +1739,29 @@ class Bot:
                 raise ValueError("no such routine")
             if delete:
                 rs.remove(r)
+            elif task is not None:
+                task = (task or "").strip()
+                if not task:
+                    raise ValueError("routine needs a task")
+                if (task != r.get("task") and r.get("last_result") == "started"
+                        and self.thread is not None and self.thread.is_alive()):
+                    raise ValueError("this routine is running now; stop it or let it finish, then edit the task")
+                kind = kind or r.get("kind")
+                fields = self._routine_fields(kind, minutes, time_s, weekdays, at)
+                for k in ("minutes", "anchor", "time", "weekdays", "at"):
+                    r.pop(k, None)
+                r.update(fields, task=task, kind=kind)
+                if kind == "once":
+                    r["last"] = None
+                    r["enabled"] = True
+                r["next"] = self._next_run(r, time.time()) if r.get("enabled") else None
             elif enabled is not None:
                 r["enabled"] = bool(enabled)
                 if r["enabled"]:
                     r["next"] = self._next_run(r, time.time())
             self.save()
+        self._sync_wake()
+        return r
 
     def routine_fire(self, r, manual=False):
         """Start the routine's task now if the bot is free; else skip this slot."""
@@ -1744,6 +1803,7 @@ class Bot:
                 r["next"] = self._next_run(r, time.time()) if r.get("enabled") else None
                 self.save()
             self.emit("system", "That routine did not start: another task took the bot first. It keeps its schedule.")
+        self._sync_wake()
 
     def _spacing_ok(self, r):
         """Refuse to fire inside the routine's own interval, judged from disk.
@@ -1805,6 +1865,7 @@ class Bot:
         if tripped:
             self.emit("system", f"Routine \"{task[:60]}\" paused after {hit['fails']} failed runs in a row. "
                                 "Fix the cause, then re-enable it under Routines.")
+            self._sync_wake()
 
     # -- control -----------------------------------------------------------
     def event_by_seq(self, seq):
@@ -1819,29 +1880,33 @@ class Bot:
         `forever`: the approval card's third button; the yes also writes an allow rule (tools.add_allow_rule)."""
         return self.receive(text, via=None, reply_to=reply_to, forever=forever)
 
-    def receive(self, text, via=None, reply_to=None, forever=False):
+    def receive(self, text, via=None, reply_to=None, forever=False, images=None):
         """A message from the user, from any channel (docs §10): the one entry
         point. `via` is where it came from (channels/base.py; None = the web).
         `reply_to` is the seq of an earlier message the user is replying to: the
         transcript keeps the plain reply plus a quoted snippet for the UI, and the
         bot reads the reply with that message quoted above it so it knows exactly
-        what is being referred to.
+        what is being referred to. `images` (an app send, docs §13): image blocks
+        pushed into the model turn beside the text.
 
         A running task gets it as an instruction or an answer; an idle bot starts
         a task from it, tagged with the channel so replies go back there."""
         via = dict(via) if via else dict(chan.WEB)
-        if not chan.is_web(via) and via.get("kind") != "imessage" and is_super(self.meta):
-            # Super Bot has shell and file access: only the user's own chat, or a text from the handle set
-            # on it (the router lets no other sender through), may drive it (docs §5).
+        if not chan.is_web(via) and via.get("kind") not in ("imessage", chan.APP_KIND) and is_super(self.meta):
+            # Super Bot has shell and file access: only the user's own chat, a text from the handle set
+            # on it (the router lets no other sender through), or an app page on this Mac (docs §13: it
+            # runs under the phone posture, every write and command asks) may drive it (docs §5).
             self.emit("system", f"Ignored a task from {chan.label(via['kind'])}: Super Bot only takes tasks you type here.")
             return
         if via.get("kind") == "imessage" and is_super(self.meta):
             with self.lock:
-                busy_on_chat = self.running() and chan.is_web(getattr(self, "task_via", None))
+                busy_on_chat = self.running() and (getattr(self, "task_via", None) or {}).get("kind") != "imessage"
             if busy_on_chat:
-                # A chat task may run unattended and its replies are never texted: a text must not steer it,
-                # and is not written as a user line (a later task's CONVERSATION SO FAR would present it as asked).
-                self.emit("system", "Texted while busy on a chat task; not applied.", via=None)
+                # A task not started by text (the chat, a routine, an app page, docs §13) may run unattended and
+                # its replies are never texted: a text must not steer it, and is not written as a user line (a
+                # later task's CONVERSATION SO FAR would present it as asked). Judged phone-vs-not, not is_local:
+                # an app task is not local either, yet a text steering it would be the same silent misroute.
+                self.emit("system", "Texted while busy on a task from the Mac; not applied.", via=None)
                 self.emit("error", "Busy with a task from the Mac; text again when it's done.", via=dict(via))
                 return
         quoted = self.event_by_seq(int(reply_to)) if reply_to else None
@@ -1862,36 +1927,50 @@ class Bot:
                                      {"seq": uev.get("seq"), "text": text, "shown": shown, "via": via}]
                 self.save()
                 return
-        self._deliver_message(text, shown, via, uev, forever=forever and chan.is_web(via))
+        self._deliver_message(text, shown, via, uev, forever=forever and chan.is_web(via), images=images)
 
-    def _deliver_message(self, text, shown, via, uev, forever=False):
+    def _deliver_message(self, text, shown, via, uev, forever=False, images=None):
         """receive()'s second half: a written user line reaches the task (an instruction or an answer) or starts one."""
         with self.lock:
             running = self.thread is not None and self.thread.is_alive()
             pending = self.meta.get("pending_offer")
         texted = via.get("kind") == "imessage"
+        # Not the user at the Mac: a text, a botsend file, an app page (channels.base.is_outside, docs §13).
+        outside = chan.is_outside(via)
         # A yes or no to an app offer that outlived its task (see _offer) is settled here, without a model call.
-        # Never from a text: a yes starts a build, and approvals are answered at the Mac (docs §10).
-        if pending and not running and not texted and self._answer_pending_offer(pending, shown):
+        # Never from an outside sender: a yes starts a build, and approvals are answered at the Mac (docs §10).
+        if pending and not running and not outside and self._answer_pending_offer(pending, shown):
             return
         if pending and running and pending.get("seq") != getattr(self, "_offer_seq", None):
             self._settle_offer()  # the offer timed out earlier and the user has moved on: it is stale, not pending
-        if running and texted and self._texted_approval(shown):
+        if running and outside and self._texted_approval(shown):
             return
         with self.lock:
-            if not running and not self.start_task(text, label=shown, via=via) and self.running():
-                if texted and is_super(self.meta) and chan.is_web(getattr(self, "task_via", None)):
-                    # The busy-on-chat hold above was checked before the user line; a chat task that started in
-                    # the gap must still not take a text as an instruction (docs §5 posture by origin). The user
-                    # line is already written: mark it ignored so past_conversation leaves it out.
-                    self.emit("system", "Texted while busy on a chat task; not applied.", via=None, ignored_seq=uev.get("seq"))
-                    self.emit("error", "Busy with a task from the Mac; text again when it's done.", via=dict(via))
-                    return
+            if (via.get("kind") == chan.APP_KIND and self.running()
+                    and (getattr(self, "task_via", None) or {}).get("addr") != via.get("addr")):
+                # An app may steer only the task it started (docs §13). receive_app refused this before the user line
+                # was written; this is the race where a task started between that check and here. Marked ignored, as
+                # the texted hold below is, so past_conversation leaves it out.
+                self.emit("system", "An app sent a message while busy on another task; not applied.", via=None,
+                          ignored_seq=uev.get("seq"))
+                self.emit("error", "Busy with another task; send again when it's done.", via=dict(via))
+                return
+            if texted and is_super(self.meta) and self.running() and (getattr(self, "task_via", None) or {}).get("kind") != "imessage":
+                # receive()'s busy hold ran before the user line, and the `running` snapshot above is unlocked: a
+                # Mac task (the chat, or a routine firing from the scheduler thread) that started in either gap
+                # must still not take a text as an instruction (docs §5 posture by origin). Judged here, under the
+                # lock every starter takes, so nothing can start between this check and the inbox write below.
+                # The user line is already written: mark it ignored so past_conversation leaves it out.
+                self.emit("system", "Texted while busy on a task from the Mac; not applied.", via=None, ignored_seq=uev.get("seq"))
+                self.emit("error", "Busy with a task from the Mac; text again when it's done.", via=dict(via))
+                return
+            if not running and not self.start_task(text, label=shown, via=via, images=images) and self.running():
                 running = True  # a hand-off started a task first: this message becomes an instruction to it
             if running:
-                # Marked as texted: approval and offer waits never take it as their verdict (channels.base.Texted).
-                # Marked as forever: the approval gate writes an allow rule on the yes (channels.base.Forever).
-                self.inbox.append(chan.Texted(text, via) if texted else (chan.Forever(text) if forever else text))
+                # Marked as outside: approval and offer waits never take it as their verdict (channels.base.Outside;
+                # it also carries an app's images). Marked as forever: the approval gate writes an allow rule on the
+                # yes (channels.base.Forever).
+                self.inbox.append(chan.Outside(text, via, images) if outside else (chan.Forever(text) if forever else text))
                 self.wake.set()
                 if self.meta.get("status") == "waiting":
                     # waiting_on stays: the engine clears it when its wait ends,
@@ -1917,30 +1996,99 @@ class Bot:
             return False
         if not (YES.match(text or "") or NO.match(text or "")):
             return False
-        self.emit("system", "Approvals are answered here at the Mac, not by text: use Approve or Deny on the card.", via=None)
+        self.emit("system", "Approvals are answered here at the Mac, not by text or by an app: use Approve or Deny on the card.", via=None)
         return True
+
+    def receive_app(self, text, via, images=None, follow_up=False, before=None):
+        """The app door (docs §13, `fused.bots.send`): judged BEFORE anything is
+        written, under the lock every starter takes, so a refusal leaves no orphan
+        user line in the chat (receive writes the line first and lets start_task
+        refuse afterwards). Raises AppRefused(reason) for the route's 409:
+        `headed` (the browser is a real window on the desktop), `control` (the user
+        holds the browser: receive would park the message in `held` with no signal
+        to the app), `busy` (a task the app did not start is running), `ended` (a
+        `follow_up` whose turn is no longer the running task: a turn's addr is
+        never reused for a new task, so a later app_events read stays one turn's).
+        `before()`, when given, runs once the checks pass and returns (text, images)
+        — the route saves the attachments there, so a refused send stores nothing."""
+        with self.lock:
+            if self.deleted:
+                raise ValueError("no such bot")
+            if self.meta.get("control"):
+                raise AppRefused("control", "the user is driving this bot's browser; send again when it's handed back")
+            running = self.thread is not None and self.thread.is_alive()
+            mine = running and (getattr(self, "task_via", None) or {}).get("addr") == via.get("addr")
+            if running and not mine:
+                raise AppRefused("busy", f"busy with another task: {self.meta.get('task') or ''}".rstrip(": "))
+            if follow_up:
+                if not mine:
+                    raise AppRefused("ended", "that turn has ended; send a new message to start another task")
+                # Written and queued under this same lock (an RLock; emit takes it again): the task cannot end between
+                # the check and the inbox write, so a follow-up never becomes a new task under an old addr.
+                if before is not None:
+                    text, images = before()
+                self.emit("user", text, via=dict(via))
+                self.inbox.append(chan.Outside(text, via, images))
+                self.wake.set()
+                if self.meta.get("status") == "waiting":
+                    self.set_status("running")  # as _deliver_message: waiting_on stays, the engine settles the card
+                return True
+        if not running and self.browser.headed():
+            raise AppRefused("headed", "the browser is open as a real window on the desktop; dock it first")
+        if before is not None:
+            text, images = before()
+        self.receive(text, via=via, images=images)
+        with self.lock:
+            return bool(self.thread is not None and self.thread.is_alive()
+                        and (getattr(self, "task_via", None) or {}).get("addr") == via.get("addr"))
+
+    def app_events(self, addr, since=0):
+        """The events of the app turn `addr` after seq `since` (docs §13): the user
+        line receive stamped and every line the task thread wrote under that via.
+        Returns (events, live): `live` while the running task is this addr's."""
+        out = [ev for _i, ev in _iter_events(self.events_path)
+               if int(ev.get("seq") or 0) > since and (ev.get("via") or {}).get("addr") == addr]
+        with self.lock:
+            live = bool(self.thread is not None and self.thread.is_alive()
+                        and (getattr(self, "task_via", None) or {}).get("addr") == addr)
+        return out, live
+
+    def app_stop(self, addr):
+        """Stop the running task only when it is the app turn `addr` (docs §13), as
+        handoff_stop stops only its own hand-off. Anything else is refused."""
+        with self.lock:
+            mine = bool(self.thread is not None and self.thread.is_alive()
+                        and (getattr(self, "task_via", None) or {}).get("addr") == addr)
+        if not mine:
+            raise AppRefused("busy", "that task is not running")
+        return self.stop()
 
     def _ai_call(self, ai, prompt, **kw):
         """Every fused_ai.text call goes through here so the usage ledger sees it."""
-        ok = False
+        ok, err = False, None
         try:
             raw = ai.text(prompt, **{**kw, "model": _resolve_model(kw.get("model") or DEFAULT_MODEL)})
             ok = True
             return raw
+        except Exception as e:  # noqa: BLE001 — the ledger keeps the reason; the caller still sees the raise
+            err = str(e) or type(e).__name__
+            raise
         finally:
             try:
                 store.usage_log(self.id, kw.get("model") or DEFAULT_MODEL,
                                 getattr(self, "task_origin", "manual"), self.meta.get("task"), ok,
-                                name=self.meta.get("name"))
+                                name=self.meta.get("name"), error=err)
             except Exception:  # noqa: BLE001
                 pass
 
-    def start_task(self, task, label=None, origin="manual", via=None):
+    def start_task(self, task, label=None, origin="manual", via=None, images=None):
         """`task` is what the model reads; `label` (default: the same) is what the
         transcript and status show — a reply's quoted prefix is only for the model.
         `via` is the channel the task came from (channels/base.py; None = web);
         `origin` tags the usage ledger ("manual" | "routine" | a channel kind) and
-        follows `via` when one is given. Picks the engine (docs §5): the bot's
+        follows `via` when one is given. `images` (an app send, docs §13) ride the
+        first model turn beside the task text (`task_images`; the steps engine is
+        text-only and leaves them). Picks the engine (docs §5): the bot's
         `engine` setting, `auto` = steps for a local model or when no `claude`
         CLI resolves, else the agent engine. Returns True when the task started;
         False when it was refused or the bot is already running one."""
@@ -1948,10 +2096,12 @@ class Bot:
             via = dict(chan.ROUTINE) if origin == "routine" else dict(chan.WEB)
         elif not chan.is_web(via):
             origin = via.get("kind") or origin
-        if is_super(self.meta) and via.get("kind") != "imessage" and not (chan.is_web(via) and origin in ("manual", "setup")):
-            # Super Bot has shell and file access: only the user's chat or their text may start it (docs §5).
-            # Judged on the via, so an origin label alone never lifts the gate (or the posture, super_mode).
-            # "setup" is the app's own first task (SUPER_SETUP, _maybe_super_setup), never an outside sender.
+        if is_super(self.meta) and via.get("kind") not in ("imessage", chan.APP_KIND) and not (
+                (chan.is_web(via) and origin in ("manual", "setup")) or via.get("kind") == chan.ROUTINE_KIND):
+            # Super Bot has shell and file access: only the user's chat, a routine they scheduled, their text, or an
+            # app page on this Mac (docs §13; like a text it is not is_local, so super_mode runs it asking) may
+            # start it (docs §5). Judged on the via, so an origin label alone never lifts the gate (or the posture,
+            # super_mode). "setup" is the app's own first task (SUPER_SETUP, _maybe_super_setup), never an outside sender.
             self.emit("system", f"Ignored a task from {origin}: Super Bot only takes tasks you type here.")
             return False
         if self.browser.headed():
@@ -1966,6 +2116,7 @@ class Bot:
                 return False
             self.task_origin = origin
             self.task_via = dict(via)
+            self.task_images = list(images or [])  # an app send's image blocks, read once by agent_engine.run
             self.task_started = time.time()  # the engines stamp it again; the router reads it from here on (forwards)
             self.stop_flag.clear()
             self.pause_flag.clear()

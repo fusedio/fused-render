@@ -43,7 +43,8 @@ import threading
 import time
 import uuid
 
-from fused_render import jobs
+from fused_render import jobs, recording_pill
+from fused_render.capture import _pause
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +63,12 @@ MAX_MAX_SECONDS = 4 * 60 * 60
 TICK_S = 1.5
 
 AUDIO_MODES = ("mic", "system", "both")
+
+#: A recording left paused this long is stopped (and kept). The cap does not
+#: count paused time, so without this a forgotten pause would hold a recording
+#: open forever; the longest recording is `MAX_MAX_SECONDS`, so that is the
+#: longest a pause is allowed to last too.
+PAUSE_MAX_S = MAX_MAX_SECONDS
 
 
 class CaptureError(ValueError):
@@ -192,6 +199,16 @@ class _Session:
         # the same spoof-proofing `routers/jobs.py` already uses for a
         # page-owned job's own `page` field.
         self.page = page
+        # Pause/resume (audio recordings, where the backend has the hooks): the
+        # clock excludes paused time from `seconds` and from the cap.
+        self.pauses = _pause.PauseClock()
+        self.can_pause = False
+        # Serialises `_set_paused`: check, backend call and clock update.
+        self.pause_lock = threading.Lock()
+
+    def elapsed(self) -> float:
+        """Recorded seconds — wall time minus time spent paused."""
+        return self.pauses.elapsed(self.started_at)
 
     @property
     def job(self) -> str:
@@ -203,10 +220,12 @@ class _Session:
             "mode": self.mode,
             "path": self.path,
             "state": self.state,
-            "seconds": round(max(0.0, time.time() - self.started_at), 2),
+            "seconds": round(max(0.0, self.elapsed()), 2),
             "maxSeconds": self.max_seconds,
             "jobId": self.job,
             "audio": self.spec.get("audio") or False,
+            "paused": self.pauses.paused,
+            "canPause": self.can_pause,
         }
         return record
 
@@ -264,10 +283,14 @@ STOP_LOCK_WAIT_S = 5.0
 
 class _native:
     """`with _native():` serialises a backend call. `with _native(timeout):`
-    waits at most that long and then runs unserialised (logged)."""
+    waits at most that long and then runs unserialised (logged) — right for
+    endings, which must not hang. `strict=True` is for non-endings (pause,
+    resume): after the timeout it raises `CaptureError` instead of running
+    unserialised."""
 
-    def __init__(self, timeout: float | None = None):
+    def __init__(self, timeout: float | None = None, strict: bool = False):
         self.timeout = timeout
+        self.strict = strict
         self.held = False
 
     def __enter__(self):
@@ -276,6 +299,9 @@ class _native:
             self.held = True
         else:
             self.held = _native_lock.acquire(timeout=self.timeout)
+            if not self.held and self.strict:
+                raise CaptureError(
+                    "the recorder is busy — try again in a moment")
             if not self.held:
                 logger.warning("capture: native lock busy for %.0fs; ending "
                                "the recording unserialised", self.timeout)
@@ -356,7 +382,7 @@ def _max_seconds(value) -> int:
     return seconds
 
 
-def _audio_mode(value, *, required: bool) -> str | None:
+def _audio_mode(value, *, required: bool, name: str = "audio") -> str | None:
     """`audio` on a screen recording: false/None, or one of AUDIO_MODES.
 
     Named values rather than a pair of booleans, and refused rather than
@@ -372,7 +398,9 @@ def _audio_mode(value, *, required: bool) -> str | None:
         return "mic"
     if value not in AUDIO_MODES:
         raise CaptureError(
-            f"'audio' must be false or {_or_list(AUDIO_MODES)}, not {value!r}")
+            (f"'audio' must be false or {_or_list(AUDIO_MODES)}, not {value!r}"
+             if name == "audio" else
+             f"'{name}' must be {_or_list(AUDIO_MODES)}, not {value!r}"))
     return value
 
 
@@ -441,17 +469,12 @@ def start(mode: str, body: dict, *, page: str = "") -> dict:
         out = _resolve_out(body.get("path"), body.get("base"),
                            _ext(backend, mode, spec))
     else:
-        # ONE check with ONE message. The first cut of this ran the shared
-        # `_audio_mode` (which names 'mic', 'system' and 'both' as valid) and
-        # then refused two of the three a line later — two sentences
-        # contradicting each other about the same argument.
-        source = body.get("source", "mic")
-        if source not in (None, "", "mic", True):
-            raise CaptureError(
-                "fused.capture.audio records the microphone, so 'source' can "
-                f"only be 'mic', not {source!r} — for system audio record the "
-                "screen with audio: 'system'")
-        spec["audio"] = "mic"
+        # `source` is the audio-only spelling of a screen recording's `audio`,
+        # so it goes through the SAME validator and there is ONE message. The
+        # first cut refused two of the three values the shared check names
+        # a line after naming them — two sentences contradicting each other.
+        spec["audio"] = _audio_mode(body.get("source", "mic"), required=False,
+                                    name="source") or "mic"
         spec["device"] = body.get("device")
         out = _resolve_out(body.get("path"), body.get("base"),
                            _ext(backend, mode, spec))
@@ -477,22 +500,41 @@ def start(mode: str, body: dict, *, page: str = "") -> dict:
         handle = (backend.start_screen(out, spec) if mode == "screen"
                   else backend.start_audio(out, spec))
     session = _Session(cid, mode, out, handle, spec, page=page)
+    # Pausing is an optional backend capability, per handle: the macOS tap, mic
+    # and audio-only ScreenCaptureKit routes have it; a screen recording and the
+    # browser-fed Windows/Linux backends do not.
+    can_pause = getattr(backend, "can_pause", None)
+    session.can_pause = bool(
+        getattr(backend, "pause", None) and getattr(backend, "resume", None)
+        and (can_pause(handle) if can_pause else True))
     with _lock:
         _sessions[cid] = session
 
-    title = body.get("title") or (
-        "Screen recording" if mode == "screen" else "Audio recording")
-    # `origin="Capture"`: `fused.capture.*` is callable from any page's own
-    # script, so no single hosting page names this row's source honestly —
-    # "Capture" names the FEATURE that raised it instead, the same way
-    # `benchmark.py`'s own row names itself "Benchmark" rather than whatever
-    # page happened to start the run.
-    _report(session, state=jobs.RUNNING, title=str(title)[:120],
-            kind="task", unit="s", done=0, total=spec["maxSeconds"],
-            cancellable=True,
-            detail="Recording — ✕ discards it", origin="Capture")
-    threading.Thread(target=_watch, args=(session,), daemon=True,
-                     name=f"capture-{cid}").start()
+    # The floating pill (macOS audio recordings only; a no-op elsewhere). Shown
+    # as soon as the session is registered, so it can never outlive one: every
+    # ending below and in `stop`/`_tick`/`stop_all` hides it, and a start that
+    # raises from here on hides it too.
+    pill = mode == "audio"
+    if pill:
+        recording_pill.show(session)
+    try:
+        title = body.get("title") or (
+            "Screen recording" if mode == "screen" else "Audio recording")
+        # `origin="Capture"`: `fused.capture.*` is callable from any page's own
+        # script, so no single hosting page names this row's source honestly —
+        # "Capture" names the FEATURE that raised it instead, the same way
+        # `benchmark.py`'s own row names itself "Benchmark" rather than whatever
+        # page happened to start the run.
+        _report(session, state=jobs.RUNNING, title=str(title)[:120],
+                kind="task", unit="s", done=0, total=spec["maxSeconds"],
+                cancellable=True,
+                detail="Recording — ✕ discards it", origin="Capture")
+        threading.Thread(target=_watch, args=(session,), daemon=True,
+                         name=f"capture-{cid}").start()
+    except BaseException:
+        if pill:
+            recording_pill.hide(cid)
+        raise
     # `opening()`, not `public()`: this is the ONE reply allowed to carry the
     # stream token (see the method).
     return session.opening()
@@ -609,8 +651,14 @@ def _tick(session: _Session) -> bool:
     in: the user can delete a recording they have, and cannot recover one this
     threw away.
     """
-    elapsed = time.time() - session.started_at
+    elapsed = session.elapsed()          # paused time never reaches the cap
     if elapsed >= session.max_seconds:
+        try:
+            stop(session.id)
+        except (CaptureError, Unsupported):
+            pass
+        return True
+    if session.pauses.paused_for() >= PAUSE_MAX_S:
         try:
             stop(session.id)
         except (CaptureError, Unsupported):
@@ -623,6 +671,8 @@ def _tick(session: _Session) -> bool:
     if died:
         with _lock:
             _sessions.pop(session.id, None)
+        if session.mode == "audio":
+            recording_pill.hide(session.id)
         session.state = "error"
         _report(session, state="error", message=died)
         try:
@@ -639,6 +689,86 @@ def _tick(session: _Session) -> bool:
         return True
     _report(session, done=round(min(elapsed, session.max_seconds), 1))
     return False
+
+
+# ------------------------------------------------------- pause, resume, state
+
+
+def _live(cid: str) -> _Session:
+    with _lock:
+        session = _sessions.get(cid)
+    if session is None:
+        raise CaptureError(f"no such capture: {cid}")
+    return session
+
+
+def _set_paused(cid: str, paused: bool) -> dict:
+    session = _live(cid)
+    if not session.can_pause:
+        if session.mode == "screen":
+            raise Unsupported(
+                "pausing is not supported for screen recordings — stop it "
+                "and start a new one")
+        raise Unsupported(
+            "this recording cannot be paused on this machine (only audio "
+            "recorded by the native app can)")
+    # Held across check + backend call + clock update so a concurrent pause and
+    # resume cannot both pass the check; `_native` alone proceeds lockless after
+    # its timeout. `_report` stays outside: it only posts a detail string.
+    with session.pause_lock:
+        if session.pauses.paused == paused:
+            return session.public()
+        backend = _backend()
+        with _native(STOP_LOCK_WAIT_S, strict=True):
+            # `stop` pops the session BEFORE it takes the native lock, so a
+            # re-check under the lock proves the recording is not finalised:
+            # resuming a finished recorder would overwrite the take.
+            with _lock:
+                if _sessions.get(cid) is not session:
+                    raise CaptureError(f"no such capture: {cid}")
+            (backend.pause if paused else backend.resume)(session.handle)
+        if paused:
+            session.pauses.pause()
+        else:
+            session.pauses.resume()
+    _report(session, detail=("Paused — ✕ discards it" if paused
+                             else "Recording — ✕ discards it"))
+    return session.public()
+
+
+def pause(cid: str) -> dict:
+    """Stop recording until `resume`. The file stays open; its length is only
+    the time spent recording."""
+    return _set_paused(cid, True)
+
+
+def resume(cid: str) -> dict:
+    return _set_paused(cid, False)
+
+
+def level_of(session: _Session) -> float:
+    """A 0..1 loudness for the recording pill's meter, 0.0 when unknown.
+
+    NOT under `_native_lock`: the meter is polled ten times a second and must not
+    queue behind a `stop` that is finalising a file."""
+    try:
+        hook = getattr(_backend(), "level", None)
+        if hook is None:
+            return 0.0
+        return max(0.0, min(1.0, float(hook(session.handle))))
+    except Exception:                            # noqa: BLE001 - a meter
+        return 0.0
+
+
+def state(cid: str) -> dict:
+    """The small live reading the pill polls: time, paused, loudness."""
+    session = _live(cid)
+    level = level_of(session)                    # never raises: a meter cannot fail a poll
+    return {"id": session.id, "state": session.state,
+            "paused": session.pauses.paused,
+            "seconds": round(max(0.0, session.elapsed()), 2),
+            "maxSeconds": session.max_seconds, "level": level,
+            "canPause": session.can_pause}
 
 
 # ------------------------------------------------------------------ stopping
@@ -673,6 +803,8 @@ def stop(cid: str, *, discard: bool = False) -> dict:
     """
     with _lock:
         session = _sessions.pop(cid, None)
+    if session is not None and session.mode == "audio":
+        recording_pill.hide(cid)
     if session is None:
         already = _finished.get(cid)
         if already is None:
@@ -693,6 +825,17 @@ def stop(cid: str, *, discard: bool = False) -> dict:
         return already
 
     error = ""
+    # Asked BEFORE the backend tears the recording down — the answer lives on the
+    # handle. A WARNING and not an error: a recording that captured only silence
+    # is still a valid file, and silence is also what an idle Mac sounds like
+    # (the macOS tap backend's note explains why the two cannot be told apart).
+    warning = None
+    hook = getattr(_backend(), "warning", None)
+    if hook is not None and not discard:
+        try:
+            warning = hook(session.handle) or None
+        except Exception:                       # noqa: BLE001 - advice, never fatal
+            warning = None
     try:
         with _native(STOP_LOCK_WAIT_S):
             _backend().stop(session.handle)
@@ -715,11 +858,19 @@ def stop(cid: str, *, discard: bool = False) -> dict:
     result = session.public()
     result.update(_describe(session.path))
     if error:
+        if warning:
+            # The backend's own failure ("captured no audio") hides the
+            # actionable advice; lead with it.
+            result["warning"] = warning
+            error = f"{warning} ({error})"
         _report(session, state="error", message=error)
         result["error"] = error
     else:
-        _report(session, state="done",
-                detail=os.path.basename(session.path))
+        detail = os.path.basename(session.path)
+        if warning:
+            result["warning"] = warning
+            detail = f"{detail} — {warning}"
+        _report(session, state="done", detail=detail)
     return _remember(cid, result)
 
 
@@ -735,7 +886,7 @@ def _describe(path: str) -> dict:
         size = 0
     ext = os.path.splitext(path)[1].lower()
     mime = {".mov": "video/quicktime", ".mp4": "video/mp4",
-            ".webm": "video/webm", ".m4a": "audio/mp4",
+            ".webm": "video/webm", ".m4a": "audio/mp4", ".wav": "audio/wav",
             ".png": "image/png", ".jpg": "image/jpeg",
             ".jpeg": "image/jpeg"}.get(ext, "application/octet-stream")
     return {"path": path, "url": "/api/fs/raw?path=" + _quote(path),
@@ -904,6 +1055,7 @@ def stop_all() -> None:
             stop(cid)
         except Exception:                        # noqa: BLE001 - exiting anyway
             pass
+    recording_pill.hide_all()
 
 
 atexit.register(stop_all)

@@ -13,7 +13,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { SlidersHorizontal } from "lucide-react";
 import type { Config } from "@platform/lib/api";
 import { useRecentsVersion } from "@apps/explorer/lib/recents";
-import { ClaudeHealthStrip } from "@platform/ui/ClaudeHealthStrip";
 import { FdaStrip } from "@platform/ui/FdaStrip";
 import { loadBookmarks } from "@platform/lib/bookmarks";
 import { AddWidgetPanel, allFolders } from "./home/AddWidgetPanel";
@@ -79,12 +78,12 @@ export default function Home({ config }: { config: Config }) {
       <div className="files-home-inner home-wide">
         <SearchHostContext.Provider value={search}>
           <div className="home-strips">
-            {/* Above the grid, because on a machine where Claude Code is not
-                set up this is the only thing on the page the user can act on —
-                and it renders nothing at all once there is nothing to say.
-                Hidden while a search is live for the same reason the grid is:
-                the search result IS the page then. */}
-            {searching ? null : <ClaudeHealthStrip />}
+            {/* Above the grid: renders nothing at all once there is nothing
+                to say. Hidden while a search is live for the same reason the
+                grid is: the search result IS the page then. No Claude Code
+                card here any more — that step of setup is optional
+                (onboarding/progress OPTIONAL_STAGES), and an optional step
+                does not get a nag on the front door. */}
             {searching ? null : <FdaStrip />}
             {searching ? null : edit ? (
               <div className="hw-editbar">

@@ -49,7 +49,7 @@ def _text_rows(reports):
 
 
 def _local(monkeypatch, events):
-    monkeypatch.setattr(supervisor, "generate_text", lambda model, request: iter(events))
+    monkeypatch.setattr(supervisor, "generate_text", lambda model, request, **kwargs: iter(events))
 
 
 # --------------------------------------------------------------- the row appears
@@ -132,7 +132,7 @@ def test_a_cold_model_opens_no_text_row_only_the_load_row(monkeypatch):
     `_wait_ready`'s merge exists to remove elsewhere."""
     reports = _spy(monkeypatch)
 
-    def cold(model, request):
+    def cold(model, request, **kwargs):
         raise supervisor.ModelNotReady("org/chat is loading now", "sys:ai-model:orgchat")
         yield  # pragma: no cover - generator function, never reached
 
@@ -151,7 +151,7 @@ def test_a_worker_that_never_answers_also_opens_no_text_row(monkeypatch):
     no row, the same rule as the cold-load case."""
     reports = _spy(monkeypatch)
 
-    def broken(model, request):
+    def broken(model, request, **kwargs):
         raise supervisor.SupervisorError("the model process did not answer: boom")
         yield  # pragma: no cover
 
@@ -209,7 +209,7 @@ def test_a_pressed_x_stops_the_generation_and_ends_the_row(monkeypatch):
     monkeypatch.setattr(supervisor, "cancel_generation", lambda: forwarded.__setitem__(
         "n", forwarded["n"] + 1) or True)
 
-    def events(model, request):
+    def events(model, request, **kwargs):
         yield {"type": "chunk", "text": "a"}
         # By the time this chunk is consumed, the ✕ has been pressed —
         # `_local_relay`'s per-chunk poll must forward it before pulling the
@@ -254,7 +254,7 @@ def test_an_abandoned_stream_still_finalises_the_row(monkeypatch):
     must not be left `running` forever when that happens."""
     reports = _spy(monkeypatch)
 
-    def events(model, request):
+    def events(model, request, **kwargs):
         yield {"type": "chunk", "text": "a"}
         yield {"type": "chunk", "text": "b"}
         yield {"type": "done", "ok": True, "tokens": 2}
@@ -329,7 +329,7 @@ def test_a_long_prefill_is_kept_out_of_stalled_by_the_watchdog(monkeypatch):
     release = threading.Event()
     started = threading.Event()
 
-    def events(model, request):
+    def events(model, request, **kwargs):
         yield {"type": "prefill", "input_tokens": 10}
         started.set()
         release.wait(2.0)
@@ -365,7 +365,7 @@ def test_the_watchdog_never_ticks_after_the_terminal_report(monkeypatch):
     monkeypatch.setattr(_server_ai, "_TEXT_WATCHDOG_TICK_S", 0.02)
     reports = _spy(monkeypatch)
 
-    def events(model, request):
+    def events(model, request, **kwargs):
         yield {"type": "prefill", "input_tokens": 5}
         yield {"type": "chunk", "text": "hi"}
         yield {"type": "done", "ok": True, "tokens": 1}
@@ -392,7 +392,7 @@ def test_the_cross_is_polled_during_prefill_not_only_between_chunks(monkeypatch)
     chunk boundaries to check on, which is exactly why the watchdog polls
     the cancel flag as well as restating the row. The failure this guards
     is a cross that draws but does nothing: pressing stop on a long-context
-    prompt used to queue the cancel behind the model's first token.
+    prompt must not queue the cancel behind the model's first token.
     """
     monkeypatch.setattr(_server_ai, "_TEXT_WATCHDOG_TICK_S", 0.02)
     reports = _spy(monkeypatch)
@@ -404,7 +404,7 @@ def test_the_cross_is_polled_during_prefill_not_only_between_chunks(monkeypatch)
     prefilling = threading.Event()
     release = threading.Event()
 
-    def events(model, request):
+    def events(model, request, **kwargs):
         yield {"type": "prefill", "input_tokens": 4096}
         prefilling.set()
         # The worker is silently doing its forward pass over the prompt: no

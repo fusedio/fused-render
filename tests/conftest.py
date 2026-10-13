@@ -509,6 +509,10 @@ def _no_bots_threads(monkeypatch, tmp_path_factory):
 
     monkeypatch.setenv("FUSED_RENDER_APP_HOME", str(tmp_path_factory.mktemp("no-fusedbot")))
     monkeypatch.setattr(bots_registry, "start", lambda: None)
+    # The routines wake agent (registry.sync_wake -> schedule_wake.sync): under a venv python there is no app
+    # bundle, so a sync REMOVES ~/Library/LaunchAgents/<flavor>.schedule-wake.plist — the developer's real Tasks
+    # wake agent. Tests reach it through every routine add/edit/fire now that they elect the owner lazily.
+    monkeypatch.setattr(bots_registry, "sync_wake", lambda: None)
     bots_registry.reset_for_tests()
     yield
     bots_registry.reset_for_tests()

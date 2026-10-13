@@ -107,7 +107,9 @@ fused_render/bots/            the backend package (in-process; no daemon, no fus
   apps.py         ports of listapps.py, importapp.py, mkbuild.py, revealapp.py
   presets.py      presets()/apply_preset (agents.py); data in presets/<key>/ (preset.json + playbook .md), section 5
   starters.py     port of installapp.py; data in starters/<key>/ (complete fused apps), section 5
-  registry.py     the bot registry, scheduler thread (routines, file inbox), iMessage thread, slow-call log
+  registry.py     the bot registry, ONE OWNER PER MACHINE (section 7: the flock elects the process that holds every
+                  Bot, engine, Chrome, the scheduler and the channels; every other process forwards), scheduler
+                  thread (routines, file inbox), takeover walk, routines wake agent, slow-call log
   routes.py       the HTTP API (section 3), an `_web.APIRouter` included from server.py
   botsend.py      CLI: `python -m fused_render.bots.botsend <bot> "<task>"` (drops into the bot's inbox dir)
 frontend/
@@ -236,6 +238,7 @@ POST   /api/bots/<id>/clone           {name?, share?}                       -> {
                                                                                          the source's browser; false copies the profile)
 DELETE /api/bots/<id>                                                       -> {ok}
 POST   /api/bots/<id>/routines        {op: add, text, kind, minutes?, time?, weekdays?, at?} -> {ok, routine}
+                                      {op: edit, rid, text, kind, minutes?, time?, weekdays?, at?} -> {ok, routine}
                                       {op: delete|enable|disable|run, rid}  -> {ok}
 POST   /api/bots/<id>/skills          {op: save, name, trigger, text, rid?} | {op: delete, rid} | {op: learn} -> {ok, skills}
 GET    /api/bots/<id>/export          -> {ok, name, text}  (transcript as Markdown)
@@ -244,6 +247,12 @@ GET    /api/bots/<id>/shot?t=         -> image/png (the latest screenshot; 404 w
 GET    /api/bots/<id>/steps/<n>.jpg   -> image/jpeg (a step thumbnail; 404 when gone)
 GET    /api/bots/<id>/tools?token=    -> {tools: [{name, description, inputSchema}]}   (botmcp's roster; section 6)
 POST   /api/bots/<id>/tool            {name, args, token}                   -> {content: [...], isError}   (botmcp only; section 6)
+GET    /api/bots/roster              -> {bots: [{id, name, kind, preset, description, status, busy, task, note, step, waitingOn,
+                                                 model, effort, face, hidden, pinned, updated}], ts}   (the app door, §13; 403 while Bots is off)
+POST   /api/bots/<id>/app_send        {text, addr?, files?: [{name, data: <base64>, preview?: {media_type, data}}]} + X-Fused-Page
+                                      -> {ok, addr, seq, started, files: [stored names], vision}   (409 {error, reason: busy|headed|control|ended, task, status}; files stored only after the checks pass)
+GET    /api/bots/<id>/app_events?addr=&since=<seq>  + X-Fused-Page -> {events, live, status, seq, ts}   (this app turn's events only)
+POST   /api/bots/<id>/app_stop        {addr} + X-Fused-Page                  -> {ok}   (409 when the running task is not this addr's)
 GET    /api/bots/builds               -> {builds: [{entryId, name, dir, createdAt, doneAt?}]}   (<home>/bots/builds.json)
 POST   /api/bots/builds               {builds: [...]}                       -> {ok}
 
@@ -516,10 +525,13 @@ not apply. Trigger lockdown (amended 2026-10-06): Super Bot is the ONLY bot
 reachable over iMessage (§10), and only from the handle set on it
 (`meta.imessage`). `receive` accepts the web and `imessage` vias and refuses
 every other (botsend, …) with a system line; `start_task` accepts a web via
-with origin `manual` or an `imessage` via (judged on the via, never on the
-origin label) and ignores everything else; `routine_add` raises;
+with origin `manual`, a `routine` via (the user's own schedule, amended
+2026-10-12: Super Bot has Routines like any bot) or an `imessage` via (judged
+on the via, never on the origin label) and ignores everything else;
 `drain_file_inbox` reads every inbox file, on every bot, as botsend and so
-Super Bot drops it (its thread shows only the refusal, no "Task received" line). Posture by origin: a phone-started task always runs in
+Super Bot drops it (its thread shows only the refusal, no "Task received" line). Posture by origin
+(`channels.base.is_local`: web or routine = set up at the Mac, keeps the bot's
+settings): a phone-started task always runs in
 CLI permission mode `default` (ask before every write, edit and shell command,
 answered at the Mac), whatever `super_access` says (`agent_engine.super_mode`;
 `_permission` reads the same answer), and with approvals `ask` and Builds
@@ -533,7 +545,7 @@ instruction), a texted yes/no while a card is up gets a system line
 open after a task (`_answer_pending_offer` is skipped), and offer questions
 are not numbered on the phone ("Answer it in the app."). Numbered options on
 Super Bot's own `ask` still map back. A text that arrives while Super Bot runs
-a task started in its chat is not applied (that task may run unattended and
+a task started at the Mac (its chat, or a routine) is not applied (that task may run unattended and
 never texts back): no user line is written (a later task's CONVERSATION SO FAR
 would present it as asked), only a system line and one texted line "Busy with
 a task from the Mac; text again when it's done." When a task ends its thread
@@ -550,7 +562,7 @@ the other bots (§11). The harness side
 is in §6 ("The Super Bot on the harness"). Page: the chooser's Super Bot card
 (shown while no Super Bot exists), Settings hides local models and Builds
 for it, shows its Phone section (and only for it) and "On this Mac",
-the list shows a Super Bot badge, the menu drops Routines and Clone.
+the list shows a Super Bot badge, the menu drops Clone.
 
 **Seeded by default** (`registry.seed_super`, 2026-10-07). `registry.start()`
 first makes Super Bot when none exists and `<home>/bots/super-seeded.json`
@@ -578,7 +590,7 @@ General (avatar, name, instructions, model, thinking), Permissions (On this Mac
 for Super Bot; before it buys/deletes/posts; builds for ordinary bots; apps it
 may use without asking), Browser (Chrome profile, encryption), Skills
 (`SkillsSection.tsx`, the playbooks: edit, delete, learn from the last task,
-write by hand), Routines (`RoutinesSection.tsx`, not on Super Bot), Memory, and
+write by hand), Routines (`RoutinesSection.tsx`: add, edit in place, run, pause, delete), Memory, and
 Phone on Super Bot (`PhoneSection.tsx`, §10). Skills and Routines post every op
 at once and never touch Save; the Skills… and Routines… menu rows and the
 preview pane's routines links open Settings on that section. The avatar picker
@@ -723,7 +735,9 @@ an over-budget rollover also writes a `note` "Conversation compacted at Nk
 tokens…". `--autocompact <window>` is passed so the CLI's own compaction
 (floor 100k) never fires first. Sessions live where the CLI keeps them,
 `~/.claude/projects/<encoded cwd>/<session_id>.jsonl` (cwd = the bot's cache
-dir, or Super Bot's Inbox).
+dir, or Super Bot's Inbox). The Tasks page skips them by that cwd
+(`paths.is_bot_workdir`, routers/tasks `_bot_session`): a bot's conversation
+is not a task.
 
 The turn's message (`first_message(bot, task, past, page, conv)` → `(text,
 sent)`): a FRESH session gets YOU (config), the changeable sections
@@ -903,6 +917,17 @@ Control flow inside the tools (the harness's job, in the server process):
   assistant turn (`_usage_log`), with `total_cost_usd` from `result`.
 - The engine ends the task when the turn's `result` arrives and no tool is
   blocking; `collect_task_artifacts(final)` runs as in OpenBot.
+- Step fold (Thread.tsx, `lib/thread.ts foldStretches`): every stretch of
+  consecutive `thought` / `action` / `note` rows between two boundaries (your
+  message, an approval / question card, `done` / `error`, the Clear marker,
+  hand-off and build cards, a thought or note with an app card, a reaction or
+  a reply quoting it) folds behind one `show more`, so a task with three
+  back-and-forths is three folds. The trigger is one muted line in the action
+  chip's family, in place of the stretch (never seated on a bubble). Seeded once per bot on open (everything before the newest task
+  closed, never a stretch with a row past the seen mark), then only a click
+  moves a fold; a stretch still growing while the bot runs never folds;
+  search opens everything, a jump at a hidden row opens its stretch.
+  View-only: no event field, nothing server-side.
 
 `botmcp.py` (spawned by claude; stdlib; UTF-8 stdio; copies the framing of
 `claude_agent/permission_server.py`): argv = `<server origin> <bot id>
@@ -919,6 +944,52 @@ semantics, `fused_ai.text(prompt, system_prompt, model, effort)` per step.
 
 ## 7. Server and shell changes
 
+- **One owner process per machine** (2026-10-13, `registry.py` module
+  docstring; design page "Bots Owner Process"). Fused Render, Fused Bot and a
+  dev checkout on main share `<home>/bots`; before this each built its own
+  `Bot` per bot, ran engines on it and wrote bot.json from its own memory,
+  so a routine added in one app never fired in the other (which owned the
+  scheduler and never re-read the file, and whose next save deleted it), two
+  engines could land on one Chrome, and the losing app's card said
+  "next 10:00" while nothing ticked. Now the flock on
+  `<home>/bots/data/routines.lock` (old name kept: an installed older app
+  takes the same file, so old and new never both own) elects the one process
+  that holds every Bot, engine, Chrome, the scheduler and the channels. The
+  winner writes `{pid, origin, app, version, boot_id, ticked_at}` into the
+  file (`ticked_at` rewritten every pass: the heartbeat). Every other process
+  forwards `/api/bots/*` and `/api/bot-apps/*` to that origin over local HTTP
+  (`routes.forward_middleware`, an `app.middleware("http")`: same method,
+  path, query, body and headers, reply streamed back; the live view's
+  WebSocket goes to Chrome's own `webSocketDebuggerUrl` inside the forwarded
+  JSON and needs nothing). A forwarder never constructs a Bot
+  (`registry.get/all/create` raise `NotOwner`). A refused forward (the owner
+  just quit) re-tries the flock at once; the scheduler thread re-tries every
+  20 s. Winning runs `_become_owner` once: layout migration, FusedBot import,
+  Super Bot seed, the takeover walk (`_reconcile`: a bot.json still saying
+  running/waiting from an owner that quit goes idle with a system line, a
+  routine stuck on `last_result "started"` gets outcome `stopped`), the
+  channels router (so the phone and the bots never split; the owner holds
+  `imessage.lock` too, through the channel), the orphan-browser sweep and the
+  routines wake agent. `shutdown()` drops the lock LAST, after engines are
+  stopped and Chromes closed; a winner also waits up to 10 s for the previous
+  record's pid to be gone (an older app dropped the lock first). A lean
+  `fused-render open` never elects (`registry.set_lean`): it forwards when an
+  owner exists and answers 503 "no Fused app is running the bots" otherwise —
+  a user app's `fused.bots.send` from a lean server used to run its own
+  engine beside the desktop app's. `GET /api/bots/setup` carries
+  `owner: {this, known, stalled, pid, origin, app, version} | null` (a
+  forwarder overwrites it with its own view; `stalled` = pid alive but
+  `ticked_at` older than 90 s, flagged, never taken over); the empty hero
+  and Settings › Routines show "Bots and their routines run in FusedBot
+  0.6.36; this window forwards to it", "Nothing is running the bots or their
+  routines" or "another Fused app ... update it" (`lib/setup.ts ownerLine`).
+  **Routines wake the app**: `registry.sync_wake` hands the soonest due
+  daily and once routines across every bot to `schedule_wake.sync(due,
+  source="bots")`, the LaunchAgent Tasks already keep (the plist is the union
+  of both sources; a sync that changes no interval does not reload the
+  agent). Interval routines are left out on purpose: a 5-minute routine would
+  relaunch a quit app five minutes after every Quit (owner's call, 2026-10-13).
+  macOS only; Windows and Linux keep the old single-process behaviour.
 - `server.py`: include `bots.routes.router` and `apps` routes; `/` →
   `bots.html`; add `/embed`; third `app_dir_for` rule; remove the showcase /
   dock / launcher / settings / open routes and their imports; `start_ai` adds
@@ -1190,7 +1261,12 @@ imessage.py           pure helpers only (chat.db queries, osascript send, handle
 sender's normalised handle), `routine`, `botsend` (addr = the inbox file
 stem), and `handoff` (addr = `<Super Bot id>:<hand-off id>`, unique per
 hand-off, `channels.base.handoff_via`; stamped on a task Super Bot
-handed to a bot and so on its events, label "Super Bot", §11).
+handed to a bot and so on its events, label "Super Bot", §11), and `app`
+(addr = `<app key>:<call id>`, unique per send, `channels.base.app_via`;
+stamped on a task an app page sent through `fused.bots`, label "an app",
+§13). `channels.base.is_outside(via)` = not web, not routine, not hand-off:
+a text, a botsend file, an app — a message that is never the verdict of an
+approval card or an offer (`Outside`, the marker `Texted` used to be).
 
 **Inbound.** Super Bot is the door. `Channel.door()` answers (Super Bot's id,
 its normalised handle on that surface), read from disk on every call
@@ -1303,8 +1379,9 @@ from a channel, and only from its own handle (`Router.resolve`,
 it came from (`Router.targets`, tested in `tests/test_bots_channels.py`); no
 approval card and no handed-off event ever does (`OUT_ROLES`,
 `Router.on_event`). Owner commands come over the iMessage service only. One
-poller per Mac (flock, unchanged). The router is inert when
-`registry.start()` never ran (`registry.on_event`).
+poller per Mac (flock; since 2026-10-13 the router only runs in the process
+that owns the bots, §7, so the phone and the bots never split). The router is
+inert when this process does not own (`registry.on_event`).
 
 ## 11. Hand-offs (`bot.py` handoff / handoff_stop, `handoffs.py`, 2026-10-07)
 
@@ -1403,9 +1480,9 @@ this hand-off's, else its `last_task_dir` when that was this hand-off's, else
 "". The via is unique per hand-off, so a queued follow-up never lends its
 events or folder to an earlier result.
 
-**Sweep** (`handoffs.sweep(registry)`, every scheduler pass, BEFORE the
-routines flock check because a queue lives in the process that made it, and
-from `bot.delete`). For the Super Bot loaded in this process, each open row:
+**Sweep** (`handoffs.sweep(registry)`, every scheduler pass of the owner
+process (§7: since 2026-10-13 only the owner holds Bots, so the queue and the
+sweep are in one place by construction), and from `bot.delete`). For the Super Bot loaded in this process, each open row:
 a target that is gone closes `failed` "<Bot> was deleted before it
 finished."; a row older than `HANDOFF_MAX_S` (= `BUILD_MAX_S`, 3 h: a target
 may wait on a sign-in at the Mac) stops the target if it is still running
@@ -1553,3 +1630,112 @@ value before changing it. The OTHER bots learn the second door too
 `APP_GUIDE`): once a Super Bot exists, "change your name to X" is answered
 with both ways (Settings dialog, or ask Super Bot), never with "only you
 can, in Settings" alone; without one the old sentence stands.
+
+## 13. The app door — `fused.bots` (`static/runtime.js`, `routes.py` roster / app_send / app_events / app_stop, 2026-10-12)
+
+An app page (any `/render` or `/embed` page with the runtime injected) can see
+the bots on this Mac and give one a message, through a `fused.bots` namespace
+shaped like `fused.tasks` (D890): Promise verbs, the server's sentence as the
+Error with `.status`/`.error`, present-and-throws on a hosted page, one
+refcounted poll per document. Design page with the decisions D1–D12 and the
+owner's answers: <https://claude.ai/artifact/69FiyvXmQP4UWFgZscJreW>.
+Author-facing skill: `skills/fused-render-bots/SKILL.md`.
+
+**Not the page's routes.** `GET /api/bots` runs side effects per call (idle
+sleep, popup recovery, screenshot threads) and returns every `bot.json` key;
+`POST /send` is the web door (via None, the `forever` flag). The app door is
+four routes of its own: `GET /roster` (one row per bot, `_app_bot`: name,
+kind, preset, the first 240 chars of instructions as `description`, status,
+`busy`, the task label, note, step, `waitingOn`, model, effort, face, hidden,
+pinned, updated — never instructions in full, the url the browser is on, rules,
+routines, memory, hand-offs, phone or browser details), `POST /<id>/app_send`,
+`GET /<id>/app_events`, `POST /<id>/app_stop`. All four answer 403 while
+`bots_enabled` is off (the pref only picks the front door; the router is
+mounted regardless, so without the gate a page could drive bots the user has
+not switched on).
+
+**Who is sending.** The app is named by the `X-Fused-Page` header the runtime
+sends with every call (`callHeaders`), resolved by `routers/tasks._page_scope`
+(the one idea of "this app" `fused.tasks` uses: the registry, the nearest
+declared entry page, else the page's folder) and spelled by `apptools.norm_app`
+— never by the body, so no page can speak as another app. A send mints
+`via = {kind: "app", addr: "<app key>:<call id>"}` (`channels.base.app_via`),
+unique per send like a hand-off's, so a turn's watcher reads only its own
+task's events and a later send never lends its events to an earlier result.
+`app_events` and `app_stop` check the addr's key against the caller's
+(`_own_addr`). The first `user` line is stamped by `receive` (`stamp`), every
+task-thread line by `emit` through `task_via`; the Bots page draws a
+"from <app key>" chip on that user line (Thread.tsx `viaChip`).
+
+**Judged before anything is written** (`Bot.receive_app`, under the bot's
+lock): the user holds the browser (`meta.control`: `receive` would park the
+message in `held` with no signal to the app) → 409 `control`; a task the app
+did not start is running → 409 `busy`; the browser is a real window
+(`headed`) → 409 `headed`. Only a message that will be delivered now falls
+through to `receive`. `receive` writes the user line first and lets
+`start_task` refuse afterwards, which would leave an orphan line on every
+refusal; and the race where a task starts between the check and the delivery
+is caught in `_deliver_message` (the user line marked `ignored_seq`, an error
+event back to the app). A follow-up on the app's own live task (same addr) is
+an instruction to it, or the answer to its `ask`. No queue: the app shows the
+reason and `watch` says when the bot is idle.
+
+**Never a verdict.** `_deliver_message` marks a message from any outside sender
+(`channels.base.is_outside`: not web, not routine, not hand-off — a text, a
+botsend file, an app) as `Outside` (the marker `Texted` used to be, kept as an
+alias), and the agent engine's approval wait, `_texted_approval` and
+`_answer_pending_offer` read that mark: an app's "yes" never approves its own
+task's risky action or accepts an offer. Before this an app via would have been
+unmarked (only iMessage was). botsend loses the same power on purpose: a
+nameless local file is not the user at the Mac.
+
+**Super Bot** is listed (`kind: "super"`) and takes app tasks: the two refusal
+gates (`receive`, `start_task`) admit kind `app` beside `imessage`.
+`is_local` is unchanged (web | routine), so every consumer of it — the
+`start_task` gate, `tools.phone_super`, `agent_engine.super_mode` — gives an
+app task the phone posture: every write, edit, shell command and build asks on
+a card in Super Bot's chat whatever `super_access` says, the CLI runs in its
+asking mode. A page is not the user typing. A hand-off from an app-started
+Super Bot task works as from a texted one: the result card comes back to the
+app as a stamped `done` with `source: "handoff"`.
+
+**Images are part of the prompt.** Every file in `files` lands in the bot's
+`files/` exactly as a composer attachment does (`save_bytes`, 8 MB, clash →
+suffix) and the message gets the composer's own "Attached (in your FILES
+folder, use `upload` when a page needs them): …" line with the names as
+stored, server-side in one request (two requests would race the suffix and
+orphan files on a failed send). An image (png, jpeg, gif, webp) also goes into
+the model turn as an image block before the text: the runtime scales it
+client-side to the API's 1568 px long edge (`preview`, PNG stays PNG, the rest
+JPEG) and sends original plus preview; the server stores the original and
+pushes the preview. `start_task(images=…)` stashes them on `bot.task_images`;
+`agent_engine.run` passes them to `write_user(prompt, images)` (the first turn;
+a ResumeLost re-spawn sends them again); a follow-up's images ride the
+`Outside` message (`.images`) and go out on the next tool result
+(`_instruction` → `sess.pending_images` → `_handle`) or, when the model is
+idle, on the stdin user turn. The steps engine is text-only ("images cannot
+be shown to you here"): the file is still saved and named, and `app_send`
+answers `vision: false` so the app can say the bot could not look.
+
+**The turn's state** is derived in the runtime from the bot's own events with
+the hand-off table (§11): `done` → done (or failed for "Stopped after N steps
+without finishing."), `error` with `trace` → failed (without one it is a
+retry), `system "Stopped"` → cancelled, `question` / `approval` → blocked with
+`{kind: question|login|approval, text, options?}`, a later action / thought /
+note → working. `app_events` answers `live` (the running task's `task_via.addr`
+is this addr and its thread is alive); when it goes false with no terminal
+event the runtime polls once more, then settles failed ("ended without a
+result") — a task can end without a `done` (a declined model download). A
+404 (bot deleted) settles failed too. `t.done` never rejects. Nothing is kept
+server-side for the app: unlike hand-offs there is no row store or sweep — the
+page is alive to read, and an app that wants history keeps its own.
+
+**Poll.** One loop per document (`botsTick`): roster watchers and open turns
+share it, it starts with the first subscriber and stops with the last, backs
+off 3 s on an error, sits out a hidden tab (resumes on `visibilitychange`). A
+page that only called `list()` never starts it. `thumb` on an event is
+expanded to `thumbUrl` (`/api/bots/<id>/steps/<seq>.jpg`).
+
+**Withheld:** pause, resume, take-over, goto, tabs, settings, delete, clone,
+routines, skills, bot creation, an embedded chat. `stop` stops only the app's
+own task (`Bot.app_stop`, as `handoff_stop` stops only its hand-off).

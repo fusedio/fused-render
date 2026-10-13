@@ -81,6 +81,13 @@ export async function evalIn<T = unknown>(expression: string, contextId?: number
   const r = await cdpCall("Runtime.evaluate", { expression, returnByValue: true, ...(contextId !== undefined ? { contextId } : {}) });
   return (r as { result?: { value?: T } } | null)?.result?.value;
 }
+/** Text on the bot Chrome's own clipboard (headless Chrome's is private to it; browser.py grants the read), null when
+ *  unreadable. */
+export async function pageClipboard(): Promise<string | null> {
+  const r = await cdpCall("Runtime.evaluate", { expression: "navigator.clipboard ? navigator.clipboard.readText().catch(() => null) : null", awaitPromise: true, returnByValue: true });
+  const v = (r as { result?: { value?: unknown } } | null)?.result?.value;
+  return typeof v === "string" ? v : null;
+}
 
 // ------------------------------------------------------------------ the socket ----
 /** Connect to the driven tab while the view is open; follow tab switches and relaunches by reconnecting when its socket

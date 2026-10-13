@@ -1013,28 +1013,29 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # router takes `_error`/`_require_fused` from `fused_render.server.common`,
     # and a top-level import would be a cycle for anyone importing
     # `fused_render.bots.routes` before the server.
+    from fused_render.bots import registry as _bots_registry
+    from fused_render.bots.routes import forward_middleware as _bots_forward
     from fused_render.bots.routes import router as bots_router
 
     app.include_router(bots_router)
+    # One owner per machine (bots/registry.py module docstring): the process holding the bots flock serves
+    # `/api/bots/*` itself, every other one forwards there. A lean `open` never elects: it forwards when an
+    # owner exists and answers 503 otherwise, instead of building Bots and running engines beside the app's.
+    _bots_registry.set_lean(lean)
+    app.middleware("http")(_bots_forward)
 
-    # The bots' scheduler (routines + file inbox) and the iMessage bridge
-    # thread. `@on_startup`, so a lean `fused-render open` starts neither — a
-    # bot still answers a request there, it just runs no routine on its own.
-    # Off the event loop: `migrate_layout` is a directory walk and
-    # `fusedbot_import.import_once` copies a FusedBot install's bots in on the
-    # first start that finds one (stamped; see that module). Layout first, so
-    # the import lands in today's tree; both before `start()`, so the
-    # scheduler's first pass sees every bot.
+    # The bots' scheduler thread. `@on_startup`, so a lean `fused-render open`
+    # starts none. Its first pass elects the owner; the winner then runs the
+    # layout migration, the FusedBot import, the Super Bot seed, the orphan
+    # browser sweep and the channels router before its first tick
+    # (registry._become_owner) — all of which used to run here in every process.
     @on_startup
     async def _startup_bots():
-        from fused_render.bots import fusedbot_import as bots_import
-        from fused_render.bots import paths as bots_paths
         from fused_render.bots import registry as bots_registry
 
         try:
-            await asyncio.to_thread(bots_paths.migrate_layout)
-            await asyncio.to_thread(bots_import.import_once)
-            bots_registry.start()
+            # Off the loop: a win runs the layout migration, the import and the takeover walk before returning.
+            await asyncio.to_thread(bots_registry.start)
         except Exception:  # noqa: BLE001 - a bots failure must not block serving
             logger.exception("could not start the bots scheduler")
 

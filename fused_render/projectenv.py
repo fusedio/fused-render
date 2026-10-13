@@ -1037,7 +1037,7 @@ _MODULE_TO_DIST = {
     "avfoundation": "pyobjc-framework-avfoundation",
     "quartz": "pyobjc-framework-avfoundation",
     "coremedia": "pyobjc-framework-avfoundation",
-    "coreaudio": "pyobjc-framework-avfoundation",
+    "coreaudio": "pyobjc-framework-coreaudio",
 }
 
 

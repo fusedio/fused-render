@@ -10,6 +10,7 @@ import { glideRows, rowOffsets, toggleLeft } from "../lib/layout";
 import { waitingUnread } from "../lib/unread";
 import { needsYou, openBot, openDialog, setShowHidden, unreadCount, useBots, type BotsState } from "../state/store";
 import { Face } from "./Face";
+import { MI } from "./menuIcons";
 
 export interface BotListProps {
   /** #add and the empty thread's "+ New bot". */
@@ -49,7 +50,7 @@ function Row({ b, S, onContextMenu }: { b: Bot; S: BotsState; onContextMenu: Bot
       <div className="name">
         {b.pinned ? <span className="pin">📌</span> : null}{b.name}
         {b.kind === "super" ? <span className="super" title="Super Bot: Claude Code's own tools on this Mac">SUPER</span> : null}
-        {glyph ? <span className={`rt ${glyph.warn ? "warn" : ""}`} title={glyph.title}>⟳</span> : null}
+        {glyph ? <span className={`rt ${glyph.warn ? "warn" : ""}`} title={glyph.title}>{MI.routines}</span> : null}
       </div>
       <div className="meta">
         {n ? <span className={`badge ${b.status === "waiting" ? "q" : ""}`} title={`${n} new message${n > 1 ? "s" : ""}`} /> : null}

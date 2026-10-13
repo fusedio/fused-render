@@ -7,7 +7,7 @@ import { Button } from "@platform/shadcn/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@platform/shadcn/ui/dialog";
 import { fmtAgo } from "../lib/format";
 import { modelChips, rankUsage, weighted } from "../lib/live";
-import { select, useBotsSelector } from "../state/store";
+import { openDialog, select, useBotsSelector } from "../state/store";
 import { DIALOG_CLASS, DIALOG_SIZE, FOOTER_CLASS, HEADER_CLASS } from "./shell";
 
 function Bars({ id, vals, label, style }: { id: string; vals: { n: number }[]; label: (v: { n: number }, i: number) => string; style?: CSSProperties }) {
@@ -57,7 +57,13 @@ export function UsageDialog({ onClose }: { onClose: () => void }) {
                     <span className="text-right tabular-nums text-muted-foreground">{b.today || "·"}</span>
                     <span className="text-right tabular-nums text-muted-foreground">{b.week}</span>
                     <span className="flex flex-wrap gap-1">{modelChips(b.models).map(([m, n]) => <i key={m} className={`chip ${m}`} title={`${n} on ${m}`}>{m}{n > 1 ? ` ${n}` : ""}</i>)}</span>
-                    <span className={cn("text-right tabular-nums", b.errors ? "text-destructive" : "text-muted-foreground")}>{b.errors || "·"}</span>
+                    {/* The count opens the failures dialog (its errors); stopPropagation keeps the row's own click (select the bot) out of
+                        it. Not for the collapsed "Deleted bots" row: its lines carry no id the failures route could match. Tailwind only:
+                        the dialog portals to <body>, outside .bots-page, so neither its button pill nor .lnk reach here. */}
+                    {b.errors && b.id !== "_deleted" ? <button type="button" className="cursor-pointer text-right tabular-nums text-destructive underline-offset-2 hover:underline"
+                      title="Show the failed calls and their errors" aria-label={`Show ${b.errors} failed call${b.errors === 1 ? "" : "s"} for ${b.name}`}
+                      onClick={(e) => { e.stopPropagation(); openDialog({ kind: "failures", id: b.id, back: true }); }}>{b.errors}</button>
+                      : <span className={cn("text-right tabular-nums", b.errors ? "text-destructive" : "text-muted-foreground")}>{b.errors || "·"}</span>}
                     <span className="truncate text-xs text-muted-foreground">{fmtAgo(b.last)}</span>
                   </div>
                 ))}

@@ -32,9 +32,17 @@
 // the stages it can see cheaply (FDA, Chrome, first app, Claude from its health cache),
 // so a grant made from the Home strip moves the meter too.
 //
-// THE PERCENTAGE: over the stages that count (not `n/a`), complete is 1,
-// partial is ½, pending is 0, rounded. A stage nobody has written yet is
-// pending — a fresh install starts at 0%.
+// THE PERCENTAGE: over the stages that count (not `n/a`, not OPTIONAL),
+// complete is 1, partial is ½, pending is 0, rounded. A stage nobody has
+// written yet is pending — a fresh install starts at 0%.
+//
+// OPTIONAL STAGES. The Claude Code step is optional: the explorer, previews
+// and local models all work without it, and the step itself says "you can
+// finish this later". So it is a wizard step with a status (its pill still
+// reads it), but it is NOT in the meter — not in the denominator, not where a
+// click on the meter lands — and no Home/Apps card nags about it (the
+// ClaudeHealthStrip is no longer mounted). Otherwise a user who never wants
+// the CLI sits at 80% forever over a step they were told was optional.
 //
 // Why a store and not the boot config: `config` is fetched ONCE (main.tsx),
 // and the sidebar is unmounted while the wizard is up — so the row would come
@@ -66,6 +74,15 @@ export type StageId = (typeof STAGE_IDS)[number];
  *  about/claude/chrome/fda): no git — it clones nothing — no model picks, no
  *  first app. */
 const BOT_OMITS: readonly StageId[] = ["git", "models", "app"];
+
+/** Stages that are wizard steps but NOT setup work (header: OPTIONAL
+ *  STAGES). They keep their status for the wizard's pills, and leave the
+ *  meter and the "first thing still to do" alone. Both flavors. */
+export const OPTIONAL_STAGES: readonly StageId[] = ["claude"];
+
+export function isOptionalStage(id: string): boolean {
+  return (OPTIONAL_STAGES as readonly string[]).includes(id);
+}
 
 /** The stages THIS flavor has (platform/lib/flavor). Fused Bot's server
  *  trims its STEPS (BOT_OMITS), so the meter must not count the ones it will
@@ -116,6 +133,8 @@ function merge(reply: OnboardingState): void {
     completed_at: reply.completed_at ?? cur.completed_at,
     dismissed_at: reply.dismissed_at ?? cur.dismissed_at,
     opened_at: reply.opened_at ?? cur.opened_at,
+    // Like the flags: a subscription only ever gains a value.
+    newsletter: reply.newsletter?.subscribed_at != null ? reply.newsletter : (cur.newsletter ?? reply.newsletter),
     stages,
   });
 }
@@ -222,7 +241,8 @@ export function stageStatus(stages: Stages | undefined, id: string): StageStatus
 
 const WEIGHT: Record<StageStatus, number> = { pending: 0, partial: 0.5, complete: 1, "n/a": 0 };
 
-/** The meter. `counted` is the denominator (stages that are not `n/a`);
+/** The meter. `counted` is the denominator (stages that are not `n/a` and
+ *  not optional);
  *  `percent` is rounded 0..100, and 100 only when every counted stage is
  *  complete. `ids` limits the count to the stages a caller has (the wizard's
  *  visible steps); default is every stage. */
@@ -235,6 +255,7 @@ export function progressPercent(
   let complete = 0;
   let partial = 0;
   for (const id of ids) {
+    if (isOptionalStage(id)) continue;
     const s = stageStatus(stages, id);
     if (s === "n/a") continue;
     counted += 1;
@@ -249,11 +270,12 @@ export function progressPercent(
   return { percent, counted, complete, partial };
 }
 
-/** The first stage that still needs doing (not complete, not `n/a`), in
- *  wizard order — where a click on the meter should land. Null when nothing
- *  is left. */
+/** The first stage that still needs doing (not complete, not `n/a`, not
+ *  optional), in wizard order — where a click on the meter should land. Null
+ *  when nothing is left. */
 export function firstOpenStage(stages: Stages | undefined): StageId | null {
   for (const id of stageIds()) {
+    if (isOptionalStage(id)) continue;
     const s = stageStatus(stages, id);
     if (s !== "complete" && s !== "n/a") return id;
   }

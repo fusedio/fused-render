@@ -52,7 +52,7 @@ def test_the_merged_tick_mirrors_the_load_row_and_clears_on_exit(monkeypatch):
 
     monkeypatch.setattr(
         supervisor, "_start_resident",
-        lambda m, c: ({"jobId": load_job, "model": m, "state": "loading"}, pending),
+        lambda m, c, **kwargs: ({"jobId": load_job, "model": m, "state": "loading"}, pending),
     )
 
     # Not ready for the first two polls, ready on the third — so the merged
@@ -139,7 +139,7 @@ def test_the_merge_is_cleared_even_when_the_wait_fails(monkeypatch):
 
     monkeypatch.setattr(
         supervisor, "_start_resident",
-        lambda m, c: ({"jobId": load_job, "model": m, "state": "error"}, pending),
+        lambda m, c, **kwargs: ({"jobId": load_job, "model": m, "state": "error"}, pending),
     )
     monkeypatch.setattr(supervisor, "ready_worker", lambda cap, mdl=None: None)
 

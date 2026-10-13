@@ -70,6 +70,10 @@ export interface CaptureResult {
   seconds: number;
   bytes?: number;
   mime?: string;
+  /** Present only when the recording is fine but probably empty of system
+   *  audio (a Core Audio tap cannot tell a denied permission from a silent
+   *  Mac). Absent otherwise; never an error. */
+  warning?: string;
   maxSeconds: number;
   jobId: string;
   /** A stop whose file failed to write reports the failure rather than handing
@@ -91,6 +95,13 @@ export interface AudioRecording {
   readonly maxSeconds: number;
   readonly state: string;
   readonly url: string;
+  /** True between `pause()` and `resume()`. A getter, like `state`. */
+  readonly paused: boolean;
+  /** Stop recording until `resume()`; the file stays open and its length is
+   *  only the time spent recording. Native (macOS) recordings only: the
+   *  browser-records platforms reject `.type "unavailable"`. Idempotent. */
+  pause(): Promise<void>;
+  resume(): Promise<void>;
   /** Keeps the file. The ending a caller asks for (CP-4). */
   stop(): Promise<CaptureResult>;
   /** Stops AND DELETES — the same meaning the download manager's ✕ has,
@@ -99,9 +110,13 @@ export interface AudioRecording {
 }
 
 export interface AudioOptions {
-  /** "mic". System audio is a property of a SCREEN recording, and asking for
-   *  it here is refused by the server with the sentence that says where to ask
-   *  instead (R:5404-5411). */
+  /** "mic" (default), "system" or "both". macOS records system audio with a
+   *  Core Audio process tap (14.2+) or ScreenCaptureKit (13.0-14.1); Linux
+   *  records it natively over PipeWire/pulse when that session is reachable,
+   *  and refuses it with a sentence saying so when it is not. Windows has
+   *  neither and refuses it here with the sentence that says to record the
+   *  screen with `audio: "system"` instead. `stop()` may carry a `warning`
+   *  when nothing was heard on the system side (R:5404-5411). */
   source?: string;
   /** Forwarded, not dropped, so the refusal is the SERVER's one good sentence
    *  rather than two (R:5408-5411). */
@@ -229,6 +244,8 @@ interface StartedRecord {
   jobId: string;
   transport?: string;
   streamToken?: string;
+  /** Present on a native reply; absent on the streamed one. */
+  paused?: boolean;
 }
 
 export interface CaptureDeps {
@@ -469,6 +486,24 @@ function makeHandle(
   let state = "recording";
   let result: CaptureResult | null = null;
   let ending: Promise<CaptureResult> | null = null;
+  let paused = !!started.paused;
+
+  // The server's reply carries the new `paused`; a streamed recording has no
+  // way to hold the browser's encoder from here, so it refuses in one sentence.
+  async function toggle(action: "pause" | "resume"): Promise<void> {
+    if (streamer) {
+      throw captureError(
+        "pausing is not available when this browser does the recording",
+        "unavailable",
+      );
+    }
+    if (ending) return;
+    const reply = await captureFetch<{ paused?: boolean }>(
+      deps,
+      "/api/capture/" + encodeURIComponent(started.id) + "/" + action,
+    );
+    paused = reply && typeof reply.paused === "boolean" ? reply.paused : action === "pause";
+  }
 
   function end(action: "stop" | "cancel"): Promise<CaptureResult> {
     if (ending) return ending;
@@ -516,6 +551,11 @@ function makeHandle(
     get url() {
       return result && result.url ? result.url : rawUrl(started.path);
     },
+    get paused() {
+      return paused;
+    },
+    pause: () => toggle("pause"),
+    resume: () => toggle("resume"),
     stop: () => end("stop"),
     cancel: () => end("cancel"),
   };
@@ -583,7 +623,9 @@ function bodyOf(opts: AudioOptions): Record<string, unknown> {
  *
  * WHERE THE TWO PATHS FORK, and the only place they do (R:5378-5382):
  * `sources.client` — the server's own answer, never a user-agent sniff — says
- * the recording is the browser's to make on this platform.
+ * recording is the browser's to make on THIS PLATFORM; `sources.audioNative`
+ * narrows that to THIS MODE on Linux, where audio records natively over
+ * PipeWire/pulse even though the screen still goes through the browser.
  *
  * Rejects `.type "unavailable"` with the MACHINE'S OWN SENTENCE where nothing
  * can record, rather than opening a picker that cannot lead anywhere
@@ -593,14 +635,11 @@ export async function captureAudio(
   opts: AudioOptions = {},
   deps: CaptureDeps = {},
 ): Promise<AudioRecording> {
-  const data = await captureFetch<{ sources?: CaptureSources & { client?: boolean } }>(
-    deps,
-    "/api/capture",
-    undefined,
-    "GET",
-  );
+  const data = await captureFetch<
+    { sources?: CaptureSources & { client?: boolean; audioNative?: boolean } }
+  >(deps, "/api/capture", undefined, "GET");
   const sources = data.sources || {};
-  if (!sources.client) {
+  if (!sources.client || sources.audioNative) {
     const started = await captureFetch<StartedRecord>(
       deps,
       "/api/capture/start",
@@ -626,25 +665,32 @@ export async function captureAudio(
  * browser is asking — and `client` is deleted on the way out (R:5449-5461).
  */
 export async function captureSources(deps: CaptureDeps = {}): Promise<CaptureSources> {
-  const data = await captureFetch<{ sources?: CaptureSources & { client?: boolean } }>(
-    deps,
-    "/api/capture",
-    undefined,
-    "GET",
-  );
+  const data = await captureFetch<
+    { sources?: CaptureSources & { client?: boolean; audioNative?: boolean } }
+  >(deps, "/api/capture", undefined, "GET");
   return mergeSources(data.sources, deps.host);
 }
 
 /** R:5455. Exported for the test, which is the only caller that has a fake
- *  window to merge against. */
+ *  window to merge against.
+ *
+ *  `audioNative` true leaves `audio`/`systemAudio` and `microphones` exactly
+ *  as the server answered them — Linux's own truth about whether
+ *  PipeWire/pulse is reachable and about the (empty) device list a native
+ *  recording can choose from, which this window's own MediaRecorder support
+ *  has nothing to say about. Deleted before this returns, same as `client`: a
+ *  caller reads `{available, reason}` and has nothing transport-shaped to
+ *  branch on (CP-8). */
 export async function mergeSources(
-  sources: (CaptureSources & { client?: boolean }) | undefined,
+  sources: (CaptureSources & { client?: boolean; audioNative?: boolean }) | undefined,
   hostArg?: CaptureHost,
 ): Promise<CaptureSources> {
   if (!sources) return {};
   if (!sources.client) return sources;
-  const merged: CaptureSources & { client?: boolean } = { ...sources };
+  const merged: CaptureSources & { client?: boolean; audioNative?: boolean } = { ...sources };
   delete merged.client;
+  const audioNative = merged.audioNative;
+  delete merged.audioNative;
   const host = captureHost(hostArg);
   const type = audioType(host);
   const ok = mediaOk(host) && !!type;
@@ -652,8 +698,25 @@ export async function mergeSources(
     ? null
     : "this browser cannot record — it has no MediaRecorder with a container " +
       "this app can store. Chrome, Edge or a recent Firefox can";
-  merged.audio = { available: ok, granted: ok, reason: why };
-  if (ok) {
+  if (!audioNative) {
+    merged.audio = { available: ok, granted: ok, reason: why };
+    // `systemAudio` is only ever NARROWED by this browser, never widened:
+    // Windows answers `true` unconditionally server-side (the screen share's
+    // "share audio" checkbox works there whenever the browser can record at
+    // all) and this is the only place that can catch a browser with no usable
+    // MediaRecorder. Linux's own `false` — no PipeWire/pulse session reachable,
+    // with no browser equivalent to fall back to — must survive untouched;
+    // this window's unrelated screen-recording capability has no business
+    // overriding that honest unavailability with a `true`.
+    if (merged.systemAudio && merged.systemAudio.available) {
+      merged.systemAudio = { available: ok, reason: why };
+    }
+  }
+  if (ok && !audioNative) {
+    // A native Linux recording has no microphone to choose — `device` is
+    // refused server-side — so this window's own device list would just be
+    // names nothing here can act on. Left exactly as the server answered it
+    // (empty) when `audioNative` is true.
     try {
       const devices = host.navigator.mediaDevices as MediaDevices;
       // `label` is EMPTY until the microphone permission has been granted once

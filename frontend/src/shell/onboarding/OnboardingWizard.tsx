@@ -9,7 +9,8 @@
 //   4 Chrome       — a Google Chrome for bots to drive, found or a download link
 //   5 Disk Access  — macOS Full Disk Access, why, and the one button there is
 //   6 Models       — local models that fit this machine, downloaded in the background
-//   7 First app    — the Home composer, or a showcase local-AI app
+//   7 Updates      — optional newsletter email; not a stage, never in the meter
+//   8 First app    — the Home composer, or a showcase local-AI app
 //
 // Steps 1–5 write nothing but their own STAGE STATUS for the progress meter
 // (progress.ts — the sidebar's "Setup N%" row and the pills in the bar above;
@@ -55,9 +56,13 @@ import { FdaStep } from "./FdaStep";
 import { FirstAppStep } from "./FirstAppStep";
 import { GitStep } from "./GitStep";
 import { forgetModelsStep, ModelsStep, useModelPicks } from "./ModelsStep";
+import { NewsletterStep } from "./NewsletterStep";
 
-type StepId = "about" | "claude" | "git" | "chrome" | "fda" | "models" | "app";
+type StepId = "about" | "claude" | "git" | "chrome" | "fda" | "models" | "newsletter" | "app";
 
+// `newsletter` (Updates) is the one step that is NOT a stage: optional, never
+// in the meter (progress.ts STAGE_IDS leaves it out), in both flavors. Before
+// First app because that step leaves the wizard; last under Fused Bot.
 const STEPS: { id: StepId; label: string }[] = [
   { id: "about", label: "About" },
   { id: "claude", label: "Claude Code" },
@@ -65,6 +70,7 @@ const STEPS: { id: StepId; label: string }[] = [
   { id: "chrome", label: "Chrome" },
   { id: "fda", label: "Disk Access" },
   { id: "models", label: "Models" },
+  { id: "newsletter", label: "Updates" },
   { id: "app", label: "First app" },
 ];
 
@@ -365,7 +371,13 @@ export function OnboardingWizard({ config }: { config: Config }) {
               green check = complete, half-filled amber = partial, the number
               = pending. Walking past a step earns it nothing. */}
           {steps.map((s, i) => {
-            const status = stageStatus(stages, s.id);
+            // Updates has no stage: its tick is "subscribed", from its own record.
+            const status =
+              s.id === "newsletter"
+                ? progress?.newsletter?.subscribed_at != null
+                  ? "complete"
+                  : "pending"
+                : stageStatus(stages, s.id);
             const done = status === "complete";
             const partial = status === "partial";
             const current = i === index;
@@ -429,6 +441,7 @@ export function OnboardingWizard({ config }: { config: Config }) {
           {step.id === "chrome" && <ChromeStep stages={stages} eyebrow={eyebrow} onWork={onWork} />}
           {step.id === "fda" && <FdaStep config={config} eyebrow={eyebrow} onWork={onWork} />}
           {step.id === "models" && <ModelsStep picks={picks} eyebrow={eyebrow} onWork={onWork} />}
+          {step.id === "newsletter" && <NewsletterStep eyebrow={eyebrow} onWork={onWork} />}
           {step.id === "app" && (
             <FirstAppStep
               health={health}

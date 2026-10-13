@@ -227,18 +227,18 @@ def _run_serve(args: argparse.Namespace) -> None:
     from fused_render.shell import onboarding as shell_onboarding
 
     shell_onboarding.seed_for_existing_users(fused_ws)
-    # One-time migration: stamp `<meta name="fused-app">` into pre-existing
-    # workspace apps (meta_migration's docstring carries the rules). Against
-    # the Fused dir, not --start-dir, for the same reason as onboarding.
-    from fused_render import meta_migration
+    # One-time migrations over the workspace's app folders, one entry point:
+    # the apps under <workspace>/local move to <workspace>/app (owner,
+    # 2026-10-12; apps_root_migration docstring carries the rules) — the
+    # renames run HERE, before serving, so the listing never sees a folder
+    # mid-move — then, on one thread, the settle + git trail, the `fused-app`
+    # meta stamp (meta_migration) and the local monorepo fold (D626,
+    # local_monorepo). Chained, not parallel: the older two walk the very
+    # folders being renamed. Against the Fused dir, not --start-dir, for the
+    # same reason as onboarding.
+    from fused_render import apps_root_migration
 
-    meta_migration.run_once_in_background(fused_ws)
-    # One-time migration: fold the per-app repos under <workspace>/local into
-    # the single shared repo at the tag root (D626; local_monorepo docstring
-    # carries the rules).
-    from fused_render import local_monorepo
-
-    local_monorepo.run_once_in_background(fused_ws)
+    apps_root_migration.run_once(fused_ws)
     # Showcase apps: clone/sync the community repo into <workspace>/showcase in
     # the background — the apps grid lists it as an ordinary tag dir once done.
     from fused_render import community

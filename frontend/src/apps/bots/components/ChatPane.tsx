@@ -5,9 +5,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { statusLabel } from "../lib/derive";
 import { toggleRight } from "../lib/layout";
-import { isNoise, searchQuery } from "../lib/thread";
+import { canClear } from "../lib/commands";
+import { searchQuery } from "../lib/thread";
 import { api } from "../lib/api";
-import { act, cur, eventsOf, onSelectChange, openDialog, useBots } from "../state/store";
+import { act, clearContextOn, cur, eventsOf, onSelectChange, openDialog, useBots } from "../state/store";
 import { Composer, type ReplyTo } from "./Composer";
 import { Face } from "./Face";
 import { ReactionPicker, type ReactionReq } from "./ReactionPicker";
@@ -30,10 +31,9 @@ export function ChatPane() {
 
   // Subtitle only while something is happening; an idle bot is just its name.
   const sub = !b || b.status === "idle" ? "" : (b.status === "running" && b.note ? b.note : statusLabel(b)) + (b.title ? " · " + b.title : "");
-  // Something to clear: an idle bot whose newest shown message is not already a Clear context marker (system and
-  // delivery rows after it, an idle-sleep toast say, render nothing and do not count).
-  const shown = b ? eventsOf(b.id).filter((e) => !isNoise(e)) : [], last = shown[shown.length - 1];
-  const clearable = !!b && !!last && (b.status === "idle" || b.status === "error") && !b.control && last.source !== "clear";
+  // Something to clear (lib/commands canClear, shared with the composer's /clear): an idle bot whose newest shown
+  // message is not already a Clear context marker.
+  const clear = canClear(b, b ? eventsOf(b.id) : []), clearable = clear.ok;
   return (
     <section className="chat">
       <header>
@@ -51,12 +51,15 @@ export function ChatPane() {
           </button>
         ) : null}
         {/* Clear context (Bot.clear_context): the bot starts over; the thread folds what came before under the marker.
-            Only between tasks and with the browser handed back (the backend refuses otherwise); a no-op right after a clear. */}
-        <button id="cclear" className="ptog" disabled={!clearable} onClick={() => { if (b) void act(() => api.clearContext(b.id)); }}
-          title={!b ? "Clear context" : clearable ? "Clear context: the bot starts fresh; this chat keeps the earlier messages, folded"
-            : b.control ? "Hand the browser back first, then clear the context" : b.status !== "idle" && b.status !== "error" ? "Stop the task first, then clear the context" : "Context is already clear"}>
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m7 21-4.3-4.3a2.4 2.4 0 0 1 0-3.4l9.6-9.6a2.4 2.4 0 0 1 3.4 0l5.6 5.6a2.4 2.4 0 0 1 0 3.4L13 21" /><path d="M22 21H7" /><path d="m5 11 9 9" /></svg>
-        </button>
+            Only between tasks and with the browser handed back (the backend refuses otherwise); a no-op right after a clear.
+            Behind the page-wide "Clear context button" switch (Settings, store clearContextOn; off by default): off, no button;
+            the composer's /clear command (lib/commands) stays. */}
+        {clearContextOn() ? (
+          <button id="cclear" className="ptog" disabled={!clearable} onClick={() => { if (b) void act(() => api.clearContext(b.id)); }}
+            title={clearable ? "Clear context: the bot starts fresh; this chat keeps the earlier messages, folded" : clear.why}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m7 21-4.3-4.3a2.4 2.4 0 0 1 0-3.4l9.6-9.6a2.4 2.4 0 0 1 3.4 0l5.6 5.6a2.4 2.4 0 0 1 0 3.4L13 21" /><path d="M22 21H7" /><path d="m5 11 9 9" /></svg>
+          </button>
+        ) : null}
         <ThreadSearch open={search.open} q={search.q} count={searchN} disabled={!b}
           onOpen={() => setSearch((s) => ({ ...s, open: true }))}
           onClose={() => setSearch({ open: false, q: "" })}

@@ -1083,8 +1083,16 @@ def _load_to_ready(model: str, capability: str) -> float | None:
     """
     if supervisor.ready_worker(capability, model) is not None:
         return None
+    # `_start_resident(respect_holds=True)` is a benchmark's own entry: it
+    # refuses a HELD conflict for a DIFFERENT model under `_lock`, the one
+    # place that check lives (SPEC-model-slot-conflict.md §1), the same as
+    # every other non-user caller — this run is neither a contender in a
+    # standoff nor the user settling one, so it must not clear a hold either.
+    # A held conflict raises `ModelSlotConflict`, which this module's `run`
+    # already records as `ok: false` with the raised message, the same as
+    # every other way a cold load already fails.
     start = _now()
-    _started, pending = supervisor._start_resident(model, capability)
+    _started, pending = supervisor._start_resident(model, capability, respect_holds=True)
     deadline = start + _LOAD_TIMEOUT_S
     error_since: float | None = None
     while True:

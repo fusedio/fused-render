@@ -156,7 +156,7 @@ def test_a_cold_model_answers_model_loading_with_a_job_id(client, monkeypatch):
 def test_a_resident_model_answers_with_vectors(client, monkeypatch):
     calls = []
 
-    def fake_generate_embed(model, body):
+    def fake_generate_embed(model, body, **_kw):
         calls.append((model, body))
         return {"vectors": [[0.6, 0.8]], "dim": 2}
 
@@ -181,7 +181,7 @@ def test_paths_are_forwarded_by_kind_not_texts(client, monkeypatch):
     calls = []
     monkeypatch.setattr(
         supervisor, "generate_embed",
-        lambda model, body: (calls.append((model, body)),
+        lambda model, body, **_kw: (calls.append((model, body)),
                              {"vectors": [[1.0]], "dim": 1})[1])
     response = _post(client, {"paths": ["/tmp/pic.png"], "model": "org/embed-x"})
     assert response.status_code == 200
@@ -192,7 +192,7 @@ def test_an_absolute_path_is_forwarded_untouched(client, monkeypatch):
     calls = []
     monkeypatch.setattr(
         supervisor, "generate_embed",
-        lambda model, body: (calls.append(body),
+        lambda model, body, **_kw: (calls.append(body),
                              {"vectors": [[1.0]], "dim": 1})[1])
     _post(client, {"paths": ["/abs/pic.png"], "model": "org/embed-x"})
     # Through `os.path.abspath`, so the one honest expectation is the OS's own
@@ -210,7 +210,7 @@ def test_a_relative_path_resolves_beside_base(client, monkeypatch):
     calls = []
     monkeypatch.setattr(
         supervisor, "generate_embed",
-        lambda model, body: (calls.append(body),
+        lambda model, body, **_kw: (calls.append(body),
                              {"vectors": [[1.0]], "dim": 1})[1])
     _post(client, {"paths": ["pic.png"], "model": "org/embed-x",
                    "base": "/pages/view.html"})
@@ -218,7 +218,7 @@ def test_a_relative_path_resolves_beside_base(client, monkeypatch):
 
 
 def test_a_runtime_failure_is_ai_error(client, monkeypatch):
-    def boom(model, body):
+    def boom(model, body, **_kw):
         raise supervisor.SupervisorError("the model process did not answer")
 
     monkeypatch.setattr(supervisor, "generate_embed", boom)
@@ -248,7 +248,7 @@ def served(monkeypatch):
     calls = []
     monkeypatch.setattr(
         supervisor, "generate_embed",
-        lambda model, body: (calls.append((model, body)),
+        lambda model, body, **_kw: (calls.append((model, body)),
                              {"vectors": [[0.6, 0.8]], "dim": 2})[1])
     return calls
 
@@ -298,7 +298,7 @@ def test_paths_on_a_COLD_model_still_answers_model_loading(client, monkeypatch):
     """
     _families(monkeypatch, {})
 
-    def not_ready(model, body):
+    def not_ready(model, body, **_kw):
         raise supervisor.ModelNotReady("loading", job_id="sys:ai-load:x")
 
     monkeypatch.setattr(supervisor, "generate_embed", not_ready)

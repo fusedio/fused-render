@@ -31,6 +31,7 @@ class FakeHandle:
         self.path = path
         self.stopped = False
         self.error = None
+        self.paused = False
 
 
 class FakeBackend:
@@ -38,6 +39,9 @@ class FakeBackend:
 
     def __init__(self):
         self.handles = []
+        self.paused = []
+        self.pausable = True
+        self.lvl = 0.0
 
     def probe(self):
         return {"video": {"available": True, "granted": True, "reason": None},
@@ -73,6 +77,28 @@ class FakeBackend:
 
     def stop(self, handle):
         handle.stopped = True
+
+    def can_pause(self, handle):
+        return self.pausable
+
+    def pause(self, handle):
+        handle.paused = True
+        self.paused.append(("pause", handle))
+
+    def resume(self, handle):
+        handle.paused = False
+        self.paused.append(("resume", handle))
+
+    def level(self, handle):
+        if isinstance(self.lvl, Exception):
+            raise self.lvl
+        return self.lvl
+
+    #: What `warning(handle)` answers; the real hook is the macOS tap's.
+    warn = None
+
+    def warning(self, handle):
+        return self.warn
 
     def failure(self, handle):
         return handle.error
@@ -194,8 +220,8 @@ def test_a_probe_that_raises_is_still_an_answer(monkeypatch, client):
     ({"mode": "screen", "rect": [0, 0, 10]}, "'rect' must be"),
     ({"mode": "screen", "maxSeconds": 0}, "must be between"),
     ({"mode": "screen", "maxSeconds": "soon"}, "whole number"),
-    ({"mode": "audio", "source": "loud"}, "can only be 'mic'"),
-    ({"mode": "audio", "source": "system"}, "record the screen"),
+    ({"mode": "audio", "source": "loud"},
+     "'source' must be 'mic', 'system' or 'both', not 'loud'"),
     ({"mode": "audio", "device": "mic0"}, "cannot be chosen here"),
     ({"mode": "screen", "path": "clip.mov"}, "must be absolute"),
 ])
@@ -211,10 +237,53 @@ def test_a_request_a_typo_deserves_an_answer_about_is_refused_before_recording(
 
 def test_the_mutating_routes_carry_the_x_fused_guard(client):
     for path in ("/api/capture/start", "/api/capture/screenshot",
-                 "/api/capture/abc/stop", "/api/capture/abc/cancel"):
+                 "/api/capture/abc/stop", "/api/capture/abc/cancel",
+                 "/api/capture/abc/pause", "/api/capture/abc/resume"):
         assert client.post(path, json={}).status_code == 403, path
     # …and the read is open, like the other read-only routes.
     assert client.get("/api/capture").status_code == 200
+
+
+@pytest.mark.parametrize("body,want", [
+    ({"mode": "audio"}, "mic"),
+    ({"mode": "audio", "source": None}, "mic"),
+    ({"mode": "audio", "source": ""}, "mic"),
+    ({"mode": "audio", "source": True}, "mic"),
+    ({"mode": "audio", "source": "mic"}, "mic"),
+    ({"mode": "audio", "source": "system"}, "system"),
+    ({"mode": "audio", "source": "both"}, "both"),
+])
+def test_audio_only_source_reaches_the_backend(backend, client, home, body, want):
+    seen = []
+    real = backend.start_audio
+
+    def spy(out, spec):
+        seen.append(dict(spec))
+        return real(out, spec)
+
+    backend.start_audio = spy
+    res = client.post("/api/capture/start", json=body, headers=H)
+    assert res.status_code == 200, res.json()
+    assert seen[0]["audio"] == want
+    assert res.json()["path"].endswith(".m4a")
+
+
+def test_a_backend_warning_rides_the_stop_result_and_the_job_row(backend, client, home):
+    backend.warn = "no system audio was captured"
+    cid = client.post("/api/capture/start",
+                      json={"mode": "audio", "source": "system"},
+                      headers=H).json()["id"]
+    done = client.post(f"/api/capture/{cid}/stop", json={}, headers=H).json()
+    assert done["state"] == "stopped"
+    assert done["warning"] == "no system audio was captured"
+    assert "no system audio" in jobs.list_jobs()[0]["detail"]
+
+
+def test_no_warning_key_when_the_backend_has_nothing_to_say(backend, client, home):
+    cid = client.post("/api/capture/start", json={"mode": "audio"},
+                      headers=H).json()["id"]
+    done = client.post(f"/api/capture/{cid}/stop", json={}, headers=H).json()
+    assert "warning" not in done
 
 
 def test_audio_only_refuses_a_device_naming_where_it_does_work(backend, client):
@@ -911,3 +980,707 @@ def test_an_ending_does_not_wait_forever_behind_a_prompting_start(
     # The lock was never released by the loser: it is back to free now.
     assert capture._native_lock.acquire(timeout=1)
     capture._native_lock.release()
+
+
+# ------------------------------------------- macOS audio-only system audio
+
+
+_darwin_only = pytest.mark.skipif(sys.platform != "darwin",
+                                  reason="the macOS backend")
+
+
+@_darwin_only
+def test_darwin_refuse_device_follows_the_source():
+    from fused_render.capture import _darwin
+
+    mic = _darwin.refuse("audio", {"audio": "mic", "device": "x"})
+    assert mic and "audio: 'mic'" in mic            # the unchanged sentence
+    system = _darwin.refuse("audio", {"audio": "system", "device": "x"})
+    assert system and "source: 'both'" in system and "no microphone" in system
+    assert _darwin.refuse("audio", {"audio": "both", "device": "x"}) is None
+    assert _darwin.refuse("audio", {"audio": "system"}) is None
+
+
+@_darwin_only
+@pytest.mark.parametrize("version,forced,source,want", [
+    ((14, 2), False, "system", "tap"),
+    ((15, 0), False, "both", "tap"),
+    ((26, 6), True, "system", "sck"),
+    ((14, 1), False, "both", "sck"),
+    ((13, 0), False, "system", "sck"),
+    ((26, 6), True, "mic", "mic"),
+    ((13, 0), False, "mic", "mic"),
+])
+def test_darwin_audio_only_routes_by_os_version(monkeypatch, version, forced,
+                                                source, want):
+    from fused_render.capture import _darwin, _darwin_mux, _darwin_tap
+
+    calls = []
+    monkeypatch.setattr(_darwin, "_os_version", lambda: version)
+    monkeypatch.setattr(_darwin.platform, "mac_ver",
+                        lambda: (".".join(map(str, version)), "", ""))
+    if forced:
+        monkeypatch.setenv(_darwin.FORCE_SCK_AUDIO, "1")
+    else:
+        monkeypatch.delenv(_darwin.FORCE_SCK_AUDIO, raising=False)
+    monkeypatch.setattr(_darwin_tap, "start",
+                        lambda out, spec: calls.append("tap") or "h")
+    monkeypatch.setattr(_darwin, "_display", lambda d: "display")
+    monkeypatch.setattr(_darwin, "_configure", lambda *a, **k: "config")
+    monkeypatch.setattr(_darwin_mux, "start_audio",
+                        lambda out, display, config, spec:
+                        calls.append("sck") or "h")
+
+    class Recorder:
+        @staticmethod
+        def alloc():
+            calls.append("mic")
+            raise RuntimeError("stop here")
+
+    monkeypatch.setattr(_darwin.AVF, "AVAudioRecorder", Recorder)
+    try:
+        _darwin.start_audio("/tmp/x.m4a", {"audio": source})
+    except RuntimeError:
+        assert want == "mic"
+    assert calls == [want]
+
+
+@_darwin_only
+def test_darwin_probe_system_audio_grant_shape(monkeypatch):
+    from fused_render.capture import _darwin
+
+    monkeypatch.setattr(_darwin, "_os_version", lambda: (15, 1))
+    monkeypatch.setattr(_darwin.platform, "mac_ver", lambda: ("15.1", "", ""))
+    sa = _darwin.probe()["systemAudio"]
+    assert sa == {"available": True, "granted": None, "reason": None}
+
+    monkeypatch.setattr(_darwin, "_os_version", lambda: (14, 1))
+    monkeypatch.setattr(_darwin.platform, "mac_ver", lambda: ("14.1", "", ""))
+    monkeypatch.setattr(_darwin, "_screen_granted", lambda: False)
+    sa = _darwin.probe()["systemAudio"]
+    assert sa["available"] is True and sa["granted"] is False
+    assert "Screen Recording" in sa["reason"]
+    monkeypatch.setattr(_darwin, "_screen_granted", lambda: True)
+    assert _darwin.probe()["systemAudio"]["reason"] is None
+
+    monkeypatch.setattr(_darwin, "_os_version", lambda: (12, 4))
+    monkeypatch.setattr(_darwin.platform, "mac_ver", lambda: ("12.4", "", ""))
+    sa = _darwin.probe()["systemAudio"]
+    assert sa["available"] is False and "macOS 13" in sa["reason"]
+
+
+@_darwin_only
+def test_darwin_probe_forced_sck_on_14_2_reports_screen_grant(monkeypatch):
+    from fused_render.capture import _darwin
+
+    monkeypatch.setenv(_darwin.FORCE_SCK_AUDIO, "1")
+    monkeypatch.setattr(_darwin, "_os_version", lambda: (14, 5))
+    monkeypatch.setattr(_darwin.platform, "mac_ver", lambda: ("14.5", "", ""))
+    monkeypatch.setattr(_darwin, "_screen_granted", lambda: False)
+    sa = _darwin.probe()["systemAudio"]
+    assert sa["granted"] is False and "Screen Recording" in sa["reason"]
+    monkeypatch.setattr(_darwin, "_screen_granted", lambda: True)
+    assert _darwin.probe()["systemAudio"]["granted"] is True
+
+
+@_darwin_only
+def test_darwin_tap_handle_dispatch_and_warning(monkeypatch):
+    from fused_render.capture import _darwin, _darwin_tap
+
+    handle = _darwin_tap.TapHandle("/tmp/x.m4a", False)
+    seen = []
+    monkeypatch.setattr(_darwin_tap, "stop", lambda h: seen.append(("stop", h)))
+    _darwin.stop(handle)
+    assert seen == [("stop", handle)]
+    handle.error = "boom"
+    assert _darwin.failure(handle) == "boom"
+
+    # warning: silent only after >= 1 s, and never once anything was heard.
+    handle = _darwin_tap.TapHandle("/tmp/x.m4a", False)
+    assert _darwin.warning(handle) is None                  # never started
+    handle.started_at = _darwin_tap.time.monotonic() - 0.2
+    assert _darwin.warning(handle) is None                  # too short
+    handle.started_at = _darwin_tap.time.monotonic() - 2
+    assert "no system audio was captured" in _darwin.warning(handle)
+    handle.heard_system = True
+    assert _darwin.warning(handle) is None
+
+
+@_darwin_only
+def test_darwin_mux_audio_only_session_starts_on_audio_not_video(monkeypatch):
+    from fused_render.capture import _darwin_mux
+
+    monkeypatch.setattr(_darwin_mux.CM, "CMSampleBufferGetPresentationTimeStamp",
+                        lambda sbuf: "pts")
+
+    class Writer:
+        started = []
+
+        def startSessionAtSourceTime_(self, t):
+            self.started.append(t)
+
+    class Input:
+        taken = 0
+
+        def isReadyForMoreMediaData(self):
+            return True
+
+        def appendSampleBuffer_(self, sbuf):
+            self.taken += 1
+            return True
+
+    handle = _darwin_mux.MuxHandle("/tmp/x.m4a", "system", audio_only=True)
+    handle.writer, handle.audio_input = Writer(), Input()
+    # The fake buffer has no CoreMedia timing; pause retiming has its own test.
+    monkeypatch.setattr(handle, "_shifted", lambda sbuf: sbuf)
+    handle.on_video("frame")                      # ignored: there is no video track
+    assert handle.writer.started == [] and handle.audio_input.taken == 0
+    handle._append(handle.audio_input, "a", video=False)
+    assert handle.writer.started == ["pts"] and handle.audio_input.taken == 1
+
+
+@_darwin_only
+def test_darwin_mux_peak_and_system_audio_warning(monkeypatch):
+    import array
+
+    from fused_render.capture import _darwin, _darwin_mux
+
+    quiet = array.array("f", [0.0, 0.00001, -0.00002]).tobytes()
+    loud = array.array("f", [0.0, -0.5]).tobytes()
+    assert _darwin_mux._peak_f32(b"") == 0.0
+    assert _darwin_mux._peak_f32(quiet) < 1e-4
+    assert _darwin_mux._peak_f32(loud + b"\x01") == 0.5       # ragged tail ignored
+
+    now = _darwin_mux.time.monotonic()
+    handle = _darwin_mux.MuxHandle("/tmp/x.m4a", "system", audio_only=True)
+    assert _darwin.warning(handle) is None                    # never started
+    handle.started_at = now - 0.2
+    assert _darwin.warning(handle) is None                    # too short
+    handle.started_at = now - 5
+    assert "reached the recording" in _darwin.warning(handle)  # zero buffers
+    handle.system_buffers = 3
+    assert "no system audio was captured" in _darwin.warning(handle)
+    handle.system_heard = True
+    assert _darwin.warning(handle) is None
+
+    both = _darwin_mux.MuxHandle("/tmp/x.m4a", "both", audio_only=True)
+    both.started_at = now - 5
+    assert _darwin.warning(both) is not None
+    for h in (_darwin_mux.MuxHandle("/tmp/x.m4a", "mic", audio_only=True),
+              _darwin_mux.MuxHandle("/tmp/x.mp4", "system", audio_only=False)):
+        h.started_at = now - 5
+        assert _darwin.warning(h) is None
+
+    # _note_system: silence is counted, sound flips the flag, a parse failure
+    # is "unknown" (heard) and never raises.
+    h = _darwin_mux.MuxHandle("/tmp/x.m4a", "system", audio_only=True)
+    h._note_system("sbuf", bytearray(quiet))
+    assert (h.system_buffers, h.system_heard) == (1, False)
+    h._note_system("sbuf", bytearray(loud))
+    assert (h.system_buffers, h.system_heard) == (2, True)
+    h = _darwin_mux.MuxHandle("/tmp/x.m4a", "system", audio_only=True)
+    monkeypatch.setattr(_darwin_mux, "_pcm",
+                        lambda sbuf: (_ for _ in ()).throw(ValueError("bad")))
+    h._note_system("sbuf")
+    assert h.system_heard is True
+
+
+@_darwin_only
+@pytest.mark.parametrize("ver,narrower", [((13, 6), False), ((14, 1), True)])
+def test_darwin_audio_permission_message(monkeypatch, ver, narrower):
+    from fused_render.capture import _darwin
+
+    text = f"{ver[0]}.{ver[1]}"
+    monkeypatch.setattr(_darwin, "_os_version", lambda: ver)
+    monkeypatch.setattr(_darwin.platform, "mac_ver", lambda: (text, "", ""))
+    monkeypatch.setattr(_darwin, "_screen_granted", lambda: False)
+    monkeypatch.setattr(_darwin, "_use_tap", lambda: False)
+
+    def no_display(display_id):
+        raise RuntimeError("no capturable display")
+
+    monkeypatch.setattr(_darwin, "_display", no_display)
+    with pytest.raises(RuntimeError) as err:
+        _darwin.start_audio("/tmp/x.m4a", {"audio": "system"})
+    msg = str(err.value)
+    assert f"on macOS {text} needs the Screen Recording permission" in msg
+    assert "only sound is recorded, no picture" in msg
+    assert msg.endswith("then quit and reopen the app." + (
+        " Updating to macOS 14.2 or later uses the narrower System Audio "
+        "Recording permission instead." if narrower else ""))
+
+    # Granted: the original error is not rewritten.
+    monkeypatch.setattr(_darwin, "_screen_granted", lambda: True)
+    with pytest.raises(RuntimeError, match="no capturable display"):
+        _darwin.start_audio("/tmp/x.m4a", {"audio": "system"})
+
+
+@_darwin_only
+def test_darwin_tap_start_failure_is_not_masked_by_teardown_error(monkeypatch):
+    from fused_render.capture import CaptureError, _darwin_tap
+
+    def bad_start(handle, out, spec):
+        handle.tap = 7
+        raise CaptureError("no such microphone: 'x'")
+
+    def bad_destroy(tap):
+        raise RuntimeError("destroy failed")
+
+    monkeypatch.setattr(_darwin_tap, "_start", bad_start)
+    monkeypatch.setattr(_darwin_tap.CA, "AudioHardwareDestroyProcessTap", bad_destroy)
+    with pytest.raises(CaptureError, match="no such microphone"):
+        _darwin_tap.start("/tmp/x.m4a", {"audio": "both"})
+
+
+# ---------------------------------------------------------- pause and resume
+
+
+class Clock:
+    """One fake wall clock for a session's start time AND its pause clock."""
+
+    def __init__(self, session):
+        self.t = 5000.0
+        session.started_at = self.t
+        session.pauses._clock = self
+
+    def __call__(self):
+        return self.t
+
+
+def _audio(client):
+    return client.post("/api/capture/start", json={"mode": "audio"},
+                       headers=H).json()
+
+
+def _row(client, started):
+    return next(j for j in client.get("/api/jobs").json()["jobs"]
+                if j["id"] == started["jobId"])
+
+
+def test_pause_and_resume_round_trip(backend, client, home):
+    started = _audio(client)
+    assert started["paused"] is False and started["canPause"] is True
+    cid = started["id"]
+    res = client.post(f"/api/capture/{cid}/pause", headers=H)
+    assert res.status_code == 200, res.json()
+    body = res.json()
+    assert body["paused"] is True and body["canPause"] is True
+    assert body["state"] == "recording"
+    assert [kind for kind, _ in backend.paused] == ["pause"]
+    assert "Paused" in _row(client, started)["detail"]
+    assert capture.active()[0]["paused"] is True
+    body = client.post(f"/api/capture/{cid}/resume", headers=H).json()
+    assert body["paused"] is False
+    assert [kind for kind, _ in backend.paused] == ["pause", "resume"]
+    assert _row(client, started)["detail"].startswith("Recording")
+
+
+def test_a_concurrent_resume_waits_for_the_pause_to_finish(backend, client,
+                                                          home):
+    import threading
+
+    gate, entered = threading.Event(), threading.Event()
+    real_pause = backend.pause
+
+    def slow_pause(handle):
+        entered.set()
+        assert gate.wait(5)
+        real_pause(handle)
+
+    backend.pause = slow_pause
+    cid = _audio(client)["id"]
+    session = capture._live(cid)
+    t1 = threading.Thread(target=capture.pause, args=(cid,))
+    t1.start()
+    assert entered.wait(5)
+    t2 = threading.Thread(target=capture.resume, args=(cid,))
+    t2.start()
+    t2.join(0.3)
+    assert t2.is_alive()                 # resume is queued behind the pause
+    assert backend.paused == []
+    gate.set()
+    t1.join(5)
+    t2.join(5)
+    assert [k for k, _ in backend.paused] == ["pause", "resume"]
+    assert session.pauses.paused is False
+
+
+def test_pausing_an_unknown_recording_is_a_404(backend, client, home):
+    for action in ("pause", "resume"):
+        assert client.post(f"/api/capture/nope/{action}",
+                           headers=H).status_code == 404
+    assert client.get("/api/capture/nope/state").status_code == 404
+
+
+def test_pausing_a_recording_the_backend_cannot_pause_is_a_409(backend, client,
+                                                               home):
+    backend.pausable = False
+    started = client.post("/api/capture/start", json={"mode": "screen"},
+                          headers=H).json()
+    assert started["canPause"] is False
+    res = client.post(f"/api/capture/{started['id']}/pause", headers=H)
+    assert res.status_code == 409
+    assert "screen recordings" in res.json()["error"]
+    assert backend.paused == []
+    audio = _audio(client)
+    assert audio["canPause"] is False
+    res = client.post(f"/api/capture/{audio['id']}/pause", headers=H)
+    assert res.status_code == 409 and "cannot be paused" in res.json()["error"]
+
+
+def test_a_backend_without_the_hooks_cannot_pause(backend, client, home,
+                                                  monkeypatch):
+    """The Windows/Linux backends are browser-fed and define none of them."""
+    class Bare:
+        probe = staticmethod(backend.probe)
+        ext = staticmethod(backend.ext)
+        start_audio = backend.start_audio
+        stop = staticmethod(backend.stop)
+
+    bare = Bare()
+    monkeypatch.setattr(capture, "_backend", lambda: bare)
+    started = _audio(client)
+    assert started["canPause"] is False
+    assert client.post(f"/api/capture/{started['id']}/pause",
+                       headers=H).status_code == 409
+    assert client.get(f"/api/capture/{started['id']}/state").json()["level"] == 0.0
+
+
+def test_a_second_pause_or_resume_is_idempotent(backend, client, home):
+    cid = _audio(client)["id"]
+    client.post(f"/api/capture/{cid}/resume", headers=H)      # not paused: no-op
+    assert backend.paused == []
+    client.post(f"/api/capture/{cid}/pause", headers=H)
+    again = client.post(f"/api/capture/{cid}/pause", headers=H)
+    assert again.status_code == 200 and again.json()["paused"] is True
+    assert len(backend.paused) == 1                            # the backend heard once
+
+
+def test_a_failing_backend_pause_leaves_the_recording_running(backend, client,
+                                                              home, monkeypatch):
+    cid = _audio(client)["id"]
+
+    def boom(handle):
+        raise RuntimeError("the microphone did not pause")
+
+    monkeypatch.setattr(backend, "pause", boom)
+    res = client.post(f"/api/capture/{cid}/pause", headers=H)
+    assert res.status_code == 500
+    assert capture.state(cid)["paused"] is False
+
+
+def test_the_elapsed_time_freezes_while_paused(backend, client, home):
+    cid = _audio(client)["id"]
+    session = capture._sessions[cid]
+    clock = Clock(session)
+    clock.t += 10
+    assert session.public()["seconds"] == 10
+    capture.pause(cid)
+    clock.t += 500
+    assert session.public()["seconds"] == 10
+    assert capture.state(cid)["seconds"] == 10
+    capture.resume(cid)
+    clock.t += 5
+    assert session.public()["seconds"] == 15
+
+
+def test_a_paused_recording_does_not_reach_its_cap(backend, client, home,
+                                                   monkeypatch):
+    monkeypatch.setattr(capture, "_max_seconds", lambda value: 60)
+    cid = _audio(client)["id"]
+    session = capture._sessions[cid]
+    clock = Clock(session)
+    clock.t += 50
+    capture.pause(cid)
+    clock.t += 600                                  # far past the cap, but paused
+    assert capture._tick(session) is False
+    assert capture.active() != []
+    capture.resume(cid)
+    clock.t += 5
+    assert capture._tick(session) is False          # 55 s recorded
+    clock.t += 6
+    assert capture._tick(session) is True           # 61 s: the cap stops it
+    assert capture.active() == [] and backend.handles[0].stopped
+
+
+def test_a_recording_paused_forever_is_stopped_and_kept(backend, client, home,
+                                                        monkeypatch):
+    monkeypatch.setattr(capture, "PAUSE_MAX_S", 100)
+    cid = _audio(client)["id"]
+    session = capture._sessions[cid]
+    clock = Clock(session)
+    capture.pause(cid)
+    clock.t += 99
+    assert capture._tick(session) is False
+    clock.t += 2
+    assert capture._tick(session) is True
+    assert capture.active() == []
+    assert os.path.exists(session.path)             # stopped, not discarded
+
+
+def test_the_state_route_reports_the_level_from_the_hook(backend, client, home,
+                                                         monkeypatch):
+    cid = _audio(client)["id"]
+    backend.lvl = 0.37
+    res = client.get(f"/api/capture/{cid}/state")
+    assert res.status_code == 200
+    body = res.json()
+    assert body == {"id": cid, "state": "recording", "paused": False,
+                    "seconds": body["seconds"], "maxSeconds": 1800,
+                    "level": 0.37, "canPause": True}
+    backend.lvl = 7.0
+    assert client.get(f"/api/capture/{cid}/state").json()["level"] == 1.0
+    backend.lvl = RuntimeError("no meters")
+    assert client.get(f"/api/capture/{cid}/state").json()["level"] == 0.0
+    backend.lvl = 0.5
+    monkeypatch.setattr(capture, "_backend", lambda: object())
+    assert client.get(f"/api/capture/{cid}/state").json()["level"] == 0.0
+
+
+def test_state_answers_with_level_zero_when_the_backend_lookup_raises(
+        backend, client, home, monkeypatch):
+    cid = _audio(client)["id"]
+
+    def boom():
+        raise capture.Unsupported("no backend")
+
+    monkeypatch.setattr(capture, "_backend", boom)
+    body = capture.state(cid)
+    assert body["level"] == 0.0 and body["id"] == cid
+
+
+def test_state_answers_while_another_thread_holds_the_native_lock(backend,
+                                                                  client, home):
+    import threading
+
+    cid = _audio(client)["id"]
+    capture._native_lock.acquire()
+    try:
+        out = []
+        t = threading.Thread(target=lambda: out.append(capture.state(cid)))
+        t.start()
+        t.join(2)
+        assert not t.is_alive() and out and out[0]["id"] == cid
+    finally:
+        capture._native_lock.release()
+
+
+# ----------------------------------------------------- the recording pill hooks
+
+
+@pytest.fixture()
+def pill(monkeypatch):
+    """Recording what the native hooks are told, with the dict restored after."""
+    from fused_render import recording_pill
+
+    calls = []
+    monkeypatch.setattr(recording_pill, "native_hooks", {
+        "show": lambda info: calls.append(("show", info["id"], info)),
+        "hide": lambda cid: calls.append(("hide", cid)),
+        "hide_all": lambda: calls.append(("hide_all",)),
+    })
+    return calls
+
+
+def _kinds(calls, kind):
+    return [c for c in calls if c[0] == kind]
+
+
+def test_the_pill_shows_once_on_an_audio_recording_and_hides_on_stop(
+        backend, client, home, pill):
+    started = _audio(client)
+    assert [c[:2] for c in pill] == [("show", started["id"])]
+    info = pill[0][2]
+    assert info["canPause"] is True and info["mode"] == "audio"
+    client.post(f"/api/capture/{started['id']}/stop", headers=H)
+    assert [c[:2] for c in pill] == [("show", started["id"]),
+                                     ("hide", started["id"])]
+    # The second ending (double click) answers from the cache and hides nothing.
+    client.post(f"/api/capture/{started['id']}/stop", headers=H)
+    assert len(_kinds(pill, "hide")) == 1
+
+
+def test_a_screen_recording_gets_no_pill(backend, client, home, pill):
+    started = client.post("/api/capture/start", json={"mode": "screen"},
+                          headers=H).json()
+    assert pill == []
+    client.post(f"/api/capture/{started['id']}/stop", headers=H)
+    assert pill == []
+
+
+def test_the_pill_hides_on_cancel(backend, client, home, pill):
+    started = _audio(client)
+    client.post(f"/api/capture/{started['id']}/cancel", headers=H)
+    assert _kinds(pill, "hide") == [("hide", started["id"])]
+
+
+def test_the_pill_hides_when_the_cap_ends_the_recording(backend, client, home,
+                                                        pill, monkeypatch):
+    monkeypatch.setattr(capture, "TICK_S", 0.05)
+    monkeypatch.setattr(capture, "_max_seconds", lambda value: 0.2)
+    started = _audio(client)
+    deadline = time.monotonic() + 5
+    while capture.active() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert _kinds(pill, "hide") == [("hide", started["id"])]
+
+
+def test_the_pill_hides_when_the_backend_loses_the_recording(
+        backend, client, home, pill, monkeypatch):
+    monkeypatch.setattr(capture, "TICK_S", 0.05)
+    started = _audio(client)
+    backend.handles[0].error = "the device went away"
+    deadline = time.monotonic() + 5
+    while capture.active() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert _kinds(pill, "hide") == [("hide", started["id"])]
+
+
+def test_the_pill_hides_when_the_job_rows_cross_is_pressed(
+        backend, client, home, pill, monkeypatch):
+    monkeypatch.setattr(capture, "TICK_S", 0.05)
+    started = _audio(client)
+    client.post(f"/api/jobs/{started['jobId']}/cancel", headers=H)
+    deadline = time.monotonic() + 5
+    while capture.active() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert _kinds(pill, "hide") == [("hide", started["id"])]
+
+
+def test_stop_all_hides_every_pill(backend, client, home, pill):
+    a, b = _audio(client), _audio(client)
+    capture.stop_all()
+    assert {c[1] for c in _kinds(pill, "hide")} == {a["id"], b["id"]}
+    assert _kinds(pill, "hide_all") == [("hide_all",)]
+
+
+def test_a_start_that_raises_after_the_pill_showed_hides_it(
+        backend, client, home, pill, monkeypatch):
+    class Boom(Exception):
+        pass
+
+    def no_thread(*a, **k):
+        raise Boom("could not spawn the watchdog")
+
+    monkeypatch.setattr(capture.threading, "Thread", no_thread)
+    with pytest.raises(Boom):
+        capture.start("audio", {})
+    assert len(_kinds(pill, "show")) == 1
+    assert _kinds(pill, "hide") == [("hide", _kinds(pill, "show")[0][1])]
+
+
+def test_a_start_that_never_produced_a_recording_shows_nothing(
+        backend, client, home, pill, monkeypatch):
+    def boom(out, spec):
+        raise RuntimeError("the microphone did not start")
+
+    monkeypatch.setattr(backend, "start_audio", boom)
+    assert client.post("/api/capture/start", json={"mode": "audio"},
+                       headers=H).status_code == 500
+    assert pill == []
+
+
+def test_a_raising_pill_hook_never_breaks_start_or_stop(backend, client, home,
+                                                        monkeypatch):
+    from fused_render import recording_pill
+
+    def boom(*args):
+        raise RuntimeError("AppKit fell over")
+
+    monkeypatch.setattr(recording_pill, "native_hooks",
+                        {"show": boom, "hide": boom, "hide_all": boom})
+    started = _audio(client)
+    res = client.post(f"/api/capture/{started['id']}/stop", headers=H)
+    assert res.status_code == 200 and res.json()["state"] == "stopped"
+    capture.stop_all()
+
+
+def test_with_no_hooks_installed_the_pill_is_a_no_op(backend, client, home,
+                                                     monkeypatch):
+    from fused_render import recording_pill
+
+    monkeypatch.setattr(recording_pill, "native_hooks", {})
+    started = _audio(client)
+    assert client.post(f"/api/capture/{started['id']}/stop",
+                       headers=H).status_code == 200
+
+
+def test_the_pill_page_route_serves_the_built_page_or_says_it_is_missing(client):
+    res = client.get("/recording-pill")
+    assert res.status_code in (200, 503)
+    if res.status_code == 503:
+        assert "recording pill page not built" in res.text
+
+
+def test_describe_carries_the_apps_icon_url(tmp_path):
+    from fused_render import recording_pill
+
+    app = tmp_path / "My App"
+    app.mkdir()
+    (app / "icon.svg").write_text("<svg xmlns='http://www.w3.org/2000/svg'/>")
+    (app / "index.html").write_text("<html></html>")
+
+    class S:
+        id, mode, can_pause = "c1", "audio", True
+        page = str(app / "index.html")
+
+    info = recording_pill.describe(S())
+    assert info["id"] == "c1" and info["canPause"] is True
+    assert info["app"] == str(app) and info["name"] == "My App"
+    assert info["icon"].startswith("/api/fs/raw?path=") and "&v=" in info["icon"]
+    assert info["flavor"] in ("render", "bot")
+
+    S.page = ""
+    info = recording_pill.describe(S())
+    assert info["icon"] is None and info["app"] == "" and info["name"] == "Fused"
+    S.page = "not/absolute.html"
+    assert recording_pill.describe(S())["icon"] is None
+
+
+def test_a_resume_after_stop_never_reaches_the_backend(backend, client, home):
+    """`stop` can pop the session between `_set_paused`'s `_live` and its backend
+    call; a mic `resume` on the finished recorder would overwrite the take."""
+    cid = _audio(client)["id"]
+    capture.pause(cid)
+    real_native = capture._native
+
+    class Popping(real_native):
+        def __enter__(self):
+            out = super().__enter__()
+            with capture._lock:
+                capture._sessions.pop(cid, None)     # stop got there first
+            return out
+
+    capture._native = Popping
+    try:
+        with pytest.raises(capture.CaptureError, match="no such capture"):
+            capture.resume(cid)
+    finally:
+        capture._native = real_native
+    assert [k for k, _ in backend.paused] == ["pause"]
+
+
+def test_pause_does_not_run_unserialised_when_the_native_lock_is_busy(
+        backend, client, home, monkeypatch):
+    cid = _audio(client)["id"]
+    session = capture._live(cid)
+    monkeypatch.setattr(capture, "STOP_LOCK_WAIT_S", 0.05)
+    with capture._native():
+        with pytest.raises(capture.CaptureError, match="busy"):
+            capture.pause(cid)
+    assert backend.paused == []
+    assert session.pauses.paused is False
+
+
+def test_a_stop_error_keeps_the_backends_warning(backend, client, home):
+    backend.warn = "quit and reopen this app after granting Screen Recording"
+    cid = _audio(client)["id"]
+
+    def boom(handle):
+        raise RuntimeError("the recording captured no audio")
+
+    backend.stop = boom
+    done = client.post(f"/api/capture/{cid}/stop", json={}, headers=H).json()
+    assert done["warning"] == backend.warn
+    assert done["error"].startswith(backend.warn)
+    assert "captured no audio" in done["error"]

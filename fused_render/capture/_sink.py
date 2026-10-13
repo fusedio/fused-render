@@ -93,6 +93,13 @@ def refuse(mode: str, spec: dict) -> str | None:
     """
     if mode == "screenshot":                                # native, not here
         return None
+    if mode == "audio" and spec.get("audio") in ("system", "both"):
+        # Audio-only records through the page's getUserMedia, and Chromium
+        # hands an audio-only request the microphone and nothing else. The
+        # screen picker's "share audio" checkbox is the only system-audio
+        # route a browser has, and it exists only on a screen recording.
+        return ("audio-only recording here captures the microphone only — "
+                "for system audio record the screen with audio: 'system'")
     if mode == "screen":
         if spec.get("display") not in (None, ""):
             return ("'display' cannot be chosen here — on this platform the "
@@ -108,24 +115,32 @@ def refuse(mode: str, spec: dict) -> str | None:
             return ("'cursor' cannot be chosen here — whether the pointer is "
                     "recorded is the browser's decision on this platform. "
                     "fused.capture.screenshot does take a 'cursor'")
+    return check_ext(spec, ext(mode, spec))
+
+
+def check_ext(spec: dict, wanted: str) -> str | None:
+    """A caller-supplied `path` whose extension contradicts `wanted` is
+    refused, not silently honoured — a `.webm` holding mp4 bytes (or, on
+    native Linux audio, a `.mp3` holding a WAV) is a file every other tool
+    misreads. Shared with `_linux.refuse`, so a native recording gets the
+    same wording a `_sink` one does."""
     out = spec.get("out")
-    if out:
-        wanted = ext(mode, spec)
-        have = os.path.splitext(out)[1].lower()
-        # `.mp4` and `.m4a` are one container under two names, so either is a
-        # truthful extension for what the mp4 branch writes.
-        allowed = ({".mp4", ".m4a"} if wanted in (".mp4", ".m4a")
-                   else {wanted})
-        if have not in allowed:
-            # Name the container that WOULD match the path they asked for —
-            # suggesting the one already in force is advice nobody can act on.
-            instead = {".webm": "'webm'", ".mp4": "'mp4'",
-                       ".m4a": "'mp4'"}.get(have)
-            fix = (f", or pass container: {instead}" if instead else "")
-            return (f"this recording is written as {wanted} — a 'path' ending "
-                    f"{have or 'with no extension'} would name a file holding "
-                    f"something else. Ask for a {wanted} path{fix}")
-    return None
+    if not out:
+        return None
+    have = os.path.splitext(out)[1].lower()
+    # `.mp4` and `.m4a` are one container under two names, so either is a
+    # truthful extension for what the mp4 branch writes.
+    allowed = {".mp4", ".m4a"} if wanted in (".mp4", ".m4a") else {wanted}
+    if have in allowed:
+        return None
+    # Name the container that WOULD match the path they asked for —
+    # suggesting the one already in force is advice nobody can act on.
+    instead = {".webm": "'webm'", ".mp4": "'mp4'",
+               ".m4a": "'mp4'"}.get(have)
+    fix = (f", or pass container: {instead}" if instead else "")
+    return (f"this recording is written as {wanted} — a 'path' ending "
+            f"{have or 'with no extension'} would name a file holding "
+            f"something else. Ask for a {wanted} path{fix}")
 
 
 class _Sink:

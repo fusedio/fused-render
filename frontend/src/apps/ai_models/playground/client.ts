@@ -15,6 +15,19 @@
 import { postJson, rawUrl, sourceHeader } from "@platform/lib/api";
 import { fetchJobs, type Job } from "@platform/lib/jobs";
 
+// Who is asking (SPEC-model-slot-conflict.md §1): the Playground is a shell
+// surface with its own fixed identity, never the user settling a conflict
+// with their own hands — that is `ModelsDock.tsx`'s row and the AI Models
+// page's own Load/Unload buttons, none of which run through this module.
+// Every generation call this module makes (text, embed, decide, image,
+// video, speech, transcribe) carries this, so two Playground tabs — or a
+// Playground run and a page's own `fused.ai` call — fighting over one
+// capability's slot are told apart by it.
+export const PLAYGROUND_REQUESTER = "shell:playground";
+function requesterHeaders(): Record<string, string> {
+  return { "X-Fused-Requester": PLAYGROUND_REQUESTER, "X-Fused-Requester-Label": PLAYGROUND_REQUESTER };
+}
+
 // SPEC-quiet-notifications.md bug 1/bug 2: `X-Fused-Source` is who RAISED the
 // job, deliberately separate from `X-Fused-Page` (never sent by this module
 // for image/video — see `startImage`/`startVideo` below). A render's own
@@ -82,6 +95,69 @@ export class ModelLoading extends Error {
   }
 }
 
+/** The 409 any request-path call answers when two different models are
+ *  fighting over one capability's resident slot (SPEC-model-slot-conflict.md).
+ *  UNLIKE `ModelLoading`, this is TERMINAL: no load it started is there to
+ *  watch, so `withModelReady` never retries it — it is not a `ModelLoading`,
+ *  so the `instanceof` check there already lets it straight through. Thrown
+ *  with its own type (rather than just the plain `Error` the generic 409
+ *  fallback throws) so a caller — the chat/embed/decide stages, and whatever
+ *  renders the Models dock's conflict row — can offer the same "keep A / keep
+ *  B / stop both" choice the AI Models page does, instead of only a sentence. */
+export class ModelSlotConflict extends Error {
+  capability: string;
+  models: string[];
+  resident: string | null;
+  held: boolean;
+  constructor(
+    message: string,
+    capability: string,
+    models: string[],
+    resident: string | null,
+    held: boolean,
+  ) {
+    super(message);
+    this.capability = capability;
+    this.models = models;
+    this.resident = resident;
+    this.held = held;
+  }
+}
+
+/** The wire shape of an `{ok: false, error}` reply's `error` object, across
+ *  every request-path route (`/api/ai`, `/api/ai/embed`, `/api/ai/decide`) —
+ *  one type rather than the same object literal spelled out again at each of
+ *  `throwRequestPathError`'s own signature and its three callers' `data` casts. */
+type RequestPathError = {
+  type?: string; message?: string; jobId?: string; capability?: string;
+  models?: string[]; resident?: string | null; held?: boolean;
+};
+
+/** The shared 409 fork every request-path reader below makes: `ModelLoading`
+ *  to watch-and-retry, `ModelSlotConflict` to offer a choice instead, or the
+ *  generic fallback `Error` for anything else. One function rather than a
+ *  copy per reader so the three outcomes stay in lockstep across `streamChat`,
+ *  `readEmbedReply` and `decide`. */
+function throwRequestPathError(
+  status: number,
+  error: RequestPathError | undefined,
+  fallback: string,
+): never {
+  if (status === 409 && error?.type === "model_loading") {
+    throw new ModelLoading(error.message || "model is loading", error.jobId ?? null);
+  }
+  if (status === 409 && error?.type === "model_slot_conflict") {
+    throw new ModelSlotConflict(
+      error.message || "two models are fighting over this capability's slot",
+      error.capability || "",
+      error.models || [],
+      error.resident ?? null,
+      error.held ?? false,
+    );
+  }
+  throw new Error(error?.message || `${fallback} (${status})`);
+}
+
 function frameError(error: unknown): Error {
   const e = error as { message?: string; type?: string } | null;
   return new Error(e?.message || (typeof error === "string" ? error : "generation failed"));
@@ -119,21 +195,15 @@ export async function streamChat(opts: {
   }
   const res = await fetch("/api/ai", {
     method: "POST",
-    headers: { ...sourceHeader(), "Content-Type": "application/json", "X-Fused": "1" },
+    headers: { ...sourceHeader(), ...requesterHeaders(), "Content-Type": "application/json", "X-Fused": "1" },
     body: JSON.stringify(body),
     signal: opts.signal,
   });
   if (!res.ok) {
     // Validation and the cold start both answer BEFORE any stream exists, so
     // the body here is one JSON object, not NDJSON.
-    const data = (await res.json().catch(() => null)) as {
-      error?: { type?: string; message?: string; jobId?: string };
-    } | null;
-    const error = data?.error;
-    if (res.status === 409 && error?.type === "model_loading") {
-      throw new ModelLoading(error.message || "model is loading", error.jobId ?? null);
-    }
-    throw new Error(error?.message || `generation failed (${res.status})`);
+    const data = (await res.json().catch(() => null)) as { error?: RequestPathError } | null;
+    throwRequestPathError(res.status, data?.error, "generation failed");
   }
   if (!res.body) throw new Error("no response body");
   const reader = res.body.getReader();
@@ -378,7 +448,7 @@ export interface ImageStarted {
 }
 
 export function startImage(request: ImageRequest): Promise<ImageStarted> {
-  return postJson<ImageStarted>("/api/ai/image", request, { headers: sourceHeader() });
+  return postJson<ImageStarted>("/api/ai/image", request, { headers: { ...sourceHeader(), ...requesterHeaders() } });
 }
 
 // -- Video (POST /api/ai/video, SPEC §40) --------------------------------------
@@ -426,7 +496,7 @@ export interface VideoStarted {
 }
 
 export function startVideo(request: VideoRequest): Promise<VideoStarted> {
-  return postJson<VideoStarted>("/api/ai/video", request, { headers: sourceHeader() });
+  return postJson<VideoStarted>("/api/ai/video", request, { headers: { ...sourceHeader(), ...requesterHeaders() } });
 }
 
 export interface SpeechRequest {
@@ -454,7 +524,7 @@ export interface SpeechStarted {
 }
 
 export function startSpeech(request: SpeechRequest): Promise<SpeechStarted> {
-  return postJson<SpeechStarted>("/api/ai/speech", request, { headers: sourceHeader() });
+  return postJson<SpeechStarted>("/api/ai/speech", request, { headers: { ...sourceHeader(), ...requesterHeaders() } });
 }
 
 // -- Embeddings (POST /api/ai/embed, SPEC §40) ---------------------------------
@@ -494,7 +564,7 @@ export async function embedTexts(
 ): Promise<EmbedResult> {
   const res = await fetch("/api/ai/embed", {
     method: "POST",
-    headers: { ...sourceHeader(), "Content-Type": "application/json", "X-Fused": "1" },
+    headers: { ...sourceHeader(), ...requesterHeaders(), "Content-Type": "application/json", "X-Fused": "1" },
     body: JSON.stringify(kind ? { model, texts, kind } : { model, texts }),
   });
   return readEmbedReply(res);
@@ -511,14 +581,10 @@ async function readEmbedReply(res: Response): Promise<EmbedResult> {
   const data = (await res.json().catch(() => null)) as {
     ok?: boolean;
     result?: EmbedResult;
-    error?: { type?: string; message?: string; jobId?: string };
+    error?: RequestPathError;
   } | null;
   if (!res.ok || !data?.ok) {
-    const error = data?.error;
-    if (res.status === 409 && error?.type === "model_loading") {
-      throw new ModelLoading(error.message || "model is loading", error.jobId ?? null);
-    }
-    throw new Error(error?.message || `embedding failed (${res.status})`);
+    throwRequestPathError(res.status, data?.error, "embedding failed");
   }
   if (!data.result) throw new Error("the reply carried no result");
   return data.result;
@@ -539,7 +605,7 @@ async function readEmbedReply(res: Response): Promise<EmbedResult> {
 export async function embedPaths(model: string, paths: string[]): Promise<EmbedResult> {
   const res = await fetch("/api/ai/embed", {
     method: "POST",
-    headers: { ...sourceHeader(), "Content-Type": "application/json", "X-Fused": "1" },
+    headers: { ...sourceHeader(), ...requesterHeaders(), "Content-Type": "application/json", "X-Fused": "1" },
     body: JSON.stringify({ model, paths }),
   });
   return readEmbedReply(res);
@@ -596,20 +662,16 @@ export async function decide(
 ): Promise<DecideResult> {
   const res = await fetch("/api/ai/decide", {
     method: "POST",
-    headers: { ...sourceHeader(), "Content-Type": "application/json", "X-Fused": "1" },
+    headers: { ...sourceHeader(), ...requesterHeaders(), "Content-Type": "application/json", "X-Fused": "1" },
     body: JSON.stringify({ model, state, questions }),
   });
   const data = (await res.json().catch(() => null)) as {
     ok?: boolean;
     result?: DecideResult;
-    error?: { type?: string; message?: string; jobId?: string };
+    error?: RequestPathError;
   } | null;
   if (!res.ok || !data?.ok) {
-    const error = data?.error;
-    if (res.status === 409 && error?.type === "model_loading") {
-      throw new ModelLoading(error.message || "model is loading", error.jobId ?? null);
-    }
-    throw new Error(error?.message || `decision failed (${res.status})`);
+    throwRequestPathError(res.status, data?.error, "decision failed");
   }
   if (!data.result) throw new Error("the reply carried no result");
   return data.result;
@@ -637,7 +699,7 @@ export interface TranscribeStarted {
 }
 
 export function startTranscribe(request: TranscribeRequest): Promise<TranscribeStarted> {
-  return postJson<TranscribeStarted>("/api/ai/transcribe", request);
+  return postJson<TranscribeStarted>("/api/ai/transcribe", request, { headers: requesterHeaders() });
 }
 
 // ---- native microphone capture (SPEC §45) ------------------------------------

@@ -629,6 +629,17 @@ OPTIONS = {
             f"{_APP} records the microphone when a page you opened asks it "
             "to — a voice note, or narration over a screen recording."
         ),
+        # `fused.capture.audio({source: "system" | "both"})` on macOS 14.2+
+        # records through a Core Audio process tap (SPEC §45). Same rule as
+        # the microphone key: the OS kills a process that taps the system's
+        # sound with no NSAudioCaptureUsageDescription instead of prompting.
+        # This is the "System Audio Recording Only" grant — NOT Screen
+        # Recording, which only the 13.0-14.1 fallback still needs.
+        "NSAudioCaptureUsageDescription": (
+            f"{_APP} records the sound your Mac is playing when a page you "
+            "opened asks it to — for example, the other side of a call for "
+            "meeting notes."
+        ),
         # The app's own windows are WKWebViews (mac_window.py) that GRANT a
         # page of ours `getUserMedia` and `navigator.geolocation` the way a
         # browser would after one Allow click; the OS then prompts with these

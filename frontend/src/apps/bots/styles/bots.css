@@ -219,7 +219,10 @@ div.bots-page.lanim .bots header #add svg { width: 20px; height: 20px; }
 /* A narrow list has no room for a time beside the name; the row is just avatar, name, preview (and the unread dot). */
 @container (max-width: 220px) { .bots-page .bot .time, .bots-page .bots header #usage { display: none; } }
 .bots-page .bot .name .pin { font-size: 10px; margin-right: 3px; opacity: .8; }
-.bots-page .bot .name .rt { font-size: 11px; margin-left: 4px; color: var(--muted); }
+/* The routines clock (same line icon as the context menu): an inline SVG, not the ⟳ text glyph, which fell back to
+   a tiny off-baseline symbol font. */
+.bots-page .bot .name .rt { display: inline-block; vertical-align: -2px; margin-left: 5px; color: var(--muted); }
+.bots-page .bot .name .rt svg { width: 12px; height: 12px; display: block; }
 .bots-page .bot .name .super { font-size: 9px; font-weight: 600; margin-left: 5px; padding: 1px 5px; border-radius: 6px; background: #d97757; color: #fff; vertical-align: 1px; letter-spacing: .04em; }
 /* "nopick", not "fixed": Tailwind's .fixed utility is in this bundle and would float the avatar over the Name field. */
 .bots-page .bot .name .rt.warn, .bots-page .bot .sub .warn, .bots-page .r .s .warn { color: var(--err); }
@@ -337,6 +340,13 @@ div.bots-page.stage .chat header #rcol { display: none; }  /* same: the preview 
 .bots-page .msg.note .readmore:hover:not(:disabled) { background: var(--hover); }
 .bots-page .msg.note .readmore:disabled { opacity: .5; cursor: default; }
 .bots-page .msg.done { align-self: flex-start; background: var(--card); }
+/* The step fold's trigger line (Thread.tsx Row, lib/thread foldStretches): a stretch of the bot's steps hides behind
+   the exchange, and one muted line in the action chip's family stands in for it; two words, no chevron, no count (the
+   hover has it). Always its own line, never seated on a bubble (owner, 2026-10-13). */
+.bots-page .msg.foldline { align-self: flex-start; background: transparent; border-radius: 0; padding: 0 12px; font-size: 12px; line-height: 1.4; color: var(--muted); }
+.bots-page .msg.foldline .fold { margin: 0; padding: 0; background: none; border: 0; font: inherit; color: inherit; cursor: pointer; }
+.bots-page .msg.foldline .fold::before { content: "·"; margin-right: 6px; opacity: .7; }
+.bots-page .msg.foldline .fold:hover, .bots-page .msg.foldline .fold:focus-visible { color: var(--text); text-decoration: underline; text-underline-offset: 2px; outline: 0; }
 .bots-page .msg.question { align-self: flex-start; background: var(--card); }
 /* The one card still waiting on you keeps the stripe; answered ones lose it. */
 .bots-page .msg.error { align-self: flex-start; background: var(--card); box-shadow: inset 3px 0 0 var(--err); color: var(--err); }
@@ -485,7 +495,15 @@ div.bots-page.sideapp .preview > :is(.shotwrap, .toast, .cap, .info) { display: 
 /* Beside Pause / Stop: the bot's state and how long since its last step (components/Composer.tsx). */
 .bots-page .composer .ctl .stat { min-width: 0; display: inline-flex; align-items: center; gap: 7px; font-size: 12px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 3px 4px; margin-right: auto; }
 .bots-page .composer .ctl .stat .dot { width: 8px; height: 8px; }
-.bots-page .composer .row { display: flex; flex-direction: column; gap: 6px; background: var(--card); border-radius: 28px; padding: 7px; box-shadow: inset 0 0 0 1px var(--line); transition: box-shadow .15s; }
+.bots-page .composer .row { position: relative; display: flex; flex-direction: column; gap: 6px; background: var(--card); border-radius: 28px; padding: 7px; box-shadow: inset 0 0 0 1px var(--line); transition: box-shadow .15s; }
+/* The slash-command popup (Composer.tsx, lib/commands): a card floating above the row; the highlighted row follows ↑↓ and hover. */
+.bots-page .composer .cmds { position: absolute; left: 0; right: 0; bottom: calc(100% + 8px); z-index: 20; display: flex; flex-direction: column; gap: 2px; padding: 6px; background: var(--card); border-radius: 16px; box-shadow: var(--shadow), 0 0 0 1px var(--line); }
+.bots-page .composer .cmds button { display: flex; align-items: baseline; gap: 10px; width: 100%; padding: 8px 12px; border-radius: 10px; background: transparent; color: var(--text); font-size: 13px; text-align: left; cursor: pointer; }
+.bots-page .composer .cmds button.sel { background: var(--raised); }
+.bots-page .composer .cmds button code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--text); flex: none; }
+.bots-page .composer .cmds button b { font-weight: 500; flex: none; }
+.bots-page .composer .cmds button span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--muted); }
+.bots-page .composer .cmds button.off b, .bots-page .composer .cmds button.off code { color: var(--muted); }
 .bots-page .composer .line { display: flex; gap: 6px; align-items: flex-end; }
 /* Reply: the message being answered sits above the input until sent or cancelled. */
 .bots-page .composer .quote { display: flex; align-items: center; gap: 8px; background: var(--raised); border-radius: 20px; padding: 7px 8px 7px 14px; font-size: 12px; color: var(--muted); }
@@ -565,6 +583,11 @@ div.bots-page.sideapp .preview > :is(.shotwrap, .toast, .cap, .info) { display: 
 .bots-page .info .rt.off { opacity: .55; }
 .bots-page .info a, .bots-page .info .lnk { color: var(--accent-text); cursor: pointer; text-decoration: none; background: none; padding: 0; font: inherit; border-radius: 0; }
 .bots-page .info a:hover, .bots-page .info .lnk:hover { text-decoration: underline; background: none; }
+/* The count in the usage strip that opens the failures dialog: a link in the text, not the pill every .bots-page button
+   wears; .warn keeps the error red over the link accent. (The Usage dialog's cell is Tailwind: it portals outside .bots-page.) */
+.bots-page button.lnk { color: var(--accent-text); cursor: pointer; text-decoration: none; background: none; padding: 0; font: inherit; border-radius: 0; }
+.bots-page button.lnk:hover { text-decoration: underline; background: none; }
+.bots-page button.lnk.warn { color: var(--err); }
 .bots-page .info .fine { font-size: 11px; opacity: .75; }
 /* Inbox: one small card per artifact the bot produced (saved result, download, built app). */
 .bots-page .info .inbox .cardrow { display: flex; align-items: center; margin: 0 -8px; }

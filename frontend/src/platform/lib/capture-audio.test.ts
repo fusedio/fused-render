@@ -551,4 +551,154 @@ describe("captureSources", () => {
       { id: "usb-1", name: "Yeti", default: false },
     ]);
   });
+
+  test("native Linux audio keeps the server's audio/systemAudio and never enumerates devices", async () => {
+    const merged = (await mergeSources(
+      {
+        client: true,
+        audioNative: true,
+        audio: { available: true, granted: true, reason: null },
+        systemAudio: { available: true, reason: null },
+        microphones: [],
+      },
+      fakeHost(emptyLog()),
+    )) as Record<string, unknown>;
+    expect("audioNative" in merged).toBe(false);
+    expect(merged.audio).toEqual({ available: true, granted: true, reason: null });
+    expect(merged.systemAudio).toEqual({ available: true, reason: null });
+    // There is no microphone to choose on a native recording — the server's
+    // own (empty) list stands, rather than this window's `enumerateDevices`.
+    expect(merged.microphones).toEqual([]);
+  });
+
+  test("Windows-shaped systemAudio:true is narrowed by a browser that cannot record", async () => {
+    // `_windows.probe` hard-codes `systemAudio: {available: true}` and leans
+    // on this merge to correct it: a browser with no usable MediaRecorder
+    // must still end up `available: false` here, same as `audio` and `video`.
+    const merged = await mergeSources(
+      {
+        client: true,
+        audio: { available: true, reason: null },
+        systemAudio: { available: true, reason: null },
+      },
+      fakeHost(emptyLog(), { types: [] }),
+    );
+    expect(merged.systemAudio?.available).toBe(false);
+    expect(merged.systemAudio?.reason).toBe(
+      "this browser cannot record — it has no MediaRecorder with a container " +
+        "this app can store. Chrome, Edge or a recent Firefox can",
+    );
+  });
+
+  test("Windows-shaped systemAudio:true survives a browser that CAN record", async () => {
+    const merged = await mergeSources(
+      {
+        client: true,
+        audio: { available: true, reason: null },
+        systemAudio: { available: true, reason: null },
+      },
+      fakeHost(emptyLog()),
+    );
+    expect(merged.systemAudio).toEqual({ available: true, reason: null });
+  });
+
+  test("Linux-shaped systemAudio:false (no PipeWire reachable) is never widened to true", async () => {
+    // `audioNative: false` is exactly the Linux case this guards: `"mic"`
+    // falls back to the browser, but `systemAudio` has no browser fallback at
+    // all, so the server's honest `false` must not be overwritten by this
+    // window's unrelated screen-recording capability.
+    const merged = (await mergeSources(
+      {
+        client: true,
+        audioNative: false,
+        audio: { available: true, reason: null },
+        systemAudio: { available: false, reason: "no pipewire here" },
+      },
+      fakeHost(emptyLog()),
+    )) as Record<string, unknown>;
+    expect(merged.systemAudio).toEqual({ available: false, reason: "no pipewire here" });
+  });
+});
+
+describe("pause and resume", () => {
+  test("a native recording pauses and resumes through the server, and `paused` follows", async () => {
+    const calls: Call[] = [];
+    const rec = await captureAudio(
+      {},
+      {
+        fetch: fakeFetch(
+          {
+            "/api/capture": { sources: {} },
+            "/api/capture/start": { ...nativeStart, paused: false, canPause: true },
+            "/api/capture/c1/pause": { ...nativeStart, paused: true },
+            "/api/capture/c1/resume": { ...nativeStart, paused: false },
+          },
+          calls,
+        ),
+      },
+    );
+    expect(rec.paused).toBe(false);
+    await rec.pause();
+    expect(rec.paused).toBe(true);
+    await rec.resume();
+    expect(rec.paused).toBe(false);
+    expect(calls.map((c) => c.url).slice(2)).toEqual([
+      "/api/capture/c1/pause",
+      "/api/capture/c1/resume",
+    ]);
+  });
+
+  test("a recording the pill already paused starts out paused", async () => {
+    const rec = await captureAudio(
+      {},
+      {
+        fetch: fakeFetch(
+          { "/api/capture": { sources: {} }, "/api/capture/start": { ...nativeStart, paused: true } },
+          [],
+        ),
+      },
+    );
+    expect(rec.paused).toBe(true);
+  });
+
+  test("the browser-records backend refuses, typed unavailable, without a request", async () => {
+    const calls: Call[] = [];
+    const rec = await captureAudio(
+      {},
+      {
+        host: fakeHost(emptyLog()),
+        fetch: fakeFetch(
+          {
+            "/api/capture": { sources: { client: true, audio: { available: true, reason: null } } },
+            "/api/capture/start": nativeStart,
+          },
+          calls,
+        ),
+      },
+    );
+    const before = calls.length;
+    const err = (await rec.pause().catch((e: CaptureError) => e)) as CaptureError;
+    expect(err.type).toBe("unavailable");
+    expect(calls.length).toBe(before);
+    expect(rec.paused).toBe(false);
+  });
+
+  test("a platform that cannot pause says so (409) as unavailable", async () => {
+    const rec = await captureAudio(
+      {},
+      {
+        fetch: (async (url: RequestInfo | URL) => {
+          const u = String(url);
+          const json = (status: number, body: unknown) =>
+            new Response(JSON.stringify(body), { status });
+          if (u === "/api/capture") return json(200, { sources: {} });
+          if (u === "/api/capture/start") return json(200, nativeStart);
+          return json(409, { error: "pause is not available for this recording" });
+        }) as unknown as typeof fetch,
+      },
+    );
+    const err = (await rec.pause().catch((e: CaptureError) => e)) as CaptureError;
+    expect(err.type).toBe("unavailable");
+    expect(err.message).toContain("not available");
+  });
 });

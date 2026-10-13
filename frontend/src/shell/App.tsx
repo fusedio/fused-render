@@ -80,6 +80,7 @@ import type { TasksScope } from "@shell/Scheduled";
 import { useTaskPeekEnabled } from "@shell/task-peek-flag";
 import { TASKS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
 import { TaskStatusNotifier } from "@shell/useTaskStatusNotify";
+import { ModelConflictNotifier } from "@shell/useModelConflictNotify";
 import ShortcutsOverlay from "@platform/ui/ShortcutsOverlay";
 import { isMod, isWindows } from "@platform/lib/platform";
 import { isOverlayOpen } from "@platform/lib/ui-overlay";
@@ -1124,6 +1125,7 @@ export default function App({ config }: { config: Config }) {
   return (
     <div id="app">
       <TaskStatusNotifier />
+      <ModelConflictNotifier />
       {!IS_EMBED && sidebar}
       <div id="main">
         {main}

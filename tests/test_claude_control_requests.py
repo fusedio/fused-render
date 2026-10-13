@@ -18,6 +18,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 
 import pytest
@@ -146,6 +147,9 @@ def test_cancel_against_a_live_host_writes_an_interrupt_and_leaves_it_alive(
 
     result = agent._cancel(run_id)
     assert result["still_queued"] == []
+    # A stop that beat the stub's first turn is answered at once and lands
+    # on a thread (`_start_pending_stop`); the markers below are its work.
+    assert _wait_for(lambda: not agent._stop_pending(run_dir))
     assert agent._alive(run_dir), \
         "an interrupt must not kill the CLI — only end the turn"
     assert os.path.exists(os.path.join(run_dir, "host.json")), \
@@ -302,3 +306,292 @@ def test_await_control_response_seeks_from_the_given_offset(agent, tmp_path):
     result = agent._await_control_response(
         str(run_dir), "req-1", timeout=1.0, start_offset=offset)
     assert result == {"fresh": True}
+
+
+# A CLI that is still STARTING UP when the stop lands: it takes a while to
+# open the first turn (SessionStart hooks, MCP servers), and only then echoes
+# the prompt as a `user` row — the CLI's `--replay-user-messages` shape, the
+# proof the prompt reached the transcript. It never closes the turn, so the
+# only thing that can end it is the interrupt.
+_SLOW_START_STUB = '''#!{python}
+import json
+import sys
+import time
+
+
+def send(row):
+    sys.stdout.write(json.dumps(row) + "\\n")
+    sys.stdout.flush()
+
+first = True
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    row = json.loads(line)
+    if row.get("type") == "control_request":
+        resp = {{"request_id": row["request_id"], "subtype": "success",
+                 "response": {{"still_queued": []}}}}
+        send({{"type": "control_response", "response": resp}})
+        continue
+    if first:
+        first = False
+        time.sleep({delay})
+        if {echo}:
+            send({{"type": "user", "message": row["message"]}})
+        continue
+    send({{"type": "user", "message": row["message"]}})
+'''
+
+
+def _drained(run_dir):
+    done = os.path.join(run_dir, "inbox", "done")
+    return lambda: any(n.endswith(".json") for n in os.listdir(done)) \
+        if os.path.isdir(done) else False
+
+
+def _slow_stub(tmp_path, delay, echo=True):
+    body = _SLOW_START_STUB.format(python=sys.executable, delay=delay,
+                                   echo="True" if echo else "False")
+    return write_stub_cli(tmp_path / "bin", body)
+
+
+def test_a_stop_on_a_fresh_chat_answers_now_and_interrupts_after_the_prompt_lands(
+        agent, monkeypatch, tmp_path, target):
+    """Akshil, 2026-10-12: new chat, stop right away, reload — the first
+    message was gone, only "Interrupted by you" left. The interrupt had
+    reached the CLI before it opened the turn, and the CLI dropped the
+    prompt instead of persisting it. The stop must wait for the echo —
+    but the reader must not: the answer is immediate, the wait is deferred."""
+    stub = _slow_stub(tmp_path, delay=1.0)
+    run_id, run_dir = _start(agent, monkeypatch, stub, target, message="dfdf")
+    assert _wait_for(_drained(run_dir)), "the host must have handed the prompt over"
+
+    result = agent._cancel(run_id)
+    assert result["pending"] is True, "deferred, not the synchronous road"
+    assert result["still_queued"] == []
+    # A second press while the first is on its way is answered the same way,
+    # at once — not by joining a wait the cancel budget cannot afford.
+    assert agent._cancel(run_id) == {"cancelled": run_id, "still_queued": [],
+                                     "pending": True}
+    assert os.path.exists(os.path.join(run_dir, "cancelled"))
+    assert agent._stop_pending(run_dir)
+    assert not os.path.exists(os.path.join(run_dir, "interrupted_offset")), \
+        "the offset is the interrupt's own boundary — written when it lands"
+
+    # Meanwhile a poll reads the turn as over, stopped by the reader.
+    poll = agent._poll(run_id)
+    assert poll["done"] is True
+    assert poll["cancelled"] is True
+    assert poll["error"], "the page swallows it into 'Stopped.' via cancelled"
+
+    assert _wait_for(lambda: not agent._stop_pending(run_dir), timeout=12)
+    kinds = [row.get("type") for row in _out_rows(run_dir)]
+    assert "user" in kinds and "control_response" in kinds, kinds
+    assert kinds.index("user") < kinds.index("control_response"), \
+        "the interrupt must land AFTER the prompt's echo — before it, the " \
+        "CLI throws the prompt away and the transcript opens with the marker"
+    assert os.path.exists(os.path.join(run_dir, "interrupted_offset"))
+    assert agent._alive(run_dir), "still an interrupt, not a kill"
+
+
+def test_a_follow_up_sent_during_a_pending_stop_waits_for_the_interrupt(
+        agent, monkeypatch, tmp_path, target):
+    stub = _slow_stub(tmp_path, delay=1.0)
+    run_id, run_dir = _start(agent, monkeypatch, stub, target, message="dfdf")
+    assert _wait_for(_drained(run_dir))
+    assert agent._cancel(run_id)["pending"] is True
+    assert agent._stop_pending(run_dir)
+
+    assert agent._send(run_id, "and now this") == {"sent": True}
+    assert not agent._stop_pending(run_dir), \
+        "_send must not write to the pipe ahead of the promised interrupt"
+
+    def order():
+        rows = _out_rows(run_dir)
+        kinds = [r.get("type") for r in rows]
+        texts = [((r.get("message") or {}).get("content") or [{}])[0].get("text")
+                 for r in rows if r.get("type") == "user"]
+        return kinds, texts
+    assert _wait_for(lambda: "and now this" in order()[1])
+    kinds, _ = order()
+    assert kinds.index("control_response") < kinds.index("user", kinds.index("user") + 1), \
+        "the follow-up's echo must come after the interrupt's response"
+
+
+def test_a_cli_that_never_opens_a_turn_is_still_interrupted_after_the_cap(
+        agent, monkeypatch, tmp_path, target):
+    stub = _slow_stub(tmp_path, delay=0, echo=False)
+    monkeypatch.setattr(agent, "_FIRST_TURN_WAIT_SEC", 0.5)
+    run_id, run_dir = _start(agent, monkeypatch, stub, target)
+    assert _wait_for(lambda: os.path.exists(os.path.join(run_dir, "host.json")))
+
+    result = agent._cancel(run_id)
+    assert result["still_queued"] == []
+    assert _wait_for(lambda: not agent._stop_pending(run_dir), timeout=12)
+    assert any(r.get("type") == "control_response" for r in _out_rows(run_dir)), \
+        "past the cap the stop falls through to the plain interrupt"
+
+
+def test_a_stop_with_a_follow_up_queued_mid_turn_is_not_deferred(
+        agent, monkeypatch, tmp_path, target):
+    """The deferral is for a run whose FIRST turn has not opened. A follow-up
+    drained into a turn that is already streaming echoes only when that turn
+    ends — waiting on it would hold the stop for the whole cap."""
+    stub = _slow_stub(tmp_path, delay=0)      # echoes the first message at once
+    run_id, run_dir = _start(agent, monkeypatch, stub, target, message="first")
+    assert _wait_for(lambda: any(r.get("type") == "user" for r in _out_rows(run_dir)))
+    # Park a follow-up the CLI will never echo (the stub answers nothing for
+    # it) — drained, unechoed, and the run has no `result` row.
+    monkeypatch.setattr(agent, "_FIRST_TURN_WAIT_SEC", 5.0)
+    with open(os.path.join(run_dir, "inbox", "done", "99999999999999999999-ffff.json"),
+              "w", encoding="utf-8") as fh:
+        json.dump({"text": "second", "at": time.time()}, fh)
+    agent._echoed_done.pop(run_dir, None)
+    started = time.monotonic()
+    result = agent._cancel(run_id)
+    assert time.monotonic() - started < 2, "must not wait the first-turn cap"
+    assert "pending" not in result
+    assert not agent._stop_pending(run_dir)
+
+
+def test_a_stop_on_an_opened_turn_takes_the_synchronous_road(
+        agent, monkeypatch, tmp_path, target):
+    """The deferral exists for the first turn only. Once the prompt has
+    echoed, Stop interrupts right there and settles its own markers before
+    answering — the road every mid-reply stop has always taken."""
+    stub = _slow_stub(tmp_path, delay=0)
+    run_id, run_dir = _start(agent, monkeypatch, stub, target, message="first")
+    assert _wait_for(lambda: any(r.get("type") == "user" for r in _out_rows(run_dir)))
+
+    result = agent._cancel(run_id)
+    assert result == {"cancelled": run_id, "still_queued": []}
+    assert not agent._stop_pending(run_dir)
+    assert os.path.exists(os.path.join(run_dir, "interrupted_offset"))
+    assert os.path.exists(os.path.join(run_dir, "cancelled"))
+    assert agent._alive(run_dir)
+
+
+def test_a_stop_pending_marker_with_no_thread_behind_it_is_stale(agent, tmp_path):
+    """A server restart mid-wait leaves the file with nobody to retire it;
+    read as live it would hold every later poll at "stopped"."""
+    run_dir = os.path.join(agent.RUNS, "20261012-140000-aaa")
+    os.makedirs(run_dir)
+    with open(os.path.join(run_dir, agent._STOP_PENDING), "w", encoding="utf-8") as f:
+        f.write("1")
+    assert agent._stop_pending(run_dir) is False
+    assert not os.path.exists(os.path.join(run_dir, agent._STOP_PENDING))
+
+
+def test_a_stop_that_beats_the_host_still_keeps_the_prompt(
+        agent, monkeypatch, tmp_path, target):
+    """Akshil, 2026-10-12: "if I click fast enough the chat is not made" —
+    Stop before the host had even drained the inbox stranded the prompt
+    (a "not sent" row, no transcript). The prompt is spared, the host
+    delivers it, and the interrupt waits for its echo like any other
+    first-turn stop."""
+    stub = _slow_stub(tmp_path, delay=1.0)
+    run_id, run_dir = _start(agent, monkeypatch, stub, target, message="huh")
+    # No wait for host.json at all: the stop lands as early as it can.
+    result = agent._cancel(run_id)
+    assert result["still_queued"] == [], "the prompt is not stranded"
+    assert result["pending"] is True
+    assert _wait_for(lambda: not agent._stop_pending(run_dir), timeout=15)
+    kinds = [row.get("type") for row in _out_rows(run_dir)]
+    assert "user" in kinds and "control_response" in kinds, kinds
+    assert kinds.index("user") < kinds.index("control_response")
+    texts = [((r.get("message") or {}).get("content") or [{}])[0].get("text")
+             for r in _out_rows(run_dir) if r.get("type") == "user"]
+    assert texts == ["huh"]
+
+
+def test_discard_inbox_spares_only_the_opening_prompt(agent, tmp_path):
+    run_dir = os.path.join(agent.RUNS, "20261012-150000-bbb")
+    os.makedirs(agent._inbox_dir(run_dir))
+    agent._write_inbox_entry(run_dir, "first")
+    time.sleep(0.01)
+    agent._write_inbox_entry(run_dir, "second")
+    assert agent._discard_inbox(run_dir, keep_first=True) == ["second"]
+    assert agent._inbox_holds_prompt(run_dir)
+    assert agent._discard_inbox(run_dir) == ["first"]
+    assert not agent._inbox_holds_prompt(run_dir)
+    # Once anything has been drained, the oldest entry is a follow-up, not
+    # the opening prompt: nothing is spared.
+    os.makedirs(os.path.join(agent._inbox_dir(run_dir), "done"), exist_ok=True)
+    with open(os.path.join(agent._inbox_dir(run_dir), "done", "0-aaaa.json"),
+              "w", encoding="utf-8") as fh:
+        json.dump({"text": "earlier", "at": 1}, fh)
+    agent._write_inbox_entry(run_dir, "third")
+    assert agent._discard_inbox(run_dir, keep_first=True) == ["third"]
+
+
+def test_the_host_wait_is_a_registered_stop_for_sends_and_second_stops(
+        agent, monkeypatch, tmp_path):
+    """Bugbot: while a Stop waits for the host to spawn, no thread exists yet —
+    a follow-up `_send` and a second Stop must still see the stop on its way."""
+    run_dir = os.path.join(agent.RUNS, "20261012-160000-ccc")
+    os.makedirs(agent._inbox_dir(run_dir))
+    agent._write_inbox_entry(run_dir, "first")
+    run_id = os.path.basename(run_dir)
+    gate = threading.Event()
+    entered = threading.Event()
+    monkeypatch.setattr(agent, "_first_turn_pending", lambda d: True)
+    monkeypatch.setattr(agent, "_host_alive", lambda d: False)
+
+    def slow_wait(d, timeout):
+        entered.set()
+        gate.wait(5)
+        return False
+
+    monkeypatch.setattr(agent, "_wait_for_host", slow_wait)
+    monkeypatch.setattr(agent, "_cancel_run", lambda *a, **k: {"cancelled": run_id})
+    results = []
+    first = threading.Thread(target=lambda: results.append(agent._cancel(run_id)))
+    first.start()
+    assert entered.wait(5)
+    # A second Stop in the gap is answered, not started again.
+    assert agent._cancel(run_id)["pending"] is True
+    # A send in the gap waits for the stop instead of writing past it.
+    joined = []
+    sender = threading.Thread(target=lambda: (agent._join_pending_stop(run_dir),
+                                              joined.append(True)))
+    sender.start()
+    time.sleep(0.2)
+    assert not joined
+    gate.set()
+    first.join(5)
+    sender.join(5)
+    assert joined and results == [{"cancelled": run_id}]
+    assert run_dir not in agent._STOPS_STARTING
+
+
+def test_a_send_does_not_wait_out_a_slow_stop(agent, monkeypatch):
+    """The stop's own wait can run ~40 s; the follow-up gets a bounded join
+    and a plain "try again" instead of a 504."""
+    run_dir = os.path.join(agent.RUNS, "20261012-170000-ddd")
+    os.makedirs(run_dir)
+    gate = threading.Event()
+    worker = threading.Thread(target=gate.wait, args=(10,), daemon=True)
+    worker.start()
+    agent._PENDING_STOPS[run_dir] = worker
+    try:
+        assert agent._join_pending_stop(run_dir, timeout=0.2) is False
+        monkeypatch.setattr(agent, "_SEND_JOIN_WAIT_SEC", 0.2)
+        out = agent._send(os.path.basename(run_dir), "follow-up")
+        assert out == {"error": "stop in progress — try again in a moment"}
+        gate.set()
+        worker.join(5)
+        assert agent._join_pending_stop(run_dir, timeout=1) is True
+    finally:
+        gate.set()
+        agent._PENDING_STOPS.pop(run_dir, None)
+
+
+def test_discard_inbox_spends_the_spare_on_an_unreadable_first_entry(agent):
+    run_dir = os.path.join(agent.RUNS, "20261012-170100-eee")
+    inbox = agent._inbox_dir(run_dir)
+    os.makedirs(inbox)
+    with open(os.path.join(inbox, "00-first.json"), "w", encoding="utf-8") as fh:
+        fh.write("{half")                       # the opening prompt, mid-write
+    agent._write_inbox_entry(run_dir, "follow-up")
+    assert agent._discard_inbox(run_dir, keep_first=True) == ["follow-up"]

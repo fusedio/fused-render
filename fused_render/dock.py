@@ -245,7 +245,29 @@ def set_bot_pinned(bid: str, pinned: bool) -> bool:
     ValueError for an unknown bot. Returns the new value."""
     from fused_render.bots import registry
 
-    b = registry.get(bid)
+    try:
+        b = registry.get(bid)
+    except registry.NotOwner as e:
+        # This process forwards the bots to another Fused app (bots/registry.py): the pin goes the same way the
+        # sidebar's would, as the owner's flag route, never as a bot.json write from here (only the owner writes).
+        origin = (e.info or {}).get("origin") or ""
+        if not origin:
+            raise ValueError(str(e)) from None
+        import json
+        import urllib.request
+
+        req = urllib.request.Request(f"{origin}/api/bots/{bid}/flag", data=json.dumps({"pinned": bool(pinned)}).encode(),
+                                     headers={"X-Fused": "1", "X-Fused-Forwarded": "1", "Content-Type": "application/json"},
+                                     method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                if r.status != 200:
+                    raise ValueError(f"the bots app answered {r.status}")
+        except urllib.error.HTTPError as err:
+            raise ValueError(f"no such bot {bid}" if err.code == 404 else f"the bots app answered {err.code}") from None
+        except OSError as err:
+            raise ValueError(f"could not reach the bots app: {err}") from None
+        return bool(pinned)
     with b.lock:
         b.meta["pinned"] = bool(pinned)
         b.save()

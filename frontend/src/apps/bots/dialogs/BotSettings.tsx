@@ -1,6 +1,6 @@
 // Settings (edit an existing bot), on shadcn/ui (owner's ask, 2026-10-07: "the entire settings modal black, use
 // shadcn"): a Dialog with a rail of sections — General · Permissions · Browser · Skills · Routines · Memory, plus
-// Phone on Super Bot (the one bot reachable over iMessage, docs §10; Super Bot has no Routines) — and one setting per
+// Phone on Super Bot (the one bot reachable over iMessage, docs §10) — and one setting per
 // row (SettingsRow.tsx): its name and one line of why on the left, the control on the right. Skills and Routines
 // (once their own dialogs behind the ☰ menu, folded in 2026-10-09) are lists whose every op posts at once, like the
 // page-wide switches on Browser; they never touch the snapshot or Save.
@@ -27,7 +27,7 @@ import { Trash2Icon } from "lucide-react";
 import { api, type AllowRule, type AppRow, type Bot, type ChromeProfile, type Face as FaceT } from "../lib/api";
 import { EFFORTS, loginGroups, loginHint, loginLabel, loginValue, modelsFor, normApp } from "../lib/botform";
 import { faceOf } from "../lib/face";
-import { act, autoStage, getState, setAutoStage, setSounds, soundsOn } from "../state/store";
+import { act, autoStage, clearContextOn, getState, setAutoStage, setClearContext, setSounds, soundsOn } from "../state/store";
 import type { BotDialogValue } from "./actions";
 import { askConfirm } from "./ask";
 import { FacePopover } from "./FacePopover";
@@ -49,7 +49,7 @@ export interface BotSettingsProps {
 export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
   const isSuper = bot.kind === "super";
   const tabs: [SettingsTab, string][] = [["general", "General"], ["permissions", "Permissions"], ["browser", "Browser"], ["skills", "Skills"],
-    ...(isSuper ? [] : [["routines", "Routines"] as [SettingsTab, string]]), ["memory", "Memory"],
+    ["routines", "Routines"], ["memory", "Memory"],
     ...(isSuper ? [["phone", "Phone"] as [SettingsTab, string]] : [])];
   const [tab, setTab] = useState<SettingsTab>(() => (tabs.some(([t]) => t === tab0) ? (tab0 as SettingsTab) : "general"));
   // What the dialog opened with (OpenBot's botDialog arguments).
@@ -72,6 +72,7 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
   // Page-wide prefs (localStorage, every bot): they apply at once, not on Save.
   const [autoOpen, setAutoOpen] = useState(autoStage);
   const [sounds, setSoundsState] = useState(soundsOn);
+  const [clearBtn, setClearBtn] = useState(clearContextOn);
   const [imessage, setImessage] = useState(init.imessage);
   const [imessageEnabled, setImessageEnabled] = useState(init.imessageEnabled);
   const [imessageTo, setImessageTo] = useState(init.imessageTo);
@@ -138,7 +139,7 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
       <DialogContent showCloseButton={false} className={cn(DIALOG_CLASS, DIALOG_SIZE)}>
         <DialogHeader className={HEADER_CLASS}>
           <DialogTitle>Settings · {n || init.name}</DialogTitle>
-          <DialogDescription className="sr-only">How this bot thinks, what it may do without asking, its browser, its playbooks{isSuper ? "" : ", its routines"}, its memory{isSuper ? " and your phone" : ""}.</DialogDescription>
+          <DialogDescription className="sr-only">How this bot thinks, what it may do without asking, its browser, its playbooks, its routines, its memory{isSuper ? " and your phone" : ""}.</DialogDescription>
         </DialogHeader>
         <div className="flex min-h-0 flex-1 gap-6 px-6 pb-5">
           <nav className="-ml-2.5 flex w-36 shrink-0 flex-col gap-0.5 self-start" aria-label="Settings sections">
@@ -265,11 +266,14 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
                 <Row title="Sounds" text="A short chime when a bot hands you its browser. Applies to every bot on this page." htmlFor="bmsounds">
                   <span title="Page-wide: applies to every bot, saved at once"><Switch id="bmsounds" checked={sounds} onCheckedChange={(c) => { setSounds(!!c); setSoundsState(!!c); }} /></span>
                 </Row>
+                <Row title="Clear context button" text="A button in the chat header that starts the bot over without leaving the conversation; the earlier messages fold under a marker. Off by default. Applies to every bot on this page." htmlFor="bmclear">
+                  <span title="Page-wide: applies to every bot, saved at once"><Switch id="bmclear" checked={clearBtn} onCheckedChange={(c) => { setClearContext(!!c); setClearBtn(!!c); }} /></span>
+                </Row>
               </Rows>
             ) : null}
 
             {tab === "skills" ? <SkillsSection b={bot} confirm={confirm} /> : null}
-            {tab === "routines" && !isSuper ? <RoutinesSection b={bot} confirm={confirm} /> : null}
+            {tab === "routines" ? <RoutinesSection b={bot} confirm={confirm} /> : null}
 
             {tab === "memory" ? (
               <Rows>

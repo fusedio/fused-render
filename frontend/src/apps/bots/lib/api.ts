@@ -203,6 +203,9 @@ export interface Bot {
 }
 
 export interface UsageBotRow { id: string; name: string; today: number; week: number; models: Record<string, number>; errors: number; last: number; live: boolean }
+/** One failed model call behind a bot's `errors` count (GET /api/bots/{id}/failures, newest first, this week).
+ *  `error` is the call's own words when the ledger recorded them (lines from before that stay without one). */
+export interface UsageFailure { ts: number; model: string; origin: string; task: string; error?: string }
 export interface UsageSummary {
   today: number;
   hour: number;
@@ -259,6 +262,14 @@ export interface Ok { ok: true }
 export interface SetupReply {
   chrome: { found: boolean | null; path: string | null };
   claude: { found?: boolean | null; signed_in?: boolean | null; version?: string | null; [k: string]: unknown };
+  /** Who runs the bots on this machine (one owner process, bots/registry.py): `this` = the server this page
+   *  talks to; else that app forwards here from the named one. `known` false = an older app holds the lock
+   *  and wrote no record. null = no process runs them. Absent from an older server. */
+  owner?: BotsOwner | null;
+}
+export interface BotsOwner {
+  this: boolean; known: boolean; stalled: boolean;
+  pid: number | null; origin: string; app: string; version: string;
 }
 
 // ------------------------------------------------------------------ instrumentation ----
@@ -330,6 +341,7 @@ export interface SettingsBody {
 }
 export type RoutineBody =
   | { op: "add"; text: string; kind: Routine["kind"]; minutes?: number; time?: string; weekdays?: number[]; at?: number }
+  | { op: "edit"; rid: string; text: string; kind: Routine["kind"]; minutes?: number; time?: string; weekdays?: number[]; at?: number }
   | { op: "delete" | "enable" | "disable" | "run"; rid: string };
 export type SkillBody =
   | { op: "save"; name: string; trigger: string; text: string; rid?: string }
@@ -347,6 +359,7 @@ export const api = {
   profiles: () => get<{ ok: true; profiles: ChromeProfile[] }>(`${B}/profiles`, "profiles"),
   presets: () => get<{ ok: true; presets: Preset[] }>(`${B}/presets`, "presets"),
   usage: () => get<UsageSummary>(`${B}/usage`, "usage"),
+  failures: (id: string) => get<{ failures: UsageFailure[] }>(`${bid(id)}/failures`, "failures"),
   imessage: () => get<ImessageState>(`${B}/imessage`, "imessage"),
   /** Settings > Phone "Send a test text": one text from this Mac to Super Bot's handle (the Automation consent lands here). */
   imessageTest: () => post<{ ok: true; handle: string }>(`${B}/imessage/test`, {}, "test text"),
