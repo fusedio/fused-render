@@ -3328,9 +3328,11 @@ def check_settings(meta, model="", effort="", max_steps=None):
         raise ValueError("Super Bot runs on Claude Code; pick a Claude model")
     if effort and effort not in EFFORTS:
         raise ValueError(f"unknown effort {effort!r}; choose one of {', '.join(EFFORTS)}")
+    if isinstance(max_steps, bool):
+        raise ValueError("steps per task must be a whole number")
     if max_steps not in (None, "", 0):
         try:
-            if isinstance(max_steps, bool) or (isinstance(max_steps, float) and not max_steps.is_integer()):
+            if isinstance(max_steps, float) and not max_steps.is_integer():
                 raise ValueError
             n = int(max_steps)
         except (TypeError, ValueError):

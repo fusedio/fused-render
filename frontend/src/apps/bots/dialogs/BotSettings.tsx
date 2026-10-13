@@ -185,7 +185,7 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
                 </Row>
                 <Row title="Steps per task" text={`Tool calls one task may take before it is stopped. Blank keeps the default (${isSuper ? 1000 : 200}). Applies from the next task.`} htmlFor="bmsteps">
                   <Input id="bmsteps" type="text" inputMode="numeric" pattern="[0-9]*" maxLength={5} className="w-full" value={maxSteps}
-                    placeholder={isSuper ? "1000" : "200"} onChange={(e) => setMaxSteps(e.target.value.replace(/[^0-9]/g, ""))} />
+                    placeholder={isSuper ? "1000" : "200"} onChange={(e) => { if (/^\d*$/.test(e.target.value)) setMaxSteps(e.target.value); }} />
                 </Row>
               </Rows>
             ) : null}
