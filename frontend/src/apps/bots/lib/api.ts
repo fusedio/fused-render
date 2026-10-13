@@ -250,6 +250,8 @@ export interface ImessageState {
   super_id?: string | null;
   enabled?: boolean;
   handle?: string;
+  /** "Approve by text": a phone-started task's approval cards are texted and the reply settles them (docs §10). */
+  approvals?: boolean;
   [k: string]: unknown;
 }
 
@@ -355,6 +357,7 @@ export interface SettingsBody {
   /** 0 clears the per-bot override (back to the default). */
   max_steps?: number;
   build_access?: string; encrypt?: boolean; imessage_handle?: string; imessage_to?: string; imessage_enabled?: boolean;
+  imessage_approvals?: boolean;
   super_access?: string; trusted_apps?: string[];
   /** Forever rules to drop (kind + key); applied to the live list, since the task thread also writes it. */
   allow_rules_remove?: AllowRule[];

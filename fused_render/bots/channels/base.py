@@ -33,9 +33,22 @@ WEB = {"kind": WEB_KIND, "addr": ""}
 ROUTINE = {"kind": ROUTINE_KIND, "addr": ""}
 
 # Events a channel may carry out of the conversation. Thoughts, actions and
-# notes are the page's business, and so are approval cards: approvals are
-# answered at the Mac only (docs §10), never by text.
-OUT_ROLES = ("done", "question", "error")
+# notes are the page's business. An approval card goes out too, but only to the
+# sender of the phone-started task it belongs to (the origin rule in
+# Router.targets), as a numbered text that sender may answer; the answer counts
+# for that one card only (`answers_card`, docs §10). Mac-started tasks never text.
+OUT_ROLES = ("done", "question", "approval", "error")
+
+# The two choices a texted approval card is numbered with (Router.render).
+APPROVAL_OPTIONS = ("Approve", "Deny")
+
+
+def approvals_by_text(meta) -> bool:
+    """Super Bot's "Approve by text" switch (Settings > Phone, `imessage_approvals`):
+    a phone-started task's approval cards are texted and the reply may settle
+    them. A bot.json without the key reads as on."""
+    m = meta or {}
+    return "imessage_approvals" not in m or bool(m.get("imessage_approvals"))
 
 
 LABELS = {"imessage": "iMessage", "botsend": "botsend", WEB_KIND: "the web page", ROUTINE_KIND: "a routine",
@@ -66,11 +79,11 @@ def is_local(v) -> bool:
 
 def is_outside(v) -> bool:
     """A message from a sender that is not the user at the Mac: a text, a botsend
-    file, an app page. Such a message is never the verdict of an approval card or
-    an app offer (approvals are answered at the Mac, docs §10); it still reaches
-    the model as an instruction or as the answer to its own `ask`. The negation
-    of is_local, minus the hand-off (Super Bot's own task, judged by its own
-    rules, docs §11)."""
+    file, an app page. Such a message is never the verdict of an app offer and,
+    unless the router stamped it for the one card it answers (`answers_card`),
+    not of an approval card either (docs §10); it still reaches the model as an
+    instruction or as the answer to its own `ask`. The negation of is_local,
+    minus the hand-off (Super Bot's own task, judged by its own rules, docs §11)."""
     return not is_local(v) and (v or {}).get("kind") != HANDOFF_KIND
 
 
@@ -102,9 +115,11 @@ class Outside(str):
     botsend file, an app page): a plain str for every reader of `bot.inbox`,
     plus the `via` it came by and, from an app, the `images` sent with it (each
     {"media_type", "data": base64}; the agent engine pushes them into the model
-    turn beside the text, docs §13). Approval and offer waits never take one as
-    their verdict (approvals are answered at the Mac, docs §10); it still
-    reaches the model as an instruction or as the answer to its own `ask`."""
+    turn beside the text, docs §13). Offer waits never take one as their verdict;
+    an approval wait only when the router stamped `via["answers"]` with that
+    card's seq (`answers_card`: the card was texted to this sender and the bot
+    still waited on it, docs §10). Otherwise it reaches the model as an
+    instruction or as the answer to its own `ask`."""
     via: dict = {}
     images: list = []
 
@@ -123,6 +138,13 @@ def is_outside_msg(s) -> bool:
 
 
 is_texted = is_outside_msg
+
+
+def answers_card(s, seq) -> bool:
+    """True when an outside message was stamped by the router as the answer to the
+    approval card `seq` (Router.dispatch: the card was texted to this sender and
+    the bot still waits on it). The one way a texted yes or no is a verdict."""
+    return seq is not None and (getattr(s, "via", None) or {}).get("answers") == seq
 
 
 def images_of(s) -> list:
@@ -222,10 +244,11 @@ def split_summary(text: str, summary: str = "") -> tuple[str, str]:
     return text, summary[:1000]
 
 
-def prompt_section(v: dict | None, caps: Caps, kind_label: str = "") -> str:
+def prompt_section(v: dict | None, caps: Caps, kind_label: str = "", approvals: bool = False) -> str:
     """The CHANNEL paragraph for the model when the task came from a surface
     other than the web. Empty for web and routine tasks; a hand-off gets its own
-    short paragraph (docs §11)."""
+    short paragraph (docs §11). `approvals`: the user may answer an approval card
+    from that surface (the "Approve by text" switch, docs §10)."""
     if is_web(v) or (v or {}).get("kind") == ROUTINE_KIND:
         return ""
     if (v or {}).get("kind") == APP_KIND:
@@ -247,6 +270,11 @@ def prompt_section(v: dict | None, caps: Caps, kind_label: str = "") -> str:
         lines.append("- Every `ask` carries 2-5 short `options`; the user answers with a number or a word. Never ask an open question you could make a choice.")
     if not caps.buttons:
         lines.append("- No `offer` on this channel: build straight away when asked, otherwise finish the task.")
+        if approvals:
+            lines.append("- Approval cards reach the user as a text they answer with a number: never tell them to come to the Mac "
+                         "for one; take the step and wait for the answer.")
+        else:
+            lines.append("- Approval cards are answered at the Mac only: say so when a step needs one and expect a wait.")
     if not caps.can_login:
         lines.append("- `login` still works, but the user must walk to the Mac to sign in; say so in its message and expect a wait.")
     if not caps.media:

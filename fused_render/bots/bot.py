@@ -33,6 +33,34 @@ from fused_render.bots import paths as bpaths
 from fused_render.bots.browser import Browser
 from fused_render.bots.channels import base as chan
 
+_TASK_TLS = threading.local()  # .task = the _ServingTask this thread is inside (Bot.serving_task), else unset
+
+
+class _ServingTask:
+    """One tool call served for a bot's running task (Bot.serving_task). It
+    snapshots the engine thread and the task's via at entry: emit stamps that
+    via only while that same thread is still the bot's, so a call that outlives
+    its task (stop, error, a new task started meanwhile) never stamps the next
+    task's via on its late cards."""
+
+    def __init__(self, bot):
+        self.bot, self.prev = bot, None
+        self.thread = bot.thread
+        self.via = dict(bot.task_via)
+
+    def __enter__(self):
+        self.prev = getattr(_TASK_TLS, "task", None)
+        _TASK_TLS.task = self
+
+    def __exit__(self, *exc):
+        _TASK_TLS.task = self.prev
+
+    def via_for(self, bot):
+        """The via a card from this call carries, or None when the task it served is gone."""
+        if bot is not self.bot or self.thread is None or bot.thread is not self.thread or not self.thread.is_alive():
+            return None  # the task ended (a dead engine thread is not yet replaced on stop / error) or another started
+        return dict(self.via)
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "sonnet"
@@ -618,6 +646,12 @@ class Bot:
         except FileNotFoundError:
             return 0
 
+    def serving_task(self):
+        """Context manager: this thread serves the running task's tool call, so
+        its emits carry the task's `via` as the task thread's do (see emit).
+        agent_engine.handle_tool wraps every botmcp / permission call in it."""
+        return _ServingTask(self)
+
     def emit(self, role, text, **extra):
         """Append one event to events.jsonl and return it (docs §2 shape).
 
@@ -627,17 +661,25 @@ class Bot:
         duplicate row key (an orphaned bubble on bot switch).
 
         Events written by the task thread carry the task's `via` (the channel
-        the task came from) unless the caller set one; other threads (build
-        watcher, offer settlement, greeting) pass theirs explicitly or carry
-        none. The channels router gets every event (registry.on_event) and
-        delivers the outbound-worthy ones under its policy."""
+        the task came from) unless the caller set one; so do events written by
+        a thread serving one of the task's tool calls (`serving_task`: Super
+        Bot's botmcp / permission requests land on uvicorn threads, and their
+        `ask`, approval and login cards must reach the phone too). Other
+        threads (build watcher, offer settlement, greeting) pass theirs
+        explicitly or carry none. The channels router gets every event
+        (registry.on_event) and delivers the outbound-worthy ones under its policy."""
         with self.lock:
             self.seq = max(self.seq, self._count_events()) + 1
             ev = {"seq": self.seq, "ts": time.time(), "role": role, "text": text, **extra}
             if "via" not in ev:
                 t = self.thread
-                if t is not None and threading.get_ident() == t.ident and not chan.is_web(self.task_via):
-                    ev["via"] = dict(self.task_via)
+                if t is not None and threading.get_ident() == t.ident:
+                    v = dict(self.task_via)
+                else:
+                    serving = getattr(_TASK_TLS, "task", None)
+                    v = serving.via_for(self) if serving is not None else None
+                if v and not chan.is_web(v):
+                    ev["via"] = v
             elif ev["via"] is None:
                 del ev["via"]
             if self.deleted:
@@ -2042,7 +2084,7 @@ class Bot:
             return
         if pending and running and pending.get("seq") != getattr(self, "_offer_seq", None):
             self._settle_offer()  # the offer timed out earlier and the user has moved on: it is stale, not pending
-        if running and outside and self._texted_approval(shown):
+        if running and outside and self._texted_approval(shown, via):
             return
         with self.lock:
             if (via.get("kind") == chan.APP_KIND and self.running()
@@ -2077,11 +2119,15 @@ class Bot:
                     # not an answer. Clearing here would settle the card for a poll.
                     self.set_status("running")
 
-    def _texted_approval(self, text):
-        """A yes/no texted while the task waits on an approval card: approvals
-        are answered at the Mac only (docs §10), so it is not taken as the
-        answer. True when the text was held back (a system line says why);
-        anything else is an ordinary mid-task instruction."""
+    def _texted_approval(self, text, via=None):
+        """A yes/no from an outside sender while the task waits on an approval
+        card. It is the answer only when the router stamped it for this very card
+        (`via["answers"]`: the card was texted to that sender, docs §10); then it
+        goes through to the gate. Otherwise (an app, a botsend file, a text for a
+        card that was never textable or was answered at the Mac already) it is
+        held back: True, with a system line saying why, and a text back to a phone
+        so it is not left waiting. Anything that is not a yes or a no is an
+        ordinary mid-task instruction."""
         with self.lock:
             waiting = self.meta.get("status") == "waiting" and self.meta.get("waiting_on")
         if not waiting:
@@ -2089,13 +2135,20 @@ class Bot:
         ev = self.event_by_seq(waiting)
         if not ev or ev.get("role") != "approval":
             return False
+        if (via or {}).get("answers") == waiting:
+            return False  # the answer to the card the phone was texted (channels.base.answers_card)
         try:
             from fused_render.bots.agent_engine import NO, YES
         except Exception:  # noqa: BLE001
             return False
         if not (YES.match(text or "") or NO.match(text or "")):
             return False
-        self.emit("system", "Approvals are answered here at the Mac, not by text or by an app: use Approve or Deny on the card.", via=None)
+        self.emit("system", "This approval card is answered here at the Mac: use Approve or Deny on the card.", via=None)
+        if (via or {}).get("kind") == "imessage":
+            # source="hold": the router reads a sourceless error as the task's end (it would forget the texted card
+            # and the numbered question); this one is a reply to the phone while the task goes on.
+            self.emit("error", "That one needs your OK at the Mac: it was answered there already, or it did not fit in a text.",
+                      via=dict(via), source="hold")
         return True
 
     def receive_app(self, text, via, images=None, follow_up=False, before=None):
