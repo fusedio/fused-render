@@ -51,6 +51,9 @@ class _RoutedStdout:
 # a standalone script, this file's own directory is sys.path[0] so `_binding.py`
 # beside it resolves even when the package is not pip-installed. Runs before a
 # module load below mutates sys.path, so a user module dir can't shadow it.
+# Not sys.path[0] under -P or the Windows ._pth (safe_path), so put it there.
+if os.path.dirname(os.path.abspath(__file__)) not in sys.path:
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _binding import bind_params
 
 

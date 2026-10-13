@@ -10844,7 +10844,7 @@ our vocabulary, with nowhere to go. Four failures, one answer.
   a TASK when it does not — and the order is the order
   people actually install this. `/Applications/FusedRender.app` first, because
   the DMG is the install; then the same bundle one level in
-  (`Contents/Resources/lib/python3.*/fused_render`), which is the code a fix
+  (`Contents/Resources/lib/python3.*/site-packages/fused_render`), which is the code a fix
   session edits and not something anyone would guess from the .app; then `brew
   list --cask`, which answers a DIFFERENT question — the cask's `app` artifact
   puts the bundle in the same place, so it finds no new path, but it says who

@@ -483,6 +483,8 @@ if [[ ! -f "$STDLIB_ZIP" ]]; then
   exit 1
 fi
 "$BUILD_VENV/bin/python" "$REPO_ROOT/scripts/_prune_stdlib_zip.py" "$STDLIB_ZIP"
+# Third-party code out of the stdlib dirs (dir, zip, lib-dynload) into lib/python3.12/site-packages, which venvs exclude.
+"$BUILD_VENV/bin/python" "$REPO_ROOT/scripts/_split_site_packages.py" "$PRUNE_PYLIB" "$STDLIB_ZIP"
 # The copied Python.framework: stdlib test suite + developer-only modules +
 # C headers. The app's own stdlib lives here (Resources/lib holds packages),
 # so prune surgically, never wholesale.
@@ -591,6 +593,7 @@ ln -sfn "Resources/lib" "$APP_DIR/Contents/lib"
 
 echo "==> bundle sanity: Mach-O-as-.py check"
 APP_PYLIB="$APP_DIR/Contents/Resources/lib/python3.12"
+APP_SITE="$APP_PYLIB/site-packages"   # every third-party package, fused_render included (4a's split)
 
 # ---------------------------------------------------------------------------
 # 4a-bis. Stage the packages py2app cannot carry (setup_py2app.STAGED_PACKAGES).
@@ -613,9 +616,9 @@ if [[ -n "$STAGED_PACKAGES" ]]; then
       exit 1
     fi
     echo "==> staging package $pkg into the bundle"
-    rm -rf "$APP_PYLIB/$pkg"
-    cp -R "$SRC" "$APP_PYLIB/$pkg"
-    find "$APP_PYLIB/$pkg" -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
+    rm -rf "$APP_SITE/$pkg"
+    cp -R "$SRC" "$APP_SITE/$pkg"
+    find "$APP_SITE/$pkg" -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
   done
 fi
 
@@ -659,7 +662,7 @@ PYEOF
 SMOKE_OUT="$(echo "{\"path\":\"$SMOKE_DIR/duckdb_smoke.py\",\"params\":{}}" | \
   env PYTHONHOME="$APP_DIR/Contents/Resources" \
   "$APP_DIR/Contents/MacOS/python" \
-  "$APP_PYLIB/fused_render/_child.py" 2>&1 || true)"
+  "$APP_SITE/fused_render/_child.py" 2>&1 || true)"
 if ! echo "$SMOKE_OUT" | grep -q '"ok": true'; then
   echo "FATAL: duckdb smoke test failed through _child.py:" >&2
   echo "$SMOKE_OUT" >&2
@@ -822,7 +825,9 @@ rm -rf "$BUILD_DIR/stdlib-venv" "$STDLIB_CHECK"
 #     own packages. Source builds import setuptools' shim and jaraco.text from
 #     their own site-packages; a leftover `_distutils_hack` or `jaraco/__init__`
 #     in python312.zip (4a) breaks every one of them, nowhere near this build.
-#     keyring's jaraco.* pieces must still import from the zip.
+#     keyring's jaraco.* pieces must still import for the bundled interpreter.
+#     Then _site_isolation_check.py: no bundled package is visible to, or wins
+#     over, a venv's own (4a's split), and none loses to a user site.
 # ---------------------------------------------------------------------------
 
 SHADOW_CHECK="$BUILD_DIR/shadow_check.py"
@@ -852,7 +857,8 @@ try:
         bad.append("jaraco.text resolved to %s" % text.__file__)
 except BaseException as exc:  # noqa: BLE001 - the report IS the product
     bad.append("jaraco.text: %s: %s" % (exc.__class__.__name__, exc))
-for name in ("keyring", "jaraco.classes", "jaraco.context", "jaraco.functools"):
+# Only the bundled interpreter has keyring; a venv must not see it (the isolation check below).
+for name in ("keyring", "jaraco.classes", "jaraco.context", "jaraco.functools") if sys.prefix == sys.base_prefix else ():
     try:
         importlib.import_module(name)
     except BaseException as exc:  # noqa: BLE001
@@ -884,6 +890,17 @@ for SHADOW_WHO in bundled venv; do
     exit 1
   fi
   echo "    $SHADOW_WHO: shadowing smoke ok"
+  ISO_ARGS=("$APP_SITE")
+  [[ "$SHADOW_WHO" == "bundled" ]] && ISO_ARGS=(--bundled "$APP_SITE")
+  ISO_OUT="$(env -u PYTHONHOME -u PYTHONPATH -u VIRTUAL_ENV \
+    "$SHADOW_PY" -B "$REPO_ROOT/scripts/_site_isolation_check.py" "${ISO_ARGS[@]}" 2>&1 || true)"
+  if ! echo "$ISO_OUT" | grep -q "^SITE-ISOLATION ok"; then
+    echo "FATAL: the $SHADOW_WHO interpreter and the bundle's site-packages are not isolated:" >&2
+    echo "$ISO_OUT" >&2
+    echo "       See 4a's split (_split_site_packages.py)." >&2
+    exit 1
+  fi
+  echo "    $SHADOW_WHO: $ISO_OUT"
 done
 rm -rf "$BUILD_DIR/shadow-venv" "$BUILD_DIR/shadow-site" "$SHADOW_CHECK"
 
@@ -924,7 +941,7 @@ cat > "$WRAPPER_PATH" <<WRAPPER
 # hazard deploy.py scrubs when spawning an external interpreter.
 HERE="\$(cd "\$(dirname "\$0")" && pwd)"        # .../Contents/Resources/bin
 RES="\$(cd "\$HERE/.." && pwd)"                  # .../Contents/Resources
-exec env -u PYTHONPATH PYTHONHOME="\$RES" "\$RES/../MacOS/python" "\$RES/lib/${PYLIB_NAME}/fused_render/_fused_cli.py" "\$@"
+exec env -u PYTHONPATH PYTHONHOME="\$RES" "\$RES/../MacOS/python" "\$RES/lib/${PYLIB_NAME}/site-packages/fused_render/_fused_cli.py" "\$@"
 WRAPPER
 chmod +x "$WRAPPER_PATH"
 

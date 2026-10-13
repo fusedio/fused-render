@@ -267,8 +267,8 @@ def _interpreter_home() -> str | None:
     Inside the py2app bundle the launcher exports
     `PYTHONHOME=…/Contents/Resources` (`scripts/build_dmg.sh` does this for every
     invocation of that python and says why), and that is the ONLY thing making
-    `Contents/Resources/lib/python3.12` — where py2app flattens both the stdlib
-    and site-packages — findable. The environment we were launched with is the
+    `Contents/Resources/lib/python3.12` — the stdlib, with every bundled package
+    in its `site-packages` — findable. The environment we were launched with is the
     ONLY source read here, and an unset PYTHONHOME is answered with None rather
     than with `sys.prefix`.
 
