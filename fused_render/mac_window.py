@@ -387,8 +387,12 @@ class _WebDelegate(NSObject):
         # for a load that was since superseded (⌘R, Home, an in-page link)
         # never drags the window back to the URL that failed.
         self._nav_gen = 0
-        self._retry_pending = False  # the next start is our own retry
-        self._terminations = 0  # content-process deaths since the last commit
+        self._retry_pending = False  # the next start is our own retry/reload
+        self._terminations = 0  # content-process deaths since the user last navigated
+        # The HTTP method of the main-frame request last allowed through the
+        # policy hook: a retry rebuilds the request from its URL alone, which
+        # is only honest for a GET. A failed form POST is not retried.
+        self._main_method = "GET"
         return self
 
     # ---- navigation policy -------------------------------------------------
@@ -412,6 +416,11 @@ class _WebDelegate(NSObject):
         )
         logger.debug("navigation %s -> %s", url, verdict)
         if verdict == "allow":
+            if is_main and request is not None:
+                try:
+                    self._main_method = str(request.HTTPMethod() or "GET").upper()
+                except Exception:  # noqa: BLE001 — diagnostics only
+                    self._main_method = "GET"
             decision(WKNavigationActionPolicyAllow)
         elif verdict == "download":
             decision(WKNavigationActionPolicyDownload)
@@ -460,6 +469,13 @@ class _WebDelegate(NSObject):
         except Exception:  # noqa: BLE001 — diagnostics only
             failing = None
         url = str(failing) if failing else (self._window.current_url() if self._window else None)
+        if self._main_method != "GET":
+            # A retry is a fresh GET of the URL; replaying a POST's body is not
+            # something this layer can do, and silently turning a submission
+            # into a GET would be worse than the blank view. Log and leave it.
+            logger.warning("navigation failed (%s): %s; %s request, not retried: %s",
+                           error.code(), error.localizedDescription(), self._main_method, url)
+            return
         gen = self._nav_gen
         self._nav_retries += 1
         if url is None or self._nav_retries > _NAV_RETRY_MAX:
@@ -490,18 +506,23 @@ class _WebDelegate(NSObject):
         """Every main-frame load starts here: our own retry included.
 
         Bumps the generation (stale retries check it), and when the load is
-        NOT our retry — ⌘R, Home, a link — gives it a fresh retry budget, so a
-        window that spent its eight on one outage is not mute on the next."""
+        NOT our own retry or crash reload — ⌘R, Home, a link — gives it fresh
+        budgets: a window that spent its eight retries on one outage is not
+        mute on the next, and a page the user navigates to afresh gets its
+        crash reloads back. The crash budget is deliberately NOT reset on
+        commit: a page that kills its renderer after its HTML arrived would
+        otherwise reload on a 1 s loop forever."""
         self._nav_gen += 1
         if self._retry_pending:
             self._retry_pending = False
         else:
             self._nav_retries = 0
+            self._terminations = 0
 
     def webView_didCommitNavigation_(self, webview, nav):
-        """A document arrived: both recovery budgets belong to the next failure."""
+        """A document arrived: the navigation retry budget belongs to the next
+        failure. (The crash-reload budget is the user's to reset, above.)"""
         self._nav_retries = 0
-        self._terminations = 0
 
     def webViewWebContentProcessDidTerminate_(self, webview):
         """WebKit's content process died under this window — memory pressure,
@@ -512,7 +533,8 @@ class _WebDelegate(NSObject):
 
         Bounded: a page that kills its renderer on every load gets
         `_TERMINATE_RELOAD_MAX` reloads on a growing delay, then is left as it
-        is (the count resets when a load commits)."""
+        is. The count resets only when the USER navigates (⌘R, Home, a link),
+        never on commit — a renderer can die after its HTML arrived."""
         window = self._window
         label = (window.key or "home") if window is not None else "?"
         self._terminations += 1
@@ -532,6 +554,7 @@ class _WebDelegate(NSObject):
                 return
             if self._nav_gen != gen:
                 return  # the user already navigated; nothing left to recover
+            self._retry_pending = True  # our own load: keeps the budgets
             w.webview.reload()
 
         AppHelper.callLater(delay, reload)
