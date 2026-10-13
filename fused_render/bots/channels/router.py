@@ -133,6 +133,8 @@ class Router:
     def _poll_loop(self) -> None:
         while not self._stop.is_set():
             for ch in list(self.channels.values()):
+                if self._stop.is_set():
+                    break  # quitting: a poll now would advance the cursor past rows whose tasks the launch latch then refuses
                 try:
                     for m in ch.poll():
                         try:

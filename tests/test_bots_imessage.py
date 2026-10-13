@@ -17,6 +17,20 @@ def test_paths_resolve_lazily_under_app_home(app_home, tmp_path, monkeypatch):
     assert imessage.cursor_path() == os.path.join(str(other), "bots", "data", "imessage.json")
 
 
+def test_cursor_and_lock_ignore_the_branch_ref(app_home, monkeypatch):
+    """chat.db is one per Mac, so the cursor and the reader's flock are too: a branch
+    dev build and the installed app must contend for the same lock and advance the
+    same cursor, or the one that was not reading replays everything the other answered."""
+    from fused_render.bots import paths as bpaths
+
+    monkeypatch.setenv("FUSED_RENDER_BRANCH", "some-branch")
+    assert "branches" in bpaths.data_root()  # the bots themselves do nest
+    base = os.path.join(str(app_home), "bots", "data")
+    assert imessage.cursor_path() == os.path.join(base, "imessage.json")
+    assert imessage.lock_path() == os.path.join(base, "imessage.lock")
+    assert imessage.state_path() == os.path.join(base, "imessage-state.json")
+
+
 def test_norm_handle():
     assert imessage.norm_handle("+1 (555) 123-4567") == "+15551234567"
     assert imessage.norm_handle("555 123 4567") == "+15551234567"

@@ -131,7 +131,8 @@ like OpenBot's `.fused/`** so moving an OpenBot install is one copy
                          names it, several bots may name the same one (shared logins, §6)
   data/usage.jsonl       usage ledger
   data/builds.json       Builds panel list
-  data/imessage*.json    iMessage cursor / state / lock
+  data/imessage*.json    iMessage cursor / state / lock — always at the BASE home, never under branches/<ref>/
+                         (chat.db is per Mac; a branch-nested cursor diverges from the installed app's and replays)
   cache/bots/<id>/       shot.png, window.json (the bot's Chrome window ids, its tabs, viewport), steps/ (deletable)
   cache/browsers/<bid>/  session.json (the live Chrome handle)
   cache/slow.jsonl       slow-call log

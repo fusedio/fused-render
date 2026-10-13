@@ -94,8 +94,17 @@ def builds_path() -> str:
 
 
 def imessage_dir() -> str:
-    """imessage.json (cursor), imessage.lock, imessage-state.json: `<home>/bots/data`."""
-    return data_root()
+    """imessage.json (cursor), imessage.lock, imessage-state.json: `<base home>/bots/data`,
+    NEVER branch-nested. chat.db is one per Mac, so the cursor that says "read up to
+    this row" and the flock that elects the one reader are per Mac too. Under
+    `home_dir()` a dev build on a branch and the installed app each kept a private
+    cursor and lock: neither excluded the other, and the installed app's cursor froze
+    while the branch build answered texts, then replayed them all (the owner's AND the
+    bot's own replies, past the echo window) at its next boot (2026-10-13, rows
+    13903–13942 re-fed to Super Bot during a quit)."""
+    p = os.path.join(_storage.base_home_dir(), "bots", "data")
+    os.makedirs(p, exist_ok=True)
+    return p
 
 
 # ----------------------------------------------------- 0.11.x layout move ---

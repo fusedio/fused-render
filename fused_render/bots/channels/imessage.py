@@ -157,7 +157,7 @@ class ImessageChannel(Channel):
                 continue  # only Super Bot's handle reaches it; nothing else is read
             if service and service != "iMessage":
                 continue  # SMS / RCS rows: the sender is not authenticated
-            if text.strip() in sent or self._is_echo(text, sent):
+            if text.strip() in sent or self._is_echo(text, sent) or self._is_own_reply(text):
                 self.state["echoes"] = self.state.get("echoes", 0) + 1
                 continue
             # ts is the message's own time, never the poll's: the router stamps a reply as an approval card's answer
@@ -173,6 +173,19 @@ class ImessageChannel(Channel):
         """A long reply came back split: any sent text that starts with this row is ours."""
         t = text.strip()
         return any(s.startswith(t) or t.startswith(s) for s in sent if len(s) > 40 and len(t) > 40)
+
+    def _is_own_reply(self, text: str) -> bool:
+        """In "own" mode (Super Bot texts the owner's own number) every reply comes back
+        as an incoming row, and the router puts `@<name> ` in front of every one
+        (router.py `_send`). The `sent` window above catches those for ten minutes;
+        a row older than that — a replay after a cursor that fell behind — is still
+        ours by that prefix, never a command. The owner typing `@Super Bot …` to
+        themselves is swallowed too; accepted."""
+        if self.identity().get("mode") != "own":
+            return False
+        _, meta = im.super_meta()
+        name = (meta.get("name") or "bot").strip() if isinstance(meta, dict) else "bot"
+        return text.lstrip().startswith(f"@{name} ")
 
     # ----------------------------------------------------------------------- send
     def send(self, addr: str, text: str, event: dict | None = None) -> None:
