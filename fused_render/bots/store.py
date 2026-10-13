@@ -143,6 +143,11 @@ def events_since(path: str, cursor: int) -> list[dict]:
 # shows is recomputed at most every USAGE_CACHE_S.
 _usage_lock = threading.Lock()
 _usage_cache: tuple[float, dict | None] = (0.0, None)
+# Bumped under the lock by every write that changes what a summary would say (usage_log, usage_dismiss_failure, an
+# outside reset). usage_summary reads the ledger under the lock and publishes its summary only if the generation is
+# still the one it read: a write landing while the summary was being built would otherwise be hidden behind the
+# stale snapshot for up to USAGE_CACHE_S. The prune in usage_summary rewrites the same content, so it does not bump.
+_usage_gen = 0
 
 
 def usage_log(bid, model, origin, task, ok, name=None, cost=None, input_tokens=None, error=None) -> None:
@@ -153,7 +158,7 @@ def usage_log(bid, model, origin, task, ok, name=None, cost=None, input_tokens=N
     exception), written only on a failure so the "N failed" count in the page
     can open the reasons (usage_failures). A line may later gain `dismissed`
     (usage_dismiss_failure): the user cleared it from that list."""
-    global _usage_cache
+    global _usage_cache, _usage_gen
     ev = {"ts": time.time(), "bot": bid, "name": name or "", "model": model, "origin": origin,
           "task": (task or "")[:80], "ok": bool(ok)}
     if cost is not None:
@@ -168,6 +173,7 @@ def usage_log(bid, model, origin, task, ok, name=None, cost=None, input_tokens=N
         with open(path, "a") as f:
             f.write(json.dumps(ev) + "\n")
         _usage_cache = (0.0, None)
+        _usage_gen += 1
 
 
 def usage_failures(bid: str, now: float | None = None) -> list[dict]:
@@ -211,7 +217,7 @@ def usage_dismiss_failure(bid: str, ts: float) -> bool:
     time.time() at the call and round-trips JSON -> JS -> JSON exactly, so equality is the match, no epsilon (an
     epsilon could catch two overlapping calls at once). Read + rewrite inside _usage_lock, like the prune in
     usage_summary, so a line landing meanwhile is not lost. Idempotent: an unknown ts is a no-op (False)."""
-    global _usage_cache
+    global _usage_cache, _usage_gen
     path = _bpaths.usage_path()
     hit = False
     with _usage_lock:
@@ -239,13 +245,15 @@ def usage_dismiss_failure(bid: str, ts: float) -> bool:
                 f.writelines(out)
             os.replace(tmp, path)
             _usage_cache = (0.0, None)
+            _usage_gen += 1
     return hit
 
 
 def usage_reset_cache() -> None:
-    global _usage_cache
+    global _usage_cache, _usage_gen
     with _usage_lock:
         _usage_cache = (0.0, None)
+        _usage_gen += 1  # an in-flight usage_summary must not publish over this reset either
 
 
 def usage_summary(now: float | None = None) -> dict:
@@ -268,6 +276,7 @@ def usage_summary(now: float | None = None) -> dict:
     # Read and prune under the one lock: a snapshot taken outside it and written back after a usage_log or a
     # usage_dismiss_failure landed in between would drop that line (the cleared failure comes back, the call vanishes).
     with _usage_lock:
+        gen = _usage_gen
         try:
             with open(path) as f:
                 for line in f:
@@ -335,7 +344,9 @@ def usage_summary(now: float | None = None) -> dict:
            "bots": sorted(per_bot.values(), key=lambda b: (-b["today"], -b["week"])),
            "tasks": per_task, "hours": hours, "days": day_list}
     if use_cache:
-        _usage_cache = (now, out)
+        with _usage_lock:
+            if _usage_gen == gen:  # nothing landed while this was built; else the next call recomputes
+                _usage_cache = (now, out)
     return out
 
 
