@@ -195,8 +195,11 @@ function render() {
   empty.textContent = "";
   state.els = [];
   const rows = state.rows;
-  if (!rows.some((a) => !a.home)) {
-    const { line, tip } = emptyCopy(q.value.trim());
+  // Nothing to show: under an empty query the bottom rows are always there, so "nothing" is nothing but them;
+  // under a typed query they are ranked results like any other, so only a bare list is empty.
+  const text = q.value.trim();
+  if (text ? rows.length === 0 : !rows.some((a) => !a.home)) {
+    const { line, tip } = emptyCopy(text);
     empty.textContent = line;
     if (tip) {
       const span = document.createElement("span");
