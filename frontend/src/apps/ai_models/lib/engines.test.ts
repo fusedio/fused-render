@@ -465,6 +465,7 @@ describe("capabilityLabel", () => {
     expect(capabilityLabel("text-to-video")).toBe("Video generation");
     expect(capabilityLabel("text-classification")).toBe("Decisions");
     expect(capabilityLabel("text-to-speech")).toBe("Text to speech");
+    expect(capabilityLabel("image-to-text")).toBe("Vision");
   });
 
   it("renders an unknown capability as ITSELF rather than hiding it", () => {

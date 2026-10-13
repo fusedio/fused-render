@@ -3321,6 +3321,13 @@ class _HubByteTicker:
             def set_description(self, *_args, **_kwargs):
                 pass
 
+            # huggingface_hub 2.x calls these too (`snapshot_download`'s last line, xet's bar).
+            def set_description_str(self, *_args, **_kwargs):
+                pass
+
+            def clear(self, *_args, **_kwargs):
+                pass
+
         return _Bar
 
 

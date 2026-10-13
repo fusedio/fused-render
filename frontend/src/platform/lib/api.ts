@@ -5091,6 +5091,9 @@ export interface AiCatalogModel {
    *  yet, because an affordance whose request then 400s is worse than a missing
    *  one. Optional on the wire only because an older server does not send it. */
   acceptsPaths?: boolean;
+  /** Vision models only (`image-to-text`, SPEC AI-33): which `fused.ai.vision`
+   *  tasks this model answers — `caption`, `query`, `detect`, `point`, `segment`. */
+  tasks?: string[];
   /** Which retrieval prompt scheme this model wants — `"bge"`, `"e5"`,
    *  `"nomic"`, … — or **null when it has none**, which is the case for every
    *  dual encoder and for any repo whose convention the server does not

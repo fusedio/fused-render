@@ -83,6 +83,7 @@ head is also the default is the intended design, not a sorting accident.
 from __future__ import annotations
 
 from fused_render.ai import registry
+from fused_render.ai.runners import formats
 
 #: runner code -> suggested models, SMALLEST FIRST (see the ordering rule in the
 #: module docstring; position 0 is also the default). `size_gb` is the approximate
@@ -1522,6 +1523,47 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "note": "ModernBERT-large encoder, upstream's primary checkpoint. "
                     "English only; 512-token context shared by state, "
                     "instructions and options.",
+        },
+    ],
+    # **Image understanding (SPEC AI-33).** `tasks` is the subset of the vision
+    # verb's tasks each model answers, from `formats.VISION_TORCH_RECIPES`; the
+    # route picks the first model here that answers a request's task, so the
+    # detect-only rows leading the list never strand a bare caption request.
+    # Sizes are the fetched files' blob totals (HF API, 2026-10-13).
+    "vision-torch": [
+        {
+            "id": "IDEA-Research/grounding-dino-tiny",
+            "params": "172M",
+            "quantization": "FP32",
+            "label": "Grounding DINO Tiny",
+            "nickname": "Grounding DINO",
+            "size_gb": 0.69,
+            "tasks": list(formats.VISION_TORCH_RECIPES["IDEA-Research/grounding-dino-tiny"]["tasks"]),
+            "note": "Open-vocabulary detector: boxes with a confidence for "
+                    "every object you name. Detection only.",
+        },
+        {
+            "id": "IDEA-Research/grounding-dino-base",
+            "params": "233M",
+            "quantization": "FP32",
+            "label": "Grounding DINO Base",
+            "nickname": "Grounding DINO",
+            "size_gb": 0.93,
+            "tasks": list(formats.VISION_TORCH_RECIPES["IDEA-Research/grounding-dino-base"]["tasks"]),
+            "note": "The larger Grounding DINO: better on small and unusual "
+                    "objects. Detection only.",
+        },
+        {
+            "id": "vikhyatk/moondream2",
+            "recommended": True,
+            "params": "1.9B",
+            "quantization": "BF16",
+            "label": "Moondream 2 (2025-06-21)",
+            "nickname": "Moondream",
+            "size_gb": 3.86,
+            "tasks": list(formats.VISION_TORCH_RECIPES["vikhyatk/moondream2"]["tasks"]),
+            "note": "Vision-language model: captions, answers questions "
+                    "(optionally reasoning first), detects and points.",
         },
     ],
     "mlx-audio-tts": [

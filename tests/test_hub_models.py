@@ -1830,7 +1830,7 @@ def test_the_menu_offers_only_tags_something_here_can_run(client):
     assert {ai_tasks.capability_for_tag(t) for t in offered} == {
         registry.TEXT_GENERATION, registry.IMAGE_GENERATION, registry.SPEECH_TO_TEXT,
         registry.EMBEDDINGS, registry.VIDEO_GENERATION, registry.DECISIONS,
-        registry.TEXT_TO_SPEECH}
+        registry.TEXT_TO_SPEECH, registry.VISION}
 
 
 def test_the_menu_follows_the_vocabulary_rather_than_a_second_list(client, monkeypatch):

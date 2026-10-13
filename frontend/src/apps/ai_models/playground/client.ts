@@ -615,6 +615,73 @@ export async function decide(
   return data.result;
 }
 
+// -- Vision (POST /api/ai/vision, SPEC AI-33) -----------------------------------
+
+export type VisionTask = "caption" | "query" | "detect" | "point" | "segment";
+
+/** A box in 0–1 image coordinates; `score` is null for models that give none. */
+export interface VisionObject {
+  xMin: number;
+  yMin: number;
+  xMax: number;
+  yMax: number;
+  label: string;
+  score: number | null;
+}
+
+export interface VisionPoint {
+  x: number;
+  y: number;
+  label: string;
+}
+
+export interface VisionRequest {
+  image: string;
+  task: VisionTask;
+  prompt?: string;
+  length?: "short" | "normal" | "long";
+  reasoning?: boolean;
+  maxObjects?: number;
+}
+
+/** `/api/ai/vision`'s result — the D632 frame with the task's payload. */
+export interface VisionResult {
+  task: VisionTask;
+  imageSize: { width: number; height: number };
+  text?: string;
+  reasoning?: string;
+  objects?: VisionObject[];
+  points?: VisionPoint[];
+  provider: "local";
+  warnings: { type: string; message: string }[];
+  response: { id: string | null; modelId: string; timestamp: string };
+  providerMetadata: Record<string, { runner?: string; seconds?: number | null }>;
+}
+
+/** One vision request. Absolute `image` (the shell has no `?path=` to resolve
+ *  against, like `embedPaths`); a cold model throws `ModelLoading`. */
+export async function vision(model: string, request: VisionRequest): Promise<VisionResult> {
+  const res = await fetch("/api/ai/vision", {
+    method: "POST",
+    headers: { ...sourceHeader(), "Content-Type": "application/json", "X-Fused": "1" },
+    body: JSON.stringify({ model, ...request }),
+  });
+  const data = (await res.json().catch(() => null)) as {
+    ok?: boolean;
+    result?: VisionResult;
+    error?: { type?: string; message?: string; jobId?: string };
+  } | null;
+  if (!res.ok || !data?.ok) {
+    const error = data?.error;
+    if (res.status === 409 && error?.type === "model_loading") {
+      throw new ModelLoading(error.message || "model is loading", error.jobId ?? null);
+    }
+    throw new Error(error?.message || `vision request failed (${res.status})`);
+  }
+  if (!data.result) throw new Error("the reply carried no result");
+  return data.result;
+}
+
 // -- Transcription (POST /api/ai/transcribe, AI-10) ---------------------------
 
 export interface TranscribeRequest {

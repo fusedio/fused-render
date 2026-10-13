@@ -94,6 +94,12 @@ const CAPABILITY_META: Record<string, CapabilityMeta> = {
     searchNoun: "decision models",
     icon: capabilityIcon("text-classification"),
   },
+  "image-to-text": {
+    plain: capabilityLabel("image-to-text"),
+    blurb: "Caption a picture, ask about it, or find and point at the things in it — with boxes and points you can draw on top.",
+    searchNoun: "vision models",
+    icon: capabilityIcon("image-to-text"),
+  },
   "text-to-video": {
     plain: capabilityLabel("text-to-video"),
     blurb: "Describe a shot and get a few seconds of video with sound. Large download, slow to render.",

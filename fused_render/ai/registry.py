@@ -145,6 +145,10 @@ VIDEO_GENERATION = "text-to-video"
 #:   how HS-0 ("everything on this tab is runnable here") keeps holding.
 DECISIONS = "text-classification"
 TEXT_TO_SPEECH = "text-to-speech"
+#: Image understanding (SPEC AI-33, `fused.ai.vision`): caption, query, detect,
+#: point and segment, each model answering a subset. The Hub's `image-to-text`
+#: tag, gated like DECISIONS: only `formats.VISION_TORCH_RECIPES` repos qualify.
+VISION = "image-to-text"
 
 # --------------------------------------------------------------- SPEC AI-28
 #: Orthogonal TAGS, not capabilities — `tool-use` and `vision` describe a
@@ -1911,6 +1915,19 @@ _RUNNERS: tuple[Runner, ...] = (
         family_label="Laya",
         note="Answers typed questions about a state with calibrated "
              "probabilities. Under 1 GB of RAM.",
+        _available=_apple_silicon,
+    ),
+    # Image understanding on torch (SPEC AI-33). Apple Silicon only for now:
+    # it is the one platform the MPS path was measured on.
+    Runner(
+        code="vision-torch",
+        capability=VISION,
+        folder=os.path.join(RUNNERS_DIR, "vision_torch"),
+        label="PyTorch Vision (Apple Silicon)",
+        short_label="PyTorch Vision",
+        family_label="PyTorch Vision",
+        note="Captions, answers questions about, and finds objects in images. "
+             "1 to 9 GB of RAM.",
         _available=_apple_silicon,
     ),
     Runner(

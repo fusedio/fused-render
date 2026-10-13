@@ -43,6 +43,7 @@ from fused_render.ai.registry import (
     TEXT_GENERATION,
     TEXT_TO_SPEECH,
     VIDEO_GENERATION,
+    VISION,
 )
 
 #: A task this machine can serve: some runner's capability covers it.
@@ -206,10 +207,11 @@ _TASKS: tuple[Task, ...] = (
        "Answers a question by reading a table."),
 
     # ------------------------------------------------------------------ vision
-    _t("image-to-text", "image to text", "multimodal", None,
+    # `vision-torch` serves these (SPEC AI-33), gated like `text-classification`:
+    # only `formats.VISION_TORCH_RECIPES` repos are ones its loader opens.
+    _t("image-to-text", "image to text", "multimodal", VISION,
        "Describes an image in words — captioning, OCR.",
-       "The vision-language models here load as chat models (image + text to text); "
-       "a caption-only checkpoint has no runner."),
+       format_gated=True),
     # D1235: was `None` ("no runner takes a base image") — the sole reason
     # `classify_repo`'s tags-widening fallback existed. The FLUX.2-klein
     # family, and the mflux edit path generally, DO take a base image
@@ -234,8 +236,9 @@ _TASKS: tuple[Task, ...] = (
        "Marks which pixels belong to which object."),
     _t("object-detection", "object detection", "cv", None,
        "Finds objects in an image and boxes them."),
-    _t("zero-shot-object-detection", "zero-shot object detection", "cv", None,
-       "Finds objects named by labels you supply at the time."),
+    _t("zero-shot-object-detection", "zero-shot object detection", "cv", VISION,
+       "Finds objects named by labels you supply at the time.",
+       format_gated=True),
     _t("depth-estimation", "depth estimation", "cv", None,
        "Estimates how far away each part of an image is."),
     _t("mask-generation", "mask generation", "cv", None,

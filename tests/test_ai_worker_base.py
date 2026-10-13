@@ -1427,6 +1427,19 @@ def test_a_bar_survives_the_rate_postfix_call_hf_makes_on_it(base, monkeypatch):
     assert bar.format_dict["total"] == 1000
 
 
+def test_a_bar_survives_the_calls_huggingface_hub_2_makes_on_it(base):
+    """huggingface_hub 2.x ends `snapshot_download` with
+    `transfer_progress.set_description_str("Download complete")` and clears a
+    xet bar; on `_Bar` both raised AttributeError after every byte had landed,
+    failing a finished download (seen loading vikhyatk/moondream2, hub 2.2.0)."""
+    ticker = base._HubByteTicker()
+    bar = _bytes_bar(ticker, "Downloading bytes", total=10)
+    bar.update(10)
+    bar.set_description_str("Download complete")
+    bar.clear()
+    assert ticker.value == 10
+
+
 def test_a_bars_own_n_is_updated_under_the_same_lock_as_the_ticker(base):
     """`self.n += n` used to run OUTSIDE `ticker._lock`, racing the read
     `format_dict` (and hf's own `_update_transfer_bar`/`_finish_transfer_bar`,

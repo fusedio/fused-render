@@ -2827,6 +2827,14 @@ def generate_decide(model: str, body: dict) -> dict:
     return _generate_sync(registry.DECISIONS, model, body, "the decision failed")
 
 
+def generate_vision(model: str, body: dict) -> dict:
+    """One image-understanding reply (SPEC AI-33): `{task, image, prompt, ...}`
+    in, `{task, width, height, text|objects|points|masks, seconds}` out.
+    Synchronous like decide: a call is seconds, and a cold load surfaces as
+    `ModelNotReady` with the load's job id."""
+    return _generate_sync(registry.VISION, model, body, "the vision request failed")
+
+
 def _wait_ready(model: str, capability: str, job: str,
                 row: dict | None = None) -> Worker:
     """Make `model` resident, reporting the wait to `job`. Blocking.

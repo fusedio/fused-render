@@ -3,7 +3,7 @@
 Mirrors `fused.ai` from `fused_render/static/runtime.js` — same names, same
 option names, same closed-envelope rejection (D413) — for Python code that
 wants local inference without re-implementing the model layer. See
-`fused.ai.text/stream/transcribe/image/embed/decide/models/cancel` there for the
+`fused.ai.text/stream/transcribe/image/embed/decide/vision/models/cancel` there for the
 JS-side contract this restates.
 
 **Travels with `appenv.py`.** This module is stdlib only (`json`, `os`,
@@ -123,6 +123,9 @@ _EMBED_WIRE_KEYS = frozenset({"texts", "paths", "model", "kind", "provider"})
 #: fields and the two shared ones; the verb has no tunables (zero output
 #: tokens — every answer is a calibrated probability, nothing to sample).
 _DECIDE_WIRE_KEYS = frozenset({"state", "questions", "model", "provider"})
+#: …and `/api/ai/vision`'s (SPEC AI-33), pinned against `_VISION_OPTIONS`.
+_VISION_WIRE_KEYS = frozenset({"image", "task", "prompt", "length", "reasoning",
+                               "maxObjects", "model", "provider"})
 _SPEECH_WIRE_KEYS = frozenset(
     {"text", "model", "provider", "voice", "instruct", "refAudio", "refText", "language"})
 
@@ -816,6 +819,37 @@ def decide(state, questions: dict, *, model: str | None = None,
     return payload.get("result") or {}
 
 
+# ------------------------------------------------------------------ vision
+
+
+def vision(image: str, task: str, prompt: str | None = None, *,
+           length: str | None = None, reasoning: bool | None = None,
+           max_objects: int | None = None, model: str | None = None,
+           provider: str | None = None,
+           timeout: float = _DEFAULT_TIMEOUT_S) -> dict:
+    """`POST /api/ai/vision` (SPEC AI-33). Caption, query, detect, point at or
+    segment what is in one image, on a local model.
+
+    `task` is `"caption"` (no prompt; `length` short/normal/long), `"query"`
+    (`prompt` is the question; `reasoning=True` thinks first), `"detect"`,
+    `"point"` or `"segment"` (`prompt` names what to look for; `max_objects`
+    caps the count). Returns the D632 frame with `task`, `imageSize` and one
+    of `text`, `objects` (`[{xMin, yMin, xMax, yMax, label, score}]`), `points`
+    or `masks`; coordinates are 0–1 of the image. Each model answers a subset
+    of the tasks; with no `model` the first suggested one that can is used.
+    `image` is made absolute here, like `embed`'s paths.
+    """
+    body: dict = {"image": os.path.abspath(os.path.expanduser(image)), "task": task}
+    for key, value in (("prompt", prompt), ("length", length), ("reasoning", reasoning),
+                       ("maxObjects", max_objects), ("model", model), ("provider", provider)):
+        if value is not None:
+            body[key] = value
+    payload = _post_json("/api/ai/vision", body, timeout=timeout)
+    if not payload.get("ok"):
+        raise _error_from_payload(200, payload)
+    return payload.get("result") or {}
+
+
 # ------------------------------------------------------------------- models
 
 
@@ -911,6 +945,7 @@ class _Ai:
     speech = staticmethod(speech)
     embed = staticmethod(embed)
     decide = staticmethod(decide)
+    vision = staticmethod(vision)
     models = models
     cancel = staticmethod(cancel)
 

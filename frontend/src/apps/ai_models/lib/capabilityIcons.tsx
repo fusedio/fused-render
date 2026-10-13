@@ -101,6 +101,13 @@ const ICONS: Record<string, ReactNode> = {
       <circle cx="20" cy="7" r="1.5" fill="currentColor" />
     </svg>
   ),
+  // Vision: an eye.
+  "image-to-text": (
+    <svg {...base}>
+      <path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z" />
+      <circle cx="12" cy="12" r="3" />
+    </svg>
+  ),
   // Search by meaning: a magnifier.
   embeddings: (
     <svg {...base}>

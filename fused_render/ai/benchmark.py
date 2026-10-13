@@ -184,8 +184,9 @@ _EMBED_TEXTS = (
 #: question, so a meaningful workload is a fixed batch of typed questions over a
 #: fixed state, and which questions — and whether the tab measures q/s or
 #: per-question latency — is the same product decision as above.
+#: `VISION` (SPEC AI-33) too: which image and which task a run should measure is undecided.
 NO_WORKLOAD_YET = frozenset({registry.VIDEO_GENERATION, registry.DECISIONS,
-                             registry.TEXT_TO_SPEECH})
+                             registry.TEXT_TO_SPEECH, registry.VISION})
 
 #: One entry per capability constant in `registry`, `NO_WORKLOAD_YET` excepted.
 #: A capability with neither an entry here nor an exemption above would render

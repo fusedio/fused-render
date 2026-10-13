@@ -1,0 +1,33 @@
+# The torch image-understanding runner's environment (SPEC AI-33).
+#
+# Moondream loads from its own torch code, not through transformers: its HF
+# wrapper breaks on transformers 5 (`all_tied_weights_keys`). transformers is
+# here for Grounding DINO only.
+# torch comes from the CPU index like `diffusers_image/`: the macOS wheel there
+# carries MPS, which is where this runner is offered today.
+[project]
+name = "fused-render-runner-vision-torch"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.13,<3",
+    "transformers>=5.19,<6",
+    "tokenizers>=0.23,<1",
+    "safetensors>=0.4,<1",
+    "numpy>=1.26,<3",
+    "pillow",
+    "huggingface_hub",
+    "psutil",
+]
+
+# Not a distribution — a folder of scripts, not something to build and install.
+[tool.uv]
+package = false
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }

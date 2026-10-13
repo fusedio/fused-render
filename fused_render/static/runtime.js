@@ -297,6 +297,25 @@
  *     (a malformed question, named by id) | "model_loading" (.jobId is the
  *     load this call started — watch it and retry) | "ai_error" |
  *     "unavailable" (no decision runner on this machine: Apple Silicon only).
+ *   fused.ai.vision({image, task, prompt, length, reasoning, maxObjects, model,
+ *                    provider, abortSignal})  (SPEC AI-33)
+ *     -> Promise<{task, imageSize: {width, height}, text?, reasoning?,
+ *                 objects?, points?, masks?, ...frame}>
+ *     providerMetadata.local: {runner, seconds}.
+ *     Image understanding on a local model. `image`: one path, resolved
+ *     beside this page when relative. `task`: "caption" (no prompt; `length`
+ *     "short" | "normal" | "long") | "query" (`prompt` is the question,
+ *     `reasoning: true` thinks first; reply `text`, maybe `reasoning`) |
+ *     "detect" (`prompt` names what to find; reply `objects: [{xMin, yMin,
+ *     xMax, yMax, label, score}]`, score null when the model gives none) |
+ *     "point" (reply `points: [{x, y, label}]`) | "segment" (reply `masks`).
+ *     Coordinates are 0–1 of the image. `maxObjects` caps detect/point.
+ *     Each model answers a subset — its catalog row's `tasks`; with no
+ *     `model`, the first suggested model that answers `task` is used. Not
+ *     job-backed. Rejects .type "bad_request" (bad option, or a model that
+ *     cannot do `task` — the message names one that can) | "model_loading"
+ *     (.jobId is the load this call started — watch it and retry) |
+ *     "ai_error" | "unavailable" (no vision runner here: Apple Silicon only).
  *   fused.capture.* -> record the screen, record the mic, grab a still
  *     screen({display, rect, audio, device, cursor, path, maxSeconds, title})
  *     -> Promise<handle> and audio({source: "mic"|"system"|"both", device, path, maxSeconds,
@@ -5425,6 +5444,63 @@
       });
   }
 
+  // `fused.ai.vision` (SPEC AI-33): decide's synchronous shape plus a
+  // page-relative `image`, resolved beside this page through `base` (RH-1).
+  function aiVision(opts) {
+    opts = opts || {};
+    const visionKeys = ["image", "task", "prompt", "length", "reasoning",
+      "maxObjects", "model", "provider"];
+    const unknown = Object.keys(opts).filter(
+      (k) => !visionKeys.includes(k) && k !== "abortSignal");
+    if (unknown.length) {
+      const named = unknown.sort().map((k) => `'${k}'`).join(", ");
+      const err = new Error(
+        `${named} ${unknown.length === 1 ? "is not an option" : "are not options"} `
+          + `of fused.ai.vision; accepted: ${visionKeys.slice().sort().join(", ")}`);
+      err.type = "bad_request";
+      return Promise.reject(err);
+    }
+    if (typeof opts.image !== "string" || !opts.image.trim()) {
+      const err = new Error("fused.ai.vision({image}): 'image' must be the path to one image");
+      err.type = "bad_request";
+      return Promise.reject(err);
+    }
+    if (typeof opts.task !== "string" || !opts.task) {
+      const err = new Error(
+        "fused.ai.vision({task}): 'task' is required — caption, query, detect, point or segment");
+      err.type = "bad_request";
+      return Promise.reject(err);
+    }
+    const body = { image: opts.image, task: opts.task };
+    for (const key of ["prompt", "length", "reasoning", "maxObjects", "model", "provider"]) {
+      if (opts[key] !== undefined) body[key] = opts[key];
+    }
+    const ownPath = new URLSearchParams(window.location.search).get("path");
+    if (ownPath) body.base = ownPath;
+    const signal = abortSignalOf(opts);
+    if (signal && signal.aborted) return Promise.reject(cancelledError("the vision request"));
+    return fetch("/api/ai/vision", {
+      method: "POST",
+      headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" }),
+      body: JSON.stringify(body),
+      signal: signal || undefined,
+    })
+      .catch(rethrowAbort("the vision request"))
+      .then((res) => res.json().catch(() => ({})).then((data) => ({ res, data })))
+      .then(({ res, data }) => {
+        if (!res.ok || !data.ok) {
+          const error = data.error || {};
+          const err = new Error(
+            error.message || res.statusText || "the vision request failed");
+          err.type = error.type
+            || (res.status === 409 ? "unavailable" : "ai_error");
+          if (error.jobId) err.jobId = error.jobId;
+          throw err;
+        }
+        return data.result;
+      });
+  }
+
   const aiModels = {
     list: () => fetch("/api/ai/runtime", { headers: callHeaders({}) }).then((r) => r.json()),
     catalog: () => fetch("/api/ai/catalog", { headers: callHeaders({}) }).then((r) => r.json()),
@@ -5467,6 +5543,7 @@
     transcribe: aiTranscribe,
     embed: aiEmbed,
     decide: aiDecide,
+    vision: aiVision,
     // Stop the generation in flight on a local model, keeping it loaded — the
     // next message answers straight away. Resolves false when there was
     // nothing to stop, which is not an error: a Stop pressed as the last token
