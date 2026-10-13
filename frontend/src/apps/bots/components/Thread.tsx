@@ -6,7 +6,7 @@
 // Rows are keyed by bot + seq and memoized on primitive props, so a poll only mounts what arrived; DOM nodes (and any
 // text selection) survive. Markdown goes through md() into ONE dangerouslySetInnerHTML site (HtmlMsg); its buttons
 // (react / reply / offer options) are handled by the thread's delegated click handler, exactly like OpenBot.
-import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type RefObject } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type RefObject } from "react";
 import { AppCard } from "../apps/AppCard";
 import { appFromText, showAppBeside, useAppsRoot } from "../apps/apps";
 import { openBuilds, getBuildRows } from "../builds/builds";
@@ -14,7 +14,7 @@ import { api, stepThumbUrl, type AppRef, type Bot, type BotEvent } from "../lib/
 import { esc, fmtDay, fmtSecs, fmtTime, fmtWhen } from "../lib/format";
 import { md } from "../lib/md";
 import { botsRoot } from "../lib/root";
-import { chosenOption, clearIndex, firstNewIndex, isHandoff, isNoise, liveCards, optionKey, rowKeys, searchCountText, searchHit, sessionBreak } from "../lib/thread";
+import { chosenOption, clearIndex, firstNewIndex, foldHint, foldStretches, isHandoff, isNoise, isTaskEnd, liveCards, optionKey, rowKeys, searchCountText, searchHit, sessionBreak } from "../lib/thread";
 import { act, clearScrollSeq, cur, eventsOf, getState, jumpTo, markSeen, openDialog, select, setNewCount, setScrollToEnd, showBanner, unviewed, useBots, viewedSet } from "../state/store";
 import { END_GAP, clearSearchHighlight, gapOf, evBox, highlightSearch, pinToEnd, restoreAnchor, topVisible, updateToBottom, type Anchor } from "./threadDom";
 import { HandBackRow, HandoverNote } from "./HandoverCard";
@@ -22,6 +22,7 @@ import { SetupLines } from "./SetupLines";
 
 const EMPTY: BotEvent[] = [];
 const NO_SEQS: ReadonlySet<number> = new Set();
+const NO_RX: Record<number, string> = {};
 
 // ---- the bubble's markup (built as escaped strings: it shares one innerHTML with the markdown) ----
 const REACT_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M8.5 14.5a4.5 4.5 0 0 0 7 0"/><path d="M9 9.5h.01M15 9.5h.01"/></svg>';
@@ -79,7 +80,17 @@ interface RowProps {
   foldN?: number;
   foldOpen?: boolean;
   onFold?: () => void;
+  /** This row is the first of a fold stretch (lib/thread `foldStretches`) and draws its trigger line: the stretch's
+   *  state, its key (the seq the toggle is keyed by, `data-fold`) and the hover text. The click is the thread's
+   *  delegated handler, so the row needs no callback prop and its memo holds. Absent on every other row. */
+  fold?: "open" | "closed";
+  foldKey?: number;
+  foldHint?: string;
 }
+
+/** The two words (cloud's RunTrigger): never a count, the count is the hover. */
+const foldHtml = (state: "open" | "closed", key: number, hint: string | undefined) =>
+  `<button class="fold" data-fold="${key}" aria-expanded="${state === "open"}" title="${esc(hint || "")}">${state === "open" ? "show less" : "show more"}</button>`;
 
 /** An action event's raw tool result as display text ("" when there is none). The wire sends a string; anything else is shown as JSON. */
 const detailText = (d: unknown): string => {
@@ -371,11 +382,18 @@ const Row = memo(function Row(p: RowProps) {
   const { e, day, isNew } = p;
   const cls = p.folded ? "ev folded" : "ev";
   if (isNoise(p.e)) return <div className={cls} />;
+  // THE TRIGGER LINE: this row is the first of a fold stretch, and the stretch's one muted line stands in for it
+  // (lib/thread `foldStretches`). Open, the line stays above the steps and reads `show less`; closed, the rows behind
+  // it are `.folded` and this line is all that is left of them.
+  const trigger = p.fold && p.foldKey != null
+    ? <div className="msg foldline" dangerouslySetInnerHTML={{ __html: foldHtml(p.fold, p.foldKey, p.foldHint) }} />
+    : null;
   return (
     <div className={cls} data-seq={e.seq}>
       {day ? <div className="day">{fmtDay(e.ts)}</div> : null}
       {isNew ? <div className="new">New</div> : null}
-      {body(p)}
+      {trigger}
+      {trigger && p.fold === "closed" ? null : body(p)}
       {p.texted?.length ? <Texted e={e} rows={p.texted} /> : null}
     </div>
   );
@@ -429,7 +447,7 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
   };
   const mark = S.newMark?.id === botId ? S.newMark.seq : null;
   const firstNew = firstNewIndex(evs, mark);  // first shown message you have not seen
-  const rxs = b?.reactions || {};
+  const rxs = b?.reactions || NO_RX;
   const onBeside = useCallback((a: AppRef) => showAppBeside(a), []);
 
   // ---- Clear context: rows before the last marker fold behind its toggle (shown again while searching) ----
@@ -446,6 +464,68 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
     const seq = k.slice(k.lastIndexOf(":") + 1), box = evBox(th.querySelector(`.ev[data-seq="${seq}"]`));
     foldRef.current.anchor = box ? { seq, y: box.getBoundingClientRect().top - th.getBoundingClientRect().top } : null;
     setOpenFold((o) => (o === k ? "" : k));
+  }, [threadRef]);
+
+  // ---- step fold: the bot's process folds behind the exchange, one fold per stretch (lib/thread `foldStretches`) ----
+  //
+  // SEEDED ONCE PER BOT, THEN THE READER'S. The cloud transcript learnt this the hard way (2026-09-17): a fold that
+  // re-derives every render shuts the minute-old answer under a reader who is mid-conversation. So on the first paint
+  // with this bot's events, every stretch lands closed except the newest task's (the one you came back for, settled or
+  // still running), and from then on nothing here moves a fold except a click. A stretch that settles while you watch
+  // arrives open and stays open. Switching bots is a fresh seed.
+  //
+  // AND THE SEED NEVER HIDES WHAT YOU HAVE NOT SEEN: a stretch with a row past the seen mark (a routine that ran
+  // overnight) stays open, so the New rule and the unread count still point at rows that are on screen.
+  //
+  // A REF PLUS A BUMP, like the Clear fold's anchor: the map is read during render, and every row's props must stay
+  // identical across a click for Row's memo to hold.
+  const busy = !!b && (b.status === "running" || b.status === "waiting");
+  // A note whose text links a built app draws a card (body() `appFromText`): an outcome, never hidden.
+  const folds = useMemo(
+    () => foldStretches(evs, { reactions: rxs, live: busy, keep: (e) => e.role !== "action" && !!appFromText(e.text, appsRoot) }),
+    [evs, rxs, busy, appsRoot],
+  );
+  const stretchRef = useRef({ bot: "\u0000", seeded: false, open: new Map<number, boolean>() });
+  const [, bumpFold] = useState(0);
+  if (stretchRef.current.bot !== botId) stretchRef.current = { bot: botId, seeded: false, open: new Map() };
+  // THE SEED WAITS FOR THE EVENTS AND THE SEEN MARK: a bot's first paint can be an empty list (not loaded yet), and a
+  // seed burnt on it would leave every stretch of the history open once it lands. "Seen as of opening" is `S.base`
+  // (store setNewMark, written in select()'s own batch and by the first poll for a URL-picked bot), not `newMark`:
+  // that one is null both before it is placed and when nothing is new, and the two must not read the same.
+  const base = S.base[botId];
+  if (!stretchRef.current.seeded && evs.length && base !== undefined) {
+    // The newest task starts after the second-to-last closer: everything from there on is the one you came back for.
+    const closers: number[] = [];
+    for (let i = 0; i < evs.length; i++) if (isTaskEnd(evs[i])) closers.push(i);
+    const newestFrom = closers.length >= 2 ? closers[closers.length - 2] : -1;
+    for (const t of folds) {
+      const unread = t.hidden.some((j) => evs[j].seq > base);
+      stretchRef.current.open.set(t.key, t.hidden[0] > newestFrom || unread);
+    }
+    stretchRef.current.seeded = true;
+  }
+  // A stretch first seen after the seed (the task that just settled) is open: only a click closes it.
+  // The first row of every stretch draws its trigger line and is never hidden itself (a session divider on it stays
+  // where it is); the rest of the stretch is `.folded` while closed.
+  const foldAt = new Map<number, { fold: "open" | "closed"; key: number; hint: string }>();
+  const foldHidden = new Set<number>();
+  // SEARCH OPENS EVERYTHING (like the Clear fold): a closed stretch draws only its trigger line, and a row whose body
+  // is not in the DOM cannot be a hit. The map is untouched, so the folds come back as they were when the search ends.
+  for (const t of folds) {
+    const isOpen = !!searchQ || (stretchRef.current.open.get(t.key) ?? true);
+    foldAt.set(t.hidden[0], { fold: isOpen ? "open" : "closed", key: t.key, hint: foldHint(t) });
+    if (isOpen) continue;
+    for (const j of t.hidden) if (j !== t.hidden[0]) foldHidden.add(j);
+  }
+  // The toggle keeps the trigger line where it sits: the steps open (or close) below it, never under your pointer.
+  const onFoldStretch = useCallback((key: number) => {
+    const th = threadRef.current; if (!th) return;
+    const btn = th.querySelector(`[data-fold="${key}"]`), ev = btn?.closest<HTMLElement>(".ev") || null;
+    const seq = ev?.dataset.seq, box = ev ? evBox(ev) : null;
+    foldRef.current.anchor = box && seq ? { seq, y: box.getBoundingClientRect().top - th.getBoundingClientRect().top } : null;
+    const m = stretchRef.current.open;
+    m.set(key, !(m.get(key) ?? true));
+    bumpFold((n) => n + 1);
   }, [threadRef]);
 
   // The search tint lives in the document's highlight registry, not the DOM: drop it when the thread goes.
@@ -470,6 +550,12 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
     const js = s.scrollSeq, jumping = !!js && js.bot === botId;
     // A jump into the folded conversation opens it first; the next commit lands on the message.
     if (jumping && folded && js.seq < evs[ci].seq && js.seq >= evs[0].seq) { setOpenFold(foldKey); return; }
+    // …and a jump at a step hidden behind its stretch's trigger opens that stretch first, the same way.
+    if (jumping) {
+      // Every row of a closed stretch, its first included: that one draws the trigger line but not its body.
+      const hit = folds.find((t) => foldAt.get(t.hidden[0])?.fold === "closed" && t.hidden.some((j) => evs[j].seq === js.seq));
+      if (hit) { stretchRef.current.open.set(hit.key, true); bumpFold((n) => n + 1); return; }
+    }
     const fa = foldRef.current.anchor;
     foldRef.current.anchor = null;
     const jumpEv = jumping ? th.querySelector<HTMLElement>(`.ev[data-seq="${js.seq}"]`) : null;
@@ -487,7 +573,12 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
     th.classList.toggle("filtering", !!searchQ);
     if (searchQ) {
       let n = 0;
-      for (const el of th.children) { const hit = searchHit(el.textContent, searchQ); el.classList.toggle("hit", hit); if (hit) n++; }
+      // A row's text, minus the fold trigger line: "show more" is chrome, and `more` must not match every stretch.
+      for (const el of th.children) {
+        let text = "";
+        for (const c of el.children) if (!c.classList.contains("foldline")) text += c.textContent || "";
+        const hit = searchHit(text, searchQ); el.classList.toggle("hit", hit); if (hit) n++;
+      }
       // The matched words themselves light up; the count is of those, or of rows where the browser cannot paint them.
       onSearchCount(searchCountText(highlightSearch(th, searchQ) || n));
     } else { highlightSearch(th, ""); onSearchCount(""); }
@@ -496,8 +587,10 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
     const io = viewer.current;
     if (io) th.querySelectorAll<HTMLElement>(".ev[data-seq]:not([data-obs])").forEach((el) => { el.dataset.obs = "1"; const m = evBox(el); if (m) io.observe(m); });
     const c = cur();
-    // Folded rows never scroll into view; they are behind the marker, not unread.
+    // Folded rows never scroll into view; they are behind the marker, not unread. Steps folded behind a result the
+    // same: the seed only ever folds what was already seen, and a click that folds is a reader who has read them.
     if (folded && botId) { const set = viewedSet(botId); for (const e of evs.slice(0, ci)) set.add(e.seq); }
+    if (foldHidden.size && botId) { const set = viewedSet(botId); for (const j of foldHidden) set.add(evs[j].seq); }
     if (c) setNewCount(unviewed(c, eventsOf(c.id)).length);
     updateToBottom(th);
     // Sitting at the end with the tab visible means you are following along: keep "seen" current so a reload or re-open
@@ -534,6 +627,8 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
     const t = ev.target as Element, sel = getState().sel;
     const jump = t.closest<HTMLElement>("[data-jump-bot]");
     if (jump) { jumpTo(jump.dataset.jumpBot || "", Number(jump.dataset.jumpSeq)); return; }
+    const fold = t.closest("[data-fold]");
+    if (fold) { onFoldStretch(Number(fold.getAttribute("data-fold"))); return; }
     const rc = t.closest("[data-react]");
     if (rc) { onReact(rc, Number(rc.getAttribute("data-react"))); return; }
     const dlg = t.closest("[data-dialog]");
@@ -597,7 +692,8 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
           hbSecs={hb && e.seq === hb.seq && e.role === "question" ? hb.secs : undefined}
           hbShot={hb && e.seq === hb.seq && e.role === "question" ? hb.shot : undefined}
           hbBot={hoSeq != null && e.seq === hoSeq ? b : undefined} queued={e.role === "user" && heldSeqs.has(e.seq)}
-          folded={folded && i < ci} foldN={i === ci ? foldN : undefined} foldOpen={i === ci ? !folded : undefined} onFold={i === ci ? onFold : undefined} />
+          folded={(folded && i < ci) || foldHidden.has(i)} foldN={i === ci ? foldN : undefined} foldOpen={i === ci ? !folded : undefined} onFold={i === ci ? onFold : undefined}
+          fold={foldAt.get(i)?.fold} foldKey={foldAt.get(i)?.key} foldHint={foldAt.get(i)?.hint} />
       );
     });
     if (b.control && hoSeq == null) content.push(<HandoverNote key="handover" b={b} />);

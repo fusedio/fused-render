@@ -89,7 +89,7 @@ export function highlightSearch(th: HTMLElement, q: string): number {
   const walker = document.createTreeWalker(th, NodeFilter.SHOW_TEXT);
   for (let node = walker.nextNode(); node; node = walker.nextNode()) {
     const el = node.parentElement;
-    if (!el || !el.closest(".hit") || el.closest("time, .when, .rx, .acts, .day, .new")) continue;
+    if (!el || !el.closest(".hit") || el.closest("time, .when, .rx, .acts, .day, .new, .foldline")) continue;
     const text = node.textContent || "";
     for (const m of text.matchAll(re)) {
       if (!m[0]) break;
