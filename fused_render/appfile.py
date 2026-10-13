@@ -1010,10 +1010,11 @@ def install_app_file(fused_path: str, *, force: bool = False) -> dict:
     refuses always. ``.fused/`` is never touched (module comment).
 
     **New copy:** unpacked into a staging dir INSIDE `app/` (a same-filesystem
-    rename claims it), the run-in-place era's state for this app adopted into
-    the staging payload, then one rename, `.fused/` scaffolded, the stamp
-    written, and `app_git.init_repo` so the copy heads its own repo like a
-    newly created `app/` app.
+    rename claims it), one rename, then the run-in-place era's state for
+    this app adopted into the secured copy (never into staging, which every
+    refusal deletes), `.fused/` scaffolded, the stamp written, and
+    `app_git.init_repo` so the copy heads its own repo like a newly created
+    `app/` app.
 
     **Update / overwrite:** the payload is merged over the copy (`_merge_tree`:
     payload files replace their counterparts; `.venv`, `.fused`, `.git` and
@@ -1044,7 +1045,10 @@ def install_app_file(fused_path: str, *, force: bool = False) -> dict:
     try:
         payload = _extract_payload(fused_path, manifest, staging)
         if not target["installed"]:
-            adopted = _adopt_legacy_state(payload, app_id, fused_path, manifest, final_dir=dest)
+            # The run-in-place state is adopted AFTER the destination is
+            # secured (below), never into staging: a refusal or a 409 out of
+            # the lost-rename branch runs the `finally` that deletes the
+            # staging dir, and the user's state must not go with it.
             try:
                 os.rename(payload, dest)
             except OSError:
@@ -1067,16 +1071,9 @@ def install_app_file(fused_path: str, *, force: bool = False) -> dict:
                         "open the file again")
                 if again["needs_force"] and not force:
                     raise InstallNeedsConfirm(again)
-                # The state adopted into this staging goes with it when the
-                # winner has none yet, so an adopted state is never lost to
-                # the staging sweep below.
-                from fused_render import app_fused_dir
-
-                staged_dot = app_fused_dir.dot_fused(payload)
-                if adopted and os.path.isdir(staged_dot) and not os.path.lexists(app_fused_dir.dot_fused(dest)):
-                    shutil.move(staged_dot, app_fused_dir.dot_fused(dest))
-                    _repoint_meta(dest, dest)
                 _merge_tree(payload, dest, skip=_INSTALL_KEEP)
+            # `dest` is ours now: the state moves straight into it.
+            adopted = _adopt_legacy_state(dest, app_id, fused_path, manifest, final_dir=dest)
             action = "installed"
         else:
             old = read_stamp(dest)
