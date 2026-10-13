@@ -800,12 +800,6 @@ _IMAGE_EXT = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", 
 _IMAGE_PUSH_MAX = 3 * 1024 * 1024  # an un-previewed original may ride the model turn only up to this (the API's ~5 MB decoded cap, with room)
 
 
-def _bots_on():
-    """The owner's gate: an app may drive bots only while the Bots sub-app is switched on."""
-    from fused_render.shell import prefs
-    return _error("Bots are off in Preferences", 403) if not prefs.bots_enabled() else None
-
-
 def _app_key(x_fused_page):
     """The calling page's app key, from the one idea of 'this app' `fused.tasks`
     uses (routers/tasks._page_scope: the registry, the nearest declared entry
@@ -859,9 +853,6 @@ def _app_bot(b):
 @router.get("/api/bots/roster")
 @_handled
 def bots_roster():
-    off = _bots_on()
-    if off is not None:
-        return off
     out = []
     for b in registry.all():
         try:
@@ -873,9 +864,6 @@ def bots_roster():
 
 
 def _app_send(bid, body, x_fused_page=None):
-    off = _bots_on()
-    if off is not None:
-        return off
     key = _app_key(x_fused_page)
     b = _bot(bid)
     bm = _botmod()
@@ -927,9 +915,6 @@ def _app_send(bid, body, x_fused_page=None):
 
 
 def _app_stop(bid, body, x_fused_page=None):
-    off = _bots_on()
-    if off is not None:
-        return off
     key = _app_key(x_fused_page)
     b = _bot(bid)
     try:
@@ -944,9 +929,6 @@ def _app_stop(bid, body, x_fused_page=None):
 def bot_app_events(bid: str, addr: str = Query(default=""), since: str = Query(default="0"),
                    x_fused_page: str | None = Header(default=None)):
     """This app turn's events after `since` (docs §13), plus `live` and the bot's status."""
-    off = _bots_on()
-    if off is not None:
-        return off
     key = _app_key(x_fused_page)
     b = _bot(bid)
     try:

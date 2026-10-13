@@ -56,7 +56,6 @@ import {
   getHfAuth,
   hfLogout,
   putAppSharingEnabled,
-  putBotsEnabled,
   putCanvasesEnabled,
   putLivePreviewsEnabled,
   putMonitorEnabled,
@@ -84,7 +83,6 @@ import { copyToClipboard } from "@platform/lib/clipboard";
 import { formatBytes } from "@platform/lib/sysmon";
 import qrcode from "qrcode-generator";
 import { publishCanvasesEnabled } from "@apps/canvases/feature-flag";
-import { publishBotsEnabled } from "@apps/bots/feature-flag";
 import { publishAppSharingEnabled } from "@platform/lib/share-app-flag";
 import { publishLivePreviewsEnabled } from "@platform/lib/live-previews-flag";
 import { publishMonitorEnabled } from "@platform/lib/monitor-flag";
@@ -385,51 +383,6 @@ function CanvasesSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Pref
         <input type="checkbox" checked={enabled} disabled={busy} onChange={toggle} />
         <span>
           <b>Show Canvases</b> in the sidebar and the Settings menu.
-        </span>
-      </label>
-      {error && <ErrorBanner>{error}</ErrorBanner>}
-    </section>
-  );
-}
-
-// Bots: the browser-bots sub-app as the FRONT DOOR. Off by default; on, the
-// sidebar's Home row gives way to a Bots row at the top and `/` lands on
-// /bots. Same one-checkbox section shape and publish-after-PUT as Canvases,
-// so the sidebar beside this page swaps its top row with the checkbox. The
-// front-door redirect itself reads the same store (App.tsx), so the next
-// visit to `/` follows the new value without a reload.
-function BotsSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const enabled = prefs.bots.enabled;
-
-  const toggle = async () => {
-    if (busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const next = await putBotsEnabled(!enabled);
-      onChange(next);
-      publishBotsEnabled(next.bots.enabled);
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <section className="prefs-section">
-      <h2>Bots</h2>
-      <p className="deploy-muted">
-        Browser bots: each bot drives its own Chrome, thinks with Claude Code or a local model, and
-        reports back in a chat thread. Off by default. On, Bots becomes the front door — it takes
-        Home&apos;s place at the top of the sidebar and the app opens on it.
-      </p>
-      <label className="prefs-radio">
-        <input type="checkbox" checked={enabled} disabled={busy} onChange={toggle} />
-        <span>
-          <b>Make Bots the front door</b> (replaces Home in the sidebar).
         </span>
       </label>
       {error && <ErrorBanner>{error}</ErrorBanner>}
@@ -1959,8 +1912,7 @@ export default function Preferences() {
                 <TaskNotifyTerminalSection prefs={prefs} onChange={setPrefs} />
                 {!bot && <LivePreviewsSection prefs={prefs} onChange={setPrefs} />}
                 <MonitorSection prefs={prefs} onChange={setPrefs} />
-                {!bot && <BotsSection prefs={prefs} onChange={setPrefs} />}
-                {(bot || prefs.bots.enabled) && <PhoneSection />}
+                <PhoneSection />
                 <DiagnosticsSection />
               </>
             )}

@@ -62,7 +62,6 @@ import { ShareFileHost } from "@platform/ui/ShareFileModal";
 import OnboardingWizard from "@shell/onboarding/OnboardingWizard";
 import { ONBOARDING_PATH, shouldAutoShow } from "@shell/onboarding/state";
 import { onboardingUrl } from "@shell/onboarding/progress";
-import { botsFrontDoor, seedBotsEnabled } from "@apps/bots/feature-flag";
 import StatusBar from "@platform/ui/StatusBar";
 import ModelsDock from "@shell/ModelsDock";
 import SystemDock from "@shell/SystemDock";
@@ -649,18 +648,13 @@ export default function App({ config }: { config: Config }) {
     return () => document.removeEventListener("keydown", onKey, { capture: true });
   }, []);
 
-  // The FRONT DOOR — "/" lands on Home, or on Bots when the `bots_enabled`
-  // preference swaps it in (shell/prefs.py; the flag rides /api/config so this
-  // render-time decision never waits on a prefs fetch, and the Preferences
-  // page publishes a toggle into the same store, so no reload is needed).
-  // Render-time write is safe — it changes pathname, so the re-render (via
-  // fused:urlchange) derives the real route. (Legacy /view/_home,
-  // /view/_account, and the whole /view//embed namespaces are rewritten at
-  // boot by router.ts.) With the flag on, /home still answers by URL: it is
-  // the pinned Home bookmark's door (shell/bookmarks.py seeds that pin), and
-  // a bare /home used to bounce to Bots before that pin existed.
-  seedBotsEnabled(config.bots_enabled);
-  const frontDoor = botsFrontDoor() ? "/bots" : "/home";
+  // The FRONT DOOR — "/" lands on Home, or on Bots under the Fused Bot
+  // flavor (platform/lib/flavor, seeded before the first render), which has
+  // no Home page. Render-time write is safe — it changes pathname, so the
+  // re-render (via fused:urlchange) derives the real route. (Legacy
+  // /view/_home, /view/_account, and the whole /view//embed namespaces are
+  // rewritten at boot by router.ts.)
+  const frontDoor = isBot() ? "/bots" : "/home";
   if (location.pathname === "/") {
     history.replaceState(null, "", frontDoor);
   }

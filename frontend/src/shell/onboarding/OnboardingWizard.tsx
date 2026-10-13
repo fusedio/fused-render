@@ -152,9 +152,8 @@ export function OnboardingWizard({ config }: { config: Config }) {
     // Fused Bot's server has no git/models/app steps at all (progress.stageIds):
     // dropped before the per-machine rules, and never reported `n/a` either —
     // the server's closed set would not take the write. Chrome is in BOTH
-    // flavors (Render runs the same bots behind `bots_enabled`), and always
-    // shown: where no bot will run the server counts it `n/a`, but the step
-    // is still the one place that says what bots need.
+    // flavors (Render runs the same bots from its Bots page), and always
+    // shown: it is the one place that says what bots need.
     if (s.id === "git" || s.id === "models" || s.id === "app") {
       if (isBot()) return false;
     }
