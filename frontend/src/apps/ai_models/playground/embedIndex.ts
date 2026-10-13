@@ -65,6 +65,12 @@ export function blamedPath(message: string, paths: string[]): string | null {
   return sorted.find((path) => message.includes(path)) ?? null;
 }
 
+/** A worker error as a sentence: drops a leading Python exception class
+ *  (`ValueError: no such file: /x.wav` → `no such file: /x.wav`). */
+export function plainError(message: string): string {
+  return message.replace(/^[A-Za-z]+Error: /, "");
+}
+
 /** The count line: how far along the index is. */
 export function indexProgress(paths: string[], index: Map<string, IndexEntry>): {
   total: number;

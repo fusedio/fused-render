@@ -47,6 +47,7 @@ import { pickFiles, rawUrl, thumbUrl, type AiCatalogModel } from "@platform/lib/
 import {
   blamedPath,
   indexProgress,
+  plainError,
   planBatches,
   scoreAgainst,
   type IndexEntry,
@@ -520,7 +521,7 @@ export function EmbedStage({
             for (const path of batch) index.set(path, { state: "pending" });
             break;
           }
-          const message = (e as Error).message;
+          const message = plainError((e as Error).message);
           const blamed = blamedPath(message, batch);
           if (blamed !== null) {
             // The error is about ONE file: that row fails, the others go

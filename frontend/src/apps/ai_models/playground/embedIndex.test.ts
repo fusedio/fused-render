@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 
-import { blamedPath, indexProgress, planBatches, scoreAgainst, type IndexEntry } from "./embedIndex";
+import { blamedPath, indexProgress, plainError, planBatches, scoreAgainst, type IndexEntry } from "./embedIndex";
 
 const idx = (entries: Record<string, IndexEntry>) => new Map(Object.entries(entries));
 const pending: IndexEntry = { state: "pending" };
@@ -51,5 +51,12 @@ describe("scoreAgainst is a dot product over the indexed rows only", () => {
       { path: "/near", score: 1 },
       { path: "/far", score: 0 },
     ]);
+  });
+});
+
+describe("plainError", () => {
+  it("drops a leading Python exception class and leaves other text alone", () => {
+    expect(plainError("ValueError: no such file: /x.wav")).toBe("no such file: /x.wav");
+    expect(plainError("model unloaded")).toBe("model unloaded");
   });
 });
