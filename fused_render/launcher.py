@@ -374,6 +374,10 @@ def _registry_uncached() -> list[dict]:
         listed.extend(registered_apps.registered_apps())
     except Exception:  # noqa: BLE001
         logger.debug("registered apps failed", exc_info=True)
+    # An uninstalled showcase app is hidden here as on the hub (AF-15).
+    from fused_render import app_hidden
+
+    listed = app_hidden.drop_hidden(listed)
     for a in listed:
         if not a.get("entry"):
             continue

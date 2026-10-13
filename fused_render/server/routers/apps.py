@@ -65,7 +65,7 @@ from typing import Literal
 from fastapi import APIRouter, Body, File, Form, Header, UploadFile
 from fastapi.responses import JSONResponse
 
-from fused_render import app_listing, fused_api_version, schedule
+from fused_render import app_hidden, app_listing, fused_api_version, schedule
 from fused_render.server.common import _error, _require_fused
 from fused_render.shell.prefs import VALID_DEFAULT_MODELS
 from fused_render.shell.seed import fused_dir
@@ -96,7 +96,7 @@ def _workspace_apps() -> list[dict]:
     opened = _opened_at_by_app()
     for a in apps:
         a["opened_at"] = opened.get(_workspace_rel(root, a["path"]))
-    return apps
+    return app_hidden.drop_hidden(apps)
 
 
 # -- The paged listing's snapshot -----------------------------------------
@@ -149,7 +149,9 @@ def _discovery_rows(fresh: bool) -> list[dict]:
             r["opened_at"] = opened.get(_workspace_rel(root, r["path"]))
         rows.extend(registered_apps.registered_apps())
         # No `.fused` rows (AF-14): an app file is an installer, and the
-        # installed copy under app/ is the app the hub lists.
+        # installed copy under app/ is the app the hub lists. Uninstalled
+        # showcase apps are hidden (app_hidden, AF-15).
+        rows = app_hidden.drop_hidden(rows)
         _snapshot = (root, now, rows)
         return rows
 
@@ -224,6 +226,7 @@ def api_apps(offset: int = 0, limit: int | None = None, tag: str | None = None,
     # `openedAt` already rides in as `opened_at` (registered_apps.py), so these
     # sort by recency exactly as workspace apps do.
     apps.extend(registered_apps.registered_apps())
+    apps = app_hidden.drop_hidden(apps)
     apps.sort(key=lambda a: (a["tag"].lower(), a["name"].lower()))
     return {"apps": apps}
 
@@ -314,6 +317,7 @@ def recent_apps(limit: int) -> list[dict]:
             limit=limit, include_updated_at=False, opened_only=True
         )
     )
+    recent = app_hidden.drop_hidden(recent)
     recent.sort(
         key=lambda a: (-_app_recency(a), a["tag"].lower(), a["name"].lower())
     )
