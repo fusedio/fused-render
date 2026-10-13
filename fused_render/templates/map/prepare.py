@@ -142,7 +142,8 @@ def _to_cog(source: str, final: Path) -> Path:
             raise Refusal(
                 "This raster has no coordinate reference system, so it cannot be "
                 "placed on a map.")
-        needs_warp = dataset.crs is None  # GCPs only
+        # GCPs only, or a CRS with no EPSG code (ESRI:54009) the browser can't read.
+        needs_warp = dataset.crs is None or (dataset.crs.to_authority() or ("",))[0] != "EPSG"
     tmp = final.with_name(final.name + f".{os.getpid()}.tmp")
     if needs_warp:
         from rasterio.vrt import WarpedVRT
