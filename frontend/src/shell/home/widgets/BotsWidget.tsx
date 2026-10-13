@@ -23,13 +23,19 @@ const STATUS_PHRASE: Record<string, string> = {
 };
 
 export function toItem(b: Bot): WidgetItem {
-  const step = b.step && b.step_cap ? `step ${b.step}/${b.step_cap}` : "";
-  const what = b.title || b.note || "";
+  // step/step_cap/title are left over from the last run once a bot settles, so only a running bot shows them.
+  let sub: string | undefined;
+  if (b.status === "running") {
+    const step = b.step && b.step_cap ? `step ${b.step}/${b.step_cap}` : "";
+    sub = [step, b.title || b.note || ""].filter(Boolean).join(" · ") || STATUS_PHRASE[b.status] || undefined;
+  } else {
+    sub = b.note || STATUS_PHRASE[b.status] || undefined;
+  }
   return {
     key: b.id,
     name: b.name,
     icon: <Face b={b} />,
-    sub: [step, what].filter(Boolean).join(" · ") || STATUS_PHRASE[b.status] || undefined,
+    sub,
     href: `${BOTS_HREF}?bot=${encodeURIComponent(b.id)}`,
     pill: { label: b.status, tone: TONE[b.status] ?? "idle" },
   };
