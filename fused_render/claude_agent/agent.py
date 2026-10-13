@@ -3258,6 +3258,29 @@ def _alive(run_dir: str) -> bool:
 #: long as the session host kept the process alive.
 _NOT_A_TURN_ROW = frozenset({"control_response", "rate_limit_event"})
 
+#: `system` rows that are bookkeeping ABOUT a turn rather than a turn
+#: speaking: the CLI writes `task_summary` right AFTER the `result` of a turn
+#: that ran background work (seen live on 2.1.296 — `post_turn_summary`,
+#: `result`, `task_summary`), and `task_progress`/`task_updated`/
+#: `background_tasks_changed` keep arriving while a backgrounded shell or
+#: monitor runs on past the reply. None of them is the run waking up for
+#: another turn — that is `init`, a hook, a `status`, or the reply itself —
+#: so none may reopen it. Before this set, a run that had spawned a monitor
+#: never read as done: the trailing `task_summary` held the quiet-verb window
+#: open for as long as the host lived.
+_BOOKKEEPING_SYSTEM_ROWS = frozenset({
+    "task_summary", "post_turn_summary", "task_progress", "task_updated",
+    "background_tasks_changed"})
+
+
+def _not_a_turn_row(row: dict) -> bool:
+    """Whether `row` is one of the shapes that never opens or reopens a turn
+    (`_NOT_A_TURN_ROW` and `_BOOKKEEPING_SYSTEM_ROWS`)."""
+    t = row.get("type")
+    if t in _NOT_A_TURN_ROW:
+        return True
+    return t == "system" and row.get("subtype") in _BOOKKEEPING_SYSTEM_ROWS
+
 
 def _turn_state(run_dir: str) -> tuple:
     """(turn_open, tasks_pending), read off `out.jsonl` alone — no pid touched.
@@ -3299,14 +3322,14 @@ def _turn_state(run_dir: str) -> tuple:
         if row.get("parent_tool_use_id"):
             continue  # a subagent's own row, not the main turn's (see _poll)
         t = row.get("type")
-        if t in _NOT_A_TURN_ROW:
-            continue
-        idle = t == "result"
         if t == "system" and row.get("subtype") == "background_tasks_changed":
             arr = row.get("tasks")
             if isinstance(arr, list):
                 tasks = {str(x.get("task_id")): True
                          for x in arr if isinstance(x, dict) and x.get("task_id")}
+        if _not_a_turn_row(row):
+            continue
+        idle = t == "result"
     return not idle, bool(tasks)
 
 
@@ -6297,7 +6320,7 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
         # quiet-verb window closes on the first row of any kind — see `idle` —
         # except the rows that are not the run speaking at all
         # (`_NOT_A_TURN_ROW`).
-        if t != "result" and t not in _NOT_A_TURN_ROW:
+        if t != "result" and not _not_a_turn_row(row):
             idle = False
         # Any of these means the request the retries were for went THROUGH.
         # Rows are in file order, so anything the model produced after an
