@@ -11,6 +11,7 @@ update over a copy the user edited since (diverged).
 import json
 import os
 import shutil
+import sys
 
 import pytest
 from fastapi.testclient import TestClient
@@ -246,14 +247,21 @@ def test_a_slug_held_by_a_different_app_is_a_clash(tmp_path):
 # -- the run-in-place era's state ----------------------------------------------
 
 
+@pytest.mark.skipif(sys.platform == "win32",
+                    reason="the run-in-place era's symlink needs Developer Mode on the Windows runner")
 def test_install_adopts_the_shared_state_dir_and_retires_extracts(tmp_path):
+    import pathlib
+
     fused = export(tmp_path, app_id="demo-abc12345")
-    shared = tmp_path / "home" / "fused_data" / "demo-abc12345"
+    # Built from the same helpers the install reads, so a branch-nested home
+    # (`storage.home_dir()` under `branches/<ref>/`) lands them where the
+    # adoption looks.
+    shared = pathlib.Path(appfile.shared_dot_fused_dir("demo-abc12345"))
     (shared / "data").mkdir(parents=True)
     (shared / "data" / "saved.json").write_text('{"k": 1}')
     (shared / "meta.json").write_text(json.dumps(
         {"version": 1, "app_dir": "/old/extract/demo-deadbeef", "created_at": "x"}))
-    extract = tmp_path / "home" / "appfiles" / "demo-0123456789abcdef"
+    extract = pathlib.Path(appfile.appfiles_root()) / "demo-0123456789abcdef"
     extract.mkdir(parents=True)
     (extract / "index.html").write_text(
         f'<html><head>{MARKER}<meta name="fused-app-id" content="demo-abc12345" /></head></html>')

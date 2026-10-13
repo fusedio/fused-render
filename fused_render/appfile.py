@@ -1026,7 +1026,16 @@ def install_app_file(fused_path: str, *, force: bool = False) -> dict:
                 if not os.path.isdir(dest):
                     raise AppFileError(f"could not place the installed app at {dest}")
                 # Lost the race with a concurrent install of the same app:
-                # the winner's copy is the one working copy, update it.
+                # the winner's copy is the one working copy, update it — and
+                # the state adopted into this staging goes with it when the
+                # winner has none yet, so an adopted state is never lost to
+                # the staging sweep below.
+                from fused_render import app_fused_dir
+
+                staged_dot = app_fused_dir.dot_fused(payload)
+                if adopted and os.path.isdir(staged_dot) and not os.path.lexists(app_fused_dir.dot_fused(dest)):
+                    shutil.move(staged_dot, app_fused_dir.dot_fused(dest))
+                    _repoint_meta(dest, dest)
                 _merge_tree(payload, dest, skip=_INSTALL_KEEP)
             action = "installed"
         else:

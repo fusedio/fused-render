@@ -328,6 +328,12 @@ def api_appfile_install(body: dict = Body(...), x_fused: str | None = Header(def
         result = appfile.install_app_file(file, force=force)
     except appfile.AppFileError as exc:
         return _error(str(exc))
+    # The paged hub's snapshot is at most 20 s behind the disk; the one folder
+    # it must never be behind on is the one just installed (the create path
+    # and #1576's uninstall reset it the same way).
+    from fused_render.server.routers import apps as apps_router
+
+    apps_router._reset_snapshot()
     entry = result["entry"]
     return {**result, "entry_view": view_url_path(entry), "entry_embed": embed_url_path(entry)}
 

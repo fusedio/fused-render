@@ -133,8 +133,11 @@ def test_a_malformed_payload_is_ferried_verbatim_to_home(tmp_path):
 
 
 def test_the_redirect_round_trips_a_spicy_path(tmp_path):
+    from fused_render._view_url_codec import view_url_path
+
     spicy = "/Users/me/My Apps/a&b #1 100%.fused"
-    assert unquote(edit_appfile_redirect(spicy)) == "/explorer/embed" + spicy
+    assert edit_appfile_redirect(spicy) == view_url_path(os.path.abspath(spicy))
+    assert unquote(edit_appfile_redirect(spicy)).endswith("My Apps/a&b #1 100%.fused")
 
 
 def test_git_links_still_get_the_confirm_page(tmp_path):
