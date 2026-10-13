@@ -1632,12 +1632,14 @@ def _gate(bot, sess: Turn, preview: str, why: str, notes: list, raw: list | None
             return None, ""
         heard = False
         for a in bot._drain_inbox():
-            # A texted message is never the verdict (approvals are answered at the Mac, docs §10): an instruction.
-            if verdict is None and not channels.base.is_texted(a) and YES.match(a):
+            # An outside message (a text, an app) is an instruction, not the verdict, unless the router stamped it as
+            # the answer to THIS card (channels.base.answers_card: the card was texted to that sender, docs §10).
+            mine = not channels.base.is_texted(a) or channels.base.answers_card(a, seq)
+            if verdict is None and mine and YES.match(a):
                 verdict = True
                 if rule and channels.base.is_forever(a):
                     tools.add_allow_rule(bot, rule)
-            elif verdict is None and not channels.base.is_texted(a) and NO.match(a):
+            elif verdict is None and mine and NO.match(a):
                 verdict = False  # a plain "no, too expensive" is the verdict, not an instruction (OpenBot _NO)
                 said = a.strip()
             else:

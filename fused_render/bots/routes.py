@@ -454,8 +454,10 @@ def bots_imessage():
     from fused_render.bots import imessage
     out = dict(registry.imessage_state() or {})
     sid, m = imessage.super_meta()
+    from fused_render.bots.channels import base as chan
     out.update({"super_id": sid, "enabled": imessage.super_switch(m) if sid else False,
-                "handle": imessage.norm_handle(m.get("imessage")) if sid else ""})
+                "handle": imessage.norm_handle(m.get("imessage")) if sid else "",
+                "approvals": chan.approvals_by_text(m) if sid else False})
     return out
 
 
@@ -658,6 +660,8 @@ def _settings(bid, body):
             b.meta["imessage_to"] = str(body["imessage_to"]).strip()
         if body.get("imessage_enabled") is not None:
             b.meta["imessage_enabled"] = bool(body["imessage_enabled"])
+        if body.get("imessage_approvals") is not None:
+            b.meta["imessage_approvals"] = bool(body["imessage_approvals"])  # "Approve by text" (docs §10)
     if body.get("build_access") in bm.BUILD_MODES:
         b.meta["build_access"] = body["build_access"]
     if isinstance(body.get("trusted_apps"), list):

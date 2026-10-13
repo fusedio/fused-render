@@ -37,7 +37,8 @@ def caps_for(via) -> Caps:
 def prompt_for(bot) -> str:
     """The CHANNEL paragraph for this task's prompt ('' for web and routine tasks)."""
     v = getattr(bot, "task_via", None)
-    return base.prompt_section(v, caps_for(v), KIND_LABELS.get((v or {}).get("kind") or "", ""))
+    return base.prompt_section(v, caps_for(v), KIND_LABELS.get((v or {}).get("kind") or "", ""),
+                               approvals=base.approvals_by_text(getattr(bot, "meta", None)))
 
 
 def origin_label(bot) -> str:

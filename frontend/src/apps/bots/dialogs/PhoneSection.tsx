@@ -69,6 +69,13 @@ export function PhoneSection({ botId, handle, setHandle, enabled, setEnabled, co
   const [testing, setTesting] = useState(false);
   const [tested, setTested] = useState<{ ok: boolean; text: string } | null>(null);
   const [opened, setOpened] = useState(false);        // System Settings was opened from here
+  // "Approve by text" (docs §10): its own key, written at once like the phone switch; null until the bridge's reply
+  // says where it stands (a bot.json without the key reads as on).
+  const [approvals, setApprovals] = useState<boolean | null>(null);
+  const flipApprovals = (on: boolean) => {
+    setApprovals(on);
+    void act(() => api.settings(botId, { imessage_approvals: on }));
+  };
 
   // The bridge's state, fresh while the section shows: the switch turning on makes the bridge read chat.db and learn
   // this Mac's own handles a poll or two later.
@@ -77,7 +84,10 @@ export function PhoneSection({ botId, handle, setHandle, enabled, setEnabled, co
     const tick = async () => {
       const r = await act(() => api.imessage(), true);
       if (!live) return;
-      if (r) setSt(r);
+      if (r) {
+        setSt(r);
+        setApprovals((a) => (a === null && typeof r.approvals === "boolean" ? r.approvals : a));
+      }
       t = window.setTimeout(() => { void tick(); }, POLL_MS);
     };
     void tick();
@@ -139,7 +149,7 @@ export function PhoneSection({ botId, handle, setHandle, enabled, setEnabled, co
   return (
     <div className="flex flex-col">
       <Rows className="pb-4">
-        <Row title="Text Super Bot from your phone" text="Texts from your number become tasks. Replies come back as texts. Approvals stay on this Mac." htmlFor="bmphone">
+        <Row title="Text Super Bot from your phone" text="Texts from your number become tasks. Replies come back as texts." htmlFor="bmphone">
           <Switch id="bmphone" checked={enabled} onCheckedChange={(c) => flip(!!c)} />
         </Row>
       </Rows>
@@ -152,6 +162,10 @@ export function PhoneSection({ botId, handle, setHandle, enabled, setEnabled, co
             <Button type="button" variant="outline" size="sm" disabled={testing} onClick={() => { void sendTest(); }}>{testing ? "Sending…" : "Send a test text"}</Button>
           </Row>
           {tested ? <p className={cn("m-0 pb-3 text-[13px]", tested.ok ? "text-muted-foreground" : "text-destructive")}>{tested.text}</p> : null}
+          <Row title="Approve by text" htmlFor="bmapprovals"
+            text="When a task you texted needs your OK, the card is texted to you: reply 1 to approve, 2 to deny. Off keeps every approval on this Mac; you still get a text saying it is waiting.">
+            <Switch id="bmapprovals" checked={approvals !== false} disabled={approvals === null} onCheckedChange={(c) => flipApprovals(!!c)} />
+          </Row>
           <Row title="Your number" text={identity} htmlFor="bmimsg">
             <Input id="bmimsg" placeholder="+1 555 123 4567 or an Apple ID" autoComplete="off" value={handle} onChange={(e) => setHandle(e.target.value)}
               onBlur={() => { if (nh && !saved) void persist(enabled, handle); }} />

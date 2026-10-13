@@ -538,15 +538,17 @@ CLI permission mode `default` (ask before every write, edit and shell command,
 answered at the Mac), whatever `super_access` says (`agent_engine.super_mode`;
 `_permission` reads the same answer), and with approvals `ask` and Builds
 `scoped` whatever the bot's settings say (`tools.effective_approval`,
-`effective_build_access`; meta is never changed). Approvals are never
-answered by text: a texted message sits in `bot.inbox` as a
-`channels.base.Texted` str, which the approval gate (`_gate`) and the offer
-wait (`_offer`) never take as their verdict (it reaches the model as an
-instruction), a texted yes/no while a card is up gets a system line
-(`Bot._texted_approval`), a texted reply never settles an app offer left
-open after a task (`_answer_pending_offer` is skipped), and offer questions
-are not numbered on the phone ("Answer it in the app."). Numbered options on
-Super Bot's own `ask` still map back. A text that arrives while Super Bot runs
+`effective_build_access`; meta is never changed). A texted message sits in
+`bot.inbox` as a `channels.base.Outside` str, which the offer wait (`_offer`)
+never takes as its verdict and the approval gate (`_gate`) takes only when the
+router stamped it as the answer to that very card (`via["answers"]`,
+`channels.base.answers_card`: the card was texted to the sender as "Reply 1
+Approve · 2 Deny" and the bot still waited on it; amended 2026-10-13, §10
+"Approve by text"). Any other texted yes/no while a card is up is held with
+a system line and one text back (`Bot._texted_approval`); a texted reply never
+settles an app offer left open after a task (`_answer_pending_offer` is
+skipped), and offer questions are not numbered on the phone ("Answer it in
+the app."). Numbered options on Super Bot's own `ask` still map back. A text that arrives while Super Bot runs
 a task started at the Mac (its chat, or a routine) is not applied (that task may run unattended and
 never texts back): no user line is written (a later task's CONVERSATION SO FAR
 would present it as asked), only a system line and one texted line "Busy with
@@ -1291,8 +1293,9 @@ its task's own `done` / `error`, so an answer given at the Mac leaves a later
 "2" as just "2"). Then
 `bot.receive(text, via)`: the one entry point for user messages (`send()` is
 `receive(text, via=None)` for the web). A running phone-started task gets it
-as an instruction or an answer to its own `ask`, never as the answer to an
-approval card or an app offer (approvals are answered at the Mac, §5); a
+as an instruction, an answer to its own `ask`, or the answer to the one
+approval card that was texted to the sender (**Approve by text**, below);
+never as the answer to an app offer; a
 running chat-started task does not get it at all (§5); an idle Super Bot starts a task
 with `task_via` set, `origin` = `imessage`. No inbox files, no scheduler hop:
 ~3 s from text to task. The botsend file inbox stays for ordinary bots
@@ -1307,7 +1310,40 @@ event to `handoffs.on_event` (§11), then hands it to the router when
 one exists (tests and a lean `fused-render open` have none). `registry.start`
 builds the router before the scheduler: the scheduler's first pass constructs
 every Bot, and Super Bot's constructor may emit an interrupted hand-off's card. `OUT_ROLES` are
-`done`, `question`, `error`: approval cards never leave the page.
+`done`, `question`, `approval`, `error`; the origin rule below means an
+approval card reaches only the sender of the phone-started task it belongs
+to (a Mac-started task never texts).
+
+**Approve by text** (2026-10-13, design
+<https://claude.ai/artifact/YJYKiDtZGi1tq28wJFRzKQ>; reverses the 2026-10-06
+"approvals at the Mac only" rule for Super Bot's own phone-started task, and
+only that). Every card that goes through `agent_engine._gate` (a risky
+browser action or tool call in `_act`, a Claude Code built-in Edit / Write /
+Bash in `_permission`, `bot_create` / `bot_settings`) is texted as the card's
+text plus `Reply 1 Approve · 2 Deny` (`render`: `role == "approval"` on a
+surface without buttons is numbered with `channels.base.APPROVAL_OPTIONS`).
+The gate itself does not move: the phone posture (§5) still forces the ask.
+The reply counts only for that card: `Router.deliver` records
+`_texted_card[bot] = (seq, options)` (kept apart from `_pending`, which any
+user event pops, so a Mac-typed instruction does not strip the phone's later
+"1"); `Router.dispatch` maps the number from it and stamps
+`via["answers"] = seq` only while `meta.waiting_on` is still that seq;
+`_deliver_message` wraps the message as `Outside` with that via, and
+`_gate` reads `channels.base.answers_card(msg, seq)` beside its
+`not is_texted` test, so "1", "approve", "ok" and "no, too expensive" are
+read as the web's are and anything else stays an instruction. botsend and
+app vias have no stamp path and keep zero approval power. A card the phone
+cannot read in full (`render` decides the fit BEFORE the Reply line is
+appended: a cut drops the options, for `ask` too) and a card sent while the
+switch is off are not numbered and end with `Needs your OK at the Mac.`; an
+unstamped texted yes/no is held with a system line and one text back
+(`_texted_approval`). The switch is `meta.imessage_approvals` on Super Bot
+(Settings > Phone, "Approve by text", missing reads as on,
+`channels.base.approvals_by_text`), written by the Settings dialog only;
+`GET /api/bots/imessage` returns it as `approvals`. No "don't ask again"
+from the phone (`forever_rule` is None for a phone-started task); offers,
+builds' "waiting for your OK", `login` and a hand-off target's cards stay at
+the Mac. The CHANNEL paragraph tells the model which way the switch stands.
 `Router.on_event` also skips any event whose via kind is `handoff` (a
 handed-off task reports to Super Bot, not to a phone). `Router.targets()` is
 the whole policy, the origin rule: an event whose `via` is this channel's kind
@@ -1383,8 +1419,10 @@ has `task_via` (`bot.receive` / `start_task`). Only Super Bot is reachable
 from a channel, and only from its own handle (`Router.resolve`,
 `ImessageChannel._tick`). Nothing reaches a channel but a reply to the task
 it came from (`Router.targets`, tested in `tests/test_bots_channels.py`); no
-approval card and no handed-off event ever does (`OUT_ROLES`,
-`Router.on_event`). Owner commands come over the iMessage service only. One
+handed-off event ever does (`Router.on_event`), and an approval card only to
+the phone that started its task. A texted yes or no settles a card only
+when stamped for that card (`Router.dispatch`, `channels.base.answers_card`;
+never a botsend or app message). Owner commands come over the iMessage service only. One
 poller per Mac (flock; since 2026-10-13 the router only runs in the process
 that owns the bots, §7, so the phone and the bots never split). The router is
 inert when this process does not own (`registry.on_event`).
@@ -1396,7 +1434,9 @@ Super Bot can give an ordinary bot a task. Design page:
 
 **The rules.**
 1. One voice on the phone: Super Bot is the only bot reachable over iMessage
-   and texts only in reply to a phone-started task (§10).
+   and texts only in reply to a phone-started task (§10). Its own approval
+   cards on such a task are texted and answerable from the phone (§10
+   "Approve by text", 2026-10-13); a target bot's are not.
 2. Task text goes down, status and ONE result come up. A bot never asks Super
    Bot anything: its `ask`, `login`, approval gate and `offer` stay in its own
    chat for the user at the Mac. To Super Bot a bot is at most "blocked".

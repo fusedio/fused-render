@@ -2039,7 +2039,7 @@ class Bot:
             return
         if pending and running and pending.get("seq") != getattr(self, "_offer_seq", None):
             self._settle_offer()  # the offer timed out earlier and the user has moved on: it is stale, not pending
-        if running and outside and self._texted_approval(shown):
+        if running and outside and self._texted_approval(shown, via):
             return
         with self.lock:
             if (via.get("kind") == chan.APP_KIND and self.running()
@@ -2074,11 +2074,15 @@ class Bot:
                     # not an answer. Clearing here would settle the card for a poll.
                     self.set_status("running")
 
-    def _texted_approval(self, text):
-        """A yes/no texted while the task waits on an approval card: approvals
-        are answered at the Mac only (docs §10), so it is not taken as the
-        answer. True when the text was held back (a system line says why);
-        anything else is an ordinary mid-task instruction."""
+    def _texted_approval(self, text, via=None):
+        """A yes/no from an outside sender while the task waits on an approval
+        card. It is the answer only when the router stamped it for this very card
+        (`via["answers"]`: the card was texted to that sender, docs §10); then it
+        goes through to the gate. Otherwise (an app, a botsend file, a text for a
+        card that was never textable or was answered at the Mac already) it is
+        held back: True, with a system line saying why, and a text back to a phone
+        so it is not left waiting. Anything that is not a yes or a no is an
+        ordinary mid-task instruction."""
         with self.lock:
             waiting = self.meta.get("status") == "waiting" and self.meta.get("waiting_on")
         if not waiting:
@@ -2086,13 +2090,18 @@ class Bot:
         ev = self.event_by_seq(waiting)
         if not ev or ev.get("role") != "approval":
             return False
+        if (via or {}).get("answers") == waiting:
+            return False  # the answer to the card the phone was texted (channels.base.answers_card)
         try:
             from fused_render.bots.agent_engine import NO, YES
         except Exception:  # noqa: BLE001
             return False
         if not (YES.match(text or "") or NO.match(text or "")):
             return False
-        self.emit("system", "Approvals are answered here at the Mac, not by text or by an app: use Approve or Deny on the card.", via=None)
+        self.emit("system", "This approval card is answered here at the Mac: use Approve or Deny on the card.", via=None)
+        if (via or {}).get("kind") == "imessage":
+            self.emit("error", "That one needs your OK at the Mac: it was answered there already, or it did not fit in a text.",
+                      via=dict(via))
         return True
 
     def receive_app(self, text, via, images=None, follow_up=False, before=None):
