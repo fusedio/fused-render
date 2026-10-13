@@ -818,6 +818,18 @@ def read_icon(fused_path: str, manifest: dict | None = None) -> tuple[str, bytes
     return mime, raw
 
 
+def _has_preview(fused_path: str, manifest: dict) -> bool:
+    """Whether the page should ask `/api/appfile/preview`: the index says so
+    for a v2 container; a v1 zip lists no members, so its `preview.png` is
+    looked up the way that route reads it (one bounded member read)."""
+    if manifest.get("fused_app_file") == container.VERSION:
+        return _find_member(manifest, (app_listing.PREVIEW_IMAGE_NAME,)) is not None
+    try:
+        return read_preview(fused_path) is not None
+    except AppFileError:
+        return False
+
+
 def install_target(fused_path: str, *, light: bool = False) -> dict:
     """What installing the ``.fused`` at ``fused_path`` would do — the install
     page's data and the POST's precondition. Read-only: one bounded manifest
@@ -855,8 +867,10 @@ def install_target(fused_path: str, *, light: bool = False) -> dict:
     if installed:
         stamp = read_stamp(dest)
         other = _installed_identity(dest) if found_by == "slug" else None
-        if app_id and other and other != app_id:
-            # The slug is taken by a different app: never overwrite it.
+        if other and other != app_id:
+            # The slug is taken by a folder declaring a different id — or any
+            # id, when this file has none and so cannot prove it is the same
+            # app: never overwrite it.
             state = STATE_CLASH
             other_name = os.path.basename(dest)
         else:
@@ -908,7 +922,7 @@ def install_target(fused_path: str, *, light: bool = False) -> dict:
         "bytes": total,
         "format": manifest.get("fused_app_file"),
         "has_icon": _find_member(manifest, ICON_NAMES) is not None,
-        "has_preview": _find_member(manifest, (app_listing.PREVIEW_IMAGE_NAME,)) is not None,
+        "has_preview": _has_preview(fused_path, manifest),
     }
     if not light:
         out["readme"] = read_readme(fused_path, manifest)
@@ -1025,9 +1039,19 @@ def install_app_file(fused_path: str, *, force: bool = False) -> dict:
             except OSError:
                 if not os.path.isdir(dest):
                     raise AppFileError(f"could not place the installed app at {dest}")
-                # Lost the race with a concurrent install of the same app:
-                # the winner's copy is the one working copy, update it — and
-                # the state adopted into this staging goes with it when the
+                # Something claimed `dest` during the extract. Ask again who:
+                # a concurrent install of the SAME app is the one working copy
+                # and gets updated; anything else (another app's folder, a
+                # copy that now needs confirmation) is refused exactly as a
+                # first probe would have refused it.
+                again = install_target(fused_path, light=True)
+                if again["state"] == STATE_CLASH or not again["installed"]:
+                    raise AppFileError(
+                        f"{dest} appeared during the install and holds a different app; "
+                        "open the file again")
+                if again["needs_force"] and not force:
+                    raise AppFileError(f"install state {again['state']!r} needs confirmation")
+                # The state adopted into this staging goes with it when the
                 # winner has none yet, so an adopted state is never lost to
                 # the staging sweep below.
                 from fused_render import app_fused_dir

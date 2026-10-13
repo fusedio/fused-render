@@ -92,7 +92,7 @@ def test_fused_file_end_to_end_installs_and_renders(tmp_path, monkeypatch):
         )
         assert installed.status_code == 200
         entry = installed.json()["entry"]
-        assert entry.startswith(str(tmp_path / "workspace" / "app" / "src-app").replace(os.sep, "/"))
+        assert entry.startswith(str(tmp_path / "workspace" / "app" / "src-app").replace("\\", "/"))
 
         entry_resp = client.get(installed.json()["entry_embed"])
         assert entry_resp.status_code == 200

@@ -244,6 +244,17 @@ def test_a_slug_held_by_a_different_app_is_a_clash(tmp_path):
     assert "mine" not in (app_root(tmp_path) / "demo" / "index.html").read_text()
 
 
+def test_an_id_less_file_over_an_identified_app_is_a_clash_too(tmp_path):
+    """A file with no id cannot prove it is the same app as the folder that
+    declares one, so it never reads as that app's update."""
+    other = export(tmp_path, app_id="other-11111111")
+    appfile.install_app_file(str(other))
+    old = export(tmp_path, out_name="old.fused")  # same slug, no id
+    assert appfile.install_target(str(old))["state"] == "clash"
+    with pytest.raises(appfile.AppFileError, match="different app"):
+        appfile.install_app_file(str(old), force=True)
+
+
 # -- the run-in-place era's state ----------------------------------------------
 
 
