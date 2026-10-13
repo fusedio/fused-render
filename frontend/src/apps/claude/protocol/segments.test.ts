@@ -94,6 +94,23 @@ describe("reconcileSegments dedupes the replay", () => {
     expect(reconcileSegments(9, list)).toEqual(reconcileSegments(9, list));
   });
 
+  test("a running Agent chip whose subagent rows grew is a NEW object (seen live 2026-10-13)", () => {
+    const first = reconcileSegments(1, [tool("t1", "running")]);
+    const grown = { ...tool("t1", "running"), children: [text("child says")] } as Segment;
+    const second = reconcileSegments(1, [grown], first);
+    expect(second.rows[0].seg).toBe(grown);
+    // ...and the same children again hands the old object back (memo stays warm).
+    const again = { ...tool("t1", "running"), children: [text("child says")] } as Segment;
+    const third = reconcileSegments(1, [again], second);
+    expect(third.rows[0].seg).toBe(grown);
+    // Streamed child text growing is a change too.
+    const longer = { ...tool("t1", "running"), children: [text("child says more")] } as Segment;
+    expect(reconcileSegments(1, [longer], third).rows[0].seg).toBe(longer);
+    // So is the task link arriving.
+    const linked = { ...tool("t1", "running"), task_id: "abc" } as Segment;
+    expect(reconcileSegments(1, [linked], first).rows[0].seg).toBe(linked);
+  });
+
   test("holes and nulls in the payload are dropped, never rendered", () => {
     const view = reconcileSegments(1, [null as unknown as Segment, text("a")]);
     expect(view.rows.length).toBe(1);

@@ -592,8 +592,30 @@ function sameChip(a: Segment, b: Segment): boolean {
   if (!x.id || x.id !== y.id) return false;
   if (x.status !== y.status) return false;
   if (x.output !== y.output) return false;
-  return (Array.isArray(x.images) ? x.images.length : 0) ===
-    (Array.isArray(y.images) ? y.images.length : 0);
+  if ((Array.isArray(x.images) ? x.images.length : 0) !==
+      (Array.isArray(y.images) ? y.images.length : 0)) return false;
+  // A SUBAGENT'S ROWS GROW UNDER A CHIP WHOSE OWN STATUS DOES NOT MOVE: the
+  // Agent call stays `running` with no output for the whole of its child's
+  // turn, so without this the carried-over object hid every child segment
+  // until the parent's result landed (seen live, 2026-10-13). The task link
+  // arrives on a later poll the same way.
+  return subagentKey(a) === subagentKey(b);
+}
+
+/** The cheap signature of what a tool chip draws BESIDES its own call: the
+ *  task registry link and the subagent rows nested under it. Child text is
+ *  streamed, so its length stands in for its content. */
+function subagentKey(seg: Segment): string {
+  const s = seg as { task_id?: string; orphan?: boolean; children?: Segment[] };
+  const kids = Array.isArray(s.children) ? s.children : [];
+  const last: Segment | undefined = kids[kids.length - 1];
+  const tail = last as { kind?: string; status?: unknown; output?: unknown } | undefined;
+  return [
+    s.task_id || "", s.orphan ? 1 : 0, kids.length,
+    tail ? tail.kind : "", tail ? String(tail.status ?? "") : "",
+    last ? segText(last).length : 0,
+    tail && typeof tail.output === "string" ? tail.output.length : 0,
+  ].join("|");
 }
 
 /** Which body a poll's payload is: segments when it has any, the flat legacy
