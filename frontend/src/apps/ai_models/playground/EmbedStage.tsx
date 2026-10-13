@@ -910,7 +910,7 @@ export function EmbedStage({
               onClick={() => void (pictureMode ? runPictures() : run())}
             >
               {busy
-                ? progress.busy ? "Indexing…" : "Searching…"
+                ? pictureMode && progress.busy ? "Indexing…" : "Searching…"
                 : "Search"} <kbd className="pg-kbd">⏎</kbd>
             </button>
           </div>
