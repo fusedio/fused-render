@@ -163,7 +163,7 @@ def available() -> bool:
 # ------------------------------------------------------------- macOS: AppKit
 
 
-def _pick_appkit(start, title, *, files=False, types=None):
+def _pick_appkit(start, title, *, files=False, types=None, multiple=False):
     from fused_render import menubar_pin
 
     try:
@@ -173,7 +173,8 @@ def _pick_appkit(start, title, *, files=False, types=None):
             return menubar_pin.choose_directory(
                 start=start, title=title, timeout=_DIALOG_TIMEOUT_S)
         return menubar_pin.choose_file(
-            start=start, title=title, types=types, timeout=_DIALOG_TIMEOUT_S)
+            start=start, title=title, types=types, timeout=_DIALOG_TIMEOUT_S,
+            multiple=multiple)
     except menubar_pin.PanelNotAnswered as exc:
         # The panel belongs to the AppKit main thread and there is nothing here
         # that could dismiss it, so this is not "the dialog failed" — it is "the
@@ -191,7 +192,8 @@ def _as_applescript_string(text: str) -> str:
     return f'"{escaped}"'
 
 
-def _osascript_script(start, title, *, files=False, types=None) -> str:
+def _osascript_script(start, title, *, files=False, types=None,
+                      multiple=False) -> str:
     """The `choose folder` / `choose file` one-liner. Separate from running it so
     a test can swap in a script that needs no human and still exercise the real
     subprocess.
@@ -203,7 +205,16 @@ def _osascript_script(start, title, *, files=False, types=None) -> str:
     UTIs), written immediately after the prompt. `choose folder` has no such
     clause, so it is emitted only for a file pick that was given types. Every
     item goes through the same escaper as the title: an extension arrives off
-    the wire, and one holding a quote would otherwise close the list early."""
+    the wire, and one holding a quote would otherwise close the list early.
+
+    `multiple` adds `with multiple selections allowed`, after which `choose
+    file` answers a LIST of aliases — and `POSIX path of` takes one alias, not a
+    list, so the script becomes three statements: choose, then walk the list
+    collecting POSIX paths, then return them joined. The join character is
+    ASCII 30, the record separator: a POSIX name may hold a newline (only `/`
+    and NUL are excluded), so a newline join would split such a name into two
+    bogus paths, and 0x1E is a control character no file manager will put in
+    a name. `_pick_osascript` splits on the same byte."""
     verb = "choose file" if files else "choose folder"
     parts = [verb + " with prompt ", _as_applescript_string(title)]
     if files and types:
@@ -212,11 +223,25 @@ def _osascript_script(start, title, *, files=False, types=None) -> str:
                   "}"]
     if start:
         parts += [" default location POSIX file ", _as_applescript_string(start)]
+    if files and multiple:
+        parts += [" with multiple selections allowed"]
+        return ("set chosen to (" + "".join(parts) + ")\n"
+                "set found to {}\n"
+                "repeat with f in chosen\n"
+                "set end of found to POSIX path of f\n"
+                "end repeat\n"
+                "set AppleScript's text item delimiters to (character id 30)\n"
+                "return found as text")
     return "POSIX path of (" + "".join(parts) + ")"
 
 
-def _pick_osascript(start, title, *, files=False, types=None):
-    script = (_osascript_script(start, title, files=True, types=types) if files
+#: The byte a multi-pick's paths are joined on — see `_osascript_script`.
+_RS = "\x1e"
+
+
+def _pick_osascript(start, title, *, files=False, types=None, multiple=False):
+    script = (_osascript_script(start, title, files=True, types=types,
+                                multiple=multiple) if files
               else _osascript_script(start, title))
     try:
         proc = subprocess.run(
@@ -233,7 +258,15 @@ def _pick_osascript(start, title, *, files=False, types=None):
     except OSError as exc:
         raise PickerFailed(f"could not run osascript: {exc}") from exc
     if proc.returncode == 0:
-        return proc.stdout.decode("utf-8", "replace").strip() or None
+        out = proc.stdout.decode("utf-8", "replace")
+        out = out[:-1] if out.endswith("\n") else out
+        if files and multiple:
+            # Joined on ASCII 30 — see `_osascript_script`. Only osascript's
+            # own trailing newline is removed; a path's own leading or
+            # trailing whitespace is part of the path. An empty answer is a
+            # cancel, same as the single-pick reading.
+            return [item for item in out.split(_RS) if item] or None
+        return out or None
     stderr = proc.stderr.decode("utf-8", "replace").strip()
     # -128 is AppleScript's "user cancelled". That is an answer, not a fault.
     if "-128" in stderr:
@@ -247,10 +280,15 @@ def _pick_osascript(start, title, *, files=False, types=None):
 # own. They raise OSError for "the dialog broke" and return None for a cancel.
 
 
-def _pick_linux(start, title, *, files=False, types=None):
+def _pick_linux(start, title, *, files=False, types=None, multiple=False):
     from fused_render.supervisor._linux.ui import pick_directory, pick_file
 
     if files:
+        # `multiple` is NOT forwarded: the tray's dialog is single-pick, and a
+        # second zenity/kdialog flag set is exactly what reusing it avoids
+        # (see below). `_pick` wraps the one answer in a list, so a caller
+        # that asked for several gets one per dialog on this platform —
+        # which works, and is one click more rather than a different feature.
         # That function predates this one and takes no title or start: it is the
         # tray's own "open a file" dialog, and zenity/kdialog are given neither
         # there. Reused rather than reimplemented — a second zenity invocation
@@ -266,8 +304,11 @@ def _pick_linux(start, title, *, files=False, types=None):
     return pick_directory(title=title, start=start)
 
 
-def _pick_win32(start, title, *, files=False, types=None):
-    """The Windows shell dialog, on its own STA thread.
+def _pick_win32(start, title, *, files=False, types=None, multiple=False):
+    """The Windows shell dialog, on its own STA thread. `multiple` is not
+    forwarded, for `_pick_linux`'s reason: `GetOpenFileNameW`'s multi-select
+    answers a NUL-packed buffer with its own parsing rules, and `_pick` wraps
+    the single answer in a list instead.
 
     `IFileDialog` pumps its own message loop and shell extensions need a
     single-threaded apartment, so it cannot run on a threadpool worker that
@@ -406,7 +447,8 @@ def _canonical_absolute(chosen: str) -> str:
 
 
 def _pick(start: str | None, title: str, *, files: bool,
-          types: Sequence[str] | None = None) -> str | None:
+          types: Sequence[str] | None = None,
+          multiple: bool = False) -> str | list[str] | None:
     """One dialog, folders or files, and everything that is the same either way.
 
     The claim, the abandoned-dialog handling, the cancel-is-an-answer rule and
@@ -415,7 +457,9 @@ def _pick(start: str | None, title: str, *, files: bool,
     words of difference over one body rather than two copies of it.
 
     `types` is a list of bare extensions ("png", "jpg") and only means anything
-    to a FILE pick — a folder has no extension to match.
+    to a FILE pick — a folder has no extension to match. `multiple` likewise:
+    the answer is then a non-empty LIST of canonical paths (one, on a backend
+    that can only pick one at a time), or None for a cancel.
     """
     noun = "file chooser" if files else "folder chooser"
     backend = _backend()
@@ -429,7 +473,8 @@ def _pick(start: str | None, title: str, *, files: bool,
         # calls every backend with exactly the two arguments it has always taken
         # — the signature this module's own tests stub, and one they should not
         # have to learn further arguments for to keep stubbing.
-        chosen = (_BACKENDS[backend](start, title, files=True, types=types)
+        chosen = (_BACKENDS[backend](start, title, files=True, types=types,
+                                     multiple=multiple)
                   if files else _BACKENDS[backend](start, title))
     except DialogAbandoned as exc:
         # The dialog is still on screen. Hand it the claim (see _unclaim) so the
@@ -446,6 +491,13 @@ def _pick(start: str | None, title: str, *, files: bool,
     if chosen is None:
         logger.info("%s (%s): cancelled", noun, backend)
         return None
+    if multiple:
+        # A backend that could only pick one answers a string; the contract
+        # here is a list either way.
+        paths = [chosen] if isinstance(chosen, str) else list(chosen)
+        paths = [_canonical_absolute(path) for path in paths]
+        logger.info("%s (%s): %d chosen", noun, backend, len(paths))
+        return paths or None
     chosen = _canonical_absolute(chosen)
     logger.info("%s (%s): %s", noun, backend, chosen)
     return chosen
@@ -488,3 +540,18 @@ def pick_file(start: str | None = None,
     None (the default) leaves the dialog showing everything, as it always has.
     """
     return _pick(start, title, files=True, types=types)
+
+
+def pick_files(start: str | None = None,
+               title: str = "Choose files",
+               types: Sequence[str] | None = None) -> list[str] | None:
+    """Raise the OS FILE dialog allowing several files, and return their
+    absolute paths — a non-empty list, or None for a cancel.
+
+    `pick_file` with the panel's multi-select on. On macOS (AppKit and
+    osascript alike) the user shift/cmd-clicks as many as they like; the Linux
+    and Windows backends pick one per dialog and answer a one-item list, so a
+    caller written against this never has to branch on the platform — it only
+    gets fewer per click there. Same claim, same timeout, same `types` filter.
+    """
+    return _pick(start, title, files=True, types=types, multiple=True)

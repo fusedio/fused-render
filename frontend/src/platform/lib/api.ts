@@ -1939,6 +1939,17 @@ export function pickFile(
   return postJson<{ path: string | null }>("/api/fs/pick-file", opts).then((r) => r.path);
 }
 
+/** `pickFile` with the dialog's multi-select on: a non-empty list of paths,
+ *  or null on a cancel. On macOS the user shift/cmd-clicks several; the Linux
+ *  and Windows dialogs pick one per click and the server answers a one-item
+ *  list, so a caller never branches on the platform — it only gets fewer per
+ *  click there. Same 409/501/500 as `pickFile`. */
+export function pickFiles(
+  opts: { start?: string; title?: string; types?: string[] } = {},
+): Promise<string[] | null> {
+  return postJson<{ paths: string[] | null }>("/api/fs/pick-files", opts).then((r) => r.paths);
+}
+
 export function mkdir(path: string): Promise<StatResult> {
   return noteAfter(path, postJson<StatResult>("/api/fs/mkdir", { path }));
 }

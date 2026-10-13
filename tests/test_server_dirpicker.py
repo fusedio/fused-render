@@ -1021,3 +1021,130 @@ def test_this_machine_really_can_raise_a_folder_dialog():
         assert dirpicker.available() is True
     else:
         pytest.skip("no GUI session this test can make a claim about")
+
+
+# ------------------------------------------------------------- several at once
+#
+# `pick_files` is `pick_file` with the panel's multi-select on. On macOS both
+# backends genuinely answer a list; Linux and Windows pick one per dialog and
+# `_pick` wraps it, so the contract (a non-empty list, or None) holds on every
+# platform and a caller never branches on the OS.
+
+
+def test_the_applescript_for_several_files_walks_the_list_one_path_per_line():
+    script = dirpicker._osascript_script("/Users/ada", "Pick", files=True,
+                                         types=["png", "mp3"], multiple=True)
+    assert "with multiple selections allowed" in script
+    assert 'of type {"png", "mp3"}' in script
+    assert 'default location POSIX file "/Users/ada"' in script
+    # `POSIX path of` takes one alias, so the multi script is a loop joining
+    # on ASCII 30 — a newline is legal in a POSIX name, 0x1E never appears.
+    assert "repeat with f in chosen" in script
+    assert "character id 30" in script
+    assert "linefeed" not in script
+    assert "return found as text" in script
+
+
+def test_a_single_file_pick_never_asks_for_multiple_selections():
+    assert "multiple" not in dirpicker._osascript_script(
+        None, "Pick", files=True, types=["png"])
+    assert "multiple" not in dirpicker._osascript_script(None, "Pick")
+
+
+@darwin_only
+@needs_osascript
+def test_a_real_osascript_multi_pick_answers_a_list_of_absolute_paths(monkeypatch, tmp_path):
+    """The REAL generated multi-pick script — loop, delimiter, `as text` — run
+    through the real osascript, with only the `choose file …` call swapped for
+    a literal list so no human has to click. Two names, one holding a space
+    and one a newline, because those are the two a naive join gets wrong."""
+    one = tmp_path / "a b.png"
+    two = tmp_path / "line\nbreak.wav"
+    one.write_bytes(b"x")
+    two.write_bytes(b"x")
+    real = dirpicker._osascript_script(None, "Pick", files=True, multiple=True)
+    head, _, tail = real.partition("\n")
+    assert head.startswith("set chosen to (choose file")
+    literal = ("set chosen to {POSIX file " + dirpicker._as_applescript_string(str(one))
+               + ", POSIX file " + dirpicker._as_applescript_string(str(two)) + "}")
+    monkeypatch.setattr(dirpicker, "_backend", lambda: "osascript")
+    monkeypatch.setattr(dirpicker, "_osascript_script",
+                        lambda *a, **kw: literal + "\n" + tail)
+    assert dirpicker.pick_files() == [str(one), str(two)]
+
+
+@darwin_only
+@needs_osascript
+def test_a_real_osascript_multi_pick_cancel_is_none(monkeypatch):
+    monkeypatch.setattr(dirpicker, "_backend", lambda: "osascript")
+    monkeypatch.setattr(dirpicker, "_osascript_script",
+                        lambda *a, **kw: "error number -128")
+    assert dirpicker.pick_files() is None
+
+
+def test_a_backend_that_picks_one_is_wrapped_in_a_list(monkeypatch):
+    seen = {}
+
+    def one(start, title, *, files=False, types=None, multiple=False):
+        seen.update(multiple=multiple, types=types)
+        return "/home/ada/one.wav"
+
+    monkeypatch.setattr(dirpicker, "_backend", lambda: "linux")
+    monkeypatch.setitem(dirpicker._BACKENDS, "linux", one)
+    assert dirpicker.pick_files(types=["wav"]) == ["/home/ada/one.wav"]
+    assert seen == {"multiple": True, "types": ["wav"]}
+
+
+def test_a_backend_that_picks_several_has_each_canonicalised(monkeypatch):
+    monkeypatch.setattr(dirpicker, "_backend", lambda: "appkit")
+    monkeypatch.setitem(dirpicker._BACKENDS, "appkit",
+                        lambda *a, **kw: ["/Users/ada/a.png/", "/Users/ada//b.mp4"])
+    assert dirpicker.pick_files() == ["/Users/ada/a.png", "/Users/ada/b.mp4"]
+
+
+def test_an_empty_multi_answer_is_a_cancel(monkeypatch):
+    monkeypatch.setattr(dirpicker, "_backend", lambda: "appkit")
+    monkeypatch.setitem(dirpicker._BACKENDS, "appkit", lambda *a, **kw: [])
+    assert dirpicker.pick_files() is None
+
+
+def test_the_appkit_backend_forwards_multiple_to_the_panel(monkeypatch):
+    import types as _types
+
+    seen = {}
+    fake = _types.SimpleNamespace(
+        choose_file=lambda **kw: seen.update(kw) or ["/Users/ada/a.png"],
+        choose_directory=lambda **kw: "/Users/ada",
+        PanelNotAnswered=TimeoutError)
+    monkeypatch.setitem(sys.modules, "fused_render.menubar_pin", fake)
+    assert dirpicker._pick_appkit(None, "Pick", files=True, types=["png"],
+                                  multiple=True) == ["/Users/ada/a.png"]
+    assert seen["multiple"] is True and seen["types"] == ["png"]
+
+
+def _pick_files(body, x_fused="1"):
+    from fused_render.server.routers.fs_read import api_fs_pick_files
+    return api_fs_pick_files(body=body, x_fused=x_fused)
+
+
+def test_the_pick_files_route_answers_a_list_and_null_on_cancel(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(dirpicker, "pick_files",
+                        lambda **kw: seen.update(kw) or ["/Users/ada/a.png", "/Users/ada/b.wav"])
+    resp = _pick_files({"title": "Choose files", "types": [".PNG", "wav"]})
+    assert _status(resp) == 200
+    assert _data(resp) == {"paths": ["/Users/ada/a.png", "/Users/ada/b.wav"]}
+    assert seen["types"] == ["png", "wav"] and seen["title"] == "Choose files"
+    monkeypatch.setattr(dirpicker, "pick_files", lambda **kw: None)
+    assert _data(_pick_files({})) == {"paths": None}
+
+
+def test_the_pick_files_route_keeps_the_single_routes_refusals(monkeypatch):
+    assert _status(_pick_files({}, x_fused=None)) == _status(_pick_file({}, x_fused=None))
+    assert _status(_pick_files({"start": "relative/dir"})) == 400
+    monkeypatch.setattr(dirpicker, "pick_files",
+                        lambda **kw: (_ for _ in ()).throw(dirpicker.PickerBusy("busy")))
+    assert _status(_pick_files({})) == 409
+    monkeypatch.setattr(dirpicker, "pick_files",
+                        lambda **kw: (_ for _ in ()).throw(dirpicker.PickerUnavailable("none")))
+    assert _status(_pick_files({})) == 501

@@ -43,7 +43,19 @@ import { useEffect, useRef, useState } from "react";
 import { embedPaths, embedTexts, withModelReady } from "./client";
 import { Textarea } from "@platform/shadcn/ui/textarea";
 import { Card } from "@platform/shadcn/ui/card";
-import { pickFile, rawUrl, type AiCatalogModel } from "@platform/lib/api";
+import { pickFiles, rawUrl, type AiCatalogModel } from "@platform/lib/api";
+import {
+  acceptedTypes,
+  basename,
+  displayName,
+  linesFromText,
+  mediaKindOf,
+  mergePaths,
+  pathsFromDrop,
+  refusal,
+  saveDropped,
+  type MediaKind,
+} from "./embedAttach";
 import { useConfigOpen, ConfigPanel, RailChips, RailField, ResultSlot, StageHeader, StarterCards, type Starter } from "./controls";
 import { StarterIcons } from "./starterIcons";
 
@@ -195,12 +207,9 @@ const MAX_PICTURES = 12;
 // Pillow can, plus HEIC through pillow-heif — which is the format an iPhone
 // photo library is actually in, so leaving it out would make the mode work on
 // screenshots and fail on the photographs.
-const PICTURE_TYPES = ["png", "jpg", "jpeg", "webp", "gif", "bmp", "tiff", "heic", "heif"];
-// What the unified encoder's audio and video decoders read — the same lists as
-// `embed_common.AUDIO_SUFFIXES` / `VIDEO_SUFFIXES` on the server, so the
-// picker never offers a file the route would then refuse by name.
-const AUDIO_TYPES = ["wav", "mp3", "flac", "ogg", "oga", "m4a", "aac", "opus"];
-const VIDEO_TYPES = ["mp4", "m4v", "mov", "mkv", "webm", "avi", "mpg", "mpeg"];
+// The extension lists themselves live in embedAttach.ts, beside the three
+// ways a file gets in (dialog, Explorer drag, Finder drop) and the one check
+// all three share.
 
 // The two things a text can BE to a retrieval model — `formats.TEXT_EMBED_KINDS`,
 // and the route refuses anything else. "Searching for" / "Being searched" rather
@@ -214,17 +223,11 @@ const KINDS = [
     title: "Prefix these as DOCUMENTS — the things you are searching THROUGH" },
 ];
 
-/** The last segment of a path, on either separator.
- *
- * `pickFile` hands back a NATIVE path, so a Windows `C:\\photos\\cat.png` split
- * on "/" alone has no separator to find and the whole string becomes the
- * "name" — the full drive path rendered as a filename in the corpus list and in
- * every ranked row. Both separators, because this string's shape depends on the
- * reader's OS and not on anything this component controls.
- */
-function basename(path: string): string {
-  const at = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
-  return (at >= 0 ? path.slice(at + 1) : path) || path;
+/** A small word for the row — what kind of thing this file is, so a list that
+ *  mixes a photo, a voice memo and a clip reads at a glance. Pictures get no
+ *  tag: they are the default, and their thumbnail already says so. */
+function kindTag(kind: MediaKind): string | null {
+  return kind === "audio" ? "sound" : kind === "video" ? "video" : null;
 }
 
 interface Ranked {
@@ -268,16 +271,22 @@ export function EmbedStage({
   // model that also takes sound and video — one picker, one list, one ranking.
   const ranksMedia = ranksAudio || ranksVideo;
   const mediaNoun = ranksMedia ? "file" : "picture";
-  const mediaTypes = [
-    ...PICTURE_TYPES,
-    ...(ranksAudio ? AUDIO_TYPES : []),
-    ...(ranksVideo ? VIDEO_TYPES : []),
-  ];
+  const mediaTypes = acceptedTypes({ audio: ranksAudio, video: ranksVideo });
+  const [dragging, setDragging] = useState(false);
+  // Drag enter/leave come in pairs per CHILD crossed, and WebKit leaves
+  // `relatedTarget` null on drag events, so "did we leave the stage" is a
+  // depth count rather than a target check: zero means gone.
+  const dragDepth = useRef(0);
   const scheme = entry.promptScheme ?? null;
   const [wantPictures, setWantPictures] = useState(false);
   const pictureMode = ranksPictures && wantPictures;
   const [kind, setKind] = useState<"query" | "document">("document");
   const [pictures, setPictures] = useState<string[]>([]);
+  // The list as last handed to React — mirrored so a merge that runs AFTER an
+  // await (the dialog, an upload) folds into whatever landed meanwhile rather
+  // than into the render this handler closed over.
+  const picturesRef = useRef(pictures);
+  picturesRef.current = pictures;
   const [rankedPictures, setRankedPictures] = useState<RankedPicture[] | null>(null);
   const [attaching, setAttaching] = useState(false);
 
@@ -361,34 +370,140 @@ export function EmbedStage({
     }
   };
 
-  /** Point the ranking at pictures ALREADY on this disk — no copy, no upload.
+  /** Fold paths into the list — the one door every way in goes through.
+   *
+   *  Each path is checked against what THIS model reads (`refusal`), because a
+   *  file the route would refuse by name must not sit in the list looking
+   *  rankable; the first refused one is the error line, the rest still land.
+   *  Deduplicated and capped in `mergePaths`, and the overflow is said once
+   *  rather than the tail of a big selection vanishing. A new file invalidates
+   *  the ranking rather than being appended to it unscored — a list where one
+   *  row has no bar reads as a broken render. */
+  const takePaths = (incoming: string[], prior: string | null = null) => {
+    const ok: string[] = [];
+    let why: string | null = prior;
+    for (const path of incoming) {
+      const no = refusal(path, mediaTypes);
+      if (no) why ??= no;
+      else ok.push(path);
+    }
+    // Merged against the mirror, not inside an updater (an updater runs at
+    // React's convenience, so the overflow count would be read before it
+    // ran) and not against the render's `pictures` (callers reach here after
+    // an await, by which time another drop may have landed).
+    const before = picturesRef.current;
+    const merged = mergePaths(before, ok, MAX_PICTURES);
+    picturesRef.current = merged.next;
+    setPictures(merged.next);
+    if (merged.over) why ??= `Up to ${MAX_PICTURES} files — ${merged.over} not added.`;
+    setError(why);
+    if (merged.next.length !== before.length) setRankedPictures(null);
+  };
+
+  /** Point the ranking at files ALREADY on this disk — no copy, no upload,
+   *  several per dialog.
    *
    *  `<input type=file>` cannot do this: a browser hands over bytes and strips
    *  the path on purpose, and the route takes a PATH because the worker is a
-   *  separate process that opens the file itself. So the only way to one is the
-   *  OS dialog raised in the server process, exactly as `ImageStage` does it. */
-  const addPicture = async () => {
+   *  separate process that opens the file itself. So the way to one is the OS
+   *  dialog raised in the server process (`pickFiles`), exactly as `ImageStage`
+   *  does it, with multi-select on. */
+  const addFiles = async () => {
     setError(null);
     setAttaching(true);
     try {
-      const path = await pickFile({
+      const paths = await pickFiles({
         title: ranksMedia
-          ? "Choose a picture, sound file or video to rank"
-          : "Choose a picture to rank",
+          ? "Choose pictures, sound files or videos to rank"
+          : "Choose pictures to rank",
         types: mediaTypes,
       });
       // A cancel is an answer: nothing changes and nothing is said about it.
-      if (path === null) return;
-      setPictures((current) =>
-        current.includes(path) || current.length >= MAX_PICTURES
-          ? current
-          : [...current, path],
-      );
-      // A new picture invalidates the ranking rather than being appended to it
-      // unscored — a list where one row has no bar reads as a broken render.
-      setRankedPictures(null);
+      if (paths === null) return;
+      takePaths(paths);
     } catch (e) {
       setError((e as Error).message);
+    } finally {
+      setAttaching(false);
+    }
+  };
+
+  /** A drop, anywhere on the stage. Two payloads: PATHS (the app's own
+   *  Explorer, a Linux file manager) go straight in; BYTES (Finder) are
+   *  written to the app's cache first and the copy goes in — the transcribe
+   *  stage's rule for the same reason. In Lines mode a dropped text file
+   *  becomes lines of the corpus; in Files mode text files are refused with
+   *  the sentence that says where they go. */
+  const onDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    dragDepth.current = 0;
+    setDragging(false);
+    if (busy) return;
+    const paths = pathsFromDrop(e.dataTransfer);
+    const files = paths.length ? [] : Array.from(e.dataTransfer.files ?? []);
+    if (!paths.length && !files.length) return;
+    setError(null);
+    if (!pictureMode) {
+      // Lines mode: text files only — read in the browser when they came as
+      // bytes, through `/api/fs/raw` when they came as a path (the Explorer).
+      // No upload either way: the corpus is text in a textarea.
+      const textFiles = files.filter((f) => mediaKindOf(f.name) === "text");
+      const textPaths = paths.filter((p) => mediaKindOf(p) === "text");
+      if (!textFiles.length && !textPaths.length) {
+        setError(
+          ranksPictures
+            ? "Drop text files here in Lines mode — switch to Files for pictures, sound and video."
+            : "Drop a text file here — one line per entry.",
+        );
+        return;
+      }
+      try {
+        const added: string[] = [];
+        for (const file of textFiles) added.push(...linesFromText(await file.text()));
+        for (const path of textPaths) {
+          const res = await fetch(rawUrl(path), { headers: { "X-Fused": "1" } });
+          if (!res.ok) throw new Error(`could not read ${basename(path)} (${res.status})`);
+          added.push(...linesFromText(await res.text()));
+        }
+        // Appended to what is typed, verbatim — the reader's own blank lines
+        // and spacing are theirs — and the cap is SAID, not applied silently:
+        // what fits lands, the rest is counted in the error line, the same
+        // "At most N lines" the run path refuses with.
+        const have = linesFromText(lines).length;
+        const room = Math.max(0, MAX_LINES - have);
+        const fits = added.slice(0, room);
+        if (fits.length) {
+          setLines((current) => (current.trimEnd() ? current.trimEnd() + "\n" : "") + fits.join("\n"));
+          setRanked(null);
+        }
+        if (added.length > room) {
+          setError(`At most ${MAX_LINES} lines — ${added.length - room} not added.`);
+        }
+      } catch (err) {
+        setError((err as Error).message);
+      }
+      return;
+    }
+    setAttaching(true);
+    try {
+      const landed = [...paths];
+      let refused: string | null = null;
+      for (const file of files) {
+        // Refused BEFORE the upload: a PDF should not be copied into the
+        // cache only to be refused by name afterwards. The first refusal is
+        // carried into `takePaths`, which owns the error line, so a mixed
+        // drop (a.pdf + b.png) lands the picture AND says why the other did
+        // not.
+        const no = refusal(file.name, mediaTypes);
+        if (no) {
+          refused ??= no;
+          continue;
+        }
+        landed.push(await saveDropped(file));
+      }
+      if (landed.length || refused) takePaths(landed, refused);
+    } catch (err) {
+      setError((err as Error).message);
     } finally {
       setAttaching(false);
     }
@@ -423,7 +538,7 @@ export function EmbedStage({
       const queryVector = phrase.embeddings[0] ?? [];
       const scored = pictures.map((path, at) => ({
         path,
-        name: basename(path),
+        name: displayName(path),
         score: (images.embeddings[at] || []).reduce(
           (sum, value, dim) => sum + value * (queryVector[dim] ?? 0),
           0,
@@ -447,7 +562,23 @@ export function EmbedStage({
     : 1;
 
   return (
-    <div className={"pg-work pg-embed" + (configOpen ? " has-config" : "")}>
+    <div
+      className={"pg-work pg-embed" + (configOpen ? " has-config" : "") + (dragging ? " dragging" : "")}
+      onDragEnter={(e) => {
+        e.preventDefault();
+        dragDepth.current += 1;
+        if (!busy) setDragging(true);
+      }}
+      onDragOver={(e) => e.preventDefault()}
+      onDragLeave={() => {
+        // Leaving a CHILD fires this too, paired with the enter that preceded
+        // it — see `dragDepth`. Only the leave that brings the depth back to
+        // zero is a leave of the stage.
+        dragDepth.current = Math.max(0, dragDepth.current - 1);
+        if (dragDepth.current === 0) setDragging(false);
+      }}
+      onDrop={(e) => void onDrop(e)}
+    >
       <Card className="pg-work-card flex-none gap-3 px-(--card-spacing) [--card-spacing:--spacing(6)]">
         {/* The action, and the way to the settings. The hero card above names
             the model and its state. */}
@@ -530,6 +661,34 @@ export function EmbedStage({
             </button>
           </div>
         </div>
+        {/* The way IN, in the open — not behind the cog. The list of what is in
+            (and Remove) stays behind the cog, where the Lines corpus also
+            lives; this row is the door and the count. */}
+        {pictureMode && (
+          <div className={"pg-dropzone pg-embed-attach" + (dragging ? " dragging" : "") + (busy ? " busy" : "")}>
+            <button
+              type="button"
+              className="pg-ghost-btn"
+              disabled={attaching || busy || pictures.length >= MAX_PICTURES}
+              onClick={() => void addFiles()}
+            >
+              {attaching ? "Adding…" : `Add ${mediaNoun}s…`}
+            </button>
+            <div className="pg-drop-copy">
+              <p className="pg-drop-title">
+                {pictures.length
+                  ? `${pictures.length} ${pictures.length === 1 ? mediaNoun : `${mediaNoun}s`} to search`
+                  : ranksMedia
+                    ? "Pictures, sound files and videos"
+                    : "Pictures"}
+              </p>
+              <p className="pg-drop-hint">
+                Pick several at once, or drop them here from Finder or the Explorer.
+                {pictures.length > 0 && " Open the settings cog to remove one."}
+              </p>
+            </div>
+          </div>
+        )}
 
       <ConfigPanel open={configOpen} animated={configTouched.current}>
         {pictureMode ? (
@@ -540,8 +699,11 @@ export function EmbedStage({
             <div className="pg-embed-pictures">
               {pictures.map((path) => (
                 <div key={path} className="pg-embed-picture-row">
+                  {kindTag(mediaKindOf(path)) && (
+                    <span className="pg-embed-kind">{kindTag(mediaKindOf(path))}</span>
+                  )}
                   <span className="pg-embed-picture-name" title={path}>
-                    {basename(path)}
+                    {displayName(path)}
                   </span>
                   <button
                     type="button"
@@ -560,9 +722,9 @@ export function EmbedStage({
                 type="button"
                 className="pg-ghost-btn"
                 disabled={attaching || pictures.length >= MAX_PICTURES}
-                onClick={() => void addPicture()}
+                onClick={() => void addFiles()}
               >
-                {attaching ? "Choosing…" : `Add a ${mediaNoun}…`}
+                {attaching ? "Adding…" : `Add ${mediaNoun}s…`}
               </button>
             </div>
           </RailField>
@@ -625,7 +787,13 @@ export function EmbedStage({
                     {/* Through `/api/fs/raw`, the one door every local file in
                         this app goes through — the shell has no other way to
                         read a picture off the user's own disk. */}
-                    <img className="pg-embed-thumb" src={rawUrl(row.path)} alt={row.name} />
+                    {mediaKindOf(row.path) === "video" ? (
+                      <video className="pg-embed-thumb" src={rawUrl(row.path)} muted playsInline preload="metadata" />
+                    ) : mediaKindOf(row.path) === "audio" ? (
+                      <span className="pg-embed-thumb pg-embed-thumb-audio" aria-label="sound file">♪</span>
+                    ) : (
+                      <img className="pg-embed-thumb" src={rawUrl(row.path)} alt={row.name} />
+                    )}
                     <span className="pg-embed-text">{row.name}</span>
                     <span className="pg-embed-score">{row.score.toFixed(2)}</span>
                   </li>
@@ -639,7 +807,7 @@ export function EmbedStage({
               note={
                 pictures.length
                   ? `The ${mediaNoun}s come back here, ordered by how close they are to the phrase.`
-                  : `Add a ${mediaNoun} or two behind the settings cog, then type what you are looking for.`
+                  : `Add a ${mediaNoun} or two above, or drop them in, then type what you are looking for.`
               }
             />
           )

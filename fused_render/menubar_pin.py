@@ -620,10 +620,14 @@ def _float_panel_over_everything(panel) -> None:
 def _run_open_panel_modal(*, title: str, prompt: str, files: bool,
                           directories: bool, start: str | None = None,
                           create_directories: bool = False,
-                          types: list[str] | None = None) -> str | None:
+                          types: list[str] | None = None,
+                          multiple: bool = False) -> str | list[str] | None:
     """Run an NSOpenPanel to completion. MAIN THREAD ONLY.
 
-    Returns the chosen path, or None when the user cancelled.
+    Returns the chosen path, or None when the user cancelled. With `multiple`
+    the panel lets the user select several files and the answer is a LIST of
+    paths (never empty — an OK with nothing chosen is read as a cancel), so a
+    caller that asked for several never has to tell one string from one item.
 
     `types` is a list of bare extensions the panel will let the user choose;
     anything else is shown greyed out. `setAllowedFileTypes_` is soft-deprecated
@@ -636,7 +640,7 @@ def _run_open_panel_modal(*, title: str, prompt: str, files: bool,
     panel = NSOpenPanel.openPanel()
     panel.setCanChooseFiles_(files)
     panel.setCanChooseDirectories_(directories)
-    panel.setAllowsMultipleSelection_(False)
+    panel.setAllowsMultipleSelection_(bool(multiple))
     panel.setCanCreateDirectories_(create_directories)
     if types:
         panel.setAllowedFileTypes_(list(types))
@@ -649,6 +653,9 @@ def _run_open_panel_modal(*, title: str, prompt: str, files: bool,
     _float_panel_over_everything(panel)
     if panel.runModal() != NSModalResponseOK or panel.URL() is None:
         return None
+    if multiple:
+        paths = [url.path() for url in panel.URLs()]
+        return paths or None
     return panel.URL().path()
 
 
@@ -665,7 +672,8 @@ def _run_directory_panel(start: str | None, title: str, prompt: str) -> str | No
 
 
 def _run_file_panel(start: str | None, title: str, prompt: str,
-                    types: list[str] | None = None) -> str | None:
+                    types: list[str] | None = None,
+                    multiple: bool = False) -> str | list[str] | None:
     """Files only. MAIN THREAD ONLY — see `choose_file`.
 
     No `canCreateDirectories`, unlike `_run_directory_panel`: this panel picks
@@ -674,7 +682,7 @@ def _run_file_panel(start: str | None, title: str, prompt: str,
     """
     return _run_open_panel_modal(
         title=title, prompt=prompt, files=True, directories=False,
-        start=start, create_directories=False, types=types)
+        start=start, create_directories=False, types=types, multiple=multiple)
 
 
 class PanelNotAnswered(TimeoutError):
@@ -727,7 +735,8 @@ def choose_directory(start: str | None = None, title: str = "Choose a folder",
 
 def choose_file(start: str | None = None, title: str = "Choose a file",
                 prompt: str = "Choose", types: list[str] | None = None,
-                timeout: float = 300.0) -> str | None:
+                timeout: float = 300.0,
+                multiple: bool = False) -> str | list[str] | None:
     """A file-only NSOpenPanel, callable from ANY thread. Blocks the caller.
 
     Everything `choose_directory` says applies unchanged — the main-thread hop,
@@ -737,9 +746,10 @@ def choose_file(start: str | None = None, title: str = "Choose a file",
     `types` narrows the panel to those extensions (see `_run_open_panel_modal`).
     Ahead of `timeout` in the signature because every caller in this app passes
     it by keyword, and it is a property of the dialog rather than of the wait.
+    `multiple` makes the answer a list of paths — see the same function.
     """
     return _on_the_main_thread(
-        lambda: _run_file_panel(start, title, prompt, types),
+        lambda: _run_file_panel(start, title, prompt, types, multiple),
         timeout, "the file chooser was not answered in time")
 
 
