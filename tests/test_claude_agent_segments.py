@@ -1261,3 +1261,128 @@ def test_a_streamed_text_segment_learns_when_it_ended_from_its_finalized_row(
     assert segs[0]["ended"] == 1791108009.0
     assert segs[0]["text"] == "Let me edit."
 
+
+
+# ------------------------------------------------- subagent nesting (SPEC T-2)
+
+def _a_tool(tool_id, name, inp=None, parent=None):
+    row = {"type": "assistant", "message": {"role": "assistant", "content": [
+        {"type": "tool_use", "id": tool_id, "name": name, "input": inp or {}}]}}
+    if parent:
+        row["parent_tool_use_id"] = parent
+    return row
+
+
+def _a_text(text, parent=None):
+    row = {"type": "assistant", "message": {"role": "assistant", "content": [
+        {"type": "text", "text": text}]}}
+    if parent:
+        row["parent_tool_use_id"] = parent
+    return row
+
+
+def _u_result(tool_id, content="ok", parent=None):
+    row = {"type": "user", "message": {"role": "user", "content": [
+        {"type": "tool_result", "tool_use_id": tool_id, "content": content}]}}
+    if parent:
+        row["parent_tool_use_id"] = parent
+    return row
+
+
+def test_subagent_rows_nest_under_their_parent_tool(agent):
+    rows = [_delta("text_delta", "Delegating."), _STOP,
+            _a_tool("toolu_A", "Agent", {"description": "map", "subagent_type": "Explore"}),
+            _a_text("child looks around", parent="toolu_A"),
+            _a_tool("toolu_c1", "Grep", {"pattern": "x"}, parent="toolu_A"),
+            _u_result("toolu_c1", "3 hits", parent="toolu_A"),
+            _a_text("child done", parent="toolu_A"),
+            _u_result("toolu_A", "summary"),
+            _delta("text_delta", "All set.")]
+    segs = agent._segments_from_rows(rows)
+    assert [s["kind"] for s in segs] == ["text", "tool", "text"]
+    parent = segs[1]
+    assert parent["name"] == "Agent" and parent["status"] == "ok"
+    kids = parent["children"]
+    assert [k["kind"] for k in kids] == ["text", "tool", "text"]
+    assert kids[0]["text"] == "child looks around"
+    assert kids[1]["name"] == "Grep" and kids[1]["output"] == "3 hits"
+    # The child's prose never leaks into the parent's reply.
+    assert "child" not in "".join(s.get("text", "") for s in segs
+                                  if s["kind"] == "text")
+
+
+def test_an_orphan_subagent_group_gets_a_synthetic_parent_at_the_end(agent):
+    rows = [_a_text("child still going", parent="toolu_OLD"),
+            _delta("text_delta", "main says hi")]
+    segs = agent._segments_from_rows(rows)
+    assert [s["kind"] for s in segs] == ["text", "tool"]
+    orphan = segs[-1]
+    assert orphan["orphan"] is True and orphan["name"] == "Agent"
+    assert orphan["id"] == "toolu_OLD" and orphan["detail"] == ""
+    assert orphan["children"][0]["text"] == "child still going"
+
+
+def test_grandchildren_are_flattened_into_their_subagents_group(agent):
+    rows = [_a_tool("toolu_A", "Agent", {"description": "outer"}),
+            _a_tool("toolu_B", "Agent", {"description": "inner"}, parent="toolu_A"),
+            _a_text("grandchild speaks", parent="toolu_B"),
+            _u_result("toolu_B", "inner done", parent="toolu_A"),
+            _u_result("toolu_A", "outer done")]
+    segs = agent._segments_from_rows(rows)
+    assert len(segs) == 1, "no orphan for the grandchild's group"
+    kids = segs[0]["children"]
+    assert [k["kind"] for k in kids] == ["tool", "text"]
+    assert kids[0]["id"] == "toolu_B" and "children" not in kids[0]
+    assert kids[1]["text"] == "grandchild speaks"
+
+
+def test_thinking_inside_a_subagent_is_kept(agent):
+    rows = [_a_tool("toolu_A", "Agent"),
+            {"type": "assistant", "parent_tool_use_id": "toolu_A",
+             "message": {"role": "assistant", "content": [
+                 {"type": "thinking", "thinking": "child ponders"},
+                 {"type": "text", "text": "child answer"}]}}]
+    kids = agent._segments_from_rows(rows)[0]["children"]
+    assert [k["kind"] for k in kids] == ["thinking", "text"]
+
+
+def test_task_links_stamp_task_id_on_tool_segments(agent):
+    rows = [_a_tool("toolu_A", "Agent"),
+            _a_tool("toolu_b", "Bash", {"command": "sleep 9", "run_in_background": True},
+                    parent="toolu_A"),
+            _a_text("orphan kid", parent="toolu_Z")]
+    segs = agent._segments_from_rows(
+        rows, task_links={"toolu_A": "a1", "toolu_b": "b1", "toolu_Z": "z1"})
+    assert segs[0]["task_id"] == "a1"
+    assert segs[0]["children"][0]["task_id"] == "b1"
+    assert segs[-1]["orphan"] and segs[-1]["task_id"] == "z1"
+
+
+def test_poll_nests_subagent_rows_and_links_the_task(agent, tmp_path):
+    rows = [_a_tool("toolu_A", "Agent", {"description": "map", "subagent_type": "Explore"}),
+            {"type": "system", "subtype": "task_started", "task_id": "t1",
+             "tool_use_id": "toolu_A", "description": "map",
+             "task_type": "local_agent"},
+            _a_text("child here", parent="toolu_A")]
+    data = _poll_rows(agent, tmp_path, rows)
+    seg = data["segments"][0]
+    assert seg["task_id"] == "t1"
+    assert seg["children"][0]["text"] == "child here"
+    assert data["text"] == ""
+
+
+def test_a_seam_count_leaves_orphans_out(agent):
+    """Orphans sit at the end of the window's list; a seam index into the list
+    must count only the replies' own segments."""
+    user = {"type": "user", "message": {"role": "user", "content": [
+        {"type": "text", "text": "next"}]}}
+    rows = [_a_text("child", parent="toolu_OLD"),
+            _delta("text_delta", "first reply"), _STOP,
+            {"type": "result", "result": "first reply"},
+            user,
+            _delta("text_delta", "second reply")]
+    breaks = agent._absorbed_turn_breaks(rows)
+    assert breaks == [{"segments": 1, "text": len("first reply")}]
+    segs = agent._segments_from_rows(rows)
+    assert [s["kind"] for s in segs] == ["text", "text", "tool"]
+    assert segs[0]["text"] == "first reply"

@@ -80,6 +80,9 @@ BUDGETS_S: dict[str, float] = {
     "sessions": 30.0,
     "history": 30.0,
     "cancel": 15.0,
+    # SPEC T-3: a 10 s control-response wait plus the request write.
+    "task_output": 15.0,
+    "commands": 30.0,
 }
 
 

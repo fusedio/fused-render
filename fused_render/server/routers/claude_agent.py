@@ -47,6 +47,7 @@ import os
 import threading
 import time
 import traceback
+from concurrent.futures import ThreadPoolExecutor
 from types import ModuleType
 
 from fastapi import APIRouter, Body, Header, Request, Response
@@ -85,6 +86,8 @@ ACTIONS: dict[str, str] = {
     "cancel": "_cancel",
     "live_host": "_live_host",
     "send": "_send",
+    "commands": "_commands",
+    "task_output": "_task_output",
 }
 
 #: The engine name the call log records for these routes. `/api/run` wrote
@@ -414,6 +417,11 @@ async def api_claude_artifacts(request: Request, body: dict = Body(default={}),
 #: let hang a menu far past the point anyone is still waiting on it.
 WORKTREE_ACTIONS = ("list", "create", "remove")
 WORKTREE_BUDGET_S = 20.0
+#: The worktree route's own two threads, NOT `pool.POOL`: a create can hold a
+#: thread for most of its 20 s (and past it, since a timed-out handler runs
+#: on), and the chat's 400 ms polls must never queue behind a checkout.
+_WORKTREE_POOL = ThreadPoolExecutor(max_workers=2,
+                                    thread_name_prefix="claude-worktrees")
 
 
 @router.post("/api/claude/worktrees")
@@ -422,9 +430,10 @@ async def api_claude_worktrees(request: Request, body: dict = Body(default={}),
     """`{"action": "list"|"create"|"remove", "file", "name"?, "base"?,
     "force"?}` → `claude_agent/worktrees.py`'s dict verbatim (its own
     `{"error": ...}` is a 200 answer, like every handler here). `file` is the
-    chat's `_file`, any path inside the repo. The git calls run on a pool
-    thread under `WORKTREE_BUDGET_S`, so a slow checkout is a 504 with the
-    agent route's error object, never a stalled event loop."""
+    chat's `_file`, any path inside the repo. The git calls run on
+    `_WORKTREE_POOL` under `WORKTREE_BUDGET_S` (the module keeps its own
+    deadline inside it), so a slow checkout is at worst a 504 with the agent
+    route's error object, never a stalled event loop or a starved poll."""
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
@@ -438,7 +447,8 @@ async def api_claude_worktrees(request: Request, body: dict = Body(default={}),
     except ParamError as exc:
         return _error(f"worktrees: {exc}")
     envelope, status, _ = await _run(f"worktrees {action}", WORKTREE_BUDGET_S,
-                                     worktrees.main, bound)
+                                     worktrees.main, bound,
+                                     executor=_WORKTREE_POOL)
     if action != "list":
         # A new or removed worktree moves what git reports for the repo.
         git_status.invalidate_status_cache()
