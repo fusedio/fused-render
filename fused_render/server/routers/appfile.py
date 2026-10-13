@@ -326,6 +326,10 @@ def api_appfile_install(body: dict = Body(...), x_fused: str | None = Header(def
                              "target": target}, status_code=409)
     try:
         result = appfile.install_app_file(file, force=force)
+    except appfile.InstallNeedsConfirm as exc:
+        # A warn state that appeared between the probe above and the write
+        # (a copy claimed the folder meanwhile): the same 409 as the probe's.
+        return JSONResponse({"error": str(exc), "target": exc.target}, status_code=409)
     except appfile.AppFileError as exc:
         return _error(str(exc))
     # The paged hub's snapshot is at most 20 s behind the disk; the one folder

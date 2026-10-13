@@ -117,6 +117,17 @@ class AppFileError(Exception):
     message goes verbatim into the route's 400 body."""
 
 
+class InstallNeedsConfirm(AppFileError):
+    """An install that would lose the user's work (a warn state, AF-14) and
+    was not ``force``d. Carries the fresh probe so the route can answer 409
+    with it and the page can show the confirm — whether the state was known
+    before the write or appeared during it."""
+
+    def __init__(self, target: dict):
+        super().__init__(f"install state {target['state']!r} needs confirmation")
+        self.target = target
+
+
 def appfiles_root() -> str:
     """Where the run-in-place era extracted app files (retired). Installs
     retire what sits there for the app they install; `registered_apps` still
@@ -1020,7 +1031,7 @@ def install_app_file(fused_path: str, *, force: bool = False) -> dict:
             f"{target['path']} already holds a different app ({target['other_name']}); "
             "rename or uninstall it first")
     if state in WARN_STATES and not force:
-        raise AppFileError(f"install state {state!r} needs confirmation")
+        raise InstallNeedsConfirm(target)
     manifest = read_manifest(fused_path)
     app_id = target["app_id"]
     root = install_dir()
@@ -1039,18 +1050,23 @@ def install_app_file(fused_path: str, *, force: bool = False) -> dict:
             except OSError:
                 if not os.path.isdir(dest):
                     raise AppFileError(f"could not place the installed app at {dest}")
-                # Something claimed `dest` during the extract. Ask again who:
-                # a concurrent install of the SAME app is the one working copy
-                # and gets updated; anything else (another app's folder, a
-                # copy that now needs confirmation) is refused exactly as a
-                # first probe would have refused it.
-                again = install_target(fused_path, light=True)
-                if again["state"] == STATE_CLASH or not again["installed"]:
+                # Something claimed `dest` during the extract. Ask again who —
+                # the FULL probe, divergence hashing included: a concurrent
+                # install of the SAME app at this very path is the one
+                # working copy and gets updated; anything else (another app's
+                # folder, the app's copy appearing elsewhere, a copy that now
+                # needs confirmation) is refused exactly as a first probe
+                # would have refused it, and a warn state reaches the page as
+                # the same 409 so it can show the confirm.
+                again = install_target(fused_path)
+                if (again["state"] == STATE_CLASH or not again["installed"]
+                        or os.path.normcase(os.path.normpath(again["path"]))
+                        != os.path.normcase(os.path.normpath(dest))):
                     raise AppFileError(
-                        f"{dest} appeared during the install and holds a different app; "
+                        f"{dest} appeared during the install and is not this app's copy; "
                         "open the file again")
                 if again["needs_force"] and not force:
-                    raise AppFileError(f"install state {again['state']!r} needs confirmation")
+                    raise InstallNeedsConfirm(again)
                 # The state adopted into this staging goes with it when the
                 # winner has none yet, so an adopted state is never lost to
                 # the staging sweep below.
