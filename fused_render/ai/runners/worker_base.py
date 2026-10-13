@@ -3107,6 +3107,7 @@ def _mirror_snapshot(model_id, allow_patterns=None, ignore_patterns=None, revisi
             model_id,
             lambda: _segmented_fetch(
                 model_id, names, manifest["commit"],
+                ref=revision or DEFAULT_REVISION,
                 meta=mirror.file_meta(model_id, manifest),
                 # Anonymous, always. The blob URL is the metadata URL here, so
                 # `_cdn_token` would otherwise hand a user's Hub token to
@@ -4277,8 +4278,11 @@ def download_snapshot(model_id, allow_patterns=None, ignore_patterns=None,
         return result
     names = [name for name, _size in files]
     try:
+        # A pinned commit is the ref, so `_write_ref` leaves `refs/main` alone, as hf does.
         fetched = fetch_with_progress(
-            model_id, lambda: _segmented_fetch(model_id, names, sha), total=total)
+            model_id, lambda: _segmented_fetch(model_id, names, sha,
+                                               ref=revision or DEFAULT_REVISION),
+            total=total)
     except Cancelled:
         raise
     except Exception as error:  # noqa: BLE001 - every failure degrades to hf's downloader

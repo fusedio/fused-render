@@ -2783,6 +2783,40 @@ def test_a_pinned_revision_reaches_the_cache_lookup_the_listing_and_the_fetch(
     assert all(revision == pin for _local, revision in asked), asked
 
 
+def test_a_pinned_fetch_names_the_commit_as_its_ref_so_refs_main_is_left_alone(
+        base, monkeypatch, tmp_path):
+    pin = "a" * 40
+    refs = []
+
+    def fetch(model_id, names, revision, ref=base.DEFAULT_REVISION, **kw):
+        refs.append(ref)
+        raise RuntimeError("stop after the call")
+
+    class Mirror:
+        allowed = staticmethod(lambda model_id: True)
+        manifest = staticmethod(lambda model_id: {
+            "commit": pin, "files": [{"name": "config.json", "size": 7}]})
+        file_meta = staticmethod(lambda model_id, manifest: {})
+
+    monkeypatch.setattr(base, "_mirror_module", lambda: Mirror)
+    monkeypatch.setattr(base, "_segmented_fetch", fetch)
+    monkeypatch.setattr(base, "fetch_with_progress", lambda model_id, fn, **kw: fn())
+    assert base._mirror_snapshot("u/x", revision=pin) is None
+
+    folder = _cache_folder(tmp_path)
+    snapshot = _snapshot_dir(tmp_path, "config.json")
+    _local_hub(monkeypatch, base, _LocalHub(cached=[], snapshot=snapshot), folder=folder)
+    monkeypatch.setattr(base, "_mirror_snapshot", lambda *a, **kw: None)
+    monkeypatch.setattr(base, "_repo_files", lambda *a, **kw: (pin, [("config.json", 7)]))
+    monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
+    base.download_snapshot("u/x", revision=pin)
+    base.download_snapshot("u/x")
+    assert refs == [pin, pin, base.DEFAULT_REVISION]
+    # And a sha-named ref writes no file at all.
+    base._write_ref(str(folder), pin, pin)
+    assert not (folder / "refs" / pin).exists()
+
+
 def test_a_mirror_manifest_at_another_commit_is_a_miss_for_a_pinned_download(
         base, monkeypatch):
     reached = []
