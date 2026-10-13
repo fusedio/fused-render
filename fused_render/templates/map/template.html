@@ -1104,8 +1104,6 @@ const raster = {
                                              state: this.state(layer, r, true) });
     const rl = mgr.getLayer(r.handle);
     if (!rl || rl.error) throw rl && rl.error || new Error("raster did not load");
-    // The tile layer parses the CRS unawaited, so one its reader can't name
-    // (ESRI:54009 in an ESRI PE string) would fail silently; throw it here.
     if (rl.geotiff && typeof rl.geotiff === "object") void rl.geotiff.crs;
     r.auto = { mode: rl.state.mode, bands: rl.state.bands.slice(), colormap: rl.state.colormap };
     r.kind = "raster";
