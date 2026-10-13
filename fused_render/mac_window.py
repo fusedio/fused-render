@@ -556,6 +556,12 @@ class _WebDelegate(NSObject):
         logger.warning("web content process terminated under window %s; reload %d/%d in %.0fs",
                        label, self._terminations, _TERMINATE_RELOAD_MAX, delay)
         gen = self._nav_gen
+        # The URL this view was showing or fetching, captured NOW: a renderer
+        # that dies before its first page commits leaves the back-forward
+        # list without a current item, and `reload()` on such a view starts
+        # no navigation at all — the window would stay blank, and a load we
+        # counted as ours would never arrive. That case loads the URL afresh.
+        url = window.current_url() if window is not None else None
         from PyObjCTools import AppHelper
 
         def reload():
@@ -564,9 +570,22 @@ class _WebDelegate(NSObject):
                 return
             if self._nav_gen != gen:
                 return  # the user (or a sibling retry) already navigated
+            has_item = False
+            try:
+                has_item = w.webview.backForwardList().currentItem() is not None
+            except Exception:  # noqa: BLE001 — diagnostics only
+                has_item = False
+            if not has_item and not url:
+                logger.warning("web content process terminated before any page "
+                               "committed and no URL to reload; leaving window %s", label)
+                return
+            # Count the load only once one is actually issued.
             self._nav_gen += 1  # synchronous, so a sibling retry bails
             self._own_loads += 1  # our own load: keeps the budgets
-            w.webview.reload()
+            if has_item:
+                w.webview.reload()
+            else:
+                w.webview.loadRequest_(NSURLRequest.requestWithURL_(_nsurl(url)))
 
         AppHelper.callLater(delay, reload)
 
