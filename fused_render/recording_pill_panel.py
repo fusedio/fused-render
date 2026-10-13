@@ -11,17 +11,17 @@ buttons does not pull the frontmost app out from under the user.
 What shows is the server half's business (`recording_pill.py` calls the hooks
 `app.py` installs); this file is only the window. The page polls
 ``GET /api/capture/{id}/state`` for time, paused and level, and posts messages
-back: ``pause`` / ``resume`` / ``stop`` (run on a worker thread — they may wait
+back: ``stop`` (and the still-accepted ``pause`` / ``resume``; run on a worker thread — they may wait
 on the native backend and the main thread must not), ``open`` (bring the
 recording app's window forward), ``gone`` (the recording ended under it) and
-``drag`` (window moves; `setMovableByWindowBackground_` alone cannot do it
+``size`` (the pill's height, so the window fits it) and ``drag`` (window moves; `setMovableByWindowBackground_` alone cannot do it
 because the page's whole surface is a web view).
 
 Everything here runs on macOS 13: no ``NSGlassEffectView``, no
 ``setInspectable_`` and nothing else newer than 13. Light/dark is the page's CSS.
 
-Several recordings at once share the one pill: it shows the newest, and when that
-one ends the previous is shown again.
+Several recordings at once share the one pill: it stacks an icon per recording,
+newest on top, and the whole list is pushed each time it changes.
 """
 from __future__ import annotations
 
@@ -59,10 +59,12 @@ from fused_render.mac_window import USER_AGENT_MARKER, _open_external
 logger = logging.getLogger(__name__)
 
 MESSAGE_NAME = "recpill"
-#: The window: the 44x152 pill plus a 14pt margin all round for the page's CSS
-#: shadow (the window has none of its own — see `_build_panel`).
+#: The window: the 44pt-wide pill plus a 14pt margin all round for the page's CSS
+#: shadow (the window has none of its own — see `_build_panel`). HEIGHT is the
+#: one-recording size (114pt pill + 28pt margin); the page reports its real
+#: height and `_resize` follows it, keeping the top edge put.
 WIDTH = 72.0
-HEIGHT = 180.0
+HEIGHT = 142.0
 EDGE_INSET = 16.0
 FRAME_NAME = "FusedRenderRecordingPill"
 
@@ -76,6 +78,19 @@ def default_origin(visible: tuple, size: tuple = (WIDTH, HEIGHT),
     (x, y, w, h), `inset` in, vertically centred."""
     x, y, w, h = visible
     return (x + w - size[0] - inset, y + (h - size[1]) / 2.0)
+
+
+def resized_frame(frame: tuple, content_h: float, margin: float = 28.0,
+                  lo: float = 60.0, hi: float = 400.0) -> tuple:
+    """`frame` (x, y, w, h) resized to fit a pill `content_h` tall. AppKit's
+    origin is bottom-left, so y moves by the height change to keep the TOP edge
+    where it was. A non-numeric `content_h` leaves the frame unchanged."""
+    if isinstance(content_h, bool) or not isinstance(content_h, (int, float)) \
+            or content_h != content_h:
+        return tuple(frame)
+    x, y, w, h = frame
+    new_h = min(hi, max(lo, float(content_h) + margin))
+    return (x, y + h - new_h, w, new_h)
 
 
 def intersects_any(frame: tuple, screens: list) -> bool:
@@ -234,6 +249,8 @@ class RecordingPillController:
         elif kind == "ready":
             self._page_ready = True
             self._push_current()
+        elif kind == "size":
+            self._resize(data.get("height"))
         elif kind == "drag":
             self._drag(str(data.get("phase") or ""), data.get("dx"), data.get("dy"))
 
@@ -252,6 +269,17 @@ class RecordingPillController:
 
         threading.Thread(target=run, daemon=True,
                          name=f"recpill-{kind}").start()
+
+    def _resize(self, content_h) -> None:
+        """Fit the window to the pill's height, top edge fixed (the web view is
+        the panel's content view, so it follows)."""
+        if self._panel is None:
+            return
+        f = self._panel.frame()
+        old = (f.origin.x, f.origin.y, f.size.width, f.size.height)
+        new = resized_frame(old, content_h)
+        if new[3] != old[3]:
+            self._panel.setFrame_display_(NSMakeRect(*new), True)
 
     def _drag(self, phase: str, dx, dy) -> None:
         if self._panel is None:
@@ -288,7 +316,7 @@ class RecordingPillController:
     def _push_current(self) -> None:
         if not self._stack or not self._page_ready:
             return
-        self._eval("window.pillShow(%s)" % json.dumps(self._stack[-1]))
+        self._eval("window.pillSet(%s)" % json.dumps(self._stack))
 
     def _eval(self, js: str) -> None:
         if self._webview is None or not self._page_ready:

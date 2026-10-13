@@ -3,7 +3,7 @@
 The window itself (look, drag, buttons, light/dark, Spaces) needs a person; see
 the human checklist in D1345. What is checked here is the logic around it: where
 the pill goes by default, the restored-frame sanity check, the stack that shows
-the newest recording, and that the page's messages reach the right calls.
+every recording, and that the page's messages reach the right calls.
 """
 from __future__ import annotations
 
@@ -28,6 +28,19 @@ def test_the_default_spot_is_the_right_edge_vertically_centred():
     # A second display to the left, origin negative: still its own right edge.
     x, y = rp.default_origin((-1920, 0, 1920, 1080))
     assert x == -rp.WIDTH - rp.EDGE_INSET
+
+
+def test_resized_frame_keeps_the_top_edge_and_clamps():
+    from fused_render.recording_pill_panel import resized_frame
+
+    # (x, y, w, h) bottom-left origin: top = y + h. 114 + 28 margin = 142 tall.
+    x, y, w, h = resized_frame((100, 200, 72, 142), 114 + 60)
+    assert (x, w, h) == (100, 72, 202) and y + h == 200 + 142
+    assert resized_frame((100, 200, 72, 142), 114) == (100, 200, 72, 142)
+    assert resized_frame((0, 0, 72, 142), 5)[3] == 60            # lo
+    assert resized_frame((0, 0, 72, 142), 9999)[3] == 400        # hi
+    for bad in (None, "x", float("nan"), True):
+        assert resized_frame((1, 2, 72, 142), bad) == (1, 2, 72, 142)
 
 
 def test_a_restored_frame_on_a_detached_display_is_rejected():
@@ -88,13 +101,14 @@ def info(cid):
             "flavor": "render", "canPause": True, "mode": "audio"}
 
 
-def test_one_pill_shows_the_newest_recording_and_restores_the_previous():
+def test_one_pill_pushes_every_recording_newest_last():
     ctl = controller()
     ctl.show(info("a"))
     ctl.show(info("b"))
-    assert '"id": "b"' in ctl._webview.js[-1] and "pillShow" in ctl._webview.js[-1]
+    js = ctl._webview.js[-1]
+    assert js.startswith("window.pillSet(") and js.index('"id": "a"') < js.index('"id": "b"')
     ctl.hide("b")
-    assert '"id": "a"' in ctl._webview.js[-1]
+    assert '"id": "a"' in ctl._webview.js[-1] and '"id": "b"' not in ctl._webview.js[-1]
     assert ctl._panel.ordered[-1] == "front"
     ctl.hide("a")
     assert ctl._panel.ordered[-1] == "out"
@@ -119,7 +133,7 @@ def test_a_recording_that_began_before_the_server_is_shown_once_it_is_ready():
     assert ctl._panel.ordered == []
     ctl._ready = True
     ctl.handle({"type": "ready"})                  # the page finished loading
-    assert any("pillShow" in js for js in ctl._webview.js)
+    assert any("pillSet" in js for js in ctl._webview.js)
 
 
 def test_the_pages_buttons_run_capture_calls_off_the_main_thread(monkeypatch):
@@ -152,6 +166,17 @@ def test_open_goes_to_the_app_and_gone_hides_the_pill():
     assert ctl.opened == ["/apps/a"]
     ctl.handle({"type": "gone", "id": "a"})
     assert ctl._stack == [] and ctl._panel.ordered[-1] == "out"
+
+
+def test_size_resizes_the_window_with_the_top_edge_fixed():
+    ctl = controller()
+    frames = []
+    ctl._panel.setFrame_display_ = lambda r, d: frames.append(
+        (r.origin.x, r.origin.y, r.size.width, r.size.height))
+    ctl.handle({"type": "size", "height": 114 + 34})   # fake frame: (100, 200, 72, 216)
+    assert frames == [(100.0, 200 + 216 - 176, 72.0, 176.0)]
+    ctl.handle({"type": "size", "height": "bad"})
+    assert len(frames) == 1
 
 
 def test_dragging_moves_the_window_by_the_pointer_delta_and_saves_it():
