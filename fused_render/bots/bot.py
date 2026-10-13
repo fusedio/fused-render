@@ -3380,7 +3380,9 @@ def activity(bid, meta, b=None, now=None) -> dict:
     headed = False
     if b is not None:
         try:
-            headed = bool(b.browser.headed() and b.browser.running())
+            # The process flag, the same test start_task refuses on: a window another bot popped out of the SHARED
+            # Chrome blocks this bot's tasks too, so it must not fold into the idle line.
+            headed = bool(b.browser.headed())
         except Exception:  # noqa: BLE001
             headed = False
     return {"status": status, "busy": busy, "live": live, "task": " ".join(str(m.get("task") or "").split()),
@@ -3463,7 +3465,8 @@ def activity_line(name, a, b=None, now=None) -> str:
     else:
         what = "idle"
     if a.get("headed"):
-        what += '; its browser is open as a real window on the desktop (no task can start until the user clicks "Back here")'
+        what += ("; the Chrome it runs on is open as a real window on the desktop (no task can start until the user "
+                 'clicks "Back here" there)')
     return f"- {name}: {what}"
 
 
