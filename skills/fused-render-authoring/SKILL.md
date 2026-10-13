@@ -122,6 +122,7 @@ Auto-created at app root. Convention, no helper API — build paths off `os.path
 | `fused.capture.*` | Native screen/mic/screenshot → `fused-render-capture`. |
 | `fused.trackJob(spec)` | Report long work to download manager; never rejects → `fused-render-jobs`. |
 | `fused.tasks.*` | List/create/follow up/cancel/watch the app's Claude tasks (headless, returns a handle); `ui()` gives an iframe URL of the shell's Tasks page → `fused-render-tasks`. |
+| `fused.bots.*` | See the Bots on this Mac (Super Bot included) and give one a message with images; the turn handle follows that task to its result → `fused-render-bots`. |
 | `fused.daemon.*` | Folder's warm worker / resident daemon → `fused-render-background-apps`. |
 | `fused.terminal.open({cwd}?)` / `.run(command, {cwd}?)` | Opens the shell's terminal drawer, optionally `cd`'d into `cwd` and/or running `command`. Rejects (Error) with no shell host (standalone/embed page, hosted export) or on Windows (terminal unsupported). |
 | `fused.env` | `"local"` vs `"hosted"` (exported). |

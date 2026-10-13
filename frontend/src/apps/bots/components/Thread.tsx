@@ -283,7 +283,10 @@ function body({ e, botId, reaction, live, chosen, appsRoot, onBeside, hstate, ta
   const viaChip = e.role === "user" && k && k !== "web" && k !== "routine"
     ? k === "handoff"
       ? `<span class="via" title="Handed off by Super Bot">from ${esc(chanLabel(k))}</span>`
-      : `<span class="via" title="${esc(`Received over ${chanLabel(k)} from ${e.via!.addr || "?"}`)}">via ${esc(chanLabel(k))}</span>`
+      : k === "app"
+        // An app page's send through `fused.bots` (docs §13): the addr is "<app key>:<call id>"; the key is what the user recognises.
+        ? `<span class="via" title="${esc(`Sent by the app ${(e.via!.addr || "").split(":")[0] || "?"} through fused.bots`)}">from ${esc((e.via!.addr || "").split(":")[0] || "an app")}</span>`
+        : `<span class="via" title="${esc(`Received over ${chanLabel(k)} from ${e.via!.addr || "?"}`)}">via ${esc(chanLabel(k))}</span>`
     : "";
   // The seeded Super Bot's greeting (registry.seed_super, source "seed") carries the door to Settings > Phone.
   const seedBtn = e.role === "done" && e.source === "seed"

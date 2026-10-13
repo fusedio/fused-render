@@ -466,6 +466,35 @@
  *         f.src = await fused.tasks.ui({ view: "board" });
  *         t.watch((row) => row && fused.tasks.ui({ task: row.key }).then((u) => (f.src = u)));
  *     LOCAL ONLY — a hosted page has no tasks.
+ *   fused.bots.* -> the Bots sub-app (docs/bots.md §13): see the bots on this
+ *     Mac and give one a message. Same contract as fused.tasks (Promises,
+ *     the server's sentence as the Error with `.status`/`.error`).
+ *     list() -> Bot[] — {id, name, kind: "bot"|"super", preset, description,
+ *       status, busy, task, note, step, waitingOn, model, effort, face,
+ *       hidden, pinned, updated}; Super Bot is listed and reachable.
+ *     get(idOrName) -> Bot|null — by id, else exact name (case-insensitive).
+ *     send(idOrName, text, {files}) -> BotTurn — starts a task on an idle
+ *       bot, stamped as from THIS app (the server names the app from
+ *       X-Fused-Page). `files`: File/Blob/{name, blob}, 8 MB each, saved to
+ *       the bot's files/ like a composer attachment; an image also goes into
+ *       the model turn beside the text (scaled client-side), when the bot's
+ *       engine can see (`turn.vision`). A busy bot, a popped-out browser or a
+ *       take-over rejects 409 with `.reason` busy | headed | control; watch()
+ *       says when it is free. Super Bot runs an app's task under the posture a
+ *       text gets: every write and command asks on a card in its chat.
+ *     watch(fn) -> unsubscribe — fn(bots) on every poll (1.5 s, shared).
+ *     BotTurn: {bot, addr, vision, state, blocked, events, result, done,
+ *       watch(fn(event, turn)) -> unsubscribe, send(text, {files}), stop()}.
+ *       `state` is working | blocked | done | failed | cancelled, derived
+ *       from the bot's own events (a `question`/`approval` blocks it until
+ *       the user answers at the Mac; `blocked` says {kind, text}); `done`
+ *       resolves {state, text, summary, seq, artifacts, events} and never
+ *       rejects. send() is a follow-up: an instruction, or the answer to the
+ *       bot's `ask` — never to an approval card. stop() stops this task only.
+ *         const t = await fused.bots.send("Researcher", "Top 3 HN posts about Rust today, as a list.");
+ *         t.watch((ev) => ev.role === "note" && setStatus(ev.text));
+ *         const r = await t.done;  // r.state === "done" ? r.text : t.blocked
+ *     LOCAL ONLY — a hosted page has no bots; 403 while Bots is off in Preferences.
  *   fused.params.get(key) / getAll() / onChange(cb) -> unsubscribe
  *   fused.params.set(key, value, opts?)   opts: { history: "replace", default: d }
  *                                         value === null REMOVES the key
@@ -6697,6 +6726,384 @@
     watch: tasksWatch,
   };
 
+  // -------------------------------------------------------------- fused.bots
+  //
+  // fused.bots — the Bots sub-app for an app page (docs/bots.md §13): see
+  // which bots exist, give one a message (a task, with images), follow THAT
+  // turn and read its result. Shaped like fused.tasks: Promise verbs, the
+  // server's sentence as the Error, one refcounted poll per document. Not the
+  // Bots page's own routes — `GET /api/bots` runs side effects per call and
+  // returns every bot.json key, `POST /send` is the web door — but a light
+  // roster, `app_send`, `app_events` and `app_stop`, which stamp the task with
+  // THIS app's via (`<app key>:<call id>`, the app key from X-Fused-Page, never
+  // from the body) so the page reads only the events of turns it started, and
+  // its messages never answer an approval card (that is the user's, at the
+  // Mac). A busy bot, a popped-out browser or a take-over is a 409 with a
+  // `reason`, not a queue: the app shows why and `watch` says when it is free.
+  const BOTS_POLL_MS = 1500;
+  const BOTS_BACKOFF_MS = 3000;
+  const BOTS_FILE_MAX = 8 * 1024 * 1024;
+  const BOTS_IMAGE_EDGE = 1568; // the API's own long-edge ceiling: a model image block is scaled to it
+  const BOTS_IMAGE_TYPES = { "image/png": 1, "image/jpeg": 1, "image/gif": 1, "image/webp": 1 };
+  const BOT_TURN_TERMINAL = { done: 1, failed: 1, cancelled: 1 };
+
+  function botsListing() {
+    return taskFetch("GET", "/api/bots/roster").then((d) => (Array.isArray(d && d.bots) ? d.bots : []));
+  }
+
+  // The app door's POSTs: like taskFetch, plus the 409's `reason` (busy |
+  // headed | control | ended) and `task` on the Error, so a page branches
+  // without parsing the sentence. Every send and stop goes through here.
+  async function botsPost(url, body) {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" }),
+      body: JSON.stringify(body || {}),
+    });
+    const d = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const err = taskError(res.status, (d && typeof d.error === "string" && d.error) || "HTTP " + res.status);
+      if (d && d.reason) err.reason = d.reason;
+      if (d && d.task) err.task = d.task;
+      throw err;
+    }
+    return d;
+  }
+
+  // A bot by id, else by exact name (case-insensitive). Two bots with one
+  // name is an error naming both, never a guess.
+  function botsResolve(who, rows) {
+    const s = String(who || "").trim();
+    if (!s) throw taskError(400, "which bot? give an id or a name");
+    const byId = rows.find((b) => b && b.id === s);
+    if (byId) return byId;
+    const named = rows.filter((b) => b && String(b.name || "").toLowerCase() === s.toLowerCase());
+    if (named.length === 1) return named[0];
+    if (named.length > 1) {
+      throw taskError(409, "two bots are called " + JSON.stringify(s) + ": use an id (" + named.map((b) => b.id).join(", ") + ")");
+    }
+    throw taskError(404, "no such bot: " + s);
+  }
+
+  function botsList() {
+    return Promise.resolve().then(botsListing);
+  }
+
+  function botsGet(who) {
+    return Promise.resolve()
+      .then(botsListing)
+      .then((rows) => {
+        try {
+          return botsResolve(who, rows);
+        } catch (e) {
+          if (e && e.status === 404) return null;
+          throw e;
+        }
+      });
+  }
+
+  // ---- files: a File/Blob becomes {name, data} plus, for an image, the scaled
+  // `preview` block the server pushes into the model turn (the original is
+  // what lands in the bot's files/ folder).
+  function botsBase64(buf) {
+    const bytes = new Uint8Array(buf);
+    let s = "";
+    for (let i = 0; i < bytes.length; i += 0x8000) {
+      s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    }
+    return btoa(s);
+  }
+
+  function botsPreview(blob, type) {
+    return new Promise((resolve) => {
+      const url = URL.createObjectURL(blob);
+      const img = new Image();
+      const finish = (out) => {
+        URL.revokeObjectURL(url);
+        resolve(out);
+      };
+      img.onload = () => {
+        try {
+          const scale = Math.min(1, BOTS_IMAGE_EDGE / Math.max(img.naturalWidth || 1, img.naturalHeight || 1));
+          const w = Math.max(1, Math.round((img.naturalWidth || 1) * scale));
+          const h = Math.max(1, Math.round((img.naturalHeight || 1) * scale));
+          const c = document.createElement("canvas");
+          c.width = w;
+          c.height = h;
+          c.getContext("2d").drawImage(img, 0, 0, w, h);
+          // PNG stays PNG (screenshots with text); photos go out as JPEG.
+          const mt = type === "image/png" ? "image/png" : "image/jpeg";
+          const dataUrl = c.toDataURL(mt, 0.85);
+          finish({ media_type: mt, data: dataUrl.slice(dataUrl.indexOf(",") + 1) });
+        } catch (e) {
+          finish(null);
+        }
+      };
+      img.onerror = () => finish(null);
+      img.src = url;
+    });
+  }
+
+  async function botsReadFile(f) {
+    const blob = f instanceof Blob ? f : f && f.blob instanceof Blob ? f.blob : null;
+    if (!blob) throw taskError(400, "files: each entry is a File, a Blob or {name, blob}");
+    const name = (f && f.name) || (blob && blob.name) || "attachment";
+    if (blob.size > BOTS_FILE_MAX) {
+      throw taskError(413, name + " is " + Math.round(blob.size / 1048576) + " MB; attachments are limited to 8 MB");
+    }
+    const out = { name: String(name), data: botsBase64(await blob.arrayBuffer()) };
+    const type = String(blob.type || "").toLowerCase();
+    if (BOTS_IMAGE_TYPES[type]) {
+      const pv = await botsPreview(blob, type);
+      if (pv) out.preview = pv;
+    }
+    return out;
+  }
+
+  function botsReadFiles(opts) {
+    const files = opts && Array.isArray(opts.files) ? opts.files : [];
+    return Promise.all(files.map(botsReadFile));
+  }
+
+  // ---- the one poll loop: roster watchers and open turns share it; it runs
+  // only while something listens, sits out a hidden tab, and backs off on an
+  // error. A page that only called list() never starts it.
+  const botsWatchers = new Set();
+  const botsTurns = new Set();
+  let botsTimer = null;
+  let botsRunning = false;
+  let botsVisibilityArmed = false;
+
+  function botsSchedule(ms) {
+    if (botsTimer !== null) clearTimeout(botsTimer);
+    botsTimer = null;
+    if (!botsWatchers.size && !botsTurns.size) return;
+    botsTimer = setTimeout(botsTick, ms);
+  }
+
+  async function botsTick() {
+    botsTimer = null;
+    if (botsRunning || (!botsWatchers.size && !botsTurns.size)) return;
+    if (document.hidden) {
+      if (!botsVisibilityArmed) {
+        botsVisibilityArmed = true;
+        const fire = () => {
+          if (document.hidden) return;
+          document.removeEventListener("visibilitychange", fire);
+          botsVisibilityArmed = false;
+          botsSchedule(0);
+        };
+        document.addEventListener("visibilitychange", fire);
+      }
+      return;
+    }
+    botsRunning = true;
+    let failed = false;
+    try {
+      if (botsWatchers.size) {
+        try {
+          const rows = await botsListing();
+          botsWatchers.forEach((fn) => {
+            try {
+              fn(rows);
+            } catch (e) {
+              console.error("[fused.bots] a watch callback threw:", e);
+            }
+          });
+        } catch (e) {
+          failed = true;
+        }
+      }
+      for (const t of Array.from(botsTurns)) {
+        try {
+          await t._poll();
+        } catch (e) {
+          failed = true;
+        }
+      }
+    } finally {
+      botsRunning = false;
+      botsSchedule(failed ? BOTS_BACKOFF_MS : BOTS_POLL_MS);
+    }
+  }
+
+  function botsWatch(fn) {
+    if (typeof fn !== "function") throw new Error("fused.bots.watch needs a function");
+    botsWatchers.add(fn);
+    botsSchedule(0);
+    let on = true;
+    return () => {
+      if (!on) return;
+      on = false;
+      botsWatchers.delete(fn);
+      botsSchedule(BOTS_POLL_MS);
+    };
+  }
+
+  // ---- a turn: one task this page started on one bot. Its state is derived
+  // from the bot's own events with the hand-off table (docs/bots.md §11), and
+  // closed by the server's `live` flag so a task that ends without a result
+  // settles as failed rather than hanging. `done` never rejects.
+  function botTurn(botId, addr, vision) {
+    const t = {
+      bot: botId,
+      addr: addr,
+      vision: !!vision,
+      state: "working",
+      blocked: null,
+      events: [],
+      result: null,
+    };
+    let since = 0;
+    let finished = false;
+    let grace = 1; // one extra poll after `live` goes false, so a `done` written in the same instant is not missed
+    const listeners = new Set();
+    let settle;
+    t.done = new Promise((resolve) => {
+      settle = resolve;
+    });
+
+    function emit(ev) {
+      listeners.forEach((fn) => {
+        try {
+          fn(ev, t);
+        } catch (e) {
+          console.error("[fused.bots] a turn watch callback threw:", e);
+        }
+      });
+    }
+
+    function finish(state, ev, text) {
+      if (finished) return;
+      finished = true;
+      t.state = state;
+      t.blocked = null;
+      t.result = {
+        state: state,
+        text: text !== undefined ? text : ev && ev.text ? String(ev.text) : "",
+        summary: (ev && ev.summary) || "",
+        seq: ev ? ev.seq : null,
+        artifacts: (ev && ev.artifacts) || [],
+        app: (ev && ev.app) || null,
+        events: t.events.slice(),
+      };
+      botsTurns.delete(t);
+      settle(t.result);
+    }
+
+    function fold(ev) {
+      if (!ev || typeof ev !== "object") return;
+      if (ev.thumb) ev.thumbUrl = "/api/bots/" + encodeURIComponent(botId) + "/steps/" + encodeURIComponent(String(ev.thumb));
+      t.events.push(ev);
+      const role = ev.role;
+      const text = String(ev.text || "");
+      if (role === "done") {
+        if (/^Stopped after \d+ steps without finishing\.?$/.test(text.trim())) finish("failed", ev);
+        else finish("done", ev);
+      } else if (role === "error") {
+        if (ev.trace) finish("failed", ev); // an error without a trace is a retry, not the end
+      } else if (role === "system" && text.trim() === "Stopped") {
+        finish("cancelled", ev, "Stopped before it finished.");
+      } else if (role === "question") {
+        t.state = "blocked";
+        // `login` is the card's own mark (agent_engine._login), not a reading of its wording.
+        t.blocked = { kind: ev.login ? "login" : "question", text: text, seq: ev.seq, options: ev.options || null };
+      } else if (role === "approval") {
+        t.state = "blocked";
+        t.blocked = { kind: "approval", text: text, seq: ev.seq };
+      } else if (role === "action" || role === "thought" || role === "note" || (role === "system" && text.indexOf("Task started") === 0)) {
+        if (t.state === "blocked" && !/^Noted; still waiting/.test(text)) t.blocked = null;
+        t.state = "working";
+      }
+      emit(ev);
+    }
+
+    t._poll = async function () {
+      if (finished) return;
+      let d;
+      try {
+        d = await taskFetch("GET", "/api/bots/" + encodeURIComponent(botId) + "/app_events?" + new URLSearchParams({ addr: addr, since: String(since) }).toString());
+      } catch (e) {
+        if (e && e.status === 404) {
+          finish("failed", null, "The bot is gone.");
+          return;
+        }
+        throw e;
+      }
+      const evs = Array.isArray(d && d.events) ? d.events : [];
+      evs.forEach((ev) => {
+        if (ev && typeof ev.seq === "number" && ev.seq > since) since = ev.seq;
+        fold(ev);
+      });
+      if (finished) return;
+      if (!d || !d.live) {
+        if (grace > 0) {
+          grace -= 1;
+          return;
+        }
+        finish("failed", null, "The bot ended without a result; its chat has the details.");
+      }
+    };
+
+    t.watch = function (fn) {
+      if (typeof fn !== "function") throw new Error("turn.watch needs a function");
+      listeners.add(fn);
+      return () => listeners.delete(fn);
+    };
+
+    // A follow-up while the task is live: an instruction, or the answer to the
+    // bot's `ask` — never to an approval card (the server marks it outside).
+    t.send = function (text, opts) {
+      return Promise.resolve()
+        .then(() => {
+          if (finished) {
+            const err = taskError(409, "that turn has ended; use fused.bots.send to start another task");
+            err.reason = "ended";
+            throw err;
+          }
+          return botsReadFiles(opts);
+        })
+        .then((files) => botsPost("/api/bots/" + encodeURIComponent(botId) + "/app_send", { text: String(text || ""), addr: addr, files: files }))
+        .then((d) => {
+          if (t.state === "blocked" && t.blocked && t.blocked.kind === "question") {
+            t.blocked = null;
+            t.state = "working";
+          }
+          return d;
+        });
+    };
+
+    t.stop = function () {
+      return Promise.resolve().then(() => botsPost("/api/bots/" + encodeURIComponent(botId) + "/app_stop", { addr: addr })).then(() => undefined);
+    };
+
+    botsTurns.add(t);
+    botsSchedule(0);
+    return t;
+  }
+
+  // fused.bots.send(bot, text, {files}) -> BotTurn. The server names the app
+  // from X-Fused-Page and mints the via; a 409 carries `.reason` (busy |
+  // headed | control) beside the sentence, so a page can branch without parsing.
+  function botsSend(who, text, opts) {
+    return Promise.resolve()
+      .then(botsListing)
+      .then((rows) => botsResolve(who, rows))
+      .then((bot) => botsReadFiles(opts).then((files) => ({ bot: bot, files: files })))
+      .then(({ bot, files }) =>
+        botsPost("/api/bots/" + encodeURIComponent(bot.id) + "/app_send", { text: String(text || ""), files: files }).then((d) =>
+          botTurn(bot.id, d.addr, d.vision),
+        ),
+      );
+  }
+
+  const bots = {
+    list: botsList,
+    get: botsGet,
+    send: botsSend,
+    watch: botsWatch,
+  };
+
   // ----------------------------------------------------------- fused.capture
   //
   // Native screen / microphone / still capture (SPEC §45). Named `capture` and
@@ -7151,12 +7558,15 @@
   // says the recording is the browser's to make on this platform — the same
   // flag `captureSources` strips before a page can read it — so the decision is
   // made once, from the server's own answer, rather than by sniffing a user
-  // agent. A page calls `screen()`; what happens under it is not its business
-  // (CP-8).
+  // agent. `sources().audioNative` narrows that to audio mode on Linux, where
+  // audio records natively over PipeWire/pulse even though the screen still
+  // goes through the browser. A page calls `screen()`; what happens under it
+  // is not its business (CP-8).
   function captureStart(body) {
     return captureFetch("/api/capture", undefined, "GET").then((data) => {
       const sources = (data && data.sources) || {};
-      if (!sources.client) {
+      const native = !sources.client || (body.mode === "audio" && sources.audioNative);
+      if (native) {
         return captureFetch("/api/capture/start", captureBase(body))
           .then((started) => captureHandle(started));
       }
@@ -7174,30 +7584,37 @@
 
   // fused.capture.audio({source, path, maxSeconds, title})
   //
-  // Sound to an .m4a. `source` is "mic" (the default), "system" (what this Mac
-  // is playing) or "both" (mixed). On macOS 14.2+ system audio is a Core Audio
-  // process tap — no Screen Recording permission, its own "System Audio
-  // Recording" one; 13.0-14.1 uses ScreenCaptureKit and needs Screen Recording.
-  // On 13.0-14.1 that grant is sound only (no picture), the app must be quit and
-  // reopened after granting it, and the file holds ALL system sound, notifications
-  // included.
-  // Windows and Linux refuse "system"/"both" here, with a sentence saying to
-  // record the screen with `audio: "system"` instead.
+  // Sound to a file (.m4a on macOS, .wav on Linux when recorded natively, or
+  // whatever container the browser picks when it falls back to one). `source`
+  // is "mic" (the default), "system" (what the machine is playing) or "both"
+  // (mixed). On macOS 14.2+ system audio is a Core Audio process tap — no
+  // Screen Recording permission, its own "System Audio Recording" one;
+  // 13.0-14.1 uses ScreenCaptureKit and needs Screen Recording. On 13.0-14.1
+  // that grant is sound only (no picture), the app must be quit and reopened
+  // after granting it, and the file holds ALL system sound, notifications
+  // included. Linux records "system"/"both" natively over PipeWire/pulse —
+  // no picker, no screen-share hack — and refuses them with a sentence saying
+  // so only when that session is unreachable; "mic" there falls back to the
+  // browser in that case. Windows has no native path at all and refuses
+  // "system"/"both" here, with a sentence saying to record the screen with
+  // `audio: "system"` instead.
   //
   // `device` picks the microphone for "mic" and "both" — except that macOS
   // audio-only "mic" records the system's current input and REFUSES a `device`
   // rather than ignoring it, and "system" has no microphone to choose (also
   // refused). It is always forwarded, so the refusal is the server's one good
-  // sentence rather than two. A tap cannot tell a denied permission from an
-  // idle Mac, so a stop() on a recording that heard nothing carries a
-  // `warning` sentence next to the file — the file itself is still valid.
+  // sentence rather than two. A tap (or, on Linux, a silent monitor stream)
+  // cannot tell a denied permission from a machine that is simply quiet, so a
+  // stop() on a system/both recording that heard nothing carries a `warning`
+  // sentence next to the file — the file itself is still valid.
   //
-  // On macOS a floating recording pill (app icon, level meter, pause/resume,
-  // stop) shows for the length of an audio recording; its stop is the same
-  // request as rec.stop(), so a page's own stop() afterwards just answers with
-  // the finished record. rec.pause() / rec.resume() hold the recording (paused
-  // time is not in the file and does not count toward maxSeconds); rec.paused
-  // reads the state. Windows and Linux reject them with `.type "unavailable"`.
+  // On macOS and on native Linux audio a floating recording pill (app icon,
+  // level meter, pause/resume, stop) shows for the length of an audio
+  // recording; its stop is the same request as rec.stop(), so a page's own
+  // stop() afterwards just answers with the finished record. rec.pause() /
+  // rec.resume() hold the recording (paused time is not in the file and does
+  // not count toward maxSeconds); rec.paused reads the state. Windows, and
+  // Linux falling back to the browser, reject them with `.type "unavailable"`.
   function captureAudio(opts) {
     opts = opts || {};
     const body = { mode: "audio" };
@@ -7238,12 +7655,31 @@
   // is a fact about this browser and not about the machine — and a server route
   // cannot know which browser is asking. So the server answers `client: true`
   // and the three recording keys get replaced here, from what this window can
-  // actually do. The flag is DELETED on the way out: a page reads
-  // `{available, reason}` exactly as it does on macOS and has nothing to branch
-  // on (CP-8).
+  // actually do. Both flags are DELETED on the way out: a page reads
+  // `{available, reason}` exactly as it does on macOS and has nothing
+  // transport-shaped to branch on (CP-8).
+  //
+  // `audioNative` (Linux only) leaves `audio`/`systemAudio` and
+  // `microphones` exactly as the server answered them — its own truth about
+  // whether PipeWire/pulse is reachable and about the (empty) device list a
+  // native recording can choose from, which this window's MediaRecorder
+  // support has nothing to say about. `video` stays unconditional: screen
+  // recording is the browser's on every `client: true` platform regardless
+  // of audio's own path.
+  //
+  // `systemAudio` is only ever NARROWED by this browser, never widened:
+  // Windows answers `true` unconditionally server-side (the screen share's
+  // "share audio" checkbox works there whenever the browser can record at
+  // all) and this is the only place that can catch a browser with no usable
+  // MediaRecorder. Linux's own `false` — no PipeWire/pulse session reachable,
+  // with no browser equivalent to fall back to — must survive untouched;
+  // this window's unrelated screen-recording capability has no business
+  // overriding that honest unavailability with a `true`.
   async function captureMerge(sources) {
     if (!sources || !sources.client) return sources;
     delete sources.client;
+    const audioNative = sources.audioNative;
+    delete sources.audioNative;
     const host = captureHost();
     const type = captureType(host, "screen");
     const ok = captureMediaOk(host) && !!type;
@@ -7251,13 +7687,17 @@
       : "this browser cannot record — it has no MediaRecorder with a container "
         + "this app can store. Chrome, Edge or a recent Firefox can";
     sources.video = { available: ok, granted: ok, reason: why };
-    sources.audio = {
-      available: ok && !!captureType(host, "audio"),
-      granted: ok,
-      reason: why,
-    };
-    sources.systemAudio = { available: ok, reason: why };
-    if (ok) {
+    if (!audioNative) {
+      sources.audio = {
+        available: ok && !!captureType(host, "audio"),
+        granted: ok,
+        reason: why,
+      };
+      if (sources.systemAudio && sources.systemAudio.available) {
+        sources.systemAudio = { available: ok, reason: why };
+      }
+    }
+    if (ok && !audioNative) {
       try {
         const devices = await host.navigator.mediaDevices.enumerateDevices();
         // `label` is EMPTY until the microphone permission has been granted
@@ -7330,6 +7770,7 @@
     terminal,
     fileIndex,
     tasks,
+    bots,
     trackJob,
     watchJob,
     autoReload,

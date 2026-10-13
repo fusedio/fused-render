@@ -886,7 +886,7 @@ def _describe(path: str) -> dict:
         size = 0
     ext = os.path.splitext(path)[1].lower()
     mime = {".mov": "video/quicktime", ".mp4": "video/mp4",
-            ".webm": "video/webm", ".m4a": "audio/mp4",
+            ".webm": "video/webm", ".m4a": "audio/mp4", ".wav": "audio/wav",
             ".png": "image/png", ".jpg": "image/jpeg",
             ".jpeg": "image/jpeg"}.get(ext, "application/octet-stream")
     return {"path": path, "url": "/api/fs/raw?path=" + _quote(path),

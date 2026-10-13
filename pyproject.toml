@@ -373,6 +373,11 @@ windows-desktop = [
 linux-desktop = [
     'dbus-fast ; sys_platform == "linux"',
     'pillow ; sys_platform == "linux"',
+    # `fused.capture.audio` on Linux: PipeWire's pulse-compatible pulseaudio
+    # client lib, bound through pasimple (ctypes, pure Python, no build step).
+    # See `fused_render/capture/_linux_audio.py` for why this and not PyAV or
+    # sounddevice.
+    'pasimple ; sys_platform == "linux"',
     'PyGObject>=3.48,<3.51 ; sys_platform == "linux"',
     "fused-render[all]",
 ]

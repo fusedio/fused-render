@@ -22,13 +22,17 @@
  * failure is real in the sense that the bridge stopped being runnable in
  * isolation, which is the property being protected.
  *
- * Usage: node _capture_bridge_probe.mjs <runtime.js>
+ * Usage: node _capture_bridge_probe.mjs <runtime.js> [sourcesOverrideJson]
+ * The optional second argument merges into the `GET /api/capture` reply's
+ * `sources` object, so a caller can drive `captureMerge`'s `audioNative`
+ * branch without a second copy of this harness.
  * Prints one JSON object: { keys, sources, handle, order, chunks, stop, error }.
  */
 import { readFileSync } from "node:fs";
 
-const [runtimePath] = process.argv.slice(2);
+const [runtimePath, sourcesOverrideJson] = process.argv.slice(2);
 const src = readFileSync(runtimePath, "utf8");
+const sourcesOverride = sourcesOverrideJson ? JSON.parse(sourcesOverrideJson) : null;
 
 const order = [];
 const chunks = [];
@@ -115,6 +119,7 @@ const REPLIES = {
       screenshot: { available: true, granted: true, reason: null },
       displays: [],
       microphones: [],
+      ...sourcesOverride,
     },
     active: [],
   },
@@ -211,7 +216,10 @@ try {
   const sources = await capture.sources();
   out.sources = {
     clientStripped: !("client" in sources),
+    audioNativeStripped: !("audioNative" in sources),
     video: sources.video,
+    audio: sources.audio,
+    systemAudio: sources.systemAudio,
     microphones: sources.microphones,
   };
 

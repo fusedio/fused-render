@@ -1,4 +1,5 @@
-"""Linux capture: a portal still, and recording fed by the page (`_sink`).
+"""Linux capture: a portal still, screen fed by the page (`_sink`), audio
+native (`_linux_audio`).
 
 **The still goes through xdg-desktop-portal**, not through X11. There is no
 grabbing the screen on Wayland — no compositor will let a client read the
@@ -9,13 +10,22 @@ already a dependency (the supervisor's tray is a StatusNotifierItem over the
 same bus) and is pure Python with manylinux wheels — no PyGObject, no GTK, no
 system packages.
 
-**Recording is the page's `MediaRecorder` (`_sink`).** The native alternative
-here is real — portal ScreenCast hands out a PipeWire node and GStreamer can
-encode it — but it needs `gst-launch-1.0` plus `gst-plugins-good`,
-`gst-plugins-bad` and `gst-libav` present on the user's machine, and it is a
-second implementation of something Chromium already does through that exact
-portal. One sink shared with Windows costs nothing extra and works wherever the
-browser does. See `_sink.py`.
+**Screen recording is the page's `MediaRecorder` (`_sink`).** The native
+alternative here is real — portal ScreenCast hands out a PipeWire node and
+GStreamer can encode it — but it needs `gst-launch-1.0` plus
+`gst-plugins-good`, `gst-plugins-bad` and `gst-libav` present on the user's
+machine, and it is a second implementation of something Chromium already does
+through that exact portal. One sink shared with Windows costs nothing extra
+and works wherever the browser does. See `_sink.py`.
+
+**Audio recording is native (`_linux_audio`), not a screen-share.** Unlike
+video, PipeWire's pulse-compatible layer is a few-line ctypes call away with no
+browser involved and no picker to show — `_linux_audio.available()` says
+whether that session is reachable, and `start_audio` prefers it whenever it is.
+It falls back to `_sink` only for `"mic"` on a machine with no PipeWire/pulse
+session at all; `"system"`/`"both"` have no browser equivalent on Linux (there
+is no screen-share-for-audio-only hack here) and are refused outright when
+native capture is unavailable, with a sentence saying why.
 
 **What the portal cannot do is refused, not faked**: it takes no display and no
 cursor option, so `display` and `cursor` say so on this platform and point at
@@ -29,15 +39,11 @@ import os
 import shutil
 from urllib.parse import unquote, urlparse
 
+from fused_render.capture import _linux_audio, _sink
 from fused_render.capture._sink import (  # noqa: F401 - the seam, re-exported
     attach,
     detach,
-    ext,
-    failure,
-    refuse as _sink_refuse,
-    start_audio,
     start_screen,
-    stop,
 )
 
 logger = logging.getLogger(__name__)
@@ -111,8 +117,15 @@ def probe() -> dict:
     cannot even be built without prompting. `display` is refused with a sentence
     saying as much, which is more use than a list nothing accepts.
 
-    The recording halves are answered `true` and refined by the browser — see
-    `_windows.probe` for why that direction, not the other.
+    The screen half is answered `true` and refined by the browser — see
+    `_windows.probe` for why that direction, not the other. The audio half is
+    split the same way whenever native capture is unavailable: `audio`
+    (the mic) is answered `true` here too, because `"mic"` still has the
+    `_sink` browser fallback to refine it with — the frontend's `audioNative:
+    false` path takes it from there. `systemAudio` has no such fallback (there
+    is no screen-share-for-audio-only hack on this platform), so it stays the
+    honest answer: true only when native capture can actually deliver it.
+    `audioNative` says whether `start_audio` will in fact record natively.
     """
     bus = _dbus()
     image = _pillow()
@@ -129,11 +142,18 @@ def probe() -> dict:
             "(xdg-desktop-portal-gnome, -kde, -wlr or -gtk)")
     else:
         shot_reason = None
+    audio_ok = _linux_audio.available()
+    audio_reason = None if audio_ok else _linux_audio.unavailable_reason()
     return {
         "client": True,
         "video": {"available": True, "granted": True, "reason": None},
+        # Always true: the mic falls back to the browser's own recording
+        # (`_sink`) when native capture is unavailable, so there is nothing to
+        # refuse here — the browser merge (`mergeSources`/`captureMerge`)
+        # refines this when `audioNative` is false.
         "audio": {"available": True, "granted": True, "reason": None},
-        "systemAudio": {"available": True, "reason": None},
+        "systemAudio": {"available": audio_ok, "reason": audio_reason},
+        "audioNative": audio_ok,
         "screenshot": {"available": shot_reason is None, "granted": True,
                        "reason": shot_reason},
         "displays": [],
@@ -142,7 +162,9 @@ def probe() -> dict:
 
 
 def refuse(mode: str, spec: dict) -> str | None:
-    """`display` and `cursor` on a still; whatever `_sink` refuses on the rest."""
+    """`display` and `cursor` on a still; system/both audio with no PipeWire
+    reachable; whatever `_sink` refuses on the rest (screen, and mic audio
+    falling back to it)."""
     if mode == "screenshot":
         if spec.get("display") not in (None, ""):
             return ("'display' cannot be chosen on Linux — the desktop portal "
@@ -154,7 +176,92 @@ def refuse(mode: str, spec: dict) -> str | None:
                     "Screenshot interface has no such option, so the pointer is "
                     "whatever the compositor decides")
         return None
-    return _sink_refuse(mode, spec)
+    if mode == "audio":
+        source = spec.get("audio") or "mic"
+        if source in ("system", "both") and not _native_audio(spec):
+            return _linux_audio.unavailable_reason()
+        if _native_audio(spec):
+            if spec.get("device"):
+                return ("choosing a microphone isn't supported on Linux — "
+                         "audio records from the default input; change it in "
+                         "your system sound settings")
+            return _sink.check_ext(spec, ext(mode, spec))
+        # Native capture is unavailable, so `"mic"` falls back to `_sink`
+        # (the browser's own recording) — let it refuse whatever it would
+        # refuse on that path, `check_ext` included, instead of waving
+        # everything through here.
+        return _sink.refuse(mode, spec)
+    return _sink.refuse(mode, spec)
+
+
+def _native_audio(spec: dict) -> bool:
+    """Whether THIS recording uses native PipeWire/pulse capture.
+
+    Decided once and cached on `spec` (threaded by `__init__.start` through
+    `ext()`, `refuse()` and `start_audio()` for the same recording) rather than
+    asked of `_linux_audio.available()` again at each of those three call
+    sites — a session that appears or disappears between them could otherwise
+    leave the extension, the refusal and the actual backend disagreeing about
+    what is being recorded.
+    """
+    if "_audioNative" not in spec:
+        spec["_audioNative"] = _linux_audio.available()
+    return spec["_audioNative"]
+
+
+def ext(mode: str, spec: dict) -> str:
+    """`.wav` for natively-recorded audio; whatever `_sink` names otherwise."""
+    if mode == "audio" and _native_audio(spec):
+        return ".wav"
+    return _sink.ext(mode, spec)
+
+
+def start_audio(out: str, spec: dict):
+    """Native whenever PipeWire/pulse is reachable; `_sink` otherwise (mic
+    only — `refuse` has already turned away system/both in that case)."""
+    if _native_audio(spec):
+        return _linux_audio.start(out, spec)
+    return _sink.start_audio(out, spec)
+
+
+def stop(handle) -> None:
+    if isinstance(handle, _linux_audio.Handle):
+        return _linux_audio.stop(handle)
+    return _sink.stop(handle)
+
+
+def failure(handle) -> str | None:
+    if isinstance(handle, _linux_audio.Handle):
+        return _linux_audio.failure(handle)
+    return _sink.failure(handle)
+
+
+def can_pause(handle) -> bool:
+    """Only a native audio recording can pause — `_sink` streams straight off
+    the page's own MediaRecorder, which has nothing to pause server-side."""
+    return isinstance(handle, _linux_audio.Handle)
+
+
+def pause(handle) -> None:
+    if isinstance(handle, _linux_audio.Handle):
+        _linux_audio.pause(handle)
+
+
+def resume(handle) -> None:
+    if isinstance(handle, _linux_audio.Handle):
+        _linux_audio.resume(handle)
+
+
+def level(handle) -> float:
+    if isinstance(handle, _linux_audio.Handle):
+        return _linux_audio.level(handle)
+    return 0.0
+
+
+def warning(handle) -> str | None:
+    if isinstance(handle, _linux_audio.Handle):
+        return _linux_audio.warning(handle)
+    return None
 
 
 def locate(rect, dpr: float):
