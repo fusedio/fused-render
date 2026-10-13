@@ -89,7 +89,9 @@ export function useFitCount(total: number, cap: number, itemSel: string, listSel
   const measure = () => {
     const wrap = ref.current;
     if (!wrap) return;
-    const item = wrap.querySelector<HTMLElement>(itemSel);
+    const items = wrap.querySelectorAll<HTMLElement>(itemSel);
+    // The last item, because in a bordered list (the Tasks frame) only rows after the first carry the hairline, so the last row's height is the real pitch.
+    const item = items[items.length - 1];
     if (!item) return;
     const parent = item.parentElement as HTMLElement;
     const more = wrap.querySelector<HTMLElement>(".hw-more");
