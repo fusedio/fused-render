@@ -186,7 +186,13 @@ def _other_share(source: str):
     try:
         if source == "bots":
             from fused_render import schedule
-            return [parse_due(v) for v in schedule._pending_due(schedule._read())]
+            out = []
+            for v in schedule._pending_due(schedule._read()):
+                try:  # one malformed (or empty) due must not cost the other Tasks their wake, as in sync()
+                    out.append(parse_due(v))
+                except (ValueError, TypeError):
+                    continue
+            return out
         from fused_render.bots import registry
         return registry.routines_due()
     except Exception:  # noqa: BLE001
