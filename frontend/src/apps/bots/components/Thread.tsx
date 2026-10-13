@@ -476,24 +476,31 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
   const turnRef = useRef({ bot: "\u0000", seeded: false, open: new Map<number, boolean>() });
   const [, bumpTurn] = useState(0);
   if (turnRef.current.bot !== botId) turnRef.current = { bot: botId, seeded: false, open: new Map() };
-  // THE SEED WAITS FOR THE EVENTS: a bot's first paint can be an empty list (not loaded yet), and a seed burnt on it
-  // would leave every turn of the history open once it lands.
-  if (!turnRef.current.seeded && evs.length) {
+  // THE SEED WAITS FOR THE EVENTS AND THE SEEN MARK: a bot's first paint can be an empty list (not loaded yet), and a
+  // seed burnt on it would leave every turn of the history open once it lands. "Seen as of opening" is `S.base`
+  // (store setNewMark, written in select()'s own batch and by the first poll for a URL-picked bot), not `newMark`:
+  // that one is null both before it is placed and when nothing is new, and the two must not read the same.
+  const base = S.base[botId];
+  if (!turnRef.current.seeded && evs.length && base !== undefined) {
     const open = turnRef.current.open;
     const newest = folds.length ? folds[folds.length - 1].closer : -1;
     for (const t of folds) {
-      const unread = mark != null && (evs[t.closer].seq > mark || t.hidden.some((j) => evs[j].seq > mark));
+      const unread = evs[t.closer].seq > base || t.hidden.some((j) => evs[j].seq > base);
       open.set(evs[t.closer].seq, t.closer === newest || unread);
     }
     turnRef.current.seeded = true;
   }
   // A closer first seen after the seed (the task that just ended) is open: only a click closes it.
   const turnOf = new Map<number, "open" | "closed">(), turnHint = new Map<number, string>(), turnHidden = new Set<number>();
+  // A session divider on a hidden row (a routine's first step after a night's silence) moves to the turn's result,
+  // so folding the steps never folds the timestamp with them.
+  const dayMoved = new Set<number>();
   for (const t of folds) {
     const seq = evs[t.closer].seq, isOpen = turnRef.current.open.get(seq) ?? true;
     turnOf.set(t.closer, isOpen ? "open" : "closed");
     turnHint.set(t.closer, turnFoldHint(t));
-    if (!isOpen && !searchQ) for (const j of t.hidden) turnHidden.add(j);
+    if (isOpen || searchQ) continue;
+    for (const j of t.hidden) { turnHidden.add(j); if (sessionBreak(evs[j - 1], evs[j])) dayMoved.add(t.closer); }
   }
   // The toggle keeps the result bubble where it sits: the steps open (or close) above it, not under your pointer.
   const onFoldTurn = useCallback((seq: number) => {
@@ -655,7 +662,7 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
       const ho = e.handoff && isHandoff(e) ? e.handoff : null;
       const card = !ho && (e.role === "approval" || e.role === "question");
       return (
-        <Row key={keys[i]} e={e} botId={botId} day={sessionBreak(evs[i - 1], e)} isNew={i === firstNew} texted={texted.get(e.seq)}
+        <Row key={keys[i]} e={e} botId={botId} day={sessionBreak(evs[i - 1], e) || dayMoved.has(i)} isNew={i === firstNew} texted={texted.get(e.seq)}
           reaction={!ho && ACTABLE.has(e.role) ? rxs[e.seq] || "" : ""} live={card && live.has(e.seq) && !held.has(e.seq)}
           chosen={card && e.role === "question" ? chosenOption(evs, e.seq) : null} appsRoot={appsRoot} onBeside={onBeside}
           hstate={ho ? (e.role === "system" ? hds.get(ho.id) : undefined) || ho.state : undefined} targetLive={ho ? botIds.has(ho.target) : undefined}
