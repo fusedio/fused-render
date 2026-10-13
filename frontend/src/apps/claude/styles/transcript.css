@@ -1843,6 +1843,7 @@
 }
 .chat-root .toolchip .chip-sub {
   display: flex;
+  align-items: baseline;
   min-width: 0;
   flex: 0 1 auto;
   color: var(--c-dim);
@@ -1883,6 +1884,12 @@
    at all, and a margin on the path would double the space after the name. */
 .chat-root .toolchip .chip-sub > .chip-lead:not(:empty) {
   margin-right: 6px;
+}
+/* An empty lead must leave layout: as `.chip-sub`'s first flex item it would
+   supply the box's baseline from its bottom edge, lifting a Read's path above
+   the name it sits beside. */
+.chat-root .toolchip .chip-sub > .chip-lead:empty {
+  display: none;
 }
 /* Fixed width whether or not the glyph is drawn, so every chip's name starts at
    the same x. `is-*` prefixed because a bare `error` collides with .turn.error. */
