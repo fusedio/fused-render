@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 POLL_S = 3
 SEND_RETRIES = 3
 SEND_RETRY_WAIT_S = 5
-CLOCK_SLACK_S = 5  # the phone's clock may run a little behind the Mac's: a reply this much older than the card still counts
+CLOCK_SLACK_S = 2  # the phone's clock may run a little behind the Mac's: a reply this much older than the card still counts
 
 
 def render(ev: dict, caps: Caps, approvals: bool = True) -> tuple[str, list[str]]:
@@ -218,14 +218,17 @@ class Router:
             # the one token that tells its lines from theirs.
             text = f"@{(bot.meta.get('name') or 'bot').strip()} {text}"
         sent = []
-        # The clock a texted approval's reply must postdate: read BEFORE the send (osascript takes a moment, a retry
-        # 5 s more), less a little room for the phone's clock, so a prompt "1" is never older than its own card.
-        sent_at = time.time() - CLOCK_SLACK_S
+        # The clock a texted approval's reply must postdate: the moment the channel ACCEPTED the send (Messages has
+        # it; the phone sees it later still), so a reply the phone wrote before this card existed can never be its
+        # answer. A failed attempt sets nothing; the retry that succeeds does. Less CLOCK_SLACK_S for a phone clock
+        # a little behind the Mac's (two clocks; the slack is the only width of the window, not the send's duration).
+        sent_at = 0.0
         for addr in addrs:
             err = ""
             for attempt in range(SEND_RETRIES):
                 try:
                     ch.send(addr, text, ev)
+                    sent_at = time.time() - CLOCK_SLACK_S
                     sent.append(addr)
                     err = ""
                     self._errors.pop(ch.kind, None)

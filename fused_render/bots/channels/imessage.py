@@ -160,9 +160,10 @@ class ImessageChannel(Channel):
             if text.strip() in sent or self._is_echo(text, sent):
                 self.state["echoes"] = self.state.get("echoes", 0) + 1
                 continue
-            # ts is the message's own time: the router stamps a reply as an approval card's answer only when the
-            # reply postdates the card's send (a "yes" typed before the card went out was meant for something else).
-            out.append(Inbound(addr=handle, text=text, service=service or "", ts=ts or now, ext_id=str(rowid)))
+            # ts is the message's own time, never the poll's: the router stamps a reply as an approval card's answer
+            # only when the reply postdates the card's send (a "yes" typed before the card went out was meant for
+            # something else). A row with no date keeps 0, so it is read but can settle no card.
+            out.append(Inbound(addr=handle, text=text, service=service or "", ts=ts, ext_id=str(rowid)))
             self.state["last_in"] = now
         im.save_cursor(cur)
         return out

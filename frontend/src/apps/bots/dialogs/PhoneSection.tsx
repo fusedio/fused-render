@@ -70,11 +70,24 @@ export function PhoneSection({ botId, handle, setHandle, enabled, setEnabled, co
   const [tested, setTested] = useState<{ ok: boolean; text: string } | null>(null);
   const [opened, setOpened] = useState(false);        // System Settings was opened from here
   // "Approve by text" (docs §10): its own key, written at once like the phone switch; null until the bridge's reply
-  // says where it stands (a bot.json without the key reads as on).
+  // says where it stands (a bot.json without the key reads as on). Writes are serialised and each sends what the
+  // user wants NOW (two quick flips collapse into the last state); a failed write puts the saved value back.
   const [approvals, setApprovals] = useState<boolean | null>(null);
+  const wantApprovals = useRef<boolean | null>(null);
+  const approvalsChain = useRef<Promise<void>>(Promise.resolve());
   const flipApprovals = (on: boolean) => {
     setApprovals(on);
-    void act(() => api.settings(botId, { imessage_approvals: on }));
+    wantApprovals.current = on;
+    const run = async () => {
+      const want = wantApprovals.current;
+      if (want === null) return;
+      const ok = await act(() => api.settings(botId, { imessage_approvals: want }));
+      if (ok === undefined) {
+        const r = await act(() => api.imessage(), true);
+        if (r && typeof r.approvals === "boolean") { wantApprovals.current = null; setApprovals(r.approvals); }
+      }
+    };
+    approvalsChain.current = approvalsChain.current.then(run, run);
   };
 
   // The bridge's state, fresh while the section shows: the switch turning on makes the bridge read chat.db and learn
