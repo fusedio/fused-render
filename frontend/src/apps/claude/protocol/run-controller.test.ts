@@ -4752,4 +4752,21 @@ describe("the run's tasks", () => {
     expect(controller.getState().tasks.map((t) => t.id)).toEqual(["a"]);
     expect(controller.getState().tasksRunId).toBe("r1");
   });
+
+  test("Bugbot: a done poll with tasks_pending keeps a running monitor running; without it, unknown", async () => {
+    const MON = { ...T("m"), kind: "monitor" as const, type: "monitor_mcp", events: 2 };
+    for (const pending of [true, false]) {
+      const { controller } = makeController({
+        start: () => ({ run_id: "r1" }),
+        poll: () =>
+          poll({ done: true, tasks_pending: pending, tasks: [MON], segments: [text("ok")], text: "ok" }),
+        history: () => ({ turns: [], transcript: null }),
+      });
+      await controller.sendMessage("go");
+      const m = controller.getState().tasks[0]!;
+      expect([pending, m.status]).toEqual([pending, pending ? "running" : "unknown"]);
+      expect(m.ended_at).toBe(null);
+      expect(controller.getState().tasksRunId).toBe("r1");
+    }
+  });
 });

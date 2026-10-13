@@ -1998,7 +1998,9 @@ export function ComposerCard({
         if (
           k?.type === "accept" &&
           ev.key === "Enter" &&
-          menuRows[menuActive]?.name.toLowerCase() === (menuQ ?? "").toLowerCase()
+          // CASE-SENSITIVE, as `classifyCommand` is: `/CLEAR` accepts the row
+          // (`/clear `) rather than sending a name nothing will recognise.
+          menuRows[menuActive]?.name === (menuQ ?? "")
         ) {
           k = null;
         }

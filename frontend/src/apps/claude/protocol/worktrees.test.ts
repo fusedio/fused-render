@@ -133,3 +133,27 @@ describe("review fixes", () => {
     expect(isDirtyRefusal("only worktrees under .claude/worktrees/ can be removed")).toBe(false);
   });
 });
+
+describe("resolveWorktree prefers a managed worktree by name", () => {
+  const SHADOWED: WorktreeList = {
+    root: "/r",
+    current: "/r",
+    branch_current: "main",
+    worktrees: [
+      { path: "/r", branch: "main", head: "a", name: "r", managed: false, is_main: true, dirty: false },
+      { path: "/hand/feat", branch: "feat", head: "b", name: "feat", managed: false, is_main: false, dirty: false },
+      { path: "/r/.claude/worktrees/feat", branch: "feat-2", head: "c", name: "feat", managed: true, is_main: false, dirty: false },
+      { path: "/r/.claude/worktrees/r", branch: "r", head: "d", name: "r", managed: true, is_main: false, dirty: false },
+    ],
+  };
+  test("over a hand-made worktree of the same name", async () => {
+    expect(await resolveWorktree("/r", "feat", { list: async () => SHADOWED })).toEqual({
+      path: "/r/.claude/worktrees/feat",
+    });
+  });
+  test("over the main checkout named like the repo folder", async () => {
+    expect(await resolveWorktree("/r", "r", { list: async () => SHADOWED })).toEqual({
+      path: "/r/.claude/worktrees/r",
+    });
+  });
+});

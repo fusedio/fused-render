@@ -278,3 +278,13 @@ describe("review fixes", () => {
     expect(c.sent).toEqual([]);
   });
 });
+
+test("Enter on a name typed in the wrong case accepts the row instead of sending", () => {
+  const c = mount();
+  c.type("/CLEAR");
+  expect(c.names()).toEqual(["/clear"]);
+  expect(c.press("Enter")).toBe(true);
+  expect(c.box().props.value).toBe("/clear ");
+  expect(c.sent).toEqual([]);
+  expect(c.locals).toEqual([]);
+});

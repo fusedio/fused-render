@@ -1730,7 +1730,8 @@ select.c-pill {
   color: var(--c-dim);
   cursor: pointer;
 }
-.chat-worktree-btn:hover {
+.chat-worktree-btn:hover,
+.chat-worktree-btn:focus-visible {
   color: var(--c-fg);
   border-color: var(--c-border-strong);
   background: var(--c-surface);

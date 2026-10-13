@@ -1753,7 +1753,12 @@ export function createChatController(deps: ControllerDeps): ChatController {
           // or a reload cannot re-attach (T:16313-16318).
           if (loopSeq === seat) clearRunParam();
           emit({ working: null });
-          endRunTasks(runId);
+          // THE REPLY IS OVER, NOT NECESSARILY THE WORK: a backgrounded shell or
+          // Monitor keeps running on the live host after it (the host stays
+          // open while `tasks_pending`, and the model is woken when the task
+          // notifies). Only the backend's own "nothing still running" fact
+          // retires the live records.
+          if (!poll.tasks_pending) endRunTasks(runId);
           deps.onRunEnded?.();
           // T does one final `pollArtifacts()` at the run's end (T:16347), and
           // controller-api promises "every 8th poll AND once at the run's end".
@@ -3523,7 +3528,9 @@ export function createChatController(deps: ControllerDeps): ChatController {
         };
         // The run this frame missed still handled its notes, and may have edited
         // the file while we were away (`annResolveSent` / `snapInvalidate`).
-        endRunTasks(runId || null);
+        // Same rule as `pollLoop`'s done branch: this payload is a done poll
+        // too, and `tasks_pending` says the host is still running work.
+        if (!poll.tasks_pending) endRunTasks(runId || null);
         deps.onRunEnded?.();
         /**
          * DID THIS REPAIR ACTUALLY PUT ROWS ON SCREEN? (Bugbot 3974939169 and

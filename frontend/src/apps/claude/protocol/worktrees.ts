@@ -156,7 +156,11 @@ export async function resolveWorktree(
 ): Promise<{ path: string; current?: boolean } | WorktreeError> {
   const list = await (deps.list ?? listWorktrees)(file);
   if (isWorktreeError(list)) return list;
-  const hit = list.worktrees.find((w) => w.name === name);
+  // A MANAGED worktree of that name first: the repo folder's own name (the
+  // main checkout) or a hand-made worktree must not shadow `.claude/worktrees/<name>`.
+  const hit =
+    list.worktrees.find((w) => w.managed && w.name === name) ??
+    list.worktrees.find((w) => w.name === name);
   // THE ONE ALREADY OPEN is not a switch: navigating would only start a fresh
   // chat in the same folder, so the caller opens the menu instead.
   if (hit) return trim(hit.path) === trim(list.current || list.root) ? { path: hit.path, current: true } : { path: hit.path };

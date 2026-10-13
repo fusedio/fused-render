@@ -106,6 +106,11 @@ describe("reconcileSegments dedupes the replay", () => {
     // Streamed child text growing is a change too.
     const longer = { ...tool("t1", "running"), children: [text("child says more")] } as Segment;
     expect(reconcileSegments(1, [longer], third).rows[0].seg).toBe(longer);
+    // An EARLIER child's result landing (parallel tools answer out of order).
+    const twoKids = { ...tool("t1", "running"), children: [tool("c1", "running"), text("tail")] } as Segment;
+    const base = reconcileSegments(1, [twoKids]);
+    const firstDone = { ...tool("t1", "running"), children: [tool("c1", "ok", "done"), text("tail")] } as Segment;
+    expect(reconcileSegments(1, [firstDone], base).rows[0].seg).toBe(firstDone);
     // So is the task link arriving.
     const linked = { ...tool("t1", "running"), task_id: "abc" } as Segment;
     expect(reconcileSegments(1, [linked], first).rows[0].seg).toBe(linked);

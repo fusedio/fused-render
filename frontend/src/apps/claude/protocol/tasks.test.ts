@@ -185,6 +185,9 @@ describe("review #1: unknown (the owning run died)", () => {
     expect(sortTasks([rec({ id: "u", status: "unknown", started_at: 1 }), rec({ id: "r", started_at: 9 })]).map((t) => t.id)).toEqual(["r", "u"]);
     expect(hasOutput(rec({ kind: "shell", status: "unknown" }))).toBe(false);
     expect(hasOutput(rec({ kind: "shell", status: "completed" }))).toBe(true);
+    expect(hasOutput(rec({ kind: "monitor", status: "completed" }))).toBe(true);
+    expect(hasOutput(rec({ kind: "monitor", status: "running" }))).toBe(true);
+    expect(hasOutput(rec({ kind: "agent", status: "completed" }))).toBe(false);
   });
   test("endActiveTasks downgrades running/pending/paused, leaves ended alone", () => {
     const out = endActiveTasks([

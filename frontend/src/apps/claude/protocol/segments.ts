@@ -603,19 +603,24 @@ function sameChip(a: Segment, b: Segment): boolean {
 }
 
 /** The cheap signature of what a tool chip draws BESIDES its own call: the
- *  task registry link and the subagent rows nested under it. Child text is
- *  streamed, so its length stands in for its content. */
+ *  task registry link and the subagent rows nested under it. EVERY child is
+ *  in it, not just the tail: a parallel tool call inside the subagent
+ *  finishes out of order (Bugbot, PR #1635). Child text is streamed, so its
+ *  length stands in for its content; a child's output and image count stand
+ *  in for its result. */
 function subagentKey(seg: Segment): string {
   const s = seg as { task_id?: string; orphan?: boolean; children?: Segment[] };
   const kids = Array.isArray(s.children) ? s.children : [];
-  const last: Segment | undefined = kids[kids.length - 1];
-  const tail = last as { kind?: string; status?: unknown; output?: unknown } | undefined;
-  return [
-    s.task_id || "", s.orphan ? 1 : 0, kids.length,
-    tail ? tail.kind : "", tail ? String(tail.status ?? "") : "",
-    last ? segText(last).length : 0,
-    tail && typeof tail.output === "string" ? tail.output.length : 0,
-  ].join("|");
+  const parts: (string | number)[] = [s.task_id || "", s.orphan ? 1 : 0, kids.length];
+  for (const kid of kids) {
+    const k = kid as { kind?: string; status?: unknown; output?: unknown; images?: unknown[] };
+    parts.push(
+      k.kind || "", String(k.status ?? ""), segText(kid).length,
+      typeof k.output === "string" ? k.output.length : 0,
+      Array.isArray(k.images) ? k.images.length : 0,
+    );
+  }
+  return parts.join("|");
 }
 
 /** Which body a poll's payload is: segments when it has any, the flat legacy
