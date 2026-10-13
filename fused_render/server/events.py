@@ -259,6 +259,12 @@ class _KeyState:
         self.ready_body: dict | None = None
         self.ready_version = -1
         self.ready_raw: str | None = None
+        # The producer's baseline: the signature read BEFORE the first
+        # snapshot was built (`_start_producer`), so no change can fall
+        # between what the first subscriber was sent and what the loop
+        # diffs against. `_UNSET` when that read failed; the loop's first
+        # read then primes.
+        self.primed: Any = _UNSET
 
 
 class Connection:
@@ -574,11 +580,15 @@ class EventBus:
                 try:
                     frame = await self._build(sub)
                 except TopicError as exc:
+                    # After an error the next good body is news even when it
+                    # equals the one sent before the error.
+                    sub.last_sig = _UNSET_SIG
                     frame = _Frame("err", {"status": exc.status, "error": str(exc)}, None)
                 except asyncio.CancelledError:
                     raise
                 except Exception:  # noqa: BLE001 — the GET would have 500ed
                     logger.exception("events: building %s for %r failed", sub.topic.name, sub.params)
+                    sub.last_sig = _UNSET_SIG
                     frame = _Frame("err", {"status": 500, "error": "internal error"}, None)
                 if sub.closed:
                     return
@@ -616,13 +626,14 @@ class EventBus:
                 return _Frame("delta", body, gen)
         sub.retries = 0
         body, raw = await self._snapshot(state)
-        if sub.gen is not None and self._same_as_last(sub, body):
-            return None  # a re-tick that found nothing new for this subscriber
-        if sub.gen is None:
-            try:
-                sub.last_sig = topic.frame_signature(body)
-            except Exception:  # noqa: BLE001
-                sub.last_sig = _UNSET_SIG
+        # The first frame always goes out (D4); after that a body equal to
+        # the last one built for this subscriber is not sent again, whether
+        # a re-tick found nothing new or a producer's read crossed a publish
+        # that had already pushed the same state (the read that straddles
+        # a write cannot tell which side of it it saw, so it re-reads and
+        # may re-find what the publish sent).
+        if self._same_as_last(sub, body):
+            return None
         return _Frame("snap", body, topic.generation(body), raw=raw)
 
     @staticmethod
@@ -668,10 +679,39 @@ class EventBus:
         # definition, and the event/write topics whose state also moves on a
         # clock nobody writes through (a job ageing out, a worker's health).
         if topic.poll_interval_s:
+            if not topic.tick_only:
+                await self._prime(state)
             state.producer = asyncio.create_task(self._poll_loop(state))
         detach = await topic.attach(state.key, state.params, self)
         if detach is not None:
             state.detach = detach
+
+    async def _prime(self, state: _KeyState) -> None:
+        """The baseline read, BEFORE the first subscriber's snapshot is built
+        (`subscribe` awaits this and only then kicks the snapshot). A change
+        that lands after this read is caught by the loop's next diff; one
+        that lands after the snapshot is in neither and caught the same way.
+        Read first and the snapshot built later, nothing can fall between
+        the two: a loop that primed itself from its own first read, racing
+        the snapshot build, swallowed any change made between the two as
+        "where things stand" and never published it (the first read landing
+        after the write on a loaded CI runner). When the signature is the
+        snapshot, this read IS the first snapshot: handed in as the ready
+        body for the current version, so the subscriber's build reads it
+        rather than reading the state a second time."""
+        topic = state.topic
+        state.poke.clear()  # a publish from here on cuts the loop's first nap short
+        try:
+            sig = await asyncio.wait_for(run_in_threadpool(topic.signature, state.params), POLL_READ_TIMEOUT_S)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 — unprimed: the loop's first read primes
+            return
+        state.primed = sig
+        if topic.signature_is_snapshot and isinstance(sig, dict):
+            state.ready_body = sig
+            state.ready_version = state.version
+            state.ready_raw = None
 
     def _stop_producer(self, state: _KeyState) -> None:
         if state.producer is not None:
@@ -686,23 +726,41 @@ class EventBus:
 
     async def _poll_loop(self, state: _KeyState) -> None:
         """One stat/diff loop per key, off-loop with a timeout, publishing only
-        when the signature changes. The first read primes the baseline; the
-        subscribe's own snapshot already told the client where things stand."""
+        when the signature changes. The baseline is `_prime`'s read, taken
+        before the first snapshot; the loop's own first read primes only when
+        that one failed."""
         topic = state.topic
         last: Any = _UNSET
         last_sig: Any = None
+        if state.primed is not _UNSET:
+            last_sig = state.primed
+            last = canonical(last_sig) if isinstance(last_sig, (dict, list)) else last_sig
         inflight: asyncio.Future | None = None
         started = time.monotonic()
-        # The key version this loop's baseline stands for: a publish since
-        # then (a write hook) already pushed the change this read is about to
-        # find, so the read re-baselines without pushing it a second time.
+        # The key version the baseline stands for. For a producer whose
+        # signature is NOT the snapshot (jobs: ids, states and stamps), a
+        # publish since then (a write hook) already pushed what this read
+        # finds, so the read re-baselines without pushing a second frame —
+        # its body cannot be compared with the one the publish sent, and a
+        # body that carries a clock would not be dropped at the wire.
         seen_version = state.version
         try:
             if topic.tick_only:
                 while True:
+                    state.poke.clear()
                     await _nap(state, topic.poll_interval(state.params, time.monotonic() - started, last_sig))
                     self._publish_on_loop(topic.name, state.key, None)
+            if last is not _UNSET:
+                # Primed: the first diff is one interval away, not now (a
+                # poke set since the prime read began returns at once).
+                await _nap(state, topic.poll_interval(state.params, 0.0, last_sig))
             while True:
+                # Cleared BEFORE the read, not when the nap begins: a publish
+                # that lands while the read is off-loop points at state the
+                # read may have missed, so it must cut the nap after it short.
+                # Clearing at the nap would forget exactly that publish and
+                # surface the change one idle interval (a minute) later.
+                state.poke.clear()
                 sig: Any = _UNSET
                 if inflight is not None:
                     if inflight.done():
@@ -724,10 +782,20 @@ class EventBus:
                 if sig is not _UNSET:
                     marker = canonical(sig) if isinstance(sig, (dict, list)) else sig
                     published_since = state.version != seen_version
-                    if last is not _UNSET and marker != last and not published_since:
+                    if last is not _UNSET and marker != last:
                         if topic.signature_is_snapshot and isinstance(sig, dict):
+                            # The read IS a snapshot: any change from the
+                            # baseline is handed in, even right after a
+                            # write hook's own publish. That publish's body
+                            # was built at some instant and this read may
+                            # stand for a later one (the job finished
+                            # between the two; a read that straddled the
+                            # write cannot tell), and a body the subscriber
+                            # already holds is dropped at the wire
+                            # (`_same_as_last`), so the redundant case costs
+                            # a version bump, never a frame.
                             self._ready(state, sig)
-                        else:
+                        elif not published_since:
                             self._publish_on_loop(topic.name, state.key, None)
                     seen_version = state.version
                     last = marker
@@ -741,8 +809,8 @@ async def _nap(state: "_KeyState", seconds: float) -> None:
     """The producer's sleep, cut short by a poke on its key (a publish, or a
     second document resubscribing): a write hook or a resync means "look
     now", and the cadence the next read chooses (1.5 s while a login is open,
-    not 60 s) starts from that read."""
-    state.poke.clear()
+    not 60 s) starts from that read. The loop clears the event before each
+    read; a poke set since then returns at once."""
     try:
         await asyncio.wait_for(state.poke.wait(), timeout=max(0.0, float(seconds)))
     except asyncio.TimeoutError:

@@ -301,6 +301,83 @@ async def _wait_for(pred, timeout=2.0):
         await asyncio.sleep(0.005)
 
 
+def test_a_publish_that_lands_during_a_read_still_cuts_the_next_nap_short():
+    """The producer's poke is cleared before each read, never when the nap
+    begins. A write hook that fires while the read is off-loop (a login
+    completing as the 60 s login check is mid-stat) points at state that read
+    may have missed; the nap after it must return at once and read again.
+    Clearing at the nap forgot exactly that publish and surfaced the change
+    one idle interval later — Windows CI, where thread-pool reads are slow
+    enough that the publish regularly landed inside one."""
+    async def scenario():
+        b = EventBus()
+        reading = threading.Event()
+        release = threading.Event()
+        reads = {"n": 0}
+
+        def signature(params):
+            reads["n"] += 1
+            if reads["n"] == 1:
+                reading.set()
+                release.wait(5.0)  # the first read is held open until the test says so
+            return {"n": reads["n"]}
+
+        topic = simple_topic("t.held", lambda p: {"n": reads["n"]}, kind="polldiff",
+                             poll_interval_s=60.0, signature=signature)
+        b.register(topic)
+        b.bind()
+        sent: list = []
+
+        async def send(text):
+            sent.append(json.loads(text))
+
+        conn = b.connect(send)
+        sub = await b.subscribe(conn, 1, "t.held", {})
+        await asyncio.get_running_loop().run_in_executor(None, reading.wait, 5.0)
+        assert reading.is_set()
+        b.publish("t.held")       # lands while read #1 is in flight
+        await asyncio.sleep(0.05)  # and reaches the loop before that read returns
+        release.set()
+        # Not a minute later: the poke set during the read survives the nap.
+        await _wait_for(lambda: reads["n"] >= 2, timeout=2.0)
+        b.unsubscribe(sub)
+        b.reset()
+
+    asyncio.run(scenario())
+
+
+def test_the_producers_baseline_is_the_first_snapshot_itself():
+    """The baseline read happens BEFORE the first snapshot is built, and for
+    a producer whose signature is the snapshot it IS that snapshot: one read
+    serves both, so nothing can change between "what the subscriber was
+    sent" and "what the loop diffs against". A loop that primed from its own
+    first read, racing the snapshot build, swallowed a change made between
+    the two (CI under load: the first read landed after the write and the
+    new value was never published)."""
+    async def scenario():
+        b = EventBus()
+        topic = _Counting()
+        topic.poll_interval_s = 0.5  # slow enough that no tick lands before the first assertion
+        b.register(topic)
+        b.bind()
+        sink = _Sink()
+        conn = b.connect(sink.send)
+        sub = await b.subscribe(conn, 1, "t.counting", {"p": 1})
+        await _wait_for(lambda: any(f.get("t") == "snap" for f in sink.frames))
+        # One read primed the loop AND became the snapshot; the subscriber's
+        # build did not read the state a second time.
+        assert topic.reads == 1, topic.reads
+        assert sink.frames[-1]["body"]["value"] == 0
+        # A change the instant the snapshot is out is the next diff's to
+        # publish — not part of the baseline.
+        topic.value = 7
+        await _wait_for(lambda: sum(1 for f in sink.frames if f.get("t") == "snap") >= 2, timeout=3.0)
+        assert sink.frames[-1]["body"]["value"] == 7
+        b.unsubscribe(sub)
+        b.disconnect(conn)
+    asyncio.run(scenario())
+
+
 def test_polldiff_producer_lives_only_while_subscribed():
     async def scenario():
         b = EventBus()
