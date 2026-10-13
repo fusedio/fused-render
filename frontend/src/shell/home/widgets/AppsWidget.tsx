@@ -34,12 +34,13 @@ export function AppGlyph({ app }: { app: AppInfo }) {
   );
 }
 
-function AppTile({ app }: { app: AppInfo }) {
+function AppTile({ app, onContextMenu }: { app: AppInfo; onContextMenu: (e: React.MouseEvent, app: AppInfo) => void }) {
   const name = app.title || app.name;
   return (
     <a
       className="hw-tile"
       {...appLinkProps(app)}
+      onContextMenu={(e) => onContextMenu(e, app)}
       title={name}
     >
       <AppGlyph app={app} />
@@ -58,8 +59,8 @@ export function AppsWidget({ widget }: { widget: Widget }) {
   const { apps, appsError, retry } = useHomeApps(cards ? limit : Math.min(cap * 2, MAX_ROW), 1, widget.sort ?? "opened");
   const { all, loadMore } = usePagedApps(!cards);
   const merged = cards ? [] : mergeApps((apps ?? []).slice(0, MAX_ROW), all);
-  // One context-menu portal for the strip, at the cursor — the hub's own
-  // card menu (appCardMenu: Open, Explorer, Reveal, Share, Uninstall…).
+  // One context-menu portal serves both formats (cards and icon tiles), at
+  // the cursor — the hub's own card menu (appCardMenu: Open, Explorer, Reveal, Share, Uninstall…).
   const [menu, setMenu] = useState<{ x: number; y: number; items: MenuEntry[] } | null>(null);
   const openCardMenu = (e: React.MouseEvent, app: AppInfo) => {
     e.preventDefault();
@@ -84,7 +85,7 @@ export function AppsWidget({ widget }: { widget: Widget }) {
         ) : (
           <CardStrip variant="icons" count={count} rows={rows} onNearEnd={loadMore} total={merged.length}>
             {merged.map((app) => (
-              <AppTile key={app.path} app={app} />
+              <AppTile key={app.path} app={app} onContextMenu={openCardMenu} />
             ))}
           </CardStrip>
         )
