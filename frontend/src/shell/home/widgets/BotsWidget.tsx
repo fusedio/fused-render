@@ -1,6 +1,7 @@
 import type { Bot } from "@apps/bots/lib/api";
 import { Face } from "@apps/bots/components/Face";
 import { useHomeBots } from "../data";
+import { homeBots } from "../bots";
 import { itemCapacity, type Widget } from "../layout";
 import { BigCount, EmptyLine, ErrorLine, ItemList, ListSkeleton, type WidgetItem } from "./bits";
 
@@ -23,13 +24,17 @@ const STATUS_PHRASE: Record<string, string> = {
 };
 
 export function toItem(b: Bot): WidgetItem {
+  // step/title survive a run, and a settled bot's note can be a stale running-phase one, so only running, waiting and error show detail.
+  // A run start resets step and note but not title: a step-0 running bot shows its note (e.g. a model download), not the last run's page.
   const step = b.step && b.step_cap ? `step ${b.step}/${b.step_cap}` : "";
-  const what = b.title || b.note || "";
+  const detail = b.status === "running" ? (step ? `${step} · ${b.title || b.note || ""}`.replace(/ · $/, "") : b.note)
+    : b.status === "waiting" || b.status === "error" ? b.note : "";
+  const sub = detail || STATUS_PHRASE[b.status] || undefined;
   return {
     key: b.id,
     name: b.name,
     icon: <Face b={b} />,
-    sub: [step, what].filter(Boolean).join(" · ") || STATUS_PHRASE[b.status] || undefined,
+    sub,
     href: `${BOTS_HREF}?bot=${encodeURIComponent(b.id)}`,
     pill: { label: b.status, tone: TONE[b.status] ?? "idle" },
   };
@@ -59,9 +64,11 @@ export function BotsWidget({ widget }: { widget: Widget }) {
       </div>
     );
   }
+  const shown = homeBots(data);
+  if (!shown.length) return <div className="hw-body"><EmptyLine>All bots are hidden.</EmptyLine></div>;
   return (
     <div className="hw-body">
-      <ItemList items={data.map(toItem)} cap={itemCapacity(widget.size, "list")} moreHref={BOTS_HREF} variant="tall" />
+      <ItemList items={shown.map(toItem)}cap={itemCapacity(widget.size, "list")} moreHref={BOTS_HREF} variant="tall" />
     </div>
   );
 }

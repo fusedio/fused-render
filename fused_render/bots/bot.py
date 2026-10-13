@@ -488,6 +488,7 @@ class Bot:
         self.cache_dir = bpaths.bot_cache_dir(bid)
         self.events_path = os.path.join(self.dir, "events.jsonl")
         self.lock = threading.RLock()
+        self._last_user_ts = None  # ts of the newest user event; lazily read from events.jsonl (last_user_ts)
         self.meta = _read_meta(bid)
         # The browser (its logins) is a folder of its own, maybe shared with other bots (browsers.py).
         # A bot from before browsers existed is adopted: its profile moves, nothing is copied.
@@ -631,8 +632,21 @@ class Bot:
             os.makedirs(self.dir, exist_ok=True)
             with open(self.events_path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(ev) + "\n")
+            if role == "user":
+                self._last_user_ts = ev["ts"]
         _registry().on_event(self, ev)
         return ev
+
+    def last_user_ts(self):
+        """ts of the newest user message (0 if none): one pass over events.jsonl, then kept current by emit()."""
+        with self.lock:
+            if getattr(self, "_last_user_ts", None) is None:
+                ts = 0
+                for _i, ev in _iter_events(self.events_path):
+                    if isinstance(ev, dict) and ev.get("role") == "user":
+                        ts = ev.get("ts") or 0
+                self._last_user_ts = ts
+            return self._last_user_ts
 
     # -- step thumbnails -------------------------------------------------------
     # One small JPEG per action, under cache/<id>/steps/, referenced from the
@@ -1639,7 +1653,7 @@ class Bot:
             meta = dict(self.meta)
             if meta.get("handoffs"):
                 meta["handoffs"] = [dict(h) for h in meta["handoffs"]]
-        return {**meta, "id": self.id, "seq": self.seq, "browser": bs, "browser_id": self.browser_id,
+        return {**meta, "id": self.id, "seq": self.seq, "last_user_ts": self.last_user_ts(), "browser": bs, "browser_id": self.browser_id,
                 "browser_name": browsers.read_meta(self.browser_id).get("name") or self.meta.get("name") or "",
                 "shared_with": self.shared_with(), "encrypt": bool(self.browser.encrypt),
                 "memory": self.memory() if detail else None,

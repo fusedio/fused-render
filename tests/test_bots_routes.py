@@ -345,3 +345,18 @@ def test_settings_trusted_apps_round_trip_and_clone(client, ws):
     assert one(status(client), out["id"])["trusted_apps"] == ["fake-docs", "mail"]
     client.post(f"/api/bots/{bid}/settings", {"name": "Ranger", "trusted_apps": []})
     assert one(status(client), bid)["trusted_apps"] == []
+
+
+def test_last_user_ts_tracks_only_user_messages(client, ws):
+    bid = make(client)
+    assert one(status(client), bid)["last_user_ts"] == 0
+    assert one(status(client, fast=1), bid)["last_user_ts"] == 0
+    b = registry.get(bid)
+    ev = b.emit("user", "hello")
+    assert one(status(client), bid)["last_user_ts"] == ev["ts"]
+    b.emit("system", "note")
+    b.emit("done", "finished")
+    assert one(status(client, fast=1), bid)["last_user_ts"] == ev["ts"]
+    cold = botmod.Bot(bid)  # a fresh instance: the value comes from events.jsonl
+    assert cold.last_user_ts() == ev["ts"]
+    assert cold.summary(light=True)["last_user_ts"] == ev["ts"]
