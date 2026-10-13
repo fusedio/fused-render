@@ -262,7 +262,7 @@ def validate_request(body):
     if task == "caption":
         if prompt not in (None, ""):
             raise ValueError("a caption takes no 'prompt'")
-    elif not isinstance(prompt, str) or not prompt.strip():
+    elif not isinstance(prompt, str) or not any(c.isalnum() for c in prompt):
         raise ValueError(f"a {task} needs a 'prompt'")
     length = body.get("length") or "normal"
     if length not in CAPTION_LENGTHS:

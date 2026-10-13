@@ -99,6 +99,7 @@ def test_an_unknown_option_is_named(client, photo):
     ({"task": "caption", "prompt": "cats"}, "takes no 'prompt'"),
     ({"task": "detect"}, "needs a 'prompt'"),
     ({"task": "query", "prompt": "  "}, "the question"),
+    ({"task": "detect", "prompt": " ., ;"}, "naming what to look for"),
     ({"task": "detect", "prompt": "cat", "length": "short"}, "'length' is a caption option"),
     ({"task": "caption", "length": "huge"}, "'length' is a caption option"),
     ({"task": "query", "prompt": "q", "reasoning": "yes"}, "'reasoning'"),
@@ -387,6 +388,7 @@ def test_an_unpinned_recipe_takes_the_ordinary_download(worker):
     ({"task": "caption", "image": "a.jpg"}, "absolute"),
     ({"task": "caption", "image": "/a.jpg", "prompt": "x"}, "no 'prompt'"),
     ({"task": "point", "image": "/a.jpg"}, "needs a 'prompt'"),
+    ({"task": "detect", "image": "/a.jpg", "prompt": "."}, "needs a 'prompt'"),
     ({"task": "caption", "image": "/a.jpg", "length": "tiny"}, "'length'"),
     ({"task": "detect", "image": "/a.jpg", "prompt": "c", "maxObjects": -1}, "'maxObjects'"),
 ])

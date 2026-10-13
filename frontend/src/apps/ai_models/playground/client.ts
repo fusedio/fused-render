@@ -723,11 +723,16 @@ export interface VisionResult {
 /** One vision request. Absolute `image` (the shell has no `?path=` to resolve
  *  against, like `embedPaths`); a cold model throws `ModelLoading`, a contended
  *  slot `ModelSlotConflict`. */
-export async function vision(model: string, request: VisionRequest): Promise<VisionResult> {
+export async function vision(
+  model: string,
+  request: VisionRequest,
+  signal?: AbortSignal,
+): Promise<VisionResult> {
   const res = await fetch("/api/ai/vision", {
     method: "POST",
     headers: { ...sourceHeader(), ...requesterHeaders(), "Content-Type": "application/json", "X-Fused": "1" },
     body: JSON.stringify({ model, ...request }),
+    signal,
   });
   const data = (await res.json().catch(() => null)) as {
     ok?: boolean;

@@ -53,6 +53,12 @@ export function VisionStage({
   const abortRef = useRef<AbortController | null>(null);
   useEffect(() => () => abortRef.current?.abort(), []);
 
+  // A reply answers the picture, task and prompt it was asked with; a change drops the run in flight.
+  useEffect(() => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+  }, [picture, task, prompt]);
+
   // A model's task list can drop the current task (Grounding DINO only detects).
   useEffect(() => {
     if (!offered.some((t) => t.value === task)) setTask(offered[0]?.value ?? "caption");
@@ -111,7 +117,12 @@ export function VisionStage({
     abortRef.current = controller;
     try {
       const reply = await withModelReady(
-        () => vision(model, { image: picture.path, task, ...(needsPrompt ? { prompt: prompt.trim() } : {}) }),
+        () =>
+          vision(
+            model,
+            { image: picture.path, task, ...(needsPrompt ? { prompt: prompt.trim() } : {}) },
+            controller.signal,
+          ),
         { signal: controller.signal, downloaded, onStatus: setStatus },
       );
       if (abortRef.current !== controller) return;

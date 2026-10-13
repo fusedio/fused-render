@@ -3293,7 +3293,7 @@ def _vision_problem(body: dict) -> str | None:
     if task == "caption":
         if prompt not in (None, ""):
             return "a caption takes no 'prompt'"
-    elif not isinstance(prompt, str) or not prompt.strip():
+    elif not isinstance(prompt, str) or not any(c.isalnum() for c in prompt):
         return ("a query needs a 'prompt' (the question)" if task == "query"
                 else f"a {task} needs a 'prompt' naming what to look for")
     if "length" in body and (task != "caption" or body["length"] not in _VISION_LENGTHS):
