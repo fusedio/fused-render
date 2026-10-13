@@ -42,6 +42,7 @@ ATTACH_MAX = 8 * 1024 * 1024  # composer attachment size cap
 IDLE_SLEEP_S = 10 * 60  # close Chrome after this long idle (every bot); encrypted bots also seal the profile
 ROUTINE_MAX_FAILS = 3   # consecutive failed runs before a routine pauses itself (RoutinesSection.tsx mirrors it)
 ROUTINE_MIN_MINUTES = 5  # "Every N minutes" floor; the dialog refuses less, routine_add clamps as the backstop
+ROUTINE_RUNS = 10        # run rows kept per routine (Settings › Routines shows the newest 5)
 
 
 class AppRefused(Exception):
@@ -1649,9 +1650,35 @@ class Bot:
 
     # -- routines ------------------------------------------------------------
     # meta["routines"]: [{id, task, kind: interval|daily|once, minutes, time "HH:MM",
-    #   weekdays [0-6, Mon=0], at (ts), enabled, next, last, last_result}]
+    #   weekdays [0-6, Mon=0], at (ts), enabled, next, last, last_result, last_message, last_done, fails,
+    #   runs: [{started, result: started|done|error|stopped|skipped, message, done (ts), seq, manual, count}]}]
+    # `runs` is the run history Settings › Routines tables (newest first, ROUTINE_RUNS kept): every slot the scheduler
+    # or Run now reached, skips included (`seq` is the transcript line the slot wrote, so a row opens the chat there;
+    # `count` folds consecutive identical skips: a due one-shot retries every minute while the bot is busy). The
+    # `last*` fields stay the sidebar's and the reconcile walk's one-glance summary of the newest run.
     def routines(self):
         return self.meta.setdefault("routines", [])
+
+    @staticmethod
+    def _run_add(r, result, message="", seq=None, manual=False):
+        """Prepend a run to `r["runs"]` (capped). A scheduled skip identical to the newest row (same reason, also
+        scheduled) is folded into it: `count` up, `started` and `seq` move to this newest attempt (the first line
+        may already have left the chat). A Run now is always its own row."""
+        runs = r.setdefault("runs", [])
+        top = runs[0] if runs else None
+        if (result == "skipped" and not manual and top and top.get("result") == "skipped" and not top.get("manual")
+                and top.get("message") == message):
+            top["count"] = int(top.get("count") or 1) + 1
+            top["started"] = time.time()
+            if seq is not None:
+                top["seq"] = seq
+            return top
+        run = {"started": time.time(), "result": result, "message": message, "manual": bool(manual)}
+        if seq is not None:
+            run["seq"] = seq
+        runs.insert(0, run)
+        del runs[ROUTINE_RUNS:]
+        return run
 
     @staticmethod
     def _next_run(r, after):
@@ -1772,13 +1799,20 @@ class Bot:
             held = bool(self.meta.get("control"))
             busy = held or (self.thread is not None and self.thread.is_alive())
             prev_last = r.get("last")
-            r["last"] = time.time()
+            r["last"] = fired_at = time.time()  # `fired_at` is this fire's stamp: the refusal below checks it is still r["last"]
+            run = None  # the row this fire adds when it starts the task; the refusal below patches that one
             if busy:
-                r["last_result"] = "skipped: you had the browser" if held else "skipped: bot was busy"
-                self.emit("system", f"Routine \"{r['task'][:60]}\" skipped: {'you had the browser' if held else 'bot busy'}")
+                why = "you had the browser" if held else "bot was busy"
+                # The busy task may be this routine's own run ("started"): that stays, or `_routine_outcome` (which
+                # finds the routine by last_result == "started") never lands the result and the row runs forever.
+                if r.get("last_result") != "started":
+                    r["last_result"] = f"skipped: {why}"
+                ev = self.emit("system", f"Routine \"{r['task'][:60]}\" skipped: {'you had the browser' if held else 'bot busy'}")
+                self._run_add(r, "skipped", why, seq=ev.get("seq"), manual=manual)
             else:
                 r["last_result"] = "started"
-                self.emit("system", f"Routine {'run now' if manual else 'fired'}: {r['task']}")
+                ev = self.emit("system", f"Routine {'run now' if manual else 'fired'}: {r['task']}")
+                run = self._run_add(r, "started", "", seq=ev.get("seq"), manual=manual)
             if busy and r["kind"] == "once":
                 # A one-shot is not a slot to lose: a `last` would end it for good (_next_run), so it is not
                 # stamped. A due one retries in a minute until the bot is free and you have handed back; a
@@ -1794,13 +1828,30 @@ class Bot:
             # Someone (a hand-off, a message) started a task between the busy check and the start. The "fired"
             # line is already in the thread; one short note says what happened to it, not a second "skipped" line.
             with self.lock:
-                r["last_result"] = "skipped: bot was busy"
-                # Undo the fire record: a once-routine with `last` set never gets a `next` again (_next_run),
-                # and `next` was computed as if this slot had run.
-                r["last"] = prev_last
-                if r["kind"] == "once":
-                    r["enabled"] = True
-                r["next"] = self._next_run(r, time.time()) if r.get("enabled") else None
+                now = time.time()
+                # Who owns the routine's state now. A Run now that fired meanwhile (outside the lock, before
+                # start_task) and WON the start put its own "started" row above ours and owns last_result: its
+                # outcome would never land if "started" were overwritten. One that only skipped (busy) put a skip
+                # row above ours and left "started" to us. Older leftover "started" rows sit below ours and count
+                # for nothing. The row itself is patched by reference: this fire's, never the live run's.
+                newest_started = next((x for x in r.get("runs") or [] if x.get("result") == "started"), None)
+                mine = run is not None and newest_started is run and r.get("last_result") == "started"
+                if run is not None and run.get("result") == "started":
+                    run.update(result="skipped", message="another task took the bot first", done=now)
+                if mine:
+                    r["last_result"] = "skipped: bot was busy"
+                    if r["kind"] == "once":
+                        r["enabled"] = True
+                    # The schedule is undone only while `last` is still this fire's stamp: a newer skipped fire
+                    # re-stamped it and set its own `next`, which stands. A once-routine with `last` set never gets
+                    # a `next` again (_next_run), and `next` was computed as if this slot had run; a due one-shot
+                    # whose time has passed retries in a minute, like the busy path (a refused Run now keeps its time).
+                    if r.get("last") == fired_at:
+                        r["last"] = prev_last
+                        if r["kind"] == "once":
+                            r["next"] = self._next_run(r, now) if manual else now + 60
+                        else:
+                            r["next"] = self._next_run(r, now) if r.get("enabled") else None
                 self.save()
             self.emit("system", "That routine did not start: another task took the bot first. It keeps its schedule.")
         self._sync_wake()
@@ -1854,6 +1905,10 @@ class Bot:
             hit["last_result"] = result
             hit["last_message"] = (message or "")[:300]
             hit["last_done"] = time.time()
+            # The run row the fire wrote (the newest one still "started"); a routine from before run history has none.
+            run = next((x for x in hit.get("runs") or [] if x.get("result") == "started"), None)
+            if run is not None:
+                run.update(result=result, message=(message or "")[:300], done=hit["last_done"])
             hit["fails"] = 0 if result == "done" else int(hit.get("fails") or 0) + (1 if result == "error" else 0)
             tripped = hit["fails"] >= ROUTINE_MAX_FAILS and hit.get("enabled")
             if tripped:

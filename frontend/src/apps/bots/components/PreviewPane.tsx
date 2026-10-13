@@ -7,7 +7,7 @@ import { SideApp } from "../apps/SideApp";
 import { embedUrlForFsPath } from "@platform/lib/router";
 import { api, rawFileUrl, shotUrl, type Artifact, type Bot } from "../lib/api";
 import { mirrorThumb, openFull } from "../lib/cdp";
-import { fmtAgo, fmtBytes, fmtWhenShort } from "../lib/format";
+import { fmtAgo, fmtBytes, fmtIn, fmtWhen, fmtWhenShort } from "../lib/format";
 import { closePreview } from "../lib/layout";
 import { LiveView } from "./LiveView";
 import { act, closeMenu, getState, openDialog, openMenu, useBotsSelector } from "../state/store";
@@ -62,12 +62,24 @@ function Routines({ b }: { b: Bot }) {
       {rs.length ? <h4>Routines</h4> : null}
       {rs.length ? (
         <>
-          {rs.slice(0, 4).map((r) => (
-            <div key={r.id} className={`rt ${r.enabled ? "" : "off"}`}>
-              <span title={r.task}>{r.task}</span>
-              <small>{r.enabled ? fmtWhenShort(r.next) || "soon" : "paused"}</small>
-            </div>
-          ))}
+          {/* "in 53 min" at a glance (owner, 2026-10-13); the clock time sits in the tooltip. Red when the newest run
+              failed. The poll (1.5–3 s) repaints the countdown. */}
+          {rs.slice(0, 4).map((r) => {
+            const bad = r.enabled && (r.last_result === "error" || (r.fails || 0) > 0);
+            // `last_message` is the newest FINISHED run's; a start or a skip since leaves it behind, so the tip
+            // quotes it only while `last_result` is still that run's outcome.
+            const ended = r.last_result === "done" || r.last_result === "error" || r.last_result === "stopped";
+            // A fired one-shot is disabled while it runs: "running" comes before every enabled check (label, fade, tip).
+            const running = r.last_result === "started", paused = !r.enabled && !running;
+            return (
+              <div key={r.id} className={`rt ${paused ? "off" : ""}`}>
+                <span title={r.task}>{r.task}</span>
+                <small className={bad ? "warn" : undefined} title={running ? "Running now" : paused ? "paused" : `${fmtWhen(r.next)}${ended && r.last_message ? `\nlast run: ${r.last_result} — ${r.last_message}` : ""}`}>
+                  {running ? "running" : paused ? "paused" : fmtIn(r.next) || "soon"}
+                </small>
+              </div>
+            );
+          })}
           <div className="fine" style={{ marginTop: 6 }}>
             <button className="lnk" data-open="routines" onClick={open}>{rs.length > 4 ? `All ${rs.length} routines` : "Manage routines"}</button>
           </div>
