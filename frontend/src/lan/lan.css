@@ -23,9 +23,12 @@ body {
   box-sizing: border-box;
 }
 
-a {
-  color: inherit;
-  text-decoration: none;
+/* In the base layer, under the utilities: a link's own text-* class wins. */
+@layer base {
+  a {
+    color: inherit;
+    text-decoration: none;
+  }
 }
 
 /* The monogram tile: an app without icon.svg gets its initial in a hue hashed
@@ -75,5 +78,104 @@ a {
 @media (prefers-reduced-motion: reduce) {
   .lan-card {
     transition: none;
+  }
+}
+
+/* ---- the bot screens (src/lan/bots) ---------------------------------------
+   No preflight in tailwind.css: the few UA defaults the bot screens would
+   otherwise inherit (button chrome, heading/paragraph margins) are reset here,
+   scoped to raw controls and to `.lan-bots` (the screens and their sheets).
+   In the base layer: unlayered, these would out-rank every Tailwind utility
+   (a raw button's bg-*, px-*, border, text-*; a <p>'s mt-*). */
+@layer base {
+  :where(button):not([data-slot]) {
+    font: inherit;
+    color: inherit;
+    background: none;
+    border: 0;
+    padding: 0;
+    margin: 0;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+  :where(textarea, input, select):not([data-slot]) {
+    font: inherit;
+    color: inherit;
+  }
+  .lan-bots :where(h1, h2, h3, p, ul, ol, figure) {
+    margin: 0;
+  }
+}
+
+/* Markdown-lite bubbles (lib.ts markdownLite): p, br, strong, code, a. */
+.lan-md p + p {
+  margin-top: 0.6em;
+}
+.lan-md code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.88em;
+  padding: 0.08em 0.35em;
+  border-radius: 6px;
+  background: color-mix(in oklch, var(--fg) 9%, transparent);
+  overflow-wrap: anywhere;
+}
+.lan-md a {
+  color: inherit;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in oklch, currentColor 45%, transparent);
+  text-underline-offset: 2px;
+  overflow-wrap: anywhere;
+}
+.lan-md strong {
+  font-weight: 650;
+}
+
+/* The chat frame follows the visual viewport (hooks.ts useVisualViewportVar):
+   the composer rides on the keyboard instead of under it. */
+.lan-chat {
+  position: fixed;
+  left: 0;
+  right: 0;
+  top: var(--vvtop, 0px);
+  height: var(--vvh, 100dvh);
+  display: flex;
+  flex-direction: column;
+}
+.lan-thread {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  overflow-anchor: none;
+}
+
+/* The selected half of a segmented control (Apps | Bots, Ask | Auto): a white
+   pill on a grey track in light, a raised grey in dark — the iOS reading. */
+.lan-seg-on {
+  background: color-mix(in srgb, var(--fg) 16%, var(--bg));
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.25);
+}
+:root[data-theme="light"] .lan-seg-on {
+  background: #ffffff;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.12), 0 0 0 0.5px rgb(0 0 0 / 0.06);
+}
+
+.lan-press {
+  transition: background-color 120ms, transform 120ms var(--ease-out, ease-out);
+}
+.lan-press:active {
+  background: var(--row-bg-hover);
+}
+
+@keyframes lan-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+.lan-pulse {
+  animation: lan-pulse 1.6s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lan-pulse {
+    animation: none;
   }
 }

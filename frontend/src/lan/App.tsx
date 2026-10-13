@@ -22,6 +22,7 @@ import { Input } from "@platform/shadcn/ui/input";
 import { Skeleton } from "@platform/shadcn/ui/skeleton";
 import { ToggleGroup, ToggleGroupItem } from "@platform/shadcn/ui/toggle-group";
 import { cn } from "@platform/lib/utils";
+import { SectionSwitch } from "./nav";
 
 interface LanAppRow {
   name: string;
@@ -36,9 +37,6 @@ interface LanAppRow {
 }
 
 const FILTER_KEY = "fused-render:lan-filter";
-// Inside the native iOS shell (its webview marks the UA; lan.py keys off the
-// same marker). The shell draws its own top bar, so the page drops its title.
-const IN_APP = /FusedRender-iOS\//.test(navigator.userAgent);
 const LINKED = "__linked";
 
 function readFilter(): string {
@@ -90,6 +88,10 @@ export function LanApp() {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<string>(readFilter);
   const now = useMemo(() => Date.now() / 1000, [apps]);
+
+  useEffect(() => {
+    document.title = "Fused apps";
+  }, []);
 
   useEffect(() => {
     let alive = true;
@@ -158,16 +160,14 @@ export function LanApp() {
   return (
     <main className="mx-auto max-w-3xl px-4 pb-[max(24px,env(safe-area-inset-bottom))]">
       <header className="sticky top-0 z-10 -mx-4 bg-[var(--bg)]/92 px-4 pt-[max(12px,env(safe-area-inset-top))] pb-3 backdrop-blur">
-        {/* Inside the native shell the top bar already says "Apps"; the page
-            keeps only the search and filters. */}
-        {!IN_APP && (
-          <div className="flex items-baseline justify-between gap-3 pb-3">
-            <h1 className="text-[22px] font-semibold tracking-[-0.01em]">Apps</h1>
-            <span className="lan-mono text-xs text-[var(--fg-muted)]">
-              {apps ? `${shown.length}/${apps.length}` : ""}
-            </span>
-          </div>
-        )}
+        {/* The section switch is the page's title row, in the browser and
+            inside the native shell alike (whose top bar reads <title>). */}
+        <div className="flex items-center justify-between gap-3 pb-3">
+          <SectionSwitch active="apps" />
+          <span className="lan-mono text-xs text-[var(--fg-muted)]">
+            {apps ? `${shown.length}/${apps.length}` : ""}
+          </span>
+        </div>
         <div className="relative">
           <SearchIcon className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-[var(--fg-muted)]" />
           <Input
