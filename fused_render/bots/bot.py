@@ -2615,7 +2615,7 @@ class Bot:
         self.emit("system", f"{verb} started: {name}. Follow it under Builds.")
         if not update:
             try:
-                self._record_artifact(d, "build", link=link, title=name)  # the app folder shows up in the Inbox list
+                self._record_artifact(d, "build", title=name)  # the Inbox card derives its URL from the path (PreviewPane)
             except Exception:  # noqa: BLE001
                 pass
         self._watch_build(bd)

@@ -80,7 +80,7 @@ export interface BotEvent {
 
 export interface Tab { i: number; id: string; title: string; url: string; active: boolean; ws: string }
 export interface FileRow { name: string; path: string; size: number; kind: string; ts?: number }
-export interface Artifact { ts: number; kind: "save" | "download" | "build" | string; name: string; path: string; size?: number; task?: string; link?: string; title?: string }
+export interface Artifact { ts: number; kind: "save" | "download" | "build" | string; name: string; path: string; size?: number; task?: string; title?: string }
 
 export interface BrowserState {
   running: boolean;
