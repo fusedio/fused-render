@@ -5141,6 +5141,16 @@ export interface AiCatalogModel {
    *  yet, because an affordance whose request then 400s is worse than a missing
    *  one. Optional on the wire only because an older server does not send it. */
   acceptsPaths?: boolean;
+  /** Finer than `acceptsPaths`: may those paths be SOUND files (wav, mp3,
+   *  flac, ogg; m4a/aac/opus with ffmpeg on PATH), and may they be VIDEOS
+   *  (mp4, mov, mkv, webm, …)? True today only for EmbeddingGemma 2, which has
+   *  an audio tower beside its vision tower and embeds all of it into the one
+   *  space its texts land in. Same fail-closed rule as `acceptsPaths`: false
+   *  for a model not on this disk yet, and false on every non-embeddings
+   *  capability. Optional on the wire because an older server does not send
+   *  them. */
+  acceptsAudio?: boolean;
+  acceptsVideo?: boolean;
   /** Which retrieval prompt scheme this model wants — `"bge"`, `"e5"`,
    *  `"nomic"`, … — or **null when it has none**, which is the case for every
    *  dual encoder and for any repo whose convention the server does not

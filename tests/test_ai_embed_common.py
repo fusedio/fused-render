@@ -316,3 +316,91 @@ def test_the_repo_id_heuristic(repo_id, expected):
     is reported back on the catalog entry rather than applied out of sight,
     which is what makes it auditable instead of silent."""
     assert formats.text_embed_scheme(repo_id) == expected
+
+
+# -- what a path IS, by extension -----------------------------------------------
+
+
+@pytest.mark.parametrize("path, kind", [
+    ("/x/photo.png", "image"), ("/x/PHOTO.JPG", "image"), ("/x/shot.heic", "image"),
+    ("/x/noext", "image"), ("/x/notes.pdf", "image"),
+    ("/x/song.wav", "audio"), ("/x/song.MP3", "audio"), ("/x/song.flac", "audio"),
+    ("/x/song.ogg", "audio"), ("/x/song.m4a", "audio"), ("/x/song.opus", "audio"),
+    ("/x/clip.mp4", "video"), ("/x/clip.MOV", "video"), ("/x/clip.mkv", "video"),
+    ("/x/clip.webm", "video"), ("/x/clip.avi", "video"),
+])
+def test_media_kind_reads_the_extension_and_nothing_else(path, kind):
+    assert embed_common.media_kind(path) == kind
+
+
+def test_anything_unlisted_is_an_image_so_PIL_names_it(tmp_path):
+    """A `.pdf` is not refused by the extension table — it reaches `open_image`
+    and gets PIL's own sentence, the same one it got before audio and video
+    existed here."""
+    path = tmp_path / "notes.pdf"
+    path.write_bytes(b"%PDF-1.4 not really")
+    assert embed_common.media_kind(str(path)) == "image"
+    with pytest.raises(ValueError, match="is not a readable image"):
+        embed_common.open_image(str(path))
+
+
+def test_the_two_suffix_lists_do_not_overlap():
+    assert not (embed_common.AUDIO_SUFFIXES & embed_common.VIDEO_SUFFIXES)
+    for suffix in embed_common.AUDIO_SUFFIXES | embed_common.VIDEO_SUFFIXES:
+        assert suffix.startswith(".") and suffix == suffix.lower()
+
+
+def test_the_media_table_covers_every_dual_family_and_only_those():
+    assert set(embed_common.EMBED_MEDIA) == set(formats.DUAL_EMBED_MODEL_TYPES)
+    for family, kinds in embed_common.EMBED_MEDIA.items():
+        assert embed_common.IMAGE in kinds, family
+    assert embed_common.EMBED_MEDIA["embedding_gemma2"] == ("image", "audio", "video")
+    assert embed_common.EMBED_MEDIA["siglip"] == ("image",)
+
+
+def test_check_media_path_gives_open_images_two_sentences(tmp_path):
+    with pytest.raises(ValueError, match="no such file: .*gone.wav"):
+        embed_common.check_media_path(str(tmp_path / "gone.wav"))
+    (tmp_path / "d.mp4").mkdir()
+    with pytest.raises(ValueError, match="not a file: .*d.mp4"):
+        embed_common.check_media_path(str(tmp_path / "d.mp4"))
+    (tmp_path / "ok.wav").write_bytes(b"x")
+    assert embed_common.check_media_path(str(tmp_path / "ok.wav")) is None
+
+
+def test_media_error_relays_the_first_line_and_names_the_kind():
+    error = embed_common.media_error("/x/clip.mp4", "video",
+                                     RuntimeError("Cannot open video\nmore"))
+    assert str(error) == "/x/clip.mp4 is not a readable video (Cannot open video)"
+    error = embed_common.media_error("/x/a.wav", "audio", RuntimeError(""))
+    assert str(error) == "/x/a.wav is not a readable audio (RuntimeError)"
+
+
+def test_media_error_turns_the_ffmpeg_banner_into_one_actionable_sentence():
+    banner = RuntimeError("ffmpeg not found!\nInstall ffmpeg:\n  macOS: brew install ffmpeg")
+    message = str(embed_common.media_error("/x/voice.m4a", "audio", banner))
+    assert message.startswith("/x/voice.m4a needs ffmpeg on PATH")
+    assert "wav, mp3, flac or ogg" in message
+    assert "brew" not in message
+    # A wav can never be an ffmpeg problem, whatever the text says.
+    message = str(embed_common.media_error("/x/voice.wav", "audio", banner))
+    assert "is not a readable audio" in message
+
+
+def test_unaccepted_media_names_model_file_kind_and_where_it_works():
+    message = embed_common.unaccepted_media(
+        "google/siglip2-base-patch16-384", ("image",),
+        ["/x/a.png", "/x/song.mp3", "/x/clip.mp4"])
+    assert message.startswith("google/siglip2-base-patch16-384 reads text and image only")
+    assert "/x/song.mp3 is an audio file" in message
+    assert "/x/clip.mp4" not in message, "the FIRST offender, not a list"
+    assert "embeddinggemma-2-bf16" in message
+    assert embed_common.unaccepted_media(
+        "google/siglip2-base-patch16-384", ("image",), ["/x/a.png"]) is None
+    assert embed_common.unaccepted_media(
+        "mlx-community/embeddinggemma-2-bf16", ("image", "audio", "video"),
+        ["/x/a.png", "/x/song.mp3", "/x/clip.mp4"]) is None
+    assert "a video file" in embed_common.unaccepted_media(
+        "m", ("image", "audio"), ["/x/clip.mov"])
+    assert "reads text and nothing only" in embed_common.unaccepted_media(
+        "m", (), ["/x/a.png"])

@@ -10,6 +10,7 @@ exercise `generate()` against a MOCKED model, never a real one.
 import importlib.util
 import sys
 import threading
+import os
 import types
 from pathlib import Path
 
@@ -588,28 +589,59 @@ class FakeUnifiedTokenizer:
 
 
 class FakeUnifiedProcessor:
+    """The three placeholder tokens and the three input shapes the real
+    `EmbeddingGemma2Processor` produces — `pixel_values` for pictures,
+    `input_features` for sound, `pixel_values_videos` for video — each
+    carrying a number the fake model turns into a recognisable vector: an
+    image's width, an audio file's size in bytes, a video file's size in
+    bytes. Sound and video arrive as PATHS, exactly as the worker hands them
+    over, and `failing` names paths the "decoder" refuses, with the error
+    class and text mlx-audio raises for a missing ffmpeg when asked to."""
     image_token = "<|image|>"
+    audio_token = "<|audio|>"
+    video_token = "<|video|>"
 
-    def __init__(self):
+    def __init__(self, failing=()):
         self.tokenizer = FakeUnifiedTokenizer()
         self.calls = []
+        self.failing = dict(failing)
 
-    def __call__(self, text=None, images=None, **kwargs):
-        self.calls.append({"text": list(text), "images": images, **kwargs})
-        return {"input_ids": [[0]] * len(text),
-                "pixel_values": [image[0].size[0] for image in images]}
+    def __call__(self, text=None, images=None, audio=None, videos=None, **kwargs):
+        self.calls.append({"text": list(text), "images": images, "audio": audio,
+                           "videos": videos, **kwargs})
+        out = {"input_ids": [[0]] * len(text)}
+        if images is not None:
+            out["pixel_values"] = [image[0].size[0] for image in images]
+        for key, paths in (("input_features", audio), ("pixel_values_videos", videos)):
+            if paths is None:
+                continue
+            for path in paths:
+                if path in self.failing:
+                    raise self.failing[path]
+            out[key] = [os.path.getsize(path) for path in paths]
+        return out
 
 
 class FakeUnifiedModel:
     def __init__(self):
         self.calls = []
 
-    def __call__(self, input_ids=None, attention_mask=None, pixel_values=None, **_kw):
+    def __call__(self, input_ids=None, attention_mask=None, pixel_values=None,
+                 input_features=None, pixel_values_videos=None, **_kw):
         self.calls.append({"input_ids": input_ids.data,
                            "attention_mask": attention_mask.data if attention_mask else None,
-                           "pixel_values": pixel_values.data if pixel_values else None})
+                           "pixel_values": pixel_values.data if pixel_values else None,
+                           "input_features": input_features.data if input_features else None,
+                           "pixel_values_videos": (pixel_values_videos.data
+                                                   if pixel_values_videos else None)})
         if pixel_values is not None:
             rows = [[float(width), 1.0] for width in pixel_values.data]
+        elif input_features is not None:
+            # 1000 + the file's size, so the ratio test below recovers the
+            # kind (thousands) and the file (the rest) from one number.
+            rows = [[1000.0 + size, 1.0] for size in input_features.data]
+        elif pixel_values_videos is not None:
+            rows = [[2000.0 + size, 1.0] for size in pixel_values_videos.data]
         else:
             rows = [[float(sum(mask)), 1.0] for mask in attention_mask.data]
         return types.SimpleNamespace(text_embeds=FakeMxArray(rows))
@@ -730,3 +762,242 @@ def test_unified_paths_are_not_refused_as_a_text_encoder_would_be(unified, tmp_p
     Image.new("RGB", (16, 16), (1, 2, 3)).save(path)
     result = unified.generate({"paths": [str(path)]})
     assert len(result["vectors"]) == 1
+
+
+# -- the unified encoder reads SOUND and VIDEO by path too --------------------
+#
+# The real model has a vision tower and an audio tower hung off one language
+# model, and the pinned mlx-vlm processor takes `audio=` and `videos=` beside
+# `images=`. The worker sorts `paths` by extension and embeds each kind in its
+# own chunks, scattering the vectors back to the caller's order. Measured on
+# the real checkpoint 2026-10-13 (`.wav`/`.mp3`/`.m4a` and two `.mp4`s): all
+# 768-dim, the two tones at cosine 0.96–0.99 to each other, the red video at
+# 0.93 to the red picture.
+
+
+def _media(tmp_path):
+    """Two pictures, three sound files and two videos, with distinct sizes so
+    the fake's vectors identify each file — not real media, since the fake
+    processor never decodes them; the real one is `_mlx_vlm_load`'s business
+    and `test_ai_mlx_embed_real_weights.py`'s."""
+    paths = {}
+    for index, name in enumerate(("a.png", "b.jpg")):
+        path = tmp_path / name
+        Image.new("RGB", (20 + index, 8)).save(path, format="PNG")
+        paths[name] = str(path)
+    for index, name in enumerate(("one.wav", "two.MP3", "three.m4a",
+                                  "clip.mp4", "clip2.mov")):
+        path = tmp_path / name
+        path.write_bytes(b"x" * (100 + index))
+        paths[name] = str(path)
+    return paths
+
+
+def _ratio(vector):
+    return round(vector[0] / vector[1])
+
+
+def test_unified_paths_mix_pictures_sound_and_video_in_the_callers_order(
+        unified, tmp_path):
+    media = _media(tmp_path)
+    order = ["one.wav", "a.png", "clip.mp4", "two.MP3", "b.jpg", "clip2.mov",
+             "three.m4a"]
+    result = unified.generate({"paths": [media[n] for n in order]})
+    assert len(result["vectors"]) == len(order)
+    # The thousands digit tags the kind (0 picture, 1 sound, 2 video) and the
+    # rest identifies the file — so order and kind are both checked at once.
+    values = [_ratio(v) for v in result["vectors"]]
+    assert [value // 1000 for value in values] == [1, 0, 2, 1, 0, 2, 1]
+    expect = {"one.wav": 100, "two.MP3": 101, "three.m4a": 102, "clip.mp4": 103,
+              "clip2.mov": 104, "a.png": 20, "b.jpg": 21}
+    assert [value % 1000 for value in values] == [expect[n] for n in order]
+
+
+def test_unified_sound_goes_through_the_audio_token_as_paths(unified, tmp_path):
+    media = _media(tmp_path)
+    unified.generate({"paths": [media["one.wav"], media["two.MP3"]]})
+    call = unified._loaded["processor"].calls[-1]
+    assert call["text"] == ["<|audio|>", "<|audio|>"]
+    assert call["audio"] == [media["one.wav"], media["two.MP3"]]
+    assert call["images"] is None and call["videos"] is None
+    assert call["padding"] is True
+
+
+def test_unified_video_goes_one_clip_per_forward(unified, tmp_path):
+    media = _media(tmp_path)
+    unified.generate({"paths": [media["clip.mp4"], media["clip2.mov"]]})
+    calls = unified._loaded["processor"].calls
+    assert [call["videos"] for call in calls] == [[media["clip.mp4"]],
+                                                  [media["clip2.mov"]]]
+    assert all(call["text"] == ["<|video|>"] for call in calls)
+
+
+def test_unified_sound_is_chunked_like_pictures(unified, tmp_path):
+    paths = []
+    for index in range(10):
+        path = tmp_path / f"s{index}.wav"
+        path.write_bytes(b"x" * (10 + index))
+        paths.append(str(path))
+    result = unified.generate({"paths": paths})
+    calls = unified._loaded["processor"].calls
+    assert [len(call["audio"]) for call in calls] == [8, 2]
+    assert [_ratio(v) % 1000 for v in result["vectors"]] == [10 + i for i in range(10)]
+
+
+def test_a_missing_sound_file_is_named_before_any_decoder_runs(unified, tmp_path):
+    missing = str(tmp_path / "gone.wav")
+    with pytest.raises(ValueError, match="no such file: .*gone.wav"):
+        unified.generate({"paths": [missing]})
+    assert unified._loaded["processor"].calls == []
+    (tmp_path / "folder.mp4").mkdir()
+    with pytest.raises(ValueError, match="not a file: .*folder.mp4"):
+        unified.generate({"paths": [str(tmp_path / "folder.mp4")]})
+
+
+def test_a_decoder_failure_names_the_ONE_file_in_the_batch_that_broke(
+        unified, tmp_path):
+    media = _media(tmp_path)
+    unified._loaded["processor"].failing = {
+        media["two.MP3"]: RuntimeError("Unsupported audio format: garbage")}
+    with pytest.raises(ValueError) as info:
+        unified.generate({"paths": [media["one.wav"], media["two.MP3"],
+                                    media["three.m4a"]]})
+    message = str(info.value)
+    assert media["two.MP3"] in message
+    assert "not a readable audio" in message
+    assert "Unsupported audio format" in message
+    assert media["one.wav"] not in message
+
+
+def test_an_m4a_without_ffmpeg_says_what_to_install_or_convert_to(
+        unified, tmp_path):
+    media = _media(tmp_path)
+    banner = ("ffmpeg not found!\n\nffmpeg is required for M4A/AAC/WebM audio "
+              "decoding.\nInstall ffmpeg:\n  macOS:  brew install ffmpeg")
+    unified._loaded["processor"].failing = {media["three.m4a"]: RuntimeError(banner)}
+    with pytest.raises(ValueError) as info:
+        unified.generate({"paths": [media["three.m4a"]]})
+    message = str(info.value)
+    assert media["three.m4a"] in message
+    assert "needs ffmpeg on PATH" in message
+    assert "wav, mp3, flac or ogg" in message
+    assert "brew" not in message, "the install banner is not relayed"
+
+
+def test_an_unreadable_video_is_named_as_a_video(unified, tmp_path):
+    media = _media(tmp_path)
+    unified._loaded["processor"].failing = {
+        media["clip.mp4"]: ValueError("Cannot open video: " + media["clip.mp4"])}
+    with pytest.raises(ValueError, match="is not a readable video .*Cannot open video"):
+        unified.generate({"paths": [media["clip.mp4"]]})
+
+
+def test_a_decoders_ValueError_is_attributed_to_its_file_too(unified, tmp_path):
+    """OpenCV's "Cannot open video" and transformers' own checks arrive as
+    `ValueError`, which must not skip the per-path retry: in a batch of sound
+    files the sentence still has to name the one that broke."""
+    media = _media(tmp_path)
+    unified._loaded["processor"].failing = {
+        media["two.MP3"]: ValueError("Unsupported sample rate")}
+    with pytest.raises(ValueError) as info:
+        unified.generate({"paths": [media["one.wav"], media["two.MP3"]]})
+    assert str(info.value).startswith(media["two.MP3"] + " is not a readable audio")
+    assert info.value.__cause__ is not None, "the decoder's traceback is kept"
+
+
+def test_a_batch_that_only_fails_TOGETHER_is_not_blamed_on_its_first_file(
+        unified, tmp_path):
+    media = _media(tmp_path)
+    processor = unified._loaded["processor"]
+    real = processor.__call__.__func__
+
+    def flaky(self, text=None, **kwargs):
+        if len(text) > 1:
+            raise RuntimeError("batch too wide")
+        return real(self, text=text, **kwargs)
+
+    processor.__class__ = type("FlakyProcessor", (FakeUnifiedProcessor,), {"__call__": flaky})
+    with pytest.raises(ValueError) as info:
+        unified.generate({"paths": [media["one.wav"], media["two.MP3"]]})
+    message = str(info.value)
+    assert "2 audio files each decode alone but not together" in message
+    assert "batch too wide" in message
+    assert media["one.wav"] in message and media["two.MP3"] in message
+    assert not message.startswith(media["one.wav"])
+
+
+def test_a_short_model_output_is_an_error_not_a_None_in_the_vectors(
+        unified, tmp_path):
+    media = _media(tmp_path)
+    model = unified._loaded["model"]
+    real = model.__call__.__func__
+
+    def short(self, **kwargs):
+        out = real(self, **kwargs)
+        out.text_embeds = FakeMxArray(out.text_embeds.data[:-1])
+        return out
+
+    model.__class__ = type("ShortModel", (FakeUnifiedModel,), {"__call__": short})
+    with pytest.raises(RuntimeError, match="returned 1 vectors for 2 audio inputs"):
+        unified.generate({"paths": [media["one.wav"], media["two.MP3"]]})
+
+
+def test_a_SIGLIP_refuses_a_sound_file_by_name(worker, tmp_path):
+    media = _media(tmp_path)
+    with pytest.raises(ValueError) as info:
+        worker.generate({"paths": [media["a.png"], media["one.wav"]]})
+    message = str(info.value)
+    assert worker._loaded["model_id"] in message
+    assert media["one.wav"] in message
+    assert "an audio file" in message
+    assert "embeddinggemma-2" in message
+    assert worker._loaded["processor"].calls == [], "refused before any decode"
+
+
+def test_a_SIGLIP_refuses_a_video_by_name_too(worker, tmp_path):
+    media = _media(tmp_path)
+    with pytest.raises(ValueError, match="a video file"):
+        worker.generate({"paths": [media["clip.mp4"]]})
+
+
+def test_the_mlx_vlm_load_keeps_the_audio_tower(worker, monkeypatch, tmp_path):
+    """PR #1553 nulled `audio_config` at load, which dropped the audio tower
+    and made every sound file raise inside the model. The config must now
+    reach `load_embedding_model` whole."""
+    import json
+    import types as _types
+
+    seen = {}
+    loader = _types.ModuleType("mlx_vlm.embedding_loader")
+    loader.load_embedding_model = lambda root, config=None: seen.setdefault(
+        "config", config) and "MODEL"
+    gemma = _types.ModuleType("mlx_vlm.models.embedding_gemma2")
+    gemma.EmbeddingGemma2Processor = _types.SimpleNamespace(
+        from_pretrained=lambda root: "PROCESSOR")
+    utils = _types.ModuleType("mlx_vlm.utils")
+    utils.load_config = lambda root: json.loads((root / "config.json").read_text())
+    package = _types.ModuleType("mlx_vlm")
+    models = _types.ModuleType("mlx_vlm.models")
+    for name, module in (("mlx_vlm", package), ("mlx_vlm.models", models),
+                         ("mlx_vlm.models.embedding_gemma2", gemma),
+                         ("mlx_vlm.embedding_loader", loader),
+                         ("mlx_vlm.utils", utils)):
+        monkeypatch.setitem(sys.modules, name, module)
+    (tmp_path / "config.json").write_text(json.dumps({
+        "model_type": "embedding_gemma2",
+        "audio_config": {"model_type": "gemma4_audio"},
+        "vision_config": {"model_type": "gemma4_vision"}}))
+
+    model, processor = worker._mlx_vlm_load(str(tmp_path))
+
+    assert model == "MODEL" and processor == "PROCESSOR"
+    assert seen["config"]["audio_config"] == {"model_type": "gemma4_audio"}
+
+
+def test_every_family_has_a_media_answer_and_they_match_the_shared_table(worker):
+    from fused_render.ai.runners import embed_common
+
+    assert set(worker._FAMILY_MEDIA) == {worker._DUAL, worker._TEXT, worker._UNIFIED}
+    assert worker._FAMILY_MEDIA[worker._UNIFIED] == embed_common.EMBED_MEDIA["embedding_gemma2"]
+    assert worker._FAMILY_MEDIA[worker._DUAL] == embed_common.EMBED_MEDIA["siglip"]
+    assert worker._FAMILY_MEDIA[worker._TEXT] == ()

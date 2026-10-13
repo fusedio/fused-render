@@ -166,6 +166,127 @@ def prompted(texts: list, kind: str, scheme: str) -> list:
     return [prefix + text for text in texts]
 
 
+#: What a `paths` entry can BE, by its extension — and the extension is the
+#: whole test, deliberately. A page author passes a path they read off the
+#: explorer, so the extension is the one fact about the file they can see and
+#: act on; sniffing magic bytes would let a `.mp3` that is really a JPEG embed
+#: as a picture, which is a confident wrong vector rather than a sentence
+#: naming the file. Anything not listed is read as an IMAGE and handed to
+#: PIL, whose own "is not a readable image" sentence then names it — the
+#: behaviour every dual encoder had before audio and video existed here, kept
+#: so a `.jpeg`/`.PNG`/`.heic` keeps working without this table knowing it.
+#:
+#: Two decoders, two lists. Audio is read by `mlx_audio.audio_io.read` (wav,
+#: mp3, flac and ogg-vorbis natively through miniaudio; m4a/aac/opus by
+#: shelling out to an `ffmpeg` this app does not ship — see `media_error`).
+#: Video is read by OpenCV's `VideoCapture`, which opens what the platform's
+#: codecs do. `.webm` is listed as VIDEO because that is what the container
+#: nearly always holds, and OpenCV reads it; an audio-only webm is the rare
+#: case and is refused as "not a readable video" rather than silently
+#: decoded as sound.
+AUDIO_SUFFIXES = frozenset({".wav", ".mp3", ".flac", ".ogg", ".oga",
+                            ".m4a", ".aac", ".opus"})
+VIDEO_SUFFIXES = frozenset({".mp4", ".m4v", ".mov", ".mkv", ".webm", ".avi",
+                            ".mpg", ".mpeg"})
+
+#: The three kinds `media_kind` answers, in the order the unified runner
+#: embeds them.
+IMAGE, AUDIO, VIDEO = "image", "audio", "video"
+
+#: Which of those every embedding family reads. Read by the route (to publish
+#: `acceptsAudio`/`acceptsVideo` and refuse a sound on a picture model by
+#: name) and by both workers (to refuse the same request a second time for a
+#: caller reaching `/generate` directly). A family absent here reads nothing
+#: by path — the prose encoders, whose `paths` refusal predates this table.
+#: Keyed by `formats.embed_model_type`'s answer, so the route and the worker
+#: classify one checkpoint identically.
+EMBED_MEDIA = {
+    "siglip": (IMAGE,),
+    "clip": (IMAGE,),
+    "embedding_gemma2": (IMAGE, AUDIO, VIDEO),
+}
+
+#: Those suffixes that need `ffmpeg` on PATH to decode — named so the refusal
+#: can say what to install, or what to convert to, rather than relaying
+#: mlx-audio's own multi-line install banner.
+_FFMPEG_AUDIO_SUFFIXES = frozenset({".m4a", ".aac", ".opus"})
+
+
+def media_kind(path: str) -> str:
+    """`"image"`, `"audio"` or `"video"` for `path`, off its extension alone —
+    see `AUDIO_SUFFIXES` for why the extension is the whole test."""
+    suffix = os.path.splitext(path)[1].lower()
+    if suffix in AUDIO_SUFFIXES:
+        return AUDIO
+    if suffix in VIDEO_SUFFIXES:
+        return VIDEO
+    return IMAGE
+
+
+def check_media_path(path: str) -> None:
+    """Raise `ValueError` naming `path` when it is not a readable file.
+
+    The audio and video decoders take a PATH rather than an open handle, so
+    the two ordinary failures `open_image` turns into sentences — gone, or a
+    directory — would otherwise surface as whatever `miniaudio` or OpenCV says
+    about them, which for OpenCV is nothing at all (`VideoCapture` just fails
+    to open). Checked here, once, so both decoders get the same two sentences
+    `open_image` gives a picture.
+    """
+    if os.path.isdir(path):
+        raise ValueError(f"not a file: {path}")
+    if not os.path.isfile(path):
+        raise ValueError(f"no such file: {path}")
+
+
+#: Named in every media refusal, because the fix is to pick a different model
+#: and this is the one curated row that reads all three kinds.
+UNIFIED_HINT = ("EmbeddingGemma 2 (mlx-community/embeddinggemma-2-bf16, on a "
+                "Mac) embeds text, images, audio and video in one space")
+
+
+def unaccepted_media(model_id: str, accepted: tuple, paths: list) -> str | None:
+    """The sentence refusing the first entry of `paths` whose kind `accepted`
+    lacks — or None when every path is something this model reads.
+
+    One function for the ROUTE and BOTH workers, so a sound file handed to a
+    SigLIP row is refused identically at `/api/ai/embed` and at the worker's
+    own `/generate`: the model is named because the fix is to pick a different
+    one, the FILE is named because a batch of 64 has to say which entry was
+    the problem, and `UNIFIED_HINT` says where audio and video do work.
+    """
+    for path in paths:
+        kind = media_kind(path)
+        if kind not in accepted:
+            reads = " and ".join(accepted) if accepted else "nothing"
+            article = "a" if kind == VIDEO else "an"
+            return (f"{model_id} reads text and {reads} only — {path} is "
+                    f"{article} {kind} file, which it has no encoder for. "
+                    f"{UNIFIED_HINT}.")
+    return None
+
+
+def media_error(path: str, kind: str, error: BaseException) -> ValueError:
+    """The `ValueError` to raise for a decoder failure on `path` — the file,
+    never a traceback, exactly `open_image`'s rule.
+
+    One case gets its own sentence: mlx-audio decodes m4a/aac/opus by shelling
+    out to `ffmpeg`, and raises a `RuntimeError` carrying a multi-line install
+    banner when it is not on PATH. This app does not ship ffmpeg (the
+    transcribe runner's manifest states why at length), so the useful sentence
+    names the formats that decode WITHOUT it rather than relaying the banner.
+    """
+    suffix = os.path.splitext(path)[1].lower()
+    text = str(error)
+    if kind == AUDIO and suffix in _FFMPEG_AUDIO_SUFFIXES and "ffmpeg" in text:
+        return ValueError(
+            f"{path} needs ffmpeg on PATH to decode ({suffix} is not a format "
+            f"the runner reads on its own). Install ffmpeg, or convert it to "
+            f"wav, mp3, flac or ogg, which read without it.")
+    first = text.strip().splitlines()[0] if text.strip() else error.__class__.__name__
+    return ValueError(f"{path} is not a readable {kind} ({first})")
+
+
 #: Whether `register_heif_opener()` has run in this process. Once, not per call:
 #: it mutates PIL's global format registry, and `open_image` is on the hot path
 #: of a 64-image batch.

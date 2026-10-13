@@ -24,6 +24,16 @@
 #                   transformers' `AutoProcessor` even on this engine — see
 #                   `worker.py`'s module docstring); named here rather than
 #                   assumed because both are load-bearing.
+#   mlx-vlm         loads EmbeddingGemma 2 (`embedding_gemma2`), which
+#                   mlx-embeddings has no module for: one language model with
+#                   a vision tower and an audio tower, read through
+#                   `embedding_loader.load_embedding_model` and its own
+#                   `EmbeddingGemma2Processor`. The processor's loaders are
+#                   what decode a `paths` entry that is not a picture —
+#                   `mlx_vlm.utils.load_audio` (mlx-audio's miniaudio reader:
+#                   wav, mp3, flac, ogg; m4a/aac/opus by shelling out to an
+#                   ffmpeg this app does not ship) and `load_video` (OpenCV).
+#                   mlx-audio and opencv-python arrive as its dependencies.
 #   pillow          opens the image half of a request
 #                   (`embed_common.open_image`) — the same reason
 #                   `onnx_embed/pyproject.toml` declares it, so both
