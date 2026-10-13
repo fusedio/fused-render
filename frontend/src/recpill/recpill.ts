@@ -36,12 +36,15 @@ let polling = false;
 let displayed = 0;
 const BAR_MAX_PX = 24;
 
+const artKey = (i: PillInfo) => i.flavor + "|" + JSON.stringify(i.icon ?? null);
+
 function appEl(i: PillInfo): HTMLElement {
   const art = iconFor(i);
   const el = document.createElement("div");
   el.className = "app" + (art.kind === "home" ? " home" : "");
   el.title = i.name;
   el.dataset.id = i.id;
+  el.dataset.key = artKey(i);
   el.style.setProperty("--home-scale", art.scale);
   const wrap = document.createElement("div");
   wrap.className = "art";
@@ -50,7 +53,12 @@ function appEl(i: PillInfo): HTMLElement {
   img.draggable = false;
   img.src = art.src ?? (i.flavor === "bot" ? botHomeImg : renderHomeImg);
   // An app icon that fails to load falls back to the flavor's card rather than a broken glyph.
-  if (art.kind === "app") img.onerror = () => { el.replaceWith(appEl({ ...i, icon: null })); applyPaused(); };
+  if (art.kind === "app") img.onerror = () => {
+    const fb = appEl({ ...i, icon: null });
+    fb.dataset.key = artKey(i); // keep the key so a reconcile does not retry the broken icon
+    el.replaceWith(fb);
+    applyPaused();
+  };
   wrap.appendChild(img);
   const badge = document.createElement("span");
   badge.className = "badge";
@@ -74,14 +82,25 @@ function reportSize() {
 
 function render() {
   const { shown, extra } = visibleApps(infos);
-  appsEl.replaceChildren(...shown.map(appEl));
+  // Reconcile by data-id so a pillSet/gone does not recreate the element under the cursor (:hover, stop badge).
+  const existing = new Map<string, HTMLElement>();
+  appsEl.querySelectorAll<HTMLElement>(".app").forEach((el) => existing.set(el.dataset.id ?? "", el));
+  const wanted: HTMLElement[] = shown.map((i) => {
+    const old = existing.get(i.id);
+    if (old && old.dataset.key === artKey(i)) { old.title = i.name; return old; }
+    return appEl(i);
+  });
+  appsEl.querySelectorAll(".chip").forEach((c) => c.remove());
   if (extra > 0) {
     const chip = document.createElement("div");
     chip.className = "chip";
     chip.textContent = "+" + extra;
     chip.title = infos.slice(0, extra).map((i) => i.name).join(", ");
-    appsEl.appendChild(chip);
+    wanted.push(chip);
   }
+  const wantedSet = new Set(wanted);
+  Array.from(appsEl.children).forEach((c) => { if (!wantedSet.has(c as HTMLElement)) c.remove(); });
+  wanted.forEach((el, k) => { if (appsEl.children[k] !== el) appsEl.insertBefore(el, appsEl.children[k] ?? null); });
   pill.classList.toggle("multi", infos.length > 1);
   stopBtn.title = infos.length > 1 ? "Stop all" : "Stop and save";
   applyPaused();
