@@ -7,6 +7,7 @@ import type { Bot, BotEvent } from "../lib/api";
 import { activeHandoff, lastBotMsg, lastTs, lastUserTs, routineGlyph, routineNote, statusLabel } from "../lib/derive";
 import { fmtAgo, fmtWhen } from "../lib/format";
 import { glideRows, rowOffsets, toggleLeft } from "../lib/layout";
+import { botOrder } from "../lib/order";
 import { waitingUnread } from "../lib/unread";
 import { needsYou, openBot, openDialog, setShowHidden, unreadCount, useBots, type BotsState } from "../state/store";
 import { Face } from "./Face";
@@ -101,7 +102,7 @@ export function BotList({ onAddBot, onOpenUsage, onOpenBrowsers, onOpenBuilds, o
   // Opening a waiting bot marks its events seen, so it drops back into the normal order instead of sitting at the top until answered.
   const recency = (b: Bot) => lastUserTs(S.events[b.id] || EMPTY) || b.created || 0;
   const waiting = (b: Bot) => waitingUnread(b, S.seen[b.id], unreadCount(b));
-  const order = (a: Bot, b: Bot) => (Number(!!b.pinned) - Number(!!a.pinned)) || (Number(waiting(b)) - Number(waiting(a))) || (recency(b) - recency(a));
+  const order = botOrder(waiting, recency);
   const query = q.trim().toLowerCase();
   const match = (b: Bot) => !query || `${b.name} ${b.task || ""} ${b.title || ""}`.toLowerCase().includes(query);
   const shown = S.bots.filter((b) => !b.hidden && match(b)).sort(order);
