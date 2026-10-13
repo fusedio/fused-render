@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 POLL_S = 3
 SEND_RETRIES = 3
 SEND_RETRY_WAIT_S = 5
+CLOCK_SLACK_S = 5  # the phone's clock may run a little behind the Mac's: a reply this much older than the card still counts
 
 
 def render(ev: dict, caps: Caps, approvals: bool = True) -> tuple[str, list[str]]:
@@ -217,6 +218,9 @@ class Router:
             # the one token that tells its lines from theirs.
             text = f"@{(bot.meta.get('name') or 'bot').strip()} {text}"
         sent = []
+        # The clock a texted approval's reply must postdate: read BEFORE the send (osascript takes a moment, a retry
+        # 5 s more), less a little room for the phone's clock, so a prompt "1" is never older than its own card.
+        sent_at = time.time() - CLOCK_SLACK_S
         for addr in addrs:
             err = ""
             for attempt in range(SEND_RETRIES):
@@ -244,7 +248,7 @@ class Router:
                 self._pending[bot.id] = (ev.get("seq"), numbered)
                 if ev.get("role") == "approval":
                     # The one card a texted yes may settle, and the clock a reply must postdate (dispatch).
-                    self._texted_card[bot.id] = (ev.get("seq"), numbered, time.time())
+                    self._texted_card[bot.id] = (ev.get("seq"), numbered, sent_at)
         return sent
 
     def _send_loop(self) -> None:
