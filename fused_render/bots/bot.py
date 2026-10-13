@@ -1829,11 +1829,6 @@ class Bot:
                 r["last_result"] = "started"
                 ev = self.emit("system", f"Routine {'run now' if manual else 'fired'}")
                 run = self._run_add(r, "started", "", seq=ev.get("seq"), manual=manual)
-                # The prompt is a user line, as a typed task is: the thread shows what the routine sent (chip "from a
-                # routine"), the fold opens a stretch on it, and CONVERSATION SO FAR reads it as USER. Written here, before
-                # the start, in this method's own style (the "fired" line is too; a refusal below adds its note). Not the
-                # user's own doing, so recency (last_user_ts, lastUserTs) skips it.
-                self.emit("user", r["task"], via=dict(chan.ROUTINE))
             if busy and r["kind"] == "once":
                 # A one-shot is not a slot to lose: a `last` would end it for good (_next_run), so it is not
                 # stamped. A due one retries in a minute until the bot is free and you have handed back; a
@@ -1845,7 +1840,19 @@ class Bot:
             if r["kind"] == "once" and not busy:
                 r["enabled"] = False
             self.save()
-        if not busy and not self.start_task(r["task"], origin="routine"):
+        started = False
+        if not busy:
+            # The prompt is a user line, as a typed task is: the thread shows what the routine sent (chip "from a
+            # routine"), the fold opens a stretch on it, and CONVERSATION SO FAR reads it as USER. Written only once the
+            # task has started (a refused routine is not something the user asked: past_conversation would read the line
+            # as a request), and under the lock, as the hand-off does: the engine thread's first emit ("Task started")
+            # waits on it, so the prompt lands first. Not the user's own doing, so recency (last_user_ts, lastUserTs) and
+            # answerTo (a card's reply) skip it.
+            with self.lock:
+                started = self.start_task(r["task"], origin="routine")
+                if started:
+                    self.emit("user", r["task"], via=dict(chan.ROUTINE))
+        if not busy and not started:
             # Someone (a hand-off, a message) started a task between the busy check and the start. The "fired"
             # line is already in the thread; one short note says what happened to it, not a second "skipped" line.
             with self.lock:
