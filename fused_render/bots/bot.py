@@ -1828,17 +1828,22 @@ class Bot:
             # Someone (a hand-off, a message) started a task between the busy check and the start. The "fired"
             # line is already in the thread; one short note says what happened to it, not a second "skipped" line.
             with self.lock:
-                r["last_result"] = "skipped: bot was busy"
                 # This fire's own row, by reference: an overlapping fire may have put a skip above it, or be the live
                 # run itself (its "started" row must not be the one marked skipped).
                 if run is not None and run.get("result") == "started":
                     run.update(result="skipped", message="another task took the bot first", done=time.time())
-                # Undo the fire record: a once-routine with `last` set never gets a `next` again (_next_run),
-                # and `next` was computed as if this slot had run.
-                r["last"] = prev_last
-                if r["kind"] == "once":
-                    r["enabled"] = True
-                r["next"] = self._next_run(r, time.time()) if r.get("enabled") else None
+                # The routine's state is rolled back only while it is still this fire's: a Run now that fired
+                # meanwhile (outside the lock, before start_task) and won the start owns last_result/next now, and
+                # its row is the newest "started" one. Its outcome would never land if "started" were overwritten.
+                newest_started = next((x for x in r.get("runs") or [] if x.get("result") == "started"), None)
+                if newest_started is None:
+                    r["last_result"] = "skipped: bot was busy"
+                    # Undo the fire record: a once-routine with `last` set never gets a `next` again (_next_run),
+                    # and `next` was computed as if this slot had run.
+                    r["last"] = prev_last
+                    if r["kind"] == "once":
+                        r["enabled"] = True
+                    r["next"] = self._next_run(r, time.time()) if r.get("enabled") else None
                 self.save()
             self.emit("system", "That routine did not start: another task took the bot first. It keeps its schedule.")
         self._sync_wake()

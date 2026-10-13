@@ -230,10 +230,11 @@ export function RoutinesSection({ b, confirm }: SectionProps) {
               {/* Schedule · next run as a countdown (the clock time beside it) · spend; the red tail when the breaker
                   tripped. Everything about past runs is the table below. */}
               <p className="m-0 text-[13px] leading-5 text-muted-foreground">
-                {routineLabel(r)} · {tasks?.[r.task] || 0} calls today · {r.enabled
-                  ? r.last_result === "started" ? <span className="text-foreground">running now</span>
-                    : <>next <span className="text-foreground" title={fmtWhen(r.next)}>{fmtIn(r.next) || "soon"}</span>{r.next ? <span> ({fmtWhen(r.next)})</span> : null}</>
-                  : (r.fails || 0) >= MAX_FAILS ? <span className="text-destructive">paused after {r.fails} failed runs in a row</span> : "paused"}
+                {routineLabel(r)} · {tasks?.[r.task] || 0} calls today · {r.last_result === "started"
+                  ? <span className="text-foreground">running now</span>  /* a fired one-shot is disabled while it runs */
+                  : r.enabled
+                    ? <>next <span className="text-foreground" title={fmtWhen(r.next)}>{fmtIn(r.next) || "soon"}</span>{r.next ? <span> ({fmtWhen(r.next)})</span> : null}</>
+                    : (r.fails || 0) >= MAX_FAILS ? <span className="text-destructive">paused after {r.fails} failed runs in a row</span> : "paused"}
                 {warn && (r.fails || 0) > 1 && (r.fails || 0) < MAX_FAILS ? <span className="text-destructive"> · {r.fails} failed in a row</span> : null}
               </p>
               <RunsTable botId={b.id} r={r} />

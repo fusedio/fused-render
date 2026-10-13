@@ -73,7 +73,8 @@ function Routines({ b }: { b: Bot }) {
               <div key={r.id} className={`rt ${r.enabled ? "" : "off"}`}>
                 <span title={r.task}>{r.task}</span>
                 <small className={bad ? "warn" : undefined} title={r.enabled ? `${fmtWhen(r.next)}${ended && r.last_message ? `\nlast run: ${r.last_result} — ${r.last_message}` : ""}` : "paused"}>
-                  {r.enabled ? (r.last_result === "started" ? "running" : fmtIn(r.next) || "soon") : "paused"}
+                  {/* A fired one-shot is disabled while it runs: "running" comes before the enabled check. */}
+                  {r.last_result === "started" ? "running" : r.enabled ? fmtIn(r.next) || "soon" : "paused"}
                 </small>
               </div>
             );
