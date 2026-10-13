@@ -74,6 +74,7 @@ import type {
   LandedDecision,
   HistoryResponse,
   InboxMessage,
+  TaskRecord,
   PermissionMode,
   PermissionRow,
   Phase,
@@ -274,6 +275,8 @@ function emptyState(file: string | null): ChatState {
     adopting: false,
     transcript: null,
     context: null,
+    tasks: [],
+    tasksRunId: null,
     ownRunEndedAt: 0,
     repaired: 0,
     transcriptGen: 0,
@@ -536,6 +539,28 @@ export function createChatController(deps: ControllerDeps): ChatController {
   /** Nothing is held once the run is over: the CLI has answered its inbox or
    *  died with it, the same rule `clearQueued` states for the optimistic half. */
   const clearInbox = () => publishInbox([]);
+
+  /**
+   * THE RUN'S BACKGROUND TASKS (SPEC T-5, `ChatState.tasks`). Sticky for the
+   * run: a poll whose list is empty or absent keeps the last non-empty one of
+   * the SAME run, because the panel blinking out for one lap is worse than a
+   * list one poll stale. A different run's empty list clears it — the old
+   * run's tasks are not this run's. Identity is the content, like the inbox:
+   * the list rides every poll and an unchanged one emits nothing.
+   */
+  let tasksSig = "";
+  const publishTasks = (rows: TaskRecord[] | null | undefined, runId: string | null) => {
+    const list = Array.isArray(rows) ? rows.filter((t) => !!t && typeof t.id === "string") : [];
+    const sig = (runId ?? "") + "\u0002" + JSON.stringify(list);
+    if (sig === tasksSig) return;
+    tasksSig = sig;
+    emit({ tasks: list, tasksRunId: runId });
+  };
+  /** The conversation on screen is leaving: its tasks go with it. */
+  const clearTasks = () => {
+    tasksSig = "";
+    if (state.tasks.length || state.tasksRunId !== null) emit({ tasks: [], tasksRunId: null });
+  };
 
   // ---- params (the exact moments T writes them) ---------------------------
   //
@@ -1471,6 +1496,11 @@ export function createChatController(deps: ControllerDeps): ChatController {
         // `publishInbox`. An older agent.py sends none, which reads as an empty
         // inbox, which is what it was before this field existed.
         publishInbox(Array.isArray(poll.inbox) ? poll.inbox : []);
+        // THE RUN'S BACKGROUND TASKS (SPEC T-5) — sticky per run, see `publishTasks`.
+        {
+          const rows = Array.isArray(poll.tasks) ? poll.tasks : [];
+          if (rows.length || state.tasksRunId !== runId) publishTasks(rows, runId);
+        }
         // THE SLASH-COMMAND LIST MAY HAVE MOVED (SPEC C-2) — the host re-reads it.
         if (poll.commands_changed) deps.onCommandsChanged?.();
 
@@ -2865,6 +2895,14 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // at all — and `live_run: ""` publishes the empty list, because nothing is
     // held when nothing is running.
     if (live) publishInbox(Array.isArray(res.inbox) ? res.inbox : []);
+    // THE SESSION'S LAST RUN'S TASKS (SPEC T-1/T-5): a reload shows the panel
+    // it left. An empty answer about the run already drawn keeps the list —
+    // the poll owns a live run's tasks.
+    {
+      const rows = Array.isArray(res.tasks) ? res.tasks : [];
+      const owner = res.live_run || null;
+      if (rows.length || !(state.tasks.length && state.tasksRunId === owner)) publishTasks(rows, owner);
+    }
     emit({
       turns: historyToTurns(res),
       transcript: res.transcript ?? null,
@@ -2904,6 +2942,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // conversation that is leaving.
     clearQueued();
     clearInbox();
+    clearTasks();
     setParam({ session_id: sessionId });
     emit({
       sessionId,
@@ -3237,6 +3276,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
       if (runId) shownRuns.add(runId);
       const poll = probe as PollResponse;
       if (poll.session_id) noteSessionId(String(poll.session_id));
+      if (Array.isArray(poll.tasks) && poll.tasks.length) publishTasks(poll.tasks, runId || null);
       const probeMsg = stripBlocks(poll.message || "");
       const users = state.turns.filter((t): t is UserTurn => t.role === "user");
       const lastUser = users.length ? users[users.length - 1] : null;
@@ -3844,6 +3884,11 @@ export function createChatController(deps: ControllerDeps): ChatController {
         // its own.
         context: res.context ?? null,
       });
+      // A refresh only ever brings tasks IN: the poll owns a live run's list,
+      // and an empty answer here is no reason to take the panel down.
+      if (Array.isArray(res.tasks) && res.tasks.length) {
+        publishTasks(res.tasks, res.live_run || state.tasksRunId);
+      }
     } catch (err) {
       // The transcript stays exactly as it rendered. The watermark is NOT
       // advanced, so the next lap tries again.
@@ -3898,6 +3943,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     claimingRuns.clear();
     clearQueued();
     clearInbox();
+    clearTasks();
     // Neither of these is a true default worth stamping — a session id is an
     // identifier and `run` is in-flight bookkeeping — so absent stays the
     // spelling for "none" (T:13031-13036). The DIFFERENCE between the two is in

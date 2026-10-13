@@ -1,0 +1,236 @@
+/* The background-tasks strip (SPEC T-5, ui/TasksPanel.tsx).
+
+   It rides the COMPOSER'S column, like `.c-schedblock` above it: same 720px
+   measure and 20px gutter, so it reads as a lid on the box rather than a band
+   across the pane. Collapsed it is one line; opened, the rows cap at a third of
+   the pane and scroll — the transcript above keeps the rest. */
+.chat-root .chat-tasks {
+  flex-shrink: 0;
+  max-width: 720px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 0 20px 6px;
+  font-size: 12px;
+  line-height: 1.45;
+}
+.chat-root .chat-tasks-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  padding: 5px 10px;
+  border: 1px solid var(--c-border);
+  border-radius: 12px;
+  background: var(--c-surface);
+  color: var(--c-dim);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.chat-root .chat-tasks.is-open .chat-tasks-head {
+  border-radius: 12px 12px 0 0;
+  border-bottom-color: transparent;
+}
+.chat-root .chat-tasks-head:hover {
+  color: var(--c-fg);
+}
+.chat-root .chat-tasks-head:focus-visible {
+  outline: 2px solid var(--c-accent);
+  outline-offset: 1px;
+}
+.chat-root .chat-tasks-chev {
+  flex-shrink: 0;
+  transition: transform 0.12s ease;
+}
+.chat-root .chat-tasks.is-open .chat-tasks-chev {
+  transform: rotate(90deg);
+}
+.chat-root .chat-tasks-title {
+  flex-shrink: 0;
+  color: var(--c-fg);
+  font-weight: 600;
+}
+.chat-root .chat-tasks-summary {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-root .chat-tasks-list,
+.chat-root .chat-tasks-empty {
+  margin: 0;
+  padding: 4px 10px 8px;
+  list-style: none;
+  border: 1px solid var(--c-border);
+  border-top: 0;
+  border-radius: 0 0 12px 12px;
+  background: var(--c-surface);
+  max-height: 33vh;
+  overflow-y: auto;
+}
+.chat-root .chat-tasks-empty {
+  color: var(--c-dim);
+}
+.chat-root .chat-task {
+  padding: 5px 0;
+  border-top: 1px solid var(--c-border);
+}
+.chat-root .chat-task:first-child {
+  border-top: 0;
+}
+.chat-root .chat-task-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.chat-root .chat-task-kind {
+  display: inline-flex;
+  flex-shrink: 0;
+  color: var(--c-dim);
+}
+.chat-root .chat-task.is-live .chat-task-kind {
+  color: var(--c-accent-text);
+}
+.chat-root .chat-task-desc {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--c-fg);
+}
+.chat-root .chat-task-status,
+.chat-root .chip-task-status {
+  flex-shrink: 0;
+  padding: 0 7px;
+  border-radius: 999px;
+  border: 1px solid var(--c-border);
+  color: var(--c-dim);
+  font-size: 11px;
+  line-height: 17px;
+}
+.chat-root .chat-task-status.is-running,
+.chat-root .chat-task-status.is-pending,
+.chat-root .chip-task-status.is-running,
+.chat-root .chip-task-status.is-pending {
+  color: var(--c-accent-text);
+  border-color: color-mix(in srgb, var(--c-accent) 40%, var(--c-border));
+}
+.chat-root .chat-task-status.is-completed,
+.chat-root .chip-task-status.is-completed {
+  color: var(--c-ok);
+}
+.chat-root .chat-task-status.is-failed,
+.chat-root .chip-task-status.is-failed {
+  color: var(--c-error);
+  border-color: color-mix(in srgb, var(--c-error) 40%, var(--c-border));
+}
+.chat-root .chat-task-time,
+.chat-root .chat-task-meta {
+  flex-shrink: 0;
+  color: var(--c-dim);
+  font-variant-numeric: tabular-nums;
+}
+.chat-root .chat-task-out-btn {
+  flex-shrink: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: var(--c-accent-text);
+  cursor: pointer;
+}
+.chat-root .chat-task-out-btn:hover {
+  text-decoration: underline;
+}
+.chat-root .chat-task-out-btn:disabled {
+  color: var(--c-dim);
+  cursor: default;
+  text-decoration: none;
+}
+.chat-root .chat-task-sub,
+.chat-root .chat-task-summary,
+.chat-root .chat-task-error,
+.chat-root .chat-task-note,
+.chat-root .chat-task-out {
+  margin: 2px 0 0 22px;
+}
+.chat-root .chat-task-sub,
+.chat-root .chat-task-summary,
+.chat-root .chat-task-note {
+  color: var(--c-dim);
+}
+.chat-root .chat-task-error {
+  color: var(--c-error);
+}
+
+/* The Output pre: CollapsiblePre's clip, mirrored from `.perm pre` in
+   transcript.css (those rules are scoped to a permission card). */
+.chat-root .chat-task-out pre.perm-pre {
+  position: relative;
+  margin: 4px 0 0;
+  padding: 8px 10px;
+  border: 1px solid var(--c-border);
+  border-radius: 10px;
+  background: var(--c-pre-bg);
+  color: var(--c-pre-fg);
+  overflow-x: auto;
+  overflow-y: hidden;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12px;
+}
+.chat-root .chat-task-out pre.is-collapsed {
+  --perm-pre-lines: 6;
+  max-height: calc(var(--perm-pre-lines) * 1.6em + 16px + 2px);
+  max-height: calc(var(--perm-pre-lines) * 1lh + 16px + 2px);
+  overflow: clip;
+}
+.chat-root .chat-task-out pre.is-clipped::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2.5em;
+  pointer-events: none;
+  background: linear-gradient(to bottom, transparent, var(--c-pre-bg) 85%);
+  border-radius: 0 0 10px 10px;
+}
+.chat-root .chat-task-out .perm-pre-toggle {
+  display: inline-block;
+  margin: 4px 0 0;
+  padding: 2px 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: var(--c-accent-text);
+  cursor: pointer;
+}
+
+/* A linked tool chip's header extras (ui/ToolChip.tsx `ChipTaskInfo`). */
+.chat-root .toolchip .chip-task {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  margin-left: 8px;
+  font-size: 11px;
+  color: var(--c-dim);
+}
+.chat-root .toolchip .chip-task-type {
+  color: var(--c-fg);
+}
+.chat-root .toolchip .chip-task-meta {
+  font-variant-numeric: tabular-nums;
+}
+
+/* A subagent's own transcript, inside its chip's body: the same renderer one
+   level in, ruled on the left so where the subagent's rows end is visible. */
+.chat-root .toolchip .chat-subagent {
+  margin: 6px 0 4px;
+  padding: 2px 0 2px 12px;
+  border-left: 2px solid color-mix(in srgb, var(--c-accent) 30%, var(--c-border));
+}

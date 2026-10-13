@@ -209,3 +209,6 @@ export { CommandMenu, MENU_MAX_ROWS, acceptText, menuKey, menuQuery } from "./Co
 export type { CommandMenuProps, MenuKey } from "./CommandMenu";
 export { WorktreeMenu, WorktreeMenuBody } from "./WorktreeMenu";
 export type { WorktreeMenuProps, WorktreeMenuBodyProps, WorktreeRequest } from "./WorktreeMenu";
+export { TasksPanel } from "./TasksPanel";
+export type { TasksPanelProps, FetchTaskOutput } from "./TasksPanel";
+export { TasksContext, useTaskIndex } from "./tasksContext";

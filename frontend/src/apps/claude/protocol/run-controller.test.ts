@@ -4606,3 +4606,69 @@ describe("a stop the frame caught up with on reload", () => {
     expect(users(controller).map((t) => t.text)).toEqual(["hi", "[Request interrupted by user]"]);
   });
 });
+
+// ---- background tasks (SPEC T-5) ---------------------------------------------
+
+describe("the run's tasks", () => {
+  const T = (id: string, status: "running" | "completed" = "running") => ({
+    id,
+    description: id,
+    kind: "shell" as const,
+    type: "local_bash",
+    subagent_type: "",
+    tool_use_id: "",
+    status,
+    started_at: 1,
+    ended_at: null,
+    backgrounded: true,
+    usage: null,
+    error: "",
+    summary: "",
+    events: 0,
+  });
+
+  test("published from the poll, kept through a poll that omits them, cleared with the conversation", async () => {
+    const { controller } = makeController({
+      start: () => ({ run_id: "r1" }),
+      poll: (_f, n) =>
+        n === 0
+          ? poll({ tasks: [T("a")] })
+          : poll({ done: true, segments: [text("ok")], text: "ok" }),
+      history: () => ({ turns: [], transcript: null }),
+    });
+    await controller.sendMessage("go");
+    expect(controller.getState().tasks.map((t) => t.id)).toEqual(["a"]);
+    expect(controller.getState().tasksRunId).toBe("r1");
+    controller.newChat();
+    expect(controller.getState().tasks).toEqual([]);
+    expect(controller.getState().tasksRunId).toBe(null);
+  });
+
+  test("a different run's empty list clears the last run's", async () => {
+    let run = 0;
+    const { controller } = makeController({
+      start: () => ({ run_id: "r" + ++run }),
+      poll: (f) =>
+        f.run_id === "r1"
+          ? poll({ done: true, tasks: [T("a", "completed")], segments: [text("ok")], text: "ok" })
+          : poll({ done: true, segments: [text("ok2")], text: "ok2" }),
+      history: () => ({ turns: [], transcript: null }),
+    });
+    await controller.sendMessage("one");
+    expect(controller.getState().tasks.map((t) => t.id)).toEqual(["a"]);
+    await controller.sendMessage("two");
+    expect(controller.getState().tasks).toEqual([]);
+    expect(controller.getState().tasksRunId).toBe("r2");
+  });
+
+  test("a restore lands history's tasks", async () => {
+    const { controller } = makeController({
+      history: () => ({ turns: [], transcript: null, live_run: "", tasks: [T("h", "completed")] }),
+      live_run: () => ({ run_id: "" }),
+      live_host: () => ({ run_id: "" }),
+    });
+    await controller.openSession("s9");
+    expect(controller.getState().tasks.map((t) => t.id)).toEqual(["h"]);
+    expect(controller.getState().tasksRunId).toBe(null);
+  });
+});

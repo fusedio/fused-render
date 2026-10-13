@@ -11,7 +11,8 @@ import { useEffect, useRef, useState } from "react";
 import { cn } from "@platform/lib/utils";
 
 import type { RunStatus, Working } from "../protocol/controller-api";
-import type { Activity, RetryInfo } from "../protocol/types";
+import { taskVerb } from "../protocol/tasks";
+import type { Activity, RetryInfo, TaskRecord } from "../protocol/types";
 import { ClaudeMark } from "./ClaudeMark";
 
 /** T:11803 — the model's turn has no useful noun, so it gets a mood. */
@@ -48,6 +49,9 @@ export function retryVerb(retry: RetryInfo): string {
 export interface VerbStats {
   phase: string;
   activity: Activity | null;
+  /** The run's background tasks (`ChatState.tasks`, SPEC T-5): while any are
+   *  running the verb names them instead of a mood. */
+  tasks?: readonly TaskRecord[] | null;
 }
 
 /** T:14806-14846 — the verb for a run this page owns, from the poll's phase and
@@ -74,8 +78,11 @@ export function activityVerb(stats: VerbStats, thinkVerb: string, quietSecs: num
       case "Glob":
         return "Searching files";
       case "Task":
-      case "Agent":
-        return "Running a helper agent";
+      case "Agent": {
+        // The registry knows how many are running; the bare tool does not.
+        const v = taskVerb(stats.tasks);
+        return v.includes("subagent") ? v : "Running a helper agent";
+      }
       case "Skill":
         return "Loading a skill";
       case "WebFetch":
@@ -97,6 +104,10 @@ export function activityVerb(stats: VerbStats, thinkVerb: string, quietSecs: num
       ? "Waiting for a background command to finish"
       : "Claude is taking longer than usual";
   }
+  // BACKGROUND WORK THE REGISTRY CAN NAME (SPEC T-5): agents, then monitors,
+  // then shells — a truer verb than a mood while the model waits on them.
+  const bg = taskVerb(stats.tasks);
+  if (bg) return bg;
   if (stats.phase === "requesting") return "Sending to Claude";
   if (stats.phase === "composing") return "Claude is replying";
   return thinkVerb;
@@ -115,11 +126,13 @@ export interface WorkingLineProps {
   working: Working;
   status: RunStatus;
   onStop: () => void;
+  /** `ChatState.tasks` — the run's background tasks, for the verb. */
+  tasks?: readonly TaskRecord[] | null;
   /** Test seam. */
   now?: () => number;
 }
 
-export function WorkingLine({ working, status, onStop, now = Date.now }: WorkingLineProps) {
+export function WorkingLine({ working, status, onStop, tasks, now = Date.now }: WorkingLineProps) {
   // One mood per line, drawn when it appears rather than per second.
   const thinkVerb = useRef(VERBS[Math.floor(Math.random() * VERBS.length)]);
   // When the poll last told us something NEW. The stream rows carry no clock,
@@ -127,7 +140,14 @@ export function WorkingLine({ working, status, onStop, now = Date.now }: Working
   // says so, instead of letting the timer imply progress.
   const lastKey = useRef("");
   const lastChange = useRef(now());
-  const key = JSON.stringify([working.tokens, working.phase, working.retry, working.activity]);
+  // A running task's progress (a monitor line, a subagent's usage) is news too.
+  const key = JSON.stringify([
+    working.tokens,
+    working.phase,
+    working.retry,
+    working.activity,
+    (tasks ?? []).map((t) => [t.id, t.status, t.events, t.usage?.tool_uses ?? 0]),
+  ]);
   if (key !== lastKey.current) {
     lastKey.current = key;
     lastChange.current = now();
@@ -159,7 +179,7 @@ export function WorkingLine({ working, status, onStop, now = Date.now }: Working
   const stoppable = !working.external;
   const secs = Math.round((now() - working.startedAt) / 1000);
   const quiet = Math.round((now() - lastChange.current) / 1000);
-  const stats: VerbStats = { phase: working.phase, activity: working.activity };
+  const stats: VerbStats = { phase: working.phase, activity: working.activity, tasks: tasks ?? null };
 
   const verb =
     (stopping

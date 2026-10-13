@@ -69,6 +69,8 @@ function state(over: Partial<ChatState> = {}): ChatState {
     adopting: false,
     transcript: null,
     context: null,
+    tasks: [],
+    tasksRunId: null,
     ownRunEndedAt: 0,
     repaired: 0,
     transcriptGen: 0,

@@ -140,6 +140,8 @@ import { fetchCommands, type ClassifiedCommand } from "./protocol/commands";
 import { parseWorktreeCommand } from "./protocol/worktrees";
 import type { CommandRow } from "./protocol/types";
 import { WorktreeMenu, paneChatUrl, type WorktreeRequest } from "./ui";
+import { TasksContext, TasksPanel } from "./ui";
+import { taskIndex } from "./protocol/tasks";
 import { EFFORTS, MODELS, MODEL_LABELS } from "./ui/composer-defaults";
 import { recapAnchor } from "./protocol/recap";
 import {
@@ -1277,6 +1279,8 @@ function ChatBody(props: ChatBodyProps) {
     controller.getState,
     controller.getState,
   );
+  // The task registry by id, for the agent / monitor chips (`ui/tasksContext`).
+  const tasksById = useMemo(() => taskIndex(state.tasks), [state.tasks]);
 
   /**
    * THE DOOR OPENS WHEN THE RUN IS LIVE, not when the controller took the
@@ -3562,7 +3566,15 @@ function ChatBody(props: ChatBodyProps) {
   const wtSeq = useRef(0);
   const [wtRequest, setWtRequest] = useState<WorktreeRequest | null>(null);
   const folderTarget = !!file && !!pane.noun && pane.noun !== "file";
-  const onToggleTasks = props.onToggleTasks;
+  // THE TASKS PANEL'S OPEN BIT (SPEC T-5): collapsed by default, toggled by its
+  // own head and by `/tasks`. The host's `onToggleTasks` still hears `/tasks`.
+  const [tasksOpen, setTasksOpen] = useState(false);
+  const toggleTasksPanel = useCallback(() => setTasksOpen((v) => !v), []);
+  const hostToggleTasks = props.onToggleTasks;
+  const onToggleTasks = useCallback(() => {
+    setTasksOpen((v) => !v);
+    hostToggleTasks?.();
+  }, [hostToggleTasks]);
   const setModelPick = defaults.setModel;
   const setEffortPick = defaults.setEffort;
   /** A local command from the composer. `false` = refused (bad argument), and
@@ -4972,6 +4984,7 @@ function ChatBody(props: ChatBodyProps) {
                 }
               />
             ) : null}
+            <TasksContext.Provider value={tasksById}>
             <Transcript
               followRef={transcriptFollow}
               cwd={chatWorkdir(file, pane.noun)}
@@ -5055,6 +5068,18 @@ function ChatBody(props: ChatBodyProps) {
                 </>
               }
             />
+            </TasksContext.Provider>
+            {/* THE RUN'S BACKGROUND TASKS (SPEC T-5), between the transcript and
+                the box: one line until opened. Not in the compact cut — a tile
+                is read, and its chips already say what is running. */}
+            {!compact ? (
+              <TasksPanel
+                tasks={state.tasks}
+                runId={state.tasksRunId}
+                open={tasksOpen}
+                onToggle={toggleTasksPanel}
+              />
+            ) : null}
             {/* …AND ONE SUMMARY OVER THE BOX. The rows are in a transcript that
                 scrolls; this is pinned where the composer is, so a reader twenty
                 turns down still knows something of theirs is held, what by, and
