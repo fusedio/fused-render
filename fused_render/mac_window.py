@@ -349,6 +349,14 @@ def _private(selector: bytes, signature: bytes):
     return wrap
 
 
+#: A failed main-frame load retries on a growing delay (1 s, 2 s, … capped),
+#: this many times. Sized for the one measured cause — a relaunch's server
+#: coming up a few seconds after its windows — with room for a slow boot.
+_NAV_RETRY_MAX = 8
+_NAV_RETRY_BASE_S = 1.0
+_NAV_RETRY_CAP_S = 4.0
+
+
 class _WebDelegate(NSObject):
     """One per window: navigation + UI + download delegate of its web view,
     and the window's own delegate (close → forget the window). WebKit keeps
@@ -368,6 +376,7 @@ class _WebDelegate(NSObject):
         self._manager = manager
         self._window = window  # the _Window record, not the NSWindow
         self._downloads = []   # strong refs: a WKDownload's delegate is weak too
+        self._nav_retries = 0  # failed main-frame loads since the last commit
         return self
 
     # ---- navigation policy -------------------------------------------------
@@ -421,8 +430,60 @@ class _WebDelegate(NSObject):
     def webView_didFailProvisionalNavigation_withError_(self, webview, nav, error):
         # -999 is "cancelled": every navigation turned into a new window, a
         # browser hand-off or a download reports as one. Not a failure.
-        if error is not None and int(error.code()) != -999:
-            logger.warning("navigation failed: %s", error.localizedDescription())
+        if error is None or int(error.code()) == -999:
+            return
+        # Anything else leaves the window BLANK at its URL: WebKit paints no
+        # error page, and the window's background is the theme colour, so a
+        # refused connection reads as a black (or white) window with the
+        # right title. Observed on a relaunch (2026-10-12 19:22:41: the
+        # restored window's first load hit the port a second before uvicorn
+        # listened, -1004); that one was rescued by a second load that
+        # happened to follow, and nothing guaranteed it. So: retry the same
+        # URL on a short backoff, a bounded number of times, and log every
+        # attempt. The user's own ⌘R is still the fallback after that.
+        failing = None
+        try:
+            info = error.userInfo() or {}
+            failing = info.get("NSErrorFailingURLStringKey")
+        except Exception:  # noqa: BLE001 — diagnostics only
+            failing = None
+        url = str(failing) if failing else (self._window.current_url() if self._window else None)
+        self._nav_retries += 1
+        if url is None or self._nav_retries > _NAV_RETRY_MAX:
+            logger.warning("navigation failed (%s), giving up after %d retries: %s",
+                           error.code(), self._nav_retries - 1, error.localizedDescription())
+            return
+        delay = min(_NAV_RETRY_BASE_S * self._nav_retries, _NAV_RETRY_CAP_S)
+        logger.warning("navigation failed (%s): %s; retry %d/%d in %.1fs: %s",
+                       error.code(), error.localizedDescription(),
+                       self._nav_retries, _NAV_RETRY_MAX, delay, url)
+        from PyObjCTools import AppHelper
+
+        # A closure, not a method: pyobjc turns methods of an NSObject
+        # subclass into selectors, and a plain Python helper there is the
+        # unbound-selector trap (menubar_pin.py learned it the hard way, PR #1609).
+        def retry():
+            window = self._window
+            if window is None or window.webview is None:
+                return
+            window.webview.loadRequest_(NSURLRequest.requestWithURL_(_nsurl(url)))
+
+        AppHelper.callLater(delay, retry)
+
+    def webView_didCommitNavigation_(self, webview, nav):
+        # A document arrived: the retry budget belongs to the next failure.
+        self._nav_retries = 0
+
+    def webViewWebContentProcessDidTerminate_(self, webview):
+        # WebKit's content process died under this window — memory pressure,
+        # a renderer crash — and WebKit's own response is to show NOTHING: the
+        # view is empty at the same URL until somebody reloads it. Apple's
+        # documented handling is exactly that reload, done here so a dead
+        # process is a brief flash, not a dead window waiting for ⌘R.
+        window = self._window
+        logger.warning("web content process terminated under window %s; reloading",
+                       (window.key or "home") if window is not None else "?")
+        webview.reload()
 
     # ---- downloads (WKDownloadDelegate) ------------------------------------
 
