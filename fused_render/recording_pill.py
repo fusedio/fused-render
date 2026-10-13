@@ -42,8 +42,7 @@ def _nearest_app(page: str, root: str) -> tuple[str, dict | None]:
     d = os.path.dirname(page)
     nd = norm(d)
     if nd != nroot and not nd.startswith(nroot.rstrip(os.sep) + os.sep):
-        found = app_listing.app_icon(root)
-        return (root, found) if found else (root, None)
+        return root, app_listing.app_icon(root)
     while True:
         found = app_listing.app_icon(d)
         if found:
@@ -69,7 +68,7 @@ def describe(session) -> dict:
     app = ""
     icon = None
     try:
-        from fused_render import app_listing, jobs, launcher
+        from fused_render import jobs, launcher
 
         page = getattr(session, "page", "") or ""
         root = jobs.app_for_page(page)
