@@ -102,7 +102,7 @@ async def forward_middleware(request: Request, call_next):
             await resp.aclose()
         if isinstance(data, dict):
             data["owner"] = registry.owner_info()
-        return Response(json.dumps(data), status_code=200, media_type="application/json")
+        return Response(json.dumps(data), status_code=200, media_type="application/json", headers=out_headers)
 
     async def body_iter():
         try:

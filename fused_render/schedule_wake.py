@@ -167,12 +167,30 @@ def remove() -> bool:
         return False
 
 
-# Due times per source (`sync(due, source=…)`): the Tasks schedule and the bots' routines each own a
-# share of the one plist and rewrite only their own. `written`: the intervals last installed, so a
-# sync that changes nothing (a routine firing on its interval) does not bootout/bootstrap the agent.
-_SOURCES: dict[str, list[datetime]] = {}
+# Two sources share the one plist (`sync(due, source=…)`): the Tasks schedule and the bots' routines.
+# The caller passes its own share; the OTHER share is read from its store on disk at every sync, never
+# cached, because the stores are written by other processes too (the bots by whichever Fused app owns
+# them, Tasks by any non-lean app) and a cached share would let one side's sync erase the other's
+# newer wakes. `_WRITTEN`: the intervals last installed by this process, so a sync that changes nothing
+# (a routine firing on its interval) does not bootout/bootstrap the agent.
 _WRITTEN: dict = {"intervals": None}
 _SYNC_LOCK = threading.Lock()
+
+
+def _other_share(source: str):
+    """The due times of the share `source` is NOT, from disk now. Lock order
+    (schedule.py _sync_wake): nothing here holds `_wake_lock`; both are plain
+    reads. Unreadable = empty: better a plist short of one share once than
+    no plist."""
+    from fused_render.schedule import parse_due
+    try:
+        if source == "bots":
+            from fused_render import schedule
+            return [parse_due(v) for v in schedule._pending_due(schedule._read())]
+        from fused_render.bots import registry
+        return registry.routines_due()
+    except Exception:  # noqa: BLE001
+        return []
 
 
 def sync(due: list, source: str = "schedule") -> bool:
@@ -186,8 +204,8 @@ def sync(due: list, source: str = "schedule") -> bool:
 
     `source` names whose share of the plist this is ("schedule": Tasks, the
     original caller; "bots": daily and once routines, 2026-10-13); the file
-    carries the union of every source's last list, so neither caller erases
-    the other's wakes.
+    carries this share plus the other one read from its store on disk now
+    (`_other_share`), so neither caller erases the other's wakes.
 
     An empty union (or a run with no app bundle to launch) removes the agent:
     a wake with nothing to fire is a machine woken for no reason."""
@@ -205,25 +223,9 @@ def sync(due: list, source: str = "schedule") -> bool:
         except ValueError:
             continue
     with _SYNC_LOCK:
-        _SOURCES[source] = parsed
-        # A process's first sync from either side must not write a plist with only its own share and erase the
-        # other's wakes (the Tasks share until the schedule store is next written; the bots' share until the
-        # next routine change, or forever from a process that never owns the bots). Each missing share is
-        # seeded from its store on disk once. Lock order (schedule.py _sync_wake): nothing here holds
-        # `_wake_lock`, and both reads are plain reads.
-        if "schedule" not in _SOURCES:
-            try:
-                from fused_render import schedule
-                _SOURCES["schedule"] = [parse_due(v) for v in schedule._pending_due(schedule._read())]
-            except Exception:  # noqa: BLE001 — no Tasks share known yet is still better than a wrong one
-                _SOURCES.pop("schedule", None)
-        if "bots" not in _SOURCES:
-            try:
-                from fused_render.bots import registry
-                _SOURCES["bots"] = registry.routines_due()
-            except Exception:  # noqa: BLE001
-                _SOURCES.pop("bots", None)
-        union = [d for lst in _SOURCES.values() for d in lst]
+        # Our share plus the other one as its store stands right now: a Tasks sync from any process and a
+        # bots sync from the owner both write the same union, so neither can erase the other's newer wakes.
+        union = parsed + _other_share(source)
         app = app_bundle_path()
         if app is None:
             # Nothing to relaunch here: a checkout, a wheel, a test. The plist on disk, if any, belongs to the
