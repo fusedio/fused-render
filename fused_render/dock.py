@@ -338,13 +338,10 @@ def _pinned_app_row(path: str) -> dict | None:
     from fused_render import app_listing, launcher
 
     if is_appfile(path):
-        from fused_render import exported_apps
-
-        try:
-            row = exported_apps._row(path, os.path.getmtime(path), None)  # noqa: SLF001 — the listing's own shape
-        except OSError:
-            return None
-        return launcher._appfile_row(row)  # noqa: SLF001
+        # A pinned `.fused` opens its install page (AF-14); the row carries
+        # the file's stem as its name, as the hub rows once did.
+        return launcher._appfile_row({  # noqa: SLF001
+            "path": path, "name": os.path.splitext(os.path.basename(path))[0]})
     try:
         entry = app_listing.app_entry(path)
     except OSError:

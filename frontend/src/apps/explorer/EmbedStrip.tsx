@@ -6,49 +6,40 @@
 // chrome. It is wrong for the embed that IS the window: a Finder double-click
 // on a `.fused` (the view-URL codec lands OS opens on the embed prefix), a CLI
 // or deeplink embed URL, a pasted link. There the user is stranded — nothing
-// on screen leads back to the explorer, and D397's Clone (the only way from a
-// read-only `.fused` to an editable copy) sat in the hidden header. That gap
-// was recorded as accepted in D390/D397; this strip is the owner reversing it.
+// on screen leads back to the explorer. That gap was recorded as accepted in
+// D390; this strip is the owner reversing it.
 //
 // WHERE: rendered by StatView above `#content`, gated on IS_TOP_EMBED
 // (router.ts) — never inside Preview, whose header is CSS-hidden in embed, and
-// never inside the fusedapp template, which frames the entry page as a second
-// embed of its own (only the outer shell is top-level).
+// never inside a template that frames a second embed of its own (only the
+// outer shell is top-level).
 //
-// WHAT: "Open in explorer" for any target but a `.fused` — the same path
-// under the VIEW prefix, full shell chrome; for a FOLDER embed (an app dir opened from the
-// CLI or a link) it opens the folder's app ENTRY page (`/api/apps/entry`, the
-// one rule in app_listing), not the listing: the user was looking at the app,
-// and the explorer should show them that same page with its chrome, falling
-// back to the folder only when there is no entry — plus, for a `.fused`, the shared
-// CloneAppFileButton (one control, one label rule: "Clone" / "Go to local
-// version", landing on the copy's entry page) told to land on the view URL, since `navigate` would keep the
-// embed prefix and drop the clone folder into a chrome-free listing with no
-// way out (D282's dead end). Export, Migrate and Reveal in Finder are
-// deliberately absent (owner): the first two they act on an app's entry FOLDER, not on
-// a read-only artifact, and the view-mode header already has them; Reveal
-// belongs to the explorer's own menus once you are there.
+// WHAT: "Open in explorer" — the same path under the VIEW prefix, full shell
+// chrome; for a FOLDER embed (an app dir opened from the CLI or a link) it
+// opens the folder's app ENTRY page (`/api/apps/entry`, the one rule in
+// app_listing), not the listing: the user was looking at the app, and the
+// explorer should show them that same page with its chrome, falling back to
+// the folder only when there is no entry. A `.fused` is its install page
+// (AF-14) and gets the same way out: the explorer's view of that page.
+// Export, Migrate and Reveal in Finder are deliberately absent (owner): the
+// first two act on an app's entry FOLDER, and the view-mode header already
+// has them; Reveal belongs to the explorer's own menus once you are there.
 //
-// DISMISS is per page load — component state, nothing persisted. The strip is
-// the only route to Clone from an opened `.fused`; a remembered "✕" would
-// rebuild exactly the dead end it exists to close. Same "not now, not never"
-// posture as FdaStrip.
+// DISMISS is per page load — component state, nothing persisted. Same "not
+// now, not never" posture as FdaStrip.
 import { useState } from "react";
 
 import { getAppEntry } from "@platform/lib/api";
 import { IS_NATIVE_WINDOW, IS_TOP_EMBED, viewUrlForFsPath } from "@platform/lib/router";
 import { MenuIcons } from "@platform/ui/MenuIcons";
 
-import { CloneAppFileButton } from "@apps/explorer/Preview";
-
 export default function EmbedStrip({ fsPath, isDir }: { fsPath: string; isDir: boolean | null }) {
   const [dismissed, setDismissed] = useState(false);
   if (!IS_TOP_EMBED || dismissed) return null;
   const isFused = isDir === false && fsPath.toLowerCase().endsWith(".fused");
   // A macOS native window running an app: its title bar's Edit button is
-  // "Open in explorer", so the strip would only repeat it. A `.fused` keeps
-  // the strip — Clone lives nowhere else.
-  if (IS_NATIVE_WINDOW && !isFused) return null;
+  // "Open in explorer", so the strip would only repeat it.
+  if (IS_NATIVE_WINDOW) return null;
   const name = fsPath.split("/").filter(Boolean).pop() || fsPath;
   // Full page load, not `navigate`: the prefix (embed vs view) is read once
   // at module init, so switching it IS a new document. The query rides along
@@ -77,24 +68,18 @@ export default function EmbedStrip({ fsPath, isDir }: { fsPath: string; isDir: b
     <div className="embed-strip" role="toolbar" aria-label="Embedded view">
       <span className="embed-strip-name" title={fsPath}>
         {name}
-        {isFused && <span className="embed-strip-note">read-only app file</span>}
+        {isFused && <span className="embed-strip-note">app file</span>}
       </span>
       <div className="embed-strip-actions">
-        {/* Not for a .fused (owner): the explorer view of a read-only
-            artifact is the same app behind a sidebar — Clone is the action
-            that means something there. */}
-        {!isFused && (
-          <button
-            type="button"
-            className="bar-ctl bar-ctl-bordered"
-            title="Open this page in the explorer, with the sidebar and toolbar"
-            onClick={() => void openInExplorer()}
-          >
-            {MenuIcons.folder}
-            Open in explorer
-          </button>
-        )}
-        {isFused && <CloneAppFileButton fsPath={fsPath} toView />}
+        <button
+          type="button"
+          className="bar-ctl bar-ctl-bordered"
+          title="Open this page in the explorer, with the sidebar and toolbar"
+          onClick={() => void openInExplorer()}
+        >
+          {MenuIcons.folder}
+          Open in explorer
+        </button>
         <button
           type="button"
           className="bar-ctl embed-strip-close"

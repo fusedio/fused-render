@@ -110,8 +110,8 @@ def _workspace_apps() -> list[dict]:
 # keystroke read it and walk nothing.
 #
 # A time-to-live, not watcher invalidation (owner's call, 2026-10-05, design
-# memo "Apps Hub Paging" Q1): the same posture as the `.fused` query cache in
-# exported_apps.py, no dependency on the index watcher running, and 20 s is
+# memo "Apps Hub Paging" Q1): the same posture as the git-repos query cache,
+# no dependency on the index watcher running, and 20 s is
 # the longest a folder dropped in from Finder goes unlisted. The create and
 # showcase-sync refetches pass `fresh=1` and rebuild it outright, so the app
 # the user just made is never behind the TTL.
@@ -130,7 +130,7 @@ def _discovery_rows(fresh: bool) -> list[dict]:
     is fresh, rebuilt otherwise. Rows are shared between requests: callers
     read them and build their own lists, never mutate them in place."""
     global _snapshot
-    from fused_render import exported_apps, registered_apps
+    from fused_render import registered_apps
 
     root = fused_dir()
     now = time.monotonic()
@@ -148,7 +148,8 @@ def _discovery_rows(fresh: bool) -> list[dict]:
         for r in rows:
             r["opened_at"] = opened.get(_workspace_rel(root, r["path"]))
         rows.extend(registered_apps.registered_apps())
-        rows.extend(exported_apps.exported_apps())
+        # No `.fused` rows (AF-14): an app file is an installer, and the
+        # installed copy under app/ is the app the hub lists.
         _snapshot = (root, now, rows)
         return rows
 
@@ -223,11 +224,6 @@ def api_apps(offset: int = 0, limit: int | None = None, tag: str | None = None,
     # `openedAt` already rides in as `opened_at` (registered_apps.py), so these
     # sort by recency exactly as workspace apps do.
     apps.extend(registered_apps.registered_apps())
-    # Exported .fused files anywhere on disk, from the file index (D396).
-    # Index unavailable degrades to zero rows — never to a failed listing.
-    from fused_render import exported_apps
-
-    apps.extend(exported_apps.exported_apps())
     apps.sort(key=lambda a: (a["tag"].lower(), a["name"].lower()))
     return {"apps": apps}
 
@@ -310,7 +306,7 @@ def recent_apps(limit: int) -> list[dict]:
     ``openedAt`` and the opened ``.fused`` files (D396). Every row carries
     ``opened_at``. Home's strip and the launcher's empty query both read
     this, so an app opened anywhere lands at the top of both."""
-    from fused_render import exported_apps, registered_apps
+    from fused_render import registered_apps
 
     recent = _recent_workspace_apps(limit)
     recent.extend(
@@ -318,9 +314,6 @@ def recent_apps(limit: int) -> list[dict]:
             limit=limit, include_updated_at=False, opened_only=True
         )
     )
-    # Opened .fused files (D396): their recents store is already newest-first
-    # and every entry carries openedAt, so they merge exactly as the other two.
-    recent.extend(exported_apps.recent_exported_apps(limit))
     recent.sort(
         key=lambda a: (-_app_recency(a), a["tag"].lower(), a["name"].lower())
     )
