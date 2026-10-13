@@ -121,10 +121,16 @@ export interface FoldStretch {
 export const isTaskEnd = (e: BotEvent): boolean =>
   (e.role === "done" || (e.role === "error" && e.trace != null)) && !isHandoff(e) && e.source !== "build" && e.source !== "seed";
 
+/** The one `error` that is a step: a model call the engine retries past (agent_engine.py `Model call failed`,
+ *  steps_engine.py `Model returned no usable JSON; retrying`). Every other error (a channel rejection, "Busy with
+ *  another task", a playbook that would not learn) is a line to you and stays visible. */
+const isRetryError = (e: BotEvent): boolean =>
+  e.role === "error" && e.trace == null && /^Model (call failed|returned no usable JSON)/.test(e.text || "");
+
 /** A row the fold may hide: the bot's process, unless something made it part of the exchange. `keep` is the thread's
  *  own extra test (a note whose text links an app the thread draws a card for, apps.ts `appFromText`). */
 const hideable = (e: BotEvent, rx: Record<number, string>, quoted: Set<number>, keep: (e: BotEvent) => boolean): boolean =>
-  (e.role === "thought" || e.role === "action" || e.role === "note" || (e.role === "error" && e.trace == null))
+  (e.role === "thought" || e.role === "action" || e.role === "note" || isRetryError(e))
   // The Clear marker is a `note` too (source "clear"): the other fold's own boundary, never a step.
   && e.source !== "clear" && !e.app?.dir && !e.build && !isHandoff(e) && !rx[e.seq] && !quoted.has(e.seq) && !keep(e);
 
