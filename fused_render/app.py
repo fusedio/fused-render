@@ -925,11 +925,22 @@ RELAUNCH_WINDOWS_FILE = os.path.join(APP_SUPPORT_DIR, "relaunch-windows.json")
 # unrelated launch would be a surprise.
 RELAUNCH_SNAPSHOT_MAX_AGE_S = 2 * RELAUNCH_DEADLINE_S
 
-#: Where the menu-bar icon is seeded the FIRST time a flavor ever launches, in
-#: points from the right edge of the screen (see the autosave-name block in
-#: main()). Small = the rightmost slot a third-party item may take; the user's
-#: ⌘-drag then overrides it for good.
-STATUS_ITEM_FIRST_POSITION_PT = 1.0
+#: Fallback for where the menu-bar icon is seeded the first time a flavor
+#: launches, in points from the right edge of the screen (see the autosave-name
+#: block in main()). Used only when Control Center's own defaults hold no item
+#: positions to derive from; wide enough to clear a stock cluster (Wi-Fi,
+#: Sound, Battery, Focus, Control Center). The user's ⌘-drag overrides it.
+STATUS_ITEM_FALLBACK_POSITION_PT = 480.0
+
+#: Gap left between the leftmost macOS item and ours when deriving the seed:
+#: about one status item's width, so a tie or rounding never sorts us inside
+#: the system cluster.
+STATUS_ITEM_GAP_PT = 48.0
+
+#: The seed PR #1609 wrote: 1 pt from the edge, which sorts the item RIGHT of
+#: Wi-Fi/Battery/Sound (they sit at 150-450 pt). A ⌘-drag never lands on
+#: exactly this value, so finding it means "never placed by the user": re-seed.
+STATUS_ITEM_LEGACY_SEED_PT = 1.0
 
 
 def bundle_executable(bundle: str) -> str:
@@ -1512,6 +1523,27 @@ def save_diagnostics_async() -> threading.Thread:
     return t
 
 
+def _status_item_seed_position() -> float:
+    """Points from the right edge that put a new status item just LEFT of
+    every macOS item: the largest "NSStatusItem Preferred Position *" in
+    Control Center's defaults plus one item's width, or the fallback constant
+    when that domain holds no positions (a Mac where nothing was ever
+    dragged, or a read that failed)."""
+    try:
+        from Foundation import NSUserDefaults
+
+        cc = NSUserDefaults.alloc().initWithSuiteName_("com.apple.controlcenter")
+        prefix = "NSStatusItem Preferred Position "
+        values = [float(v) for k, v in cc.dictionaryRepresentation().items()
+                  if str(k).startswith(prefix)]
+    except Exception:
+        logger.exception("reading Control Center item positions failed")
+        values = []
+    if not values:
+        return STATUS_ITEM_FALLBACK_POSITION_PT
+    return max(values) + STATUS_ITEM_GAP_PT
+
+
 def main() -> None:
     os.makedirs(APP_SUPPORT_DIR, exist_ok=True)
     setup_logging()  # first: everything after this can crash-report to the file
@@ -1800,24 +1832,30 @@ def main() -> None:
     # ---- the status item's spot in the menu bar ------------------------------
     # macOS keeps every status item's position in the app's defaults under
     # "NSStatusItem Preferred Position <autosaveName>", as a distance in
-    # points from the RIGHT edge of the screen (lower = further right; AppKit
-    # clamps past Control Center and the clock). rumps never sets an autosave
+    # points from the RIGHT edge of the screen (lower = further right). Only
+    # the clock and the Control Center pill are pinned: Wi-Fi, Sound, Battery,
+    # Focus and the rest are ordinary ordered items, kept the same way in
+    # Control Center's own domain, and a third-party item seeded below their
+    # values sorts in among them or right of them. rumps never sets an autosave
     # name, so AppKit mints one per launch and a new item lands LEFTMOST —
     # which on a notched MacBook with a busy bar is the slot that is never
     # drawn: the icon is simply not there. A fixed name makes AppKit read and
     # write that key, so the spot the user ⌘-drags it to survives restarts;
     # seeding the key once, before the item exists, is what places it the
-    # first time. The name must be set BEFORE the item is first laid out:
-    # rumps' run() creates it (initializeStatusBar), then emits before_start,
-    # then enters the run loop — so the hook goes there, not in the _kickoff
-    # timer below, which fires after the first run-loop pass.
+    # first time: just left of the leftmost macOS item, read from Control
+    # Center's defaults (a fallback constant when it holds none). The name
+    # must be set BEFORE the item is first laid out: rumps' run() creates it
+    # (initializeStatusBar), then emits before_start, then enters the run
+    # loop — so the hook goes there, not in the _kickoff timer below, which
+    # fires after the first run-loop pass.
     from Foundation import NSUserDefaults
 
     status_item_name = _flavor.app_name()  # FusedRender / FusedBot
     position_key = f"NSStatusItem Preferred Position {status_item_name}"
     defaults = NSUserDefaults.standardUserDefaults()
-    if defaults.objectForKey_(position_key) is None:
-        defaults.setDouble_forKey_(STATUS_ITEM_FIRST_POSITION_PT, position_key)
+    stored = defaults.objectForKey_(position_key)
+    if stored is None or float(stored) == STATUS_ITEM_LEGACY_SEED_PT:
+        defaults.setDouble_forKey_(_status_item_seed_position(), position_key)
 
     @rumps.events.before_start.register
     def _name_status_item():
