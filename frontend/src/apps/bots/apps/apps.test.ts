@@ -15,6 +15,12 @@ describe("appFromText", () => {
     const t = `/render?path=${encodeURIComponent(ROOT + "/my_map/index.html")}&tab=2&q=a+b&_preview=1&path=x`;
     expect(appFromText(t, ROOT)).toEqual({ name: "My map", dir: ROOT + "/my_map", params: "tab=2&q=a+b" });
   });
+  test("a link ending a sentence drops the period (and other trailing punctuation)", () => {
+    expect(appFromText(`The link is http://127.0.0.1:1777/render?path=${ROOT}/brex-memo-updater. You'll hear from me.`, ROOT))
+      .toEqual({ name: "Brex memo updater", dir: ROOT + "/brex-memo-updater", params: "" });
+    expect(appFromText(`/render?path=${encodeURIComponent(ROOT + "/notes/index.html")}&tab=2, then`, ROOT))
+      .toEqual({ name: "Notes", dir: ROOT + "/notes", params: "tab=2" });
+  });
   test("folder link without index.html, trailing slash", () => {
     expect(appFromText(`see (/render?path=${ROOT}/notes/)`, ROOT)).toEqual({ name: "Notes", dir: ROOT + "/notes", params: "" });
   });

@@ -406,7 +406,8 @@ def _app_at(url_or_path):
 def _app_in_text(text):
     """First built app linked from a message, or None."""
     for m in re.finditer(r"https?://\S*?/render\?path=[^\s)\]>\"']+", text or ""):
-        a = _app_at(m.group(0))
+        # A link ending a sentence keeps no period/comma: `<dir>.` is not the app.
+        a = _app_at(m.group(0).rstrip(".,;:!?"))
         if a:
             return a
     return None
