@@ -1655,10 +1655,7 @@ kind, preset, the first 240 chars of instructions as `description`, status,
 `busy`, the task label, note, step, `waitingOn`, model, effort, face, hidden,
 pinned, updated — never instructions in full, the url the browser is on, rules,
 routines, memory, hand-offs, phone or browser details), `POST /<id>/app_send`,
-`GET /<id>/app_events`, `POST /<id>/app_stop`. All four answer 403 while
-`bots_enabled` is off (the pref only picks the front door; the router is
-mounted regardless, so without the gate a page could drive bots the user has
-not switched on).
+`GET /<id>/app_events`, `POST /<id>/app_stop`.
 
 **Who is sending.** The app is named by the `X-Fused-Page` header the runtime
 sends with every call (`callHeaders`), resolved by `routers/tasks._page_scope`

@@ -1236,18 +1236,17 @@ class WindowManager:
     def _is_home(self, w: _Window) -> bool:
         # The shell's home is `/`, which the SPA rewrites in place to `/home`
         # (shell/App.tsx); `/apps` is the Apps hub, and a window on /tasks or
-        # /preferences has no key either — none of those is Home. With Bots
-        # as the front door (`prefs.bots_enabled`, always on under the bot
-        # flavor) `/` lands on `/bots`, so that window IS Home — without this
-        # `open_app_in_home` found no home window and opened a fresh one
-        # every time.
+        # /preferences has no key either — none of those is Home. Under the
+        # Fused Bot flavor `/` lands on `/bots`, so that window IS Home —
+        # without this `open_app_in_home` found no home window and opened a
+        # fresh one every time.
         path = urllib.parse.urlsplit(w.current_url() or "").path.rstrip("/")
         if path in ("", "/home"):
             return True
         if path == "/bots":
-            from fused_render.shell import prefs
+            from fused_render import _flavor
 
-            return prefs.bots_enabled()
+            return _flavor.is_bot()
         return False
 
     def _pick(self, candidates: list["_Window"]) -> "_Window | None":

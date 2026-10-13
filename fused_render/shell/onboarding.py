@@ -86,7 +86,7 @@ _KEY = "onboarding"
 #: step (it does not build apps), so there the set is four — `_observe`
 #: keys off the same tuple, so neither stage ever enters the meter's count.
 #: `chrome` (a Google Chrome for bots to drive) is in both: Render runs the
-#: same bots behind the `bots_enabled` preference. `git` (a usable git — the
+#: same bots from its Bots page. `git` (a usable git — the
 #: showcase clone and Claude Code's own worktrees need one) is Render's only:
 #: Fused Bot clones nothing.
 STEPS = (("about", "claude", "chrome", "fda") if _flavor.is_bot()
@@ -218,22 +218,17 @@ def _observe(stages: dict) -> None:
     # Chrome: the bots' own candidate walk (bots/browser.CHROME_CANDIDATES —
     # the list `find_chrome` runs when a bot starts, so this and the bot never
     # disagree), a handful of os.path.exists, conclusive. Found = complete,
-    # with the path for the step's "Found at …" row. Not found = pending only
-    # where a bot could be asked to run: the Fused Bot flavor, or Render with
-    # `bots_enabled` on. Elsewhere it is `n/a`, so a Render user who never
-    # turned bots on is not pulled back under 100% by a browser they do not
-    # need (the step still shows in the wizard; the meter just does not
-    # count it). Flipping bots on later moves it to pending on the next read.
+    # with the path for the step's "Found at …" row. Not found = pending in
+    # both flavors: Render's Bots page runs the same bots, so a machine
+    # without a Chrome cannot run one anywhere.
     try:
         from fused_render.bots.browser import CHROME_CANDIDATES
 
         found = next((p for p in CHROME_CANDIDATES if p and os.path.exists(p)), None)
         if found:
             put("chrome", "complete", found=True, path=found)
-        elif _flavor.is_bot() or prefs.bots_enabled():
-            put("chrome", "pending", found=False, path=None)
         else:
-            put("chrome", "n/a", found=False, path=None)
+            put("chrome", "pending", found=False, path=None)
     except Exception:  # noqa: BLE001
         log.debug("onboarding: chrome observe failed", exc_info=True)
 

@@ -51,10 +51,6 @@ export interface Config {
   // `dismiss` are distinct writes (reached the end vs "skip for now").
   // Server-side, not localStorage: a port drift is a new origin.
   onboarding?: OnboardingState;
-  /** Bots as the front door (prefs `bots_enabled`, default off): `/` lands on
-   *  `/bots` and the sidebar's Home row gives way to Bots. In config so the
-   *  shell can decide the front door synchronously at first render. */
-  bots_enabled?: boolean;
   /** Which app this build is wearing (fused_render/flavor.py): "render" is
    *  Fused Render, "bot" is Fused Bot, built from the same repo. Read through
    *  platform/lib/flavor.ts, seeded before the first render. Absent on an
@@ -1336,8 +1332,6 @@ export interface Prefs {
   // the shell's entry points to it (the sidebar row and the Settings menu
   // entry), not the /canvases routes, which keep answering a deep link.
   canvases: { enabled: boolean };
-  /** Bots sub-app as the front door (default off); see shell/prefs.bots_enabled. */
-  bots: { enabled: boolean };
   // Whether the unified Share sheet (public link + .fused file) is OFFERED in
   // place of the plain Export / Download action (opt-in, default off). Gates
   // the five share surfaces, not the /api/share routes.
@@ -1632,7 +1626,7 @@ export function getPrefs(): Promise<Prefs> {
 }
 
 // Single-flight prefs GET for the feature-flag modules' first reads. Each
-// flag module (bots, canvases, claude queue, share, live previews, monitor,
+// flag module (canvases, claude queue, share, live previews, monitor,
 // task peek, …) does its own one read on first subscribe, and they all
 // subscribe in the same mount commit — five-plus identical GETs per window
 // open. Every native window shares WebKit's 6-connection HTTP/1.1 pool per
@@ -1675,10 +1669,6 @@ export function putReaderEnabled(enabled: boolean): Promise<Prefs> {
 
 export function putCanvasesEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { canvases_enabled: enabled });
-}
-
-export function putBotsEnabled(enabled: boolean): Promise<Prefs> {
-  return putJson<Prefs>("/api/prefs", { bots_enabled: enabled });
 }
 
 /** The launcher's panel shortcut, as a `hotkey.py` spec (`"alt+space"`,
