@@ -459,7 +459,10 @@ export function EmbedStage({
         if (!entry || entry.state === "failed") indexRef.current.set(path, { state: "pending" });
       }
       bumpIndex();
-      void pumpIndex();
+      // Only in Files mode: an upload that finishes after the reader switched
+      // to Lines must not restart the runner that switch stopped. The rows
+      // wait as pending; switching back to Files picks them up.
+      if (filesMode.current) void pumpIndex();
     }
   };
 
@@ -775,6 +778,12 @@ export function EmbedStage({
         score: row.score,
       }));
       if (!scored.length) {
+        const left = indexProgress(picturesRef.current, indexRef.current);
+        afterNote = null;
+        // The runner gave up with files still waiting: its sentence is
+        // already on the error line and is the real reason — those rows
+        // are pending, not failed, so the cog has nothing to show.
+        if (halted.current && left.total - left.done - left.failed > 0) return;
         setError("None of the files could be read — open the settings cog to see why.");
         return;
       }
