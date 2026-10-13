@@ -527,7 +527,11 @@ export function EmbedStage({
           refused ??= no;
           continue;
         }
-        const room = MAX_PICTURES - picturesRef.current.length - reservedSlots.current - landed.length;
+        // `reservedSlots` already holds this drop's own uploads, so only the
+        // PATH entries (dropped from the Explorer, never uploaded, never
+        // reserved) are counted beside it — counting `landed` too charged
+        // each upload twice and halved the room.
+        const room = MAX_PICTURES - picturesRef.current.length - reservedSlots.current - paths.length;
         if (room <= 0) {
           over += 1;
           continue;
