@@ -112,7 +112,11 @@ def test_duplicate_watchers_share_one_stat_stream(home, tmp_path, monkeypatch):
     monkeypatch.setattr(os, "stat", spy)
 
     client = _client(tmp_path)
-    with client.websocket_connect("/api/events") as a, client.websocket_connect("/api/events") as b:
+    # Inside `with client:` both sockets share ONE portal loop, as two windows
+    # share the one uvicorn loop; opened bare, each `websocket_connect` runs
+    # its own loop and the key's memoized build future (made on the first
+    # socket's loop) cannot be awaited from the second's.
+    with client, client.websocket_connect("/api/events") as a, client.websocket_connect("/api/events") as b:
         _watch(a, 1, watched)
         _watch(b, 1, watched)
         _frame(a, "snap")
