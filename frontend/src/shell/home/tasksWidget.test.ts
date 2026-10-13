@@ -87,3 +87,12 @@ test("the list format draws the Tasks page's own rows, not ItemList", async () =
   expect(src).toMatch(/<TaskRowItem[^>]*\bshowProject\b/);
   expect(src).not.toContain("ItemList");
 });
+
+test("TaskRows reserves no more line and renders none", async () => {
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(new URL("./widgets/TasksWidget.tsx", import.meta.url), "utf8");
+  const start = src.indexOf("function TaskRows");
+  const body = src.slice(start, src.indexOf("function BoardLane"));
+  expect(body).toContain("{ more: false }");
+  expect(body).not.toContain("MoreLine");
+});

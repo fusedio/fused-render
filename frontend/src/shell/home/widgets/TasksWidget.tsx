@@ -86,9 +86,10 @@ function toItem(t: Task): WidgetItem {
 
 /** The list format: the Tasks page's own rows (`TaskRowItem` in the page's
     `.tasks-list-frame`), as many as the tile's height holds — a list never
-    grows the tile. */
+    grows the tile. No "+N more" line: the header's See all is the way to the
+    rest, so that space goes to rows. */
 function TaskRows({ rows, cap, onReload }: { rows: Task[]; cap: number; onReload: () => void }) {
-  const { ref, n, moreFits } = useFitCount(rows.length, cap, ".tasks-node");
+  const { ref, n } = useFitCount(rows.length, cap, ".tasks-node", undefined, { more: false });
   const shown = rows.slice(0, n);
   return (
     <div ref={ref} className="hw-task-rows">
@@ -98,7 +99,6 @@ function TaskRows({ rows, cap, onReload }: { rows: Task[]; cap: number; onReload
           return <TaskRowItem key={t.key} task={t} showProject href={href} onPress={() => navigateUrl(href)} onReload={onReload} />;
         })}
       </div>
-      <MoreLine count={moreFits ? rows.length - shown.length : 0} href={TASKS_HREF} />
     </div>
   );
 }
