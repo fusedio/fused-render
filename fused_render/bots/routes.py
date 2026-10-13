@@ -841,6 +841,7 @@ def _app_bot(b):
     row["kind"] = "super" if bm.is_super(m) else "bot"
     row["description"] = " ".join(str(m.get("instructions") or "").split())[:_APP_DESC]
     a = bm.activity(b.id, m, b)  # the one reading of "busy" / "blocked", shared with Super Bot's BOTS NOW block
+    row["status"] = "idle" if a["status"] == "ended" else a["status"]  # a word that outlived its thread is idle to an app
     row["busy"] = a["busy"]
     row["waitingOn"] = (a["blocked"] or {}).get("kind")
     row["step"] = int(m.get("step") or 0)

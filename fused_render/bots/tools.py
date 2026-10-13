@@ -758,7 +758,8 @@ def ui_summary(name: str, result: str, change: str = "", obs: dict | None = None
     if name == "handoff_stop" and not raw.startswith("error"):
         return "cancelled"
     if name == "bot_chat" and not raw.startswith("error"):
-        n_lines = sum(1 for ln in raw.splitlines() if ln.startswith("[#"))
+        _, sep, body = raw.partition("\n---\n")  # the transcript follows the separator (bot.bot_chat)
+        n_lines = sum(1 for ln in body.splitlines() if ln.strip()) if sep and not body.startswith("(no lines") else 0
         return f"{n_lines} line{'s' if n_lines != 1 else ''} read"
     if name == "build":
         doing = "updating" if "updating" in _NOW_DONE.sub("", raw) else "building"

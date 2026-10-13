@@ -3358,6 +3358,10 @@ def activity(bid, meta, b=None, now=None) -> dict:
     live = bool(b.running()) if b is not None else None
     if live is False and status == "running":
         status = "ended"  # the status word on disk outlived the thread (a crash, a refused download)
+    elif b is None and status in ("running", "waiting", "paused"):
+        # A task thread needs a Bot in this process; none was built, so the word is a leftover from before a
+        # restart (Bot.__init__ resets it to idle on load, "interrupted by worker restart").
+        status = "ended"
     busy = bool(live) or status in ("running", "waiting", "paused")
     blocked = None
     if status == "waiting" and m.get("waiting_on"):
@@ -3369,12 +3373,14 @@ def activity(bid, meta, b=None, now=None) -> dict:
                 ev = next((e for _, e in _iter_events(store.events_path(bid)) if e.get("seq") == seq), None) or {}
         except Exception:  # noqa: BLE001
             ev = {}
-        kind = "approval" if ev.get("role") == "approval" else ("login" if ev.get("login") else "question")
+        kind = ("approval" if ev.get("role") == "approval"
+                else "login" if ev.get("login") or (m.get("control") and m.get("control_by") == "bot")
+                else "question")
         blocked = {"kind": kind, "text": _flat_cap(ev.get("text"))}
     headed = False
     if b is not None:
         try:
-            headed = bool(b.browser.headed())
+            headed = bool(b.browser.headed() and b.browser.running())
         except Exception:  # noqa: BLE001
             headed = False
     return {"status": status, "busy": busy, "live": live, "task": " ".join(str(m.get("task") or "").split()),
@@ -3390,7 +3396,7 @@ def _origin_words(via) -> str:
     if kind == chan.HANDOFF_KIND:
         return "your hand-off, see HAND-OFFS"
     if kind == chan.APP_KIND:
-        return f"the app {(via or {}).get('addr') or ''}".rstrip()
+        return f"the app {chan.app_key_of(via)}".rstrip()
     if kind == chan.ROUTINE_KIND:
         return "its routine"
     if kind == "imessage":
@@ -3406,6 +3412,8 @@ def _last_progress(b) -> str:
         return ""
     for ev in reversed(evs):
         role = ev.get("role")
+        if role == "system" and str(ev.get("text") or "").startswith("Task started: "):
+            return ""  # the current task has not acted yet; anything older belongs to the task before
         if (role == "note" and ev.get("progress")) or role == "action":
             return _flat_cap(ev.get("summary") or ev.get("text"), 120)
     return ""
@@ -3482,9 +3490,9 @@ def bots_now_section(bot) -> str:
             if not name or is_super(m):
                 continue
             a = activity(bid, m, b, now)
-            if a["status"] == "idle" and not a["headed"]:
+            if a["status"] == "idle" and not a["busy"] and not a["headed"]:
                 idle.append(name)  # one folded line: an idle bot's line carries nothing to act on
-            elif a["status"] == "error" and not a["headed"] and now - a["since"] > FOLD_FAILED_S:
+            elif a["status"] == "error" and not a["busy"] and not a["headed"] and now - a["since"] > FOLD_FAILED_S:
                 idle.append(f"{name} (last task failed)")  # an old failure is not news every turn
             else:
                 lines.append(activity_line(name, a, b, now))
