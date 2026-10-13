@@ -94,18 +94,24 @@ describe("visibleApps", () => {
 });
 
 describe("combineStates", () => {
+  const m = (o: Record<string, { level?: number; paused?: boolean; seconds?: number }>) => new Map(Object.entries(o));
   test("level is the max over non-paused states", () => {
-    expect(combineStates([{ level: 0.2, seconds: 3 }, { level: 0.7, paused: true, seconds: 9 }, { level: 0.5, seconds: 1 }]))
+    expect(combineStates(["a", "b", "c"], m({ a: { level: 0.2, seconds: 3 }, b: { level: 0.7, paused: true, seconds: 9 }, c: { level: 0.5, seconds: 1 } })))
       .toEqual({ level: 0.5, paused: false, seconds: 9 });
   });
   test("all paused", () => {
-    expect(combineStates([{ level: 0.4, paused: true, seconds: 2 }, { paused: true, seconds: 5 }]))
+    expect(combineStates(["a", "b"], m({ a: { level: 0.4, paused: true, seconds: 2 }, b: { paused: true, seconds: 5 } })))
       .toEqual({ level: 0, paused: true, seconds: 5 });
   });
-  test("empty and undefined entries", () => {
-    expect(combineStates([])).toEqual({ level: 0, paused: false, seconds: 0 });
-    expect(combineStates([undefined, undefined])).toEqual({ level: 0, paused: false, seconds: 0 });
-    expect(combineStates([undefined, { paused: true }])).toEqual({ level: 0, paused: true, seconds: 0 });
-    expect(combineStates([undefined, { level: 0.3 }]).level).toBe(0.3);
+  test("a recording with no state yet counts as live", () => {
+    expect(combineStates(["a", "b"], m({ a: { paused: true } })).paused).toBe(false);
+    expect(combineStates(["a", "b"], m({})).paused).toBe(false);
+    expect(combineStates(["a", "b"], m({ b: { level: 0.3 } })).level).toBe(0.3);
+  });
+  test("empty", () => {
+    expect(combineStates([], m({}))).toEqual({ level: 0, paused: false, seconds: 0 });
+  });
+  test("states of removed ids are ignored", () => {
+    expect(combineStates(["a"], m({ a: { level: 0.1 }, z: { level: 0.9 } })).level).toBe(0.1);
   });
 });

@@ -71,14 +71,17 @@ export function visibleApps(infos: PillInfo[]): { shown: PillInfo[]; extra: numb
   return { shown: newestFirst.slice(0, MAX_ICONS - 1), extra: infos.length - (MAX_ICONS - 1) };
 }
 
-/** One meter for all recordings: the loudest non-paused level; paused only when every polled one is paused. */
-export function combineStates(states: (PillState | undefined)[]): { level: number; paused: boolean; seconds: number } {
-  const live = states.filter((s): s is PillState => !!s);
+/** One meter for all recordings: the loudest non-paused level; paused only when every current recording has a polled state and all are paused. A recording not polled yet counts as live. */
+export function combineStates(ids: string[], states: Map<string, PillState>): { level: number; paused: boolean; seconds: number } {
   let level = 0;
   let seconds = 0;
-  for (const s of live) {
+  let allPaused = ids.length > 0;
+  for (const id of ids) {
+    const s = states.get(id);
+    if (!s || !s.paused) allPaused = false;
+    if (!s) continue;
     if (!s.paused) level = Math.max(level, s.level ?? 0);
     seconds = Math.max(seconds, s.seconds ?? 0);
   }
-  return { level, paused: live.length > 0 && live.every((s) => !!s.paused), seconds };
+  return { level, paused: allPaused, seconds };
 }

@@ -89,7 +89,7 @@ function render() {
 }
 
 function drawMeter() {
-  const c = combineStates(infos.map((i) => states.get(i.id)));
+  const c = combineStates(infos.map((i) => i.id), states);
   displayed = smoothLevel(shapeLevel(c.level), displayed);
   pill.classList.toggle("paused", c.paused);
   meterEl.title = "Recording " + formatElapsed(c.seconds);
