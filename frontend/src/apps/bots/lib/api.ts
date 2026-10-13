@@ -154,6 +154,8 @@ export interface Bot {
   title?: string;
   note?: string;
   updated?: number;
+  /** ts of the newest message you sent this bot (0 if none); unlike `updated`, idle-sleep and download ticks never bump it. */
+  last_user_ts?: number;
   approval?: "ask" | "auto";
   build_access?: "scoped" | "full";
   /** App folders (normalised) whose tools and scripts never raise an approval card for this bot. */
