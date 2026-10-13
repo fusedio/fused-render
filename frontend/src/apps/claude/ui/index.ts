@@ -205,3 +205,7 @@ export { RecapFold } from "./RecapFold";
 export type { RecapFoldProps } from "./RecapFold";
 export { useAwayRecap, AWAY_MS, MAX_FAILURES } from "./useAwayRecap";
 export type { AwayRecapOptions, AwayRecapResult } from "./useAwayRecap";
+export { CommandMenu, MENU_MAX_ROWS, acceptText, menuKey, menuQuery } from "./CommandMenu";
+export type { CommandMenuProps, MenuKey } from "./CommandMenu";
+export { WorktreeMenu, WorktreeMenuBody } from "./WorktreeMenu";
+export type { WorktreeMenuProps, WorktreeMenuBodyProps, WorktreeRequest } from "./WorktreeMenu";

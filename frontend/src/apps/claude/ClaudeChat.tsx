@@ -136,6 +136,11 @@ import {
   type Viewable,
 } from "./ui";
 import { debugSentEnabled } from "./ui/debug-sent";
+import { fetchCommands, type ClassifiedCommand } from "./protocol/commands";
+import { parseWorktreeCommand } from "./protocol/worktrees";
+import type { CommandRow } from "./protocol/types";
+import { WorktreeMenu, paneChatUrl, type WorktreeRequest } from "./ui";
+import { EFFORTS, MODELS, MODEL_LABELS } from "./ui/composer-defaults";
 import { recapAnchor } from "./protocol/recap";
 import {
   queueEnabled,
@@ -277,9 +282,30 @@ export interface ClaudeChatProps {
    * how this bug arrived. (.claude-design/session-recap.md, "Trigger".)
    */
   recap?: boolean;
+  /**
+   * `/tasks` (SPEC C-1): toggle the background-tasks panel. Optional — the
+   * panel's host fills it; absent, the command is answered and does nothing.
+   */
+  onToggleTasks?: () => void;
 }
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/** `/model <name>`'s argument as a pill value — the id or its label, any case —
+ *  or "" when it names none of them. */
+export function localModelArg(arg: string): string {
+  const want = arg.trim().toLowerCase();
+  if (!want) return "";
+  return (
+    MODELS.find((m) => m === want || (MODEL_LABELS[m] ?? "").toLowerCase() === want) ?? ""
+  );
+}
+
+/** `/effort <level>`'s argument as a pill value, or "". */
+export function localEffortArg(arg: string): string {
+  const want = arg.trim().toLowerCase();
+  return (EFFORTS as readonly string[]).includes(want) ? want : "";
+}
 
 /**
  * THE FOLDER THE READER IS WORKING IN, for a shell fence's or a Bash chip's
@@ -1104,6 +1130,8 @@ function ChatBody(props: ChatBodyProps) {
   // cards wall share this module and their chip keys collide by construction
   // (ui/cardPolicy.ts).
   const [cardPolicy] = useState(createCardPolicy);
+  /** `onCommandsChanged`'s target — a ref, because the controller is built once. */
+  const commandsChanged = useRef<() => void>(() => {});
   const controller = useMemo(
     () =>
       createChatController({
@@ -1119,6 +1147,8 @@ function ChatBody(props: ChatBodyProps) {
         // The controller already announces on THIS document
         // (`announceTasksChanged`); the stamp is for every OTHER one (T:16435).
         onActivity: stampChatActivity,
+        // A poll saw the slash-command list move (SPEC C-2): re-fetch it.
+        onCommandsChanged: () => commandsChanged.current(),
         // Follow-ups the CLI never delivered come back as "not sent" bubbles
         // in place, one each, never into the box (`still_queued`, T:15911;
         // browser QA 2026-09-24).
@@ -3503,6 +3533,87 @@ function ChatBody(props: ChatBodyProps) {
     },
     [openSessionNow],
   );
+
+  // ── SLASH COMMANDS (SPEC C-1/C-3) ──────────────────────────────────────────
+  //
+  // The folder's list, fetched per `_file` and again when a poll says it moved.
+  const [slashCommands, setSlashCommands] = useState<CommandRow[] | null>(null);
+  const [commandsGen, setCommandsGen] = useState(0);
+  commandsChanged.current = () => setCommandsGen((n) => n + 1);
+  useEffect(() => {
+    if (!file) {
+      setSlashCommands(null);
+      return;
+    }
+    let live = true;
+    fetchCommands(file).then(
+      (out) => {
+        if (live) setSlashCommands(out.commands);
+      },
+      () => {
+        /* no list: the menu still has the local commands */
+      },
+    );
+    return () => {
+      live = false;
+    };
+  }, [file, commandsGen]);
+  // The worktree menu's `/worktree` requests (`ui/WorktreeMenu`).
+  const wtSeq = useRef(0);
+  const [wtRequest, setWtRequest] = useState<WorktreeRequest | null>(null);
+  const folderTarget = !!file && !!pane.noun && pane.noun !== "file";
+  const onToggleTasks = props.onToggleTasks;
+  const setModelPick = defaults.setModel;
+  const setEffortPick = defaults.setEffort;
+  /** A local command from the composer. `false` = refused (bad argument), and
+   *  the composer puts the words back. `/help` never arrives: it is the
+   *  composer's own menu. */
+  const onLocalCommand = useCallback(
+    (cmd: ClassifiedCommand): boolean => {
+      switch (cmd.name) {
+        case "clear":
+          // THE SAME DOOR AS `← Chats`: a new conversation in this folder.
+          onBack();
+          return true;
+        case "model": {
+          const v = localModelArg(cmd.arg);
+          if (!v) return false;
+          setModelPick(v);
+          return true;
+        }
+        case "effort": {
+          const v = localEffortArg(cmd.arg);
+          if (!v) return false;
+          setEffortPick(v);
+          return true;
+        }
+        case "worktree": {
+          if (!folderTarget) return false;
+          const parsed = parseWorktreeCommand(cmd.arg);
+          if ("error" in parsed) return false;
+          wtSeq.current += 1;
+          setWtRequest({ seq: wtSeq.current, ...("name" in parsed ? { name: parsed.name } : {}) });
+          return true;
+        }
+        case "tasks":
+          onToggleTasks?.();
+          return true;
+        default:
+          return false;
+      }
+    },
+    [onBack, setModelPick, setEffortPick, folderTarget, onToggleTasks],
+  );
+  /** SWITCHING WORKTREE IS OPENING THAT FOLDER'S CHAT, FRESH — the URL the Home
+   *  lists open a folder chat on (`paneChatUrl`), with no session, through the
+   *  same `onNavigate` (so the composer's leave guard is asked). */
+  const onWorktreeSwitch = useCallback(
+    (path: string) => onNavigate(paneChatUrl(path, "")),
+    [onNavigate],
+  );
+  const worktreeMenu = folderTarget ? (
+    <WorktreeMenu file={file as string} onSwitch={onWorktreeSwitch} request={wtRequest} />
+  ) : null;
   /**
    * A DRAFT ROW PRESSED — THE WORDS COME TO THE BOX (Akshil, 2026-09-15).
    *
@@ -4396,6 +4507,8 @@ function ChatBody(props: ChatBodyProps) {
       // and a count of follow-ups the live host will drain in seconds is the one
       // waiting state with nothing to act on.
       queueOn,
+      slashCommands,
+      onLocalCommand,
       // ONLY INSIDE A CONVERSATION. `card` is spread into `Home`'s composer as
       // well as the chat's, and a hand-back is about the turn that was running
       // — the landing has none.
@@ -4450,6 +4563,8 @@ function ChatBody(props: ChatBodyProps) {
       sched.placeholder,
       sched.reason,
       queueOn,
+      slashCommands,
+      onLocalCommand,
     ],
   );
   /**
@@ -4818,6 +4933,7 @@ function ChatBody(props: ChatBodyProps) {
                 (T:1412-1438). */}
             {!compact && !peek ? (
               <Topbar
+                worktree={worktreeMenu}
                 sessionId={state.sessionId ?? ""}
                 subtitle={name}
                 {...(taskId ? { taskId } : {})}
@@ -4995,6 +5111,7 @@ function ChatBody(props: ChatBodyProps) {
             heldKey={held?.key ?? null}
             heldForm={heldForm}
             onHeldGone={onHeldGone}
+            worktree={worktreeMenu}
           />
         )}
         {/* THE NOTE COMPOSER'S IDLE HOME (T:7291): ONE node, parked in the chat

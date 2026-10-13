@@ -7,7 +7,9 @@
 import {
   useCallback,
   useEffect,
+  useId,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   type ReactNode,
@@ -31,7 +33,14 @@ import {
 import { notify } from "@platform/lib/notifications";
 import { onDraftChange } from "@shell/tasksPulse";
 import "../styles/composer.css";
-import type { ContextUsage, PermissionMode } from "../protocol/types";
+import type { CommandRow, ContextUsage, PermissionMode } from "../protocol/types";
+import {
+  classifyCommand,
+  filterCommands,
+  menuCommands,
+  type ClassifiedCommand,
+} from "../protocol/commands";
+import { CommandMenu, acceptText, menuKey, menuQuery } from "./CommandMenu";
 import type { RunStatus, SendOptions } from "../protocol/controller-api";
 import type { Attachment } from "../shots/types";
 import {
@@ -453,6 +462,23 @@ export interface ComposerCardProps {
   /** The held record was deleted elsewhere (its row trashed on the Tasks
    *  page): the box has emptied itself, and the host should hold a fresh key. */
   onHeldGone?(): void;
+  /**
+   * THE FOLDER'S SLASH COMMANDS (SPEC C-3), as the agent's `commands` action
+   * listed them. The menu adds the local ones itself. `null`/absent = not
+   * fetched yet: the menu still lists the local commands.
+   */
+  slashCommands?: readonly CommandRow[] | null;
+  /**
+   * A LOCAL COMMAND WAS SENT (`/clear`, `/model`, `/effort`, `/worktree`,
+   * `/tasks` — `protocol/commands.LOCAL_COMMANDS`). The box is emptied first,
+   * then this runs, and `onSend` never does. Answer `false` to refuse it (a bad
+   * argument): the words go back in the box. `/help` never reaches here — it
+   * opens this composer's own menu.
+   *
+   * ABSENT = no slash-command handling at all: no menu, and a `/clear` is sent
+   * to the CLI as typed, exactly as before.
+   */
+  onLocalCommand?(cmd: ClassifiedCommand): boolean | void;
 }
 
 /** EVERYTHING THERE IS TO LOSE IN A COMPOSER: the words, and how many files are
@@ -548,6 +574,8 @@ export function ComposerCard({
   heldKey,
   heldForm,
   onHeldGone,
+  slashCommands,
+  onLocalCommand,
 }: ComposerCardProps) {
   // WHAT IS IN THE BOX DEPENDS ON WHETHER THERE IS A CONVERSATION BEHIND IT —
   // the one fork this file has, and every rule below hangs off it (see "THE
@@ -1752,6 +1780,58 @@ export function ComposerCard({
    */
   const hopFrozen = hopping && !running;
 
+  // ---- THE SLASH-COMMAND MENU (SPEC C-3) -----------------------------------
+  //
+  // Open while the box holds only a `/token` (`menuQuery`), or after `/help`
+  // with an empty box (`helpOpen`). Esc or leaving the box dismisses it for
+  // the text it was dismissed at; the next keystroke brings it back.
+  const menuId = useId();
+  const [menuIdx, setMenuIdx] = useState(0);
+  const [helpOpen, setHelpOpen] = useState(false);
+  const [menuDismissed, setMenuDismissed] = useState<string | null>(null);
+  const menuAll = useMemo(() => menuCommands(slashCommands), [slashCommands]);
+  const menuQ = onLocalCommand ? (helpOpen && !text ? "" : menuQuery(text)) : null;
+  const menuRows = useMemo(
+    () => (menuQ === null ? [] : filterCommands(menuAll, menuQ)),
+    [menuAll, menuQ],
+  );
+  const menuOpen =
+    menuQ !== null && menuRows.length > 0 && menuDismissed !== text && !blocked && !hopping;
+  const menuActive = Math.min(menuIdx, Math.max(0, menuRows.length - 1));
+  /** The words go, the tray stays: what a local command leaves behind — the
+   *  same as the reader deleting the line by hand, latched like a send so a
+   *  render older than this cannot hand the words back (`spent`). */
+  const clearWords = useCallback(() => {
+    spent.current = boxShape(textRef.current, 0);
+    textRef.current = "";
+    dirtyRef.current = !hasSessionRef.current && trayDraftRef.current.length > 0;
+    episode.current += 1;
+    setText("");
+    grow();
+  }, [grow]);
+  const pickCommand = useCallback(
+    (name: string) => {
+      const next = acceptText(name);
+      spent.current = null;
+      typedRef.current = true;
+      setHelpOpen(false);
+      setMenuIdx(0);
+      setText(next);
+      grow();
+      const box = boxRef.current;
+      if (box) {
+        box.focus({ preventScroll: true });
+        // The caret after the space, ready for an argument.
+        try {
+          box.setSelectionRange?.(next.length, next.length);
+        } catch {
+          /* a box that cannot place a caret still has the words */
+        }
+      }
+    },
+    [boxRef, grow],
+  );
+
   const submit = useCallback((seed?: string, now = false): boolean => {
     // Nothing leaves this composer while a scheduled message is pending — not a
     // typed line, not a follow-up (T:17871).
@@ -1794,6 +1874,25 @@ export function ComposerCard({
     // THE LIVE HALF FIRST-CLASS, not a fallback: a round of notes committed a
     // microtask ago is exactly as real as one the last paint drew a chip for.
     if (!message && !hasAttachments && !hasAttachmentsNow?.()) return false;
+    // A LOCAL SLASH COMMAND IS ANSWERED HERE AND NEVER SENT (SPEC C-3). Only a
+    // typed line: a programmatic send's seed is never a command.
+    const local = onLocalCommand && !extra ? classifyCommand(message) : null;
+    if (local && local.kind === "local") {
+      const words = textRef.current;
+      clearWords();
+      setMenuIdx(0);
+      if (local.name === "help") {
+        setMenuDismissed(null);
+        setHelpOpen(true);
+      } else if (onLocalCommand!(local) === false) {
+        // Refused (a bad argument): the words come back to be fixed.
+        spent.current = null;
+        textRef.current = words;
+        setText(words);
+      }
+      boxRef.current?.focus({ preventScroll: true });
+      return true;
+    }
     // A SEND SPENDS THE BOX THE SAME WAY AN ANSWERED DIALOG DOES, and a render
     // older than this line would otherwise hand a sent sentence to the unmount
     // save as an unfinished task (`spent`).
@@ -1869,6 +1968,8 @@ export function ComposerCard({
     onSend,
     controls,
     boxRef,
+    onLocalCommand,
+    clearWords,
   ]);
 
   // The seat for the programmatic send. In an EFFECT so a render React throws
@@ -1884,6 +1985,25 @@ export function ComposerCard({
 
   const onKeyDown = useCallback(
     (ev: React.KeyboardEvent<HTMLTextAreaElement>) => {
+      // THE COMMAND MENU HAS THE ARROWS, ENTER, TAB AND ESC WHILE IT IS OPEN
+      // (`menuKey`); every other key is the box's.
+      if (menuOpen) {
+        const k = menuKey(ev.key, menuActive, menuRows.length, ev.shiftKey);
+        if (k) {
+          ev.preventDefault();
+          if (k.type === "move") setMenuIdx(k.index);
+          else if (k.type === "accept") pickCommand(menuRows[menuActive].name);
+          else {
+            // Esc closes the menu and goes no further: not the annotation
+            // mode's, not the host's (`ClaudeChat`'s document listener reads
+            // `defaultPrevented`).
+            ev.stopPropagation();
+            setHelpOpen(false);
+            setMenuDismissed(text);
+          }
+          return;
+        }
+      }
       // ↑ IN AN EMPTY BOX PULLS THE NEWEST PARKED LINE BACK — Claude Code's
       // "Press up to edit queued messages". Only with nothing typed: in a box
       // with words, ↑ is the caret's.
@@ -1912,7 +2032,7 @@ export function ComposerCard({
       ev.preventDefault();
       submit(undefined, ev.ctrlKey && !ev.metaKey);
     },
-    [submit, onPullQueued, queuedCount, notSentCount, text, grow],
+    [submit, onPullQueued, queuedCount, notSentCount, text, grow, menuOpen, menuActive, menuRows, pickCommand],
   );
 
   const draft = useCallback(() => text, [text]);
@@ -1986,6 +2106,15 @@ export function ComposerCard({
             <span>{controls.effort}</span>
           </div>
         ) : null}
+        {menuOpen ? (
+          <CommandMenu
+            id={menuId}
+            rows={menuRows}
+            active={menuActive}
+            onPick={pickCommand}
+            onHover={setMenuIdx}
+          />
+        ) : null}
         <textarea
           ref={boxRef}
           rows={variant === "home" ? 2 : 1}
@@ -2025,9 +2154,18 @@ export function ComposerCard({
             spent.current = null;
             typedRef.current = true;
             setText(value);
+            setHelpOpen(false);
+            setMenuIdx(0);
             grow();
           }}
           onKeyDown={onKeyDown}
+          {...(menuOpen
+            ? {
+                "aria-controls": menuId,
+                "aria-activedescendant": `${menuId}-${menuActive}`,
+                "aria-expanded": true,
+              }
+            : {})}
           // WHO HAS THE CARET, for the conflict rule above and nothing else: a
           // record that changed elsewhere is adopted into a box nobody is
           // typing in, and never over one somebody is.
@@ -2036,6 +2174,11 @@ export function ComposerCard({
           }}
           onBlur={() => {
             focusedRef.current = false;
+            // The menu belongs to the box: leaving it closes the menu.
+            if (menuOpen) {
+              setHelpOpen(false);
+              setMenuDismissed(text);
+            }
             // A SENTENCE ENDS WHEN THE READER LEAVES THE BOX (Bugbot
             // 4039858841): the held road's "mid-sentence" flag is not a
             // permanent claim, and an idle box takes remote news again.

@@ -744,6 +744,10 @@ export interface ControllerDeps {
      */
     refused?: boolean;
   }) => void;
+  /** A poll window held an `init` or `commands_changed` row
+   *  (`PollResponse.commands_changed`, SPEC C-2): the folder's slash-command
+   *  list may have moved, so the host re-fetches it once. */
+  onCommandsChanged?: () => void;
 }
 
 export type { HistoryTurn };

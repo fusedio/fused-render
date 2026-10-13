@@ -26,7 +26,8 @@ export type Action =
   | "terminal_command"
   | "cancel"
   | "live_host"
-  | "send";
+  | "send"
+  | "commands";
 
 /** A permission mode as the CLI spells it (PERMISSION_MODES, agent.py). */
 export type PermissionMode = "plan" | "prompt" | "acceptEdits" | "auto";
@@ -216,6 +217,7 @@ export interface AgentRequests {
   cancel: CancelRequest;
   live_host: FileSessionRequest;
   send: SendRequest;
+  commands: FileRequest;
 }
 
 // ---- segments (agent.py:3253 _segments_from_rows; T:15591-15635) -----------
@@ -541,6 +543,10 @@ export interface PollResponse {
    * which is the same as an empty one: the optimistic bubbles are all there is.
    */
   inbox?: InboxMessage[];
+  /** True on a window that held an `init` or `commands_changed` row: the
+   *  slash-command list may have moved, so the page re-fetches `commands`
+   *  once (SPEC C-2). Absent on an older agent.py. */
+  commands_changed?: boolean;
 }
 
 /**
@@ -938,6 +944,23 @@ export interface AgentResponses {
   cancel: CancelResponse;
   live_host: RunIdResponse | ErrorOnly;
   send: SendResponse;
+  commands: CommandsResponse | ErrorOnly;
+}
+
+/** One slash command the CLI (or the disk scan) knows (SPEC C-2). */
+export interface CommandRow {
+  name: string;
+  description: string;
+  source: string;
+}
+
+/** `commands {file}` — the folder's slash-command list. `from: "cli"` when the
+ *  last session's `init` row was captured, `"disk"` for the fallback scan. */
+export interface CommandsResponse {
+  commands: CommandRow[];
+  agents: string[];
+  stale: boolean;
+  from: "cli" | "disk";
 }
 
 // ---- sibling scripts ---------------------------------------------------------

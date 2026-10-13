@@ -1471,6 +1471,8 @@ export function createChatController(deps: ControllerDeps): ChatController {
         // `publishInbox`. An older agent.py sends none, which reads as an empty
         // inbox, which is what it was before this field existed.
         publishInbox(Array.isArray(poll.inbox) ? poll.inbox : []);
+        // THE SLASH-COMMAND LIST MAY HAVE MOVED (SPEC C-2) — the host re-reads it.
+        if (poll.commands_changed) deps.onCommandsChanged?.();
 
         const segs = Array.isArray(poll.segments) ? poll.segments : [];
         const fullText = poll.text || "";
