@@ -14,7 +14,7 @@ import { api, stepThumbUrl, type AppRef, type Bot, type BotEvent } from "../lib/
 import { esc, fmtDay, fmtSecs, fmtTime, fmtWhen } from "../lib/format";
 import { md } from "../lib/md";
 import { botsRoot } from "../lib/root";
-import { chosenOption, clearIndex, firstNewIndex, foldHint, foldStretches, isHandoff, isNoise, liveCards, optionKey, rowKeys, searchCountText, searchHit, sessionBreak } from "../lib/thread";
+import { chosenOption, clearIndex, firstNewIndex, foldHint, foldStretches, isHandoff, isNoise, isTaskEnd, liveCards, optionKey, rowKeys, searchCountText, searchHit, sessionBreak } from "../lib/thread";
 import { act, clearScrollSeq, cur, eventsOf, getState, jumpTo, markSeen, openDialog, select, setNewCount, setScrollToEnd, showBanner, unviewed, useBots, viewedSet } from "../state/store";
 import { END_GAP, clearSearchHighlight, gapOf, evBox, highlightSearch, pinToEnd, restoreAnchor, topVisible, updateToBottom, type Anchor } from "./threadDom";
 import { HandBackRow, HandoverNote } from "./HandoverCard";
@@ -480,7 +480,11 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
   // A REF PLUS A BUMP, like the Clear fold's anchor: the map is read during render, and every row's props must stay
   // identical across a click for Row's memo to hold.
   const busy = !!b && (b.status === "running" || b.status === "waiting");
-  const folds = useMemo(() => foldStretches(evs, rxs, busy), [evs, rxs, busy]);
+  // A note whose text links a built app draws a card (body() `appFromText`): an outcome, never hidden.
+  const folds = useMemo(
+    () => foldStretches(evs, { reactions: rxs, live: busy, keep: (e) => e.role !== "action" && !!appFromText(e.text, appsRoot) }),
+    [evs, rxs, busy, appsRoot],
+  );
   const stretchRef = useRef({ bot: "\u0000", seeded: false, open: new Map<number, boolean>() });
   const [, bumpFold] = useState(0);
   if (stretchRef.current.bot !== botId) stretchRef.current = { bot: botId, seeded: false, open: new Map() };
@@ -492,7 +496,7 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
   if (!stretchRef.current.seeded && evs.length && base !== undefined) {
     // The newest task starts after the second-to-last closer: everything from there on is the one you came back for.
     const closers: number[] = [];
-    for (let i = 0; i < evs.length; i++) if ((evs[i].role === "done" || evs[i].role === "error") && !isHandoff(evs[i]) && evs[i].source !== "build" && evs[i].source !== "seed") closers.push(i);
+    for (let i = 0; i < evs.length; i++) if (isTaskEnd(evs[i])) closers.push(i);
     const newestFrom = closers.length >= 2 ? closers[closers.length - 2] : -1;
     for (const t of folds) {
       const unread = t.hidden.some((j) => evs[j].seq > base);
@@ -505,10 +509,12 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
   // where it is); the rest of the stretch is `.folded` while closed.
   const foldAt = new Map<number, { fold: "open" | "closed"; key: number; hint: string }>();
   const foldHidden = new Set<number>();
+  // SEARCH OPENS EVERYTHING (like the Clear fold): a closed stretch draws only its trigger line, and a row whose body
+  // is not in the DOM cannot be a hit. The map is untouched, so the folds come back as they were when the search ends.
   for (const t of folds) {
-    const isOpen = stretchRef.current.open.get(t.key) ?? true;
+    const isOpen = !!searchQ || (stretchRef.current.open.get(t.key) ?? true);
     foldAt.set(t.hidden[0], { fold: isOpen ? "open" : "closed", key: t.key, hint: foldHint(t) });
-    if (isOpen || searchQ) continue;
+    if (isOpen) continue;
     for (const j of t.hidden) if (j !== t.hidden[0]) foldHidden.add(j);
   }
   // The toggle keeps the trigger line where it sits: the steps open (or close) below it, never under your pointer.
@@ -546,7 +552,8 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
     if (jumping && folded && js.seq < evs[ci].seq && js.seq >= evs[0].seq) { setOpenFold(foldKey); return; }
     // …and a jump at a step hidden behind its stretch's trigger opens that stretch first, the same way.
     if (jumping) {
-      const hit = folds.find((t) => t.hidden.some((j) => foldHidden.has(j) && evs[j].seq === js.seq));
+      // Every row of a closed stretch, its first included: that one draws the trigger line but not its body.
+      const hit = folds.find((t) => foldAt.get(t.hidden[0])?.fold === "closed" && t.hidden.some((j) => evs[j].seq === js.seq));
       if (hit) { stretchRef.current.open.set(hit.key, true); bumpFold((n) => n + 1); return; }
     }
     const fa = foldRef.current.anchor;
@@ -566,7 +573,12 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
     th.classList.toggle("filtering", !!searchQ);
     if (searchQ) {
       let n = 0;
-      for (const el of th.children) { const hit = searchHit(el.textContent, searchQ); el.classList.toggle("hit", hit); if (hit) n++; }
+      // A row's text, minus the fold trigger line: "show more" is chrome, and `more` must not match every stretch.
+      for (const el of th.children) {
+        let text = "";
+        for (const c of el.children) if (!c.classList.contains("foldline")) text += c.textContent || "";
+        const hit = searchHit(text, searchQ); el.classList.toggle("hit", hit); if (hit) n++;
+      }
       // The matched words themselves light up; the count is of those, or of rows where the browser cannot paint them.
       onSearchCount(searchCountText(highlightSearch(th, searchQ) || n));
     } else { highlightSearch(th, ""); onSearchCount(""); }

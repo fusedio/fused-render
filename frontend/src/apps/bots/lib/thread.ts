@@ -115,17 +115,30 @@ export interface FoldStretch {
   secs: number;
 }
 
-/** A row the fold may hide: the bot's process, unless something made it part of the exchange. */
-const hideable = (e: BotEvent, rx: Record<number, string>, quoted: Set<number>): boolean =>
-  (e.role === "thought" || e.role === "action" || e.role === "note")
-  // The Clear marker is a `note` too (source "clear"): the other fold's own boundary, never a step.
-  && e.source !== "clear" && !e.app?.dir && !e.build && !isHandoff(e) && !rx[e.seq] && !quoted.has(e.seq);
+/** The `done` / `error` bubble a task ends on. A retried `error` ("Model call failed", no `trace`: the engine carries
+ *  on) is a step, not an end; only one with a `trace` (process death, three strikes) closes the task. Cards (hand-off
+ *  result, build notice) and the seeded greeting are not closers. */
+export const isTaskEnd = (e: BotEvent): boolean =>
+  (e.role === "done" || (e.role === "error" && e.trace != null)) && !isHandoff(e) && e.source !== "build" && e.source !== "seed";
 
-/**
- * The fold stretches of a thread. `live`: the bot is mid-task, so a stretch that runs to the END of the list is still
- * growing and is left alone (its progress is the point; a lid that goes on per step comes straight back off).
- */
-export function foldStretches(evs: readonly BotEvent[], reactions: Record<number, string> | undefined, live: boolean): FoldStretch[] {
+/** A row the fold may hide: the bot's process, unless something made it part of the exchange. `keep` is the thread's
+ *  own extra test (a note whose text links an app the thread draws a card for, apps.ts `appFromText`). */
+const hideable = (e: BotEvent, rx: Record<number, string>, quoted: Set<number>, keep: (e: BotEvent) => boolean): boolean =>
+  (e.role === "thought" || e.role === "action" || e.role === "note" || (e.role === "error" && e.trace == null))
+  // The Clear marker is a `note` too (source "clear"): the other fold's own boundary, never a step.
+  && e.source !== "clear" && !e.app?.dir && !e.build && !isHandoff(e) && !rx[e.seq] && !quoted.has(e.seq) && !keep(e);
+
+export interface FoldOpts {
+  reactions?: Record<number, string>;
+  /** The bot is mid-task, so a stretch that runs to the END of the list is still growing and is left alone (its
+   *  progress is the point; a lid that goes on per step comes straight back off). */
+  live: boolean;
+  /** Rows the thread draws something for beyond their text (an app card inferred from the text): never hidden. */
+  keep?: (e: BotEvent) => boolean;
+}
+
+/** The fold stretches of a thread. */
+export function foldStretches(evs: readonly BotEvent[], { reactions, live, keep = () => false }: FoldOpts): FoldStretch[] {
   const quoted = new Set<number>();
   for (const e of evs) if (e.reply?.seq != null) quoted.add(e.reply.seq);
   const rx = reactions || {};
@@ -143,7 +156,7 @@ export function foldStretches(evs: readonly BotEvent[], reactions: Record<number
   for (let i = 0; i < evs.length; i++) {
     const e = evs[i];
     if (isNoise(e)) continue;  // draws nothing; neither hides nor bounds
-    if (hideable(e, rx, quoted)) { run.push(i); continue; }
+    if (hideable(e, rx, quoted, keep)) { run.push(i); continue; }
     close(i);
   }
   if (!live) close(-1);
