@@ -15,11 +15,12 @@ import { Input } from "@platform/shadcn/ui/input";
 import { NativeSelect, NativeSelectOption } from "@platform/shadcn/ui/native-select";
 import { Textarea } from "@platform/shadcn/ui/textarea";
 import { ToggleGroup, ToggleGroupItem } from "@platform/shadcn/ui/toggle-group";
-import { api, type Routine, type RoutineBody, type SetupReply } from "../lib/api";
-import { fmtWhen } from "../lib/format";
+import { Badge } from "@platform/shadcn/ui/badge";
+import { api, type Routine, type RoutineBody, type RoutineRun, type SetupReply } from "../lib/api";
+import { fmtDay, fmtDur, fmtIn, fmtWhen } from "../lib/format";
 import { DAYS, routineLabel } from "../lib/live";
 import { ownerLine } from "../lib/setup";
-import { act, showBanner, useBotsSelector } from "../state/store";
+import { act, closeDialog, jumpTo, showBanner, useBotsSelector } from "../state/store";
 import { CARD_CLASS } from "./shell";
 import type { SectionProps } from "./SkillsSection";
 
@@ -29,6 +30,67 @@ type Schedule = Omit<Extract<RoutineBody, { op: "add" }>, "op">;
 
 // Mirrors ROUTINE_MIN_MINUTES / ROUTINE_MAX_FAILS in bot.py (APP_GUIDE tells the bot the same numbers).
 const MIN_MINUTES = 5, MAX_FAILS = 3;
+/** Run rows shown per routine (bot.py keeps ROUTINE_RUNS = 10). */
+const SHOW_RUNS = 5;
+
+/** The rows the table shows: `runs` (bot.py _run_add), or one row built from the `last*` fields for a routine that
+ *  fired before run history existed (2026-10-13), so an upgraded routine is not blank. */
+function runRows(r: Routine): RoutineRun[] {
+  if (r.runs?.length) return r.runs.slice(0, SHOW_RUNS);
+  if (!r.last) return [];
+  const skipped = (r.last_result || "").startsWith("skipped");
+  return [{ started: r.last, result: skipped ? "skipped" : r.last_result || "done",
+    message: skipped ? (r.last_result || "").replace(/^skipped:\s*/, "") : r.last_message, done: r.last_done }];
+}
+
+const RESULT_LABEL: Record<string, string> = { started: "running", done: "done", error: "error", stopped: "stopped", skipped: "skipped" };
+
+/** A run's outcome pill: red for an error, quiet for a skip or a stop, filled while it runs. */
+function ResultBadge({ run }: { run: RoutineRun }) {
+  const v = run.result === "error" ? "destructive" : run.result === "done" ? "secondary" : run.result === "started" ? "default" : "outline";
+  return <Badge variant={v} className="h-[18px] px-1.5 text-[11px]">{RESULT_LABEL[run.result] || run.result}{(run.count || 1) > 1 ? ` ×${run.count}` : ""}</Badge>;
+}
+
+/** The last runs of one routine (owner, 2026-10-13: "when they ran, what they did, if error then surface"): when it
+ *  started, how long it took, the outcome and the bot's closing message (the error text for a failed run, why for a
+ *  skip). A row that wrote a transcript line opens the chat there: the dialog closes first (Routines posts every op
+ *  at once, so nothing on this tab is unsaved; a General-tab edit left behind would be dropped). */
+function RunsTable({ botId, r }: { botId: string; r: Routine }) {
+  const rows = runRows(r);
+  if (!rows.length) return <p className="m-0 text-[13px] text-muted-foreground">No runs yet.</p>;
+  const open = (run: RoutineRun) => { if (run.seq) { closeDialog(); jumpTo(botId, run.seq); } };
+  return (
+    <table className="w-full border-collapse text-[13px] leading-5" data-runs={r.id}>
+      <thead>
+        <tr className="text-left text-[11px] uppercase tracking-wide text-muted-foreground">
+          <th className="py-1 pr-3 font-medium">When</th>
+          <th className="py-1 pr-3 font-medium">Took</th>
+          <th className="py-1 pr-3 font-medium">Result</th>
+          <th className="py-1 font-medium">What it did</th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((run, i) => {
+          const err = run.result === "error";
+          const took = run.done && run.result !== "skipped" ? fmtDur(run.done - run.started) : run.result === "started" ? "…" : "";
+          return (
+            <tr key={`${run.started}-${i}`} data-result={run.result} role={run.seq ? "button" : undefined} tabIndex={run.seq ? 0 : undefined}
+              title={run.seq ? "Open the chat at this run" : undefined}
+              className={cn("border-t border-foreground/10 align-top", run.seq && "cursor-pointer hover:bg-foreground/[0.04]")}
+              onClick={() => open(run)} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(run); } }}>
+              <td className="whitespace-nowrap py-1.5 pr-3 tabular-nums text-muted-foreground" title={fmtWhen(run.started)}>{fmtDay(run.started)}{run.manual ? <span title="Run now"> ·&nbsp;manual</span> : null}</td>
+              <td className="whitespace-nowrap py-1.5 pr-3 tabular-nums text-muted-foreground">{took || "—"}</td>
+              <td className="whitespace-nowrap py-1.5 pr-3"><ResultBadge run={run} /></td>
+              <td className={cn("min-w-0 py-1.5", err ? "text-destructive" : "text-foreground/85")}>
+                <span className="line-clamp-2 break-words" title={run.message || ""}>{run.message || (run.result === "started" ? "Running now…" : "")}</span>
+              </td>
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
+  );
+}
 
 /** Epoch seconds → the datetime-local value (local time, to the minute); the inverse of `new Date(value)`. */
 function toLocal(ts: number): string {
@@ -164,12 +226,16 @@ export function RoutinesSection({ b, confirm }: SectionProps) {
                   <Button variant="ghost" size="icon-xs" data-op="delete" aria-label="Delete routine" title="Delete" className="text-muted-foreground hover:text-destructive" onClick={() => { void onOp(r.id, "delete"); }}><Trash2Icon /></Button>
                 </div>
               </div>
+              {/* Schedule · next run as a countdown (the clock time beside it) · spend; the red tail when the breaker
+                  tripped. Everything about past runs is the table below. */}
               <p className="m-0 text-[13px] leading-5 text-muted-foreground">
-                {routineLabel(r)} · {tasks?.[r.task] || 0} calls today · next: {r.enabled ? fmtWhen(r.next)
+                {routineLabel(r)} · {tasks?.[r.task] || 0} calls today · {r.enabled
+                  ? r.last_result === "started" ? <span className="text-foreground">running now</span>
+                    : <>next <span className="text-foreground" title={fmtWhen(r.next)}>{fmtIn(r.next) || "soon"}</span>{r.next ? <span> ({fmtWhen(r.next)})</span> : null}</>
                   : (r.fails || 0) >= MAX_FAILS ? <span className="text-destructive">paused after {r.fails} failed runs in a row</span> : "paused"}
-                {r.last ? <> · last: {fmtWhen(r.last)} <span className={warn ? "text-destructive" : undefined}>({r.last_result || ""}{(r.fails || 0) > 1 ? `, ${r.fails} in a row` : ""})</span></> : null}
-                {r.last_message ? <> <span>{r.last_message}</span></> : null}
+                {warn && (r.fails || 0) > 1 && (r.fails || 0) < MAX_FAILS ? <span className="text-destructive"> · {r.fails} failed in a row</span> : null}
               </p>
+              <RunsTable botId={b.id} r={r} />
             </section>
           );
         }) : <p className="m-0 text-sm text-muted-foreground">No routines yet. Add one below.</p>}

@@ -490,7 +490,9 @@ them all. `logins_from` takes a bot's name or a browser's name.
 
 Everything in `agents.py` that is not the model loop: create/clone/delete,
 greet, rename/settings, flag, react, routines (`_next_run`, spacing from
-disk, circuit breaker after 3 fails), skills (`learn`, `skills_for`), memory
+disk, circuit breaker after 3 fails, run history `runs[]` per routine:
+`_run_add` writes one row per slot reached, skips included, `_routine_outcome`
+lands the result on it; ROUTINE_RUNS kept, newest first), skills (`learn`, `skills_for`), memory
 (`remember`, caps), artifacts/Inbox (`save_file`, `collect_task_artifacts`,
 README.md per task, `index.jsonl`), attachments (`save_bytes`,
 `resolve_file`), file inbox (`drain_file_inbox`, botsend / iMessage), offers
@@ -590,7 +592,10 @@ General (avatar, name, instructions, model, thinking), Permissions (On this Mac
 for Super Bot; before it buys/deletes/posts; builds for ordinary bots; apps it
 may use without asking), Browser (Chrome profile, encryption), Skills
 (`SkillsSection.tsx`, the playbooks: edit, delete, learn from the last task,
-write by hand), Routines (`RoutinesSection.tsx`: add, edit in place, run, pause, delete), Memory, and
+write by hand), Routines (`RoutinesSection.tsx`: add, edit in place, run, pause, delete; each card
+says "next in 53 min" and tables its last 5 runs — when, how long, result pill, the bot's closing
+message or the error, a row opens the chat at that run; the preview pane's routine rows and the
+list's idle subtitle use the same countdown, `fmtIn`), Memory, and
 Phone on Super Bot (`PhoneSection.tsx`, §10). Skills and Routines post every op
 at once and never touch Save; the Skills… and Routines… menu rows and the
 preview pane's routines links open Settings on that section. The avatar picker

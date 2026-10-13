@@ -42,6 +42,7 @@ ATTACH_MAX = 8 * 1024 * 1024  # composer attachment size cap
 IDLE_SLEEP_S = 10 * 60  # close Chrome after this long idle (every bot); encrypted bots also seal the profile
 ROUTINE_MAX_FAILS = 3   # consecutive failed runs before a routine pauses itself (RoutinesSection.tsx mirrors it)
 ROUTINE_MIN_MINUTES = 5  # "Every N minutes" floor; the dialog refuses less, routine_add clamps as the backstop
+ROUTINE_RUNS = 10        # run rows kept per routine (Settings › Routines shows the newest 5)
 
 
 class AppRefused(Exception):
@@ -1649,9 +1650,30 @@ class Bot:
 
     # -- routines ------------------------------------------------------------
     # meta["routines"]: [{id, task, kind: interval|daily|once, minutes, time "HH:MM",
-    #   weekdays [0-6, Mon=0], at (ts), enabled, next, last, last_result}]
+    #   weekdays [0-6, Mon=0], at (ts), enabled, next, last, last_result, last_message, last_done, fails,
+    #   runs: [{started, result: started|done|error|stopped|skipped, message, done (ts), seq, manual, count}]}]
+    # `runs` is the run history Settings › Routines tables (newest first, ROUTINE_RUNS kept): every slot the scheduler
+    # or Run now reached, skips included (`seq` is the transcript line the slot wrote, so a row opens the chat there;
+    # `count` folds consecutive identical skips: a due one-shot retries every minute while the bot is busy). The
+    # `last*` fields stay the sidebar's and the reconcile walk's one-glance summary of the newest run.
     def routines(self):
         return self.meta.setdefault("routines", [])
+
+    @staticmethod
+    def _run_add(r, result, message="", seq=None, manual=False):
+        """Prepend a run to `r["runs"]` (capped). A skip identical to the newest row is folded into it (`count`)."""
+        runs = r.setdefault("runs", [])
+        top = runs[0] if runs else None
+        if result == "skipped" and top and top.get("result") == "skipped" and top.get("message") == message:
+            top["count"] = int(top.get("count") or 1) + 1
+            top["started"] = time.time()
+            return top
+        run = {"started": time.time(), "result": result, "message": message, "manual": bool(manual)}
+        if seq is not None:
+            run["seq"] = seq
+        runs.insert(0, run)
+        del runs[ROUTINE_RUNS:]
+        return run
 
     @staticmethod
     def _next_run(r, after):
@@ -1774,11 +1796,14 @@ class Bot:
             prev_last = r.get("last")
             r["last"] = time.time()
             if busy:
-                r["last_result"] = "skipped: you had the browser" if held else "skipped: bot was busy"
-                self.emit("system", f"Routine \"{r['task'][:60]}\" skipped: {'you had the browser' if held else 'bot busy'}")
+                why = "you had the browser" if held else "bot was busy"
+                r["last_result"] = f"skipped: {why}"
+                ev = self.emit("system", f"Routine \"{r['task'][:60]}\" skipped: {'you had the browser' if held else 'bot busy'}")
+                self._run_add(r, "skipped", why, seq=ev.get("seq"), manual=manual)
             else:
                 r["last_result"] = "started"
-                self.emit("system", f"Routine {'run now' if manual else 'fired'}: {r['task']}")
+                ev = self.emit("system", f"Routine {'run now' if manual else 'fired'}: {r['task']}")
+                self._run_add(r, "started", "", seq=ev.get("seq"), manual=manual)
             if busy and r["kind"] == "once":
                 # A one-shot is not a slot to lose: a `last` would end it for good (_next_run), so it is not
                 # stamped. A due one retries in a minute until the bot is free and you have handed back; a
@@ -1795,6 +1820,9 @@ class Bot:
             # line is already in the thread; one short note says what happened to it, not a second "skipped" line.
             with self.lock:
                 r["last_result"] = "skipped: bot was busy"
+                runs = r.get("runs") or []
+                if runs and runs[0].get("result") == "started":
+                    runs[0].update(result="skipped", message="another task took the bot first", done=time.time())
                 # Undo the fire record: a once-routine with `last` set never gets a `next` again (_next_run),
                 # and `next` was computed as if this slot had run.
                 r["last"] = prev_last
@@ -1854,6 +1882,10 @@ class Bot:
             hit["last_result"] = result
             hit["last_message"] = (message or "")[:300]
             hit["last_done"] = time.time()
+            # The run row the fire wrote (the newest one still "started"); a routine from before run history has none.
+            run = next((x for x in hit.get("runs") or [] if x.get("result") == "started"), None)
+            if run is not None:
+                run.update(result=result, message=(message or "")[:300], done=hit["last_done"])
             hit["fails"] = 0 if result == "done" else int(hit.get("fails") or 0) + (1 if result == "error" else 0)
             tripped = hit["fails"] >= ROUTINE_MAX_FAILS and hit.get("enabled")
             if tripped:

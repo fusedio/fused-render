@@ -112,7 +112,22 @@ export interface Routine {
   last?: number;
   last_result?: string;
   last_message?: string;
+  last_done?: number;
   fails?: number;
+  /** Run history, newest first (bot.py _run_add): every slot reached, skips included. */
+  runs?: RoutineRun[];
+}
+
+/** One run of a routine. `seq` is the transcript line the slot wrote (the chat opens there); `count` folds consecutive
+ *  identical skips; `done` is set once the task ended (result no longer "started"). */
+export interface RoutineRun {
+  started: number;
+  result: "started" | "done" | "error" | "stopped" | "skipped" | (string & {});
+  message?: string;
+  done?: number;
+  seq?: number;
+  manual?: boolean;
+  count?: number;
 }
 
 /** Bot.skills(): one playbook file. `name` is the file stem (the rid in /skills calls). */
