@@ -616,6 +616,131 @@ def api_fs_pick_file(body: dict = Body(...), x_fused: str | None = Header(defaul
     return JSONResponse({"path": chosen})
 
 
+#: What `/api/fs/thumb` will read. Pillow opens the first group on every
+#: platform; HEIC/HEIF is `sips` on macOS (the OS decoder, no dependency) and a
+#: 415 elsewhere, since the server venv deliberately carries no pillow-heif
+#: (`embed_common._register_heif` is the embed RUNNER's, a separate venv).
+_THUMB_PIL = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tif", ".tiff", ".avif"}
+_THUMB_SIPS = {".heic", ".heif"}
+_THUMB_SIZES = (64, 160, 320, 640)
+
+
+def _thumb_dir() -> str:
+    from fused_render.shell.storage import home_dir as shell_home_dir
+
+    return os.path.join(shell_home_dir(), "cache", "thumbs")
+
+
+def _make_thumb(src: str, dst: str, size: int) -> None:
+    """Write a JPEG of `src` at most `size` px on its long side to `dst`.
+
+    `sips` for HEIC on macOS — it is the system's own decoder, already on every
+    Mac, and the one thing that reads an iPhone photo without a wheel this
+    venv does not ship. Pillow for everything else, EXIF-rotated so a phone
+    photo shot sideways thumbs upright. Written to a temp name and renamed,
+    so a reader never sees a half-written file.
+    """
+    import tempfile
+
+    ext = os.path.splitext(src)[1].lower()
+    # A fresh temp name per call (not `<dst>.tmp`): two requests for the same
+    # key at once would otherwise write one file between them and the
+    # second rename would find nothing to move.
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(dst), suffix=".tmp")
+    os.close(fd)
+    try:
+        if ext in _THUMB_SIPS:
+            if not _sips_here():
+                raise LookupError("HEIC thumbnails need macOS (sips)")
+            proc = subprocess.run(
+                ["sips", "-s", "format", "jpeg", "-s", "formatOptions", "80",
+                 "-Z", str(size), src, "--out", tmp],
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE, timeout=30)
+            if proc.returncode != 0:
+                raise ValueError(proc.stderr.decode("utf-8", "replace").strip()
+                                 or f"sips exited with status {proc.returncode}")
+        else:
+            from PIL import Image, ImageOps
+
+            with Image.open(src) as image:
+                image = ImageOps.exif_transpose(image)
+                image.thumbnail((size, size))
+                if image.mode in ("RGBA", "LA") or (image.mode == "P" and "transparency" in image.info):
+                    # JPEG has no alpha; transparent areas go onto white, as
+                    # a viewer would show them, not onto black.
+                    rgba = image.convert("RGBA")
+                    flat = Image.new("RGB", rgba.size, (255, 255, 255))
+                    flat.paste(rgba, mask=rgba.getchannel("A"))
+                    image = flat
+                image.convert("RGB").save(tmp, "JPEG", quality=80)
+        os.replace(tmp, dst)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+
+
+def _sips_here() -> bool:
+    """Whether this host's own HEIC decoder is available — macOS and nothing
+    else. A function, not an inline platform check, so a test can take the
+    other branch without patching `sys.platform` for the whole process."""
+    return sys.platform == "darwin"
+
+
+@router.get("/api/fs/thumb")
+async def api_fs_thumb(path: str, request: Request, size: int = 160):
+    """A small JPEG of the picture at `path` — the preview a browser cannot
+    make for itself.
+
+    `/api/fs/raw` hands over the file as-is, and for a `.HEIC` (every iPhone
+    photo) that is bytes no browser renders, so an `<img>` of it shows alt
+    text. This answers a JPEG instead, at one of a few fixed sizes (a
+    free-form size would be a cache that grows by one file per pixel value),
+    cached under the app's cache dir and keyed on the source's path, mtime
+    and byte size, so an edited photo gets a new thumbnail and an unchanged
+    one is a stat and a send.
+
+    Same path rules as `/api/fs/raw`: absolute, a regular file, TCC denial as
+    the Full Disk Access 403. No `X-Fused` guard, for the same reason that
+    route has none — an `<img src>` cannot send one.
+    """
+    if not os.path.isabs(path):
+        return _error("'path' must be an absolute filesystem path")
+    ext = os.path.splitext(path)[1].lower()
+    if ext not in _THUMB_PIL and ext not in _THUMB_SIPS:
+        return _error(f"{path} is not a picture this route can thumbnail", status=415)
+    size = min(_THUMB_SIZES, key=lambda s: abs(s - size))
+    try:
+        st = await asyncio.to_thread(os.stat, path)
+    except PermissionError as e:
+        return shell_fda.refused(path, e)
+    except OSError:
+        return _error(f"no such file: {path}", status=404)
+    if not stat.S_ISREG(st.st_mode):
+        return _error(f"no such file: {path}", status=404)
+    import hashlib
+
+    key = hashlib.sha1(
+        f"{path}\0{st.st_mtime_ns}\0{st.st_size}\0{size}".encode()).hexdigest()
+    folder = _thumb_dir()
+    dst = os.path.join(folder, key + ".jpg")
+    if not os.path.exists(dst):
+        try:
+            await asyncio.to_thread(os.makedirs, folder, exist_ok=True)
+            await asyncio.to_thread(_make_thumb, path, dst, size)
+        except PermissionError as e:
+            return shell_fda.refused(path, e)
+        except LookupError as e:
+            return _error(str(e), status=415)
+        except Exception as e:  # noqa: BLE001 - Pillow raises its own family (DecompressionBombError, SyntaxError…)
+            logger.info("thumbnail of %s failed: %s", path, e)
+            return _error(f"{path} is not a readable picture ({e})", status=415)
+    # No cache headers of its own: the app's middleware answers `no-cache` on
+    # every route, and the saving here is server-side — a second request is
+    # a stat and a send, never a second decode.
+    return FileResponse(dst, media_type="image/jpeg")
+
+
 @router.post("/api/fs/pick-files")
 def api_fs_pick_files(body: dict = Body(...), x_fused: str | None = Header(default=None)):
     """`/api/fs/pick-file` with multi-select on: `{"paths": [<abs>, …]}` on a

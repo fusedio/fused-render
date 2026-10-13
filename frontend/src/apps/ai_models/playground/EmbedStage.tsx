@@ -43,7 +43,14 @@ import { useEffect, useRef, useState } from "react";
 import { embedPaths, embedTexts, withModelReady } from "./client";
 import { Textarea } from "@platform/shadcn/ui/textarea";
 import { Card } from "@platform/shadcn/ui/card";
-import { pickFiles, rawUrl, type AiCatalogModel } from "@platform/lib/api";
+import { pickFiles, rawUrl, thumbUrl, type AiCatalogModel } from "@platform/lib/api";
+import {
+  blamedPath,
+  indexProgress,
+  planBatches,
+  scoreAgainst,
+  type IndexEntry,
+} from "./embedIndex";
 import {
   acceptedTypes,
   basename,
@@ -200,7 +207,12 @@ const MAX_LINES = 63;
 // two towers are two sessions — so the full 64 is available here. Held well
 // below it anyway: this is a demonstration a reader assembles by hand through
 // the OS file dialog, one picture per click.
-const MAX_PICTURES = 12;
+// The route's own ceiling per request is 64 (`embed_common.MAX_ITEMS`); the
+// index sends small batches, so the cap here is about what a demo list can
+// hold and still be read, not about one request. 64 matches the API's number
+// so a page author trying the Playground meets the same limit they will in
+// code.
+const MAX_PICTURES = 64;
 
 // What the file dialog offers, and what is checked after it regardless. The
 // checks are the runner's real ones: `embed_common.open_image` reads anything
@@ -308,6 +320,18 @@ export function EmbedStage({
     activeAdds.current = Math.max(0, activeAdds.current - 1);
     setAttaching(activeAdds.current > 0);
   };
+  // The INDEX: one vector per file, built as files land (see embedIndex.ts).
+  // A ref because the queue runner mutates it between renders; `indexTick`
+  // is bumped after every change so the rows and the count re-render.
+  const indexRef = useRef<Map<string, IndexEntry>>(new Map());
+  const [, setIndexTick] = useState(0);
+  const bumpIndex = () => setIndexTick((t) => t + 1);
+  const pumping = useRef(false);
+  // Set when the runner stopped on a run-level error (see `pumpIndex`), so
+  // the finally-block does not restart it into the same failure; cleared by
+  // the next add or Search, which are the reader acting.
+  const halted = useRef(false);
+  const progress = indexProgress(pictures, indexRef.current);
 
   // **Which model produced the scores currently on screen — recorded at the run,
   // not read live.** `model` is the SIDEBAR's selection and changes the instant
@@ -329,7 +353,11 @@ export function EmbedStage({
   // The run itself is one quick POST, but the cold-start watch loop is not —
   // leaving the stage must stop it, same as the chat stage's rule.
   const abortRef = useRef<AbortController | null>(null);
-  useEffect(() => () => abortRef.current?.abort(), []);
+  const indexAbortRef = useRef<AbortController | null>(null);
+  useEffect(() => () => {
+    abortRef.current?.abort();
+    indexAbortRef.current?.abort();
+  }, []);
 
   // Both inputs are arguments with the current state as their default: a
   // sample card sets the query AND the corpus and runs in the same click, and
@@ -416,8 +444,135 @@ export function EmbedStage({
     setPictures(merged.next);
     if (merged.over) why ??= `Up to ${MAX_PICTURES} files — ${merged.over} not added.`;
     setError(why);
-    if (merged.next.length !== before.length) setRankedPictures(null);
+    if (merged.next.length !== before.length) {
+      setRankedPictures(null);
+      // Every new file starts its journey now, not at Search time.
+      for (const path of merged.next) {
+        if (!indexRef.current.has(path)) indexRef.current.set(path, { state: "pending" });
+      }
+      bumpIndex();
+      void pumpIndex();
+    }
   };
+
+  /** Embed whatever is pending, one small batch at a time, until nothing is.
+   *
+   *  One runner at a time (`pumping`): a drop landing mid-run is picked up by
+   *  the loop's next `planBatches` rather than starting a second runner that
+   *  would race it for the same files. The status line names the file being
+   *  read, because the slow case — a 4K clip, thirty seconds on its own — is
+   *  exactly the one the reader wants an explanation for; the model load, when
+   *  that is the wait, speaks through `withModelReady`'s own status.
+   *
+   *  A batch that fails is pinned on the file the error names
+   *  (`blamedPath`): that row is marked failed, the rest go back to pending
+   *  and are sent again without it. An error naming no file (the model's slot
+   *  was taken, the runner died) fails the whole batch with that sentence —
+   *  there is nothing to retry until the reader acts. */
+  const pumpIndex = async () => {
+    if (pumping.current) return;
+    pumping.current = true;
+    halted.current = false;
+    const controller = new AbortController();
+    indexAbortRef.current = controller;
+    try {
+      for (;;) {
+        const index = indexRef.current;
+        const batches = planBatches(picturesRef.current, index);
+        if (!batches.length || controller.signal.aborted) break;
+        const batch = batches[0];
+        for (const path of batch) index.set(path, { state: "indexing" });
+        bumpIndex();
+        const { done: finished, failed, total } = indexProgress(picturesRef.current, index);
+        // "N of M" counts every file that has been THROUGH the index, failed
+        // ones included — otherwise two unreadable files stall the count two
+        // short of the total for the rest of the run.
+        const done = finished + failed;
+        const first = batch[0];
+        const kind = mediaKindOf(first);
+        setStatus(
+          `Indexing ${done + 1}${batch.length > 1 ? `–${done + batch.length}` : ""} of ${total} · ` +
+            `${displayName(first)}${batch.length > 1 ? ` +${batch.length - 1}` : ""}` +
+            `${kind === "picture" ? "" : ` (${kind === "audio" ? "sound" : kind})`}…`,
+        );
+        try {
+          const result = await withModelReady(() => embedPaths(model, batch), {
+            signal: controller.signal,
+            downloaded,
+            onStatus: (text) => setStatus(text ?? `Indexing ${done + 1} of ${total}…`),
+          });
+          const made = result.response?.modelId ?? model;
+          const listed = new Set(picturesRef.current);
+          batch.forEach((path, at) => {
+            // A file Removed while its batch was in flight stays removed —
+            // writing it back would resurrect a row the reader just deleted.
+            if (!listed.has(path)) return;
+            const vector = result.embeddings[at];
+            index.set(path, vector
+              ? { state: "done", vector, model: made }
+              : { state: "failed", error: "the model returned no vector for this file" });
+          });
+          setVectorModel(made);
+        } catch (e) {
+          if ((e as Error).name === "AbortError" || controller.signal.aborted) {
+            // Leaving the stage: nothing is wrong with these files, and a
+            // row stuck on "indexing…" would block every later Search.
+            for (const path of batch) index.set(path, { state: "pending" });
+            break;
+          }
+          const message = (e as Error).message;
+          const blamed = blamedPath(message, batch);
+          if (blamed !== null) {
+            // The error is about ONE file: that row fails, the others go
+            // round again without it — and the sentence is shown, because a
+            // ✗ in the settings panel is not where the reader is looking.
+            for (const path of batch) {
+              index.set(path, path === blamed ? { state: "failed", error: message } : { state: "pending" });
+            }
+            setError(message);
+          } else {
+            // The error is about the RUN — the model lost its slot, the
+            // runner died, the load was cancelled. Nothing is wrong with the
+            // files, so they go back to pending and the runner STOPS: the
+            // next add or Search starts it again, and the error line says
+            // what happened meanwhile.
+            for (const path of batch) index.set(path, { state: "pending" });
+            setError(message);
+            halted.current = true;
+            bumpIndex();
+            break;
+          }
+        }
+        bumpIndex();
+      }
+    } finally {
+      pumping.current = false;
+      indexAbortRef.current = null;
+      setStatus(null);
+      // A file dropped in while the last batch was in flight is still pending:
+      // one more pass picks it up — unless this runner was aborted (the stage
+      // is going away) or stopped on a run-level error (see above; `halted`
+      // is what Search clears when it tries again).
+      if (!controller.signal.aborted && !halted.current
+          && planBatches(picturesRef.current, indexRef.current).length) {
+        void pumpIndex();
+      }
+    }
+  };
+
+  /** Resolves once nothing is pending or indexing — what Search waits on —
+   *  or as soon as `signal` aborts, so an unmount mid-wait leaves no timer
+   *  behind. Restarts the runner if it stopped on a run-level error: a
+   *  Search is the reader trying again. */
+  const whenIndexed = (signal: AbortSignal) =>
+    new Promise<void>((resolve) => {
+      if (!pumping.current && planBatches(picturesRef.current, indexRef.current).length) void pumpIndex();
+      const check = () => {
+        if (signal.aborted || !indexProgress(picturesRef.current, indexRef.current).busy) resolve();
+        else window.setTimeout(check, 150);
+      };
+      check();
+    });
 
   /** Point the ranking at files ALREADY on this disk — no copy, no upload,
    *  several per dialog.
@@ -573,24 +728,32 @@ export function EmbedStage({
     const controller = new AbortController();
     abortRef.current = controller;
     try {
+      // The files are embedded as they land (`pumpIndex`); a search that
+      // arrives first waits for the tail of that rather than re-sending
+      // anything. Then the PHRASE is one small request, and the ranking is
+      // arithmetic over vectors already here.
+      if (indexProgress(picturesRef.current, indexRef.current).busy) {
+        setStatus("Finishing the index first…");
+        await whenIndexed(controller.signal);
+        if (controller.signal.aborted) return;
+      }
       const phrase = await withModelReady(() => embedTexts(model, [asked]), {
         signal: controller.signal,
         downloaded,
         onStatus: setStatus,
       });
-      const images = await embedPaths(model, pictures);
       const queryVector = phrase.embeddings[0] ?? [];
-      const scored = pictures.map((path, at) => ({
-        path,
-        name: displayName(path),
-        score: (images.embeddings[at] || []).reduce(
-          (sum, value, dim) => sum + value * (queryVector[dim] ?? 0),
-          0,
-        ),
+      const scored = scoreAgainst(queryVector, picturesRef.current, indexRef.current).map((row) => ({
+        path: row.path,
+        name: displayName(row.path),
+        score: row.score,
       }));
-      scored.sort((a, b) => b.score - a.score);
+      if (!scored.length) {
+        setError("None of the files could be read — open the settings cog to see why.");
+        return;
+      }
       setRankedPictures(scored);
-      setVectorModel(images.response?.modelId ?? model);
+      setVectorModel(phrase.response?.modelId ?? model);
     } catch (e) {
       if ((e as Error).name !== "AbortError") setError((e as Error).message);
     } finally {
@@ -701,7 +864,9 @@ export function EmbedStage({
               title="Enter to run"
               onClick={() => void (pictureMode ? runPictures() : run())}
             >
-              {busy ? "Searching…" : "Search"} <kbd className="pg-kbd">⏎</kbd>
+              {busy
+                ? progress.busy ? "Indexing…" : "Searching…"
+                : "Search"} <kbd className="pg-kbd">⏎</kbd>
             </button>
           </div>
         </div>
@@ -720,11 +885,12 @@ export function EmbedStage({
             </button>
             <div className="pg-drop-copy">
               <p className="pg-drop-title">
-                {pictures.length
-                  ? `${pictures.length} ${pictures.length === 1 ? mediaNoun : `${mediaNoun}s`} to search`
-                  : ranksMedia
-                    ? "Pictures, sound files and videos"
-                    : "Pictures"}
+                {!pictures.length
+                  ? ranksMedia ? "Pictures, sound files and videos" : "Pictures"
+                  : progress.busy
+                    ? `Indexing ${progress.done} of ${progress.total}…`
+                    : `${progress.done} ${progress.done === 1 ? mediaNoun : `${mediaNoun}s`} ready` +
+                      (progress.failed ? ` · ${progress.failed} could not be read` : "")}
               </p>
               <p className="pg-drop-hint">
                 Pick several at once, or drop them here from Finder or the Explorer.
@@ -749,12 +915,29 @@ export function EmbedStage({
                   <span className="pg-embed-picture-name" title={path}>
                     {displayName(path)}
                   </span>
+                  {(() => {
+                    const entry = indexRef.current.get(path);
+                    if (!entry || entry.state === "pending") return <span className="pg-embed-state">queued</span>;
+                    if (entry.state === "indexing") return <span className="pg-embed-state">indexing…</span>;
+                    if (entry.state === "failed") {
+                      // One mark, like the ✓: the settings panel is narrow and
+                      // a sentence here squeezed the filename to nothing. The
+                      // reason is the tooltip, and the error line under the
+                      // composer says it in full when it happens.
+                      return <span className="pg-embed-state is-failed" title={`Could not read: ${entry.error}`}>✗</span>;
+                    }
+                    return <span className="pg-embed-state is-done" title="Indexed">✓</span>;
+                  })()}
                   <button
                     type="button"
                     className="pg-ghost-btn"
                     title={`Remove this ${mediaNoun}`}
                     onClick={() => {
-                      setPictures((current) => current.filter((p) => p !== path));
+                      const next = picturesRef.current.filter((p) => p !== path);
+                      picturesRef.current = next;
+                      setPictures(next);
+                      indexRef.current.delete(path);
+                      bumpIndex();
                       setRankedPictures(null);
                     }}
                   >
@@ -836,9 +1019,17 @@ export function EmbedStage({
                     ) : mediaKindOf(row.path) === "audio" ? (
                       <span className="pg-embed-thumb pg-embed-thumb-audio" aria-label="sound file">♪</span>
                     ) : (
-                      <img className="pg-embed-thumb" src={rawUrl(row.path)} alt={row.name} />
+                      // `thumbUrl`, not `rawUrl`: a browser cannot decode an
+                      // iPhone's HEIC, and a photo library is mostly HEIC —
+                      // the server makes the JPEG.
+                      <img className="pg-embed-thumb" src={thumbUrl(row.path)} alt={row.name} loading="lazy" />
                     )}
-                    <span className="pg-embed-text">{row.name}</span>
+                    <span className="pg-embed-text">
+                      {kindTag(mediaKindOf(row.path)) && (
+                        <span className="pg-embed-kind">{kindTag(mediaKindOf(row.path))}</span>
+                      )}
+                      {row.name}
+                    </span>
                     <span className="pg-embed-score">{row.score.toFixed(2)}</span>
                   </li>
                 ))}
@@ -850,7 +1041,9 @@ export function EmbedStage({
               capability="embeddings"
               note={
                 pictures.length
-                  ? `The ${mediaNoun}s come back here, ordered by how close they are to the phrase.`
+                  ? progress.busy
+                    ? `Indexing ${progress.done} of ${progress.total} — type what you are looking for meanwhile.`
+                    : `The ${mediaNoun}s come back here, ordered by how close they are to the phrase.`
                   : `Add a ${mediaNoun} or two above, or drop them in, then type what you are looking for.`
               }
             />

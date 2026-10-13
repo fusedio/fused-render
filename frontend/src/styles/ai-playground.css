@@ -2790,6 +2790,27 @@
   letter-spacing: 0.04em;
 }
 
+/* Each file's place in the index, on its cog row: queued / indexing… / ✓ /
+   could not read (the reason is the tooltip). */
+.pg-embed-state {
+  flex: none;
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
+.pg-embed-state.is-done {
+  color: var(--accent);
+}
+
+.pg-embed-state.is-failed {
+  color: var(--danger, #c0392b);
+}
+
+.pg-embed-text .pg-embed-kind {
+  margin-right: 8px;
+  vertical-align: 1px;
+}
+
 /* A sound file has no frame to show; the note sits where the thumbnail would. */
 .pg-embed-thumb-audio {
   display: inline-flex;

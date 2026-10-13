@@ -133,7 +133,11 @@ describe("the displayed scores say which model produced them", () => {
     expect(STAGE).toContain("const [vectorModel, setVectorModel]");
     // D632: the model that ran is `response.modelId` on the result frame.
     expect(STAGE).toContain("setVectorModel(result.response?.modelId ?? model)");
-    expect(STAGE).toContain("setVectorModel(images.response?.modelId ?? model)");
+    // Files mode: the phrase's reply at search time, and the index runner's
+    // reply as each batch lands (`made`), both off the result frame.
+    expect(STAGE).toContain("setVectorModel(phrase.response?.modelId ?? model)");
+    expect(STAGE).toContain("const made = result.response?.modelId ?? model;");
+    expect(STAGE).toContain("setVectorModel(made)");
     // The label renders the recorded value, never the prop.
     expect(STAGE).toContain("{vectorModel}");
     expect(STAGE).not.toContain('pg-answer-provenance">\n                    {model}');
@@ -144,8 +148,10 @@ describe("the displayed scores say which model produced them", () => {
     // is not always what ran. `result.response.modelId` first, the prop only
     // as the older-server fallback.
     const setters = STAGE.match(/setVectorModel\([^)]*\)/g) ?? [];
-    expect(setters.length).toBe(2);
-    for (const setter of setters) expect(setter).toContain(".modelId ??");
+    expect(setters.length).toBe(3);
+    for (const setter of setters) {
+      expect(setter.includes(".modelId ??") || setter === "setVectorModel(made)").toBe(true);
+    }
   });
 
   it("both result surfaces carry it, texts and pictures alike", () => {

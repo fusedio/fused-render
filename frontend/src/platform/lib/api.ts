@@ -1243,6 +1243,13 @@ export function rawUrl(fsPath: string): string {
   return "/api/fs/raw?path=" + encodeURIComponent(fsPath);
 }
 
+/** A small JPEG of a picture on this disk (`/api/fs/thumb`) — what an `<img>`
+ *  needs for a file the browser cannot decode itself, an iPhone's HEIC above
+ *  all. `size` snaps to the route's ladder (64/160/320/640). */
+export function thumbUrl(fsPath: string, size = 160): string {
+  return "/api/fs/thumb?path=" + encodeURIComponent(fsPath) + "&size=" + size;
+}
+
 // Bookmark store (server-side, ~/.fused-render/bookmarks.json). The tree shape
 // is BookmarkItem[] (lib/bookmarks.ts); kept as unknown[] here so api.ts has no
 // dependency on the bookmark data layer. `exists` is false only until the file
