@@ -6,7 +6,7 @@ installDomShim();
 import { afterEach, describe, expect, test } from "bun:test";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 
-const { TasksPanel } = await import("./TasksPanel");
+const { TasksPanel, useTasksOpen, tasksPanelScope } = await import("./TasksPanel");
 const { ToolChip } = await import("./ToolChip");
 const { SegmentView } = await import("./SegmentView");
 const { TasksContext } = await import("./tasksContext");
@@ -206,5 +206,60 @@ describe("working line verbs", () => {
   test("the quiet-wait line keeps its wording", () => {
     const activity = { tool: null, tools_open: 0, tool_input_bytes: 0, thinking_tokens: 0, hook: "", tasks: [{ id: "s", description: "" }], agent_rows: 0 };
     expect(activityVerb({ phase: "thinking", activity, tasks: [shell] }, "x", 60)).toBe("Waiting for a background command to finish");
+  });
+});
+
+describe("review #5: the open bit is scoped to the run and conversation", () => {
+  test("opened for one run, collapsed again for the next; reopening works there", () => {
+    let api!: [boolean, () => void];
+    function Probe({ scope }: { scope: string }) {
+      api = useTasksOpen(scope);
+      return null;
+    }
+    const base = { lastRunId: "r1", tasksRunId: "r1", sessionId: "s1", transcriptGen: 1 };
+    const r = mount(<Probe scope={tasksPanelScope(base)} />);
+    expect(api[0]).toBe(false);
+    act(() => api[1]());
+    expect(api[0]).toBe(true);
+    // A later run in the same session.
+    act(() => r.update(<Probe scope={tasksPanelScope({ ...base, lastRunId: "r2", tasksRunId: "r2" })} />));
+    expect(api[0]).toBe(false);
+    act(() => api[1]());
+    expect(api[0]).toBe(true);
+    // Another session opened, and a new chat (everything back to empty).
+    act(() => r.update(<Probe scope={tasksPanelScope({ ...base, sessionId: "s2", transcriptGen: 2 })} />));
+    expect(api[0]).toBe(false);
+    act(() => api[1]());
+    act(() => r.update(<Probe scope={tasksPanelScope({ lastRunId: null, tasksRunId: null, sessionId: null, transcriptGen: 0 })} />));
+    expect(api[0]).toBe(false);
+  });
+});
+
+describe("review #6: the model's own streaming outranks the task verb", () => {
+  const agent = rec({ id: "a", kind: "agent" });
+  test("composing and requesting win; the task verb replaces only the mood", () => {
+    expect(activityVerb({ phase: "composing", activity: null, tasks: [agent] }, "Mulling", 0)).toBe("Claude is replying");
+    expect(activityVerb({ phase: "requesting", activity: null, tasks: [agent] }, "Mulling", 0)).toBe("Sending to Claude");
+    expect(activityVerb({ phase: "thinking", activity: null, tasks: [agent] }, "Mulling", 0)).toBe("Running a subagent");
+  });
+});
+
+describe("review #1/#4: an unknown task in the panel", () => {
+  test("labelled ended, no time, no Output button, no live class", () => {
+    const r = mount(
+      <TasksPanel
+        tasks={[rec({ id: "u", kind: "shell", description: "srv", status: "unknown", ended_at: null })]}
+        runId="r1"
+        open
+        onToggle={() => {}}
+        now={() => 999_000}
+      />,
+    );
+    const row = byClass(r.root, "chat-task")[0]!;
+    expect(text(byClass(row, "chat-task-status")[0]!)).toBe("ended");
+    expect(byClass(row, "chat-task-status")[0]!.props.className).toContain("is-unknown");
+    expect(byClass(row, "chat-task-time").length).toBe(0);
+    expect(byClass(row, "chat-task-out-btn").length).toBe(0);
+    expect(row.props.className).toContain("is-ended");
   });
 });

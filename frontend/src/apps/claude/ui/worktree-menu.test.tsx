@@ -4,7 +4,8 @@ import { describe, expect, test } from "bun:test";
 import { useState } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 
-const { WorktreeMenuBody } = await import("./WorktreeMenu");
+const await_import = await import("./WorktreeMenu");
+const { WorktreeMenuBody } = await_import;
 const { worktreeRows } = await import("../protocol/worktrees");
 import type { WorktreeList } from "../protocol/worktrees";
 
@@ -99,3 +100,93 @@ describe("WorktreeMenuBody", () => {
 function label(b: { props: { children?: unknown } }): string {
   return ([] as unknown[]).concat(b.props.children as unknown).filter((x) => typeof x === "string").join("");
 }
+
+describe("review fixes", () => {
+  const { removeFlow, useWorktreeList } = await_import;
+
+  test("remove asks the leave guard FIRST, and a 'stay' removes nothing", async () => {
+    const order: string[] = [];
+    const stay = await removeFlow("clean", {
+      leave: async () => (order.push("leave"), false),
+      remove: async () => (order.push("remove"), { removed: "/x" }),
+    });
+    expect(stay).toEqual({ stayed: true });
+    expect(order).toEqual(["leave"]);
+    const go = await removeFlow("clean", {
+      leave: async () => (order.push("leave"), true),
+      remove: async (force) => (order.push("remove:" + force), { removed: "/x" }),
+    });
+    expect(go).toEqual({ removed: "/x" });
+    expect(order).toEqual(["leave", "leave", "remove:false"]);
+  });
+
+  test("unknown or dirty forces; a dirty refusal is flagged for the forced retry", async () => {
+    const forces: boolean[] = [];
+    const remove = async (force: boolean) => {
+      forces.push(force);
+      return force ? { removed: "/x" } : { error: "this worktree has uncommitted changes" };
+    };
+    expect(await removeFlow("unknown", { leave: async () => true, remove })).toEqual({ removed: "/x" });
+    expect(await removeFlow("clean", { leave: async () => true, remove })).toEqual({
+      error: "this worktree has uncommitted changes",
+      dirty: true,
+    });
+    expect(forces).toEqual([true, false]);
+  });
+
+  test("a running turn refuses Remove, with a note", () => {
+    let r: ReactTestRenderer | undefined;
+    act(() => {
+      r = create(
+        <WorktreeMenuBody
+          rows={worktreeRows(LIST("/r/.claude/worktrees/feat"))}
+          onSwitch={() => {}}
+          creating={null}
+          onCreating={() => {}}
+          onCreate={() => {}}
+          confirming={false}
+          onRemove={() => {
+            throw new Error("must not run");
+          }}
+          running
+        />,
+      );
+    });
+    const btn = r!.root.findAll((n) => n.type === "button").find((b) => label(b) === "Remove this worktree")!;
+    expect(btn.props.disabled).toBe(true);
+    expect(btn.props.onClick).toBeUndefined();
+    expect(r!.root.findAll((n) => n.props.className === "chat-worktree-note")).toHaveLength(1);
+    act(() => r!.unmount());
+  });
+
+  test("the list hook drops an older answer and another folder's answer", async () => {
+    const pending: { file: string; res(v: WorktreeList | { error: string }): void }[] = [];
+    const lister = (file: string) =>
+      new Promise<WorktreeList | { error: string }>((res) => pending.push({ file, res }));
+    const ready: boolean[] = [];
+    let seen: { list: WorktreeList | null; refresh(): Promise<void> } | null = null;
+    function Probe({ file }: { file: string }) {
+      seen = useWorktreeList(file, lister, (v) => ready.push(v));
+      return null;
+    }
+    let r: ReactTestRenderer | undefined;
+    await act(async () => {
+      r = create(<Probe file="/r" />);
+    });
+    // A second call goes out; the FIRST answer lands last and must lose.
+    await act(async () => void seen!.refresh());
+    await act(async () => pending[1]!.res(LIST("/r/.claude/worktrees/feat")));
+    await act(async () => pending[0]!.res(LIST("/r")));
+    expect(seen!.list?.current).toBe("/r/.claude/worktrees/feat");
+    // Another folder: the old folder's late answer does not land.
+    await act(async () => r!.update(<Probe file="/other" />));
+    await act(async () => void seen!.refresh());
+    // pending[2] is the remount's own call, superseded by the refresh above.
+    await act(async () => pending[3]!.res({ error: "not a git repository" }));
+    await act(async () => pending[2]!.res(LIST("/r")));
+    expect(seen!.list).toBeNull();
+    expect(ready).toEqual([true, false]);
+    act(() => r!.unmount());
+    expect(ready[ready.length - 1]).toBe(false);
+  });
+});

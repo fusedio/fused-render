@@ -3,9 +3,26 @@
 // poll's `tasks` registry (agent.py, SPEC T-1). No React, no DOM.
 import type { TaskKind, TaskRecord, TaskStatus, TaskUsage, ToolSegment } from "./types";
 
-/** A task that is still going: counted as "running", sorted above the rest. */
+/** A task that is still MOVING: counted as "running", its clock ticks, a
+ *  Monitor says "watching". `paused` is not — it is held, not working. */
 export function isLive(status: TaskStatus | string): boolean {
-  return status === "running" || status === "pending" || status === "paused";
+  return status === "running" || status === "pending";
+}
+
+/** Not finished: live or paused. Sorted above the ended rows, and what a run
+ *  that ends downgrades to `unknown` (`endActiveTasks`). */
+export function isActive(status: TaskStatus | string): boolean {
+  return isLive(status) || status === "paused";
+}
+
+/**
+ * THE OWNING RUN IS GONE: every still-active record becomes `unknown` with no
+ * end time — its real outcome was never reported, and a dead host can neither
+ * be watched nor asked for output. `null` when nothing changes.
+ */
+export function endActiveTasks(tasks: readonly TaskRecord[]): TaskRecord[] | null {
+  if (!tasks.some((t) => isActive(t.status))) return null;
+  return tasks.map((t) => (isActive(t.status) ? { ...t, status: "unknown", ended_at: null } : t));
 }
 
 /** The summary's and the panel's kind order (SPEC T-5: "1 agent, 1 shell, 1 monitor"). */
@@ -56,6 +73,8 @@ export function statusLabel(status: TaskStatus | string): string {
       return "failed";
     case "killed":
       return "stopped";
+    case "unknown":
+      return "ended";
     default:
       return String(status || "running");
   }
@@ -63,8 +82,9 @@ export function statusLabel(status: TaskStatus | string): string {
 
 /**
  * The collapsed panel's one line: "2 running (1 agent, 1 shell) · 1 done".
- * Ended tasks are counted by outcome ("done", "failed", "stopped") so a failure
- * is never folded into a reassuring "done". "" for an empty list.
+ * Paused tasks are their own count. Ended tasks are counted by outcome ("done",
+ * "failed", "stopped", and "ended" for an `unknown` one whose run died) so a
+ * failure is never folded into a reassuring "done". "" for an empty list.
  */
 export function summarizeTasks(tasks: readonly TaskRecord[]): string {
   const live = tasks.filter((t) => isLive(t.status));
@@ -80,20 +100,22 @@ export function summarizeTasks(tasks: readonly TaskRecord[]): string {
     const n = tasks.filter((t) => t.status === status).length;
     if (n) parts.push(n + " " + word);
   };
+  ended("paused", "paused");
   ended("completed", "done");
   ended("failed", "failed");
   ended("killed", "stopped");
+  ended("unknown", "ended");
   return parts.join(" · ");
 }
 
-/** Live first, then ended; each group by `started_at`, ties kept in arrival
+/** Active (live or paused) first, then ended; each group by `started_at`, ties kept in arrival
  *  order. A new array — the input is the published state. */
 export function sortTasks(tasks: readonly TaskRecord[]): TaskRecord[] {
   return tasks
     .map((t, i) => ({ t, i }))
     .sort((a, b) => {
-      const la = isLive(a.t.status) ? 0 : 1;
-      const lb = isLive(b.t.status) ? 0 : 1;
+      const la = isActive(a.t.status) ? 0 : 1;
+      const lb = isActive(b.t.status) ? 0 : 1;
       if (la !== lb) return la - lb;
       const sa = Number(a.t.started_at) || 0;
       const sb = Number(b.t.started_at) || 0;
@@ -111,14 +133,17 @@ export function durationWords(secs: number): string {
   return Math.floor(s / 3600) + "h " + Math.floor((s % 3600) / 60) + "m";
 }
 
-/** How long the task ran (ended) or has been running (live, against `nowMs`).
- *  `started_at`/`ended_at` are epoch SECONDS; `nowMs` is `Date.now()`'s unit.
- *  "" when the record carries no start. */
+/** How long the task has been running (live, against `nowMs`) or ran (ended,
+ *  to `ended_at`). `started_at`/`ended_at` are epoch SECONDS; `nowMs` is
+ *  `Date.now()`'s unit. "" when the record carries no start, or is not live
+ *  and has no end (paused, `unknown`) — the clock is never run against now
+ *  for a task that is not moving. */
 export function elapsedLabel(rec: Pick<TaskRecord, "started_at" | "ended_at" | "status">, nowMs: number): string {
   const start = Number(rec.started_at) || 0;
   if (!start) return "";
-  const end = rec.ended_at != null && !isLive(rec.status) ? Number(rec.ended_at) || nowMs / 1000 : nowMs / 1000;
-  return durationWords(end - start);
+  if (isLive(rec.status)) return durationWords(nowMs / 1000 - start);
+  const end = rec.ended_at == null ? 0 : Number(rec.ended_at) || 0;
+  return end ? durationWords(end - start) : "";
 }
 
 /** "12.3k tokens · 4 tool uses"; "" when there is no usage yet. */
@@ -138,9 +163,10 @@ export function eventsLabel(events: number | null | undefined): string {
   return n ? plural(n, ["event", "events"]) : "";
 }
 
-/** Shell and monitor tasks have output the CLI can hand back (`get_task_output`). */
-export function hasOutput(rec: Pick<TaskRecord, "kind">): boolean {
-  return rec.kind === "shell" || rec.kind === "monitor";
+/** Shell and monitor tasks have output the CLI can hand back (`get_task_output`)
+ *  — not once their run has died (`unknown`): there is no host to ask. */
+export function hasOutput(rec: Pick<TaskRecord, "kind"> & Partial<Pick<TaskRecord, "status">>): boolean {
+  return (rec.kind === "shell" || rec.kind === "monitor") && rec.status !== "unknown";
 }
 
 /**

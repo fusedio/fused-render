@@ -3,6 +3,10 @@ import { describe, expect, test } from "bun:test";
 import {
   durationWords,
   elapsedLabel,
+  endActiveTasks,
+  hasOutput,
+  isLive,
+  statusLabel,
   kindLabel,
   sortTasks,
   subagentChipModel,
@@ -163,5 +167,56 @@ describe("chip expand model", () => {
     expect(subagentChipModel(seg, taskFor(seg, taskIndex([live]))).monitor).toBe("watching · 3 events");
     const done = { ...live, status: "completed" as const };
     expect(subagentChipModel(seg, taskFor(seg, taskIndex([done]))).monitor).toBe("3 events");
+  });
+});
+
+describe("review #1: unknown (the owning run died)", () => {
+  test("labelled ended, counted with the ended group", () => {
+    expect(statusLabel("unknown")).toBe("ended");
+    expect(summarizeTasks([rec({ id: "a" }), rec({ id: "u", status: "unknown" }), rec({ id: "d", status: "completed" })])).toBe(
+      "1 running (1 task) · 1 done · 1 ended",
+    );
+  });
+  test("no clock against now when not live and ended_at is null", () => {
+    expect(elapsedLabel(rec({ status: "unknown", started_at: 100, ended_at: null }), 999_000)).toBe("");
+    expect(elapsedLabel(rec({ status: "completed", started_at: 100, ended_at: null }), 999_000)).toBe("");
+  });
+  test("sorts with the ended rows, offers no Output", () => {
+    expect(sortTasks([rec({ id: "u", status: "unknown", started_at: 1 }), rec({ id: "r", started_at: 9 })]).map((t) => t.id)).toEqual(["r", "u"]);
+    expect(hasOutput(rec({ kind: "shell", status: "unknown" }))).toBe(false);
+    expect(hasOutput(rec({ kind: "shell", status: "completed" }))).toBe(true);
+  });
+  test("endActiveTasks downgrades running/pending/paused, leaves ended alone", () => {
+    const out = endActiveTasks([
+      rec({ id: "r" }),
+      rec({ id: "p", status: "paused" }),
+      rec({ id: "q", status: "pending" }),
+      rec({ id: "d", status: "completed", ended_at: 5 }),
+    ])!;
+    expect(out.map((t) => [t.id, t.status, t.ended_at])).toEqual([
+      ["r", "unknown", null],
+      ["p", "unknown", null],
+      ["q", "unknown", null],
+      ["d", "completed", 5],
+    ]);
+    expect(endActiveTasks([rec({ status: "completed" })])).toBe(null);
+  });
+});
+
+describe("review #7: paused", () => {
+  test("its own word in the summary, not running", () => {
+    expect(summarizeTasks([rec({ id: "a", kind: "agent" }), rec({ id: "p", kind: "shell", status: "paused" })])).toBe(
+      "1 running (1 agent) · 1 paused",
+    );
+    expect(isLive("paused")).toBe(false);
+  });
+  test("no live clock, still sorted above the ended rows", () => {
+    expect(elapsedLabel(rec({ status: "paused", started_at: 100 }), 999_000)).toBe("");
+    expect(sortTasks([rec({ id: "d", status: "completed", started_at: 1 }), rec({ id: "p", status: "paused", started_at: 9 })]).map((t) => t.id)).toEqual(["p", "d"]);
+  });
+  test("a paused Monitor is not watching", () => {
+    const seg = tool({ name: "Monitor", id: "tuM" });
+    const paused = rec({ id: "M", kind: "monitor", tool_use_id: "tuM", events: 2, status: "paused" });
+    expect(subagentChipModel(seg, taskFor(seg, taskIndex([paused]))).monitor).toBe("2 events");
   });
 });

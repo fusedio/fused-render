@@ -126,12 +126,13 @@ function mount(answer: (cmd: ClassifiedCommand) => boolean | void = () => true) 
   const root = renderer!.root;
   const box = () => root.findByType("textarea");
   const type = (value: string) => act(() => box().props.onChange({ currentTarget: { value } }));
-  const press = (key: string, shiftKey = false) => {
+  const press = (key: string, shiftKey = false, isComposing = false) => {
     let prevented = false;
     act(() => {
       box().props.onKeyDown({
         key,
         shiftKey,
+        nativeEvent: { isComposing },
         preventDefault() {
           prevented = true;
         },
@@ -228,5 +229,52 @@ describe("composer: local commands are answered, never sent", () => {
     c.press("Enter");
     expect(c.sent).toEqual(["/compact keep the plan", "/nosuch thing"]);
     expect(c.locals).toEqual([]);
+  });
+});
+
+describe("review fixes", () => {
+  test("Enter on a fully typed name sends it; Tab still only accepts", () => {
+    const c = mount();
+    c.type("/compact");
+    expect(c.rows().length).toBeGreaterThan(0);
+    c.press("Tab");
+    expect(c.box().props.value).toBe("/compact ");
+    expect(c.sent).toEqual([]);
+    c.type("/compact");
+    c.press("Enter");
+    expect(c.sent).toEqual(["/compact"]);
+    // A local one typed in full runs at once too.
+    c.type("/clear");
+    c.press("Enter");
+    expect(c.locals.map((l) => l.name)).toEqual(["clear"]);
+  });
+
+  test("an IME composition keeps its keys", () => {
+    const c = mount();
+    c.type("/c");
+    const before = c.active();
+    expect(c.press("ArrowDown", false, true)).toBe(false);
+    expect(c.active()).toBe(before);
+  });
+
+  test("the box is a combobox; the list ids only while open", () => {
+    const c = mount();
+    expect(c.box().props.role).toBe("combobox");
+    expect(c.box().props["aria-autocomplete"]).toBe("list");
+    expect(c.box().props["aria-expanded"]).toBe(false);
+    expect(c.box().props["aria-controls"]).toBeUndefined();
+    c.type("/");
+    expect(c.box().props["aria-expanded"]).toBe(true);
+    expect(c.box().props["aria-controls"]).toBeTruthy();
+    expect(String(c.box().props["aria-activedescendant"])).toEndWith("-0");
+  });
+
+  test("/help with words after it goes to the host, which may refuse and keep them", () => {
+    const c = mount(() => false);
+    c.type("/help me with this");
+    c.press("Enter");
+    expect(c.locals.map((l) => [l.name, l.arg])).toEqual([["help", "me with this"]]);
+    expect(c.box().props.value).toBe("/help me with this");
+    expect(c.sent).toEqual([]);
   });
 });

@@ -13,9 +13,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { GitBranch } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@platform/shadcn/ui/popover";
+import { confirmLeave } from "@platform/lib/router";
 import {
   defaultWorktreeName,
+  dirtyState,
+  isDirtyRefusal,
   isWorktreeError,
+  removeLabel,
   listWorktrees,
   createWorktree,
   removeWorktree,
@@ -23,6 +27,7 @@ import {
   triggerLabel,
   validWorktreeName,
   worktreeRows,
+  type DirtyState,
   type WorktreeList,
   type WorktreeMenuRow,
 } from "../protocol/worktrees";
@@ -43,7 +48,12 @@ export interface WorktreeMenuBodyProps {
   onCreate(name: string): void;
   /** The remove confirm's state for the current worktree. */
   confirming: boolean;
+  /** The current worktree's dirt as the confirm reads it — the row's own,
+   *  upgraded to "dirty" by a server refusal. Defaults to the row's. */
+  dirt?: DirtyState;
   onRemove(): void;
+  /** A turn is live: nothing may be removed from under it. */
+  running?: boolean;
   busy?: boolean;
   error?: string;
 }
@@ -59,7 +69,9 @@ export function WorktreeMenuBody({
   onCreating,
   onCreate,
   confirming,
+  dirt,
   onRemove,
+  running,
   busy,
   error,
 }: WorktreeMenuBodyProps) {
@@ -127,35 +139,110 @@ export function WorktreeMenuBody({
         <button
           type="button"
           className="chat-worktree-row is-danger"
-          disabled={busy}
-          onClick={onRemove}
+          disabled={busy || running}
+          onClick={running ? undefined : onRemove}
         >
-          {confirming
-            ? current.dirty
-              ? "Has uncommitted changes. Remove anyway"
-              : "Confirm remove"
-            : "Remove this worktree"}
+          {removeLabel(confirming, dirt ?? dirtyState(current))}
         </button>
+      ) : null}
+      {current?.removable && running ? (
+        <div className="chat-worktree-note">Stop the run before removing this worktree.</div>
       ) : null}
       {error ? <div className="chat-worktree-note is-error">{error}</div> : null}
     </div>
   );
 }
 
+/**
+ * THE CONFIRMED REMOVE, in order: the leave guard FIRST — removing the folder
+ * this chat is open on and then being told "stay" would strand the chat in a
+ * folder that is gone — then the remove, forced unless the worktree is known
+ * clean (the confirm the reader just pressed said so).
+ */
+export async function removeFlow(
+  dirt: DirtyState,
+  deps: {
+    leave(): Promise<boolean>;
+    remove(force: boolean): Promise<{ removed: string } | { error: string }>;
+  },
+): Promise<{ stayed: true } | { removed: string } | { error: string; dirty: boolean }> {
+  if (!(await deps.leave())) return { stayed: true };
+  const out = await deps.remove(dirt !== "clean");
+  if (isWorktreeError(out)) return { error: out.error, dirty: isDirtyRefusal(out.error) };
+  return out;
+}
+
+/**
+ * THE FOLDER'S WORKTREE LIST, or null when it is not a repo (or not known yet).
+ * Every call is numbered and only the NEWEST call's answer for the CURRENT file
+ * lands, so an older list arriving late cannot overwrite a newer one. `onReady`
+ * hears whether the folder is a repo after every landed answer, and `false`
+ * when the hook goes away.
+ */
+export function useWorktreeList(
+  file: string,
+  lister: (file: string) => Promise<WorktreeList | { error: string }> = listWorktrees,
+  onReady?: (isRepo: boolean) => void,
+): { list: WorktreeList | null; refresh: () => Promise<void> } {
+  const [list, setList] = useState<WorktreeList | null>(null);
+  const live = useRef(true);
+  const fileRef = useRef(file);
+  fileRef.current = file;
+  const gen = useRef(0);
+  const listerRef = useRef(lister);
+  listerRef.current = lister;
+  const readyRef = useRef(onReady);
+  readyRef.current = onReady;
+  useEffect(() => {
+    live.current = true;
+    return () => {
+      live.current = false;
+      readyRef.current?.(false);
+    };
+  }, []);
+  const refresh = useCallback(async () => {
+    const at = file;
+    const g = ++gen.current;
+    let next: WorktreeList | null = null;
+    try {
+      const out = await listerRef.current(at);
+      next = isWorktreeError(out) || !(out as WorktreeList).root ? null : (out as WorktreeList);
+    } catch {
+      next = null;
+    }
+    if (!live.current || fileRef.current !== at || g !== gen.current) return;
+    setList(next);
+    readyRef.current?.(!!next);
+  }, [file]);
+  useEffect(() => {
+    setList(null);
+    void refresh();
+  }, [refresh]);
+  return { list, refresh };
+}
+
 export interface WorktreeMenuProps {
-  /** The chat's `_file` — a FOLDER (the host mounts this for folders only). */
+  /** The chat's `_file` — a FOLDER (the host mounts this for folders only,
+   *  keyed on it, so a new folder is a new instance). */
   file: string;
   /** Open `path`'s folder chat, fresh (no session, no run). */
   onSwitch(path: string): void;
   /** A `/worktree [name]` from the composer. */
   request?: WorktreeRequest | null;
+  /** A turn is live in this chat: Remove is refused. */
+  running?: boolean;
+  /** Whether this menu can act: true once the list says the folder is in a
+   *  repo, false when it is not (or the menu goes away). `/worktree` reads it. */
+  onReady?(isRepo: boolean): void;
 }
 
-export function WorktreeMenu({ file, onSwitch, request }: WorktreeMenuProps) {
-  const [list, setList] = useState<WorktreeList | null>(null);
+export function WorktreeMenu({ file, onSwitch, request, running, onReady }: WorktreeMenuProps) {
+  const { list, refresh } = useWorktreeList(file, listWorktrees, onReady);
   const [open, setOpen] = useState(false);
   const [creating, setCreating] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
+  /** A server refusal said "dirty": the next press forces. */
+  const [refusedDirty, setRefusedDirty] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const live = useRef(true);
@@ -165,20 +252,10 @@ export function WorktreeMenu({ file, onSwitch, request }: WorktreeMenuProps) {
       live.current = false;
     };
   }, []);
-
-  const refresh = useCallback(async () => {
-    try {
-      const out = await listWorktrees(file);
-      if (!live.current) return;
-      setList(isWorktreeError(out) || !out.root ? null : out);
-    } catch {
-      if (live.current) setList(null);
-    }
-  }, [file]);
-  useEffect(() => {
-    setList(null);
-    void refresh();
-  }, [refresh]);
+  // AN ANSWER ABOUT A FOLDER THIS CHAT HAS SINCE LEFT IS DROPPED.
+  const fileRef = useRef(file);
+  fileRef.current = file;
+  const stale = (at: string) => !live.current || fileRef.current !== at;
 
   const closeMenu = useCallback(() => setOpen(false), []);
   useDismissOnWindow(open, closeMenu);
@@ -190,6 +267,7 @@ export function WorktreeMenu({ file, onSwitch, request }: WorktreeMenuProps) {
       } else {
         setCreating(null);
         setConfirming(false);
+        setRefusedDirty(false);
         setError("");
       }
     },
@@ -208,17 +286,18 @@ export function WorktreeMenu({ file, onSwitch, request }: WorktreeMenuProps) {
 
   const onCreate = useCallback(
     async (name: string) => {
+      const at = file;
       setBusy(true);
       setError("");
       try {
-        const out = await createWorktree(file, name);
-        if (!live.current) return;
+        const out = await createWorktree(at, name);
+        if (stale(at)) return;
         if (isWorktreeError(out)) setError(out.error);
         else go(out.path);
       } catch (err) {
-        if (live.current) setError(err instanceof Error ? err.message : String(err));
+        if (!stale(at)) setError(err instanceof Error ? err.message : String(err));
       } finally {
-        if (live.current) setBusy(false);
+        if (!stale(at)) setBusy(false);
       }
     },
     [file, go],
@@ -226,31 +305,43 @@ export function WorktreeMenu({ file, onSwitch, request }: WorktreeMenuProps) {
 
   const rows = list ? worktreeRows(list) : [];
   const current = rows.find((r) => r.current) ?? null;
+  const dirt: DirtyState | undefined = current
+    ? refusedDirty
+      ? "dirty"
+      : dirtyState(current)
+    : undefined;
   const onRemove = useCallback(async () => {
-    if (!current || !list) return;
+    if (!current || !list || running) return;
     if (!confirming) {
       setConfirming(true);
       return;
     }
+    const at = file;
     setBusy(true);
     setError("");
     try {
-      // The second press on a DIRTY worktree is the force the confirm asked for.
-      const out = await removeWorktree(file, current.name, current.dirty);
-      if (!live.current) return;
-      if (isWorktreeError(out)) {
+      const out = await removeFlow(dirt ?? "unknown", {
+        leave: confirmLeave,
+        remove: (force) => removeWorktree(at, current.name, force),
+      });
+      if (stale(at)) return;
+      if ("stayed" in out) return;
+      if ("error" in out) {
         setError(out.error);
-        setConfirming(false);
+        // A dirty refusal keeps the confirm up, and the next press forces.
+        if (out.dirty) setRefusedDirty(true);
+        else setConfirming(false);
       } else go(list.root);
     } catch (err) {
-      if (live.current) setError(err instanceof Error ? err.message : String(err));
+      if (!stale(at)) setError(err instanceof Error ? err.message : String(err));
     } finally {
-      if (live.current) setBusy(false);
+      if (!stale(at)) setBusy(false);
     }
-  }, [confirming, current, file, go, list]);
+  }, [confirming, current, dirt, file, go, list, running]);
 
   // `/worktree` from the composer: no name opens this menu, a name is
-  // create-or-switch — with a refusal shown in the menu it would have used.
+  // create-or-switch — with a refusal shown in the menu it would have used,
+  // and the worktree ALREADY open answered by opening the menu.
   const seen = useRef(request?.seq ?? 0);
   useEffect(() => {
     if (!request || request.seq === seen.current) return;
@@ -259,24 +350,26 @@ export function WorktreeMenu({ file, onSwitch, request }: WorktreeMenuProps) {
       onOpenChange(true);
       return;
     }
+    const at = file;
     const name = request.name;
     setBusy(true);
     setError("");
-    void resolveWorktree(file, name)
+    void resolveWorktree(at, name)
       .then((out) => {
-        if (!live.current) return;
+        if (stale(at)) return;
         if (isWorktreeError(out)) {
           setError(out.error);
           setOpen(true);
-        } else go(out.path);
+        } else if (out.current) onOpenChange(true);
+        else go(out.path);
       })
       .catch((err: unknown) => {
-        if (!live.current) return;
+        if (stale(at)) return;
         setError(err instanceof Error ? err.message : String(err));
         setOpen(true);
       })
       .finally(() => {
-        if (live.current) setBusy(false);
+        if (!stale(at)) setBusy(false);
       });
   }, [request, file, go, onOpenChange]);
 
@@ -315,7 +408,9 @@ export function WorktreeMenu({ file, onSwitch, request }: WorktreeMenuProps) {
             }}
             onCreate={(name) => void onCreate(name)}
             confirming={confirming}
+            {...(dirt ? { dirt } : {})}
             onRemove={() => void onRemove()}
+            running={!!running}
             busy={busy}
             error={error}
           />

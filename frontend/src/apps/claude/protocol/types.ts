@@ -1003,7 +1003,10 @@ export interface ArtifactsListResponse {
 // ---- background tasks (SPEC T) -----------------------------------------------
 
 export type TaskKind = "shell" | "agent" | "monitor" | "other";
-export type TaskStatus = "running" | "completed" | "failed" | "killed" | "paused" | "pending";
+/** `unknown`: the run that owned the task is gone while the task was still
+ *  active (agent.py on a restore; the page itself when a run ends) — its real
+ *  outcome was never reported. `ended_at` is null then. */
+export type TaskStatus = "running" | "completed" | "failed" | "killed" | "paused" | "pending" | "unknown";
 export interface TaskUsage {
   total_tokens: number;
   tool_uses: number;

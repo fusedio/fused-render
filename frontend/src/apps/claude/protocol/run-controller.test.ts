@@ -4628,15 +4628,22 @@ describe("the run's tasks", () => {
   });
 
   test("published from the poll, kept through a poll that omits them, cleared with the conversation", async () => {
+    const seen: string[][] = [];
     const { controller } = makeController({
       start: () => ({ run_id: "r1" }),
-      poll: (_f, n) =>
-        n === 0
-          ? poll({ tasks: [T("a")] })
-          : poll({ done: true, segments: [text("ok")], text: "ok" }),
+      poll: (_f, n) => {
+        seen.push(controller.getState().tasks.map((t) => t.id));
+        return n === 0
+          ? poll({ tasks: [T("a", "completed")] })
+          : n === 1
+            ? poll({})
+            : poll({ done: true, segments: [text("ok")], text: "ok" });
+      },
       history: () => ({ turns: [], transcript: null }),
     });
     await controller.sendMessage("go");
+    // The poll after the one that omitted the list still saw it.
+    expect(seen[2]).toEqual(["a"]);
     expect(controller.getState().tasks.map((t) => t.id)).toEqual(["a"]);
     expect(controller.getState().tasksRunId).toBe("r1");
     controller.newChat();
@@ -4670,5 +4677,79 @@ describe("the run's tasks", () => {
     await controller.openSession("s9");
     expect(controller.getState().tasks.map((t) => t.id)).toEqual(["h"]);
     expect(controller.getState().tasksRunId).toBe(null);
+  });
+
+  test("review #4: the owning run ending downgrades its active tasks to unknown", async () => {
+    const { controller } = makeController({
+      start: () => ({ run_id: "r1" }),
+      poll: (_f, n) =>
+        n === 0
+          ? poll({ tasks: [T("live"), { ...T("held"), status: "paused" }, T("done", "completed")] })
+          : poll({ done: true, segments: [text("ok")], text: "ok" }),
+      history: () => ({ turns: [], transcript: null }),
+    });
+    await controller.sendMessage("go");
+    const byId = Object.fromEntries(controller.getState().tasks.map((t) => [t.id, t]));
+    expect(byId.live!.status).toBe("unknown");
+    expect(byId.live!.ended_at).toBe(null);
+    expect(byId.held!.status).toBe("unknown");
+    expect(byId.done!.status).toBe("completed");
+  });
+
+  test("review #2/#3: a refresh with nothing live publishes exactly history's list, owned by no run", async () => {
+    let n = 0;
+    let refreshing = false;
+    const { controller } = makeController({
+      start: () => ({ run_id: "r1" }),
+      poll: () => poll({ done: true, tasks: [T("a", "completed")], segments: [text("ok")], text: "ok" }),
+      history: () =>
+        !refreshing
+          ? { turns: [], transcript: null }
+          : { turns: [], transcript: { path: "/p", mtime: ++n, size: 1 }, live_run: "", tasks: [] },
+    });
+    await controller.sendMessage("go");
+    expect(controller.getState().tasksRunId).toBe("r1");
+    refreshing = true;
+    await controller.refreshHistory("s1");
+    expect(controller.getState().tasks).toEqual([]);
+    expect(controller.getState().tasksRunId).toBe(null);
+  });
+
+  test("review #2/#3: a refresh under ANOTHER live run is owned by that run, never the old id", async () => {
+    let n = 0;
+    let refreshing = false;
+    const { controller } = makeController({
+      start: () => ({ run_id: "r1" }),
+      poll: () => poll({ done: true, tasks: [T("a", "completed")], segments: [text("ok")], text: "ok" }),
+      history: () =>
+        !refreshing
+          ? { turns: [], transcript: null }
+          : { turns: [{ role: "user" as const, text: "go", uuid: "u1" }], transcript: { path: "/p", mtime: ++n, size: 1 }, live_run: "r2", tasks: [T("b")] },
+      live_run: () => ({ run_id: "" }),
+    });
+    await controller.sendMessage("go");
+    refreshing = true;
+    await controller.refreshHistory("s1");
+    expect(controller.getState().tasks.map((t) => t.id)).toEqual(["b"]);
+    expect(controller.getState().tasksRunId).toBe("r2");
+  });
+
+  test("a refresh about the run already drawn keeps its list through an empty answer", async () => {
+    let n = 0;
+    let refreshing = false;
+    const { controller } = makeController({
+      start: () => ({ run_id: "r1" }),
+      poll: () => poll({ done: true, tasks: [T("a", "completed")], segments: [text("ok")], text: "ok" }),
+      history: () =>
+        !refreshing
+          ? { turns: [], transcript: null }
+          : { turns: [{ role: "user" as const, text: "go", uuid: "u1" }], transcript: { path: "/p", mtime: ++n, size: 1 }, live_run: "r1", tasks: [] },
+      live_run: () => ({ run_id: "" }),
+    });
+    await controller.sendMessage("go");
+    refreshing = true;
+    await controller.refreshHistory("s1");
+    expect(controller.getState().tasks.map((t) => t.id)).toEqual(["a"]);
+    expect(controller.getState().tasksRunId).toBe("r1");
   });
 });

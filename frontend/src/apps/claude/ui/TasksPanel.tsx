@@ -31,6 +31,32 @@ import { CollapsiblePre } from "./CollapsiblePre";
 
 import "../styles/tasks.css";
 
+/**
+ * WHAT AN OPEN PANEL BELONGS TO (review #5): the run and the conversation on
+ * screen. Opened, the panel stays open for THIS scope only — a later run, a
+ * restored session or a new chat starts collapsed again, rather than carrying
+ * an empty "No background tasks" strip into every conversation after it.
+ */
+export function tasksPanelScope(s: {
+  lastRunId: string | null;
+  tasksRunId: string | null;
+  sessionId: string | null;
+  transcriptGen: number;
+}): string {
+  return [s.lastRunId ?? "", s.tasksRunId ?? "", s.sessionId ?? "", s.transcriptGen].join("\u0001");
+}
+
+/** The panel's open bit, scoped (`tasksPanelScope`): open only while the scope
+ *  it was opened in is still the current one. Derived, so no effect races. */
+export function useTasksOpen(scope: string): [boolean, () => void] {
+  const [st, setSt] = useState<{ open: boolean; scope: string }>({ open: false, scope });
+  const open = st.open && st.scope === scope;
+  const toggle = useCallback(() => {
+    setSt((prev) => ({ open: !(prev.open && prev.scope === scope), scope }));
+  }, [scope]);
+  return [open, toggle];
+}
+
 export type FetchTaskOutput = (runId: string, taskId: string) => Promise<TaskOutputResponse | ErrorOnly>;
 
 const defaultFetch: FetchTaskOutput = (runId, taskId) =>

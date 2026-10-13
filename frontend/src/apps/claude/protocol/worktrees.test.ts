@@ -3,6 +3,9 @@ import { describe, expect, test } from "bun:test";
 import {
   currentWorktree,
   defaultWorktreeName,
+  dirtyState,
+  isDirtyRefusal,
+  removeLabel,
   parseWorktreeCommand,
   resolveWorktree,
   triggerLabel,
@@ -99,5 +102,34 @@ describe("transport", () => {
     } finally {
       (globalThis as { fetch: unknown }).fetch = real;
     }
+  });
+});
+
+describe("review fixes", () => {
+  test("/worktree <current> is reported as current, not a switch", async () => {
+    expect(await resolveWorktree("/r", "r", { list: async () => LIST })).toEqual({ path: "/r", current: true });
+    const inZed = { ...LIST, current: "/r/.claude/worktrees/zed" };
+    expect(await resolveWorktree("/r", "zed", { list: async () => inZed })).toEqual({
+      path: "/r/.claude/worktrees/zed",
+      current: true,
+    });
+  });
+
+  test("dirty: null is possibly dirty, and the confirm says so", () => {
+    const rows = worktreeRows(LIST);
+    const alpha = rows.find((r) => r.name === "alpha")!;
+    expect(alpha.dirty).toBe(false);
+    expect(alpha.maybeDirty).toBe(true);
+    expect(dirtyState(alpha)).toBe("unknown");
+    expect(removeLabel(true, "unknown")).toBe("May have uncommitted changes. Remove anyway");
+    expect(removeLabel(true, "dirty")).toBe("Has uncommitted changes. Remove anyway");
+    expect(removeLabel(true, "clean")).toBe("Confirm remove");
+    expect(removeLabel(false, "dirty")).toBe("Remove this worktree");
+  });
+
+  test("the server's dirty refusals are recognised", () => {
+    expect(isDirtyRefusal("this worktree has uncommitted changes")).toBe(true);
+    expect(isDirtyRefusal("could not tell whether this worktree has changes")).toBe(true);
+    expect(isDirtyRefusal("only worktrees under .claude/worktrees/ can be removed")).toBe(false);
   });
 });

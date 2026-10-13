@@ -234,3 +234,16 @@
   padding: 2px 0 2px 12px;
   border-left: 2px solid color-mix(in srgb, var(--c-accent) 30%, var(--c-border));
 }
+
+/* `unknown`: the owning run died while the task was active — no outcome was
+   reported, so it reads as neither done nor failed, just over. */
+.chat-root .chat-task-status.is-unknown,
+.chat-root .chip-task-status.is-unknown {
+  color: var(--c-faint);
+  border-style: dashed;
+}
+.chat-root .chat-task-status.is-paused,
+.chat-root .chip-task-status.is-paused {
+  color: var(--c-dim);
+  border-style: dashed;
+}

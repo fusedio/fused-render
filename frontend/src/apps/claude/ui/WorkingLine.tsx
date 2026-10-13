@@ -104,13 +104,12 @@ export function activityVerb(stats: VerbStats, thinkVerb: string, quietSecs: num
       ? "Waiting for a background command to finish"
       : "Claude is taking longer than usual";
   }
-  // BACKGROUND WORK THE REGISTRY CAN NAME (SPEC T-5): agents, then monitors,
-  // then shells — a truer verb than a mood while the model waits on them.
-  const bg = taskVerb(stats.tasks);
-  if (bg) return bg;
   if (stats.phase === "requesting") return "Sending to Claude";
   if (stats.phase === "composing") return "Claude is replying";
-  return thinkVerb;
+  // BACKGROUND WORK THE REGISTRY CAN NAME (SPEC T-5): agents, then monitors,
+  // then shells — a truer verb than a mood, but only in the mood's place: while
+  // the model is streaming, what it is doing right now is the news.
+  return taskVerb(stats.tasks) || thinkVerb;
 }
 
 /** T:14848-14855 — the ONE thing that goes in the brackets beside the time.

@@ -105,7 +105,11 @@ export interface WorktreeMenuRow {
   path: string;
   name: string;
   branch: string;
+  /** Known dirty — draws the dot. */
   dirty: boolean;
+  /** Dirty OR unknown (`git status` timed out): removing it needs the force,
+   *  and the confirm says it may lose changes. */
+  maybeDirty: boolean;
   current: boolean;
   /** "Remove this worktree" is offered: managed and not the main checkout. */
   removable: boolean;
@@ -119,6 +123,7 @@ export function worktreeRows(list: WorktreeList): WorktreeMenuRow[] {
     name: w.is_main ? w.name || w.branch : w.name,
     branch: w.branch,
     dirty: w.dirty === true,
+    maybeDirty: w.dirty !== false,
     current: trim(w.path) === cur,
     removable: w.managed && !w.is_main,
     main: w.is_main,
@@ -148,12 +153,36 @@ export async function resolveWorktree(
   file: string,
   name: string,
   deps: { list?: typeof listWorktrees; create?: typeof createWorktree } = {},
-): Promise<{ path: string } | WorktreeError> {
+): Promise<{ path: string; current?: boolean } | WorktreeError> {
   const list = await (deps.list ?? listWorktrees)(file);
   if (isWorktreeError(list)) return list;
   const hit = list.worktrees.find((w) => w.name === name);
-  if (hit) return { path: hit.path };
+  // THE ONE ALREADY OPEN is not a switch: navigating would only start a fresh
+  // chat in the same folder, so the caller opens the menu instead.
+  if (hit) return trim(hit.path) === trim(list.current || list.root) ? { path: hit.path, current: true } : { path: hit.path };
   const made = await (deps.create ?? createWorktree)(file, name);
   if (isWorktreeError(made)) return made;
   return { path: made.path };
+}
+
+/** The server refused a remove because the worktree has (or may have) changes
+ *  (`worktrees.py::remove_worktree`): the next press may force it. */
+export function isDirtyRefusal(error: string): boolean {
+  return /uncommitted changes|could not tell whether this worktree has changes/i.test(error || "");
+}
+
+export type DirtyState = "clean" | "dirty" | "unknown";
+
+/** A row's dirt as the remove confirm sees it. */
+export function dirtyState(row: Pick<WorktreeMenuRow, "dirty" | "maybeDirty">): DirtyState {
+  return row.dirty ? "dirty" : row.maybeDirty ? "unknown" : "clean";
+}
+
+/** The remove button's words at each step. Anything but "clean" means the
+ *  confirming press FORCES the remove. */
+export function removeLabel(confirming: boolean, state: DirtyState): string {
+  if (!confirming) return "Remove this worktree";
+  if (state === "dirty") return "Has uncommitted changes. Remove anyway";
+  if (state === "unknown") return "May have uncommitted changes. Remove anyway";
+  return "Confirm remove";
 }

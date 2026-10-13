@@ -62,6 +62,7 @@ import type {
 import { historyToTurns } from "./history";
 import { CONTINUE_PROMPT, CONTINUE_TITLE, continueDue, continueNote, limitHit } from "./quota";
 import { pollBody, type SegmentView } from "./segments";
+import { endActiveTasks } from "./tasks";
 import { isNetworkFailure, isUnknownRun, troubleFromError, troubleFromMessage, troubleOf } from "./trouble";
 import type {
   Activity,
@@ -555,6 +556,34 @@ export function createChatController(deps: ControllerDeps): ChatController {
     if (sig === tasksSig) return;
     tasksSig = sig;
     emit({ tasks: list, tasksRunId: runId });
+  };
+  /**
+   * THE RUN THAT OWNS THE LIST HAS ENDED (SPEC T-5 review #4): anything it
+   * still had active is downgraded to `unknown`, `ended_at` null — the panel's
+   * clock stops, a Monitor chip stops saying "watching" and no Output button
+   * aims at a dead host. A session host that does outlive the turn re-reports
+   * the real statuses on its next poll, which replaces this list wholesale.
+   */
+  const endRunTasks = (runId: string | null) => {
+    if (!runId || state.tasksRunId !== runId) return;
+    const ended = endActiveTasks(state.tasks);
+    if (ended) publishTasks(ended, runId);
+  };
+  /**
+   * HISTORY'S TASKS, on a restore and on every refresh — one rule for both
+   * (`openSession` has already cleared the last conversation's list).
+   * Nothing live (`live_run` "" or absent): history's list IS the answer, empty
+   * included, owned by no run (its host is gone, so no Output). A live run:
+   * owned by THAT run; an empty answer about the run already drawn keeps the
+   * list (the poll owns a live run's tasks), any other answer replaces it.
+   */
+  const landHistoryTasks = (res: HistoryResponse) => {
+    // An older server sends no `tasks` at all: that says nothing, not "none".
+    if (!Array.isArray(res.tasks)) return;
+    const rows = res.tasks;
+    const owner = res.live_run || null;
+    if (owner && !rows.length && state.tasksRunId === owner && state.tasks.length) return;
+    publishTasks(rows, owner);
   };
   /** The conversation on screen is leaving: its tasks go with it. */
   const clearTasks = () => {
@@ -1465,6 +1494,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
           const message = String((data as { error?: string }).error);
           if (loopSeq === seat) clearRunParam();
           emit({ working: null });
+          endRunTasks(runId);
           deps.onRunEnded?.();
           deps.onArtifactsTick?.();
           const gone = runEnding({ error: message }, stoppedSeat === seat);
@@ -1723,6 +1753,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
           // or a reload cannot re-attach (T:16313-16318).
           if (loopSeq === seat) clearRunParam();
           emit({ working: null });
+          endRunTasks(runId);
           deps.onRunEnded?.();
           // T does one final `pollArtifacts()` at the run's end (T:16347), and
           // controller-api promises "every 8th poll AND once at the run's end".
@@ -2898,11 +2929,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // THE SESSION'S LAST RUN'S TASKS (SPEC T-1/T-5): a reload shows the panel
     // it left. An empty answer about the run already drawn keeps the list —
     // the poll owns a live run's tasks.
-    {
-      const rows = Array.isArray(res.tasks) ? res.tasks : [];
-      const owner = res.live_run || null;
-      if (rows.length || !(state.tasks.length && state.tasksRunId === owner)) publishTasks(rows, owner);
-    }
+    landHistoryTasks(res);
     emit({
       turns: historyToTurns(res),
       transcript: res.transcript ?? null,
@@ -3496,6 +3523,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
         };
         // The run this frame missed still handled its notes, and may have edited
         // the file while we were away (`annResolveSent` / `snapInvalidate`).
+        endRunTasks(runId || null);
         deps.onRunEnded?.();
         /**
          * DID THIS REPAIR ACTUALLY PUT ROWS ON SCREEN? (Bugbot 3974939169 and
@@ -3884,11 +3912,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
         // its own.
         context: res.context ?? null,
       });
-      // A refresh only ever brings tasks IN: the poll owns a live run's list,
-      // and an empty answer here is no reason to take the panel down.
-      if (Array.isArray(res.tasks) && res.tasks.length) {
-        publishTasks(res.tasks, res.live_run || state.tasksRunId);
-      }
+      landHistoryTasks(res);
     } catch (err) {
       // The transcript stays exactly as it rendered. The watermark is NOT
       // advanced, so the next lap tries again.

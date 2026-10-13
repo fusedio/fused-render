@@ -136,13 +136,13 @@ import {
   type Viewable,
 } from "./ui";
 import { debugSentEnabled } from "./ui/debug-sent";
-import { fetchCommands, type ClassifiedCommand } from "./protocol/commands";
-import { parseWorktreeCommand } from "./protocol/worktrees";
-import type { CommandRow } from "./protocol/types";
+import type { ClassifiedCommand } from "./protocol/commands";
+import { useSlashCommands } from "./ui/useSlashCommands";
+import { planLocalCommand } from "./ui/local-commands";
+import { notify } from "@platform/lib/notifications";
 import { WorktreeMenu, paneChatUrl, type WorktreeRequest } from "./ui";
-import { TasksContext, TasksPanel } from "./ui";
+import { TasksContext, TasksPanel, tasksPanelScope, useTasksOpen } from "./ui";
 import { taskIndex } from "./protocol/tasks";
-import { EFFORTS, MODELS, MODEL_LABELS } from "./ui/composer-defaults";
 import { recapAnchor } from "./protocol/recap";
 import {
   queueEnabled,
@@ -293,21 +293,8 @@ export interface ClaudeChatProps {
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-/** `/model <name>`'s argument as a pill value — the id or its label, any case —
- *  or "" when it names none of them. */
-export function localModelArg(arg: string): string {
-  const want = arg.trim().toLowerCase();
-  if (!want) return "";
-  return (
-    MODELS.find((m) => m === want || (MODEL_LABELS[m] ?? "").toLowerCase() === want) ?? ""
-  );
-}
-
-/** `/effort <level>`'s argument as a pill value, or "". */
-export function localEffortArg(arg: string): string {
-  const want = arg.trim().toLowerCase();
-  return (EFFORTS as readonly string[]).includes(want) ? want : "";
-}
+// `/model` and `/effort` parsing moved to `ui/local-commands.ts`; re-exported.
+export { localEffortArg, localModelArg } from "./ui/local-commands";
 
 /**
  * THE FOLDER THE READER IS WORKING IN, for a shell fence's or a Bash chip's
@@ -3541,40 +3528,35 @@ function ChatBody(props: ChatBodyProps) {
   // ── SLASH COMMANDS (SPEC C-1/C-3) ──────────────────────────────────────────
   //
   // The folder's list, fetched per `_file` and again when a poll says it moved.
-  const [slashCommands, setSlashCommands] = useState<CommandRow[] | null>(null);
-  const [commandsGen, setCommandsGen] = useState(0);
-  commandsChanged.current = () => setCommandsGen((n) => n + 1);
-  useEffect(() => {
-    if (!file) {
-      setSlashCommands(null);
-      return;
-    }
-    let live = true;
-    fetchCommands(file).then(
-      (out) => {
-        if (live) setSlashCommands(out.commands);
-      },
-      () => {
-        /* no list: the menu still has the local commands */
-      },
-    );
-    return () => {
-      live = false;
-    };
-  }, [file, commandsGen]);
+  const { commands: slashCommands, refetch: refetchCommands } = useSlashCommands(file);
+  commandsChanged.current = refetchCommands;
   // The worktree menu's `/worktree` requests (`ui/WorktreeMenu`).
   const wtSeq = useRef(0);
   const [wtRequest, setWtRequest] = useState<WorktreeRequest | null>(null);
   const folderTarget = !!file && !!pane.noun && pane.noun !== "file";
+  /** A worktree menu is MOUNTED and has said this folder is in a repo
+   *  (`WorktreeMenu.onReady`). Peek/compact mount none; a non-repo says false. */
+  const worktreeReady = useRef(false);
+  const onWorktreeReady = useCallback((isRepo: boolean) => {
+    worktreeReady.current = isRepo;
+  }, []);
   // THE TASKS PANEL'S OPEN BIT (SPEC T-5): collapsed by default, toggled by its
-  // own head and by `/tasks`. The host's `onToggleTasks` still hears `/tasks`.
-  const [tasksOpen, setTasksOpen] = useState(false);
-  const toggleTasksPanel = useCallback(() => setTasksOpen((v) => !v), []);
+  // own head and by `/tasks`, and scoped to the run and conversation on screen
+  // (`tasksPanelScope`) so it does not stay open into the next one. The host's
+  // `onToggleTasks` still hears `/tasks`.
+  const [tasksOpen, toggleTasksPanel] = useTasksOpen(
+    tasksPanelScope({
+      lastRunId: state.lastRunId,
+      tasksRunId: state.tasksRunId,
+      sessionId: state.sessionId,
+      transcriptGen: state.transcriptGen,
+    }),
+  );
   const hostToggleTasks = props.onToggleTasks;
   const onToggleTasks = useCallback(() => {
-    setTasksOpen((v) => !v);
+    toggleTasksPanel();
     hostToggleTasks?.();
-  }, [hostToggleTasks]);
+  }, [toggleTasksPanel, hostToggleTasks]);
   const setModelPick = defaults.setModel;
   const setEffortPick = defaults.setEffort;
   /** A local command from the composer. `false` = refused (bad argument), and
@@ -3582,36 +3564,32 @@ function ChatBody(props: ChatBodyProps) {
    *  composer's own menu. */
   const onLocalCommand = useCallback(
     (cmd: ClassifiedCommand): boolean => {
-      switch (cmd.name) {
+      const plan = planLocalCommand(cmd, {
+        worktreeReady: folderTarget && worktreeReady.current,
+      });
+      if ("refuse" in plan) {
+        // The words stay in the box (`false`), and the reader is told why.
+        notify({ title: plan.refuse, tone: "info" });
+        return false;
+      }
+      switch (plan.do) {
         case "clear":
           // THE SAME DOOR AS `← Chats`: a new conversation in this folder.
           onBack();
           return true;
-        case "model": {
-          const v = localModelArg(cmd.arg);
-          if (!v) return false;
-          setModelPick(v);
+        case "model":
+          setModelPick(plan.value);
           return true;
-        }
-        case "effort": {
-          const v = localEffortArg(cmd.arg);
-          if (!v) return false;
-          setEffortPick(v);
+        case "effort":
+          setEffortPick(plan.value);
           return true;
-        }
-        case "worktree": {
-          if (!folderTarget) return false;
-          const parsed = parseWorktreeCommand(cmd.arg);
-          if ("error" in parsed) return false;
+        case "worktree":
           wtSeq.current += 1;
-          setWtRequest({ seq: wtSeq.current, ...("name" in parsed ? { name: parsed.name } : {}) });
+          setWtRequest({ seq: wtSeq.current, ...(plan.name ? { name: plan.name } : {}) });
           return true;
-        }
         case "tasks":
-          onToggleTasks?.();
+          onToggleTasks();
           return true;
-        default:
-          return false;
       }
     },
     [onBack, setModelPick, setEffortPick, folderTarget, onToggleTasks],
@@ -3623,9 +3601,6 @@ function ChatBody(props: ChatBodyProps) {
     (path: string) => onNavigate(paneChatUrl(path, "")),
     [onNavigate],
   );
-  const worktreeMenu = folderTarget ? (
-    <WorktreeMenu file={file as string} onSwitch={onWorktreeSwitch} request={wtRequest} />
-  ) : null;
   /**
    * A DRAFT ROW PRESSED — THE WORDS COME TO THE BOX (Akshil, 2026-09-15).
    *
@@ -3738,6 +3713,16 @@ function ChatBody(props: ChatBodyProps) {
   const name = file ? file.split(/[\\/]/).filter(Boolean).pop() || file : "Claude";
   const running =
     state.status === "running" || state.status === "starting" || state.status === "stopping";
+  const worktreeMenu = folderTarget ? (
+    <WorktreeMenu
+      key={file as string}
+      file={file as string}
+      onSwitch={onWorktreeSwitch}
+      request={wtRequest}
+      running={running}
+      onReady={onWorktreeReady}
+    />
+  ) : null;
   // The picker moves into the shared strip below the breakpoint: there is no
   // persistent left column to hang a bar on (`pickerHost`).
   const host = pickerHost(narrowView.narrow, pane.noPane, pane.decision?.leftModes.length ?? 0);

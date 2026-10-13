@@ -1881,7 +1881,9 @@ export function ComposerCard({
       const words = textRef.current;
       clearWords();
       setMenuIdx(0);
-      if (local.name === "help") {
+      // `/help` alone is this composer's own menu; with words after it, the
+      // host refuses it like any other argument it would throw away.
+      if (local.name === "help" && !local.arg) {
         setMenuDismissed(null);
         setHelpOpen(true);
       } else if (onLocalCommand!(local) === false) {
@@ -1987,8 +1989,19 @@ export function ComposerCard({
     (ev: React.KeyboardEvent<HTMLTextAreaElement>) => {
       // THE COMMAND MENU HAS THE ARROWS, ENTER, TAB AND ESC WHILE IT IS OPEN
       // (`menuKey`); every other key is the box's.
-      if (menuOpen) {
-        const k = menuKey(ev.key, menuActive, menuRows.length, ev.shiftKey);
+      // NOT MID-COMPOSITION: an IME's Enter/arrows pick its own candidates.
+      if (menuOpen && !ev.nativeEvent?.isComposing) {
+        let k = menuKey(ev.key, menuActive, menuRows.length, ev.shiftKey);
+        // A FULLY TYPED NAME IS A COMMAND, NOT A QUERY: Enter on `/compact`
+        // with `compact` highlighted sends it, rather than rewriting it to
+        // `/compact ` and asking for a second Enter. Tab still only accepts.
+        if (
+          k?.type === "accept" &&
+          ev.key === "Enter" &&
+          menuRows[menuActive]?.name.toLowerCase() === (menuQ ?? "").toLowerCase()
+        ) {
+          k = null;
+        }
         if (k) {
           ev.preventDefault();
           if (k.type === "move") setMenuIdx(k.index);
@@ -2032,7 +2045,7 @@ export function ComposerCard({
       ev.preventDefault();
       submit(undefined, ev.ctrlKey && !ev.metaKey);
     },
-    [submit, onPullQueued, queuedCount, notSentCount, text, grow, menuOpen, menuActive, menuRows, pickCommand],
+    [submit, onPullQueued, queuedCount, notSentCount, text, grow, menuOpen, menuActive, menuRows, menuQ, pickCommand],
   );
 
   const draft = useCallback(() => text, [text]);
@@ -2159,11 +2172,19 @@ export function ComposerCard({
             grow();
           }}
           onKeyDown={onKeyDown}
-          {...(menuOpen
+          // A COMBOBOX whenever this box has a command menu at all; the list's
+          // id and the highlighted row only while it is open.
+          {...(onLocalCommand
             ? {
-                "aria-controls": menuId,
-                "aria-activedescendant": `${menuId}-${menuActive}`,
-                "aria-expanded": true,
+                role: "combobox",
+                "aria-autocomplete": "list" as const,
+                "aria-expanded": menuOpen,
+                ...(menuOpen
+                  ? {
+                      "aria-controls": menuId,
+                      "aria-activedescendant": `${menuId}-${menuActive}`,
+                    }
+                  : {}),
               }
             : {})}
           // WHO HAS THE CARET, for the conflict rule above and nothing else: a
