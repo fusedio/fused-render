@@ -102,3 +102,9 @@ describe("displayName hides the upload stamp and nothing else", () => {
     expect(displayName("/Users/ada/1234-5-notes.wav")).toBe("1234-5-notes.wav");
   });
 });
+
+describe("the unified filter fits the dialog route's clamp", () => {
+  it("is at most 40 extensions, the server's `_file_types` ceiling", () => {
+    expect(acceptedTypes({ audio: true, video: true }).length).toBeLessThanOrEqual(40);
+  });
+});

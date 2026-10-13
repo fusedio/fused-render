@@ -975,7 +975,7 @@ def test_a_type_is_normalised_before_it_reaches_a_shell(monkeypatch):
     assert seen["types"] == ["png", "7"]
     # Clamped like `title`: a runaway list is a dialog nobody can use.
     _pick_file({"types": [f"e{i}" for i in range(200)]})
-    assert len(seen["types"]) == 24
+    assert len(seen["types"]) == 40
 
 
 def test_no_types_leaves_the_dialog_showing_everything(monkeypatch):

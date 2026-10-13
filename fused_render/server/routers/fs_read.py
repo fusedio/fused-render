@@ -565,7 +565,10 @@ def _file_types(raw) -> list[str] | None:
     if not isinstance(raw, list):
         return None
     kept = []
-    for item in raw[:24]:
+    # 40, not the 24 this started at: the embed Playground's unified-model
+    # filter is 27 extensions (pictures + sound + video), and a clamp below
+    # the longest honest list greys out real formats in the dialog.
+    for item in raw[:40]:
         ext = str(item).lstrip(".").lower()
         # DROPPED past 8 characters, not truncated: a real extension is short,
         # and slicing a long one invents a filter the caller never asked for and

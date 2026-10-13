@@ -294,6 +294,17 @@ export function EmbedStage({
   picturesRef.current = pictures;
   const [rankedPictures, setRankedPictures] = useState<RankedPicture[] | null>(null);
   const [attaching, setAttaching] = useState(false);
+  // Adds can overlap — a dialog open while a drop uploads — so "Adding…" is
+  // held by a COUNT of operations in flight, not the last one to finish.
+  const activeAdds = useRef(0);
+  const beginAdd = () => {
+    activeAdds.current += 1;
+    setAttaching(true);
+  };
+  const endAdd = () => {
+    activeAdds.current = Math.max(0, activeAdds.current - 1);
+    setAttaching(activeAdds.current > 0);
+  };
 
   // **Which model produced the scores currently on screen — recorded at the run,
   // not read live.** `model` is the SIDEBAR's selection and changes the instant
@@ -415,7 +426,7 @@ export function EmbedStage({
    *  does it, with multi-select on. */
   const addFiles = async () => {
     setError(null);
-    setAttaching(true);
+    beginAdd();
     try {
       const paths = await pickFiles({
         title: ranksMedia
@@ -429,7 +440,7 @@ export function EmbedStage({
     } catch (e) {
       setError((e as Error).message);
     } finally {
-      setAttaching(false);
+      endAdd();
     }
   };
 
@@ -491,9 +502,14 @@ export function EmbedStage({
       }
       return;
     }
-    setAttaching(true);
+    beginAdd();
     const landed = [...paths];
     let refused: string | null = null;
+    // The cap is applied BEFORE any upload, not after in `mergePaths`: a
+    // Finder drop of forty videos with two slots left must copy two files
+    // into the cache, not forty that then sit there unlisted.
+    let room = Math.max(0, MAX_PICTURES - picturesRef.current.length - landed.length);
+    let over = 0;
     try {
       for (const file of files) {
         // Refused BEFORE the upload: a PDF should not be copied into the
@@ -506,8 +522,14 @@ export function EmbedStage({
           refused ??= no;
           continue;
         }
+        if (room <= 0) {
+          over += 1;
+          continue;
+        }
+        room -= 1;
         landed.push(await saveDropped(file));
       }
+      if (over) refused ??= `Up to ${MAX_PICTURES} files — ${over} not added.`;
       if (landed.length || refused) takePaths(landed, refused);
     } catch (err) {
       // The files already copied into the cache still land — a failure on
@@ -515,7 +537,7 @@ export function EmbedStage({
       // The upload error outranks an earlier refusal: it is the newer news.
       takePaths(landed, (err as Error).message);
     } finally {
-      setAttaching(false);
+      endAdd();
     }
   };
 
