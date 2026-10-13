@@ -64,9 +64,11 @@ export function BotsWidget({ widget }: { widget: Widget }) {
       </div>
     );
   }
+  const shown = homeBots(data);
+  if (!shown.length) return <div className="hw-body"><EmptyLine>All bots are hidden.</EmptyLine></div>;
   return (
     <div className="hw-body">
-      <ItemList items={homeBots(data).map(toItem)} cap={itemCapacity(widget.size, "list")} moreHref={BOTS_HREF} variant="tall" />
+      <ItemList items={shown.map(toItem)}cap={itemCapacity(widget.size, "list")} moreHref={BOTS_HREF} variant="tall" />
     </div>
   );
 }
