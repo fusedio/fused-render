@@ -146,7 +146,25 @@ def test_the_file_cap_bounds_the_read(agent, tmp_path, monkeypatch):
             _side(_asst([{"type": "text", "text": "no"}]))])
     _write_agent(sub, "z", "toolu_P", [
         _side(_asst([{"type": "text", "text": "late"}]))])
-    monkeypatch.setattr(agent, "_SUBAGENT_FILE_CAP", 3)
+    # The cap bounds the transcripts PARSED, not which files sort first: the
+    # one referenced by the chip on screen is parsed on demand, so three
+    # unrelated subagents ahead of it alphabetically change nothing (Bugbot,
+    # PR #1635).
+    monkeypatch.setattr(agent, "_SUBAGENT_FILE_CAP", 1)
+    assert _agent_seg(agent, target)["children"][0]["text"] == "late"
+    monkeypatch.setattr(agent, "_SUBAGENT_FILE_CAP", 0)
     assert "children" not in _agent_seg(agent, target)
-    monkeypatch.setattr(agent, "_SUBAGENT_FILE_CAP", 50)
+
+
+def test_a_fifo_meta_is_skipped_not_opened(agent, tmp_path, monkeypatch):
+    """A FIFO (or a symlink to one) named like a meta file would block the
+    pool thread on open; only regular files are read (Bugbot, PR #1635)."""
+    import os as _os
+    if not hasattr(_os, "mkfifo"):
+        import pytest
+        pytest.skip("no FIFOs on this platform")
+    target, sub = _setup(agent, tmp_path, monkeypatch)
+    _write_agent(sub, "z", "toolu_P", [
+        _side(_asst([{"type": "text", "text": "late"}]))])
+    _os.mkfifo(str(sub / "agent-fifo.meta.json"))
     assert _agent_seg(agent, target)["children"][0]["text"] == "late"

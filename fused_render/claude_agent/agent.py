@@ -7924,43 +7924,48 @@ _SUBAGENT_FILE_CAP = 50
 _SUBAGENT_BYTES_CAP = 2 * 1024 * 1024
 
 
-def _subagent_transcripts(transcript_path: str) -> dict:
-    """`{parent tool_use id: (agent_type, rows)}` for the subagents Claude
-    Code persisted beside a session transcript.
+#: A meta file is a few hundred bytes; anything bigger is not one.
+_SUBAGENT_META_CAP = 64 * 1024
+#: How many `*.meta.json` names are even looked at.
+_SUBAGENT_META_NAMES_CAP = 500
 
-    2.1.296 writes each subagent to `<session dir>/subagents/agent-<id>.jsonl`
-    with an `agent-<id>.meta.json` beside it naming the Agent/Task call that
-    spawned it (`toolUseId`) and its `agentType`. The main transcript holds
-    none of those rows, so without this a restored Agent chip has nothing to
-    unfold. Rows are the ordinary transcript shape marked `isSidechain`
-    (which `_segments_from_rows` skips, so the mark is dropped on a copy);
-    only `user`/`assistant` rows are kept — `attachment` rows and the rest
-    are bookkeeping.
 
-    ONE LEVEL, like the poll's nesting: a subagent spawned INSIDE another
-    one (its `toolUseId` is a call in that subagent's rows) is folded into
-    its parent's rows, in timestamp order. Capped at `_SUBAGENT_FILE_CAP`
-    files of at most `_SUBAGENT_BYTES_CAP` bytes; any unreadable file simply
-    contributes nothing — this never raises."""
-    base = transcript_path.removesuffix(".jsonl")
-    folder = os.path.join(base, "subagents")
-    try:
-        names = sorted(n for n in os.listdir(folder) if n.endswith(".meta.json"))
-    except OSError:
-        return {}
-    groups = {}   # toolUseId -> [agent_type, rows, own tool ids]
-    for name in names[:_SUBAGENT_FILE_CAP]:
-        stem = name[:-len(".meta.json")]
+class _SubagentIndex:
+    """The subagents persisted beside a session, parsed ON DEMAND.
+
+    `get(tool_use_id)` → `(agent_type, rows)` or None. Only the metas are read
+    up front (tiny, and only regular files under `_SUBAGENT_META_CAP`); a
+    subagent's `.jsonl` is parsed the first time a restored Agent chip asks
+    for it, so the `_SUBAGENT_FILE_CAP` bounds the transcripts a history call
+    parses rather than which fifty files happen to sort first (Bugbot, PR
+    #1635: a chat with more than fifty subagents restored the ones on screen
+    with no children while unrelated files were the ones read).
+
+    ONE LEVEL, like the poll's nesting: a subagent spawned INSIDE the one
+    asked for (its `toolUseId` is a call in these rows) is folded into the
+    rows, in timestamp order. Nothing here raises."""
+
+    def __init__(self, folder: str, metas: dict):
+        self.folder = folder
+        self.metas = metas        # toolUseId -> (stem, agent_type)
+        self.cache = {}           # toolUseId -> (agent_type, rows) | None
+        self.parsed = 0
+
+    def __bool__(self) -> bool:
+        return bool(self.metas)
+
+    def _rows(self, stem: str) -> tuple:
+        """(rows, own tool_use ids) of one `.jsonl`, or None when it is
+        unreadable, not a regular file, over the cap, or the cap on parsed
+        files is spent."""
+        if self.parsed >= _SUBAGENT_FILE_CAP:
+            return None
+        self.parsed += 1
+        jsonl = os.path.join(self.folder, stem + ".jsonl")
         try:
-            with open(os.path.join(folder, name), encoding="utf-8") as fh:
-                meta = json.load(fh)
-            tool_use_id = str(meta.get("toolUseId") or "")
-            if not tool_use_id:
-                continue
-            jsonl = os.path.join(folder, stem + ".jsonl")
-            st = os.stat(jsonl)
+            st = os.lstat(jsonl)
             if not stat.S_ISREG(st.st_mode) or st.st_size > _SUBAGENT_BYTES_CAP:
-                continue
+                return None
             rows, tool_ids = [], set()
             with open(jsonl, encoding="utf-8", errors="replace") as fh:
                 for line in fh:
@@ -7980,21 +7985,70 @@ def _subagent_transcripts(transcript_path: str) -> dict:
                         if isinstance(block, dict) and block.get("type") == "tool_use":
                             tool_ids.add(str(block.get("id") or ""))
         except (OSError, ValueError, AttributeError, TypeError):
+            return None
+        return rows, tool_ids
+
+    def get(self, tool_use_id):
+        if tool_use_id in self.cache:
+            return self.cache[tool_use_id]
+        meta = self.metas.get(tool_use_id)
+        if meta is None:
+            return None
+        got = self._rows(meta[0])
+        if got is None:
+            self.cache[tool_use_id] = None
+            return None
+        rows, tool_ids = got
+        # Fold the subagents this one spawned (one level).
+        for nested_id in sorted(tool_ids & set(self.metas)):
+            nested = self._rows(self.metas[nested_id][0])
+            if nested is not None:
+                rows.extend(nested[0])
+                self.cache[nested_id] = None
+        rows.sort(key=lambda r: str(r.get("timestamp") or ""))
+        self.cache[tool_use_id] = (meta[1], rows)
+        return self.cache[tool_use_id]
+
+
+def _subagent_transcripts(transcript_path: str) -> _SubagentIndex:
+    """The subagents Claude Code persisted beside a session transcript, as a
+    lazy `_SubagentIndex` (`get(parent tool_use id)` → `(agent_type, rows)`).
+
+    2.1.296 writes each subagent to `<session dir>/subagents/agent-<id>.jsonl`
+    with an `agent-<id>.meta.json` beside it naming the Agent/Task call that
+    spawned it (`toolUseId`) and its `agentType`. The main transcript holds
+    none of those rows, so without this a restored Agent chip has nothing to
+    unfold. Rows are the ordinary transcript shape marked `isSidechain`
+    (which `_segments_from_rows` skips, so the mark is dropped on a copy);
+    only `user`/`assistant` rows are kept — `attachment` rows and the rest
+    are bookkeeping. Metas are read here (regular files only, never a FIFO or
+    a symlink to one — a blocked `open` would hold a pool thread, Bugbot);
+    transcripts are parsed on demand by the index."""
+    base = transcript_path.removesuffix(".jsonl")
+    folder = os.path.join(base, "subagents")
+    try:
+        names = sorted(n for n in os.listdir(folder) if n.endswith(".meta.json"))
+    except OSError:
+        return _SubagentIndex(folder, {})
+    metas = {}
+    for name in names[:_SUBAGENT_META_NAMES_CAP]:
+        stem = name[:-len(".meta.json")]
+        path = os.path.join(folder, name)
+        try:
+            st = os.lstat(path)
+            if not stat.S_ISREG(st.st_mode) or st.st_size > _SUBAGENT_META_CAP:
+                continue
+            with open(path, encoding="utf-8") as fh:
+                meta = json.load(fh)
+            tool_use_id = str(meta.get("toolUseId") or "")
+        except (OSError, ValueError, AttributeError, TypeError):
             continue
-        groups[tool_use_id] = [str(meta.get("agentType") or ""), rows, tool_ids]
-    # Fold nested subagents into the group whose rows made their call.
-    for tool_use_id in list(groups):
-        owner = next((k for k, g in groups.items()
-                      if k != tool_use_id and tool_use_id in g[2]), None)
-        if owner is not None:
-            nested = groups.pop(tool_use_id)
-            groups[owner][1].extend(nested[1])
-            groups[owner][2] |= nested[2]
-            groups[owner][1].sort(key=lambda r: str(r.get("timestamp") or ""))
-    return {k: (g[0], g[1]) for k, g in groups.items()}
+        if tool_use_id and tool_use_id not in metas:
+            metas[tool_use_id] = (stem, str(meta.get("agentType") or ""))
+    return _SubagentIndex(folder, metas)
 
 
-def _attach_subagent_children(segments: list, subagents: dict,
+def _attach_subagent_children(segments: list, subagents,
                               app_reads: bool = False,
                               task_links: dict | None = None) -> None:
     """Hang each persisted subagent's segments off its parent tool segment
