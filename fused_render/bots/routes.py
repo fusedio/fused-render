@@ -840,12 +840,9 @@ def _app_bot(b):
     row["id"] = b.id
     row["kind"] = "super" if bm.is_super(m) else "bot"
     row["description"] = " ".join(str(m.get("instructions") or "").split())[:_APP_DESC]
-    row["busy"] = bool(b.running()) or m.get("status") in ("running", "waiting", "paused")
-    waiting = None
-    if m.get("status") == "waiting" and m.get("waiting_on"):
-        ev = b.event_by_seq(m["waiting_on"]) or {}
-        waiting = "approval" if ev.get("role") == "approval" else ("login" if ev.get("login") else "question")
-    row["waitingOn"] = waiting
+    a = bm.activity(b.id, m, b)  # the one reading of "busy" / "blocked", shared with Super Bot's BOTS NOW block
+    row["busy"] = a["busy"]
+    row["waitingOn"] = (a["blocked"] or {}).get("kind")
     row["step"] = int(m.get("step") or 0)
     return row
 

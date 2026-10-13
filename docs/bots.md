@@ -1419,6 +1419,29 @@ user asks. `note {text}` (every bot's roster): one short progress line for the
 user, written as `{"role": "note", "progress": true}`; not a result, at most
 one every few steps. On a hand-off it also lands on the row's `notes`.
 
+**BOTS NOW** (2026-10-13, `bot.bots_now_section`, Super Bot only). Owner's
+ask: "super bot should be able to see what all bots are, what are they
+currently doing, if they are blocked at something". BOTS stays the hashed
+identity list (resent only when a bot is added or reshaped); the live state
+is a per-turn block beside HAND-OFFS, one line per ordinary bot, whatever
+started its task (the user's chat, a routine, a text, an app page, a
+hand-off): `- <name>: working on "<task>" (from <origin>, step n/cap); last:
+"<latest progress note or action chip>"`, `BLOCKED on "<task>": waiting
+<ago> for the user to approve: "<card>" (answered by the user at its own
+chat, not by you)` / `… to sign in at its browser` / `…, asked the user:
+"<card>"`, `paused <ago>: the user is driving its browser`, `failed <ago>
+ago: <note>`, `idle <ago>; last task "<task>"`, plus `SILENT for <ago>` on a
+running bot with no status change for `STALL_S` (10 min) and a note when
+its browser is open as a real window (no task can start). `bot.activity(bid,
+meta, b)` is the one reading of busy / blocked for both this block and the
+app roster's `busy` / `waitingOn` (§13, `routes._app_bot`): a live Bot
+(`registry.loaded()`, no disk scan, no Bot construction inside prompt
+assembly) answers with its thread (a "running" word on disk that outlived
+the thread reads as `ended`) and its browser; a bot this process has not
+built is read from disk, the card behind `waiting_on` off its events file.
+`SUPER_PROMPT` says to answer "what is X doing / is X stuck / who is busy"
+from the block and never to try to unstick a bot (rule 2 above).
+
 **Flow.** `Bot.handoff(name, task)` resolves the target among the
 ordinary bots (exact name, case-insensitive, then a unique prefix; two bots
 with the same exact name: the idle one, else an error naming both; Super
