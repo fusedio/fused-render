@@ -37,6 +37,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import threading
 from datetime import datetime
 from xml.sax.saxutils import escape
 
@@ -166,7 +167,15 @@ def remove() -> bool:
         return False
 
 
-def sync(due: list) -> bool:
+# Due times per source (`sync(due, source=…)`): the Tasks schedule and the bots' routines each own a
+# share of the one plist and rewrite only their own. `written`: the intervals last installed, so a
+# sync that changes nothing (a routine firing on its interval) does not bootout/bootstrap the agent.
+_SOURCES: dict[str, list[datetime]] = {}
+_WRITTEN: dict = {"intervals": None}
+_SYNC_LOCK = threading.Lock()
+
+
+def sync(due: list, source: str = "schedule") -> bool:
     """Point the wake agent at these pending due times. True if a plist is now
     installed for them.
 
@@ -175,7 +184,12 @@ def sync(due: list) -> bool:
     rather than raised on: this is a best-effort wake-up hint, and one malformed
     row must not cost the others their wake.
 
-    An empty list (or a run with no app bundle to launch) removes the agent:
+    `source` names whose share of the plist this is ("schedule": Tasks, the
+    original caller; "bots": daily and once routines, 2026-10-13); the file
+    carries the union of every source's last list, so neither caller erases
+    the other's wakes.
+
+    An empty union (or a run with no app bundle to launch) removes the agent:
     a wake with nothing to fire is a machine woken for no reason."""
     if not _is_darwin():
         return False
@@ -190,11 +204,23 @@ def sync(due: list) -> bool:
             parsed.append(parse_due(value))
         except ValueError:
             continue
-    app = app_bundle_path()
-    if not parsed or app is None:
-        remove()
-        return False
+    with _SYNC_LOCK:
+        _SOURCES[source] = parsed
+        union = [d for lst in _SOURCES.values() for d in lst]
+        app = app_bundle_path()
+        if not union or app is None:
+            _WRITTEN["intervals"] = None
+            remove()
+            return False
+        intervals = _calendar_intervals(union)
+        path = agent_plist_path()
+        if _WRITTEN["intervals"] == (path, intervals) and os.path.exists(path):
+            return True
+        _WRITTEN["intervals"] = (path, intervals)
+        return _install(app, union)
 
+
+def _install(app: str, parsed: list[datetime]) -> bool:
     path = agent_plist_path()
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:

@@ -107,7 +107,9 @@ fused_render/bots/            the backend package (in-process; no daemon, no fus
   apps.py         ports of listapps.py, importapp.py, mkbuild.py, revealapp.py
   presets.py      presets()/apply_preset (agents.py); data in presets/<key>/ (preset.json + playbook .md), section 5
   starters.py     port of installapp.py; data in starters/<key>/ (complete fused apps), section 5
-  registry.py     the bot registry, scheduler thread (routines, file inbox), iMessage thread, slow-call log
+  registry.py     the bot registry, ONE OWNER PER MACHINE (section 7: the flock elects the process that holds every
+                  Bot, engine, Chrome, the scheduler and the channels; every other process forwards), scheduler
+                  thread (routines, file inbox), takeover walk, routines wake agent, slow-call log
   routes.py       the HTTP API (section 3), an `_web.APIRouter` included from server.py
   botsend.py      CLI: `python -m fused_render.bots.botsend <bot> "<task>"` (drops into the bot's inbox dir)
 frontend/
@@ -931,6 +933,52 @@ semantics, `fused_ai.text(prompt, system_prompt, model, effort)` per step.
 
 ## 7. Server and shell changes
 
+- **One owner process per machine** (2026-10-13, `registry.py` module
+  docstring; design page "Bots Owner Process"). Fused Render, Fused Bot and a
+  dev checkout on main share `<home>/bots`; before this each built its own
+  `Bot` per bot, ran engines on it and wrote bot.json from its own memory,
+  so a routine added in one app never fired in the other (which owned the
+  scheduler and never re-read the file, and whose next save deleted it), two
+  engines could land on one Chrome, and the losing app's card said
+  "next 10:00" while nothing ticked. Now the flock on
+  `<home>/bots/data/routines.lock` (old name kept: an installed older app
+  takes the same file, so old and new never both own) elects the one process
+  that holds every Bot, engine, Chrome, the scheduler and the channels. The
+  winner writes `{pid, origin, app, version, boot_id, ticked_at}` into the
+  file (`ticked_at` rewritten every pass: the heartbeat). Every other process
+  forwards `/api/bots/*` and `/api/bot-apps/*` to that origin over local HTTP
+  (`routes.forward_middleware`, an `app.middleware("http")`: same method,
+  path, query, body and headers, reply streamed back; the live view's
+  WebSocket goes to Chrome's own `webSocketDebuggerUrl` inside the forwarded
+  JSON and needs nothing). A forwarder never constructs a Bot
+  (`registry.get/all/create` raise `NotOwner`). A refused forward (the owner
+  just quit) re-tries the flock at once; the scheduler thread re-tries every
+  20 s. Winning runs `_become_owner` once: layout migration, FusedBot import,
+  Super Bot seed, the takeover walk (`_reconcile`: a bot.json still saying
+  running/waiting from an owner that quit goes idle with a system line, a
+  routine stuck on `last_result "started"` gets outcome `stopped`), the
+  channels router (so the phone and the bots never split; the owner holds
+  `imessage.lock` too, through the channel), the orphan-browser sweep and the
+  routines wake agent. `shutdown()` drops the lock LAST, after engines are
+  stopped and Chromes closed; a winner also waits up to 10 s for the previous
+  record's pid to be gone (an older app dropped the lock first). A lean
+  `fused-render open` never elects (`registry.set_lean`): it forwards when an
+  owner exists and answers 503 "no Fused app is running the bots" otherwise —
+  a user app's `fused.bots.send` from a lean server used to run its own
+  engine beside the desktop app's. `GET /api/bots/setup` carries
+  `owner: {this, known, stalled, pid, origin, app, version} | null` (a
+  forwarder overwrites it with its own view; `stalled` = pid alive but
+  `ticked_at` older than 90 s, flagged, never taken over); the empty hero
+  and Settings › Routines show "Bots and their routines run in FusedBot
+  0.6.36; this window forwards to it", "Nothing is running the bots or their
+  routines" or "another Fused app ... update it" (`lib/setup.ts ownerLine`).
+  **Routines wake the app**: `registry.sync_wake` hands the soonest due
+  daily and once routines across every bot to `schedule_wake.sync(due,
+  source="bots")`, the LaunchAgent Tasks already keep (the plist is the union
+  of both sources; a sync that changes no interval does not reload the
+  agent). Interval routines are left out on purpose: a 5-minute routine would
+  relaunch a quit app five minutes after every Quit (owner's call, 2026-10-13).
+  macOS only; Windows and Linux keep the old single-process behaviour.
 - `server.py`: include `bots.routes.router` and `apps` routes; `/` →
   `bots.html`; add `/embed`; third `app_dir_for` rule; remove the showcase /
   dock / launcher / settings / open routes and their imports; `start_ai` adds
@@ -1320,8 +1368,9 @@ from a channel, and only from its own handle (`Router.resolve`,
 it came from (`Router.targets`, tested in `tests/test_bots_channels.py`); no
 approval card and no handed-off event ever does (`OUT_ROLES`,
 `Router.on_event`). Owner commands come over the iMessage service only. One
-poller per Mac (flock, unchanged). The router is inert when
-`registry.start()` never ran (`registry.on_event`).
+poller per Mac (flock; since 2026-10-13 the router only runs in the process
+that owns the bots, §7, so the phone and the bots never split). The router is
+inert when this process does not own (`registry.on_event`).
 
 ## 11. Hand-offs (`bot.py` handoff / handoff_stop, `handoffs.py`, 2026-10-07)
 
@@ -1420,9 +1469,9 @@ this hand-off's, else its `last_task_dir` when that was this hand-off's, else
 "". The via is unique per hand-off, so a queued follow-up never lends its
 events or folder to an earlier result.
 
-**Sweep** (`handoffs.sweep(registry)`, every scheduler pass, BEFORE the
-routines flock check because a queue lives in the process that made it, and
-from `bot.delete`). For the Super Bot loaded in this process, each open row:
+**Sweep** (`handoffs.sweep(registry)`, every scheduler pass of the owner
+process (§7: since 2026-10-13 only the owner holds Bots, so the queue and the
+sweep are in one place by construction), and from `bot.delete`). For the Super Bot loaded in this process, each open row:
 a target that is gone closes `failed` "<Bot> was deleted before it
 finished."; a row older than `HANDOFF_MAX_S` (= `BUILD_MAX_S`, 3 h: a target
 may wait on a sign-in at the Mac) stops the target if it is still running
