@@ -421,16 +421,33 @@ def sync_wake() -> None:
     if not owns():
         return
     try:
-        from datetime import datetime, timezone
         from fused_render import schedule_wake
-        due = []
-        for b in loaded():
-            for r in b.meta.get("routines") or []:
-                if r.get("enabled") and r.get("kind") in ("daily", "once") and r.get("next"):
-                    due.append(datetime.fromtimestamp(float(r["next"]), tz=timezone.utc))
-        schedule_wake.sync(due, source="bots")
+        schedule_wake.sync(routines_due(), source="bots")
     except Exception:  # noqa: BLE001
         logger.debug("bots: could not sync the routines wake agent", exc_info=True)
+
+
+def routines_due() -> list:
+    """Every enabled daily / once routine's `next` across every bot ON DISK, as
+    UTC datetimes. Disk, not `loaded()`: a bot nobody has built yet (right after
+    a takeover, before the first tick) has routines too, and every writer saves
+    bot.json before syncing. Needs no ownership — schedule_wake seeds the bots'
+    share of the plist from here in any process that syncs the Tasks share."""
+    from datetime import datetime, timezone
+    from fused_render.bots import store
+    due = []
+    for bid in store.list_ids():
+        try:
+            meta = store.read_meta(bid)
+        except (OSError, ValueError):
+            continue
+        for r in meta.get("routines") or []:
+            if r.get("enabled") and r.get("kind") in ("daily", "once") and r.get("next"):
+                try:
+                    due.append(datetime.fromtimestamp(float(r["next"]), tz=timezone.utc))
+                except (TypeError, ValueError, OverflowError, OSError):
+                    continue
+    return due
 
 
 # ------------------------------------------------------------- threads ---

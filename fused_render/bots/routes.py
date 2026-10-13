@@ -75,6 +75,11 @@ async def forward_middleware(request: Request, call_next):
     else:
         return await call_next(request)
     origin = (info or {}).get("origin") or ""
+    if not origin and path == "/api/bots/setup":
+        # The one route that must answer in EVERY process: it builds no Bot, and its `owner` (null, or an older
+        # holder with `known` false) is exactly what the hero and Settings › Routines show when nothing can be
+        # forwarded. A 503 here would hide the "nothing is running the bots" line behind a swallowed error.
+        return await call_next(request)
     if not origin:
         return _error(str(registry.NotOwner(info)) + ("; update it" if info and not info.get("known") else
                                                      ". Open Fused Render (or Fused Bot) to run them."), 503)

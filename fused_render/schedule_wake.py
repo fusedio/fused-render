@@ -206,18 +206,35 @@ def sync(due: list, source: str = "schedule") -> bool:
             continue
     with _SYNC_LOCK:
         _SOURCES[source] = parsed
-        if source != "schedule" and "schedule" not in _SOURCES:
-            # A fresh process's first bots sync must not write a plist with only the bots' share and erase the
-            # Tasks wakes until the schedule store is next written: seed the Tasks share from the store once.
-            # Lock order (schedule.py _sync_wake): nothing here holds `_wake_lock`, and `_read` is a plain read.
+        # A process's first sync from either side must not write a plist with only its own share and erase the
+        # other's wakes (the Tasks share until the schedule store is next written; the bots' share until the
+        # next routine change, or forever from a process that never owns the bots). Each missing share is
+        # seeded from its store on disk once. Lock order (schedule.py _sync_wake): nothing here holds
+        # `_wake_lock`, and both reads are plain reads.
+        if "schedule" not in _SOURCES:
             try:
                 from fused_render import schedule
                 _SOURCES["schedule"] = [parse_due(v) for v in schedule._pending_due(schedule._read())]
             except Exception:  # noqa: BLE001 — no Tasks share known yet is still better than a wrong one
                 _SOURCES.pop("schedule", None)
+        if "bots" not in _SOURCES:
+            try:
+                from fused_render.bots import registry
+                _SOURCES["bots"] = registry.routines_due()
+            except Exception:  # noqa: BLE001
+                _SOURCES.pop("bots", None)
         union = [d for lst in _SOURCES.values() for d in lst]
         app = app_bundle_path()
-        if not union or app is None:
+        if app is None:
+            # Nothing to relaunch here: a checkout, a wheel, a test. The plist on disk, if any, belongs to the
+            # INSTALLED app and keeps pointing at it — removing it would uninstall that app's Tasks and bots
+            # wakes the moment a checkout syncs (becoming the bots' owner syncs, 2026-10-13). Only a plist
+            # this process wrote itself is taken back, so a test run never leaves one behind.
+            if _WRITTEN["intervals"] is not None:
+                _WRITTEN["intervals"] = None
+                remove()
+            return False
+        if not union:
             _WRITTEN["intervals"] = None
             remove()
             return False
