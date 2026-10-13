@@ -1104,6 +1104,7 @@ const raster = {
                                              state: this.state(layer, r, true) });
     const rl = mgr.getLayer(r.handle);
     if (!rl || rl.error) throw rl && rl.error || new Error("raster did not load");
+    if (rl.geotiff && typeof rl.geotiff === "object") void rl.geotiff.crs;
     r.auto = { mode: rl.state.mode, bands: rl.state.bands.slice(), colormap: rl.state.colormap };
     r.kind = "raster";
   },

@@ -81,6 +81,18 @@ def test_a_striped_geotiff_becomes_a_cached_cog(prepare, tmp_path):
     assert os.path.getmtime(first["path"]) == mtime, "the second open must reuse the cache"
 
 
+def test_a_tiled_geotiff_with_no_epsg_crs_is_warped_to_one_the_browser_reads(prepare, tmp_path):
+    source = tmp_path / "mollweide.tif"
+    with rasterio.open(source, "w", driver="GTiff", width=256, height=256, count=1, dtype="float32",
+                       crs="ESRI:54009", transform=from_bounds(3.2e6, 2.0e6, 5.3e6, 3.9e6, 256, 256),
+                       tiled=True, blockxsize=128, blockysize=128, nodata=-1) as out:
+        out.write(np.ones((1, 256, 256), "float32"))
+    result = prepare.main(str(source), action="convert")
+    assert result["converted"]
+    with rasterio.open(result["path"]) as cog:
+        assert cog.crs.to_epsg() == 4326 and 30 < cog.bounds.left < cog.bounds.right < 60
+
+
 def test_convert_reencodes_even_a_tiled_file(prepare, tmp_path):
     source = _tiff(tmp_path / "tiled.tif", tiled=True)
     result = prepare.main(source, action="convert")
