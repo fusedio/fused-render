@@ -306,7 +306,7 @@ def test_a_sound_file_on_a_PICTURE_ONLY_model_is_refused_by_name(
     assert response.status_code == 400
     message = response.json()["error"]["message"]
     assert siglip in message
-    assert "/tmp/voice.mp3 is an audio file" in message
+    assert f"{os.path.abspath('/tmp/voice.mp3')} is an audio file" in message
     assert "embeddinggemma-2" in message
     assert served == []
 
