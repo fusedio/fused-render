@@ -206,6 +206,15 @@ def sync(due: list, source: str = "schedule") -> bool:
             continue
     with _SYNC_LOCK:
         _SOURCES[source] = parsed
+        if source != "schedule" and "schedule" not in _SOURCES:
+            # A fresh process's first bots sync must not write a plist with only the bots' share and erase the
+            # Tasks wakes until the schedule store is next written: seed the Tasks share from the store once.
+            # Lock order (schedule.py _sync_wake): nothing here holds `_wake_lock`, and `_read` is a plain read.
+            try:
+                from fused_render import schedule
+                _SOURCES["schedule"] = [parse_due(v) for v in schedule._pending_due(schedule._read())]
+            except Exception:  # noqa: BLE001 — no Tasks share known yet is still better than a wrong one
+                _SOURCES.pop("schedule", None)
         union = [d for lst in _SOURCES.values() for d in lst]
         app = app_bundle_path()
         if not union or app is None:

@@ -1032,7 +1032,8 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
         from fused_render.bots import registry as bots_registry
 
         try:
-            bots_registry.start()
+            # Off the loop: a win runs the layout migration, the import and the takeover walk before returning.
+            await asyncio.to_thread(bots_registry.start)
         except Exception:  # noqa: BLE001 - a bots failure must not block serving
             logger.exception("could not start the bots scheduler")
 

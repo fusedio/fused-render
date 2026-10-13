@@ -60,6 +60,10 @@ async def forward_middleware(request: Request, call_next):
     path = request.url.path
     if not path.startswith(OWNED_PREFIXES) or registry.owns():
         return await call_next(request)
+    if request.headers.get("x-fused-forwarded"):
+        # A forward landed on a process that does not own either (a record whose origin is stale): stop here
+        # rather than bounce it on until the timeout.
+        return _error("this Fused app does not run the bots and was forwarded to by mistake; try again", 503)
     import asyncio
     import httpx
     try:
@@ -76,6 +80,7 @@ async def forward_middleware(request: Request, call_next):
                                                      ". Open Fused Render (or Fused Bot) to run them."), 503)
     body = await request.body()
     headers = {k: v for k, v in request.headers.items() if k.lower() not in _SKIP_REQUEST_HEADERS}
+    headers["X-Fused-Forwarded"] = "1"
     client = _forward_client()
     try:
         req = client.build_request(request.method, origin + path + (("?" + request.url.query) if request.url.query else ""),

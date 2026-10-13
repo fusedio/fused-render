@@ -343,11 +343,13 @@ def _become_owner() -> None:
     if _OWNER["ready"]:
         return
     _OWNER["ready"] = True
+    # Router BEFORE anything that builds a Bot (the takeover walk, the sweep): a Bot's __init__ may emit an
+    # interrupted hand-off's result card that must reach the phone, and on_event skips a router that is None.
     for label, step in (("layout migration", lambda: bpaths.migrate_layout()),
                         ("FusedBot import", _import_fusedbot),
                         ("Super Bot seed", seed_super),
-                        ("takeover walk", _reconcile),
                         ("channels router", _start_router),
+                        ("takeover walk", _reconcile),
                         ("browser sweep", _sweep_browsers),
                         ("routines wake agent", sync_wake)):
         try:
@@ -512,6 +514,11 @@ def start() -> None:
     never wins never writes. A lean server never calls this (server/app.py)."""
     if _OWNER["lean"]:
         return
+    # One synchronous election first (the startup hook awaits this off the loop): a win runs _become_owner
+    # BEFORE the first request can pass require_owner() and build Bots mid-migration, and the page's first
+    # paint sees an owner that is ready rather than one up to 20 s away.
+    if _elect():
+        _become_owner()
     with _lock:
         t = _sched["thread"]
         if t is None or not t.is_alive():
