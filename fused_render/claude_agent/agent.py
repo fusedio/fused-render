@@ -4978,6 +4978,12 @@ def _segments_from_rows(rows: list, shape: tuple = (),
                       "orphan": True}
             if parent_id in links:
                 orphan["task_id"] = links[parent_id]
+            # The parent's call is outside the window but its RESULT may be
+            # in it (the subagent handed back): it sat in `orphans` waiting
+            # for a tool_use that never comes, so settle the synthetic
+            # parent from it exactly as a seen parent would be.
+            if parent_id in orphans:
+                settle(orphan, *orphans.pop(parent_id))
             out.append(orphan)
     return out
 
@@ -7703,6 +7709,9 @@ def _history(file: str, session_id: str, app_reads: bool = False,
 
     turns = []
     stretch = []  # rows of the assistant reply being read, for its segments
+    # Each subagent's own transcript, beside this one (SPEC T-2 on reload) —
+    # `{parent tool_use id: (agentType, rows)}`, see `_subagent_transcripts`.
+    subagents = _subagent_transcripts(path)
     # THE LATEST ASSISTANT ROW'S CONTEXT READING, overwritten as the walk finds
     # newer ones — the last one standing is the state of the window right now.
     # Free: these are the same rows already being parsed, no second read.
@@ -7731,6 +7740,8 @@ def _history(file: str, session_id: str, app_reads: bool = False,
             return
         segments = _segments_from_rows(stretch, app_reads=app_reads,
                                        task_links=_task_links(task_registry))
+        _attach_subagent_children(segments, subagents, app_reads,
+                                  _task_links(task_registry))
         # The stretch's own first record id, for a reply that opens NO text turn
         # — see the `uuid` note below. Read before the list is emptied.
         opener = ""
@@ -7905,6 +7916,108 @@ def _history(file: str, session_id: str, app_reads: bool = False,
     return {"turns": turns, "transcript": stat, "context": context,
             "tasks": tasks,
             **_history_live(file, session_id, inbox=inbox)}
+
+
+#: Caps on the subagent transcripts `_history` reads beside a session's own:
+#: a chat with hundreds of subagents still restores in one read.
+_SUBAGENT_FILE_CAP = 50
+_SUBAGENT_BYTES_CAP = 2 * 1024 * 1024
+
+
+def _subagent_transcripts(transcript_path: str) -> dict:
+    """`{parent tool_use id: (agent_type, rows)}` for the subagents Claude
+    Code persisted beside a session transcript.
+
+    2.1.296 writes each subagent to `<session dir>/subagents/agent-<id>.jsonl`
+    with an `agent-<id>.meta.json` beside it naming the Agent/Task call that
+    spawned it (`toolUseId`) and its `agentType`. The main transcript holds
+    none of those rows, so without this a restored Agent chip has nothing to
+    unfold. Rows are the ordinary transcript shape marked `isSidechain`
+    (which `_segments_from_rows` skips, so the mark is dropped on a copy);
+    only `user`/`assistant` rows are kept — `attachment` rows and the rest
+    are bookkeeping.
+
+    ONE LEVEL, like the poll's nesting: a subagent spawned INSIDE another
+    one (its `toolUseId` is a call in that subagent's rows) is folded into
+    its parent's rows, in timestamp order. Capped at `_SUBAGENT_FILE_CAP`
+    files of at most `_SUBAGENT_BYTES_CAP` bytes; any unreadable file simply
+    contributes nothing — this never raises."""
+    base = transcript_path.removesuffix(".jsonl")
+    folder = os.path.join(base, "subagents")
+    try:
+        names = sorted(n for n in os.listdir(folder) if n.endswith(".meta.json"))
+    except OSError:
+        return {}
+    groups = {}   # toolUseId -> [agent_type, rows, own tool ids]
+    for name in names[:_SUBAGENT_FILE_CAP]:
+        stem = name[:-len(".meta.json")]
+        try:
+            with open(os.path.join(folder, name), encoding="utf-8") as fh:
+                meta = json.load(fh)
+            tool_use_id = str(meta.get("toolUseId") or "")
+            if not tool_use_id:
+                continue
+            jsonl = os.path.join(folder, stem + ".jsonl")
+            st = os.stat(jsonl)
+            if not stat.S_ISREG(st.st_mode) or st.st_size > _SUBAGENT_BYTES_CAP:
+                continue
+            rows, tool_ids = [], set()
+            with open(jsonl, encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    try:
+                        row = json.loads(line)
+                    except ValueError:
+                        continue
+                    if not isinstance(row, dict) or "attachment" in row \
+                            or row.get("type") not in ("user", "assistant"):
+                        continue
+                    row = dict(row)
+                    row.pop("isSidechain", None)
+                    rows.append(row)
+                    content = (row.get("message") or {}).get("content") \
+                        if isinstance(row.get("message"), dict) else None
+                    for block in content if isinstance(content, list) else []:
+                        if isinstance(block, dict) and block.get("type") == "tool_use":
+                            tool_ids.add(str(block.get("id") or ""))
+        except (OSError, ValueError, AttributeError, TypeError):
+            continue
+        groups[tool_use_id] = [str(meta.get("agentType") or ""), rows, tool_ids]
+    # Fold nested subagents into the group whose rows made their call.
+    for tool_use_id in list(groups):
+        owner = next((k for k, g in groups.items()
+                      if k != tool_use_id and tool_use_id in g[2]), None)
+        if owner is not None:
+            nested = groups.pop(tool_use_id)
+            groups[owner][1].extend(nested[1])
+            groups[owner][2] |= nested[2]
+            groups[owner][1].sort(key=lambda r: str(r.get("timestamp") or ""))
+    return {k: (g[0], g[1]) for k, g in groups.items()}
+
+
+def _attach_subagent_children(segments: list, subagents: dict,
+                              app_reads: bool = False,
+                              task_links: dict | None = None) -> None:
+    """Hang each persisted subagent's segments off its parent tool segment
+    as `children` (and its `agentType` as `subagent_type`). A segment that
+    already has children (the live nesting) is left alone."""
+    if not subagents:
+        return
+    for seg in segments:
+        if seg.get("kind") != "tool" or seg.get("children"):
+            continue
+        found = subagents.get(seg.get("id"))
+        if not found:
+            continue
+        agent_type, rows = found
+        try:
+            children = _segments_from_rows(rows, (), app_reads, task_links,
+                                           _nested=True)
+        except Exception:  # noqa: BLE001 — a chip with no children, never an error
+            children = []
+        if children:
+            seg["children"] = children
+        if agent_type:
+            seg["subagent_type"] = agent_type
 
 
 def _session_task_registry(file: str, session_id: str,

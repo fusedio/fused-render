@@ -1386,3 +1386,16 @@ def test_a_seam_count_leaves_orphans_out(agent):
     segs = agent._segments_from_rows(rows)
     assert [s["kind"] for s in segs] == ["text", "text", "tool"]
     assert segs[0]["text"] == "first reply"
+
+
+def test_an_orphan_parent_takes_its_result_from_the_window(agent):
+    """The Agent call began before the window; its subagent rows and its
+    tool_result are in it. The synthetic parent must read as finished."""
+    rows = [_a_text("child working", parent="toolu_OLD"),
+            _u_result("toolu_OLD", "subagent summary"),
+            _delta("text_delta", "Thanks.")]
+    segs = agent._segments_from_rows(rows)
+    orphan = segs[-1]
+    assert orphan["orphan"] is True
+    assert orphan["status"] == "ok" and orphan["output"] == "subagent summary"
+    assert orphan["children"][0]["text"] == "child working"

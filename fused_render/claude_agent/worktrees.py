@@ -62,6 +62,23 @@ _ENV = {"GIT_TERMINAL_PROMPT": "0", "GIT_PAGER": "cat", "GIT_ASKPASS": "",
         "GIT_OPTIONAL_LOCKS": "0"}
 _CONFIG = ("-c", "core.quotepath=false", "-c", "color.ui=false",
            "-c", "advice.detachedHead=false")
+#: Inherited variables that would point git at ANOTHER repository than the
+#: `-C root` we name: a server launched from a git hook, or a developer shell
+#: with `GIT_DIR` exported, would otherwise have every call here (the add, the
+#: forced remove, the cleanup's `branch -D`) act on that repository instead.
+#: Dropped from the child environment before `_ENV` is merged (CodeRabbit,
+#: PR #1635).
+_GIT_LOCATION_VARS = frozenset({
+    "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_PREFIX",
+    "GIT_NAMESPACE", "GIT_CEILING_DIRECTORIES"})
+
+
+def _child_env() -> dict:
+    """The environment every git call here runs under: ours minus the
+    repository-location variables, plus the non-interactive pins."""
+    return {**{k: v for k, v in os.environ.items()
+               if k not in _GIT_LOCATION_VARS}, **_ENV}
 
 
 class _Refusal(Exception):
@@ -98,7 +115,7 @@ def _git(root: str, *args: str, timeout: float = QUICK_S,
     try:
         proc = subprocess.run(
             argv, capture_output=True, timeout=timeout, check=False,
-            stdin=subprocess.DEVNULL, env={**os.environ, **_ENV},
+            stdin=subprocess.DEVNULL, env=_child_env(),
             close_fds=False,
             creationflags=(subprocess.CREATE_NO_WINDOW
                            if sys.platform == "win32" else 0))

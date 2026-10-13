@@ -358,3 +358,18 @@ def test_route_runs_on_its_own_executor(client, repo, monkeypatch):
     assert r.status_code == 200
     assert r.json()["thread"].startswith("claude-worktrees")
     assert router._WORKTREE_POOL._max_workers == 2
+
+
+def test_git_child_env_drops_inherited_repository_location(monkeypatch):
+    """A server launched from a hook (or a shell with GIT_DIR exported) must
+    not have its worktree calls redirected to that repository (CodeRabbit,
+    PR #1635)."""
+    monkeypatch.setenv("GIT_DIR", "/elsewhere/.git")
+    monkeypatch.setenv("GIT_WORK_TREE", "/elsewhere")
+    monkeypatch.setenv("GIT_INDEX_FILE", "/elsewhere/.git/index")
+    monkeypatch.setenv("UNRELATED", "kept")
+    env = wt._child_env()
+    for name in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"):
+        assert name not in env
+    assert env["UNRELATED"] == "kept"
+    assert env["GIT_TERMINAL_PROMPT"] == "0"

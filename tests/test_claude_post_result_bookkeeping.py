@@ -76,8 +76,9 @@ def test_poll_reports_done_with_task_summary_after_result(tmp_path, monkeypatch)
         {"type": "system", "subtype": "post_turn_summary"},
         RESULT,
         {"type": "system", "subtype": "task_summary", "detail": None}))
-    # No pid file: the process is gone either way, so `done` is forced by
-    # liveness — assert on the turn-open reading the page keys its verb on.
+    # Keep the process "alive" so `done` depends on the turn-state rule and
+    # not on liveness (a missing pid file would force it either way).
+    monkeypatch.setattr(agent, "_alive", lambda _run_dir: True)
     out = agent._poll(run_id, str(tmp_path))
     assert out["done"] is True
     assert out["error"] == ""
