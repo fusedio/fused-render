@@ -246,7 +246,9 @@ class LauncherController:
 
     def open_row(self, kind: str, key: str) -> None:
         self.close()
-        if key:
+        # The Bots page row (`kind: "bots"`) has no key: the page itself is
+        # the target. Every other kind needs one (a path or a bot id).
+        if key or kind == "bots":
             self._open_row(kind, key)
 
     def open_home(self) -> None:
