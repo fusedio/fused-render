@@ -602,11 +602,19 @@ async function readEmbedReply(res: Response): Promise<EmbedResult> {
  *  and a caller drawing an affordance off anything else is drawing one whose
  *  request then fails. Shares `embedTexts`' reply handling, including the
  *  `ModelLoading` fork, by calling through the same reader below. */
-export async function embedPaths(model: string, paths: string[]): Promise<EmbedResult> {
+export async function embedPaths(
+  model: string,
+  paths: string[],
+  signal?: AbortSignal,
+): Promise<EmbedResult> {
+  // `signal`: a batch can be a 4K clip, tens of seconds on the wire — leaving
+  // the stage (or its Files mode) must end the request, not just stop waiting
+  // for the model load before it.
   const res = await fetch("/api/ai/embed", {
     method: "POST",
     headers: { ...sourceHeader(), ...requesterHeaders(), "Content-Type": "application/json", "X-Fused": "1" },
     body: JSON.stringify({ model, paths }),
+    signal,
   });
   return readEmbedReply(res);
 }

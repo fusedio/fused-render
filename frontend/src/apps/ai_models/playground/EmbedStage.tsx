@@ -332,6 +332,10 @@ export function EmbedStage({
   // the finally-block does not restart it into the same failure; cleared by
   // the next add or Search, which are the reader acting.
   const halted = useRef(false);
+  // Whether the reader is in Files mode right now, for the runner's
+  // finally-block: an abort from a mode switch that was undone before the
+  // aborted runner finished unwinding must still restart it.
+  const filesMode = useRef(false);
   const progress = indexProgress(pictures, indexRef.current);
 
   // **Which model produced the scores currently on screen — recorded at the run,
@@ -356,6 +360,7 @@ export function EmbedStage({
   const abortRef = useRef<AbortController | null>(null);
   const indexAbortRef = useRef<AbortController | null>(null);
   useEffect(() => () => {
+    filesMode.current = false;
     abortRef.current?.abort();
     indexAbortRef.current?.abort();
   }, []);
@@ -499,7 +504,7 @@ export function EmbedStage({
             `${kind === "picture" ? "" : ` (${kind === "audio" ? "sound" : kind})`}…`,
         );
         try {
-          const result = await withModelReady(() => embedPaths(model, batch), {
+          const result = await withModelReady(() => embedPaths(model, batch, controller.signal), {
             signal: controller.signal,
             downloaded,
             onStatus: (text) => setStatus(text ?? `Indexing ${done + 1} of ${total}…`),
@@ -557,9 +562,10 @@ export function EmbedStage({
       setStatus(null);
       // A file dropped in while the last batch was in flight is still pending:
       // one more pass picks it up — unless this runner was aborted (the stage
-      // is going away) or stopped on a run-level error (see above; `halted`
-      // is what Search clears when it tries again).
-      if (!controller.signal.aborted && !halted.current
+      // is going away, or Lines mode took over and has not handed back) or
+      // stopped on a run-level error (see above; `halted` is what Search
+      // clears when it tries again).
+      if ((!controller.signal.aborted || filesMode.current) && !halted.current
           && planBatches(picturesRef.current, indexRef.current).length) {
         void pumpIndex();
       }
@@ -835,6 +841,16 @@ export function EmbedStage({
             active={pictureMode ? "pictures" : "lines"}
             onPick={(value) => {
               setWantPictures(value === "pictures");
+              filesMode.current = value === "pictures";
+              // The index runner belongs to Files mode. Left running under
+              // Lines it would race a lines Search for the model and for the
+              // status/error line; aborted, its in-flight rows go back to
+              // pending, and coming back picks them up where they stopped.
+              if (value === "pictures") {
+                if (planBatches(picturesRef.current, indexRef.current).length) void pumpIndex();
+              } else {
+                indexAbortRef.current?.abort();
+              }
               // Each mode keeps its own ranking, and neither is shown under the
               // other's heading — a stale list read as the new one is the same
               // failure `ResultSlot` exists to prevent on a re-search.
