@@ -337,8 +337,26 @@ def _lifespan(startup_handlers: list, shutdown_handlers: list):
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        t_all = time.monotonic()
+        loop = asyncio.get_running_loop()
         for handler in startup_handlers:
-            await handler()
+            name = _handler_name(handler)
+            t0 = time.monotonic()
+            # Logged WHILE it runs, not only after: the handler still hung when
+            # the desktop app hits its readiness cutoff is the one the log has
+            # to name, and that one never returns to be timed.
+            watchdog = loop.call_later(
+                STARTUP_SLOW_HANDLER_S, logger.info,
+                "startup: %s still running after %.0fs", name, STARTUP_SLOW_HANDLER_S)
+            try:
+                await handler()
+            finally:
+                watchdog.cancel()
+            took = time.monotonic() - t0
+            if took >= STARTUP_SLOW_HANDLER_S:
+                logger.info("startup: %s took %.1fs", name, took)
+        logger.info("startup: %d handler(s) in %.1fs",
+                    len(startup_handlers), time.monotonic() - t_all)
         try:
             yield
         finally:
@@ -346,6 +364,18 @@ def _lifespan(startup_handlers: list, shutdown_handlers: list):
                 await handler()
 
     return lifespan
+
+
+#: A startup handler slower than this gets a "startup: <name> still running
+#: after Ns" line while it runs and a "startup: <name> took Ns" line after. The desktop app quits itself when the whole startup outlasts
+#: `app.SERVER_READY_TIMEOUT_S`, and without these lines the log says only
+#: "did not become ready" — which step was still running is the one fact that
+#: incident needs (2026-10-13: six silent self-quits in a row on a busy Mac).
+STARTUP_SLOW_HANDLER_S = 1.0
+
+
+def _handler_name(handler) -> str:
+    return getattr(handler, "__name__", None) or repr(handler)
 
 
 def create_app(start_dir: str, lean: bool = False) -> FastAPI:

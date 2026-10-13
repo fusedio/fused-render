@@ -861,10 +861,30 @@ def bundle_path() -> str | None:
 # How long `_bootstrap_server` gives its own server to answer the desktop probe
 # before it gives up — and, because `_write_pidfile` runs AFTER that wait, the
 # ceiling on how late a perfectly healthy successor's pidfile can appear. Named
-# rather than spelled 15.0 at the call site because the relauncher below has to
-# be sized against it: a relauncher that gives up first would "retry" a launch
+# rather than spelled at the call site because the relauncher below has to be
+# sized against it: a relauncher that gives up first would "retry" a launch
 # that was still booting (bugbot, PR #1214).
-SERVER_READY_TIMEOUT_S = 15.0
+#
+# 60 s, not the 15 s it was (INCIDENT 2026-10-13): a quiet boot of the signed
+# bundle is ~9 s, and every startup handler (server/app.py `_lifespan`) runs
+# before uvicorn answers the probe — the tasks warm, the engine warm-up, the
+# bots takeover, the index scan all compete for one GIL. On a busy Mac (an
+# update's restart with the old instance still tearing down, a build, a test
+# run, Spotlight after an OS update) that stretched past 15 s six times in a
+# row and the app quit itself each time with nothing on screen: measured 15.4 s
+# and 15.7 s on the two launches that DID make it. The cutoff exists to catch a
+# server that will never answer (a bind error, a crashed thread), and for that
+# a minute loses nothing; a healthy-but-slow boot is the case it must not kill.
+SERVER_READY_TIMEOUT_S = 60.0
+
+def _load_words() -> str:
+    """`os.getloadavg()` as "1.2/3.4/5.6", or "?" where it is unavailable — one
+    glance at the timeout line tells a busy Mac from a broken server."""
+    try:
+        return "/".join(f"{x:.1f}" for x in os.getloadavg())
+    except (AttributeError, OSError):
+        return "?"
+
 
 # The relauncher's poll cadence while it waits for this process to die. Every
 # tick of it is dead time between "the old windows vanish" and "the new ones
@@ -887,9 +907,9 @@ RELAUNCH_SETTLE_S = 1.0
 # relauncher stops expecting one. Strictly longer than SERVER_READY_TIMEOUT_S,
 # and that is the point: `_bootstrap_server` waits up to that ceiling for its own
 # server and only then calls `_write_pidfile`, so a slow-but-perfectly-healthy
-# launch has no pidfile for fifteen seconds after it starts — plus the seconds a
+# launch has no pidfile for up to a minute after it starts — plus the seconds a
 # cold start of a signed bundle takes before any Python runs.
-RELAUNCH_BOOT_WAIT_S = 25.0
+RELAUNCH_BOOT_WAIT_S = SERVER_READY_TIMEOUT_S + 15.0
 
 # How long after an ask before the relauncher checks whether ANYTHING started at
 # all. Much shorter than the boot wait above, and for a different question: "is
@@ -904,11 +924,18 @@ RELAUNCH_RETRY_AFTER_S = 5.0
 # very start of the teardown. That distinction is load-bearing. The teardown may
 # take up to QUIT_HARD_DEADLINE_S (39 s; a relaunch quit runs the tighter
 # QUIT_FAST_HARD_DEADLINE_S, so this is a conservative cap), so a deadline counted from the pid's
-# death could still be running 89 s after the press, long after the page gave up
-# at RESTART_GIVE_UP_MS (60 s, frontend/src/platform/lib/restart-flow.ts) and
-# told the user the app is not running. Counted from the press it is under that
-# cap whatever the teardown does (bugbot, PR #1214).
-RELAUNCH_DEADLINE_S = 50.0
+# death could still be running long after the page gave up at RESTART_GIVE_UP_MS
+# (120 s, frontend/src/platform/lib/restart-flow.ts) and told the user the app
+# is not running. Counted from the press it is under that cap whatever the
+# teardown does (bugbot, PR #1214).
+#
+# Sized from the pieces, not spelled: a relaunch quit's teardown, then a
+# successor that may legitimately take the whole SERVER_READY_TIMEOUT_S before
+# it writes its pidfile, then a margin. A deadline shorter than that sum (the
+# 50 s it was, against a 60 s readiness cutoff) has the relauncher log "giving
+# up: the app did not come back" over a successor that is still booting fine.
+# Must stay under RESTART_GIVE_UP_MS (tests/test_app_relaunch.py pins both).
+RELAUNCH_DEADLINE_S = QUIT_FAST_HARD_DEADLINE_S + SERVER_READY_TIMEOUT_S + 10.0
 
 # How many times it asks, the first ask included.
 RELAUNCH_OPEN_TRIES = 3
@@ -1872,10 +1899,14 @@ def main() -> None:
         if not desktop_probe.wait_until_ready(port, desktop_token,
                                               SERVER_READY_TIMEOUT_S, poll_interval=0.2):
             # Log file, not print: Finder-launched apps have no visible stderr.
-            logger.error("server did not become ready on port %s", port)
+            # The "startup: ..." lines above it name the handler that was still
+            # running (server/app.py `_lifespan` logs each slow one).
+            logger.error("server did not become ready on port %s within %.0fs "
+                         "(machine load %s); see the 'startup:' lines above for "
+                         "the slow step", port, SERVER_READY_TIMEOUT_S, _load_words())
             # Through the quit ACTION, not straight to quit_application: by now
-            # the server has been up for as long as 15s, so it may have spawned
-            # children — aborting past the teardown would strand them.
+            # the server has been up for as long as a minute, so it may have
+            # spawned children — aborting past the teardown would strand them.
             _do_quit()
             return
         _write_pidfile(port)
