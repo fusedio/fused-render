@@ -1828,23 +1828,30 @@ class Bot:
             # Someone (a hand-off, a message) started a task between the busy check and the start. The "fired"
             # line is already in the thread; one short note says what happened to it, not a second "skipped" line.
             with self.lock:
-                # This fire's own row, by reference: an overlapping fire may have put a skip above it, or be the live
-                # run itself (its "started" row must not be the one marked skipped).
+                now = time.time()
+                # Who owns the routine's state now. A Run now that fired meanwhile (outside the lock, before
+                # start_task) and WON the start put its own "started" row above ours and owns last_result: its
+                # outcome would never land if "started" were overwritten. One that only skipped (busy) put a skip
+                # row above ours and left "started" to us. Older leftover "started" rows sit below ours and count
+                # for nothing. The row itself is patched by reference: this fire's, never the live run's.
+                newest_started = next((x for x in r.get("runs") or [] if x.get("result") == "started"), None)
+                mine = run is not None and newest_started is run and r.get("last_result") == "started"
                 if run is not None and run.get("result") == "started":
-                    run.update(result="skipped", message="another task took the bot first", done=time.time())
-                # The routine's state is rolled back only while it is still this fire's: `last` is still this
-                # fire's stamp and `last_result` the "started" it wrote. A Run now that fired meanwhile (outside the
-                # lock, before start_task) stamped its own `last` and owns last_result / next, finished or not; its
-                # outcome would never land if "started" were overwritten. (Leftover rows are not consulted: an old
-                # "started" row from a run that never settled must not block the rollback.)
-                if r.get("last") == fired_at and r.get("last_result") == "started":
+                    run.update(result="skipped", message="another task took the bot first", done=now)
+                if mine:
                     r["last_result"] = "skipped: bot was busy"
-                    # Undo the fire record: a once-routine with `last` set never gets a `next` again (_next_run),
-                    # and `next` was computed as if this slot had run.
-                    r["last"] = prev_last
                     if r["kind"] == "once":
                         r["enabled"] = True
-                    r["next"] = self._next_run(r, time.time()) if r.get("enabled") else None
+                    # The schedule is undone only while `last` is still this fire's stamp: a newer skipped fire
+                    # re-stamped it and set its own `next`, which stands. A once-routine with `last` set never gets
+                    # a `next` again (_next_run), and `next` was computed as if this slot had run; a due one-shot
+                    # whose time has passed retries in a minute, like the busy path (a refused Run now keeps its time).
+                    if r.get("last") == fired_at:
+                        r["last"] = prev_last
+                        if r["kind"] == "once":
+                            r["next"] = self._next_run(r, now) if manual else now + 60
+                        else:
+                            r["next"] = self._next_run(r, now) if r.get("enabled") else None
                 self.save()
             self.emit("system", "That routine did not start: another task took the bot first. It keeps its schedule.")
         self._sync_wake()
