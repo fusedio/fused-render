@@ -146,12 +146,23 @@ def _report(snapshot: dict) -> None:
         logger.debug("could not report the Claude Code %s job", snapshot["action"])
 
 
+
+def _publish_topic(topic: str, key=None) -> None:
+    """Wake the events bus (server/events.py) for `topic`. Imported lazily so
+    this module keeps importing in a process that never starts the server."""
+    try:
+        from fused_render.server.events import bus
+        bus.publish(topic, key)
+    except Exception:  # noqa: BLE001 — a missed wake is latency, never an error
+        pass
+
 def _publish(**fields) -> None:
     """Update the record and mirror it into the job registry. Never raises."""
     with _lock:
         _state.update(fields)
         snapshot = dict(_state)
     _report(snapshot)
+    _publish_topic("claude.setup")
 
 
 def status() -> dict:

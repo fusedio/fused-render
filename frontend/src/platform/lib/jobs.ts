@@ -10,6 +10,7 @@
 // screenshot doesn't show (a bar at 0% because `total` was absent rather than
 // zero; a row that says "stalled" for work that finished).
 import { getJson, postJson } from "@platform/lib/api";
+import { subscribeTopic, type SubscribeLike } from "@platform/lib/events";
 
 // "waiting" — the two NON-terminal states are "running" and "waiting". Work
 // has stopped and is not coming back on its own: it is sitting on a QUESTION
@@ -1033,46 +1034,79 @@ export function jobDetail(job: Job, nowS: number): string {
   return job.stalled ? `${kind} · ${started} · not reporting` : `${kind} · ${started}`;
 }
 
-// Poll cadence. Fast while anything is live — a progress bar that steps once a
-// second reads as stuck — and slow otherwise, where the only thing a poll can
-// discover is a job started with no ping behind it: one reported from another
-// same-origin document (a page in another browser tab), or one a server-side
-// process reports on its own with no browser ever POSTing anything (a
-// scheduled message's timer tick, `schedule.py`'s `_report` — runs no JS, so
-// writes no ping). A row a page's own JS causes — the env-install path
-// included, even though the row itself is created server-side inside
-// `envinstall.start()` — is pinged the moment the triggering POST resolves.
-// This floor is what covers the cases a ping can't reach.
-export const POLL_ACTIVE_MS = 1000;
-export const POLL_IDLE_MS = 5000;
-
-// How long to keep the ACTIVE cadence going after the last running job
-// disappears. jobs.py sweeps a finished row after FINISHED_TTL_S (currently
-// 3s) — a short TTL only actually shortens what the user sees if the client
-// is still polling fast enough to catch the row landing AND catch it being
-// swept. Dropping straight to POLL_IDLE_MS (5s) the instant nothing is
-// running would mean a row could be missed on arrival, or sit for a ragged
-// 0-5s after it dies depending on poll phase, instead of the clean ~3s the
-// server now promises.
+// ------------------------------------------------------------ watching one job
 //
-// GRACE_MS must comfortably outlive FINISHED_TTL_S plus a poll interval —
-// this is the other half of that relationship, so a future change to
-// FINISHED_TTL_S (fused_render/jobs.py) should come back here and check the
-// margin still holds, and vice versa: shrinking GRACE_MS below
-// FINISHED_TTL_S + POLL_ACTIVE_MS reopens the same lag this constant exists
-// to close.
-export const GRACE_MS = 6000;
+// `fused.watchJob`'s shape, over the events bus: subscribe to `jobs` narrowed
+// to one id and settle when the row leaves `running` (or whatever `until`
+// says), or with `null` when the row is GONE. A finished record is dropped
+// after its retention window (SPEC BG-6), which a backgrounded tab can sleep
+// straight through, so "gone" has to be an answer or the promise never
+// settles. No timer in here ever fetches: the server pushes every change,
+// and the one timer is the GRACE a missing row is given before it is called
+// gone — a snapshot that arrives a beat before the reporter's first tick is
+// not evidence the row never existed.
+export const GONE_GRACE_MS = 2500;
 
-/**
- * Poll cadence given the current jobs and how long ago a job was last seen
- * running. Pure — no clock of its own — so the caller (DownloadManager's
- * `useJobs`) is the one that owns `Date.now()` and remembers when it last
- * saw a running job; this function just decides what the elapsed time means.
- */
-export function pollInterval(jobs: Job[], sinceLastRunningMs: number): number {
-  if (jobs.some(isRunning)) return POLL_ACTIVE_MS;
-  if (sinceLastRunningMs < GRACE_MS) return POLL_ACTIVE_MS;
-  return POLL_IDLE_MS;
+export interface WatchJobOptions {
+  /** Settle (with the row) once this says so. Default: the row has left
+   *  `running`. */
+  until?: (job: Job) => boolean;
+  /** Fires for every snapshot that carries the row. */
+  onTick?: (job: Job) => void;
+  /** Settle with `null` the moment this is set (a Stop pressed). */
+  signal?: AbortSignal;
+  /** Polled on every frame; `true` settles with `null`. */
+  stopped?: () => boolean;
+  /** The bus subscription, for tests. */
+  subscribe?: SubscribeLike<JobsSnapshot, unknown>;
+  /** The grace a missing row is given, for tests. */
+  goneGraceMs?: number;
+}
+
+export function watchJobRow(id: string, opts: WatchJobOptions = {}): Promise<Job | null> {
+  const until = opts.until ?? ((job: Job) => job.state !== "running");
+  const subscribe = opts.subscribe ?? subscribeTopic;
+  const grace = opts.goneGraceMs ?? GONE_GRACE_MS;
+  return new Promise<Job | null>((resolve) => {
+    let settled = false;
+    let off: (() => void) = () => {};
+    let goneTimer: ReturnType<typeof setTimeout> | null = null;
+    const finish = (value: Job | null) => {
+      if (settled) return;
+      settled = true;
+      if (goneTimer !== null) clearTimeout(goneTimer);
+      opts.signal?.removeEventListener("abort", onAbort);
+      off();
+      resolve(value);
+    };
+    const onAbort = () => finish(null);
+    if (opts.signal?.aborted) {
+      resolve(null);
+      return;
+    }
+    opts.signal?.addEventListener("abort", onAbort);
+    off = subscribe("jobs", { id }, (snap, _delta, meta) => {
+      if (settled) return;
+      if (opts.stopped?.()) return finish(null);
+      if (meta.error !== undefined) return; // the server will say again
+      if (snap === null) return;
+      const row = (snap.jobs || []).find((j) => j.id === id) || null;
+      if (row) {
+        if (goneTimer !== null) {
+          clearTimeout(goneTimer);
+          goneTimer = null;
+        }
+        opts.onTick?.(row);
+        if (until(row)) finish(row);
+        return;
+      }
+      // Absent. Not gone yet: a reporter's first tick may still be landing.
+      if (goneTimer === null) goneTimer = setTimeout(() => finish(null), grace);
+    });
+    // A cached snapshot is replayed synchronously, inside `subscribe`: the
+    // watch may already be settled by the time the disposer is handed back.
+    if (settled) off();
+  });
 }
 
 // ------------------------------------------------------------- auto-expand

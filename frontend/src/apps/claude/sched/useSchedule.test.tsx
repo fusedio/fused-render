@@ -14,8 +14,8 @@ import { act, create, type ReactTestRenderer } from "react-test-renderer";
 // Types are erased, so they import statically; the VALUE import is deferred
 // past `installDomShim()` because `@platform/lib/api` reads its environment at
 // module scope.
-import type { ScheduleApi, ScheduleState } from "./useSchedule";
-import type { SchedEntry, SchedTask } from "./scheduled";
+import type { ScheduleApi, ScheduleFeed, ScheduleState } from "./useSchedule";
+import type { SchedEntry, ScheduleFrame, SchedTask } from "./scheduled";
 import type { ChatController } from "../protocol/controller-api";
 
 const { useSchedule } = await import("./useSchedule");
@@ -70,35 +70,28 @@ afterEach(() => {
 
 interface Harness {
   state(): State;
-  /** Re-render with a different session on screen — no tick, no fetch. The
+  /** Re-render with a different session on screen — no frame, no fetch. The
    *  leader moves with it when one is given (the adoption clears it). */
   setSession(id: string, leaderId?: string): Promise<void>;
-  /** Run the poll's interval callback and flush it. */
+  /** Push the schedule's current answer as a snapshot, the way the server does
+   *  on every change, and flush it. */
   poll(): Promise<void>;
-  /** What `/api/schedule` answers next. */
+  /** What the `schedule` topic answers next. */
   serve(entries: Entry[]): void;
-  /** Wedge `/api/schedule` open, so the confirming tick a cancel fires in its
-   *  `finally` cannot answer over the local edit under test. */
+  /** Wedge the schedule open — a resync that nothing answers — so the
+   *  confirming snapshot a cancel asks for in its `finally` cannot land over
+   *  the local edit under test. */
   holdSchedule(): void;
+  /** How many times the pane asked the schedule for a fresh snapshot. */
+  resyncs(): number;
   cancels: string[];
   /** The next cancel's answer, installed by the test. */
   nextCancel(d: { promise: Promise<unknown> }): void;
-  /** How many full `/api/tasks` listings this mount has paid for. */
-  tasksReads(): number;
-  /** What `/api/tasks` answers next. */
-  serveTasks(tasks: SchedTask[]): void;
-  /** Wedge `/api/tasks` open, so the single-flight guard is observable. */
-  holdTasks(): void;
-  /** Let a wedged `/api/tasks` answer. */
-  releaseTasks(): Promise<void>;
-  /** Move the injected wall clock, which is what paces the row's own re-read
-   *  (`REC_REFRESH_MS`) — the poll's rate no longer decides it. */
-  advance(ms: number): void;
-  /** Push a tasks-change-feed answer, the way the server's long-poll does the
-   *  instant the queue manager moves anything. */
+  /** Push a tasks-listing frame, the way the server does the instant the
+   *  queue manager moves anything. */
   feed(rows: SchedTask[]): Promise<void>;
-  /** Is anything subscribed to the feed right now? */
-  feeding(): boolean;
+  /** How many subscribers the listing feed has right now. */
+  feeding(): number;
 }
 
 async function mount(
@@ -115,22 +108,11 @@ async function mount(
   leader = "",
 ): Promise<Harness> {
   let served = initial;
-  let servedTasks: SchedTask[] = tasks;
-  let tasksReads = 0;
-  let taskGate: { promise: Promise<void>; open(): void } | null = null;
   const cancels: string[] = [];
   let pendingCancel: { promise: Promise<unknown> } | null = null;
-  let held: Promise<never> | null = null;
+  let held = false;
+  let resyncs = 0;
   const api: Api = {
-    getSchedule: async () => {
-      if (held) await held;
-      return { entries: served };
-    },
-    getTasks: async () => {
-      tasksReads += 1;
-      if (taskGate) await taskGate.promise;
-      return { tasks: servedTasks };
-    },
     cancelScheduledMessage: async (id) => {
       cancels.push(id);
       if (!pendingCancel) return undefined;
@@ -139,19 +121,26 @@ async function mount(
       return d.promise;
     },
   };
-  /** The injected wall clock. Starts at a round number so an assertion about
-   *  the floor is about the floor and not about the epoch. */
-  let clock = 1_000_000;
-  const beats: Array<() => void> = [];
-  const timers = {
-    setInterval: (fn: () => void) => {
-      beats.push(fn);
-      return beats.length;
+
+  /** THE SCHEDULE SUBSCRIPTION, injected: one frame callback at a time, which
+   *  the hook holds for the life of the watcher. A resync answers with the
+   *  schedule as served, unless the test has wedged it. */
+  let frame: ScheduleFrame | null = null;
+  const pushSchedule = () => frame?.({ entries: served }, {});
+  const scheduleFeed: ScheduleFeed = {
+    subscribe: (cb) => {
+      frame = cb;
+      return () => {
+        if (frame === cb) frame = null;
+      };
     },
-    clearInterval: () => {},
+    resync: () => {
+      resyncs += 1;
+      if (!held) pushSchedule();
+    },
   };
 
-  /** THE TASKS CHANGE FEED, injected. One subscriber at a time is all the hook
+  /** THE TASKS LISTING FEED, injected. One subscriber at a time is all the hook
    *  ever takes, which is also what makes `feeding()` a real assertion. */
   const feeds: Array<(rows: SchedTask[]) => void> = [];
   const subscribeRows = (cb: (rows: SchedTask[]) => void) => {
@@ -175,9 +164,8 @@ async function mount(
       inChat: !!props.sessionId || !!props.leaderId,
       setRunParam: () => {},
       api,
-      timers,
+      scheduleFeed,
       subscribeRows,
-      now: () => clock,
       ...(queueEnabled === undefined ? {} : { queueEnabled }),
     });
     return null;
@@ -190,6 +178,14 @@ async function mount(
     renderer = create(createElement(Probe, { sessionId: session_, leaderId: leader_ }));
   });
   mounted.push(renderer);
+  // The snapshots that answer the two subscribes: the schedule's, then the
+  // listing's (a page's first frames).
+  await act(async () => {
+    pushSchedule();
+  });
+  await act(async () => {
+    for (const cb of [...feeds]) cb(tasks);
+  });
 
   return {
     state: () => {
@@ -205,46 +201,26 @@ async function mount(
     },
     async poll() {
       await act(async () => {
-        for (const beat of beats) beat();
+        pushSchedule();
       });
     },
     serve(entries: Entry[]) {
       served = entries;
     },
     holdSchedule() {
-      held = new Promise<never>(() => {});
+      held = true;
     },
+    resyncs: () => resyncs,
     cancels,
     nextCancel(d) {
       pendingCancel = d;
-    },
-    advance(ms: number) {
-      clock += ms;
     },
     async feed(rows: SchedTask[]) {
       await act(async () => {
         for (const cb of [...feeds]) cb(rows);
       });
     },
-    feeding: () => feeds.length > 0,
-    tasksReads: () => tasksReads,
-    serveTasks(tasks: SchedTask[]) {
-      servedTasks = tasks;
-    },
-    holdTasks() {
-      let open!: () => void;
-      const promise = new Promise<void>((res) => {
-        open = res;
-      });
-      taskGate = { promise, open };
-    },
-    async releaseTasks() {
-      const gate = taskGate;
-      taskGate = null;
-      await act(async () => {
-        gate?.open();
-      });
-    },
+    feeding: () => feeds.length,
   };
 }
 
@@ -256,7 +232,7 @@ test("Back to the landing page opens the composer on the same paint", async () =
   expect(h.state().blocked).toBe(true);
   expect(h.state().schedDisabled).toBe(true);
 
-  // The gesture, WITHOUT a poll: `newChat` puts `transcriptGen` back to 0 and
+  // The gesture, WITHOUT a snapshot: `newChat` puts `transcriptGen` back to 0 and
   // the schedule is still serving the same pending row, so nothing but the
   // session id has changed. The composer must be open anyway — the banner only
   // ever draws inside a chat, so a blocked home box has nothing to explain it.
@@ -360,7 +336,7 @@ test("a chat entry beside a calendar one still shuts the box, and names the cale
   expect(h.state().reason).not.toBe("");
 });
 
-test("every row the tick saw is published, for a chat that has no session", async () => {
+test("every row the snapshot carried is published, for a chat that has no session", async () => {
   // A chat whose first message queued has NO session — nothing has run — so the
   // session filter answers `[]` for it by construction. Its waiting messages are
   // found in THIS list, through the leader entry they were admitted behind, and
@@ -424,14 +400,14 @@ test("a claimed entry stays in the list, and in the live ids behind the seeds", 
   expect([...(h.state().pendingIds ?? [])]).toEqual(["a"]);
 });
 
-test("the row is re-read on a CLOCK under the queue, because its fields move", async () => {
+test("the row follows the listing feed under the queue, because its fields move", async () => {
   // `queue_ahead`, `queue_position`, `queue_priority` and `queue_waiting` all
   // change UNDER A FIXED ENTRY ID — the task in front finishes, somebody skips
   // ahead — so a row read once said "behind TASK-038" for the life of the chat.
   //
-  // NOT once per poll lap, which is what it was (🔴 review 2026-09-12): the
-  // schedule polls every 3 s while the composer is shut, and that made a chat
-  // behind a blocker ask for the whole tasks listing twenty times a minute.
+  // NOT re-read on a clock, which is what it was (a 5 s floor under a GET,
+  // 🔴 review 2026-09-12): the listing feed carries every such move the moment
+  // the manager makes it, and the row is whatever the last frame said.
   const h = await mount(
     [{ ...pending("a", "2026-09-09T14:00:00+00:00"), origin: "chat" }],
     "s1",
@@ -440,69 +416,32 @@ test("the row is re-read on a CLOCK under the queue, because its fields move", a
   );
   await h.poll();
   expect(h.state().rec?.queue_ahead).toBe("TASK-041");
-  const reads = h.tasksReads();
   const gen = h.state().recGen;
-  h.serveTasks([{ key: "s1", queue_ahead: "", queue_priority: true }]);
-  // Two laps INSIDE the floor buy nothing at all…
+  // Snapshots of the schedule alone move nothing about the row…
   await h.poll();
   await h.poll();
-  expect(h.tasksReads()).toBe(reads);
-  // …and the first lap past it re-reads.
-  h.advance(5000);
-  await h.poll();
-  expect(h.tasksReads()).toBeGreaterThan(reads);
+  expect(h.state().recGen).toBe(gen);
+  // …and the next listing frame does.
+  await h.feed([{ key: "s1", queue_ahead: "", queue_priority: true }]);
   expect(h.state().rec?.queue_priority).toBe(true);
   // …and the generation moves with it, which is what retires an optimistic claim.
   expect(h.state().recGen).toBeGreaterThan(gen);
 });
 
-test("a listing SLOWER than the floor does not put the row read in a loop", async () => {
-  // Bugbot PR #1124. `at` was stamped when the read STARTED, and the effect
-  // re-runs on `at` — so a listing that took longer than `REC_REFRESH_MS` landed
-  // already stale, the effect read `stale`, and fired again immediately. On a
-  // busy machine that is a tight loop of whole-`/api/tasks` listings. The floor
-  // is a floor BETWEEN reads, so it is measured from where one ended.
-  const h = await mount(
-    [{ ...pending("a", "2026-09-09T14:00:00+00:00"), origin: "chat" }],
-    "s1",
-    [{ key: "s1", queue_ahead: "TASK-041" }],
-    true,
-  );
-  await h.poll();
-  const reads = h.tasksReads();
-
-  // A read that takes longer than the floor: wedge it open and move the clock
-  // past `REC_REFRESH_MS` while it is in flight.
-  h.holdTasks();
-  h.advance(5000);
-  await h.poll();
-  expect(h.tasksReads()).toBe(reads + 1);
-  h.advance(6000);
-  await h.releaseTasks();
-
-  // The answer landed stamped at the moment it LANDED, so the laps that follow
-  // are inside the floor again and buy nothing.
-  await h.poll();
-  await h.poll();
-  expect(h.tasksReads()).toBe(reads + 1);
-  // …and the floor still expires on its own.
-  h.advance(5000);
-  await h.poll();
-  expect(h.tasksReads()).toBe(reads + 2);
-});
-
-test("…and exactly once per entry with the flag off, as it always was", async () => {
+test("…and flag off the row comes from the same feed, with no GET of its own", async () => {
   const h = await mount(
     [pending("a", "2026-09-09T14:00:00+00:00")],
     "s1",
     [{ key: "s1", task_id: "TASK-7" }],
     false,
   );
+  expect(h.feeding()).toBe(1);
+  expect(h.state().rec?.task_id).toBe("TASK-7");
   await h.poll();
-  const reads = h.tasksReads();
   await h.poll();
-  await h.poll();
-  expect(h.tasksReads()).toBe(reads);
+  expect(h.feeding()).toBe(1);
+  await h.feed([{ key: "s1", task_id: "TASK-7", status: "done" }]);
+  expect(h.state().rec?.status).toBe("done");
 });
 
 test("a chat with no session gets its card and its row, keyed on the leader", async () => {
@@ -548,19 +487,16 @@ test("…and stays open when the row says nothing is blocking, whatever the entr
   const h = await mount([pending("a", "2026-09-09T14:00:00+00:00")], "s1", [], true);
   expect(h.state().rec).toBe(null);
   expect(h.state().blocked).toBe(true);
-  // Then the server's own answer lands and it outranks that reading. Past the
-  // row's own floor, which is what paces the re-read now.
-  h.serveTasks([{ key: "s1", queue_blocking: false }]);
-  h.advance(5000);
-  await h.poll();
+  // Then the server's own answer lands and it outranks that reading.
+  await h.feed([{ key: "s1", queue_blocking: false }]);
   expect(h.state().rec?.queue_blocking).toBe(false);
   expect(h.state().blocked).toBe(false);
 });
 
 test("those rows keep their identity when the schedule did not move", async () => {
   // The dedupe `absorb` keeps — one object for one unchanged list — is worth
-  // nothing if this publishes a fresh array on every lap: the composer's whole
-  // column would re-render four times a minute over a schedule that did not
+  // nothing if this publishes a fresh array on every snapshot: the composer's
+  // whole column would re-render on every push over a schedule that did not
   // change.
   const h = await mount([pending("a", "2026-09-09T14:00:00+00:00")], "s1", [], true);
   await h.poll();
@@ -600,8 +536,8 @@ test("a finished one-off cancel drops the entry it was pressed on, not the head"
   expect(h.state().blockers.map((e) => e.id)).toEqual(["b", "a"]);
 
   // The LOCAL edit is what this asserts — the reason it exists at all is that
-  // the box must open on the click and not on the next poll — so the confirming
-  // tick is wedged open rather than allowed to answer over it.
+  // the box must open on the click and not on the next snapshot — so the
+  // confirming resync is wedged open rather than allowed to answer over it.
   h.holdSchedule();
   await act(async () => {
     d.resolve(undefined);
@@ -681,9 +617,9 @@ test("a cancel that outlives its transcript neither unblocks nor refuses", async
   expect(h.state().stopping).toBe(false);
 });
 
-// ── the banner repaints every field the poll can change (G-5) ────────────────
+// ── the banner repaints every field a snapshot can change (G-5) ──────────────
 
-test("a message edited on the Tasks page reaches the banner on the next tick", async () => {
+test("a message edited on the Tasks page reaches the banner on the next snapshot", async () => {
   const h = await mount([
     pending("a", "2026-09-09T14:00:00+00:00", { message: "old wording" }),
   ]);
@@ -696,7 +632,7 @@ test("a message edited on the Tasks page reaches the banner on the next tick", a
   expect(h.state().blockers[0].message).toBe("new wording");
 });
 
-test("an entry that becomes a repeat re-words the reason line on the next tick", async () => {
+test("an entry that becomes a repeat re-words the reason line on the next snapshot", async () => {
   const h = await mount([pending("a", "2026-09-09T14:00:00+00:00")]);
   expect(h.state().reason).toBe("Blocked — a scheduled message runs in this chat.");
 
@@ -705,7 +641,7 @@ test("an entry that becomes a repeat re-words the reason line on the next tick",
   expect(h.state().reason).toBe("Blocked — a repeating message runs in this chat.");
 });
 
-test("an unchanged poll still hands back the very same array", async () => {
+test("an unchanged snapshot still hands back the very same array", async () => {
   const h = await mount([pending("a", "2026-09-09T14:00:00+00:00", { message: "m" })]);
   const first = h.state().blockers;
   // A FRESH ARRAY OFF THE WIRE, field for field identical: the whole point of
@@ -715,64 +651,49 @@ test("an unchanged poll still hands back the very same array", async () => {
   expect(h.state().blockers).toBe(first);
 });
 
-// ── the tasks row is read for the BLOCK, once (G-6) ──────────────────────────
+// ── the tasks row comes off the listing feed, never a GET (G-6, D3) ──────────
 
-test("the landing page pays for no tasks listing at all", async () => {
+test("the landing page follows no listing at all", async () => {
   const h = await mount([pending("a", "2026-09-09T14:00:00+00:00")]);
-  expect(h.tasksReads()).toBe(1);
+  expect(h.feeding()).toBe(1);
 
-  // Back. `blocked` goes false on this paint with the blockers still in hand —
-  // T reads the listing only `if (blocked)`, so this gesture is free.
+  // Back. `blocked` goes false on this paint with the blockers still in hand,
+  // and there is no conversation whose row could be waiting — so the feed is
+  // let go.
   await h.setSession("");
   expect(h.state().blocked).toBe(false);
-  expect(h.tasksReads()).toBe(1);
+  expect(h.feeding()).toBe(0);
   await h.poll();
-  expect(h.tasksReads()).toBe(1);
+  expect(h.feeding()).toBe(0);
 });
 
-test("one listing per blocking message, however often the poll ticks", async () => {
-  const h = await mount([pending("a", "2026-09-09T14:00:00+00:00")]);
-  expect(h.tasksReads()).toBe(1);
+test("one subscription however many snapshots land, and a new head is filled from the rows in hand", async () => {
+  const h = await mount([pending("a", "2026-09-09T14:00:00+00:00")], "s1", [
+    { key: "k", task_id: "TASK-1", messages: [{ entry_id: "a" }] },
+    { key: "k9", task_id: "TASK-9", messages: [{ entry_id: "c" }] },
+  ]);
+  expect(h.feeding()).toBe(1);
+  expect(h.state().rec?.task_id).toBe("TASK-1");
   await h.poll();
   await h.poll();
-  expect(h.tasksReads()).toBe(1);
+  expect(h.feeding()).toBe(1);
 
-  // A DIFFERENT message at the front is a different row, so it is read.
-  h.serve([pending("b", "2026-09-09T15:00:00+00:00")]);
-  await h.poll();
-  expect(h.tasksReads()).toBe(2);
-});
-
-test("two rapid heads issue one listing, and the head that lost is filled after", async () => {
-  const h = await mount([pending("a", "2026-09-09T14:00:00+00:00")]);
-  // Wedge the NEXT read open, then move the head twice underneath it.
-  h.holdTasks();
-  h.serve([pending("b", "2026-09-09T15:00:00+00:00")]);
-  await h.poll();
+  // A DIFFERENT message at the front is a different row question — answered
+  // from the listing already in hand, on that paint, with no new frame.
   h.serve([pending("c", "2026-09-09T16:00:00+00:00")]);
   await h.poll();
-  // "a"'s read landed before the gate went up; "b" and "c" then shared ONE
-  // wedged read rather than issuing two overlapping listings.
-  expect(h.tasksReads()).toBe(2);
-
-  h.serveTasks([{ key: "k", task_id: "TASK-9", messages: [{ entry_id: "c" }] }]);
-  await h.releaseTasks();
-  // The wedged answer belonged to "b", which is no longer the head, so it is
-  // never published against "c" — the guard re-arms instead and reads again for
-  // the id that actually is blocking.
-  expect(h.tasksReads()).toBe(3);
   expect(h.state().rec?.task_id).toBe("TASK-9");
+  expect(h.feeding()).toBe(1);
 });
 
-test("a row belongs to the entry it was read for", async () => {
+test("a row belongs to the entry it was found for", async () => {
   const h = await mount([pending("a", "2026-09-09T14:00:00+00:00")], "s1", [
     { key: "k", task_id: "TASK-1", messages: [{ entry_id: "a" }] },
   ]);
   expect(h.state().rec?.task_id).toBe("TASK-1");
 
-  // A new message at the front: the old number must be gone on THAT PAINT, not
-  // when the replacement listing lands (T:16997-16999).
-  h.holdTasks();
+  // A new message at the front with no row of its own: the old number must be
+  // gone on THAT PAINT, not when a later listing says so (T:16997-16999).
   h.serve([pending("z", "2026-09-09T18:00:00+00:00")]);
   await h.poll();
   expect(h.state().rec).toBe(null);
@@ -787,12 +708,12 @@ test("a row belongs to the entry it was read for", async () => {
 // 2026-09-12). The chip is the right card for a message the reader just typed;
 // this block is the right one for a message coming due out of the calendar.
 
-test("under the flag the block draws nothing, and the task row is still read", async () => {
+test("under the flag the block draws nothing, and the task row is still found", async () => {
   // The block was one card explaining why the box was shut. Under the queue the
   // same fact is drawn as the messages themselves, plus one summary over the
   // composer — so the block draws NOTHING rather than a third copy of it.
   //
-  // What it still pays for is the `/api/tasks` row, and that is not decoration
+  // What it still carries is the `/api/tasks` row, and that is not decoration
   // any more: it is where "1st in line · behind TASK-038" comes from, which is
   // what makes a reload say the same sentence the send did.
   const h = await mount(
@@ -821,11 +742,11 @@ test("flag OFF, the block is main's byte for byte", async () => {
   expect(h.state().schedDisabled).toBe(true);
 });
 
-test("refresh() asks the schedule NOW, rather than at the end of the lap", async () => {
+test("refresh() asks the schedule NOW — one resync, never a fetch", async () => {
   // What a row's `delete` spends. The press changed the schedule from this pane,
-  // so everything derived from the poll — the waiting rows and `pendingIds` both
-  // — describes a world the reader has already left until a lap ends: fifteen
-  // seconds of a row standing over a message they just deleted.
+  // so everything derived from the snapshot — the waiting rows and `pendingIds`
+  // both — describes a world the reader has already left until the producer's
+  // next push: a row standing over a message they just deleted.
   const h = await mount(
     [{ ...pending("a", "2026-09-09T14:00:00+00:00"), origin: "chat" }],
     "s1",
@@ -834,21 +755,22 @@ test("refresh() asks the schedule NOW, rather than at the end of the lap", async
   );
   expect(h.state().waitingHere.map((e) => e.id)).toEqual(["a"]);
   h.serve([]);
+  const before = h.resyncs();
   await act(async () => {
     h.state().refresh();
   });
+  expect(h.resyncs()).toBe(before + 1);
   expect(h.state().waitingHere).toEqual([]);
   expect([...(h.state().pendingIds ?? [])]).toEqual([]);
 });
 
 // ── the live row (the tasks change feed) ─────────────────────────────────────
 
-test("a feed answer moves this chat's row without waiting for a lap", async () => {
+test("a feed answer moves this chat's row without waiting for anything", async () => {
   // The bug (Akshil, 2026-09-17): the queue moves on EVENTS and this pane was
-  // the only surface still asking on a lap. A chat with nothing pending in its
-  // own session polls `/api/schedule` at 15s and floors its `/api/tasks` re-read
-  // at 5s on top of it, so "behind TASK-046" lingered seconds after the folder
-  // freed while the Tasks page repainted in ~100ms off the long-poll.
+  // the only surface still asking on a lap, so "behind TASK-046" lingered
+  // seconds after the folder freed while the Tasks page repainted in ~100ms
+  // off the feed.
   const h = await mount(
     [{ ...pending("a", "2026-09-09T14:00:00+00:00"), origin: "chat" }],
     "s1",
@@ -856,14 +778,12 @@ test("a feed answer moves this chat's row without waiting for a lap", async () =
     true,
   );
   expect(h.state().rec?.queue_position).toBe(3);
-  const reads = h.tasksReads();
   await h.feed([
     { key: "s1", status: "queued", queue_position: 2, queue_ahead: "TASK-046" },
   ]);
-  // No lap, no clock, no second listing — and the caption has already moved.
+  // No snapshot, no clock, no GET — and the caption has already moved.
   expect(h.state().rec?.queue_position).toBe(2);
   expect(h.state().row?.queue_position).toBe(2);
-  expect(h.tasksReads()).toBe(reads);
 });
 
 test("the same answer twice is not a re-render", async () => {
@@ -901,16 +821,16 @@ test("queued → in_progress asks the schedule again in the same beat", async ()
   h.serve([]);
   await h.feed([{ key: "s1", status: "in_progress", queue_waiting: 0 }]);
   expect(h.state().row?.status).toBe("in_progress");
-  // …and the dashed bubble is retired in the same beat, off the schedule read
-  // the status change went and asked for rather than off the next lap.
+  // …and the dashed bubble is retired in the same beat, off the schedule
+  // resync the status change went and asked for rather than off the next push.
   expect(h.state().waitingHere).toEqual([]);
   expect(h.state().rec?.queue_waiting ?? 0).toBe(0);
 });
 
 test("a chat with no session reads its row through the leader key", async () => {
   // The brand-new chat whose first message queued is the one this matters most
-  // on: it has no session for the schedule's own filter to find, so its poll
-  // never goes fast and its row is named `pending:<leader>`.
+  // on: it has no session for the schedule's own filter to find, and its row
+  // is named `pending:<leader>`.
   const h = await mount(
     [{ ...pending("lead", "2026-09-09T14:00:00+00:00"), session_id: "", origin: "chat" }],
     "",
@@ -989,9 +909,12 @@ test("a listing without our row clears it; a failed read leaves it (Bugbot)", as
   expect(recBefore).toBe(null);
 });
 
-test("flag OFF nothing subscribes to the feed", async () => {
+test("flag OFF the feed is still the row's source, but the header's `row` stays null", async () => {
   const h = await mount([pending("a", "2026-09-09T14:00:00+00:00")], "s1", [], false);
-  expect(h.feeding()).toBe(false);
+  expect(h.feeding()).toBe(1);
+  await h.feed([{ key: "s1", status: "queued", queue_position: 1, task_id: "TASK-3" }]);
+  expect(h.state().rec?.task_id).toBe("TASK-3");
+  expect(h.state().row).toBe(null);
 });
 
 test("a done chat's row updates when its session's new message is queued in another task", async () => {

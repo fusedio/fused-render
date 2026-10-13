@@ -38,6 +38,20 @@ from fused_render._view_url_codec import canonical_fs_path
 from fused_render.server import create_app
 from fused_render.server.routers import claude_sessions as sessions_mod
 from fused_render.server.routers import tasks as tasks_mod
+from tests._tasks_feed import changes, pulse as pulse_rows
+
+
+class _Answer:
+    """The old GET's response object, for assertions on `.status_code`/`.json()`."""
+    status_code = 200
+    text = ""
+
+    def __init__(self, body):
+        self._body = body
+
+    def json(self):
+        return self._body
+
 
 HEADERS = {"X-Fused": "1"}
 
@@ -1157,7 +1171,7 @@ def test_the_pulse_carries_where_a_row_stands(
     alpha = _waiting_pair(projects_dir, folders, monkeypatch)
     manager.line(alpha, "sess-wait", holder="sess-holder")
 
-    pulse = {row["key"]: row for row in client.get("/api/tasks/pulse").json()["tasks"]}
+    pulse = {row["key"]: row for row in pulse_rows(client)}
     row = pulse["sess-wait"]
     assert row["status"] == "queued"
     assert row["queue_position"] == 1
@@ -1185,7 +1199,7 @@ def test_the_changes_answer_names_a_holder_it_was_not_asked_about(
 
     since = tasks_watch.generation()
     tasks_watch.notify({"sess-wait"})
-    r = client.get(f"/api/tasks/changes?since={since}&wait=0")
+    r = _Answer(changes(client, since))
     assert r.status_code == 200, r.text
     rows = {row["key"]: row for row in r.json()["rows"]}
     assert rows["sess-wait"]["queue_position"] == 1
@@ -2323,7 +2337,7 @@ def test_the_scoped_gone_reaches_the_changes_endpoint(
 
     since = tasks_watch.generation()
     tasks_watch.notify({"sess-a"})
-    r = client.get(f"/api/tasks/changes?since={since}&wait=0")
+    r = _Answer(changes(client, since))
     assert r.status_code == 200, r.text
     assert tasks_store.pending_key("e-ran") in r.json()["gone"]
 
@@ -2369,7 +2383,7 @@ def test_a_rung_pending_key_the_run_has_rekeyed_is_not_gone_it_is_the_session_ro
     since = tasks_watch.generation()
     tasks_watch.notify({pending})  # what the watcher can spell, and only that
 
-    body = client.get(f"/api/tasks/changes?since={since}&wait=0").json()
+    body = changes(client, since)
     assert [row["key"] for row in body["rows"]] == ["sess-new"], \
         "the replacement row, which the rung key alone never produced"
     assert body["gone"] == [pending], "and the old name leaves with it"
@@ -2393,7 +2407,7 @@ def test_with_the_flag_off_a_rung_pending_key_stays_a_pending_row(
     since = tasks_watch.generation()
     tasks_watch.notify({pending})
 
-    body = client.get(f"/api/tasks/changes?since={since}&wait=0").json()
+    body = changes(client, since)
     assert body["gone"] == []
     assert [row["key"] for row in body["rows"]] == [pending]
 

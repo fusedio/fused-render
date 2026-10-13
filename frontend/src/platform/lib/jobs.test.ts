@@ -16,7 +16,6 @@ const {
   activeJobByModel,
   EMPTY_GROUP_POPUP_STATE,
   effectiveTier,
-  GRACE_MS,
   GROUP_GAP_MS,
   groupEffectiveTier,
   groupJobs,
@@ -31,9 +30,7 @@ const {
   jobsAfterClear,
   jobStatusLine,
   mergedRows,
-  pollInterval,
-  POLL_ACTIVE_MS,
-  POLL_IDLE_MS,
+  watchJobRow,
   popupJobs,
   popupTick,
   terminalNotifications,
@@ -322,22 +319,66 @@ test("an id that disappears and later reappears counts as new again", () => {
 
 // ---------------------------------------------------------- overall fraction
 
-// ---------------------------------------------------------------- poll pacing
+// -------------------------------------------------------------- watching a job
 
-test("the poll goes fast while anything runs, regardless of elapsed time", () => {
-  expect(pollInterval([job()], 0)).toBe(POLL_ACTIVE_MS);
-  expect(pollInterval([job()], GRACE_MS + 1)).toBe(POLL_ACTIVE_MS);
+/** A scripted `jobs` subscription: each entry is one snapshot's rows (or an
+ *  error frame), pushed in order on subscribe; `push` adds more by hand. */
+function jobsFeed(script: Array<Job[] | "error">) {
+  let cb: ((s: unknown, d: unknown, m: Record<string, unknown>) => void) | null = null;
+  const deliver = (entry: Job[] | "error") => {
+    if (!cb) return;
+    if (entry === "error") cb(null, null, { error: "boom", status: 500 });
+    else cb({ jobs: entry, now: 0 }, null, { gen: null });
+  };
+  let subs = 0;
+  const subscribe = ((_topic: string, _params: unknown, fn: typeof cb) => {
+    subs += 1;
+    cb = fn;
+    for (const entry of script) deliver(entry);
+    return () => {
+      subs -= 1;
+      if (cb === fn) cb = null;
+    };
+  }) as never;
+  return { subscribe, push: deliver, live: () => subs };
+}
+
+test("watchJobRow settles with the row once it leaves running, ticking on the way", async () => {
+  const feed = jobsFeed([[job()], [job()], [job({ state: "done" })]]);
+  const seen: string[] = [];
+  const out = await watchJobRow("j1", { subscribe: feed.subscribe, onTick: (j) => seen.push(j.state) });
+  expect(out?.state).toBe("done");
+  expect(seen).toEqual(["running", "running", "done"]);
+  expect(feed.live()).toBe(0);
 });
 
-test("the poll stays fast through a grace window after the last running job disappears", () => {
-  expect(pollInterval([job({ state: "done" })], 0)).toBe(POLL_ACTIVE_MS);
-  expect(pollInterval([job({ state: "done" })], GRACE_MS - 1)).toBe(POLL_ACTIVE_MS);
+test("a row missing from a snapshot is gone only after the grace, and a sighting cancels it", async () => {
+  const feed = jobsFeed([[job()], []]);
+  const p = watchJobRow("j1", { subscribe: feed.subscribe, goneGraceMs: 20 });
+  // The row comes back before the grace is up: still watching.
+  await new Promise((r) => setTimeout(r, 5));
+  feed.push([job({ state: "done" })]);
+  expect((await p)?.state).toBe("done");
+  // Absent for the whole grace: gone.
+  const feed2 = jobsFeed([[]]);
+  expect(await watchJobRow("j1", { subscribe: feed2.subscribe, goneGraceMs: 10 })).toBeNull();
 });
 
-test("the poll idles once the grace window has elapsed", () => {
-  expect(pollInterval([job({ state: "done" })], GRACE_MS)).toBe(POLL_IDLE_MS);
-  expect(pollInterval([job({ state: "done" })], GRACE_MS + 1)).toBe(POLL_IDLE_MS);
-  expect(pollInterval([], GRACE_MS + 1)).toBe(POLL_IDLE_MS);
+test("an error frame ends nothing — the server will say again", async () => {
+  const feed = jobsFeed([[job()], "error", "error", [job({ state: "cancelled" })]]);
+  const out = await watchJobRow("j1", { subscribe: feed.subscribe });
+  expect(out?.state).toBe("cancelled");
+});
+
+test("an aborted signal and a `stopped` answer settle with null and unsubscribe", async () => {
+  const feed = jobsFeed([[job()]]);
+  const ctl = new AbortController();
+  const p = watchJobRow("j1", { subscribe: feed.subscribe, signal: ctl.signal });
+  ctl.abort();
+  expect(await p).toBeNull();
+  expect(feed.live()).toBe(0);
+  const feed2 = jobsFeed([[job()]]);
+  expect(await watchJobRow("j1", { subscribe: feed2.subscribe, stopped: () => true })).toBeNull();
 });
 
 // --------------------------------------------------------------------- clear

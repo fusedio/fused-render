@@ -140,7 +140,7 @@ describe("If-Match", () => {
   });
 
   test("a task write is versioned under the key the LISTING uses", async () => {
-    // `draft:<id>`, not `<id>`: that is the key `/api/tasks/changes` pushes this
+    // `draft:<id>`, not `<id>`: that is the key the `tasks.listing` deltas push this
     // record's version under, and two spellings of one record is the class of bug
     // this design ends.
     const id = "d-version";

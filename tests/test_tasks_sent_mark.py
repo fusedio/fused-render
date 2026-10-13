@@ -39,6 +39,20 @@ from fused_render._view_url_codec import canonical_fs_path
 from fused_render.server import create_app
 from fused_render.server.routers import claude_sessions as sessions_mod
 from fused_render.server.routers import tasks as tasks_mod
+from tests._tasks_feed import changes, pulse
+
+
+class _Answer:
+    """The old GET's response object, for assertions on `.status_code`/`.json()`."""
+    status_code = 200
+    text = ""
+
+    def __init__(self, body):
+        self._body = body
+
+    def json(self):
+        return self._body
+
 
 
 @pytest.fixture(autouse=True)
@@ -532,7 +546,7 @@ def test_the_send_arrives_and_departs_down_the_changes_long_poll(client,
     at = tasks_watch.generation()
     tasks_watch.mark_running(SID, text="pull today's news", file=str(tmp_path))
 
-    r = client.get("/api/tasks/changes", params={"since": at, "wait": 0})
+    r = _Answer(changes(client, at))
     assert r.status_code == 200, r.text
     body = r.json()
     assert [row["key"] for row in body["rows"]] == [SID]
@@ -541,8 +555,7 @@ def test_the_send_arrives_and_departs_down_the_changes_long_poll(client,
 
     at = body["generation"]
     _expire()
-    body = client.get("/api/tasks/changes",
-                      params={"since": at, "wait": 0}).json()
+    body = changes(client, at)
     assert body["rows"] == []
     assert body["gone"] == [SID]
 

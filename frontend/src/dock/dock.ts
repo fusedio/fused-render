@@ -3,7 +3,10 @@
 // holds the data model and the face drawing. Everything the data model does not force is the old page's logic, kept
 // as it was: the fisheye, the rest layout, the bubble, the keyboard, drag-to-reorder, the separator resize with ⌥
 // snaps, report()/dockAnchor/dockShown/dockMenuClosed, the size/tray/resize/menu messages to the native panel
-// (fused_render/menubar_dock.py), the in-app vs dev-mode classes and the 1.5 s poll with the newest-poll-wins rule.
+// (fused_render/menubar_dock.py), the in-app vs dev-mode classes. The tray itself is a `dock` subscription on the
+// events bus (fused_render/static/events-client.js, imported below so this bundle carries the client): the server
+// pushes the GET /api/dock body on subscribe and on every change, and nothing here fetches on a timer (D3).
+import "@static/events-client.js";
 import {
   browserHref, bubbleText, displayName, fallbackTile, faceSvg, openBody, tileKey, trayOrder,
   type DockPayload, type Row,
@@ -40,7 +43,7 @@ const state = {
   pinned: [] as Row[], recent: [] as Row[],
   nodes: new Map<string, Item>(), rows: new WeakMap<HTMLElement, Row>(),
   dragging: null as Item | null, menuFor: null as Item | null, hover: null as HTMLElement | null,
-  dragEndedAt: 0, loaded: false, saving: 0, gen: 0, pollSeq: 0, resizing: false,
+  dragEndedAt: 0, loaded: false, saving: 0, resizing: false,
 };
 
 // ---------- net ----------
@@ -50,28 +53,28 @@ async function post(path: string, body?: unknown): Promise<Reply> {
   if (!r.ok) throw new Error(path + " " + r.status);
   return r.json();
 }
-// A mutation: polls pause until it lands, and any poll already in flight is discarded, so a 1.5 s refresh can never
-// paint the pre-save tray over what the user just did. The old routes replied with the new list; these reply with
-// `{ok, …}` only, so the tray is re-read once the mutation is done (a GET started after it, so it carries it).
+// A mutation: snapshots are not applied until it lands (`apply` skips while `saving`), so a push that was already on
+// the wire can never paint the pre-save tray over what the user just did. The old routes replied with the new list;
+// these reply with `{ok, …}` only, so the tray is re-read once the mutation is done (a resync of the subscription,
+// answered with a snapshot taken after it).
 async function save(fn: () => Promise<unknown>) {
-  state.saving++; state.gen++;
+  state.saving++;
   try { await fn(); }
   finally { state.saving--; }
-  await refresh();
+  refresh();
 }
-// Newest-started poll wins: a reply is applied only if no save landed and no later poll started while it was in
-// flight. Two polls overlap when a dockShown() refresh (after the native menu's Keep in Dock) fires mid-interval;
-// the earlier one may still carry the pre-change tray.
-async function refresh() {
+// "Show me the tray as it is NOW": one resync of the `dock` subscription — an event (after an action, dockShown),
+// never a timer. The snapshot that answers lands in `onFrame` like any other push.
+function refresh() {
   if (state.dragging || state.menuFor || state.saving || state.resizing) return;
-  const gen = state.gen, seq = ++state.pollSeq;
-  try {
-    const r = await fetch("/api/dock", { cache: "no-store" });
-    if (!r.ok) return;
-    const d = (await r.json()) as DockPayload;
-    if (gen !== state.gen || seq !== state.pollSeq) return; // superseded while in flight
-    apply(d, d.tilesize);
-  } catch (_) { if (!state.loaded) render(); /* server down: show empty tray rather than nothing */ }
+  fusedEvents.resync("dock");
+}
+// Every frame of the subscription: the GET body, or its refusal. A refusal with nothing drawn yet paints the empty
+// tray rather than nothing (server down); a refusal after that leaves the last tray up.
+function onFrame(d: DockPayload | null, _delta: unknown, meta: { error?: string }) {
+  if (!d) { if (meta.error && !state.loaded) render(); return; }
+  if (state.saving) return; // a snapshot from before the save; the resync after it answers
+  apply(d, d.tilesize);
 }
 // `tilesize` rides along on GET /api/dock: it is applied before the render so the tray never paints at the default
 // size first and then jumps.
@@ -126,7 +129,7 @@ function updateItem(b: Item, row: Row) {
   }
   const img = tile.querySelector("img");
   // An icon that failed to load stays on the letter tile until the icon changes (the server stamps its mtime into
-  // the URL): without this mark every 1.5 s poll would see no <img>, build a new one and refetch the failing URL.
+  // the URL): without this mark every pushed snapshot would see no <img>, build a new one and refetch the failing URL.
   const failKey = row.icon || "";
   if (row.icon && tile.dataset.failed !== failKey) {
     const src = row.icon;
@@ -663,27 +666,14 @@ function onSepDown(e: PointerEvent) {
 }
 
 // ---------- lifecycle ----------
-let timer: ReturnType<typeof setInterval> | null = null;
-// The interval tick skips while a previous poll is still in flight: a slow /api/dock (the server busy, or the request
-// queued behind the 6-connection-per-host:port pool every WebKit window shares — measured 2026-10-08) would
-// otherwise stack a new request every 1.5 s on top of the stalled one. Explicit refresh() calls (after an action,
-// dockShown) are not gated — they must see the change, and newest-poll-wins already settles the overlap.
-let polling = false;
-function pollTick() {
-  if (polling) return;
-  polling = true;
-  void refresh().finally(() => { polling = false; });
-}
-function schedule() {
-  if (timer) clearInterval(timer);
-  timer = null;
-  if (document.visibilityState === "visible") timer = setInterval(pollTick, 1500);
-}
-document.addEventListener("visibilitychange", () => { schedule(); if (document.visibilityState === "visible") refresh(); });
+// The tray follows the `dock` topic: the client itself drops the subscription while the document is hidden and
+// resubscribes on visible, and the snapshot that answers is the catch-up — so there is no visibilitychange handler
+// and no interval here. A request stalled behind the 6-connection-per-host:port pool every WebKit window shares
+// (measured 2026-10-08) cannot stack up any more either: one socket, one subscription.
 window.dockShown = () => { hideMenu(); pointerGone(); refresh(); };
 window.dockMenuClosed = () => {
   mag.frozen = false;
   if (!tray.matches(":hover")) pointerGone();
 };
 window.addEventListener("resize", report);
-refresh(); schedule();
+fusedEvents.subscribe<DockPayload>("dock", null, onFrame);

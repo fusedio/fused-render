@@ -11,6 +11,10 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
+# The terminal stream checks Origin (D10); the test client stamps
+# `Host: testserver`, so both headers name loopback explicitly.
+_LOOPBACK = {"origin": "http://127.0.0.1", "host": "127.0.0.1"}
+
 from fused_render import claude_cmd_log, pty_session
 from fused_render.server import create_app
 
@@ -42,7 +46,7 @@ def logroot(monkeypatch, tmp_path):
 
 @pytest.fixture
 def client(tmp_path):
-    return TestClient(create_app(start_dir=str(tmp_path)))
+    return TestClient(create_app(start_dir=str(tmp_path)), headers=_LOOPBACK)
 
 
 def fake_cmd(root, chat, ident, user_cmd, out=b"", code=None, pid=None):

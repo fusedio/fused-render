@@ -4248,7 +4248,7 @@ export function cardKey(task: Pick<Task, "key" | "task_id" | "project">): string
  *
  * WHY `started` WAS HERE, AND WHY THE LIST'S KEY IS SAFE TOO. The wall first ran
  * by `last_active`, which climbs on every write and reaches this page within a
- * second (the /api/tasks/changes fast lane), so cards traded places for as long
+ * second (the tasks.listing delta lane), so cards traded places for as long
  * as anything was talking (Akshil, 2026-09-03: "when i create a new task the
  * layout shifts multiple times"). `started` never moves, and that was the fix
  * (PR #984) — but it over-corrected: it froze the wall against a clock nobody
@@ -5167,7 +5167,7 @@ export function taskListKeys(rows: readonly Task[], queueOn: boolean): string[] 
 }
 
 /**
- * Fold a `/api/tasks/changes` answer into the rows on screen: rows in `upserts`
+ * Fold a `tasks.listing` delta into the rows on screen: rows in `upserts`
  * replace (or join) the row with the same key, keys in `gone` leave, and the
  * result keeps the one ordering promise this client makes — the server's
  * `last_active` descending — so a session that just woke up rises to the top
@@ -5240,7 +5240,7 @@ export function mergeTaskChanges(
 // both are thrown away the moment the server actually speaks about that key.
 //
 // Why it is needed at all: every queue verb is instant on the server (the notify
-// ring wakes `/api/tasks/changes` in milliseconds) and the ROW still cannot move
+// ring pushes a `tasks.listing` delta in milliseconds) and the ROW still cannot move
 // until that answer lands. A press on Skip that left a card reading "#3 in line"
 // for a beat reads as a press that did nothing, and this page's whole vocabulary
 // is that a status is a fact the reader can trust.

@@ -59,17 +59,13 @@ import {
   useState,
 } from "react";
 import { createPortal } from "react-dom";
-import {
-  getConfig,
-  getSchedule,
-  getScheduleQueue,
-} from "@platform/lib/api";
+import { getConfig } from "@platform/lib/api";
 import type {
   ScheduledMessage,
   ScheduleResult,
   Task,
 } from "@platform/lib/api";
-import { useRefreshOnReturn } from "@platform/lib/hooks";
+import { resyncTopic, subscribeTopic } from "@platform/lib/events";
 import { draftChatUrl } from "@apps/claude";
 import {
   chatKeySession,
@@ -103,8 +99,6 @@ import {
   readTasksRows,
   refreshListing,
   subscribeListing,
-  TASKS_POKE_EVENT,
-  useTasksFeeder,
 } from "./tasksPulse";
 import {
   TASK_VIEWS,
@@ -146,15 +140,6 @@ export interface TasksScope {
    *  instead of waiting for a slot nobody provides. AppPage leaves it unset. */
   ownFrame?: boolean;
 }
-
-// How often the page re-reads the SCHEDULE and the QUEUE. A `pending` message
-// becomes `sent` on the server's own tick (30s), so anything much slower than
-// this shows a message as still-waiting for a while after it went out.
-//
-// The TASKS feed is no longer on this clock: it moved to the shared listing feed
-// (`tasksPulse.subscribeListing`), whose floor refresh is this same 20s — one
-// `/api/tasks` for the document rather than one per surface that wants the rows.
-const POLL_MS = 20000;
 
 // Which view is up, remembered across visits — a person who plans on the
 // calendar plans on the calendar every time. List is the default now (Akshil,
@@ -292,12 +277,6 @@ export function reopenTime(seed: DraftSeed | null): Date | null {
 }
 
 export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
-  // THIS PAGE IS THE POLLER while it is open. The sidebar's Tasks entry reads the
-  // same rows (shell/tasksPulse) and would otherwise run a timer of its own
-  // alongside this one — two calls to /api/tasks for one answer, at two
-  // cadences. Holding a feeder for the page's lifetime says "take my answers,
-  // make no calls", so the shared store stands down until this unmounts.
-  useTasksFeeder();
   const [state, setState] = useState<ScheduleResult | null>(null);
   // NOT `[]`, because this page remounts on every navigation and /api/tasks is
   // 2.9s on the first call of a server process — so a bare `[]` meant List →
@@ -733,9 +712,9 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
     history.replaceState(history.state, "", location.pathname + (rest ? `?${rest}` : ""));
   }, []);
 
-  // Three feeds, one poll, INDEPENDENT failures — each is allowed to fail
-  // without taking the others down, because each answers a different question
-  // and two thirds of an answer beats an error page.
+  // Three feeds, INDEPENDENT failures — each is allowed to fail without
+  // taking the others down, because each answers a different question and two
+  // thirds of an answer beats an error page.
   //
   // The schedule is the only one whose failure is worth a banner: it carries
   // the permission modes the form needs, so without it the page cannot even
@@ -744,83 +723,90 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   // an empty queue and an unreadable one look the same to a user, and the
   // common case by far is that there is simply nothing waiting.
   //
-  // TWO OF THEM HERE NOW, not three: the ROWS moved to the shared listing feed
-  // (`tasksPulse.subscribeListing`, subscribed below), which runs one
-  // `/api/tasks` and one change long-poll for the whole document — so this page
-  // and every chat card on it read the same listing off the same socket, and the
-  // sidebar's dot, which that feed publishes, cannot disagree with the rows under
-  // it. This pair keeps its own clock because it is its own pair of endpoints.
+  // TWO OF THEM HERE, not three: the ROWS ride the shared listing feed
+  // (`tasksPulse.subscribeListing`, subscribed below), one `tasks.listing`
+  // subscription for the whole document — so this page and every chat card on
+  // it read the same listing off the same socket, and the sidebar's dot, which
+  // that feed publishes, cannot disagree with the rows under it. This pair is
+  // two subscriptions of its own (`schedule`, `schedule.queue`; the snapshot
+  // is the GET's body) because it is its own pair of endpoints: the server
+  // pushes a fresh snapshot the moment either changes — a `pending` message
+  // becoming `sent` on the scheduler's own tick included — and NOTHING HERE
+  // FETCHES ON A TIMER (D3). A return to the tab is the client's business: it
+  // drops the subscriptions while hidden and resubscribes on visible, and the
+  // snapshot that answers is the catch-up.
+  //
   // WRITTEN ONLY WHEN THE ANSWER CHANGED (2026-10-09, Tasks latency design
-  // D7). Both endpoints answer every 20 s and on every poke, and a fresh
-  // object per answer was a full re-render of this page — rows, peek, toolbar
-  // — at default priority, for a schedule that had not moved. The last answer
-  // is kept as text; the same text is the same state.
+  // D7). Both topics answer on subscribe, on every change and on every
+  // resync, and a fresh object per answer was a full re-render of this page —
+  // rows, peek, toolbar — at default priority, for a schedule that had not
+  // moved. The last answer is kept as text; the same text is the same state.
   const feedSeen = useRef<{ schedule: string; queue: string }>({ schedule: "", queue: "" });
-  const reloadFeeds = () => {
-    getSchedule().then(
-      (r) => {
-        const text = JSON.stringify(r);
+  useEffect(
+    () =>
+      subscribeTopic<ScheduleResult>("schedule", null, (snap, _delta, meta) => {
+        if (!snap) {
+          if (meta.error) setLoadError(meta.error);
+          return;
+        }
+        const text = JSON.stringify(snap);
         if (text !== feedSeen.current.schedule) {
           feedSeen.current.schedule = text;
-          setState(r);
+          setState(snap);
         }
         setLoadError((cur) => (cur === null ? cur : null));
-      },
-      (e: Error) => setLoadError(e.message),
-    );
-    getScheduleQueue().then(
-      (r) => {
-        const text = JSON.stringify([r.queued ?? [], r.running ?? []]);
-        if (text === feedSeen.current.queue) return;
-        feedSeen.current.queue = text;
-        setQueued(r.queued ?? []);
-        setRunning(r.running ?? []);
-      },
-      () => {
-        if (feedSeen.current.queue === "[[],[]]") return;
-        feedSeen.current.queue = "[[],[]]";
-        setQueued([]);
-        setRunning([]);
-      },
-    );
+      }),
+    [],
+  );
+  useEffect(
+    () =>
+      subscribeTopic<{ queued?: ScheduledMessage[]; running?: ScheduledMessage[] }>(
+        "schedule.queue",
+        null,
+        (snap) => {
+          if (!snap) {
+            // The GET's refusal: an unreadable queue draws as an empty one.
+            if (feedSeen.current.queue === "[[],[]]") return;
+            feedSeen.current.queue = "[[],[]]";
+            setQueued([]);
+            setRunning([]);
+            return;
+          }
+          const text = JSON.stringify([snap.queued ?? [], snap.running ?? []]);
+          if (text === feedSeen.current.queue) return;
+          feedSeen.current.queue = text;
+          setQueued(snap.queued ?? []);
+          setRunning(snap.running ?? []);
+        },
+      ),
+    [],
+  );
+  /** "Ask the schedule and the queue again NOW" — one resync of each
+   *  subscription, for a write this page just made that the producer may take
+   *  a beat to notice. An event, never a timer. */
+  const reloadFeeds = () => {
+    resyncTopic("schedule");
+    resyncTopic("schedule.queue");
   };
-  /** "Re-read everything on this page NOW" — what a created task, a returned-to
-   *  tab or a finished run asks for. The rows answer through the feed's own
-   *  refresh, which is collapsed to one read for the document. */
+  /** "Re-read everything on this page NOW" — what a created task or a
+   *  finished run asks for. The rows answer through the feed's own refresh,
+   *  which is collapsed to one resync for the document. */
   const reload = () => {
     reloadFeeds();
     refreshListing();
   };
-  useEffect(reloadFeeds, []);
-  useRefreshOnReturn(reload);
-  useEffect(() => {
-    // The ROWS are deliberately not on this timer: the feed carries the same 20s
-    // floor (LISTING_FLOOR_MS), and asking here as well would be two full listing
-    // reads every twenty seconds for one answer.
-    const id = window.setInterval(reloadFeeds, POLL_MS);
-    return () => window.clearInterval(id);
-  }, []);
-  // The corner card knows a run ended about a second after it does; this page's
-  // own clock is 20s. pokeTasks forwards that knowledge here as a window event —
-  // it has already refreshed the listing itself, so what this answers for is the
-  // schedule and the queue, and the row flips the moment the popover does rather
-  // than up to a poll later.
-  useEffect(() => {
-    window.addEventListener(TASKS_POKE_EVENT, reloadFeeds);
-    return () => window.removeEventListener(TASKS_POKE_EVENT, reloadFeeds);
-  }, []);
   // THE ROWS, LIVE — one feed for the document (`tasksPulse.subscribeListing`).
   //
-  // The fast lane is still `/api/tasks/changes`, long-polling the server's change
-  // watcher (tasks_watch.py) so a `claude` typed into a terminal in some folder is
-  // a row here within a second rather than up to a poll later; only the rows that
-  // moved come back and are folded into place, and a 20s floor read stays as the
-  // truth underneath. What changed is WHOSE loop it is: this page used to run one
-  // and every ClaudeChat mount on it ran another, so the cards wall with twelve
-  // chats open held thirteen sockets on a 25-second wait against a browser cap of
-  // six, and every other request on the page queued behind them. The feed also
-  // publishes to the sidebar and remembers the listing for the next mount, which
-  // is what this effect used to do by hand.
+  // The feed is the document's one `tasks.listing` subscription on the events
+  // bus: the server's change watcher (tasks_watch.py) pushes only the rows that
+  // moved, so a `claude` typed into a terminal in some folder is a row here
+  // within a second, and the snapshot that answers a (re)subscribe is the truth
+  // underneath. This page used to run its own long-poll and every ClaudeChat
+  // mount on it ran another, so the cards wall with twelve chats open held
+  // thirteen sockets on a 25-second wait against a browser cap of six, and every
+  // other request on the page queued behind them. The feed also publishes to
+  // the sidebar and remembers the listing for the next mount, which is what
+  // this effect used to do by hand.
   useEffect(
     () =>
       subscribeListing((ev) => {

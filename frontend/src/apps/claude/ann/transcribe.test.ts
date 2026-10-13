@@ -59,26 +59,29 @@ const started = {
   task: "transcribe",
 };
 
-/** One tick per call, so a poll loop cannot hang a test. */
+/** A scripted `jobs` bus subscription: every entry is one snapshot's rows
+ *  (`null` = an error frame), pushed in order the moment the watch
+ *  subscribes, so a watch cannot hang a test. */
 function polls(states: Array<Job[] | null>) {
-  let i = 0;
-  return () => {
-    const next = states[Math.min(i, states.length - 1)];
-    i += 1;
-    return Promise.resolve(snapshot(next || []));
+  return (_topic: string, _params: unknown, cb: (s: unknown, d: unknown, m: Record<string, unknown>) => void) => {
+    for (const next of states) {
+      if (next === null) cb(null, null, { error: "offline", status: 500 });
+      else cb(snapshot(next), null, { gen: null });
+    }
+    return () => {};
   };
 }
 
 const deps = (over: Record<string, unknown> = {}) => ({
   post: (() => Promise.resolve(started)) as never,
-  jobs: polls([[job({ state: "done" })]]) as never,
+  subscribe: polls([[job({ state: "done" })]]) as never,
   readJson: () =>
     Promise.resolve({
       text: "hello world",
       segments: [{ start: 0, end: 1, text: "hello world" }],
     }),
   cancel: () => Promise.resolve(undefined),
-  sleep: () => Promise.resolve(),
+  goneGraceMs: 5,
   ...over,
 });
 
@@ -239,7 +242,7 @@ describe("startTranscribe", () => {
   test("an error row rejects with the row's own message (R:4490)", async () => {
     const err = (await transcribe(
       { path: "/a" },
-      deps({ jobs: polls([[job({ state: "error", message: "the model fell over" })]]) as never }),
+      deps({ subscribe: polls([[job({ state: "error", message: "the model fell over" })]]) as never }),
     ).catch((e: TranscribeError) => e)) as TranscribeError;
     expect(err.message).toBe("the model fell over");
     expect(err.type).toBe("ai_error");
@@ -250,7 +253,7 @@ describe("startTranscribe", () => {
   test("a messageless error row gets the fallback sentence (R:4490)", async () => {
     const err = (await transcribe(
       { path: "/a" },
-      deps({ jobs: polls([[job({ state: "error" })]]) as never }),
+      deps({ subscribe: polls([[job({ state: "error" })]]) as never }),
     ).catch((e: TranscribeError) => e)) as TranscribeError;
     expect(err.message).toBe("the transcription failed");
   });
@@ -258,7 +261,7 @@ describe("startTranscribe", () => {
   test("a cancelled row is `cancelled`, not a failure (R:4489)", async () => {
     const err = (await transcribe(
       { path: "/a" },
-      deps({ jobs: polls([[job({ state: "cancelled" })]]) as never }),
+      deps({ subscribe: polls([[job({ state: "cancelled" })]]) as never }),
     ).catch((e: TranscribeError) => e)) as TranscribeError;
     expect(err.message).toBe("the transcription was cancelled");
     expect(err.type).toBe("cancelled");
@@ -276,7 +279,7 @@ describe("startTranscribe", () => {
   test("a row that AGED OUT is answered from the transcript when it landed (R:4448)", async () => {
     const out = await transcribe(
       { path: "/a" },
-      deps({ jobs: polls([[job()], [], [], [], [], []]) as never }),
+      deps({ subscribe: polls([[job()], []]) as never }),
     );
     expect(out.text).toBe("hello world");
   });
@@ -285,7 +288,7 @@ describe("startTranscribe", () => {
     const err = (await transcribe(
       { path: "/a" },
       deps({
-        jobs: polls([[job()], [], [], [], [], []]) as never,
+        subscribe: polls([[job()], []]) as never,
         readJson: () => Promise.reject(new Error("gone")),
       }),
     ).catch((e: TranscribeError) => e)) as TranscribeError;
@@ -298,7 +301,7 @@ describe("startTranscribe", () => {
     await transcribe(
       { path: "/a" },
       deps({
-        jobs: polls([[job()], [job()], [job({ state: "done" })]]) as never,
+        subscribe: polls([[job()], [job()], [job({ state: "done" })]]) as never,
         onProgress: (j: Job) => seen.push(j.state),
       }),
     );
@@ -310,7 +313,7 @@ describe("startTranscribe", () => {
     const run = await startTranscribe(
       { path: "/a" },
       deps({
-        jobs: polls([[job()]]) as never,
+        subscribe: polls([[job()]]) as never,
         cancel: (id: string) => {
           cancelled = id;
           return Promise.resolve(undefined);
@@ -333,22 +336,27 @@ describe("startTranscribe", () => {
 // the life of the page (Bugbot, PR #1074). Two ways a row is never terminal —
 // never LISTED, and never READ — and both are bounded.
 describe("a job the listing never carries", () => {
-  test("stops polling instead of watching forever (Bugbot, PR #1074)", async () => {
-    let asked = 0;
+  test("is gone after the grace instead of being watched forever (Bugbot, PR #1074)", async () => {
+    let subscribed = 0;
+    let unsubscribed = 0;
     const err = (await transcribe(
       { path: "/a" },
       deps({
-        // The row is absent from the very first poll: nothing was ever seen, so
-        // the old `seen &&` gate never armed the miss counter.
-        jobs: (() => {
-          asked += 1;
-          return Promise.resolve(snapshot([]));
+        // The row is absent from the very first snapshot: nothing was ever
+        // seen, and the grace is still the whole budget.
+        subscribe: ((_t: string, _p: unknown, cb: (s: unknown, d: unknown, m: Record<string, unknown>) => void) => {
+          subscribed += 1;
+          cb(snapshot([]), null, { gen: null });
+          return () => {
+            unsubscribed += 1;
+          };
         }) as never,
         readJson: () => Promise.reject(new Error("gone")),
       }),
     ).catch((e: TranscribeError) => e)) as TranscribeError;
-    // Five misses is the whole budget — the loop is not still running.
-    expect(asked).toBe(5);
+    // One subscription, and it is gone — the watch is not still running.
+    expect(subscribed).toBe(1);
+    expect(unsubscribed).toBe(1);
     expect(err.message).toBe("the transcription job is no longer being reported");
     expect(err.type).toBe("ai_error");
     // The salvage paths ride along, same as the aged-out row's rejection.
@@ -358,48 +366,20 @@ describe("a job the listing never carries", () => {
 
   test("…and is still answered from the transcript when the words did land", async () => {
     // Unseen is not failed: the worker may have finished and the row retired
-    // before the first poll. The FILE is the witness (R:4448).
+    // before the first snapshot. The FILE is the witness (R:4448).
     const out = await transcribe(
       { path: "/a" },
-      deps({ jobs: (() => Promise.resolve(snapshot([]))) as never }),
+      deps({ subscribe: polls([[]]) as never }),
     );
     expect(out.text).toBe("hello world");
   });
 
-  test("a listing that keeps failing gives up too, and never spends a miss", async () => {
-    let asked = 0;
-    const err = (await transcribe(
-      { path: "/a" },
-      deps({
-        jobs: (() => {
-          asked += 1;
-          return Promise.reject(new Error("offline"));
-        }) as never,
-        readJson: () => Promise.reject(new Error("gone")),
-      }),
-    ).catch((e: TranscribeError) => e)) as TranscribeError;
-    // A failed READ says nothing about the row, so it costs a failure and not a
-    // miss: ten tries, not five.
-    expect(asked).toBe(10);
-    expect(err.message).toBe("the transcription job is no longer being reported");
-  });
-
-  test("a blip in the listing does NOT count against the row", async () => {
-    // Four failures, then the row, then done. Nothing is spent permanently: a
-    // transient `/api/jobs` outage must not retire a job that is still running.
-    const script: Array<() => Promise<JobsSnapshot>> = [
-      () => Promise.reject(new Error("blip")),
-      () => Promise.reject(new Error("blip")),
-      () => Promise.reject(new Error("blip")),
-      () => Promise.reject(new Error("blip")),
-      () => Promise.resolve(snapshot([job()])),
-      () => Promise.reject(new Error("blip")),
-      () => Promise.resolve(snapshot([job({ state: "done" })])),
-    ];
-    let i = 0;
+  test("an error frame does NOT count against the row — the server says again", async () => {
+    // Four error frames, then the row, then done. Nothing is spent: a
+    // transient outage must not retire a job that is still running.
     const out = await transcribe(
       { path: "/a" },
-      deps({ jobs: (() => script[Math.min(i++, script.length - 1)]()) as never }),
+      deps({ subscribe: polls([null, null, null, null, [job()], null, [job({ state: "done" })]]) as never }),
     );
     expect(out.text).toBe("hello world");
   });

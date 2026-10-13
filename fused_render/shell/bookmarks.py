@@ -219,13 +219,15 @@ async def _compute_missing(leaves: list) -> list:
     return missing_ids
 
 
-@router.get("/api/bookmarks")
-async def get_bookmarks():
+def _bookmarks_data() -> list | None:
+    """The sanitized tree, migrated on disk where needed, or None when there
+    is no file (`exists: false`). The GET's read half, shared with the
+    `bookmarks` topic's snapshot so the two bodies are the same body."""
     data = storage.read_json(_path())
     # Absent or corrupt (not a list) -> report not-yet-written; a valid file
     # (even []) reports exists=true.
     if not isinstance(data, list):
-        return {"exists": False, "bookmarks": [], "missing": []}
+        return None
     # Order matters: sanitize before dedupe, so a dropped garbage entry never
     # claims a name that a real bookmark would then get suffixed around.
     changed = _sanitize_tree(data)
@@ -235,6 +237,25 @@ async def get_bookmarks():
         changed = True
     if changed:
         storage.write_json(_path(), data)
+    return data
+
+
+def bookmarks_payload() -> dict:
+    """The GET's body, from a plain thread (the `bookmarks` topic's
+    snapshot, built in the bus's threadpool): the missing-file check runs on
+    its own short-lived loop there."""
+    data = _bookmarks_data()
+    if data is None:
+        return {"exists": False, "bookmarks": [], "missing": []}
+    missing = asyncio.run(_compute_missing(_flatten_bookmarks(data)))
+    return {"exists": True, "bookmarks": data, "missing": missing}
+
+
+@router.get("/api/bookmarks")
+async def get_bookmarks():
+    data = _bookmarks_data()
+    if data is None:
+        return {"exists": False, "bookmarks": [], "missing": []}
     missing = await _compute_missing(_flatten_bookmarks(data))
     return {"exists": True, "bookmarks": data, "missing": missing}
 
@@ -247,6 +268,8 @@ def put_bookmarks(
     if guard is not None:
         return guard
     storage.write_json(_path(), bookmarks)
+    from fused_render.server.events import bus
+    bus.publish("bookmarks")
     return {"ok": True, "count": len(bookmarks)}
 
 

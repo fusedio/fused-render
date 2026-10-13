@@ -1,19 +1,21 @@
-// The recent list's `null` vs `[]` semantics and the change-poll's loop.
+// The recent list's `null` vs `[]` semantics and which changes are worth
+// emitting for.
 //
-// The loop itself moved to `shell/tasksPulse` (one read and one long-poll for
-// the whole document), so these drive it through `subscribeTasks` exactly as the
-// list does — the `env` seam is the same one, and every assertion below is about
-// the contract this module still owns: what a subscription emits, and which
-// changes are worth emitting for.
+// The feed itself lives in `shell/tasksPulse` (one `tasks.listing` subscription
+// on the events bus for the whole document), so these drive it through
+// `subscribeTasks` exactly as the list does — the `env` seam is a scripted bus
+// subscription — and every assertion below is about the contract this module
+// still owns: what a subscription emits, and which changes are worth emitting
+// for.
 import { beforeEach, describe, expect, test } from "bun:test";
 
 import type { Task } from "@platform/lib/api";
-import { refreshListing, resetListingFeedForTests } from "@shell/tasksPulse";
-import { changeIsHere, CHANGES_BACKOFF_MS, subscribeTasks, type RecentEnv } from "./sessions";
+import { resetListingFeedForTests } from "@shell/tasksPulse";
+import { changeIsHere, subscribeTasks, type RecentEnv } from "./sessions";
 
 // The feed is MODULE state — one per document in the app, and so one per `bun
 // test` process here. A case that hands over its own scripted `env` needs the
-// last one's rows and generation gone, or it would be replayed them on subscribe.
+// last one's rows gone, or it would be replayed them on subscribe.
 beforeEach(() => {
   resetListingFeedForTests();
 });
@@ -28,33 +30,36 @@ const row = (key: string): Task =>
     title: key,
   }) as Task;
 
-/** A change-poll that answers from a script and records its waits. */
-function env(script: unknown[], listings: unknown[]): RecentEnv & { urls: string[]; waits: number[] } {
-  const urls: string[] = [];
-  const waits: number[] = [];
-  let i = 0;
-  let s = 0;
+type Pushed = { snap?: unknown; delta?: unknown; fail?: true };
+
+/** A scripted bus subscription: the frames in `script` are pushed, in order,
+ *  the moment the feed subscribes; `push` adds more by hand. */
+function env(script: Pushed[]): RecentEnv & { push(f: Pushed): void; subscribed(): number; resyncs(): number } {
+  let cb: ((s: unknown, d: unknown, m: Record<string, unknown>) => void) | null = null;
+  let subscribed = 0;
+  let resyncs = 0;
+  const deliver = (f: Pushed) => {
+    if (!cb) return;
+    if (f.fail) cb(null, null, { error: "offline", status: 500 });
+    else if (f.snap !== undefined) cb(f.snap, null, { gen: 1 });
+    else if (f.delta !== undefined) cb(null, f.delta, { gen: 2 });
+  };
   return {
-    urls,
-    waits,
-    fetch: (url) => {
-      urls.push(url);
-      const next = script[i++];
-      if (next === "boom") return Promise.reject(new Error("offline"));
-      if (next === undefined) return new Promise(() => {}); // park forever
-      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(next) });
+    subscribe: (_topic, _params, fn) => {
+      subscribed += 1;
+      cb = fn as typeof cb;
+      for (const f of script) deliver(f);
+      return () => {
+        subscribed -= 1;
+        if (cb === fn) cb = null;
+      };
     },
-    hidden: () => false,
-    whenVisible: () => ({ promise: new Promise<void>(() => {}), cancel: () => {} }),
-    sleep: (ms) => {
-      waits.push(ms);
-      return Promise.resolve();
+    resync: () => {
+      resyncs += 1;
     },
-    tasks: () => {
-      const answer = listings[Math.min(s++, listings.length - 1)];
-      if (answer === "boom") return Promise.reject(new Error("no such folder"));
-      return Promise.resolve(answer as { tasks?: Task[] });
-    },
+    push: deliver,
+    subscribed: () => subscribed,
+    resyncs: () => resyncs,
   };
 }
 
@@ -76,51 +81,48 @@ describe("changeIsHere (T:18384)", () => {
 describe("subscribeTasks", () => {
   test("`null` first (the skeleton), then the rows", async () => {
     const seen: (Task[] | null)[] = [];
-    const e = env([], [{ tasks: [row("a"), row("b")] }]);
+    const e = env([{ snap: { tasks: [row("a"), row("b")] } }]);
     const off = subscribeTasks("/proj/app.py", (r) => seen.push(r), e);
     await settle();
     off();
     expect(seen[0]).toBeNull();
     expect(seen[1]?.map((t) => t.key)).toEqual(["a", "b"]);
-    // `null` is emitted ONCE — a re-read repaints in place (T:18411).
+    // `null` is emitted ONCE — a later snapshot repaints in place (T:18411).
     expect(seen.filter((s) => s === null).length).toBe(1);
   });
 
   test("no target ⇒ an empty list and no watch at all", async () => {
     const seen: (Task[] | null)[] = [];
-    const e = env([], []);
+    const e = env([]);
     subscribeTasks(null, (r) => seen.push(r), e)();
     await settle();
     expect(seen).toEqual([null, []]);
-    expect(e.urls.length).toBe(0);
+    expect(e.subscribed()).toBe(0);
   });
 
-  // A FAILED READ EMITS NOTHING (Akshil QA, 2026-09-16: "the list goes blank").
+  // A FAILED FRAME EMITS NOTHING (Akshil QA, 2026-09-16: "the list goes blank").
   // It used to emit `[]` — the feed's own answer, since a failure makes it
   // forget its listing — and `[]` is the count the Recent block's visibility is
   // decided on (`ui/lists-visibility.isFilled`), so one dropped read took the
   // heading, the tab and every row off screen until the next one landed.
-  test("a FAILED read keeps the rows already up — it is not an empty list", async () => {
+  test("a FAILED frame keeps the rows already up — it is not an empty list", async () => {
     const seen: (Task[] | null)[] = [];
-    const off = subscribeTasks(
-      "/proj/app.py",
-      (r) => seen.push(r),
-      env([], [{ tasks: [row("a"), row("b")] }, "boom"]),
-    );
+    const e = env([{ snap: { tasks: [row("a"), row("b")] } }]);
+    const off = subscribeTasks("/proj/app.py", (r) => seen.push(r), e);
     await settle();
     expect(seen[seen.length - 1]?.map((t) => t.key)).toEqual(["a", "b"]);
-    refreshListing();
+    e.push({ fail: true });
     await settle();
     off();
     // No `[]` ever reached the list, and the rows it is drawing are still the
-    // ones the last GOOD read gave it.
+    // ones the last GOOD snapshot gave it.
     expect(seen.some((r) => Array.isArray(r) && r.length === 0)).toBe(false);
     expect(seen[seen.length - 1]?.map((t) => t.key)).toEqual(["a", "b"]);
   });
 
   test("…and a list that never had rows keeps its SKELETON, not \"no chats\"", async () => {
     const seen: (Task[] | null)[] = [];
-    const off = subscribeTasks("/proj/app.py", (r) => seen.push(r), env([], ["boom"]));
+    const off = subscribeTasks("/proj/app.py", (r) => seen.push(r), env([{ fail: true }]));
     await settle();
     off();
     // The opening `null` and nothing after it: "we could not read" is not the
@@ -128,41 +130,20 @@ describe("subscribeTasks", () => {
     expect(seen).toEqual([null]);
   });
 
-  test("an answer with no `tasks` at all is the same as a failure", async () => {
+  test("a snapshot with no `tasks` at all is an empty list", async () => {
     const seen: (Task[] | null)[] = [];
-    const off = subscribeTasks("/proj/app.py", (r) => seen.push(r), env([], [{}]));
+    const off = subscribeTasks("/proj/app.py", (r) => seen.push(r), env([{ snap: {} }]));
     await settle();
     off();
     expect(seen[seen.length - 1]).toEqual([]);
   });
 
-  test("the first change-poll is a handshake that reads nothing back", async () => {
-    let reads = 0;
-    const e = env([{ generation: 7, full: true }], [{ tasks: [row("a")] }]);
-    const off = subscribeTasks(
-      "/proj/app.py",
-      () => {
-        reads++;
-      },
-      e,
-    );
-    await settle();
-    off();
-    expect(e.urls[0]).toBe("/api/tasks/changes?since=-1&wait=25");
-    // The handshake's `full` is NOT acted on, and the next poll asks from 7.
-    expect(e.urls[1]).toBe("/api/tasks/changes?since=7&wait=25");
-    expect(reads).toBe(2); // null + the one read
-  });
-
-  test("a row in this folder re-reads the list; one elsewhere does not", async () => {
-    const e = env(
-      [
-        { generation: 1 },
-        { generation: 2, rows: [{ project: "/elsewhere" }] },
-        { generation: 3, rows: [{ project: "/proj" }] },
-      ],
-      [{ tasks: [row("a")] }],
-    );
+  test("a row in this folder repaints the list; one elsewhere does not", async () => {
+    const e = env([
+      { snap: { tasks: [row("a")] } },
+      { delta: { rows: [{ project: "/elsewhere" }] } },
+      { delta: { rows: [{ project: "/proj" }] } },
+    ]);
     let reads = 0;
     const off = subscribeTasks(
       "/proj/app.py",
@@ -173,14 +154,15 @@ describe("subscribeTasks", () => {
     );
     await settle();
     off();
-    expect(reads).toBe(2); // the first load, plus the one the /proj row caused
+    expect(reads).toBe(2); // the snapshot, plus the one the /proj row caused
   });
 
   test("a `gone` key only counts when the list was showing it (T:18352)", async () => {
-    const e = env(
-      [{ generation: 1 }, { generation: 2, gone: ["nope"] }, { generation: 3, gone: ["a"] }],
-      [{ tasks: [row("a")] }],
-    );
+    const e = env([
+      { snap: { tasks: [row("a")] } },
+      { delta: { gone: ["nope"] } },
+      { delta: { gone: ["a"] } },
+    ]);
     let reads = 0;
     const off = subscribeTasks(
       "/proj/app.py",
@@ -194,44 +176,13 @@ describe("subscribeTasks", () => {
     expect(reads).toBe(2);
   });
 
-  test("a failed change-poll backs off 3 s and carries on", async () => {
-    const e = env([{ generation: 1 }, "boom", { generation: 2, full: true }], [{ tasks: [] }]);
-    let reads = 0;
-    const off = subscribeTasks(
-      "/proj/app.py",
-      (r) => {
-        if (r) reads++;
-      },
-      e,
-    );
+  test("unsubscribing drops the bus subscription", async () => {
+    const e = env([{ snap: { tasks: [] } }]);
+    const off = subscribeTasks("/proj/app.py", () => {}, e);
     await settle();
+    expect(e.subscribed()).toBe(1);
     off();
-    expect(e.waits).toContain(CHANGES_BACKOFF_MS);
-    expect(reads).toBe(2);
-  });
-
-  test("unsubscribing aborts the in-flight long-poll (bugbot #892)", async () => {
-    let signal: AbortSignal | undefined;
-    const e = env([{ generation: 1 }], [{ tasks: [] }]);
-    const wrapped: RecentEnv = {
-      ...e,
-      fetch: (url, init) => {
-        signal = init?.signal;
-        return e.fetch(url, init);
-      },
-    };
-    const off = subscribeTasks("/proj/app.py", () => {}, wrapped);
-    await settle();
-    off();
-    expect(signal?.aborted).toBe(true);
-  });
-
-  test("a hidden tab sits the long-poll out entirely (T:18369)", async () => {
-    const e = env([{ generation: 1 }], [{ tasks: [] }]);
-    const off = subscribeTasks("/proj/app.py", () => {}, { ...e, hidden: () => true });
-    await settle();
-    off();
-    expect(e.urls.length).toBe(0);
+    expect(e.subscribed()).toBe(0);
   });
 
   test("rows with no key are dropped rather than rendered", async () => {
@@ -239,7 +190,7 @@ describe("subscribeTasks", () => {
     const off = subscribeTasks(
       "/proj/app.py",
       (r) => seen.push(r),
-      env([], [{ tasks: [row("a"), null, { title: "no key" }] }]),
+      env([{ snap: { tasks: [row("a"), null, { title: "no key" }] } }]),
     );
     await settle();
     off();
@@ -249,19 +200,18 @@ describe("subscribeTasks", () => {
 
 // ── R3-1: the list does not wait for the long-poll to notice ────────────────
 //
-// The long-poll's first call is a HANDSHAKE that only learns the current
-// generation, so everything that moved before this subscription existed is
-// already spent — and a run started and finished while the reader was inside the
-// chat is exactly that. Landing then spends ONE read, racing the CLI's own
-// transcript write, and when it lost, nothing ever came back: "new task from
-// Home → Back: not in Recent chats, needed a refresh" (owner, R3-1).
+// A brand-new session becomes a row only once the CLI has written the first
+// lines of its transcript and the server's watcher has seen them — SECONDS
+// after the snapshot this mount is handed. The two looks below ask the bus for
+// a fresh snapshot across exactly that window: "new task from Home → Back: not
+// in Recent chats, needed a refresh" (owner, R3-1).
 describe("subscribeTasks — the push side (R3-1)", () => {
   /** The env, plus a hand-driven poke channel and retry clock. */
   function pushEnv(listings: unknown[]) {
-    const e = env([], listings);
+    const e = env(listings.length ? [{ snap: listings[0] }] : []);
     const fired: Array<() => void> = [];
     const timers: Array<{ ms: number; fn: () => void; cancelled: boolean }> = [];
-    const wrapped: RecentEnv = {
+    const wrapped: RecentEnv & { push: typeof e.push; resyncs: typeof e.resyncs } = {
       ...e,
       pokes: (fn) => {
         fired.push(fn);
@@ -281,9 +231,9 @@ describe("subscribeTasks — the push side (R3-1)", () => {
     return { env: wrapped, poke: () => fired.forEach((f) => f()), fired, timers };
   }
 
-  test("a poke re-reads the list", async () => {
+  test("a poke asks the bus for a fresh snapshot, and the snapshot repaints in place", async () => {
     const seen: (Task[] | null)[] = [];
-    const p = pushEnv([{ tasks: [row("a")] }, { tasks: [row("a"), row("b")] }]);
+    const p = pushEnv([{ tasks: [row("a")] }]);
     const off = subscribeTasks("/proj/app.py", (r) => seen.push(r), p.env);
     await settle();
     expect(seen[seen.length - 1]?.map((t) => t.key)).toEqual(["a"]);
@@ -291,15 +241,17 @@ describe("subscribeTasks — the push side (R3-1)", () => {
     // or by any other document's, through the activity stamp.
     p.poke();
     await settle();
+    expect(p.env.resyncs()).toBe(1);
+    p.env.push({ snap: { tasks: [row("a"), row("b")] } });
     off();
     expect(seen[seen.length - 1]?.map((t) => t.key)).toEqual(["a", "b"]);
-    // The skeleton is still spent exactly once: a re-read over a drawn list
+    // The skeleton is still spent exactly once: a snapshot over a drawn list
     // repaints in place (T:18411).
     expect(seen.filter((s) => s === null).length).toBe(1);
   });
 
   test("two more looks a few seconds apart cover the CLI's transcript write", async () => {
-    const p = pushEnv([{ tasks: [] }, { tasks: [row("a")] }]);
+    const p = pushEnv([{ tasks: [] }]);
     const seen: (Task[] | null)[] = [];
     // `coverWrite` — T's `leftLive`. The looks are for a chat left MID-TURN.
     const off = subscribeTasks(
@@ -313,6 +265,8 @@ describe("subscribeTasks — the push side (R3-1)", () => {
     expect(p.timers.map((t) => t.ms)).toEqual([2500, 6000]);
     p.timers[0].fn();
     await settle();
+    expect(p.env.resyncs()).toBe(1);
+    p.env.push({ snap: { tasks: [row("a")] } });
     off();
     expect(seen[seen.length - 1]?.map((t) => t.key)).toEqual(["a"]);
   });
@@ -327,7 +281,7 @@ describe("subscribeTasks — the push side (R3-1)", () => {
     const off = subscribeTasks("/proj/app.py", (r) => seen.push(r), p.env);
     await settle();
     expect(p.timers.map((t) => t.ms)).toEqual([]);
-    // One read, and the rows are up: the list is what it honestly is.
+    // One snapshot, and the rows are up: the list is what it honestly is.
     expect(seen[seen.length - 1]?.map((t) => t.key)).toEqual(["a"]);
     off();
   });
@@ -344,7 +298,7 @@ describe("subscribeTasks — the push side (R3-1)", () => {
     expect(p.timers.every((t) => t.cancelled)).toBe(true);
   });
 
-  test("a poke after unsubscribing reads nothing", async () => {
+  test("a poke after unsubscribing asks for nothing", async () => {
     const p = pushEnv([{ tasks: [] }]);
     const seen: (Task[] | null)[] = [];
     const off = subscribeTasks("/proj/app.py", (r) => seen.push(r), p.env);
@@ -353,8 +307,8 @@ describe("subscribeTasks — the push side (R3-1)", () => {
     off();
     fn(); // a handler the host has not detached yet, mid-teardown
     await settle();
-    // Nothing painted after the teardown: `stopped` guards the read, and the
-    // seat guards the paint.
+    // Nothing asked for after the teardown: `stopped` guards the resync.
+    expect(p.env.resyncs()).toBe(0);
     expect(seen.filter((s) => s !== null).length).toBe(1);
   });
 });

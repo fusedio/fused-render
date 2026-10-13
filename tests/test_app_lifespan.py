@@ -129,6 +129,9 @@ EXPECTED_STARTUP = [
     # lease and deciding that only once, in one place, is the whole point.
     "_startup_queue_manager",
     "_startup_tasks_watch",
+    # The events bus captures the uvicorn loop for cross-thread `publish`
+    # (server/events.py); always, lean too, like the watcher above it.
+    "_startup_events_bus",
     "_startup_tasks_warm",
     "_startup_ai_hub_metadata_refresh",
     "_startup_ai_hub_catalog_refresh",
@@ -203,6 +206,7 @@ EXPECTED_STARTUP_LEAN = [
     # hands over promptly if every live process is parked on it from startup.
     "_startup_queue_manager",
     "_startup_tasks_watch",
+    "_startup_events_bus",
 ]
 
 #: The shutdown handlers registered even in `lean` — anything that can start

@@ -26,11 +26,18 @@
 // here — confirmed again while building this file (share-file.test.ts's own
 // fetch-level mocks broke when a mock.module in this file ran first in the
 // same process). A route-keyed fetch stub sidesteps that entirely.
+//
+// The detached upload's progress is not fetched at all any more: it arrives
+// on the events bus (`share.upload {id}`). Those frames come from a scripted
+// events client installed with `setEventsClientForTests` — again not a
+// module mock, for the same reason.
 import { installDomShim } from "@platform/lib/testDomShim";
 installDomShim();
 import { afterEach, expect, test } from "bun:test";
 import { createElement } from "react";
 import { act, create } from "react-test-renderer";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { ShareableFile } from "@platform/lib/share-file";
 import type { ShareFileHookState } from "@platform/ui/ShareFileModal";
 
@@ -41,10 +48,46 @@ import type { ShareFileHookState } from "@platform/ui/ShareFileModal";
 // before the shim installs `location`. share-file.test.ts hits the same
 // trap and dodges it the same way.
 const { PRIMARY_ACTIONS, useShareFile } = await import("@platform/ui/ShareFileModal");
+const { setEventsClientForTests } = await import("@platform/lib/events");
+
+type Frame = (snap: unknown, delta: unknown, meta: Record<string, unknown>) => void;
+interface Sub {
+  topic: string;
+  params: unknown;
+  cb: Frame;
+  open: boolean;
+}
+
+/** A scripted events client: records every subscription (topic, params,
+ *  whether it is still open) so a test can push frames into it. */
+function fakeEvents() {
+  const subs: Sub[] = [];
+  setEventsClientForTests({
+    subscribe: ((topic: string, params: unknown, cb: Frame) => {
+      const sub: Sub = { topic, params, cb, open: true };
+      subs.push(sub);
+      return () => {
+        sub.open = false;
+      };
+    }) as never,
+    resync: () => true,
+  });
+  return {
+    subs,
+    open: () => subs.filter((x) => x.open),
+    push: (snap: unknown) => {
+      for (const x of subs) if (x.open) x.cb(snap, null, { gen: null });
+    },
+    fail: (error: string, status = 500) => {
+      for (const x of subs) if (x.open) x.cb(null, null, { error, status });
+    },
+  };
+}
 
 const realFetch = globalThis.fetch;
 afterEach(() => {
   globalThis.fetch = realFetch;
+  setEventsClientForTests(null);
 });
 
 const FILE: ShareableFile = { path: "/data/demo.parquet", name: "demo.parquet" };
@@ -273,9 +316,8 @@ test("finding 9: an immediately-done upload publishes with the upload's OWN id, 
   await h.unmount();
 });
 
-test("finding 10: a poll that fails to reach /upload/status ends the uploading phase instead of spinning forever", async () => {
-  let statusCalls = 0;
-  const originalFetch = globalThis.fetch;
+test("finding 10: an error frame for the upload ends the uploading phase instead of spinning forever", async () => {
+  const bus = fakeEvents();
   stubFetch({
     "/api/share/file/status": STATUS_BASE,
     "/api/share/file/publish": {
@@ -284,17 +326,6 @@ test("finding 10: a poll that fails to reach /upload/status ends the uploading p
     },
     "/api/share/file/upload": { id: "demo_abc123", state: "running", bytes: 999999999 },
   });
-  const routedFetch = globalThis.fetch;
-  globalThis.fetch = (async (url: string, init?: RequestInit) => {
-    if (url.startsWith("/api/share/file/upload/status")) {
-      statusCalls += 1;
-      // A transient failure — network drop, server briefly unreachable —
-      // getJson() throws on a non-ok response the same way a fetch()
-      // rejection would.
-      return new Response(JSON.stringify({ error: "network blip" }), { status: 500 });
-    }
-    return routedFetch(url, init);
-  }) as unknown as typeof fetch;
 
   const h = await mountHook(FILE);
   await act(async () => {
@@ -303,22 +334,122 @@ test("finding 10: a poll that fails to reach /upload/status ends the uploading p
     await new Promise((r) => setTimeout(r, 0));
   });
   expect(h.state.phase).toBe("uploading");
+  expect(bus.open().map((x) => [x.topic, x.params])).toEqual([["share.upload", { id: "demo_abc123" }]]);
 
-  // Let the poll interval (UPLOAD_POLL_MS = 1200ms, private to the module)
-  // fire at least once.
+  // The bus relays the status GET's refusal — a transient failure, the
+  // server briefly unreachable — exactly where that GET's rejection landed.
   await act(async () => {
-    await new Promise((r) => setTimeout(r, 1400));
+    bus.fail("network blip");
   });
 
-  globalThis.fetch = originalFetch;
-  expect(statusCalls).toBeGreaterThan(0);
   expect(h.state.phase).not.toBe("uploading");
   expect(h.state.upload).toBeNull();
-  expect(h.state.err).toBeTruthy();
+  expect(h.state.err).toBe("network blip");
+  expect(bus.open()).toEqual([]);
   await h.unmount();
 });
 
+test("a running upload follows share.upload until done, then publishes with its id and closes the subscription", async () => {
+  const bus = fakeEvents();
+  let publishedUploadId: string | undefined;
+  stubFetch({
+    "/api/share/file/status": STATUS_BASE,
+    "/api/share/file/publish": (body: unknown) => {
+      const b = body as { upload_id?: string };
+      if (!b.upload_id) {
+        return {
+          __status: 409,
+          error: "the upload has not finished (state: none); call /api/share/file/upload first",
+        };
+      }
+      publishedUploadId = b.upload_id;
+      return { ok: true, shared: { ...SHARED_PUBLIC, mode: "public" } };
+    },
+    "/api/share/file/upload": { id: "upload_xyz999", state: "running", bytes: 10 },
+  });
+  const h = await mountHook(FILE);
+  await act(async () => {
+    h.state.share("public");
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+  });
+  expect(bus.open().map((x) => [x.topic, x.params])).toEqual([["share.upload", { id: "upload_xyz999" }]]);
+
+  await act(async () => {
+    bus.push({ id: "upload_xyz999", state: "running", bytes: 10, elapsed: 3 });
+  });
+  expect(h.state.phase).toBe("uploading");
+  expect(h.state.upload?.elapsed).toBe(3);
+  expect(bus.open().length).toBe(1);
+
+  await act(async () => {
+    bus.push({ id: "upload_xyz999", state: "done", bytes: 10, elapsed: 4 });
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+  });
+  expect(bus.open()).toEqual([]);
+  expect(publishedUploadId).toBe("upload_xyz999");
+  expect(h.state.shared).not.toBeNull();
+  expect(h.state.phase).toBe("shared");
+  await h.unmount();
+});
+
+test("a failed upload frame surfaces its error and closes the subscription", async () => {
+  const bus = fakeEvents();
+  stubFetch({
+    "/api/share/file/status": STATUS_BASE,
+    "/api/share/file/publish": {
+      __status: 409,
+      error: "the upload has not finished (state: none); call /api/share/file/upload first",
+    },
+    "/api/share/file/upload": { id: "demo_abc123", state: "running", bytes: 10 },
+  });
+  const h = await mountHook(FILE);
+  await act(async () => {
+    h.state.share("public");
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+  });
+  await act(async () => {
+    bus.push({ id: "demo_abc123", state: "failed", error: "quota exceeded" });
+  });
+  expect(h.state.err).toBe("quota exceeded");
+  expect(h.state.upload).toBeNull();
+  expect(h.state.busy).toBeNull();
+  expect(bus.open()).toEqual([]);
+  await h.unmount();
+});
+
+test("unmounting mid-upload closes the share.upload subscription", async () => {
+  const bus = fakeEvents();
+  stubFetch({
+    "/api/share/file/status": STATUS_BASE,
+    "/api/share/file/publish": {
+      __status: 409,
+      error: "the upload has not finished (state: none); call /api/share/file/upload first",
+    },
+    "/api/share/file/upload": { id: "demo_abc123", state: "running", bytes: 10 },
+  });
+  const h = await mountHook(FILE);
+  await act(async () => {
+    h.state.share("public");
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+  });
+  expect(bus.open().length).toBe(1);
+  await h.unmount();
+  expect(bus.open()).toEqual([]);
+});
+
+test("no timer drives the upload status: the module never schedules a fetch", () => {
+  const src = readFileSync(join(import.meta.dir, "ShareFileModal.tsx"), "utf8");
+  expect(src).not.toContain("setInterval");
+  expect(src).not.toContain("uploadStatus(");
+  expect(src).toContain('subscribeTopic<UploadStatus>("share.upload"');
+});
+
 test("a still-running detached upload shows the uploading phase, and cancelUploadNow calls /upload/cancel", async () => {
+  const bus = fakeEvents();
   let cancelCalled = false;
   stubFetch({
     "/api/share/file/status": STATUS_BASE,
@@ -327,7 +458,6 @@ test("a still-running detached upload shows the uploading phase, and cancelUploa
       error: "the upload has not finished (state: none); call /api/share/file/upload first",
     },
     "/api/share/file/upload": { id: "demo_abc123", state: "running", bytes: 999999999 },
-    "/api/share/file/upload/status": { id: "demo_abc123", state: "running", bytes: 999999999 },
     "/api/share/file/upload/cancel": () => {
       cancelCalled = true;
       return { id: "demo_abc123", state: "cancelled" };
@@ -344,8 +474,10 @@ test("a still-running detached upload shows the uploading phase, and cancelUploa
   expect(h.state.phase).toBe("uploading");
   expect(h.state.upload?.state).toBe("running");
 
+  expect(bus.open().length).toBe(1);
   act(() => h.state.cancelUploadNow());
   expect(cancelCalled).toBe(true);
+  expect(bus.open()).toEqual([]);
   expect(h.state.upload).toBeNull();
   expect(h.state.busy).toBeNull();
   await h.unmount();

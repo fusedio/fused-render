@@ -15,6 +15,11 @@ const { ClaudeChat } = await import("./ClaudeChat");
 const { createMemoryParamsStore } = await import("./params/store");
 const { resetListingFeedForTests } = await import("@shell/tasksPulse");
 const { troubleReport } = await import("@platform/lib/trouble");
+// The run stream (`claude.run`) and the live probe (`claude.live`) are events
+// bus subscriptions now; this fake client answers them with the same
+// `/api/claude/agent` POSTs (`poll` / `live_run`) the stub below scripts.
+const { setEventsClientForTests } = await import("@platform/lib/events");
+const { agentBackedEventsClient } = await import("./protocol/test-bus");
 
 /** One `/api/claude/agent` call: the action, plus the fields. */
 interface RunCall {
@@ -30,8 +35,8 @@ let holdPrefs = false;
 let holdPaneStat = false;
 let stats = 0;
 /** Held back so a test can watch the landing's ready signal wait on the task
- *  listing the Recent list is drawn from (T:19282-19291). Resolved by
- *  `releaseSessions()`. */
+ *  listing the Recent list is drawn from (T:19282-19291): the `tasks.listing`
+ *  snapshot is not pushed until `releaseSessions()`. */
 let holdSessions = false;
 let releaseSessions: () => void = () => {};
 /** Every `/api/schedule` read of this mount — one per watcher tick, which is
@@ -65,27 +70,9 @@ function stubFetch(): void {
         templates: [{ mode: "claude", path: "/w/p/.claude/template.html" }],
       });
     }
-    // THE LANDING'S LONG POLL, and it has to be a LONG poll here. `sessions.ts`
-    // re-arms `/api/tasks/changes` the moment one returns, so a stub that
-    // answers it immediately is an infinite re-arm inside `act` — which flushes
-    // until the queue is empty and therefore never returns at all. A promise
-    // that never settles is what the real endpoint does (it holds the request
-    // open until something changes), so the landing view can be mounted.
-    if (url.startsWith("/api/tasks/changes")) return new Promise<Response>(() => {});
     // THE LANDING'S RECENT LIST, which reads the task listing now rather than
     // agent.py's `sessions` action (.claude-design/design.md §B).
-    if (url === "/api/tasks") {
-      if (holdSessions) {
-        return new Promise<Response>((res) => {
-          releaseSessions = () => res(jsonRes({ tasks: [] }));
-        });
-      }
-      return jsonRes({ tasks: [] });
-    }
-    if (url === "/api/schedule") {
-      scheduleReads++;
-      return jsonRes({ entries: [] });
-    }
+    if (url === "/api/tasks") return jsonRes({ tasks: [] });
     if (url === "/api/prefs") {
       if (holdPrefs) return new Promise<Response>(() => {});
       return jsonRes({});
@@ -106,6 +93,35 @@ function stubFetch(): void {
 }
 
 beforeEach(() => {
+  // The schedule is a `schedule` subscription now: the watcher's baseline is
+  // the snapshot that answers its subscribe, and a reset is a resync. Both
+  // count as "a read" for the T:18000 rule below.
+  const agentBacked = agentBackedEventsClient();
+  setEventsClientForTests({
+    ...agentBacked,
+    subscribe: ((topic, params, cb, opts) => {
+      if (topic === "schedule") {
+        scheduleReads++;
+        cb({ entries: [] } as never, null, { gen: null });
+        return () => {};
+      }
+      if (topic === "tasks.listing") {
+        // THE LANDING'S RECENT LIST reads the document's listing feed; the
+        // snapshot that answers this subscribe is what `holdSessions` holds
+        // back, and `releaseSessions()` is that snapshot landing.
+        let on = true;
+        const answer = () => { if (on) cb({ tasks: [] } as never, null, { gen: null }); };
+        if (holdSessions) releaseSessions = answer;
+        else answer();
+        return () => { on = false; };
+      }
+      return agentBacked.subscribe!(topic, params, cb, opts);
+    }) as NonNullable<typeof agentBacked.subscribe>,
+    resync: (topic) => {
+      if (topic === "schedule") scheduleReads++;
+      return false;
+    },
+  });
   runs.length = 0;
   holdPrefs = false;
   holdPaneStat = false;
@@ -125,6 +141,7 @@ beforeEach(() => {
 const mounted: Array<ReturnType<typeof create>> = [];
 afterEach(() => {
   for (const r of mounted.splice(0)) act(() => r.unmount());
+  setEventsClientForTests(null);
   (globalThis as { fetch: unknown }).fetch = realFetch;
 });
 
@@ -578,8 +595,9 @@ test("THE SCHEDULE RESET WAITS FOR A TRANSCRIPT REPLACEMENT (T:18000)", async ()
   // scheduled run that fired in that window.
   await mountChat({ initialAsk: "go" });
   await settle(20);
-  // ONE read: the watcher's own baseline tick. The mount is not a replacement,
-  // and neither is the session id the run's first poll just reported.
+  // ONE read: the snapshot that answers the watcher's own subscribe. The mount
+  // is not a replacement (no resync), and neither is the session id the run's
+  // first frame just reported.
   expect(started().length).toBe(1);
   expect(scheduleReads).toBe(1);
 });

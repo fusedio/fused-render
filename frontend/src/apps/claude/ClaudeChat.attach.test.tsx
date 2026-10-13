@@ -24,6 +24,11 @@ const { ATTACH_API } = await import("./ui/attachApi");
 const { createMemoryParamsStore } = await import("./params/store");
 const { PANE_SHOT_TAG } = await import("./protocol/wire");
 const { inFlightSizeForTests } = await import("./ClaudeChat");
+// The run stream (`claude.run`) and the live probe (`claude.live`) are events
+// bus subscriptions now; this fake client answers them with the same
+// `/api/claude/agent` POSTs (`poll` / `live_run`) the stub below scripts.
+const { setEventsClientForTests } = await import("@platform/lib/events");
+const { agentBackedEventsClient } = await import("./protocol/test-bus");
 type Attachment = import("./shots/types").Attachment;
 type AttachApi = import("./ui/attachApi").AttachApi;
 type Viewable = import("./ui/attachApi").Viewable;
@@ -127,6 +132,7 @@ beforeEach(() => {
   // A shared prefs GET pinned by an earlier file's never-settling fetch stub
   // would starve the flag read this chat's send waits on.
   dropSharedPrefsRead();
+  setEventsClientForTests(agentBackedEventsClient());
   runs.length = 0;
   startError = "";
   holdStart = false;
@@ -175,6 +181,7 @@ beforeEach(() => {
 const mounted: Array<ReturnType<typeof create>> = [];
 afterEach(() => {
   for (const r of mounted.splice(0)) act(() => r.unmount());
+  setEventsClientForTests(null);
   (globalThis as { fetch: unknown }).fetch = realFetch;
   restoreApi();
   // THE RESTORE IS ASSERTED, not assumed: a patch left behind is a failure in

@@ -92,13 +92,6 @@ export const SEARCH_RANK_LIMIT = 200;
 // blows even past this).
 export const SEARCH_GLOB_RANK_LIMIT = 1_000;
 
-// How often the box re-asks while a scan covering the open folder is running.
-// Results trickle in as the scan lands rows, which is the closest thing to
-// live progress this search has; a finer poll would mostly re-read an index
-// that has not changed, since a scan writes its rows in one compaction at the
-// end.
-export const SCAN_POLL_MS = 1_500;
-
 export type ListingState =
   | { status: "loading" }
   // `truncated`: the directory has more entries than the server cap, so this

@@ -38,6 +38,11 @@ const { createMemoryParamsStore } = await import("./params/store");
 const { ANN_TAG, PANE_SHOT_TAG } = await import("./protocol/wire");
 const { publishProjectQueueEnabled } = await import("./feature-flag");
 const { isMac } = await import("@platform/lib/platform");
+// The run stream (`claude.run`) and the live probe (`claude.live`) are events
+// bus subscriptions now; this fake client answers them with the same
+// `/api/claude/agent` POSTs (`poll` / `live_run`) the stub below scripts.
+const { setEventsClientForTests } = await import("@platform/lib/events");
+const { agentBackedEventsClient } = await import("./protocol/test-bus");
 type Attachment = import("./shots/types").Attachment;
 type AttachApi = import("./ui/attachApi").AttachApi;
 
@@ -244,6 +249,7 @@ beforeEach(() => {
   // A shared prefs GET pinned by an earlier file's never-settling fetch stub
   // would starve the flag read this chat's send waits on.
   dropSharedPrefsRead();
+  setEventsClientForTests(agentBackedEventsClient());
   runs.length = 0;
   startError = "";
   appEntry = "/w/p/index.html";
@@ -455,6 +461,7 @@ let swallowed = { prevented: 0, stopped: 0 };
 const mounted: Array<ReturnType<typeof create>> = [];
 afterEach(() => {
   for (const r of mounted.splice(0)) act(() => r.unmount());
+  setEventsClientForTests(null);
   publishProjectQueueEnabled(false);
   (globalThis as { fetch: unknown }).fetch = realFetch;
   const doc = globalThis.document as unknown as Record<string, unknown>;

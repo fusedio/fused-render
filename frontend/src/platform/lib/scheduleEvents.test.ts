@@ -1,5 +1,5 @@
 // useScheduleEvents' §5 wiring (SPEC-quiet-notifications.md): narrator-only
-// polling, and the info/error split (`started`/`done` suppressible+
+// narration, and the info/error split (`started`/`done` suppressible+
 // non-retained, `failed`/`missed` never suppressed+always retained).
 //
 // Drives the real hook via react-test-renderer (drafts.test.ts's own
@@ -7,10 +7,12 @@
 // notifications — both are transitively imported everywhere, and
 // appdoctor-lib.test.ts's header explains why `mock.module` on a module this
 // widely shared is the wrong tool (process-wide, contaminates unrelated
-// suites). `fetch` is stubbed directly (drafts.test.ts's `recordFetch`), and
-// presence is driven through a real in-memory `localStorage` — the same
-// surface a real browser gives every one of these modules, so no module
-// needs an env-injection seam it doesn't already have.
+// suites). The events bus is a scripted client (`setEventsClientForTests`)
+// whose `schedule.events` subscription pushes the frames a test hands it;
+// the ack is a POST, so `fetch` is stubbed for that one path (drafts.test.ts's
+// `recordFetch`); and presence is driven through a real in-memory
+// `localStorage` — the same surface a real browser gives every one of these
+// modules, so no module needs an env-injection seam it doesn't already have.
 import { beforeEach, describe, expect, test } from "bun:test";
 import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
@@ -36,6 +38,7 @@ const presenceStore = new Map<string, string>();
 } as Storage;
 
 const { useScheduleEvents } = await import("@platform/lib/scheduleEvents");
+const { setEventsClientForTests } = await import("@platform/lib/events");
 const { _resetNotificationsForTest, getPopupNotification, getRetainedNotifications } =
   await import("@platform/lib/notifications");
 
@@ -51,23 +54,47 @@ function plantForeignNarrator(): void {
   presenceStore.set(PRESENCE_KEY, JSON.stringify(map));
 }
 
+/** The scripted bus: `schedule.events` answers its subscribe with the events
+ *  given, synchronously, as the real client replays a snapshot. Records every
+ *  subscription's topic and options, so the narrator-only and hidden-policy
+ *  contracts are both observable. */
 function recordFetch(events: unknown[]): {
   calls: { url: string; init?: RequestInit }[];
+  subs: { topic: string; opts?: { hiddenOk?: boolean } }[];
+  open: () => number;
   restore: () => void;
 } {
   const calls: { url: string; init?: RequestInit }[] = [];
+  const subs: { topic: string; opts?: { hiddenOk?: boolean } }[] = [];
+  let open = 0;
   const real = globalThis.fetch;
   globalThis.fetch = (async (url: string, init?: RequestInit) => {
     calls.push({ url: String(url), init });
-    if (String(url).includes("/api/schedule/events/ack")) {
-      return { ok: true, json: async () => ({ delivered: 0 }) } as Response;
-    }
-    return { ok: true, json: async () => ({ events }) } as Response;
+    return { ok: true, json: async () => ({ delivered: 0 }) } as Response;
   }) as typeof fetch;
+  setEventsClientForTests({
+    subscribe: ((
+      topic: string,
+      _params: unknown,
+      cb: (s: unknown, d: unknown, m: Record<string, unknown>) => void,
+      opts?: { hiddenOk?: boolean },
+    ) => {
+      subs.push({ topic, opts });
+      open += 1;
+      cb({ events }, null, { gen: null });
+      return () => {
+        open -= 1;
+      };
+    }) as never,
+    resync: () => true,
+  });
   return {
     calls,
+    subs,
+    open: () => open,
     restore: () => {
       globalThis.fetch = real;
+      setEventsClientForTests(null);
     },
   };
 }
@@ -91,8 +118,8 @@ function mountHook(onOutcome?: () => void): { unmount: () => void } {
 }
 
 async function flush(): Promise<void> {
-  // Two microtask hops: one for `getScheduleEvents()`'s awaited fetch+json,
-  // one for the ack that follows it.
+  // The snapshot is replayed synchronously inside the subscribe; the hops are
+  // for the ack that follows narrating it.
   await act(async () => {
     await Promise.resolve();
     await Promise.resolve();
@@ -106,13 +133,30 @@ beforeEach(() => {
 });
 
 describe("useScheduleEvents narrator gating", () => {
-  test("a non-narrator window never polls or acks", async () => {
+  test("a non-narrator window subscribes but never narrates or acks", async () => {
     plantForeignNarrator();
-    const f = recordFetch([]);
+    const f = recordFetch([
+      { id: 3, kind: "started", entry_id: "e1", target: "/x", message: "m", detail: "", ts: 0 },
+    ]);
     const h = mountHook();
     await flush();
     expect(f.calls.length).toBe(0);
+    expect(getPopupNotification()).toBeNull();
     h.unmount();
+    f.restore();
+  });
+
+  test("the feed is one narrator subscription, kept open while hidden, closed on unmount", async () => {
+    // `schedule.events` is the one topic that must fire unseen (hiddenOk:
+    // false): the client drops hidden_ok subscriptions while the tab is
+    // hidden, and that is exactly when an unattended run fires.
+    const f = recordFetch([]);
+    const h = mountHook();
+    await flush();
+    expect(f.subs).toEqual([{ topic: "schedule.events", opts: { hiddenOk: false } }]);
+    expect(f.open()).toBe(1);
+    h.unmount();
+    expect(f.open()).toBe(0);
     f.restore();
   });
 

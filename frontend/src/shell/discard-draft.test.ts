@@ -115,13 +115,12 @@ function stubFetch(): void {
  *  restore would have nothing to prove. */
 function seedListing(rows: Task[]): () => void {
   const env: ListingEnv = {
-    fetch: () => new Promise(() => {}), // the change-poll parks
-    hidden: () => false,
-    whenVisible: () => ({ promise: new Promise<void>(() => {}), cancel: () => {} }),
-    sleep: () => Promise.resolve(),
-    tasks: () => Promise.resolve({ tasks: rows }),
+    subscribe: (_topic, _params, cb) => {
+      cb({ tasks: rows }, null, { gen: 1 });
+      return () => {};
+    },
+    resync: () => {},
     pokes: () => () => {},
-    every: () => () => {},
   };
   return subscribeListing(() => {}, env);
 }

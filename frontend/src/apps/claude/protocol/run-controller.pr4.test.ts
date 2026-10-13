@@ -6,6 +6,9 @@ installDomShim();
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 const { ARTIFACTS_EVERY_TICKS, createChatController } = await import("./run-controller");
+// The run stream and the live probe are bus subscriptions now; this adapter
+// turns the scripted `poll` / `live_run` answers into frames, one per ask.
+const { scriptedBus } = await import("./test-bus");
 const { publishProjectQueueEnabled } = await import("../feature-flag");
 const { createMemoryParamsStore } = await import("../params/store");
 
@@ -66,6 +69,7 @@ function makeController(
     file: "/proj/app.py",
     params,
     run: agent.run,
+    subscribe: scriptedBus(agent.run),
     sleep: () => Promise.resolve(),
     now: () => 1_000,
     hasPane: () => true,
@@ -188,6 +192,7 @@ describe("the run-clock hooks", () => {
       file: "/proj/app.py",
       params: createMemoryParamsStore(),
       run: agent.run,
+      subscribe: scriptedBus(agent.run),
       sleep: () => Promise.resolve(),
       now: () => 1_000,
       focusComposer: () => focused.push(1),
@@ -1136,6 +1141,7 @@ test("isBusy() covers a send INSIDE the gate, which no ChatState field does", as
     file: "/proj/app.py",
     params: createMemoryParamsStore(),
     run: agent.run,
+    subscribe: scriptedBus(agent.run),
     sleep: () => Promise.resolve(),
     now: () => 1_000,
   });

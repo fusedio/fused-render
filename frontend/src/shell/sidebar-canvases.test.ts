@@ -67,15 +67,16 @@ describe("the sidebar's Canvases entry", () => {
   });
 
   it("reads the feature flag from prefs, one fetch plus a publish", () => {
-    // No poll, unlike sign-in: this pref can only change on the Preferences
+    // No subscription, unlike sign-in: this pref can only change on the Preferences
     // page of this app, and that page hands the new value over so the row
     // appears with the checkbox instead of on the next navigation.
     expect(FLAG).toMatch(/export function publishCanvasesEnabled/);
     expect(FLAG).toMatch(/getPrefs(Shared)?\(\)/);
     expect(FLAG).not.toMatch(/setTimeout|setInterval/);
     expect(PREFS_PAGE).toMatch(/publishCanvasesEnabled\(next\.canvases\.enabled\)/);
-    // And a publish OUTRANKS a read already in flight — the same generation
-    // counter logged-in.ts keeps, for the same reason: a reader who lands on
+    // And a publish OUTRANKS a read already in flight — the generation
+    // counter logged-in.ts used to keep before it followed the bus, for the
+    // same reason: a reader who lands on
     // /preferences and flips the checkbox before that first GET resolves would
     // otherwise watch the row they just enabled vanish when the pre-toggle
     // payload arrives.
@@ -111,13 +112,15 @@ describe("the sidebar's Canvases entry", () => {
 
   it("treats sign-in as a fact that MOVES, unlike claude-config availability", () => {
     // Signing in and out happens mid-session, so there is no one-shot cache:
-    // the page publishes what its own status poll returned, and the store's own
-    // slow poll only exists to catch a login that happened elsewhere.
+    // the page publishes what its own status read returned, and the store's
+    // own `canvases.status` subscription exists to catch a login that
+    // happened elsewhere — a bus topic, never a timer (D3).
     expect(STORE).toMatch(/export function publishLoggedIn/);
     expect(PAGE).toMatch(/publishLoggedIn\(status\)/);
-    expect(STORE).toMatch(/window\.setTimeout\(gatedPoll, POLL_MS\)/);
-    // A failed read is not a sign-out — the row survives a server restart.
-    expect(STORE).toMatch(/catch \{\n\s*\/\/ A failed read is not a sign-out/);
+    expect(STORE).toMatch(/subscribeTopic<CanvasesStatus>\("canvases\.status"/);
+    expect(STORE).not.toMatch(/setTimeout|setInterval|pauseWhileHidden/);
+    // A refused frame is not a sign-out — the row survives a server restart.
+    expect(STORE).toMatch(/if \(meta\.error !== undefined \|\| status === null\) return;/);
   });
 
   it("does not un-hide the row for credentials the server already refused", () => {

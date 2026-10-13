@@ -108,6 +108,21 @@ _DISK_SPACE_FACTOR = 3
 
 
 class UpdateManager:
+    # Every state transition wakes the `update` topic (server/topics.py): the
+    # attribute is a property so the twelve write sites stay one line each.
+    @property
+    def _state(self) -> str:
+        return self.__dict__.get("_state_value", "idle")
+
+    @_state.setter
+    def _state(self, value: str) -> None:
+        self.__dict__["_state_value"] = value
+        try:
+            from fused_render.server.events import bus
+            bus.publish("update")
+        except Exception:  # noqa: BLE001
+            pass
+
     """State machine behind /api/config's `update` field.
 
     states: idle -> checking -> (idle | available) -> installing(progress)

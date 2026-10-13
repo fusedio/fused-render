@@ -20,17 +20,17 @@
 // The check that DECIDES a repo belongs here runs server-side, throttled per
 // repo root, triggered from GET /render opening an app (fused_render/
 // git_upstream.py — see its module docstring for the full reasoning). This
-// component only polls the RESULT (GET /api/git-upstream) and renders it;
-// it never itself decides which repos are behind, and it never fetches git
-// directly.
+// component only follows the RESULT (GET /api/git-upstream, pushed as the
+// `git.upstream` topic of the events bus) and renders it; it never itself
+// decides which repos are behind, and it never fetches git directly.
 //
 // Same component/lib split as ActivityDock.tsx/queue-dock-lib.ts and
 // DownloadManager.tsx/jobs.ts: row shaping, the branch-dependent action
 // choice, the dismissal rule and the header text are pure functions in
-// repo-updates-lib.ts, testable without a DOM; polling, mutation calls and
-// pixels live here. `RepoUpdatesCardView` is the pure, props-in half of
-// THIS card (mirroring `DownloadManagerView`) — no polling, no network, no
-// `window`/`document` — so RepoUpdatesDock.test.tsx can render it directly
+// repo-updates-lib.ts, testable without a DOM; the subscriptions, mutation
+// calls and pixels live here. `RepoUpdatesCardView` is the pure, props-in half of
+// THIS card (mirroring `DownloadManagerView`) — no subscription, no network,
+// no `window`/`document` — so RepoUpdatesDock.test.tsx can render it directly
 // with a fixed row list, the same way DownloadManager.test.tsx renders
 // `DownloadManagerView`.
 //
@@ -46,8 +46,8 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import type { ReactNode } from "react";
 import { shortTaskId } from "@platform/lib/task-id";
 import { stageClaudeAsk } from "@platform/lib/pending-claude-ask";
-import { pauseWhileHidden } from "@platform/lib/pause-while-hidden";
-import { dismissLanPairing, getJson, getLanPairings, postJson } from "@platform/lib/api";
+import { resyncTopic, subscribeTopic } from "@platform/lib/events";
+import { dismissLanPairing, postJson } from "@platform/lib/api";
 import type { LanPairingEvent } from "@platform/lib/api";
 import { navigate, navigateToJobPage, navigateUrl, viewUrlForFsPath } from "@platform/lib/router";
 import { requestOpenSection, useStatusChip, type StatusChipState } from "@platform/lib/statusChip";
@@ -116,11 +116,10 @@ import {
   type SyncPull,
 } from "@shell/repo-updates-lib";
 
-// Same order of magnitude as ActivityDock's own poll: fast enough that a row
-// appears soon after an app open triggers the server-side check, slow
-// enough to be a permanent background poll in every shell. The check itself
-// is throttled server-side (git_upstream.CHECK_TTL_S), so polling faster
-// than that would only ever re-read the same cached answer.
+// A row appears the moment the server-side check (triggered by an app open,
+// throttled per repo root by git_upstream.CHECK_TTL_S) writes its result:
+// the `git.upstream` topic pushes a fresh snapshot on every write, so there
+// is nothing here to pace — no timer, no cadence.
 const NOOP = () => {};
 /** `JobRow`'s optimistic-patch seam, defaulted for callers that hand in a
  *  fixed `terminal` list (the tests). A real one comes from the shell, which
@@ -131,7 +130,6 @@ const NOOP_PATCH = () => {};
 // full list is still there, one click away — it only bounds how tall the
 // panel gets on a machine that has finished a great many jobs.
 const TERMINAL_VISIBLE_CAP = 5;
-const POLL_MS = 6000;
 // NOTHING ABOUT THE FOLD IS PERSISTED (D603, user: "on page reload the models
 // popover auto opens for some reason"). There used to be a `COLLAPSED_KEY` here
 // plus `loadCollapsed`/`saveCollapsed`; all three are DELETED, not merely
@@ -164,102 +162,90 @@ type MutationResult = {
 
 // `scope`, set only by a native app window (NativeAppSyncNotices): keep just
 // the failures and pull popups of the repo that window's app lives in, and skip
-// the LAN-pairing poll (not that window's business). The dock passes nothing.
+// the LAN-pairing subscription (not that window's business). The dock passes
+// nothing.
+//
+// Two subscriptions on the events bus — `git.upstream` (the body of
+// GET /api/git-upstream: repos, sync failures, pulls) and `lan.pairings` (the
+// body of GET /api/lan/pairings) — each answered by a snapshot at once and
+// pushed again on every server-side write. Each source degrades alone: a
+// refused `lan.pairings` frame never takes the repo rows down with it (and
+// vice versa), which is the same independence the old paired reads kept.
 export function useRepoUpdates(scope?: { forApp: string | null }) {
   const forApp = scope ? scope.forApp : undefined;
   const forAppRef = useRef(forApp);
   forAppRef.current = forApp;
   const [repos, setRepos] = useState<RepoStatus[]>([]);
-  // LAN pairings ride the same poll (third row kind, after D586's failures):
-  // a device pairing is a notification, and this card is the notification
-  // surface. Server-side store (lan.py `_recent_pairings`), so a dismissal
-  // holds across shells and reloads for as long as the server runs.
+  // LAN pairings are the third row kind (after D586's failures): a device
+  // pairing is a notification, and this card is the notification surface.
+  // Server-side store (lan.py `_recent_pairings`), so a dismissal holds across
+  // shells and reloads for as long as the server runs.
   const [pairings, setPairings] = useState<LanPairingEvent[]>([]);
   // Auto-sync failures (git_upstream.sync_failures): the persistent rows that
   // say a background pull/push could not be done and nothing was changed.
   const [syncFailures, setSyncFailures] = useState<SyncFailure[]>([]);
-  // Pull ids already announced. `null` until the first poll lands: pulls that
-  // happened before this shell opened are history, never a popup.
+  // Pull ids already announced. `null` until the first snapshot lands: pulls
+  // that happened before this shell opened are history, never a popup. A pull
+  // that landed while the window was hidden still pops on return — the
+  // catch-up snapshot the client's resubscribe earns is diffed by id like
+  // any other frame, not by tick.
   const announcedPulls = useRef<Set<string> | null>(null);
-  const pollRef = useRef<() => void>(() => {});
+  // Whether this hook follows pairings at all is fixed at mount: the scope is
+  // a property of the window, not something that changes under a reader.
+  const scoped = forApp !== undefined;
 
   useEffect(() => {
-    let disposed = false;
-    let timer = 0;
-    // WHICH poll invocation is the current one. `clearTimeout` alone was not
-    // enough (finding 7, code review 2026-08-27): it cancels a PENDING timer,
-    // but the fork happens across the `await`. `refresh()` calling
-    // `pollRef.current()` while an earlier `poll` was still awaiting left both
-    // in flight; each then assigned `timer` on its way out, the second
-    // overwriting the first, so one chain was leaked — unclearable on unmount
-    // and ticking for the rest of the session, which is exactly the doubling
-    // the comment here used to claim was already fixed. A generation counter
-    // closes it properly: only the newest invocation may schedule.
-    let generation = 0;
-    const poll = async () => {
-      const mine = ++generation;
-      window.clearTimeout(timer);
-      try {
-        const [data, paired] = await Promise.all([
-          getJson<{
-            repos?: RepoStatus[];
-            sync_failures?: SyncFailure[];
-            pulls?: SyncPull[];
-          }>("/api/git-upstream"),
-          // Its failure must not take the repo rows down with it (and vice
-          // versa): each source degrades alone.
-          forAppRef.current === undefined ? getLanPairings().catch(() => null) : null,
-        ]);
-        // Superseded responses are DROPPED, not painted: a fresher read is
-        // already in flight, and letting an older one land after it would
-        // flick stale rows back onto the screen (the same reason
-        // `useJobs` carries its own epoch).
-        if (!disposed && mine === generation) {
-          setRepos(data.repos || []);
-          const scoped = forAppRef.current;
-          setSyncFailures(
-            scoped === undefined
-              ? data.sync_failures || []
-              : failuresForApp(data.sync_failures || [], scoped),
-          );
-          const pulls =
-            scoped === undefined
-              ? data.pulls || []
-              : pullsForApp(data.pulls || [], scoped);
-          if (announcedPulls.current === null) {
-            announcedPulls.current = new Set(pulls.map((p) => p.id));
-          } else {
-            for (const p of newPulls(pulls, announcedPulls.current)) {
-              announcedPulls.current.add(p.id);
-              // A brief popup and nothing retained: no action, no page, not
-              // an error, so notifications.ts drops it after the popup.
-              notify({ title: pullPopupTitle(p) });
-            }
-          }
-          if (paired) setPairings(paired.pairings || []);
+    const offUpstream = subscribeTopic<{
+      repos?: RepoStatus[];
+      sync_failures?: SyncFailure[];
+      pulls?: SyncPull[];
+    }>("git.upstream", {}, (data, _delta, meta) => {
+      // Best-effort, like every other source in this card: a refused frame
+      // leaves the last snapshot standing rather than clearing the rows.
+      if (meta.error !== undefined || data === null) return;
+      setRepos(data.repos || []);
+      const forAppNow = forAppRef.current;
+      setSyncFailures(
+        forAppNow === undefined
+          ? data.sync_failures || []
+          : failuresForApp(data.sync_failures || [], forAppNow),
+      );
+      const pulls =
+        forAppNow === undefined
+          ? data.pulls || []
+          : pullsForApp(data.pulls || [], forAppNow);
+      if (announcedPulls.current === null) {
+        announcedPulls.current = new Set(pulls.map((p) => p.id));
+      } else {
+        for (const p of newPulls(pulls, announcedPulls.current)) {
+          announcedPulls.current.add(p.id);
+          // A brief popup and nothing retained: no action, no page, not
+          // an error, so notifications.ts drops it after the popup.
+          notify({ title: pullPopupTitle(p) });
         }
-      } catch {
-        // Best-effort, like every other poll in this card: a failed read
-        // leaves the last snapshot standing rather than clearing the rows.
       }
-      // Exactly ONE chain survives — whichever invocation is newest.
-      if (!disposed && mine === generation) timer = window.setTimeout(gated, POLL_MS);
-    };
-    // Hidden window: the scheduled tick parks and runs once on return
-    // (pause-while-hidden.ts — the shared 6-connection WebKit pool). Covers
-    // NativeAppSyncNotices too (same hook). A pull that landed meanwhile
-    // still pops on return: `announcedPulls` diffs ids, not ticks.
-    const gated = pauseWhileHidden(() => void poll());
-    pollRef.current = poll;
-    poll();
+    });
+    const offPairings = scoped
+      ? () => {}
+      : subscribeTopic<{ pairings?: LanPairingEvent[] }>("lan.pairings", {}, (paired, _delta, meta) => {
+          if (meta.error !== undefined || paired === null) return;
+          setPairings(paired.pairings || []);
+        });
     return () => {
-      disposed = true;
-      window.clearTimeout(timer);
-      gated.cancel();
+      offUpstream();
+      offPairings();
     };
+    // `scoped` is fixed for the life of the reader (see above).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const refresh = useCallback(() => pollRef.current(), []);
+  // "Ask again now": a mutation this document made (an Update, a Retry, a
+  // pairing dismissed) that the bus will also announce — one resync per
+  // followed topic covers the beat between the two.
+  const refresh = useCallback(() => {
+    resyncTopic("git.upstream", {});
+    if (!scoped) resyncTopic("lan.pairings", {});
+  }, [scoped]);
   return { repos, pairings, setPairings, syncFailures, setSyncFailures, refresh };
 }
 
@@ -295,7 +281,7 @@ function PairingRowView({
     try {
       await dismissLanPairing(event.id);
     } catch {
-      /* the next poll restores it if the server never heard */
+      /* the next snapshot restores it if the server never heard */
     }
   };
   return (
@@ -359,7 +345,7 @@ export function SyncFailureRowView({
         reason: failure.reason,
       });
     } catch {
-      /* the next poll restores it if the server never heard */
+      /* the next snapshot restores it if the server never heard */
     }
   };
   const retry = async () => {
@@ -373,7 +359,7 @@ export function SyncFailureRowView({
         reason: failure.reason,
       });
       // A success clears the failure server-side; drop the row at once. A
-      // repeat failure keeps it (the poll refreshes its text).
+      // repeat failure keeps it (the next snapshot refreshes its text).
       if (result.ok) onGone(failure.id);
       else setRetryNote(result.message || "still failing");
     } catch {
@@ -442,7 +428,7 @@ export function SyncFailureRowView({
 // A run that has STOPPED TO ASK SOMETHING (Akshil, 2026-09-03: "when the task
 // was blocked I did not see any notifications in there"). The fourth row kind,
 // and the only one whose subject is still happening: `tasks-lib.attentionRows`
-// decides what it says and where it goes, off the pulse poll the shell already
+// decides what it says and where it goes, off the pulse feed the shell already
 // runs — no endpoint and no second loop of this card's own.
 //
 // THE WHOLE ROW IS ALSO A CLICK TARGET — rather than a corner "Open" control
@@ -1041,7 +1027,7 @@ export function RepoUpdatesCardView({
   /** Standing auto-sync failures — the sixth row kind. Always "Needs you". */
   syncFailures?: SyncFailure[];
   onSyncGone?: (id: string) => void;
-  /** A terminal row was acted on — ask the jobs poll to re-read. */
+  /** A terminal row was acted on — ask the jobs subscription to resync. */
   onJobsChanged?: () => void;
   /** Remove a dismissed failure from the shell's own list, immediately. */
   onTerminalPatch?: (fn: (jobs: Job[]) => Job[]) => void;
@@ -1691,7 +1677,7 @@ export function RepoUpdatesDockView({
   onDismiss: (root: string, signature: string) => void;
   onDismissAll: (visible: RepoRow[]) => void;
   onDone: (result: MutationResult) => void;
-  /** A terminal row was cancelled/dismissed — ask the jobs poll to re-read.
+  /** A terminal row was cancelled/dismissed — ask the jobs subscription to resync.
    *  Optional: a caller with no jobs of its own has nothing to refresh. */
   onJobsChanged?: () => void;
   /** Remove a dismissed failure from the shell's own list, immediately. */
@@ -1756,9 +1742,10 @@ export default function RepoUpdatesDock({
   const { dismissed, dismissOne, dismissAll } = useDismissed();
   const { dismissed: attentionDismissed, dismissOne: attentionDismissOne } =
     useAttentionDismissed();
-  // THE SHELL'S EXISTING TASKS POLL, subscribed to — not a fifth timer in this
-  // file. `tasksPulse.ts` is one store with one poll behind it (and none at all
-  // while the Tasks page is feeding it), which is the whole reason it exists;
+  // THE SHELL'S EXISTING TASKS FEED, subscribed to — not a third subscription
+  // of this file's own. `tasksPulse.ts` is one store with one listing lane
+  // behind it, refcounted with the Tasks page, which is the whole reason it
+  // exists;
   // taking a row subscription here costs this card nothing but a re-render when
   // the answer changes, and it means the notification and the sidebar's red dot
   // can never disagree — they are reading the same array.

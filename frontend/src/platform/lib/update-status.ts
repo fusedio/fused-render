@@ -1,56 +1,56 @@
-// Shared self-update poll — one store, same pattern as sidebarstate.ts. Three
+// Shared self-update state — one store, same pattern as sidebarstate.ts. Three
 // surfaces read this (the expanded UpdateBadge row, the collapsed rail dot on
-// Preferences, and the Settings popover's own row) and none of them should run
-// its own timer: update state changes rarely, so one poll shared via
-// useSyncExternalStore is enough for all three to stay in sync.
+// Preferences, and the Settings popover's own row) and none of them should
+// talk to the server on its own: one subscription to the `update` topic of the
+// events bus (platform/lib/events), shared via useSyncExternalStore, is enough
+// for all three to stay in sync.
 //
-// Owns its own slow poll (60s idle, 2s while installing) instead of riding
-// ServerStatusBanner's 5s one — see UpdateBadge.tsx's header for why.
+// SINCE 2026-10-09 NOTHING HERE POLLS (D3). The store used to own a
+// `/api/config` timer with four cadences (2 s hot after boot, 15 s warm while
+// the first check was still coming, 2 s busy through an install, 60 s idle) —
+// see UpdateBadge.tsx's header for why it had to be its own and not
+// ServerStatusBanner's. The server now pushes `{ update }` (the `update` field
+// of GET /api/config, exactly as that GET would answer) on subscribe and on
+// every change the updater makes, and at the old busy cadence while an
+// install runs — so the badge sees "installing" → "installed" at the same
+// freshness, and an idle session costs no request at all.
 import { useSyncExternalStore } from "react";
 
-import { getConfig, updateCheck, updateInstall, type UpdateStatus } from "@platform/lib/api";
-import { pauseWhileHidden } from "@platform/lib/pause-while-hidden";
+import { updateCheck, updateInstall, type UpdateStatus } from "@platform/lib/api";
+import { resyncTopic, subscribeTopic } from "@platform/lib/events";
 
-const POLL_IDLE_MS = 60_000;
-const POLL_BUSY_MS = 2_000;
-const POLL_WARM_MS = 15_000;
-// HOT for the first moments after this page starts: the server's first check
-// lands ~1s after boot, and a 15s tick from t≈0 put the badge at ~15s
-// (Akshil, 2026-09-09: "the first check after boot took 14s"). Two-second
-// ticks for the first twenty seconds catch it within a couple of seconds.
-const POLL_HOT_MS = 2_000;
-const HOT_WINDOW_MS = 20_000;
-const WARM_WINDOW_MS = 120_000;
-const startedAt = Date.now();
+/** The `update` topic's snapshot: the `update` field of GET /api/config,
+ *  null when this server has no updater (an unpackaged dev run). */
+type UpdateFrame = { update?: UpdateStatus | null };
+
 // Check-on-return (Akshil, 2026-09-09). The server's own loop checks every five
 // minutes (common.CHECK_INTERVAL_S), which is the floor under a session left
 // open — but a user who comes back to the app should learn about a release in
-// the seconds after they return, not up to five minutes later on the next tick. Coming back to the front is the moment to ask,
-// so focus/visibilitychange trigger one POST /api/update/check, gated by a
-// 30-minute gap so cmd-tabbing between two windows is not a run of requests.
-// The gap starts at store start, not at 0: a launch has just checked (the
-// server's first check runs ~1s after boot), so the first return inside half
-// an hour of opening the app has nothing to learn.
+// the seconds after they return, not up to five minutes later on the next
+// tick. Coming back to the front is the moment to ask, so focus/visibilitychange
+// trigger one POST /api/update/check, gated by a 30-minute gap so cmd-tabbing
+// between two windows is not a run of requests. This is a CHECK the server
+// performs (a manifest fetch), not a read of state — the state itself arrives
+// over the bus whenever it moves. The gap starts at store start, not at 0: a
+// launch has just checked (the server's first check runs ~1s after boot), so
+// the first return inside half an hour of opening the app has nothing to learn.
 const RETURN_CHECK_GAP_MS = 30 * 60_000;
 
 let current: UpdateStatus | null = null;
 const listeners = new Set<() => void>();
 let started = false;
-let timer: ReturnType<typeof setTimeout> | undefined;
+/** This store's one subscription to the `update` topic, or null while nobody
+ *  reads the store. */
+let lane: (() => void) | null = null;
 // When a check was last TRIGGERED from here — bumped only by the return
-// trigger below. The 60s poll does not touch it: that poll only reads
-// /api/config, which costs the CDN nothing and says nothing new about
-// cadence, so letting it bump this would suppress every return check forever.
+// trigger below and the manual check. A pushed snapshot does not touch it: a
+// snapshot costs the CDN nothing and says nothing new about cadence, so
+// letting it bump this would suppress every return check forever.
 let lastCheckTriggerAt = Date.now();
 
-// Every re-arm bumps this; a poll that was already in flight when the timer
-// was cleared sees a stale generation on landing and arms nothing, so a poke
-// mid-request cannot leave two self-rearming chains running (review, PR #1049).
-let generation = 0;
-
 function set(next: UpdateStatus | null): void {
-  // By VALUE: getConfig() hands back a fresh object every tick, so an identity
-  // check never held and every subscriber re-rendered on every poll.
+  // By VALUE: every snapshot is a fresh object, so an identity check never
+  // held and every subscriber re-rendered on every frame.
   if (JSON.stringify(next) === JSON.stringify(current)) return;
   current = next;
   listeners.forEach((fn) => fn());
@@ -64,113 +64,46 @@ function set(next: UpdateStatus | null): void {
 // #1097). The fix moved to the server: `check()` only says "checking" when it
 // entered from "idle", and keeps "available"/"installed"/"error" on the wire
 // while it re-checks (update/mac.py). Nothing is held here; the wire is true.
+//
+// Nor is there a stale-response guard any more (2026-09-22's `generation`,
+// found chasing a CI-only flake in UpdateNotifier.test.tsx): the hazard was a
+// `getConfig()` fetch started by one bun test file's component mount landing
+// during a later file's test and overwriting `current`. A subscription's
+// callback stops the moment it is unsubscribed — `resetUpdateStatusForTests`
+// closes the lane — so nothing can land late.
 
-async function poll(): Promise<void> {
-  const mine = generation;
-  let next: UpdateStatus | null = current;
-  try {
-    const config = await getConfig();
-    next = config.update ?? null;
-  } catch {
-    // Server down — ServerStatusBanner owns that story; keep last state.
-  }
-  // STALE-POLL GUARD, checked BEFORE `set()` runs — not just before the
-  // re-arm below (2026-09-22 fix, found chasing a CI-only test flake in
-  // UpdateNotifier.test.tsx). `getConfig()` is a real `await`: a poll that
-  // was in flight when `pokeUpdateStatus`/`setUpdateStatus`/a test's
-  // `resetUpdateStatusForTests()` bumped `generation` can still land
-  // afterwards. The OLD code let that stale response through to `set()`
-  // unconditionally and only used `generation` to decide whether to
-  // re-arm the NEXT tick — so a poll started by one bun test file (any
-  // mount of a component that reads `useUpdateStatus()`, which calls
-  // `ensureStarted()`) could resolve during a LATER test file's test (bun
-  // shares one module registry and one event loop across a whole `bun
-  // test` invocation) and silently overwrite `current` out from under it,
-  // firing every subscriber — including a freshly-mounted `UpdateNotifier`
-  // — with content that test never asked for. `resetUpdateStatusForTests()`
-  // clears the pending TIMER but cannot cancel a `fetch` already in
-  // flight, so bumping `generation` only closes this hole if the check
-  // happens before the mutation, not after. Fast locally (the round trip
-  // usually finishes before the next file's `beforeEach` even runs) but a
-  // slower/differently-scheduled CI runner lands it mid-test far more
-  // often — exactly the "passes locally, flakes on CI, order/timing
-  // dependent" signature this was caught as.
-  if (mine !== generation) return;
-  set(next);
-  arm(next);
+// One frame from the bus. A refusal (`meta.error`: the server is down, or a
+// GET /api/config that failed) keeps the last state — ServerStatusBanner owns
+// that story.
+function onFrame(snap: UpdateFrame | null): void {
+  if (snap === null) return;
+  set(snap.update ?? null);
 }
 
-// Schedule the next poll. A HIDDEN window skips its idle/warm ticks and polls
-// once when it shows again (pause-while-hidden.ts: every native window shares
-// WebKit's 6-connection pool per host:port, measured 2026-10-08) — the badge
-// it would refresh is not on screen, and the return trigger below re-asks on
-// the way back anyway. The BUSY cadence ("installing"/"checking") keeps
-// running hidden: the install button lives in whichever window was pressed,
-// and a person who hit Update and cmd-tabbed away must still see the
-// installing → installed/error flip land without waiting on a return. Busy is
-// bounded by the install itself, so this costs a few 2 s ticks, not a session.
-// Each arm carries its generation: a tick parked while hidden that a later
-// poke/push superseded does nothing when it finally runs, so a parked
-// catch-up can never start a second chain beside the re-armed one.
-function arm(next: UpdateStatus | null): void {
-  const mine = generation;
-  const tick = () => {
-    if (mine === generation) void poll();
-  };
-  const busy = next?.state === "installing" || next?.state === "checking";
-  timer = setTimeout(busy ? tick : pauseWhileHidden(tick), pollDelay(next));
+function openLane(): void {
+  if (lane) return;
+  lane = subscribeTopic<UpdateFrame>("update", {}, onFrame);
 }
 
-// How long until the next look. Busy while an install runs; WARM while the
-// packaged app has an updater but it has not answered yet ("idle"/"checking":
-// the server's first manifest check lands ~1s after boot, and a 60s tick
-// after that left the badge up to a minute late); the slow idle tick otherwise
-// — including for an unpackaged dev run, where `update` is absent and there is
-// nothing to be quick about.
-export function pollDelay(status: UpdateStatus | null, sinceStartMs = Date.now() - startedAt): number {
-  if (status?.state === "installing") return POLL_BUSY_MS;
-  // "checking" IS busy, at any age (bugbot, PR #1097): a manifest fetch lasts
-  // seconds (FETCH_TIMEOUT_S bounds it at 15), and the server's own tick starts
-  // one every five minutes, so the state is short-lived and frequent. Polled
-  // at the slow tick, a manual check that landed mid-fetch — the server hands
-  // back "checking" rather than an answer — would leave the row saying
-  // "Checking…" for up to a minute after the answer existed. Bounded: the
-  // busy cadence lasts exactly as long as the fetch does.
-  if (status?.state === "checking") return POLL_BUSY_MS;
-  // WARM ONLY WHILE THE FIRST ANSWER IS PLAUSIBLY STILL COMING (bugbot, PR
-  // #1049): "idle" is also the packaged app's resting state after a check that
-  // found nothing, so warm-on-idle forever would never settle. The server's
-  // first check now starts ~1s after boot, so the warm window is dominated by
-  // how long the check itself takes (a manifest fetch over the network, seconds
-  // rather than sub-second) — two minutes after this page started the cadence
-  // goes back to the slow tick for good.
-  const pending = status?.state === "idle";
-  if (status && pending && sinceStartMs < HOT_WINDOW_MS) return POLL_HOT_MS;
-  if (status && pending && sinceStartMs < WARM_WINDOW_MS) return POLL_WARM_MS;
-  return POLL_IDLE_MS;
+function closeLane(): void {
+  if (!lane) return;
+  const stop = lane;
+  lane = null;
+  stop();
 }
 
-// Re-arm the poll now — called after an install kicks off so
-// installing-progress shows within POLL_BUSY_MS instead of waiting out the
-// idle interval.
+// Ask the bus for a fresh snapshot now — called after an install kicks off so
+// installing-progress shows at once instead of waiting on the server's next
+// push, and after a check whose answer may have moved what status() reads
+// off disk.
 export function pokeUpdateStatus(): void {
-  clearTimeout(timer);
-  generation += 1;
-  void poll();
+  resyncTopic("update", {});
 }
 
 // Let a caller push a freshly-fetched status straight into the store (the
-// install button's optimistic update) without waiting on the next poll tick.
+// install button's optimistic update) without waiting on the next frame.
 export function setUpdateStatus(next: UpdateStatus | null): void {
   set(next);
-  // A pushed status re-arms the timer at the cadence IT calls for: a status
-  // that says "installing" must not sit on a 60s idle tick armed by the poll
-  // that ran before the install began.
-  if (started) {
-    clearTimeout(timer);
-    generation += 1;
-    arm(next);
-  }
 }
 
 // Whether a return to the app should spend a manifest check. Pure so the three
@@ -202,7 +135,7 @@ export function shouldCheckOnReturn(
 //
 // The same POST the return trigger sends, fired by a press on the badge's idle
 // row. The response IS the answer — check() is synchronous on the server — so
-// the caller can word the row off the result without waiting for the poll. Goes
+// the caller can word the row off the result without waiting for a frame. Goes
 // through the server's 60s floor like every other manual-ish check: a press
 // inside the gap gets the answer the last fetch left, at most a minute old,
 // which is exactly what "up to date" meant a moment ago. Bumps the return
@@ -237,7 +170,7 @@ export function checkNowLabel(phase: ManualCheckPhase, version: string | null | 
 
 // The app came back to the front. Never throws: this runs off a window event
 // with no caller to catch anything, and a failed check is exactly as
-// uninteresting as a failed poll — the next one will do.
+// uninteresting as a refused frame — the next one will do.
 async function onReturn(): Promise<void> {
   const visible = document.visibilityState === "visible";
   if (!shouldCheckOnReturn(lastCheckTriggerAt, Date.now(), current, visible)) return;
@@ -246,46 +179,50 @@ async function onReturn(): Promise<void> {
     const result = await updateCheck();
     setUpdateStatus(result);
     // The check itself is synchronous on the server, so `result` is already
-    // the answer; the poke is for what follows it — an "installing" that wants
-    // the busy cadence, and the disk re-read status() does on every poll.
+    // the answer; the poke is for what follows it — the disk re-read status()
+    // does when the bus builds its next snapshot.
     pokeUpdateStatus();
   } catch {
-    // 404 (no updater), offline, server down — all of it is the poll's story.
+    // 404 (no updater), offline, server down — all of it is the bus's story.
   }
 }
 
 function ensureStarted(): void {
   if (started) return;
   started = true;
-  // Registered once for the life of the page, alongside the one shared poll:
-  // three surfaces subscribe to this store and none of them should own a
-  // listener. `focus` catches the app being brought forward, and
+  // Registered once for the life of the page, alongside the one shared
+  // subscription: three surfaces subscribe to this store and none of them
+  // should own a listener. `focus` catches the app being brought forward, and
   // `visibilitychange` catches a tab/window that was hidden becoming visible
   // without a focus event of its own.
   lastCheckTriggerAt = Date.now();
   window.addEventListener("focus", () => void onReturn());
   document.addEventListener("visibilitychange", () => void onReturn());
-  poll();
 }
 
 /** Tests only: put the module back to its never-started state. The store is
- *  module-global by design (one poll for three surfaces), which is exactly what
- *  lets one test's "available" leak into the next test's "nothing here". Clears
- *  the timer too, so a finished test file leaves no poll behind to keep the
- *  runner's event loop alive. */
+ *  module-global by design (one subscription for three surfaces), which is
+ *  exactly what lets one test's "available" leak into the next test's "nothing
+ *  here". Closes the lane too, so a finished test file leaves no subscription
+ *  behind whose frames could land in the next file's tests. */
 export function resetUpdateStatusForTests(): void {
-  clearTimeout(timer);
-  timer = undefined;
-  generation += 1;
+  closeLane();
   current = null;
   started = false;
   listeners.clear();
 }
 
+// The lane opens with the first reader and closes with the last: N readers
+// share one subscription and one snapshot (the client refcounts the key too,
+// but the store's own count is what lets the lane close when nobody looks).
 function subscribe(fn: () => void): () => void {
   ensureStarted();
   listeners.add(fn);
-  return () => listeners.delete(fn);
+  if (listeners.size === 1) openLane();
+  return () => {
+    listeners.delete(fn);
+    if (listeners.size === 0) closeLane();
+  };
 }
 
 function getSnapshot(): UpdateStatus | null {
@@ -327,7 +264,7 @@ export async function installUpdate(status: UpdateStatus): Promise<void> {
   try {
     setUpdateStatus(await updateInstall(status.latest_version));
   } catch {
-    // Fall through — the re-armed poll picks up the real state.
+    // Fall through — the resync below picks up the real state.
   }
   pokeUpdateStatus();
 }

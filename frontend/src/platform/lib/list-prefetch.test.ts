@@ -123,8 +123,8 @@ test("the dir-watch socket clears the cache for an EXTERNAL writer", () => {
   // mounted; it is not a general backstop.
   const src = source("apps/explorer/listing/useDirListing.ts");
   expect(src).toContain("clearListPrefetch");
-  // In the socket's message handler, not merely imported.
-  expect(src.slice(src.indexOf("sock.onmessage"))).toContain("clearListPrefetch()");
+  // In the `fs.watch` subscription's frame handler, not merely imported.
+  expect(src.slice(src.indexOf('subscribeTopic("fs.watch"'))).toContain("clearListPrefetch()");
 });
 
 test("the shell installs the hook the preview runtime reports writes through", () => {

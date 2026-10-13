@@ -26,6 +26,20 @@ from fused_render._view_url_codec import canonical_fs_path
 from fused_render.server import create_app
 from fused_render.server.routers import claude_sessions as sessions_mod
 from fused_render.server.routers import tasks as tasks_mod
+from tests._tasks_feed import changes, pulse
+
+
+class _Answer:
+    """The old GET's response object, for assertions on `.status_code`/`.json()`."""
+    status_code = 200
+    text = ""
+
+    def __init__(self, body):
+        self._body = body
+
+    def json(self):
+        return self._body
+
 
 WRITE = {"X-Fused": "1"}
 
@@ -470,18 +484,18 @@ def test_draft_rows_reach_the_changes_endpoint_but_not_the_pulse(client):
     before = client.get("/api/tasks").json()["generation"]
     client.put("/api/drafts/task/draft-0001", json={"title": "Nightly report"})
 
-    r = client.get(f"/api/tasks/changes?since={before}&wait=0")
+    r = _Answer(changes(client, before))
     assert r.status_code == 200, r.text
     body = r.json()
     assert [row["key"] for row in body["rows"]] == ["draft:draft-0001"]
     assert body["gone"] == []
 
-    assert [t["key"] for t in client.get("/api/tasks/pulse").json()["tasks"]] == []
+    assert [t["key"] for t in pulse(client)] == []
 
     # ...and discarding it names the key as gone rather than leaving the row.
     gen = body["generation"]
     client.delete("/api/drafts/task/draft-0001")
-    body = client.get(f"/api/tasks/changes?since={gen}&wait=0").json()
+    body = changes(client, gen)
     assert body["rows"] == []
     assert body["gone"] == ["draft:draft-0001"]
 
@@ -843,19 +857,19 @@ def test_new_chat_draft_rows_appear_and_vanish_through_the_changes_endpoint(
     before = client.get("/api/tasks").json()["generation"]
     client.put(_chat_url(key), json={"text": "unsent"})
 
-    body = client.get(f"/api/tasks/changes?since={before}&wait=0").json()
+    body = changes(client, before)
     assert [row["key"] for row in body["rows"]] == [key]
     assert body["rows"][0]["draft_kind"] == "chat"
 
     gen = body["generation"]
     client.delete(_chat_url(key))
-    body = client.get(f"/api/tasks/changes?since={gen}&wait=0").json()
+    body = changes(client, gen)
     assert body["rows"] == []
     assert body["gone"] == [key]
 
     # ...and never in the pulse. A form nobody has finished is not news.
     client.put(_chat_url(key), json={"text": "unsent again"})
-    assert [t["key"] for t in client.get("/api/tasks/pulse").json()["tasks"]] == []
+    assert [t["key"] for t in pulse(client)] == []
 
 
 # ----------------------------------- round 2: the first send's session
@@ -1523,7 +1537,7 @@ def test_the_router_answers_and_announces_the_id_the_write_landed_on(
     assert drafts.get_task("draft-0002") is None
     assert drafts.get_task("draft-0001")["title"].startswith("written by a card")
 
-    changed = client.get(f"/api/tasks/changes?since={before}&wait=0").json()
+    changed = changes(client, before)
     assert "draft:draft-0002" in changed["gone"]
 
 
@@ -1796,7 +1810,7 @@ def test_both_doors_announce_the_form_and_the_session(client, tmp_path,
 
     before = client.get("/api/tasks").json()["generation"]
     client.put(_chat_url("sess-a"), json={"text": "Roll up the PRs"})
-    body = client.get("/api/tasks/changes?since=%d&wait=0" % before).json()
+    body = changes(client, before)
     rows = {row["key"]: row for row in body["rows"]}
     assert rows["sess-a"]["draft"]["preview"] == "Roll up the PRs"
     assert rows["sess-a"]["bound_draft"] == "draft-0001"
@@ -1804,7 +1818,7 @@ def test_both_doors_announce_the_form_and_the_session(client, tmp_path,
 
     gen = body["generation"]
     client.delete(_chat_url("sess-a"))
-    body = client.get("/api/tasks/changes?since=%d&wait=0" % gen).json()
+    body = changes(client, gen)
     rows = {row["key"]: row for row in body["rows"]}
     assert rows["sess-a"]["draft"] is None
     assert "draft:draft-0001" in body["gone"]
@@ -1923,7 +1937,7 @@ def test_the_chip_repaints_through_the_changes_endpoint(client, tmp_path,
 
     before = client.get("/api/tasks").json()["generation"]
     _bound_draft(client, "draft-0001", "sess-a", elsewhere)
-    body = client.get("/api/tasks/changes?since=%d&wait=0" % before).json()
+    body = changes(client, before)
     rows = {row["key"]: row for row in body["rows"]}
     assert rows["sess-a"]["bound_draft"] == "draft-0001"
     assert rows["sess-a"]["draft"]["preview"] == "Ship the changelog"
@@ -1933,7 +1947,7 @@ def test_the_chip_repaints_through_the_changes_endpoint(client, tmp_path,
 
     gen = body["generation"]
     assert client.delete("/api/drafts/task/draft-0001").status_code == 200
-    body = client.get("/api/tasks/changes?since=%d&wait=0" % gen).json()
+    body = changes(client, gen)
     rows = {row["key"]: row for row in body["rows"]}
     assert rows["sess-a"]["bound_draft"] == ""
     assert rows["sess-a"]["draft"] is None
@@ -2089,8 +2103,8 @@ def test_a_live_session_is_untouched_by_a_draft_bound_to_it(
 
     # The pulse is the half the sidebar reads, and a listing that hid rows was a
     # dot that never lit and a Notification nobody got.
-    pulse = {t["key"] for t in client.get("/api/tasks/pulse").json()["tasks"]}
-    assert "sess-a" in pulse
+    pulsed = {t["key"] for t in pulse(client)}
+    assert "sess-a" in pulsed
 
     # …and the narrowed build the changes long-poll runs says the same thing.
     assert [r["key"] for r in
@@ -2128,7 +2142,7 @@ def test_erasing_a_session_drops_its_task_draft(client, tmp_path,
     # AND THE DRAFT'S OWN KEY IS ANNOUNCED (bugbot, PR #1126). A page holding a
     # row under it — from before the binding, or from an older build — has to be
     # told to drop it in the same round the conversation goes.
-    body = client.get("/api/tasks/changes?since=%d&wait=0" % before).json()
+    body = changes(client, before)
     assert [r["key"] for r in body["rows"]] == []
     assert "draft:draft-0001" in body["gone"], "the form that went with it"
     assert "sess-a" in body["gone"], "and the conversation itself"

@@ -658,11 +658,13 @@ Applies to the `code` template (`templates/code/`), the only free-text editable 
 
 ### 13.2 Change feed (server)
 
-- **WF-1** Endpoint `/api/fs/events?path=A&path=B&…` — a **WebSocket** (D74; was SSE until the Chrome 6-connections-per-origin HTTP/1.1 cap starved every other fetch once ≥6 panes held streams open). Watched paths arrive as **repeated `path` query params** (paths may contain commas; repetition avoids a delimiter).
-- **WF-2** v1 implementation: async loop stats every watched path every **200 ms**; baseline mtimes captured at connect. When a path's mtime differs from the last seen value (or the file appears/disappears) send one JSON text message: `{"path": "<abs path>", "mtime": <float|null>}` — `null` means deleted. No event replay: changes that happen while disconnected are missed by design (the client reloads on reconnect-relevant changes anyway).
-- **WF-3** A `{"keepalive": true}` message every 15 s keeps intermediaries and buffers honest; clients ignore it.
-- **WF-4** No filesystem-watcher dependency (watchdog/fsevents) in v1 — polling stat is cheap and dependency-free at local scale. A later upgrade to real FS events is internal to this endpoint; the client contract (WebSocket, same message shape) does not change.
-- **WF-5** Read-only GET — no `X-Fused` guard, consistent with the other read endpoints (D36 covers only mutating/executing POSTs).
+*Rewritten 2026-10-09 (the Fused Events Bus, DECISIONS "2026-10-09 — One socket per document"): the dedicated `/api/fs/events` WebSocket is gone; the feed is the `fs.watch` topic on the one events socket every document holds.*
+
+- **WF-1** A document watches files by subscribing to the `fs.watch` topic over `WS /api/events` (`{"t":"sub","id":N,"topic":"fs.watch","params":{"paths":[A, B, …]}}`). One subscription carries the whole set; a changed set is a new subscription (runtime.js LR-4). The socket is origin-checked (`ws_origin_ok`, D10) like every socket that reaches application state.
+- **WF-2** v1 implementation: the server's watch registry stats every watched path every **200 ms** (one ticker per path, shared by every document watching it). The subscribe answers a snapshot `{"paths": [{"path", "mtime"}, …]}` — where things stand now, never a reload. When a path's mtime differs from the last seen value (or the file appears/disappears) the server pushes a delta `{"changes": [{"path": "<abs path>", "mtime": <float|null>}]}` — `null` means deleted. No event replay: changes that happen while the socket is down are missed by design; the snapshot that answers the resubscribe is the catch-up.
+- **WF-3** The server sends `{"t":"ping"}` after 15 s of silence; a client that hears nothing for 45 s closes and redials (the events client's watchdog). Clients ignore pings.
+- **WF-4** No filesystem-watcher dependency (watchdog/fsevents) in v1 — polling stat is cheap and dependency-free at local scale. A later upgrade to real FS events is internal to the topic's producer; the client contract (topic, snapshot shape, delta shape) does not change.
+- **WF-5** A read: the subscribe carries no `X-Fused` guard, consistent with the other read endpoints (D36 covers only mutating/executing POSTs); the Origin check is the socket's guard.
 
 ### 13.3 Auto-reload (runtime)
 
@@ -671,16 +673,16 @@ The reload logic lives **entirely in the injected runtime** — the shell needs 
 - **LR-1** Each rendered page watches the union of: **its own rendered file** (the `path` param of its `/render` URL), **`_file`** if present (templates watching their target), and **every Python file executed via `runPython` this page-life**.
 - **LR-2** `POST /api/run` response gains a `resolved_py` field — the absolute resolved path of the executed file — so the runtime learns dependency paths authoritatively instead of re-implementing the server's relative-path resolution. Recorded for failed runs too (a broken py that gets fixed must still trigger reload).
 - **LR-3** On any change event: debounce **300 ms** (coalesce bursts), then `location.reload()` on the iframe itself. Full reload is the honest re-execution — the runtime cannot replay what the page did with a python result. State survives because view state lives in URL params (D8/D20/D25).
-- **LR-4** When the watch set grows (a new py runs), the runtime closes and reopens its watch `WebSocket` with the full set. Resubscribe is debounced so a page firing several `runPython` calls on load reconnects once. Unlike `EventSource`, a WebSocket does not auto-reconnect — the runtime retries a dropped socket after 1 s.
+- **LR-4** When the watch set grows (a new py runs), the runtime replaces its `fs.watch` subscription with one carrying the full set. Resubscribe is debounced so a page firing several `runPython` calls on load resubscribes once. The events client redials a dropped socket itself (1 s → 30 s backoff) and resubscribes everything.
 - **LR-5** Opt-out: `fused.autoReload(false)` disables watching/reloading for that page. The `code` template calls it — the editor must not reload out from under the cursor (its own autosave changes the mtime; external changes are the conflict lock's job). The `claude` template calls it too — Claude's own edit to the watched `_file` would otherwise reload the chat mid-stream, killing the poll loop and orphaning the run. Since D237 that is one template covering both kinds of target (PT-14), and the opt-out is the chat **frame's** only: its own left pane is a nested frame that keeps live-refreshing, which is what makes the edit visible while the chat survives it. To make the opt-out race-free, the runtime starts watching on `DOMContentLoaded`, after inline page scripts have run. *Since D1310 the chat is no longer a framed page — the shell renders it — so there is no chat document to reload and the `claude` half of this clause records the retired iframe page; the target's own pane beside the native chat still live-refreshes.*
 - **LR-6** Deletion (`mtime: null`) reloads too — the resulting 404/error view is the truthful state.
 - **LR-7** Reload works identically for standalone `/render?path=…` pages (runtime is the same code).
 
 ### 13.4 Listing refresh (shell)
 
-- **LS-1** The directory listing view watches the directory path via the same endpoint; on change it re-fetches `/api/fs/list` and re-renders, preserving sort params.
+- **LS-1** The directory listing view watches the directory path via the same topic; on change it re-fetches `/api/fs/list` and re-renders, preserving sort params.
 - **LS-2** Known limitation, accepted: a directory's mtime changes on create/delete/rename of entries — not when a child file's content or size changes. Stale sizes in an open listing are fine.
-- **LS-3** The shell closes the listing's watch `WebSocket` when navigating away (to a preview or another directory).
+- **LS-3** The shell drops the listing's `fs.watch` subscription when navigating away (to a preview or another directory).
 
 ### 13.5 Read-only files — the editability contract
 
