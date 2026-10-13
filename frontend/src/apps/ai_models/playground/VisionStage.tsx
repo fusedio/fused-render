@@ -19,7 +19,6 @@ const TASKS: { value: VisionTask; label: string; placeholder: string }[] = [
   { value: "query", label: "Ask", placeholder: "Ask anything about the picture…" },
   { value: "detect", label: "Detect", placeholder: "What to find — e.g. cat, remote control" },
   { value: "point", label: "Point", placeholder: "What to point at — e.g. window" },
-  { value: "segment", label: "Segment", placeholder: "What to outline" },
 ];
 
 interface Picture {

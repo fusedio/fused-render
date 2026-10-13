@@ -3,6 +3,7 @@ copies, the catalog's per-model `tasks`, and the `vision-torch` worker's
 torch-free logic. The route is served by a stubbed `supervisor.generate_vision`,
 the embed tests' pattern.
 """
+import contextlib
 import importlib.util
 import os
 import re
@@ -245,19 +246,27 @@ def test_a_query_forwards_reasoning(client, photo, served):
 # -- the catalog and the format table agree -------------------------------------
 
 
-def test_every_vision_suggestion_is_a_recipe_with_the_same_tasks():
-    worker_tasks = {"caption", "query", "detect", "point", "segment"}
+def test_every_vision_suggestion_is_a_recipe_and_the_catalog_publishes_its_tasks(client):
     for entry in catalog.SUGGESTIONS["vision-torch"]:
-        recipe = formats.vision_torch_recipe(entry["id"])
-        assert recipe is not None, entry["id"]
-        assert entry["tasks"] == list(recipe["tasks"])
-        assert set(entry["tasks"]) <= worker_tasks
+        assert formats.vision_torch_recipe(entry["id"]) is not None, entry["id"]
+        assert "tasks" not in entry, "tasks come from the recipe, not a second copy"
+    rows = client.get("/api/ai/catalog").json()["capabilities"]
+    models = next(r for r in rows if r["capability"] == registry.VISION)["models"]
+    assert models
+    for model in models:
+        assert model["tasks"] == list(formats.VISION_TORCH_RECIPES[model["id"]]["tasks"])
+        assert set(model["tasks"]) <= set(ai_runtime._VISION_TASKS)
 
 
-def test_a_recipe_that_runs_repo_code_pins_its_commit():
+def test_a_recipe_carries_no_download_arguments():
+    # A revision or any other kwarg takes download_snapshot off its cache fast path and the mirror.
     for repo_id, recipe in formats.VISION_TORCH_RECIPES.items():
-        if any(p.endswith(".py") for p in recipe["allow"]):
-            assert re.fullmatch(r"[0-9a-f]{40}", recipe["revision"] or ""), repo_id
+        assert set(recipe) == {"family", "allow", "tasks"}, repo_id
+
+
+def test_moondreams_tokenizer_is_a_registered_component():
+    row = formats.component("moondream/starmie-v1")
+    assert row is not None and row["of"] == MOONDREAM and row["file"] == "tokenizer.json"
 
 
 def test_only_curated_repos_are_claimed_by_the_vision_runner():
@@ -330,6 +339,22 @@ def test_the_python_client_raises_the_servers_error(fused_ai_module, monkeypatch
 # -- the worker, without torch --------------------------------------------------
 
 
+class _FakeTorch(types.ModuleType):
+    """Only what `generate` touches: `inference_mode`, observable through `inside`."""
+
+    def __init__(self):
+        super().__init__("torch")
+        self.inside = False
+
+    @contextlib.contextmanager
+    def inference_mode(self):
+        self.inside = True
+        try:
+            yield
+        finally:
+            self.inside = False
+
+
 class _FakeBase(types.ModuleType):
     def __init__(self):
         super().__init__("worker_base")
@@ -338,7 +363,11 @@ class _FakeBase(types.ModuleType):
 
     def download_snapshot(self, model_id, allow_patterns=None, ignore_patterns=None, **kwargs):
         self.downloads.append((model_id, allow_patterns, kwargs))
-        return f"/snap/{model_id}/{kwargs.get('revision') or 'main'}"
+        return f"/snap/{model_id}/main"
+
+    def download_file(self, repo_id, filename, detail=None, job=None, row=None):
+        self.downloads.append(("file", repo_id, filename))
+        return f"/snap/{repo_id}/main/{filename}"
 
     def set_state(self, **fields):
         self.state.update(fields)
@@ -352,6 +381,7 @@ def worker(monkeypatch):
     base = _FakeBase()
     monkeypatch.setitem(sys.modules, "worker_base", base)
     monkeypatch.setitem(sys.modules, "formats", formats)
+    monkeypatch.setitem(sys.modules, "torch", _FakeTorch())
     spec = importlib.util.spec_from_file_location("vision_torch_worker_under_test", _WORKER)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -368,17 +398,16 @@ def test_the_worker_refuses_a_repo_it_has_no_recipe_for(worker):
         worker.download("someone/moondream-ft")
 
 
-def test_a_pinned_recipe_downloads_its_commit_and_its_tokenizer(worker):
+def test_moondream_downloads_its_tokenizer_file_then_its_snapshot(worker):
     path = worker.download(MOONDREAM)
-    recipe = formats.VISION_TORCH_RECIPES[MOONDREAM]
     assert worker._base.downloads == [
-        ("moondream/starmie-v1", ["*.json"], {}),
-        (MOONDREAM, recipe["allow"], {"revision": recipe["revision"]}),
+        ("file", "moondream/starmie-v1", "tokenizer.json"),
+        (MOONDREAM, formats.VISION_TORCH_RECIPES[MOONDREAM]["allow"], {}),
     ]
-    assert path.endswith(recipe["revision"])
+    assert path == f"/snap/{MOONDREAM}/main"
 
 
-def test_an_unpinned_recipe_takes_the_ordinary_download(worker):
+def test_grounding_dino_takes_the_ordinary_download(worker):
     worker.download(DINO)
     assert worker._base.downloads == [(DINO, ["*.json", "model.safetensors"], {})]
 
@@ -405,10 +434,11 @@ class _FakeMoondreamModel:
         return {"answer": "two", "reasoning": {"text": "I count two", "grounding": []}}
 
     def detect(self, image, obj, settings):
-        assert settings["variant"] is None
+        assert settings == {"max_objects": 50}
         return {"objects": [{"x_min": -0.01, "y_min": 0.2, "x_max": 1.0001, "y_max": 0.5}]}
 
-    def point(self, image, obj):
+    def point(self, image, obj, settings):
+        assert settings == {"max_objects": 1}
         return {"points": [{"x": 0.25, "y": 0.75}, {"x": 0.5, "y": 0.5}]}
 
 
@@ -439,6 +469,28 @@ def test_moondream_replies_are_normalized(worker):
 
 
 def test_the_worker_refuses_a_task_its_model_does_not_answer(worker):
-    _moondream(worker)
-    with pytest.raises(ValueError, match="cannot segment"):
-        worker.generate({"task": "segment", "image": "/a.jpg", "prompt": "cat"})
+    worker._loaded.update(family=object(), model_id=DINO, tasks=("detect",))
+    with pytest.raises(ValueError, match="cannot caption"):
+        worker.generate({"task": "caption", "image": "/a.jpg"})
+
+
+def test_a_request_runs_without_autograd(worker):
+    # Grad mode is per thread; set at load it never reached the request thread.
+    family = _moondream(worker)
+    torch = sys.modules["torch"]
+    seen = []
+    family.run = lambda *a: seen.append(torch.inside) or {"width": 1, "height": 1}
+    worker.generate({"task": "caption", "image": "/a.jpg"})
+    assert seen == [True]
+
+
+def test_the_worker_opens_a_rotated_photo_upright(worker, tmp_path):
+    from PIL import Image
+
+    path = tmp_path / "phone.jpg"
+    exif = Image.Exif()
+    exif[0x0112] = 6  # rotate 90° clockwise to display
+    Image.new("RGB", (40, 20)).save(path, exif=exif)
+    assert worker._open(str(path)).size == (20, 40)
+    with pytest.raises(ValueError, match="no such file"):
+        worker._open(str(tmp_path / "gone.jpg"))

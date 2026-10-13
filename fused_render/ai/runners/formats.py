@@ -808,6 +808,18 @@ COMPONENT_REPOS = {
             "again."
         ),
     },
+    "moondream/starmie-v1": {
+        "file": "tokenizer.json",
+        "of": "vikhyatk/moondream2",
+        "owner": "Moondream 2",
+        "part": "tokenizer",
+        "what": (
+            "The 4MB tokenizer Moondream 2's own code loads by name — fetched "
+            "with the model so an offline machine still has it, not a model you "
+            "can load on its own. Deleting it makes Moondream 2's next load "
+            "download it again."
+        ),
+    },
 }
 
 
@@ -1915,35 +1927,32 @@ def is_laya_snapshot(names, dirnames) -> bool:
 
 
 #: Image-understanding checkpoints `vision-torch` opens (SPEC AI-33), by repo id.
-#: An allow-list, not a format test: Moondream ships its model as Python in the
-#: repo, so a recipe that runs repo code pins the commit it was read at.
+#: An allow-list, not a format test: which tasks a model answers is a fact about
+#: the model, and no file in the repo says it.
 VISION_TORCH_RECIPES = {
     "IDEA-Research/grounding-dino-tiny": {
         "family": "grounding-dino",
-        "revision": None,
         "allow": ["*.json", "model.safetensors"],
         "tasks": ("detect",),
     },
     "IDEA-Research/grounding-dino-base": {
         "family": "grounding-dino",
-        "revision": None,
         "allow": ["*.json", "model.safetensors"],
         "tasks": ("detect",),
     },
     "vikhyatk/moondream2": {
         "family": "moondream",
-        # Tag 2025-06-21.
-        "revision": "9a7d4024050840e001defacec2b00727e89149e6",
+        # Its model is the Python in the repo, loaded with `trust_remote_code`.
         "allow": ["*.py", "*.json", "model.safetensors"],
-        "tokenizer": "moondream/starmie-v1",
         "tasks": ("caption", "query", "detect", "point"),
     },
 }
 
 
 def vision_torch_recipe(repo_id: str) -> dict | None:
-    """The `vision-torch` recipe for `repo_id`, or None when it is not one."""
-    return VISION_TORCH_RECIPES.get(repo_id)
+    """The `vision-torch` recipe for `repo_id` (a copy), or None when it is not one."""
+    spec = VISION_TORCH_RECIPES.get(repo_id)
+    return dict(spec) if spec else None
 
 
 QWEN3_TTS_MODEL_TYPE = "qwen3_tts"

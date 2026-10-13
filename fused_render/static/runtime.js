@@ -306,7 +306,7 @@
  *   fused.ai.vision({image, task, prompt, length, reasoning, maxObjects, model,
  *                    provider, abortSignal})  (SPEC AI-33)
  *     -> Promise<{task, imageSize: {width, height}, text?, reasoning?,
- *                 objects?, points?, masks?, ...frame}>
+ *                 objects?, points?, ...frame}>
  *     providerMetadata.local: {runner, seconds}.
  *     Image understanding on a local model. `image`: one path, resolved
  *     beside this page when relative. `task`: "caption" (no prompt; `length`
@@ -314,9 +314,9 @@
  *     `reasoning: true` thinks first; reply `text`, maybe `reasoning`) |
  *     "detect" (`prompt` names what to find; reply `objects: [{xMin, yMin,
  *     xMax, yMax, label, score}]`, score null when the model gives none) |
- *     "point" (reply `points: [{x, y, label}]`) | "segment" (reply `masks`).
+ *     "point" (reply `points: [{x, y, label}]`).
  *     Coordinates are 0–1 of the image. `maxObjects` caps detect/point.
- *     Each model answers a subset — its catalog row's `tasks`; with no
+ *     Each model answers a subset — its catalog entry's `tasks`; with no
  *     `model`, the first suggested model that answers `task` is used. Not
  *     job-backed. Rejects .type "bad_request" (bad option, or a model that
  *     cannot do `task` — the message names one that can) | "model_loading"
@@ -5536,7 +5536,7 @@
     }
     if (typeof opts.task !== "string" || !opts.task) {
       const err = new Error(
-        "fused.ai.vision({task}): 'task' is required — caption, query, detect, point or segment");
+        "fused.ai.vision({task}): 'task' is required — caption, query, detect or point");
       err.type = "bad_request";
       return Promise.reject(err);
     }

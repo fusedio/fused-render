@@ -1,8 +1,10 @@
 # The torch image-understanding runner's environment (SPEC AI-33).
 #
-# Moondream loads from its own torch code, not through transformers: its HF
-# wrapper breaks on transformers 5 (`all_tied_weights_keys`). transformers is
-# here for Grounding DINO only.
+# Both families load through transformers' `from_pretrained`; Moondream 2's
+# model is the Python in its repo (`trust_remote_code`), which imports
+# `tokenizers` itself. No `accelerate`: it adds ~1.7 s to the transformers
+# import and saves ~1 s of weight loading (measured on M5, 2026-10-13).
+# `pillow-heif` opens iPhone photos, as in the embed runners.
 # torch comes from the CPU index like `diffusers_image/`: the macOS wheel there
 # carries MPS, which is where this runner is offered today.
 [project]
@@ -16,6 +18,7 @@ dependencies = [
     "safetensors>=0.4,<1",
     "numpy>=1.26,<3",
     "pillow",
+    "pillow-heif>=1.5,<2",
     "huggingface_hub",
     "psutil",
 ]

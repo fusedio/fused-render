@@ -912,10 +912,10 @@ def _repo_meta(repo_dir: str) -> _RepoMeta:
     # snapshot actually is. Format evidence is still the more precise answer
     # (mlx vs diffusers vs "genuinely nothing else known"), so it still gets
     # first refusal even though the task itself is no longer unsupported.
-    if formats.vision_torch_recipe(repo_id):
-        # Moondream's card says image-text-to-text, which would route it to the text runner.
-        meta.task, meta.task_source = _format_task(repo_id, names, dirnames, config)
-    elif not _tasks.classify(meta.task).supported or meta.task == "image-to-image":
+    # A vision-torch recipe is decisive too: Moondream's card says
+    # image-text-to-text, which would route it to the text runner.
+    if (not _tasks.classify(meta.task).supported or meta.task == "image-to-image"
+            or formats.vision_torch_recipe(repo_id)):
         found = _format_task(repo_id, names, dirnames, config)
         if found:
             meta.task, meta.task_source = found

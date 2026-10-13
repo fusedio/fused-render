@@ -679,7 +679,7 @@ export async function decide(
 
 // -- Vision (POST /api/ai/vision, SPEC AI-33) -----------------------------------
 
-export type VisionTask = "caption" | "query" | "detect" | "point" | "segment";
+export type VisionTask = "caption" | "query" | "detect" | "point";
 
 /** A box in 0–1 image coordinates; `score` is null for models that give none. */
 export interface VisionObject {

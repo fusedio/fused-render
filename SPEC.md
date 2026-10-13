@@ -10209,27 +10209,29 @@ an AI Models page that could say what was on disk but not what was *running*.
 - **AI-33** **`image-to-text` capability ("Vision") and `fused.ai.vision({image,
   task, prompt, ...})` verb (D1353).** One verb for every image-understanding
   task: `caption` (no prompt; `length`), `query` (`prompt` is the question;
-  `reasoning`), `detect`, `point` and `segment` (`prompt` names what to find;
-  `maxObjects`). Each model answers a subset, published as its catalog row's
-  `tasks`; with no `model` the route uses the first suggested model that
-  answers the task, and a model that cannot do it is a `bad_request` naming
-  one that can. The payload is `task`, `imageSize` and one of `text`
-  (+ `reasoning`), `objects: [{xMin, yMin, xMax, yMax, label, score}]` (score
-  null when the model gives none), `points: [{x, y, label}]` or `masks`;
-  coordinates are 0–1 of the image. `POST /api/ai/vision` is decide's shape
-  (closed options, local only, synchronous, `model_loading` + job id on a cold
-  model) with `image` resolved beside the page named by `base`. One runner
-  today, `vision-torch` (Apple Silicon, own venv, torch MPS), running repos
-  from `formats.VISION_TORCH_RECIPES` only: both Hub tags it serves
+  `reasoning`), `detect` and `point` (`prompt` names what to find;
+  `maxObjects`). Each model answers a subset, fixed by its recipe and published
+  as its catalog entry's `tasks`; with no `model` the route uses the first
+  suggested model that answers the task, and a model that cannot do it is a
+  `bad_request` naming one that can. The payload is `task`, `imageSize` and one
+  of `text` (+ `reasoning`), `objects: [{xMin, yMin, xMax, yMax, label, score}]`
+  (score null when the model gives none) or `points: [{x, y, label}]`;
+  coordinates are 0–1 of the image as a browser shows it (EXIF orientation
+  applied). `POST /api/ai/vision` is decide's shape (closed options, local
+  only, synchronous, `model_loading` + job id on a cold model) with `image`
+  resolved beside the page named by `base`. One runner today, `vision-torch`
+  (Apple Silicon, own venv, torch MPS), running repos from
+  `formats.VISION_TORCH_RECIPES` only: both Hub tags it serves
   (`image-to-text`, `zero-shot-object-detection`) are format-gated, and the
-  loader claims a snapshot by curated repo id, not by layout. Two families:
-  Moondream 2 from its own torch code at a pinned commit (the repo ships
-  Python, and its transformers wrapper breaks on transformers 5), and
-  Grounding DINO through transformers. The catalog lists Grounding DINO Tiny
-  and Base (detect) and Moondream 2 (caption, query, detect, point;
-  recommended). A new family (SAM 3, a Photon-served Moondream 3) is a recipe
-  plus a family class, or a runner of its own on the same capability.
-  Onboarding and the benchmark leave it out.
+  loader claims a snapshot by curated repo id, not by layout. Two families,
+  both through transformers' `from_pretrained`: Moondream 2 at the Hub's
+  `main` (its model is the repo's own Python, `trust_remote_code`; its
+  tokenizer `moondream/starmie-v1` is a `COMPONENT_REPOS` file fetched with
+  it) and Grounding DINO. The catalog lists Grounding DINO Tiny and Base
+  (detect) and Moondream 2 (caption, query, detect, point; recommended). A new
+  family is a recipe plus a family class, or a runner of its own on the same
+  capability; a new task (a segmenter's masks) is added with the first model
+  that answers it. Onboarding and the benchmark leave it out.
 
 ## 41. Scheduled Messages — Sending Claude a Message Later (D289, D290, D291)
 

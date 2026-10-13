@@ -1,9 +1,10 @@
-"""Image understanding on torch (SPEC AI-33): caption, query, detect, point, segment.
+"""Image understanding on torch (SPEC AI-33): caption, query, detect, point.
 
 Started by `fused_render.ai.supervisor` on the interpreter built from this
 folder's `pyproject.toml`; the HTTP contract and download reporting are
 `worker_base`'s. Which repos load, and which tasks each answers, is
-`formats.VISION_TORCH_RECIPES`; a family class below runs each kind.
+`formats.VISION_TORCH_RECIPES`; a family class below runs each kind, both
+through transformers' own `from_pretrained`.
 """
 
 import os
@@ -12,17 +13,17 @@ import sys
 # The base sits one directory up, in `runners/` — see mlx_text/worker.py.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import importlib  # noqa: E402
-import json  # noqa: E402
 import re  # noqa: E402
 import time  # noqa: E402
-import types  # noqa: E402
 
+import embed_common  # noqa: E402 - the shared image opener (HEIC included)
 import formats  # noqa: E402 - the recipe table, shared with the server
 import worker_base  # noqa: E402 - the path insert above is what makes it importable
 
 #: Every task the vision verb names; a recipe answers a subset.
-TASKS = ("caption", "query", "detect", "point", "segment")
+TASKS = ("caption", "query", "detect", "point")
+#: Moondream 2's tokenizer, a separate repo its code loads by name (`formats.COMPONENT_REPOS`).
+MOONDREAM_TOKENIZER = "moondream/starmie-v1"
 CAPTION_LENGTHS = ("short", "normal", "long")
 DEFAULT_MAX_OBJECTS = 50
 #: Grounding DINO's own defaults for keeping a box and naming it.
@@ -52,15 +53,7 @@ def _device(half):
 
 
 def _open(path):
-    from PIL import Image, ImageOps
-
-    try:
-        with Image.open(path) as im:
-            return ImageOps.exif_transpose(im).convert("RGB")
-    except FileNotFoundError:
-        raise ValueError(f"image not found: {path}") from None
-    except OSError as e:
-        raise ValueError(f"image not readable: {path} ({e})") from None
+    return embed_common.open_image(path, upright=True)
 
 
 def _clamp(v):
@@ -71,57 +64,15 @@ def _clamp(v):
 
 
 class _Moondream:
-    """Moondream's own torch code from the pinned snapshot; no transformers wrapper."""
+    """Moondream 2 as its model card loads it: transformers running the repo's own code."""
 
     def __init__(self, model_id, spec, path):
-        import torch
-        from safetensors.torch import load_file
+        from transformers import AutoModelForCausalLM
 
-        if spec["revision"] and os.path.basename(os.path.normpath(path)) != spec["revision"]:
-            raise RuntimeError(
-                f"{model_id} resolved to {path}, not the pinned commit {spec['revision']}")
         self.device, dtype = _device(half=True)
-        md, cfg_mod = self._import_snapshot(path, f"_fused_vision_{spec['family']}")
-        md.Tokenizer = self._local_tokenizer(spec["tokenizer"])
-        with open(os.path.join(path, "config.json")) as f:
-            cfg = cfg_mod.MoondreamConfig.from_dict(json.load(f).get("config") or {})
-        model = md.MoondreamModel(cfg, dtype=dtype, setup_caches=False)
-        weights = {k.removeprefix("model."): v
-                   for k, v in load_file(os.path.join(path, "model.safetensors")).items()}
-        missing, unexpected = model.load_state_dict(weights, strict=False)
-        if missing or unexpected:
-            raise RuntimeError(
-                f"{model_id} weights do not match its code: "
-                f"{len(missing)} missing, {len(unexpected)} unexpected tensors")
-        model.to(self.device)
-        model._setup_caches()
-        model.eval()
-        torch.set_grad_enabled(False)
-        self.model = model
+        self.model = AutoModelForCausalLM.from_pretrained(
+            path, trust_remote_code=True, dtype=dtype).to(self.device).eval()
         self._key, self._encoded = None, None
-
-    @staticmethod
-    def _import_snapshot(path, name):
-        pkg = types.ModuleType(name)
-        pkg.__path__ = [path]
-        sys.modules[name] = pkg
-        return (importlib.import_module(f"{name}.moondream"),
-                importlib.import_module(f"{name}.config"))
-
-    @staticmethod
-    def _local_tokenizer(repo_id):
-        """Tokenizer.from_pretrained, served from the snapshot `download` fetched."""
-        from huggingface_hub import snapshot_download
-        from tokenizers import Tokenizer
-
-        path = os.path.join(snapshot_download(repo_id, local_files_only=True), "tokenizer.json")
-
-        class _Local:
-            @staticmethod
-            def from_pretrained(*_a, **_k):
-                return Tokenizer.from_file(path)
-
-        return _Local
 
     def _encode(self, path):
         # Encoding is most of a call; reuse it while requests keep naming one file.
@@ -144,16 +95,16 @@ class _Moondream:
             if reasoning:
                 out["reasoning"] = reasoning.get("text") if isinstance(reasoning, dict) else str(reasoning)
         elif task == "detect":
-            # encode_image reads settings["variant"] unguarded, so it must be present.
-            settings = {"variant": None, "max_objects": opts["maxObjects"]}
+            settings = {"max_objects": opts["maxObjects"]}
             found = self.model.detect(encoded, prompt, settings=settings)["objects"]
             out["objects"] = [{"xMin": _clamp(o["x_min"]), "yMin": _clamp(o["y_min"]),
                                "xMax": _clamp(o["x_max"]), "yMax": _clamp(o["y_max"]),
                                "label": prompt, "score": None} for o in found]
         elif task == "point":
-            found = self.model.point(encoded, prompt)["points"][: opts["maxObjects"]]
+            settings = {"max_objects": opts["maxObjects"]}
+            found = self.model.point(encoded, prompt, settings=settings)["points"]
             out["points"] = [{"x": _clamp(p["x"]), "y": _clamp(p["y"]), "label": prompt}
-                             for p in found]
+                             for p in found[: opts["maxObjects"]]]
         return out
 
 
@@ -161,13 +112,11 @@ class _GroundingDino:
     """Open-vocabulary detection through transformers' Grounding DINO."""
 
     def __init__(self, model_id, spec, path):
-        import torch
         from transformers import AutoModelForZeroShotObjectDetection, AutoProcessor
 
         self.device, _ = _device(half=False)
         self.processor = AutoProcessor.from_pretrained(path)
         self.model = AutoModelForZeroShotObjectDetection.from_pretrained(path).to(self.device).eval()
-        torch.set_grad_enabled(False)
 
     def run(self, task, path, prompt, opts):
         image = _open(path)
@@ -197,11 +146,10 @@ _FAMILIES = {"moondream": _Moondream, "grounding-dino": _GroundingDino}
 
 def download(model_id):
     spec = recipe(model_id)
-    if spec.get("tokenizer"):
-        worker_base.download_snapshot(spec["tokenizer"], allow_patterns=["*.json"])
-    if spec["revision"]:
-        return worker_base.download_snapshot(
-            model_id, allow_patterns=spec["allow"], revision=spec["revision"])
+    if spec["family"] == "moondream":
+        worker_base.download_file(
+            MOONDREAM_TOKENIZER, formats.COMPONENT_REPOS[MOONDREAM_TOKENIZER]["file"],
+            detail="Fetching Moondream's tokenizer…")
     return worker_base.download_snapshot(model_id, allow_patterns=spec["allow"])
 
 
@@ -275,6 +223,8 @@ def validate_request(body):
 
 
 def generate(body):
+    import torch
+
     family = _loaded.get("family")
     if family is None:
         raise RuntimeError("no model is loaded")
@@ -283,7 +233,9 @@ def generate(body):
         raise ValueError(
             f"{_loaded['model_id']} cannot {task}; it answers {', '.join(_loaded['tasks'])}")
     started = time.monotonic()
-    out = family.run(task, path, prompt, opts)
+    # Grad mode is per thread, and requests do not run on the thread `load` did.
+    with torch.inference_mode():
+        out = family.run(task, path, prompt, opts)
     out["task"] = task
     out["seconds"] = round(time.monotonic() - started, 4)
     return out

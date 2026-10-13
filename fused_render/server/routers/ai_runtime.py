@@ -210,7 +210,7 @@ _VISION_OPTIONS = frozenset({"image", "task", "prompt", "length", "reasoning",
                              "maxObjects", "model", "provider"})
 #: `base` is bridge-injected so a relative `image` resolves beside the page (RH-1).
 _VISION_SERVER_OPTIONS = _VISION_OPTIONS | {"base"}
-_VISION_TASKS = ("caption", "query", "detect", "point", "segment")
+_VISION_TASKS = ("caption", "query", "detect", "point")
 _VISION_LENGTHS = ("short", "normal", "long")
 _VISION_MAX_OBJECTS = 200
 
@@ -1226,6 +1226,9 @@ def _catalog_with_downloads() -> list[dict]:
                                                    entry["id"])
             entry["promptScheme"] = _prompt_scheme(row["capability"],
                                                    entry["id"])
+            # The vision tasks this entry answers (SPEC AI-33), from its recipe.
+            if row["capability"] == registry.VISION:
+                entry["tasks"] = list(_vision_tasks(entry["id"]))
             traits = (speech_traits(entry["id"])
                       if row["capability"] == registry.TEXT_TO_SPEECH else None)
             if traits:
@@ -3302,17 +3305,23 @@ def _vision_problem(body: dict) -> str | None:
         return "'reasoning' is a query option and must be true or false"
     if "maxObjects" in body:
         n = body["maxObjects"]
-        if (task not in ("detect", "point", "segment") or not isinstance(n, int)
+        if (task not in ("detect", "point") or not isinstance(n, int)
                 or isinstance(n, bool) or not 1 <= n <= _VISION_MAX_OBJECTS):
-            return (f"'maxObjects' is a detect, point or segment option: an integer "
+            return (f"'maxObjects' is a detect or point option: an integer "
                     f"from 1 to {_VISION_MAX_OBJECTS}")
     return None
+
+
+def _vision_tasks(model: str) -> tuple[str, ...]:
+    """The tasks `model` answers, from its `vision-torch` recipe; () for a stranger."""
+    spec = formats.vision_torch_recipe(model)
+    return tuple(spec["tasks"]) if spec else ()
 
 
 def _vision_models_for(task: str) -> list[str]:
     """Suggested vision models that answer `task`, in suggestion order."""
     return [e["id"] for e in catalog.for_capability(registry.VISION)
-            if task in (e.get("tasks") or ())]
+            if task in _vision_tasks(e["id"])]
 
 
 @router.post("/api/ai/vision")
@@ -3320,12 +3329,13 @@ def api_ai_vision(body: dict = Body(...), x_fused: str | None = Header(default=N
                   x_fused_page: str | None = Header(default=None),
                   x_fused_requester: str | None = Header(default=None),
                   x_fused_requester_label: str | None = Header(default=None)):
-    """Caption, query, detect, point at or segment what is in one image (SPEC AI-33).
+    """Caption, query, detect or point at what is in one image (SPEC AI-33).
 
     Synchronous like decide: a call is seconds, a cold model is `model_loading`
     with the load's job id. Each model answers a subset of the tasks (its
-    catalog row's `tasks`); with no `model`, the first suggested model that
-    answers the task is used. Coordinates come back normalized to 0–1.
+    recipe's `tasks`, shown on its catalog row); with no `model`, the first
+    suggested model that answers the task is used. Coordinates come back
+    normalized to 0–1.
     """
     guard = _require_fused(x_fused)
     if guard is not None:
@@ -3336,45 +3346,46 @@ def api_ai_vision(body: dict = Body(...), x_fused: str | None = Header(default=N
     rejection = _reject_unknown(body, _VISION_SERVER_OPTIONS, "/api/ai/vision")
     if rejection is not None:
         message = json.loads(bytes(rejection.body))["error"]
-        return _decide_error("bad_request", message, status=400)
+        return _embed_error("bad_request", message, status=400)
     tier = _provider_rejection(body, "vision")
     if tier is not None:
-        return _decide_error(tier[0], tier[1], status=tier[2])
+        return _embed_error(tier[0], tier[1], status=tier[2])
     problem = _vision_problem(body)
     if problem is not None:
-        return _decide_error("bad_request", problem, status=400)
+        return _embed_error("bad_request", problem, status=400)
     path, err = _resolve_reference_file(
         body.get("image"), body.get("base"), caller="fused.ai.vision",
         verb="reads one picture", option="image", noun="image")
     if err is not None:
-        return _decide_error("bad_request", json.loads(bytes(err.body))["error"], status=400)
+        return _embed_error("bad_request", json.loads(bytes(err.body))["error"], status=400)
 
     task = body["task"]
     reason = registry.unavailable_reason(registry.VISION)
     if reason:
-        return _decide_error("unavailable", reason, status=409)
+        return _embed_error("unavailable", reason, status=409)
     model = _model_of(body)
     if not model:
         candidates = _vision_models_for(task)
         if not candidates:
-            return _decide_error("unavailable", f"no vision model here can {task}", status=409)
+            return _embed_error("unavailable", f"no vision model here can {task}", status=409)
         model = candidates[0]
     entry = catalog.entry_for(registry.VISION, model)
     if entry is None:
         known = ", ".join(e["id"] for e in catalog.for_capability(registry.VISION))
-        return _decide_error(
+        return _embed_error(
             "bad_request", f"{model} is not a vision model here; vision models: {known}",
             status=400)
-    if task not in (entry.get("tasks") or ()):
+    tasks = _vision_tasks(model)
+    if task not in tasks:
         able = ", ".join(_vision_models_for(task)) or "none"
-        return _decide_error(
+        return _embed_error(
             "bad_request",
-            f"{model} cannot {task}; it answers {', '.join(entry.get('tasks') or ())}. "
+            f"{model} cannot {task}; it answers {', '.join(tasks)}. "
             f"Models that can {task}: {able}",
             status=400)
     gap = catalog.engine_gap(model)
     if gap is not None:
-        return _decide_error("unavailable", gap["reason"], status=409)
+        return _embed_error("unavailable", gap["reason"], status=409)
 
     forwarded = {"task": task, "image": path}
     for key in ("prompt", "length", "reasoning", "maxObjects"):
@@ -3384,15 +3395,15 @@ def api_ai_vision(body: dict = Body(...), x_fused: str | None = Header(default=N
         result = supervisor.generate_vision(model, forwarded, requester_id=requester_id,
                                            requester_label=requester_label)
     except supervisor.ModelNotReady as e:
-        return _decide_error("model_loading", str(e), status=409, job_id=e.job_id)
+        return _embed_error("model_loading", str(e), status=409, job_id=e.job_id)
     except supervisor.ModelSlotConflict as e:
         return _conflict_error(e)
     except supervisor.SupervisorError as e:
-        return _decide_error("ai_error", str(e), status=502)
+        return _embed_error("ai_error", str(e), status=502)
 
     payload = {"task": result.get("task", task),
                "imageSize": {"width": result.get("width"), "height": result.get("height")}}
-    for key in ("text", "reasoning", "objects", "points", "masks"):
+    for key in ("text", "reasoning", "objects", "points"):
         if key in result:
             payload[key] = result[key]
     runner = registry.for_capability(registry.VISION)
