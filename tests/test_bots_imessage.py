@@ -21,9 +21,11 @@ def test_cursor_and_lock_ignore_the_branch_ref(app_home, monkeypatch):
     """chat.db is one per Mac, so the cursor and the reader's flock are too: a branch
     dev build and the installed app must contend for the same lock and advance the
     same cursor, or the one that was not reading replays everything the other answered."""
+    from fused_render import _branch
     from fused_render.bots import paths as bpaths
 
     monkeypatch.setenv("FUSED_RENDER_BRANCH", "some-branch")
+    monkeypatch.setattr(_branch, "_CACHED_REF", None)  # the ref is resolved once per process
     assert "branches" in bpaths.data_root()  # the bots themselves do nest
     base = os.path.join(str(app_home), "bots", "data")
     assert imessage.cursor_path() == os.path.join(base, "imessage.json")

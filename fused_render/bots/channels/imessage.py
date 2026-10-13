@@ -112,7 +112,7 @@ class ImessageChannel(Channel):
             self.state["error"] = f"another bridge is running ({self.state['holder'] or 'standalone'})"
             return []
         try:
-            with im.CURSOR_LOCK:
+            with im.CURSOR_LOCK, im.cursor_flock():  # the flock: another process' send is editing the same file
                 out = self._tick()
             self.state["running"] = True
             self.state["error"] = ""

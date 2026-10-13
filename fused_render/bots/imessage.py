@@ -306,8 +306,43 @@ def format_texts(label, rows):
 
 
 # The cursor file is shared by the channel's poll (router poll thread) and every
-# sender (router send thread, a bot's `text` action on its task thread): one lock.
+# sender (router send thread, a bot's `text` action on its task thread): one lock
+# in-process, and `cursor_flock` across processes — the file sits at the BASE
+# home (paths.imessage_dir), so a branch dev build and the installed app, each a
+# bots owner with its own router, both load → edit → save it. Only one of them
+# reads chat.db (imessage.lock), but every one SENDS: a send's save landing after
+# the reader's would put the rowid back and replay the rows in between.
 CURSOR_LOCK = threading.RLock()
+
+
+class cursor_flock:
+    """`with cursor_flock():` — an exclusive flock on `<data>/imessage.json.lock`
+    for one load → save of the cursor file. Taken inside CURSOR_LOCK, never
+    around it. A no-op where fcntl is missing (the channel is macOS-only)."""
+
+    def __enter__(self):
+        self.fh = None
+        try:
+            import fcntl
+        except ImportError:
+            return self
+        p = cursor_path() + ".lock"
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        fh = open(p, "a+")
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        self.fh = fh
+        return self
+
+    def __exit__(self, *exc):
+        if self.fh is not None:
+            try:
+                import fcntl
+                fcntl.flock(self.fh, fcntl.LOCK_UN)
+            except Exception:  # noqa: BLE001
+                pass
+            self.fh.close()
+            self.fh = None
+        return False
 
 
 def send_text(handle, text):
@@ -316,7 +351,7 @@ def send_text(handle, text):
     reply come back as an incoming row) is never read as a command — whoever
     sends: the channel's replies or a bot's `text` action."""
     now = time.time()
-    with CURSOR_LOCK:
+    with CURSOR_LOCK, cursor_flock():
         cur = load_cursor()
         sent = cur.setdefault("sent", {})
         for chunk in chunks(text):
