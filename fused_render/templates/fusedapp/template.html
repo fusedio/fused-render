@@ -108,6 +108,18 @@
     return (i === 0 ? n : n.toFixed(1)) + " " + u[i];
   };
   const api = (q) => "/api/appfile/" + q + "?path=" + encodeURIComponent(FILE);
+  // The export stamp is UTC ISO-8601 with seconds (`2026-10-13T07:34:59Z`);
+  // shown as the viewer's local date AND time — two exports of one app on
+  // the same day are told apart by the minute. A stamp the browser cannot
+  // parse is shown as written; none is null.
+  const fmtStamp = (s) => {
+    if (!s || !/^\d{4}-\d{2}-\d{2}/.test(s)) return null;
+    const d = new Date(s);
+    if (isNaN(d.getTime())) return s;
+    return d.toLocaleString(undefined, {
+      year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
+    });
+  };
 
   // A small, safe Markdown subset for the README: text is escaped FIRST, then
   // headings, fenced code, lists, quotes, paragraphs, and inline code / bold /
@@ -154,7 +166,7 @@
   // What the page says per state. `needs_force` states carry a warning and
   // the button asks twice (the second click sends force).
   function describe(t) {
-    const when = (s) => (s && /^\d{4}-\d{2}-\d{2}/.test(s)) ? s.slice(0, 10) : "an unknown date";
+    const when = (s) => fmtStamp(s) || "an unknown date";
     switch (t.state) {
       case "new": return { tone: "ok", title: "Not installed yet",
         body: "Install puts the app at " + t.path + " as an editable app of your own.", button: "Install" };
@@ -235,7 +247,7 @@
     const h1 = document.createElement("h1"); h1.textContent = t.name; hero.appendChild(h1);
     const meta = document.createElement("div"); meta.className = "meta";
     const bits = [t.files.length + " files", human(t.bytes)];
-    if (t.exported_at && /^\d{4}/.test(t.exported_at)) bits.push("exported " + t.exported_at.slice(0, 10));
+    if (fmtStamp(t.exported_at)) bits.push("exported " + fmtStamp(t.exported_at));
     meta.textContent = bits.join(" · ");
     hero.appendChild(meta);
 
