@@ -60,9 +60,23 @@ CONTROL_POOL = ThreadPoolExecutor(max_workers=2,
 CONTROL_ACTIONS = frozenset({"cancel", "decide", "app_state"})
 
 
+#: THE TASK-OUTPUT LANE (SPEC T-3). `task_output` parks a worker for up to
+#: 10 s on a control response, so it gets its own two threads: on `POOL` a
+#: few clicks of "Output" would hold slots the 400 ms polls need, and on
+#: `CONTROL_POOL` they would queue a Stop behind them.
+TASK_OUTPUT_POOL = ThreadPoolExecutor(max_workers=2,
+                                      thread_name_prefix="claude-agent-out")
+
+#: Actions with a lane of their own, beside the control lane.
+SIDE_POOLS: dict[str, ThreadPoolExecutor] = {"task_output": TASK_OUTPUT_POOL}
+
+
 def pool_for(action: str) -> ThreadPoolExecutor:
-    """The executor `action` runs on: `CONTROL_POOL` for a control action."""
-    return CONTROL_POOL if action in CONTROL_ACTIONS else POOL
+    """The executor `action` runs on: `CONTROL_POOL` for a control action,
+    its own lane for one in `SIDE_POOLS`, else `POOL`."""
+    if action in CONTROL_ACTIONS:
+        return CONTROL_POOL
+    return SIDE_POOLS.get(action, POOL)
 
 #: Default budget in seconds — the old `/api/run` executor timeout, kept for
 #: every action that can write (start/send/decide/snapshot_revert/...).

@@ -10,7 +10,7 @@ These routes run the SAME `main()` on the one in-process module instance
 answers are the bytes `/api/run` carried in its `result` field.
 
 ONE DISPATCH ENDPOINT, an explicit allowlist — the `claude_config.py` precedent.
-`ACTIONS` names the seventeen actions `agent.main` dispatches and the handler
+`ACTIONS` names the nineteen actions `agent.main` dispatches and the handler
 each reaches. The allowlist is the gate (an unknown action is a 400 before
 anything is bound or run); the call itself goes through `agent.main`, not the
 handler, because `main` is where the string-shaped wire params become handler

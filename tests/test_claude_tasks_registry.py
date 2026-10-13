@@ -227,7 +227,8 @@ def test_the_old_flat_file_is_upgraded(agent, run_dir):
     assert rec["description"] == "sleep 30" and rec["status"] == "running"
     assert data["activity"]["tasks"] == [{"id": "t1", "description": "sleep 30"}]
     stored = json.loads((run_dir / "bg_tasks.json").read_text())
-    assert stored["t1"]["status"] == "running"
+    assert stored["tasks"]["t1"]["status"] == "running"
+    assert isinstance(stored["offset"], int)
 
 
 def test_history_carries_the_last_runs_tasks(agent, run_dir, tmp_path, monkeypatch):
@@ -260,8 +261,12 @@ def _fake_host(agent, monkeypatch, run_dir, response):
         seen.update(subtype=subtype, **fields)
         return "req-1"
 
-    def await_(rd, request_id, timeout=5.0, start_offset=0):
+    def await_(rd, request_id, timeout=5.0, start_offset=0, errors=None):
         seen["timeout"] = timeout
+        if isinstance(response, Exception):
+            if errors is not None:
+                errors.append(str(response))
+            return None
         return response
     monkeypatch.setattr(agent, "_write_control_request", write)
     monkeypatch.setattr(agent, "_await_control_response", await_)
@@ -291,3 +296,131 @@ def test_task_output_tolerates_an_unknown_shape(agent, run_dir, monkeypatch):
                                                 "truncated": False}
     _fake_host(agent, monkeypatch, run_dir, None)
     assert "error" in agent._task_output("run", "b1")
+
+
+def test_task_output_passes_the_clis_refusal_through(agent, run_dir, monkeypatch):
+    _fake_host(agent, monkeypatch, run_dir, RuntimeError("No task found with ID: b9"))
+    assert agent._task_output("run", "b9") == {"error": "No task found with ID: b9"}
+
+
+def test_await_control_response_reports_an_error_answer(agent, run_dir):
+    _append(run_dir, [{"type": "control_response", "response": {
+        "request_id": "r1", "subtype": "error", "error": "No task found"}}])
+    errors = []
+    assert agent._await_control_response(str(run_dir), "r1", timeout=0.2,
+                                         errors=errors) is None
+    assert errors == ["No task found"]
+
+
+def test_task_output_has_its_own_lane():
+    import importlib
+    pool = importlib.import_module("fused_render.claude_agent.pool")
+    lane = pool.pool_for("task_output")
+    assert lane is not pool.POOL and lane is not pool.CONTROL_POOL
+    assert pool.budget("task_output") == 15.0
+
+
+# ------------------------------------------- review fixes: storage and revival
+
+def test_the_registry_and_its_offset_are_one_file(agent, run_dir):
+    _append(run_dir, [_sys("task_started", task_id="b1", description="x")])
+    agent._poll("run")
+    stored = json.loads((run_dir / "bg_tasks.json").read_text())
+    assert set(stored) == {"offset", "tasks"}
+    assert stored["offset"] == (run_dir / "out.jsonl").stat().st_size
+    assert not (run_dir / "bg_tasks.offset").exists()
+
+
+def test_the_transitional_two_file_layout_is_read(agent, run_dir):
+    _append(run_dir, [_sys("task_started", task_id="m1", description="w",
+                           task_type="monitor_ws"),
+                      _sys("task_notification", task_id="m1", summary="l1")])
+    size = (run_dir / "out.jsonl").stat().st_size
+    rec = agent._new_task_record("m1", "w")
+    rec.update(kind="monitor", events=1, type="monitor_ws")
+    (run_dir / "bg_tasks.json").write_text(json.dumps({"m1": rec}))
+    (run_dir / "bg_tasks.offset").write_text(str(size))
+    data = agent._poll("run")
+    assert _rec(data, "m1")["events"] == 1, "rows behind the old offset are not re-applied"
+    assert not (run_dir / "bg_tasks.offset").exists()
+
+
+def test_interleaved_polls_keep_every_record(agent, run_dir):
+    """Poll A read the window before poll B absorbed a newer row; A's write
+    must not drop B's record (the registry is re-read under the lock)."""
+    _append(run_dir, [_sys("task_started", task_id="a", description="first")])
+    ends_a = []
+    rows_a, _ = agent._read_current_turn(str(run_dir), ends_a)
+    _append(run_dir, [_sys("task_started", task_id="b", description="second")])
+    agent._poll("run")                                    # B: sees a and b
+    reg, _ = agent._update_run_registry(str(run_dir), rows_a, ends_a, {}, {})  # A, late
+    assert set(reg) == {"a", "b"}
+    data = agent._poll("run")
+    assert {t["id"] for t in data["tasks"]} == {"a", "b"}
+
+
+def test_concurrent_polls_from_threads_keep_every_record(agent, run_dir):
+    import threading
+    _append(run_dir, [_sys("task_started", task_id="t%d" % i, description="d")
+                      for i in range(20)])
+    errs = []
+
+    def go():
+        try:
+            for _ in range(5):
+                agent._poll("run")
+        except Exception as exc:  # noqa: BLE001
+            errs.append(exc)
+    threads = [threading.Thread(target=go) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert not errs
+    assert len(agent._read_bg_tasks(str(run_dir))) == 20
+
+
+@pytest.mark.parametrize("body", ["", '{"offset": 5, "tas'])
+def test_an_unreadable_file_rebuilds_rather_than_wipes(agent, run_dir, body):
+    _append(run_dir, [_sys("task_started", task_id="b1", description="x")])
+    agent._poll("run")
+    (run_dir / "bg_tasks.json").write_text(body)
+    data = agent._poll("run")
+    assert [t["id"] for t in data["tasks"]] == ["b1"]
+    assert _rec(data, "b1")["status"] == "running"
+    assert json.loads((run_dir / "bg_tasks.json").read_text())["tasks"]["b1"]
+
+
+def test_an_ended_task_is_not_revived_by_a_non_terminal_patch(agent, run_dir):
+    _append(run_dir, [_sys("task_started", task_id="t3", description="three"),
+                      _sys("task_started", task_id="t4", description="four"),
+                      _sys("background_tasks_changed", tasks=[
+                          {"task_id": "t4", "description": "four"}]),
+                      _sys("task_updated", task_id="t3", patch={"status": "paused"}),
+                      _sys("task_notification", task_id="t3", status="running")])
+    data = agent._poll("run")
+    rec = _rec(data, "t3")
+    assert rec["status"] == "completed" and rec["ended_at"] is not None
+    assert data["activity"]["tasks"] == [{"id": "t4", "description": "four"}]
+    # A terminal patch may still correct how it ended…
+    _append(run_dir, [_sys("task_updated", task_id="t3", patch={"status": "killed"})])
+    assert _rec(agent._poll("run"), "t3")["status"] == "killed"
+    # …and a fresh listing brings it back.
+    _append(run_dir, [_sys("background_tasks_changed", tasks=[
+        {"task_id": "t3", "description": "three"}])])
+    assert _rec(agent._poll("run"), "t3")["status"] == "running"
+
+
+def test_history_marks_a_dead_runs_tasks_unknown(agent, run_dir, tmp_path, monkeypatch):
+    target = tmp_path / "proj2"
+    target.mkdir()
+    (run_dir / "meta.json").write_text(json.dumps({"file": str(target)}))
+    (run_dir / "session").write_text("s")
+    (run_dir / "bg_tasks.json").write_text(json.dumps({"old": "sleep 99"}))
+    os.utime(run_dir / "bg_tasks.json", (1000.0, 1000.0))
+    monkeypatch.setattr(agent, "PROJECTS", str(tmp_path / "projects"))
+    agent._alive = lambda _d: False
+    tasks = agent._history(str(target), "s")["tasks"]
+    assert tasks[0]["status"] == "unknown" and tasks[0]["ended_at"] is None
+    assert tasks[0]["started_at"] == 1000.0, "an upgraded record keeps a stable start"
+    assert agent._history(str(target), "s")["tasks"][0]["started_at"] == 1000.0

@@ -179,3 +179,66 @@ def test_commands_for_a_file_target_uses_its_folder(agent, repo):
 def test_main_dispatches_commands(agent, repo):
     assert agent.main("commands", file=str(repo / "app"))["from"] == "disk"
     assert "error" in agent.main("commands")
+
+
+def test_commands_changed_once_across_a_tail_then_complete_row(agent, tmp_path, repo):
+    run_dir = _make_run(agent, tmp_path, repo / "app", [])
+    with open(run_dir / "out.jsonl", "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(_init_row()))          # no newline yet
+    assert agent._poll("run1")["commands_changed"] is False
+    assert (run_dir / "capabilities.json").exists(), "a tail row is still captured"
+    with open(run_dir / "out.jsonl", "a", encoding="utf-8") as fh:
+        fh.write("\n")
+    assert agent._poll("run1")["commands_changed"] is True
+    assert agent._poll("run1")["commands_changed"] is False
+
+
+def test_a_first_poll_captures_only_the_last_init(agent, tmp_path, repo, monkeypatch):
+    captured = []
+    run_dir = _make_run(agent, tmp_path, repo / "app", [
+        _init_row(slash_commands=["one"]), {"type": "result", "result": "x"},
+        _init_row(slash_commands=["two"])])
+    real = agent._capture_commands
+    monkeypatch.setattr(agent, "_capture_commands",
+                        lambda rd, row: (captured.append(row["slash_commands"]),
+                                         real(rd, row)))
+    agent._poll("run1")
+    assert captured == [["two"]]
+    assert json.loads((run_dir / "capabilities.json").read_text())["slash_commands"] == ["two"]
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="POSIX FIFOs only")
+def test_a_fifo_named_like_a_command_is_not_opened(agent, repo):
+    os.mkfifo(str(repo / ".claude" / "commands" / "trap.md"))
+    os.mkfifo(str(repo / ".claude" / "skills" / "deploy" / "x.md"))
+    names = {c["name"] for c in agent._commands(str(repo / "app"))["commands"]}
+    assert "trap" not in names and "a" in names
+    assert agent._md_description(str(repo / ".claude" / "commands" / "trap.md")) == ""
+
+
+def test_symlinked_project_command_dirs_are_not_walked(agent, tmp_path, repo):
+    elsewhere = tmp_path / "elsewhere"
+    (elsewhere / "commands").mkdir(parents=True)
+    (elsewhere / "commands" / "far.md").write_text("far away\n", encoding="utf-8")
+    (repo / ".claude" / "commands" / "linked").symlink_to(elsewhere / "commands")
+    names = {c["name"] for c in agent._commands(str(repo / "app"))["commands"]}
+    assert "linked:far" not in names, "a symlinked subdirectory is not followed"
+
+    other = tmp_path / "repo2"
+    (other / ".git").mkdir(parents=True)
+    (other / ".claude").symlink_to(elsewhere)
+    names = {c["name"] for c in agent._commands(str(other))["commands"]}
+    assert "far" not in names, "a symlinked project .claude is not walked"
+
+
+def test_the_walk_is_capped_by_directory_count(agent, tmp_path, monkeypatch):
+    r = tmp_path / "deep"
+    (r / ".git").mkdir(parents=True)
+    base = r / ".claude" / "commands"
+    for i in range(10):
+        (base / ("d%02d" % i)).mkdir(parents=True)
+        (base / ("d%02d" % i) / "c.md").write_text("x\n", encoding="utf-8")
+    monkeypatch.setattr(agent, "_COMMAND_DIR_CAP", 3)
+    names = [c["name"] for c in agent._commands(str(r))["commands"]
+             if c["source"] == "project"]
+    assert len(names) == 2   # the root plus two subdirectories

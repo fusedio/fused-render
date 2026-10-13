@@ -2812,7 +2812,8 @@ def _write_control_request(run_dir: str, subtype: str, **fields) -> str:
 
 def _await_control_response(run_dir: str, request_id: str,
                             timeout: float = 5.0,
-                            start_offset: int = 0) -> dict | None:
+                            start_offset: int = 0,
+                            errors: list | None = None) -> dict | None:
     """Poll `out.jsonl` for the `control_response` row answering
     `request_id`, or None if it never arrives (the host never got to drain
     the request, the CLI died first, ...) or answered with anything other
@@ -2835,7 +2836,11 @@ def _await_control_response(run_dir: str, request_id: str,
     caller captures `start_offset` (the file's size) BEFORE queuing the
     request — every row that can possibly answer it is written after that
     point, since the CLI cannot respond to a request it has not received
-    yet — so nothing before it is ever worth reading, on any pass."""
+    yet — so nothing before it is ever worth reading, on any pass.
+
+    `errors`, when given, receives the CLI's own `error` text when it
+    answered with anything but success — the None return alone cannot tell
+    "it refused" from "it never answered"."""
     out_path = os.path.join(run_dir, "out.jsonl")
     deadline = time.time() + timeout
     while True:
@@ -2856,6 +2861,9 @@ def _await_control_response(run_dir: str, request_id: str,
                     if resp.get("request_id") != request_id:
                         continue
                     if resp.get("subtype") != "success":
+                        if errors is not None:
+                            errors.append(str(resp.get("error") or
+                                              "the session refused the request"))
                         return None
                     inner = resp.get("response")
                     return inner if isinstance(inner, dict) else {}
@@ -5111,61 +5119,191 @@ def _upgrade_task_record(task_id: str, value) -> dict | None:
     return rec
 
 
-def _read_bg_tasks(run_dir: str) -> dict:
-    """The task registry `_poll` last computed (`{task_id: TaskRecord}`),
-    persisted across cursor advances — see `_write_bg_tasks`. Tolerates the
-    old flat `{task_id: description}` shape by upgrading each entry."""
-    try:
-        with open(os.path.join(run_dir, "bg_tasks.json"), encoding="utf-8") as fh:
-            data = json.load(fh)
-    except (OSError, ValueError):
-        return {}
+def _parse_registry(data, mtime: float | None = None) -> dict:
+    """`{task_id: TaskRecord}` from a decoded registry body — the current
+    `{"offset", "tasks"}` file's `tasks`, or the older flat map (records, or
+    bare descriptions from before T-1, stamped with `mtime` so a re-read
+    never moves their `started_at`)."""
     if not isinstance(data, dict):
         return {}
     out = {}
     for task_id, value in data.items():
         rec = _upgrade_task_record(str(task_id), value)
-        if rec is not None:
-            out[str(task_id)] = rec
+        if rec is None:
+            continue
+        if isinstance(value, str) and mtime is not None:
+            rec["started_at"] = mtime
+        out[str(task_id)] = rec
     return out
 
 
-def _write_bg_tasks(run_dir: str, bg_tasks: dict) -> None:
+def _load_registry(run_dir: str) -> tuple:
+    """(registry, offset, current) off `bg_tasks.json`.
+
+    ONE FILE, `{"offset": N, "tasks": {task_id: TaskRecord}}`: the records
+    and the `out.jsonl` byte offset they have absorbed every row up to, so a
+    reader can never pair one poll's records with another poll's offset.
+    Older layouts still read: the flat `{task_id: record | description}` map,
+    with the offset (if any) in the transitional `bg_tasks.offset` file.
+
+    `current` is True only for the current layout. A missing, empty or
+    unparseable file reads as offset 0: the caller rebuilds from its whole
+    window rather than writing an empty registry over records it merely
+    failed to read at a fixed offset. Anything not `current` is rewritten
+    in the current layout by the next poll."""
+    path = os.path.join(run_dir, "bg_tasks.json")
+    try:
+        mtime = os.path.getmtime(path)
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return {}, 0, False
+    if not isinstance(data, dict):
+        return {}, 0, False
+    if isinstance(data.get("tasks"), dict) and isinstance(data.get("offset"), int) \
+            and not isinstance(data.get("offset"), bool):
+        return _parse_registry(data["tasks"], mtime), max(0, data["offset"]), True
+    offset = 0
+    try:
+        with open(os.path.join(run_dir, "bg_tasks.offset"), encoding="utf-8") as fh:
+            offset = max(0, int(fh.read().strip()))
+    except (OSError, ValueError):
+        offset = 0
+    return _parse_registry(data, mtime), offset, False
+
+
+def _read_bg_tasks(run_dir: str) -> dict:
+    """The task registry `_poll` last persisted (`{task_id: TaskRecord}`),
+    any layout `_load_registry` reads."""
+    return _load_registry(run_dir)[0]
+
+
+def _write_bg_tasks(run_dir: str, bg_tasks: dict, offset: int = 0) -> None:
     """`background_tasks_changed` is the CLI's own AUTHORITATIVE full list,
     sent only when it changes — a page reading `activity.tasks`/
     `tasks_pending` needs the last one it saw for as long as it stays true,
     not just for the one poll whose narrow, cursor-bounded window (see
-    `_read_current_turn`) happened to contain the row. Once a genuine new
-    turn advances the cursor past that row, a poll scanning only what
-    changed since the last one has no way to see it again — so `_poll`
-    persists its own answer here every call and seeds the next call's scan
-    from it, the same way `cursor` itself survives between calls."""
+    `_read_current_turn`) happened to contain the row. So `_poll` persists
+    its registry here every call and seeds the next call from it.
+
+    Atomic (temp file + `os.replace`): a reader sees the old file or the new
+    one, never half of either."""
+    path = os.path.join(run_dir, "bg_tasks.json")
     try:
-        with _private_open(os.path.join(run_dir, "bg_tasks.json")) as fh:
-            json.dump(bg_tasks, fh)
+        tmp = f"{path}.{os.urandom(4).hex()}.tmp"
+        with _private_open(tmp) as fh:
+            json.dump({"offset": int(offset), "tasks": bg_tasks}, fh)
+        os.replace(tmp, path)
     except OSError:
-        pass  # costs the next poll a stale (not wrong-forever) answer
-
-
-def _read_applied_offset(run_dir: str, size: int) -> int:
-    """The `out.jsonl` byte offset the persisted registry (and the command
-    capture) has already absorbed every row up to. 0 when missing, garbage,
-    or past the end of the file (a file that shrank is not the one this
-    offset was taken against)."""
+        return  # costs the next poll a stale (not wrong-forever) answer
     try:
-        with open(os.path.join(run_dir, "bg_tasks.offset"), encoding="utf-8") as fh:
-            value = int(fh.read().strip())
-    except (OSError, ValueError):
-        return 0
-    return value if 0 <= value <= size else 0
-
-
-def _write_applied_offset(run_dir: str, value: int) -> None:
-    try:
-        with _private_open(os.path.join(run_dir, "bg_tasks.offset")) as fh:
-            fh.write(str(value))
+        os.remove(os.path.join(run_dir, "bg_tasks.offset"))
     except OSError:
-        pass
+        pass  # the transitional layout's offset file; usually not there
+
+
+class _RunLock:
+    """`flock` on `<run_dir>/bg_tasks.lock` for one read-apply-write of the
+    registry (POSIX; Windows takes the unlocked path, the same posture
+    `_record_settings` takes). Two polls of one run — a page and the spawn
+    bookkeeping loop, or two tabs — otherwise both read offset N, and the
+    later writer's copy drops whatever the earlier one added."""
+
+    def __init__(self, run_dir: str):
+        self.path = os.path.join(run_dir, "bg_tasks.lock")
+        self.fh = None
+
+    def __enter__(self):
+        try:
+            import fcntl
+        except ImportError:
+            return self
+        try:
+            self.fh = os.fdopen(os.open(self.path, os.O_RDWR | os.O_CREAT, 0o600), "r+")
+            fcntl.flock(self.fh, fcntl.LOCK_EX)
+        except OSError:
+            if self.fh is not None:
+                self.fh.close()
+            self.fh = None
+        return self
+
+    def __exit__(self, *exc):
+        if self.fh is not None:
+            self.fh.close()   # closing the descriptor releases the flock
+        return False
+
+
+def _update_run_registry(run_dir: str, rows: list, ends: list,
+                         tool_names: dict, tool_inputs: dict) -> tuple:
+    """(registry, commands_changed) after applying this window's task and
+    command rows that the persisted registry has not absorbed yet.
+
+    `ends[i]` is `rows[i]`'s end offset (negative for a half-written tail,
+    see `_read_current_turn`). A complete row past the stored offset is
+    applied and persisted; a tail row past it changes THIS answer only (it
+    will be read again, complete, by a later poll). The whole
+    read-apply-write holds `_RunLock`.
+
+    Commands (SPEC C-2): only the newest `init` row among the fresh ones is
+    captured (each one replaces the last anyway, and a run dir polled for
+    the first time would otherwise rewrite the state file once per turn),
+    plus any `commands_changed` after it. `commands_changed` on the payload
+    is True only for a COMPLETE fresh row, so one row is news exactly once."""
+    now = time.time()
+    with _RunLock(run_dir):
+        registry, applied, current = _load_registry(run_dir)
+        try:
+            size = os.path.getsize(os.path.join(run_dir, "out.jsonl"))
+        except OSError:
+            size = 0
+        if applied > size:
+            applied = 0   # not the file this offset was taken against
+        new_applied = applied
+        persist = None
+        cap_rows = []         # (row, complete) — init/commands_changed, fresh
+        commands_changed = False
+        for row, end in zip(rows, ends):
+            complete = end is not None and end >= 0
+            stop = end if complete else -(end or 0)
+            if stop <= applied:
+                continue
+            if complete:
+                new_applied = max(new_applied, stop)
+            if not isinstance(row, dict) or row.get("parent_tool_use_id") \
+                    or row.get("type") != "system":
+                continue
+            sub = row.get("subtype")
+            if sub in ("task_started", "task_progress", "task_updated",
+                       "task_notification", "background_tasks_changed"):
+                if not complete and persist is None:
+                    persist = json.loads(json.dumps(registry))
+                registry = _apply_task_row(registry, row, tool_names,
+                                           tool_inputs, now)
+            elif sub == "init":
+                cap_rows = [(row, complete)]
+                commands_changed = commands_changed or complete
+            elif sub == "commands_changed":
+                cap_rows.append((row, complete))
+                commands_changed = commands_changed or complete
+        # A task whose tool call this window only now names gets its kind
+        # settled here.
+        settled = False
+        for target in (registry, persist or {}):
+            for rec in target.values():
+                if rec.get("kind") == "other" \
+                        and rec.get("tool_use_id") in tool_names:
+                    kind = _task_kind(rec, tool_names[rec["tool_use_id"]])
+                    if kind != "other":
+                        rec["kind"] = kind
+                        settled = True
+        for row, _complete in cap_rows:
+            _capture_commands(run_dir, row)
+        # Nothing new absorbed and nothing settled: the file already says this.
+        if new_applied != applied or settled or not current:
+            _write_bg_tasks(run_dir,
+                            persist if persist is not None else registry,
+                            new_applied)
+    return registry, commands_changed
 
 
 def _apply_task_row(registry: dict, row: dict, tool_names: dict,
@@ -5209,7 +5347,12 @@ def _apply_task_row(registry: dict, row: dict, tool_names: dict,
         if not isinstance(patch, dict):
             patch = {}
         if patch.get("status"):
-            _task_end(rec, _task_status(patch["status"], rec["status"]), now)
+            status = _task_status(patch["status"], rec["status"])
+            # An ENDED task stays ended: only a terminal patch (a correction
+            # of how it ended) moves it. `task_started` or a
+            # `background_tasks_changed` listing are what bring one back.
+            if status in _TASK_TERMINAL or rec.get("ended_at") is None:
+                _task_end(rec, status, now)
         if isinstance(patch.get("description"), str) and patch["description"]:
             rec["description"] = patch["description"]
         if patch.get("error") is not None:
@@ -5223,7 +5366,9 @@ def _apply_task_row(registry: dict, row: dict, tool_names: dict,
         if summary:
             rec["summary"] = summary
         status = str(row.get("status") or "")
-        if status in _TASK_TERMINAL:
+        if rec.get("ended_at") is not None:
+            pass  # already ended; a late notification only adds its summary
+        elif status in _TASK_TERMINAL:
             _task_end(rec, _task_status(status), now)
         elif status:
             # A line from a monitor (or any notification that says the task
@@ -5304,6 +5449,7 @@ _BUILTIN_COMMANDS = {
 
 _COMMANDS_STATE = "commands"
 _COMMAND_SCAN_CAP = 500   # files per folder walk; a menu, not an index
+_COMMAND_DIR_CAP = 200    # directories per folder walk
 
 
 def _commands_state_path(workdir: str) -> str:
@@ -5379,11 +5525,23 @@ def _capture_commands(run_dir: str, row: dict) -> None:
 
 
 def _md_description(path: str) -> str:
-    """Frontmatter `description:`, else the first non-empty line."""
+    """Frontmatter `description:`, else the first non-empty line.
+
+    REGULAR FILES ONLY, checked on the open descriptor: a FIFO named
+    `x.md` would block this read (and a pool thread) forever, so the open is
+    non-blocking and anything that is not a plain file is refused before a
+    byte is read."""
     try:
-        with open(path, encoding="utf-8", errors="replace") as fh:
-            text = fh.read(16384)
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
     except OSError:
+        return ""
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            os.close(fd)
+            return ""
+        with os.fdopen(fd, encoding="utf-8", errors="replace") as fh:
+            text = fh.read(16384)
+    except (OSError, ValueError):
         return ""
     lines = text.splitlines()
     body = lines
@@ -5406,14 +5564,27 @@ def _md_description(path: str) -> str:
 
 
 def _scan_command_dir(root: str, source: str, out: dict) -> None:
-    """`root/**/*.md` — a nested `a/b.md` is `a:b`, the CLI's own spelling."""
+    """`root/**/*.md` — a nested `a/b.md` is `a:b`, the CLI's own spelling.
+
+    Bounded: symlinked subdirectories are not followed, at most
+    `_COMMAND_DIR_CAP` directories and `_COMMAND_SCAN_CAP` files are looked
+    at, and only regular files (by `lstat`) are opened."""
     if not os.path.isdir(root):
         return
     seen = 0
-    for dirpath, dirnames, filenames in os.walk(root):
+    dirs = 0
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        dirs += 1
+        if dirs > _COMMAND_DIR_CAP:
+            return
         dirnames[:] = sorted(d for d in dirnames if not d.startswith("."))
         for fn in sorted(filenames):
             if not fn.endswith(".md"):
+                continue
+            try:
+                if not stat.S_ISREG(os.lstat(os.path.join(dirpath, fn)).st_mode):
+                    continue
+            except OSError:
                 continue
             seen += 1
             if seen > _COMMAND_SCAN_CAP:
@@ -5462,8 +5633,16 @@ def _disk_commands(workdir: str) -> dict:
     out = {}
     home = os.path.expanduser("~")
     project = _project_dirs(workdir) if workdir else []
+    # A project's `.claude` (or its `commands`) that is a SYMLINK is not
+    # walked: a repo can point it anywhere, including at a huge tree. The
+    # user's own `~/.claude` is often a dotfiles symlink and is still read —
+    # its walk is bounded like every other.
+    project = [d for d in project
+               if not os.path.islink(os.path.join(d, ".claude"))]
     for d in project:
-        _scan_command_dir(os.path.join(d, ".claude", "commands"), "project", out)
+        if not os.path.islink(os.path.join(d, ".claude", "commands")):
+            _scan_command_dir(os.path.join(d, ".claude", "commands"),
+                              "project", out)
     for d in project:
         _scan_skill_dir(os.path.join(d, ".claude", "skills"), "project", out)
     _scan_command_dir(os.path.join(home, ".claude", "commands"), "user", out)
@@ -5570,10 +5749,11 @@ def _task_output(run_id: str, task_id: str) -> dict:
                                             task_id=task_id)
     except OSError as exc:
         return {"error": f"could not reach the session: {exc}"}
+    refused = []
     resp = _await_control_response(run_dir, request_id, timeout=10.0,
-                                   start_offset=start_offset)
+                                   start_offset=start_offset, errors=refused)
     if resp is None:
-        return {"error": "the session did not answer"}
+        return {"error": refused[0] if refused else "the session did not answer"}
     output = ""
     for key in ("output", "content", "text"):
         if isinstance(resp.get(key), str):
@@ -5843,9 +6023,10 @@ def _read_current_turn(run_dir: str, ends: list | None = None) -> tuple:
     the picture.
 
     `ends`, when given, is filled in step with `rows`: each row's END byte
-    offset in `out.jsonl` (just past its newline), or None for a parsed but
-    half-written tail row. `_poll` uses it to apply task rows exactly once
-    (see `_read_applied_offset`)."""
+    offset in `out.jsonl` (just past its newline) — NEGATED for a parsed but
+    half-written tail row (no newline yet), whose end is where its bytes stop
+    today. `_poll` uses it to apply task rows exactly once (see
+    `_update_run_registry`)."""
     path = os.path.join(run_dir, "out.jsonl")
     try:
         size = os.path.getsize(path)
@@ -5929,7 +6110,7 @@ def _read_current_turn(run_dir: str, ends: list | None = None) -> tuple:
         try:
             rows.append(json.loads(tail.decode("utf-8", "replace")))
             if ends is not None:
-                ends.append(None)
+                ends.append(-(line_start + len(tail)))
         except ValueError:
             pass  # half-written last line; next poll gets it, same as before
 
@@ -6092,17 +6273,10 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
     # cursor advances past the row that announced a still-running task, this
     # poll's own window may say nothing about it at all.
     #
-    # It is the T-1 task REGISTRY now (`{task_id: TaskRecord}`, see
-    # `_apply_task_row`), applied once per row rather than replayed: `ends`
-    # carries each row's end offset and `applied` is how far the persisted
-    # registry has already absorbed, so a row at or before it is skipped by the
-    # task and command branches below (everything else here still re-reads the
-    # whole window, as it always has).
-    bg_tasks = _read_bg_tasks(run_dir)
+    # It is the T-1 task REGISTRY now (`{task_id: TaskRecord}`), applied once
+    # per row rather than replayed, under a lock, AFTER this loop — see
+    # `_update_run_registry`. The loop below only collects what that needs.
     tool_names = {}        # tool_use id -> tool name, for a task's `kind`
-    persist_tasks = None   # the registry as of the last COMPLETE row, when a
-    #                        half-written tail row changed the live answer
-    commands_changed = False  # a NEW init/commands_changed row (SPEC C-2)
     agent_rows = 0         # rows a subagent wrote (parent_tool_use_id set)
     after_tool = False     # a tool_result landed and nothing has streamed since
     # Every row this poll managed to parse, handed to `_segments_from_rows` once
@@ -6114,22 +6288,10 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
 
     ends = []
     rows, scan_cursor = _read_current_turn(run_dir, ends)
-    try:
-        applied = _read_applied_offset(
-            run_dir, os.path.getsize(os.path.join(run_dir, "out.jsonl")))
-    except OSError:
-        applied = 0
-    new_applied = applied
-    now = time.time()
 
-    for row, row_end in zip(rows, ends):
+    for row in rows:
         parsed.append(row)
         t = row.get("type")
-        # Not yet absorbed by the persisted registry — see `ends` above. A
-        # tail row (no end yet) is always fresh and never persisted.
-        fresh = row_end is None or row_end > applied
-        if row_end is not None and row_end > new_applied:
-            new_applied = row_end
         # Anything at all after a `result` is the run waking up for another turn
         # (the harness's hooks fire first, then `init`, then the reply), so the
         # quiet-verb window closes on the first row of any kind — see `idle` —
@@ -6184,22 +6346,6 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
                 hooks_open[row["hook_id"]] = str(row.get("hook_name") or "hook")
             elif sub == "hook_response":
                 hooks_open.pop(row.get("hook_id"), None)
-            elif sub in ("task_started", "task_progress", "task_updated",
-                         "task_notification", "background_tasks_changed"):
-                # The registry (SPEC T-1). `background_tasks_changed` is the
-                # CLI's authoritative list when it sends one.
-                if fresh:
-                    if row_end is None and persist_tasks is None:
-                        persist_tasks = json.loads(json.dumps(bg_tasks))
-                    bg_tasks = _apply_task_row(bg_tasks, row, tool_names,
-                                               tool_inputs, now)
-            elif sub in ("init", "commands_changed"):
-                # The command list (SPEC C-2) — captured once per row, and
-                # `commands_changed` on the payload only for a row this poll
-                # is the first to see, so the page re-fetches once.
-                if fresh:
-                    commands_changed = True
-                    _capture_commands(run_dir, row)
         elif t == "assistant":
             skills += _skill_calls(row)
             # THE WINDOW AS OF THIS MESSAGE. Same filter and same shape as the
@@ -6301,15 +6447,11 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
                 # the turn that then succeeded says nothing about why this ended.
                 gave_up = was_retrying
 
-    # A task whose tool call this window only now shows (the row that names
-    # the tool landed after `task_started`) gets its kind settled here.
-    for rec in bg_tasks.values():
-        if rec.get("kind") == "other" and rec.get("tool_use_id") in tool_names:
-            rec["kind"] = _task_kind(rec, tool_names[rec["tool_use_id"]])
-    _write_bg_tasks(run_dir, persist_tasks if persist_tasks is not None
-                    else bg_tasks)
-    if new_applied != applied:
-        _write_applied_offset(run_dir, new_applied)
+    # The task registry (SPEC T-1) and the command list (SPEC C-2): the rows
+    # this window holds that the persisted registry has not absorbed yet,
+    # applied once, under the run's registry lock.
+    bg_tasks, commands_changed = _update_run_registry(
+        run_dir, rows, ends, tool_names, tool_inputs)
 
     # Last word on the verb: a run sitting in a retry is not thinking, and
     # saying so is the whole point — "Thinking…" with a frozen token count is
@@ -7747,7 +7889,11 @@ def _session_task_registry(file: str, session_id: str,
     """The task registry (`bg_tasks.json`) of the newest run dir belonging to
     this chat's session, live or not — {} when none is left. Matched the way
     `_live_run` matches (target, or folder/member with the session named;
-    `resumed_from` or the run's own session), without its liveness gate."""
+    `resumed_from` or the run's own session), without its liveness gate.
+
+    A run whose process is gone cannot vouch for a task it last saw running:
+    such records come back with status `unknown` (and `ended_at` null) rather
+    than a confident `running` the panel would tick a live clock for."""
     if not session_id or _bad_id(session_id):
         return {}
     file = os.path.abspath(file)
@@ -7772,7 +7918,13 @@ def _session_task_registry(file: str, session_id: str,
         if session_id not in (meta.get("resumed_from", ""),
                               _run_own_session(run_dir, meta)):
             continue
-        return _read_bg_tasks(run_dir)
+        registry = _read_bg_tasks(run_dir)
+        if registry and not (_host_alive(run_dir) or _alive(run_dir)):
+            for rec in registry.values():
+                if _task_active(rec):
+                    rec["status"] = "unknown"
+                    rec["ended_at"] = None
+        return registry
     return {}
 
 
