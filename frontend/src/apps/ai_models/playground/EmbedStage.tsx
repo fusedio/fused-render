@@ -28,7 +28,11 @@
 //   encoder has no such convention and the route 400s a `kind` sent to one,
 //   because a parameter that changed nothing would be worse than one refused.
 // * an IMAGES mode, only where `entry.acceptsPaths` is true. That is a vision
-//   tower, which a prose encoder does not have.
+//   tower, which a prose encoder does not have. Where `entry.acceptsAudio` /
+//   `entry.acceptsVideo` are true as well (EmbeddingGemma 2), the same mode
+//   takes sound files and videos through the same picker — the server sorts a
+//   path by extension, so the only difference the reader sees is the file
+//   filter and the noun.
 //
 // Both read the server's flags and neither re-derives them, which is the rule
 // `imageInput.ts` states for `acceptsImage`: a control drawn off anything else
@@ -192,6 +196,11 @@ const MAX_PICTURES = 12;
 // photo library is actually in, so leaving it out would make the mode work on
 // screenshots and fail on the photographs.
 const PICTURE_TYPES = ["png", "jpg", "jpeg", "webp", "gif", "bmp", "tiff", "heic", "heif"];
+// What the unified encoder's audio and video decoders read — the same lists as
+// `embed_common.AUDIO_SUFFIXES` / `VIDEO_SUFFIXES` on the server, so the
+// picker never offers a file the route would then refuse by name.
+const AUDIO_TYPES = ["wav", "mp3", "flac", "ogg", "oga", "m4a", "aac", "opus"];
+const VIDEO_TYPES = ["mp4", "m4v", "mov", "mkv", "webm", "avi", "mpg", "mpeg"];
 
 // The two things a text can BE to a retrieval model — `formats.TEXT_EMBED_KINDS`,
 // and the route refuses anything else. "Searching for" / "Being searched" rather
@@ -253,6 +262,17 @@ export function EmbedStage({
   // reader who switched engines mid-session would otherwise see an images tab
   // whose every request 400s), which is `usableBase`'s argument applied here.
   const ranksPictures = entry.acceptsPaths === true;
+  const ranksAudio = ranksPictures && entry.acceptsAudio === true;
+  const ranksVideo = ranksPictures && entry.acceptsVideo === true;
+  // The noun the mode is drawn with: "Pictures" on a SigLIP, "Files" on a
+  // model that also takes sound and video — one picker, one list, one ranking.
+  const ranksMedia = ranksAudio || ranksVideo;
+  const mediaNoun = ranksMedia ? "file" : "picture";
+  const mediaTypes = [
+    ...PICTURE_TYPES,
+    ...(ranksAudio ? AUDIO_TYPES : []),
+    ...(ranksVideo ? VIDEO_TYPES : []),
+  ];
   const scheme = entry.promptScheme ?? null;
   const [wantPictures, setWantPictures] = useState(false);
   const pictureMode = ranksPictures && wantPictures;
@@ -352,8 +372,10 @@ export function EmbedStage({
     setAttaching(true);
     try {
       const path = await pickFile({
-        title: "Choose a picture to rank",
-        types: PICTURE_TYPES,
+        title: ranksMedia
+          ? "Choose a picture, sound file or video to rank"
+          : "Choose a picture to rank",
+        types: mediaTypes,
       });
       // A cancel is an answer: nothing changes and nothing is said about it.
       if (path === null) return;
@@ -430,7 +452,7 @@ export function EmbedStage({
         {/* The action, and the way to the settings. The hero card above names
             the model and its state. */}
         <StageHeader
-          title={pictureMode ? "Search pictures by meaning" : "Search lines by meaning"}
+          title={pictureMode ? `Search ${mediaNoun}s by meaning` : "Search lines by meaning"}
           configOpen={configOpen}
           onToggleConfig={toggleConfig}
         />
@@ -444,9 +466,13 @@ export function EmbedStage({
             options={[
               { value: "lines", label: "Lines",
                 title: "Rank written lines against the phrase" },
-              { value: "pictures", label: "Pictures",
-                title: "Rank pictures on this disk against the phrase — the same "
-                  + "vector space, through this model's vision tower" },
+              { value: "pictures", label: ranksMedia ? "Files" : "Pictures",
+                title: ranksMedia
+                  ? "Rank pictures, sound files and videos on this disk against "
+                    + "the phrase — one vector space, through this model's vision "
+                    + "and audio towers"
+                  : "Rank pictures on this disk against the phrase — the same "
+                    + "vector space, through this model's vision tower" },
             ]}
             active={pictureMode ? "pictures" : "lines"}
             onPick={(value) => {
@@ -508,7 +534,7 @@ export function EmbedStage({
       <ConfigPanel open={configOpen} animated={configTouched.current}>
         {pictureMode ? (
           <RailField
-            label="Pictures to search"
+            label={ranksMedia ? "Files to search" : "Pictures to search"}
             hint={`Files already on this disk, up to ${MAX_PICTURES}.`}
           >
             <div className="pg-embed-pictures">
@@ -520,7 +546,7 @@ export function EmbedStage({
                   <button
                     type="button"
                     className="pg-ghost-btn"
-                    title="Remove this picture"
+                    title={`Remove this ${mediaNoun}`}
                     onClick={() => {
                       setPictures((current) => current.filter((p) => p !== path));
                       setRankedPictures(null);
@@ -536,7 +562,7 @@ export function EmbedStage({
                 disabled={attaching || pictures.length >= MAX_PICTURES}
                 onClick={() => void addPicture()}
               >
-                {attaching ? "Choosing…" : "Add a picture…"}
+                {attaching ? "Choosing…" : `Add a ${mediaNoun}…`}
               </button>
             </div>
           </RailField>
@@ -612,8 +638,8 @@ export function EmbedStage({
               capability="embeddings"
               note={
                 pictures.length
-                  ? "The pictures come back here, ordered by how close they are to the phrase."
-                  : "Add a picture or two behind the settings cog, then type what you are looking for."
+                  ? `The ${mediaNoun}s come back here, ordered by how close they are to the phrase.`
+                  : `Add a ${mediaNoun} or two behind the settings cog, then type what you are looking for.`
               }
             />
           )

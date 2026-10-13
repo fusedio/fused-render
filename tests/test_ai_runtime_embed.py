@@ -290,6 +290,56 @@ def test_paths_on_a_DUAL_encoder_is_served(client, monkeypatch, served):
     assert "kind" not in served[0][1]
 
 
+def _media(monkeypatch, answers):
+    """`hub_cache.embed_media` as the route sees it — patched on the router's
+    own name for `_families`' reason."""
+    monkeypatch.setattr(ai_runtime, "embed_media", answers.get)
+
+
+def test_a_sound_file_on_a_PICTURE_ONLY_model_is_refused_by_name(
+        client, monkeypatch, served):
+    siglip = "onnx-community/siglip2-base-patch16-384-ONNX"
+    _families(monkeypatch, {siglip: "dual"})
+    _media(monkeypatch, {siglip: ("image",)})
+    response = _post(client, {"paths": ["/tmp/pic.png", "/tmp/voice.mp3"],
+                              "model": siglip})
+    assert response.status_code == 400
+    message = response.json()["error"]["message"]
+    assert siglip in message
+    assert "/tmp/voice.mp3 is an audio file" in message
+    assert "embeddinggemma-2" in message
+    assert served == []
+
+
+def test_a_video_on_the_UNIFIED_model_is_served(client, monkeypatch, served):
+    _families(monkeypatch, {GEMMA: "dual"})
+    _media(monkeypatch, {GEMMA: ("image", "audio", "video")})
+    response = _post(client, {"paths": ["/tmp/clip.mp4", "/tmp/voice.wav",
+                                        "/tmp/pic.png"], "model": GEMMA})
+    assert response.status_code == 200
+    assert served[0][1]["paths"] == [os.path.abspath(p) for p in
+                                     ("/tmp/clip.mp4", "/tmp/voice.wav", "/tmp/pic.png")]
+
+
+def test_a_sound_file_on_a_COLD_dual_model_still_answers_model_loading(
+        client, monkeypatch):
+    """`embed_media` is None with no snapshot to read, and that must not be
+    read as "reads nothing" — the same positive-evidence rule the text-encoder
+    refusal follows."""
+    _families(monkeypatch, {})
+    _media(monkeypatch, {})
+
+    def not_ready(model, body, **_kw):
+        raise supervisor.ModelNotReady("loading", job_id="sys:ai-load:x")
+
+    monkeypatch.setattr(supervisor, "generate_embed", not_ready)
+    response = _post(client, {"paths": ["/tmp/voice.mp3"],
+                              "model": "google/siglip2-base-patch16-384"})
+    assert response.status_code == 409
+    assert response.json()["error"]["type"] == "model_loading"
+    assert response.json()["error"]["jobId"] == "sys:ai-load:x"
+
+
 def test_paths_on_a_COLD_model_still_answers_model_loading(client, monkeypatch):
     """**The reason the route's refusal is keyed on positive evidence rather
     than on `_accepts_paths`.** A model with no snapshot on disk has no config
@@ -403,6 +453,38 @@ def test_the_catalog_publishes_acceptsPaths_and_promptScheme(client, monkeypatch
         else:
             assert entry["acceptsPaths"] is False
             assert entry["promptScheme"] in ("bge", "e5", "nomic")
+
+
+def test_the_catalog_publishes_acceptsAudio_and_acceptsVideo_off_embed_media(
+        client, monkeypatch):
+    """Finer than `acceptsPaths`, and fail-closed the same way: a model whose
+    snapshot cannot say (None) claims neither."""
+    monkeypatch.setattr(
+        ai_runtime, "embed_family",
+        lambda model_id: "dual" if "siglip" in model_id or "embeddinggemma" in model_id
+        else "text")
+    monkeypatch.setattr(
+        ai_runtime, "embed_media",
+        lambda model_id: ("image", "audio", "video") if "embeddinggemma" in model_id
+        else ("image",) if "siglip2-base" in model_id else None)
+    rows = client.get("/api/ai/catalog").json()["capabilities"]
+    embeddings = next(r for r in rows if r["capability"] == "embeddings")
+    seen = set()
+    for entry in embeddings["models"]:
+        assert "acceptsAudio" in entry and "acceptsVideo" in entry
+        if "embeddinggemma" in entry["id"]:
+            assert entry["acceptsAudio"] is True and entry["acceptsVideo"] is True
+            seen.add("gemma")
+        else:
+            assert entry["acceptsAudio"] is False and entry["acceptsVideo"] is False
+            if "siglip2-base" in entry["id"]:
+                assert entry["acceptsPaths"] is True
+                seen.add("siglip")
+    assert seen == {"gemma", "siglip"}
+    for row in rows:
+        if row["capability"] != "embeddings":
+            for entry in row["models"]:
+                assert entry["acceptsAudio"] is False and entry["acceptsVideo"] is False
 
 
 def test_no_other_capability_claims_either_field(client):

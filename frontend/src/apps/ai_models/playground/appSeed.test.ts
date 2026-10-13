@@ -70,6 +70,42 @@ describe("a PROSE model's seed names kind and refuses paths", () => {
   });
 });
 
+describe("the UNIFIED encoder's seed names sound and video beside pictures", () => {
+  const detail = seed({
+    id: "mlx-community/embeddinggemma-2-bf16",
+    acceptsPaths: true,
+    acceptsAudio: true,
+    acceptsVideo: true,
+    promptScheme: "gemma-embedding",
+  });
+
+  it("says which kinds, by extension, and that documents are not among them", () => {
+    expect(detail).toContain("UNIFIED ENCODER");
+    expect(detail).toContain("sound files (wav, mp3, flac, ogg)");
+    expect(detail).toContain("videos (mp4, mov, mkv, webm)");
+    expect(detail).toContain("Not PDFs or documents");
+    expect(detail).toContain("{ paths } instead of { texts }");
+  });
+
+  it("still names kind, since this model has a prompt scheme", () => {
+    expect(detail).toContain('kind: "query"');
+  });
+});
+
+describe("a DUAL encoder with no audio flag keeps the picture-only seed", () => {
+  const detail = seed({
+    id: "onnx-community/siglip2-base-patch16-384-ONNX",
+    acceptsPaths: true,
+    promptScheme: null,
+  });
+
+  it("does not promise sound or video", () => {
+    expect(detail).toContain("DUAL ENCODER");
+    expect(detail).not.toContain("UNIFIED ENCODER");
+    expect(detail).not.toContain("sound files");
+  });
+});
+
 describe("a DUAL encoder's seed names paths and refuses kind", () => {
   const detail = seed({
     id: "onnx-community/siglip2-base-patch16-384-ONNX",
