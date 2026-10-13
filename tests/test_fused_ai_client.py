@@ -128,6 +128,69 @@ def test_ok_false_error_with_job_id_is_carried_through():
     assert err.job_id == "sys:ai-load:abc"
 
 
+def test_a_model_slot_conflict_carries_the_standoff_through():
+    """SPEC-model-slot-conflict.md §3: unlike `model_loading`, this error is
+    terminal — no load it started is there to watch — so a caller needs the
+    competing models and the held state, not just a message, to decide what
+    to do instead of retrying."""
+    err = fused_ai._error_from_payload(
+        409, {"ok": False, "error": {
+            "type": "model_slot_conflict", "code": "model_slot_conflict",
+            "message": "org/a and org/b are fighting over the text-generation slot",
+            "capability": "text-generation", "models": ["org/a", "org/b"],
+            "resident": "org/b", "held": False}})
+    assert err.type == "model_slot_conflict"
+    assert err.capability == "text-generation"
+    assert err.models == ["org/a", "org/b"]
+    assert err.resident == "org/b"
+    assert err.held is False
+    assert err.job_id is None
+    # A distinct type, not a generic AiError with these fields merely set —
+    # `except fused_ai.ModelSlotConflict` has to be reachable on its own,
+    # the same way `except fused_ai.ServerNotRunning` already is.
+    assert isinstance(err, fused_ai.ModelSlotConflict)
+
+
+def test_model_slot_conflict_is_raised_by_the_request_path(monkeypatch):
+    """The subclass has to actually reach a caller, not just exist: a 409
+    off the wire with `type: model_slot_conflict` raised through `_request`
+    (every `fused_ai.text`/`embed`/... call goes through it) must surface as
+    `ModelSlotConflict`, catchable without inspecting `.type` by hand."""
+    def fake_urlopen(req, timeout=None):
+        raise _FakeHTTPError(409, {"ok": False, "error": {
+            "type": "model_slot_conflict", "code": "model_slot_conflict",
+            "message": "org/a and org/b are fighting over the text-generation slot",
+            "capability": "text-generation", "models": ["org/a", "org/b"],
+            "resident": "org/b", "held": False}})
+
+    monkeypatch.setenv("FUSED_RENDER_ORIGIN", "http://127.0.0.1:1")
+    monkeypatch.setattr(fused_ai.urllib.request, "urlopen", fake_urlopen)
+    with pytest.raises(fused_ai.ModelSlotConflict) as exc:
+        fused_ai.text("hi")
+    assert exc.value.capability == "text-generation"
+    assert exc.value.resident == "org/b"
+
+
+def test_models_load_raises_model_slot_conflict(monkeypatch):
+    """`models.load` posts straight to `/api/ai/runtime/load` through
+    `_post_json`, the same `_request` path every other call goes through —
+    a standing conflict there has to surface the same `ModelSlotConflict`,
+    not a generic `AiError` a caller would have to inspect by `.type`."""
+    def fake_urlopen(req, timeout=None):
+        raise _FakeHTTPError(409, {"ok": False, "error": {
+            "type": "model_slot_conflict", "code": "model_slot_conflict",
+            "message": "org/a and org/b are fighting over the text-generation slot",
+            "capability": "text-generation", "models": ["org/a", "org/b"],
+            "resident": "org/b", "held": False}})
+
+    monkeypatch.setenv("FUSED_RENDER_ORIGIN", "http://127.0.0.1:1")
+    monkeypatch.setattr(fused_ai.urllib.request, "urlopen", fake_urlopen)
+    with pytest.raises(fused_ai.ModelSlotConflict) as exc:
+        fused_ai.models.load("org/b")
+    assert exc.value.capability == "text-generation"
+    assert exc.value.resident == "org/b"
+
+
 def test_plain_error_string_shape_maps_to_bad_request_or_unavailable():
     bad = fused_ai._error_from_payload(400, {"error": "nope"})
     assert bad.type == "bad_request"
@@ -157,6 +220,65 @@ def test_text_returns_result_text_on_success(monkeypatch):
         return _FakeHTTPResponse(json.dumps(payload).encode())
 
     monkeypatch.setenv("FUSED_RENDER_ORIGIN", "http://127.0.0.1:1")
+    monkeypatch.setattr(fused_ai.urllib.request, "urlopen", fake_urlopen)
+    assert fused_ai.text("hi") == "hi there"
+
+
+def test_text_falls_back_to_the_running_scripts_own_path_without_FUSED_RENDER_PAGE(monkeypatch):
+    """A bare script — no `_child.py`/`engine.py` wrapper setting
+    `FUSED_RENDER_PAGE` — is still one stable caller across every request it
+    makes, not nothing: `sys.argv[0]`'s own absolute path stands in, so its
+    own retries are never mistaken for a new stranger on every call the way
+    the server's one-off anonymous fallback would read them."""
+    payload = {"ok": True, "result": {"text": "hi there", "model": "opus", "usage": None}}
+    script_path = os.path.join(os.sep, "home", "iamsdas", "my_script.py")
+
+    def fake_urlopen(req, timeout=None):
+        expected = fused_ai.quote(f"script:{script_path}", safe="")
+        assert req.get_header("X-fused-requester") == expected
+        assert req.get_header("X-fused-requester-label") == expected
+        return _FakeHTTPResponse(json.dumps(payload).encode())
+
+    monkeypatch.setenv("FUSED_RENDER_ORIGIN", "http://127.0.0.1:1")
+    monkeypatch.delenv("FUSED_RENDER_PAGE", raising=False)
+    monkeypatch.setattr(fused_ai.sys, "argv", [script_path])
+    monkeypatch.setattr(fused_ai.urllib.request, "urlopen", fake_urlopen)
+    assert fused_ai.text("hi") == "hi there"
+
+
+def test_text_carries_no_requester_header_with_no_page_and_no_script_path(monkeypatch):
+    """SPEC-model-slot-conflict.md §1: a caller with no resolvable identity at
+    all — no `FUSED_RENDER_PAGE`, and `sys.argv[0]` itself empty (an
+    interactive interpreter, `python -c`) — is anonymous, not the user: no
+    header at all, never a default that could be mistaken for one."""
+    payload = {"ok": True, "result": {"text": "hi there", "model": "opus", "usage": None}}
+
+    def fake_urlopen(req, timeout=None):
+        assert req.get_header("X-fused-requester") is None
+        assert req.get_header("X-fused-requester-label") is None
+        return _FakeHTTPResponse(json.dumps(payload).encode())
+
+    monkeypatch.setenv("FUSED_RENDER_ORIGIN", "http://127.0.0.1:1")
+    monkeypatch.delenv("FUSED_RENDER_PAGE", raising=False)
+    monkeypatch.setattr(fused_ai.sys, "argv", [""])
+    monkeypatch.setattr(fused_ai.urllib.request, "urlopen", fake_urlopen)
+    assert fused_ai.text("hi") == "hi there"
+
+
+def test_text_carries_the_requester_header_from_FUSED_RENDER_PAGE(monkeypatch):
+    """This module runs only as a page's own subprocess or a background app's
+    generated wrapper (`_child.py`/`engine.py` both set `FUSED_RENDER_PAGE`)
+    — its identity is always that script's own path, percent-encoded the
+    same way `runtime.js`'s own `X-Fused-Page` is, never `user`."""
+    payload = {"ok": True, "result": {"text": "hi there", "model": "opus", "usage": None}}
+
+    def fake_urlopen(req, timeout=None):
+        assert req.get_header("X-fused-requester") == "a%2Fb%2Fscript.py"
+        assert req.get_header("X-fused-requester-label") == "a%2Fb%2Fscript.py"
+        return _FakeHTTPResponse(json.dumps(payload).encode())
+
+    monkeypatch.setenv("FUSED_RENDER_ORIGIN", "http://127.0.0.1:1")
+    monkeypatch.setenv("FUSED_RENDER_PAGE", "a/b/script.py")
     monkeypatch.setattr(fused_ai.urllib.request, "urlopen", fake_urlopen)
     assert fused_ai.text("hi") == "hi there"
 

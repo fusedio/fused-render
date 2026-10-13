@@ -24,6 +24,7 @@ const EMPTY: AiRuntime = {
   runners: [],
   loaded: [],
   downloading: [],
+  conflicts: [],
   totalResidentBytes: null,
   // Null, not a guess: `settled` (below) is what distinguishes
   // "not asked yet" from "this machine has no readable ceiling".

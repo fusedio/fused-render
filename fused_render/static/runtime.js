@@ -275,8 +275,11 @@
  *     no onProgress, no jobId on success. Rejects .type "bad_request" |
  *     "model_loading" (the model is not resident; .jobId is the load this
  *     call just started — watch it and retry, exactly like the first
- *     fused.ai.text(...) on a cold local model) | "ai_error" | "unavailable" (no
- *     embedding runner on this machine).
+ *     fused.ai.text(...) on a cold local model) | "model_slot_conflict"
+ *     (another model is already fighting this one over the capability's
+ *     slot; .capability/.models/.resident/.held name the standoff — this is
+ *     TERMINAL, do not retry) | "ai_error" | "unavailable" (no embedding
+ *     runner on this machine).
  *   fused.ai.decide({state, questions, model, provider, abortSignal})
  *     -> Promise<{answers, ...frame}>  usage: {inputTokens, outputTokens: 0, totalTokens}
  *     providerMetadata.local: {runner}.
@@ -295,8 +298,11 @@
  *     and state. Not job-backed: one forward pass per question, over in
  *     milliseconds, so the reply IS the result. Rejects .type "bad_request"
  *     (a malformed question, named by id) | "model_loading" (.jobId is the
- *     load this call started — watch it and retry) | "ai_error" |
- *     "unavailable" (no decision runner on this machine: Apple Silicon only).
+ *     load this call started — watch it and retry) | "model_slot_conflict"
+ *     (another model is already fighting this one over the capability's
+ *     slot; .capability/.models/.resident/.held name the standoff — this is
+ *     TERMINAL, do not retry) | "ai_error" | "unavailable" (no decision
+ *     runner on this machine: Apple Silicon only).
  *   fused.capture.* -> record the screen, record the mic, grab a still
  *     screen({display, rect, audio, device, cursor, path, maxSeconds, title})
  *     -> Promise<handle> and audio({source: "mic"|"system"|"both", device, path, maxSeconds,
@@ -1661,6 +1667,31 @@
     const abandoned = takePendingSupersedes();
     if (abandoned) headers["X-Fused-Supersedes"] = abandoned;
     return headers;
+  }
+
+  // ---- AI requester identity (SPEC-model-slot-conflict.md §1) ---------------
+  // Every call this runtime makes into the shared model supervisor — text,
+  // image, video, speech, transcribe, embed, decide, and the load/unload
+  // lifecycle calls — carries WHO is asking, so two pages fighting over one
+  // capability's slot can be told apart from one page retrying its own call.
+  // This is always the calling page's own identity: a sandboxed page is never
+  // the user settling a conflict with their own hands, no matter which of
+  // these it calls — only the shell's own ModelsDock row, its notification
+  // actions, and the AI Models page's own load/unload buttons (none of which
+  // run through this runtime) ever send `X-Fused-Requester: user`. A page with
+  // no resolvable path (an inline preview with no `path` query param) sends no
+  // header at all, which the server reads as anonymous — not a reason to fail
+  // the call.
+  //
+  // Takes `callHeaders`' own OUTPUT rather than deriving the page itself —
+  // `callHeaders` already reads `ownQuery("path")` and percent-encodes it
+  // into `X-Fused-Page`, so this reuses that exact encoded string instead of
+  // querying `window.location.search` and re-encoding a second time for the
+  // same value.
+  function aiRequesterHeaders(headers) {
+    const page = headers["X-Fused-Page"];
+    if (!page) return headers;
+    return Object.assign({}, headers, { "X-Fused-Requester": page, "X-Fused-Requester-Label": page });
   }
 
   // ---- superseded reporting (docs/CALL_LOG_DESIGN.md §6.2, SPEC CL-5) -------
@@ -3905,6 +3936,21 @@
     if (jobId) err.jobId = jobId;
     return err;
   }
+  // "model_slot_conflict" (SPEC-model-slot-conflict.md): two different models
+  // are fighting over a capability's one resident slot and the server has
+  // stopped auto-evicting between them. Carrying the competing models and
+  // the held state through is what lets a caller offer the same choice the
+  // AI Models page does, instead of just surfacing the message — every
+  // request-path verb that turns a 409 into a thrown Error (`fused.ai.text`,
+  // `.embed`, `.decide`) calls this on its way out so none of them drift
+  // from the others field by field.
+  function copyConflictFields(err, error) {
+    if (!error || error.type !== "model_slot_conflict") return;
+    err.capability = error.capability;
+    err.models = error.models;
+    err.resident = error.resident;
+    err.held = error.held;
+  }
   // fetch rejects an aborted request with a DOMException named AbortError;
   // this is the one place that name is translated into the bridge's own type.
   function rethrowAbort(what) {
@@ -4100,7 +4146,8 @@
       : promise;
     const req = fetch("/api/ai", {
       method: "POST",
-      headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" }),
+      headers: aiRequesterHeaders(callHeaders(
+        { "Content-Type": "application/json", "X-Fused": "1" })),
       body: JSON.stringify(body),
       signal: signal || undefined,
     }).catch(rethrowAbort("the AI call"));
@@ -4111,6 +4158,10 @@
       // load this call just started (SPEC AI-5). Carrying it through is what
       // lets a caller show that download rather than just reporting a failure.
       if (error && error.jobId) err.jobId = error.jobId;
+      // UNLIKE "model_loading", a "model_slot_conflict" is terminal — it is
+      // never followed by a load that will eventually finish, so a caller
+      // must not retry it the way it retries "model_loading".
+      copyConflictFields(err, error);
       throw err;
     }
     if (!onChunk) {
@@ -4506,7 +4557,8 @@
   async function aiPost(path, body, signal) {
     const res = await fetch(path, {
       method: "POST",
-      headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" }),
+      headers: aiRequesterHeaders(callHeaders(
+        { "Content-Type": "application/json", "X-Fused": "1" })),
       body: JSON.stringify(body || {}),
       signal: signal || undefined,
     }).catch(rethrowAbort("the AI call"));
@@ -4518,8 +4570,18 @@
       return {};
     });
     if (!res.ok) {
-      const err = new Error((data && data.error) || res.statusText);
-      err.type = res.status === 409 ? "unavailable" : "bad_request";
+      // `data.error` is a plain string for every ordinary failure, but a
+      // `model_slot_conflict` (SPEC-model-slot-conflict.md) carries it as the
+      // `to_wire()` object `_conflict_error` wraps every job-backed verb's
+      // conflict in — same shape `fused.ai.text`/`.embed`/`.decide` already
+      // surface through `copyConflictFields`, so image/video/speech/
+      // transcribe share the one code path rather than inventing a second.
+      const error = data && data.error;
+      const isConflict = error && typeof error === "object" && error.type === "model_slot_conflict";
+      const message = isConflict ? error.message : error;
+      const err = new Error(message || res.statusText);
+      err.type = isConflict ? "model_slot_conflict" : (res.status === 409 ? "unavailable" : "bad_request");
+      copyConflictFields(err, error);
       throw err;
     }
     return data;
@@ -5313,7 +5375,8 @@
     if (signal && signal.aborted) return Promise.reject(cancelledError("the embedding"));
     return fetch("/api/ai/embed", {
       method: "POST",
-      headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" }),
+      headers: aiRequesterHeaders(callHeaders(
+        { "Content-Type": "application/json", "X-Fused": "1" })),
       body: JSON.stringify(body),
       signal: signal || undefined,
     })
@@ -5335,6 +5398,9 @@
           // the load this call just started — the same field `fused.ai`'s own
           // `fail()` carries through for exactly the same reason (SPEC AI-5).
           if (error.jobId) err.jobId = error.jobId;
+          // Same model_slot_conflict fields `fused.ai.text`'s own `fail()`
+          // carries through, for the same reason — see `copyConflictFields`.
+          copyConflictFields(err, error);
           throw err;
         }
         return data.result;
@@ -5405,7 +5471,8 @@
     if (signal && signal.aborted) return Promise.reject(cancelledError("the decision"));
     return fetch("/api/ai/decide", {
       method: "POST",
-      headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" }),
+      headers: aiRequesterHeaders(callHeaders(
+        { "Content-Type": "application/json", "X-Fused": "1" })),
       body: JSON.stringify(body),
       signal: signal || undefined,
     })
@@ -5419,6 +5486,7 @@
           err.type = error.type
             || (res.status === 409 ? "unavailable" : "ai_error");
           if (error.jobId) err.jobId = error.jobId;
+          copyConflictFields(err, error);
           throw err;
         }
         return data.result;

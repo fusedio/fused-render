@@ -128,6 +128,34 @@ VIDEO_TIMEOUT_S = 2 * 3600.0
 # a wait with no end is a wedge, not a feature.
 LOAD_WAIT_TIMEOUT_S = 3600.0
 
+#: How recently a capability's resident model must have been installed by a
+#: REQUEST-PATH load (never a manual one) for evicting it to count as the
+#: swap loop rather than an ordinary switch. Two consumers wanting different
+#: models of one capability each evict the other on every retry with no cap
+#: otherwise — see `ModelSlotConflict`. 60s is generous against any real
+#: retry cadence (`runtime.js`'s own backoff is seconds, not minutes) while
+#: being far short of a user genuinely changing their mind between two
+#: unrelated sessions.
+CONFLICT_WINDOW_S = 60.0
+
+#: The one `requester` id the shell itself is allowed to send — a human
+#: acting through the shell's own conflict controls (the ModelsDock row, a
+#: notification action) or the AI Models page's own load/unload buttons
+#: (SPEC-model-slot-conflict.md §1). Every other caller — a page, an app, a
+#: background app, Playground, chat, or any request with no `X-Fused-
+#: Requester` header at all — is a non-user requester, never this id. The
+#: header is attribution for contention detection, not authorization: a page
+#: could claim to be `"user"`, the same way it could already claim any other
+#: value, and the server never treats the header as proof of anything beyond
+#: "this is who to blame for the next eviction".
+USER_REQUESTER_ID = "user"
+
+
+def is_user_requester(requester_id: str) -> bool:
+    """Is `requester_id` the shell's own reserved identity?"""
+    return requester_id == USER_REQUESTER_ID
+
+
 JOB_PREFIX = jobs.SERVER_ID_PREFIX + "ai-model:"
 #: One row per RENDER, not per model: two images from the same pipeline are two
 #: pieces of work with two progress bars, and a shared id would have the second
@@ -200,6 +228,80 @@ class ModelNotReady(SupervisorError):
         self.job_id = job_id
 
 
+def _join_names(names: list[str]) -> str:
+    """"a and b" for two, "a, b, and c" for three or more — the Oxford comma
+    form `ModelSlotConflict`'s message needs for an arbitrary-length list of
+    contenders (a third, fourth, ... caller can fold into a live conflict;
+    see `_request_path_conflict`)."""
+    if len(names) <= 1:
+        return "".join(names)
+    if len(names) == 2:
+        return f"{names[0]} and {names[1]}"
+    return ", ".join(names[:-1]) + f", and {names[-1]}"
+
+
+class ModelSlotConflict(SupervisorError):
+    """Two different models are contending for one capability's single slot.
+
+    Raised by a request-path load INSTEAD OF evicting, once the supervisor
+    sees the swap loop (or while a capability is held after a resolve) — see
+    `CONFLICT_WINDOW_S` and `_request_path_conflict`. Deliberately NOT a
+    `ModelNotReady`: that error means "the load started, watch its job",
+    which is exactly the retry contract that produces the ping-pong in the
+    first place. A caller must treat this as terminal — stop retrying and
+    show the message — the same way `ModelNotReady` must never be treated as
+    terminal.
+    """
+
+    def __init__(self, capability: str, models: list[str], resident: str | None,
+                *, held: bool = False, message: str | None = None):
+        if message is not None:
+            # An override for a refusal that is not a contention LOOP at all
+            # (`unload`'s ownership check, below) — the "X and Y are
+            # contending for the slot" wording this constructor otherwise
+            # builds describes two requesters racing each other, not one
+            # requester being told a DIFFERENT requester's model is not
+            # theirs to remove, and reads as nonsense when `models` is just
+            # the one resident with nothing else contending for it.
+            pass
+        elif held and resident is not None:
+            message = (f"{resident} is held for {capability}. Release it on the "
+                       f"AI Models page to let another model load.")
+        elif held:
+            message = (f"{capability} is stopped. Release it on the AI Models page "
+                       f"to let a model load again.")
+        elif resident is not None:
+            # The resident keeps answering throughout — it is the OTHER
+            # contenders' request-path loads that are refused, not its own
+            # service, so the message has to say which model is which rather
+            # than lumping every name together as equally stuck.
+            others = _join_names([m for m in models if m != resident])
+            message = (f"{_join_names(models)} are contending for the "
+                       f"{capability} slot — {resident} stays loaded, "
+                       f"{others or 'the rest'} can't take over. Pick one on "
+                       f"the AI Models page.")
+        else:
+            message = (f"{_join_names(models)} are contending for the "
+                       f"{capability} slot and none of them can load. Pick "
+                       f"one on the AI Models page.")
+        super().__init__(message)
+        self.capability = capability
+        self.models = list(models)
+        self.resident = resident
+        self.held = held
+
+    def to_wire(self) -> dict:
+        """The 409 body's `error` object — one shape, so a route and the
+        relay that proxies it (`server/ai.py`'s `_local_relay`,
+        `server/routers/ai_runtime.py`'s `_conflict_error`) can't drift from
+        each other field by field."""
+        return {
+            "type": "model_slot_conflict", "code": "model_slot_conflict",
+            "message": str(self), "capability": self.capability,
+            "models": self.models, "resident": self.resident, "held": self.held,
+        }
+
+
 def job_id_for(model: str) -> str:
     """The download-manager row for this model's bring-up.
 
@@ -219,6 +321,15 @@ class Worker:
     model: str
     capability: str
     runner_code: str
+    #: Who asked for THIS worker to be loaded — the `requester` identity
+    #: (SPEC-model-slot-conflict.md §1) carried on the request that started
+    #: it, as a stable id plus a human label. `""` for a caller that sent no
+    #: `X-Fused-Requester` header (anonymous — never `USER_REQUESTER_ID`).
+    #: Remembered here, not just on the moment of eviction, because a LATER
+    #: request-path eviction has to ask "who loaded the model I am about to
+    #: take" — see `_request_path_conflict`.
+    requester_id: str = ""
+    requester_label: str = ""
     #: Unique per bring-up, and the reason the status and log files are named
     #: after it rather than after the capability. Two workers for one capability
     #: DO overlap — an eviction's replacement starts while the old one is still
@@ -367,6 +478,59 @@ _draining: dict[str, Worker] = {}
 #: `_release_install` gives it back once per worker however many times it is
 #: called. Read and written under `_lock`.
 _install_waiters: dict[str, int] = {}
+
+
+@dataclass
+class ConflictState:
+    """One capability's model-slot conflict — the swap loop caught, or a
+    capability held by an explicit resolve. Read and written under `_lock`.
+    """
+
+    capability: str
+    #: Ordered distinct models seen contending for the slot. Grows as more
+    #: callers try while the conflict stands (`_request_path_conflict`
+    #: appends rather than replacing), so the notification and the dock row
+    #: can name everyone still asking, not just the two that first collided.
+    models: list[str]
+    #: The model actually resident right now, or `None` when the capability
+    #: is held empty (a `resolve` with `keep: null`). Requests for THIS model
+    #: are served normally even while the conflict stands — only requests for
+    #: a DIFFERENT model are refused.
+    resident: str | None
+    since: float
+    #: True once the user has resolved it (`resolve_conflict`) — as opposed
+    #: to a conflict `_request_path_conflict` detected on its own, which is
+    #: an auto-stop still waiting on a choice. Both states refuse competing
+    #: request-path loads the same way; `held` only changes the message and
+    #: how the dock row is worded ("Held for…" vs "fighting over…").
+    held: bool = False
+    #: model -> the human label of whichever requester most recently asked
+    #: for it, for the notification/dock row to name ("Notes app and Chat
+    #: are both trying to use the text model") instead of only the bare
+    #: model ids. Grows and updates the same way `models` does — see
+    #: `_request_path_conflict`.
+    requesters: dict[str, str] = field(default_factory=dict)
+
+
+#: capability -> its live conflict, if any. Absent means auto-load behaves
+#: exactly as before (evict on miss). See `ConflictState` and
+#: `_request_path_conflict`.
+_conflicts: dict[str, ConflictState] = {}
+
+#: capability -> recent CROSS-REQUESTER request-path evictions, oldest
+#: first, each `(time.time(), requester_id)` — one entry per side of the
+#: eviction (the requester who got evicted and the one who just took the
+#: slot). `_request_path_conflict` prunes entries older than
+#: `CONFLICT_WINDOW_S` on every read and asks whether the requester about to
+#: be evicted NOW already appears here — proof that two or more distinct
+#: requesters are taking the slot off each other, not one caller settling on
+#: a choice. A same-requester eviction (one caller alternating its own two
+#: models) is never recorded here at all — see `_request_path_conflict`.
+#: Popped once a conflict opens (the standoff itself is the record from then
+#: on, in `_conflicts`), and by any explicit load/unload (the user settled
+#: the capability, so whatever history was building toward a conflict no
+#: longer means anything).
+_swap_chains: dict[str, list[tuple[float, str]]] = {}
 
 
 def is_worker_token(token: str) -> bool:
@@ -1389,6 +1553,7 @@ def _bring_up(runner: registry.Runner, worker: Worker, job: str) -> None:
             worker.error = message
             if _workers.get(worker.capability) is worker:
                 del _workers[worker.capability]
+                _clear_unheld_conflict_locked(worker.capability)
         _terminate(worker)
         # `tier=jobs.TRAIL`, restated explicitly the same way the success
         # report above restates `SILENT`: `job_id_for(model)` is shared
@@ -1532,7 +1697,126 @@ def _runner_or_raise(capability: str) -> registry.Runner:
     return runner
 
 
-def _start_resident(model: str, capability: str) -> tuple[dict, Worker]:
+def _request_path_conflict(capability: str, model: str, current: Worker | None,
+                           requester_id: str, requester_label: str, *,
+                           record: bool = True,
+                           ) -> ConflictState | None:
+    """Under `_lock`. Whether a REQUEST-PATH load for `model`, asked for by
+    `requester_id`, must be refused without evicting, or `None` to let
+    `_start_resident` make its ordinary join-or-evict decision.
+
+    **Identity-based, not alternation-based** (SPEC-model-slot-conflict.md
+    §1): a conflict never depends on which MODELS repeat, only on which
+    REQUESTERS keep taking the slot off each other. One requester alternating
+    its own two models — a router and a generator, say — swaps the resident
+    worker on every call and is never a conflict, however fast: the check
+    below only ever fires when `requester_id` differs from the model's own
+    loader.
+
+    Two reasons to refuse outright: the capability is already held (a live
+    conflict, resolved or not — see `ConflictState.held`) and `model` is not
+    the one resident; or `current` was loaded by a DIFFERENT requester who
+    has, within `CONFLICT_WINDOW_S`, already been on either side of a
+    cross-requester eviction on this capability — proof that two or more
+    distinct requesters are taking the slot off each other, not one of them
+    settling on a choice for the first time. `_swap_chains` is the
+    per-capability record of requester ids this reads and appends to: it
+    remembers WHO was party to an ordinary cross-requester switch, not which
+    model, so a three-way rotation (A by r1, B by r2, C by r3, A by r1 again)
+    is caught the moment r1 or r2 reappears — it needs no model to repeat the
+    way an alternation count would.
+
+    A new contender during a live conflict is folded into `conflict.models`/
+    `conflict.requesters` rather than only the original two, so a
+    notification or dock row raised later names everyone still asking, not
+    just whoever collided first.
+
+    `record=False` (the render paths' synchronous pre-check,
+    `_check_request_path_conflict`) answers the same question — would THIS
+    request be refused — without writing a fresh `_swap_chains` entry for an
+    ordinary (non-conflicting) eviction: that pre-check runs on the calling
+    thread before the render/transcribe turn starts the REAL load, and a
+    chain entry it wrote here would already be sitting in `_swap_chains` by
+    the time that real load makes its own `_request_path_conflict` call a
+    moment later — read back the entry this same request just planted and
+    wrongly conflict with itself. A conflict that record=False DOES find
+    (the standing-conflict fold, and the chain-match branch below) is
+    written for real regardless: either is a genuine refusal this call is
+    about to raise on, not a simulation.
+    """
+    conflict = _conflicts.get(capability)
+    if conflict is not None:
+        if model == conflict.resident:
+            return None
+        if model not in conflict.models:
+            conflict.models.append(model)
+        if requester_label:
+            conflict.requesters[model] = requester_label
+        return conflict
+    if current is None or current.model == model:
+        return None
+    if current.requester_id == requester_id:
+        # The SAME caller swapping its own models — never recorded, because
+        # it can never, by itself, prove two requesters are fighting.
+        return None
+    if not current.requester_id or is_user_requester(current.requester_id):
+        # Nobody is fighting for a resident nobody claimed (an internal
+        # caller loaded it outside the request path) or one the user set
+        # explicitly: taking it over is an ordinary first move, not a
+        # requester "coming back". Recording it would wrongly implicate the
+        # requester who takes it over the moment anyone else later evicts
+        # THEM — a brand-new third party with no history of its own.
+        return None
+    now = time.time()
+    chain = [e for e in _swap_chains.get(capability, ()) if now - e[0] < CONFLICT_WINDOW_S]
+    if any(rid == current.requester_id for _, rid in chain):
+        requesters = {current.model: current.requester_label, model: requester_label}
+        new_conflict = ConflictState(capability=capability, models=[current.model, model],
+                                     resident=current.model, since=now,
+                                     requesters={k: v for k, v in requesters.items() if v})
+        _conflicts[capability] = new_conflict
+        _swap_chains.pop(capability, None)
+        return new_conflict
+    if record:
+        chain.append((now, current.requester_id))
+        chain.append((now, requester_id))
+        _swap_chains[capability] = chain
+    return None
+
+
+def _check_request_path_conflict(model: str, capability: str, *,
+                                 requester_id: str = "",
+                                 requester_label: str = "") -> None:
+    """Under `_lock`: raise `ModelSlotConflict` if a request-path load for
+    `model` on `capability` would be refused, without evicting, loading, or
+    starting a `_terminate` on this thread.
+
+    `_start_render`/`start_transcribe`'s own synchronous pre-check — it runs
+    before the job row opens and before the render/transcribe thread starts,
+    so a losing standoff answers with that standoff right here, not minutes
+    later as a generic error. `_request_path_conflict(record=False)` makes
+    this read-only for the one case it must be: an ORDINARY one-off switch
+    (no conflict) does not raise, and is left alone for `_wait_ready`'s own
+    `_start_resident` call — made inside the render thread, or inside
+    `generate_transcript` under `_TRANSCRIBE_LOCK` — to actually evict and
+    load. Evicting HERE instead would kill a resident worker (and whatever
+    it is mid-generation for) on the calling HTTP thread, ahead of any lock
+    that serializes the turn."""
+    with _lock:
+        current = _workers.get(capability)
+        conflict = _request_path_conflict(capability, model, current,
+                                          requester_id, requester_label,
+                                          record=False)
+    if conflict is not None:
+        raise ModelSlotConflict(capability, conflict.models, conflict.resident,
+                                held=conflict.held)
+
+
+def _start_resident(model: str, capability: str, *,
+                    request_path: bool = False,
+                    respect_holds: bool = False,
+                    hold: "ConflictState | None" = None,
+                    requester_id: str = "", requester_label: str = "") -> tuple[dict, Worker]:
     """`load`'s residency path, handing back the WORKER RECORD beside the reply.
 
     Two callers, two needs. `load` is answering an endpoint, so the reply is all
@@ -1543,6 +1827,35 @@ def _start_resident(model: str, capability: str) -> tuple[dict, Worker]:
     the reason it went, which is how every failed image render came back as
     "was unloaded before it could be used" (D266). Holding the record, a waiter
     reads the error off the very object it was waiting for.
+
+    `request_path` is True for every automatic load a caller's own request
+    triggers on a miss — the miss-handling calls inside
+    `generate_text`/`_generate_sync`, and `_wait_ready`'s own call on behalf
+    of image, video, speech, and transcribe — never for a manual
+    `/api/ai/runtime/load`. It gates `_request_path_conflict` (an explicit
+    load is never refused for contention, and clears any conflict standing on
+    this capability: the user just made a choice) and whether an eviction
+    here is recorded into `_swap_chains`, the history a LATER request-path
+    eviction checks itself against. A `ModelSlotConflict` raised here reaches
+    `_wait_ready`'s caller the same way any other load failure already does
+    — surfaced through the record `_start_resident` hands back, not retried.
+
+    `respect_holds` is the ONE other way in besides `request_path` — for a
+    caller that is neither a contending request-path retry nor a user
+    settling a conflict: `ai/benchmark.py`'s own cold load. It refuses a
+    HELD conflict for a different model exactly like `request_path` does,
+    but does none of `request_path`'s bookkeeping (no `_swap_chains` entry,
+    no folding into a live unheld conflict's contenders — a benchmark run is
+    not one of the requesters fighting over the slot) and, like
+    `request_path` and UNLIKE the explicit branch below, never clears an
+    existing hold or conflict on its way through. `request_path` and
+    `respect_holds` are mutually exclusive; a caller passing neither is the
+    explicit, user-settles-it path.
+
+    `requester_id`/`requester_label` are the caller's own identity
+    (SPEC-model-slot-conflict.md §1) — forwarded to `_request_path_conflict`
+    when `request_path` is set, and stamped onto the new `Worker` either way,
+    so a LATER request-path eviction of this worker knows who loaded it.
     """
     runner = _runner_or_raise(capability)
     _require_build_tools()
@@ -1558,6 +1871,46 @@ def _start_resident(model: str, capability: str) -> tuple[dict, Worker]:
     job = job_id_for(model)
     with _lock:
         current = _workers.get(capability)
+        if request_path:
+            conflict = _request_path_conflict(capability, model, current,
+                                              requester_id, requester_label)
+            if conflict is not None:
+                raise ModelSlotConflict(capability, conflict.models, conflict.resident,
+                                        held=conflict.held)
+        elif respect_holds:
+            # `ai/benchmark.py`'s own entry: refuse a HELD conflict for a
+            # different model exactly like a request-path load would, but
+            # touch nothing else in `_conflicts`/`_swap_chains` — a benchmark
+            # run is neither a contender in the standoff nor the user
+            # settling it.
+            conflict = _conflicts.get(capability)
+            if conflict is not None and conflict.held and model != conflict.resident:
+                raise ModelSlotConflict(capability, conflict.models, conflict.resident,
+                                        held=True)
+        else:
+            # An explicit load is never refused for contention, and it settles
+            # one: the user just picked a model, so whatever conflict stood on
+            # this capability is answered, held or not. `hold`, when given
+            # (only `resolve_conflict`'s `keep=<model>` passes one), WRITES
+            # the new held `ConflictState` right here instead, in the exact
+            # locked block that evicts the old worker below — the eviction and
+            # the hold land together, so no other thread's `load`/`unload` can
+            # read an empty `_conflicts[capability]` in the gap between this
+            # function returning and a caller recording the hold itself — a
+            # gap `_remove`'s own ~9s-worst-case teardown would otherwise
+            # leave open.
+            if hold is not None:
+                _conflicts[capability] = hold
+            else:
+                _conflicts.pop(capability, None)
+            # And it clears the capability's swap-loop HISTORY too, not only a
+            # conflict already raised — without this, an old `_swap_chains`
+            # entry a resolve merely re-confirmed (the model asked for is
+            # already resident, so the join branch below returns without
+            # building a new `Worker`) would still count toward the next
+            # alternation the next time somebody tries to take the slot back,
+            # re-triggering the very conflict the resolve just answered.
+            _swap_chains.pop(capability, None)
         if (current is not None and current.model == model
                 and current.runner_code == runner.code
                 and current.state != "error"):
@@ -1600,9 +1953,27 @@ def _start_resident(model: str, capability: str) -> tuple[dict, Worker]:
             # it from `_workers` — so there is no instant where the old worker
             # exists in neither table (see `_draining`'s own comment).
             _draining[current.token] = current
+            if respect_holds:
+                # The benchmark's own eviction just changed who is ACTUALLY
+                # resident. An UNHELD conflict's `resident` field (a HELD one
+                # is refused above instead, before any eviction happens) would
+                # otherwise keep naming the model this just replaced — a stale
+                # reference nothing else here corrects, since `respect_holds`
+                # deliberately touches none of `_request_path_conflict`'s own
+                # bookkeeping. Left stale, the model benchmark just installed
+                # would never match `conflict.resident` on its own later
+                # request-path call, so it would be folded into `conflict.
+                # models` and refused right back — the slot a benchmark just
+                # freed up would be unusable from the moment it finished.
+                conflict = _conflicts.get(capability)
+                if conflict is not None and not conflict.held:
+                    conflict.resident = model
+                    if model not in conflict.models:
+                        conflict.models.append(model)
 
         worker = Worker(model=model, capability=capability, runner_code=runner.code,
-                        token=secrets.token_urlsafe(24))
+                        token=secrets.token_urlsafe(24),
+                        requester_id=requester_id, requester_label=requester_label)
         _workers[capability] = worker
         _worker_tokens.add(worker.token)
 
@@ -1652,7 +2023,9 @@ def _start_resident(model: str, capability: str) -> tuple[dict, Worker]:
 
 
 def load(model: str, capability: str, *, weights_only: bool = False,
-         file: str | None = None) -> dict:
+         file: str | None = None, request_path: bool = False,
+         hold: "ConflictState | None" = None,
+         requester_id: str = "", requester_label: str = "") -> dict:
     """Make `model` resident for `capability`; returns `{jobId, model, state}`.
 
     `weights_only` downloads and stops — the AI Models page's "Download", which
@@ -1668,9 +2041,27 @@ def load(model: str, capability: str, *, weights_only: bool = False,
     Idempotent for the model already loading or loaded — a second call joins the
     first rather than starting a duplicate, which matters because two pages
     opening at once is the normal case, not the exotic one.
+
+    `request_path` is forwarded to `_start_resident` — see its docstring and
+    `ModelSlotConflict`. Every caller but the two miss-handlers inside
+    `generate_text`/`_generate_sync` leaves it False: `/api/ai/runtime/load`,
+    `resolve_conflict`, and this function's own `weights_only` branch (a
+    download is never a contested eviction) are all explicit actions, not
+    retries.
+
+    `hold`, also forwarded to `_start_resident`, is `resolve_conflict`'s own
+    plumbing (see there) — no other caller passes it.
+
+    `requester_id`/`requester_label` are the caller's identity
+    (SPEC-model-slot-conflict.md §1), forwarded to `_start_resident` unchanged
+    — see its docstring. The shell's own controls pass
+    `requester_id=USER_REQUESTER_ID`; every other caller passes whatever
+    `X-Fused-Requester` named, or leaves both blank for an anonymous one.
     """
     if not weights_only:
-        return _start_resident(model, capability)[0]
+        return _start_resident(model, capability, request_path=request_path,
+                               hold=hold, requester_id=requester_id,
+                               requester_label=requester_label)[0]
 
     runner = _runner_or_raise(capability)
     _require_build_tools()
@@ -1710,7 +2101,8 @@ def image_job_id(uid: str) -> str:
 
 def _start_render(capability: str, model: str, request: dict, job: str,
                    generate, *, noun: str, thread_name: str, page: str = "",
-                   source: str = "", title: str | None = None) -> None:
+                   source: str = "", title: str | None = None,
+                   requester_id: str = "", requester_label: str = "") -> None:
     """Open `job` and render `generate(model, request, job)` on a thread.
     Raises before starting if it cannot.
 
@@ -1752,6 +2144,18 @@ def _start_render(capability: str, model: str, request: dict, job: str,
     _runner_or_raise(capability)
     _require_build_tools()
 
+    # A model-slot conflict is checked HERE too, for the reason the runner
+    # check above is: a render that loses a standoff should answer with that
+    # standoff before a job row opens, not minutes later as a generic
+    # `state="error"` once `generate(...)`'s own miss-handler (`_wait_ready`)
+    # hits the same `ModelSlotConflict` on the thread (SPEC-model-slot-
+    # conflict.md §1). `_check_request_path_conflict` is READ-ONLY — it never
+    # evicts, loads, or runs `_terminate` on this (the HTTP) thread; an
+    # ordinary one-off switch is left for `_wait_ready`'s own `_start_resident`
+    # call, inside the render thread, to actually evict and load.
+    _check_request_path_conflict(model, capability,
+                                 requester_id=requester_id, requester_label=requester_label)
+
     title = str(title or request.get("prompt") or model).strip() or model
     # `model` rides as its own field (jobs.py `Job.model`), a dimmed suffix
     # JobRow draws after the title — never folded into `title` (that's the
@@ -1789,7 +2193,8 @@ def _start_render(capability: str, model: str, request: dict, job: str,
 
     def run() -> None:
         try:
-            result = generate(model, request, job)
+            result = generate(model, request, job, requester_id=requester_id,
+                              requester_label=requester_label)
         except BaseException as e:  # noqa: BLE001 - top of a thread; see _bring_up
             message = _failure_text(e)
             if message == "cancelled":
@@ -1809,17 +2214,21 @@ def _start_render(capability: str, model: str, request: dict, job: str,
     threading.Thread(target=run, name=thread_name, daemon=True).start()
 
 
-def start_image(model: str, request: dict, job: str, page: str = "", source: str = "") -> None:
+def start_image(model: str, request: dict, job: str, page: str = "", source: str = "",
+                requester_id: str = "", requester_label: str = "") -> None:
     """Open `job` and render an image on a thread. See `_start_render`.
 
     `page` is the caller's own page (`/api/ai/image`'s `X-Fused-Page`) — the
     destination a click on this row should go to. `source` is who RAISED it
     (`X-Fused-Source`, defaulting to `page` at the router) — see `Job.source`
     and `_start_render`'s own docstring for why the two are threaded
-    separately.
+    separately. `requester_id`/`requester_label` are forwarded to
+    `generate_image`'s own miss-handler, same as every other request-path
+    caller (SPEC-model-slot-conflict.md §1).
     """
     _start_render(registry.IMAGE_GENERATION, model, request, job, generate_image,
-                  noun="image", thread_name="ai-image", page=page, source=source)
+                  noun="image", thread_name="ai-image", page=page, source=source,
+                  requester_id=requester_id, requester_label=requester_label)
 
 
 #: What a queued transcription's row says while it waits.
@@ -1977,7 +2386,8 @@ def text_row_fields(title: str, model: str = "", page: str = "") -> dict:
             "origin": jobs.origin_for_page(page, default="Playground")}
 
 
-def start_transcribe(model: str, request: dict, job: str, page: str = "") -> None:
+def start_transcribe(model: str, request: dict, job: str, page: str = "",
+                     requester_id: str = "", requester_label: str = "") -> None:
     """Open `job` and transcribe on a thread. Raises before starting if it cannot.
 
     The runner check is synchronous here for the reason `start_image` explains:
@@ -1989,6 +2399,17 @@ def start_transcribe(model: str, request: dict, job: str, page: str = "") -> Non
     """
     _runner_or_raise(registry.SPEECH_TO_TEXT)
     _require_build_tools()
+    # See `_start_render`'s identical pre-check: a transcription that loses a
+    # standoff answers with it before the row opens, not as a generic error
+    # once `generate_transcript`'s own `_wait_ready` hits it on the thread.
+    # Read-only (`_check_request_path_conflict`): this runs before
+    # `generate_transcript` ever takes `_TRANSCRIBE_LOCK`, so evicting here
+    # would kill a running transcription for a request that is merely QUEUED
+    # behind it — the real eviction for an ordinary one-off switch belongs to
+    # `_wait_ready`'s own `_start_resident` call, made once this request has
+    # the lock and it is actually its turn.
+    _check_request_path_conflict(model, registry.SPEECH_TO_TEXT,
+                                 requester_id=requester_id, requester_label=requester_label)
 
     # `unit="s"` from the first tick: the row is drawn before the worker knows
     # the duration, and a bar that starts unitless and acquires seconds later
@@ -2011,7 +2432,8 @@ def start_transcribe(model: str, request: dict, job: str, page: str = "") -> Non
         # never finishes for a transcript that is already on disk.
         fields = transcribe_row_fields(title, model, page)
         try:
-            result = generate_transcript(model, request, job)
+            result = generate_transcript(model, request, job, requester_id=requester_id,
+                                         requester_label=requester_label)
         except BaseException as e:  # noqa: BLE001 - top of a thread; see _bring_up
             message = _failure_text(e)
             if message == "cancelled":
@@ -2026,7 +2448,28 @@ def start_transcribe(model: str, request: dict, job: str, page: str = "") -> Non
     threading.Thread(target=run, name="ai-transcribe", daemon=True).start()
 
 
-def _claim_for_removal(match) -> list[Worker]:
+def _clear_unheld_conflict_locked(capability: str) -> None:
+    """Pop `capability`'s `ConflictState` if one stands and it is UNHELD.
+    Caller must already hold `_lock`.
+
+    An unheld conflict names a standoff over a slot that still has a
+    resident; once that resident leaves `_workers` by ANY path — an
+    eviction, a manual unload, the idle reaper, a bring-up that fails, or a
+    process `_drop_gone` finds already dead — the standoff it named is over.
+    A HELD conflict is the user's own `resolve_conflict` decision and
+    survives removal of the very worker it is about; only `release_conflict`
+    lifts it.
+    """
+    conflict = _conflicts.get(capability)
+    if conflict is not None and not conflict.held:
+        _conflicts.pop(capability, None)
+
+
+def _claim_for_removal(match, capability: str | None = None, *,
+                       hold: "ConflictState | None" = None,
+                       explicit: bool = False,
+                       requester_id: str = "",
+                       ) -> list[Worker]:
     """Atomically find-and-pop every worker `match(worker)` accepts.
 
     The shared atomic core `unload()` and `reap_idle()` both build on: the
@@ -2038,6 +2481,32 @@ def _claim_for_removal(match) -> list[Worker]:
     being decided and being removed (see `reap_idle`'s docstring for the
     concrete failure that gap caused).
 
+    `requester_id`, when given (non-empty, non-user), is `unload`'s own
+    ownership check — see there — run HERE, against the very `targets` this
+    same locked block is about to pop, rather than in a separate locked
+    read `unload` did first and handed down as a decision already made. A
+    separate check-then-act left a window between the two lock holds where
+    a DIFFERENT worker (a fresh load claiming the same capability, loaded by
+    someone else entirely) could replace whatever `unload`'s own read saw,
+    so the targets this function went on to remove were not necessarily the
+    ones the ownership check actually approved.
+
+    `hold`, when given, writes it into `_conflicts` (keyed by its own
+    `capability` field) in the SAME locked block that pops the targets —
+    `unload`'s own `hold` plumbing (see there), needed so a held-empty
+    conflict lands atomically with the eviction it is holding against,
+    instead of after `_remove`'s ~9s-worst-case teardown returns.
+
+    `explicit`, when true, is `unload`'s own signal that THIS call is a
+    user action (`/unload`, or `resolve_conflict`'s `keep: null` by way of
+    `hold` instead — the two never both apply at once): every conflict on
+    an affected capability is cleared, held or not, in the same locked
+    block rather than only the unheld ones `_clear_unheld_conflict_locked`
+    would leave standing. `capability`, given alongside it, covers the
+    capability named on the call even when `match` finds no worker to
+    remove — a capability already held EMPTY has nothing in `targets` for
+    the per-worker clearing below to ever reach.
+
     Deliberately does NOT terminate or report here: `_terminate` does network
     I/O (a `/quit` POST, a process wait) and must run OUTSIDE `_lock`, or
     reaping one idle worker would block every other table operation for as
@@ -2045,9 +2514,32 @@ def _claim_for_removal(match) -> list[Worker]:
     """
     with _lock:
         targets = [w for w in _workers.values() if match(w)]
+        if requester_id and not is_user_requester(requester_id):
+            # A worker with NO claimed owner is free for anyone to take; only
+            # one another NAMED requester loaded is foreign — see `unload`'s
+            # own comment on why the empty-owner case is exempt.
+            foreign = [w for w in targets if w.requester_id and w.requester_id != requester_id]
+            if foreign:
+                worker = foreign[0]
+                conflict = _conflicts.get(worker.capability)
+                models = list(conflict.models) if conflict is not None else [worker.model]
+                message = (f"{worker.model} was loaded by another requester. Unload "
+                           f"it from the AI Models page, or load your own model to "
+                           f"take over the {worker.capability} slot.")
+                raise ModelSlotConflict(worker.capability, models, worker.model,
+                                        held=conflict.held if conflict is not None else False,
+                                        message=message)
         for worker in targets:
             worker.stopping = True
             _workers.pop(worker.capability, None)
+            if explicit:
+                _conflicts.pop(worker.capability, None)
+            else:
+                _clear_unheld_conflict_locked(worker.capability)
+        if explicit and capability is not None:
+            _conflicts.pop(capability, None)
+        if hold is not None:
+            _conflicts[hold.capability] = hold
         return targets
 
 
@@ -2079,19 +2571,138 @@ def _remove(targets: list[Worker], reason: str) -> None:
 
 
 def unload(model: str | None = None, capability: str | None = None,
-          reason: str = "Unloaded") -> bool:
+          reason: str = "Unloaded", *,
+          hold: "ConflictState | None" = None,
+          explicit: bool = False,
+          requester_id: str = "", requester_label: str = "") -> bool:
     """Stop a resident worker. True if there was one to stop.
 
     `reason` lands verbatim in the job row's `detail`, so every caller — a
     page's explicit unload, `evict_stale_engines`, a newer load claiming the
     capability, shutdown, and the idle reaper (AI-13) — can say which of them
     it was, without a parallel teardown for each.
+
+    `explicit` is this call's own "the user made a choice" flag — true only
+    for the shell's own `/api/ai/runtime/unload` call and `resolve_conflict`'s
+    `keep: null` branch, both always `requester_id=USER_REQUESTER_ID`. Every
+    OTHER caller (`evict_stale_engines`, the benchmark teardown, Monitor's
+    Stop, shutdown's `unload_all`) is reacting to something that is not the
+    user settling a conflict, and defaults to false: it must not silently
+    lift a hold the user wrote moments ago, the way clearing every conflict
+    on an affected capability unconditionally used to. A false `explicit`
+    still clears an UNHELD conflict on a worker it actually removes
+    (`_claim_for_removal`'s own job, same as the idle reaper) — only a HELD
+    one is reserved for an explicit call or `release_conflict`.
+
+    `requester_id`/`requester_label` identify a non-user caller reaching
+    this through `/api/ai/runtime/unload` or `fused.ai.models.unload`
+    (SPEC-model-slot-conflict.md §1, "every non-user path goes through the
+    conflict logic"). Such a caller may remove only a worker it itself
+    loaded — `Worker.requester_id` says who that was — never clears a hold
+    (that is what `explicit=False` already guarantees), and gets a
+    `ModelSlotConflict` instead of a silent no-op when it tries to unload
+    somebody else's model, so an app cannot kick another app's resident
+    model out from under it just by calling unload. `requester_id=""`
+    covers every internal caller above AND the shell's own
+    `USER_REQUESTER_ID` calls equally — the ownership check only applies
+    when a NON-EMPTY, non-user `requester_id` is given, which is exactly
+    the router's signal that this is an app/page acting through the public
+    API rather than the server acting on its own.
+
+    `hold` is `resolve_conflict`'s own plumbing for its `keep: null` branch —
+    a `ConflictState` to write ATOMICALLY with the eviction, inside
+    `_claim_for_removal`'s own locked block, rather than clearing the
+    capability here and leaving a caller to record the hold afterward, which
+    would open a gap across `_remove`'s own ~9s-worst-case teardown. When
+    given, `capability` must also be given and `explicit`
+    must be true — a hold is only ever written by an explicit resolve — and
+    `_claim_for_removal` writes it instead of running its own `explicit`
+    clear, so it cannot be overwritten by, or race, that clear.
     """
-    targets = _claim_for_removal(
-        lambda w: (model is None or w.model == model)
-        and (capability is None or w.capability == capability))
+    if hold is not None:
+        assert capability is not None, "hold requires a capability"
+        assert explicit, "a hold is only ever written by an explicit resolve"
+    match = (lambda w: (model is None or w.model == model)
+             and (capability is None or w.capability == capability))
+    # The ownership check itself — a worker with no claimed owner is free for
+    # anyone, only one another NAMED requester loaded is foreign — runs
+    # inside `_claim_for_removal`'s own locked block, against the very
+    # targets that block is about to pop, rather than as a separate locked
+    # read here: a check-then-act split across two lock holds leaves a
+    # window where a different worker could claim the capability in between,
+    # so what got checked would not be what got removed.
+    targets = _claim_for_removal(match, capability,
+                                 hold=hold, explicit=explicit,
+                                 requester_id=requester_id)
     _remove(targets, reason)
     return bool(targets)
+
+
+def resolve_conflict(capability: str, keep: str | None) -> dict:
+    """The user's explicit answer to a capability stuck in `ModelSlotConflict`
+    — `POST /api/ai/runtime/conflicts/resolve`.
+
+    `keep=<model>` loads it (joining if it is already resident or loading)
+    and HOLDS the slot: every later request-path load for a DIFFERENT model
+    on this capability keeps getting `ModelSlotConflict` — naming this held
+    model — until `release_conflict` or another manual load/unload. `keep:
+    null` stops everything instead: the capability is unloaded and held
+    EMPTY, so every request-path load for it is refused the same way.
+
+    Calling this with no conflict currently standing still works — same as a
+    manual load or unload always has — and simply starts a hold from
+    scratch, which is what lets a user pre-empt a conflict `_start_resident`
+    has not yet detected.
+
+    The held `ConflictState` is built HERE and handed to `load`/`unload` as
+    their own `hold=` argument, which writes it into `_conflicts` inside the
+    same locked block that evicts (or removes) the old worker — not after
+    `load`/`unload` return. Writing it only after the call returned used to
+    leave the capability's conflict either absent (between the eviction and
+    this function regaining `_lock`) or still naming the stale pre-resolve
+    standoff for the whole ~9s-worst-case teardown, a window another
+    request-path load or a second `resolve_conflict`/`release_conflict` call
+    could race into.
+    """
+    with _lock:
+        existing = _conflicts.get(capability)
+        models = list(existing.models) if existing is not None else []
+        since = existing.since if existing is not None else time.time()
+    if keep is not None:
+        if keep not in models:
+            models.append(keep)
+        hold = ConflictState(capability=capability, models=models, resident=keep,
+                             since=since, held=True)
+        return load(keep, capability, request_path=False, hold=hold,
+                   requester_id=USER_REQUESTER_ID)
+    hold = ConflictState(capability=capability, models=models, resident=None,
+                         since=since, held=True)
+    unload(capability=capability, reason="Stopped (model slot conflict)",
+          hold=hold, explicit=True, requester_id=USER_REQUESTER_ID)
+    return {"capability": capability, "resident": None}
+
+
+def conflict_for(capability: str) -> "ConflictState | None":
+    """The live `ConflictState` standing on `capability`, or `None`.
+
+    Read-only, under `_lock` — the router's own validation ahead of
+    `resolve_conflict` (B6: `keep` must name one of the models actually
+    contending) needs this BEFORE calling it, not the dict after the fact.
+    """
+    with _lock:
+        return _conflicts.get(capability)
+
+
+def release_conflict(capability: str) -> bool:
+    """Clear a conflict or hold on `capability` — back to ordinary auto-load.
+    True if there was one to clear.
+
+    Loads nothing and unloads nothing: whatever is (or isn't) resident stays
+    exactly as it is, the same way lifting a hold must not itself evict the
+    model it was holding.
+    """
+    with _lock:
+        return _conflicts.pop(capability, None) is not None
 
 
 def evict_stale_engines() -> list[str]:
@@ -2656,6 +3267,7 @@ def _drop_gone(worker: Worker) -> None:
         owned = _workers.get(worker.capability) is worker
         if owned:
             del _workers[worker.capability]
+            _clear_unheld_conflict_locked(worker.capability)
     if code is not None:
         desc = (report_child_exit("ai-worker", worker.pid, code, _log_path(worker))
                 if owned else describe_exit(code))
@@ -2729,7 +3341,8 @@ def ready_worker(capability: str, model: str | None = None) -> Worker | None:
     return worker
 
 
-def generate_text(model: str, body: dict):
+def generate_text(model: str, body: dict, *,
+                  requester_id: str = "", requester_label: str = ""):
     """Yield `{"type":"chunk","text":…}` events from the resident text model.
 
     Raises `SupervisorError` when the model is not ready — and STARTS THE LOAD
@@ -2738,6 +3351,10 @@ def generate_text(model: str, body: dict):
     before its first `fused.ai(...)`, but generation must not block for the
     minutes a cold 8GB load takes either. So the first call fails fast, having
     kicked off exactly the work the caller needed, and the page watches the job.
+
+    `requester_id`/`requester_label` identify who is asking (SPEC-model-
+    slot-conflict.md §1) — forwarded to the miss-handling `load()` below so a
+    contending eviction can be attributed to them.
     """
     worker = ready_worker(registry.TEXT_GENERATION, model)
     if worker is None:
@@ -2746,7 +3363,8 @@ def generate_text(model: str, body: dict):
         if current is not None and current.model == model:
             raise ModelNotReady(
                 f"{model} is still loading ({current.state})", job_id_for(model))
-        started = load(model, registry.TEXT_GENERATION)
+        started = load(model, registry.TEXT_GENERATION, request_path=True,
+                       requester_id=requester_id, requester_label=requester_label)
         raise ModelNotReady(f"{model} is loading now", started["jobId"])
 
     with _in_use(worker):
@@ -2769,7 +3387,8 @@ def generate_text(model: str, body: dict):
 
 
 def _generate_sync(capability: str, model: str, body: dict,
-                   failed: str) -> dict:
+                   failed: str, *,
+                   requester_id: str = "", requester_label: str = "") -> dict:
     """One reply, inside the request, from the resident `capability` worker.
 
     The same fail-fast shape as `generate_text`, not the wait-inside-a-job shape
@@ -2794,7 +3413,8 @@ def _generate_sync(capability: str, model: str, body: dict,
         if current is not None and current.model == model:
             raise ModelNotReady(
                 f"{model} is still loading ({current.state})", job_id_for(model))
-        started = load(model, capability)
+        started = load(model, capability, request_path=True,
+                       requester_id=requester_id, requester_label=requester_label)
         raise ModelNotReady(f"{model} is loading now", started["jobId"])
 
     try:
@@ -2812,23 +3432,28 @@ def _generate_sync(capability: str, model: str, body: dict,
     return payload.get("result") or {}
 
 
-def generate_embed(model: str, body: dict) -> dict:
+def generate_embed(model: str, body: dict, *,
+                   requester_id: str = "", requester_label: str = "") -> dict:
     """One `{vectors, dim}` reply from the resident embedding model — see
     `_generate_sync` for the shape and why it is synchronous."""
-    return _generate_sync(registry.EMBEDDINGS, model, body, "the embedding failed")
+    return _generate_sync(registry.EMBEDDINGS, model, body, "the embedding failed",
+                          requester_id=requester_id, requester_label=requester_label)
 
 
-def generate_decide(model: str, body: dict) -> dict:
+def generate_decide(model: str, body: dict, *,
+                    requester_id: str = "", requester_label: str = "") -> dict:
     """One `{answers, usage}` reply from the resident Laya agent (D887) —
     `{state, questions}` in, calibrated probabilities per question out. Same
     shape as `generate_embed`, for the same reason: one encoder pass per
     question, ~13 ms each, zero output tokens; nothing to stream and nothing
     to hide a cold load inside."""
-    return _generate_sync(registry.DECISIONS, model, body, "the decision failed")
+    return _generate_sync(registry.DECISIONS, model, body, "the decision failed",
+                          requester_id=requester_id, requester_label=requester_label)
 
 
 def _wait_ready(model: str, capability: str, job: str,
-                row: dict | None = None) -> Worker:
+                row: dict | None = None, *,
+                requester_id: str = "", requester_label: str = "") -> Worker:
     """Make `model` resident, reporting the wait to `job`. Blocking.
 
     `row` is the caller's row IDENTITY, restated on every tick of the wait —
@@ -2883,7 +3508,9 @@ def _wait_ready(model: str, capability: str, job: str,
     Both rows have to be able to say the same failure regardless of the merge,
     which is what `_start_resident` returning the record is for (D266).
     """
-    started, pending = _start_resident(model, capability)
+    started, pending = _start_resident(model, capability, request_path=True,
+                                       requester_id=requester_id,
+                                       requester_label=requester_label)
     deadline = time.monotonic() + LOAD_WAIT_TIMEOUT_S
     unreadable = False
     try:
@@ -2973,10 +3600,12 @@ def speech_job_id(uid: str) -> str:
     return SPEECH_JOB_PREFIX + "".join(c for c in uid if c.isalnum() or c in "._-")
 
 
-def start_speech(model: str, request: dict, job: str, page: str = "", source: str = "") -> None:
+def start_speech(model: str, request: dict, job: str, page: str = "", source: str = "",
+                 requester_id: str = "", requester_label: str = "") -> None:
     _start_render(registry.TEXT_TO_SPEECH, model, request, job, generate_speech,
                   noun="speech clip", thread_name="ai-speech", page=page, source=source,
-                  title=request.get("text"))
+                  title=request.get("text"), requester_id=requester_id,
+                  requester_label=requester_label)
 
 
 def video_job_id(uid: str) -> str:
@@ -2984,7 +3613,8 @@ def video_job_id(uid: str) -> str:
     return VIDEO_JOB_PREFIX + "".join(c for c in uid if c.isalnum() or c in "._-")
 
 
-def start_video(model: str, request: dict, job: str, page: str = "", source: str = "") -> None:
+def start_video(model: str, request: dict, job: str, page: str = "", source: str = "",
+                requester_id: str = "", requester_label: str = "") -> None:
     """Open `job` and render a video on a thread. See `_start_render`.
 
     Raises before starting if it cannot — a request this machine cannot
@@ -2994,11 +3624,13 @@ def start_video(model: str, request: dict, job: str, page: str = "", source: str
     who RAISED it (`X-Fused-Source`), threaded separately from `page`.
     """
     _start_render(registry.VIDEO_GENERATION, model, request, job, generate_video,
-                  noun="video", thread_name="ai-video", page=page, source=source)
+                  noun="video", thread_name="ai-video", page=page, source=source,
+                  requester_id=requester_id, requester_label=requester_label)
 
 
 def _generate_via_worker(capability: str, model: str, request: dict, job: str,
-                          *, timeout: float, noun: str) -> dict:
+                          *, timeout: float, noun: str,
+                          requester_id: str = "", requester_label: str = "") -> dict:
     """Render one item through the resident `capability` worker. Blocking —
     call it on a thread, never on the loop.
 
@@ -3014,7 +3646,8 @@ def _generate_via_worker(capability: str, model: str, request: dict, job: str,
     """
     worker = ready_worker(capability, model)
     if worker is None:
-        worker = _wait_ready(model, capability, job)
+        worker = _wait_ready(model, capability, job, requester_id=requester_id,
+                             requester_label=requester_label)
 
     with _in_use(worker):
         try:
@@ -3034,13 +3667,16 @@ def _generate_via_worker(capability: str, model: str, request: dict, job: str,
     return payload.get("result") or {}
 
 
-def generate_image(model: str, request: dict, job: str) -> dict:
+def generate_image(model: str, request: dict, job: str, *,
+                   requester_id: str = "", requester_label: str = "") -> dict:
     """Render one image. See `_generate_via_worker`."""
     return _generate_via_worker(registry.IMAGE_GENERATION, model, request, job,
-                                timeout=GENERATE_TIMEOUT_S, noun="image")
+                                timeout=GENERATE_TIMEOUT_S, noun="image",
+                                requester_id=requester_id, requester_label=requester_label)
 
 
-def generate_video(model: str, request: dict, job: str) -> dict:
+def generate_video(model: str, request: dict, job: str, *,
+                   requester_id: str = "", requester_label: str = "") -> dict:
     """Render one video. See `_generate_via_worker`.
 
     `VIDEO_TIMEOUT_S` rather than `GENERATE_TIMEOUT_S`, because a
@@ -3048,12 +3684,15 @@ def generate_video(model: str, request: dict, job: str) -> dict:
     request.
     """
     return _generate_via_worker(registry.VIDEO_GENERATION, model, request, job,
-                                timeout=VIDEO_TIMEOUT_S, noun="video")
+                                timeout=VIDEO_TIMEOUT_S, noun="video",
+                                requester_id=requester_id, requester_label=requester_label)
 
 
-def generate_speech(model: str, request: dict, job: str) -> dict:
+def generate_speech(model: str, request: dict, job: str, *,
+                    requester_id: str = "", requester_label: str = "") -> dict:
     return _generate_via_worker(registry.TEXT_TO_SPEECH, model, request, job,
-                                timeout=GENERATE_TIMEOUT_S, noun="speech")
+                                timeout=GENERATE_TIMEOUT_S, noun="speech",
+                                requester_id=requester_id, requester_label=requester_label)
 
 
 def _await_turn(job: str, title: str, model: str = "", page: str = "") -> None:
@@ -3159,7 +3798,8 @@ def _transcribe_turn(job: str, title: str, model: str = "", page: str = ""):
         _TRANSCRIBE_LOCK.release()
 
 
-def generate_transcript(model: str, request: dict, job: str) -> dict:
+def generate_transcript(model: str, request: dict, job: str, *,
+                        requester_id: str = "", requester_label: str = "") -> dict:
     """Transcribe one recording. Blocking — call it on a thread, never on the loop.
 
     The image path's shape exactly (`generate_image`), because the two have the
@@ -3192,7 +3832,8 @@ def generate_transcript(model: str, request: dict, job: str) -> dict:
             # reporter on this path, so it is the one most likely to meet an
             # evicted row.
             worker = _wait_ready(model, registry.SPEECH_TO_TEXT, job,
-                                 row=request.get("row"))
+                                 row=request.get("row"), requester_id=requester_id,
+                                 requester_label=requester_label)
         with _in_use(worker):
             try:
                 response = _worker_request(worker, "/generate", body={**request, "job": job},
@@ -3381,6 +4022,21 @@ def describe() -> dict:
         # all and what stops a Discover card claiming "✓ downloaded" over a pull
         # that is still running.
         downloading = [dict(row) for row in _downloads.values()]
+        # One row per capability stuck in `ModelSlotConflict` (detected or
+        # resolved-and-held) — what the status-bar dock and the actionable
+        # notification both read to draw "Keep A / Keep B / Stop both" (or,
+        # once held, "Held for A — Release").
+        conflicts = [
+            {
+                "capability": c.capability,
+                "models": list(c.models),
+                "resident": c.resident,
+                "since": c.since,
+                "held": c.held,
+                "requesters": dict(c.requesters),
+            }
+            for c in _conflicts.values()
+        ]
     total = sum(row["residentBytes"] or 0 for row in loaded)
     # WHAT EACH MODEL ACTUALLY COSTS, and the ceiling it has to fit under
     # (D594). `residentBytes` above is the worker process's RSS — real, but
@@ -3408,6 +4064,7 @@ def describe() -> dict:
         "runners": registry.describe(),
         "loaded": loaded,
         "downloading": downloading,
+        "conflicts": conflicts,
         "totalResidentBytes": total or None,
         # THE DENOMINATOR, once per payload rather than per row — it is a
         # per-machine constant. The WIRED limit where it applies, not raw total
@@ -3449,3 +4106,12 @@ def reset() -> None:
         # direct `_wait_for_draining` call) block for the full drain timeout
         # waiting on a `Worker` that no longer exists.
         _draining.clear()
+        # Otherwise a conflict raised in one test outlives it — the table is
+        # module-level and nothing else ever clears a capability nobody
+        # unloads or resolves.
+        _conflicts.clear()
+        # Same reasoning for the swap-loop history: a chain built up near the
+        # end of one test would count toward the NEXT test's own evictions
+        # (different models, same capability key) and close a loop that test
+        # never built.
+        _swap_chains.clear()

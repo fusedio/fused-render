@@ -73,13 +73,20 @@ async function watchJob(id: string, stopped: () => boolean = () => false, tick?:
   }
 }
 
+// Who is asking (SPEC-model-slot-conflict.md §1): the Composer's own mic
+// button is a shell surface with a fixed identity, the same way
+// `playground/client.ts`'s `PLAYGROUND_REQUESTER` is — not the user settling
+// a conflict with their own hands, and not another bot's page, so two bots
+// dictating into their own composers at once are told apart from each other.
+const COMPOSER_REQUESTER = "shell:bots-composer";
+
 /**
  * POST /api/ai/transcribe, reading the error body itself: request() keeps only the message, and a `model_loading`
  * reply ({error: {type, message}, jobId}) names the download job to wait on. Transcribe's usual 409 is the plain
  * {error: "…"} (no model or no runner) and stays an error.
  */
 async function transcribeStart(path: string): Promise<{ jobId: string; output: string }> {
-  const r = await fetch("/api/ai/transcribe", { method: "POST", headers: { "X-Fused": "1", "Content-Type": "application/json" }, body: JSON.stringify({ path }), cache: "no-store" });
+  const r = await fetch("/api/ai/transcribe", { method: "POST", headers: { "X-Fused": "1", "X-Fused-Requester": COMPOSER_REQUESTER, "X-Fused-Requester-Label": COMPOSER_REQUESTER, "Content-Type": "application/json" }, body: JSON.stringify({ path }), cache: "no-store" });
   const data = await r.json().catch(() => ({})) as { jobId?: string; output?: string; job_id?: string; error?: string | { type?: string; message?: string; jobId?: string } };
   if (!r.ok) {
     const e = data.error;

@@ -59,6 +59,7 @@ import {
   downloadAiModel,
   getAiCatalog,
   loadAiModel,
+  USER_REQUESTER,
   type AiCatalogCapability,
   type AiCatalogModel,
   type AiModelDeleteTarget,
@@ -372,7 +373,9 @@ export function LocalTab({ scan }: { scan: CacheScan }) {
   const runLoad = async (repo: AiModelRepo) => {
     setRuntimeError(null);
     try {
-      await loadAiModel(repo.id, repo.capability ?? undefined);
+      // This page's own Load button (SPEC-model-slot-conflict.md §1) — an
+      // explicit user choice, never refused for contention.
+      await loadAiModel(repo.id, repo.capability ?? undefined, USER_REQUESTER);
       refreshAiRuntime();
     } catch (e) {
       setRuntimeError((e as Error).message);

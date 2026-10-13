@@ -16,8 +16,15 @@ import { installDomShim } from "@platform/lib/testDomShim";
 installDomShim();
 
 // Dynamic, so the shim above is in place before the module graph evaluates.
-const { ModelLoading, startImage, startVideo, streamChat, watchJob, withModelReady } =
-  await import("./client");
+const {
+  ModelLoading,
+  ModelSlotConflict,
+  startImage,
+  startVideo,
+  streamChat,
+  watchJob,
+  withModelReady,
+} = await import("./client");
 import type { Job } from "@platform/lib/jobs";
 const { currentPresencePage } = await import("@platform/lib/presence");
 
@@ -405,4 +412,69 @@ test("streamChat omits images entirely when none are attached", async () => {
   }
   expect(sentBody).not.toBeNull();
   expect("images" in sentBody!).toBe(false);
+});
+
+// -- model slot conflicts (SPEC-model-slot-conflict.md) ----------------------
+//
+// Unlike a cold start's 409 (`ModelLoading`, watched and retried above), a
+// slot conflict's 409 is terminal: two different models are fighting over
+// one capability's resident slot, and no load this call started is there to
+// watch. `streamChat` must throw the richer `ModelSlotConflict` rather than
+// the generic 409 fallback, and `withModelReady` — whose whole job above is
+// watching and retrying `ModelLoading` — must let it straight through
+// instead of mistaking it for another cold start.
+
+test("streamChat throws ModelSlotConflict, not a generic error, on the conflict 409", async () => {
+  const realFetch = globalThis.fetch;
+  (globalThis as { fetch: unknown }).fetch = async () => ({
+    ok: false,
+    status: 409,
+    json: async () => ({
+      ok: false,
+      error: {
+        type: "model_slot_conflict",
+        code: "model_slot_conflict",
+        message: "org/a and org/b are fighting over the text-generation slot",
+        capability: "text-generation",
+        models: ["org/a", "org/b"],
+        resident: "org/b",
+        held: false,
+      },
+    }),
+  });
+  try {
+    await expect(
+      streamChat({
+        model: "org/a",
+        prompt: "hi",
+        history: [],
+        settings: {},
+        signal: new AbortController().signal,
+        onChunk: () => {},
+      }),
+    ).rejects.toThrow(ModelSlotConflict);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("withModelReady lets a ModelSlotConflict straight through, never retrying it", async () => {
+  let attempts = 0;
+  const attempt = async () => {
+    attempts++;
+    throw new ModelSlotConflict(
+      "org/a and org/b are fighting over the text-generation slot",
+      "text-generation",
+      ["org/a", "org/b"],
+      "org/b",
+      false,
+    );
+  };
+  const outcome = withModelReady(attempt, {
+    signal: new AbortController().signal,
+    downloaded: true,
+    onStatus: () => {},
+  });
+  await expect(outcome).rejects.toBeInstanceOf(ModelSlotConflict);
+  expect(attempts).toBe(1);
 });
