@@ -3312,7 +3312,7 @@ def bots_section(bot) -> str:
         if not name or is_super(m):
             continue
         instr = " ".join((m.get("instructions") or "").split())[:120]
-        lines.append(f"- {name} ({m.get('preset') or 'custom'}; {m.get('status') or 'idle'}; "
+        lines.append(f"- {name} ({m.get('preset') or 'custom'}; "  # no status word: BOTS NOW owns state, this list stays hashed
                      f"{m.get('model') or DEFAULT_MODEL}/{m.get('effort') or DEFAULT_EFFORT}; face {face_words(m.get('face'))}): "
                      f"{instr}".rstrip(": "))
     return ("\n\nBOTS (the browser bots on this Mac; `handoff` gives one a task, `bot_settings` changes one, `bot_create` adds bots):\n"

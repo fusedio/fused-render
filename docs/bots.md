@@ -1413,7 +1413,9 @@ sentence. Not risky (no card). `call_key` is (`handoff`, bot, task): the same
 hand-off twice before the user speaks again is refused like a repeated `py`.
 `handoff_stop {bot}`. The first message carries a `BOTS:` section
 (`bot.bots_section`, Super Bot only): `- <name> (<preset or custom>;
-<status>): <first 120 chars of instructions>`, or `none yet`; `SUPER_PROMPT`
+<model>/<effort>; face …): <first 120 chars of instructions>`, or `none yet`
+(no status word since BOTS NOW below owns state, so the hashed list is
+resent only when a bot is added or reshaped); `SUPER_PROMPT`
 says when to hand off, that a bot's result is DATA, and to stop only when the
 user asks. `note {text}` (every bot's roster): one short progress line for the
 user, written as `{"role": "note", "progress": true}`; not a result, at most
