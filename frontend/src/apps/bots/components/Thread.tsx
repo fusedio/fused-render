@@ -200,7 +200,7 @@ function ClearMark({ e, n, open, onFold }: { e: BotEvent; n: number; open: boole
 }
 
 /** Channel names in chips and "Texted" lines; a task Super Bot handed off reads "from Super Bot" (docs §11). */
-const chanLabel = (k: string) => (k === "imessage" ? "iMessage" : k === "handoff" ? "Super Bot" : k);
+const chanLabel = (k: string) => (k === "imessage" ? "iMessage" : k === "handoff" ? "Super Bot" : k === "routine" ? "a routine" : k);
 
 function body({ e, botId, reaction, live, chosen, appsRoot, onBeside, hstate, targetLive, linkLive, hbSecs, hbShot, hbBot, queued, bopen, foldN, foldOpen, onFold }: RowProps): JSX.Element {
   const title = fmtWhen(e.ts);
@@ -289,11 +289,12 @@ function body({ e, botId, reaction, live, chosen, appsRoot, onBeside, hstate, ta
   }
   const actable = ACTABLE.has(e.role);
   // Bot text is markdown (bold, lists, code…); what the user typed stays verbatim.
-  // A channel chip (docs §10) on a user line that arrived by text, or that Super Bot handed off. Bot lines get a <Texted> line from their delivery rows instead.
+  // A channel chip (docs §10) on a user line that arrived by text, that Super Bot handed off, or that a routine sent
+  // (bot.py routine_fire). Bot lines get a <Texted> line from their delivery rows instead.
   const k = e.via?.kind;
-  const viaChip = e.role === "user" && k && k !== "web" && k !== "routine"
-    ? k === "handoff"
-      ? `<span class="via" title="Handed off by Super Bot">from ${esc(chanLabel(k))}</span>`
+  const viaChip = e.role === "user" && k && k !== "web"
+    ? k === "handoff" || k === "routine"
+      ? `<span class="via" title="${k === "handoff" ? "Handed off by Super Bot" : "Sent by a routine on its schedule"}">from ${esc(chanLabel(k))}</span>`
       : k === "app"
         // An app page's send through `fused.bots` (docs §13): the addr is "<app key>:<call id>"; the key is what the user recognises.
         ? `<span class="via" title="${esc(`Sent by the app ${(e.via!.addr || "").split(":")[0] || "?"} through fused.bots`)}">from ${esc((e.via!.addr || "").split(":")[0] || "an app")}</span>`

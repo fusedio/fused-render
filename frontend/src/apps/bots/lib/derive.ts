@@ -59,8 +59,12 @@ export const lastTs = (evs: BotEvent[]): number => {
   return 0;
 };
 // List order follows what you last did, not what the bot did, so rows stay put while agents work. lastTs still drives the row time + "New" marker.
+// A `user` row you sent yourself. A routine's prompt is a user row too (bot.py routine_fire, via routine) but the schedule's
+// doing, not yours: never the thing you last did, nor your answer to a card (thread answerTo), nor a reply after a hand back.
+export const sentByYou = (e: BotEvent): boolean => e.role === "user" && e.via?.kind !== "routine";
+// Routine prompts skipped here as the server's last_user_ts skips them.
 export const lastUserTs = (evs: BotEvent[]): number => {
-  for (let i = evs.length - 1; i >= 0; i--) if (evs[i].role === "user") return evs[i].ts;
+  for (let i = evs.length - 1; i >= 0; i--) if (sentByYou(evs[i])) return evs[i].ts;
   return 0;
 };
 // Card subtitle: the bot's latest message (not yours, not system noise), flattened to one plain line.

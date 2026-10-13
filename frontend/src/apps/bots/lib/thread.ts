@@ -1,7 +1,7 @@
 // The thread's pure rules (OpenBot chat.js render()'s thread half): session dividers, the "New" rule's slot, which
 // approval/question cards are live, the answer an old card keeps ticked, and the search predicate. No DOM here.
 import type { Bot, BotEvent } from "./api";
-import { lastSeqOf } from "./derive";
+import { lastSeqOf, sentByYou } from "./derive";
 
 /** Silence that starts a new "session" and earns a centered timestamp (seconds). */
 export const SESSION_GAP_S = 15 * 60;
@@ -28,8 +28,9 @@ export const clearIndex = (evs: readonly BotEvent[]): number => {
 export const firstNewIndex = (evs: BotEvent[], mark: number | null | undefined): number =>
   mark == null ? -1 : evs.findIndex((e) => e.seq > mark && !isNoise(e));
 
-/** The first message you sent after the card at `seq` (your answer to it), if any. */
-export const answerTo = (evs: BotEvent[], seq: number): BotEvent | undefined => evs.find((x) => x.seq > seq && x.role === "user");
+/** The first message you sent after the card at `seq` (your answer to it), if any. A routine firing after an offer
+ *  that outlived its task must not settle the card: its prompt is not a yes or a no. */
+export const answerTo = (evs: BotEvent[], seq: number): BotEvent | undefined => evs.find((x) => x.seq > seq && sentByYou(x));
 
 /**
  * The approval / question cards that are interactive right now. Only the one the bot waits on is live; an unanswered
