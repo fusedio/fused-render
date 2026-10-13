@@ -387,7 +387,13 @@ class _WebDelegate(NSObject):
         # for a load that was since superseded (⌘R, Home, an in-page link)
         # never drags the window back to the URL that failed.
         self._nav_gen = 0
-        self._retry_pending = False  # the next start is our own retry/reload
+        # How many of the next provisional starts are OUR OWN (a retry, a
+        # crash reload) rather than the user's. A count, not a flag: a
+        # renderer dying mid-load fires BOTH the navigation failure and the
+        # termination hook, so two recoveries can be scheduled for one event,
+        # and a flag consumed by the first start would let the second pass as
+        # a user navigation and hand the budgets back.
+        self._own_loads = 0
         self._terminations = 0  # content-process deaths since the user last navigated
         # The HTTP method of the main-frame request last allowed through the
         # policy hook: a retry rebuilds the request from its URL alone, which
@@ -497,7 +503,11 @@ class _WebDelegate(NSObject):
                 return
             if self._nav_gen != gen:
                 return  # something else navigated meanwhile; it owns the view now
-            self._retry_pending = True
+            # Bump NOW, synchronously: a crash reload scheduled for the same
+            # moment (see `_own_loads`) checks the generation next and bails,
+            # instead of racing this load before WebKit reports its start.
+            self._nav_gen += 1
+            self._own_loads += 1
             window.webview.loadRequest_(NSURLRequest.requestWithURL_(_nsurl(url)))
 
         AppHelper.callLater(delay, retry)
@@ -513,8 +523,8 @@ class _WebDelegate(NSObject):
         commit: a page that kills its renderer after its HTML arrived would
         otherwise reload on a 1 s loop forever."""
         self._nav_gen += 1
-        if self._retry_pending:
-            self._retry_pending = False
+        if self._own_loads > 0:
+            self._own_loads -= 1
         else:
             self._nav_retries = 0
             self._terminations = 0
@@ -553,8 +563,9 @@ class _WebDelegate(NSObject):
             if w is None or w.webview is None or getattr(w, "_torn", False):
                 return
             if self._nav_gen != gen:
-                return  # the user already navigated; nothing left to recover
-            self._retry_pending = True  # our own load: keeps the budgets
+                return  # the user (or a sibling retry) already navigated
+            self._nav_gen += 1  # synchronous, so a sibling retry bails
+            self._own_loads += 1  # our own load: keeps the budgets
             w.webview.reload()
 
         AppHelper.callLater(delay, reload)
