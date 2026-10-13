@@ -407,3 +407,44 @@ async def api_claude_artifacts(request: Request, body: dict = Body(default={}),
         engine=ENGINE, result=envelope,
     )
     return _respond(envelope, status)
+
+
+#: `/api/claude/worktrees`' actions, and its budget. 20 s (SPEC W-3): a
+#: `git worktree add` checks out a whole tree, which the 60 s default would
+#: let hang a menu far past the point anyone is still waiting on it.
+WORKTREE_ACTIONS = ("list", "create", "remove")
+WORKTREE_BUDGET_S = 20.0
+
+
+@router.post("/api/claude/worktrees")
+async def api_claude_worktrees(request: Request, body: dict = Body(default={}),
+                               x_fused: str | None = Header(default=None)):
+    """`{"action": "list"|"create"|"remove", "file", "name"?, "base"?,
+    "force"?}` → `claude_agent/worktrees.py`'s dict verbatim (its own
+    `{"error": ...}` is a 200 answer, like every handler here). `file` is the
+    chat's `_file`, any path inside the repo. The git calls run on a pool
+    thread under `WORKTREE_BUDGET_S`, so a slow checkout is a 504 with the
+    agent route's error object, never a stalled event loop."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    action = body.get("action")
+    if not isinstance(action, str) or action not in WORKTREE_ACTIONS:
+        return _error(f"unknown worktree action: {action!r}")
+    from fused_render.claude_agent import worktrees
+    params = dict(body)
+    try:
+        bound = bind_params(worktrees.main, params)
+    except ParamError as exc:
+        return _error(f"worktrees: {exc}")
+    envelope, status, _ = await _run(f"worktrees {action}", WORKTREE_BUDGET_S,
+                                     worktrees.main, bound)
+    if action != "list":
+        # A new or removed worktree moves what git reports for the repo.
+        git_status.invalidate_status_cache()
+    shell_calls.enrich_run(
+        getattr(request.state, "fused_call", None),
+        resolved=os.path.abspath(worktrees.__file__), params=params,
+        engine=ENGINE, result=envelope,
+    )
+    return _respond(envelope, status)
