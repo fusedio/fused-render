@@ -67,6 +67,10 @@ describe("pathsFromDrop reads the two path-carrying payloads", () => {
     expect(pathsFromDrop(transfer({ "text/uri-list": uris })))
       .toEqual(["/Users/ada/my clip.mp4", "/tmp/a.wav"]);
   });
+  it("drops the authority slash before a Windows drive letter", () => {
+    expect(pathsFromDrop(transfer({ "text/uri-list": "file:///C:/Users/ada/a%20b.png\r\n" })))
+      .toEqual(["C:/Users/ada/a b.png"]);
+  });
   it("is empty for a Finder drop, which carries bytes only", () => {
     expect(pathsFromDrop(transfer({}))).toEqual([]);
   });

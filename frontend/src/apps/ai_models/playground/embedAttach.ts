@@ -98,7 +98,10 @@ export function pathsFromDrop(data: DataTransfer): string[] {
       const uri = line.trim();
       if (!uri || uri.startsWith("#") || !uri.startsWith("file://")) continue;
       try {
-        out.push(decodeURIComponent(uri.replace(/^file:\/\/(localhost)?/, "")));
+        // `file:///C:/x` keeps the authority's slash before the drive
+        // letter; a Windows path has none.
+        const path = decodeURIComponent(uri.replace(/^file:\/\/(localhost)?/, ""));
+        out.push(/^\/[A-Za-z]:[\\/]/.test(path) ? path.slice(1) : path);
       } catch {
         /* a malformed escape: not a path, skip it */
       }

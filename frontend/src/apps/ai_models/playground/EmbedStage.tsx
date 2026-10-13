@@ -252,6 +252,11 @@ export function EmbedStage({
 }) {
   const [query, setQuery] = useState("");
   const [lines, setLines] = useState(DEFAULT_LINES);
+  // Mirrored for the same reason as `picturesRef` below: a text drop counts
+  // its room AFTER reading the files, by which time the reader may have typed
+  // or another drop may have landed.
+  const linesRef = useRef(lines);
+  linesRef.current = lines;
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -469,11 +474,13 @@ export function EmbedStage({
         // and spacing are theirs — and the cap is SAID, not applied silently:
         // what fits lands, the rest is counted in the error line, the same
         // "At most N lines" the run path refuses with.
-        const have = linesFromText(lines).length;
-        const room = Math.max(0, MAX_LINES - have);
+        const current = linesRef.current;
+        const room = Math.max(0, MAX_LINES - linesFromText(current).length);
         const fits = added.slice(0, room);
         if (fits.length) {
-          setLines((current) => (current.trimEnd() ? current.trimEnd() + "\n" : "") + fits.join("\n"));
+          const next = (current.trimEnd() ? current.trimEnd() + "\n" : "") + fits.join("\n");
+          linesRef.current = next;
+          setLines(next);
           setRanked(null);
         }
         if (added.length > room) {
@@ -485,9 +492,9 @@ export function EmbedStage({
       return;
     }
     setAttaching(true);
+    const landed = [...paths];
+    let refused: string | null = null;
     try {
-      const landed = [...paths];
-      let refused: string | null = null;
       for (const file of files) {
         // Refused BEFORE the upload: a PDF should not be copied into the
         // cache only to be refused by name afterwards. The first refusal is
@@ -503,7 +510,10 @@ export function EmbedStage({
       }
       if (landed.length || refused) takePaths(landed, refused);
     } catch (err) {
-      setError((err as Error).message);
+      // The files already copied into the cache still land — a failure on
+      // the third of five must not make the reader drop the first two again.
+      // The upload error outranks an earlier refusal: it is the newer news.
+      takePaths(landed, (err as Error).message);
     } finally {
       setAttaching(false);
     }
