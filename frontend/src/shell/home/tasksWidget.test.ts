@@ -84,7 +84,8 @@ test("the list format draws the Tasks page's own rows, not ItemList", async () =
   const { readFileSync } = await import("node:fs");
   const src = readFileSync(new URL("./widgets/TasksWidget.tsx", import.meta.url), "utf8");
   expect(src).toContain('className="tasks-list-frame"');
-  expect(src).toMatch(/<TaskRowItem[^>]*\bshowProject\b/);
+  expect(src).toContain("<TaskRowItem");
+  expect(src).not.toContain("showProject");
   expect(src).not.toContain("ItemList");
 });
 

@@ -96,7 +96,7 @@ function TaskRows({ rows, cap, onReload }: { rows: Task[]; cap: number; onReload
       <div className="tasks-list-frame">
         {shown.map((t) => {
           const href = taskHref(t) ?? TASKS_HREF;
-          return <TaskRowItem key={t.key} task={t} showProject href={href} onPress={() => navigateUrl(href)} onReload={onReload} />;
+          return <TaskRowItem key={t.key} task={t} href={href} onPress={() => navigateUrl(href)} onReload={onReload} />;
         })}
       </div>
     </div>
