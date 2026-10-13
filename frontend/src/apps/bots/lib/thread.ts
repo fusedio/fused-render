@@ -91,61 +91,75 @@ export function rowKeys(evs: readonly BotEvent[], botId: string): string[] {
   });
 }
 
-// ---- turn fold: a settled task's steps fold behind its result (the cloud transcript's "show more", design.md §A) ----
+// ---- step fold: the bot's process folds behind the exchange (the cloud transcript's "show more", design.md §A) ----
 /**
- * One task's stretch of the thread, as the fold sees it. The stream has no turn object: a turn is derived from its
- * CLOSER, the `done` / `error` row that ends it (routine and hand-off tasks have no `user` opener, only a noise
- * `system "Task started"` line, so openers are no boundary). `hidden` are the indices of the rows between the previous
- * closer and this one that fold away: the bot's process. What stays visible, in the order the thread draws it:
- *   - approval / question cards and the `user` answer under them (the exchange is part of the conversation);
- *   - a `thought` or `note` carrying an app card (an outcome, bot.py `Here's <app>:`), one with a reaction, or one a
- *     later message quotes (`reply.seq`): hiding it hides the reader's own mark;
- *   - hand-off cards, build cards, the Clear marker, "Sent to Super Bot" lines: cross-bot state with its own door.
- * A closer with nothing to hide above it is not a turn (no entry, no trigger drawn).
+ * One STRETCH of the thread that folds: consecutive `thought` / `action` / `note` rows between two BOUNDARIES. A
+ * boundary is any row that is part of the exchange and stays visible: your message, an approval / question card, the
+ * `done` / `error` that ends a task, the Clear marker, a hand-off or build card, and a thought or note that carries an
+ * app card (an outcome, bot.py `Here's <app>:`), a reaction, or a reply quoting it (hiding it hides your own mark).
+ * So a task with three back-and-forths is three folds, each opening only the steps between that question and its
+ * answer, not one lid over the whole task (owner, 2026-10-13).
+ *
+ * WHERE THE TRIGGER SITS, from the cloud rule (prose before or after the run carries it, else a bare line):
+ *   - `seat`: the bubble that ENDS the stretch, when it is one drawn through the thread's html path (`done`, `error`,
+ *     a kept `thought`): the two words go on its last line;
+ *   - `bare`: the stretch ends at a card, at your message, at the Clear marker or at the end of the list — none of
+ *     those is a line to seat two words on — so the first hidden row stands in for the stretch as one muted line.
+ * `key` is the seq of the first hidden row: the fold's identity, stable across appends and the 600-row trim.
  */
-export interface TurnFold {
-  /** Index of the `done` / `error` row that carries the trigger. */
-  closer: number;
-  /** Indices (into `evs`) hidden while the turn is folded. */
+export interface FoldStretch {
+  key: number;
+  /** Indices (into `evs`) hidden while folded. */
   hidden: number[];
-  /** How many `action` rows the fold hides, and the seconds from the first hidden row to the closer: the trigger's hover. */
+  /** The row whose bubble carries the trigger, or -1 when the stretch takes a bare line of its own (`hidden[0]`). */
+  seat: number;
+  /** How many `action` rows hide, and the seconds the stretch spans: the trigger's hover. */
   steps: number;
   secs: number;
 }
 
-/** Is `e` the row a task ends on? A `done` / `error` drawn as a bubble; the cards (hand-off result, build notice) and
- *  the seeded greeting are not closers. */
-const isCloser = (e: BotEvent): boolean =>
-  (e.role === "done" || e.role === "error") && !isHandoff(e) && e.source !== "build" && e.source !== "seed";
+/** A row the fold may hide: the bot's process, unless something made it part of the exchange. */
+const hideable = (e: BotEvent, rx: Record<number, string>, quoted: Set<number>): boolean =>
+  (e.role === "thought" || e.role === "action" || e.role === "note")
+  && !e.app?.dir && !e.build && !isHandoff(e) && !rx[e.seq] && !quoted.has(e.seq);
 
-export function turnFolds(evs: readonly BotEvent[], reactions: Record<number, string> | undefined): TurnFold[] {
+/** A boundary row that can carry the trigger on its own last line: the bubbles `body()` builds as html. */
+const seatable = (e: BotEvent): boolean =>
+  (e.role === "done" && e.source !== "seed" && !isHandoff(e) && e.source !== "build") || e.role === "error" || e.role === "thought";
+
+/**
+ * The fold stretches of a thread. `live`: the bot is mid-task, so a stretch that runs to the END of the list is still
+ * growing and is left alone (its progress is the point; a lid that goes on per step comes straight back off).
+ */
+export function foldStretches(evs: readonly BotEvent[], reactions: Record<number, string> | undefined, live: boolean): FoldStretch[] {
   const quoted = new Set<number>();
   for (const e of evs) if (e.reply?.seq != null) quoted.add(e.reply.seq);
   const rx = reactions || {};
-  const out: TurnFold[] = [];
-  let start = 0;
+  const out: FoldStretch[] = [];
+  let run: number[] = [];
+  const close = (end: number) => {
+    if (!run.length) return;
+    const first = evs[run[0]], last = evs[end >= 0 ? end : run[run.length - 1]];
+    out.push({
+      key: first.seq, hidden: run, seat: end >= 0 && seatable(evs[end]) ? end : -1,
+      steps: run.filter((j) => evs[j].role === "action").length, secs: Math.max(0, last.ts - first.ts),
+    });
+    run = [];
+  };
   for (let i = 0; i < evs.length; i++) {
     const e = evs[i];
-    if (e.source === "clear") { start = i + 1; continue; }  // the Clear marker is the other fold's boundary
-    if (!isCloser(e)) continue;
-    const hidden: number[] = [];
-    let steps = 0;
-    for (let j = start; j < i; j++) {
-      const m = evs[j];
-      if (m.role !== "thought" && m.role !== "action" && m.role !== "note") continue;
-      if (m.app?.dir || m.build || isHandoff(m) || rx[m.seq] || quoted.has(m.seq)) continue;
-      hidden.push(j);
-      if (m.role === "action") steps++;
-    }
-    if (hidden.length) out.push({ closer: i, hidden, steps, secs: Math.max(0, e.ts - evs[hidden[0]].ts) });
-    start = i + 1;
+    if (isNoise(e)) continue;  // draws nothing; neither hides nor bounds
+    if (hideable(e, rx, quoted)) { run.push(i); continue; }
+    close(i);
   }
+  if (!live) close(-1);
   return out;
 }
 
 /** The trigger's hover: "12 steps · 48s", "1 step", "3 messages · 5s". */
-export function turnFoldHint(t: TurnFold): string {
+export function foldHint(t: FoldStretch): string {
   const n = t.steps ? `${t.steps} step${t.steps === 1 ? "" : "s"}` : `${t.hidden.length} message${t.hidden.length === 1 ? "" : "s"}`;
   return t.secs >= 1 ? `${n} · ${fmtSecsShort(t.secs)}` : n;
 }
 const fmtSecsShort = (s: number): string => (s < 60 ? `${Math.round(s)}s` : s < 3600 ? `${Math.floor(s / 60)}m ${Math.round(s % 60)}s` : `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`);
+

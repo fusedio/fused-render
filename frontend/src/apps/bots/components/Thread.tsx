@@ -14,7 +14,7 @@ import { api, stepThumbUrl, type AppRef, type Bot, type BotEvent } from "../lib/
 import { esc, fmtDay, fmtSecs, fmtTime, fmtWhen } from "../lib/format";
 import { md } from "../lib/md";
 import { botsRoot } from "../lib/root";
-import { chosenOption, clearIndex, firstNewIndex, isHandoff, isNoise, liveCards, optionKey, rowKeys, searchCountText, searchHit, sessionBreak, turnFoldHint, turnFolds } from "../lib/thread";
+import { chosenOption, clearIndex, firstNewIndex, foldHint, foldStretches, isHandoff, isNoise, liveCards, optionKey, rowKeys, searchCountText, searchHit, sessionBreak } from "../lib/thread";
 import { act, clearScrollSeq, cur, eventsOf, getState, jumpTo, markSeen, openDialog, select, setNewCount, setScrollToEnd, showBanner, unviewed, useBots, viewedSet } from "../state/store";
 import { END_GAP, clearSearchHighlight, gapOf, evBox, highlightSearch, pinToEnd, restoreAnchor, topVisible, updateToBottom, type Anchor } from "./threadDom";
 import { HandBackRow, HandoverNote } from "./HandoverCard";
@@ -80,12 +80,20 @@ interface RowProps {
   foldN?: number;
   foldOpen?: boolean;
   onFold?: () => void;
-  /** A `done` / `error` row that ends a task with steps above it (lib/thread `turnFolds`): whether those steps are
-   *  shown, and the trigger's hover text. The click is the thread's delegated handler (`data-fold`), so the row needs
-   *  no callback prop and its memo holds. Absent on every other row. */
-  turnFold?: "open" | "closed";
-  turnHint?: string;
+  /** This row carries a fold trigger (lib/thread `foldStretches`): the state of the stretch, the stretch's key (the
+   *  seq the toggle is keyed by, `data-fold`) and the hover text. `bare`: this is the stretch's first hidden row standing
+   *  in for it as one muted line, because the row that ends the stretch (a card, your message) has no line to seat two
+   *  words on; otherwise the trigger goes on this bubble's last line. The click is the thread's delegated handler, so the
+   *  row needs no callback prop and its memo holds. Absent on every other row. */
+  fold?: "open" | "closed";
+  foldKey?: number;
+  foldHint?: string;
+  bare?: boolean;
 }
+
+/** The two words (cloud's RunTrigger): never a count, the count is the hover. */
+const foldHtml = (state: "open" | "closed", key: number, hint: string | undefined, bare?: boolean) =>
+  `<button class="fold${bare ? " bare" : ""}" data-fold="${key}" aria-expanded="${state === "open"}" title="${esc(hint || "")}">${state === "open" ? "show less" : "show more"}</button>`;
 
 /** An action event's raw tool result as display text ("" when there is none). The wire sends a string; anything else is shown as JSON. */
 const detailText = (d: unknown): string => {
@@ -197,7 +205,7 @@ function ClearMark({ e, n, open, onFold }: { e: BotEvent; n: number; open: boole
 /** Channel names in chips and "Texted" lines; a task Super Bot handed off reads "from Super Bot" (docs §11). */
 const chanLabel = (k: string) => (k === "imessage" ? "iMessage" : k === "handoff" ? "Super Bot" : k);
 
-function body({ e, botId, reaction, live, chosen, appsRoot, onBeside, hstate, targetLive, linkLive, hbSecs, hbShot, hbBot, queued, bopen, foldN, foldOpen, onFold, turnFold, turnHint }: RowProps): JSX.Element {
+function body({ e, botId, reaction, live, chosen, appsRoot, onBeside, hstate, targetLive, linkLive, hbSecs, hbShot, hbBot, queued, bopen, foldN, foldOpen, onFold, fold, foldKey, foldHint: hint, bare }: RowProps): JSX.Element {
   const title = fmtWhen(e.ts);
   if (e.source === "clear") return <ClearMark e={e} n={foldN || 0} open={!!foldOpen} onFold={onFold} />;
   if (e.handoff && isHandoff(e)) return <HandoffCard e={e} state={hstate || e.handoff.state} targetLive={!!targetLive} />;
@@ -297,14 +305,15 @@ function body({ e, botId, reaction, live, chosen, appsRoot, onBeside, hstate, ta
   // The seeded Super Bot's greeting (registry.seed_super, source "seed") carries the door to Settings > Phone.
   const seedBtn = e.role === "done" && e.source === "seed"
     ? '<div class="opts"><button class="opt seed" data-dialog="phone">Connect your phone</button></div>' : "";
-  // THE TURN'S TRIGGER (lib/thread `turnFolds`): the cloud transcript's two words, `show more` / `show less`, muted at
-  // the foot of the result bubble, never a count (the count and the duration are the hover). The result is the
-  // summary the reader scans for; the steps that produced it open above it on demand.
-  const foldBtn = turnFold
-    ? `<button class="fold" data-fold="${e.seq}" aria-expanded="${turnFold === "open"}" title="${esc(turnHint || "")}">${turnFold === "open" ? "show less" : "show more"}</button>`
-    : "";
+  // THE STRETCH'S TRIGGER ON THIS BUBBLE'S LAST LINE (lib/thread `foldStretches`, the cloud seat rule): the two words
+  // go INSIDE the last paragraph the markdown produced, so they sit on the sentence's own line, right edge, in the
+  // reading type, the way the cloud transcript's `show more` does. A bubble whose markdown does not end in a paragraph
+  // (a list, a code block) gets them on a line of their own after it.
+  const trigger = fold && !bare && foldKey != null ? foldHtml(fold, foldKey, hint) : "";
+  let bodyHtml = e.role === "user" ? esc(e.text) : md(e.text);
+  if (trigger) bodyHtml = bodyHtml.endsWith("</p>") ? bodyHtml.slice(0, -4) + trigger + "</p>" : bodyHtml + `<p class="foldline">${trigger}</p>`;
   const html = (actable ? actsHtml(e.seq) + `<time class="when">${esc(fmtTime(e.ts))}</time>` : "")
-    + (e.role === "user" ? esc(e.text) : md(e.text)) + seedBtn + viaChip + foldBtn
+    + bodyHtml + seedBtn + viaChip
     + (actable ? `<span class="rx" data-react="${e.seq}" title="Change reaction">${esc(reaction)}</span>` : "");
   const cls = `msg ${e.role}${e.role === "user" ? "" : " md"}${actable && reaction ? " has-rx" : ""}${queued ? " queued" : ""}`;
   const bubble = <HtmlMsg className={cls} title={queued ? "Queued: sent when you hand the browser back" : title} seq={actable ? e.seq : undefined} html={html} />;
@@ -383,11 +392,18 @@ const Row = memo(function Row(p: RowProps) {
   const { e, day, isNew } = p;
   const cls = p.folded ? "ev folded" : "ev";
   if (isNoise(p.e)) return <div className={cls} />;
+  // A BARE TRIGGER: this row is the first of a folded stretch whose end has no bubble to seat the words on, so it
+  // stands in for the stretch as one muted line (cloud's `is-bare` seat). Open, the line stays above the steps and
+  // reads `show less`; closed, the steps behind it are `.folded` and this line is all that is left of them.
+  const bare = p.bare && p.fold && p.foldKey != null
+    ? <div className="msg foldbare" dangerouslySetInnerHTML={{ __html: foldHtml(p.fold, p.foldKey, p.foldHint, true) }} />
+    : null;
   return (
     <div className={cls} data-seq={e.seq}>
       {day ? <div className="day">{fmtDay(e.ts)}</div> : null}
       {isNew ? <div className="new">New</div> : null}
-      {body(p)}
+      {bare}
+      {bare && p.fold === "closed" ? null : body(p)}
       {p.texted?.length ? <Texted e={e} rows={p.texted} /> : null}
     </div>
   );
@@ -460,56 +476,68 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
     setOpenFold((o) => (o === k ? "" : k));
   }, [threadRef]);
 
-  // ---- turn fold: every settled task's steps fold behind its result (lib/thread `turnFolds`) ----
+  // ---- step fold: the bot's process folds behind the exchange, one fold per stretch (lib/thread `foldStretches`) ----
   //
   // SEEDED ONCE PER BOT, THEN THE READER'S. The cloud transcript learnt this the hard way (2026-09-17): a fold that
   // re-derives every render shuts the minute-old answer under a reader who is mid-conversation. So on the first paint
-  // with this bot's events, every turn but the newest lands closed, and from then on nothing here moves a fold except a
-  // click. A turn that finishes while you watch arrives open and stays open. Switching bots is a fresh seed.
+  // with this bot's events, every stretch lands closed except the newest task's (the one you came back for, settled or
+  // still running), and from then on nothing here moves a fold except a click. A stretch that settles while you watch
+  // arrives open and stays open. Switching bots is a fresh seed.
   //
-  // AND THE SEED NEVER HIDES WHAT YOU HAVE NOT SEEN: a turn with a row past the New mark (a routine that ran overnight)
-  // stays open, so the New rule and the unread count still point at rows that are on screen.
+  // AND THE SEED NEVER HIDES WHAT YOU HAVE NOT SEEN: a stretch with a row past the seen mark (a routine that ran
+  // overnight) stays open, so the New rule and the unread count still point at rows that are on screen.
   //
   // A REF PLUS A BUMP, like the Clear fold's anchor: the map is read during render, and every row's props must stay
   // identical across a click for Row's memo to hold.
-  const folds = useMemo(() => turnFolds(evs, rxs), [evs, rxs]);
-  const turnRef = useRef({ bot: "\u0000", seeded: false, open: new Map<number, boolean>() });
-  const [, bumpTurn] = useState(0);
-  if (turnRef.current.bot !== botId) turnRef.current = { bot: botId, seeded: false, open: new Map() };
+  const busy = !!b && (b.status === "running" || b.status === "waiting");
+  const folds = useMemo(() => foldStretches(evs, rxs, busy), [evs, rxs, busy]);
+  const stretchRef = useRef({ bot: "\u0000", seeded: false, open: new Map<number, boolean>() });
+  const [, bumpFold] = useState(0);
+  if (stretchRef.current.bot !== botId) stretchRef.current = { bot: botId, seeded: false, open: new Map() };
   // THE SEED WAITS FOR THE EVENTS AND THE SEEN MARK: a bot's first paint can be an empty list (not loaded yet), and a
-  // seed burnt on it would leave every turn of the history open once it lands. "Seen as of opening" is `S.base`
+  // seed burnt on it would leave every stretch of the history open once it lands. "Seen as of opening" is `S.base`
   // (store setNewMark, written in select()'s own batch and by the first poll for a URL-picked bot), not `newMark`:
   // that one is null both before it is placed and when nothing is new, and the two must not read the same.
   const base = S.base[botId];
-  if (!turnRef.current.seeded && evs.length && base !== undefined) {
-    const open = turnRef.current.open;
-    const newest = folds.length ? folds[folds.length - 1].closer : -1;
+  if (!stretchRef.current.seeded && evs.length && base !== undefined) {
+    // The newest task starts after the second-to-last closer: everything from there on is the one you came back for.
+    const closers: number[] = [];
+    for (let i = 0; i < evs.length; i++) if ((evs[i].role === "done" || evs[i].role === "error") && !isHandoff(evs[i]) && evs[i].source !== "build" && evs[i].source !== "seed") closers.push(i);
+    const newestFrom = closers.length >= 2 ? closers[closers.length - 2] : -1;
     for (const t of folds) {
-      const unread = evs[t.closer].seq > base || t.hidden.some((j) => evs[j].seq > base);
-      open.set(evs[t.closer].seq, t.closer === newest || unread);
+      const unread = t.hidden.some((j) => evs[j].seq > base);
+      stretchRef.current.open.set(t.key, t.hidden[0] > newestFrom || unread);
     }
-    turnRef.current.seeded = true;
+    stretchRef.current.seeded = true;
   }
-  // A closer first seen after the seed (the task that just ended) is open: only a click closes it.
-  const turnOf = new Map<number, "open" | "closed">(), turnHint = new Map<number, string>(), turnHidden = new Set<number>();
-  // A session divider on a hidden row (a routine's first step after a night's silence) moves to the turn's result,
-  // so folding the steps never folds the timestamp with them.
+  // A stretch first seen after the seed (the task that just settled) is open: only a click closes it.
+  const foldAt = new Map<number, { fold: "open" | "closed"; key: number; hint: string; bare: boolean }>();
+  const foldHidden = new Set<number>();
+  // A session divider on a hidden row (a routine's first step after a night's silence) moves to the seat, so folding
+  // the steps never folds the timestamp with them. A bare stretch keeps its own: its first row stays drawn.
   const dayMoved = new Set<number>();
   for (const t of folds) {
-    const seq = evs[t.closer].seq, isOpen = turnRef.current.open.get(seq) ?? true;
-    turnOf.set(t.closer, isOpen ? "open" : "closed");
-    turnHint.set(t.closer, turnFoldHint(t));
+    const isOpen = stretchRef.current.open.get(t.key) ?? true;
+    const state = isOpen ? "open" as const : "closed" as const, hint = foldHint(t);
+    if (t.seat >= 0) foldAt.set(t.seat, { fold: state, key: t.key, hint, bare: false });
+    else foldAt.set(t.hidden[0], { fold: state, key: t.key, hint, bare: true });
     if (isOpen || searchQ) continue;
-    for (const j of t.hidden) { turnHidden.add(j); if (sessionBreak(evs[j - 1], evs[j])) dayMoved.add(t.closer); }
+    for (const j of t.hidden) {
+      if (t.seat < 0 && j === t.hidden[0]) continue;  // the bare line itself stays
+      foldHidden.add(j);
+      if (t.seat >= 0 && sessionBreak(evs[j - 1], evs[j])) dayMoved.add(t.seat);
+    }
   }
-  // The toggle keeps the result bubble where it sits: the steps open (or close) above it, not under your pointer.
-  const onFoldTurn = useCallback((seq: number) => {
+  // The toggle keeps the trigger where it sits: the steps open (or close) above a seated trigger, below a bare one,
+  // never under your pointer.
+  const onFoldStretch = useCallback((key: number) => {
     const th = threadRef.current; if (!th) return;
-    const box = evBox(th.querySelector(`.ev[data-seq="${seq}"]`));
-    foldRef.current.anchor = box ? { seq: String(seq), y: box.getBoundingClientRect().top - th.getBoundingClientRect().top } : null;
-    const m = turnRef.current.open;
-    m.set(seq, !(m.get(seq) ?? true));
-    bumpTurn((n) => n + 1);
+    const btn = th.querySelector(`[data-fold="${key}"]`), ev = btn?.closest<HTMLElement>(".ev") || null;
+    const seq = ev?.dataset.seq, box = ev ? evBox(ev) : null;
+    foldRef.current.anchor = box && seq ? { seq, y: box.getBoundingClientRect().top - th.getBoundingClientRect().top } : null;
+    const m = stretchRef.current.open;
+    m.set(key, !(m.get(key) ?? true));
+    bumpFold((n) => n + 1);
   }, [threadRef]);
 
   // The search tint lives in the document's highlight registry, not the DOM: drop it when the thread goes.
@@ -534,10 +562,10 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
     const js = s.scrollSeq, jumping = !!js && js.bot === botId;
     // A jump into the folded conversation opens it first; the next commit lands on the message.
     if (jumping && folded && js.seq < evs[ci].seq && js.seq >= evs[0].seq) { setOpenFold(foldKey); return; }
-    // …and a jump at a step hidden behind its turn's result opens that turn first, the same way.
+    // …and a jump at a step hidden behind its stretch's trigger opens that stretch first, the same way.
     if (jumping) {
-      const hit = folds.find((t) => turnHidden.has(t.hidden[0]) && t.hidden.some((j) => evs[j].seq === js.seq));
-      if (hit) { turnRef.current.open.set(evs[hit.closer].seq, true); bumpTurn((n) => n + 1); return; }
+      const hit = folds.find((t) => t.hidden.some((j) => foldHidden.has(j) && evs[j].seq === js.seq));
+      if (hit) { stretchRef.current.open.set(hit.key, true); bumpFold((n) => n + 1); return; }
     }
     const fa = foldRef.current.anchor;
     foldRef.current.anchor = null;
@@ -568,7 +596,7 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
     // Folded rows never scroll into view; they are behind the marker, not unread. Steps folded behind a result the
     // same: the seed only ever folds what was already seen, and a click that folds is a reader who has read them.
     if (folded && botId) { const set = viewedSet(botId); for (const e of evs.slice(0, ci)) set.add(e.seq); }
-    if (turnHidden.size && botId) { const set = viewedSet(botId); for (const j of turnHidden) set.add(evs[j].seq); }
+    if (foldHidden.size && botId) { const set = viewedSet(botId); for (const j of foldHidden) set.add(evs[j].seq); }
     if (c) setNewCount(unviewed(c, eventsOf(c.id)).length);
     updateToBottom(th);
     // Sitting at the end with the tab visible means you are following along: keep "seen" current so a reload or re-open
@@ -606,7 +634,7 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
     const jump = t.closest<HTMLElement>("[data-jump-bot]");
     if (jump) { jumpTo(jump.dataset.jumpBot || "", Number(jump.dataset.jumpSeq)); return; }
     const fold = t.closest("[data-fold]");
-    if (fold) { onFoldTurn(Number(fold.getAttribute("data-fold"))); return; }
+    if (fold) { onFoldStretch(Number(fold.getAttribute("data-fold"))); return; }
     const rc = t.closest("[data-react]");
     if (rc) { onReact(rc, Number(rc.getAttribute("data-react"))); return; }
     const dlg = t.closest("[data-dialog]");
@@ -670,8 +698,8 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
           hbSecs={hb && e.seq === hb.seq && e.role === "question" ? hb.secs : undefined}
           hbShot={hb && e.seq === hb.seq && e.role === "question" ? hb.shot : undefined}
           hbBot={hoSeq != null && e.seq === hoSeq ? b : undefined} queued={e.role === "user" && heldSeqs.has(e.seq)}
-          folded={(folded && i < ci) || turnHidden.has(i)} foldN={i === ci ? foldN : undefined} foldOpen={i === ci ? !folded : undefined} onFold={i === ci ? onFold : undefined}
-          turnFold={turnOf.get(i)} turnHint={turnHint.get(i)} />
+          folded={(folded && i < ci) || foldHidden.has(i)} foldN={i === ci ? foldN : undefined} foldOpen={i === ci ? !folded : undefined} onFold={i === ci ? onFold : undefined}
+          fold={foldAt.get(i)?.fold} foldKey={foldAt.get(i)?.key} foldHint={foldAt.get(i)?.hint} bare={foldAt.get(i)?.bare} />
       );
     });
     if (b.control && hoSeq == null) content.push(<HandoverNote key="handover" b={b} />);
