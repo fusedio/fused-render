@@ -146,7 +146,7 @@ export interface Bot {
   created?: number;
   task?: string;
   step?: number;
-  /** The step budget of the current task; the status line shows "step 12/60" when present. */
+  /** The step budget of the current task; the Home widget shows "step 12/200" when present. */
   step_cap?: number;
   /** While `status === "waiting"`: the seq of the approval / question card the bot is blocked on (null: unknown, fall back to the last ask). */
   waiting_on?: number | null;
