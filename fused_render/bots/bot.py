@@ -57,8 +57,8 @@ class _ServingTask:
 
     def via_for(self, bot):
         """The via a card from this call carries, or None when the task it served is gone."""
-        if bot is not self.bot or self.thread is None or bot.thread is not self.thread:
-            return None
+        if bot is not self.bot or self.thread is None or bot.thread is not self.thread or not self.thread.is_alive():
+            return None  # the task ended (a dead engine thread is not yet replaced on stop / error) or another started
         return dict(self.via)
 
 logger = logging.getLogger(__name__)
