@@ -1,4 +1,4 @@
-// The webview that shows the grid and the apps. One persistent
+// The webview that shows the grid, the bots pages and the apps. One persistent
 // WKWebsiteDataStore (the default) is the whole pairing story: /pair sets the
 // device cookie there once, and every later launch carries it.
 //
@@ -83,6 +83,14 @@ struct WebView: UIViewRepresentable {
         context.coordinator.titleObservation = web.observe(\.title, options: [.new]) { [controller] web, _ in
             Task { @MainActor in controller.title = web.title ?? "" }
         }
+        // The lan pages may route `/` ⇄ `/bots` ⇄ `/bots/<id>` in-page
+        // (pushState: no didFinish), so the top bar follows the URL itself.
+        // (Only the chrome: onGridLoaded stays on didFinish below.)
+        context.coordinator.urlObservation = web.observe(\.url, options: [.new]) { [controller] web, _ in
+            Task { @MainActor in
+                if let url = web.url { controller.location = url }
+            }
+        }
         // Record a pairing URL as already-loaded here: updateUIView runs right
         // after and would otherwise load the same /pair again — the token is
         // single-use, so the second hit would land on "code expired".
@@ -122,6 +130,7 @@ struct WebView: UIViewRepresentable {
         var baseURL: URL
         var lastPending: URL?
         var titleObservation: NSKeyValueObservation?
+        var urlObservation: NSKeyValueObservation?
         weak var webView: WKWebView?
         let controller: WebController
         let onGridLoaded: (String) -> Void

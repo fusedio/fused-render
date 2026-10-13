@@ -1,8 +1,9 @@
 # XcodeGen spec for the FusedRender iOS app — `xcodegen generate` in this
 # folder writes FusedRender.xcodeproj (gitignored). A thin native shell around
 # the local-network listener (fused_render/lan.py): Bonjour finds the computer,
-# a QR scan pairs, a WKWebView shows the same grid and apps a phone browser
-# would — with the native pieces a browser on plain http cannot offer.
+# a QR scan pairs, a WKWebView shows the same grid, bots pages and apps a
+# phone browser would — with the native pieces a browser on plain http cannot
+# offer.
 #
 # Two targets share Shared/: the app, and a WidgetKit extension that puts
 # individual Fused apps on the Home Screen (one configurable widget per app,
@@ -67,8 +68,9 @@ targets:
         # the scene delegate is handed over by AppDelegate (SceneDelegate.swift).
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
-        # fusedrender://open?host=…&port=…&path=… — what widgets and quick
-        # actions open (Shared/AppManifest.swift builds and parses it).
+        # fusedrender://open?host=…&port=…&path=… (or &page=bots, &bot=<id>)
+        # — what widgets and quick actions open (Shared/AppManifest.swift
+        # builds and parses it).
         CFBundleURLTypes:
           - CFBundleURLName: io.fused.render.open
             CFBundleURLSchemes:

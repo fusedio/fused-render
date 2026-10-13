@@ -79,22 +79,70 @@ struct ManifestApp: Codable, Identifiable, Hashable {
     }
 }
 
+/// `fusedrender://open?host=…` plus one of: `path=<entry html>` (an app page,
+/// `/render?path=…`), `page=bots` (the bots list, `/bots`) or `bot=<id>` (one
+/// bot's chat, `/bots/<id>`). Port and scheme ride along on app links but the
+/// app ignores them (AppModel.open(deepLink:)).
 struct DeepLink {
+    enum Target: Equatable {
+        case app(path: String)
+        case bots
+        case bot(id: String)
+    }
+
     let host: String
     let port: Int
     let scheme: String
-    let path: String
+    let target: Target
 
     init?(_ url: URL) {
         guard url.scheme == FusedShared.scheme, url.host == "open",
               let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems,
-              let host = items.first(where: { $0.name == "host" })?.value, !host.isEmpty,
-              let path = items.first(where: { $0.name == "path" })?.value, !path.isEmpty
+              let host = items.first(where: { $0.name == "host" })?.value, !host.isEmpty
         else { return nil }
+        let value: (String) -> String? = { name in items.first(where: { $0.name == name })?.value }
+        // A bot id becomes a path segment: anything outside [A-Za-z0-9_-]
+        // refuses the whole link rather than being cleaned up into another id.
+        if let bot = value("bot") {
+            guard Self.isBotID(bot) else { return nil }
+            self.target = .bot(id: bot)
+        } else if let page = value("page") {
+            guard page == "bots" else { return nil }
+            self.target = .bots
+        } else if let path = value("path"), !path.isEmpty {
+            self.target = .app(path: path)
+        } else {
+            return nil
+        }
         self.host = host
-        self.scheme = items.first(where: { $0.name == "scheme" })?.value ?? "http"
-        self.port = Int(items.first(where: { $0.name == "port" })?.value ?? "") ?? (scheme == "https" ? 443 : 80)
-        self.path = path
+        self.scheme = value("scheme") ?? "http"
+        self.port = Int(value("port") ?? "") ?? (scheme == "https" ? 443 : 80)
+    }
+
+    private static let botIDCharacters = CharacterSet(
+        charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-")
+
+    static func isBotID(_ id: String) -> Bool {
+        !id.isEmpty && id.count <= 128 && id.unicodeScalars.allSatisfy { botIDCharacters.contains($0) }
+    }
+
+    /// `fusedrender://open?host=…&page=bots` — the "Bots" quick action.
+    static func bots(host: String) -> URL {
+        link(host: host, [.init(name: "page", value: "bots")])
+    }
+
+    /// `fusedrender://open?host=…&bot=<id>`; nil for an id the parser would refuse.
+    static func bot(_ id: String, host: String) -> URL? {
+        guard isBotID(id) else { return nil }
+        return link(host: host, [.init(name: "bot", value: id)])
+    }
+
+    private static func link(host: String, _ extra: [URLQueryItem]) -> URL {
+        var c = URLComponents()
+        c.scheme = FusedShared.scheme
+        c.host = "open"
+        c.queryItems = [URLQueryItem(name: "host", value: host)] + extra
+        return c.url!
     }
 }
 

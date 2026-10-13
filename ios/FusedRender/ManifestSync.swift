@@ -1,8 +1,8 @@
 // Keeps the shared manifest (Shared/AppManifest.swift) current: whenever the
 // grid loads, fetch the same /api/lan/apps the grid shows — with the webview's
 // cookie — cache each preview.png, write apps.json, and tell WidgetKit and the
-// Home Screen quick actions. Best-effort throughout: a failed refresh leaves
-// the last manifest in place.
+// Home Screen quick actions (Bots first, then the apps). Best-effort
+// throughout: a failed refresh leaves the last manifest in place.
 import Foundation
 import UIKit
 import WebKit
@@ -54,7 +54,7 @@ enum ManifestSync {
         let merged = (apps + others).sorted { $0.recency > $1.recency }
         Manifest.save(merged)
         WidgetCenter.shared.reloadAllTimelines()
-        installQuickActions(merged)
+        installQuickActions(merged, host: server.host)
         log.info("manifest: \(apps.count) apps from \(server.host, privacy: .public)")
     }
 
@@ -83,9 +83,21 @@ enum ManifestSync {
         return name
     }
 
-    /// Long-press the app icon → the four most recent apps.
-    private static func installQuickActions(_ apps: [ManifestApp]) {
-        UIApplication.shared.shortcutItems = apps.prefix(4).map { app in
+    /// Long-press the app icon → "Bots" (the bots list on `host`, the computer
+    /// whose grid just loaded — the most recent one), then the three most
+    /// recent apps. No host, no Bots item: the link would have nowhere to go.
+    private static func installQuickActions(_ apps: [ManifestApp], host: String?) {
+        var items: [UIApplicationShortcutItem] = []
+        if let host, !host.isEmpty {
+            items.append(UIApplicationShortcutItem(
+                type: "io.fused.render.bots",
+                localizedTitle: "Bots",
+                localizedSubtitle: nil,
+                icon: UIApplicationShortcutIcon(systemImageName: "sparkles"),
+                userInfo: ["url": DeepLink.bots(host: host).absoluteString as NSSecureCoding]
+            ))
+        }
+        items += apps.prefix(3).map { app in
             UIApplicationShortcutItem(
                 type: "io.fused.render.open",
                 localizedTitle: app.label,
@@ -94,6 +106,7 @@ enum ManifestSync {
                 userInfo: ["url": app.deepLink.absoluteString as NSSecureCoding]
             )
         }
+        UIApplication.shared.shortcutItems = items
     }
 
     private struct Payload: Decodable {
