@@ -33,19 +33,33 @@ from fused_render.bots import paths as bpaths
 from fused_render.bots.browser import Browser
 from fused_render.bots.channels import base as chan
 
-_TASK_TLS = threading.local()  # .bot = the Bot whose task this thread is serving a tool call for (Bot.serving_task)
+_TASK_TLS = threading.local()  # .task = the _ServingTask this thread is inside (Bot.serving_task), else unset
 
 
 class _ServingTask:
+    """One tool call served for a bot's running task (Bot.serving_task). It
+    snapshots the engine thread and the task's via at entry: emit stamps that
+    via only while that same thread is still the bot's, so a call that outlives
+    its task (stop, error, a new task started meanwhile) never stamps the next
+    task's via on its late cards."""
+
     def __init__(self, bot):
         self.bot, self.prev = bot, None
+        self.thread = bot.thread
+        self.via = dict(bot.task_via)
 
     def __enter__(self):
-        self.prev = getattr(_TASK_TLS, "bot", None)
-        _TASK_TLS.bot = self.bot
+        self.prev = getattr(_TASK_TLS, "task", None)
+        _TASK_TLS.task = self
 
     def __exit__(self, *exc):
-        _TASK_TLS.bot = self.prev
+        _TASK_TLS.task = self.prev
+
+    def via_for(self, bot):
+        """The via a card from this call carries, or None when the task it served is gone."""
+        if bot is not self.bot or self.thread is None or bot.thread is not self.thread:
+            return None
+        return dict(self.via)
 
 logger = logging.getLogger(__name__)
 
@@ -659,9 +673,13 @@ class Bot:
             ev = {"seq": self.seq, "ts": time.time(), "role": role, "text": text, **extra}
             if "via" not in ev:
                 t = self.thread
-                mine = t is not None and (threading.get_ident() == t.ident or getattr(_TASK_TLS, "bot", None) is self)
-                if mine and not chan.is_web(self.task_via):
-                    ev["via"] = dict(self.task_via)
+                if t is not None and threading.get_ident() == t.ident:
+                    v = dict(self.task_via)
+                else:
+                    serving = getattr(_TASK_TLS, "task", None)
+                    v = serving.via_for(self) if serving is not None else None
+                if v and not chan.is_web(v):
+                    ev["via"] = v
             elif ev["via"] is None:
                 del ev["via"]
             if self.deleted:
