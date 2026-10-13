@@ -12,6 +12,7 @@ const EMPTY: AiRuntime = {
   runners: [],
   loaded: [],
   downloading: [],
+  conflicts: [],
   totalResidentBytes: null,
   memoryCeilingBytes: null,
 };

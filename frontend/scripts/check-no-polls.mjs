@@ -48,6 +48,11 @@ const ALLOW = new Map([
   // re-reads its settings ONCE (the app rebinds a tick later) and never
   // re-arms; the error path shows what it already holds.
   ["launcher/launcher.ts", "one-shot re-read after a write; no events client on that page"],
+  // The recording pill is its own native panel document with no events
+  // client; it reads the capture's clock and level at 100 ms and a 404 is
+  // how it learns the recording ended ("The pill polls; nothing pushes",
+  // DECISIONS D1343).
+  ["recpill/recpill.ts", "recording pill level/clock read; no events client on that page"],
 ]);
 
 // `setTimeout(fn, 0)` batches work already decided into one call (runtime.js's
