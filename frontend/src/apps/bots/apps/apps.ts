@@ -102,7 +102,9 @@ export function appFromText(text: string | null | undefined, rootDir: string = a
   if (!rootDir) return null;
   const root = rootDir.replace(/\/$/, "") + "/";
   for (const m of String(text || "").matchAll(/render\?path=([^\s)\]>"']+)/g)) {
-    const [rawPath, ...rest] = m[1].split("&");
+    // A link ending a sentence ("…/brex-memo-updater. You'll hear…") must not keep the period: the card would
+    // open `<dir>./index.html`, "no such file".
+    const [rawPath, ...rest] = m[1].replace(/[.,;:!?]+$/, "").split("&");
     let p: string;
     try { p = decodeURIComponent(rawPath.replace(/\+/g, " ")); } catch { continue; }
     p = p.replace(/\/index\.html$/, "").replace(/\/$/, "");
