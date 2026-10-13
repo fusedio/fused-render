@@ -632,18 +632,20 @@ class Bot:
             os.makedirs(self.dir, exist_ok=True)
             with open(self.events_path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(ev) + "\n")
-            if role == "user":
-                self._last_user_ts = ev["ts"]
+            if role == "user" and (ev.get("via") or {}).get("kind") != chan.ROUTINE_KIND:
+                self._last_user_ts = ev["ts"]  # a routine's prompt is the schedule's doing, not the user's (last_user_ts)
         _registry().on_event(self, ev)
         return ev
 
     def last_user_ts(self):
-        """ts of the newest user message (0 if none): one pass over events.jsonl, then kept current by emit()."""
+        """ts of the newest message the user sent (0 if none): one pass over events.jsonl, then kept current by
+        emit(). A routine's prompt line (via routine) is not counted: the Home widget and the sidebar order bots by
+        what YOU last did, and a routine firing overnight must not move a row."""
         with self.lock:
             if getattr(self, "_last_user_ts", None) is None:
                 ts = 0
                 for _i, ev in _iter_events(self.events_path):
-                    if isinstance(ev, dict) and ev.get("role") == "user":
+                    if isinstance(ev, dict) and ev.get("role") == "user" and (ev.get("via") or {}).get("kind") != chan.ROUTINE_KIND:
                         ts = ev.get("ts") or 0
                 self._last_user_ts = ts
             return self._last_user_ts
@@ -1825,8 +1827,13 @@ class Bot:
                 self._run_add(r, "skipped", why, seq=ev.get("seq"), manual=manual)
             else:
                 r["last_result"] = "started"
-                ev = self.emit("system", f"Routine {'run now' if manual else 'fired'}: {r['task']}")
+                ev = self.emit("system", f"Routine {'run now' if manual else 'fired'}")
                 run = self._run_add(r, "started", "", seq=ev.get("seq"), manual=manual)
+                # The prompt is a user line, as a typed task is: the thread shows what the routine sent (chip "from a
+                # routine"), the fold opens a stretch on it, and CONVERSATION SO FAR reads it as USER. Written here, before
+                # the start, in this method's own style (the "fired" line is too; a refusal below adds its note). Not the
+                # user's own doing, so recency (last_user_ts, lastUserTs) skips it.
+                self.emit("user", r["task"], via=dict(chan.ROUTINE))
             if busy and r["kind"] == "once":
                 # A one-shot is not a slot to lose: a `last` would end it for good (_next_run), so it is not
                 # stamped. A due one retries in a minute until the bot is free and you have handed back; a

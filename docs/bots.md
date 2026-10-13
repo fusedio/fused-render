@@ -490,7 +490,7 @@ them all. `logins_from` takes a bot's name or a browser's name.
 
 Everything in `agents.py` that is not the model loop: create/clone/delete,
 greet, rename/settings, flag, react, routines (`_next_run`, spacing from
-disk, circuit breaker after 3 fails, run history `runs[]` per routine:
+disk, a fire writes "Routine fired" then the prompt as a `user` line via `routine` (chip "from a routine"; recency skips it), circuit breaker after 3 fails, run history `runs[]` per routine:
 `_run_add` writes one row per slot reached, skips included, `_routine_outcome`
 lands the result on it; ROUTINE_RUNS kept, newest first), skills (`learn`, `skills_for`), memory
 (`remember`, caps), artifacts/Inbox (`save_file`, `collect_task_artifacts`,
