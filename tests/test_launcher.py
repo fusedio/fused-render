@@ -187,12 +187,19 @@ def test_launcher_search_route(home, tmp_path):
     launcher.invalidate()
     client = _client(tmp_path)
     body = client.get("/api/launcher").json()
-    assert body["query"] == "" and [x["path"] for x in body["apps"]] == [a, ""]
-    assert body["apps"][-1]["home"] is True and body["apps"][-1]["url"] == "/"
+    # Empty query: the list, then the two bottom rows — the shell home, then the Bots page.
+    assert body["query"] == "" and [x["path"] for x in body["apps"]] == [a, "", ""]
+    assert [(x["home"], x["kind"], x["url"]) for x in body["apps"][-2:]] == [
+        (True, "home", "/"), (True, "bots", "/bots")]
+    # A typed query ranks the bottom rows like any other row: "zet" matches neither.
     body = client.get("/api/launcher?q=zet").json()
-    assert [x["name"] for x in body["apps"]] == ["zeta", "Fused Render"]
+    assert [x["name"] for x in body["apps"]] == ["zeta"]
+    body = client.get("/api/launcher?q=fused").json()
+    assert [x["name"] for x in body["apps"]] == ["Fused Render", "Fused Bot"]
+    body = client.get("/api/launcher?q=bot").json()
+    assert [x["name"] for x in body["apps"]] == ["Fused Bot"]
     body = client.get("/api/launcher?q=qqqq").json()
-    assert [x.get("home") for x in body["apps"]] == [True]
+    assert body["apps"] == []
     # The page is a Vite entry (shell-dist/launcher.html): served when built,
     # an explicit 503 when the frontend has not been built in this checkout.
     page = client.get("/launcher")
