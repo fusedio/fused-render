@@ -700,7 +700,7 @@ ride on the next real tool result. `web_touched` flips on any browser action and
 WebFetch / WebSearch; from then on every write and command asks whatever
 `super_access` says. Built-in calls never reach `handle_tool`: `_drive` sees the
 `tool_use` (`_builtin_use`: remember id → label, count a step, interrupt
-past SUPER_MAX_STEPS = 200) and the echoed `user` tool_result (`_builtin_results`:
+past the step cap, SUPER_MAX_STEPS = 1000 by default) and the echoed `user` tool_result (`_builtin_results`:
 one `action` row, `builtin_label` text such as "run `make test`" / "write
 ~/x.md", `result` the first line via `tools.ui_summary`, the whole output
 as `detail`, like every other chip).
@@ -709,8 +709,9 @@ The fake CLI plays a built-in with `{"builtin": "Read", "args", "output"}`.
 Process model: ONE `claude` process per bot per TURN (one incoming message,
 answered), spawned by `start_task`, killed when the turn ends (`done`, Stop,
 error, step cap); `--max-turns` does not exist on this CLI, so the engine
-counts `tool_use` blocks itself (MAX_STEPS = 60, same as OpenBot) and
-interrupts past the cap. The per-turn bookkeeping is `agent_engine.Turn`
+counts `tool_use` blocks itself against `bot.step_cap(meta)` (the bot's own
+`max_steps`, Settings > General "Steps per task", else MAX_STEPS = 200 /
+SUPER_MAX_STEPS = 1000) and interrupts past the cap. The per-turn bookkeeping is `agent_engine.Turn`
 (token, process, one-run ledger, repeat/stuck state, last observation).
 
 **Bot threads** (2026-10-07, design <https://claude.ai/artifact/6ZFS5kHjxiL7efGPxVxuph>).
@@ -863,7 +864,7 @@ Control flow inside the tools (the harness's job, in the server process):
 - Pause: every tool waits on `pause_flag` before and after running. A call
   that waited is skipped (the user may have changed the page) with a `note`
   event saying so.
-- Status: `set_status("running", step=n, step_cap=MAX_STEPS)` per call; every
+- Status: `set_status("running", step=n, step_cap=<bot.step_cap(meta)>)` per call; every
   wait on a card (`ask`, `login`, approval, the stuck question; `offer` in
   bot.py) sets `waiting` with `waiting_on=<the card's seq>` and clears it with
   `waiting_on=None` when the wait ends (Stop included: `run()`'s finally).

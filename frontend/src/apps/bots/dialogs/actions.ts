@@ -10,6 +10,8 @@ import { askConfirm } from "./ask";
 export interface BotDialogValue {
   name: string; model: string; effort: string; instructions: string; memory: string; approval: string; buildAccess: string;
   encrypt: boolean; profile: string; face: Face;
+  /** Settings only: steps per task as typed ("" = the default; sent as 0 so the backend drops the override). */
+  maxSteps?: string;
   /** Super Bot's phone (docs §10): the owner's handle, the Settings > Phone switch, the people it may text. Ignored
    *  for every other bot (the backend drops the keys on load and refuses them in Settings). */
   imessage: string;
@@ -61,6 +63,7 @@ export async function saveSettings(id: string, v: BotDialogValue): Promise<void>
   const rules = v.allowRulesRemoved.length ? { allow_rules_remove: v.allowRulesRemoved } : {};
   await act(() => api.settings(id, { name: v.name, model: v.model, effort: v.effort, instructions: v.instructions, memory: v.memory, approval: v.approval,
     build_access: v.buildAccess, ...encrypt, ...phone(v), super_access: v.superAccess,
+    ...(v.maxSteps !== undefined ? { max_steps: Number(v.maxSteps) || 0 } : {}),
     trusted_apps: v.trustedApps, ...rules }));
   if (v.face && v.kind !== "super") await act(() => api.flag(id, { face: v.face }));
   if (v.profile) await act(() => api.profile(id, v.profile));

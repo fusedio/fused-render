@@ -168,7 +168,8 @@ def run(bot, task, label=None):
             return
         bot.browser.start()
         history.extend(bot._offer_hints(task))  # step-1 nudges toward an app that fits, or one worth building
-        for step in range(1, botmod.MAX_STEPS + 1):
+        cap = botmod.step_cap(bot.meta)
+        for step in range(1, cap + 1):
             bot._wait_if_paused()
             if bot.stop_flag.is_set():
                 break
@@ -176,7 +177,7 @@ def run(bot, task, label=None):
                 history.append(f"USER INSTRUCTION: {m}")
                 ran_calls.clear()  # a new instruction may legitimately ask for the same call again
                 current_result = None
-            bot.set_status("running", step=step, step_cap=botmod.MAX_STEPS)
+            bot.set_status("running", step=step, step_cap=cap)
 
             obs = bot.browser.observe()
             bot.meta["url"], bot.meta["title"] = obs.get("url"), obs.get("title")
@@ -419,8 +420,8 @@ def run(bot, task, label=None):
                 bot.set_status("running", waiting_on=None)
             history = history[-14:]
         else:
-            bot.emit("done", f"Stopped after {botmod.MAX_STEPS} steps without finishing.")
-            bot._routine_outcome(task, "error", f"gave up after {botmod.MAX_STEPS} steps")
+            bot.emit("done", f"Stopped after {cap} steps without finishing.")
+            bot._routine_outcome(task, "error", f"gave up after {cap} steps")
         if bot.stop_flag.is_set():
             bot.emit("system", "Stopped")
             bot._routine_outcome(task, "stopped", "")

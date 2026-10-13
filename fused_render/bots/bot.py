@@ -37,7 +37,9 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "sonnet"
 DEFAULT_EFFORT = "low"
-MAX_STEPS = 60
+MAX_STEPS = 200          # tool calls per task before the bot is stopped; Settings > General "Steps per task" overrides it per bot
+SUPER_MAX_STEPS = 1000   # Super Bot's default: Claude Code tasks (read, edit, run, re-run) take many more calls than browsing
+MAX_STEPS_CEILING = 10000
 ATTACH_MAX = 8 * 1024 * 1024  # composer attachment size cap
 IDLE_SLEEP_S = 10 * 60  # close Chrome after this long idle (every bot); encrypted bots also seal the profile
 ROUTINE_MAX_FAILS = 3   # consecutive failed runs before a routine pauses itself (RoutinesSection.tsx mirrors it)
@@ -166,7 +168,7 @@ def _artifacts_root() -> str:
 # and feature without paying for the text on ordinary browsing steps. `@APPS_ROOT@`
 # is substituted when the prompt is built (app_guide()), so FUSED_RENDER_DIR applies.
 APP_GUIDE = """APP GUIDE (Browser Bots, a local desktop app; every bot has its own settings and its own Chrome unless it was made to share another bot's logins):
-- Settings (menu on the preview pane, or the bot's avatar): name and avatar; Model (Haiku fastest, Sonnet balanced, Opus strongest, Fable most capable, plus Gemma 4B and 12B, local models that run on this Mac) and Effort (low/medium/high/xhigh, how long you think per step), both apply from the next task; Instructions (your STANDING INSTRUCTIONS); @SETTINGS_DOORS@Approvals: "Ask before irreversible actions" (default; the gate pauses on risky actions and on upload) or "Never ask"; Logins: "This bot only" or "Same as <bot>" (bots sharing logins drive one Chrome, each in its own tabs: log in once, all stay in); Browser profile: import one of the user's own Chrome profiles (its logins, cookies, extensions) into your browser; Encrypt browser profile at rest (AES-256 file while Chrome is closed, key in the macOS Keychain); Memory: the user can read and edit your MEMORY there (it caps at 200 notes, then `remember` fails until they trim it).
+- Settings (menu on the preview pane, or the bot's avatar): name and avatar; Model (Haiku fastest, Sonnet balanced, Opus strongest, Fable most capable, plus Gemma 4B and 12B, local models that run on this Mac) and Effort (low/medium/high/xhigh, how long you think per step), both apply from the next task; Steps per task (the tool-call cap of one task: 200 by default, Super Bot 1000, blank keeps the default), applies from the next task; Instructions (your STANDING INSTRUCTIONS); @SETTINGS_DOORS@Approvals: "Ask before irreversible actions" (default; the gate pauses on risky actions and on upload) or "Never ask"; Logins: "This bot only" or "Same as <bot>" (bots sharing logins drive one Chrome, each in its own tabs: log in once, all stay in); Browser profile: import one of the user's own Chrome profiles (its logins, cookies, extensions) into your browser; Encrypt browser profile at rest (AES-256 file while Chrome is closed, key in the macOS Keychain); Memory: the user can read and edit your MEMORY there (it caps at 200 notes, then `remember` fails until they trim it).
 - Routines (same menu): scheduled tasks, "Every N minutes" (min 5), "Daily at HH:MM" on chosen weekdays, or "Once at" a date-time. Each can be enabled, disabled, run now or deleted. A run only starts when you are idle; a busy bot skips that slot. A routine pauses itself after 3 failed runs in a row. You cannot create routines yourself: tell the user how to add one.
 - Skills (same menu): the PLAYBOOKS. The user can write one by hand, click "Learn from last task" (the model condenses your last finished task), or you save one with `learn`. Up to 40 per bot; each mounts into your prompt only when one of its trigger words appears in the task.
 - Chat: the user can pause, resume or stop you at any time; a message sent while you work arrives as USER INSTRUCTION and overrides the task; they can reply to or react with an emoji on one of your messages (you see reactions in CONVERSATION SO FAR); they can search the thread; "Export" saves the whole transcript as Markdown. Attaching, pasting or dropping a file on the composer puts it in FILES so you can `upload` it.
@@ -178,7 +180,7 @@ APP_GUIDE = """APP GUIDE (Browser Bots, a local desktop app; every bot has its o
 - App tools: local apps that expose MCP tools (an `mcp.toml` curated in fused-render's MCP panel) are available to you through the `tool` action; the APP TOOLS section of your prompt lists them by app. Reading tools run at once; tools that change something ask the user first. Cards in the Apps panel show a tools badge when an app exposes any. Nothing has to be attached: every app with a manifest is available to every bot.
 - App skills: an app that ships a SKILL.md (marked [py] in APPS) tells you what each of its .py files does and how to call it; the `py` action runs one (its main(**args), exactly as the app's page would run it). Skills load only when needed: apps you built this task and apps the task names are mounted under APP SKILLS; `py` with an app and no file loads any other. Apps you build get a SKILL.md as part of the build; an older app without one can get it from an update build. Your own builds run at once; other apps' files ask the user first, showing the file's line from its SKILL.md.
 - Bots list: New bot, search, pin or hide a bot (pinned first, then bots waiting on the user, then most recent); "Clone" makes a new bot on your logins (sharing them, not a copy) with your memory, instructions and skills; "Delete" removes a bot, and its logins unless another bot shares them. The Usage button shows model calls per hour, day and bot. Other local scripts can hand you tasks through botsend.py; they show up as normal tasks.
-- Limits: a task ends after 60 steps; your browser closes after 10 minutes idle (and reopens on the next task, logins kept); model calls time out after 3 minutes."""
+- Limits: a task ends after its step cap (Settings > General > "Steps per task"; 200 by default, Super Bot 1000); your browser closes after 10 minutes idle (and reopens on the next task, logins kept); model calls time out after 3 minutes."""
 APP_GUIDE_TRIGGER = re.compile(
     r"\b(setting|settings|routine|schedule|scheduled|daily|every (day|morning|hour|\d+ ?min)|cron|remind|skill|playbook|memory|remember|forget|model|haiku|sonnet|opus|fable|effort|faster|slower|smarter|approval|approve|permission|encrypt|keychain|profile|login|cookie|export|transcript|clone|copy of you|delete you|rename|avatar|take ?over|live view|pop out|window|dock|download|upload|attach|file|save|usage|calls|steps|limit|timeout|sleep|pause|resume|stop|botsend|build|builds|app|apps|tool|tools|mcp|dashboard|tracker|how do (i|you)|can you|what can you|help|who are you|your (name|settings|config))\b", re.I)
 
@@ -458,6 +460,16 @@ def _engine_for(meta) -> str:
     except Exception:  # noqa: BLE001
         return "steps"
     return "agent"
+
+
+def step_cap(meta) -> int:
+    """The tool-call budget of one task: the bot's own `max_steps` (Settings > General),
+    else MAX_STEPS / SUPER_MAX_STEPS by kind. Read once when a task starts."""
+    try:
+        n = int((meta or {}).get("max_steps") or 0)
+    except (TypeError, ValueError):
+        n = 0
+    return n if n > 0 else (SUPER_MAX_STEPS if is_super(meta) else MAX_STEPS)
 
 
 def is_super(meta) -> bool:
@@ -3306,15 +3318,27 @@ def bots_section(bot) -> str:
             + ("\n".join(lines) if lines else "none yet"))
 
 
-def check_settings(meta, model="", effort=""):
+def check_settings(meta, model="", effort="", max_steps=None):
     """The Settings dialog's and `bot_settings`' shared checks (ValueError with the
-    sentence the user / model reads)."""
+    sentence the user / model reads). `max_steps`: None leaves the cap alone; 0 / ""
+    clears the override; else 1..MAX_STEPS_CEILING."""
     if model and model not in MODELS:
         raise ValueError(f"unknown model {model!r}; choose one of {', '.join(MODELS)}")
     if model and model in LOCAL_MODELS and is_super(meta):
         raise ValueError("Super Bot runs on Claude Code; pick a Claude model")
     if effort and effort not in EFFORTS:
         raise ValueError(f"unknown effort {effort!r}; choose one of {', '.join(EFFORTS)}")
+    if isinstance(max_steps, bool):
+        raise ValueError("steps per task must be a whole number")
+    if max_steps not in (None, "", 0):
+        try:
+            if isinstance(max_steps, float) and not max_steps.is_integer():
+                raise ValueError
+            n = int(max_steps)
+        except (TypeError, ValueError):
+            raise ValueError("steps per task must be a whole number") from None
+        if not 1 <= n <= MAX_STEPS_CEILING:
+            raise ValueError(f"steps per task must be between 1 and {MAX_STEPS_CEILING}")
 
 
 def check_face(meta, face, strict=False):
@@ -3708,6 +3732,8 @@ def clone(src_id, name="", share=True):
             "status": "idle", "created": time.time(), "task": "", "step": 0, "url": None, "title": None}
     if src.meta.get("engine"):
         meta["engine"] = src.meta["engine"]
+    if src.meta.get("max_steps"):
+        meta["max_steps"] = src.meta["max_steps"]
     _write_new_meta(bid, meta)
     b = reg.get(bid)
     if src.memory():
