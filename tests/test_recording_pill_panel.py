@@ -192,6 +192,15 @@ def test_dragging_moves_the_window_by_the_pointer_delta_and_saves_it():
     assert len(ctl._panel.origins) == 1
 
 
+def test_a_resize_during_a_drag_is_not_undone_by_the_next_move():
+    ctl = controller()
+    ctl._panel.setFrame_display_ = lambda r, d: None
+    ctl.handle({"type": "drag", "phase": "start", "dx": 0, "dy": 0})
+    ctl.handle({"type": "size", "height": 114 + 34})   # origin y 200 -> 240
+    ctl.handle({"type": "drag", "phase": "move", "dx": 10, "dy": 4})
+    assert ctl._panel.origins == [(110.0, 236.0)]
+
+
 def test_a_malformed_page_message_is_ignored():
     ctl = controller()
     ctl.handle({})

@@ -280,6 +280,11 @@ class RecordingPillController:
         new = resized_frame(old, content_h)
         if new[3] != old[3]:
             self._panel.setFrame_display_(NSMakeRect(*new), True)
+            if self._drag_origin is not None:
+                # Moves are deltas from the origin captured at 'start'; carry
+                # the resize's origin shift so the next move keeps the top edge.
+                x0, y0 = self._drag_origin
+                self._drag_origin = (x0 + (new[0] - old[0]), y0 + (new[1] - old[1]))
 
     def _drag(self, phase: str, dx, dy) -> None:
         if self._panel is None:
