@@ -520,6 +520,33 @@ function pingJobs() {
     /* private mode / disabled storage — the shell's poll still covers it */
   }
 }
+// The loader follows an install over the events bus (`env.progress` for the
+// installer's key, runtime.js `subscribeTopic`), where the server reads the
+// worker's progress.json at the old client cadence and pushes each change.
+// Here the socket is replaced by the poll it replaced: every scenario below
+// stubs `fetch("/api/env/progress?key=...")`, so the shim reads that until
+// the loader unsubscribes, and delivers each body's `progress` as a snapshot
+// — the one frame shape the loader reads. `polls` therefore still counts
+// server reads, one per frame, as it did when the page itself polled. The
+// cadence (100 ms for the first second, then 500 ms) is the server's now and
+// is asserted on the topic (`test_the_progress_feed_ramps_then_backs_off`).
+var subscribeTopic = function (topic, params, cb, opts) {
+  if (topic !== "env.progress") throw new Error("unexpected topic " + topic);
+  let on = true;
+  const step = () => {
+    if (!on) return;
+    fetch("/api/env/progress?key=" + encodeURIComponent(params.key), { headers: { "X-Fused": "1" } })
+      .then((res) => res.json())
+      .then((body) => {
+        if (!on) return;
+        cb({ progress: body && body.progress }, null, {});
+        if (on) setTimeout(step, 0);
+      })
+      .catch((e) => { if (on) cb(null, null, { error: String(e && e.message || e) }); });
+  };
+  setTimeout(step, 0);
+  return () => { on = false; };
+};
 """
 
 
@@ -543,13 +570,20 @@ function showInstall(need) {
 """
 
 
+#: Where the install loader starts in runtime.js. The poll constants that used
+#: to open the block (`INSTALL_POLL_MS` and the fast-window pair) moved to the
+#: server with the events bus (`server/topics.py` `EnvProgressTopic`), so the
+#: section comment is the anchor now.
+_LOADER_ANCHOR = "  // ---- the project-venv install loader (SPEC PY-16, PY-18)"
+
+
 def _loader_js():
     """The install-loader block of runtime.js, verbatim."""
     import fused_render
 
     path = os.path.join(os.path.dirname(fused_render.__file__), "static", "runtime.js")
     src = open(path, encoding="utf-8").read()
-    start = src.index("  const INSTALL_POLL_MS")
+    start = src.index(_LOADER_ANCHOR)
     return src[start:src.index("  function runPython(", start)]
 
 
@@ -566,7 +600,7 @@ def _loader_and_runpython_js():
 
     path = os.path.join(os.path.dirname(fused_render.__file__), "static", "runtime.js")
     src = open(path, encoding="utf-8").read()
-    start = src.index("  const INSTALL_POLL_MS")
+    start = src.index(_LOADER_ANCHOR)
     return src[start:src.index("  function rawUrl(", start)]
 
 
@@ -2065,49 +2099,29 @@ setTimeout(() => {
     assert result["timer"] is None, "the pending mount timer was left armed"
 
 
-def test_the_poll_interval_ramps_then_backs_off():
-    """The first second is polled fast, then it settles to the slow grid.
+def test_the_progress_feed_ramps_then_backs_off():
+    """The first second is read fast, then it settles to the slow grid.
 
     A fixed 500ms grid meant a ~540ms install was not noticed until its second
-    poll. What is asserted is the observable SCHEDULE — the gaps the loader asks
-    for — because wall-clock timing in a test would be measuring the machine.
-
-    Both the timer and the clock are stubbed, and the clock is the important one:
-    the ramp is keyed on the INSTALL's age rather than on a poll count, so with
-    real time frozen by an instant-firing timer it would stay in its fast phase
-    forever and this test would assert nothing about the back-off.
+    read. The cadence used to be the page's own poll; it is the server's now
+    (`EnvProgressTopic`, one reader per key per process over the events bus),
+    keyed on the INSTALL's age — measured from the first subscriber, as the
+    page measured from its first poll — rather than on a read count, so a
+    user who takes ten seconds over the consent question does not spend the
+    fast budget on nothing having downloaded yet.
     """
-    result = _run_loader("""
-const gaps = [];
-const realSetTimeout = globalThis.setTimeout;
-globalThis.setTimeout = (fn, ms) => { gaps.push(ms); return realSetTimeout(fn, 0); };
-// A controllable clock: 200ms of install age per poll, so the 1000ms fast window
-// is crossed on the fifth one.
-let now = 0;
-Date.now = () => now;
-let polls = 0;
-globalThis.fetch = (url) => {
-  if (url === "/api/env/install")
-    return Promise.resolve({ ok: true, json: () => Promise.resolve(
-      { ok: true, key: "%(b)s", progress: { stage: "install", pct: 25, done: false } })});
-  polls += 1;
-  now += 200;
-  // Twelve unfinished polls, so the ramp has to cross its window and back off.
-  return Promise.resolve({ json: () => Promise.resolve({ ok: true,
-    progress: polls < 12
-      ? { stage: "install", pct: 25, done: false }
-      : { stage: "done", pct: 100, done: true, error: null } })});
-};
-installEnv({ key: "%(a)s", requirements: ["x"] }, "a.py", "a.html").then(
-  () => console.log(JSON.stringify({ gaps })),
-  (e) => console.log(JSON.stringify({ error: e.message, gaps })));
-""" % {"a": _KEY_A, "b": _KEY_B})
-    gaps = [g for g in result.get("gaps", []) if g in (100, 500)]
-    assert gaps, result
-    assert gaps[0] == 100, f"the first poll waited the full grid: {gaps}"
-    assert 500 in gaps, f"the interval never backed off: {gaps}"
+    from fused_render.server.topics import EnvProgressTopic
+
+    topic = EnvProgressTopic()
+    last = {"stage": "install", "pct": 25, "done": False}
+    # 200ms of install age per read: the 1000ms fast window is crossed on the
+    # fifth one.
+    gaps = [topic.poll_interval({"key": _KEY_A}, age_s=0.2 * n, last=last) for n in range(12)]
+    assert gaps[0] == 0.1, f"the first read waited the full grid: {gaps}"
+    assert 0.5 in gaps, f"the interval never backed off: {gaps}"
     # Monotonic: fast first, slow after — never back to fast.
     assert gaps == sorted(gaps), f"the ramp went backwards: {gaps}"
+    assert topic.poll_interval_s == 0.5 and topic.hidden_ok is False
 
 
 def test_the_runtime_drives_the_loader():
@@ -2126,7 +2140,7 @@ def test_the_runtime_drives_the_loader():
     assert "data.needs_install" in src, "the run response must be inspected"
     assert "installEnv(data.needs_install" in src, "and must drive the install"
     assert "/api/env/install" in src
-    assert "/api/env/progress?key=" in src
+    assert 'subscribeTopic("env.progress"' in src, "and must follow the install over the bus"
     assert "/api/env/cancel" in src
     # The retry, and its loop guard: re-running after the install is the whole
     # point, and looping on it forever is the way that goes wrong. The guard is
