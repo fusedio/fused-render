@@ -312,6 +312,7 @@ def test_a_sound_file_on_a_PICTURE_ONLY_model_is_refused_by_name(
 
 
 def test_a_video_on_the_UNIFIED_model_is_served(client, monkeypatch, served):
+    _mac(monkeypatch)
     _families(monkeypatch, {GEMMA: "dual"})
     _media(monkeypatch, {GEMMA: ("image", "audio", "video")})
     response = _post(client, {"paths": ["/tmp/clip.mp4", "/tmp/voice.wav",
@@ -326,6 +327,7 @@ def test_a_sound_file_on_a_COLD_dual_model_still_answers_model_loading(
     """`embed_media` is None with no snapshot to read, and that must not be
     read as "reads nothing" — the same positive-evidence rule the text-encoder
     refusal follows."""
+    _mac(monkeypatch)
     _families(monkeypatch, {})
     _media(monkeypatch, {})
 
@@ -459,6 +461,7 @@ def test_the_catalog_publishes_acceptsAudio_and_acceptsVideo_off_embed_media(
         client, monkeypatch):
     """Finer than `acceptsPaths`, and fail-closed the same way: a model whose
     snapshot cannot say (None) claims neither."""
+    _mac(monkeypatch)
     monkeypatch.setattr(
         ai_runtime, "embed_family",
         lambda model_id: "dual" if "siglip" in model_id or "embeddinggemma" in model_id
