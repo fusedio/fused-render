@@ -191,7 +191,7 @@ export function findInstallCommands(): string[] {
   const app = bundleName();
   return [
     `ls -d /Applications/${app}.app ~/Applications/${app}.app`,
-    `ls -d /Applications/${app}.app/Contents/Resources/lib/python3.*/fused_render   # the code a fix edits`,
+    `ls -d /Applications/${app}.app/Contents/Resources/lib/python3.*/site-packages/fused_render   # the code a fix edits`,
     "brew list --cask fused-render   # if this answers, Homebrew manages that copy",
     `dir "%LOCALAPPDATA%\\Programs\\${app}Py"   # Windows`,
   ];

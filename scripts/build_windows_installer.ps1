@@ -147,14 +147,8 @@ if (-not (Test-Path -LiteralPath $bundlePython) -or -not (Test-Path -LiteralPath
     throw "staged Python runtime is incomplete"
 }
 Remove-Item -LiteralPath (Join-Path $PythonRoot "Lib\EXTERNALLY-MANAGED") -Force -ErrorAction SilentlyContinue
-# A ._pth file disables Python's normal "prepend the invoked script's own
-# directory to sys.path" behavior, which _child.py's worker subprocess relies
-# on (it does a top-level `from _binding import ...`, invoked as
-# `[sys.executable, .../fused_render/_child.py]` by executor.py, not as a
-# package module) - so fused_render's own install dir must be listed
-# explicitly, or every /api/run call through the built-in executor fails with
-# ModuleNotFoundError in the packaged app.
-@("python312.zip", "DLLs", "Lib", ".", "Lib\site-packages", "Lib\site-packages\fused_render", "import site") |
+# Stdlib only: venvs inherit this DLL-adjacent ._pth, so a listed site-packages would shadow theirs (`import site` adds it here).
+@("python312.zip", "DLLs", "Lib", ".", "import site") |
     Set-Content -Path (Join-Path $PythonRoot "python312._pth") -Encoding Ascii
 
 Invoke-Native $Uv @("pip", "install", "--python", $bundlePython, "$($wheel.FullName)[bundled,fused,windows-desktop]")
@@ -220,6 +214,16 @@ try {
     }
 } finally {
     Remove-Item -LiteralPath $probe, $request -Force -ErrorAction SilentlyContinue
+}
+# A venv on the bundled python must neither see nor be shadowed by Lib\site-packages.
+$isoVenv = Join-Path $env:TEMP "fused_render_installer_venv_$PID"
+try {
+    Invoke-Native (Join-Path $PythonRoot "uv.exe") @("venv", "--quiet", "--python", $bundlePython, $isoVenv)
+    Invoke-Native (Join-Path $isoVenv "Scripts\python.exe") @(
+        "-B", (Join-Path $RepoRoot "scripts\_site_isolation_check.py"), (Join-Path $PythonRoot "Lib\site-packages")
+    )
+} finally {
+    Remove-Item -LiteralPath $isoVenv -Recurse -Force -ErrorAction SilentlyContinue
 }
 Get-ChildItem -Path $PythonRoot -Directory -Recurse -Filter "__pycache__" -ErrorAction SilentlyContinue |
     Remove-Item -Recurse -Force

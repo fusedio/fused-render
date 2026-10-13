@@ -152,6 +152,12 @@ case "$OUTPUT" in
     *'"value"'*42*) : ;;
     *) echo "staged _child.py smoke test failed: $OUTPUT" >&2; exit 1 ;;
 esac
+# A venv on the bundled python must neither see nor be shadowed by its site-packages.
+ISO_DIR="$(mktemp -d)"
+"$PYTHON_ROOT/bin/uv" venv --quiet --python "$BUNDLE_PYTHON" "$ISO_DIR/venv"
+"$ISO_DIR/venv/bin/python" -B "$REPO_ROOT/scripts/_site_isolation_check.py" \
+    "$PYTHON_ROOT/lib/python3.12/site-packages"
+rm -rf "$ISO_DIR"
 
 # --- AppDir assembly ---------------------------------------------------------
 log "Assembling AppDir"

@@ -97,7 +97,7 @@ test("the report carries the installation, which is what the user cannot look up
   const text = troubleReport({
     what: "starting a fix session on this installation",
     error: "Claude Code isn't installed (or couldn't be found).",
-    install_root: "/Applications/FusedRender.app/Contents/Resources/lib/python3.12/fused_render",
+    install_root: "/Applications/FusedRender.app/Contents/Resources/lib/python3.12/site-packages/fused_render",
     version: "0.4.22",
     platform: "macOS-15.0",
     page: "/explorer/view/Users/me/data.parquet",
