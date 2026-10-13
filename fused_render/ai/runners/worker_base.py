@@ -3058,8 +3058,10 @@ def _mirror_module():
     return _MIRROR or None
 
 
-def _mirror_snapshot(model_id, allow_patterns=None, ignore_patterns=None):
+def _mirror_snapshot(model_id, allow_patterns=None, ignore_patterns=None, revision=None):
     """The repo off our own mirror, or None to say "take the Hub path".
+
+    With a pinned `revision`, only a manifest at exactly that commit is a hit.
 
     None for every way of not having a mirror — not configured, not permitted
     for this model, no manifest, a manifest that does not hold up, a 404, a 5xx,
@@ -3090,7 +3092,7 @@ def _mirror_snapshot(model_id, allow_patterns=None, ignore_patterns=None):
         if not mirror.allowed(model_id):
             return None
         manifest = mirror.manifest(model_id)
-        if manifest is None:
+        if manifest is None or (revision and manifest["commit"] != revision):
             return None
         files = [(entry["name"], entry["size"]) for entry in manifest["files"]
                  if selects(entry["name"], allow=allow_patterns,
@@ -3105,6 +3107,7 @@ def _mirror_snapshot(model_id, allow_patterns=None, ignore_patterns=None):
             model_id,
             lambda: _segmented_fetch(
                 model_id, names, manifest["commit"],
+                ref=revision or DEFAULT_REVISION,
                 meta=mirror.file_meta(model_id, manifest),
                 # Anonymous, always. The blob URL is the metadata URL here, so
                 # `_cdn_token` would otherwise hand a user's Hub token to
@@ -3319,6 +3322,13 @@ class _HubByteTicker:
                 pass
 
             def set_description(self, *_args, **_kwargs):
+                pass
+
+            # huggingface_hub 2.x calls these too (`snapshot_download`'s last line, xet's bar).
+            def set_description_str(self, *_args, **_kwargs):
+                pass
+
+            def clear(self, *_args, **_kwargs):
                 pass
 
         return _Bar
@@ -4147,7 +4157,8 @@ def _cached_file(repo_id, filename):
     return path if _settled(path) else None
 
 
-def download_snapshot(model_id, allow_patterns=None, ignore_patterns=None, **kwargs):
+def download_snapshot(model_id, allow_patterns=None, ignore_patterns=None,
+                      revision=None, **kwargs):
     """The repo, with progress. What most runners mean by "download".
 
     The total is measured against the SAME patterns the download uses, or a pull
@@ -4160,11 +4171,16 @@ def download_snapshot(model_id, allow_patterns=None, ignore_patterns=None, **kwa
     that they reach `_repo_files` too: an `allow_patterns` that only reached
     `snapshot_download` would fetch a tenth of a repo behind a bar priced at all
     of it.
+
+    `revision` (a commit sha) is first-class too, so a pin reaches the cache
+    lookup, the mirror, the listing and the fetch alike.
     """
+    pin = {"revision": revision} if revision else {}
+
     def local():
         from huggingface_hub import snapshot_download
 
-        return snapshot_download(model_id, local_files_only=True)
+        return snapshot_download(model_id, local_files_only=True, **pin)
 
     # Already on disk, at this scope, and complete? Then there is nothing to
     # download and nothing to report: no metadata call, no etag revalidation, no
@@ -4190,7 +4206,8 @@ def download_snapshot(model_id, allow_patterns=None, ignore_patterns=None, **kwa
         # under `kwargs` for the same reason the fast path above is: an argument
         # this function does not know about changes what a download IS, and a
         # manifest describes the whole repo at one commit and nothing else.
-        mirrored = _mirror_snapshot(model_id, allow_patterns, ignore_patterns)
+        mirrored = _mirror_snapshot(model_id, allow_patterns, ignore_patterns,
+                                    revision=revision)
         if mirrored:
             _sweep_orphan_parts(repo_folder(model_id))
             return mirrored
@@ -4202,7 +4219,7 @@ def download_snapshot(model_id, allow_patterns=None, ignore_patterns=None, **kwa
     sha, files, total = None, None, None
     try:
         sha, files = _repo_files(model_id, allow=allow_patterns,
-                                 ignore=ignore_patterns)
+                                 ignore=ignore_patterns, **pin)
         total = _total_bytes(files)
     except Exception as error:  # noqa: BLE001 - the bar can proceed on a guess; the fetch cannot
         _fallback(model_id, error)
@@ -4254,13 +4271,16 @@ def download_snapshot(model_id, allow_patterns=None, ignore_patterns=None, **kwa
         # here too, same as every other successful return in this function,
         # or a repo whose listing keeps failing stays "partial" forever no
         # matter how many times hf itself completes it underneath.
-        result = hub()
+        result = hub(revision=revision)
         _sweep_orphan_parts(repo_folder(model_id))
         return result
     names = [name for name, _size in files]
     try:
+        # A pinned commit is the ref, so `_write_ref` leaves `refs/main` alone, as hf does.
         fetched = fetch_with_progress(
-            model_id, lambda: _segmented_fetch(model_id, names, sha), total=total)
+            model_id, lambda: _segmented_fetch(model_id, names, sha,
+                                               ref=revision or DEFAULT_REVISION),
+            total=total)
     except Cancelled:
         raise
     except Exception as error:  # noqa: BLE001 - every failure degrades to hf's downloader

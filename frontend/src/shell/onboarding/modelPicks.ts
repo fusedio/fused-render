@@ -24,9 +24,11 @@
 // reader can find, not as a checkbox on day one.
 import type { AiCatalogCapability, AiCatalogModel } from "@platform/lib/api";
 
-/** `registry.VIDEO_GENERATION` and `registry.DECISIONS`. Left out of the
- *  step — see the header. */
-const EXCLUDED_CAPABILITIES = new Set(["text-to-video", "text-classification", "text-to-speech"]);
+/** `registry.VIDEO_GENERATION`, `registry.DECISIONS` and Vision. Left out of
+ *  the step — see the header. */
+const EXCLUDED_CAPABILITIES = new Set([
+  "text-to-video", "text-classification", "text-to-speech", "image-to-text",
+]);
 
 export interface ModelPick {
   capability: string;
@@ -76,6 +78,8 @@ function capabilityLabel(capability: string): string {
       return "Search and similarity";
     case "text-classification":
       return "Decisions";
+    case "image-to-text":
+      return "Vision";
     default:
       return capability;
   }

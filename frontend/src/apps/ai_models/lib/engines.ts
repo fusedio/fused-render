@@ -43,6 +43,8 @@ const CAPABILITY_LABELS: Record<string, string> = {
   // answers typed questions (choice / score / noul) rather than sorting text
   // into one fixed label set, so the standard name would undersell it.
   "text-classification": "Decisions",
+  // `vision-torch` (SPEC AI-33): captions, answers and finds things in images.
+  "image-to-text": "Vision",
 };
 
 export function capabilityLabel(capability: string): string {

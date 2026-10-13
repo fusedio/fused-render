@@ -319,8 +319,11 @@ def _register_heif():
     register_heif_opener()
 
 
-def open_image(path: str):
+def open_image(path: str, *, upright: bool = False):
     """The image at `path`, as RGB — or a `ValueError` naming the file.
+
+    `upright` applies the EXIF orientation, for callers whose answer is drawn
+    back over the picture as a browser shows it (vision boxes and points).
 
     **The file, never a traceback.** A page passes a path it read from the
     explorer, and the ways that can go wrong are ordinary and nameable: gone,
@@ -334,7 +337,7 @@ def open_image(path: str):
     fail inside the processor with an error about tensor shape rather than
     about the picture.
     """
-    from PIL import Image, ImageFile, UnidentifiedImageError
+    from PIL import Image, ImageFile, ImageOps, UnidentifiedImageError
 
     # **A truncated file is decoded as far as it goes, not refused.** Photo
     # libraries are full of half-written JPEGs — an interrupted download, a
@@ -349,7 +352,7 @@ def open_image(path: str):
 
     try:
         with Image.open(path) as image:
-            return image.convert("RGB")
+            return (ImageOps.exif_transpose(image) if upright else image).convert("RGB")
     except FileNotFoundError:
         raise ValueError(f"no such file: {path}") from None
     except IsADirectoryError:

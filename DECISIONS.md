@@ -6853,3 +6853,14 @@ The model has an audio tower beside its vision tower and the pinned mlx-vlm proc
 - **Chunks: 8 images, 8 clips, 1 video.** One video is up to 32 frames × 140 soft tokens; eight 2 s clips peaked no higher than eight 1024×768 pictures (~5.1 GB).
 - **No ffmpeg shipped**, same stance as the transcribe runner's manifest. **Mac only** — the ONNX runner has no EmbeddingGemma 2 export. **No `size_gb` change**: the catalog figure is the download, which already held the audio weights.
 - Playground's Pictures mode becomes "Files" on this model, with the audio/video extensions added to the picker and the seed text saying which kinds the session may pass.
+
+## D1354 — `fused.ai.vision`: one verb for image understanding, tasks per model (2026-10-13, moondream-fuse-render)
+
+SPEC AI-33.
+
+- **One verb, a `task` per call.** Each model's recipe lists the tasks it answers (published as catalog `tasks`), so a detector (Grounding DINO) and a VLM (Moondream) share one capability. With no `model`, the route takes the first suggestion that answers the task — position 0 is a detector, so a bare caption would otherwise fail. `segment` waits for a model that does it.
+- **One reply shape:** 0–1 coordinates, camelCase boxes, `score` null when the model gives none.
+- **Moondream 2 via transformers `trust_remote_code`, pinned to a reviewed commit** (5d6c926, upstream's transformers-5 fix, same weights as 2025-06-21). Unpinned `main` would run whatever the owner pushes next (CWE-494, review). `revision` is a named `download_snapshot` argument so the pin keeps the cache fast path and the mirror (only at that commit), and writes no `refs/main`; the loader refuses any other snapshot. Its tokenizer is a `COMPONENT_REPOS` file.
+- **No MLX, GGUF or Photon.** mlx-vlm and llama.cpp/Ollama drop Moondream's region head (no detect/point); Grounding DINO has neither. Photon 2.x gave corrupted output on an M5, and Moondream 3.1 ships only for Photon.
+- **Load time (M5):** ~4.5 s to ready, ~7 s cold click-to-answer. `accelerate` saves ~1 s of loading but costs ~1.7 s of import, so it is out. Requests run under `torch.inference_mode()` (grad mode is per thread).
+- Apple Silicon only; not in onboarding or the benchmark. Mirror publishing for the three suggestions is pending.

@@ -670,6 +670,8 @@ def _format_task(repo_id: str, names, dirnames, config: dict) -> tuple[str, str]
         return _ai_registry.DECISIONS, "its Laya decision-head config"
     if formats.is_qwen3_tts_snapshot(config, dirnames):
         return _ai_registry.TEXT_TO_SPEECH, "its Qwen3-TTS speech tokenizer"
+    if formats.vision_torch_recipe(repo_id):
+        return _ai_registry.VISION, "its vision-torch recipe"
     return None
 
 
@@ -910,7 +912,10 @@ def _repo_meta(repo_dir: str) -> _RepoMeta:
     # snapshot actually is. Format evidence is still the more precise answer
     # (mlx vs diffusers vs "genuinely nothing else known"), so it still gets
     # first refusal even though the task itself is no longer unsupported.
-    if not _tasks.classify(meta.task).supported or meta.task == "image-to-image":
+    # A vision-torch recipe is decisive too: Moondream's card says
+    # image-text-to-text, which would route it to the text runner.
+    if (not _tasks.classify(meta.task).supported or meta.task == "image-to-image"
+            or formats.vision_torch_recipe(repo_id)):
         found = _format_task(repo_id, names, dirnames, config)
         if found:
             meta.task, meta.task_source = found

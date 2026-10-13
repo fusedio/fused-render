@@ -1,11 +1,11 @@
 ---
 name: fused-render-ai
-description: Use when page or .py calls fused.ai (text/image/video/speech/transcribe/embed/decide), picks model/provider, or AI call rejects.
+description: Use when page or .py calls fused.ai (text/image/video/speech/transcribe/embed/decide/vision), picks model/provider, or AI call rejects.
 ---
 
 # fused.ai
 
-Seven verbs, one options object each, one shared result frame. `fused.ai(prompt)` / `fused.ai.text("hi")` don't exist — always `fused.ai.text({prompt})`.
+Eight verbs, one options object each, one shared result frame. `fused.ai(prompt)` / `fused.ai.text("hi")` don't exist — always `fused.ai.text({prompt})`.
 
 Result frame, every verb: `{<payload>, provider, finishReason, warnings, usage, response: {id, modelId, timestamp}, providerMetadata}`. Read `response.modelId` (no top-level `model`), `usage.inputTokens` (camelCase, or null), `providerMetadata.local` for seed/sizes/paths. Never echo own request as caption.
 
@@ -18,6 +18,7 @@ Result frame, every verb: `{<payload>, provider, finishReason, warnings, usage, 
 | `transcribe({path})` | path | `text`, `segments: [{text, startSecond, endSecond, speaker?, words?}]`, `language`, `durationInSeconds` |
 | `embed({texts})` | texts or paths | `embeddings: number[][]` (unit-length → cosine = dot) |
 | `decide({state, questions})` | state, questions | `answers: {[id]: {type, confidence, ...}}` (probabilities, zero output tokens) |
+| `vision({image, task})` | image, task (+ prompt unless caption) | `task`, `imageSize`, then `text` (+`reasoning`) / `objects` / `points` (0–1 coords) |
 
 Universal rules:
 
@@ -30,11 +31,11 @@ Universal rules:
 
 ## Provider / model
 
-Three tiers. `provider: "local" | "apple" | "claude"` pins; omitted → model decides: pinned apple ids (`afm-text`, `afm-speech`, `afm-embedding`) → apple; id with `/` or `.gguf` → local; `"sonnet"`/`"opus"`/`claude-*`/omitted → Claude CLI (text only; default tier haiku unless configured). `{provider: "apple"}` with no model = the tier's one id for the verb; a pinned id under another provider = `bad_request`. image/video/speech = local-only (apple rejects `unavailable`: no programmatic image model on macOS). `afm-speech` is Apple's speech-TO-text id, not `fused.ai.speech`. transcribe = local or apple. embed = local (apple `unavailable` in this build). decide = local-only (claude/apple `unavailable`). **Take local ids from `fused.ai.models.catalog()`, treat as opaque** — never hardcode, never `split("/")`; apple ids are the three literals above and never appear in the catalog.
+Three tiers. `provider: "local" | "apple" | "claude"` pins; omitted → model decides: pinned apple ids (`afm-text`, `afm-speech`, `afm-embedding`) → apple; id with `/` or `.gguf` → local; `"sonnet"`/`"opus"`/`claude-*`/omitted → Claude CLI (text only; default tier haiku unless configured). `{provider: "apple"}` with no model = the tier's one id for the verb; a pinned id under another provider = `bad_request`. image/video/speech = local-only (apple rejects `unavailable`: no programmatic image model on macOS). `afm-speech` is Apple's speech-TO-text id, not `fused.ai.speech`. transcribe = local or apple. embed = local (apple `unavailable` in this build). decide and vision = local-only (claude/apple `unavailable`). **Take local ids from `fused.ai.models.catalog()`, treat as opaque** — never hardcode, never `split("/")`; apple ids are the three literals above and never appear in the catalog.
 
 **apple tier** = macOS 26+, Apple Silicon, Apple Intelligence ON (System Settings) — else `ai_unavailable`/`unavailable` with the reason; OS still downloading the model → `model_loading` + `err.jobId` to watch. Nothing to download, nothing leaves the Mac. Small model (~3B on 26), ~4k-token context incl. history/systemPrompt → keep prompts short or `ai_error` on overflow. Guardrails refuse arbitrarily → `finishReason: "content-filter"` with the text so far, not an error; reword and retry. `usage` null on macOS 26. `providerMetadata.apple: {os, modelGeneration, refusal?, restarted?}` (text), `{locale}` (speech, also in the transcript file).
 
-`catalog()` → `{capabilities: [{capability, available, reason, default, models[], videoTraits?}], unsupported, ramGb}`. Capabilities: `text-generation`, `text-to-image`, `text-to-video`, `text-to-speech`, `automatic-speech-recognition`, `embeddings`, `text-classification` (decide). Model flags: `downloaded, loaded, recommended, size_gb, acceptsImage, acceptsPaths, promptScheme`; speech models add `voiceMode` and, once downloaded, `voices`/`languages`.
+`catalog()` → `{capabilities: [{capability, available, reason, default, models[], videoTraits?}], unsupported, ramGb}`. Capabilities: `text-generation`, `text-to-image`, `text-to-video`, `text-to-speech`, `automatic-speech-recognition`, `image-to-text` (vision; models carry `tasks`), `embeddings`, `text-classification` (decide). Model flags: `downloaded, loaded, recommended, size_gb, acceptsImage, acceptsPaths, promptScheme`; speech models add `voiceMode` and, once downloaded, `voices`/`languages`.
 
 `fused.ai.models`: `list()`, `load(id, {capability})` / `download(id, {capability})` → `{jobId}` (**always pass capability** — wrong runner otherwise), `unload({capability})` (by capability, not id), `fused.ai.cancel(capability?)` (default text-generation — name capability to stop anything else).
 
@@ -72,6 +73,10 @@ Resolves `audio: [{path, url, mediaType: "audio/wav"}]`, `usage: {audioGenerated
 
 **decide** — `fused.ai.decide({state, questions, model, provider, abortSignal})`. Not generative: Laya (typed-decision encoder, `laya-mlx`, Apple Silicon only) reads a `state` and answers typed questions with calibrated probabilities. `state` = string | object | array (a message, a JSON record, a conversation). `questions` = object keyed by YOUR ids, each `{type, instructions, criteria}`: `"choice"` — `criteria` array of labels OR object label→description, answer `choice` + `probabilities: {label: p}`; `"score"` — `criteria` ordered rubric array (low→high), answer `score` = expected ZERO-BASED level (float), `legend: {"0": ..}`, `probabilities: {"0": p}`; `"noul"` — no criteria, answer `noul` = P(true). Every answer: `type`, `confidence`, `action: {actProbability}`. `confidence` is NOT P(picked): it is 1 − normalized entropy of the whole distribution (1 = all mass on one option, 0 = flat over the k options) — show the picked option's own probability when you mean "how likely"; for `noul` it equals `max(p, 1−p)`. `usage.outputTokens` always 0; `providerMetadata.local` = `{runner, seconds}` (model time only); no `onChunk`, no `onProgress` — sync, ~ms per question once resident (cold = `model_loading`, watch `err.jobId`, retry). **Context is small**: 512 tokens (English) / 1024 (multilingual) SHARED by instructions + criteria + state — too many labels/levels for the budget → `ai_error` ("too many options for the token budget"); too long a state is silently cut from the TAIL, reported per question in `warnings[]` (`{type: "other", message: "…state was cut to N tokens…"}`) — `usage.inputTokens` at the ceiling is the other tell. Shortlist labels first; keep instructions one sentence; put the decisive part of the state FIRST. Not for arithmetic, counting, date compare, multi-hop lookup. Ids from `catalog()` under `text-classification`, never hardcode; multilingual is the bare default, English `recommended`.
 
+## Vision
+
+`fused.ai.vision({image, task, prompt, length, reasoning, maxObjects, model, provider, abortSignal})` — local, Apple Silicon, synchronous like decide (cold → `model_loading` + `err.jobId`). `task`: `caption` (no prompt; `length`), `query` (`prompt`; `reasoning`), `detect` (→ `objects: [{xMin, yMin, xMax, yMax, label, score}]`, score null if unscored), `point` (→ `points: [{x, y, label}]`). Coordinates are 0–1 of the upright image: draw with an SVG `viewBox="0 0 1 1" preserveAspectRatio="none"` over the `<img>`. Each model answers the `tasks` on its catalog entry; omit `model` and the first that can is used. Grounding DINO (detect, scored; comma-separate labels) or Moondream 2 (all four; follow-ups on one image ~0.3 s). Python: `fused_ai.vision(image, task, prompt, max_objects=, model=)`.
+
 ## From Python
 
 `import fused_ai` works in any `runPython` `.py`, no path setup. A daemon (`main =` or `daemon =`) must add the path itself, see fused-render-background-apps. Same option names, blocking; all verbs except video (speech: `ref_audio=`, `ref_text=`). `fused_ai.text(prompt, ...)` → str; `stream(...)` yields; `decide(state, questions, model=, provider=)` and the rest return frame (dict). `wait=False`, `on_progress=`, `timeout=` on job-backed calls. Catch `ServerNotRunning`, `AiError` (`.type`). Outside server: `sys.path.insert(0, server.json["shared"])`. No live UI through it — `runPython` returns once, no streaming.
@@ -85,7 +90,7 @@ Resolves `audio: [{path, url, mediaType: "audio/wav"}]`, `usage: {audioGenerated
 
 Every caller is identified by `X-Fused-Requester`/`X-Fused-Requester-Label` (percent-encoded; apps go through `fused.ai.*`/`fused_ai.py`, which set these for you) — this is what lets the supervisor tell your own router↔generator alternation apart from two different callers actually fighting over a slot. A conflict is between CALLERS, not models: the same model id loaded twice by two different callers can still conflict.
 | `ai_unavailable` | claude CLI missing / local worker won't start — friendly state, not overlay |
-| `unavailable` | Machine can't (no runner, needs Apple Silicon, claude on non-text verb, apple on image/video/speech/embed/decide or below macOS 26 / Apple Intelligence off) |
+| `unavailable` | Machine can't (no runner, needs Apple Silicon, claude on non-text verb, apple on image/video/speech/embed/decide/vision or below macOS 26 / Apple Intelligence off) |
 | `bad_request` | Call wrong — read `.message` |
 | `ai_error` | Ran, failed (bad id, OOM, crash, render past cap) |
 | `timeout` | Text: 600 s on Claude, 900 s local (image 900 s, video 2 h, transcribe far longer) — size a UI timeout off the tier you're calling, not off 600 |

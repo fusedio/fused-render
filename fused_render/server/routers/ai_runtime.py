@@ -205,6 +205,14 @@ _DECIDE_SERVER_OPTIONS = _DECIDE_OPTIONS
 #: The three question types Laya's decision heads answer. Closed: a fourth
 #: type is a 400 here, not a worker traceback.
 _DECIDE_TYPES = frozenset({"choice", "score", "noul"})
+#: `/api/ai/vision`'s options (SPEC AI-33); tests pin `visionKeys` and `_VISION_WIRE_KEYS` to it.
+_VISION_OPTIONS = frozenset({"image", "task", "prompt", "length", "reasoning",
+                             "maxObjects", "model", "provider"})
+#: `base` is bridge-injected so a relative `image` resolves beside the page (RH-1).
+_VISION_SERVER_OPTIONS = _VISION_OPTIONS | {"base"}
+_VISION_TASKS = ("caption", "query", "detect", "point")
+_VISION_LENGTHS = ("short", "normal", "long")
+_VISION_MAX_OBJECTS = 200
 
 
 def _reject_unknown(body: dict, allowed: frozenset[str], endpoint: str):
@@ -294,6 +302,7 @@ _APPLE_VERB_CAPABILITY = {
     "transcribe": registry.SPEECH_TO_TEXT,
     "embed": registry.EMBEDDINGS,
     "decide": registry.DECISIONS,
+    "vision": registry.VISION,
 }
 #: The verbs the apple tier serves in THIS build. `embed` has a pinned id
 #: (`afm-embedding`) but no path yet — it answers `unavailable` until its
@@ -309,6 +318,7 @@ _APPLE_VERB_REFUSALS = {
               "is reserved for it); use a local model"),
     "decide": ("provider 'apple' does not serve decide: Apple ships no typed-decision "
                "model; use a local model"),
+    "vision": ("provider 'apple' does not serve vision in this build; use a local model"),
 }
 
 
@@ -1222,6 +1232,9 @@ def _catalog_with_downloads() -> list[dict]:
             entry["acceptsVideo"] = embed_common.VIDEO in media
             entry["promptScheme"] = _prompt_scheme(row["capability"],
                                                    entry["id"])
+            # The vision tasks this entry answers (SPEC AI-33), from its recipe.
+            if row["capability"] == registry.VISION:
+                entry["tasks"] = list(_vision_tasks(entry["id"]))
             traits = (speech_traits(entry["id"])
                       if row["capability"] == registry.TEXT_TO_SPEECH else None)
             if traits:
@@ -3286,4 +3299,134 @@ def api_ai_decide(body: dict = Body(...), x_fused: str | None = Header(default=N
             warnings=list(result.get("warnings") or []),
             finish_reason="stop",
             metadata={"runner": "laya-mlx", "seconds": result.get("seconds")}),
+    }
+
+
+# ---------------------------------------------------------------- vision
+
+
+def _vision_problem(body: dict) -> str | None:
+    """The sentence a malformed vision request earns, or None when it is fine."""
+    task = body.get("task")
+    if task not in _VISION_TASKS:
+        return f"'task' must be one of {', '.join(_VISION_TASKS)}"
+    prompt = body.get("prompt")
+    if task == "caption":
+        if prompt not in (None, ""):
+            return "a caption takes no 'prompt'"
+    elif not isinstance(prompt, str) or not any(c.isalnum() for c in prompt):
+        return ("a query needs a 'prompt' (the question)" if task == "query"
+                else f"a {task} needs a 'prompt' naming what to look for")
+    if "length" in body and (task != "caption" or body["length"] not in _VISION_LENGTHS):
+        return f"'length' is a caption option: one of {', '.join(_VISION_LENGTHS)}"
+    if "reasoning" in body and (task != "query" or not isinstance(body["reasoning"], bool)):
+        return "'reasoning' is a query option and must be true or false"
+    if "maxObjects" in body:
+        n = body["maxObjects"]
+        if (task not in ("detect", "point") or not isinstance(n, int)
+                or isinstance(n, bool) or not 1 <= n <= _VISION_MAX_OBJECTS):
+            return (f"'maxObjects' is a detect or point option: an integer "
+                    f"from 1 to {_VISION_MAX_OBJECTS}")
+    return None
+
+
+def _vision_tasks(model: str) -> tuple[str, ...]:
+    """The tasks `model` answers, from its `vision-torch` recipe; () for a stranger."""
+    spec = formats.vision_torch_recipe(model)
+    return tuple(spec["tasks"]) if spec else ()
+
+
+def _vision_models_for(task: str) -> list[str]:
+    """Suggested vision models that answer `task`, in suggestion order."""
+    return [e["id"] for e in catalog.for_capability(registry.VISION)
+            if task in _vision_tasks(e["id"])]
+
+
+@router.post("/api/ai/vision")
+def api_ai_vision(body: dict = Body(...), x_fused: str | None = Header(default=None),
+                  x_fused_page: str | None = Header(default=None),
+                  x_fused_requester: str | None = Header(default=None),
+                  x_fused_requester_label: str | None = Header(default=None)):
+    """Caption, query, detect or point on one image (SPEC AI-33), synchronous like decide.
+
+    With no `model`, the first suggested model whose recipe answers the task is used.
+    """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    requester_id, requester_label = _requester_identity(
+        x_fused_requester, x_fused_requester_label, x_fused_page)
+
+    rejection = _reject_unknown(body, _VISION_SERVER_OPTIONS, "/api/ai/vision")
+    if rejection is not None:
+        message = json.loads(bytes(rejection.body))["error"]
+        return _embed_error("bad_request", message, status=400)
+    tier = _provider_rejection(body, "vision")
+    if tier is not None:
+        return _embed_error(tier[0], tier[1], status=tier[2])
+    problem = _vision_problem(body)
+    if problem is not None:
+        return _embed_error("bad_request", problem, status=400)
+    path, err = _resolve_reference_file(
+        body.get("image"), body.get("base"), caller="fused.ai.vision",
+        verb="reads one picture", option="image", noun="image")
+    if err is not None:
+        return _embed_error("bad_request", json.loads(bytes(err.body))["error"], status=400)
+
+    task = body["task"]
+    reason = registry.unavailable_reason(registry.VISION)
+    if reason:
+        return _embed_error("unavailable", reason, status=409)
+    model = _model_of(body)
+    if not model:
+        candidates = _vision_models_for(task)
+        if not candidates:
+            return _embed_error("unavailable", f"no vision model here can {task}", status=409)
+        model = candidates[0]
+    entry = catalog.entry_for(registry.VISION, model)
+    if entry is None:
+        known = ", ".join(e["id"] for e in catalog.for_capability(registry.VISION))
+        return _embed_error(
+            "bad_request", f"{model} is not a vision model here; vision models: {known}",
+            status=400)
+    tasks = _vision_tasks(model)
+    if task not in tasks:
+        able = ", ".join(_vision_models_for(task)) or "none"
+        return _embed_error(
+            "bad_request",
+            f"{model} cannot {task}; it answers {', '.join(tasks)}. "
+            f"Models that can {task}: {able}",
+            status=400)
+    gap = catalog.engine_gap(model)
+    if gap is not None:
+        return _embed_error("unavailable", gap["reason"], status=409)
+
+    forwarded = {"task": task, "image": path}
+    for key in ("prompt", "length", "reasoning", "maxObjects"):
+        if key in body and body[key] is not None:
+            forwarded[key] = body[key].strip() if key == "prompt" else body[key]
+    try:
+        result = supervisor.generate_vision(model, forwarded, requester_id=requester_id,
+                                           requester_label=requester_label)
+    except supervisor.ModelNotReady as e:
+        return _embed_error("model_loading", str(e), status=409, job_id=e.job_id)
+    except supervisor.ModelSlotConflict as e:
+        return _conflict_error(e)
+    except supervisor.SupervisorError as e:
+        return _embed_error("ai_error", str(e), status=502)
+
+    payload = {"task": result.get("task", task),
+               "imageSize": {"width": result.get("width"), "height": result.get("height")}}
+    for key in ("text", "reasoning", "objects", "points"):
+        if key in result:
+            payload[key] = result[key]
+    runner = registry.for_capability(registry.VISION)
+    return {
+        "ok": True,
+        "result": ai_result(
+            payload, provider="local", model=model, usage=None,
+            warnings=list(result.get("warnings") or []),
+            finish_reason="stop",
+            metadata={"runner": runner.code if runner else None,
+                      "seconds": result.get("seconds")}),
     }

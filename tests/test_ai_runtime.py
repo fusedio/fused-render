@@ -6097,7 +6097,7 @@ def test_the_runtime_endpoint_reports_runners_and_nothing_loaded(client):
         "faster-whisper", "mlx-whisper",
         "mlx-embed",
         "onnx-embed", "onnx-embed-directml", "onnx-embed-cuda",
-        "onnx-embed-rocm", "ltx-video", "laya-mlx", "mlx-audio-tts"}
+        "onnx-embed-rocm", "ltx-video", "laya-mlx", "mlx-audio-tts", "vision-torch"}
     assert body["loaded"] == []
     # Exactly one runner per capability is ACTIVE — the distinction D302 needed,
     # since with a preference in the middle "available" stopped meaning "this is
@@ -6113,7 +6113,7 @@ def test_the_runtime_endpoint_reports_runners_and_nothing_loaded(client):
 def test_every_mutating_route_carries_the_guard(client):
     for path in ("/api/ai/runtime/load", "/api/ai/runtime/unload",
                  "/api/ai/runtime/download", "/api/ai/image", "/api/ai/transcribe",
-                 "/api/ai/video", "/api/ai/speech",
+                 "/api/ai/video", "/api/ai/speech", "/api/ai/vision",
                  "/api/ai/runtime/conflicts/resolve", "/api/ai/runtime/conflicts/release"):
         assert client.post(path, json={"model": "org/x", "prompt": "x"}).status_code == 403
 

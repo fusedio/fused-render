@@ -3451,6 +3451,16 @@ def generate_decide(model: str, body: dict, *,
                           requester_id=requester_id, requester_label=requester_label)
 
 
+def generate_vision(model: str, body: dict, *,
+                    requester_id: str = "", requester_label: str = "") -> dict:
+    """One image-understanding reply (SPEC AI-33): `{task, image, prompt, ...}`
+    in, `{task, width, height, text|objects|points|masks, seconds}` out.
+    Synchronous like decide: a call is seconds, and a cold load surfaces as
+    `ModelNotReady` with the load's job id."""
+    return _generate_sync(registry.VISION, model, body, "the vision request failed",
+                          requester_id=requester_id, requester_label=requester_label)
+
+
 def _wait_ready(model: str, capability: str, job: str,
                 row: dict | None = None, *,
                 requester_id: str = "", requester_label: str = "") -> Worker:

@@ -87,6 +87,7 @@ def test_the_capability_constants_are_unchanged():
     assert registry.EMBEDDINGS == "embeddings"
     assert registry.VIDEO_GENERATION == "text-to-video"
     assert registry.DECISIONS == "text-classification"
+    assert registry.VISION == "image-to-text"
 
 
 # -- use cases (SPEC AI-28b) --------------------------------

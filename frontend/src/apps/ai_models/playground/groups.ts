@@ -65,6 +65,11 @@ export const PLAYGROUND_GROUPS: PlaygroundGroup[] = [
     label: capabilityLabel("text-to-video"),
     blurb: "Turn a description into a short video with sound.",
   },
+  {
+    capability: "image-to-text",
+    label: capabilityLabel("image-to-text"),
+    blurb: "Caption a picture, ask about it, or find things in it.",
+  },
   // Second to last: a building block more than a destination.
   {
     capability: "embeddings",

@@ -1048,6 +1048,18 @@ def test_quantization_is_read_even_when_the_card_named_the_task(client, hub):
 
 
 @requires_symlinks
+def test_a_vision_recipe_overrules_a_card_that_says_image_text_to_text(client, hub):
+    # Moondream 2's card would otherwise send it to the text runner (SPEC AI-33).
+    repo = _repo(hub, "models--vikhyatk--moondream2", blobs={"w": 10},
+                 snapshots={"c1": {"x": "w"}}, refs={"main": "c1"})
+    _snapshot_file(repo, "c1", "README.md", "---\npipeline_tag: image-text-to-text\n---\n")
+    _snapshot_file(repo, "c1", "config.json", json.dumps({"architectures": ["HfMoondream"]}))
+    row = _repo_row(client, "vikhyatk/moondream2")
+    assert row["capability"] == _ai_registry.VISION
+    assert row["taskSource"] == "its vision-torch recipe"
+
+
+@requires_symlinks
 def test_a_gguf_repo_is_named_but_not_given_a_task(client, hub):
     """No config.json, no card, no real GGUF header either — a fixture whose
     `.gguf` file is fake bytes, not a real one — and the library is all that

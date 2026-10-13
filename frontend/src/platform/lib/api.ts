@@ -5141,6 +5141,9 @@ export interface AiCatalogModel {
    *  yet, because an affordance whose request then 400s is worse than a missing
    *  one. Optional on the wire only because an older server does not send it. */
   acceptsPaths?: boolean;
+  /** Vision models only (`image-to-text`, SPEC AI-33): which `fused.ai.vision`
+   *  tasks this model answers — `caption`, `query`, `detect`, `point`. */
+  tasks?: string[];
   /** Finer than `acceptsPaths`: may those paths be SOUND files (wav, mp3,
    *  flac, ogg; m4a/aac/opus with ffmpeg on PATH), and may they be VIDEOS
    *  (mp4, mov, mkv, webm, …)? True today only for EmbeddingGemma 2, which has

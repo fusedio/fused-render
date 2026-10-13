@@ -90,6 +90,11 @@ def test_every_registered_runner_appears_in_loaders():
     `h3-video`, and is likewise covered on its own below.
     """
     seen = set()
+    # `vision-torch` claims by curated repo id (`VISION_TORCH_RECIPES`), not by layout.
+    for repo_id in formats.VISION_TORCH_RECIPES:
+        seen |= set(formats.loaders(
+            repo_id=repo_id, names={"config.json", "model.safetensors"}, dirnames=set(),
+            config={}, torch_weights=True))
     for repo_id in formats.MFLUX_VARIANTS:
         seen |= set(formats.loaders(
             repo_id=repo_id, names=set(), dirnames=set(formats.MFLUX_COMPONENTS),

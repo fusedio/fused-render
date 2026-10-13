@@ -33,6 +33,7 @@ import { TranscribeStage } from "./TranscribeStage";
 import { SpeechStage } from "./SpeechStage";
 import { EmbedStage } from "./EmbedStage";
 import { DecideStage } from "./DecideStage";
+import { VisionStage } from "./VisionStage";
 import { modelSizeHint, modelSizeLabel } from "@apps/ai_models/shared/modelSize";
 import { fitNote } from "@apps/ai_models/shared/fitNote";
 import { formatSize } from "@platform/lib/format";
@@ -1061,6 +1062,13 @@ export default function PlaygroundTab() {
                 key={selected.model.id}
                 model={selected.model.id}
                 downloaded={selected.model.downloaded}
+              />
+            ) : selected.row.capability === "image-to-text" ? (
+              <VisionStage
+                key={selected.model.id}
+                model={selected.model.id}
+                downloaded={selected.model.downloaded}
+                entry={selected.model}
               />
             ) : (
               // A capability a future runner adds before this tab learns it:

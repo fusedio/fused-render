@@ -1421,6 +1421,9 @@ def test_a_bar_survives_the_rate_postfix_call_hf_makes_on_it(base, monkeypatch):
     bar.update(100)
 
     _set_aggregate_rate_postfix(bar)  # must not raise AttributeError
+    # huggingface_hub 2.x ends a finished download with these two (hub 2.2.0).
+    bar.set_description_str("Download complete")
+    bar.clear()
 
     assert bar.format_dict["rate"] is None
     assert bar.format_dict["n"] == 100
@@ -2736,8 +2739,51 @@ def test_download_snapshots_kwargs_fallback_sweeps_orphans_too(base, monkeypatch
                         lambda *a, **kw: (COMMIT, [("config.json", 7)]))
     monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
 
-    assert base.download_snapshot("u/x", revision="abc123") == snapshot
+    assert base.download_snapshot("u/x", max_workers=2) == snapshot
     assert not orphan.exists(), "the kwargs fallback did not sweep orphan parts"
+
+
+def test_a_pinned_download_asks_for_its_commit_everywhere_and_leaves_refs_main(
+        base, monkeypatch, tmp_path):
+    # A recipe that runs repo code pins a commit (D1354).
+    pin, other = "a" * 40, "b" * 40
+    asked, refs = [], []
+    folder = _cache_folder(tmp_path)
+    snapshot = _snapshot_dir(tmp_path, "config.json")
+    hub = _LocalHub(cached=[], snapshot=snapshot)
+
+    def spy(model_id, local_files_only=False, revision=None, **kw):
+        asked.append(revision)
+        if local_files_only:
+            raise hub.LocalEntryNotFoundError(model_id)
+        return snapshot
+
+    def fetch(model_id, names, revision, ref=base.DEFAULT_REVISION, **kw):
+        refs.append(ref)
+        raise RuntimeError("fall back")
+
+    class Mirror:
+        commit = other
+        allowed = staticmethod(lambda model_id: True)
+        manifest = classmethod(lambda cls, model_id: {
+            "commit": cls.commit, "files": [{"name": "config.json", "size": 7}]})
+        file_meta = staticmethod(lambda model_id, manifest: {})
+
+    hub.snapshot_download = spy
+    _local_hub(monkeypatch, base, hub, folder=folder)
+    monkeypatch.setattr(base, "_mirror_module", lambda: Mirror)
+    monkeypatch.setattr(base, "_repo_files", lambda *a, **kw: (kw["revision"], [("config.json", 7)]))
+    monkeypatch.setattr(base, "_segmented_fetch", fetch)
+    monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
+
+    assert base.download_snapshot("u/x", revision=pin) == snapshot
+    assert asked == [pin] and refs == [pin]  # the Hub fallback; a mirror at another commit is not tried
+    Mirror.commit = pin
+    asked.clear(), refs.clear()
+    base.download_snapshot("u/x", revision=pin)
+    assert refs == [pin, pin]  # mirror, then the Hub listing, both name the pin as ref
+    base._write_ref(str(folder), pin, pin)
+    assert not (folder / "refs" / pin).exists()
 
 
 def test_a_TORN_record_left_by_a_crashed_write_is_not_read_as_a_record(
@@ -2942,7 +2988,9 @@ def test_a_caller_supplied_REVISION_wins_over_the_pin(base, monkeypatch, tmp_pat
 
     hub.snapshot_download = spy
     _local_hub(monkeypatch, base, hub, folder=folder)
-    monkeypatch.setattr(base, "_repo_files", lambda *a, **kw: (COMMIT, []))
+    # `revision` is first-class now: the listing resolves the caller's revision.
+    monkeypatch.setattr(base, "_repo_files",
+                        lambda *a, **kw: (kw.get("revision", COMMIT), []))
     monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
 
     assert base.download_snapshot("u/x", revision="theirs") == snapshot

@@ -87,6 +87,7 @@ const PLAYGROUND_FLOWS: Record<string, [PlaygroundMedia, PlaygroundMedia]> = {
   "text-to-speech": ["chat", "voice"],
   embeddings: ["chat", "meaning"],
   "text-classification": ["chat", "decision"],
+  "image-to-text": ["image", "chat"],
 };
 
 // The header's single glyph names the task itself, which is not always the
@@ -99,6 +100,7 @@ const PLAYGROUND_HEADS: Record<string, PlaygroundMedia> = {
   "text-to-speech": "voice",
   embeddings: "meaning",
   "text-classification": "decision",
+  "image-to-text": "image",
 };
 
 const FLOW_ARROW = (

@@ -1,0 +1,29 @@
+# The vision runner's environment (SPEC AI-33). No `accelerate`: its import costs
+# more than it saves (D1354). torch from the CPU index, as in `diffusers_image/`.
+[project]
+name = "fused-render-runner-vision-torch"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.13,<3",
+    "transformers>=5.19,<6",
+    "tokenizers>=0.23,<1",
+    "safetensors>=0.4,<1",
+    "numpy>=1.26,<3",
+    "pillow",
+    "pillow-heif>=1.5,<2",
+    "huggingface_hub",
+    "psutil",
+]
+
+# Not a distribution — a folder of scripts, not something to build and install.
+[tool.uv]
+package = false
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }

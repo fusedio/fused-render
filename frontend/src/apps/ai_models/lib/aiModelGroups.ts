@@ -82,6 +82,8 @@ export const CAPABILITY_ORDER = [
   // it is the newest and least familiar of the six, so it reads best after the
   // four everybody recognises. Video still sorts last, as before.
   "text-classification",
+  // Vision (`image-to-text`, SPEC AI-33): the newest, so after Decisions.
+  "image-to-text",
   "text-to-video",
 ];
 

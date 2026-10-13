@@ -1525,6 +1525,40 @@ SUGGESTIONS: dict[str, list[dict]] = {
                     "instructions and options.",
         },
     ],
+    # Vision (SPEC AI-33): each model's tasks come from its recipe. Sizes: HF API, 2026-10-13.
+    "vision-torch": [
+        {
+            "id": "IDEA-Research/grounding-dino-tiny",
+            "params": "172M",
+            "quantization": "FP32",
+            "label": "Grounding DINO Tiny",
+            "nickname": "Grounding DINO",
+            "size_gb": 0.69,
+            "note": "Open-vocabulary detector: boxes with a confidence for "
+                    "every object you name. Detection only.",
+        },
+        {
+            "id": "IDEA-Research/grounding-dino-base",
+            "params": "233M",
+            "quantization": "FP32",
+            "label": "Grounding DINO Base",
+            "nickname": "Grounding DINO",
+            "size_gb": 0.93,
+            "note": "The larger Grounding DINO: better on small and unusual "
+                    "objects. Detection only.",
+        },
+        {
+            "id": "vikhyatk/moondream2",
+            "recommended": True,
+            "params": "1.9B",
+            "quantization": "BF16",
+            "label": "Moondream 2",
+            "nickname": "Moondream",
+            "size_gb": 3.86,
+            "note": "Vision-language model: captions, answers questions "
+                    "(optionally reasoning first), detects and points.",
+        },
+    ],
     "mlx-audio-tts": [
         {
             "id": "mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16",

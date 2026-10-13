@@ -10198,6 +10198,21 @@ an AI Models page that could say what was on disk but not what was *running*.
   default is `Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16` (2.50 GB); each row has
   `voiceMode`, and a downloaded row adds `voices`/`languages`. Onboarding and
   the benchmark leave it out.
+- **AI-33** **`image-to-text` ("Vision") and `fused.ai.vision({image, task,
+  prompt, ...})` (D1354).** Tasks: `caption` (`length`), `query` (`prompt`,
+  `reasoning`), `detect` and `point` (`prompt`, `maxObjects`). A model answers
+  the tasks its recipe lists (catalog `tasks`); with no `model` the first
+  suggestion that answers the task is used, and an unable model is a
+  `bad_request` naming one that can. Reply: `task`, `imageSize`, then `text`
+  (+ `reasoning`), `objects: [{xMin, yMin, xMax, yMax, label, score}]` or
+  `points: [{x, y, label}]`, in 0–1 coordinates of the upright image.
+  `POST /api/ai/vision` has decide's shape (closed options, local only,
+  synchronous, `model_loading` + job id). Runner `vision-torch` (Apple
+  Silicon, torch MPS) runs only `formats.VISION_TORCH_RECIPES`: Grounding DINO
+  Tiny/Base (detect) and Moondream 2 (caption, query, detect, point;
+  recommended), both via transformers; Moondream at a pinned commit. A new
+  model is a recipe (plus a family class for a new kind). Not in onboarding or
+  the benchmark.
 
 ## 41. Scheduled Messages — Sending Claude a Message Later (D289, D290, D291)
 

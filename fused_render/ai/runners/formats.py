@@ -808,6 +808,18 @@ COMPONENT_REPOS = {
             "again."
         ),
     },
+    "moondream/starmie-v1": {
+        "file": "tokenizer.json",
+        "of": "vikhyatk/moondream2",
+        "owner": "Moondream 2",
+        "part": "tokenizer",
+        "what": (
+            "The 4MB tokenizer Moondream 2's own code loads by name — fetched "
+            "with the model so an offline machine still has it, not a model you "
+            "can load on its own. Deleting it makes Moondream 2's next load "
+            "download it again."
+        ),
+    },
 }
 
 
@@ -1730,6 +1742,8 @@ DECISIVE = ("faster-whisper", "mlx-whisper", "mflux-image", "ltx-video",
             # card tag, so the claim settles the modality as surely as a
             # `weights.npz` does.
             "laya-mlx",
+            # Only curated repo ids reach it (`VISION_TORCH_RECIPES`), so the claim is exact.
+            "vision-torch",
             "mlx-audio-tts",
             "diffusers-image",
             # Every hardware variant of the diffusers runner, because membership
@@ -1910,6 +1924,35 @@ def is_laya_snapshot(names, dirnames) -> bool:
     "this belongs to Laya", not "nothing reads this".
     """
     return LAYA_AGENT_CONFIG in names and LAYA_ENCODER_DIR in dirnames
+
+
+#: The repos `vision-torch` opens (SPEC AI-33) and the tasks each answers. A recipe
+#: that fetches Python pins `revision` to a reviewed commit.
+VISION_TORCH_RECIPES = {
+    "IDEA-Research/grounding-dino-tiny": {
+        "family": "grounding-dino",
+        "allow": ["*.json", "model.safetensors"],
+        "tasks": ("detect",),
+    },
+    "IDEA-Research/grounding-dino-base": {
+        "family": "grounding-dino",
+        "allow": ["*.json", "model.safetensors"],
+        "tasks": ("detect",),
+    },
+    "vikhyatk/moondream2": {
+        "family": "moondream",
+        # Runs repo code (`trust_remote_code`): pinned to the reviewed "Support transformers 5".
+        "revision": "5d6c926f44e26b07957b0dd315bbedcb4c17a5fe",
+        "allow": ["*.py", "*.json", "model.safetensors"],
+        "tasks": ("caption", "query", "detect", "point"),
+    },
+}
+
+
+def vision_torch_recipe(repo_id: str) -> dict | None:
+    """The `vision-torch` recipe for `repo_id` (a copy), or None when it is not one."""
+    spec = VISION_TORCH_RECIPES.get(repo_id)
+    return dict(spec) if spec else None
 
 
 QWEN3_TTS_MODEL_TYPE = "qwen3_tts"
@@ -2129,6 +2172,11 @@ def loaders(*, repo_id: str, names, dirnames, config: dict, torch_weights: bool,
         # `config` requirement there — Laya keeps its encoder config under
         # `encoder/`, not at the root — but the return states the intent
         # rather than leaning on that accident.)
+        return tuple(found)
+    if vision_torch_recipe(repo_id):
+        # A curated vision repo and nothing else: Moondream's safetensors plus
+        # config.json would otherwise fall through to the text runner below.
+        found.append("vision-torch")
         return tuple(found)
     if is_qwen3_tts_snapshot(config, dirnames):
         found.append("mlx-audio-tts")

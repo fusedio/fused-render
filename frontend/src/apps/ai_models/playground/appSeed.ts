@@ -217,6 +217,19 @@ function buildAppSeedDetail(model: AiCatalogModel, capability: string): string {
         "instructions, criteria and state — keep questions short and state focused. " +
         "Do not use it for arithmetic, counting, date comparison or multi-hop lookups.",
     );
+  } else if (capability === "image-to-text") {
+    const tasks = (model.tasks ?? ["caption", "query", "detect", "point"]).join(", ");
+    lines.push(
+      "It is a local vision model. Call it from the page with " +
+        `await fused.ai.vision({ image, task, prompt, model: ${JSON.stringify(model.id)} }) — ` +
+        `this model answers these tasks: ${tasks}. image is a path (relative paths resolve ` +
+        "beside the page).",
+      'task "caption" takes no prompt (length: short | normal | long) and returns text; ' +
+        '"query" takes the question as prompt (reasoning: true thinks first) and returns text; ' +
+        '"detect" returns objects [{ xMin, yMin, xMax, yMax, label, score }]; ' +
+        '"point" returns points [{ x, y, label }]. Coordinates are 0–1 of the image, ' +
+        "so draw them over the <img> scaled to its rendered size.",
+    );
   }
   // Addressed to the CLAUDE SESSION the composer spawns, not to the user: the
   // `fused-render-ai` skill is the authoritative contract for these calls
