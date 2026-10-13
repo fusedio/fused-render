@@ -307,7 +307,7 @@ async def _wait_for(pred, timeout=2.0):
 
 def test_a_publish_that_lands_during_a_read_still_cuts_the_next_nap_short():
     """The producer's poke is cleared before each read, never when the nap
-    begins. A write hook that fires while the read is off-loop (a login
+    begins. A write hook that fires while a read is off-loop (a login
     completing as the 60 s login check is mid-stat) points at state that read
     may have missed; the nap after it must return at once and read again.
     Clearing at the nap forgot exactly that publish and surfaced the change
@@ -321,13 +321,18 @@ def test_a_publish_that_lands_during_a_read_still_cuts_the_next_nap_short():
 
         def signature(params):
             reads["n"] += 1
-            if reads["n"] == 1:
+            if reads["n"] == 2:
+                # The loop's own first diff read (read 1 is the baseline
+                # taken inside subscribe) is held open until the test says so.
                 reading.set()
-                release.wait(5.0)  # the first read is held open until the test says so
+                release.wait(5.0)
             return {"n": reads["n"]}
 
         topic = simple_topic("t.held", lambda p: {"n": reads["n"]}, kind="polldiff",
                              poll_interval_s=60.0, signature=signature)
+        # One quick interval to reach the held read, then the idle minute:
+        # only a poke can bring read 3 before the test's deadline.
+        topic.poll_interval = lambda params, age_s, last: 0.02 if reads["n"] < 2 else 60.0
         b.register(topic)
         b.bind()
         sent: list = []
@@ -338,12 +343,12 @@ def test_a_publish_that_lands_during_a_read_still_cuts_the_next_nap_short():
         conn = b.connect(send)
         sub = await b.subscribe(conn, 1, "t.held", {})
         await asyncio.get_running_loop().run_in_executor(None, reading.wait, 5.0)
-        assert reading.is_set()
-        b.publish("t.held")       # lands while read #1 is in flight
+        assert reading.is_set(), "the loop never reached its first diff read"
+        b.publish("t.held")       # lands while read 2 is in flight
         await asyncio.sleep(0.05)  # and reaches the loop before that read returns
         release.set()
         # Not a minute later: the poke set during the read survives the nap.
-        await _wait_for(lambda: reads["n"] >= 2, timeout=2.0)
+        await _wait_for(lambda: reads["n"] >= 3, timeout=2.0)
         b.unsubscribe(sub)
         b.reset()
 
