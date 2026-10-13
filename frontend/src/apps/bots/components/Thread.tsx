@@ -80,20 +80,17 @@ interface RowProps {
   foldN?: number;
   foldOpen?: boolean;
   onFold?: () => void;
-  /** This row carries a fold trigger (lib/thread `foldStretches`): the state of the stretch, the stretch's key (the
-   *  seq the toggle is keyed by, `data-fold`) and the hover text. `bare`: this is the stretch's first hidden row standing
-   *  in for it as one muted line, because the row that ends the stretch (a card, your message) has no line to seat two
-   *  words on; otherwise the trigger goes on this bubble's last line. The click is the thread's delegated handler, so the
-   *  row needs no callback prop and its memo holds. Absent on every other row. */
+  /** This row is the first of a fold stretch (lib/thread `foldStretches`) and draws its trigger line: the stretch's
+   *  state, its key (the seq the toggle is keyed by, `data-fold`) and the hover text. The click is the thread's
+   *  delegated handler, so the row needs no callback prop and its memo holds. Absent on every other row. */
   fold?: "open" | "closed";
   foldKey?: number;
   foldHint?: string;
-  bare?: boolean;
 }
 
 /** The two words (cloud's RunTrigger): never a count, the count is the hover. */
-const foldHtml = (state: "open" | "closed", key: number, hint: string | undefined, bare?: boolean) =>
-  `<button class="fold${bare ? " bare" : ""}" data-fold="${key}" aria-expanded="${state === "open"}" title="${esc(hint || "")}">${state === "open" ? "show less" : "show more"}</button>`;
+const foldHtml = (state: "open" | "closed", key: number, hint: string | undefined) =>
+  `<button class="fold" data-fold="${key}" aria-expanded="${state === "open"}" title="${esc(hint || "")}">${state === "open" ? "show less" : "show more"}</button>`;
 
 /** An action event's raw tool result as display text ("" when there is none). The wire sends a string; anything else is shown as JSON. */
 const detailText = (d: unknown): string => {
@@ -205,7 +202,7 @@ function ClearMark({ e, n, open, onFold }: { e: BotEvent; n: number; open: boole
 /** Channel names in chips and "Texted" lines; a task Super Bot handed off reads "from Super Bot" (docs §11). */
 const chanLabel = (k: string) => (k === "imessage" ? "iMessage" : k === "handoff" ? "Super Bot" : k);
 
-function body({ e, botId, reaction, live, chosen, appsRoot, onBeside, hstate, targetLive, linkLive, hbSecs, hbShot, hbBot, queued, bopen, foldN, foldOpen, onFold, fold, foldKey, foldHint: hint, bare }: RowProps): JSX.Element {
+function body({ e, botId, reaction, live, chosen, appsRoot, onBeside, hstate, targetLive, linkLive, hbSecs, hbShot, hbBot, queued, bopen, foldN, foldOpen, onFold }: RowProps): JSX.Element {
   const title = fmtWhen(e.ts);
   if (e.source === "clear") return <ClearMark e={e} n={foldN || 0} open={!!foldOpen} onFold={onFold} />;
   if (e.handoff && isHandoff(e)) return <HandoffCard e={e} state={hstate || e.handoff.state} targetLive={!!targetLive} />;
@@ -305,15 +302,8 @@ function body({ e, botId, reaction, live, chosen, appsRoot, onBeside, hstate, ta
   // The seeded Super Bot's greeting (registry.seed_super, source "seed") carries the door to Settings > Phone.
   const seedBtn = e.role === "done" && e.source === "seed"
     ? '<div class="opts"><button class="opt seed" data-dialog="phone">Connect your phone</button></div>' : "";
-  // THE STRETCH'S TRIGGER ON THIS BUBBLE'S LAST LINE (lib/thread `foldStretches`, the cloud seat rule): the two words
-  // go INSIDE the last paragraph the markdown produced, so they sit on the sentence's own line, right edge, in the
-  // reading type, the way the cloud transcript's `show more` does. A bubble whose markdown does not end in a paragraph
-  // (a list, a code block) gets them on a line of their own after it.
-  const trigger = fold && !bare && foldKey != null ? foldHtml(fold, foldKey, hint) : "";
-  let bodyHtml = e.role === "user" ? esc(e.text) : md(e.text);
-  if (trigger) bodyHtml = bodyHtml.endsWith("</p>") ? bodyHtml.slice(0, -4) + trigger + "</p>" : bodyHtml + `<p class="foldline">${trigger}</p>`;
   const html = (actable ? actsHtml(e.seq) + `<time class="when">${esc(fmtTime(e.ts))}</time>` : "")
-    + bodyHtml + seedBtn + viaChip
+    + (e.role === "user" ? esc(e.text) : md(e.text)) + seedBtn + viaChip
     + (actable ? `<span class="rx" data-react="${e.seq}" title="Change reaction">${esc(reaction)}</span>` : "");
   const cls = `msg ${e.role}${e.role === "user" ? "" : " md"}${actable && reaction ? " has-rx" : ""}${queued ? " queued" : ""}`;
   const bubble = <HtmlMsg className={cls} title={queued ? "Queued: sent when you hand the browser back" : title} seq={actable ? e.seq : undefined} html={html} />;
@@ -392,18 +382,18 @@ const Row = memo(function Row(p: RowProps) {
   const { e, day, isNew } = p;
   const cls = p.folded ? "ev folded" : "ev";
   if (isNoise(p.e)) return <div className={cls} />;
-  // A BARE TRIGGER: this row is the first of a folded stretch whose end has no bubble to seat the words on, so it
-  // stands in for the stretch as one muted line (cloud's `is-bare` seat). Open, the line stays above the steps and
-  // reads `show less`; closed, the steps behind it are `.folded` and this line is all that is left of them.
-  const bare = p.bare && p.fold && p.foldKey != null
-    ? <div className="msg foldbare" dangerouslySetInnerHTML={{ __html: foldHtml(p.fold, p.foldKey, p.foldHint, true) }} />
+  // THE TRIGGER LINE: this row is the first of a fold stretch, and the stretch's one muted line stands in for it
+  // (lib/thread `foldStretches`). Open, the line stays above the steps and reads `show less`; closed, the rows behind
+  // it are `.folded` and this line is all that is left of them.
+  const trigger = p.fold && p.foldKey != null
+    ? <div className="msg foldline" dangerouslySetInnerHTML={{ __html: foldHtml(p.fold, p.foldKey, p.foldHint) }} />
     : null;
   return (
     <div className={cls} data-seq={e.seq}>
       {day ? <div className="day">{fmtDay(e.ts)}</div> : null}
       {isNew ? <div className="new">New</div> : null}
-      {bare}
-      {bare && p.fold === "closed" ? null : body(p)}
+      {trigger}
+      {trigger && p.fold === "closed" ? null : body(p)}
       {p.texted?.length ? <Texted e={e} rows={p.texted} /> : null}
     </div>
   );
@@ -511,25 +501,17 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
     stretchRef.current.seeded = true;
   }
   // A stretch first seen after the seed (the task that just settled) is open: only a click closes it.
-  const foldAt = new Map<number, { fold: "open" | "closed"; key: number; hint: string; bare: boolean }>();
+  // The first row of every stretch draws its trigger line and is never hidden itself (a session divider on it stays
+  // where it is); the rest of the stretch is `.folded` while closed.
+  const foldAt = new Map<number, { fold: "open" | "closed"; key: number; hint: string }>();
   const foldHidden = new Set<number>();
-  // A session divider on a hidden row (a routine's first step after a night's silence) moves to the seat, so folding
-  // the steps never folds the timestamp with them. A bare stretch keeps its own: its first row stays drawn.
-  const dayMoved = new Set<number>();
   for (const t of folds) {
     const isOpen = stretchRef.current.open.get(t.key) ?? true;
-    const state = isOpen ? "open" as const : "closed" as const, hint = foldHint(t);
-    if (t.seat >= 0) foldAt.set(t.seat, { fold: state, key: t.key, hint, bare: false });
-    else foldAt.set(t.hidden[0], { fold: state, key: t.key, hint, bare: true });
+    foldAt.set(t.hidden[0], { fold: isOpen ? "open" : "closed", key: t.key, hint: foldHint(t) });
     if (isOpen || searchQ) continue;
-    for (const j of t.hidden) {
-      if (t.seat < 0 && j === t.hidden[0]) continue;  // the bare line itself stays
-      foldHidden.add(j);
-      if (t.seat >= 0 && sessionBreak(evs[j - 1], evs[j])) dayMoved.add(t.seat);
-    }
+    for (const j of t.hidden) if (j !== t.hidden[0]) foldHidden.add(j);
   }
-  // The toggle keeps the trigger where it sits: the steps open (or close) above a seated trigger, below a bare one,
-  // never under your pointer.
+  // The toggle keeps the trigger line where it sits: the steps open (or close) below it, never under your pointer.
   const onFoldStretch = useCallback((key: number) => {
     const th = threadRef.current; if (!th) return;
     const btn = th.querySelector(`[data-fold="${key}"]`), ev = btn?.closest<HTMLElement>(".ev") || null;
@@ -690,7 +672,7 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
       const ho = e.handoff && isHandoff(e) ? e.handoff : null;
       const card = !ho && (e.role === "approval" || e.role === "question");
       return (
-        <Row key={keys[i]} e={e} botId={botId} day={sessionBreak(evs[i - 1], e) || dayMoved.has(i)} isNew={i === firstNew} texted={texted.get(e.seq)}
+        <Row key={keys[i]} e={e} botId={botId} day={sessionBreak(evs[i - 1], e)} isNew={i === firstNew} texted={texted.get(e.seq)}
           reaction={!ho && ACTABLE.has(e.role) ? rxs[e.seq] || "" : ""} live={card && live.has(e.seq) && !held.has(e.seq)}
           chosen={card && e.role === "question" ? chosenOption(evs, e.seq) : null} appsRoot={appsRoot} onBeside={onBeside}
           hstate={ho ? (e.role === "system" ? hds.get(ho.id) : undefined) || ho.state : undefined} targetLive={ho ? botIds.has(ho.target) : undefined}
@@ -699,7 +681,7 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
           hbShot={hb && e.seq === hb.seq && e.role === "question" ? hb.shot : undefined}
           hbBot={hoSeq != null && e.seq === hoSeq ? b : undefined} queued={e.role === "user" && heldSeqs.has(e.seq)}
           folded={(folded && i < ci) || foldHidden.has(i)} foldN={i === ci ? foldN : undefined} foldOpen={i === ci ? !folded : undefined} onFold={i === ci ? onFold : undefined}
-          fold={foldAt.get(i)?.fold} foldKey={foldAt.get(i)?.key} foldHint={foldAt.get(i)?.hint} bare={foldAt.get(i)?.bare} />
+          fold={foldAt.get(i)?.fold} foldKey={foldAt.get(i)?.key} foldHint={foldAt.get(i)?.hint} />
       );
     });
     if (b.control && hoSeq == null) content.push(<HandoverNote key="handover" b={b} />);

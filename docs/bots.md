@@ -920,10 +920,8 @@ Control flow inside the tools (the harness's job, in the server process):
   message, an approval / question card, `done` / `error`, the Clear marker,
   hand-off and build cards, a thought or note with an app card, a reaction or
   a reply quoting it) folds behind one `show more`, so a task with three
-  back-and-forths is three folds. The trigger sits on the last line of the
-  bubble that ends the stretch (`done`, `error`, a kept `thought`); a stretch
-  that ends at a card, your message or the list end takes a bare muted line
-  of its own. Seeded once per bot on open (everything before the newest task
+  back-and-forths is three folds. The trigger is one muted line in the action
+  chip's family, in place of the stretch (never seated on a bubble). Seeded once per bot on open (everything before the newest task
   closed, never a stretch with a row past the seen mark), then only a click
   moves a fold; a stretch still growing while the bot runs never folds;
   search opens everything, a jump at a hidden row opens its stretch.

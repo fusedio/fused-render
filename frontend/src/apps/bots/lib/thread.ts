@@ -100,19 +100,16 @@ export function rowKeys(evs: readonly BotEvent[], botId: string): string[] {
  * So a task with three back-and-forths is three folds, each opening only the steps between that question and its
  * answer, not one lid over the whole task (owner, 2026-10-13).
  *
- * WHERE THE TRIGGER SITS, from the cloud rule (prose before or after the run carries it, else a bare line):
- *   - `seat`: the bubble that ENDS the stretch, when it is one drawn through the thread's html path (`done`, `error`,
- *     a kept `thought`): the two words go on its last line;
- *   - `bare`: the stretch ends at a card, at your message, at the Clear marker or at the end of the list — none of
- *     those is a line to seat two words on — so the first hidden row stands in for the stretch as one muted line.
+ * WHERE THE TRIGGER SITS: always a muted line of its own IN PLACE of the stretch, drawn by the stretch's first hidden
+ * row (Thread.tsx Row). The cloud transcript seats its two words on the prose that ends the run; here that was tried
+ * and dropped (owner, 2026-10-13): a thread of bubbles has the steps BETWEEN the bubbles, and a word hanging off the
+ * end of a result sentence read as two kinds of control for one thing.
  * `key` is the seq of the first hidden row: the fold's identity, stable across appends and the 600-row trim.
  */
 export interface FoldStretch {
   key: number;
-  /** Indices (into `evs`) hidden while folded. */
+  /** Indices (into `evs`) hidden while folded. The first one draws the trigger line and is never hidden itself. */
   hidden: number[];
-  /** The row whose bubble carries the trigger, or -1 when the stretch takes a bare line of its own (`hidden[0]`). */
-  seat: number;
   /** How many `action` rows hide, and the seconds the stretch spans: the trigger's hover. */
   steps: number;
   secs: number;
@@ -122,10 +119,6 @@ export interface FoldStretch {
 const hideable = (e: BotEvent, rx: Record<number, string>, quoted: Set<number>): boolean =>
   (e.role === "thought" || e.role === "action" || e.role === "note")
   && !e.app?.dir && !e.build && !isHandoff(e) && !rx[e.seq] && !quoted.has(e.seq);
-
-/** A boundary row that can carry the trigger on its own last line: the bubbles `body()` builds as html. */
-const seatable = (e: BotEvent): boolean =>
-  (e.role === "done" && e.source !== "seed" && !isHandoff(e) && e.source !== "build") || e.role === "error" || e.role === "thought";
 
 /**
  * The fold stretches of a thread. `live`: the bot is mid-task, so a stretch that runs to the END of the list is still
@@ -141,7 +134,7 @@ export function foldStretches(evs: readonly BotEvent[], reactions: Record<number
     if (!run.length) return;
     const first = evs[run[0]], last = evs[end >= 0 ? end : run[run.length - 1]];
     out.push({
-      key: first.seq, hidden: run, seat: end >= 0 && seatable(evs[end]) ? end : -1,
+      key: first.seq, hidden: run,
       steps: run.filter((j) => evs[j].role === "action").length, secs: Math.max(0, last.ts - first.ts),
     });
     run = [];
