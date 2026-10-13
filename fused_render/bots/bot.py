@@ -33,6 +33,20 @@ from fused_render.bots import paths as bpaths
 from fused_render.bots.browser import Browser
 from fused_render.bots.channels import base as chan
 
+_TASK_TLS = threading.local()  # .bot = the Bot whose task this thread is serving a tool call for (Bot.serving_task)
+
+
+class _ServingTask:
+    def __init__(self, bot):
+        self.bot, self.prev = bot, None
+
+    def __enter__(self):
+        self.prev = getattr(_TASK_TLS, "bot", None)
+        _TASK_TLS.bot = self.bot
+
+    def __exit__(self, *exc):
+        _TASK_TLS.bot = self.prev
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "sonnet"
@@ -618,6 +632,12 @@ class Bot:
         except FileNotFoundError:
             return 0
 
+    def serving_task(self):
+        """Context manager: this thread serves the running task's tool call, so
+        its emits carry the task's `via` as the task thread's do (see emit).
+        agent_engine.handle_tool wraps every botmcp / permission call in it."""
+        return _ServingTask(self)
+
     def emit(self, role, text, **extra):
         """Append one event to events.jsonl and return it (docs §2 shape).
 
@@ -627,16 +647,20 @@ class Bot:
         duplicate row key (an orphaned bubble on bot switch).
 
         Events written by the task thread carry the task's `via` (the channel
-        the task came from) unless the caller set one; other threads (build
-        watcher, offer settlement, greeting) pass theirs explicitly or carry
-        none. The channels router gets every event (registry.on_event) and
-        delivers the outbound-worthy ones under its policy."""
+        the task came from) unless the caller set one; so do events written by
+        a thread serving one of the task's tool calls (`serving_task`: Super
+        Bot's botmcp / permission requests land on uvicorn threads, and their
+        `ask`, approval and login cards must reach the phone too). Other
+        threads (build watcher, offer settlement, greeting) pass theirs
+        explicitly or carry none. The channels router gets every event
+        (registry.on_event) and delivers the outbound-worthy ones under its policy."""
         with self.lock:
             self.seq = max(self.seq, self._count_events()) + 1
             ev = {"seq": self.seq, "ts": time.time(), "role": role, "text": text, **extra}
             if "via" not in ev:
                 t = self.thread
-                if t is not None and threading.get_ident() == t.ident and not chan.is_web(self.task_via):
+                mine = t is not None and (threading.get_ident() == t.ident or getattr(_TASK_TLS, "bot", None) is self)
+                if mine and not chan.is_web(self.task_via):
                     ev["via"] = dict(self.task_via)
             elif ev["via"] is None:
                 del ev["via"]

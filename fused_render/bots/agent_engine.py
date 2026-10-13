@@ -1149,7 +1149,9 @@ def handle_tool(bot, token, name: str, args) -> dict:
     current task's; every other failure is a tool result the model can read."""
     sess = _check(bot, token)
     args = args if isinstance(args, dict) else {}
-    with sess.step_lock:
+    with sess.step_lock, bot.serving_task():
+        # serving_task: this uvicorn thread is the task's for the duration, so the cards it emits (ask, approval,
+        # login) carry the task's via and reach the phone the way the task thread's `done` does.
         _check(bot, token)  # the task may have ended while this call queued
         try:
             return _handle(bot, sess, name, args)
