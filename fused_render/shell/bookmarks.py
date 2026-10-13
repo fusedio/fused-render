@@ -220,23 +220,17 @@ async def _compute_missing(leaves: list) -> list:
 
 
 def _bookmarks_data() -> list | None:
-    """The sanitized tree, seeded and migrated on disk where needed, or None
-    when there is no file and nothing to seed (`exists: false`). The GET's
-    read half, shared with the `bookmarks` topic's snapshot."""
+    """The sanitized tree, migrated on disk where needed, or None when there
+    is no file (`exists: false`). The GET's read half, shared with the
+    `bookmarks` topic's snapshot so the two bodies are the same body."""
     data = storage.read_json(_path())
     # Absent or corrupt (not a list) -> report not-yet-written; a valid file
-    # (even []) reports exists=true. The Home pin seeds into an absent file
-    # too — a fresh bots install should open with the door in place.
+    # (even []) reports exists=true.
     if not isinstance(data, list):
-        data = []
-        if not _seed_home_pin(data):
-            return None
-        storage.write_json(_path(), data)
+        return None
     # Order matters: sanitize before dedupe, so a dropped garbage entry never
     # claims a name that a real bookmark would then get suffixed around.
     changed = _sanitize_tree(data)
-    if _seed_home_pin(data):
-        changed = True
     # Pre-D97 files may hold duplicate names; migrate once (write only when
     # something actually changed — the normal GET stays read-only).
     if _dedupe_names(data):
@@ -259,20 +253,9 @@ def bookmarks_payload() -> dict:
 
 @router.get("/api/bookmarks")
 async def get_bookmarks():
-    data = storage.read_json(_path())
-    # Absent or corrupt (not a list) -> report not-yet-written; a valid file
-    # (even []) reports exists=true.
-    if not isinstance(data, list):
+    data = _bookmarks_data()
+    if data is None:
         return {"exists": False, "bookmarks": [], "missing": []}
-    # Order matters: sanitize before dedupe, so a dropped garbage entry never
-    # claims a name that a real bookmark would then get suffixed around.
-    changed = _sanitize_tree(data)
-    # Pre-D97 files may hold duplicate names; migrate once (write only when
-    # something actually changed — the normal GET stays read-only).
-    if _dedupe_names(data):
-        changed = True
-    if changed:
-        storage.write_json(_path(), data)
     missing = await _compute_missing(_flatten_bookmarks(data))
     return {"exists": True, "bookmarks": data, "missing": missing}
 

@@ -50,13 +50,17 @@ def _client(tmp_path, **kw):
 
 
 def _recv(ws, want=None, tries=50):
-    """The next frame, or the next frame of kind `want` (pings skipped)."""
+    """The next frame, or the next frame of kind `want` (pings skipped). An
+    `err` frame while waiting for something else fails at once: a broken
+    topic's refusal is the answer, not a reason to block on the socket."""
     for _ in range(tries):
         msg = ws.receive_json()
         if msg.get("t") == "ping":
             continue
         if want is None or msg.get("t") == want:
             return msg
+        if msg.get("t") == "err":
+            raise AssertionError(f"wanted a {want} frame, got an error: {msg}")
     raise AssertionError(f"no {want} frame arrived")
 
 
