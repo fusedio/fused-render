@@ -496,10 +496,13 @@ button.tasks-caret,
 }
 
 /* With a reply in the row the reply is the element that takes the free width, so
-   the spacer is dropped entirely: its 8px minimum and its own flex gap read as a
-   hole before the message count. */
+   the spacer keeps no width and its negative margin cancels its own flex gap,
+   which would otherwise read as a hole before the message count. It stays
+   rendered (not display: none) because TaskNode's growRef observer measures it. */
 .tasks-row:has(.tasks-title-reply) .tasks-grow {
-  display: none;
+  flex-grow: 0;
+  min-width: 0;
+  margin-left: calc(var(--tasks-row-gap) * -1);
 }
 
 /* A task whose work has not happened yet (tasks-lib.isUpcomingTask, 2026-08-18).
