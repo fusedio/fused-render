@@ -441,7 +441,8 @@ def bots_usage():
 @_handled
 def bot_failures(bid: str):
     """The failed model calls behind the bot's "N failed" usage count (this week, newest first), each with the
-    error text when it was recorded: `{failures: [{ts, model, origin, task, error?}]}`."""
+    error text when it was recorded: `{failures: [{ts, model, origin, task, error?}]}`. Rows the user cleared
+    (POST, `_failures`) are left out."""
     return {"failures": _store().usage_failures(bid)}
 
 
@@ -737,6 +738,18 @@ def _skills(bid, body):
     return {"ok": True, "skills": b.skills()}
 
 
+def _failures(bid, body):
+    """POST /api/bots/{bid}/failures `{op: "dismiss", ts}`: clear one row of the failures dialog (the GET above
+    lists them). The ledger line is flagged, not deleted (store.usage_dismiss_failure). No `_bot(bid)`: the ledger
+    keeps lines for deleted bots too, and nothing here needs the live object."""
+    if body.get("op") != "dismiss":
+        raise ValueError(f"unknown failures op {body.get('op')!r}")
+    ts = body.get("ts")
+    if isinstance(ts, bool) or not isinstance(ts, (int, float)):
+        raise ValueError("ts must be a number")
+    return {"ok": True, "found": _store().usage_dismiss_failure(bid, float(ts))}
+
+
 def _reveal(bid, body):
     return {"ok": True, "path": _bot(bid).reveal(body.get("path") or None)}
 
@@ -939,7 +952,7 @@ def bot_app_events(bid: str, addr: str = Query(default=""), since: str = Query(d
 
 _POSTS = {"goto": _goto, "nav": _nav, "tab": _tab, "attach": _attach, "react": _react,
           "flag": _flag, "settings": _settings, "profile": _profile, "clone": _clone, "routines": _routines,
-          "skills": _skills, "reveal": _reveal, "tool": _tool, "viewport": _viewport}
+          "skills": _skills, "reveal": _reveal, "tool": _tool, "viewport": _viewport, "failures": _failures}
 # The app door's POSTs read the X-Fused-Page header too (docs §13).
 _APP_POSTS = {"app_send": _app_send, "app_stop": _app_stop}
 

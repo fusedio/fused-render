@@ -151,7 +151,8 @@ def usage_log(bid, model, origin, task, ok, name=None, cost=None, input_tokens=N
     written only when known (the agent engine reports them; OpenBot did not).
     `error` is the failed call's own words (the CLI's result text, the API
     exception), written only on a failure so the "N failed" count in the page
-    can open the reasons (usage_failures)."""
+    can open the reasons (usage_failures). A line may later gain `dismissed`
+    (usage_dismiss_failure): the user cleared it from that list."""
     global _usage_cache
     ev = {"ts": time.time(), "bot": bid, "name": name or "", "model": model, "origin": origin,
           "task": (task or "")[:80], "ok": bool(ok)}
@@ -186,6 +187,8 @@ def usage_failures(bid: str, now: float | None = None) -> list[dict]:
                     continue
                 if not isinstance(ev, dict) or ev.get("bot") != bid or ev.get("ok", True) or ev.get("ts", 0) < keep_from:
                     continue
+                if ev.get("dismissed"):  # cleared from the dialog (usage_dismiss_failure); still a call in the totals
+                    continue
                 row = {"ts": ev.get("ts", 0), "model": ev.get("model") or "?", "origin": ev.get("origin") or "manual",
                        "task": ev.get("task") or ""}
                 if ev.get("error"):
@@ -197,6 +200,46 @@ def usage_failures(bid: str, now: float | None = None) -> list[dict]:
     # in the file out of order.
     out.sort(key=lambda r: r["ts"], reverse=True)
     return out
+
+
+def usage_dismiss_failure(bid: str, ts: float) -> bool:
+    """Clear one failure from the dialog (owner, 2026-10-13: "each row should have a clear icon, so that users can
+    remove the old failure logs that they are not concerned about"). The line stays in the ledger with
+    `dismissed: true` rather than being deleted: the call happened and cost tokens, so the today / 7-day totals and
+    the model mix keep counting it; only the "N failed" count (usage_summary) and this dialog's list
+    (usage_failures) drop it, together, so the count and the list stay the same length. Keyed by bot + ts: ts is
+    time.time() at the call and round-trips JSON -> JS -> JSON exactly, so equality is the match, no epsilon (an
+    epsilon could catch two overlapping calls at once). Read + rewrite inside _usage_lock, unlike the prune in
+    usage_summary, so a usage_log landing meanwhile is not lost. Idempotent: an unknown ts is a no-op (False)."""
+    global _usage_cache
+    path = _bpaths.usage_path()
+    hit = False
+    with _usage_lock:
+        try:
+            with open(path) as f:
+                lines = f.readlines()
+        except FileNotFoundError:
+            return False
+        out = []
+        for line in lines:
+            try:
+                ev = json.loads(line)
+            except ValueError:
+                out.append(line)
+                continue
+            if (isinstance(ev, dict) and ev.get("bot") == bid and ev.get("ts") == ts and not ev.get("ok", True)
+                    and not ev.get("dismissed")):
+                ev["dismissed"] = True
+                line = json.dumps(ev) + "\n"
+                hit = True
+            out.append(line)
+        if hit:
+            tmp = f"{path}.{os.getpid()}-{threading.get_ident()}.tmp"
+            with open(tmp, "w") as f:
+                f.writelines(out)
+            os.replace(tmp, path)
+            _usage_cache = (0.0, None)
+    return hit
 
 
 def usage_reset_cache() -> None:
@@ -266,7 +309,8 @@ def usage_summary(now: float | None = None) -> dict:
         pb["week"] += 1
         pb["models"][ev.get("model") or "?"] = pb["models"].get(ev.get("model") or "?", 0) + 1
         pb["last"] = max(pb["last"], t)
-        if not ev.get("ok", True):
+        failed = not ev.get("ok", True) and not ev.get("dismissed")  # a cleared failure is still a call, not a failure
+        if failed:
             pb["errors"] += 1
         if t >= midnight:
             today += 1
@@ -274,7 +318,7 @@ def usage_summary(now: float | None = None) -> dict:
             per_task[ev.get("task", "")] = per_task.get(ev.get("task", ""), 0) + 1
             o = ev.get("origin") if ev.get("origin") in origin else "manual"
             origin[o] += 1
-            if not ev.get("ok", True):
+            if failed:
                 errors += 1
         if t >= now - 3600:
             hour += 1

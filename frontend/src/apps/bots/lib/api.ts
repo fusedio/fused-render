@@ -204,7 +204,8 @@ export interface Bot {
 
 export interface UsageBotRow { id: string; name: string; today: number; week: number; models: Record<string, number>; errors: number; last: number; live: boolean }
 /** One failed model call behind a bot's `errors` count (GET /api/bots/{id}/failures, newest first, this week).
- *  `error` is the call's own words when the ledger recorded them (lines from before that stay without one). */
+ *  `error` is the call's own words when the ledger recorded them (lines from before that stay without one). `ts` is
+ *  also the row's key for `dismissFailure`. */
 export interface UsageFailure { ts: number; model: string; origin: string; task: string; error?: string }
 export interface UsageSummary {
   today: number;
@@ -360,6 +361,9 @@ export const api = {
   presets: () => get<{ ok: true; presets: Preset[] }>(`${B}/presets`, "presets"),
   usage: () => get<UsageSummary>(`${B}/usage`, "usage"),
   failures: (id: string) => get<{ failures: UsageFailure[] }>(`${bid(id)}/failures`, "failures"),
+  /** The row's clear icon: the ledger line is flagged dismissed (still a call in the totals), so it leaves this list and
+   *  the "N failed" count together. `found` false = no such line (already cleared, or pruned). */
+  dismissFailure: (id: string, ts: number) => post<Ok & { found: boolean }>(`${bid(id)}/failures`, { op: "dismiss", ts }, "clear failure"),
   imessage: () => get<ImessageState>(`${B}/imessage`, "imessage"),
   /** Settings > Phone "Send a test text": one text from this Mac to Super Bot's handle (the Automation consent lands here). */
   imessageTest: () => post<{ ok: true; handle: string }>(`${B}/imessage/test`, {}, "test text"),
