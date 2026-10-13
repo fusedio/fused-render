@@ -33,9 +33,11 @@ describe("blamedPath finds the file an error names", () => {
 describe("indexProgress counts the three states", () => {
   it("is busy while anything is pending or indexing, and never afterwards", () => {
     const index = idx({ "/a": { state: "done", vector: [1], model: "m" }, "/b": { state: "failed", error: "x" }, "/c": pending });
-    expect(indexProgress(["/a", "/b", "/c"], index)).toEqual({ total: 3, done: 1, failed: 1, busy: true });
-    expect(indexProgress(["/a", "/b"], index)).toEqual({ total: 2, done: 1, failed: 1, busy: false });
+    expect(indexProgress(["/a", "/b", "/c"], index)).toEqual({ total: 3, done: 1, failed: 1, indexing: 0, busy: true });
+    expect(indexProgress(["/a", "/b"], index)).toEqual({ total: 2, done: 1, failed: 1, indexing: 0, busy: false });
     expect(indexProgress(["/unknown"], index).busy).toBe(true);
+    index.set("/d", { state: "indexing" });
+    expect(indexProgress(["/a", "/d"], index)).toEqual({ total: 2, done: 1, failed: 0, indexing: 1, busy: true });
   });
 });
 

@@ -76,18 +76,26 @@ export function indexProgress(paths: string[], index: Map<string, IndexEntry>): 
   total: number;
   done: number;
   failed: number;
+  /** In flight right now — counted into "Indexing N of M" so the line moves
+   *  when a batch STARTS, not only when it lands (the first batch is the one
+   *  that waits for the model). */
+  indexing: number;
   busy: boolean;
 } {
   let done = 0;
   let failed = 0;
+  let indexing = 0;
   let busy = false;
   for (const path of paths) {
     const entry = index.get(path);
-    if (!entry || entry.state === "pending" || entry.state === "indexing") busy = true;
-    else if (entry.state === "done") done += 1;
+    if (!entry || entry.state === "pending") busy = true;
+    else if (entry.state === "indexing") {
+      busy = true;
+      indexing += 1;
+    } else if (entry.state === "done") done += 1;
     else failed += 1;
   }
-  return { total: paths.length, done, failed, busy };
+  return { total: paths.length, done, failed, indexing, busy };
 }
 
 export interface Scored {

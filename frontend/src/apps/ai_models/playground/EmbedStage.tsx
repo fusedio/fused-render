@@ -449,7 +449,9 @@ export function EmbedStage({
       setRankedPictures(null);
       // Every new file starts its journey now, not at Search time.
       for (const path of merged.next) {
-        if (!indexRef.current.has(path)) indexRef.current.set(path, { state: "pending" });
+        const entry = indexRef.current.get(path);
+        // New, or added back after a failure: adding again IS the retry.
+        if (!entry || entry.state === "failed") indexRef.current.set(path, { state: "pending" });
       }
       bumpIndex();
       void pumpIndex();
@@ -527,7 +529,10 @@ export function EmbedStage({
             // The error is about ONE file: that row fails, the others go
             // round again without it — and the sentence is shown, because a
             // ✗ in the settings panel is not where the reader is looking.
+            const listed = new Set(picturesRef.current);
             for (const path of batch) {
+              // Removed mid-batch stays removed — see the success path.
+              if (!listed.has(path)) continue;
               index.set(path, path === blamed ? { state: "failed", error: message } : { state: "pending" });
             }
             setError(message);
@@ -569,7 +574,13 @@ export function EmbedStage({
     new Promise<void>((resolve) => {
       if (!pumping.current && planBatches(picturesRef.current, indexRef.current).length) void pumpIndex();
       const check = () => {
-        if (signal.aborted || !indexProgress(picturesRef.current, indexRef.current).busy) resolve();
+        // Three ways out: the index is idle, the search was abandoned, or the
+        // runner STOPPED on a run-level error (`halted`) — files still
+        // pending but nothing working on them. The last must resolve too,
+        // or Search waits forever on a runner that has already given up,
+        // with `busy` holding every other control shut.
+        const idle = !indexProgress(picturesRef.current, indexRef.current).busy;
+        if (signal.aborted || idle || (!pumping.current && halted.current)) resolve();
         else window.setTimeout(check, 150);
       };
       check();
@@ -728,6 +739,7 @@ export function EmbedStage({
     setBusy(true);
     const controller = new AbortController();
     abortRef.current = controller;
+    let afterNote: string | null = null;
     try {
       // The files are embedded as they land (`pumpIndex`); a search that
       // arrives first waits for the tail of that rather than re-sending
@@ -737,6 +749,13 @@ export function EmbedStage({
         setStatus("Finishing the index first…");
         await whenIndexed(controller.signal);
         if (controller.signal.aborted) return;
+        if (halted.current) {
+          // The runner gave up (its sentence is on the error line); rank
+          // what IS indexed rather than nothing, and say what is missing —
+          // kept past the `finally` below, which otherwise clears status.
+          const left = indexProgress(picturesRef.current, indexRef.current);
+          afterNote = `${left.total - left.done - left.failed} not indexed — showing the rest.`;
+        }
       }
       const phrase = await withModelReady(() => embedTexts(model, [asked]), {
         signal: controller.signal,
@@ -758,7 +777,7 @@ export function EmbedStage({
     } catch (e) {
       if ((e as Error).name !== "AbortError") setError((e as Error).message);
     } finally {
-      setStatus(null);
+      setStatus(afterNote);
       setBusy(false);
       abortRef.current = null;
     }
@@ -889,7 +908,7 @@ export function EmbedStage({
                 {!pictures.length
                   ? ranksMedia ? "Pictures, sound files and videos" : "Pictures"
                   : progress.busy
-                    ? `Indexing ${progress.done} of ${progress.total}…`
+                    ? `Indexing ${progress.done + progress.failed + progress.indexing} of ${progress.total}…`
                     : `${progress.done} ${progress.done === 1 ? mediaNoun : `${mediaNoun}s`} ready` +
                       (progress.failed ? ` · ${progress.failed} could not be read` : "")}
               </p>
@@ -1043,7 +1062,7 @@ export function EmbedStage({
               note={
                 pictures.length
                   ? progress.busy
-                    ? `Indexing ${progress.done} of ${progress.total} — type what you are looking for meanwhile.`
+                    ? `Indexing ${progress.done + progress.failed + progress.indexing} of ${progress.total} — type what you are looking for meanwhile.`
                     : `The ${mediaNoun}s come back here, ordered by how close they are to the phrase.`
                   : `Add a ${mediaNoun} or two above, or drop them in, then type what you are looking for.`
               }
