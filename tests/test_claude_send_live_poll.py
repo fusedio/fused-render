@@ -138,3 +138,84 @@ def test_a_dead_process_still_ends_the_poll_even_with_a_pending_echo(
     agent._alive = lambda _run_dir: False
     poll = agent._poll("run")
     assert poll["done"] is True
+
+
+def _system_row(subtype):
+    return {"type": "system", "subtype": subtype, "session_id": "s"}
+
+
+def test_the_clis_turn_preamble_does_not_lift_the_echo_blank(agent, run_dir):
+    """Claude Code 2.1.29x writes `system/init` and `system/status` the moment
+    it picks a follow-up off stdin — BEFORE the `--replay-user-messages` echo.
+    Read as "the run speaking", they flipped `idle` off and lifted the
+    `pending_echo` blank, so every poll until the cursor stepped past the echo
+    handed the page the PREVIOUS turn's reply, in full and with no seam: the
+    previous answer flashed into the new bubble (Akshil, 2026-10-14)."""
+    _write(run_dir, [_user_row("turn one"), _text_row("Turn one answer."),
+                     _result_row("Turn one answer.")])
+    _setup(agent, run_dir)
+    assert agent._send("run", "second message", "") == {"sent": True}
+    with (run_dir / "out.jsonl").open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(_system_row("hook_started")) + "\n")
+        fh.write(json.dumps(_system_row("init")) + "\n")
+        fh.write(json.dumps(_system_row("status")) + "\n")
+    poll = agent._poll("run")
+    assert poll["done"] is False
+    assert poll["text"] == "" and poll["segments"] == [], (
+        "`init`/`status` are the CLI picking the message up, not a reply — "
+        "the previous turn must stay blanked until the echo lands")
+    # The echo: the window still opens on turn one for this one poll (the
+    # cursor steps on the NEXT read), so the seam is what tells the page where
+    # its own turn begins.
+    with (run_dir / "out.jsonl").open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(_user_row("second message")) + "\n")
+    poll = agent._poll("run")
+    assert poll["done"] is False
+    assert poll["text"] == "Turn one answer."
+    assert poll["turn_breaks"] == [{"segments": 1, "text": len("Turn one answer.")}]
+    with (run_dir / "out.jsonl").open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(_text_row("Turn two answer.")) + "\n")
+    poll = agent._poll("run")
+    assert poll["text"] == "Turn two answer." and poll["turn_breaks"] == []
+
+
+def test_the_preamble_still_reopens_the_turn_when_no_send_is_pending(
+        agent, run_dir):
+    """The preamble exemption is scoped to the `pending_echo` window. With no
+    send outstanding, `init` after a `result` is the run waking up (a D415
+    wake whose hooks fire first, a slow SessionStart hook) and the turn must
+    read open at once — otherwise `done` is True across the hook window."""
+    _write(run_dir, [_user_row("turn one"), _text_row("Turn one answer."),
+                     _result_row("Turn one answer."),
+                     _system_row("hook_started"), _system_row("init")])
+    _setup(agent, run_dir)
+    assert not (run_dir / "pending_echo").exists()
+    assert agent._poll("run")["done"] is False
+
+
+def test_an_echo_landing_between_the_rows_read_and_the_tail_scan_keeps_the_turn_open(
+        agent, run_dir, monkeypatch):
+    """`_poll` reads the window first and scans the `pending_echo` tail after.
+    If the echo lands in between, the window ends on the preamble alone
+    (which the gate told `idle` to ignore) while the tail already has the
+    echo — so the gate lifts, and without the tail re-opening the turn the
+    poll reported `done` with the previous reply as the new turn's text."""
+    _write(run_dir, [_user_row("turn one"), _text_row("Turn one answer."),
+                     _result_row("Turn one answer.")])
+    _setup(agent, run_dir)
+    assert agent._send("run", "second message", "") == {"sent": True}
+    with (run_dir / "out.jsonl").open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(_system_row("init")) + "\n")
+        fh.write(json.dumps(_system_row("status")) + "\n")
+    real = agent._read_current_turn
+
+    def read_then_echo_lands(*args, **kwargs):
+        out = real(*args, **kwargs)
+        with (run_dir / "out.jsonl").open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(_user_row("second message")) + "\n")
+        return out
+    monkeypatch.setattr(agent, "_read_current_turn", read_then_echo_lands)
+    poll = agent._poll("run")
+    assert poll["done"] is False, (
+        "the tail has the echo and no `result` after it: the new turn is open")
+    assert not (run_dir / "pending_echo").exists()
