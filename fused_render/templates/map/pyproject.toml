@@ -16,7 +16,7 @@
 #   xarray/zarr/        prepare.py — NetCDF / HDF5 rewritten as a Zarr store the
 #   h5netcdf/h5py/      browser layer streams; h5netcdf + scipy read what
 #   scipy/cftime        netCDF4 would (NEVER add netCDF4: its bundled HDF5
-#                       clashes with h5py's in one process on Windows)
+#                       can clash with h5py's in one process)
 #   numpy/pandas/       arrays and tables a script returns; GeoParquet writes
 #   pyarrow
 #   laspy[lazrs]        prepare.py — a LAS/LAZ the browser cannot read (LAS 1.4,

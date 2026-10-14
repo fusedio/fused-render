@@ -654,7 +654,7 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # loads a local model.
 
     # GPU/VRAM detection (SPEC AI-18, D519): `hw_detect.detect_hardware` is a
-    # subprocess probe (nvidia-smi/rocm-smi/PowerShell+registry/sysctl),
+    # subprocess probe (nvidia-smi/rocm-smi/sysctl),
     # 50-500ms cold — the same cost `fit._wired_limit_mb` refuses on the
     # per-request verdict path, which is why `fit.py`/`speed.py` only ever
     # read `hw_detect.cached_hardware()`. No startup hook for it — like the

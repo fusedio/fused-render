@@ -63,7 +63,7 @@ Actions:
   main(action="cancel", run_id=...)   -> {"cancelled": ...}
 """
 import datetime
-import errno
+import fcntl
 import io
 import json
 import os
@@ -1582,7 +1582,6 @@ def _record_settings(session_id: str, model: str = "", effort: str = "") -> None
     if not session_id or _bad_id(session_id) or not (model or effort):
         return   # an id `_defaults` would refuse to read is not worth writing
     path = _state_file(*SESSION_SETTINGS)
-    import fcntl
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path + ".lock", "w") as lock:
@@ -5151,85 +5150,18 @@ class _RunLock:
     spawn bookkeeping loop, or two tabs — otherwise both read offset N, and
     the later writer's copy drops whatever the earlier one added.
 
-    POSIX: `flock(LOCK_EX)`. Windows: `msvcrt.locking` on byte 0 with a
-    non-blocking retry loop, the same shape as `tasks_store.locked_path`
-    (`LK_LOCK` gives up after ~10 tries, so it is not a blocking wait;
-    CodeRabbit, PR #1635 — the unlocked Windows path let poll B persist past
-    poll A's row). Neither available: unlocked, the posture `_record_settings`
-    takes on such a build.
-
-    `held_elsewhere` is True only when the Windows retry budget ran out on
-    CONTENTION: another poll holds the lock right now and is writing this
-    very registry, so the caller skips its own write and leaves the poll
-    cursor where it was — the next poll re-reads the same rows and absorbs
-    them (CodeRabbit, PR #1635). A PERMANENT failure (no lock primitive, the
-    lock file will not open, `flock` or the byte lock erroring for any other
-    reason) is still the unlocked fallback: skipping there would mean the
-    registry never persists at all."""
-
-    _RETRY_S = 0.05
-    #: How long the Windows byte lock is retried before the unlocked fallback:
-    #: a permanent `OSError` (not contention) must not wedge a poll thread
-    #: (Bugbot, PR #1635).
-    _RETRY_BUDGET_S = 10.0
+    `flock(LOCK_EX)`. A lock file that will not open, or a `flock` error, is
+    the unlocked fallback: skipping the write there would mean the registry
+    never persists at all."""
 
     def __init__(self, run_dir: str):
         self.path = os.path.join(run_dir, "bg_tasks.lock")
         self.fh = None
-        self.byte_locked = False
-        self.held_elsewhere = False
 
     def __enter__(self):
         try:
-            import fcntl
-        except ImportError:
-            fcntl = None
-        try:
-            import msvcrt
-        except ImportError:
-            msvcrt = None
-        if fcntl is None and msvcrt is None:
-            return self
-        try:
             self.fh = os.fdopen(os.open(self.path, os.O_RDWR | os.O_CREAT, 0o600), "r+b")
-            if fcntl is not None:
-                fcntl.flock(self.fh, fcntl.LOCK_EX)
-            else:
-                # `msvcrt.locking` locks a byte RANGE that must exist: a fresh,
-                # empty lock file has no byte 0 and the call fails for good,
-                # which the retry loop would read as contention forever
-                # (Bugbot, PR #1635). Stamp one byte first, the way
-                # `tasks_store._open_lockfile` does.
-                # The stamp's own failure is NOT the lock's: when two polls
-                # both see an empty file, the second's write fails because
-                # the first already holds byte 0 (Windows byte locks are
-                # mandatory) — and by then the byte exists, so the retry
-                # loop below is exactly where it should go (Bugbot, PR
-                # #1635; `_open_lockfile` swallows the same error).
-                try:
-                    if os.fstat(self.fh.fileno()).st_size == 0:
-                        self.fh.write(b"\0")
-                        self.fh.flush()
-                except OSError:
-                    pass
-                deadline = time.monotonic() + self._RETRY_BUDGET_S
-                while True:
-                    try:
-                        self.fh.seek(0)
-                        msvcrt.locking(self.fh.fileno(), msvcrt.LK_NBLCK, 1)
-                        self.byte_locked = True
-                        break
-                    except OSError as exc:
-                        # EACCES / EDEADLOCK: another holder (contention).
-                        # Anything else will not clear by waiting.
-                        contended = exc.errno in (errno.EACCES,
-                                                  getattr(errno, "EDEADLOCK", errno.EDEADLK))
-                        if not contended or time.monotonic() >= deadline:
-                            self.held_elsewhere = contended
-                            self.fh.close()
-                            self.fh = None
-                            break
-                        time.sleep(self._RETRY_S)
+            fcntl.flock(self.fh, fcntl.LOCK_EX)
         except OSError:
             if self.fh is not None:
                 self.fh.close()
@@ -5238,13 +5170,6 @@ class _RunLock:
 
     def __exit__(self, *exc):
         if self.fh is not None:
-            if self.byte_locked:
-                try:
-                    import msvcrt
-                    self.fh.seek(0)
-                    msvcrt.locking(self.fh.fileno(), getattr(msvcrt, "LK_UNLCK", 0), 1)
-                except (ImportError, OSError):
-                    pass
             self.fh.close()   # closing the descriptor releases the flock
         return False
 
@@ -5268,13 +5193,9 @@ def _update_run_registry(run_dir: str, rows: list, ends: list,
     is True only for a COMPLETE fresh row, so one row is news exactly once.
 
     `cursor`, when given, is the poll cursor `_read_current_turn` held back
-    (its `pending`); it is persisted here, after the registry write, so a
-    poll that could not take the lock (`_RunLock.held_elsewhere`) leaves
-    both where they were and the next poll re-reads the same rows. That
-    poll still answers with this window applied in memory."""
+    (its `pending`); it is persisted here, after the registry write."""
     now = time.time()
-    with _RunLock(run_dir) as lock:
-        writable = not lock.held_elsewhere
+    with _RunLock(run_dir):
         registry, applied, current = _load_registry(run_dir)
         try:
             size = os.path.getsize(os.path.join(run_dir, "out.jsonl"))
@@ -5305,10 +5226,10 @@ def _update_run_registry(run_dir: str, rows: list, ends: list,
                                            tool_inputs, now)
             elif sub == "init":
                 cap_rows = [(row, complete)]
-                commands_changed = commands_changed or (complete and writable)
+                commands_changed = commands_changed or complete
             elif sub == "commands_changed":
                 cap_rows.append((row, complete))
-                commands_changed = commands_changed or (complete and writable)
+                commands_changed = commands_changed or complete
         # A task whose tool call this window only now names gets its kind
         # settled here.
         settled = False
@@ -5320,8 +5241,6 @@ def _update_run_registry(run_dir: str, rows: list, ends: list,
                     if kind != "other":
                         rec["kind"] = kind
                         settled = True
-        if not writable:
-            return registry, False
         for row, _complete in cap_rows:
             _capture_commands(run_dir, row)
         # Nothing new absorbed and nothing settled: the file already says this.

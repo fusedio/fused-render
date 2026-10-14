@@ -646,11 +646,6 @@ jobs:
         # These skip on macOS but execute here: the process-tree gate,
         # Unix-socket IPC, XDG paths/autostart/UI resolution, the tray retry
         # contract, and the association-table sync.
-        env:
-          # pystray picks its backend at import time; on a headless runner the
-          # X11 backend raises DisplayNameError during test collection. The
-          # tray test stubs the run loop anyway — force the dummy backend.
-          PYSTRAY_BACKEND: dummy
         run: >
           python -m pytest -q
           tests/test_supervisor_core.py

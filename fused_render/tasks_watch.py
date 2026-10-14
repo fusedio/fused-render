@@ -1070,7 +1070,7 @@ def _read_permission_cards() -> set[str]:
         run_dir = os.path.join(runs, name)
         seen.add(run_dir)
         # The stamp is THE FILES, not the directory: a directory's mtime is not
-        # a portable signal (NTFS leaves it alone for a rewrite, and two writes
+        # a portable signal (a rewrite in place leaves it alone, and two writes
         # inside its granularity read as one), and a perm/ dir holds a handful
         # of small files at most — a card and its answer per prompt.
         perm_dir = perm_dir_of(run_dir)

@@ -964,8 +964,7 @@ def main(action: str = "tectonic_status", path: str = "", target: str = "",
         for dp, dns, fns in os.walk(root):
             dns[:] = [x for x in dns if not x.startswith(".")
                       and x not in ("node_modules", "__pycache__", ".git")]
-            # relpath on a file named "nul"/"con" device-expands and raises;
-            # derive rel from the walk's dir instead.
+            # derive rel from the walk's dir rather than a relpath per file.
             reldir = os.path.relpath(dp, root)
             for fn in sorted(fns, key=str.lower):
                 ext = os.path.splitext(fn)[1].lower()

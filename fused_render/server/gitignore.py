@@ -542,7 +542,7 @@ def _repo_toplevel_uncached(path) -> "tuple[bool, str | None]":
 def _canonical(path: str) -> str:
     """A path in the one form two spellings of the same location share:
     symlinks resolved (macOS's /var -> /private/var, a symlinked checkout) and
-    case folded where the platform folds it (HFS+/APFS, NTFS)."""
+    case folded where the platform folds it (HFS+/APFS)."""
     return os.path.normcase(os.path.realpath(path))
 
 

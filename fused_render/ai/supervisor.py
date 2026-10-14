@@ -2932,7 +2932,7 @@ def start_hardware_refresh() -> None:
     """Start the background GPU/VRAM-detection thread, once per process —
     the missing wiring `hw_detect.py`'s own docstring assumes exists:
     `detect_hardware()`/`refresh_hardware()` are a slow subprocess probe
-    (`nvidia-smi`/`rocm-smi`/a PowerShell WMI+registry query/`sysctl`) that
+    (`nvidia-smi`/`rocm-smi`/`sysctl`) that
     must never run on the verdict path, so `fit.py` and `speed.py` only ever
     read `hw_detect.cached_hardware()` — but until SOMETHING calls
     `refresh_hardware`, that cache never gets written, and both modules

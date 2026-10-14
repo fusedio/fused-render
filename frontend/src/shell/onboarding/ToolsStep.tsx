@@ -109,7 +109,7 @@ function claudeRows(h: ClaudeHealth): ClaudeRow[] {
       label: "Available in your terminal",
       hint: "Optional. The app works either way; this is for typing `claude` yourself.",
       optional: true,
-      // `null` is "could not tell" (Windows, an override) — never a green check.
+      // `null` is "could not tell" (an override) — never a green check.
       state: !runnable ? "open" : h.on_shell_path === false ? "open" : h.on_shell_path === true ? "done" : "unknown",
       issueIds: ["not-on-path"],
     },
