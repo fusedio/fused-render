@@ -236,7 +236,21 @@ describe("the List's waiting row", () => {
     expect(css(TASKS_CSS)).toContain(".tasks-row-queue {");
     expect(css(TASKS_CSS)).toContain(".tasks-card-queue {");
     // …and the seat is still drawn for the one caption a row has left.
-    expect(ROW).toContain('<span className="tasks-row-queue" data-hint={limit}>');
+    expect(ROW).toContain('<span className="tasks-row-queue" data-hint={limit} {...pressRow}>');
+  });
+
+  it("wears background work in the same seat, and never beside the limit", () => {
+    // The Tasks List and Recent chats both draw `TaskRowItem` → this row.
+    expect(ROW).toContain("const background = limit ? \"\" : backgroundCaption(task);");
+    expect(ROW).toContain('className="tasks-row-queue tasks-row-queue--bg"');
+    expect(ROW).toContain("data-hint={BACKGROUND_HINT}");
+    expect(ROW).toContain('<span className="tasks-queue-text">{background}</span>');
+    // It keeps its width — the title ellipsises, not the caption.
+    const bg = css(TASKS_CSS).slice(css(TASKS_CSS).indexOf(".tasks-row-queue--bg {"));
+    expect(bg.slice(0, bg.indexOf("}"))).toContain("flex: 0 0 auto;");
+    // The limit's seat is untouched.
+    expect(ROW).toContain('<span className="tasks-row-queue" data-hint={limit} {...pressRow}>');
+    expect(API).toContain("pending_background?: boolean;");
   });
 
   it("grows FORCE START in the hover strip, and NO Run next anywhere", () => {
