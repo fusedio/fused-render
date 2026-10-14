@@ -16,10 +16,8 @@ second window comes from what would have been a second tab: `target=_blank`,
 link, the launcher.
 
 ONLY THE NATIVE DOORS SPAWN APP WINDOWS. An app click inside the shell — a
-card, the app page's Open — loads the app's embed into the window it
-happened in (appEntry.ts `openAppEntry`), and the URL observer re-keys that
-window as the app's; with `prefs.apps_open_in_explorer` on it loads the
-explorer view there instead. The launcher's pick and the menu-bar Dock's app tile
+card, the app page's Open — navigates the window it happened in to the
+app's entry page in the explorer view (appEntry.ts `openApp`). The launcher's pick and the menu-bar Dock's app tile
 focus-or-open the app's OWN window (`focus_or_open_app`), which runs its
 entry page as a chrome-free embed (`window_policy.app_window_path`) under its
 own saved size and place. The title bar's Edit button (⌘⇧E) switches the SAME window to the explorer
@@ -703,8 +701,7 @@ class _WebDelegate(NSObject):
             window.view = window_policy.window_view_of(current)
             if (window.view == "embed") != was_embed and not window._popup:
                 # The window crossed between shell and an app's run window —
-                # an app clicked inside it (appEntry.ts `openAppEntry`), or
-                # the title bar's Home/Edit back out: it takes the frame of
+                # the title bar's Home/Edit out of an app window, say: it takes the frame of
                 # what it shows now and lets go of the old one, so neither
                 # side's saved frame is the other's to move. Edit hands
                 # before loading, so it is already a no-op here. A popup

@@ -47,7 +47,7 @@ describe("the page", () => {
     expect(APP).toContain("<span className={APP_PAGE_FIT_LABEL}>Share</span>");
     expect(APP).toContain("<span className={APP_PAGE_FIT_LABEL}>Open</span>");
     expect(APP).toContain("<span className={APP_PAGE_FIT_LABEL}>{label}</span>");
-    expect(APP).toContain('title={IS_NATIVE_WINDOW && isMac ? "Open the app" : "Open the app in the Explorer"}');
+    expect(APP).toContain('title="Open the app in the Explorer"');
     expect(APP).toContain("title={label}");
     expect(APP).toContain("aria-label={label}");
   });
