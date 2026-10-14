@@ -47,7 +47,9 @@ def _require_fused(x_fused: str | None) -> JSONResponse | None:
 
 @router.get("/api/marketplace/catalog")
 def api_marketplace_catalog(refresh: str = "0"):
-    """The catalog (cached 10 min; `refresh=1` forces a rebuild). Answers
+    """The catalog (cached 10 min; `refresh=1` forces a rebuild, at most once
+    a minute). The only route that rebuilds a stale cache — and it answers
+    the cache at once while another request's rebuild is running. Answers
     `{status:"error", message}` only when nothing is cached at all."""
     return marketplace.catalog(refresh=refresh in ("1", "true", "yes"))
 

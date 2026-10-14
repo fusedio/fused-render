@@ -28,6 +28,7 @@ from _git_repo import bare_repo, git, git_available, write  # noqa: E402
 from fused_render import marketplace as mp  # noqa: E402
 
 needs_git = pytest.mark.skipif(not git_available(), reason="git not installed")
+SHA = "c0ffee" + "0" * 34
 
 
 def _meta(name, category="starters", version="1.0.0", **extra):
@@ -71,6 +72,8 @@ def env(tmp_path, monkeypatch):
     git(seed, "remote", "add", "origin", remote)
     git(seed, "push", "-q", "-u", "origin", "HEAD:main")
     monkeypatch.setenv("FUSED_RENDER_MARKETPLACE_REPO", remote)
+    # Tests refresh back to back; the once-a-minute limit has its own test.
+    monkeypatch.setattr(mp, "REFRESH_MIN_INTERVAL_S", 0)
     with mp._JOBS_LOCK:
         mp._JOBS.clear()
         mp._JOB_FINISHED.clear()
@@ -166,16 +169,16 @@ def test_catalog_from_github_api(env, monkeypatch):
 
     def fake_get(url, **kw):
         if url.endswith("/commits/main"):
-            return Resp({"sha": "c0ffee"}), None
-        if "/git/trees/c0ffee" in url:
+            return Resp({"sha": SHA}), None
+        if f"/git/trees/{SHA}" in url:
             return Resp(tree), None
-        if url == f"{mp.RAW_BASE}/o/r/c0ffee/hello/metadata.json":
+        if url == f"{mp.RAW_BASE}/o/r/{SHA}/hello/metadata.json":
             return Resp(content=meta), None
         return None, "not found on GitHub (404)"
 
     monkeypatch.setattr(mp, "_http_get", fake_get)
     cat = mp.catalog()
-    assert cat["source"] == mp.SOURCE_API and cat["commit"] == "c0ffee"
+    assert cat["source"] == mp.SOURCE_API and cat["commit"] == SHA
     assert cat["repo"] == "o/r" and cat["warning"] is None
     (app,) = cat["apps"]
     assert app["slug"] == "hello" and app["tree_sha"] == "t-hello"
@@ -335,3 +338,197 @@ def test_stale_cache_fallback(env):
     os.remove(mp.catalog_path())
     cat = mp.catalog(refresh=True)
     assert cat["status"] == "error" and cat["apps"] == [] and cat["message"]
+
+
+def test_api_commit_must_be_a_full_sha(env, monkeypatch):
+    """A commit that is not 40/64 hex never becomes a cache path or a URL."""
+    monkeypatch.setenv("FUSED_RENDER_MARKETPLACE_REPO", "o/r")
+    monkeypatch.setenv("FUSED_RENDER_MARKETPLACE_SOURCE", "api")
+
+    class Resp:
+        def json(self):
+            return {"sha": "../../etc"}
+
+    monkeypatch.setattr(mp, "_http_get", lambda url, **kw: (Resp(), None))
+    cat = mp.catalog()
+    assert cat["status"] == "error" and "unexpected" in cat["message"]
+
+
+# --- 1: a keep-data uninstall's husk is not "installed" -----------------------
+
+@needs_git
+def test_husk_is_not_installed_but_install_reuses_its_data(env):
+    snap, _ = mp.get_snapshot()
+    mp.install_app("sine-starter", snap)
+    dest = os.path.join(str(env["ws"]), "community", "sine-starter")
+    write(dest, ".fused/data/state.db", "user state")
+    # What routers/app_uninstall._strip_app_files leaves: only `.fused/`
+    # (the marketplace stamp inside it survives).
+    for name in os.listdir(dest):
+        if name != ".fused":
+            p = os.path.join(dest, name)
+            shutil.rmtree(p) if os.path.isdir(p) else os.remove(p)
+    assert mp.read_stamp(dest) is not None and mp._is_husk(dest)
+    assert mp.installed_apps() == {}
+    entry = next(a for a in mp.catalog()["apps"] if a["slug"] == "sine-starter")
+    assert entry["installed"] is None and entry["update_available"] is False
+    assert mp.installed_list()["apps"] == []
+    assert mp.app_detail("sine-starter")["app"]["installed"] is None
+    # Installing again is an install to the user, but lands IN the husk,
+    # keeping its data.
+    res = mp.install_app("sine-starter", snap)
+    assert res["action"] == "install" and res["path"] == dest
+    assert open(os.path.join(dest, "index.html")).read() == "<html>v1</html>"
+    assert open(os.path.join(dest, ".fused/data/state.db")).read() == "user state"
+    assert list(mp.installed_apps()) == ["sine-starter"]
+
+
+# --- 2: only /catalog rebuilds a stale cache; nobody queues behind a build ----
+
+def _api_cache(monkeypatch, files, checked_at):
+    """A github-api catalog.json for repo o/r, `checked_at` as given."""
+    monkeypatch.setenv("FUSED_RENDER_MARKETPLACE_REPO", "o/r")
+    snap = {"source": mp.SOURCE_API, "commit": SHA, "fetched_at": "then",
+            "checked_at": checked_at, "stale": False, "warning": None,
+            "apps": {"hello": {"meta": {"name": "Hello"}, "tree_sha": "t",
+                               "files": [{"path": p, "size": 4} for p in files]}},
+            **mp._cfg_fields(mp.repo_config())}
+    mp._write_cache(snap)
+    return snap
+
+
+class _Bytes:
+    def __init__(self, content):
+        self.content = content
+
+
+def test_stale_cache_readers_never_call_the_builder(env, monkeypatch):
+    _api_cache(monkeypatch, ["icon.svg", "metadata.json"], checked_at=0)  # ancient
+    built = []
+    monkeypatch.setattr(mp, "_build_snapshot", lambda: built.append(1) or 1 / 0)
+    monkeypatch.setattr(mp, "_http_get", lambda url, **kw: (_Bytes(b"<svg/>"), None))
+    assert mp.get_asset("hello", "icon.svg") == (b"<svg/>", "image/svg+xml")
+    assert mp.app_detail("hello")["app"]["slug"] == "hello"
+    assert mp.installed_list() == {"apps": []}
+    assert built == []
+    # The route too.
+    assert _client().get("/api/marketplace/asset/hello/icon.svg").status_code == 200
+    assert built == []
+    # /catalog is the one that rebuilds (here it crashes → stale cache).
+    cat = mp.catalog()
+    assert built == [1] and cat["status"] == "ok" and cat["stale"] is True
+
+
+def test_catalog_does_not_wait_behind_a_running_rebuild(env, monkeypatch):
+    _api_cache(monkeypatch, ["icon.svg"], checked_at=0)
+    monkeypatch.setattr(mp, "_build_snapshot", lambda: pytest.fail("built while locked"))
+    monkeypatch.setattr(mp, "_http_get", lambda url, **kw: (_Bytes(b"<svg/>"), None))
+    assert mp._CATALOG_LOCK.acquire(timeout=1)  # "another request is rebuilding"
+    try:
+        t0 = time.monotonic()
+        cat = mp.catalog()
+        assert cat["status"] == "ok" and [a["slug"] for a in cat["apps"]] == ["hello"]
+        assert mp.get_asset("hello", "icon.svg") is not None
+        assert time.monotonic() - t0 < 2
+    finally:
+        mp._CATALOG_LOCK.release()
+
+
+def test_crashing_build_backs_off_and_refresh_is_rate_limited(env, monkeypatch):
+    monkeypatch.setattr(mp, "REFRESH_MIN_INTERVAL_S", 60)
+    _api_cache(monkeypatch, ["icon.svg"], checked_at=0)
+    built = []
+
+    def crash():
+        built.append(1)
+        raise RuntimeError("bug")
+
+    monkeypatch.setattr(mp, "_build_snapshot", crash)
+    assert mp.catalog()["stale"] is True and built == [1]
+    # The crash stamped checked_at: neither the next view nor a forced
+    # refresh within the minute retries it.
+    assert mp.catalog()["status"] == "ok" and built == [1]
+    assert mp.catalog(refresh=True)["status"] == "ok" and built == [1]
+    # Past the minute, refresh=1 rebuilds again.
+    cache = mp._read_cache()
+    cache["checked_at"] = time.time() - 61
+    mp._write_cache(cache)
+    mp.catalog(refresh=True)
+    assert built == [1, 1]
+
+
+# --- 3: KEEP names and case-fold collisions (case-insensitive filesystems) ----
+
+def test_wanted_skips_keep_names_case_insensitively():
+    files = [{"path": p, "size": 1} for p in
+             (".FUSED/x", ".Venv/bin/python", ".GIT/config", ".fused/y", "index.html",
+              "docs/.git/x")]
+    assert [f["path"] for f in mp._wanted(files)] == ["index.html", "docs/.git/x"]
+
+
+def test_case_fold_collisions_are_refused(env, monkeypatch):
+    def paths(*ps):
+        return [{"path": p, "size": 1} for p in ps]
+
+    assert mp._case_collisions(paths("README.md", "lib/a.js", "lib/b.js")) == []
+    assert mp._case_collisions(paths("README.md", "readme.md")) == ["README.md / readme.md"]
+    assert mp._case_collisions(paths("Lib/a.js", "lib/b.js")) == ["Lib / lib"]
+    snap = {"source": mp.SOURCE_API, "commit": SHA, "repo": "o/r",
+            "apps": {"clash": {"meta": {}, "tree_sha": "t",
+                               "files": paths("index.html", "Index.html")}}}
+    monkeypatch.setattr(mp, "_stage", lambda *a: pytest.fail("staged a colliding app"))
+    with pytest.raises(mp.InstallError, match="differ only by upper/lower case"):
+        mp.install_app("clash", snap)
+    assert not os.path.exists(os.path.join(str(env["ws"]), "community", "clash"))
+
+
+# --- 4: a mirror install copies the catalog's commit, not the checkout --------
+
+@needs_git
+def test_mirror_install_copies_the_catalog_commit(env):
+    snap, _ = mp.get_snapshot()
+    # The branch moves on and the mirror's checkout with it.
+    _push(env["seed"], {"sine-starter/index.html": "<html>v2</html>"})
+    with mp._mirror_lock():
+        mp._ensure_mirror(fetch=True)
+    assert open(os.path.join(mp.mirror_dir(), "sine-starter", "index.html")).read() \
+        == "<html>v2</html>"
+    res = mp.install_app("sine-starter", snap)
+    dest = res["path"]
+    assert open(os.path.join(dest, "index.html")).read() == "<html>v1</html>"
+    assert res["stamp"]["commit"] == snap["commit"]
+    assert res["stamp"]["tree_sha"] == snap["apps"]["sine-starter"]["tree_sha"]
+    assert os.path.isfile(os.path.join(mp.state_dir(), "mirror.lock"))
+
+
+# --- 5: raw.githubusercontent paths are percent-encoded ----------------------
+
+def test_raw_urls_are_percent_encoded(env, monkeypatch):
+    odd = "img/my shot #1?.png"
+    _api_cache(monkeypatch, [odd, "index.html", "metadata.json"], checked_at=time.time())
+    seen = []
+
+    def fake_get(url, **kw):
+        seen.append(url)
+        return _Bytes(b"PNG"), None
+
+    monkeypatch.setattr(mp, "_http_get", fake_get)
+    assert mp.get_asset("hello", odd)[0] == b"PNG"
+    assert seen == [f"{mp.RAW_BASE}/o/r/{SHA}/hello/img/my%20shot%20%231%3F.png"]
+
+    # The installer's downloads too.
+    import httpx
+
+    requested = []
+
+    def handler(request):
+        requested.append(request.url.raw_path.decode())
+        return httpx.Response(200, content=b"data")
+
+    real_client = httpx.Client
+    monkeypatch.setattr(httpx, "Client",
+                        lambda *a, **k: real_client(transport=httpx.MockTransport(handler)))
+    snap = mp._read_cache()
+    res = mp.install_app("hello", snap)
+    assert f"/o/r/{SHA}/hello/img/my%20shot%20%231%3F.png" in requested
+    assert open(os.path.join(res["path"], "img", "my shot #1?.png"), "rb").read() == b"data"

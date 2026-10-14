@@ -46,13 +46,20 @@ the workspace the apps install into (`seed.fused_dir()`), read per call.
 
   catalog.json             the last snapshot + fetched_at/checked_at/stale
   mirror/                  the git-mirror clone (only once that source ran)
+  mirror.lock              flock'd around every mirror clone/fetch/reset/copy
+                           (the state dir is shared across worktree servers)
   assets/<commit>/<slug>/  bytes served by /api/marketplace/asset, per commit
 
 **Cache policy.** A catalog younger than 10 minutes (by `checked_at`, the last
 ATTEMPT — so an offline machine backs off too instead of re-trying the network
-on every page view) is served as-is unless `refresh=1`. A refresh that fails on
-both sources serves the old cache with `stale: true` and a warning; with no
-cache at all the answer is `{status: "error", message}`.
+on every page view, and a crashing build likewise) is served as-is unless
+`refresh=1`; a `refresh=1` within 60 s of the last attempt is served the cache
+too. A refresh that fails on both sources serves the old cache with
+`stale: true` and a warning; with no cache at all the answer is
+`{status: "error", message}`. Only GET /catalog (`get_snapshot`) rebuilds an
+OLD cache; assets, detail, install and installed (`cached_snapshot`) take any
+cache regardless of age, without the build lock, and build only when there is
+none — a rebuild never holds up an <img>.
 
 **Install / update** run as background jobs (one per slug, idempotent while
 running; finished jobs linger 60 s for the UI's success state). Files are
@@ -69,7 +76,12 @@ The stamp `<app>/.fused/marketplace.json` = {slug, version, tree_sha, commit,
 repo, installed_at, source, files{path: sha256}} is what "installed" means:
 the catalog finds installs by globbing `community/*/.fused/marketplace.json`,
 reports `modified` when a stamped file's bytes changed, and `update_available`
-when the catalog's tree sha differs from the stamp's.
+when the catalog's tree sha differs from the stamp's. A HUSK (a folder holding
+only `.fused/`, what a keep-data uninstall leaves) is not installed, but an
+install into it merges like an update, so its data is reused. A mirror install
+copies the blobs of the catalog's own commit out of the object store (never the
+working tree, which may have moved on). An app whose paths differ only by case
+is refused (they would collide on macOS).
 
 Every git call: an ABSOLUTE git (`git_tools.git_bin()`), `-C` instead of
 `cwd=`, `close_fds=False` — the posix_spawn rule (see community.py and
@@ -78,6 +90,7 @@ timeout. Every HTTP call goes through `_http_get`, which never raises.
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import logging
@@ -91,6 +104,12 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from urllib.parse import quote
+
+try:  # POSIX only — community.py's `_cache_lock` makes the same assumption.
+    import fcntl
+except ImportError:  # pragma: no cover
+    fcntl = None
 
 import httpx
 
@@ -106,6 +125,9 @@ SOURCE_GIT = "git-mirror"
 
 #: A cached catalog younger than this (since the last attempt) is served as-is.
 CACHE_TTL_S = 10 * 60
+#: A forced `refresh=1` within this long of the last attempt serves the cache
+#: (a reload-hammering user must not burn the 60 req/h API budget).
+REFRESH_MIN_INTERVAL_S = 60
 #: Finished jobs stay in /jobs this long, so the UI can show "done"/"error".
 JOB_TTL_S = 60
 #: Install staging dirs older than this are swept (an interrupted install
@@ -118,6 +140,9 @@ WORKERS = 8
 HTTP_TIMEOUT_S = 20
 GIT_TIMEOUT_S = 60
 CLONE_TIMEOUT_S = 240
+#: How long a mirror operation waits for another server process (a parallel
+#: worktree sharing the state dir) to finish its own clone/fetch.
+MIRROR_LOCK_WAIT_S = CLONE_TIMEOUT_S + 60
 MAX_ASSET_BYTES = 64 * 1024 * 1024
 MAX_README_BYTES = 512 * 1024
 
@@ -142,6 +167,7 @@ DEFAULT_FEATURED = ("local-chat", "overture-explorer", "local-transcription",
 
 _SLUG_RE = re.compile(r"[a-z0-9][a-z0-9-]{1,63}")
 _GH_SLUG_RE = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
+_SHA_RE = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 _GH_URL_RE = re.compile(r"(?:https?://|git@)github\.com[/:]([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+?)(?:\.git)?/?$")
 
 
@@ -209,6 +235,12 @@ def is_slug(slug) -> bool:
     # The shape the community repo's CI enforces; also what keeps a crafted
     # slug from ever forming a path outside community/ or the cache.
     return isinstance(slug, str) and bool(_SLUG_RE.fullmatch(slug))
+
+
+def is_sha(v) -> bool:
+    """A full git object id (sha1 or sha256) — the only thing a commit may be
+    before it becomes a cache directory name or a git argument."""
+    return isinstance(v, str) and bool(_SHA_RE.fullmatch(v))
 
 
 def _safe_rel(path) -> bool:
@@ -318,7 +350,55 @@ def _git_out(*args, cwd: str | None = None, timeout: float = GIT_TIMEOUT_S) -> s
 
 #: Serializes every touch of the mirror's git state within this process
 #: (a catalog refresh resetting the tree while an install copies out of it).
+#: Reentrant; the OUTERMOST holder also takes `_mirror_lock`'s file lock.
 _MIRROR_LOCK = threading.RLock()
+_MIRROR_DEPTH = [0]
+
+
+def _flock_acquire(fd: int, wait_s: float) -> bool:
+    deadline = time.monotonic() + wait_s
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except OSError:
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.2)
+
+
+@contextlib.contextmanager
+def _mirror_lock(wait_s: float = MIRROR_LOCK_WAIT_S):
+    """Hold the mirror: `_MIRROR_LOCK` within this process plus an OS
+    advisory lock on `<state>/mirror.lock` across processes — the state dir
+    is shared by every worktree's server, so a per-process lock alone lets
+    one server's `reset --hard` run under another's copy (the same reason
+    community.py has `_cache_lock`). Raises SourceError when another process
+    holds it for longer than ``wait_s``."""
+    if not _MIRROR_LOCK.acquire(timeout=wait_s):
+        raise SourceError("the community apps mirror is busy — try again in a moment")
+    fd = None
+    try:
+        if _MIRROR_DEPTH[0] == 0 and fcntl is not None:
+            os.makedirs(state_dir(), exist_ok=True)
+            fd = os.open(os.path.join(state_dir(), "mirror.lock"), os.O_CREAT | os.O_RDWR, 0o644)
+            if not _flock_acquire(fd, wait_s):
+                os.close(fd)
+                fd = None
+                raise SourceError("the community apps mirror is busy (another fused-render "
+                                  "is updating it) — try again in a moment")
+        _MIRROR_DEPTH[0] += 1
+        try:
+            yield
+        finally:
+            _MIRROR_DEPTH[0] -= 1
+    finally:
+        if fd is not None:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            finally:
+                os.close(fd)
+        _MIRROR_LOCK.release()
 
 
 def _ensure_mirror(*, fetch: bool) -> tuple[str, str | None]:
@@ -326,7 +406,7 @@ def _ensure_mirror(*, fetch: bool) -> tuple[str, str | None]:
     ``fetch``, bring it to the branch tip. Answers (head sha, warning) — a
     failed FETCH over an existing mirror is not fatal: the old checkout is
     still a catalog, reported with a warning (and `stale`). Caller holds
-    _MIRROR_LOCK."""
+    `_mirror_lock()`."""
     cfg = repo_config()
     mirror = mirror_dir()
     warning = None
@@ -360,8 +440,11 @@ def _ensure_mirror(*, fetch: bool) -> tuple[str, str | None]:
     return head, warning
 
 
-def _ls_tree(ref: str, *paths: str, recursive: bool = False) -> list[tuple[str, str, int | None, str]]:
-    """`git ls-tree -l -z` over the mirror: [(type, sha, size, path)]."""
+def _ls_tree(ref: str, *paths: str, recursive: bool = False,
+             skip_symlinks: bool = False) -> list[tuple[str, str, int | None, str]]:
+    """`git ls-tree -l -z` over the mirror: [(type, sha, size, path)]
+    (``skip_symlinks`` drops mode-120000 entries: not something an app
+    ships, and never something an install writes)."""
     args = ["ls-tree", "-l", "-z"] + (["-r"] if recursive else []) + [ref]
     if paths:
         args += ["--", *paths]
@@ -374,7 +457,9 @@ def _ls_tree(ref: str, *paths: str, recursive: bool = False) -> list[tuple[str, 
         parts = head.split()
         if len(parts) < 4:
             continue
-        _mode, typ, sha, size = parts[:4]
+        mode, typ, sha, size = parts[:4]
+        if skip_symlinks and mode == "120000":
+            continue
         rows.append((typ, sha, int(size) if size.isdigit() else None, path))
     return rows
 
@@ -401,6 +486,8 @@ def _api_snapshot(cfg: dict) -> dict:
         raise SourceError(err)
     try:
         commit = r.json()["sha"]
+        if not is_sha(commit):
+            raise SourceError("GitHub answered something unexpected")
         r, err = _http_get(f"{API_BASE}/repos/{gh}/git/trees/{commit}?recursive=1",
                            headers=headers)
         if err:
@@ -424,7 +511,7 @@ def _api_snapshot(cfg: dict) -> dict:
                    if any(f["path"] == "metadata.json" for f in files.get(s, [])))
 
     def fetch_meta(slug):
-        url = f"{RAW_BASE}/{gh}/{commit}/{slug}/metadata.json"
+        url = _raw_url(gh, commit, slug, "metadata.json")
         resp, error = _http_get(url, client=client)
         return slug, (None if error else _parse_metadata(resp.content)), error
 
@@ -469,7 +556,7 @@ def _git_snapshot_locked(head: str) -> dict:
 
 
 def _git_snapshot(cfg: dict) -> dict:
-    with _MIRROR_LOCK:
+    with _mirror_lock():
         head, warning = _ensure_mirror(fetch=True)
         snap = _git_snapshot_locked(head)
     if warning:
@@ -507,6 +594,11 @@ def _cfg_fields(cfg: dict) -> dict:
 # catalog cache
 # ---------------------------------------------------------------------------
 
+#: Held only while a catalog is being BUILT. Never waited on while a cache
+#: exists: readers (assets, detail, install, installed) read catalog.json
+#: without it, and a /catalog request that finds a rebuild already running
+#: serves the cache instead of queueing behind it — a slow build (20 s HTTP,
+#: up to 240 s of git) must not soak up FastAPI's threadpool.
 _CATALOG_LOCK = threading.Lock()
 
 
@@ -526,10 +618,15 @@ def _read_cache() -> dict | None:
 
 def _write_cache(snap: dict) -> None:
     os.makedirs(state_dir(), exist_ok=True)
-    tmp = catalog_path() + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(snap, f)
-    os.replace(tmp, catalog_path())
+    # Unique per writer: other worktrees' servers share this state dir.
+    tmp = f"{catalog_path()}.{os.getpid()}.{threading.get_ident()}.tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(snap, f)
+        os.replace(tmp, catalog_path())
+    finally:
+        with contextlib.suppress(OSError):
+            os.remove(tmp)
 
 
 def _prune_asset_cache(keep_commit: str | None) -> None:
@@ -543,46 +640,103 @@ def _prune_asset_cache(keep_commit: str | None) -> None:
             shutil.rmtree(os.path.join(root, n), ignore_errors=True)
 
 
+def _age(cached: dict, now: float) -> float:
+    try:
+        return now - float(cached.get("checked_at") or 0)
+    except (TypeError, ValueError):
+        return float("inf")
+
+
+def _fresh_enough(cached: dict | None, refresh: bool, now: float) -> bool:
+    if cached is None:
+        return False
+    return _age(cached, now) < (REFRESH_MIN_INTERVAL_S if refresh else CACHE_TTL_S)
+
+
+def _mark_failed(cached: dict, now: float, warning: str | None) -> dict:
+    """The old cache, flagged stale and stamped as just-checked (so the next
+    requests back off for a TTL instead of each retrying a failing build)."""
+    cached = dict(cached)
+    cached["stale"] = True
+    cached["checked_at"] = now
+    if warning:
+        cached["warning"] = warning
+    try:
+        _write_cache(cached)
+    except OSError:
+        pass
+    return cached
+
+
+def _build_locked(cached: dict | None) -> tuple[dict | None, str | None]:
+    """Build, store and answer a snapshot (caller holds _CATALOG_LOCK);
+    ``cached`` is what to fall back to. Never raises."""
+    now = time.time()
+    try:
+        snap = _build_snapshot()
+    except SourceError as exc:
+        msg = str(exc)
+        logger.warning("marketplace: catalog refresh failed: %s", msg)
+        if cached:
+            return _mark_failed(cached, now, f"Could not refresh the catalog ({msg}) — "
+                                             f"showing apps cached at {cached.get('fetched_at')}"), None
+        return None, f"Could not load the community catalog: {msg}"
+    except Exception as exc:  # noqa: BLE001 — a bug must not take the page down
+        logger.exception("marketplace: catalog build crashed")
+        if cached:
+            return _mark_failed(cached, now, None), None
+        return None, f"Could not load the community catalog: {exc.__class__.__name__}"
+    snap["fetched_at"] = _utc_now()
+    snap["checked_at"] = now
+    snap["stale"] = bool(snap.get("stale"))
+    try:
+        _write_cache(snap)
+    except OSError:
+        logger.warning("marketplace: could not write %s", catalog_path(), exc_info=True)
+    if not cached or cached.get("commit") != snap.get("commit"):
+        _prune_asset_cache(snap.get("commit"))
+    return snap, None
+
+
 def get_snapshot(refresh: bool = False) -> tuple[dict | None, str | None]:
-    """The catalog snapshot (cached or freshly built) and, when there is none
-    at all, the error message. Never raises."""
+    """The catalog snapshot for GET /catalog — the ONLY caller allowed to
+    rebuild a cache because it is old: rebuilt when older than CACHE_TTL_S,
+    or on ``refresh`` when the last attempt is over REFRESH_MIN_INTERVAL_S
+    old. While another request is already rebuilding, the existing cache is
+    answered at once rather than waiting. Answers (snapshot, None) or, when
+    there is no cache at all and the build failed, (None, message). Never
+    raises. Everything else uses `cached_snapshot()`."""
+    cached = _read_cache()
+    if _fresh_enough(cached, refresh, time.time()):
+        return cached, None
+    if cached is not None:
+        if not _CATALOG_LOCK.acquire(blocking=False):
+            return cached, None  # a rebuild is in flight; it will land shortly
+    else:
+        _CATALOG_LOCK.acquire()  # nothing to serve without a build anyway
+    try:
+        # Re-read: the build we may have waited behind just stored one.
+        cached = _read_cache()
+        if _fresh_enough(cached, refresh, time.time()):
+            return cached, None
+        return _build_locked(cached)
+    finally:
+        _CATALOG_LOCK.release()
+
+
+def cached_snapshot() -> tuple[dict | None, str | None]:
+    """The catalog for everything but GET /catalog (assets, detail, install,
+    installed): whatever is cached, REGARDLESS of age, read without the
+    build lock — so thirty parallel <img> requests after the TTL never queue
+    behind a rebuild. Builds only when there is no cache at all."""
+    cached = _read_cache()
+    if cached is not None:
+        return cached, None
     with _CATALOG_LOCK:
         cached = _read_cache()
-        now = time.time()
-        if cached and not refresh and now - float(cached.get("checked_at") or 0) < CACHE_TTL_S:
+        if cached is not None:
             return cached, None
-        try:
-            snap = _build_snapshot()
-        except SourceError as exc:
-            msg = str(exc)
-            logger.warning("marketplace: catalog refresh failed: %s", msg)
-            if cached:
-                cached["stale"] = True
-                cached["checked_at"] = now
-                cached["warning"] = (f"Could not refresh the catalog ({msg}) — showing apps "
-                                     f"cached at {cached.get('fetched_at')}")
-                try:
-                    _write_cache(cached)
-                except OSError:
-                    pass
-                return cached, None
-            return None, f"Could not load the community catalog: {msg}"
-        except Exception as exc:  # noqa: BLE001 — a bug must not take the page down
-            logger.exception("marketplace: catalog build crashed")
-            if cached:
-                cached["stale"] = True
-                return cached, None
-            return None, f"Could not load the community catalog: {exc.__class__.__name__}"
-        snap["fetched_at"] = _utc_now()
-        snap["checked_at"] = now
-        snap["stale"] = bool(snap.get("stale"))
-        try:
-            _write_cache(snap)
-        except OSError:
-            logger.warning("marketplace: could not write %s", catalog_path(), exc_info=True)
-        if not cached or cached.get("commit") != snap.get("commit"):
-            _prune_asset_cache(snap.get("commit"))
-        return snap, None
+        return _build_locked(None)
 
 
 # ---------------------------------------------------------------------------
@@ -645,7 +799,12 @@ def _modified(app_dir: str, stamp: dict) -> bool:
 
 
 def installed_apps() -> dict[str, dict]:
-    """slug → {path, stamp} for every `community/*/.fused/marketplace.json`."""
+    """slug → {path, stamp} for every `community/*/.fused/marketplace.json`
+    whose folder still holds the app. A keep-data uninstall
+    (routers/app_uninstall._strip_app_files) removes the app's files but
+    keeps `.fused/` — and the stamp with it — so a husk is NOT installed;
+    it stays an install TARGET (install_app merges into it, reusing the
+    data)."""
     root = community_dir()
     out: dict[str, dict] = {}
     try:
@@ -657,7 +816,7 @@ def installed_apps() -> dict[str, dict]:
             continue
         app_dir = os.path.join(root, name)
         stamp = read_stamp(app_dir)
-        if stamp is None:
+        if stamp is None or _is_husk(app_dir):
             continue
         slug = stamp.get("slug") if is_slug(stamp.get("slug")) else name
         out.setdefault(slug, {"path": app_dir, "stamp": stamp})
@@ -817,7 +976,7 @@ def _local_entry(slug: str, rec: dict) -> dict:
 def installed_list() -> dict:
     """GET /api/marketplace/installed — every stamped install, catalog-backed
     where the catalog (cached; never forces a network refresh) still has it."""
-    snap, _error = get_snapshot(refresh=False)
+    snap, _error = cached_snapshot()
     apps = (snap or {}).get("apps") or {}
     declared = _featured_mode(snap) if snap else False
     out = []
@@ -846,34 +1005,47 @@ def _content_type(path: str) -> str:
     return guessed or "application/octet-stream"
 
 
+def _raw_url(gh: str, commit: str, slug: str, rel: str) -> str:
+    """raw.githubusercontent.com URL of `<slug>/<rel>` at `commit`, the path
+    percent-encoded (a `#`, `?`, space or `%` in a file name is a path
+    character there, not URL syntax)."""
+    return f"{RAW_BASE}/{gh}/{commit}/{quote(f'{slug}/{rel}', safe='/')}"
+
+
 def _fetch_asset_bytes(snap: dict, slug: str, rel: str) -> bytes | None:
     """The bytes of `<slug>/<rel>` at the snapshot's commit, from the
     snapshot's source (falling back to the mirror's checkout)."""
     commit = snap.get("commit")
+    if not is_sha(commit):
+        return None
     cfg = repo_config()
     if snap.get("source") == SOURCE_API and cfg["gh"]:
-        r, err = _http_get(f"{RAW_BASE}/{cfg['gh']}/{commit}/{slug}/{rel}")
+        r, err = _http_get(_raw_url(cfg["gh"], commit, slug, rel))
         if not err and r is not None:
             return r.content
     mirror = mirror_dir()
     if not os.path.isdir(os.path.join(mirror, ".git")):
         return None
-    with _MIRROR_LOCK:
-        try:
-            r = _git("cat-file", "blob", f"{commit}:{slug}/{rel}", cwd=mirror)
-            if r.returncode == 0:
-                return r.stdout
-        except SourceError:
-            pass
-        # The commit is gone from the shallow mirror: the checkout is the
-        # nearest thing (a preview a commit newer, never a wrong app).
-        p = os.path.join(mirror, slug, *rel.split("/"))
-        try:
+    # Reading an object needs no lock (git's object store is safe to read
+    # while a fetch writes it) — so an <img> never waits on a mirror fetch.
+    try:
+        r = _git("cat-file", "blob", f"{commit}:{slug}/{rel}", cwd=mirror)
+        if r.returncode == 0:
+            return r.stdout
+    except SourceError:
+        pass
+    # The commit is gone from the shallow mirror: the checkout is the nearest
+    # thing (a preview a commit newer, never a wrong app). The checkout DOES
+    # change under a reset, so this read holds the mirror — briefly: busy
+    # means no preview, not a stalled request.
+    p = os.path.join(mirror, slug, *rel.split("/"))
+    try:
+        with _mirror_lock(wait_s=1.0):
             if os.path.isfile(p) and not os.path.islink(p):
                 with open(p, "rb") as f:
                     return f.read(MAX_ASSET_BYTES + 1)
-        except OSError:
-            return None
+    except (OSError, SourceError):
+        return None
     return None
 
 
@@ -883,7 +1055,7 @@ def get_asset(slug: str, rel: str) -> tuple[bytes, str] | None:
     every traversal shape), too large, or unfetchable."""
     if not is_slug(slug) or not _safe_rel(rel):
         return None
-    snap, _err = get_snapshot(refresh=False)
+    snap, _err = cached_snapshot()
     if not snap:
         return None
     app = snap["apps"].get(slug)
@@ -892,7 +1064,9 @@ def get_asset(slug: str, rel: str) -> tuple[bytes, str] | None:
     entry = next((f for f in app.get("files") or [] if f["path"] == rel), None)
     if entry is None or int(entry.get("size") or 0) > MAX_ASSET_BYTES:
         return None
-    commit = snap.get("commit") or "unknown"
+    commit = snap.get("commit")
+    if not is_sha(commit):
+        return None  # never a path segment, never a git argument
     cache_root = os.path.join(state_dir(), "assets", commit, slug)
     cached = os.path.join(cache_root, *rel.split("/"))
     try:
@@ -918,7 +1092,7 @@ def app_detail(slug: str) -> dict | None:
     """GET /api/marketplace/app/{slug}'s payload, or None (→ 404)."""
     if not is_slug(slug):
         return None
-    snap, error = get_snapshot(refresh=False)
+    snap, error = cached_snapshot()
     installed = installed_apps()
     if snap and slug in snap["apps"]:
         app = snap["apps"][slug]
@@ -996,12 +1170,13 @@ def start_install(slug: str) -> dict:
         job = _JOBS.get(slug)
         if job and job["state"] in _ACTIVE:
             return dict(job)
-    snap, error = get_snapshot(refresh=False)
+    snap, error = cached_snapshot()
     if snap is None:
         raise InstallError(error or "the catalog is unavailable")
     if slug not in snap["apps"]:
         raise InstallError(f"no app named {slug!r} in the catalog")
-    action = "update" if read_stamp(os.path.join(community_dir(), slug)) else "install"
+    dest = os.path.join(community_dir(), slug)
+    action = "update" if read_stamp(dest) and not _is_husk(dest) else "install"
     total = sum(int(f.get("size") or 0) for f in snap["apps"][slug].get("files") or [])
     with _JOBS_LOCK:
         job = _JOBS.get(slug)
@@ -1045,9 +1220,39 @@ def _sweep_staging(root: str) -> None:
             continue
 
 
+def _kept(rel: str) -> bool:
+    """Whether `rel` lies under a KEEP name — case-insensitively, since on a
+    case-insensitive filesystem (macOS by default) `.FUSED/x` IS `.fused/x`."""
+    return rel.split("/", 1)[0].lower() in KEEP
+
+
 def _wanted(files: list[dict]) -> list[dict]:
     """The files an install writes: safe paths, nothing under a KEEP name."""
-    return [f for f in files if _safe_rel(f["path"]) and f["path"].split("/", 1)[0] not in KEEP]
+    return [f for f in files if _safe_rel(f["path"]) and not _kept(f["path"])]
+
+
+def _case_collisions(files: list[dict]) -> list[str]:
+    """Paths (or folder prefixes) of the list that differ only by case —
+    `README.md` + `readme.md`, `Lib/a.js` + `lib/b.js`. On a case-insensitive
+    filesystem they land on ONE file/folder, so one silently overwrites the
+    other and the stamp's hashes stop describing the disk."""
+    seen: dict[str, str] = {}
+    clashes: set[str] = set()
+    for f in files:
+        segs = f["path"].split("/")
+        for i in range(1, len(segs) + 1):
+            name = "/".join(segs[:i])
+            prev = seen.setdefault(name.casefold(), name)
+            if prev != name:
+                clashes.add(f"{prev} / {name}")
+    return sorted(clashes)
+
+
+def _refuse_case_collisions(files: list[dict]) -> None:
+    clashes = _case_collisions(files)
+    if clashes:
+        raise InstallError("this app has files whose names differ only by upper/lower case "
+                           f"({clashes[0]}), which cannot be installed safely")
 
 
 def _download_api(snap: dict, slug: str, files: list[dict], payload: str, progress) -> None:
@@ -1055,7 +1260,7 @@ def _download_api(snap: dict, slug: str, files: list[dict], payload: str, progre
     commit = snap["commit"]
 
     def one(f):
-        url = f"{RAW_BASE}/{gh}/{commit}/{slug}/{f['path']}"
+        url = _raw_url(gh, commit, slug, f["path"])
         dest = os.path.join(payload, *f["path"].split("/"))
         os.makedirs(os.path.dirname(dest), exist_ok=True)
         try:
@@ -1075,26 +1280,80 @@ def _download_api(snap: dict, slug: str, files: list[dict], payload: str, progre
             fut.result()
 
 
-def _copy_from_mirror(slug: str, payload: str, progress) -> dict:
-    """Copy the app out of the mirror's checkout (caller holds _MIRROR_LOCK);
-    answers the {commit, tree_sha, files} actually copied."""
+def _git_has_commit(sha) -> bool:
+    if not is_sha(sha):
+        return False
+    try:
+        return _git("cat-file", "-e", f"{sha}^{{commit}}", cwd=mirror_dir()).returncode == 0
+    except SourceError:
+        return False
+
+
+def _write_blobs(shas: dict[str, str], payload: str, progress) -> None:
+    """Write each blob (rel → sha) out of the mirror's object store into
+    `payload`, through ONE `git cat-file --batch` whose output streams to a
+    file (bounded memory, exact bytes — no checkout, no .gitattributes
+    filters). Caller holds `_mirror_lock()`."""
+    from fused_render.shell import git_tools
+
+    if not shas:
+        return
+    order = sorted(shas)
+    batch = os.path.join(os.path.dirname(payload), "blobs.batch")
+    env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
+    try:
+        with open(batch, "wb") as out:
+            # argv inlined for tests/test_git_posix_spawn.py's sweep.
+            r = subprocess.run([git_tools.git_bin(), "-C", mirror_dir(), "cat-file", "--batch"],
+                               input="".join(f"{shas[rel]}\n" for rel in order).encode(),
+                               stdout=out, stderr=subprocess.PIPE, timeout=CLONE_TIMEOUT_S,
+                               env=env, close_fds=False)
+    except FileNotFoundError:
+        raise SourceError("git is not installed (or not on PATH)")
+    except subprocess.TimeoutExpired:
+        raise SourceError("git timed out reading the community apps mirror")
+    if r.returncode != 0:
+        raise SourceError("git cat-file failed reading the community apps mirror")
+    with open(batch, "rb") as src:
+        for rel in order:
+            header = src.readline().decode("ascii", "replace").split()
+            if len(header) != 3 or header[0] != shas[rel] or header[1] != "blob":
+                raise SourceError(f"the community apps mirror is missing {rel}")
+            left = int(header[2])
+            dest = os.path.join(payload, *rel.split("/"))
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            with open(dest, "wb") as out:
+                while left:
+                    chunk = src.read(min(left, 1024 * 1024))
+                    if not chunk:
+                        raise SourceError(f"the community apps mirror cut {rel} short")
+                    out.write(chunk)
+                    left -= len(chunk)
+                    progress(len(chunk))
+            src.read(1)  # the record's trailing newline
+    with contextlib.suppress(OSError):
+        os.remove(batch)
+
+
+def _copy_from_mirror(slug: str, ref: str, payload: str, progress) -> dict:
+    """Copy the app AS OF `ref` (the catalog's commit when the mirror has it)
+    out of the mirror's object store — never its working tree, which may be
+    a different commit than the one the user chose from. Caller holds
+    `_mirror_lock()`; answers the {commit, tree_sha, files} actually
+    copied."""
     mirror = mirror_dir()
-    head = _git_out("rev-parse", "HEAD", cwd=mirror).strip()
-    tree_sha = _git_out("rev-parse", f"HEAD:{slug}", cwd=mirror).strip()
-    files = []
-    for typ, _sha, size, path in _ls_tree("HEAD", f"{slug}/", recursive=True):
+    commit = _git_out("rev-parse", "--verify", f"{ref}^{{commit}}", cwd=mirror).strip()
+    tree_sha = _git_out("rev-parse", f"{commit}:{slug}", cwd=mirror).strip()
+    files, shas = [], {}
+    for typ, sha, size, path in _ls_tree(commit, f"{slug}/", recursive=True, skip_symlinks=True):
         if typ == "blob" and path.startswith(slug + "/"):
-            files.append({"path": path[len(slug) + 1:], "size": size or 0})
+            rel = path[len(slug) + 1:]
+            files.append({"path": rel, "size": size or 0})
+            shas[rel] = sha
+    _refuse_case_collisions(files)
     files = _wanted(files)
-    for f in files:
-        src = os.path.join(mirror, slug, *f["path"].split("/"))
-        dest = os.path.join(payload, *f["path"].split("/"))
-        os.makedirs(os.path.dirname(dest), exist_ok=True)
-        if os.path.islink(src):
-            continue  # symlinks are not something an app ships
-        shutil.copyfile(src, dest)
-        progress(f["size"])
-    return {"commit": head, "tree_sha": tree_sha, "files": files}
+    _write_blobs({f["path"]: shas[f["path"]] for f in files}, payload, progress)
+    return {"commit": commit, "tree_sha": tree_sha, "files": files}
 
 
 def _stage(snap: dict, slug: str, payload: str, progress) -> dict:
@@ -1112,21 +1371,27 @@ def _stage(snap: dict, slug: str, payload: str, progress) -> dict:
             shutil.rmtree(payload, ignore_errors=True)
             os.makedirs(payload)
             progress(None)  # reset the byte count
-    with _MIRROR_LOCK:
-        try:
-            # Fetch when the mirror is behind the catalog this install was
-            # chosen from (or does not exist yet).
-            behind = True
-            if os.path.isdir(os.path.join(mirror_dir(), ".git")):
-                head = _git_out("rev-parse", "HEAD", cwd=mirror_dir()).strip()
-                behind = head != snap.get("commit")
-            _ensure_mirror(fetch=behind)
-            r = _git("cat-file", "-e", f"HEAD:{slug}", cwd=mirror_dir())
+    try:
+        with _mirror_lock():
+            want = snap.get("commit")
+            mirror_ok = os.path.isdir(os.path.join(mirror_dir(), ".git"))
+            if not mirror_ok or not _git_has_commit(want):
+                # Clone, or bring the mirror to the branch tip (the catalog is
+                # usually the tip, so that is where its commit turns up).
+                _ensure_mirror(fetch=True)
+            if is_sha(want) and not _git_has_commit(want):
+                # Older than the tip (the branch moved on): ask for it by sha.
+                with contextlib.suppress(SourceError):
+                    _git("fetch", "--depth", "1", "--no-tags", "origin", want,
+                         cwd=mirror_dir(), timeout=CLONE_TIMEOUT_S)
+            # Failing all that, the tip — the stamp records what was copied.
+            ref = want if _git_has_commit(want) else "HEAD"
+            r = _git("cat-file", "-e", f"{ref}:{slug}", cwd=mirror_dir())
             if r.returncode != 0:
                 raise InstallError(f"{slug} is no longer in the community repo")
-            got = _copy_from_mirror(slug, payload, progress)
-        except SourceError as exc:
-            raise InstallError(str(exc))
+            got = _copy_from_mirror(slug, ref, payload, progress)
+    except SourceError as exc:
+        raise InstallError(str(exc))
     return {**got, "source": SOURCE_GIT}
 
 
@@ -1138,7 +1403,7 @@ def _prune_dropped(dest: str, old_stamp: dict | None, new_paths: set[str]) -> li
         return []
     pruned = []
     for rel, digest in sorted(old_stamp["files"].items()):
-        if rel in new_paths or not _safe_rel(rel) or rel.split("/", 1)[0] in KEEP:
+        if rel in new_paths or not _safe_rel(rel) or _kept(rel):
             continue
         p = os.path.join(dest, *rel.split("/"))
         try:
@@ -1187,8 +1452,11 @@ def install_app(slug: str, snap: dict, report=lambda **kw: None) -> dict:
     if old_stamp is not None and old_stamp.get("slug") not in (None, slug):
         raise InstallError(f"{dest} holds a different Marketplace app "
                            f"({old_stamp.get('slug')})")
-    action = "update" if old_stamp else "install"
+    # A husk (keep-data uninstall) with our stamp is merged into like an
+    # update — its `.fused/` data is reused — but to the user it is an install.
+    action = "update" if old_stamp and not _is_husk(dest) else "install"
     meta = snap["apps"][slug].get("meta") or {}
+    _refuse_case_collisions(snap["apps"][slug].get("files") or [])
     total = sum(int(f.get("size") or 0) for f in _wanted(snap["apps"][slug].get("files") or []))
     done = [0]
     lock = threading.Lock()
