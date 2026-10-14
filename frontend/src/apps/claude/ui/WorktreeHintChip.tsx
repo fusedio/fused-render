@@ -7,7 +7,8 @@
 // already in that folder (then the menu has said it).
 import { GitBranch } from "lucide-react";
 
-import type { WorktreeHint } from "../protocol/types";
+import { isLive } from "../protocol/tasks";
+import type { TaskRecord, WorktreeHint } from "../protocol/types";
 
 const trim = (p: string): string => (p.length > 1 ? p.replace(/\/+$/, "") : p);
 const base = (p: string): string => trim(p).split("/").filter(Boolean).pop() ?? "";
@@ -22,23 +23,33 @@ export function isSameFolder(hintPath: string, currentPath?: string): boolean {
   return h === base(c) || c.endsWith("/" + h.replace(/^\.\//, ""));
 }
 
+/** A `via: "agent"` hint is true only while an isolated agent is running:
+ *  hidden once no task with `isolation === "worktree"` is live. */
+export function visibleWorktreeHint(hint: WorktreeHint | null | undefined, tasks: TaskRecord[] | undefined): WorktreeHint | null {
+  if (!hint) return null;
+  if (hint.via !== "agent") return hint;
+  return (tasks ?? []).some((t) => t.isolation === "worktree" && isLive(t.status)) ? hint : null;
+}
+
 const HOW: Record<WorktreeHint["via"], string> = {
   bash: "created with git worktree add",
   enter: "entered",
   agent: "a subagent's isolated worktree",
+  exit: "left the worktree",
 };
 
 export function WorktreeHintChip({ hint, currentPath }: { hint: WorktreeHint | null; currentPath?: string }) {
   if (!hint) return null;
   if (isSameFolder(hint.path, currentPath)) return null;
-  const name = hint.branch || base(hint.path) || hint.label || "subagent";
+  if (hint.via === "exit") return null;
+  const name = hint.branch || base(hint.path) || hint.label || (hint.via === "agent" ? "subagent" : "");
   const title = [hint.path && "Path: " + hint.path, hint.branch && "Branch: " + hint.branch, HOW[hint.via]]
     .filter(Boolean)
     .join("\n");
   return (
     <span className="chat-worktree-btn chat-worktree-hint" title={title}>
       <GitBranch size={12} aria-hidden="true" />
-      <span>{"worktree · " + name}</span>
+      <span>{name ? "worktree · " + name : "worktree"}</span>
     </span>
   );
 }

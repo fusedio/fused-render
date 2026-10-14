@@ -82,8 +82,9 @@ export function activityVerb(stats: VerbStats, thinkVerb: string, quietSecs: num
         // The registry knows how many are running; the bare tool does not.
         const v = taskVerb(stats.tasks);
         if (v.includes("subagent")) return v;
+        if (t.streaming) return t.subagent_type ? `Briefing ${t.subagent_type} subagent` : "Briefing a subagent";
         if (t.subagent_type) return `Running ${t.subagent_type} subagent`;
-        return act?.tool_input_bytes && !t.detail ? "Briefing a subagent" : "Starting a subagent";
+        return "Starting a subagent";
       }
       case "Skill":
         return "Loading a skill";

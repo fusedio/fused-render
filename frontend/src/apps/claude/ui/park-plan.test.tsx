@@ -35,6 +35,14 @@ describe("parkPlan", () => {
     expect(parkPlan(turns, [row({ toolUseId: "nope", parkedIn: "B" })]).get("B")?.tail).toEqual(["q1"]);
     expect(parkPlan(turns, [row({ toolUseId: "nope" })]).size).toBe(0);
   });
+  test("an exact chip match beats a name-match fallback row that comes first", () => {
+    const fallback = row({ id: "fb", tool: "SendMessage", parkedIn: "B" });
+    const exact = row({ id: "ex", tool: "SendMessage", toolUseId: "toolu_s", parkedIn: "B" });
+    const plan = parkPlan(turns, [fallback, exact]);
+    expect(plan.get("B")?.after.get(0)).toEqual(["ex"]);
+    // The fallback finds no free SendMessage chip, so it goes to the tail.
+    expect(plan.get("B")?.tail).toEqual(["fb"]);
+  });
   test("name-match fallback stays inside the stamped turn", () => {
     const plan = parkPlan(turns, [row({ id: "p1", tool: "Agent", parkedIn: "B" })]);
     expect(plan.get("B")?.after.get(1)).toEqual(["p1"]);

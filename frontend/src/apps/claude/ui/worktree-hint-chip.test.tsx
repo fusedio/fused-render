@@ -8,7 +8,7 @@ import { act, create, type ReactTestInstance, type ReactTestRenderer } from "rea
 import type { Task } from "@platform/lib/api";
 import type { WorktreeHint } from "../protocol/types";
 
-const { WorktreeHintChip } = await import("./WorktreeHintChip");
+const { WorktreeHintChip, visibleWorktreeHint } = await import("./WorktreeHintChip");
 const { Topbar } = await import("./Topbar");
 
 const mounted: ReactTestRenderer[] = [];
@@ -50,8 +50,25 @@ describe("WorktreeHintChip", () => {
     expect(t({ path: "../p/", branch: "", via: "enter" })).toBe("worktree · p");
     expect(t({ path: "", branch: "", via: "agent", label: "Fix it" })).toBe("worktree · Fix it");
     expect(t({ path: "", branch: "", via: "agent" })).toBe("worktree · subagent");
+    expect(t({ path: "", branch: "", via: "enter" })).toBe("worktree");
+    expect(t({ path: "", branch: "", via: "bash" })).toBe("worktree");
     const c = chip(mount(<WorktreeHintChip hint={{ path: "", branch: "", via: "agent" }} />))[0]!;
     expect(c.props.title).toContain("a subagent's isolated worktree");
+  });
+});
+
+describe("visibleWorktreeHint", () => {
+  const agent: WorktreeHint = { path: "", branch: "", via: "agent", label: "x" };
+  const t = (status: string, isolation: string) => ({ id: "a", status, isolation }) as never;
+  test("an agent hint shows only while an isolated task is live", () => {
+    expect(visibleWorktreeHint(agent, [t("running", "worktree")])).toBe(agent);
+    expect(visibleWorktreeHint(agent, [t("completed", "worktree")])).toBe(null);
+    expect(visibleWorktreeHint(agent, [t("running", "")])).toBe(null);
+    expect(visibleWorktreeHint(agent, undefined)).toBe(null);
+  });
+  test("other hints do not depend on tasks", () => {
+    expect(visibleWorktreeHint(bash, [])).toBe(bash);
+    expect(visibleWorktreeHint(null, [])).toBe(null);
   });
 });
 

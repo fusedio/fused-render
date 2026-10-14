@@ -225,10 +225,17 @@ describe("working line verbs", () => {
   });
   test("an Agent call still streaming its brief says so, then names the type", () => {
     const base = { tools_open: 1, thinking_tokens: 0, hook: "", tasks: [], agent_rows: 0 };
-    const briefing = { ...base, tool: { id: "x", name: "Agent", detail: "" }, tool_input_bytes: 300 };
+    const briefing = { ...base, tool: { id: "x", name: "Agent", detail: "", streaming: true }, tool_input_bytes: 300 };
     expect(activityVerb({ phase: "tooling", activity: briefing, tasks: [] }, "x", 0)).toBe("Briefing a subagent");
-    const typed = { ...base, tool: { id: "x", name: "Agent", detail: "Fix it", subagent_type: "Explore" }, tool_input_bytes: 300 };
+    // Still streaming after the description arrived: the brief is not done.
+    const named = { ...base, tool: { id: "x", name: "Agent", detail: "Fix it", streaming: true }, tool_input_bytes: 300 };
+    expect(activityVerb({ phase: "tooling", activity: named, tasks: [] }, "x", 0)).toBe("Briefing a subagent");
+    const typedStreaming = { ...base, tool: { id: "x", name: "Agent", detail: "Fix it", subagent_type: "Explore", streaming: true }, tool_input_bytes: 300 };
+    expect(activityVerb({ phase: "tooling", activity: typedStreaming, tasks: [] }, "x", 0)).toBe("Briefing Explore subagent");
+    const typed = { ...base, tool: { id: "x", name: "Agent", detail: "Fix it", subagent_type: "Explore", streaming: false }, tool_input_bytes: 300 };
     expect(activityVerb({ phase: "tooling", activity: typed, tasks: [] }, "x", 0)).toBe("Running Explore subagent");
+    const done = { ...base, tool: { id: "x", name: "Agent", detail: "", streaming: false }, tool_input_bytes: 300 };
+    expect(activityVerb({ phase: "tooling", activity: done, tasks: [] }, "x", 0)).toBe("Starting a subagent");
     const typedRegistry = rec({ id: "t", kind: "agent", subagent_type: "Explore" });
     expect(activityVerb({ phase: "tooling", activity: briefing, tasks: [typedRegistry, agent] }, "x", 0)).toBe(
       "Running 2 subagents: 1 Explore, 1 other",

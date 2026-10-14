@@ -4670,6 +4670,63 @@ describe("the run's tasks", () => {
     expect(controller.getState().worktreeHint).toBe(null);
   });
 
+  test("a via:exit hint clears the worktree hint", async () => {
+    const hint = { path: "../wt", branch: "feat/x", via: "bash" as const };
+    const { controller } = makeController({
+      start: () => ({ run_id: "r1" }),
+      poll: (_f, n) =>
+        n === 0
+          ? poll({ worktree_hint: hint })
+          : n === 1
+            ? poll({ worktree_hint: { path: "", branch: "", via: "exit" } })
+            : poll({ done: true, segments: [text("ok")], text: "ok" }),
+      history: () => ({ turns: [], transcript: null }),
+    });
+    await controller.sendMessage("go");
+    expect(controller.getState().worktreeHint).toBe(null);
+  });
+
+  test("an equal worktree hint does not bump rev", async () => {
+    const hint = { path: "../wt", branch: "feat/x", via: "bash" as const };
+    const revs: number[] = [];
+    const { controller } = makeController({
+      start: () => ({ run_id: "r1" }),
+      poll: (_f, n) => {
+        revs.push(controller.getState().rev);
+        return n < 3 ? poll({ worktree_hint: { ...hint } }) : poll({ done: true, segments: [text("ok")], text: "ok" });
+      },
+      history: () => ({ turns: [], transcript: null }),
+    });
+    await controller.sendMessage("go");
+    // Poll 0 lands the hint; polls 1..3 repeat it. Any rev change between
+    // them comes from the poll's other fields, so compare against a run
+    // that sends no hint at all.
+    expect(controller.getState().worktreeHint).toEqual(hint);
+    const baseline: number[] = [];
+    const other = makeController({
+      start: () => ({ run_id: "r1" }),
+      poll: (_f, n) => {
+        baseline.push(other.controller.getState().rev);
+        return n < 3 ? poll({}) : poll({ done: true, segments: [text("ok")], text: "ok" });
+      },
+      history: () => ({ turns: [], transcript: null }),
+    });
+    await other.controller.sendMessage("go");
+    const delta = (a: number[]) => a[a.length - 1]! - a[1]!;
+    expect(delta(revs)).toBe(delta(baseline));
+  });
+
+  test("history seeds the worktree hint after the tasks are cleared", async () => {
+    const hint = { path: "../wt", branch: "feat/x", via: "enter" as const };
+    const { controller } = makeController({
+      start: () => ({ run_id: "r1" }),
+      poll: () => poll({ done: true, segments: [text("ok")], text: "ok" }),
+      history: () => ({ turns: [], transcript: null, worktree_hint: hint }) as never,
+    });
+    await controller.openSession("s1");
+    expect(controller.getState().worktreeHint).toEqual(hint);
+  });
+
   test("a different run's empty list clears the last run's", async () => {
     let run = 0;
     const { controller } = makeController({

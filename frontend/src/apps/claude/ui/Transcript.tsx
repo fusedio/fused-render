@@ -855,26 +855,31 @@ export function parkPlan(
     if (list) list.push(id);
     else plan.after.set(at, [id]);
   };
+  // PASS 1 — THE EXACT CHIP, IN ANY TURN. `parkedIn` is the turn that was
+  // streaming when the card was answered; a long run split by mid-run
+  // follow-ups has its question chip in an EARLIER turn, and filing by
+  // `parkedIn` alone sent the card to the newest turn's tail, after every
+  // later chip. Every exact match is filed (and its chip marked taken) BEFORE
+  // any name-match fallback runs, so a fallback row that happens to come first
+  // in `rows` cannot take a chip another row names exactly.
+  const placed = new Set<string>();
   for (const p of rows) {
-    if (!p || !p.id || !p.decision) continue;
-    // THE EXACT CHIP, IN ANY TURN. `parkedIn` is the turn that was streaming
-    // when the card was answered; a long run split by mid-run follow-ups has
-    // its question chip in an EARLIER turn, and filing by `parkedIn` alone sent
-    // the card to the newest turn's tail, after every later chip.
+    if (!p || !p.id || !p.decision || !p.toolUseId) continue;
     const wanted = p.toolUseId;
-    let placed = false;
-    if (wanted) {
-      for (const turn of turns) {
-        if (turn.role !== "assistant") continue;
-        const at = (turn.segments ?? []).findIndex((s) => s.kind === "tool" && s.id === wanted);
-        if (at >= 0) {
-          file(turn.key, at, p.id);
-          placed = true;
-          break;
-        }
+    for (const turn of turns) {
+      if (turn.role !== "assistant") continue;
+      const at = (turn.segments ?? []).findIndex((s) => s.kind === "tool" && s.id === wanted);
+      if (at >= 0) {
+        file(turn.key, at, p.id);
+        placed.add(p.id);
+        break;
       }
     }
-    if (placed || !p.parkedIn) continue;
+  }
+  // PASS 2 — the `parkedIn` / name-match fallback for the rest.
+  for (const p of rows) {
+    if (!p || !p.id || !p.decision) continue;
+    if (placed.has(p.id) || !p.parkedIn) continue;
     const key = p.parkedIn;
     const plan = planFor(key);
     const turn = turns.find((t) => t.key === key);

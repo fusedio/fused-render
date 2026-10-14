@@ -469,12 +469,16 @@ export interface ActivityTool {
   detail: string;
   /** Agent/Task only, and only once the streaming input has named it. */
   subagent_type?: string;
+  /** Agent/Task only: true from `content_block_start` until the finalized
+   *  input arrives, i.e. while the brief is still being written. */
+  streaming?: boolean;
 }
-/** Latest hint that work moved into a git worktree (agent.py `_worktree_hint`). */
+/** Latest hint that work moved into a git worktree (agent.py `_worktree_hint`).
+ *  `via: "exit"` is the "work left the worktree" marker; the page clears on it. */
 export interface WorktreeHint {
   path: string;
   branch: string;
-  via: "bash" | "enter" | "agent";
+  via: "bash" | "enter" | "agent" | "exit";
   label?: string;
 }
 export interface ActivityTask {
@@ -773,6 +777,8 @@ export interface TranscriptStat {
 export interface HistoryResponse {
   turns: HistoryTurn[];
   transcript: TranscriptStat;
+  /** The worktree hint the transcript's tool calls end on (agent.py `_history`). */
+  worktree_hint?: WorktreeHint | null;
   /** agent.py `_history_live`: the run still going for this chat, with its
    *  cards, so transcript and card paint in one frame. `""` = nothing live (an
    *  answer too); absent = an older server, and the page discovers as before. */
