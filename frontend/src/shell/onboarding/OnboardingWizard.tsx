@@ -1,24 +1,25 @@
-// The first-run wizard: the `/onboarding` page, seven steps, every one of them
+// The first-run wizard: the `/onboarding` page, six steps, every one of them
 // skippable. App.tsx renders it ALONE on that route — no sidebar, no status
 // bar — and redirects a fresh install there at boot (shell/onboarding/state
 // has the rule). Leaving is a navigation like any other.
 //
 //   1 About        — what FusedRender is (download-page copy + video)
-//   2 Claude Code  — installed / new enough / signed in / on PATH, with buttons
-//   3 Git          — a usable git (showcase clone, worktrees), found or one Install button
-//   4 Chrome       — a Google Chrome for bots to drive, found or a download link
-//   5 Disk Access  — macOS Full Disk Access, why, and the one button there is
-//   6 Models       — local models that fit this machine, downloaded in the background
-//   7 Updates      — optional newsletter email; not a stage, never in the meter
-//   8 First app    — the Home composer, or a showcase local-AI app
+//   2 Tools        — ONE checklist: Claude Code (installed / new enough /
+//                    signed in / on PATH), a usable git, a Google Chrome for
+//                    bots — three STAGES (claude, git, chrome), one step; was
+//                    three steps until the owner asked for a shorter wizard
+//   3 Disk Access  — macOS Full Disk Access, why, and the one button there is
+//   4 Models       — local models that fit this machine, downloaded in the background
+//   5 Updates      — optional newsletter email; not a stage, never in the meter
+//   6 First app    — the Home composer, or a showcase local-AI app
 //
-// Steps 1–5 write nothing but their own STAGE STATUS for the progress meter
+// Steps 1–3 write nothing but their STAGE STATUSES for the progress meter
 // (progress.ts — the sidebar's "Setup N%" row and the pills in the bar above;
 // a reopen lands on the first step still to do; Git's and Chrome's statuses
-// are the server's alone, observed on every read). Step 6 starts model
+// are the server's alone, observed on every read). Step 4 starts model
 // downloads, which
 // are server-owned jobs that outlive the wizard and block nothing in it — a
-// head start, since a model is fetched on first use anyway. Step 7's create
+// head start, since a model is fetched on first use anyway. Step 6's create
 // (or a showcase open) is the only other durable action and doubles as
 // "complete". ✕ / Escape
 // record a DISMISS — a different flag, so a later build can tell the two
@@ -46,38 +47,63 @@ import {
   reportStage,
   seedProgress,
   setProgress,
+  stageIds,
   stageStatus,
   useOnboardingState,
+  type Stages,
+  type StageStatus,
 } from "./progress";
 import { AboutStep } from "./AboutStep";
-import { ChromeStep } from "./ChromeStep";
-import { ClaudeStep } from "./ClaudeStep";
 import { FdaStep } from "./FdaStep";
 import { FirstAppStep } from "./FirstAppStep";
-import { GitStep } from "./GitStep";
 import { forgetModelsStep, ModelsStep, useModelPicks } from "./ModelsStep";
 import { NewsletterStep } from "./NewsletterStep";
+import { ToolsStep } from "./ToolsStep";
 
-type StepId = "about" | "claude" | "git" | "chrome" | "fda" | "models" | "newsletter" | "app";
+type StepId = "about" | "tools" | "fda" | "models" | "newsletter" | "app";
 
-// `newsletter` (Updates) is the one step that is NOT a stage: optional, never
-// in the meter (progress.ts STAGE_IDS leaves it out), in both flavors. Before
-// First app because that step leaves the wizard; last under Fused Bot.
+// `tools` is one step over THREE stages (claude, git, chrome — the server's
+// closed set stays; ToolsStep says why). `newsletter` (Updates) is the one
+// step that is NOT a stage: optional, never in the meter (progress.ts
+// STAGE_IDS leaves it out), in both flavors. Before First app because that
+// step leaves the wizard; last under Fused Bot.
 const STEPS: { id: StepId; label: string }[] = [
   { id: "about", label: "About" },
-  { id: "claude", label: "Claude Code" },
-  { id: "git", label: "Git" },
-  { id: "chrome", label: "Chrome" },
+  { id: "tools", label: "Tools" },
   { id: "fda", label: "Disk Access" },
   { id: "models", label: "Models" },
   { id: "newsletter", label: "Updates" },
   { id: "app", label: "First app" },
 ];
 
+/** The stages the Tools step hosts — a `?step=` naming any of them (the
+ *  meter's link and the boot auto-show build one from progress.ts
+ *  firstOpenStage, which answers in STAGE ids; a link saved from the
+ *  three-step days) opens Tools. */
+const TOOLS_STAGES = ["claude", "git", "chrome"] as const;
+
 // The step id rides in the query so a refresh and a link both land on it.
 const STEP_PARAM = "step";
 function asStepId(v: string | null | undefined): StepId | null {
+  if ((TOOLS_STAGES as readonly string[]).includes(v ?? "")) return "tools";
   return STEPS.some((s) => s.id === v) ? (v as StepId) : null;
+}
+
+/** The Tools pill's mark, from all three stages it hosts — Claude Code
+ *  included (owner: it is not optional; progress.ts OPTIONAL_STAGES keeps it
+ *  out of the sidebar METER, which is a different question). Complete when
+ *  every one the machine has is complete, partial when any has moved,
+ *  pending otherwise. */
+function toolsStatus(stages: Stages | undefined): StageStatus {
+  // `stageIds()` drops what this flavor's server never has (Bot: no git), or
+  // an absent record would read as pending forever.
+  const have = TOOLS_STAGES.filter((id) => stageIds().includes(id))
+    .map((id) => stageStatus(stages, id))
+    .filter((s) => s !== "n/a");
+  if (have.length === 0) return "pending";
+  if (have.every((s) => s === "complete")) return "complete";
+  if (have.some((s) => s === "complete" || s === "partial")) return "partial";
+  return "pending";
 }
 function stepFromUrl(): StepId | null {
   return asStepId(new URLSearchParams(location.search).get(STEP_PARAM));
@@ -126,9 +152,9 @@ export function OnboardingWizard({ config }: { config: Config }) {
     replaceSearch(url.pathname + url.search);
   }, [stepId]);
   // ONE setup machine for the whole wizard, not one per step: a sign-in done
-  // on step 2 must be what step 4 reads, and two hook instances would each
-  // hold their own snapshot. Focus re-checks only while the Claude step is up.
-  const setup = useClaudeSetup(stepId === "claude");
+  // on step 2 must be what step 6 reads, and two hook instances would each
+  // hold their own snapshot. Focus re-checks only while the Tools step is up.
+  const setup = useClaudeSetup(stepId === "tools");
   const { health } = setup;
   // The catalog, once, for the whole wizard: the Models step's own contents AND
   // whether it exists at all come from it (a machine no local engine serves has
@@ -148,24 +174,27 @@ export function OnboardingWizard({ config }: { config: Config }) {
     if (isBot()) return;
     if (picks !== null && picks.length === 0) reportStage("models", "n/a", { offered: 0 });
   }, [picks]);
+  // The Git ROW of the Tools step: macOS only (its probe + Install button
+  // are built for the Mac's Command Line Tools alone, server git_tools —
+  // elsewhere the server counts the stage `n/a`), and never under Fused Bot,
+  // whose server has no git stage at all (it clones nothing). Chrome is in
+  // BOTH flavors (Render runs the same bots from its Bots page), and always
+  // shown: it is the one place that says what bots need.
+  const showGit = !isBot() && isMac(health?.platform);
   const steps = STEPS.filter((s) => {
-    // Fused Bot's server has no git/models/app steps at all (progress.stageIds):
+    // Fused Bot's server has no models/app steps at all (progress.stageIds):
     // dropped before the per-machine rules, and never reported `n/a` either —
-    // the server's closed set would not take the write. Chrome is in BOTH
-    // flavors (Render runs the same bots from its Bots page), and always
-    // shown: it is the one place that says what bots need.
-    if (s.id === "git" || s.id === "models" || s.id === "app") {
+    // the server's closed set would not take the write.
+    if (s.id === "models" || s.id === "app") {
       if (isBot()) return false;
     }
-    // macOS only, both: Full Disk Access is a macOS grant, and the Git step's
-    // probe + Install button are built for the Mac's Command Line Tools alone
-    // (server git_tools) — elsewhere the server counts it `n/a`.
-    if (s.id === "fda" || s.id === "git") return isMac(health?.platform);
+    // macOS only, both: Full Disk Access is a macOS grant.
+    if (s.id === "fda") return isMac(health?.platform);
     // Kept while the answer is UNKNOWN (`null`), unlike the FDA step's
     // hidden-until-known: this is the only step a `?step=` resume is likely to
     // name while its own fetch is still in flight, and dropping it for those
     // few hundred milliseconds would render step 1 under a user who asked for
-    // step 4. A pill that disappears on the rare no-engine machine is the
+    // step 4 (Models). A pill that disappears on the rare no-engine machine is the
     // cheaper wrong.
     if (s.id === "models") return picks === null || picks.length > 0;
     return true;
@@ -226,7 +255,7 @@ export function OnboardingWizard({ config }: { config: Config }) {
     [markComplete],
   );
 
-  // Step 4's actions (the composer's create, a showcase card) NAVIGATE — App
+  // Step 6's actions (the composer's create, a showcase card) NAVIGATE — App
   // swaps this page out on the route change, not when the action starts, so
   // the composer's own `task_error` ("folder created, Claude didn't start")
   // lands in a composer that is still on screen where the user can read it.
@@ -359,8 +388,8 @@ export function OnboardingWizard({ config }: { config: Config }) {
           </span>
         </a>
 
-        {/* Every step is a link, in both directions: nothing before step 4
-            gates anything after it, so a user who knows what they want can go
+        {/* Every step is a link, in both directions: nothing before the last
+            step gates anything after it, so a user who knows what they want can go
             straight there. */}
         <ol
           className="my-0 hidden list-none items-center gap-0.5 rounded-lg bg-muted/60 p-0.5 sm:flex"
@@ -370,13 +399,16 @@ export function OnboardingWizard({ config }: { config: Config }) {
               green check = complete, half-filled amber = partial, the number
               = pending. Walking past a step earns it nothing. */}
           {steps.map((s, i) => {
-            // Updates has no stage: its tick is "subscribed", from its own record.
+            // Updates has no stage: its tick is "subscribed", from its own
+            // record. Tools hosts three stages: `toolsStatus` combines them.
             const status =
               s.id === "newsletter"
                 ? progress?.newsletter?.subscribed_at != null
                   ? "complete"
                   : "pending"
-                : stageStatus(stages, s.id);
+                : s.id === "tools"
+                  ? toolsStatus(stages)
+                  : stageStatus(stages, s.id);
             const done = status === "complete";
             const partial = status === "partial";
             const current = i === index;
@@ -435,9 +467,9 @@ export function OnboardingWizard({ config }: { config: Config }) {
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto w-full max-w-4xl px-6 py-10">
           {step.id === "about" && <AboutStep eyebrow={eyebrow} />}
-          {step.id === "claude" && <ClaudeStep setup={setup} eyebrow={eyebrow} onWork={onWork} />}
-          {step.id === "git" && <GitStep stages={stages} eyebrow={eyebrow} onWork={onWork} />}
-          {step.id === "chrome" && <ChromeStep stages={stages} eyebrow={eyebrow} onWork={onWork} />}
+          {step.id === "tools" && (
+            <ToolsStep setup={setup} stages={stages} showGit={showGit} eyebrow={eyebrow} onWork={onWork} />
+          )}
           {step.id === "fda" && <FdaStep config={config} eyebrow={eyebrow} onWork={onWork} />}
           {step.id === "models" && <ModelsStep picks={picks} eyebrow={eyebrow} onWork={onWork} />}
           {step.id === "newsletter" && <NewsletterStep eyebrow={eyebrow} onWork={onWork} />}
