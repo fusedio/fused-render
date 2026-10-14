@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+  agentModelLabel,
   durationWords,
   elapsedLabel,
   endActiveTasks,
@@ -109,6 +110,29 @@ describe("elapsed / labels", () => {
     expect(usageLabel({ total_tokens: 12345, tool_uses: 4, duration_ms: 1 })).toBe("12.3k tokens · 4 tool uses");
     expect(usageLabel({ total_tokens: 800, tool_uses: 1, duration_ms: 1 })).toBe("800 tokens · 1 tool use");
     expect(usageLabel(null)).toBe("");
+  });
+});
+
+describe("agentModelLabel", () => {
+  test("short names for aliases and full ids; effort appended", () => {
+    expect(agentModelLabel({ model: "sonnet", effort: "medium" })).toBe("Sonnet · medium");
+    expect(agentModelLabel({ model: "claude-sonnet-5-5", effort: "" })).toBe("Sonnet");
+    expect(agentModelLabel({ model: "claude-opus-4-1" })).toBe("Opus");
+    expect(agentModelLabel({ model: "haiku" })).toBe("Haiku");
+    expect(agentModelLabel({ model: "fable", effort: "max" })).toBe("Fable · max");
+    expect(agentModelLabel({ model: "gpt-x" })).toBe("gpt-x");
+  });
+  test("no model: the parent's, marked inherited", () => {
+    expect(agentModelLabel({ model: "", effort: "" }, "opus")).toBe("Opus (inherited)");
+    expect(agentModelLabel({ model: "", effort: "high" }, "opus")).toBe("Opus (inherited) · high");
+    expect(agentModelLabel({ model: "" }, "")).toBe("");
+    expect(agentModelLabel({}, undefined)).toBe("");
+  });
+  test("taskVerb names an explicit model for one agent only", () => {
+    const a = rec({ id: "a", kind: "agent", subagent_type: "Explore", model: "sonnet", effort: "medium" });
+    expect(taskVerb([a])).toBe("Running Explore subagent (Sonnet · medium)");
+    expect(taskVerb([rec({ id: "b", kind: "agent" })])).toBe("Running a subagent");
+    expect(taskVerb([a, rec({ id: "c", kind: "agent", model: "haiku" })])).toBe("Running 2 subagents: 1 Explore, 1 other");
   });
 });
 

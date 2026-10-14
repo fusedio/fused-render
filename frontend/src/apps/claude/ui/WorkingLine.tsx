@@ -11,7 +11,7 @@ import { useEffect, useRef, useState } from "react";
 import { cn } from "@platform/lib/utils";
 
 import type { RunStatus, Working } from "../protocol/controller-api";
-import { taskVerb } from "../protocol/tasks";
+import { explicitModelLabel, taskVerb } from "../protocol/tasks";
 import type { Activity, RetryInfo, TaskRecord } from "../protocol/types";
 import { ClaudeMark } from "./ClaudeMark";
 
@@ -82,9 +82,11 @@ export function activityVerb(stats: VerbStats, thinkVerb: string, quietSecs: num
         // The registry knows how many are running; the bare tool does not.
         const v = taskVerb(stats.tasks);
         if (v.includes("subagent")) return v;
-        if (t.streaming) return t.subagent_type ? `Briefing ${t.subagent_type} subagent` : "Briefing a subagent";
-        if (t.subagent_type) return `Running ${t.subagent_type} subagent`;
-        return "Starting a subagent";
+        const ml = explicitModelLabel(t.model, t.effort);
+        const tail = ml ? ` (${ml})` : "";
+        if (t.streaming) return (t.subagent_type ? `Briefing ${t.subagent_type} subagent` : "Briefing a subagent") + tail;
+        if (t.subagent_type) return `Running ${t.subagent_type} subagent${tail}`;
+        return "Starting a subagent" + tail;
       }
       case "Skill":
         return "Loading a skill";

@@ -5076,6 +5076,7 @@ function ChatBody(props: ChatBodyProps) {
                 runId={state.tasksRunId}
                 open={tasksOpen}
                 onToggle={toggleTasksPanel}
+                parentModel={defaults.model}
               />
             ) : null}
             {/* …AND ONE SUMMARY OVER THE BOX. The rows are in a transcript that

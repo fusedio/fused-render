@@ -169,6 +169,38 @@ export function hasOutput(rec: Pick<TaskRecord, "kind"> & Partial<Pick<TaskRecor
   return (rec.kind === "shell" || rec.kind === "monitor") && rec.status !== "unknown";
 }
 
+const MODEL_FAMILIES = ["sonnet", "opus", "haiku", "fable"];
+
+/** "sonnet" / "claude-sonnet-5-5" -> "Sonnet"; anything else verbatim. */
+export function modelName(model: string | null | undefined): string {
+  const m = (model || "").trim();
+  if (!m) return "";
+  const lower = m.toLowerCase();
+  const fam = MODEL_FAMILIES.find(
+    (f) => lower === f || lower.startsWith(f + "-") || lower.startsWith("claude-" + f) || lower.includes("-" + f + "-") || lower.endsWith("-" + f),
+  );
+  return fam ? fam[0].toUpperCase() + fam.slice(1) : m;
+}
+
+/** "Sonnet · medium" for what an Agent call stated; "" when it stated neither
+ *  (the subagent then inherits, which is not worth saying on the working line). */
+export function explicitModelLabel(model?: string | null, effort?: string | null): string {
+  const name = modelName(model);
+  const e = (effort || "").trim();
+  return [name, e].filter(Boolean).join(" · ");
+}
+
+/** The row's model words: the explicit label, or the parent's model with
+ *  " (inherited)" when the call set none. "" when nothing is known. */
+export function agentModelLabel(rec: Pick<TaskRecord, "model" | "effort">, parentModel?: string | null): string {
+  const name = modelName(rec.model);
+  const e = (rec.effort || "").trim();
+  if (name) return e ? name + " · " + e : name;
+  const parent = modelName(parentModel);
+  if (!parent) return e;
+  return parent + " (inherited)" + (e ? " · " + e : "");
+}
+
 /**
  * The working line's verb while background work is live (SPEC T-5): agents
  * first, then monitors, then shells. "" when nothing it can name is running.
@@ -186,7 +218,11 @@ export function taskVerb(tasks: readonly TaskRecord[] | null | undefined): strin
       if (ty) groups.set(ty, (groups.get(ty) ?? 0) + 1);
       else untyped++;
     }
-    if (agents === 1) return groups.size ? "Running " + [...groups.keys()][0] + " subagent" : "Running a subagent";
+    if (agents === 1) {
+      const ml = explicitModelLabel(liveAgents[0].model, liveAgents[0].effort);
+      const tail = ml ? " (" + ml + ")" : "";
+      return (groups.size ? "Running " + [...groups.keys()][0] + " subagent" : "Running a subagent") + tail;
+    }
     let out = "Running " + agents + " subagents";
     if (groups.size) {
       const parts = [...groups.entries()].sort((a, b) => b[1] - a[1]).map(([ty, c]) => c + " " + ty);

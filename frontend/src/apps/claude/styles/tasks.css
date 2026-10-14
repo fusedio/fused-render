@@ -83,7 +83,7 @@
   opacity: 0.5;
 }
 .chat-root .chat-tasks-more {
-  margin: 2px 0 6px 12px;
+  margin: 0;
   padding: 0;
   border: 0;
   background: none;
@@ -91,6 +91,18 @@
   font: inherit;
   font-size: 12px;
   cursor: pointer;
+}
+.chat-root .chat-tasks-more-row {
+  display: block;
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.chat-root .chat-task-model {
+  flex-shrink: 0;
+  color: var(--c-dim);
+  font-size: 11px;
+  white-space: nowrap;
 }
 .chat-root .chat-tasks-more:hover {
   text-decoration: underline;

@@ -94,6 +94,27 @@ describe("TasksPanel", () => {
     expect(rows.map((n) => byClass(n, "chat-task-out-btn").length)).toEqual([0, 1, 1]);
   });
 
+  test("an agent row shows its model; a shell row none; inherited names the parent", () => {
+    const ag = rec({ id: "a", kind: "agent", description: "A", model: "sonnet", effort: "medium" });
+    const inh = rec({ id: "i", kind: "agent", description: "I" });
+    const sh = rec({ id: "s", kind: "shell", description: "S" });
+    const r = mount(<TasksPanel tasks={[ag, inh, sh]} runId="r1" open onToggle={() => {}} parentModel="opus" />);
+    const rows = byClass(r.root, "chat-task");
+    const labels = rows.map((n) => byClass(n, "chat-task-model").map(text));
+    expect(labels).toEqual([["Sonnet · medium"], ["Opus (inherited)"], []]);
+    expect(byClass(rows[0]!, "chat-task-desc")[0]!.props.title).toBe("A — Sonnet · medium");
+  });
+
+  test("Show N finished sits inside the panel's list", () => {
+    const old = rec({ id: "o", kind: "shell", description: "old", status: "completed", ended_at: 1 });
+    const r = mount(<TasksPanel tasks={[old]} runId="r1" open onToggle={() => {}} now={() => 100_000} />);
+    const empty = byClass(r.root, "chat-tasks-empty")[0]!;
+    expect(byClass(empty, "chat-tasks-more").length).toBe(1);
+    const live = rec({ id: "l", kind: "shell", description: "live" });
+    const r2 = mount(<TasksPanel tasks={[old, live]} runId="r1" open onToggle={() => {}} now={() => 100_000} />);
+    expect(byClass(byClass(r2.root, "chat-tasks-list")[0]!, "chat-tasks-more").length).toBe(1);
+  });
+
   test("a worktree-isolated agent gets an inline marker and a tooltip, not a sub-line", () => {
     const iso = rec({ id: "w", kind: "agent", description: "Build fix", subagent_type: "general-purpose", isolation: "worktree" });
     const r = mount(<TasksPanel tasks={[iso, rec({ id: "n", kind: "agent", description: "Plain" })]} runId="r1" open onToggle={() => {}} />);
@@ -155,7 +176,8 @@ describe("TasksPanel", () => {
 
     test("every row hidden says Nothing running. with the toggle", () => {
       const r = mk([ended("a", 30), ended("b", 40)]);
-      expect(text(byClass(r.root, "chat-tasks-empty")[0]!)).toBe("Nothing running.");
+      // The toggle now lives inside the box, so its words ride in the text.
+      expect(text(byClass(r.root, "chat-tasks-empty")[0]!)).toBe("Nothing running.Show 2 finished");
       expect(text(byClass(r.root, "chat-tasks-more")[0]!)).toBe("Show 2 finished");
     });
 
@@ -284,6 +306,17 @@ describe("working line verbs", () => {
     const activity = { tool: { id: "x", name: "Agent", detail: "" }, tools_open: 1, tool_input_bytes: 0, thinking_tokens: 0, hook: "", tasks: [], agent_rows: 0 };
     expect(activityVerb({ phase: "tooling", activity, tasks: [agent, rec({ id: "b", kind: "agent" })] }, "x", 0)).toBe("Running 2 subagents");
     expect(activityVerb({ phase: "tooling", activity, tasks: [] }, "x", 0)).toBe("Starting a subagent");
+  });
+  test("an explicit model rides the verb; inherited never does", () => {
+    const base = { tools_open: 1, thinking_tokens: 0, hook: "", tasks: [], agent_rows: 0, tool_input_bytes: 1 };
+    const brief = { ...base, tool: { id: "x", name: "Agent", detail: "", streaming: true, model: "haiku" } };
+    expect(activityVerb({ phase: "tooling", activity: brief, tasks: [] }, "x", 0)).toBe("Briefing a subagent (Haiku)");
+    const run = { ...base, tool: { id: "x", name: "Agent", detail: "", subagent_type: "Explore", model: "sonnet", effort: "medium" } };
+    expect(activityVerb({ phase: "tooling", activity: run, tasks: [] }, "x", 0)).toBe("Running Explore subagent (Sonnet · medium)");
+    const none = { ...base, tool: { id: "x", name: "Agent", detail: "", subagent_type: "Explore" } };
+    expect(activityVerb({ phase: "tooling", activity: none, tasks: [] }, "x", 0)).toBe("Running Explore subagent");
+    const live = rec({ id: "a", kind: "agent", subagent_type: "Plan", model: "opus" });
+    expect(activityVerb({ phase: "thinking", activity: null, tasks: [live] }, "x", 0)).toBe("Running Plan subagent (Opus)");
   });
   test("an Agent call still streaming its brief says so, then names the type", () => {
     const base = { tools_open: 1, thinking_tokens: 0, hook: "", tasks: [], agent_rows: 0 };

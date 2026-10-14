@@ -16,6 +16,7 @@ import { cn } from "@platform/lib/utils";
 
 import { runAgent } from "../protocol/agent";
 import {
+  agentModelLabel,
   elapsedLabel,
   hasOutput,
   isActive,
@@ -82,6 +83,8 @@ export interface TasksPanelProps {
   /** Expanded. The host owns it (`/tasks` toggles it). */
   open: boolean;
   onToggle: () => void;
+  /** The chat's own model (`opus`...): what an agent that named none inherits. */
+  parentModel?: string;
   /** Test seam: the `task_output` call. */
   fetchOutput?: FetchTaskOutput;
   /** Test seam: the clock (ms). */
@@ -95,9 +98,9 @@ type OutputState =
   | { phase: "error"; message: string };
 
 /** The title's tooltip: "Build fix — general-purpose · worktree". */
-function rowTitle(t: TaskRecord): string {
+function rowTitle(t: TaskRecord, modelLabel = ""): string {
   const base = t.description || kindLabel(t.kind);
-  const extra = [t.subagent_type, t.isolation === "worktree" ? "worktree" : ""].filter(Boolean).join(" · ");
+  const extra = [t.subagent_type, modelLabel, t.isolation === "worktree" ? "worktree" : ""].filter(Boolean).join(" · ");
   return extra ? `${base} — ${extra}` : base;
 }
 
@@ -109,7 +112,7 @@ function KindIcon({ kind }: { kind: TaskKind }) {
   return <CircleDot {...props} />;
 }
 
-export function TasksPanel({ tasks, runId, open, onToggle, fetchOutput = defaultFetch, now = Date.now }: TasksPanelProps) {
+export function TasksPanel({ tasks, runId, open, onToggle, parentModel, fetchOutput = defaultFetch, now = Date.now }: TasksPanelProps) {
   const [outputs, setOutputs] = useState<Record<string, OutputState>>({});
   // Answers for a run that is no longer the panel's are dropped on arrival.
   const runRef = useRef(runId);
@@ -210,18 +213,20 @@ export function TasksPanel({ tasks, runId, open, onToggle, fetchOutput = default
             {rows.map((t) => {
               const out = outputs[t.id];
               const elapsed = elapsedLabel(t, nowMs);
+              const modelLabel = t.kind === "agent" ? agentModelLabel(t, parentModel) : "";
               return (
                 <li key={t.id} className={cn("chat-task", "is-" + t.kind, isLive(t.status) ? "is-live" : "is-ended", t.status === "failed" && "is-failed")}>
                   <div className="chat-task-line">
                     <span className="chat-task-kind" title={kindLabel(t.kind)}>
                       <KindIcon kind={t.kind} />
                     </span>
-                    <span className="chat-task-desc" title={rowTitle(t)}>
+                    <span className="chat-task-desc" title={rowTitle(t, modelLabel)}>
                       {t.description || kindLabel(t.kind)}
                     </span>
                     {t.isolation === "worktree" ? (
                       <GitBranch className="chat-task-wt" size={12} aria-label="in a worktree" />
                     ) : null}
+                    {modelLabel ? <span className="chat-task-model">{modelLabel}</span> : null}
                     <span className={"chat-task-status is-" + t.status}>{statusLabel(t.status)}</span>
                     {elapsed ? <span className="chat-task-time">{elapsed}</span> : null}
                     {hasOutput(t) && runId ? (
@@ -256,11 +261,14 @@ export function TasksPanel({ tasks, runId, open, onToggle, fetchOutput = default
                 </li>
               );
             })}
+            {finishedToggle ? <li className="chat-tasks-more-row">{finishedToggle}</li> : null}
           </ul>
         ) : (
-          <div className="chat-tasks-empty">{hiddenCount ? "Nothing running." : "No background tasks in this run."}</div>
+          <div className="chat-tasks-empty">
+            {hiddenCount ? "Nothing running." : "No background tasks in this run."}
+            {finishedToggle ? <div className="chat-tasks-more-row">{finishedToggle}</div> : null}
+          </div>
         )}
-        {finishedToggle}
         </>
       ) : null}
     </section>
