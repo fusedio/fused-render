@@ -151,7 +151,7 @@ export function claudeIssues(health: ClaudeHealth | null): ClaudeIssue[] {
     // WHETHER TO OFFER THE BUTTON AT ALL, and the whole subtlety of this issue.
     //
     // `claude update` only updates a CLI that updates itself — a native or npm
-    // install. Homebrew, WinGet, apt, dnf and apk own their own binary and
+    // install. Homebrew, apt, dnf and apk own their own binary and
     // answer `claude update` with "Claude is up to date!" while changing
     // nothing. An Update button there is a button that cannot work, which is a
     // worse answer than the plain sentence it replaced.

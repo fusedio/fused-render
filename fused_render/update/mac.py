@@ -1,4 +1,4 @@
-"""macOS in-app updater (docs/PYTHON_SUPERVISOR_SPEC.md "Software updates").
+"""macOS in-app updater (docs/LINUX_AUTO_UPDATE_SPEC.md "What already exists").
 A silent background loop checks the signed manifest and surfaces a newer
 version only through /api/config's `update` field — the shell shows a badge.
 Downloading and installing happen solely on an explicit POST

@@ -6,9 +6,7 @@ server as a child, shows the tray, forwards "open this file" requests from
 secondary launches, and tears everything down cleanly (including on
 upgrade). It lives in `fused_render/supervisor/`.
 
-This replaces the experiment framing of
-[`PYTHON_SUPERVISOR_SPEC.md`](PYTHON_SUPERVISOR_SPEC.md) (kept for history): the
-pure-Python supervisor shipped, and the code is now organized as a
+The supervisor is pure Python, organized as a
 platform-neutral core plus a per-OS backend, so a new operating system is a new
 *backend*, not a reimplementation of the run loop. Linux is the one
 out-of-process backend today; macOS runs its own in-process app (below).

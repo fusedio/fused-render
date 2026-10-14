@@ -34,7 +34,7 @@ subprocess + stream-json log + poll loop).
 > the `~/.claude/projects/<munged-cwd>` consequence, the detached `claude -p`
 > stream-json + poll design, copy-on-resume,
 > the one-tool stdio MCP **permission bridge**, the `fused_render_claude-<uid>`
-> run-dir root and its per-uid reasoning, and the Windows notes. What is **stale**:
+> run-dir root and its per-uid reasoning. What is **stale**:
 > the `.html`/`.htm`-only binding and the `["_render", "code", "claude"]` mode
 > list (see SPEC §7.2 for the real bindings — 47 authored-file keys plus the
 > universal `/` directory key), the "no gate" assumption, and the file layout
@@ -184,7 +184,7 @@ claude (headless)                    agent.py / browser
     first user to open a chat owns the namespace and everybody else is locked
     out of creating runs at all, and anything writable by them is either a
     world-writable directory we created or the disclosure the `0700` exists to
-    prevent. Windows' temp dir is already per-user, so the suffix is POSIX-only.
+    prevent.
   - modes are set by the `mkdir`/`open` itself, never a `chmod` after the
     content lands, and `os.makedirs`' `mode` reaches only the leaf since 3.7 —
     hence `_private_dir` creating each level in turn.
@@ -394,8 +394,8 @@ claude (headless)                    agent.py / browser
 7. **`claude` binary discovery:** `FUSED_RENDER_CLAUDE_BIN` (explicit
    override), then `shutil.which`, then
    the platform's install locations — `~/.local/bin`, `/opt/homebrew/bin`,
-   `/usr/local/bin` on POSIX; see **Windows** below for that list. The server
-   env's PATH (Finder-launched .app! GUI-launched .exe!) may lack it; the
+   `/usr/local/bin`. The server
+   env's PATH (Finder-launched .app!) may lack it; the
    error message names every place we looked.
 8. **`run_id`/tmp hygiene.** Run dirs under `$TMPDIR/fused_render_claude/`
    are never pruned (OS tmp cleanup handles it eventually). Cancel action
@@ -416,59 +416,14 @@ claude (headless)                    agent.py / browser
     the CLI changing its side of the wire — the flag names, the result schema,
     or which tools a prompt tool un-gates.
 
-## Windows
+## Related fixes
 
-The template was written against POSIX and broke on Windows in four separate
-places — each a POSIX idiom that Windows either ignores or reinterprets.
-
-- **`claude` is usually not on our PATH.** The PowerShell installer puts
-  `claude.exe` in `%USERPROFILE%\.local\bin` and appends that to the *user*
-  PATH in the registry; a process that was already running (or was started by
-  Explorer before the install) keeps the PATH it inherited at login, so
-  `shutil.which("claude")` finds nothing while `claude` works fine in a fresh
-  terminal. `_claude_bin` therefore also looks in the known install locations,
-  `%USERPROFILE%\.local\bin\claude.exe` (native installer) first, then winget's
-  shim dir and npm's global prefix. `.exe` is preferred over a `.cmd` shim:
-  a shim hands our argv back to cmd.exe for a second round of parsing, and that
-  argv carries arbitrary user text (`-p`) plus the target path.
-- **`start_new_session=True` does nothing on Windows** — subprocess accepts and
-  ignores it. So `claude.exe` was spawned with no creationflags at all, and
-  because the executor deliberately gives its worker no console
-  (`CREATE_NO_WINDOW`, so a windowless server doesn't flash a console per run),
-  Windows had to allocate a **fresh console window** for the console-subsystem
-  child: a terminal window popped up for every chat turn. `_DETACH` now passes
-  `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP` there — the same detach idiom
-  as templates/docs, latex and usd — which both detaches the run and leaves it
-  console-less (stdout/stderr already go to the run dir).
-- **`os.kill(pid, 0)` is not a liveness probe on Windows.** Signal 0 *is*
-  `CTRL_C_EVENT`, so Python routes it to `GenerateConsoleCtrlEvent` instead of
-  a no-op check: it either delivers a real Ctrl+C or fails outright, and the
-  failure made `_alive` report a perfectly healthy run as dead. Since the page
-  polls 400 ms after `start`, the first poll killed or condemned the turn —
-  surfacing as *"claude exited unexpectedly"* with an empty `err.log`. `_alive`
-  now goes through `../shared/procutil.pid_alive` (OpenProcess +
-  GetExitCodeProcess), which is what the rest of the repo already uses.
-- **`os.killpg` doesn't exist on Windows**, so `cancel` raised AttributeError
-  instead of stopping the run. There is no process group to signal either —
-  `CTRL_BREAK` only reaches a shared console and a detached run has none — so
-  Windows cancels with `taskkill /PID <pid> /T /F`, which also collects the
-  children claude spawned for its own tools. It runs with `CREATE_NO_WINDOW`:
-  taskkill is itself a console program, so it would otherwise flash the very
-  window the detach fix removes (Bugbot, PR #307). The server's global
-  no-window policy does not reach here — it patches `Popen` in `cli.py`'s
-  process, and the executor worker is a bare `python _child.py`.
-
-Two related fixes came out of the same pass:
-
-- **`CLAUDE_CONFIG_DIR` is honoured** when locating transcripts. The supervisor
-  sets it for every packaged build (`supervisor/paths.py child_environment`),
-  so claude writes the transcripts for *our* runs under the app's state dir —
-  reading a hardcoded `~/.claude/projects` lost history and copy-on-resume in
-  the packaged app on every platform, not just Windows.
-- **The id guards reject `\` and a drive prefix.** `run_id` and `session_id`
-  arrive as URL params and are joined onto a directory we own; on Windows
-  `..\..\x` traverses exactly like `../../x`, and `os.path.join(runs, "d:x")`
-  drops `runs` entirely. Both now go through `_bad_id`.
+- **`CLAUDE_CONFIG_DIR` is honoured** when locating transcripts, so an
+  environment that points claude somewhere else does not lose history and
+  copy-on-resume to a hardcoded `~/.claude/projects`.
+- **The id guards reject anything path-shaped.** `run_id` and `session_id`
+  arrive as URL params and are joined onto a directory we own, so both go
+  through `_bad_id` before any join.
 
 Not covered here: the `claude-cli://` deep link (`Open in Claude`, PR #286) is
 a different path — the OS hands the URL to Claude Code's own scheme handler,

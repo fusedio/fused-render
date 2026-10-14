@@ -298,7 +298,7 @@ def start(action: str = "install") -> dict:
                 "there is no Claude Code on this machine to update — install it first")
         plan = claude_health.update_plan(
             claude_health.install_method(path, None))
-        # THE GUARD THE FEATURE EXISTS FOR. A Homebrew/WinGet/apt install answers
+        # THE GUARD THE FEATURE EXISTS FOR. A Homebrew/apt install answers
         # `claude update` with "Claude is up to date!" and changes nothing, so
         # running it would spend a minute to tell the user their old CLI is
         # current. Refuse, and say which command actually would work.

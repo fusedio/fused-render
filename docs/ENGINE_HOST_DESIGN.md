@@ -131,14 +131,13 @@ so a new engine is a manifest rather than a new router. Not built yet — the
 caller-supplied `ensure` payload is simpler and correct until there's a second
 caller.
 
-## Windows thread-exit deadlock (why the pools are persistent)
+## Persistent pools
 
-On Windows, a thread that has done GDAL `/vsicurl/` work deadlocks the whole
-process the moment it exits: its DLL thread-detach holds the loader lock against
-a native thread holding the GIL, so the next `Thread.start()` blocks forever. So
-all describe/tile work runs on persistent pools (`daemon.RENDER_POOL`,
-`VTILE_POOL`, and `RasterEngine.prepare_pool`) whose threads never exit per-call;
-socketserver's per-connection handler threads never touch the geo stack.
+All describe/tile work runs on persistent pools (`daemon.RENDER_POOL`,
+`VTILE_POOL`, and `RasterEngine.prepare_pool`) whose threads never exit
+per-call; socketserver's per-connection handler threads never touch the geo
+stack. (The rule was introduced for a GDAL thread-exit deadlock on a platform
+that is no longer supported, D1359; the threading model stays as built.)
 
 ## Vector tile performance
 

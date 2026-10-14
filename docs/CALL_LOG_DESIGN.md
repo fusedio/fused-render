@@ -1060,25 +1060,17 @@ Closing it means persisting a periodic drop marker into the store, which adds a
 record kind (CL-2) — a feature, not a review fix, so it is recorded here rather
 than smuggled in.
 
-**Two spellings of the same path (D147).** The twelfth round is the eleventh's
-class of bug one layer down. D146 was two spellings of a *directory*; this is two
-spellings of a *file path*: on Windows the store held `page` forward-slashed
-(headers, and what a `/view` URL decodes to) and `entrypoint` backslashed for a
-relative `/api/run` target (`os.path.normpath`), while the CLI's `--page` filter
-ran through `os.path.abspath` and came back backslashed as well. Exact-match
-filters then matched nothing — `calls --page` found not even the page the caller
-was standing on. Two lessons beyond the fix. First, **the fix belonged at the
-boundary, not at the three reported call sites**: there was one broken writer and
-one broken filter, and canonicalizing in `record()` repaired the third reader —
-the gate — without touching it, where patching each reader would have left the
-store holding two forms and the next reader broken by default. Second, and
-sharper: **the platform I do not run on is the one the invariant breaks on.** The
-two forms are identical on POSIX, so every test and every manual check was blind
-to this by construction — which is why the regressions simulate Windows with
-`ntpath` and drive-shaped literals instead of sitting behind a `sys.platform`
-guard that would only ever run where the bug cannot happen. After D146 I had
-verified the gate and the writer agreed about the *directory*; I never asked
-whether they agreed about the *paths inside it*.
+**Two spellings of the same path (D147).** The twelfth round was the eleventh's
+class of bug one layer down — D146 was two spellings of a *directory*, this was
+two spellings of a *file path*, on a platform since dropped (D1359), where the
+store held one form from headers and another from `os.path`, so exact-match
+filters matched nothing. The lesson that outlives it: **the fix belonged at the
+boundary, not at the reported call sites.** There was one broken writer and one
+broken filter, and canonicalizing in `record()` (`_view_url_codec.canonical_fs_path`)
+repaired the third reader — the gate — without touching it, where patching each
+reader would have left the store holding two forms and the next reader broken by
+default. On macOS and Linux that seam returns its input unchanged, but it stays
+the one place a path is put into stored form.
 
 **Two directories, two lifetimes (D148).** The thirteenth round is the smallest
 and the tidiest: `Browse call logs` navigated to the store directory, which the

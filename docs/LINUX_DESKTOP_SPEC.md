@@ -1,12 +1,9 @@
 # Linux desktop supervisor — spec + acceptance gates
 
-Status: **in progress.** This document borrows the *shape* of
-[`PYTHON_SUPERVISOR_SPEC.md`](PYTHON_SUPERVISOR_SPEC.md) (gates-before-code) but
-not its contract: the behavioral contract below is the **requirements, stated
-user-first** — not "match Windows". The Windows backend
-(`fused_render/supervisor/_win32/`) is a reference point for *what problems
-exist*, not an API to port. Where sockets/XDG/namespaces make a problem simpler
-than the Win32 idiom, the Linux backend solves it the Linux-native way.
+Status: **in progress.** This document is gates-before-code: the behavioral
+contract below is the **requirements, stated user-first**, each with an
+acceptance gate. Where sockets/XDG/namespaces make a problem simple, the Linux
+backend solves it the Linux-native way.
 
 The current desktop architecture and the per-OS backend seam this plugs into
 live in [`DESKTOP_SUPERVISOR.md`](DESKTOP_SUPERVISOR.md). Linux support is a new
@@ -18,8 +15,8 @@ live in [`DESKTOP_SUPERVISOR.md`](DESKTOP_SUPERVISOR.md). Linux support is a new
 
 ## Goal
 
-Ship FusedRender as a single-file Linux desktop app with the same user-visible
-guarantees the Windows build ships — single instance, file "Open with", tray,
+Ship FusedRender as a single-file Linux desktop app with the user-visible
+guarantees a desktop app owes — single instance, file "Open with", tray,
 start-at-login, no orphaned process trees on crash, clean upgrade — packaged as
 an **AppImage** (download, `chmod +x`, run; no admin, no package-manager
 matrix).
@@ -28,7 +25,7 @@ matrix).
 
 | Concern | Linux mechanism (`_linux`) |
 | --- | --- |
-| Single instance | `flock(LOCK_EX\|LOCK_NB)` on `$XDG_RUNTIME_DIR/fused-render/supervisor.lock`. The kernel releases the lock on **any** death including `SIGKILL` — the same "abandoned mutex" semantics the Windows named mutex has. |
+| Single instance | `flock(LOCK_EX\|LOCK_NB)` on `$XDG_RUNTIME_DIR/fused-render/supervisor.lock`. The kernel releases the lock on **any** death including `SIGKILL`, so a crashed primary never blocks the next launch. |
 | IPC (secondary → primary) | Unix stream socket (`supervisor.sock`) in the same `0700` runtime dir, socket mode `0600`; carries the **identical** `protocol.py` frames with a 4-byte status reply. |
 | Process-tree kill | **baseline**: `start_new_session` (setsid) + `PR_SET_PDEATHSIG(SIGKILL)` via `prctl` in a `preexec_fn`, with `killpg` for deliberate teardown. **strong**: wrap the server in an unprivileged user+pid namespace (`unshare --user --map-root-user --pid --fork --kill-child`) so the kernel reaps every descendant when ns-init dies. Selected by `FUSED_RENDER_LINUX_TREE_KILL` (`pgroup` default, `namespace` opt-in); the gate decides which ships by default. |
 | Tray | Native **StatusNotifierItem over D-Bus** (`dbus-fast`); works on any StatusNotifier host — waybar, KDE, AppIndicator-GNOME. No X11/XEmbed, so it renders on Wayland. Absence on a session with no StatusNotifier host (stock GNOME w/o extension) is an accepted degraded mode (gate (c)). |
@@ -37,9 +34,8 @@ matrix).
 | Paths | Durable state IS the flat dotdir `~/.fused-render` — the same dir the dev/CLI and macOS app use, shared by design (all user config in one known place); `logs/` and `temp/` are subdirs of it. Disposable cache stays OS-native at `$XDG_CACHE_HOME/fused-render` (fallback `~/.cache`), runtime at `$XDG_RUNTIME_DIR/fused-render` (fallback: a `0700` dir under cache when `XDG_RUNTIME_DIR` is unset). |
 | Installer / upgrade | Replace the `.AppImage` file; old instance shuts down via the same `--shutdown-for-upgrade` command over the socket. |
 
-The `.desktop` `Exec` uses `%u` (a **single** URL/file field code), not `%F`, to
-match the Windows registry command's `%1` and keep `protocol.parse_args`
-identical across platforms (it accepts exactly one argument). `%u` rather than
+The `.desktop` `Exec` uses `%u` (a **single** URL/file field code), not `%F`,
+because `protocol.parse_args` accepts exactly one argument. `%u` rather than
 `%f` because the same entry must receive both plain file paths (from a file
 manager's "Open with") **and** `fused-render://` deep-link URLs (from the
 `x-scheme-handler/fused-render` registration, §26/D110) — `%f` is files-only and
@@ -48,8 +44,8 @@ instance per file; the second and later instances forward their open to the
 primary over the socket and exit, exactly as a second manual launch does — the
 desktop environment coalesces, the supervisor never sees more than one argument
 per process. A deep link routes to the server's `/clone?src=…` confirm page
-instead of a `/view` URL; the same shared mapping (`_view_url_codec`) macOS and
-Windows use, so an OS-delivered link resolves identically everywhere.
+instead of a `/view` URL; the same shared mapping (`_view_url_codec`) macOS
+uses, so an OS-delivered link resolves identically everywhere.
 
 The associations themselves register out of the box, with no third-party
 AppImage integrator: at first supervisor start the app self-integrates its
@@ -101,15 +97,12 @@ Decision section below.
 - **Tray fragmentation.** With a native StatusNotifierItem the icon renders on
   any StatusNotifier host (waybar, KDE, AppIndicator-GNOME); it is absent only
   where no such host runs (stock GNOME w/o extension) → no icon. Accepted:
-  everything is reachable via the browser and a re-launch. The Windows tray's
-  "Default apps..." item opens an OS "default apps" settings page
-  (`ms-settings:defaultapps`); there is no cross-desktop Linux equivalent, so
-  the item is **omitted from the Linux menu** entirely (rather than shown as a
-  dead entry). `_linux/ui.open_default_apps` still exists and raises `OSError`
+  everything is reachable via the browser and a re-launch. There is no
+  cross-desktop Linux "default apps" settings page, so the tray has **no
+  "Default apps..." item** (rather than a dead entry). `_linux/ui.open_default_apps` still exists and raises `OSError`
   for any other caller, a logged no-op. Cosmetic, not a launch blocker.
 - **Template daemons that outlive the server on purpose** (tile daemons started with `start_new_session`): under either tree-kill they die
-  with the app, matching Windows Job semantics but differing from dev/macOS.
-  Same accepted trade-off as Windows.
+  with the app, differing from dev/macOS — an accepted trade-off.
 - **glibc floor.** python-build-standalone needs glibc ≥ 2.17; `[bundled]`
   manylinux wheels (duckdb, pyarrow…) have their own floors, as do the wheels a
   template's own `pyproject.toml` resolves at runtime (rasterio, geopandas…). Ubuntu 22.04 /
@@ -143,8 +136,8 @@ nothing is lost, and no command dispatches before that read. It listens on
 | Preference toggle | `native_hooks["apply"]` -> `set_enabled`; off closes every window and the host declines opens |
 
 The server only installs hooks when the supervisor put
-`FUSED_RENDER_WINDOW_HOST_SOCKET` in its environment, so `fused-render serve`,
-macOS and Windows behave exactly as before. Preferences reports
+`FUSED_RENDER_WINDOW_HOST_SOCKET` in its environment, so `fused-render serve`
+and macOS behave exactly as before. Preferences reports
 `native_windows.available` on Linux while the host answers a ping, or while
 the supervisor says one could run here (`FUSED_RENDER_WINDOW_HOST_LAUNCHABLE`)
 even though the preference being off left none running to ping.
