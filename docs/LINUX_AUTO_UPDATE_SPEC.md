@@ -16,7 +16,7 @@ and a "Restart fused-render" button that actually restarts.
   redirects, streams to a temp file, hashes, compares against the signed
   sha256, `progress` + `should_abort` callbacks, `UpdateCancelled`). Platform
   neutral already. **Do not change its security semantics.**
-- `scripts/windows/generate_update_manifest.py` — signs `latest.json`. Used by
+- `scripts/generate_update_manifest.py` — signs `latest.json`. Used by
   both the mac and Windows release jobs. Reuse as-is.
 - `fused_render/update/mac.py` — the `UpdateManager` state machine, the check
   loop, the throttle, the Activity-dock job mirroring, the cancel flag, and
@@ -177,7 +177,7 @@ env:
   FUSED_RENDER_UPDATE_SIGNING_KEY: ${{ secrets.FUSED_RENDER_UPDATE_SIGNING_KEY }}
 run: |
   uv run --no-project --with cryptography \
-    scripts/windows/generate_update_manifest.py \
+    scripts/generate_update_manifest.py \
     "$VERSION" "$APPIMAGE" "https://${CDN_DOMAIN}/${LINUX_PREFIX}" \
     dist/linux-latest.json
   aws s3 cp dist/linux-latest.json "s3://${S3_BUCKET}/${LINUX_PREFIX}/latest.json" \

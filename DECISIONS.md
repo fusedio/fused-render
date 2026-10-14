@@ -6902,3 +6902,12 @@ docs/bots.md §14.
 - **Own prefix, own router**: `/api/phone/bots` (`bots/phone.py`), an owned prefix (forwarded to the bots' owner), and the only bots prefix the LAN listener forwards; it stamps `X-Fused-Device` from the pairing record and drops a client-sent one. `/api/bots` stays a 404 on the LAN: it holds the Mac-screen operations (take-over, pop-out, profiles, reveal, browsers, encryption, access settings), none of which the phone gets.
 - **The app door's attachment handling is shared** (`routes.decode_files` / `save_files`), so a phone file lands in files/ with the same "Attached (…)" line and image rules (D1351).
 - **Phone UI is web inside the lan page** (`/bots`, `/bots/<id>`), not the desktop Bots page; Swift stays a thin shell (top-level pages, deep link `page=bots` / `bot=<id>`, a "Bots" quick action).
+
+## D1359 — Windows support removed (2026-10-14, claude/elegant-curie-xzoqh8)
+
+Design page, owner-approved: <https://claude.ai/artifact/CmgeDrXCDscEcHtzTn4PoF>.
+
+- **macOS and Linux only; Windows is dropped end to end.** Gone: the installer and launcher (`scripts/windows/`, `build_windows_installer.ps1`, `windows/`), the `_win32` supervisor backend, `winopen.py` and the `fused-render-open` script, the Windows capture and clipboard backends, every inline `win32` / `os.name == "nt"` branch (collapsed to the POSIX path), the `windows-desktop` extra, the Windows CI and release jobs, and the Windows card on the download page. **Rejected:** keeping the branches and dropping only packaging (dead branches rot and keep the Windows CI question alive); a `test-python-windows` import canary (nothing left to canary once the CLI refuses).
+- **One explicit refusal survives:** `cli.main()` exits with "fused-render does not support Windows" on `win32`. The wheel is platform-agnostic, so pip still installs it there; without the guard the first failure would be a random POSIX import.
+- **Two shared pieces moved instead of dying.** The file-association tables now live in `fused_render/file_associations.py` (consumed by `_mime_package.py` and `scripts/file_associations.py`; the committed JSON is unchanged); the update-manifest signer is `scripts/generate_update_manifest.py`, used by the macOS and Linux release lanes. `update/common.py` stays.
+- Existing Windows installs are left alone: they poll `fused-render-windows/latest.json`, which simply stops moving. Inert `skipif(sys.platform == "win32")` test guards stay for a later mechanical sweep; historical SPEC/DECISIONS/PLAN files are not rewritten.

@@ -323,9 +323,8 @@ requested ones. The PNG lands in `<home>/ai/images/` and is read back through
 what this machine can do (`available()` answers with a REASON, and resolution
 skips a runner that cannot run here). `supervisor.py` owns the worker processes:
 one resident model per capability, auto-evicting; liveness via `Popen.poll()`
-(never `os.kill(pid, 0)` — a zombie answers that yes, and on Windows it
-*terminates* the process); stopping via `killpg` on a verified group leader, or
-`CTRL_BREAK`/`taskkill /T /F` on Windows. The port-handshake file is named per
+(never `os.kill(pid, 0)` — a zombie answers that yes); stopping via `killpg`
+on a verified group leader. The port-handshake file is named per
 BRING-UP (a random per-worker id, never the token), because two workers for one
 capability overlap — an eviction's replacement starts while the old one is being
 killed — and a shared name let the second one's `unlink` delete the port the first

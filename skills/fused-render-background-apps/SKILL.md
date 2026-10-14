@@ -47,7 +47,7 @@ Stopped daemon comes back via exactly: (1) server start IF autostart on, (2) exp
 
 ## Native/tray work
 
-Don't write fourth tray backend: `fused_render/supervisor/tray.py` = the seam (win32 pystray / linux D-Bus backends beside it); macOS menubar = `fused_render/menubar_pin.py`. macOS AppKit = main-thread only — hop from handler threads with `PyObjCTools.AppHelper.callAfter`.
+Don't write another tray backend: `fused_render/supervisor/tray.py` = the seam (linux D-Bus backend beside it); macOS menubar = `fused_render/menubar_pin.py`. macOS AppKit = main-thread only — hop from handler threads with `PyObjCTools.AppHelper.callAfter`.
 
 ## Pitfalls
 
