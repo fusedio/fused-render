@@ -433,7 +433,8 @@ def test_approval_sets_waiting_on_its_card(steps_bot, monkeypatch):
 def test_an_outside_yes_approves_only_the_card_it_was_stamped_for(steps_bot, monkeypatch, stamp):
     # The phone's answer (bots/phone.py) and a texted one carry via["answers"] = the card's seq
     # (channels.base.answers_card): the steps engine's gate takes it as the verdict, as the agent engine's does.
-    # One stamped for another card (settled between bot._texted_approval's check and the inbox write) is not a yes.
+    # One stamped for another card (settled between bot._texted_approval's check and the inbox write) is neither
+    # a yes nor a no: the card stays up (no "Denied"), and the next, rightly stamped yes settles it.
     from fused_render.bots.channels import base as chan
     b = steps_bot
     ai = FakeAI([
@@ -450,14 +451,17 @@ def test_an_outside_yes_approves_only_the_card_it_was_stamped_for(steps_bot, mon
         else:
             b.inbox.append(chan.Outside("approve", {**chan.phone_via("dev1"), "answers": seq - 1}))
             b.wake.set()
+            assert _wait_for(lambda: b.asking and not b.inbox)  # drained, and waiting again on the same card
+            assert b.meta["status"] == "waiting" and b.meta["waiting_on"] == seq
+            assert ("click", "sb2", "Buy now") not in b.browser.calls
+            b.receive("approve", via={**chan.phone_via("dev1"), "answers": seq})
     t = threading.Thread(target=answer)
     t.start()
     b.start_task("buy it")
     b.thread.join(15)
     t.join(5)
-    clicked = ("click", "sb2", "Buy now") in b.browser.calls
-    assert clicked is (stamp == "card")
-    assert any(e["role"] == "system" and e["text"].startswith("Denied") for e in _events(b)) is (stamp != "card")
+    assert ("click", "sb2", "Buy now") in b.browser.calls
+    assert not any(e["role"] == "system" and e["text"].startswith("Denied") for e in _events(b))
 
 
 def test_a_repeated_call_is_a_note_and_actions_carry_a_one_liner_and_detail(steps_bot, monkeypatch):

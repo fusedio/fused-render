@@ -234,6 +234,27 @@ def test_ordinary_bot_card_denied_from_the_phone(client, ws, gated):
     assert gated["verdict"] is False
 
 
+def test_a_parked_send_keeps_its_photos(client, ws, monkeypatch):
+    # The user holds the browser at the Mac: receive parks the message (held: true). The image blocks must ride
+    # the queued entry, or the flush delivers the "Attached" line without the photos the model should see.
+    delivered = []
+    monkeypatch.setattr(botmod.Bot, "start_task",
+                        lambda self, task, label=None, origin="manual", via=None, images=None: delivered.append((task, images)))
+    bid = make(client)
+    b = registry.get(bid)
+    b.meta["control"] = True
+    png = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"0" * 64).decode()
+    body = {"text": "what is this?", "files": [{"name": "shot.png", "data": png,
+                                                 "preview": {"media_type": "image/png", "data": png}}]}
+    st, out = j(client.post(f"{P}/{bid}/send", body, headers=DEV))
+    assert st == 200 and out["held"] is True and out["files"] == ["shot.png"]
+    assert delivered == [] and b.meta["held"][0]["images"] == [{"media_type": "image/png", "data": png}]
+    b.meta["control"] = False
+    b._flush_held()
+    assert len(delivered) == 1 and delivered[0][1] == [{"media_type": "image/png", "data": png}]
+    assert delivered[0][0].startswith("what is this?") and "shot.png" in delivered[0][0]
+
+
 def test_controls_settings_routines_create_delete(client, ws):
     bid = make(client, model="sonnet", effort="high", instructions="be brief", approval="auto", preset="")
     d = j(client.get(f"{P}/{bid}"))[1]["bot"]
