@@ -244,7 +244,10 @@ DEFAULT_IGNORE_NAMES = [
 # minutes at a time. The top roots, by rescan count, were:
 #
 #   212  Application Support/Google/Chrome   (profile writes)
-#   225  Containers / Group Containers for WhatsApp
+#   225  WhatsApp containers: Data/Library (analytics, sqlite), Data/tmp,
+#        Documents/cask (bloks stash), the group container's Preferences,
+#        FieldStats2, fts — NOT Message/Media, which is the user's received
+#        photos and files and stays indexed
 #    79  Containers/com.apple.*Widget*/Data/SystemData (widget timelines)
 #    43  Application Support/Slack
 #    17  Metadata/CoreSpotlight
@@ -263,10 +266,12 @@ DEFAULT_IGNORE_NAMES = [
 # `Group Containers/group.com.apple.notes` — so neither `Containers/com.apple.*`
 # nor `Group Containers/group.com.apple.*` is acceptable as a pattern. What
 # is listed is the per-container `Data/SystemData` (widget timelines,
-# `com.apple.chrono`, written by every widget on a schedule — the one
-# subtree of ANY container that is system-owned) and the specific Apple
-# daemons the bundle showed re-triggering: none of them has a document
-# folder. Same for Google: only Chrome's profile, not every Google app.
+# `com.apple.chrono`, written by every widget on a schedule) and `Data/tmp`
+# (TemporaryItems) — the two subtrees of ANY container that are never user
+# content — the specific Apple daemons the bundle showed re-triggering (none
+# has a document folder), and for WhatsApp the exact churn subtrees rather
+# than the container roots, so received media stays searchable. Same for
+# Google: only Chrome's profile, not every Google app.
 LIBRARY_CHURN_PATHS = [
     "~/Library/Preferences",
     "~/Library/Metadata",
@@ -284,8 +289,13 @@ LIBRARY_CHURN_PATHS = [
     "~/Library/Group Containers/group.com.apple.findmy.*",
     "~/Library/Group Containers/group.com.apple.siri.*",
     "~/Library/Group Containers/group.com.apple.PegasusConfiguration",
-    "~/Library/Containers/net.whatsapp.*",
-    "~/Library/Group Containers/group.net.whatsapp.*",
+    "~/Library/Containers/*/Data/tmp",
+    "~/Library/Containers/net.whatsapp.*/Data/Library",
+    "~/Library/Containers/net.whatsapp.*/Data/Documents/cask",
+    "~/Library/Group Containers/group.net.whatsapp.*/Library",
+    "~/Library/Group Containers/group.net.whatsapp.*/FieldStats2",
+    "~/Library/Group Containers/group.net.whatsapp.*/fts",
+    "~/Library/Group Containers/group.net.whatsapp.*/fba_extentions_event_store",
     "~/Library/Application Support/Google/Chrome*",
     "~/Library/Application Support/Slack",
     "~/Library/Application Support/AddressBook",
