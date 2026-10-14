@@ -53,7 +53,8 @@ LIMIT_MAX = 400
 # disclosure), `artifacts` (paths on the Mac), `forever` (the third button, never offered on the phone),
 # `ignored_seq` and the rest of the bookkeeping. `detail` is kept, cut to DETAIL_MAX.
 EVENT_KEYS = ("seq", "ts", "role", "text", "result", "thumb", "options", "multi", "offer", "app", "reply", "via",
-              "source", "handoff", "build", "link", "summary", "ref", "channel", "addr", "error", "login")
+              "source", "handoff", "build", "link", "summary", "ref", "channel", "addr", "error", "login",
+              "ignored_seq")  # a system line naming a user line that was written but not applied
 # The roles a list row's "last line" is taken from: what the user said and what the bot said back.
 LAST_ROLES = ("user", "done", "question", "approval", "error")
 # The settings sheet's keys (routes._settings with nothing else from the desktop dialog).
@@ -304,6 +305,8 @@ def _send(b, body, device):
         from fused_render.bots.agent_engine import NO, YES
         if not (YES.match(text) or NO.match(text)):
             raise ValueError("an approval card is answered with approve or deny")
+        if files:
+            raise ValueError("an approval card is answered with approve or deny")  # no photos: nothing to orphan
         via["answers"] = seq
     # An answer is the bare yes or no: a quoted reply would put "Replying to …" in front of it, and the gate's
     # YES / NO would no longer see the verdict.
@@ -317,7 +320,9 @@ def _send(b, body, device):
         held = bool(b.meta.get("control"))  # receive parks it in `held` until the Mac hands the browser back
     try:
         # `answers` binds the click to its card in receive too (bot.CardSettled): a card that settled between the
-        # check above and here refuses the send before any line is written, instead of a held-back "yes".
+        # check above and here refuses the send instead of a held-back "yes". Settled before receive's first check,
+        # nothing is written; in the narrow gap after it, the line is written and a system line marks it
+        # `ignored_seq` (past_conversation and the phone's verdict caption both skip it).
         b.receive(text, via=via, reply_to=reply_to or None, images=images or None, answers=via.get("answers"))
     except _botmod().CardSettled:
         raise ValueError("that card is not waiting on an answer") from None

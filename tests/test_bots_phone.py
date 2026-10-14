@@ -280,6 +280,47 @@ def test_a_card_settled_after_the_check_refuses_the_answer_cleanly(client, ws, g
     b.thread.join(10)
 
 
+def test_a_card_settled_after_the_line_is_written_shows_it_ignored(client, ws, gated, monkeypatch):
+    # The narrow gap inside receive: the user line is written, then the card settles before the inbox write.
+    # The send is refused, the line is marked ignored_seq (the phone's verdict caption skips it), nothing approved.
+    bid = make(client)
+    b = registry.get(bid)
+    client.post(f"{P}/{bid}/send", {"text": "buy it"}, headers=DEV)
+    card = _waiting_card(b)
+    real = b.emit
+
+    def settle_after_the_line(role, *a, **kw):
+        ev = real(role, *a, **kw)
+        if role == "user":
+            b.meta["waiting_on"] = card + 1
+        return ev
+    monkeypatch.setattr(b, "emit", settle_after_the_line)
+    st, out = j(client.post(f"{P}/{bid}/send", {"text": "approve", "answer": card}, headers=DEV))
+    monkeypatch.setattr(b, "emit", real)
+    assert st == 400 and out["error"] == "that card is not waiting on an answer"
+    assert "verdict" not in gated
+    evs = j(client.get(f"{P}/{bid}?since={card}"))[1]["events"]
+    line = next(e for e in evs if e["role"] == "user" and e["text"] == "approve")
+    assert any(e.get("ignored_seq") == line["seq"] for e in evs if e["role"] == "system"), evs
+    b.meta["waiting_on"] = card
+    b.stop()
+    b.thread.join(10)
+
+
+def test_a_card_answer_takes_no_photos(client, ws, gated):
+    bid = make(client)
+    b = registry.get(bid)
+    client.post(f"{P}/{bid}/send", {"text": "buy it"}, headers=DEV)
+    card = _waiting_card(b)
+    n = b.seq
+    st, out = j(client.post(f"{P}/{bid}/send", {"text": "approve", "answer": card,
+                                                "files": [{"name": "a.png", "data": "iVBORw0KGgo="}]}, headers=DEV))
+    assert st == 400 and b.seq == n and "verdict" not in gated
+    assert not os.path.isdir(os.path.join(b.dir, "files")) or not os.listdir(os.path.join(b.dir, "files"))
+    b.stop()
+    b.thread.join(10)
+
+
 def test_controls_settings_routines_create_delete(client, ws):
     bid = make(client, model="sonnet", effort="high", instructions="be brief", approval="auto", preset="")
     d = j(client.get(f"{P}/{bid}"))[1]["bot"]

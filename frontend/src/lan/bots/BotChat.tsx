@@ -207,6 +207,8 @@ export function BotChat({ id }: { id: string }) {
       if (d.events.length) oldest.current = Math.min(oldest.current ?? Infinity, d.events[0].seq);
       earlier.current = d.events.length >= PAGE && hasMore(d.events);
       setHasEarlier(earlier.current);
+      // The gap closed: save the cursor now, not at the next poll (leaving first would keep the backlog unread).
+      if (seqRef.current != null && document.visibilityState === "visible" && !unloadedUnread()) writeSeen(skey, seqRef.current);
     } catch (e) {
       toast((e as Error).message, "error");
     } finally {

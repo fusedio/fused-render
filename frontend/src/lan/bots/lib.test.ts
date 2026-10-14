@@ -111,6 +111,9 @@ describe("thread", () => {
     const evs = [ev(1, "approval"), ev(2, "action"), ev(3, "user", "approve"), ev(4, "approval"), ev(5, "user", "deny")];
     expect(answerAfter(evs, 1)?.seq).toBe(3);
     expect(answerAfter(evs, 5)).toBeNull();
+    // An answer that lost the race to the Mac is written, then marked ignored: the next line settled it.
+    const raced = [ev(1, "approval"), ev(2, "user", "approve"), ev(3, "system", "not applied", { ignored_seq: 2 }), ev(4, "user", "deny")];
+    expect(answerAfter(raced, 1)?.seq).toBe(4);
     expect(approvalVerdict("approve")).toBe("Approved");
     expect(approvalVerdict("Yes please")).toBe("Approved");
     expect(approvalVerdict("deny")).toBe("Denied");

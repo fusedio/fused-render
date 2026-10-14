@@ -118,7 +118,9 @@ export function groupRows(events: BotEvent[]): Item[] {
 
 /** The first user line after `seq` — how a card was answered. */
 export function answerAfter(events: BotEvent[], seq: number): BotEvent | null {
-  for (const e of events) if (e.seq > seq && e.role === "user") return e;
+  // A line the server wrote and then did not apply (bot.py ignored_seq) never settled anything.
+  const ignored = new Set(events.flatMap((e) => (e.ignored_seq != null ? [e.ignored_seq] : [])));
+  for (const e of events) if (e.seq > seq && e.role === "user" && !ignored.has(e.seq)) return e;
   return null;
 }
 

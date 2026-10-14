@@ -72,6 +72,8 @@ export interface BotEvent {
   handoff?: HandoffRef;
   build?: BuildRef;
   link?: { bot: string; seq: number };
+  /** system: the user line (by seq) that was written but not applied (e.g. a card answer that lost a race). */
+  ignored_seq?: number;
   summary?: string;
   /** role "delivery": the event this row records a send of. */
   ref?: number;
