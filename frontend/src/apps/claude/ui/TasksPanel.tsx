@@ -3,13 +3,13 @@
 // A strip between the transcript and the composer (`.chat-tasks`), there
 // whenever the run on screen has tasks, COLLAPSED by default to one line
 // ("2 running (1 agent, 1 shell) · 1 done"). Opened, one row per task: kind
-// icon, description, status pill, elapsed (live while running), usage for an
-// agent, the events count for a monitor, the last summary, and for a shell or a
-// monitor an "Output" button that asks the live CLI for it (`task_output`).
+// icon, description (its tooltip names the subagent type and worktree), status
+// pill, elapsed (live while running), and for a shell or a monitor an "Output"
+// button that asks the live CLI for it (`task_output`).
 //
 // The words are `protocol/tasks.ts`'s; this file only lays them out. The
 // open/closed bit is the host's (`ClaudeChat`), because `/tasks` toggles it.
-import { Bot, ChevronRight, CircleDot, Radio, Terminal } from "lucide-react";
+import { Bot, ChevronRight, CircleDot, GitBranch, Radio, Terminal } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { cn } from "@platform/lib/utils";
@@ -17,14 +17,12 @@ import { cn } from "@platform/lib/utils";
 import { runAgent } from "../protocol/agent";
 import {
   elapsedLabel,
-  eventsLabel,
   hasOutput,
   isLive,
   kindLabel,
   sortTasks,
   statusLabel,
   summarizeTasks,
-  usageLabel,
 } from "../protocol/tasks";
 import type { ErrorOnly, TaskKind, TaskOutputResponse, TaskRecord } from "../protocol/types";
 import { CollapsiblePre } from "./CollapsiblePre";
@@ -82,6 +80,13 @@ type OutputState =
   | { phase: "loading" }
   | { phase: "shown"; text: string; truncated: boolean }
   | { phase: "error"; message: string };
+
+/** The title's tooltip: "Build fix — general-purpose · worktree". */
+function rowTitle(t: TaskRecord): string {
+  const base = t.description || kindLabel(t.kind);
+  const extra = [t.subagent_type, t.isolation === "worktree" ? "worktree" : ""].filter(Boolean).join(" · ");
+  return extra ? `${base} — ${extra}` : base;
+}
 
 function KindIcon({ kind }: { kind: TaskKind }) {
   const props = { size: 14, "aria-hidden": true } as const;
@@ -158,8 +163,6 @@ export function TasksPanel({ tasks, runId, open, onToggle, fetchOutput = default
         rows.length ? (
           <ul className="chat-tasks-list">
             {rows.map((t) => {
-              const meta =
-                t.kind === "agent" ? usageLabel(t.usage) : t.kind === "monitor" ? eventsLabel(t.events) : "";
               const out = outputs[t.id];
               const elapsed = elapsedLabel(t, nowMs);
               return (
@@ -168,12 +171,14 @@ export function TasksPanel({ tasks, runId, open, onToggle, fetchOutput = default
                     <span className="chat-task-kind" title={kindLabel(t.kind)}>
                       <KindIcon kind={t.kind} />
                     </span>
-                    <span className="chat-task-desc" title={t.description || kindLabel(t.kind)}>
+                    <span className="chat-task-desc" title={rowTitle(t)}>
                       {t.description || kindLabel(t.kind)}
                     </span>
+                    {t.isolation === "worktree" ? (
+                      <GitBranch className="chat-task-wt" size={12} aria-label="in a worktree" />
+                    ) : null}
                     <span className={"chat-task-status is-" + t.status}>{statusLabel(t.status)}</span>
                     {elapsed ? <span className="chat-task-time">{elapsed}</span> : null}
-                    {meta ? <span className="chat-task-meta">{meta}</span> : null}
                     {hasOutput(t) && runId ? (
                       <button
                         type="button"
@@ -186,9 +191,11 @@ export function TasksPanel({ tasks, runId, open, onToggle, fetchOutput = default
                       </button>
                     ) : null}
                   </div>
-                  {t.subagent_type ? <div className="chat-task-sub">{t.subagent_type}</div> : null}
-                  {t.summary ? <div className="chat-task-summary">{t.summary}</div> : null}
-                  {t.error ? <div className="chat-task-error">{t.error}</div> : null}
+                  {t.error ? (
+                    <div className="chat-task-error is-clamped" title={t.error}>
+                      {t.error}
+                    </div>
+                  ) : null}
                   {out?.phase === "shown" ? (
                     <div className="chat-task-out">
                       {out.truncated ? <div className="chat-task-note">Showing the last 64 KB.</div> : null}

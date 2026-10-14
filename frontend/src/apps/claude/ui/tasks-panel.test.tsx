@@ -83,13 +83,32 @@ describe("TasksPanel", () => {
     const r = mount(<TasksPanel tasks={TASKS} runId="r1" open onToggle={() => {}} now={() => 70_000} />);
     const rows = byClass(r.root, "chat-task");
     expect(rows.map((n) => text(byClass(n, "chat-task-desc")[0]!))).toEqual(["Explore the repo", "tail logs", "npm test"]);
-    expect(text(byClass(rows[0]!, "chat-task-meta")[0]!)).toBe("4.2k tokens · 7 tool uses");
-    expect(text(byClass(rows[1]!, "chat-task-meta")[0]!)).toBe("3 events");
-    expect(text(byClass(rows[1]!, "chat-task-summary")[0]!)).toBe("line 3");
+    // One line per row: no usage/events meta, no summary, no sub-line.
+    for (const cls of ["chat-task-meta", "chat-task-summary", "chat-task-sub"]) {
+      expect(rows.map((n) => byClass(n, cls).length)).toEqual([0, 0, 0]);
+    }
+    expect(byClass(rows[0]!, "chat-task-desc")[0]!.props.title).toBe("Explore the repo — Explore");
     expect(text(byClass(rows[0]!, "chat-task-time")[0]!)).toBe("20s");
     expect(text(byClass(rows[2]!, "chat-task-time")[0]!)).toBe("30s");
     expect(text(byClass(rows[2]!, "chat-task-status")[0]!)).toBe("done");
     expect(rows.map((n) => byClass(n, "chat-task-out-btn").length)).toEqual([0, 1, 1]);
+  });
+
+  test("a worktree-isolated agent gets an inline marker and a tooltip, not a sub-line", () => {
+    const iso = rec({ id: "w", kind: "agent", description: "Build fix", subagent_type: "general-purpose", isolation: "worktree" });
+    const r = mount(<TasksPanel tasks={[iso, rec({ id: "n", kind: "agent", description: "Plain" })]} runId="r1" open onToggle={() => {}} />);
+    const rows = byClass(r.root, "chat-task");
+    const marked = rows[0]!.findAll((n) => n.props["aria-label"] === "in a worktree");
+    expect(marked.length).toBeGreaterThan(0);
+    expect(byClass(rows[0]!, "chat-task-desc")[0]!.props.title).toBe("Build fix — general-purpose · worktree");
+    expect(rows[1]!.findAll((n) => n.props["aria-label"] === "in a worktree").length).toBe(0);
+    expect(byClass(rows[1]!, "chat-task-desc")[0]!.props.title).toBe("Plain");
+  });
+
+  test("an error stays on one clamped line with the full text in title", () => {
+    const r = mount(<TasksPanel tasks={[rec({ id: "e", kind: "shell", status: "failed", error: "boom\nlong" })]} runId="r1" open onToggle={() => {}} />);
+    const err = byClass(r.root, "chat-task-error")[0]!;
+    expect(err.props.title).toBe("boom\nlong");
   });
 
   test("no run to ask → no Output buttons", () => {
