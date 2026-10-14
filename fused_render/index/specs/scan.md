@@ -79,10 +79,19 @@ The GIL caps one process at roughly 15k dirs/s, so the worker fans out:
 2. **Split the giants** — with a cache available, any frontier entry whose cached
    subtree exceeds `cfg.split_dirs` (4 000) dirs is expanded further, so one huge folder
    (`~/Library`) can't serialize the tail of the run.
-3. **Process pool** — a `multiprocessing` **spawn** pool over the frontier,
-   `chunksize=1`, initialized by `_child_init` (its own dir cache, `Sink`, thread pool,
-   and a `MountGuard` rebuilt from `spec.json`). Spawn, never fork: a forked child
-   re-runs PROJ's SQLite atfork handler and dies with SIGSEGV.
+3. **Process pool** — a `concurrent.futures.ProcessPoolExecutor` over a **spawn**
+   context, one task per frontier entry (in sorted order), initialized by `_child_init`
+   (its own dir cache, `Sink`, thread pool, and a `MountGuard` rebuilt from `spec.json`).
+   Spawn, never fork: a forked child re-runs PROJ's SQLite atfork handler and dies with
+   SIGSEGV. The parent polls `concurrent.futures.wait(..., timeout=0.5,
+   FIRST_EXCEPTION)`, calls `.result()` on what finished, emits progress and checks the
+   cancel flag. **Not `multiprocessing.Pool`**: it replaces a killed child (a
+   memory-pressure kill) and the lost task never completes, so `map_async` never became
+   ready and the run hung for ever. A dead child now breaks the executor,
+   `BrokenProcessPool` propagates to `run_scan`'s handler and the run ends
+   `run_end failed` with the traceback; the next scan redoes the work. The env var
+   `FUSED_RENDER_TEST_SCAN_CHILD_DIE=<subdir basename>` is a test-only fault injection
+   (`os._exit(137)` in that subtree's child).
 4. **Thread-pool escape hatch** — `_scan_subtree` walks single-threaded (fastest when
    metadata is warm) but if a 100-dir window takes over 1 s, the rest of that subtree
    is handed to a 16-thread pool, where blocking syscalls overlap because they release
@@ -120,6 +129,12 @@ the disk queue.
 
 **Device ids** are collected during the walk — a root spanning more than one volume
 disqualifies the FSEvents fast path (`scan-incremental.md §3`).
+
+**Memory before compaction.** Compaction can wait on the store lock for minutes, so
+immediately before it `run_scan` clears the dir `cache` (and the `keys`/`subtree_n`
+split helpers sharing its strings), and `_run_fsevents` clears `cache` and drops
+`children`, `scanned`, `dead`, `keys`, `stack`, `deleted` — nothing after that point
+reads them (it needs only `totals`, `t0` and the summary).
 
 ## 5. Cancellation
 

@@ -65,6 +65,12 @@ derived at read time because every query opens a fresh in-memory DuckDB over
 column and parquet has no computed-column concept. It measures 92 ms vs 148 ms on
 300k rows at the real `LIMIT 200_001`, for +0.10% on disk.
 
+`load_dir_cache(cfg, root, pq)` filters in Arrow before materializing: for a root other
+than `/` it reads with `dir >= root` / `dir < root + "0"` (`0` follows `/`, so the range is
+the root plus every descendant, and row-group statistics skip the rest of a sorted
+file), masks out range-neighbours like `/r/a-b` with an exact-prefix test, and only then
+builds the Python dict. A trailing slash on `root` is irrelevant.
+
 Readers tolerate older files: `load_dir_cache` treats a `dirs.parquet` without
 `mtime_ns` as no cache at all, and `compact` synthesizes missing `mtime_ns` /
 `n_subdirs` / `depth` columns so an old index can still be merged forward.
@@ -128,11 +134,29 @@ Three consequences worth knowing:
   deliberately left on disk one compaction longer for a reader that loaded the manifest
   microseconds before the swap.
 
+## 4b. The store lock wait
+
+`store_lock(cfg, cancel_flag=None, on_wait=None)` is the flock every store writer
+takes. With no arguments it blocks (delete-index wants that). `compact` passes the
+run's `cancel_flag` and an `on_wait` that emits a `waiting for another scan to finish`
+phase, so the wait **polls** (`LOCK_NB` every `LOCK_POLL_S` = 0.25 s) instead of
+blocking in `flock`: a cancelled run raises `StoreLockCancelled` and `compact` returns
+`None` ("cancelled at the store lock") at once rather than holding its scan memory
+until the lock frees, and `on_wait` fires every `_LOCK_WAIT_HEARTBEAT_S` (20 s) so a
+queued worker keeps touching its run dir and `runner._with_liveness` does not declare
+it dead after `ABANDONED_RUN_S`. Before the wait, `scan.py` drops the dir cache (and,
+on the FSEvents path, its walk structures) so a queued worker is not parked on them.
+
 ## 5. Compaction threads
 
-The merge connects through `background_connect()`, which issues
-`SET threads TO compaction_threads()` — a quarter of the cores, at most
-`MAX_COMPACTION_THREADS` (4). Readers get no cap at all (`query.py` connects plain):
+The merge connects through `background_connect(temp_dir=<index dir>/duckdb-tmp)`, which
+issues `SET threads TO compaction_threads()` — a quarter of the cores, at most
+`MAX_COMPACTION_THREADS` (4) — and `SET memory_limit` to `compaction_memory_mb()`: an
+eighth of physical RAM clamped to `[MIN_COMPACTION_MEMORY_MB, MAX_COMPACTION_MEMORY_MB]`
+(512 MB-2 GB; 1 GB when RAM is unknown). DuckDB's default is ~80% of RAM, which pushed
+a 16 GB Mac into swap; past the cap the merge spills to `temp_directory` instead of
+growing RSS (slower, never frozen). `preserve_insertion_order` stays on — the
+LIMIT/OFFSET partition split relies on the merged table's order. Readers get no cap at all (`query.py` connects plain):
 the compaction runs inside a niced scan worker nobody is waiting on, while
 `/api/index/rank` is a keystroke, and an all-cores merge starved it for seconds
 (`scan.md §4`, scheduling priority).

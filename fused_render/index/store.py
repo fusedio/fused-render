@@ -11,6 +11,7 @@ module top: this module is imported by the server (routers/index.py), and a
 `stats` call on a missing index should not pay a duckdb import.
 """
 import contextlib
+import errno
 import fcntl
 import json
 import os
@@ -52,18 +53,61 @@ def search_threads() -> int:
     return max(1, min(MAX_SEARCH_THREADS, (os.cpu_count() or 4) // 2))
 
 
-def background_connect():
-    """An in-memory DuckDB for the scan side, capped to `compaction_threads`."""
+# Bounds for the memory DuckDB may use during a compaction. An unset
+# memory_limit is ~80% of RAM, and the merge runs inside a scan worker beside
+# the user's apps: on a 16 GB Mac that is enough to push the machine into swap.
+# DuckDB spills past the limit to `temp_directory` instead of growing RSS, so
+# the cap trades merge speed for not freezing the box. An eighth of RAM, never
+# below the floor (a merge that cannot fit just spills harder) nor above the
+# ceiling (more than this buys no measurable speed).
+MIN_COMPACTION_MEMORY_MB = 512
+MAX_COMPACTION_MEMORY_MB = 2048
+
+
+def compaction_memory_mb() -> int:
+    try:
+        total = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+    except (ValueError, OSError, AttributeError):
+        return 1024  # unknown RAM: a middle value, still far under 80%
+    total_mb = total // (1024 * 1024)
+    return max(MIN_COMPACTION_MEMORY_MB,
+               min(MAX_COMPACTION_MEMORY_MB, total_mb // 8))
+
+
+def background_connect(temp_dir=None):
+    """An in-memory DuckDB for the scan side, capped to `compaction_threads`
+    cores and `compaction_memory_mb` of RAM. With `temp_dir`, a merge larger
+    than the memory cap spills there rather than growing the worker's RSS.
+
+    `preserve_insertion_order` is deliberately left on: the compaction's
+    LIMIT/OFFSET partition split relies on the merged table's order."""
     import duckdb
 
     con = duckdb.connect()
     con.execute(f"SET threads TO {compaction_threads()}")
+    con.execute(f"SET memory_limit = '{compaction_memory_mb()}MB'")
+    if temp_dir is not None:
+        os.makedirs(temp_dir, exist_ok=True)
+        con.execute(f"SET temp_directory = '{_sql(temp_dir)}'")
     return con
 
 
+class StoreLockCancelled(Exception):
+    """The run was cancelled while it waited for `store_lock`."""
+
+
+# How often a waiter polls for the lock, and how often it tells its caller it
+# is still alive while it waits. The heartbeat mirrors _MERGE_HEARTBEAT_S
+# (comfortably under runner.ABANDONED_RUN_S): a worker queued behind another
+# scan's merge writes nothing, so without it the liveness watchdog reports a
+# healthy waiter dead.
+LOCK_POLL_S = 0.25
+_LOCK_WAIT_HEARTBEAT_S = 20.0
+
+
 @contextlib.contextmanager
-def store_lock(cfg: IndexConfig):
-    """Mutual exclusion for store WRITERS (compactions, delete), blocking.
+def store_lock(cfg: IndexConfig, cancel_flag=None, on_wait=None):
+    """Mutual exclusion for store WRITERS (compactions, delete).
 
     Two concurrent compactions — two configured roots scanned at startup, or a
     config-save rescan racing the startup scan — would otherwise both read the
@@ -75,17 +119,44 @@ def store_lock(cfg: IndexConfig):
 
     An OS lock (flock), not a lockfile-existence protocol: it is held
     by an open fd, so a crashed worker releases it with its process instead of
-    wedging every future scan."""
+    wedging every future scan.
+
+    With no arguments it blocks until it has the lock (delete-index and the
+    other callers want exactly that). A scan worker passes `cancel_flag` and
+    `on_wait`: the wait then polls instead of blocking in flock, so a cancelled
+    run raises `StoreLockCancelled` at once rather than sitting on its memory
+    until the lock frees, and `on_wait()` is called every
+    `_LOCK_WAIT_HEARTBEAT_S` so the run still looks alive."""
     os.makedirs(cfg.dir, exist_ok=True)
     f = open(os.path.join(cfg.dir, ".store.lock"), "a")
+    acquired = False
     try:
-        fcntl.flock(f, fcntl.LOCK_EX)
+        if cancel_flag is None and on_wait is None:
+            fcntl.flock(f, fcntl.LOCK_EX)
+        else:
+            last_beat = time.monotonic()
+            while True:
+                try:
+                    fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except OSError as e:
+                    if e.errno not in (errno.EWOULDBLOCK, errno.EAGAIN):
+                        raise
+                if cancel_flag is not None and os.path.exists(cancel_flag):
+                    raise StoreLockCancelled()
+                if (on_wait is not None
+                        and time.monotonic() - last_beat >= _LOCK_WAIT_HEARTBEAT_S):
+                    last_beat = time.monotonic()
+                    on_wait()
+                time.sleep(LOCK_POLL_S)
+        acquired = True
         yield
     finally:
-        try:
-            fcntl.flock(f, fcntl.LOCK_UN)
-        except OSError:
-            pass
+        if acquired:
+            try:
+                fcntl.flock(f, fcntl.LOCK_UN)
+            except OSError:
+                pass
         f.close()
 
 
@@ -241,25 +312,44 @@ def load_dir_cache(cfg: IndexConfig, root: str, pq) -> dict:
     asks `ignored_for_index`, the one predicate all three gates share, rather than
     the raw rules — otherwise a LEAF dir the user's ignore list names (a `.git`,
     for every config saved before it left the default list) is written by a full
-    rescan and then deleted by the very next incremental one."""
+    rescan and then deleted by the very next incremental one.
+
+    The subtree is selected in Arrow, BEFORE anything becomes a Python object:
+    each pool child and each folder-rooted scan used to `to_pylist()` every row
+    of the whole index (~800 MB resident with a million dirs) only to throw
+    nearly all of them away. The root may be given with or without a trailing
+    slash; `/` selects everything."""
     if not os.path.exists(cfg.dirs_parquet):
         return {}
     names = pq.read_schema(cfg.dirs_parquet).names
     if "mtime_ns" not in names:
         return {}
+    import pyarrow.compute as pc
+
     cols = ["dir", "n_files", "mtime_ns"] + (
         ["n_subdirs"] if "n_subdirs" in names else [])
-    t = pq.read_table(cfg.dirs_parquet, columns=cols)
+    rootp = root.rstrip("/") or "/"
+    if rootp == "/":
+        t = pq.read_table(cfg.dirs_parquet, columns=cols)
+    else:
+        prefix = rootp + "/"
+        # '0' is the code point right after '/', so [rootp, rootp + "0")
+        # holds the root and every descendant; row-group statistics let
+        # pyarrow skip the rest of the file. It also admits siblings that
+        # sort between them (`/a/b-x`, `/a/b.x`), which the mask removes.
+        t = pq.read_table(cfg.dirs_parquet, columns=cols,
+                          filters=[("dir", ">=", rootp),
+                                   ("dir", "<", rootp + "0")])
+        d = t.column("dir")
+        t = t.filter(pc.or_(pc.equal(d, rootp), pc.starts_with(d, prefix)))
     subs = (t.column("n_subdirs").to_pylist() if "n_subdirs" in names
             else [-1] * t.num_rows)
     rules = cfg.rules
-    prefix = root.rstrip("/") + "/"
     cache = {}
     for d, m, n, ns in zip(t.column("dir").to_pylist(),
                            t.column("mtime_ns").to_pylist(),
                            t.column("n_files").to_pylist(), subs):
-        if ((d == root or d.startswith(prefix))
-                and not ignored_for_index(rules, d, tree=True)):
+        if not ignored_for_index(rules, d, tree=True):
             cache[d] = (m, n, ns)
     return cache
 
@@ -375,17 +465,28 @@ def compact(cfg: IndexConfig, root, shards_dir, pa, pq, emit=None,
     behind this one and merges on top of ITS output instead of on the stale
     generation both of them read.
 
-    `cancel_flag` is re-checked after the lock is acquired: a Delete Index
+    `cancel_flag` is also polled WHILE waiting for the lock (a cancelled run
+    gives up at once instead of holding its memory behind another scan's
+    merge), and the wait emits a heartbeat phase so the run still reads as
+    alive. It is re-checked after the lock is acquired: a Delete Index
     pressed while this run was walking cancels the run and takes the lock, so
     a compaction that was about to rebuild the store the user just emptied
     aborts here (returns None) instead of quietly undoing the delete.
 
     `emit` is the worker's event writer (or None when compaction is driven
     directly, e.g. by a test)."""
-    with store_lock(cfg):
-        if cancel_flag is not None and os.path.exists(cancel_flag):
-            return None
-        return _compact_locked(cfg, root, shards_dir, pa, pq, emit)
+    def phase(msg):
+        if emit is not None:
+            emit(type="phase", msg=msg)
+
+    try:
+        with store_lock(cfg, cancel_flag=cancel_flag,
+                        on_wait=lambda: phase("waiting for another scan to finish")):
+            if cancel_flag is not None and os.path.exists(cancel_flag):
+                return None
+            return _compact_locked(cfg, root, shards_dir, pa, pq, emit)
+    except StoreLockCancelled:
+        return None
 
 
 # Heartbeat cadence for the blocking merge statement below — comfortably
@@ -527,7 +628,8 @@ def _compact_locked(cfg: IndexConfig, root, shards_dir, pa, pq, emit=None):
     dirs_parquet = cfg.dirs_parquet
     old_manifest = read_manifest(cfg) or {}
     generation = int(old_manifest.get("generation") or 0) + 1
-    con = background_connect()
+    con = background_connect(
+        temp_dir=os.path.join(cfg.dir, "duckdb-tmp"))
     rootp = root.rstrip("/") or "/"
     prefix_like = (like_literal(rootp) + "/") if rootp != "/" else "/"
     outside = (f"(dir <> '{_sql(rootp)}' "

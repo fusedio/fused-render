@@ -22,7 +22,11 @@ The chosen strategy is announced as a `phase` event.
 ## 2. The mtime reuse rule
 
 `load_dir_cache` reads `dirs.parquet` into `{dir: (mtime_ns, n_files, n_subdirs)}`,
-restricted to the scan root's subtree and filtered through the ignore list. A directory
+restricted to the scan root's subtree and filtered through the ignore list. The
+subtree is selected in Arrow first (a `dir` range filter that row-group statistics push
+down, then an exact-prefix mask for siblings like `/r/a-b`) and only then turned into
+Python objects, so a folder-rooted scan or a pool child does not pay for the whole index.
+A directory
 is **unchanged** when its `st_mtime_ns` equals the cached value:
 
 - **Unchanged leaf** (`n_subdirs == 0`) → one `stat`, nothing else. Kind `"u"`.

@@ -173,6 +173,29 @@ def active_run(cfg: IndexConfig, root: str):
     return None
 
 
+# The most index runs the rescan queue (server/index_touch.py) lets be alive at
+# once. Each run is a worker process that can hold hundreds of MB, and runs
+# serialize on the store lock anyway (only one compacts at a time), so a third
+# run adds waiting memory and no throughput.
+MAX_CONCURRENT_RUNS = 2
+
+
+def live_run_count(cfg: IndexConfig) -> int:
+    """How many runs are alive right now, across every root.
+
+    Counted the way `active_run` decides liveness, with one difference: a run
+    already told to stop STILL counts. Cancelling is asynchronous, and a
+    cancelled worker keeps its memory until it actually exits, so it must keep
+    occupying a slot of MAX_CONCURRENT_RUNS."""
+    now = time.time()
+    n = 0
+    for rid in _run_ids(cfg):
+        rd = os.path.join(cfg.runs_dir, rid)
+        if _with_liveness(dict(_folded(rd)), rd, now)["running"]:
+            n += 1
+    return n
+
+
 def start(cfg: IndexConfig, root: str, full: bool = False,
          hint=None) -> dict:
     """Spawn a detached scan of `root`; returns `{run_id, root}` at once.
