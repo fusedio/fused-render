@@ -21,35 +21,7 @@ would report zero bytes downloaded, so those fixtures have to write real
 bytes — which is fine, they are sized in megabytes rather than gigabytes.
 """
 
-import ctypes
 import os
-import sys
-
-#: FSCTL_SET_SPARSE — see `_mark_sparse`.
-_FSCTL_SET_SPARSE = 0x000900C4
-
-
-def _mark_sparse(fd: int) -> None:
-    """Ask NTFS not to reserve the clusters. Best effort, never fatal.
-
-    A POSIX filesystem makes this sparse implicitly: extending the length
-    without writing allocates nothing at all. NTFS does not — it sets EOF
-    and reserves the space, so a 5GB fixture would still cost 5GB of a
-    Windows runner's rather small disk. It stays fast there either way (no
-    data is written), which is why failing to set the flag is not an error:
-    the worst case is the disk usage we already had before this helper.
-    """
-    if sys.platform != "win32":
-        return
-    try:
-        import msvcrt
-
-        returned = ctypes.c_ulong(0)
-        ctypes.windll.kernel32.DeviceIoControl(
-            ctypes.c_void_p(msvcrt.get_osfhandle(fd)), _FSCTL_SET_SPARSE,
-            None, 0, None, 0, ctypes.byref(returned), None)
-    except Exception:
-        pass
 
 
 def sparse_file(path, size: int) -> None:
@@ -64,5 +36,4 @@ def sparse_file(path, size: int) -> None:
     if parent:
         os.makedirs(parent, exist_ok=True)
     with open(path, "wb") as f:
-        _mark_sparse(f.fileno())
         f.truncate(size)
