@@ -624,8 +624,6 @@ def test_an_os_error_from_a_backend_becomes_a_picker_failure(monkeypatch):
 def test_a_posix_path_with_a_backslash_in_a_name_round_trips(monkeypatch):
     # A backslash is a legal POSIX filename character, so it must NOT be swapped
     # for a separator — canonical_fs_path leaves it untouched.
-    if os.name == "nt":
-        pytest.skip("a backslash cannot be a filename character on Windows")
     monkeypatch.setattr(dirpicker, "_backend", lambda: "linux")
     monkeypatch.setitem(dirpicker._BACKENDS, "linux",
                         lambda start, title: "/home/ada/we\\ird")

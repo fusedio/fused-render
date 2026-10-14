@@ -1114,8 +1114,8 @@ def test_a_prefs_file_naming_a_WITHDRAWN_engine_still_serves_the_capability(
     since D416 the only local text engines are `mlx-text` (Apple Silicon) and
     `llamacpp-text` (whose wheel index publishes no macOS x86_64 build and only
     three Linux architectures), so `effective is None` is the CORRECT answer on
-    Intel macOS, Windows ARM64 and a Linux machine outside
-    x86_64/aarch64/riscv64 — and this test would fail there on right behaviour.
+    Intel macOS and a Linux machine outside x86_64/aarch64/riscv64 — and this
+    test would fail there on right behaviour.
     Linux/x86_64 is the same pin its registry-level sibling uses, and for the
     same reason. What is under test here is the DEGRADATION, not the coverage;
     the coverage invariant is
@@ -1283,7 +1283,7 @@ def test_auto_is_a_value_you_can_write_BACK(tmp_path, monkeypatch):
 def test_a_preference_this_MACHINE_cannot_honour_is_still_stored(tmp_path, monkeypatch):
     """Legal is a weaker claim than usable, deliberately.
 
-    A user with a Mac and a Windows box shares one prefs.json through a synced
+    A user with a Mac and a Linux box shares one prefs.json through a synced
     home directory. Refusing to STORE a choice the current machine cannot run
     would make the file un-shareable, and rewriting it on read would make the
     choice un-restorable. The resolution is what drops it, per machine, with the
@@ -1292,8 +1292,8 @@ def test_a_preference_this_MACHINE_cannot_honour_is_still_stored(tmp_path, monke
     """
     from fused_render.ai import registry
 
-    monkeypatch.setattr(registry.platform, "system", lambda: "Windows")
-    monkeypatch.setattr(registry.platform, "machine", lambda: "AMD64")
+    monkeypatch.setattr(registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
     client, _ = _client(tmp_path, monkeypatch)
 
     body = client.put(

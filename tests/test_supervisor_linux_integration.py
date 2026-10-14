@@ -71,10 +71,7 @@ def test_first_install_writes_files_and_pokes_databases(env):
 
     # .desktop entry: absolute quoted AppImage Exec with the URL field code.
     desktop = env.desktop_file.read_text()
-    # Via _exec_quote rather than the assumption "no quoting needed": a real
-    # tmp_path is a native path, and on Windows that always contains the
-    # backslash separator, itself an _EXEC_RESERVED char — even though this
-    # Linux-only integration path never runs on a real Windows install.
+    # Via _exec_quote rather than the assumption "no quoting needed".
     assert f"Exec={integration.startup._exec_quote(str(env.appimage))} %u" in desktop
     assert "MimeType=" in desktop and desktop.rstrip().endswith("x-scheme-handler/fused-render;")
     assert f"Icon={env.icon_file}" in desktop
@@ -268,16 +265,8 @@ def test_deintegrate_swallows_tool_failures(env, monkeypatch):
 
 
 def _exec_line(appimage: str) -> str:
-    # Deliberately NOT wrapped in Path(appimage): _desktop_entry only ever
-    # calls str() on it, and these are POSIX-style literals standing in for a
-    # hypothetical AppImage location (AppImages/.desktop files are Linux-only,
-    # so no such path is ever native-Windows in reality). Routing a literal
-    # through Path() would let the host OS's path flavour reinterpret it —
-    # on Windows, `Path("/opt/Fu\\sed.AppImage")` parses the embedded "\\" as
-    # a directory separator instead of the literal character under test, and
-    # str() back out renders every "/" as "\\" too, corrupting the very
-    # escaping behaviour being pinned here. Passing the plain string keeps
-    # these tests pure-string checks of _exec_quote, exactly as intended.
+    # A plain string: _desktop_entry only ever calls str() on it, so these
+    # stay pure-string checks of _exec_quote.
     entry = integration._desktop_entry(appimage, "fused-render")
     (line,) = [ln for ln in entry.splitlines() if ln.startswith("Exec=")]
     return line

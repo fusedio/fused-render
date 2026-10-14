@@ -6,7 +6,6 @@ import io
 import os
 import shutil
 import subprocess
-import sys
 import time
 
 import pytest
@@ -177,14 +176,9 @@ def test_repo_toplevel_cache_expires_after_the_ttl(tmp_path, monkeypatch):
 # `_read_field` used to block forever on `self.proc.stdout.read1` with no
 # timeout at all. A stalled check-ignore child (an index.lock held elsewhere,
 # gc --auto, a degraded filesystem) would hang the request thread
-# indefinitely. These are POSIX-only (select() on a pipe doesn't work on
-# Windows), matching the class's own `_read_chunk` fallback.
+# indefinitely.
 
 import types
-
-pytestmark_win = pytest.mark.skipif(
-    sys.platform == "win32", reason="deadline uses select() on a pipe, POSIX only")
-
 
 class _NullStdin:
     def write(self, data):
@@ -197,7 +191,6 @@ class _NullStdin:
         pass
 
 
-@pytestmark_win
 def test_ignored_gives_up_on_a_stalled_child_within_the_deadline(tmp_path, monkeypatch):
     _make_repo(tmp_path)
     oracle = _gi._IgnoreOracle(str(tmp_path))
@@ -227,7 +220,6 @@ def test_ignored_gives_up_on_a_stalled_child_within_the_deadline(tmp_path, monke
     real_proc.wait(timeout=5)
 
 
-@pytestmark_win
 def test_a_broken_oracle_after_a_stall_answers_nothing_ignored_from_then_on(
         tmp_path, monkeypatch):
     _make_repo(tmp_path)
@@ -252,7 +244,6 @@ def test_a_broken_oracle_after_a_stall_answers_nothing_ignored_from_then_on(
     real_proc.wait(timeout=5)
 
 
-@pytestmark_win
 def test_ignored_does_not_time_out_on_a_slow_but_progressing_stream(tmp_path):
     # A generous deadline must not fire just because a real (fast) call takes
     # a normal amount of time — no false positive on the happy path.
@@ -263,7 +254,6 @@ def test_ignored_does_not_time_out_on_a_slow_but_progressing_stream(tmp_path):
     oracle.close()
 
 
-@pytestmark_win
 def test_ignored_survives_a_chunk_cycle_bigger_than_64kib(tmp_path):
     """One CHUNK (200 queries) of ordinary-length paths, echoed back in full
     by `check-ignore -v`, produces more than the 65536-byte `_READ_SIZE` of
@@ -297,7 +287,6 @@ class _ExplodingRead1(io.BufferedReader):
         raise AssertionError("_read_chunk must not use read1()")
 
 
-@pytestmark_win
 def test_read_chunk_never_buffers_bytes_select_cannot_see():
     """`_read_chunk` must read the fd directly (`os.read`), never through
     `self.proc.stdout.read1` — the latter is a `BufferedReader` (no `bufsize`

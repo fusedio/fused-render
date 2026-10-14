@@ -532,7 +532,6 @@ def test_on_sigterm_quits_the_host():
     assert saved == [True]
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="the host serves a unix socket")
 def test_main_sets_app_identity_and_a_sigterm_handler_before_serving(monkeypatch, tmp_path):
     from types import SimpleNamespace
 
@@ -584,7 +583,6 @@ def test_main_sets_app_identity_and_a_sigterm_handler_before_serving(monkeypatch
     assert calls.index(("prgname", "fused-render")) < calls.index(("main",))
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="the host serves a unix socket")
 def test_main_runs_without_a_sigterm_handler_when_neither_api_exists(monkeypatch, capsys, tmp_path):
     """Neither GLibUnix.signal_add nor GLib.unix_signal_add existing must not
     crash the host into browser-tab fallback: it just runs with no SIGTERM

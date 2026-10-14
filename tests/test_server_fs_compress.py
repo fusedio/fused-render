@@ -11,7 +11,6 @@ import os
 import shutil
 import stat
 import subprocess
-import sys
 import tarfile
 import zipfile
 
@@ -25,7 +24,7 @@ from fused_render.server.fs_mutate import _fs_compress as COMPRESS
 from tests.test_server_git_repo import git, make_repo
 
 skip_root = pytest.mark.skipif(
-    hasattr(os, "geteuid") and os.geteuid() == 0,
+    os.geteuid() == 0,
     reason="read-only bits are ignored when running as root")
 
 
@@ -41,15 +40,9 @@ def _data(resp) -> dict:
 
 def make_tree(root):
     root.mkdir(parents=True)
-    # newline="": Path.write_text's default text-mode translation rewrites
-    # "\n" to os.linesep on write, so a Windows run stores "beta\r\n" for
-    # content this fixture asked to be "beta\n" — a fixture artifact tests
-    # that check exact bytes (test_zip_writes_sibling_archive_and_returns_stat)
-    # would then see, not anything the archiver does. newline="" writes
-    # exactly what's given, the same on every platform.
-    (root / "a.txt").write_text("alpha\n", newline="")
+    (root / "a.txt").write_text("alpha\n")
     (root / "sub").mkdir()
-    (root / "sub" / "b.txt").write_text("beta\n", newline="")
+    (root / "sub" / "b.txt").write_text("beta\n")
     (root / "empty").mkdir()
     return root
 
@@ -96,18 +89,14 @@ def _tree(root):
     """Every path under `root`, relative and "/"-separated, dirs marked.
 
     Zip archive entries are always "/"-separated by the ZIP spec (and this
-    app's own `_zip_tree.arcname` enforces exactly that), regardless of host
-    OS — so the tree this reads back off a REAL extraction has to be
-    normalized the same way, or a nested relpath's OS-native separator
-    (backslash on Windows) never matches the forward-slash entries the
-    archiver wrote.
+    app's own `_zip_tree.arcname` enforces exactly that).
     """
     out = set()
     for base, dirs, files in os.walk(root):
         for name in dirs:
-            out.add(os.path.relpath(os.path.join(base, name), root).replace(os.sep, "/") + "/")
+            out.add(os.path.relpath(os.path.join(base, name), root) + "/")
         for name in files:
-            out.add(os.path.relpath(os.path.join(base, name), root).replace(os.sep, "/"))
+            out.add(os.path.relpath(os.path.join(base, name), root))
     return out
 
 
@@ -169,25 +158,15 @@ def test_zip_stores_symlinks_without_following_them(tmp_path):
     src = make_tree(tmp_path / "proj")
     outside = tmp_path / "secret.txt"
     outside.write_text("do not inline me\n")
-    try:
-        os.symlink(str(outside), str(src / "link.txt"))
-        os.symlink(str(src), str(src / "loop"), target_is_directory=True)
-    except (OSError, NotImplementedError):
-        pytest.skip("symlinks unavailable")
+    os.symlink(str(outside), str(src / "link.txt"))
+    os.symlink(str(src), str(src / "loop"), target_is_directory=True)
     out = _data(COMPRESS({"path": str(src), "format": "zip"}, x_fused="1"))
     with zipfile.ZipFile(out["path"]) as z:
         info = z.getinfo("proj/link.txt")
         assert stat.S_ISLNK(info.external_attr >> 16)
         # _zip_tree stores os.readlink()'s own return value verbatim (by
-        # design — it never rewrites a symlink's target). On Windows that can
-        # come back with the "\\?\" extended-length prefix even for a link
-        # created from a plain absolute path — a cosmetic artifact of how
-        # NTFS reports an absolute SubstituteName, not a different target —
-        # so it is stripped before comparing, same as the readlink() check in
-        # test_server_fs_mutate.py's trashed-symlink test.
+        # design — it never rewrites a symlink's target).
         stored_target = z.read("proj/link.txt")  # target, not content
-        if stored_target.startswith(b"\\\\?\\"):
-            stored_target = stored_target[4:]
         assert stored_target == str(outside).encode()
         # The self-referential dir symlink is stored, never descended into.
         assert stat.S_ISLNK(z.getinfo("proj/loop").external_attr >> 16)
@@ -378,16 +357,6 @@ def test_missing_dest_parent_400(tmp_path):
 
 
 @skip_root
-@pytest.mark.skipif(
-    sys.platform == "win32",
-    reason="the readonly guard falls back to os.access(parent, os.W_OK) for a "
-           "destination that doesn't exist yet (mount._writable), and Windows' "
-           "directory read-only attribute is largely vestigial — long used only "
-           "by Explorer's folder-customization UI — so it does not gate creating "
-           "entries inside the directory the way a POSIX missing write-bit does. "
-           "os.access keeps reporting the chmod'd holder writable and the zip is "
-           "written (200), so the 403 this test expects cannot occur there (see "
-           "test_server_fs_mutate.py's test_mkdir_readonly_parent_403).")
 def test_readonly_destination_403(tmp_path):
     holder = tmp_path / "ro"
     holder.mkdir()
@@ -414,13 +383,8 @@ def test_git_is_run_as_an_argv_list_with_no_shell(tmp_path, monkeypatch):
 
     def spy(cmd, **kw):
         # argv[0] is now the ABSOLUTE git path — required to reach posix_spawn, since CPython forks unless os.path.dirname(executable) is truthy and a fork with libproj resident SIGSEGVs before exec (tests/test_git_posix_spawn.py). Still one basename, still a list, still no shell, which is what this test is about.
-        # .lower(): _git_bin() resolves this via shutil.which("git"), and on
-        # Windows shutil.which appends an extension straight from %PATHEXT%
-        # (".EXE" by default, uppercase) rather than whatever case the file
-        # happens to be stored under — so the basename here is "git.EXE", not
-        # "git.exe". NTFS is case-insensitive for the same reason.
         if isinstance(cmd, list) and cmd and os.path.basename(
-                str(cmd[0])).lower() in ("git", "git.exe"):
+                str(cmd[0])) == "git":
             seen.setdefault("calls", []).append((cmd, kw))
         return real_run(cmd, **kw)
 

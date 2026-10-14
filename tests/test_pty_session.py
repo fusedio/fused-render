@@ -12,11 +12,8 @@ import time
 
 import pytest
 
-pytestmark = pytest.mark.skipif(os.name == "nt", reason="pty is unix-only")
-
-if os.name != "nt":
-    from fused_render import pty_session
-    from fused_render.terminal_profiles import TerminalProfile
+from fused_render import pty_session
+from fused_render.terminal_profiles import TerminalProfile
 
 
 def _profile(tmp_path, argv, env=None):

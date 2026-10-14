@@ -263,12 +263,8 @@ def test_walk_stream_same_entries_as_plain(tmp_path):
     # code path here that could disagree about what a directory's mtime is.
     # What CAN legitimately differ by a sub-millisecond amount between two live
     # re-stats of the same just-created directory is the filesystem's own
-    # metadata write-back settling — on a real Windows/NTFS runner a `sub` dir
-    # whose creation is still being committed when the first request's
-    # FindNextFile-backed DirEntry.stat() captures it can read back a mtime a
-    # fraction of a millisecond earlier than the second request's, moments
-    # later, does. That is filesystem timing noise between two reads, not a
-    # disagreement to pin exactly.
+    # metadata write-back settling. That is filesystem timing noise between two
+    # reads, not a disagreement to pin exactly.
     assert [{**e, "mtime": None} for e in streamed] \
         == [{**e, "mtime": None} for e in plain["entries"]]
     assert len(streamed) == len(plain["entries"])

@@ -9,7 +9,6 @@ existing start-at-login toggle is the only mechanism those platforms get).
 installing one. The two tests that do go through `sync` stub `launchctl`.
 """
 import os
-import sys
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -149,7 +148,6 @@ def test_off_darwin_it_is_a_no_op(monkeypatch, tmp_path):
     assert schedule_wake.remove() is False
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX bundle-walk layout")
 def test_app_bundle_path_walks_up_to_the_dot_app(monkeypatch, tmp_path):
     bundle = tmp_path / "FusedRender.app"
     exe = bundle / "Contents" / "MacOS" / "python"

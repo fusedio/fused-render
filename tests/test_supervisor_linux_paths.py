@@ -65,7 +65,6 @@ def test_state_is_the_flat_dotdir_shared_with_cli(monkeypatch, tmp_path):
     # XDG_CACHE_HOME (disposable, out of backup scope) and runtime stays on
     # XDG_RUNTIME_DIR (tmpfs, 0700, socket-safe).
     monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("USERPROFILE", str(tmp_path))  # Path.home()'s expanduser on Windows
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "run"))
     p = paths_mod.DesktopPaths.discover_linux()
@@ -82,7 +81,6 @@ def test_xdg_data_home_no_longer_affects_the_root(monkeypatch, tmp_path):
     # The move off ~/.local/share means XDG_DATA_HOME must NOT steer the state
     # root anymore — it only ever governed the old XDG-data layout.
     monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("USERPROFILE", str(tmp_path))  # Path.home()'s expanduser on Windows
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
     p = paths_mod.DesktopPaths.discover_linux()
     root = tmp_path / ".fused-render"
@@ -94,7 +92,6 @@ def test_xdg_data_home_no_longer_affects_the_root(monkeypatch, tmp_path):
 def test_cache_and_runtime_fallbacks_when_xdg_unset(monkeypatch, tmp_path):
     _clear_xdg(monkeypatch)
     monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("USERPROFILE", str(tmp_path))  # Path.home()'s expanduser on Windows
     p = paths_mod.DesktopPaths.discover_linux()
     root = tmp_path / ".fused-render"
     assert p.root == root
@@ -126,7 +123,7 @@ def test_child_environment_keys_are_contract_identical(monkeypatch, tmp_path):
 
 def test_child_environment_leaves_the_claude_config_dir_alone(monkeypatch, tmp_path):
     """The app must NOT relocate Claude Code's config dir. That dir holds
-    `.credentials.json` on Linux and Windows, so pointing it at app-owned state
+    `.credentials.json` on Linux, so pointing it at app-owned state
     logged the user out of a CLI they were already logged into — unrecoverably,
     since both spawn paths run headless and `/login` cannot run there."""
     monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
@@ -157,9 +154,8 @@ def test_child_environment_passes_a_user_set_claude_config_dir_through(monkeypat
 
 
 def test_child_environment_points_all_temp_vars_at_temp(monkeypatch, tmp_path):
-    # TEMP/TMP cover Windows-conventioned lookups, but POSIX tempfile consults
-    # TMPDIR first — without it the child's temp files land outside the
-    # supervisor-owned temp dir.
+    # tempfile consults TMPDIR first — without it the child's temp files land
+    # outside the supervisor-owned temp dir.
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "run"))

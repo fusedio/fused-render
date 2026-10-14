@@ -67,9 +67,9 @@ def _registry(root, sid, pid=None, status="busy", name="p"):
            "cwd": "/proj", "status": status, "updatedAt": 1787824059664}
     path = root / "sessions" / f"{name}.json"
     path.write_text(json.dumps(row), encoding="utf-8")
-    # Two rewrites can land inside the clock's granularity (Windows time.time()
-    # is ~15ms before 3.13), and the watcher would rightly see no change: stamp
-    # each write one whole second later than the last.
+    # Two rewrites can land inside the filesystem mtime's granularity, and the
+    # watcher would rightly see no change: stamp each write one whole second
+    # later than the last.
     _STAMP[0] += 1
     os.utime(path, (_STAMP[0], _STAMP[0]))
     return path

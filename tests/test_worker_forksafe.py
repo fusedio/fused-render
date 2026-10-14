@@ -33,9 +33,6 @@ from fused_render import executor, server
 from fused_render.server import ai as _server_ai
 from fused_render.templates.pyramid import overview_pyramid as op
 
-_POSIX = os.name == "posix"
-
-
 # --------------------------------------------------------------------------
 # executor._child.py spawn — the site in the crash report (server thread)
 # --------------------------------------------------------------------------
@@ -63,7 +60,6 @@ def test_executor_child_spawn_disables_fork(tmp_path, monkeypatch):
     )
 
 
-@pytest.mark.skipif(not _POSIX, reason="pthread_atfork is POSIX-only")
 def test_executor_spawn_runs_no_atfork_child_handler(tmp_path, monkeypatch):
     """Behavioral guard: register a C-level pthread_atfork CHILD handler (the
     same layer PROJ's crashing handler lives at) and prove it does NOT run when
@@ -144,7 +140,6 @@ def test_pyramid_analyze_worker_spawn_disables_fork(monkeypatch):
     assert captured.get("close_fds") is False
 
 
-@pytest.mark.skipif(not _POSIX, reason="posix_spawn is POSIX-only")
 def test_pyramid_build_worker_uses_posix_spawn(tmp_path, monkeypatch):
     """The detached build/cogify spawn must go through os.posix_spawn with
     setsid=True (session detachment, no atfork handlers), NOT subprocess.Popen

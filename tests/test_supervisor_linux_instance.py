@@ -19,16 +19,6 @@ from pathlib import Path
 
 import pytest
 
-pytestmark = pytest.mark.skipif(
-    not hasattr(socket, "AF_UNIX"), reason="Unix domain sockets required"
-)
-
-# instance.py imports fcntl (POSIX-only): importorskip keeps this module from
-# ERRORing at collection on Windows, where fcntl is absent (sibling convention:
-# test_supervisor_linux_tree.py guards the same way). AF_UNIX exists on macOS
-# too, so the tests below still run there — only fcntl gates the import.
-pytest.importorskip("fcntl")
-
 from fused_render.supervisor import protocol
 from fused_render.supervisor._linux import instance
 

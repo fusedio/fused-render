@@ -57,7 +57,6 @@ def home(tmp_path, monkeypatch):
     house = tmp_path / "home"
     (house / ".fused-render").mkdir(parents=True)
     monkeypatch.setenv("HOME", str(house))
-    monkeypatch.setenv("USERPROFILE", str(house))
     monkeypatch.setenv("FUSED_RENDER_HOME", str(house / ".fused-render"))
     return house
 
@@ -530,10 +529,8 @@ def folders(tmp_path):
     CANONICAL, because these strings are used at BOTH ends: as a target/project
     handed to the router (raw input, any spelling) and as the folder KEY a
     stubbed `holders()` is filed under and a row's `queue_key` is compared with.
-    `queue_key` answers `canonical_fs_path` — forward slashes, always — so on
-    Windows `str(WindowsPath)` would key the fixture on a backslashed spelling
-    the router never produces and every lookup would miss. On POSIX this is
-    `str(path)` unchanged."""
+    `queue_key` answers `canonical_fs_path`, so the fixture keys on that same
+    spelling."""
     a = tmp_path / "trees" / "alpha"
     b = tmp_path / "trees" / "beta"
     a.mkdir(parents=True)
@@ -1485,8 +1482,8 @@ def test_a_queued_send_keeps_every_choice_the_user_made(
     assert entry["permission_mode"] == "plan"
     assert entry["title"] == "A queued send"
     assert entry["description"] == "with everything on it"
-    # The store keeps the canonical forward-slash spelling of a path (schedule
-    # `_images`), whatever spelling the request used — on Windows the two differ.
+    # The store keeps the canonical spelling of a path (schedule `_images`),
+    # whatever spelling the request used.
     assert entry["images"] == [canonical_fs_path(shot)]
     assert entry["attachments"][0]["name"] == "shot.png"
 
@@ -3789,15 +3786,15 @@ def test_a_queue_dispatched_turn_marks_its_session_running(monkeypatch):
                                                             "session_id": "sess-1"}
     assert tw.is_marked_running("sess-1")
     # …even when the mark lands in the SAME clock tick as the ended stamp,
-    # which on Windows (~15 ms `time.time()` resolution) it routinely does.
+    # which a coarse `time.time()` can produce.
     assert not tw.is_turn_ended("sess-1")
 
 
 def test_a_running_mark_in_the_same_tick_as_the_ended_stamp_still_wins():
-    """Windows CI (2026-09-18): `time.time()` there ticks every ~15 ms, so the
-    queue's `mark_running` right after dispatch carried the SAME stamp as the
-    `turn_ended` it followed, and a strict "newer" compare read the fresh turn
-    as ended. Equal is newer here — dispatch follows the end by causality."""
+    """A coarse clock can give the queue's `mark_running` right after dispatch
+    the SAME stamp as the `turn_ended` it followed, and a strict "newer" compare
+    read the fresh turn as ended. Equal is newer here — dispatch follows the end
+    by causality."""
     from fused_render import tasks_watch as tw
 
     tw.reset()
