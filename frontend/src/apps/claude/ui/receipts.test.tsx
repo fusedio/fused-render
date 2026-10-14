@@ -76,17 +76,15 @@ function texts(root: ReactTestRenderer, className: string): string[] {
 
 test("a restored turn rebuilds every receipt row from its own wire (T:10903)", () => {
   const r = mount(<Receipts turn={turn} paneNoun="preview" onOpenShot={() => {}} probe={async () => false} />);
+  // The overview and pane captions are gone (the thumbnail says it); images,
+  // files and a refusal keep theirs, and the comments live in the bubble now.
   expect(texts(r, "annsum-txt")).toEqual([
-    "annotated overview attached",
-    "screenshot attached",
     "image attached: pasted.png",
     "file attached: rows.csv",
     "no image — could not be saved",
-    // The comment rows, with the user's own words (and nothing for the wordless
-    // spot — the placeholder is a wire token, not a receipt's line).
-    "this is the wrong colour",
-    "",
   ]);
+  expect(els(r, "annsum-row annsum-note")).toHaveLength(0);
+  expect(JSON.stringify(r.toJSON())).not.toContain("annotated overview attached");
   // Pictures are drawn; a file and a refusal are not (an <img> pointed at a .csv
   // is a broken-image glyph, which reads as a bug).
   expect(panes(r).length).toBe(3);
@@ -122,11 +120,7 @@ test("a live send wears the receipts it was given, not a re-read of the wire", (
     ],
   };
   const r = mount(<Receipts turn={live} paneNoun="preview" onOpenShot={() => {}} probe={async () => false} />);
-  expect(texts(r, "annsum-txt")).toEqual([
-    "screenshot attached",
-    "this is the wrong colour",
-    "",
-  ]);
+  expect(texts(r, "annsum-txt")).toEqual([]);
   const img = r.root.findAll((n) => n.type === "img");
   expect(img[0]!.props.src).toBe("blob:live");
 });
@@ -179,7 +173,7 @@ test("a turn that carried nothing draws no receipt", () => {
   expect(r.toJSON()).toBe(null);
 });
 
-test("comments ride the message, so every row opens the popup instead (T:11068)", () => {
+test("comments ride the message, so the thumbnail opens the popup instead (T:11068)", () => {
   let opened = 0;
   const r = mount(
     <Receipts
@@ -192,27 +186,11 @@ test("comments ride the message, so every row opens the popup instead (T:11068)"
       probe={async () => false}
     />,
   );
-  const note = els(r, "annsum-row annsum-note")[0]!;
-  expect(note.props.role).toBe("button");
-  expect(note.props.tabIndex).toBe(0);
-  act(() => note.props.onClick());
-  // Space and Enter reach it too: a div with an onclick is invisible to a
-  // keyboard (T:11061-11065).
-  let prevented = false;
-  act(() =>
-    note.props.onKeyDown({
-      key: " ",
-      preventDefault: () => {
-        prevented = true;
-      },
-    }),
-  );
-  expect(prevented).toBe(true);
-  // ... and so does the screenshot thumb, because the picture belongs to the
-  // comments here.
+  expect(els(r, "annsum-row annsum-note")).toHaveLength(0);
+  // The screenshot thumb is the one door: the picture belongs to the comments.
   const thumb = panes(r)[0]!;
   act(() => thumb.props.onClick());
-  expect(opened).toBe(3);
+  expect(opened).toBe(1);
 });
 
 test("a picture-only send keeps the plain viewer on its thumb (T:11075)", () => {
@@ -439,4 +417,21 @@ test("the Modal chassis takes a name, and without one is byte-identical (flag-of
   expect(modal).toContain("{ \"aria-labelledby\": titleId }");
   // No unconditional `aria-labelledby` left behind beside the spread.
   expect(modal).not.toContain("aria-labelledby={titleId}");
+});
+
+test("a wordless-caption turn with only an overview draws no empty wrapper", () => {
+  const only: UserTurn = {
+    role: "user",
+    key: "u:3",
+    text: "x",
+    raw: "x",
+    attachments: [{ kind: "overview", label: "annotated overview attached", view: "/shots/o.png", thumb: "blob:o" }],
+  };
+  const r = mount(<Receipts turn={only} paneNoun="preview" onOpenShot={() => {}} probe={async () => false} />);
+  expect(texts(r, "annsum-txt")).toEqual([]);
+  expect(panes(r)).toHaveLength(1);
+  const noThumb: UserTurn = { ...only, attachments: [{ kind: "overview", label: "annotated overview attached", view: "/shots/o.png" }] };
+  const r2 = mount(<Receipts turn={noThumb} paneNoun="preview" onOpenShot={() => {}} probe={async () => false} />);
+  // The glyph-only failure/no-thumb case keeps its label.
+  expect(texts(r2, "annsum-txt")).toEqual(["annotated overview attached"]);
 });

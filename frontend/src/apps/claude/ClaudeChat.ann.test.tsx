@@ -1282,8 +1282,15 @@ test("the typed words are in the transcript WHILE the picture is taken, and once
   await act(async () => open());
   await settle(30);
 
-  // The send's own bubble ADOPTED that row rather than adding a second.
-  expect(bubbles()).toEqual(["look at the header"]);
+  // The send's own bubble ADOPTED that row rather than adding a second. Its
+  // note now rides the bubble too: the typed words, then the comment.
+  const words = (n: unknown): string =>
+    typeof n === "string"
+      ? n
+      : n && typeof n === "object" && "children" in n
+        ? (n as { children: unknown[] }).children.map(words).join("")
+        : "";
+  expect(byClass(r, "bubble").map(words)).toEqual(["look at the header" + "this button is too small"]);
   expect(started()).toHaveLength(1);
 });
 

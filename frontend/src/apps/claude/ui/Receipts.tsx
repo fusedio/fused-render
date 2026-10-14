@@ -10,12 +10,10 @@
 // `<pane-shot>` block its `raw` still holds.
 import { useEffect, useMemo, useState } from "react";
 
-import { Pin } from "lucide-react";
-
 import "../styles/transcript.css";
 
 import type { UserTurn } from "../protocol/controller-api";
-import { parseInbound, type AnnotationWire } from "../protocol/wire";
+import { parseInbound } from "../protocol/wire";
 import { probePruned, receiptsFromWire } from "../shots";
 import type { Receipt } from "../shots/types";
 import { ShotThumb } from "./AttachTray";
@@ -37,49 +35,13 @@ export interface ReceiptsProps {
   /** The HEAD probe, injectable so a render test makes no request (T:10875). */
   probe?: (receipt: Receipt) => Promise<boolean>;
   /**
-   * "What was sent". A comment ROW is the door — no separate button, the row
-   * itself is the affordance (T:11053-11056) — and when comments ride the
-   * message the screenshot thumbs open the same popup instead of the plain
-   * viewer, because the picture belongs to the comments there (T:11068-11077).
-   * A picture-only send is never wired, so a lone picture keeps the viewer.
+   * "What was sent". When comments ride the message, the overview thumbnail is
+   * the door to this popup (or the overview's glyph when there is no
+   * thumbnail), opening it instead of the plain viewer because the picture
+   * belongs to the comments (T:11068-11077). A picture-only send is never
+   * wired, so a lone picture keeps the viewer.
    */
   onShowSent?(turn: UserTurn): void;
-}
-
-/** T:11079 `annReceiptRow` — one comment row, the same rendering for a live send
- *  and for a turn restored from the transcript, so the two cannot drift. */
-function NoteRow({ note, onOpen }: { note: AnnotationWire; onOpen?: () => void }) {
-  const meta = note.tag ? "<" + note.tag + ">" : "";
-  const clickable = !!onOpen;
-  return (
-    <div
-      className="annsum-row annsum-note"
-      {...(clickable
-        ? {
-            title: "Click to see exactly what was sent to the agent",
-            tabIndex: 0,
-            role: "button",
-            onClick: onOpen,
-            onKeyDown: (ev: React.KeyboardEvent) => {
-              if (ev.key === "Enter" || ev.key === " ") {
-                ev.preventDefault();
-                onOpen?.();
-              }
-            },
-          }
-        : {})}
-    >
-      {/* The stored label — the same letter burned into the overview and sent on
-          the wire, so the receipt, the picture and the JSON can never drift.
-          The pin beside it is a lucide glyph, not 📌 (P2-7). */}
-      <span className="annsum-lbl">
-        <Pin width="1em" height="1em" strokeWidth={1.5} aria-hidden="true" focusable="false" />
-        {note.label || "•"}
-      </span>
-      <span className="annsum-txt">{note.content || ""}</span>
-      {meta ? <span className="annsum-el">{meta}</span> : null}
-    </div>
-  );
 }
 
 function ShotRow({
@@ -141,15 +103,18 @@ function ShotRow({
 
   if (!src) {
     const door = glyphDoor(shot);
+    // An overview with no picture still has to be a way into "What was sent",
+    // now that the comment rows are gone.
+    const sentDoor = shot.kind === "overview" && !!onShowSent;
     return (
       <div className="annsum-row">
-        {door ? (
+        {door || sentDoor ? (
           <button
             type="button"
             className="annsum-lbl"
-            title="Click to see what was attached"
+            title={sentDoor ? "Click to see exactly what was sent to the agent" : "Click to see what was attached"}
             aria-label={alt + " — open details"}
-            onClick={() => onOpenShot(shot)}
+            onClick={sentDoor ? () => onShowSent!() : () => onOpenShot(shot)}
           >
             <AttachIcon kind={shot.kind} />
           </button>
@@ -172,11 +137,16 @@ function ShotRow({
 
   return (
     <>
-      <div className="annsum-row">
-        <span className="annsum-txt" title={receipt.viewNote || receipt.view || ""}>
-          {receipt.label}
-        </span>
-      </div>
+      {/* The overview and the pane screenshot say what they are by being the
+          picture; their caption row is the sentence the bubble no longer
+          needs. An image or a file keeps it — the caption carries the name. */}
+      {receipt.kind === "overview" || receipt.kind === "pane" ? null : (
+        <div className="annsum-row">
+          <span className="annsum-txt" title={receipt.viewNote || receipt.view || ""}>
+            {receipt.label}
+          </span>
+        </div>
+      )}
       {/* A restored turn whose file the shots directory has pruned (12h/200
           files) 404s here. Said in words rather than left as a broken-image
           glyph, which a reader takes for a bug in the chat (T:10886-10894). */}
@@ -218,7 +188,8 @@ export function Receipts({
     return { receipts: receiptsFromWire(wire.paneShots), notes: wire.annotations ?? [] };
   }, [turn.attachments, turn.raw]);
 
-  if (!receipts.length && !notes.length) return null;
+  // Comments alone draw nothing here — they are in the bubble.
+  if (!receipts.length) return null;
   // A send with no comments never gets wired to the popup (T:11068-11077).
   const sent = notes.length && onShowSent ? () => onShowSent(turn) : undefined;
 
@@ -226,7 +197,7 @@ export function Receipts({
     <div className="annsum">
       {/* The overview first — it is the one picture every annotation row refers
           to — then the user's own attachments, then the labelled rows
-          (T:16565-16572). */}
+          (T:16565-16572). The comments are in the bubble now, not rows here. */}
       {receipts.map((r, i) => (
         <ShotRow
           key={(r.view || r.label) + ":" + i}
@@ -236,9 +207,6 @@ export function Receipts({
           probe={probe}
           {...(sent ? { onShowSent: sent } : {})}
         />
-      ))}
-      {notes.map((note, i) => (
-        <NoteRow key={(note.id || note.label || "n") + ":" + i} note={note} {...(sent ? { onOpen: sent } : {})} />
       ))}
     </div>
   );

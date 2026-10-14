@@ -10,12 +10,12 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { AppCard } from "../apps/AppCard";
 import { appFromText, showAppBeside, useAppsRoot } from "../apps/apps";
 import { openBuilds, getBuildRows } from "../builds/builds";
-import { api, stepThumbUrl, type AppRef, type Bot, type BotEvent } from "../lib/api";
+import { ApiError, api, stepThumbUrl, type AppRef, type Bot, type BotEvent } from "../lib/api";
 import { esc, fmtDay, fmtSecs, fmtTime, fmtWhen } from "../lib/format";
 import { md } from "../lib/md";
 import { botsRoot } from "../lib/root";
 import { chosenOption, clearIndex, firstNewIndex, foldHint, foldStretches, isHandoff, isNoise, isTaskEnd, liveCards, optionKey, rowKeys, searchCountText, searchHit, sessionBreak } from "../lib/thread";
-import { act, clearScrollSeq, cur, eventsOf, getState, jumpTo, markSeen, openDialog, select, setNewCount, setScrollToEnd, showBanner, unviewed, useBots, viewedSet } from "../state/store";
+import { act, clearScrollSeq, cur, errMsg, eventsOf, getState, jumpTo, markSeen, openDialog, poll, select, setNewCount, setScrollToEnd, showBanner, unviewed, useBots, viewedSet } from "../state/store";
 import { END_GAP, clearSearchHighlight, gapOf, evBox, highlightSearch, pinToEnd, restoreAnchor, topVisible, updateToBottom, type Anchor } from "./threadDom";
 import { HandBackRow, HandoverNote } from "./HandoverCard";
 import { SetupLines } from "./SetupLines";
@@ -69,6 +69,8 @@ interface RowProps {
   hstate?: string;
   /** Hand-off card: the bot it went to still exists ("Open <Bot>'s chat" is live). */
   targetLive?: boolean;
+  /** Hand-off card: the seq that bot waits on right now (its Bot.waiting_on); a relayed card is live while it is the card's. */
+  targetWaiting?: number | null;
   /** Build notice (`e.build`): still the build's current stall (buildOpen). A prop for the same reason as linkLive. */
   bopen?: boolean;
   /** "Sent to Super Bot" line: the bot its `link` points at still exists ("Read more" is live). A prop, not a store read:
@@ -132,18 +134,46 @@ function Action({ text, result, detail, thumbSrc, title }: { text: string; resul
 /** Hand-off events written before 2026-10-07 carry the old state names; bot.json rows were renamed on load, events were not. */
 const LEGACY_HANDOFF_STATE: Record<string, string> = { queued: "received", running: "working", waiting: "blocked", error: "failed", stopped: "cancelled" };
 
-function HandoffCard({ e, state: rawState, targetLive }: { e: BotEvent; state: string; targetLive: boolean }) {
+function HandoffCard({ e, state: rawState, targetLive, targetWaiting }: { e: BotEvent; state: string; targetLive: boolean; targetWaiting?: number | null }) {
   const state = LEGACY_HANDOFF_STATE[rawState] || rawState;
   const h = e.handoff!, who = h.target_name || "the bot";
+  const relay = e.role === "question" ? e.relay : undefined;
   const head = e.role === "system" ? `Asked ${who}`
-    : e.role === "question" ? `${who} needs you at the laptop`
+    : e.role === "question" ? (relay?.kind === "approval" ? `${who} needs your OK` : relay ? `${who} asks` : `${who} needs you at the laptop`)
     : state === "failed" ? `${who} failed` : state === "cancelled" ? `${who} stopped` : `${who} finished`;
-  const lead = e.role === "system" ? /^Asked .+? to:\s*/ : e.role === "question" ? /^.+? needs you at the laptop:\s*/ : null;
+  const lead = e.role === "system" ? /^Asked .+? to:\s*/ : e.role === "question" ? /^.+? (?:needs you at the laptop|needs your OK|asks):\s*/ : null;
   const text = lead ? e.text.replace(lead, "") : e.text;
+  // The relayed card's answer goes to the bot that waits on it (docs §11 relay): the same POST a click in that bot's
+  // own chat makes. Live while that bot still waits on this very card; settled on the first click, before the poll
+  // confirms it (a second click would send another answer).
+  const [sent, setSent] = useState(false);
+  const live = !!relay && targetLive && targetWaiting === relay.seq && !sent;
+  // The click names the card (`answers`): the server refuses it (409 "settled") once that bot waits on another card,
+  // so a click that outlived a poll never approves the next card. A settled refusal stays settled; any other failure
+  // brings the buttons back.
+  const answer = (t: string) => {
+    setSent(true);
+    void (async () => {
+      try { await api.send(relay!.bot, t, null, false, relay!.seq); }
+      catch (e) {
+        if (!(e instanceof ApiError && e.status === 409)) { setSent(false); showBanner(errMsg(e)); return; }  // no poll: it would hide the banner
+      }
+      await poll();
+    })();
+  };
   return (
     <div className={`handoff-card ${state}`} data-seq={e.seq} title={fmtWhen(e.ts)}>
       <div className="hd"><span className="ttl">{head}</span><span className={`pill ${state}`}>{state}</span></div>
       {text ? <HtmlMsg className="msg md" title={fmtWhen(e.ts)} html={md(text)} /> : null}
+      {relay ? (
+        // Its own class, not `.msg.approval` / `.msg.question`: the thread's click handler reads those as Super Bot's cards.
+        <div className={`relay${live ? "" : " settled"}`}>
+          {relay.kind === "approval"
+            ? <><button className="primary" disabled={!live} onClick={() => answer("approve")}>Approve</button><button disabled={!live} onClick={() => answer("deny")}>Deny</button></>
+            : relay.options.map((o) => <button key={o} disabled={!live} onClick={() => answer(o)}>{o}</button>)}
+          {!live && !sent && targetWaiting !== relay.seq ? <span className="hint">Answered</span> : null}
+        </div>
+      ) : null}
       <div className="ft">
         <button disabled={!targetLive} title={targetLive ? (h.task_dir || undefined) : "That bot is gone"}
           onClick={() => { if (getState().bots.some((x) => x.id === h.target)) select(h.target); }}>Open {who}'s chat</button>
@@ -202,10 +232,10 @@ function ClearMark({ e, n, open, onFold }: { e: BotEvent; n: number; open: boole
 /** Channel names in chips and "Texted" lines; a task Super Bot handed off reads "from Super Bot" (docs §11). */
 const chanLabel = (k: string) => (k === "imessage" ? "iMessage" : k === "handoff" ? "Super Bot" : k === "routine" ? "a routine" : k);
 
-function body({ e, botId, reaction, live, chosen, appsRoot, onBeside, hstate, targetLive, linkLive, hbSecs, hbShot, hbBot, queued, bopen, foldN, foldOpen, onFold }: RowProps): JSX.Element {
+function body({ e, botId, reaction, live, chosen, appsRoot, onBeside, hstate, targetLive, targetWaiting, linkLive, hbSecs, hbShot, hbBot, queued, bopen, foldN, foldOpen, onFold }: RowProps): JSX.Element {
   const title = fmtWhen(e.ts);
   if (e.source === "clear") return <ClearMark e={e} n={foldN || 0} open={!!foldOpen} onFold={onFold} />;
-  if (e.handoff && isHandoff(e)) return <HandoffCard e={e} state={hstate || e.handoff.state} targetLive={!!targetLive} />;
+  if (e.handoff && isHandoff(e)) return <HandoffCard e={e} state={hstate || e.handoff.state} targetLive={!!targetLive} targetWaiting={targetWaiting} />;
   if (e.build && e.source === "build") return <BuildCard e={e} open={!!bopen} />;
   // The target bot's "Sent to Super Bot: …" (what went up): a quiet harness line.
   if (isHandoff(e) && e.role === "system") {
@@ -689,6 +719,7 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
           reaction={!ho && ACTABLE.has(e.role) ? rxs[e.seq] || "" : ""} live={card && live.has(e.seq) && !held.has(e.seq)}
           chosen={card && e.role === "question" ? chosenOption(evs, e.seq) : null} appsRoot={appsRoot} onBeside={onBeside}
           hstate={ho ? (e.role === "system" ? hds.get(ho.id) : undefined) || ho.state : undefined} targetLive={ho ? botIds.has(ho.target) : undefined}
+          targetWaiting={ho && e.relay ? S.bots.find((x) => x.id === ho.target)?.waiting_on ?? null : undefined}
           linkLive={e.link ? botIds.has(e.link.bot) : undefined} bopen={e.build ? buildOpen(evs, e) : undefined}
           hbSecs={hb && e.seq === hb.seq && e.role === "question" ? hb.secs : undefined}
           hbShot={hb && e.seq === hb.seq && e.role === "question" ? hb.shot : undefined}

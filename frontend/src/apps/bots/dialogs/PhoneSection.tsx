@@ -176,7 +176,7 @@ export function PhoneSection({ botId, handle, setHandle, enabled, setEnabled, co
           </Row>
           {tested ? <p className={cn("m-0 pb-3 text-[13px]", tested.ok ? "text-muted-foreground" : "text-destructive")}>{tested.text}</p> : null}
           <Row title="Approve by text" htmlFor="bmapprovals"
-            text="When a task you texted needs your OK, the card is texted to you: reply 1 to approve, 2 to deny. Off keeps every approval on this Mac; you still get a text saying it is waiting.">
+            text="When a task you texted needs your OK, the card is texted to you: reply 1 to approve, 2 to deny. A bot Super Bot handed that task to gets the same: its card reaches you through Super Bot and your reply settles it. Off keeps every approval on this Mac; you still get a text saying it is waiting.">
             <Switch id="bmapprovals" checked={approvals !== false} disabled={approvals === null} onCheckedChange={(c) => flipApprovals(!!c)} />
           </Row>
           <Row title="Your number" text={identity} htmlFor="bmimsg">

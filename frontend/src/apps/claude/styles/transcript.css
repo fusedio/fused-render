@@ -182,6 +182,20 @@
   white-space: pre-wrap;
   word-break: break-word;
 }
+/* AN ANNOTATED SEND (Turn.tsx, UserBubbleBody): the typed words, then one block
+   per comment. The letter prefix shows only when there are two or more, and is
+   the same letter as the badge burned into the overview picture. */
+.chat-root .turn.user .bubble-ann + .bubble-ann {
+  margin-top: 4px;
+}
+.chat-root .turn.user .bubble-typed + .bubble-ann {
+  margin-top: 6px;
+}
+.chat-root .turn.user .bubble-ann-lbl {
+  font-weight: 600;
+  margin-right: 6px;
+  color: var(--c-accent);
+}
 /* A TERMINAL ASK (Turn.tsx, parseTerminalAsk): the user bubble leads with a
    chip naming the terminal, then the selected lines as a block, then the words. */
 .chat-root .turn.user .term-ask-chip {
@@ -1843,6 +1857,7 @@
 }
 .chat-root .toolchip .chip-sub {
   display: flex;
+  align-items: baseline;
   min-width: 0;
   flex: 0 1 auto;
   color: var(--c-dim);
@@ -1883,6 +1898,12 @@
    at all, and a margin on the path would double the space after the name. */
 .chat-root .toolchip .chip-sub > .chip-lead:not(:empty) {
   margin-right: 6px;
+}
+/* An empty lead must leave layout: as `.chip-sub`'s first flex item it would
+   supply the box's baseline from its bottom edge, lifting a Read's path above
+   the name it sits beside. */
+.chat-root .toolchip .chip-sub > .chip-lead:empty {
+  display: none;
 }
 /* Fixed width whether or not the glyph is drawn, so every chip's name starts at
    the same x. `is-*` prefixed because a bare `error` collides with .turn.error. */
