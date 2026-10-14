@@ -122,7 +122,7 @@ def test_build_runs_in_a_child_process_and_server_never_holds_rows(hub, monkeypa
     assert pid != os.getpid()
     assert cmd[0] == sys.executable and os.path.isabs(cmd[0])
     assert cmd[1:3] == ["-m", builder.WORKER_MODULE]
-    assert kw.get("close_fds") is False if os.name != "nt" else True
+    assert kw.get("close_fds") is False
     assert "cwd" not in kw
     assert all(len(a) < 1000 for a in cmd)  # small args only, never rows/token
     assert hub_catalog.pool_exists(cfg, CAP)
@@ -180,7 +180,7 @@ def test_child_crash_is_logged_and_leaves_manifest_and_pool_untouched(
         "w = PoolWriter(HubCatalogConfig(dir=sys.argv[3]), sys.argv[2])\n"
         "w.append([{'capability': 'c', 'format': '', 'raw': {'id': 'a/b'}}])\n"
         "print('about to die', flush=True)\n"
-        "os.kill(os.getpid(), signal.SIGKILL if os.name != 'nt' else signal.SIGTERM)\n")
+        "os.kill(os.getpid(), signal.SIGKILL)\n")
     monkeypatch.setenv("PYTHONPATH", str(crash_dir) + os.pathsep + os.environ.get("PYTHONPATH", ""))
     monkeypatch.setattr(builder, "WORKER_MODULE", "crash_worker")
 

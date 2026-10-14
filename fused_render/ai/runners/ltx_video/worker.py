@@ -275,12 +275,7 @@ def _put_ffmpeg_on_path():
     literally named `ffmpeg` — pointing at the real binary — is what
     `shutil.which("ffmpeg")` actually needs to find.
 
-    Symlinked on POSIX (no copy of a ~70-90MB binary); copied on Windows,
-    where `os.symlink` needs a privilege (Developer Mode, or an elevated
-    process) this worker cannot assume it has — a real cost on that
-    platform, but `ltx-video` is Apple-Silicon-gated in the registry and
-    never actually runs there; this only has to not crash a portable test
-    suite.
+    Symlinked, not copied — no copy of a ~70-90MB binary.
 
     Idempotent and called from `load()` rather than `generate()`: this
     process renders one video at a time behind `worker_base.GENERATE_LOCK`,
@@ -288,20 +283,14 @@ def _put_ffmpeg_on_path():
     process-wide fact this worker owns outright — no other code here reads
     or depends on it being unset.
     """
-    import shutil
     import tempfile
 
     import imageio_ffmpeg
 
     real_exe = imageio_ffmpeg.get_ffmpeg_exe()
     link_dir = tempfile.mkdtemp(prefix="fused-render-ltx-ffmpeg-")
-    link_name = "ffmpeg.exe" if sys.platform == "win32" else "ffmpeg"
-    link_path = os.path.join(link_dir, link_name)
-    if sys.platform == "win32":
-        shutil.copyfile(real_exe, link_path)
-        os.chmod(link_path, 0o755)
-    else:
-        os.symlink(real_exe, link_path)
+    link_path = os.path.join(link_dir, "ffmpeg")
+    os.symlink(real_exe, link_path)
     path = os.environ.get("PATH", "")
     os.environ["PATH"] = os.pathsep.join(
         [link_dir, path] if path else [link_dir])

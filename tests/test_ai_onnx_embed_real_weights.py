@@ -59,7 +59,7 @@ rather than through `huggingface_hub`, which this file has no other reason to
 depend on.
 
 **This runs on the CPU provider, in fp32 — it is not a GPU test.** The
-DirectML, CUDA and ROCm rows have no hardware here to place onto, so this
+CUDA and ROCm rows have no hardware here to place onto, so this
 exercises the CONTRACT (the outputs `_output_index` reads, the shapes
 `generate()` returns) and the NUMERICS (that they match torch's), not the
 accelerated kernels those three rows would need real hardware to check.

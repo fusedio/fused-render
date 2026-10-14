@@ -132,9 +132,9 @@ MAX_SIDE = 32
 #: A preview never costs a render (see `Sink.add`), so a failure is swallowed —
 #: but a PERMANENT failure swallowed silently is a device sync plus a doomed
 #: syscall on every one of a hundred steps. Three in a row is the line: the
-#: failure this most expects is a Windows lock held by the page's own `<img>`
-#: over the destination, which is transient by nature, and a sink that gave up
-#: on the first unlucky step would throw the feature away over nothing. The
+#: failure this most expects is transient by nature (a full disk being cleared,
+#: a destination briefly unwritable), and a sink that gave up on the first
+#: unlucky step would throw the feature away over nothing. The
 #: count resets on any frame that lands.
 MAX_FAILURES = 3
 
@@ -546,11 +546,8 @@ class Sink:
         point in a `pipe()` / `generate_image()` call that runs for minutes — so
         an exception here does not fail a thumbnail, it unwinds the render and
         destroys work that was going to succeed. The failures are real and are
-        not hypothetical: `save` on a full disk, `os.replace` against a Windows
-        lock held by the page's own `<img>` reading this very file through
-        `/api/fs/raw` (the hazard `discard` already swallows, one line of
-        reasoning below), a device that has fallen over inside `latents()`, a
-        latent shape nobody predicted. Both runners' `_sigma_after` helpers
+        not hypothetical: `save` on a full disk, a device that has fallen over
+        inside `latents()`, a latent shape nobody predicted. Both runners' `_sigma_after` helpers
         state this invariant; this is where it is actually kept.
 
         Broad on purpose — a list of expected exception types is a promise
@@ -647,9 +644,7 @@ class Sink:
         exchange for a tidier directory. That trade is never worth taking, so
         every `os.remove` failure is swallowed and not just the absent-file one:
         a render cancelled on its first step arrives having written nothing
-        (FileNotFoundError), and a page holding this file open through
-        `/api/fs/raw` can have a Windows lock on it (PermissionError) at the
-        exact moment the image lands. The temp goes too — a frame that failed
+        (FileNotFoundError). The temp goes too — a frame that failed
         between `save` and `replace` is the one thing here that can outlive its
         writer, and it is in a directory the user browses.
         """

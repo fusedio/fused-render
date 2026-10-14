@@ -44,7 +44,7 @@ def _jobs_in_process(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _fail_on_leaked_build_threads():
-    """Guard against the exact hazard that starved the Windows CI runner:
+    """Guard against the exact hazard that starved a CI runner:
     a test that calls `ensure_build_started` (a REAL `threading.Thread`, not
     a fake) without joining it before returning. A leaked thread here is not
     just untidy — it keeps running after THIS test's own `monkeypatch`

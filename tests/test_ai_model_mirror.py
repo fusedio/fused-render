@@ -20,8 +20,8 @@ import os
 import pytest
 # `no_egress` is imported for its SIDE EFFECT: it is an autouse fixture, so
 # binding the name in this module installs it for every test here. See its
-# docstring — Windows CI proved that "every test stubs the Hub" is not the same
-# claim as "no test reaches the network".
+# docstring — "every test stubs the Hub" is not the same claim as "no test
+# reaches the network".
 from test_ai_hub_fetch import _start_server, no_egress  # noqa: F401
 
 MIRROR_PATH = os.path.join(

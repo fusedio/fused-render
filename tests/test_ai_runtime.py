@@ -33,16 +33,13 @@ from fused_render.ai.hub_cache import CachedModel
 from fused_render.server.routers import ai_runtime
 # `no_egress` is imported for its SIDE EFFECT: it is an autouse fixture, so
 # binding the name in this module installs it for every test here, including
-# the model-mirror tests below. See its docstring — Windows CI proved that
-# "every test stubs the Hub" is not the same claim as "no test reaches the
-# network".
+# the model-mirror tests below. See its docstring — "every test stubs the Hub"
+# is not the same claim as "no test reaches the network".
 from test_ai_hub_fetch import no_egress  # noqa: F401
 from _big_files import sparse_file
 from _hardware_probe_helpers import force_no_accelerators
 
-# os.geteuid is POSIX-only; a bare call below would crash collection of this
-# whole module on Windows, before any skipif could act on it.
-_IS_ROOT = hasattr(os, "geteuid") and os.geteuid() == 0
+_IS_ROOT = os.geteuid() == 0
 
 #: The real `_ensure_venv`, captured at import — before any fixture replaces it.
 #: The runner fixtures stub it (nothing is ever built in these tests), so a test
@@ -610,14 +607,14 @@ def _drain_downloads(timeout=20.0):
 
 
 def test_a_runner_that_cannot_run_here_says_why(monkeypatch):
-    # The reason is the product: "needs Apple Silicon" tells a Windows user what
+    # The reason is the product: "needs Apple Silicon" tells a Linux user what
     # happened, where a bare False sends them to the issue tracker.
-    monkeypatch.setattr(registry.platform, "system", lambda: "Windows")
-    monkeypatch.setattr(registry.platform, "machine", lambda: "AMD64")
+    monkeypatch.setattr(registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
     mlx = registry.by_code("mlx-text")
     status = mlx.available()
     assert status.ok is False
-    assert "Apple Silicon" in status.reason and "windows" in status.reason
+    assert "Apple Silicon" in status.reason and "linux" in status.reason
 
 
 def test_resolution_skips_a_runner_that_cannot_run(monkeypatch, tmp_path):
@@ -669,8 +666,7 @@ def test_speech_to_text_prefers_MLX_on_a_mac_and_CTranslate2_everywhere_else(
     resolved = registry.for_capability(registry.SPEECH_TO_TEXT)
     assert resolved is not None and resolved.code == "mlx-whisper"
 
-    for system, machine in (("Windows", "AMD64"), ("Linux", "x86_64"),
-                            ("Darwin", "x86_64")):
+    for system, machine in (("Linux", "x86_64"), ("Darwin", "x86_64")):
         monkeypatch.setattr(registry.platform, "system", lambda s=system: s)
         monkeypatch.setattr(registry.platform, "machine", lambda m=machine: m)
         resolved = registry.for_capability(registry.SPEECH_TO_TEXT)
@@ -714,8 +710,8 @@ def test_image_generation_takes_MFLUX_on_apple_silicon_and_diffusers_elsewhere(
         "Disty0/FLUX.2-klein-4B-SDNQ-4bit-dynamic",
         "tonera/FLUX.2-klein-4B-int8-diffusers"]
 
-    # Windows and Linux never see the MLX row at all, preference or none.
-    for system, machine in (("Windows", "AMD64"), ("Linux", "x86_64")):
+    # Linux never sees the MLX row at all, preference or none.
+    for system, machine in (("Linux", "x86_64"),):
         monkeypatch.setattr(registry.platform, "system", lambda s=system: s)
         monkeypatch.setattr(registry.platform, "machine", lambda m=machine: m)
         assert registry.for_capability(
@@ -730,8 +726,8 @@ def test_the_mflux_preference_is_dropped_off_apple_silicon(monkeypatch, tmp_path
     falls through to the ORDERING, same AUTO path a CI runner's real NVIDIA/
     AMD hardware could otherwise redirect.
     """
-    monkeypatch.setattr(registry.platform, "system", lambda: "Windows")
-    monkeypatch.setattr(registry.platform, "machine", lambda: "AMD64")
+    monkeypatch.setattr(registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
     force_no_accelerators(monkeypatch, tmp_path)
     _prefer(monkeypatch, registry.IMAGE_GENERATION, "mflux-image")
 
@@ -778,13 +774,13 @@ def test_a_preference_for_a_runner_that_cannot_run_HERE_is_ignored(monkeypatch):
 
     prefs.json travels: it is a plain file in a home directory people sync,
     copy between machines and restore from backups. A preference for MLX
-    Whisper set on a Mac and honoured on a Windows box would take speech to
+    Whisper set on a Mac and honoured on a Linux box would take speech to
     text away entirely — a capability silently gone is a bug report, while a
     preference that quietly does nothing is recoverable. So the ordering
     decides instead, and the REASON comes back so the page can say so.
     """
-    monkeypatch.setattr(registry.platform, "system", lambda: "Windows")
-    monkeypatch.setattr(registry.platform, "machine", lambda: "AMD64")
+    monkeypatch.setattr(registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
     _prefer(monkeypatch, registry.SPEECH_TO_TEXT, "mlx-whisper")
 
     resolution = registry.resolve(registry.SPEECH_TO_TEXT)
@@ -793,7 +789,7 @@ def test_a_preference_for_a_runner_that_cannot_run_HERE_is_ignored(monkeypatch):
     assert not resolution.honoured
     # The registry's own words, not a second copy written for the page.
     assert "Apple Silicon" in resolution.ignored_reason
-    assert "windows" in resolution.ignored_reason
+    assert "linux" in resolution.ignored_reason
 
 
 def test_a_preference_naming_something_that_is_not_a_runner_is_ignored(monkeypatch):
@@ -1010,8 +1006,8 @@ def test_describe_engines_carries_every_choice_with_its_own_reason(monkeypatch):
     comes from the registry (`available().reason`) rather than being written
     again in the UI, because the UI cannot know it — it is a fact about this
     machine and this backend."""
-    monkeypatch.setattr(registry.platform, "system", lambda: "Windows")
-    monkeypatch.setattr(registry.platform, "machine", lambda: "AMD64")
+    monkeypatch.setattr(registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
     rows = {row["capability"]: row for row in registry.describe_engines()}
     speech = rows[registry.SPEECH_TO_TEXT]
 
@@ -1139,7 +1135,6 @@ _QUALIFIED_SHORT_NAMES = {
     "llamacpp-text": "(CPU)",
     "llamacpp-text-vulkan": "(Vulkan)",
     "onnx-embed": "(CPU)",
-    "onnx-embed-directml": "(DirectML)",
     "onnx-embed-cuda": "(CUDA)",
     "onnx-embed-rocm": "(ROCm)",
 }
@@ -1149,11 +1144,7 @@ _QUALIFIED_SHORT_NAMES = {
 #: The vocabulary is closed on purpose: it is what
 #: `test_no_engine_name_advertises_the_format_its_sibling_also_reads` matches a
 #: name against, and what Task B's family test forbids in a family name.
-#: `(DirectML)` joined the vocabulary with the ONNX embedding family: it names a
-#: BUILD (`onnxruntime-directml`) exactly as `(Vulkan)` does, and it is the
-#: Windows GPU path — vendor-neutral, so one row covers NVIDIA, AMD and Intel
-#: there rather than a folder per vendor.
-_HARDWARE_QUALIFIERS = ("(CPU)", "(CUDA)", "(ROCm)", "(Vulkan)", "(DirectML)")
+_HARDWARE_QUALIFIERS = ("(CPU)", "(CUDA)", "(ROCm)", "(Vulkan)")
 
 
 def test_the_picker_keeps_the_platform_qualifier_and_everything_else_drops_it():
@@ -1268,11 +1259,11 @@ def test_every_runner_that_can_run_here_suggests_something(monkeypatch):
     """A capability with a runner and no shortlist is an empty Discover heading.
 
     Checked on the platform where it would actually bite: text generation
-    resolves to a DIFFERENT runner on Windows than on a Mac, so a list added for
+    resolves to a DIFFERENT runner on Linux than on a Mac, so a list added for
     one and forgotten for the other is invisible to anyone developing on the
     other machine.
     """
-    for system, machine in (("Darwin", "arm64"), ("Windows", "AMD64"), ("Linux", "x86_64")):
+    for system, machine in (("Darwin", "arm64"), ("Linux", "x86_64")):
         monkeypatch.setattr(registry.platform, "system", lambda s=system: s)
         monkeypatch.setattr(registry.platform, "machine", lambda m=machine: m)
         for capability in registry.capabilities():
@@ -1287,9 +1278,9 @@ def test_every_runner_that_can_run_here_suggests_something(monkeypatch):
 #:
 #: A literal table rather than a loop over `_RUNNERS`, because the property being
 #: pinned is not "the registry is self-consistent" — it is "the set of platforms
-#: we ship to is covered", and a registry cannot know that set. The three rows
-#: are the three artefacts this repo builds: the macOS DMG (`skills/making-a-release`),
-#: and the Windows and Linux builds under `windows/` and `.github/workflows`.
+#: we ship to is covered", and a registry cannot know that set. The two rows
+#: are the two artefacts this repo builds: the macOS DMG (`skills/making-a-release`),
+#: and the Linux build under `.github/workflows`.
 #:
 #: The `code` column is asserted and not merely non-None on purpose. "Something
 #: serves text generation here" would still pass if a removal silently moved
@@ -1299,7 +1290,6 @@ def test_every_runner_that_can_run_here_suggests_something(monkeypatch):
 #: nothing.
 _TEXT_ENGINE_PER_SHIPPED_PLATFORM = (
     ("Darwin", "arm64", "mlx-text"),
-    ("Windows", "AMD64", "llamacpp-text"),
     ("Linux", "x86_64", "llamacpp-text"),
 )
 
@@ -1308,24 +1298,23 @@ def test_every_shipped_platform_keeps_a_local_text_engine(monkeypatch, tmp_path)
     """No platform this app ships to may be left with no local text generation.
 
     D293 stated this first: text generation was Apple-Silicon-only, which made
-    the app's flagship local capability something a Windows or Linux user could
-    read about and not use. D416 is why it is now written as an INVARIANT over an
+    the app's flagship local capability something a Linux user could read about
+    and not use. D416 is why it is now written as an INVARIANT over an
     enumerated platform list rather than as three incidental assertions — that
     change removed three of the four text rows, and the thing that made it safe
     to do was being able to show that no shipped platform was stranded. A future
     removal must have to argue with this test.
 
     **The remaining coverage is thin, and the test says so rather than implying
-    otherwise.** Apple Silicon holds `mlx-text` and `llamacpp-text` both; Windows
-    and Linux hold `llamacpp-text` PLUS `llamacpp-text-vulkan`, now registered
-    ABOVE it — the GPU-first policy decision means `auto` reaches the Vulkan
-    row first on those two platforms WHEN the hardware is there (see
+    otherwise.** Apple Silicon holds `mlx-text` and `llamacpp-text` both; Linux
+    holds `llamacpp-text` PLUS `llamacpp-text-vulkan`, now registered ABOVE it
+    — the GPU-first policy decision means `auto` reaches the Vulkan row first
+    there WHEN the hardware is there (see
     `registry.py`'s block comment above `_RUNNERS`), and this table names the
     row that would serve with no accelerator present, which is what makes the
     assertion below host-independent rather than a bet on the CI runner's own
-    GPU. So on those two
-    platforms this assertion is one runner deep, and `_llamacpp_platform`'s own
-    docstring carries what that costs (a Windows ARM64 box, or a Linux machine
+    GPU. So on Linux this assertion is one runner deep, and
+    `_llamacpp_platform`'s own docstring carries what that costs (a Linux machine
     outside the three architectures its wheel index publishes, has no local text
     engine at all and falls back to `claude-cli`).
     """
@@ -1369,23 +1358,23 @@ def test_intel_macos_is_not_advertised_as_a_supported_text_platform(monkeypatch)
 
 def test_llamacpp_texts_platform_gate_matches_its_published_wheel_tags(monkeypatch):
     """`_llamacpp_platform`, pinned directly rather than only through
-    `for_capability` — the maintainer's CPU index publishes wheels for
-    `win_amd64`, Linux x86_64/aarch64/riscv64, and macOS arm64, and NOTHING
-    else (verified against the index listing for the pinned 0.3.29, D411).
+    `for_capability` — the maintainer's CPU index publishes wheels for Linux
+    x86_64/aarch64/riscv64 and macOS arm64 on the platforms this app ships to
+    (verified against the index listing for the pinned 0.3.29, D411).
 
     **The gate is checked by ARCHITECTURE, and the refusals are asserted, not
-    just the admissions.** This docstring used to say "Windows (any arch it runs
-    on), Linux (any arch)", which contradicted both `_llamacpp_platform` and the
+    just the admissions.** This docstring used to say "Linux (any arch)", which
+    contradicted both `_llamacpp_platform` and the
     loop two lines below it — and a half-checked gate is what
     `test_the_hardware_probes_stop_refusing_machines_that_work`'s whole family
     exists to prevent. D416 makes it load-bearing rather than cosmetic: this row
-    is now the ONLY local text engine on Windows and Linux, so an arch this gate
+    is now the ONLY local text engine on Linux, so an arch this gate
     wrongly ADMITS gets a Load button whose `uv sync` has nothing to install, and
     one it wrongly REFUSES has no local text generation at all —
     `_llamacpp_platform`'s own docstring cites this test for exactly that reason.
     """
     for system, machine in (
-        ("Windows", "AMD64"), ("Linux", "x86_64"), ("Linux", "aarch64"),
+        ("Linux", "x86_64"), ("Linux", "aarch64"),
         ("Linux", "riscv64"), ("Darwin", "arm64"),
     ):
         monkeypatch.setattr(registry.platform, "system", lambda s=system: s)
@@ -1398,7 +1387,6 @@ def test_llamacpp_texts_platform_gate_matches_its_published_wheel_tags(monkeypat
     # because "ok is False" alone would pass on a gate that refused for the
     # wrong reason, which is the failure mode a user reads off the disabled row.
     for system, machine, needle in (
-        ("Windows", "ARM64", "no win_arm64"),
         ("Linux", "ppc64le", "no ppc64le build for Linux"),
         ("Darwin", "x86_64", "macOS x86_64"),
     ):
@@ -1757,10 +1745,10 @@ def test_an_unreadable_topology_is_its_own_reason(monkeypatch, tmp_path):
 
 
 def test_rocm_is_not_offered_off_linux(monkeypatch, tmp_path):
-    """ROCm publishes no macOS or Windows wheels, so these rows must not be
-    selectable there however the devices look."""
+    """ROCm publishes no macOS wheels, so these rows must not be selectable
+    there however the devices look."""
     _fake_amd(monkeypatch, tmp_path)
-    for system, machine in (("Windows", "AMD64"), ("Darwin", "arm64")):
+    for system, machine in (("Darwin", "arm64"),):
         monkeypatch.setattr(registry.platform, "system", lambda s=system: s)
         monkeypatch.setattr(registry.platform, "machine", lambda m=machine: m)
         status = registry.by_code("diffusers-image-rocm").available()
@@ -1883,24 +1871,7 @@ def test_cuda_is_not_offered_on_macos(monkeypatch, tmp_path):
     monkeypatch.setattr(registry.platform, "machine", lambda: "arm64")
     status = registry.by_code("diffusers-image-cuda").available()
     assert status.ok is False
-    assert "Windows and Linux only" in status.reason
-
-
-def test_windows_gates_cuda_on_the_drivers_own_cuda_library(monkeypatch, tmp_path):
-    """Windows has no device nodes to ask, so the gate is the weaker one the
-    constant documents: `nvcuda.dll` is a HINT (the display driver installs it),
-    and proving CUDA would mean loading the DLL and calling `cuInit` on a page
-    render. What it does buy is the ordinary case — a machine that has never had
-    an NVIDIA driver does not offer the row."""
-    monkeypatch.setattr(registry.platform, "system", lambda: "Windows")
-    monkeypatch.setattr(registry.platform, "machine", lambda: "AMD64")
-    monkeypatch.setattr(registry, "NVCUDA_DLL", str(tmp_path / "nvcuda.dll"))
-    status = registry.by_code("diffusers-image-cuda").available()
-    assert status.ok is False
-    assert "nvcuda.dll" in status.reason
-
-    (tmp_path / "nvcuda.dll").write_text("")
-    assert registry.by_code("diffusers-image-cuda").available().ok is True
+    assert "Linux only" in status.reason
 
 
 def test_AUTO_MOVES_TO_AN_ACCELERATED_ROW_WHEN_ONE_IS_AVAILABLE(
@@ -2177,7 +2148,7 @@ def test_every_suggestion_list_recommends_exactly_one_model():
 
     Asserted per runner rather than in total, because a list is what ONE machine
     sees: a Mac reads `mlx-text` and nothing else, and a total would let a
-    Windows-only list go unmarked behind a well-marked Apple one.
+    Linux-only list go unmarked behind a well-marked Apple one.
     """
     for code, entries in catalog.SUGGESTIONS.items():
         marked = [e["id"] for e in entries if e.get("recommended")]
@@ -2234,9 +2205,9 @@ def test_the_default_is_the_smallest_model_the_active_runner_offers(monkeypatch,
     Named per capability because these are the ids a no-model call reaches for,
     and the whole point of the change is that they are now the SMALL ones.
 
-    Accelerators forced off (`force_no_accelerators`) so the Windows half pins
+    Accelerators forced off (`force_no_accelerators`) so the Linux half pins
     `llamacpp-text`'s list — the fallthrough — rather than betting on whether
-    the CI runner's own `vulkan-1.dll` happens to make `_vulkan` pass, which
+    the CI runner's own Vulkan loader happens to make `_vulkan` pass, which
     would silently switch this to `llamacpp-text-vulkan`'s list instead.
     """
     monkeypatch.setattr(registry.platform, "system", lambda: "Darwin")
@@ -2249,8 +2220,8 @@ def test_the_default_is_the_smallest_model_the_active_runner_offers(monkeypatch,
     assert catalog.default_for(registry.SPEECH_TO_TEXT) == \
         "mlx-community/whisper-tiny.en-8bit"
 
-    monkeypatch.setattr(registry.platform, "system", lambda: "Windows")
-    monkeypatch.setattr(registry.platform, "machine", lambda: "AMD64")
+    monkeypatch.setattr(registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
     force_no_accelerators(monkeypatch, tmp_path)
     assert catalog.default_for(registry.TEXT_GENERATION) == \
         "LFM2.5-1.2B-Instruct-Q4_K_M.gguf"
@@ -2259,21 +2230,21 @@ def test_the_default_is_the_smallest_model_the_active_runner_offers(monkeypatch,
 
 
 def test_the_catalog_follows_the_runner_that_would_actually_load(monkeypatch, tmp_path):
-    """A Windows machine must not be shown MLX repos, or told it has no runner.
+    """A Linux machine must not be shown MLX repos, or told it has no runner.
 
     Both halves were one bug: `describe()` took the FIRST runner registered for
     a capability regardless of whether it could run, so with MLX listed above the
-    cross-platform row a Windows box would have read "needs Apple Silicon" under
+    cross-platform row a Linux box would have read "needs Apple Silicon" under
     a heading whose four suggestions were all Metal-packed checkpoints it could
     not load — while a runner sat ready to serve it.
 
     Accelerators forced off (`force_no_accelerators`): this test's subject is
-    the CPU fallthrough row's identity, and a CI runner whose real
-    `vulkan-1.dll` makes `_vulkan` pass would otherwise resolve to
+    the CPU fallthrough row's identity, and a CI runner whose real Vulkan
+    loader and ICD make `_vulkan` pass would otherwise resolve to
     `llamacpp-text-vulkan` instead, silently pinning the wrong row's label.
     """
-    monkeypatch.setattr(registry.platform, "system", lambda: "Windows")
-    monkeypatch.setattr(registry.platform, "machine", lambda: "AMD64")
+    monkeypatch.setattr(registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
     force_no_accelerators(monkeypatch, tmp_path)
     text = next(row for row in catalog.describe()
                 if row["capability"] == registry.TEXT_GENERATION)
@@ -2297,7 +2268,7 @@ def test_the_catalog_follows_the_runner_that_would_actually_load(monkeypatch, tm
     # The namespace set is a PROXY for "these are MLX conversions", and it
     # grows: `prism-ml/` is here for the Bonsai row, because no
     # `mlx-community/` conversion of it exists. What the assertion is really
-    # pinning is the Windows half above — that the two lists are disjoint — so
+    # pinning is the Linux half above — that the two lists are disjoint — so
     # a new publisher belongs here rather than being a reason to weaken it.
     assert all(m["id"].startswith(("mlx-community/", "prism-ml/"))
                for m in text["models"])
@@ -2322,8 +2293,8 @@ def test_the_cpu_warning_reaches_the_page(monkeypatch, tmp_path):
     `llamacpp-text`'s own note rather than `llamacpp-text-vulkan`'s on a CI
     runner with a real Vulkan loader.
     """
-    monkeypatch.setattr(registry.platform, "system", lambda: "Windows")
-    monkeypatch.setattr(registry.platform, "machine", lambda: "AMD64")
+    monkeypatch.setattr(registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
     force_no_accelerators(monkeypatch, tmp_path)
     text = next(row for row in catalog.describe()
                 if row["capability"] == registry.TEXT_GENERATION)
@@ -2345,8 +2316,8 @@ def test_speech_recognition_is_a_capability_something_here_serves(monkeypatch):
     reading = ai_tasks.classify("automatic-speech-recognition")
     assert reading.capability == registry.SPEECH_TO_TEXT
     assert reading.supported and not reading.ruled_out
-    monkeypatch.setattr(registry.platform, "system", lambda: "Windows")
-    monkeypatch.setattr(registry.platform, "machine", lambda: "AMD64")
+    monkeypatch.setattr(registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
     runner = registry.for_capability(registry.SPEECH_TO_TEXT)
     assert runner is not None and runner.code == "faster-whisper"
 
@@ -2373,8 +2344,7 @@ def test_llamacpp_text_is_registered_directly_below_llamacpp_text_vulkan(monkeyp
     (4.2x transformers' throughput on a Radeon GPU, 2.4x on CPU, a third of
     the download, a third of the peak RSS); the GPU-first decision then moved
     the default again, onto the Vulkan row, wherever a usable Vulkan GPU is
-    there — this row is what a Windows/Linux machine falls back to without
-    one. macOS arm64 — where the audit's failures were — still resolves to
+    there — this row is what a Linux machine falls back to without one. macOS arm64 — where the audit's failures were — still resolves to
     `mlx-text` first (the Vulkan wheel does not cover macOS at all), which is
     asserted below and is half of why the trade was acceptable.
 
@@ -2384,19 +2354,16 @@ def test_llamacpp_text_is_registered_directly_below_llamacpp_text_vulkan(monkeyp
     docstring makes about the Diffusers split) and nothing else fails when a
     row moves one line up.
 
-    Accelerators forced off (`force_no_accelerators`) for the Windows
+    Accelerators forced off (`force_no_accelerators`) for the Linux
     assertion below: this test's subject is the ORDERING, so it has to hold
-    independent of the CI runner's own hardware — the GitHub `windows-latest`
-    runner ships a real `vulkan-1.dll`, which made this test (and three
-    others of the same shape) fail on the `test-python-windows` lane before
-    this fix.
+    independent of the CI runner's own hardware.
     """
     codes = [r.code for r in registry.all_runners() if r.capability == registry.TEXT_GENERATION]
     assert codes.index("llamacpp-text") == codes.index("llamacpp-text-vulkan") + 1
     assert codes.index("llamacpp-text-vulkan") == codes.index("mlx-text") + 1
 
-    monkeypatch.setattr(registry.platform, "system", lambda: "Windows")
-    monkeypatch.setattr(registry.platform, "machine", lambda: "AMD64")
+    monkeypatch.setattr(registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
     force_no_accelerators(monkeypatch, tmp_path)
     monkeypatch.setattr(registry, "preferred_code", lambda capability: registry.AUTO)
     assert registry.for_capability(registry.TEXT_GENERATION).code == "llamacpp-text"
@@ -2449,7 +2416,7 @@ def test_llamacpp_text_default_is_reached_only_once_selected(monkeypatch):
 def test_llamacpp_text_vulkan_is_registered_immediately_above_llamacpp_text(monkeypatch, tmp_path):
     """The Vulkan variant sits directly before the CPU/Metal row, and that is
     what the GPU-first policy decision (see `registry.py`'s block comment above
-    `_RUNNERS`) requires: `auto` reaches it on any Windows/Linux x86_64 machine
+    `_RUNNERS`) requires: `auto` reaches it on any Linux x86_64 machine
     whose GPU `_vulkan` can actually use, and the CPU row behind it is the
     fallthrough for a machine with none.
 
@@ -2465,9 +2432,8 @@ def test_llamacpp_text_vulkan_is_registered_immediately_above_llamacpp_text(monk
     whatever this test's real machine happens to have.** The earlier revision
     of this docstring argued "without a faked loader/ICD here `_vulkan` still
     refuses on this test's real machine" — true on the macOS box that wrote
-    it, false on the GitHub `windows-latest` CI runner, which ships a real
-    `vulkan-1.dll` and made this test (and three others of the same shape)
-    fail on the `test-python-windows` lane. `auto` landing on the CPU row is
+    it, false on any CI runner with a real Vulkan loader and ICD. `auto`
+    landing on the CPU row is
     the fallthrough case this test pins by ORDERING, not by an assumption
     about the runner's hardware; hardware presence is
     `test_llamacpp_text_vulkan_is_reachable_by_auto_once_the_hardware_is_there`'s
@@ -2478,21 +2444,20 @@ def test_llamacpp_text_vulkan_is_registered_immediately_above_llamacpp_text(monk
     assert codes[0] == "mlx-text"
     assert codes[1] == "llamacpp-text-vulkan"
 
-    monkeypatch.setattr(registry.platform, "system", lambda: "Windows")
-    monkeypatch.setattr(registry.platform, "machine", lambda: "AMD64")
+    monkeypatch.setattr(registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
     force_no_accelerators(monkeypatch, tmp_path)
     monkeypatch.setattr(registry, "preferred_code", lambda capability: registry.AUTO)
     assert registry.for_capability(registry.TEXT_GENERATION).code == "llamacpp-text"
 
 
 def test_the_embeddings_capability_orders_mlx_then_the_accelerated_rows_then_onnx(monkeypatch, tmp_path):
-    """Embeddings' five rows, pinned in full — the whole family shares one
+    """Embeddings' four rows, pinned in full — the whole family shares one
     ordering rule with the image and text families, and it is invisible in a diff
     of the table.
 
-    MLX takes the Macs (`_apple_silicon`), and `onnx-embed-directml`/`-cuda`/
-    `-rocm` now LEAD `onnx-embed` — DirectML first because it is the only one
-    Windows can take, then CUDA before ROCm, the same order
+    MLX takes the Macs (`_apple_silicon`), and `onnx-embed-cuda`/`-rocm` now
+    LEAD `onnx-embed` — CUDA before ROCm, the same order
     `diffusers-image-cuda`/`-rocm` use — by the GPU-first policy decision (see
     `registry.py`'s block comment above `_RUNNERS`). `onnx-embed` behind them
     is the cross-platform fallthrough and the Apple-Silicon fallback, exactly
@@ -2507,7 +2472,7 @@ def test_the_embeddings_capability_orders_mlx_then_the_accelerated_rows_then_onn
     codes = [r.code for r in registry.all_runners() if r.capability == registry.EMBEDDINGS]
     assert codes == [
         "mlx-embed",
-        "onnx-embed-directml", "onnx-embed-cuda", "onnx-embed-rocm", "onnx-embed",
+        "onnx-embed-cuda", "onnx-embed-rocm", "onnx-embed",
     ]
 
     # Accelerators forced OFF (`force_no_accelerators`), not merely left
@@ -2519,8 +2484,7 @@ def test_the_embeddings_capability_orders_mlx_then_the_accelerated_rows_then_onn
     # `auto` falls through to the unaccelerated row DETERMINISTICALLY — the
     # fallthrough case. A machine WITH a working accelerator is pinned
     # separately (`test_a_supported_amd_gpu_is_offered_the_rocm_engines` and
-    # its CUDA/DirectML neighbours already exercise `_rocm`/`_cuda`/
-    # `_directml` directly; `test_AUTO_MOVES_TO_AN_ACCELERATED_ROW_WHEN_ONE_IS_AVAILABLE`
+    # its CUDA neighbours already exercise `_rocm`/`_cuda` directly; `test_AUTO_MOVES_TO_AN_ACCELERATED_ROW_WHEN_ONE_IS_AVAILABLE`
     # pins the image family's equivalent end-to-end).
     monkeypatch.setattr(registry.platform, "system", lambda: "Linux")
     monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
@@ -2531,15 +2495,15 @@ def test_the_embeddings_capability_orders_mlx_then_the_accelerated_rows_then_onn
 
 def test_llamacpp_text_vulkans_platform_gate_matches_its_published_wheel_tags(monkeypatch, tmp_path):
     """`_vulkan`, pinned directly — the maintainer's vulkan index publishes
-    `manylinux2014_x86_64` and `win_amd64` for `0.3.29` and NOTHING else: no
+    `manylinux2014_x86_64` for `0.3.29` on the platforms this app ships to: no
     macOS build (Apple Silicon already gets acceleration through the CPU
-    index's Metal-linked wheel), no Linux aarch64, no Windows ARM64.
+    index's Metal-linked wheel), no Linux aarch64.
 
     A working loader and ICD are faked via the same `_fake_vulkan` fixture
     `test_vulkan_needs_a_registered_icd_even_with_a_working_loader` and its
     neighbours use, so this only pins the ARCHITECTURE half of the gate.
     """
-    for system, machine in (("Windows", "AMD64"), ("Linux", "x86_64")):
+    for system, machine in (("Linux", "x86_64"),):
         monkeypatch.setattr(registry.platform, "system", lambda s=system: s)
         monkeypatch.setattr(registry.platform, "machine", lambda m=machine: m)
         _fake_vulkan(monkeypatch, tmp_path, system)
@@ -2547,7 +2511,7 @@ def test_llamacpp_text_vulkans_platform_gate_matches_its_published_wheel_tags(mo
         assert status.ok is True, (system, machine, status.reason)
 
     for system, machine in (
-        ("Darwin", "arm64"), ("Linux", "aarch64"), ("Windows", "ARM64"),
+        ("Darwin", "arm64"), ("Linux", "aarch64"),
     ):
         monkeypatch.setattr(registry.platform, "system", lambda s=system: s)
         monkeypatch.setattr(registry.platform, "machine", lambda m=machine: m)
@@ -2557,35 +2521,16 @@ def test_llamacpp_text_vulkans_platform_gate_matches_its_published_wheel_tags(mo
 
 
 def _fake_vulkan(monkeypatch, tmp_path, system, *, loader=True, icd=True,
-                  icd_names=("hardware_icd.json",), adapters=None):
+                  icd_names=("hardware_icd.json",)):
     """A machine with a working Vulkan loader and (optionally) a registered
     ICD — real files under `tmp_path`, repointed onto the module constants
-    `_vulkan` reads, the same style `test_windows_gates_cuda_on_the_drivers_own_cuda_library`
-    uses for `NVCUDA_DLL` rather than a global `os.path` patch.
+    `_vulkan` reads, rather than a global `os.path` patch.
 
     `icd_names` is every manifest filename to create when `icd` is True — the
     default is one plausible HARDWARE ICD name (nothing in
     `SOFTWARE_VULKAN_ICD_MARKERS`); a test of the software-rasterizer refusal
     passes `icd_names=("lvp_icd.x86_64.json",)` or similar instead.
-
-    `adapters` (Windows only) is the value `_windows_display_adapter_ids` is
-    made to return — the same injectable seam `_directml`'s own tests fake
-    directly, reused here rather than a parallel one, since `_vulkan` now
-    asks it the identical question. Left `None` by default, which leaves the
-    real `_windows_display_adapter_ids` in place — on this macOS test
-    machine that reads no registry at all (`winreg` does not exist) and
-    returns `None` itself, i.e. every caller that doesn't pass `adapters`
-    gets the fail-open path for free, same as `_directml`'s equivalent tests.
     """
-    if system == "Windows":
-        dll = tmp_path / "vulkan-1.dll"
-        if loader:
-            dll.write_text("")
-        monkeypatch.setattr(registry, "VULKAN_DLL", str(dll))
-        if adapters is not None:
-            monkeypatch.setattr(
-                registry, "_windows_display_adapter_ids", lambda: adapters)
-        return
     loader_path = tmp_path / "libvulkan.so.1"
     if loader:
         loader_path.write_text("")
@@ -2599,9 +2544,9 @@ def _fake_vulkan(monkeypatch, tmp_path, system, *, loader=True, icd=True,
 
 
 def test_vulkan_needs_the_loader_even_before_a_gpu_is_asked_about(monkeypatch, tmp_path):
-    """The hard-failure half: `libggml-vulkan.so`/`ggml-vulkan.dll` link the
-    loader directly (`DT_NEEDED libvulkan.so.1` / a PE import on
-    `vulkan-1.dll`, read off the actual `0.3.29` wheels on 2026-08-21), so a
+    """The hard-failure half: `libggml-vulkan.so` links the loader directly
+    (`DT_NEEDED libvulkan.so.1`, read off the actual `0.3.29` wheel on
+    2026-08-21), so a
     missing loader fails `import llama_cpp` itself — refused here rather than
     left to that import error, the same reasoning `_cuda`'s missing-device
     case documents for why ITS checks exist at all.
@@ -2613,67 +2558,9 @@ def test_vulkan_needs_the_loader_even_before_a_gpu_is_asked_about(monkeypatch, t
     assert status.ok is False
     assert "loader" in status.reason
 
-    monkeypatch.setattr(registry.platform, "system", lambda: "Windows")
-    monkeypatch.setattr(registry.platform, "machine", lambda: "AMD64")
-    _fake_vulkan(monkeypatch, tmp_path, "Windows", loader=False)
-    status = registry.by_code("llamacpp-text-vulkan").available()
-    assert status.ok is False
-    assert "Vulkan driver" in status.reason
-
-
-def test_vulkan_passes_on_windows_with_a_real_adapter_and_the_loader(monkeypatch, tmp_path):
-    """The follow-up fix: a real PCI display adapter alongside a working
-    loader still passes — the adapter check is only meant to catch the
-    software-only case, exactly like `_directml`'s equivalent test."""
-    monkeypatch.setattr(registry.platform, "system", lambda: "Windows")
-    monkeypatch.setattr(registry.platform, "machine", lambda: "AMD64")
-    _fake_vulkan(monkeypatch, tmp_path, "Windows",
-                 adapters=[(0x10DE, 0x2704)])  # an NVIDIA device id
-    status = registry.by_code("llamacpp-text-vulkan").available()
-    assert status.ok is True, status.reason
-
-
-def test_vulkan_refuses_windows_with_only_the_basic_render_driver(monkeypatch, tmp_path):
-    """The follow-up fix (this pass): `_vulkan`'s Windows branch used to pass
-    on `vulkan-1.dll` presence alone — "a hint, not proof" by its own
-    docstring's admission. Since the GPU-first reorder made this row the
-    text-generation default on every Windows x86_64 box `auto` resolves on,
-    a headless/RDP/VM machine with the DLL installed but no real Direct3D 12
-    adapter now refuses, reusing `_windows_display_adapter_ids` — the exact
-    seam `_directml` already established for the identical question."""
-    monkeypatch.setattr(registry.platform, "system", lambda: "Windows")
-    monkeypatch.setattr(registry.platform, "machine", lambda: "AMD64")
-    _fake_vulkan(
-        monkeypatch, tmp_path, "Windows",
-        adapters=[(registry.MS_BASIC_RENDER_VENDOR, registry.MS_BASIC_RENDER_DEVICE)])
-    status = registry.by_code("llamacpp-text-vulkan").available()
-    assert status.ok is False
-    assert "Basic Render Driver" in status.reason
-
-
-def test_vulkan_passes_on_windows_when_the_adapter_probe_cannot_determine(monkeypatch, tmp_path):
-    """`None` (registry unreadable) and `[]` (enumerated, found nothing) both
-    fail OPEN — a probe that failed to read the registry is not evidence the
-    machine is software-only, exactly the asymmetry `_directml`'s equivalent
-    test pins. `adapters=None` here leaves the real (macOS, `winreg`-less)
-    `_windows_display_adapter_ids` in place, which already returns `None`
-    on this test machine; the second half pins the empty-list case
-    explicitly."""
-    monkeypatch.setattr(registry.platform, "system", lambda: "Windows")
-    monkeypatch.setattr(registry.platform, "machine", lambda: "AMD64")
-    _fake_vulkan(monkeypatch, tmp_path, "Windows")
-    status = registry.by_code("llamacpp-text-vulkan").available()
-    assert status.ok is True, status.reason
-
-    _fake_vulkan(monkeypatch, tmp_path, "Windows", adapters=[])
-    status = registry.by_code("llamacpp-text-vulkan").available()
-    assert status.ok is True, status.reason
-
 
 def test_vulkan_needs_a_registered_icd_even_with_a_working_loader(monkeypatch, tmp_path):
-    """The advisory half, on Linux only — Windows has no equivalent manifest
-    directory this module checks, per `_vulkan`'s own docstring, so the DLL
-    check stands in for both halves there.
+    """The advisory half.
 
     A loader with no registered driver is not a load failure (ggml's own
     bundled CPU backend answers instead), but it IS the "advertising a claim
@@ -6096,7 +5983,7 @@ def test_the_runtime_endpoint_reports_runners_and_nothing_loaded(client):
         "diffusers-image-rocm", "mflux-image",
         "faster-whisper", "mlx-whisper",
         "mlx-embed",
-        "onnx-embed", "onnx-embed-directml", "onnx-embed-cuda",
+        "onnx-embed", "onnx-embed-cuda",
         "onnx-embed-rocm", "ltx-video", "laya-mlx", "mlx-audio-tts", "vision-torch"}
     assert body["loaded"] == []
     # Exactly one runner per capability is ACTIVE — the distinction D302 needed,
@@ -6323,28 +6210,6 @@ def test_an_image_rows_origin_names_the_calling_page_when_there_is_one(
     _wait_job(started["jobId"])
 
 
-def test_an_image_result_path_that_comes_back_windows_shaped_still_lands_canonical(
-        fake_image_runner, monkeypatch, tmp_path):
-    """The worker's own `result["path"]` is built with `os.path` on its side
-    of the boundary, so on Windows it comes back backslashed — this is
-    reproducible on any host by having the (fake) worker hand back a
-    Windows-shaped string directly, independent of the test host's own OS.
-    The row's `page` must still be the canonical (forward-slash) spelling the
-    rest of the app treats a filesystem path as, the same one `/api/ai/image`
-    hands back as `path` — never the raw spelling the render happened to
-    report."""
-    def windows_shaped(model, request, job, **_kw):
-        return {"steps": 1, "path": r"C:\Users\runner\out\one.png"}
-
-    monkeypatch.setattr(supervisor, "generate_image", windows_shaped)
-    job = supervisor.image_job_id("windows-shaped")
-    supervisor.start_image("org/fake-image", {"prompt": "x", "out": str(tmp_path / "one.png")},
-                           job)
-    row = _row(job)
-    assert row["state"] == "done"
-    assert row["page"] == "C:/Users/runner/out/one.png"
-
-
 def test_a_caller_supplied_page_still_wins_once_the_image_is_done(
         client, fake_image_runner):
     """An app that raised the render keeps opening that app — the output
@@ -6541,8 +6406,8 @@ def test_the_worker_is_told_where_to_write_the_preview(client, fake_image_runner
     monkeypatch.setattr(supervisor, "start_image", spy)
     started = client.post("/api/ai/image", json={"prompt": "x"},
                           headers={"X-Fused": "1"}).json()
-    # `captured` is the RAW request the worker gets (a native path,
-    # backslashed on Windows); `previewPath` is the reply's canonical
+    # `captured` is the RAW request the worker gets (a native path);
+    # `previewPath` is the reply's canonical
     # (forward-slash) form of the same path — see `ai_runtime.canonical_fs_path`.
     assert ai_runtime.canonical_fs_path(captured["outPreview"]) == started["previewPath"]
     _wait_job(started["jobId"])
@@ -8604,23 +8469,6 @@ def test_a_video_row_with_no_X_Fused_Page_opens_its_own_output_file_once_done(
     assert finished["page"] == started["path"]
 
 
-def test_a_video_result_path_that_comes_back_windows_shaped_still_lands_canonical(
-        fake_video_runner, monkeypatch, tmp_path):
-    """See the image twin of this test — `_start_render` is shared, so the
-    same Windows-shaped `result["path"]` has to canonicalize the same way for
-    a video render."""
-    def windows_shaped(model, request, job, **_kw):
-        return {"steps": 1, "path": r"C:\Users\runner\out\one.mp4"}
-
-    monkeypatch.setattr(supervisor, "generate_video", windows_shaped)
-    job = supervisor.video_job_id("windows-shaped")
-    supervisor.start_video("org/fake-video", {"prompt": "x", "out": str(tmp_path / "one.mp4")},
-                           job)
-    row = _row(job)
-    assert row["state"] == "done"
-    assert row["page"] == "C:/Users/runner/out/one.mp4"
-
-
 def test_a_failed_video_render_with_no_caller_page_points_at_its_output_folder(
         fake_video_runner, monkeypatch, tmp_path):
     def boom(model, request, job, **_kw):
@@ -8711,7 +8559,7 @@ def test_the_transcribe_reply_settles_the_request_before_anything_runs(
     reply = _post_transcribe(client, path=recording, task="translate").json()
     # Canonical (forward-slash), like every path this API hands back — see
     # `ai_runtime.canonical_fs_path` — so it is `os.path.abspath` run through
-    # the SAME transform, not the raw (backslashed, on Windows) form.
+    # the SAME transform, not the raw form.
     assert reply["path"] == ai_runtime.canonical_fs_path(os.path.abspath(recording))
     assert reply["model"] == catalog.default_for(registry.SPEECH_TO_TEXT)
     assert reply["task"] == "translate"
@@ -8750,8 +8598,8 @@ def test_the_partial_path_reaches_the_WORKER_as_well_as_the_page(
     reply = _post_transcribe(client, path=recording).json()
     _wait_job(reply["jobId"])
 
-    # `seen` is the RAW request the worker gets (a native path, backslashed on
-    # Windows); `outputPartial` is the reply's canonical (forward-slash) form
+    # `seen` is the RAW request the worker gets (a native path);
+    # `outputPartial` is the reply's canonical (forward-slash) form
     # of the same path — see `ai_runtime.canonical_fs_path`.
     assert ai_runtime.canonical_fs_path(seen["outPartial"]) == reply["outputPartial"]
     # A SIBLING of the two the request already named, not a third location:
@@ -9036,8 +8884,8 @@ def test_a_relative_path_resolves_against_the_PAGE_not_the_server(
                         headers={"X-Fused": "1"})
     assert reply.status_code == 200, reply.json()
     # Canonical (forward-slash), like every path this API hands back — see
-    # `ai_runtime.canonical_fs_path` — not the raw (backslashed, on Windows)
-    # form `recording` is built in.
+    # `ai_runtime.canonical_fs_path` — not the raw form `recording` is built
+    # in.
     assert reply.json()["path"] == ai_runtime.canonical_fs_path(recording)
     _wait_job(reply.json()["jobId"])
 
@@ -9919,8 +9767,8 @@ def _run_ai_transcribe(readfile, record, node_required=True, opts='{path: "a.m4a
       );
     """.replace("OPTS", opts).replace("EXTRA", extra or '"_": null')
     # Node writes UTF-8 to stdout regardless of platform; without an explicit
-    # `encoding` here, Windows decodes with `locale.getpreferredencoding()`
-    # (often cp1252), which mangles or crashes on the multibyte transcript
+    # `encoding` here, Python decodes with `locale.getpreferredencoding()`
+    # (ASCII under an unset locale), which mangles or crashes on the multibyte transcript
     # text some of these harnesses drive through (see e.g.
     # test_a_MULTIBYTE_transcript_does_not_split_a_character_or_lose_its_place).
     out = subprocess.run(["node", "-e", prelude + fn + call],
@@ -10016,8 +9864,8 @@ def _run_ai_image(record='{state: "done"}', ticks="[]", preview='"/t/a.preview.p
       );
     """.replace("OPTS", opts)
     # Node writes UTF-8 to stdout regardless of platform; without an explicit
-    # `encoding` here, Windows decodes with `locale.getpreferredencoding()`
-    # (often cp1252), which mangles or crashes on the multibyte transcript
+    # `encoding` here, Python decodes with `locale.getpreferredencoding()`
+    # (ASCII under an unset locale), which mangles or crashes on the multibyte transcript
     # text some of these harnesses drive through (see e.g.
     # test_a_MULTIBYTE_transcript_does_not_split_a_character_or_lose_its_place).
     out = subprocess.run(["node", "-e", prelude + fn + call],
@@ -10740,8 +10588,8 @@ def _run_ai_transcribe_tailing(lines, final, opts='{path: "a.m4a"}',
         # reach the branch that decides whether to tail.
         else "{onProgress: () => {}}")
     # Node writes UTF-8 to stdout regardless of platform; without an explicit
-    # `encoding` here, Windows decodes with `locale.getpreferredencoding()`
-    # (often cp1252), which mangles or crashes on the multibyte transcript
+    # `encoding` here, Python decodes with `locale.getpreferredencoding()`
+    # (ASCII under an unset locale), which mangles or crashes on the multibyte transcript
     # text some of these harnesses drive through (see e.g.
     # test_a_MULTIBYTE_transcript_does_not_split_a_character_or_lose_its_place).
     out = subprocess.run(["node", "-e", prelude + fn + call],
@@ -12163,7 +12011,7 @@ def safetensors_text_engine(monkeypatch):
     boilerplate: the cached-repo union only offers a repo the ACTIVE engine can
     load, so which engine is active decides whether these fixtures are visible at
     all. That used to be true on every platform by accident — `transformers-text`
-    read safetensors and served Windows and Linux — and D416 removed it, leaving
+    read safetensors and served Linux — and D416 removed it, leaving
     `mlx-text` as the only safetensors text engine and `llamacpp-text` (GGUF) as
     what a non-Apple machine resolves to. Without this fixture these tests assert
     the union mechanism on a developer's Mac and assert nothing at all in CI.
@@ -12889,8 +12737,8 @@ def test_a_curated_gguf_gets_its_repo_as_the_permission(entry, monkeypatch,
     Handed the filename, the client refuses it against `_REPO_ID` (`org/name`)
     and declines forever: no manifest request, no mirrored download, and nothing
     in the app's behaviour that would say so. Since D416 llama.cpp is the only
-    local text engine on Windows and Linux, so that is every suggested text
-    model on those platforms.
+    local text engine on Linux, so that is every suggested text
+    model there.
 
     Parametrized over the REAL curated list, because a synthetic id is exactly
     what would keep passing while this stayed broken.
@@ -13075,9 +12923,8 @@ def test_on_macos_a_worker_is_spawned_in_the_posix_spawn_shape(monkeypatch):
 
 def test_elsewhere_a_worker_keeps_its_own_session_and_cwd(monkeypatch):
     """Off macOS the shape is unchanged: `cwd` on the Popen, descriptors
-    closed, and the platform's own new-session/new-group flag — which is
-    `SPAWN_KWARGS` itself, so this reads the constant rather than naming
-    `start_new_session`: on a Windows runner that key is `creationflags`."""
+    closed, and a new session — which is `SPAWN_KWARGS` itself, so this reads
+    the constant."""
     monkeypatch.setattr(sys, "platform", "linux")
     env = {}
     kwargs = supervisor._spawn_kwargs("/runners/x", env)

@@ -5,7 +5,7 @@
 # transcribes on its CPU cores there and on its GPU here. Both folders exist
 # because neither dependency set belongs in the other's interpreter, let alone
 # in fused-render's: `mlx-whisper` is Metal-only and would not even install on
-# the Windows wheel.
+# the Linux wheel.
 #
 # `envinstall` (PY-18) builds this on first use with the same detached
 # `uv sync`, progress record and verbatim errors any declaring folder gets.

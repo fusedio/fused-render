@@ -594,7 +594,7 @@ def test_a_runner_naming_a_split_distribution_names_its_other_half(folder):
 
 # -- the three diffusers_image* manifests' dependency parity -----------------
 #
-# Same shape as the onnx_embed four-way check below, for the same reason: these
+# Same shape as the onnx_embed three-way check below, for the same reason: these
 # three folders are declared, in their own header comments, to be one
 # dependency list with only `torch` (and ROCm's extra `triton-rocm`, which
 # rides in for the reason that folder's header explains) swapped per hardware.
@@ -751,17 +751,16 @@ def test_the_split_table_is_not_quietly_unused():
             f"than leaving a rule that cannot fire")
 
 
-# -- the onnx_embed* four-way manifest parity (the numpy regression itself) ----
+# -- the onnx_embed* three-way manifest parity (the numpy regression itself) ---
 #
 # `SPLIT_DISTRIBUTIONS` above catches "this distribution's own metadata won't
 # carry a needed package". The two tests below catch the other half of the
 # same numpy bug: a manifest can be short a package `runners/onnx_embed.py`
 # itself imports directly, with no distribution's metadata to blame at all —
-# and with four near-identical manifests, a hand-copied list is exactly what
-# lets one of them fall behind the other three unnoticed.
+# and with three near-identical manifests, a hand-copied list is exactly what
+# lets one of them fall behind the other two unnoticed.
 
-_ONNX_EMBED_FOLDERS = ("onnx_embed", "onnx_embed_cuda", "onnx_embed_directml",
-                       "onnx_embed_rocm")
+_ONNX_EMBED_FOLDERS = ("onnx_embed", "onnx_embed_cuda", "onnx_embed_rocm")
 
 _ONNX_EMBED_WORKER_PATH = os.path.join(RUNNERS_DIR, "onnx_embed.py")
 
@@ -777,8 +776,8 @@ _ONNX_EMBED_LOCAL_MODULES = {"embed_common", "formats", "worker_base"}
 
 #: The one import name legitimately satisfied by a distribution whose name it
 #: is only a PREFIX of: `import onnxruntime` is answered by whichever of
-#: `onnxruntime` / `onnxruntime-gpu` / `onnxruntime-directml` /
-#: `onnxruntime-rocm` a given folder declares. Nothing else gets this
+#: `onnxruntime` / `onnxruntime-gpu` / `onnxruntime-rocm` a given folder
+#: declares. Nothing else gets this
 #: leniency — a generic prefix match would also let a declared `pillow-heif`
 #: silently stand in for an imported `pillow`, which is the exact shape of
 #: hole the second test below exists to close.
@@ -806,10 +805,10 @@ def _onnx_embed_third_party_imports():
     return {_IMPORT_TO_DISTRIBUTION.get(name, name) for name in names}
 
 
-def test_the_four_onnx_embed_manifests_agree_beyond_their_onnxruntime_line():
-    """The four `onnx_embed*` folders' dependency sets are meant to be one set
+def test_the_three_onnx_embed_manifests_agree_beyond_their_onnxruntime_line():
+    """The three `onnx_embed*` folders' dependency sets are meant to be one set
     with a single distribution swapped — the manifests say so themselves. If a
-    dependency is added or dropped in one folder and not the other three,
+    dependency is added or dropped in one folder and not the other two,
     "which hardware" quietly starts also meaning "which tokenizer"."""
     shared = None
     for name in _ONNX_EMBED_FOLDERS:
@@ -820,14 +819,14 @@ def test_the_four_onnx_embed_manifests_agree_beyond_their_onnxruntime_line():
         assert rest == shared, name
 
 
-def test_every_third_party_import_of_onnx_embed_is_declared_in_all_four():
+def test_every_third_party_import_of_onnx_embed_is_declared_in_all_three():
     """The regression itself: `onnx_embed.py` is free to `import` anything, but
     only `onnxruntime`'s own transitive dependencies rode along for free — and
     `onnxruntime-rocm` declares NONE (see `SPLIT_DISTRIBUTIONS` above), so a
     name the mainline wheel happened to pull (this is how `numpy` went
     missing) is invisible on every other distribution and fatal on that one.
     Every third-party import this runner makes, lazy ones included, must be a
-    distribution named in all four manifests — matched EXACTLY, except for
+    distribution named in all three manifests — matched EXACTLY, except for
     `onnxruntime` itself (see `_PREFIX_MATCHED_IMPORT`)."""
     imported = _onnx_embed_third_party_imports()
     assert imported, "the parser found nothing — it is broken, not the runner"

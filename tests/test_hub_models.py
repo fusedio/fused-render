@@ -80,7 +80,7 @@ def _no_format_filter(monkeypatch):
     non-Apple machine resolved to was `transformers-text`, which declares none —
     so every safetensors fixture in this file survived the filter by accident of
     what the developer's laptop happened to be. With the transformers rows gone,
-    Linux and Windows resolve to `llamacpp-text` and its `("gguf",)` tag, which
+    Linux resolves to `llamacpp-text` and its `("gguf",)` tag, which
     dropped 30 tests here while the code under test was behaving exactly as
     designed. Pinning it makes the DEFAULT explicit and the format-filter tests
     the deliberate exception they already read as (`_gguf_runner` below), and it

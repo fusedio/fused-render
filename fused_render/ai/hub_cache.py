@@ -48,9 +48,8 @@ Two consequences drive `_scan_repo`:
 * **Size is measured with `lstat`, symlinks skipped.** A snapshot entry points
   at a blob in the *same* repo, so following it would count every file twice
   per revision — a two-revision repo would report triple its real footprint.
-  Hardlinks (the same blob shared by two entries, and what Windows falls back
-  to when it cannot symlink) are de-duplicated by `(st_dev, st_ino)` for the
-  same reason. What is left is bytes actually on disk, which is the number the
+  Hardlinks (the same blob shared by two entries) are de-duplicated by
+  `(st_dev, st_ino)` for the same reason. What is left is bytes actually on disk, which is the number the
   page exists to show.
 * **The newest mtime includes the symlinks**, unlike the size — and excludes
   directories. A blob is written once and never touched again, but
@@ -96,7 +95,6 @@ import os
 import re
 import shutil
 import stat
-import sys
 import time
 from dataclasses import dataclass
 from typing import NamedTuple
@@ -197,40 +195,6 @@ def _scan_repo(root: str) -> _RepoScan:
                 if st.st_mtime > newest:
                     newest = st.st_mtime
                 continue
-            if sys.platform == "win32":
-                # entry.stat() above is DirEntry.stat(): on Windows it is built
-                # from the cached FindFirstFile/FindNextFile data, which has no
-                # file-index or link-count field at all, so st_ino/st_dev/
-                # st_nlink from it are always 0 — silently disabling the dedup
-                # below on exactly the platform (no symlink permission) where
-                # huggingface_hub falls back to hardlinks in the first place.
-                # A real (uncached) stat is the only way to get true values;
-                # the extra syscall is paid only here — once per real file,
-                # Windows only — never on the POSIX path above, where
-                # DirEntry.stat() already answers this correctly for free.
-                #
-                # Guarded like the entry.stat() above, and for the same
-                # reason: this is a SECOND trip to the filesystem, so a blob
-                # that a live download (or a `hf` cache cleanup) removes
-                # between the scandir and here raises FileNotFoundError. Left
-                # unguarded that aborted the whole listing — the exact
-                # "report what we could see rather than failing the page"
-                # contract the enclosing loop is built on.
-                try:
-                    st = os.stat(entry.path, follow_symlinks=False)
-                except OSError:
-                    continue
-            # EVERY accumulator below reads the FINAL `st`, and none of them run
-            # before the re-stat above can rule the file out. A file that
-            # vanishes in that window has to count for nothing at all: dating
-            # the repo from a blob whose size we then refuse to count is not a
-            # partial answer, it is a wrong one. `lastUsed` is the field that
-            # makes it concrete — it drives prune selection in the client, so a
-            # deleted blob's atime leaking in here marks a stale repo as
-            # recently used and protects it from the very cleanup that removed
-            # the blob. (On win32 these now read the fresh stat rather than the
-            # cached DirEntry one, which is also the stat that size and st_nlink
-            # come from — one consistent view of the file, not two.)
             if st.st_mtime > newest:
                 newest = st.st_mtime
             if st.st_atime > used:
@@ -1019,8 +983,8 @@ def _snapshot_blobs(snapshot_dir: str, blobs_dir: str) -> set[str]:
     """The blobs a revision references — resolved link targets that really land
     in this repo's `blobs/`.
 
-    Anything resolving elsewhere is deliberately NOT returned: on Windows (and
-    any filesystem without symlinks) a snapshot entry is the file itself, whose
+    Anything resolving elsewhere is deliberately NOT returned: on any
+    filesystem without symlinks a snapshot entry is the file itself, whose
     bytes go away with the snapshot directory; and a target outside `blobs/` is
     not a path this module will ever unlink.
     """
@@ -1266,7 +1230,7 @@ def _engine(meta: _RepoMeta, reading: _tasks.Classification,
 
     **"Nothing reads this" and "what reads it does not run here" are different
     sentences**, so an unavailable runner is still reported — with the
-    registry's own reason. A Windows user looking at `mlx-community/whisper-…`
+    registry's own reason. A Linux user looking at `mlx-community/whisper-…`
     has not made a mistake they can fix by deleting it; they have a Mac's model.
 
     The capability comes back because for some repos the FORMAT is the only

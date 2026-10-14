@@ -977,13 +977,13 @@ def test_an_embed_config_with_neither_weight_layout_loads_nowhere():
     assert codes == ()
 
 
-def test_the_onnx_family_tuple_names_all_four_execution_providers():
+def test_the_onnx_family_tuple_names_all_three_execution_providers():
     """`TRANSFORMERS_EMBED_RUNNERS`' own argument, restated for this family: a
     variant registered but missing from `loaders()` has no engine tag, no Load
     button and no cached repos offered, on precisely the machines that chose it.
     """
     assert formats.ONNX_EMBED_RUNNERS == (
-        "onnx-embed", "onnx-embed-directml", "onnx-embed-cuda", "onnx-embed-rocm")
+        "onnx-embed", "onnx-embed-cuda", "onnx-embed-rocm")
 
 
 # -- embeddings, the prose encoders ---------------------------------------------

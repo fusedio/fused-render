@@ -20,8 +20,7 @@
 #
 # **CPU is the DEFAULT, which is the change this folder carries.** Before the
 # split, torch came from PyPI for everyone, so a Linux machine paid several GB of
-# `nvidia-*` wheels whether or not it owned a card and a Windows machine got a
-# CPU-only build it could not opt out of. On macOS nothing changes: the CPU index
+# `nvidia-*` wheels whether or not it owned a card. On macOS nothing changes: the CPU index
 # carries the ordinary `2.13.0` wheel there — no local version, the same file PyPI
 # ships, MPS compiled in — so Apple Silicon keeps its GPU, which this runner needs
 # because it is what a Mac falls back to when `mflux_image` is unavailable.
@@ -124,7 +123,7 @@
 #                  version 2).
 #                  **It installs on every platform this app ships to** — PyPI
 #                  carries a manylinux x86_64 wheel and a `py3-none-any` wheel
-#                  beside it, which is what macOS and Windows resolve to — so
+#                  beside it, which is what macOS resolves to — so
 #                  the wheels-only rule above holds in all three folders, and
 #                  torchao is named in all three because the repo it reads is
 #                  suggested to all three (one `catalog.py` list, aliased).

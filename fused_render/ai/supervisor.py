@@ -630,16 +630,10 @@ def _in_use(worker: Worker):
 def _alive(worker: Worker) -> bool:
     """Is this worker's process still running?
 
-    `poll()` rather than `os.kill(pid, 0)`, for two independent reasons:
-
-    * On POSIX an exited child nobody has waited on is a ZOMBIE, and signal 0 to
-      a zombie succeeds — so the pid check answers "alive" for a model that
-      crashed, which is the one answer this function must never get wrong.
-      `poll()` reaps as it asks, so the zombie also goes away.
-    * On Windows `os.kill(pid, sig)` is `TerminateProcess(handle, sig)` for any
-      signal that is not a console event. `os.kill(pid, 0)` there does not probe
-      a process, it KILLS it with exit code 0 — a liveness check that is fatal to
-      the thing it asks about.
+    `poll()` rather than `os.kill(pid, 0)`: an exited child nobody has waited
+    on is a ZOMBIE, and signal 0 to a zombie succeeds — so the pid check answers
+    "alive" for a model that crashed, which is the one answer this function must
+    never get wrong. `poll()` reaps as it asks, so the zombie also goes away.
     """
     proc = worker.proc
     if proc is None:
@@ -649,12 +643,8 @@ def _alive(worker: Worker) -> bool:
 
 #: Detach a worker into its own process group so a stop reaches the CHILDREN it
 #: spawned too — a dataloader, a compile step, a `uv` download — and not just the
-#: leader that would otherwise leave them holding the weights. Two different
-#: mechanisms for the same idea; `envinstall._spawn` makes the same split.
-SPAWN_KWARGS = (
-    {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
-    if os.name == "nt" else {"start_new_session": True}
-)
+#: leader that would otherwise leave them holding the weights.
+SPAWN_KWARGS = {"start_new_session": True}
 
 #: The worker's working directory, when the spawn cannot pass `cwd=` — see
 #: `_spawn_kwargs`. `worker_base.serve` reads it and `chdir`s first thing.
@@ -697,58 +687,32 @@ def _spawn_kwargs(cwd: str, env: dict) -> dict:
     `close_fds=False` leaks only descriptors marked inheritable, which since
     Python 3.4 (PEP 446) is none of this server's by default.
 
-    Linux and Windows keep the previous shape: glibc's fork is not where this
-    hazard lives, and Windows never forks.
+    Linux keeps the previous shape: glibc's fork is not where this hazard
+    lives.
     """
     if sys.platform == "darwin":
         env[WORKER_CWD_ENV] = cwd
         return {"close_fds": False}
     return {"cwd": cwd, "close_fds": True, **SPAWN_KWARGS}
 
-#: Windows has no SIGKILL. Read through getattr so merely IMPORTING this module
-#: does not fail there — the image runner is cross-platform, so this code really
-#: does run on Windows.
-_SIGKILL = getattr(signal, "SIGKILL", signal.SIGTERM)
-
 
 def _kill_tree(worker: Worker) -> None:
     """Stop the worker process and everything it started.
 
-    Two platforms, two mechanisms, and neither is optional:
-
-    * **POSIX** — `killpg` on the worker's own group, but ONLY when the pid is
-      that group's leader. The guard is not decoration: `envinstall._kill`
-      carries the same one because a stale pid that happened to live in the
-      SERVER's group once made `killpg` shut down a pytest session. A non-leader
-      gets a plain single-pid kill.
-    * **Windows** — there is no `killpg` (it does not exist as an attribute, so a
-      naive port raises AttributeError rather than OSError), and `os.kill(pid,
-      sig)` maps onto `TerminateProcess`. CTRL_BREAK reaches the group we spawned
-      with CREATE_NEW_PROCESS_GROUP; `taskkill /T /F` is the fallback that walks
-      the tree.
+    `killpg` on the worker's own group, but ONLY when the pid is that group's
+    leader. The guard is not decoration: `envinstall._kill` carries the same one
+    because a stale pid that happened to live in the SERVER's group once made
+    `killpg` shut down a pytest session. A non-leader gets a plain single-pid
+    kill.
     """
     pid = worker.pid
     if not pid:
         return
-    if os.name == "nt":
-        try:
-            os.kill(pid, signal.CTRL_BREAK_EVENT)
-        except (OSError, AttributeError, ValueError):
-            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
-                           capture_output=True)
-        deadline = time.monotonic() + 3.0
-        while time.monotonic() < deadline and _alive(worker):
-            time.sleep(0.05)
-        if _alive(worker):
-            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
-                           capture_output=True)
-        return
-
     try:
         leader = os.getpgid(pid) == pid
     except OSError:
         leader = False
-    for sig in (signal.SIGTERM, _SIGKILL):
+    for sig in (signal.SIGTERM, signal.SIGKILL):
         if not _alive(worker):
             return
         try:
@@ -766,8 +730,7 @@ def _cleanup_files(worker: Worker) -> None:
     Per-bring-up names mean they would otherwise accumulate one pair per load
     forever. Nothing is lost: a worker that failed has already had its stderr
     read into the error the job row carries, and this only runs once the process
-    is gone. Best-effort — on Windows an unlink can lose a race with the child's
-    last write, and a leftover log is not worth failing an unload over.
+    is gone. Best-effort — a leftover log is not worth failing an unload over.
     """
     for path in (_status_path(worker), _log_path(worker)):
         try:
@@ -2185,8 +2148,7 @@ def _start_render(capability: str, model: str, request: dict, job: str,
     # (`request["out"]`) is the only destination available in that case, so it
     # becomes one: the file itself once it exists, its folder if it never did.
     #
-    # Canonical (forward-slash) form, like every other fs path this API hands
-    # a page — `os.path.dirname` comes back backslashed on Windows, and a page
+    # Canonical form, like every other fs path this API hands a page — a page
     # is compared against the canonical spelling everywhere else it is stored
     # or read (`ai_runtime.canonical_fs_path`, `X-Fused-Page`, `/view` URLs).
     out_dir = canonical_fs_path(os.path.dirname(str(request.get("out") or ""))) or None
@@ -2204,8 +2166,8 @@ def _start_render(capability: str, model: str, request: dict, job: str,
             return
         # `result["path"]` is the worker's own field, written with `os.path` on
         # its side of the boundary — canonicalized here for the same reason
-        # `out_dir` is, so a Windows worker's spelling still matches the one
-        # `/api/ai/image`'s and `/api/ai/video`'s own `path` reply carries.
+        # `out_dir` is, so it matches the one `/api/ai/image`'s and
+        # `/api/ai/video`'s own `path` reply carries.
         done_page = canonical_fs_path(str(result.get("path"))) if result.get("path") else ""
         _report(job, state="done", done=result.get("steps"), total=result.get("steps"),
                 detail=f"Saved {os.path.basename(result.get('path') or noun)}",

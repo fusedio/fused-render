@@ -138,7 +138,7 @@ def test_for_runner_applies_the_overlay_on_a_hardware_variant_runner(monkeypatch
     BUILT-IN `llamacpp-text` list (`_SHARED_SUGGESTIONS`'s alias), so the
     overlay lookup has to be keyed by that same resolved name — not the raw
     variant code — or an overlay entry silently never applies on a Vulkan/
-    CUDA/ROCm/DirectML machine, exactly the example `catalog_overlay.py`'s
+    CUDA/ROCm machine, exactly the example `catalog_overlay.py`'s
     own module docstring gives as the motivating case."""
     canonical = catalog._SHARED_SUGGESTIONS["llamacpp-text-vulkan"]
     assert canonical == "llamacpp-text"

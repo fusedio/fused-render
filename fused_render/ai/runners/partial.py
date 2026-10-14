@@ -167,9 +167,7 @@ class Sink:
         failed run, in exchange for a tidier directory. That trade is never
         worth taking, so every `os.remove` failure is swallowed, not just the
         absent-file one: a run cancelled during the audio decode arrives having
-        never written a segment (FileNotFoundError), and a page tailing this
-        file through `/api/fs/raw` can be holding a Windows lock over it
-        (PermissionError) at the exact moment the transcript lands. A partial
+        never written a segment (FileNotFoundError). A partial
         file that outlives its run is duplicate bytes; a crash here is the
         result."""
         if self._handle is not None:

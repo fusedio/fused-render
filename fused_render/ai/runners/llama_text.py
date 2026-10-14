@@ -9,7 +9,7 @@ below. They differ in which wheel index their manifest takes
 never about the code. (The pattern is `torch_image.py`'s and was the removed
 `torch_text.py`'s, which served three such folders — D416.)
 
-**The DEFAULT text engine on Windows and Linux since D416, and now only the
+**The DEFAULT text engine on Linux since D416, and now only the
 FALLTHROUGH one wherever `llamacpp_text_vulkan/`'s own row can run — and it
 was designed not to be even that.** This module shipped registered below
 three `transformers-text*` rows so that `auto` could never reach it, because
@@ -24,10 +24,10 @@ default moved here. The GPU-first policy decision (`registry.py`'s block
 comment above `_RUNNERS`) has since moved it again, onto
 `llamacpp_text_vulkan/`'s row, wherever `registry._vulkan` finds a usable
 hardware Vulkan GPU — this module still backs BOTH rows (`main()` below is
-shared), so what changed is which folder's wheel a Windows/Linux machine
+shared), so what changed is which folder's wheel a Linux machine
 gets by default, not which code runs once it has one. What kept the D416
 move affordable, and still applies to this row now that it is the
-fallthrough: the pinned `0.3.29` Linux and Windows wheels were verified
+fallthrough: the pinned `0.3.29` Linux wheels were verified
 intact, macOS arm64 still resolves to `mlx-text` ahead of this row, and a
 corrupt wheel fails LOUDLY at `uv sync` rather than answering wrongly later.
 `llamacpp_text/pyproject.toml` carries the version this was audited against

@@ -22,13 +22,13 @@
 # `onnx_embed._placement`'s fallback chain relies on).
 #
 # **No `[tool.uv.index]`, unlike the torch CUDA sibling this replaces.**
-# `onnxruntime-gpu` is published on PyPI proper for both Linux and Windows and
+# `onnxruntime-gpu` is published on PyPI proper for Linux and
 # pulls its CUDA and cuDNN libraries in as ordinary `nvidia-*` wheels, so there
 # is no `download.pytorch.org` mirror to route around and no per-platform
 # source split. That is one of the two savings this whole engine is for.
 #
 # Every dependency below is a verbatim copy of the CPU folder's six beyond
-# onnxruntime and must stay one. A version drifting between the four would make
+# onnxruntime and must stay one. A version drifting between the three would make
 # "which hardware" also mean "which tokenizer".
 [project]
 name = "fused-render-runner-onnx-embed-cuda"

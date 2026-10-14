@@ -527,7 +527,7 @@ def test_there_is_no_second_mlx_embedding_FOLDER():
         entry.name for entry in runners.iterdir()
         if entry.is_dir() and "embed" in entry.name)
     assert embed_folders == ["mlx_embed", "onnx_embed", "onnx_embed_cuda",
-                             "onnx_embed_directml", "onnx_embed_rocm"], embed_folders
+                             "onnx_embed_rocm"], embed_folders
 
 
 def test_a_family_MLX_cannot_read_is_refused_BY_NAME(worker, monkeypatch,

@@ -97,7 +97,7 @@ def api_ai_models_revisions(repo: str):
                 "commit": commit,
                 "refs": sorted(refs_by_commit.get(commit, [])),
                 # own.size covers a snapshot dir that holds real files rather
-                # than links (Windows), and is 0 in the ordinary symlink case.
+                # than links, and is 0 in the ordinary symlink case.
                 "size": sum(_blob_size(b) for b in blobs - others) + own.size,
                 "shared": sum(_blob_size(b) for b in blobs & others),
                 "files": len(blobs) + own.files,

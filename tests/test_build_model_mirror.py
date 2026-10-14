@@ -297,12 +297,6 @@ def test_a_manifest_built_from_a_cache_round_trips_through_the_client(
     bytes. Each on its own can be self-consistently wrong: a script that reports
     the symlink's size and a client that trusts it would agree perfectly and
     produce a truncated blob under a real etag.
-
-    **No longer gated on `os.pwrite`.** It was, because the mirror's only
-    transport refused without it and this half really did fetch; the transport
-    now takes a single append-only stream instead (`worker_base._appends_only`),
-    so the round trip runs on win32 too — and it is the one test in this feature
-    that proves a real Windows download end to end.
     """
     mirror, base = mirror_and_base
     source, _manifest, _state = _served(script, mirror, tmp_path, monkeypatch)

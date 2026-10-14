@@ -10,7 +10,7 @@ needs.
 
 **Detection is a subprocess probe, and subprocess probes do not belong on the
 verdict path.** `fit._wired_limit_mb`'s own docstring states the rule this
-module has to keep: a cold `nvidia-smi`/`rocm-smi`/PowerShell spawn is
+module has to keep: a cold `nvidia-smi`/`rocm-smi` spawn is
 50-500ms, and `verdict()` runs once per catalog ROW on a route the picker
 polls. So the split here is the same one `_wired_limit_mb` drew for the wired
 ceiling, at a coarser grain: `detect_hardware()` is the slow probe, `fit.py`
@@ -22,20 +22,8 @@ plain `storage.read_json` and nothing else — the only thing `fit.py` and
 `benchmark.py` are meant to call, once a later phase wires either of them
 up to read it.
 
-**Four traps, each with its own test:**
+**Three traps, each with its own test:**
 
-* **Windows `Win32_VideoController.AdapterRAM` is a 32-bit `uint32`.** A card
-  with 4GB or more reports the field capped at (or wrapped past) that width —
-  a 16GB RTX 4080 comes back as ~4GB. The FIX is not a bigger read of the same
-  field: the display driver's own registry key
-  (`HKLM\\...\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}\\<NNNN>\\
-  HardwareInformation.qwMemorySize`, Microsoft's documented Display class
-  GUID) carries the true value as a 64-bit `REG_QWORD`, so a capped WMI
-  reading is re-resolved against that registry value rather than trusted.
-  (`Win32_PhysicalMemory` — total SYSTEM ram via SMBIOS — is a different
-  number entirely and is used below only for the unified-memory override,
-  never as a stand-in for VRAM; an earlier draft of this project's own spec
-  conflated the two and this module deliberately does not.)
 * **Unified-memory APUs report a tiny carveout, not the real pool.** AMD's
   Ryzen AI Max ("Strix Halo") and NVIDIA's Grace/DGX Spark parts show up as a
   GPU with ~0.5-1GB of "VRAM" — the BIOS-assigned aperture, not the shared
@@ -85,17 +73,9 @@ _PROBE_TIMEOUT_S = 3.0
 #: How long a caller that NEEDS a reading (a worker spawn baking a memory
 #: budget for the worker's whole life) waits for an in-flight probe to land.
 #: `_PROBE_TIMEOUT_S` is per vendor-tool spawn, and `detect_hardware` runs
-#: several in sequence (nvidia, amd, windows, sysctl), so the whole probe can
+#: several in sequence (nvidia, amd, sysfs, sysctl), so the whole probe can
 #: legitimately outlast one per-tool timeout; this spans a handful of them.
 _PROBE_WAIT_S = 5 * _PROBE_TIMEOUT_S
-
-#: `Win32_VideoController.AdapterRAM` is a `uint32`. Anything at or above
-#: 4 GiB minus a little slack reads as "this is the capped value, not the
-#: card's real size" — a handful of real sub-4GB cards report numbers close
-#: to but under the cap and must NOT be treated as capped, which is why this
-#: is a threshold near the top of the range rather than an exact-equality
-#: check against `2**32 - 1`.
-_ADAPTER_RAM_CAP_BYTES = 4 * 1024 ** 3 - 32 * 1024 * 1024  # ~3.97 GiB
 
 VERSION = 1
 
@@ -137,11 +117,10 @@ def _run(args: list[str], timeout: float = _PROBE_TIMEOUT_S) -> str | None:
         # default `locale.getpreferredencoding(False)` — a GUI-launched
         # fused-render process inherits no LANG/LC_ALL, which resolves that to
         # ASCII, so the first non-ASCII byte a vendor tool prints (a curly
-        # quote in an OEM device name, a Windows codepage that is not UTF-8)
-        # would raise `UnicodeDecodeError` and turn "no GPU detected" into a
-        # crashed background refresh. `errors="replace"` over a *correct*
-        # per-platform codepage (`cp1252`, PowerShell's OEM page, ...)
-        # because every field this module reads back out of `_run`'s output —
+        # quote in an OEM device name) would raise `UnicodeDecodeError` and
+        # turn "no GPU detected" into a crashed background refresh.
+        # `errors="replace"` over a *correct* per-platform codepage because
+        # every field this module reads back out of `_run`'s output —
         # a GPU name, a byte count — is matched by `in`/parsed as a number;
         # a mis-decoded byte in the middle of a name that isn't in the
         # bandwidth table already read as "unknown" before this fix, and
@@ -287,7 +266,7 @@ def _amd_gpus() -> list[GpuDevice] | None:
 
 #: The kernel's DRM class directory, as its own constant so tests can point
 #: the probe at a fixture tree instead of the real `/sys` (which does not
-#: exist on macOS/Windows CI at all, and on Linux CI describes the runner's
+#: exist on macOS CI at all, and on Linux CI describes the runner's
 #: hardware rather than the case under test).
 _DRM_CLASS_DIR = "/sys/class/drm"
 
@@ -422,91 +401,6 @@ def _sysfs_gpus() -> list[GpuDevice] | None:
     return gpus or None
 
 
-# --------------------------------------------------------------- Windows
-
-
-def _adapter_ram_is_capped(byte_value: int) -> bool:
-    """Is `byte_value` (WMI `AdapterRAM`) close enough to the 32-bit ceiling
-    that it is evidence of the cap, not a real reading — see module
-    docstring."""
-    return byte_value >= _ADAPTER_RAM_CAP_BYTES
-
-
-def _parse_windows_adapter_ram(text: str) -> list[tuple[str, int]]:
-    """`name|bytes` lines (one PowerShell `Win32_VideoController` row each)
-    into `(name, bytes)` pairs. Malformed lines are skipped, not fatal — a
-    row a future Windows build adds a new field to must not take down every
-    OTHER row's reading."""
-    rows = []
-    for line in text.splitlines():
-        line = line.strip()
-        if not line or "|" not in line:
-            continue
-        name, _, raw = line.rpartition("|")
-        try:
-            rows.append((name.strip(), int(raw.strip())))
-        except ValueError:
-            continue
-    return rows
-
-
-def _windows_registry_vram() -> dict[str, int]:
-    """`{driver description: qwMemorySize bytes}` read from the display
-    driver's own registry class — the correction for a capped `AdapterRAM`
-    reading (see module docstring). A real implementation shells out to
-    PowerShell (`Get-ItemProperty` over
-    `HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Class\\
-    {4d36e968-e325-11ce-bfc1-08002be10318}\\*`); split out as its own
-    function so `_windows_gpus` can be tested without one, and so a future
-    real implementation lands in exactly one place."""
-    out = _run(["powershell", "-NoProfile", "-Command",
-               "Get-ItemProperty -Path "
-               "'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Class\\"
-               "{4d36e968-e325-11ce-bfc1-08002be10318}\\*' "
-               "-ErrorAction SilentlyContinue | ForEach-Object { "
-               "$d = $_.DriverDesc; $m = $_.'HardwareInformation.qwMemorySize'; "
-               "if ($d -and $m) { $d + '|' + $m } }"])
-    if out is None:
-        return {}
-    result = {}
-    for name, value in _parse_windows_adapter_ram(out):
-        result[name] = value
-    return result
-
-
-def _windows_gpus() -> list[GpuDevice] | None:
-    # No explicit `sys.platform` guard, unlike `_apple_gpu`: off Windows,
-    # `_run` already returns None for free (no `powershell` binary, or one
-    # that answers nothing useful) — see `test_ai_hw_detect.py`'s Windows
-    # tests, which drive this on macOS/Linux CI by monkeypatching `_run`
-    # rather than needing a Windows runner to exercise the parsing at all.
-    out = _run(["powershell", "-NoProfile", "-Command",
-               "Get-CimInstance Win32_VideoController | "
-               "Select-Object Name,AdapterRAM | ForEach-Object { "
-               "$_.Name + '|' + $_.AdapterRAM }"])
-    if out is None:
-        return None
-    rows = _parse_windows_adapter_ram(out)
-    if not rows:
-        return None
-    registry = None
-    gpus = []
-    for name, byte_value in rows:
-        if _adapter_ram_is_capped(byte_value):
-            if registry is None:
-                registry = _windows_registry_vram()
-            corrected = registry.get(name)
-            if isinstance(corrected, int) and corrected > byte_value:
-                byte_value = corrected
-        # Decimal GB (`GpuDevice.vram_gb`'s own unit — see `_parse_nvidia_
-        # smi`'s docstring for the full reasoning), NOT `/1024**3`: both
-        # `AdapterRAM` and the registry's `qwMemorySize` are raw bytes, and
-        # binary-GiB math here was the other half of the same under-report
-        # `_parse_nvidia_smi` had.
-        gpus.append(GpuDevice(name=name, vram_gb=byte_value / 1e9))
-    return gpus or None
-
-
 # ---------------------------------------------------------------- Apple
 
 
@@ -573,8 +467,8 @@ def _linux_cpu_name() -> str:
     unconditionally when `sys.platform` starts with `"linux"`, and a
     container or an exotic kernel might still lack `/proc`), a permission
     error, or a `model name` field this format has never had — the same
-    "no signal" answer the Darwin/Windows CPU-name reads already give in
-    their own failure cases, so `detect_hardware`'s override/bandwidth
+    "no signal" answer the Darwin CPU-name read already gives in
+    its own failure cases, so `detect_hardware`'s override/bandwidth
     logic needs no extra branch for it.
     """
     try:
@@ -674,8 +568,7 @@ def detect_hardware(ram_gb: float | None = None) -> HardwareInfo:
     (see module docstring). Composes every vendor probe with `or` so one
     absent tool falls through to the next: NVIDIA, then AMD, then the Linux
     DRM sysfs reading (the tool-free fallback for a box with no ROCm
-    installed — see `_sysfs_gpus`), then Windows WMI, then Apple Silicon's
-    unified pool. `ram_gb` — pass
+    installed — see `_sysfs_gpus`), then Apple Silicon's unified pool. `ram_gb` — pass
     `fit.machine_ram_gb()` — feeds both the Apple-Silicon reading and the
     unified-APU override; without it those two degrade to "no GPU" and "no
     override" respectively rather than guessing a pool size.
@@ -684,7 +577,7 @@ def detect_hardware(ram_gb: float | None = None) -> HardwareInfo:
     and an empty result here is a legitimate answer (a CPU-only machine),
     not a caller-visible error.
     """
-    gpus = (_nvidia_gpus() or _amd_gpus() or _sysfs_gpus() or _windows_gpus()
+    gpus = (_nvidia_gpus() or _amd_gpus() or _sysfs_gpus()
             or _apple_gpu(ram_gb) or [])
     if sys.platform == "darwin":
         cpu_name = _run(["sysctl", "-n", "machdep.cpu.brand_string"]) or ""

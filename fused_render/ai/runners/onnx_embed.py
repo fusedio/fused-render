@@ -2,10 +2,9 @@
 
 **This module is the whole of the runner and it sits at the runners ROOT**,
 beside `worker_base.py`, `embed_common.py` and `torch_image.py` — the rule
-`preview.py` states about itself, applied to embeddings. FOUR folders serve this
-engine — `onnx_embed/`, `onnx_embed_directml/`, `onnx_embed_cuda/` and
-`onnx_embed_rocm/` — and they differ only in which `onnxruntime` distribution
-their `pyproject.toml` installs. Each folder's `worker.py` is a five-line shell
+`preview.py` states about itself, applied to embeddings. THREE folders serve this
+engine — `onnx_embed/`, `onnx_embed_cuda/` and `onnx_embed_rocm/` — and they
+differ only in which `onnxruntime` distribution their `pyproject.toml` installs. Each folder's `worker.py` is a five-line shell
 around `onnx_embed.main()`, the same shape `diffusers_image_cuda/worker.py`
 documents at length for the image family; a second copy of the padding rule, the
 output-name assertion or the provider order under any of them would fail no
@@ -237,7 +236,7 @@ def _cached_repo_files(model_id):
     commit is a graph this layout has.
 
     Forward slashes unconditionally, because the patterns are compared against
-    Hub paths and `os.walk` yields backslashes on Windows.
+    Hub paths.
     """
     folder = worker_base.repo_folder(model_id)
     if not folder:
@@ -349,7 +348,7 @@ def download(model_id):
 #: Execution providers this runner will use, best first, with the device string
 #: `/health` reports for each. Every folder's `onnxruntime` distribution
 #: registers exactly one accelerated provider (or none, for the CPU folder), so
-#: this one table serves all four and no folder needs a branch of its own — the
+#: this one table serves all three and no folder needs a branch of its own — the
 #: argument the withdrawn torch embedding runner made for its own single
 #: `_placement()`, in the vocabulary onnxruntime uses.
 #: `CPUExecutionProvider` is always present and always last, which is what makes
@@ -357,7 +356,6 @@ def download(model_id):
 _PROVIDERS = (
     ("CUDAExecutionProvider", "cuda"),
     ("ROCMExecutionProvider", "rocm"),
-    ("DmlExecutionProvider", "directml"),
     ("CPUExecutionProvider", "cpu"),
 )
 

@@ -15,7 +15,7 @@ down beside each entry.
 **Keyed by RUNNER, not by capability, and that is what makes it correct on more
 than one platform.** A suggestion is only meaningful for the backend that will
 load it: `mlx-community/Qwen3.5-9B-MLX-4bit` is packed for Metal kernels and is
-unloadable rubbish on a Windows box, while `Qwen/Qwen3.5-4B` is the
+unloadable rubbish on a Linux box, while `Qwen/Qwen3.5-4B` is the
 right answer there and the wrong one on a Mac that has MLX. One capability with
 two BACKENDS (text generation since D293, speech to text since D302) therefore
 has two lists — hardware variants of one backend share theirs, since the wheel
@@ -453,7 +453,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
     #
     # **And that requirement is load-bearing precisely BECAUSE of D416.** Since
     # the transformers family was withdrawn, this list is what a bare "auto"
-    # reaches on Windows and Linux rather than an opt-in a user had to go
+    # reaches on Linux rather than an opt-in a user had to go
     # looking for — so these four entries are no longer an alternative
     # shortlist beside a safetensors one, they are the whole of what text
     # generation suggests on those platforms. A monoculture was a thin
@@ -1645,11 +1645,10 @@ _SHARED_SUGGESTIONS = {
     "diffusers-image-rocm": "diffusers-image",
     "llamacpp-text-vulkan": "llamacpp-text",
     # Hardware variants of `onnx-embed` — same repos, same `onnx/` graphs, a
-    # different execution provider — for the identical reason. The four ONNX
+    # different execution provider — for the identical reason. The three ONNX
     # builds differ in which `onnxruntime*` distribution is installed and in
     # nothing about which files are loadable, so their lists must be identical
     # BY CONSTRUCTION rather than by nobody having edited one of them yet.
-    "onnx-embed-directml": "onnx-embed",
     "onnx-embed-cuda": "onnx-embed",
     "onnx-embed-rocm": "onnx-embed",
     # **`mlx-embed` used to be aliased here and deliberately is not any more.**
@@ -1692,7 +1691,7 @@ def for_runner(code: str) -> list[dict]:
     nothing there even when the user wrote the entry under
     `"llamacpp-text"` (the only name that appears anywhere in the built-in
     curation a user could plausibly have copied), silently doing nothing on
-    every Vulkan/CUDA/ROCm/DirectML machine — exactly the scenario
+    every Vulkan/CUDA/ROCm machine — exactly the scenario
     `catalog_overlay.py`'s own module docstring gives as the motivating
     example. Every hardware variant of a runner shares ONE overlay
     namespace, matching how they already share one built-in list.
@@ -1804,7 +1803,7 @@ def runners_offering(model_id: str) -> tuple[str, ...]:
 #: on every machine that is not a Mac**, and for no more general reason than
 #: that. Both were curated for `transformers-embed`, which every platform could
 #: run; with that engine gone their only curated home is `mlx-embed`, so a Linux
-#: or Windows user who had already downloaded one is holding a snapshot no
+#: user who had already downloaded one is holding a snapshot no
 #: engine available to them can read. The ONNX exports below are the same
 #: checkpoints in the format the engine they DO have opens, which is what makes
 #: the refusal a "fetch this instead" rather than a shrug.
@@ -1913,10 +1912,11 @@ def engine_gap(model_id: str) -> dict | None:
     # **Why `offering[0]` alone got this wrong (PR review finding).**
     # `runners_offering()` walks `_RUNNERS` in registry order, and since the
     # GPU-first reorder that order puts each family's accelerator rows AHEAD
-    # of its cross-platform base row — `onnx-embed-directml`, `-cuda`, `-rocm`,
-    # then `onnx-embed`. `offering[0]` on an Intel Mac was therefore
-    # `onnx-embed-directml`, whose reason is "needs Windows" — true of that one
-    # row and useless to the reader, who is not on Windows and never will be.
+    # of its cross-platform base row — `onnx-embed-cuda`, `-rocm`, then
+    # `onnx-embed`. `offering[0]` on an Intel Mac was therefore
+    # `onnx-embed-cuda`, whose reason is "needs an NVIDIA GPU (published for
+    # Linux only)" — true of that one row and useless to the reader, who is
+    # on a Mac.
     # The blocker that actually applies is `onnx-embed`'s own gate (no macOS
     # x86_64 `onnxruntime` wheel), because the base row is definitionally the
     # one every accelerated sibling falls back to (`_SHARED_SUGGESTIONS`
@@ -2032,7 +2032,7 @@ def describe() -> list[dict]:
 
     The runner is resolved the way a LOAD resolves it, which is the fix D293
     needed: this used to take the first runner registered for the capability
-    whatever its availability, so a Windows machine — where the MLX row is
+    whatever its availability, so a Linux machine — where the MLX row is
     first and unavailable, and the cross-platform row below it is fine — would
     have been told text generation "needs Apple Silicon" while a runner sat
     ready to serve it, and shown four MLX repos it could not load.

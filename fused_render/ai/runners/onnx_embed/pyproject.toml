@@ -1,8 +1,8 @@
 # The ONNX embedding runner's environment — the CPU build (SPEC §40, PY-16).
 #
 # The cross-platform, and default, backend for embeddings off Apple Silicon.
-# Read this file first: the three accelerated siblings
-# (`onnx_embed_directml/`, `onnx_embed_cuda/`, `onnx_embed_rocm/`) are this
+# Read this file first: the two accelerated siblings
+# (`onnx_embed_cuda/`, `onnx_embed_rocm/`) are this
 # manifest with one dependency name changed, and they point back here for the
 # reasoning.
 #
@@ -16,9 +16,9 @@
 # (`tests/test_ai_onnx_embed_real_weights.py`) asserting ≥0.999 cosine against
 # the torch runner's vectors, and that evidence is what licensed the removal.
 #
-# **No `[tool.uv.index]` on any of the four folders**, and that is the other
+# **No `[tool.uv.index]` on any of the three folders**, and that is the other
 # half of the saving. Every onnxruntime build ships on PyPI proper — CPU,
-# DirectML, CUDA and ROCm alike — so none of these manifests needs the
+# CUDA and ROCm alike — so none of these manifests needs the
 # `explicit = true` mirror dance `transformers_embed*` and `diffusers_image*`
 # both carry, and none of them can accidentally resolve numpy or pillow off a
 # vendor mirror.
@@ -67,7 +67,7 @@
 # **`requires-python = ">=3.11"`, not the `>=3.10` every other runner folder
 # here declares**, and it is a fact about the wheels rather than a preference:
 # onnxruntime 1.29 publishes `cp311` upwards and nothing older, on every one of
-# the four distributions. Declaring 3.10 would let `uv sync` pick a 3.10
+# the three distributions. Declaring 3.10 would let `uv sync` pick a 3.10
 # interpreter and then fail to find any onnxruntime at all — a resolution error
 # about a version range, where this line makes it an interpreter error naming
 # the real requirement.
