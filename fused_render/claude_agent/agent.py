@@ -3184,6 +3184,19 @@ _NOT_A_TURN_ROW = frozenset({"control_response", "rate_limit_event"})
 _BOOKKEEPING_SYSTEM_ROWS = frozenset({
     "task_summary", "post_turn_summary", "task_progress", "task_updated",
     "background_tasks_changed"})
+# THE CLI'S OWN PREAMBLE TO A TURN, not the turn itself. Claude Code 2.1.29x
+# writes `system/init` and `system/status` (and the SessionStart hook pair on
+# a fresh process) the moment it picks an input off stdin — BEFORE the
+# `--replay-user-messages` echo of that input. Read as "the run speaking",
+# they flipped `idle` off on the poll right after a follow-up was sent, which
+# lifted the `pending_echo` blank and handed the page the PREVIOUS reply, in
+# full and with no seam, for every poll until the cursor stepped past the
+# echo: the previous answer flashed into the new bubble (Akshil, 2026-10-14).
+# The echo (`_starts_new_turn`), a D415 wake (`task_notification` + its
+# synthetic user row) or any stream/assistant row is what proves a turn
+# opened; these four never do.
+_TURN_PREAMBLE_SYSTEM_ROWS = frozenset({
+    "init", "status", "hook_started", "hook_response"})
 
 
 def _not_a_turn_row(row: dict) -> bool:
@@ -3193,6 +3206,19 @@ def _not_a_turn_row(row: dict) -> bool:
     if t in _NOT_A_TURN_ROW:
         return True
     return t == "system" and row.get("subtype") in _BOOKKEEPING_SYSTEM_ROWS
+
+
+def _turn_preamble_row(row: dict) -> bool:
+    """Whether `row` is the CLI picking a message up rather than answering it
+    (`_TURN_PREAMBLE_SYSTEM_ROWS`).
+
+    Deliberately NOT folded into `_not_a_turn_row`: for `_turn_state` (and so
+    `_live_run`, the Tasks row) a fresh `init` after a `result` is the right
+    moment to call the turn open again. It is only `_poll`'s window — what the
+    page is handed as THIS turn's text — that must not read it as the reply
+    having started, because the window has not moved yet."""
+    return row.get("type") == "system" and \
+        row.get("subtype") in _TURN_PREAMBLE_SYSTEM_ROWS
 
 
 def _turn_state(run_dir: str) -> tuple:
@@ -5811,7 +5837,15 @@ def _absorbed_turn_breaks(rows: list, app_reads: bool = False) -> list:
     # index of the row before the one being looked at (subagent rows skipped) —
     # see the genuine-boundary branch below for why the ADJACENCY matters.
     last_result = None
-    last_main = None
+    # Whether every main row since `last_result` is one the CLI writes while
+    # picking up the next input (`_not_a_turn_row`: `system/init`,
+    # `system/status`, bookkeeping) rather than the turn reopening on its own
+    # (a D415 wake's rows, see the test below). The CLI writes `init` and
+    # `status` between the `result` and the echo on EVERY follow-up (2.1.29x),
+    # so demanding the echo sit directly after the `result` reported no seam
+    # for any genuine boundary at all, and a page with nothing to subtract
+    # typed the previous reply into the new bubble (Akshil, 2026-10-14).
+    quiet_since_result = False
     for i, row in enumerate(rows):
         if not isinstance(row, dict):
             continue
@@ -5819,7 +5853,6 @@ def _absorbed_turn_breaks(rows: list, app_reads: bool = False) -> list:
         # `_read_current_turn`'s cursor and `_segments_from_rows` both make.
         if row.get("parent_tool_use_id"):
             continue
-        prev_main, last_main = last_main, i
         if row.get("type") == "result":
             seen_result = True
             if outstanding:
@@ -5833,6 +5866,7 @@ def _absorbed_turn_breaks(rows: list, app_reads: bool = False) -> list:
                 # Not a seam YET. It becomes one if a new user turn shows up
                 # after it inside this window — see the `elif` below.
                 last_result = i
+                quiet_since_result = True
         elif i and _starts_new_turn(row):
             # `i and` skips `rows[0]`: the window opens on its own turn's echo.
             if seen_result:
@@ -5876,11 +5910,16 @@ def _absorbed_turn_breaks(rows: list, app_reads: bool = False) -> list:
                 # still has its shrink test for that one, and the shape this
                 # branch exists for (a follow-up the CLI drained straight after
                 # the reply's `result`) has no wake in it by construction.
-                if last_result is not None and prev_main == last_result:
+                if last_result is not None and quiet_since_result:
                     _seam(breaks, rows, i, shape, app_reads)
                     last_result = None
+                quiet_since_result = False
             else:
                 outstanding += 1
+        elif not _not_a_turn_row(row) and not _turn_preamble_row(row):
+            # The run itself speaking after a `result` (a wake's rows): a
+            # seam at that `result` would file this under the wrong turn.
+            quiet_since_result = False
     return breaks
 
 
@@ -6244,6 +6283,15 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
     ends = []
     pending_cursor = []
     rows, scan_cursor = _read_current_turn(run_dir, ends, pending_cursor)
+    # ONLY WHILE A SEND IS WAITING FOR ITS ECHO do the CLI's preamble rows
+    # (`_turn_preamble_row`) leave `idle` alone: that is the window in which
+    # "the previous reply, served as this turn" is the bug, and the
+    # `pending_echo` gate below is what blanks it. With no send outstanding —
+    # a D415 wake whose hooks fire before its `task_notification`, a slow
+    # SessionStart hook — those same rows are the run waking up and must
+    # reopen the turn at once, or `done` would read True across the hook
+    # window (Bugbot-style review, 2026-10-14).
+    echo_outstanding = os.path.exists(os.path.join(run_dir, "pending_echo"))
 
     for row in rows:
         parsed.append(row)
@@ -6252,8 +6300,10 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
         # (the harness's hooks fire first, then `init`, then the reply), so the
         # quiet-verb window closes on the first row of any kind — see `idle` —
         # except the rows that are not the run speaking at all
-        # (`_NOT_A_TURN_ROW`).
-        if t != "result" and not _not_a_turn_row(row):
+        # (`_NOT_A_TURN_ROW`), and the preamble of the turn a pending send is
+        # about to open (`_turn_preamble_row`, gated on `echo_outstanding`).
+        if t != "result" and not _not_a_turn_row(row) \
+                and not (echo_outstanding and _turn_preamble_row(row)):
             idle = False
         # Any of these means the request the retries were for went THROUGH.
         # Rows are in file order, so anything the model produced after an
@@ -6472,22 +6522,47 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
         except (OSError, ValueError):
             pending_offset = 0
         saw_echo_since_send = False
+        # Where the echo's line ENDS in `out.jsonl` — the same absolute
+        # offsets `ends` records for the window's rows, so the two compare.
+        echo_end = 0
         try:
             with open(os.path.join(run_dir, "out.jsonl"), "rb") as fh:
                 fh.seek(pending_offset)
                 tail = fh.read()
         except OSError:
             tail = b""
+        line_off = pending_offset
         for raw_line in tail.split(b"\n"):
-            if not raw_line:
-                continue
-            try:
-                row = json.loads(raw_line.decode("utf-8", "replace"))
-            except ValueError:
-                continue
-            if _starts_new_turn(row):
-                saw_echo_since_send = True
-                break
+            line_end = line_off + len(raw_line) + 1
+            if raw_line:
+                try:
+                    row = json.loads(raw_line.decode("utf-8", "replace"))
+                except ValueError:
+                    row = None
+                if row is not None and _starts_new_turn(row):
+                    saw_echo_since_send = True
+                    echo_end = line_end
+                    break
+            line_off = line_end
+        # THE ECHO CAN LAND BETWEEN THE TWO READS: `rows` above came off the
+        # file a moment earlier and may end on the preamble alone — `result`,
+        # `init`, `status` — while this newer tail already has the echo. The
+        # payload built from `rows` is still the previous reply with no seam,
+        # so believing the tail here would hand exactly that to the page (and
+        # `done`, if the tail held the new `result` too — Bugbot/CodeRabbit,
+        # PR #1650). The echo counts only once the WINDOW has it; until then
+        # this poll stays pending and the marker stays on disk for the next
+        # one, whose window will carry the echo and its seam.
+        # BY POSITION, NOT BY VALUE (Bugbot/CodeRabbit, PR #1650 round 2): a
+        # message sent twice has an older echo of the same shape already in
+        # the window, so a row match would lift the gate for the wrong one.
+        # `ends` holds each window row's absolute end offset (a half-written
+        # last line is recorded negative and never counts as read), so the
+        # echo is in the window exactly when its own line ended at or before
+        # the last complete row the window read.
+        window_end = max((e for e in ends if e > 0), default=0)
+        if saw_echo_since_send and echo_end > window_end:
+            saw_echo_since_send = False
         if saw_echo_since_send:
             try:
                 os.remove(pending_echo_path)
