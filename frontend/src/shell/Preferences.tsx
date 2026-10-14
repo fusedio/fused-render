@@ -41,7 +41,6 @@
 // The active tab lives in the URL (`?tab=indexing`), same pattern as
 // Templates' bindings/library tabs.
 // Template bindings live in the dedicated /view/_templates view.
-import { isMac } from "@platform/lib/platform";
 import { useCallback, useEffect, useState } from "react";
 import {
   buildDiagnostics,
@@ -61,7 +60,6 @@ import {
   putLivePreviewsEnabled,
   putMonitorEnabled,
   putMenubarPinEnabled,
-  putAppsOpenInExplorer,
   putNativeWindowsEnabled,
   putGitAutoSyncEnabled,
   putAutoDownloadUpdates,
@@ -907,20 +905,6 @@ function NativeWindowsSection({ prefs, onChange }: { prefs: Prefs; onChange: (p:
   const nw = prefs.native_windows;
   if (!nw || !nw.available) return null;
   const enabled = nw.enabled;
-  const inExplorer = prefs.apps_open_in_explorer?.enabled === true;
-
-  const toggleInExplorer = async () => {
-    if (busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      onChange(await putAppsOpenInExplorer(!inExplorer));
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  };
 
   const toggle = async () => {
     if (busy) return;
@@ -949,26 +933,6 @@ function NativeWindowsSection({ prefs, onChange }: { prefs: Prefs; onChange: (p:
           <b>Use native windows</b> instead of browser tabs.
         </span>
       </label>
-      {/* macOS only: a Linux window always opens apps in the explorer
-          (appEntry.ts `openAppEntry`), so there is nothing to choose. */}
-      {isMac && (
-        <label className="prefs-radio">
-          <input
-            type="checkbox"
-            checked={inExplorer}
-            disabled={busy || !enabled}
-            onChange={toggleInExplorer}
-          />
-          <span>
-            <b>Open apps in the file explorer</b>
-            <br />
-            <span className="deploy-muted">
-              An app you click inside a window opens there with the explorer around it, instead of
-              on its own with the window becoming the app's.
-            </span>
-          </span>
-        </label>
-      )}
       {error && <ErrorBanner>{error}</ErrorBanner>}
     </section>
   );
