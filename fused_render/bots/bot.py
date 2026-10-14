@@ -2083,7 +2083,8 @@ class Bot:
                 # The user holds the browser: the bot stays stopped. The message is written (the page shows it
                 # queued) and delivered when the page goes back to the bot (_control_off → _flush_held).
                 self.meta["held"] = [*(self.meta.get("held") or []),
-                                     {"seq": uev.get("seq"), "text": text, "shown": shown, "via": via}]
+                                     {"seq": uev.get("seq"), "text": text, "shown": shown, "via": via,
+                                      **({"answers": answers} if answers is not None else {})}]
                 self.save()
                 return
         self._deliver_message(text, shown, via, uev, forever=forever and chan.is_web(via), images=images, answers=answers)
@@ -2430,7 +2431,10 @@ class Bot:
                     h, self.meta["held"] = held[0], held[1:]
                     self.save()
                 try:
-                    self._deliver_message(h.get("text") or "", h.get("shown") or "", h.get("via") or dict(chan.WEB), {"seq": h.get("seq")})
+                    # `answers` rides along: a card button's click held through a take-over is still bound to its
+                    # card, and _deliver_message drops it if that card settled meanwhile.
+                    self._deliver_message(h.get("text") or "", h.get("shown") or "", h.get("via") or dict(chan.WEB), {"seq": h.get("seq")},
+                                          answers=h.get("answers"))
                 except Exception:  # noqa: BLE001 — one bad message must not strand the rest
                     logger.warning("bot %s: queued message %s not delivered", self.id, h.get("seq"), exc_info=True)
         finally:

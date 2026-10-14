@@ -178,7 +178,9 @@ def _relay_card(sb, t, hd, ev, card):
         opts = list(chan.APPROVAL_OPTIONS)
     elif not (ev.get("login") or "browser window" in (ev.get("text") or "") or ev.get("multi")):
         # (a multi-select question stays a notice: one tap here or one number on the phone cannot carry several picks)
-        opts = [str(o).strip()[:80] for o in (ev.get("options") or []) if str(o).strip()][:5]
+        # Labels verbatim, as the target emitted them: a mapped number sends the exact option back, so the target's
+        # chat marks it chosen. The phone text is cut by render() as a whole, never per label.
+        opts = [str(o).strip() for o in (ev.get("options") or []) if str(o).strip()]
     if len(opts) < 2 or ev.get("seq") is None:
         sb.emit("question", f"{name} needs you at the laptop: {card} Answer it at the Mac.",
                 source="handoff", handoff=sb._handoff_ref(hd), via=hd.get("origin_via"))

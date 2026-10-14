@@ -155,7 +155,9 @@ function HandoffCard({ e, state: rawState, targetLive, targetWaiting }: { e: Bot
     setSent(true);
     void (async () => {
       try { await api.send(relay!.bot, t, null, false, relay!.seq); }
-      catch (e) { if (!(e instanceof ApiError && e.status === 409)) { setSent(false); showBanner(errMsg(e)); } }
+      catch (e) {
+        if (!(e instanceof ApiError && e.status === 409)) { setSent(false); showBanner(errMsg(e)); return; }  // no poll: it would hide the banner
+      }
       await poll();
     })();
   };

@@ -231,7 +231,17 @@ class Router:
             door.emit("error", f"That reply was sent before {who}'s card reached you. Reply again to answer it.", via=dict(via), source="hold")
             return True
         via["answers"] = card["seq"]
-        target.receive(verdict, via=via)
+        try:
+            # `answers` binds it in receive() too: judged again under the target's lock at the inbox write, so the
+            # gap between the check above and the write cannot turn it into the verdict on a later card.
+            target.receive(verdict, via=via, answers=card["seq"])
+        except Exception as e:  # noqa: BLE001 — CardSettled: the card went in the gap
+            if e.__class__.__name__ != "CardSettled":
+                raise
+            door.emit("system", f"Texted \"{text.strip()[:80]}\" for {who}'s card after it was settled; not applied.", via=None)
+            door.emit("error", f"That card of {who}'s was answered already (at the Mac, or the task ended).", via=dict(via), source="hold")
+            self._settle(door.id, card)
+            return True
         self._settle(door.id, card)
         # Super Bot's transcript records that the USER answered, as a plain line the model reads as data.
         did = "approved" if _yes().match(verdict) else "denied" if _no().match(verdict) else f"answered \"{verdict.strip()[:80]}\" to"
