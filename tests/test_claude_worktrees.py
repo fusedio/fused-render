@@ -52,7 +52,9 @@ def test_list_on_main(repo):
     [row] = out["worktrees"]
     assert row == {"path": repo, "branch": "main", "head": row["head"],
                    "name": "repo", "managed": False, "is_main": True,
-                   "dirty": False}
+                   "dirty": False,
+                   "mapped": {"path": os.path.join(repo, "a.txt"), "exists": True}}
+    assert out["relative"] == "a.txt"
     assert len(row["head"]) >= 40
 
 
@@ -373,3 +375,36 @@ def test_git_child_env_drops_inherited_repository_location(monkeypatch):
         assert name not in env
     assert env["UNRELATED"] == "kept"
     assert env["GIT_TERMINAL_PROMPT"] == "0"
+
+
+def test_list_maps_a_file_target_into_every_worktree(repo):
+    """A chat open on a FILE switches to the same file in another worktree
+    when it exists there, else to that worktree's root (the user: "it should
+    behave the same as the folder level does")."""
+    os.mkdir(os.path.join(repo, "src"))
+    with open(os.path.join(repo, "src", "app.py"), "w") as f:
+        f.write("x = 1\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "add app")
+    made = wt.create_worktree(repo, "feat")
+    assert "error" not in made
+    out = wt.list_worktrees(os.path.join(repo, "src", "app.py"))
+    assert out["relative"] == os.path.join("src", "app.py")
+    by_name = {w["name"]: w for w in out["worktrees"]}
+    main = by_name["repo"]
+    assert main["mapped"] == {"path": os.path.join(repo, "src", "app.py"),
+                              "exists": True}
+    feat = by_name["feat"]
+    assert feat["mapped"] == {"path": os.path.join(made["path"], "src", "app.py"),
+                              "exists": True}
+    # A file that only the main checkout has: the other worktree maps to it
+    # too, but says it is not there.
+    with open(os.path.join(repo, "src", "new.py"), "w") as f:
+        f.write("y = 2\n")
+    out = wt.list_worktrees(os.path.join(repo, "src", "new.py"))
+    feat = next(w for w in out["worktrees"] if w["name"] == "feat")
+    assert feat["mapped"]["exists"] is False
+    # A folder target keeps the old shape: relative "" and the roots.
+    out = wt.list_worktrees(repo)
+    assert out["relative"] == ""
+    assert all(w["mapped"]["path"] == w["path"] for w in out["worktrees"])

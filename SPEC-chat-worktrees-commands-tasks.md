@@ -47,8 +47,11 @@ Stdlib + `git` subprocess only. Functions:
   parent). "" when not a git repo or git missing.
 - `list_worktrees(path) -> dict` → `{"root": <main root>, "current": <worktree
   path containing `path` or root>, "branch_current": <branch of current>,
+  "relative": <path of the target under current, "" at the root>,
   "worktrees": [{"path", "branch", "head", "name", "managed": bool,
-  "is_main": bool, "dirty": bool|null}]}` from `git worktree list --porcelain`.
+  "is_main": bool, "dirty": bool|null, "mapped": {"path", "exists"}}]}` from
+  `git worktree list --porcelain`; `mapped` is the target carried into that
+  worktree and whether it is on disk there.
   `managed` = under `<root>/.claude/worktrees/`. `name` = basename for managed
   ones, else the last path segment. `dirty` from `git status --porcelain` with a
   2 s timeout; `null` on timeout.
@@ -74,8 +77,11 @@ Run the git calls in a thread (`asyncio.to_thread`) with a 20 s budget.
 - `protocol/worktrees.ts`: `listWorktrees(file)`, `createWorktree(file, name,
   base?)`, `removeWorktree(file, name, force?)` over `postJson` with the chat's
   headers (reuse `agent.ts`'s `post` pattern; export a `WorktreeRow` type).
-- `ui/WorktreeMenu.tsx` in the Topbar, folder targets only (hidden for a file
-  target, hidden when `listWorktrees` says not a repo). Trigger shows a branch
+- `ui/WorktreeMenu.tsx` in the Topbar and on the landing card, for ANY
+  target inside a repo, file or folder (hidden when `listWorktrees` says not
+  a repo). A file chat switches to the SAME file in the other worktree
+  (`list` maps the target into every worktree as `mapped: {path, exists}`),
+  or to that worktree's root when the file is not on that branch. Trigger shows a branch
   icon + the current worktree name (`main` checkout shows the branch name).
   Menu: one row per worktree (name, branch, dirty dot), the current one marked;
   "New worktree…" opens an inline name field (Enter creates, Esc cancels; the

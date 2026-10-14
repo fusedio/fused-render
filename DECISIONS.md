@@ -6873,6 +6873,7 @@ SPEC-chat-worktrees-commands-tasks.md §W.
 - **Only managed worktrees can be removed** (anything outside `.claude/worktrees/` is refused, the main checkout included), and a dirty one only with a second, forcing click. A failed or timed-out add is undone (unlock, remove, prune, branch delete) so a retry works; `.claude` or `.claude/worktrees` as a symlink is refused, since a cloned repo could commit one and redirect a checkout.
 - **One deadline per request** (16 s inside the route's 20 s) and a two-thread executor of its own: a slow checkout must never queue behind, or starve, the chat's polls on `pool.POOL`.
 - Switching is a navigation to the worktree path with no session, the same URL the Home lists build (`paneChatUrl`), so the leave guard and the landing card apply unchanged. The menu is on the landing card as well as the Topbar because a switch always lands on the landing.
+- **A file chat gets the same menu as a folder chat** (2026-10-14, user: "it should behave the same as the folder level does"): `list` carries the target into every worktree (`mapped: {path, exists}`), so a chat open on `src/app.py` switches to `src/app.py` on the other branch, and to that worktree's root when the file is not there — never to a path that is not on disk.
 
 ## D1356 — Slash commands: the CLI's list, a disk scan before it exists, six local ones (2026-10-13, claude/happy-mayer-evqehd)
 

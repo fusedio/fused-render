@@ -345,8 +345,25 @@ def list_worktrees(path: str) -> dict:
     current = max(holding, key=lambda w: len(w["path"]))["path"] if holding else root
     branch_current = next((w["branch"] for w in worktrees
                            if w["path"] == current), "")
+    # THE SAME TARGET IN EVERY OTHER WORKTREE. A chat open on a FILE (or a
+    # subfolder) of one checkout switches to that file in the other checkout
+    # when it exists there, and to the checkout's root when it does not (a
+    # file added on one branch only), so a switch never lands on a path that
+    # is not on disk. `relative` is the path under `current`; the current
+    # worktree maps to the target itself.
+    target = os.path.realpath(path)
+    relative = ""
+    if target != current and _within(target, current):
+        relative = os.path.relpath(target, current)
+    for w in worktrees:
+        if w["path"] == current:
+            w["mapped"] = {"path": target, "exists": os.path.exists(target)}
+            continue
+        candidate = os.path.join(w["path"], relative) if relative else w["path"]
+        w["mapped"] = {"path": candidate,
+                       "exists": os.path.lexists(candidate)}
     return {"root": root, "current": current, "branch_current": branch_current,
-            "worktrees": worktrees}
+            "relative": relative, "worktrees": worktrees}
 
 
 def _check_name(name: str) -> str:
