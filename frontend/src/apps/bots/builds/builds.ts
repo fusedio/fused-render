@@ -249,6 +249,12 @@ export function chipFor(rows: TaskRow[]): { n: string; live: boolean; warn: bool
 export function renderBuildChip(): void {
   noteBotBuilds(getState().bots);  // before `mine()`: the bots' own records are part of what counts as a build
   adoptBuilds();
+  refreshBuildFilter();
+}
+/** The chip and the framed list's filter off the rows as they stand — WITHOUT `adoptBuilds`, which must only run on a
+ *  feed tick: run on an empty row set it seeds its "seen" set empty, and the next real listing then adopts every
+ *  task on the page into builds.json (Bugbot, PR #1646). */
+function refreshBuildFilter(): void {
   setBuildsChip(chipFor(mine()));
   applyBuildFilter();
 }
@@ -332,8 +338,9 @@ export function startBuilds(): () => void {
   loadBuilds().then(() => tasksList({ scope: "all" })).then((rows) => { if (alive) { setRows(rows); renderBuildChip(); } }).catch((e) => console.warn("builds", e));
   const unwatch = tasksWatch((rows) => { setRows(rows); renderBuildChip(); }, { scope: "all" });
   // The bots poll can land after the first listing (a direct /bots/tasks load): a bot record that names a build the
-  // filter did not know re-draws the chip and the filter at once rather than on the feed's next tick.
-  const unsub = subscribe(() => { if (noteBotBuilds(getState().bots)) renderBuildChip(); });
+  // filter did not know re-draws the chip and the filter at once rather than on the feed's next tick. The filter
+  // only — never `adoptBuilds`, which is the feed tick's (refreshBuildFilter).
+  const unsub = subscribe(() => { if (noteBotBuilds(getState().bots)) refreshBuildFilter(); });
   const onHide = () => unwatch();
   addEventListener("pagehide", onHide);
   return () => { alive = false; unwatch(); unsub(); removeEventListener("pagehide", onHide); };
