@@ -511,6 +511,17 @@ export const Transcript = memo(function Transcript({
     state.permissions,
   ]);
 
+  // Every id `parkPlan` filed inline, so the bottom stack skips them even when
+  // the row carries no `parkedIn`.
+  const placedIds = useMemo(() => {
+    const s = new Set<string>();
+    for (const plan of parked.values()) {
+      for (const ids of plan.after.values()) for (const id of ids) s.add(id);
+      for (const id of plan.tail) s.add(id);
+    }
+    return s;
+  }, [parked]);
+
   // ── WHICH REPLIES ARE FOLDED (design.md §B) ──────────────────────────────
   //
   // A finished conversation is a wall of replies the reader has already read,
@@ -773,6 +784,7 @@ export const Transcript = memo(function Transcript({
               <CardStack
                 rows={state.permissions}
                 placement="open"
+                placed={placedIds}
                 liveMode={liveMode}
                 pickerMode={pickerMode}
                 actions={actions}
@@ -826,24 +838,50 @@ export function parkPlan(
 ): Map<string, ParkPlan> {
   const out = new Map<string, ParkPlan>();
   const claimed = new Map<string, Set<number>>();
-  for (const p of rows) {
-    if (!p || !p.id || !p.decision || !p.parkedIn) continue;
-    const key = p.parkedIn;
+  const planFor = (key: string): ParkPlan => {
     let plan = out.get(key);
     if (!plan) out.set(key, (plan = { after: new Map(), tail: [] }));
-    const turn = turns.find((t) => t.key === key);
-    const segs = (turn && turn.role === "assistant" ? turn.segments : null) ?? [];
+    return plan;
+  };
+  const takenFor = (key: string): Set<number> => {
     let taken = claimed.get(key);
     if (!taken) claimed.set(key, (taken = new Set<number>()));
-    const at = chipFor(segs, p, taken);
-    if (at < 0) {
-      plan.tail.push(p.id);
-      continue;
-    }
-    taken.add(at);
+    return taken;
+  };
+  const file = (key: string, at: number, id: string) => {
+    takenFor(key).add(at);
+    const plan = planFor(key);
     const list = plan.after.get(at);
-    if (list) list.push(p.id);
-    else plan.after.set(at, [p.id]);
+    if (list) list.push(id);
+    else plan.after.set(at, [id]);
+  };
+  for (const p of rows) {
+    if (!p || !p.id || !p.decision) continue;
+    // THE EXACT CHIP, IN ANY TURN. `parkedIn` is the turn that was streaming
+    // when the card was answered; a long run split by mid-run follow-ups has
+    // its question chip in an EARLIER turn, and filing by `parkedIn` alone sent
+    // the card to the newest turn's tail, after every later chip.
+    const wanted = p.toolUseId;
+    let placed = false;
+    if (wanted) {
+      for (const turn of turns) {
+        if (turn.role !== "assistant") continue;
+        const at = (turn.segments ?? []).findIndex((s) => s.kind === "tool" && s.id === wanted);
+        if (at >= 0) {
+          file(turn.key, at, p.id);
+          placed = true;
+          break;
+        }
+      }
+    }
+    if (placed || !p.parkedIn) continue;
+    const key = p.parkedIn;
+    const plan = planFor(key);
+    const turn = turns.find((t) => t.key === key);
+    const segs = (turn && turn.role === "assistant" ? turn.segments : null) ?? [];
+    const at = chipFor(segs, p, takenFor(key));
+    if (at < 0) plan.tail.push(p.id);
+    else file(key, at, p.id);
   }
   return out;
 }
