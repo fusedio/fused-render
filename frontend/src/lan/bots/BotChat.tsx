@@ -74,6 +74,13 @@ export function BotChat({ id }: { id: string }) {
   // The seen cursor as it was when the chat opened (null: nothing unread then); the "New" divider sits
   // above the first readable line after it among the events held.
   const unreadAfter = useRef<number | null>(null);
+  // The oldest line held and whether earlier ones exist: while unread lines between the last seen and the
+  // oldest held are not loaded yet (a failed or capped backfill), the seen cursor is not advanced, so the
+  // badge and the next visit's divider still count them. "Load earlier" closing the gap lifts it.
+  const oldest = useRef<number | null>(null);
+  const earlier = useRef(false);
+  const unloadedUnread = () =>
+    earlier.current && unreadAfter.current != null && oldest.current != null && oldest.current > unreadAfter.current + 1;
   const newSeq = useMemo(() => {
     const was = unreadAfter.current;
     return was == null ? null : (events.find((e) => e.seq > was && READABLE.has(e.role))?.seq ?? null);
@@ -127,13 +134,15 @@ export function BotChat({ id }: { id: string }) {
         // that "Load earlier" brings in later lands under it too.
         const unread = was != null && (evs.some((e) => e.seq > was && READABLE.has(e.role)) || (more && evs[0].seq > was + 1));
         unreadAfter.current = unread ? was : null;
+        oldest.current = evs.length ? evs[0].seq : null;
+        earlier.current = more;
         setEvents(evs);
         setHasEarlier(more);
       } else if (d.events.length) {
         setEvents((old) => mergeEvents(old, d.events));
       }
       seqRef.current = Math.max(seqRef.current ?? 0, d.seq);
-      if (document.visibilityState === "visible") writeSeen(skey, d.seq);
+      if (document.visibilityState === "visible" && !unloadedUnread()) writeSeen(skey, d.seq);
       // The poll that brings a card's answer back releases its local hold.
       for (const s of heldRef.current) if (d.bot.waiting_seq !== s) heldRef.current.delete(s);
       setHeld((h) => (h.size ? new Set([...h].filter((s) => d.bot.waiting_seq === s)) : h));
@@ -195,7 +204,9 @@ export function BotChat({ id }: { id: string }) {
       const el = thread.current;
       if (el && d.events.length) prepend.current = { height: el.scrollHeight, top: el.scrollTop };
       setEvents((old) => mergeEvents(old, d.events));
-      setHasEarlier(d.events.length >= PAGE && hasMore(d.events));
+      if (d.events.length) oldest.current = Math.min(oldest.current ?? Infinity, d.events[0].seq);
+      earlier.current = d.events.length >= PAGE && hasMore(d.events);
+      setHasEarlier(earlier.current);
     } catch (e) {
       toast((e as Error).message, "error");
     } finally {
