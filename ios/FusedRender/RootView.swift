@@ -1,5 +1,13 @@
 // Screens: pick a computer (found on the Wi-Fi, or paired before) → pair by
-// QR (or a pasted URL, the simulator's only way) → the grid in a webview.
+// QR (or a pasted URL, the simulator's only way) → the grid, the bots pages
+// and the apps in a webview.
+//
+// Bots on the phone: `/bots` (the list) and `/bots/<id>` (one bot's chat) are
+// web pages the paired computer's LAN listener serves from the same lan entry
+// as the grid; this file only gives them a title and a way back. Deep links
+// `fusedrender://open?host=…&page=bots` / `&bot=<id>` open them (AppModel),
+// and the first Home Screen quick action is "Bots" (ManifestSync). Photos for
+// a bot ride the page's own <input type=file>, i.e. the webview's picker.
 import SwiftUI
 
 struct RootView: View {
@@ -180,7 +188,7 @@ struct PairView: View {
     }
 }
 
-// MARK: - Connected: the grid and the apps
+// MARK: - Connected: the grid, the bots and the apps
 
 struct ConnectedView: View {
     @EnvironmentObject var model: AppModel
@@ -188,11 +196,28 @@ struct ConnectedView: View {
     @StateObject private var web = WebController()
     @State private var showHomeScreenHelp = false
 
-    /// On the grid itself (or the pairing pages around it) — nothing to go back to.
-    private var onGrid: Bool {
-        guard let loc = web.location else { return true }
-        return loc.path == "/" || loc.path == "/index.html" || loc.path == "/pair"
+    /// Where the webview is, as far as the top bar cares.
+    private enum Place {
+        /// The grid itself (or the pairing pages around it) — nothing to go back to.
+        case grid
+        /// `/bots`, the bots list.
+        case bots
+        /// `/bots/<id>`, one bot's chat.
+        case bot
+        /// Anything else: an app page.
+        case app
     }
+
+    private var place: Place {
+        guard let loc = web.location else { return .grid }
+        let path = loc.path
+        if path == "/" || path == "/index.html" || path == "/pair" { return .grid }
+        if path == "/bots" || path == "/bots/" { return .bots }
+        if path.hasPrefix("/bots/") { return .bot }
+        return .app
+    }
+
+    private var botsURL: URL { server.baseURL.appendingPathComponent("bots") }
 
     /// The page's own <title> once it lands; until then (or for a page without
     /// one) the app's name from the manifest, else its folder name.
@@ -206,33 +231,54 @@ struct ConnectedView: View {
         return (folder as NSString).lastPathComponent
     }
 
+    private var title: String {
+        switch place {
+        case .grid: return "Apps"
+        case .bots: return "Bots"
+        case .bot: return web.title.isEmpty ? "Bot" : web.title  // the page sets it to the bot's name
+        case .app: return appTitle
+        }
+    }
+
     var body: some View {
         WebView(server: server, pairURL: $model.pendingPairURL, controller: web,
                 onGridLoaded: { host in model.confirmPairing(host: host) })
             .ignoresSafeArea(edges: .bottom)
             .toolbar(.hidden, for: .navigationBar)
             .sheet(isPresented: $showHomeScreenHelp) { HomeScreenHelp() }
-            // One top bar, on the grid and inside apps alike (owner's call —
-            // no floating button, no back). Left: the computer (grid) or home
-            // (app). Middle: where you are. Right: the few actions.
+            // One top bar, on the grid, the bots pages and inside apps alike
+            // (owner's call — no floating button). Left: the computer (grid),
+            // the bots list (a bot's chat) or home (bots list, app). Middle:
+            // where you are. Right: the few actions.
             .safeAreaInset(edge: .top, spacing: 0) { topBar }
+    }
+
+    @ViewBuilder
+    private var leftButton: some View {
+        switch place {
+        case .grid:
+            Button { model.disconnect() } label: {
+                Label("Computers", systemImage: "desktopcomputer").labelStyle(.iconOnly)
+            }
+            .accessibilityLabel("Switch computer")
+        case .bot:
+            Button { web.load(botsURL) } label: {
+                Label("Bots", systemImage: "chevron.left").labelStyle(.iconOnly)
+            }
+            .accessibilityLabel("Bots")
+        case .bots, .app:
+            Button { web.load(server.baseURL) } label: {
+                Label("All apps", systemImage: "house").labelStyle(.iconOnly)
+            }
+            .accessibilityLabel("All apps")
+        }
     }
 
     private var topBar: some View {
         HStack(spacing: 8) {
-            if onGrid {
-                Button { model.disconnect() } label: {
-                    Label("Computers", systemImage: "desktopcomputer").labelStyle(.iconOnly)
-                }
-                .accessibilityLabel("Switch computer")
-            } else {
-                Button { web.load(server.baseURL) } label: {
-                    Label("All apps", systemImage: "house").labelStyle(.iconOnly)
-                }
-                .accessibilityLabel("All apps")
-            }
+            leftButton
             VStack(spacing: 0) {
-                Text(onGrid ? "Apps" : appTitle)
+                Text(title)
                     .font(.headline)
                     .lineLimit(1)
                 Text(server.host)
@@ -243,6 +289,7 @@ struct ConnectedView: View {
             .frame(maxWidth: .infinity)
             Menu {
                 Button("Reload", systemImage: "arrow.clockwise") { web.webView?.reload() }
+                Button("Bots", systemImage: "sparkles") { web.load(botsURL) }
                 Button("Add an app to the Home Screen", systemImage: "plus.square.on.square") { showHomeScreenHelp = true }
                 Divider()
                 Button("Switch computer", systemImage: "desktopcomputer") { model.disconnect() }

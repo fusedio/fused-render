@@ -6892,3 +6892,13 @@ SPEC-chat-worktrees-commands-tasks.md §T.
 - **A monitor's line notifications keep it running;** only a terminal status, `task_updated`, or a `background_tasks_changed` list that omits it ends a task. An ended record ignores non-terminal patches — a late `paused` must not resurrect it.
 - **Subagent rows nest.** `_segments_from_rows` groups `parent_tool_use_id` rows under their parent tool segment as `children` (one level; grandchildren flatten into the group), and synthesises an orphan parent when the call started before the window. Before this, subagent prose was mixed into the main reply. Turn-boundary detection is untouched; orphans are appended after the seam count.
 - `task_output` relays `get_task_output` to the live host and caps at the last 64 KiB; the Tasks panel shows it on demand rather than streaming every background line into the transcript.
+
+## D1358 — Bots on the phone: the iOS app gets a bots list and chat, as a channel of its own (2026-10-13, claude/inspiring-franklin-n9cx9e)
+
+docs/bots.md §14.
+
+- **The phone is a channel** (`via {kind: "phone", addr: <paired device id>}`), outside like a text: Super Bot takes its tasks and runs them under the phone posture (every write and command asks). Ordinary bots keep their own `approval`.
+- **The phone may answer the approval card it shows**, for any task, Mac-started too: the user's own paired device, not a stranger's text. The route checks the bot waits on that very `approval` card and stamps `via["answers"] = seq`, the texted-card mechanism (`answers_card`); a wrong seq is a 400, an unstamped yes is held back as before. `Forever` is never available from the phone.
+- **Own prefix, own router**: `/api/phone/bots` (`bots/phone.py`), an owned prefix (forwarded to the bots' owner), and the only bots prefix the LAN listener forwards; it stamps `X-Fused-Device` from the pairing record and drops a client-sent one. `/api/bots` stays a 404 on the LAN: it holds the Mac-screen operations (take-over, pop-out, profiles, reveal, browsers, encryption, access settings), none of which the phone gets.
+- **The app door's attachment handling is shared** (`routes.decode_files` / `save_files`), so a phone file lands in files/ with the same "Attached (…)" line and image rules (D1351).
+- **Phone UI is web inside the lan page** (`/bots`, `/bots/<id>`), not the desktop Bots page; Swift stays a thin shell (top-level pages, deep link `page=bots` / `bot=<id>`, a "Bots" quick action).

@@ -144,6 +144,10 @@ ENGINES = ("auto", "steps", "agent")
 KINDS = ("bot", "super")
 SUPER_ACCESS = {"ask": "default", "full": "auto"}
 SUPER_NAME = "Super Bot"
+# The outside senders Super Bot takes a task from (receive / start_task): a text from its handle, an app page on
+# this Mac (docs §13), the iOS app on a paired phone (docs §14). Each runs under the phone posture (not is_local).
+# A botsend file is outside too and is refused.
+_SUPER_OUTSIDE = ("imessage", chan.APP_KIND, chan.PHONE_KIND)
 # Super Bot's avatar is the Claude mark (frontend lib/face.ts BRANDS["claude"], a
 # locked brand): the face picker does not offer it, `_flag` refuses it for any
 # other bot and refuses any face change for Super Bot.
@@ -2051,10 +2055,11 @@ class Bot:
             with self.lock:
                 if self.meta.get("waiting_on") != answers:
                     raise CardSettled(f"that card (#{answers}) was answered already")
-        if not chan.is_web(via) and via.get("kind") not in ("imessage", chan.APP_KIND) and is_super(self.meta):
+        if not chan.is_web(via) and via.get("kind") not in _SUPER_OUTSIDE and is_super(self.meta):
             # Super Bot has shell and file access: only the user's own chat, a text from the handle set
-            # on it (the router lets no other sender through), or an app page on this Mac (docs §13: it
-            # runs under the phone posture, every write and command asks) may drive it (docs §5).
+            # on it (the router lets no other sender through), an app page on this Mac (docs §13), or the
+            # iOS app from a paired device (docs §14) may drive it (docs §5). The last three run under the
+            # phone posture: every write and command asks.
             self.emit("system", f"Ignored a task from {chan.label(via['kind'])}: Super Bot only takes tasks you type here.")
             return
         if via.get("kind") == "imessage" and is_super(self.meta):
@@ -2082,8 +2087,11 @@ class Bot:
             if self.meta.get("control"):
                 # The user holds the browser: the bot stays stopped. The message is written (the page shows it
                 # queued) and delivered when the page goes back to the bot (_control_off → _flush_held).
+                # The image blocks ride along (an app's or the phone's photos): the files are already in files/
+                # and named in `text`, but the model only sees a photo as a block on the turn that delivers it.
                 self.meta["held"] = [*(self.meta.get("held") or []),
                                      {"seq": uev.get("seq"), "text": text, "shown": shown, "via": via,
+                                      **({"images": list(images)} if images else {}),
                                       **({"answers": answers} if answers is not None else {})}]
                 self.save()
                 return
@@ -2103,7 +2111,9 @@ class Bot:
             return
         if pending and running and pending.get("seq") != getattr(self, "_offer_seq", None):
             self._settle_offer()  # the offer timed out earlier and the user has moved on: it is stale, not pending
-        if running and outside and self._texted_approval(shown, via):
+        if answers is not None:
+            self._settled_answer(answers, uev)  # before the texted hold below, which would take it as a held-back yes
+        if running and outside and self._texted_approval(shown, via, uev):
             return
         with self.lock:
             if (via.get("kind") == chan.APP_KIND and self.running()
@@ -2124,11 +2134,8 @@ class Bot:
                 self.emit("system", "Texted while busy on a task from the Mac; not applied.", via=None, ignored_seq=uev.get("seq"))
                 self.emit("error", "Busy with a task from the Mac; text again when it's done.", via=dict(via))
                 return
-            if answers is not None and self.meta.get("waiting_on") != answers:
-                # receive() judged this before the user line; the card settled in the gap (a poll-lagged click at
-                # the Mac answered it). Under the lock the engine's wait takes: nothing reaches the inbox.
-                self.emit("system", "An answer for a card that was answered already; not applied.", via=None, ignored_seq=uev.get("seq"))
-                raise CardSettled(f"that card (#{answers}) was answered already")  # the caller holds or 409s, never "approved"
+            if answers is not None:
+                self._settled_answer(answers, uev)  # again under the lock the engine's wait takes: nothing reaches the inbox
             if not running and not self.start_task(text, label=shown, via=via, images=images) and self.running():
                 running = True  # a hand-off started a task first: this message becomes an instruction to it
             if running:
@@ -2143,7 +2150,18 @@ class Bot:
                     # not an answer. Clearing here would settle the card for a poll.
                     self.set_status("running")
 
-    def _texted_approval(self, text, via=None):
+    def _settled_answer(self, answers, uev):
+        """A card answer (`answers`: the card's seq) whose card is no longer the one waited on: receive() judged it
+        before the user line, and the card settled in the gap (a poll-lagged click at the Mac answered it, and the
+        bot may already wait on the next card). The written line is marked ignored and CardSettled raised, so the
+        caller holds or refuses it and no chat reads it as that card's verdict."""
+        with self.lock:
+            if self.meta.get("waiting_on") == answers:
+                return
+            self.emit("system", "An answer for a card that was answered already; not applied.", via=None, ignored_seq=uev.get("seq"))
+        raise CardSettled(f"that card (#{answers}) was answered already")  # the caller holds or 409s, never "approved"
+
+    def _texted_approval(self, text, via=None, uev=None):
         """A yes/no from an outside sender while the task waits on an approval
         card. It is the answer only when the router stamped it for this very card
         (`via["answers"]`: the card was texted to that sender, docs §10); then it
@@ -2167,7 +2185,9 @@ class Bot:
             return False
         if not (YES.match(text or "") or NO.match(text or "")):
             return False
-        self.emit("system", "This approval card is answered here at the Mac: use Approve or Deny on the card.", via=None)
+        # ignored_seq: the held-back yes/no settled nothing, so no chat reads it as this card's verdict.
+        self.emit("system", "This approval card is answered here at the Mac: use Approve or Deny on the card.", via=None,
+                  **({"ignored_seq": uev.get("seq")} if uev and uev.get("seq") is not None else {}))
         if (via or {}).get("kind") == "imessage":
             # source="hold": the router reads a sourceless error as the task's end (it would forget the texted card
             # and the numbered question); this one is a reply to the phone while the task goes on.
@@ -2272,11 +2292,11 @@ class Bot:
             via = dict(chan.ROUTINE) if origin == "routine" else dict(chan.WEB)
         elif not chan.is_web(via):
             origin = via.get("kind") or origin
-        if is_super(self.meta) and via.get("kind") not in ("imessage", chan.APP_KIND) and not (
+        if is_super(self.meta) and via.get("kind") not in _SUPER_OUTSIDE and not (
                 (chan.is_web(via) and origin in ("manual", "setup")) or via.get("kind") == chan.ROUTINE_KIND):
-            # Super Bot has shell and file access: only the user's chat, a routine they scheduled, their text, or an
-            # app page on this Mac (docs §13; like a text it is not is_local, so super_mode runs it asking) may
-            # start it (docs §5). Judged on the via, so an origin label alone never lifts the gate (or the posture,
+            # Super Bot has shell and file access: only the user's chat, a routine they scheduled, their text, an
+            # app page on this Mac (docs §13) or the iOS app (docs §14; like a text neither is is_local, so
+            # super_mode runs them asking) may start it (docs §5). Judged on the via, so an origin label alone never lifts the gate (or the posture,
             # super_mode). "setup" is the app's own first task (SUPER_SETUP, _maybe_super_setup), never an outside sender.
             self.emit("system", f"Ignored a task from {origin}: Super Bot only takes tasks you type here.")
             return False
@@ -2432,9 +2452,9 @@ class Bot:
                     self.save()
                 try:
                     # `answers` rides along: a card button's click held through a take-over is still bound to its
-                    # card, and _deliver_message drops it if that card settled meanwhile.
+                    # card, and _deliver_message drops it if that card settled meanwhile. So do the image blocks.
                     self._deliver_message(h.get("text") or "", h.get("shown") or "", h.get("via") or dict(chan.WEB), {"seq": h.get("seq")},
-                                          answers=h.get("answers"))
+                                          images=h.get("images") or None, answers=h.get("answers"))
                 except CardSettled:
                     pass  # its card settled during the take-over; the line is marked ignored already
                 except Exception:  # noqa: BLE001 — one bad message must not strand the rest

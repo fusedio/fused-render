@@ -1,8 +1,8 @@
 // Keeps the shared manifest (Shared/AppManifest.swift) current: whenever the
 // grid loads, fetch the same /api/lan/apps the grid shows — with the webview's
 // cookie — cache each preview.png, write apps.json, and tell WidgetKit and the
-// Home Screen quick actions. Best-effort throughout: a failed refresh leaves
-// the last manifest in place.
+// Home Screen quick actions (Bots first, then the apps). Best-effort
+// throughout: a failed refresh leaves the last manifest in place.
 import Foundation
 import UIKit
 import WebKit
@@ -14,14 +14,22 @@ private let log = Logger(subsystem: "io.fused.render", category: "manifest")
 @MainActor
 enum ManifestSync {
     private static var lastRefresh: Date = .distantPast
+    private static var lastHost = ""
+    /// Bumped per refresh; a run that finished for an earlier one must not put its
+    /// host's Bots shortcut back over the computer the user has since switched to.
+    private static var generation = 0
 
     static func refresh(from webView: WKWebView, server: Server) {
-        guard Date().timeIntervalSince(lastRefresh) > 5 else { return }
+        // Throttled per computer: switching computers within the window still refreshes.
+        guard server.host != lastHost || Date().timeIntervalSince(lastRefresh) > 5 else { return }
         lastRefresh = Date()
-        Task { await run(webView: webView, server: server) }
+        lastHost = server.host
+        generation += 1
+        let gen = generation
+        Task { await run(webView: webView, server: server, generation: gen) }
     }
 
-    private static func run(webView: WKWebView, server: Server) async {
+    private static func run(webView: WKWebView, server: Server, generation gen: Int) async {
         let cookies = await webView.configuration.websiteDataStore.httpCookieStore.allCookies()
         let cookieHeader = cookies
             .filter { server.host.hasSuffix($0.domain.trimmingCharacters(in: CharacterSet(charactersIn: "."))) }
@@ -54,7 +62,10 @@ enum ManifestSync {
         let merged = (apps + others).sorted { $0.recency > $1.recency }
         Manifest.save(merged)
         WidgetCenter.shared.reloadAllTimelines()
-        installQuickActions(merged)
+        // The manifest is right for any computer; the Bots shortcut names ONE, the current one.
+        if gen == generation {
+            installQuickActions(merged, host: server.host)
+        }
         log.info("manifest: \(apps.count) apps from \(server.host, privacy: .public)")
     }
 
@@ -83,9 +94,21 @@ enum ManifestSync {
         return name
     }
 
-    /// Long-press the app icon → the four most recent apps.
-    private static func installQuickActions(_ apps: [ManifestApp]) {
-        UIApplication.shared.shortcutItems = apps.prefix(4).map { app in
+    /// Long-press the app icon → "Bots" (the bots list on `host`, the computer
+    /// whose grid just loaded — the most recent one), then the three most
+    /// recent apps. No host, no Bots item: the link would have nowhere to go.
+    private static func installQuickActions(_ apps: [ManifestApp], host: String?) {
+        var items: [UIApplicationShortcutItem] = []
+        if let host, !host.isEmpty {
+            items.append(UIApplicationShortcutItem(
+                type: "io.fused.render.bots",
+                localizedTitle: "Bots",
+                localizedSubtitle: nil,
+                icon: UIApplicationShortcutIcon(systemImageName: "sparkles"),
+                userInfo: ["url": DeepLink.bots(host: host).absoluteString as NSSecureCoding]
+            ))
+        }
+        items += apps.prefix(3).map { app in
             UIApplicationShortcutItem(
                 type: "io.fused.render.open",
                 localizedTitle: app.label,
@@ -94,6 +117,7 @@ enum ManifestSync {
                 userInfo: ["url": app.deepLink.absoluteString as NSSecureCoding]
             )
         }
+        UIApplication.shared.shortcutItems = items
     }
 
     private struct Payload: Decodable {

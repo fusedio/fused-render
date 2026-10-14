@@ -5,6 +5,7 @@ the engine wrote and calls its tools over MCP. A tiny threaded HTTP server
 stands in for the two routes botmcp posts to; a fake Bot and a fake Browser
 stand in for bot.py / browser.py."""
 from _bots_conftest import *  # noqa: F401,F403 — FusedBot's conftest fixtures (app_home, client, …)
+import contextlib
 import json
 import os
 import shutil
@@ -113,6 +114,12 @@ class FakeBrowser:
 
 
 class FakeBot:
+    # Bot.serving_task (a67cead): handle_tool wraps every tool call in it so the cards it emits carry the
+    # task's via. The fake stamps nothing, so its serving is a no-op context.
+    @contextlib.contextmanager
+    def serving_task(self):
+        yield
+
     def __init__(self, bid="b1"):
         self.id = bid
         self.meta = {"name": "Tester", "model": "haiku", "effort": "low", "approval": "ask", "routines": []}

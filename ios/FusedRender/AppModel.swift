@@ -191,22 +191,31 @@ final class AppModel: ObservableObject {
         remember(server)
     }
 
-    /// A widget or quick action: `fusedrender://open?host&port&path`. Go to
+    /// A widget or quick action: `fusedrender://open?host&…` naming an app
+    /// (`path`), the bots list (`page=bots`) or one bot (`bot=<id>`). Go to
     /// that computer and straight to the page, skipping the grid. The known
     /// record for that host carries the scheme and CA.
     ///
     /// Only a computer this phone already paired with. Any app can open a
     /// fusedrender:// URL; one naming a stranger's host would put the webview
     /// — bridge and all — on that host's page. The link's port/scheme are
-    /// ignored too: the known record decides how the computer is reached.
+    /// ignored too: the known record decides how the computer is reached. A
+    /// bot id is a path segment, so DeepLink refuses any outside [A-Za-z0-9_-].
     func open(deepLink url: URL) -> Bool {
         guard let link = DeepLink(url),
               let server = known.first(where: { $0.host == link.host }) else { return false }
         unconfirmed = nil  // same rule as open(_:) — leaving the pairing abandons it
         remember(server)
         var c = URLComponents(url: server.baseURL, resolvingAgainstBaseURL: false)!
-        c.path = "/render"
-        c.queryItems = [URLQueryItem(name: "path", value: link.path)]
+        switch link.target {
+        case .app(let path):
+            c.path = "/render"
+            c.queryItems = [URLQueryItem(name: "path", value: path)]
+        case .bots:
+            c.path = "/bots"
+        case .bot(let id):
+            c.path = "/bots/\(id)"
+        }
         pendingPairURL = c.url  // the webview's "load this next" slot
         current = server
         return true

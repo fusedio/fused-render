@@ -212,14 +212,20 @@ def test_handoff_runs_blocks_and_reports_one_result(pair):
     (hd,) = rows(sb).values()
     assert hd["state"] == "working" and hd["started_at"] and "start_seq" not in hd and "asked" not in hd
     hv = chan.handoff_via(sb.id, hd["id"])
-    # the target waits on the user: blocked, and ONE "needs you at the laptop" card on Super Bot
+    # the target waits on the user: blocked. Its approval is relayed into Super Bot's chat with live buttons that
+    # post to the bot that waits (#1638); a question without options stays a "needs you at the laptop" notice.
     t.emit("approval", "About to submit the form. Approve?", via=hv)
     assert hd["state"] == "blocked" and hd["blocked"]["kind"] == "approval"
     t.emit("question", "Which airport?", via=hv)
     assert hd["blocked"] == {"kind": "question", "text": "Which airport?"}
-    (ask,) = cards(sb, "question")
-    assert ask["text"] == "Scout needs you at the laptop: About to submit the form. Answer it at the Mac."
-    assert ask["handoff"]["state"] == "blocked" and "via" not in ask  # web-started: never texted
+    relayed, notice = cards(sb, "question")
+    assert relayed["text"] == "Scout needs your OK: About to submit the form."
+    assert relayed["options"] == ["Approve", "Deny"] and relayed["relay"]["bot"] == t.id
+    assert relayed["relay"]["kind"] == "approval"
+    assert notice["text"] == "Scout needs you at the laptop: Which airport? Answer it at the Mac."
+    assert not notice.get("relay") and not notice.get("options")
+    for ask in (relayed, notice):
+        assert ask["handoff"]["state"] == "blocked" and "via" not in ask  # web-started: never texted
     # the wait ends when the bot acts again; a `note` progress line lands on the row
     t.emit("action", "goto kayak.com", via=hv)
     assert hd["state"] == "working" and "blocked" not in hd

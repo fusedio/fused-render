@@ -365,10 +365,24 @@ def run(bot, task, label=None):
                 preview = tools.describe(bot, act, decision, obs)
                 ev = bot.emit("approval", f"About to {preview}. {why} Approve?", detail=preview, **({"forever": rule} if rule else {}))
                 bot.set_status("waiting", waiting_on=ev["seq"])
-                _wait_for_user(bot)
+                while True:
+                    _wait_for_user(bot)
+                    if bot.stop_flag.is_set():
+                        break
+                    # An outside yes or no (a text, an app, the phone) counts only when stamped for THIS card
+                    # (channels.base.answers_card), as in the agent engine's gate: bot._texted_approval checks the
+                    # card before the inbox write, and a yes stamped for a card settled in between is neither the
+                    # approval nor a denial of this one — the card stays up and the wait goes on. Anything else an
+                    # outside sender says is an instruction, read exactly as the chat's would be (below: not a yes,
+                    # so the action is denied and the words ride the DENIED line to the model).
+                    answers = [a for a in bot._drain_inbox()
+                               if not channels.base.is_texted(a) or channels.base.answers_card(a, ev["seq"])
+                               or not (botmod._YES.match(a) or botmod._NO.match(a))]
+                    if answers:
+                        break
+                    bot.set_status("waiting", waiting_on=ev["seq"])  # bot.send() flipped it to running
                 if bot.stop_flag.is_set():
                     break
-                answers = bot._drain_inbox()
                 bot.set_status("running", waiting_on=None)
                 yes = [a for a in answers if botmod._YES.match(a)]
                 if not yes:

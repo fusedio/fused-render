@@ -275,3 +275,31 @@ def test_imessage_lock_is_exclusive(app_home):
         a.stop()
     assert b.acquire() is True
     b.stop()
+
+
+def test_phone_kind_is_outside_with_its_own_label_and_caps():
+    """The iOS app's Bots screens (docs §14): outside like a text, so Super Bot runs it under the phone posture,
+    and never mistaken for the web, a routine or a hand-off. It shows cards and media; only a login needs the Mac."""
+    v = base.phone_via("a1b2c3")
+    assert v == {"kind": "phone", "addr": "a1b2c3"} and base.PHONE_KIND == "phone"
+    assert base.is_outside(v) and not base.is_local(v) and not base.is_web(v)
+    assert base.label(base.PHONE_KIND) == "the phone"
+    assert base.phone_via("") == {"kind": "phone", "addr": ""}  # loopback: no paired device
+    caps = channels.caps_for(v)
+    assert caps.buttons and caps.options and caps.media and not caps.max_len and not caps.can_login
+    # An unstamped phone yes is no verdict; one stamped for the card is (answers_card), and only for that card.
+    assert not base.answers_card(base.Outside("yes", v), 7)
+    assert base.answers_card(base.Outside("yes", {**v, "answers": 7}), 7)
+    assert not base.answers_card(base.Outside("yes", {**v, "answers": 7}), 8)
+
+
+def test_phone_task_prompt_and_origin():
+    class B:
+        task_via = base.phone_via("dev1")
+        task_origin = "phone"
+        meta = {}
+
+    text = channels.prompt_for(B())
+    assert text.startswith("CHANNEL: the user sent this task from the Fused Render app on their phone")
+    assert "walk to the Mac to sign in" in text and "No `offer`" not in text and "SUMMARY" not in text
+    assert "texted" not in channels.origin_label(B())
