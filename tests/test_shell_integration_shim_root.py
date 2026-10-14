@@ -7,8 +7,6 @@ import pytest
 
 from fused_render import shell_integration as si
 
-pytestmark = pytest.mark.skipif(os.name == "nt", reason="POSIX permissions")
-
 
 @pytest.fixture
 def tmp_root(monkeypatch, tmp_path):

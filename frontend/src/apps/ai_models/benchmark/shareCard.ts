@@ -72,8 +72,8 @@ const BAR_H = 12;
 /** This machine, in one line — the caption that makes the chart shareable.
  *
  *  Every part is omitted when the server did not report it (`cpuCount` and
- *  `totalMemoryBytes` are both nullable, and Windows reports no RAM at all —
- *  see `benchmark._total_memory_bytes`), because a card that says
+ *  `totalMemoryBytes` are both nullable — see `benchmark._total_memory_bytes`),
+ *  because a card that says
  *  "— cores" reads as a bug in the card rather than as a gap in the data. */
 export function hardwareLine(machine: AiBenchmarkMachine | null, device: string | null): string {
   if (!machine) return device ?? "";
@@ -91,7 +91,7 @@ export function hardwareLine(machine: AiBenchmarkMachine | null, device: string 
 
 /** `platform.system()`'s answer, as a person names it. Only the one rename
  *  worth making — "Darwin" is the kernel, and nobody shares a benchmark taken
- *  on "Darwin". Linux and Windows already say what they are. */
+ *  on "Darwin". Linux already says what it is. */
 function platformLabel(platform: string): string {
   return platform === "Darwin" ? "macOS" : platform;
 }

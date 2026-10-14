@@ -151,10 +151,9 @@ def _home() -> str:
 
 
 def _is_root(path: str) -> bool:
-    """Is this a filesystem root — `/`, or `C:/` on Windows. `dirname` of a root
-    is the root itself, which is the one test that spells the same on both."""
-    native = path if os.sep == "/" else path.replace("/", os.sep)
-    return os.path.dirname(native) == native
+    """Is this the filesystem root `/`? `dirname` of a root is the root
+    itself."""
+    return os.path.dirname(path) == path
 
 
 def queue_key(project: str) -> str:
@@ -568,9 +567,7 @@ def bad_id(value) -> bool:
     `agent._bad_id`'s rule, spelled a second time for the same reason the
     held-answers PATH is (see `HELD_ANSWERS_FILE`): agent.py is a template
     outside the package's import graph, so the server cannot import the one it
-    has. Empty, a leading dot, or a `/`, a backslash or a `:` — the last two
-    because on Windows a backslash separates exactly like `/`, and a drive
-    prefix ("d:x") makes `os.path.join` drop our directory altogether.
+    has. Empty, a leading dot, or a `/`, a backslash or a `:`.
 
     Held HERE and not only at the endpoint because these two ids become a path
     twice over: the run id joins `agent.RUNS` and the request id is joined with

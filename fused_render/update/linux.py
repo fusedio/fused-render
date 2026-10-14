@@ -1,8 +1,8 @@
-"""Linux in-app updater (AppImage) (docs/PYTHON_SUPERVISOR_SPEC.md "Software
-updates" gives the Windows design this mirrors). A silent background loop
-checks the signed manifest and surfaces a newer version only through
-/api/config's `update` field — the shell shows a badge. Downloading and
-installing happen solely on an explicit POST /api/update/install.
+"""Linux in-app updater (AppImage) (docs/LINUX_AUTO_UPDATE_SPEC.md, Task 2).
+A silent background loop checks the signed manifest and surfaces
+a newer version only through /api/config's `update` field — the shell shows a
+badge. Downloading and installing happen solely on an explicit POST
+/api/update/install.
 
 The state machine, the throttle, the Activity-dock job mirroring, the cancel
 flag, and the shared constants all live in `update/_manager.py`
@@ -13,7 +13,7 @@ AppImage's path, and the AppImage download + swap.
 ONE install path, same as mac: download the signed AppImage next to the
 current one, verify, `os.chmod` it executable, then `os.replace()` it onto
 the running file. The running process keeps its already-open inode (same
-guarantee the mac bundle rename and the Windows installer swap both rely on),
+guarantee the mac bundle rename relies on),
 so the swap is safe to do under a live server. `$APPIMAGE`'s path must stay
 byte-identical across the swap — `_linux/startup.py` writes `.desktop`
 `Exec=` lines and an autostart entry that both point at it, and renaming the

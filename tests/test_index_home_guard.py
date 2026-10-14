@@ -22,8 +22,8 @@ def _run(cfg, root):
     guarantees that before this path is ever reached in production
     (platform.md §1) — and this helper calls `run_scan` directly, so it has
     to make the same guarantee itself or the run's own top-level row lands
-    under the native (backslash, on Windows) spelling while everything
-    `scan_dir_once` discovers underneath it is `norm`ed to forward slashes."""
+    under a different spelling than everything `scan_dir_once` discovers
+    underneath it, which is `norm`ed."""
     run_dir = os.path.join(cfg.runs_dir, "run")
     os.makedirs(run_dir, exist_ok=True)
     with open(os.path.join(run_dir, "spec.json"), "w") as f:

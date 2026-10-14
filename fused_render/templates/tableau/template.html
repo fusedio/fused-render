@@ -1245,9 +1245,8 @@ async function listInto(m, path) {
   const parts = res.path.split("/").filter(Boolean);
   let acc = "";
   parts.forEach((seg, i) => {
-    acc += (i === 0 && /^[A-Za-z]:$/.test(seg)) ? seg : "/" + seg;
-    if (i === 0 && !/^[A-Za-z]:$/.test(seg)) acc = "/" + seg;
-    const target = acc + (i === 0 && /^[A-Za-z]:$/.test(seg) ? "/" : "");
+    acc += "/" + seg;
+    const target = acc;
     const b = document.createElement("button"); b.textContent = seg;
     b.addEventListener("click", () => listInto(m, target));
     crumbs.appendChild(b);

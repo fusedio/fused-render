@@ -34,10 +34,9 @@ def _index(tmp_path, root, dirs):
     Every key goes through `canonical_root` before it becomes a dirs.parquet
     row: `indexed_mtime_ns`/`enclosing_root` look a directory up by
     `norm(os.path.abspath(...))` of their OWN argument (freshness.py), so a
-    row filed under the raw literal this helper is handed — "/r", or a
-    native-separator `str(tmp_path / ...)` on Windows — silently misses every
-    query built from the same literal once that literal isn't already its own
-    abspath (a POSIX-only coincidence)."""
+    row filed under the raw literal this helper is handed (e.g. "/r") silently
+    misses every query built from the same literal once that literal isn't
+    already its own abspath."""
     cfg = IndexConfig(dir=str(tmp_path / "ix"))
     shards = str(tmp_path / "run" / "shards")
     os.makedirs(shards, exist_ok=True)

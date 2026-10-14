@@ -129,20 +129,12 @@ def _utf8_stdio() -> None:
 
     The client on the other end of these pipes is Node: it writes
     `JSON.stringify(message) + "\\n"`, which leaves non-ASCII UNESCAPED and goes
-    out as UTF-8. Python decodes a PIPE at the locale encoding, and that is
+    out as UTF-8. Python decodes a PIPE at the locale encoding, which is
     UTF-8 on macOS and on Linux (where a C/POSIX locale additionally turns
-    PEP 540 UTF-8 mode on) but the ANSI code page on Windows — cp1252 on a
-    typical Western install, which leaves 0x81/0x8D/0x8F/0x90/0x9D UNDEFINED.
-
-    Those five bytes are ordinary UTF-8 continuation bytes, so on Windows the
-    first typographic character in a tool payload killed this server outright:
-    `Write` an index.html containing a curly quote (U+201D is E2 80 9D) and the
-    read loop in `main` raised UnicodeDecodeError *before* the request was
-    parked. No card ever appeared in the chat, the CLI's pending `approve` call
-    died with the transport, and the turn went nowhere — "it just got stuck
-    writing index.html", with no prompt to answer and nothing in the run dir to
-    say why. Nothing about it was rare: model-written HTML is full of curly
-    quotes, en dashes and emoji.
+    PEP 540 UTF-8 mode on) — but a non-UTF-8 locale would make the first
+    typographic character in a tool payload raise UnicodeDecodeError in the
+    read loop in `main` *before* the request was parked: no card, a dead
+    transport, and a turn that goes nowhere.
 
     Two halves ship, because either can be absent. agent.py stamps `PYTHONUTF8`
     into this server's env (the CLI's MCP client passes an allowlist of env vars
@@ -153,9 +145,8 @@ def _utf8_stdio() -> None:
     `errors="replace"` on the way IN, deliberately: an undecodable byte costs
     one character of a payload the user is about to read on a card, and dying
     costs them the whole turn with no way to answer it. On the way OUT the JSON
-    is `ensure_ascii` today, so the encoding is belt and braces — but
-    `newline="\\n"` is not: a Windows text stream would otherwise turn the
-    framing newline into CRLF.
+    is `ensure_ascii` today, so the encoding is belt and braces, as is
+    `newline="\\n"` for the framing newline.
 
     Never raises. A stream that has already been read cannot be reconfigured,
     and `sys.stdout` can be None where there is no stdio at all; neither is a
@@ -652,22 +643,18 @@ def _handle_app_state(args: dict) -> dict:
 #
 # The roster follows ONE signal, exactly as app_state's follows STATE_DIR:
 # `FUSED_RENDER_TERMINAL_ORIGIN`, which agent.py stamps into this server's env
-# (never inherited ambiently — see `_write_mcp_config`) and only on POSIX. No
-# origin, or Windows (every terminal route 501s there): the tools are not
-# offered, because a tool that can never answer is worse than none.
+# (never inherited ambiently — see `_write_mcp_config`). No origin: the tools
+# are not offered, because a tool that can never answer is worse than none.
 
 TERMINAL_LIST_TOOL = "terminal_list"
 TERMINAL_READ_TOOL = "terminal_read"
 TERMINAL_SEND_TOOL = "terminal_send"
 TERMINAL_TOOLS = (TERMINAL_LIST_TOOL, TERMINAL_READ_TOOL, TERMINAL_SEND_TOOL)
-_IS_WINDOWS = os.name == "nt"
 _TERMINAL_TIMEOUT = 15.0
 
 
 def _terminal_origin() -> str:
     """The server origin the terminal tools talk to, or "" when they are off."""
-    if _IS_WINDOWS:
-        return ""
     return (os.environ.get("FUSED_RENDER_TERMINAL_ORIGIN") or "").rstrip("/")
 
 

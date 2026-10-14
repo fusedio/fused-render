@@ -8,20 +8,19 @@ frames and the file, and is asked for a short list — `probe`, `start_screen`,
 so a platform is a module, not a second design (the same seam
 `fused_render/supervisor/_backend.py` uses).
 
-**Three backends, and one of them is not native.** `_darwin.py` records with
-ScreenCaptureKit and AVFoundation. `_windows.py` and `_linux.py` take the STILL
-natively — GDI and the desktop portal — and hand RECORDING to `_sink.py`, which
-receives already-encoded chunks from the page's own `MediaRecorder` over a
-WebSocket and appends them to the file. That split is not a shortcut: on Windows
-there is no OS API a non-packaged process can ask to write a movie with system
-audio in it (ffmpeg has no WASAPI input either), while Chromium already does
-exactly what a native recorder would, hardware-encoded. On macOS the browser
-cannot capture system audio at all, which is why that platform is the native one.
+**Two backends, and one of them is not native.** `_darwin.py` records with
+ScreenCaptureKit and AVFoundation. `_linux.py` takes the STILL natively — the
+desktop portal — and hands screen RECORDING to `_sink.py`, which receives
+already-encoded chunks from the page's own `MediaRecorder` over a WebSocket and
+appends them to the file. That split is not a shortcut: Chromium already does
+exactly what a native recorder would, through the same portal, hardware-encoded
+(see `_linux.py`). On macOS the browser cannot capture system audio at all,
+which is why that platform is the native one.
 
 **What the design buys, on every platform.** The output is a FILE whose path is
 known before the first frame exists, so `fused.ai.transcribe({path})` is the next
 line rather than a blob round-trip through JS; a recording is a job row, so the
-download manager can show and stop it; and one API answers on three platforms
+download manager can show and stop it; and one API answers on both platforms
 with no `via` field for a page to branch on.
 
 **"Unavailable" always carries a REASON.** Wrong OS, an OS too old
@@ -95,13 +94,8 @@ def _backend():
     recording it has already lost, and `locate(rect, dpr)` for mapping a
     browser-measured screen rect onto one of its displays (`shot_region`). Everything platform-specific, INCLUDING the
     prose of a refusal, belongs there: a sentence naming System Settings is
-    wrong on two of the three platforms, and this module cannot be the place it
-    is written.
+    wrong on Linux, and this module cannot be the place it is written.
     """
-    if sys.platform == "win32":
-        from fused_render.capture import _windows
-
-        return _windows
     if sys.platform.startswith("linux"):
         from fused_render.capture import _linux
 
@@ -424,7 +418,7 @@ def _rect(value):
 def _ext(backend, mode: str, spec: dict) -> str:
     """The container the backend is about to write, for the default filename.
 
-    Asked rather than assumed: a QuickTime movie is what one of the three
+    Asked rather than assumed: a QuickTime movie is what one of the
     backends produces, and a default `.mov` holding WebM would be a file every
     other tool misreads. The fallback keeps a minimal backend (and the suite's
     stub) working without the hook.
@@ -502,7 +496,7 @@ def start(mode: str, body: dict, *, page: str = "") -> dict:
     session = _Session(cid, mode, out, handle, spec, page=page)
     # Pausing is an optional backend capability, per handle: the macOS tap, mic
     # and audio-only ScreenCaptureKit routes have it; a screen recording and the
-    # browser-fed Windows/Linux backends do not.
+    # browser-fed Linux backend does not.
     can_pause = getattr(backend, "can_pause", None)
     session.can_pause = bool(
         getattr(backend, "pause", None) and getattr(backend, "resume", None)
@@ -907,7 +901,7 @@ def attach_stream(cid: str, token: str | None):
 
     Only the sink backends have this; on macOS the recording is native and there
     is nothing to attach, so asking is a `CaptureError` rather than a 500 — a
-    page on the wrong platform gets a sentence, and one route serves all three.
+    page on the wrong platform gets a sentence, and one route serves both.
     """
     backend = _backend()
     hook = getattr(backend, "attach", None)
@@ -994,7 +988,7 @@ def shot_region(body: dict) -> bytes:
 
     Which display, and in which units, is the backend's knowledge (`locate`):
     macOS measures displays in points, which ARE DIPs, so `dpr` is unused there;
-    Windows and Linux measure in physical pixels, so the rect is scaled. Each
+    Linux measures in physical pixels, so the rect is scaled. Each
     backend also REFUSES a rect that is not fully inside one display rather
     than clipping it — an export button on a half-off-screen window would
     otherwise bake a sliver into the artifact as its permanent thumbnail, and

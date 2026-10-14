@@ -1,18 +1,12 @@
-"""Recording fed by the page's own encoder — the Windows and Linux path.
+"""Recording fed by the page's own encoder — the Linux path.
 
-**Not a platform backend on its own.** `_windows.py` and `_linux.py` take the
-STILL natively and re-export everything here for the two RECORDING modes, so
-there is one implementation of this for both of them.
+**Not a platform backend on its own.** `_linux.py` takes the STILL natively and
+re-exports everything here for the RECORDING modes.
 
-**Why the page encodes.** On Windows no OS API a non-packaged process can reach
-will write a movie with system audio in it: `AppRecordingManager` needs MSIX
-identity, `Windows.Graphics.Capture` hands out D3D surfaces and no muxer, Media
-Foundation has no screen source, and ffmpeg has no WASAPI input device at all
-(its Windows inputs are dshow/gdigrab/vfwcap, and dshow cannot do loopback
-without a third-party driver). Chromium already does what a native recorder
-would — WGC plus WASAPI loopback on Windows, the PipeWire portal on Linux,
-hardware-encoded — so the page runs `MediaRecorder` and this module receives the
-chunks it produces and appends them to the file. macOS stays native because
+**Why the page encodes.** Chromium already does what a native recorder would —
+the PipeWire portal, hardware-encoded (see `_linux.py` for the native
+alternative and why it is not used) — so the page runs `MediaRecorder` and this
+module receives the chunks it produces and appends them to the file. macOS stays native because
 there the browser cannot capture system audio at all, which is the whole
 capability (`_darwin.py`).
 
@@ -25,7 +19,7 @@ file rather than an unplayable one.
 
 **The socket, not the process, owns the recording's life.** A page that reloads
 takes its `MediaRecorder` with it, so `detach()` ends the session and KEEPS what
-arrived. That is the one behaviour these platforms cannot match on macOS, and
+arrived. That is the one behaviour this platform cannot match on macOS, and
 `list()` telling the truth about it — no row saying "recording" over a file
 nothing is writing — matters more than pretending otherwise.
 """

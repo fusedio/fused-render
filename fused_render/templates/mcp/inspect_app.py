@@ -115,18 +115,8 @@ def _fused_cli() -> str:
     The wrapper's filename is a DUPLICATED rule, not an import — this file
     cannot `import fused_render` (SPEC PY-15, templates are stdlib-only) — and
     must stay character-for-character what `fusedcli.export_fused_cli_env()`
-    writes: `fused.cmd` on Windows (the wrapper's content is a batch script,
-    which only a `.cmd`/`.bat` extension executes — `.exe` was a past bug
-    here, guarded against by
-    `tests/test_mcp_inspect.py::test_the_reader_finds_exactly_what_the_writer_names`,
-    which pins the two sides together), `fused` everywhere else.
-
-    This returns the bare `.cmd` path on purpose — the caller (`template.html`'s
-    registration entry) does NOT route it through a `cmd.exe /c` hop
-    (DECISIONS.md D549, SPEC.md MC-12). See the comment at that call site for
-    why a hop was investigated and rejected (cross-spawn's own
-    extension-based dispatch, and the unresolved-either-way quoting risk for
-    a spaced path); it is intentionally not repeated here.
+    writes: `fused` (pinned together by
+    `tests/test_mcp_inspect.py::test_the_reader_finds_exactly_what_the_writer_names`).
     """
     cli_dir = _shared_import("appenv", "fused_cli_dir")
     if cli_dir is None:
@@ -134,7 +124,7 @@ def _fused_cli() -> str:
     directory = cli_dir()
     if not directory:
         return ""
-    candidate = os.path.join(directory, "fused.cmd" if os.name == "nt" else "fused")
+    candidate = os.path.join(directory, "fused")
     return candidate if os.path.isfile(candidate) else ""
 
 

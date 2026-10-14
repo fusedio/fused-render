@@ -93,9 +93,9 @@ dev = [
     # Coverage reporting (pytest --cov=fused_render). Combines per-worker data
     # under -n auto (xdist) automatically — no extra config needed there.
     "pytest-cov",
-    # The Windows updater's tests (tests/test_win_supervisor_update.py) are
-    # mock-based and cross-platform, but importorskip("cryptography") skips them
-    # in CI unless it's installed here — it's win32-only in windows-desktop.
+    # The in-app updaters' manifest verification (update/common.py) and the
+    # LAN TLS cert (lan_tls.py) import cryptography lazily; it is not a core
+    # dependency, so the suite only exercises them if it's installed here.
     #
     # Platform-conditional ceiling (LEAN_WHEEL_SPEC.md item 1): cryptography
     # dropped x86_64 macOS wheels (even the universal2 fat binary) after
@@ -115,8 +115,7 @@ dev = [
     # "does the kernel render figures" is worth keeping covered, and the
     # honest description of matplotlib now is that this repo tests with it and
     # does not ship it. No packaged build installs `[dev]`
-    # (build_dmg.sh / build_linux_appimage.sh / build_windows_installer.ps1 all
-    # install `[bundled,...]`), and the macOS force-list is derived by walking
+    # (build_dmg.sh / build_linux_appimage.sh both install `[bundled,...]`), and the macOS force-list is derived by walking
     # `[bundled]`'s own requirements, so nothing here can reach the bundle.
     "matplotlib",
     # A TEST dependency for the same reason matplotlib is one above, and a
@@ -258,8 +257,7 @@ data = [
 #   * pyobjc ScreenCaptureKit + AVFoundation + CoreAudio, pillow and dbus-fast:
 #     native capture (SPEC §45). macOS records through ScreenCaptureKit and
 #     AVFoundation, and audio-only system audio (14.2+) through a Core Audio
-#     process tap (CoreAudio); the Windows still is a `BitBlt` that pillow encodes; the
-#     Linux still goes through the `org.freedesktop.portal.Screenshot` D-Bus
+#     process tap (CoreAudio); the Linux still goes through the `org.freedesktop.portal.Screenshot` D-Bus
 #     call (dbus-fast, pure Python, no GTK) and pillow crops or converts what
 #     the portal wrote. Without them `fused.capture` reports
 #     `available: false`. pillow also backs the TIFF/HEIC attachment converter
@@ -272,7 +270,6 @@ desktop = [
     "pyobjc-framework-ScreenCaptureKit; sys_platform == 'darwin'",
     "pyobjc-framework-AVFoundation; sys_platform == 'darwin'",
     "pyobjc-framework-CoreAudio; sys_platform == 'darwin'",
-    "pillow; sys_platform == 'win32'",
     "pillow; sys_platform == 'linux'",
     "dbus-fast; sys_platform == 'linux'",
 ]
@@ -326,22 +323,11 @@ all = [
 # Menu-bar app shell (SPEC DM-3/DM-7). macOS-only; installed by the packaged
 # .app build alone (scripts/build_dmg.sh).
 # Both entries carry a darwin marker as well, so `pip install "fused-render[app]"`
-# on Linux or Windows resolves to nothing instead of trying to build pyobjc/rumps there.
+# on Linux resolves to nothing instead of trying to build pyobjc/rumps there.
 app = [
     "rumps ; sys_platform == 'darwin'",
     # Pinned view (SPEC §25, D97): WKWebView inside the status-item popover.
     "pyobjc-framework-WebKit ; sys_platform == 'darwin'",
-    "fused-render[all]",
-]
-# Windows desktop supervisor backend (fused_render/supervisor/_win32,
-# docs/DESKTOP_SUPERVISOR.md). Windows-only; installed by the packaged desktop
-# build alone (scripts/build_windows_installer.ps1).
-windows-desktop = [
-    'pywin32>=306 ; sys_platform == "win32"',
-    'pystray>=0.19 ; sys_platform == "win32"',
-    'pillow ; sys_platform == "win32"',
-    # Verifies the ed25519-signed update manifest (supervisor/_win32/update.py).
-    'cryptography ; sys_platform == "win32"',
     "fused-render[all]",
 ]
 # Linux desktop supervisor backend (fused_render/supervisor/_linux,
@@ -390,11 +376,6 @@ Releases = "https://github.com/fusedio/fused-render/releases"
 [project.scripts]
 fused-render = "fused_render.cli:main"
 fused-render-app = "fused_render.app:main"
-
-# No-console launcher for the Explorer "Open with" registration; a dedicated
-# exe because the Open With dialog displays a pythonw.exe command as "Python".
-[project.gui-scripts]
-fused-render-open = "fused_render.winopen:main"
 
 # Run the suite in parallel by default (needs pytest-xdist, in the dev extra).
 # -n auto spawns one worker per CPU; the suite is xdist-safe (see the dev-extra

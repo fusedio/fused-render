@@ -251,8 +251,7 @@ export const CHAT_ENTRY_ORIGIN = "chat";
  *  opened by the entry it is waiting as. Never both — a session outranks it, and
  *  a chat that has one has nothing left to open by entry. */
 export function chatUrl(target: string, sessionId: string, queuedEntryId = ""): string {
-  const norm = /^[A-Za-z]:[\\/]/.test(target) ? target.replace(/\\/g, "/") : target;
-  const encoded = norm
+  const encoded = target
     .replace(/^\/+/, "")
     .split("/")
     .filter(Boolean)

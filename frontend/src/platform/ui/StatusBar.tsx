@@ -126,8 +126,8 @@ export default function StatusBar({
   /** The status-bar terminal's chip (`shell/TerminalDock.tsx`), leftmost —
    *  the same lifetime argument this file's header makes for Models:
    *  persistent status, not transient work that appears and resolves.
-   *  Optional so a caller/test with no terminal feature wired up (or a
-   *  Windows build, where the chip is hidden) renders nothing here. */
+   *  Optional so a caller/test with no terminal feature wired up renders
+   *  nothing here. */
   terminalDock?: ReactNode;
   /** The self-update chip (`shell/UpdatesDock.tsx`): version, Check for
    *  updates and the download/restart story, at the bar's LEFT edge before

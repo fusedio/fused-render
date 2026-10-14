@@ -92,7 +92,7 @@ export function useListingShortcuts({
     const action = matchChord(e, { inSearch, hasSelection });
     if (action === null) return;
     // The parent folder, for Mod+Up / bare Backspace. Equal to the current
-    // folder at the filesystem (or drive) root, where there's nowhere to go.
+    // folder at the filesystem root, where there's nowhere to go.
     const here = normDir(base);
     const parent = dirname(here);
     if (action === "copy" || action === "cut") {
@@ -159,7 +159,7 @@ export function useListingShortcuts({
       else doRedo();
     } else if (action === "rename") {
       // Rename is single-entry: with several rows selected it renames the LEAD
-      // row (what Windows Explorer does — F2 edits the focused item), not a
+      // row (what desktop file managers do — F2 edits the focused item), not a
       // no-op and never a batch rename.
       if (!row) return;
       e.preventDefault();

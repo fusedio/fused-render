@@ -28,8 +28,7 @@ function firstBookmarkFolderId(): string | undefined {
 }
 
 export default function Home({ config }: { config: Config }) {
-  // Same normalization every other config.home consumer applies.
-  const home = config.home.replace(/\\/g, "/");
+  const home = config.home;
   useRecentsVersion();
 
   const layoutApi = useHomeLayout();

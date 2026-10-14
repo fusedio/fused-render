@@ -564,36 +564,14 @@ def machine_ram_gb() -> float | None:
     router importing a private name out of another router would be the wrong
     direction of dependency. Stdlib only — psutil lives in the runner venvs,
     not the server's own environment (AI-2's rule). `sysconf` covers macOS and
-    Linux; Windows answers through `GlobalMemoryStatusEx`. Cached forever: the
-    machine's RAM does not change under a running server, and this is read
-    per catalog request.
+    Linux. Cached forever: the machine's RAM does not change under a running
+    server, and this is read per catalog request.
     """
     try:
         if hasattr(os, "sysconf") and os.sysconf_names.get("SC_PHYS_PAGES"):
             return os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE") / 1e9
     except (ValueError, OSError):
         pass
-    if sys.platform == "win32":  # pragma: no cover - the Windows branch
-        # A literal `sys.platform == "win32"` check, not a `hasattr`/try
-        # probe: pyright narrows `ctypes.windll` (only declared in typeshed
-        # under this exact guard) the same way `index/worker.py`'s own
-        # `GetProcessMemoryInfo` read already does — off Windows this whole
-        # branch is eliminated by static platform inference, so the
-        # attribute is never even type-checked, not just never executed.
-        try:
-            class _MemoryStatus(ctypes.Structure):
-                _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
-                            ("ullTotalPhys", ctypes.c_uint64), ("ullAvailPhys", ctypes.c_uint64),
-                            ("ullTotalPageFile", ctypes.c_uint64), ("ullAvailPageFile", ctypes.c_uint64),
-                            ("ullTotalVirtual", ctypes.c_uint64), ("ullAvailVirtual", ctypes.c_uint64),
-                            ("ullAvailExtendedVirtual", ctypes.c_uint64)]
-
-            status = _MemoryStatus()
-            status.dwLength = ctypes.sizeof(status)
-            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
-                return status.ullTotalPhys / 1e9
-        except Exception:  # noqa: BLE001 - a failed read must not be fatal
-            pass
     return None
 
 

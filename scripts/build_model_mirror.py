@@ -125,12 +125,8 @@ def wire_name(path: str, root: str) -> str:
     segment and a filesystem path, and the client validates it as `/`-only —
     a `\` there is a traversal character and gets the whole manifest rejected.
 
-    So on Windows this conversion is load-bearing: `os.path.relpath` returns
-    `tokenizer\vocab.json`, and publishing that would produce a manifest the
-    generator's own client refuses. Nothing downstream converts back,
-    deliberately: both POSIX and Windows accept `/` in every filesystem call the
-    client makes, so one conversion here is the whole story rather than a
-    per-call `normpath` sprinkled through the fetcher.
+    Nothing downstream converts back: one conversion here is the whole story
+    rather than a per-call `normpath` sprinkled through the fetcher.
     """
     return os.path.relpath(path, root).replace(os.sep, "/")
 

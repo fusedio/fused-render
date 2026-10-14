@@ -1,8 +1,8 @@
-"""macOS in-app updater (docs/PYTHON_SUPERVISOR_SPEC.md "Software updates"
-gives the Windows design this mirrors). A silent background loop checks the
-signed manifest and surfaces a newer version only through /api/config's
-`update` field — the shell shows a badge. Downloading and installing happen
-solely on an explicit POST /api/update/install.
+"""macOS in-app updater (docs/LINUX_AUTO_UPDATE_SPEC.md "What already exists").
+A silent background loop checks the signed manifest and surfaces a newer
+version only through /api/config's `update` field — the shell shows a badge.
+Downloading and installing happen solely on an explicit POST
+/api/update/install.
 
 The state machine, the throttle, the Activity-dock job mirroring, the cancel
 flag, and the shared constants all live in `update/_manager.py`
@@ -115,11 +115,9 @@ CANCELLED_MESSAGE = _base.CANCELLED_MESSAGE
 _DISK_SPACE_FACTOR = _base._DISK_SPACE_FACTOR
 # The first check runs right after boot, so the sidebar badge (UpdateBadge,
 # 60s idle poll on top of this) appears on the first poll rather than a minute
-# or two into the session. Not `common.STARTUP_DELAY_S`, which the Windows tray
-# updater also drives and wants to keep clear of a whole app launch; here the
-# check loop is a background thread, so it is off the startup path anyway and
-# the delay only keeps the manifest fetch out of a booting process's first
-# tick. Every check after it is common.CHECK_INTERVAL_S (5 min) apart.
+# or two into the session. The check loop is a background thread, so it is
+# off the startup path anyway and the delay only keeps the manifest fetch out
+# of a booting process's first tick. Every check after it is common.CHECK_INTERVAL_S (5 min) apart.
 MAC_STARTUP_DELAY_S = 1.0
 _DOWNLOAD_PREFIX = _flavor.app_name() + "-"
 _DOWNLOAD_SUFFIX = ".dmg"

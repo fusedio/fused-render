@@ -775,12 +775,12 @@ export function startTranscribe(request: TranscribeRequest): Promise<TranscribeS
 // On macOS the server records the microphone itself through AVFoundation and
 // writes an `.m4a` — a container every transcribe tier reads, including the
 // apple one, which opens files through AVFoundation and has no WebM/Opus
-// demuxer (Chrome's `MediaRecorder` default). Windows and Linux report
+// demuxer (Chrome's `MediaRecorder` default). Linux reports
 // `sources.client: true`: there the browser is the encoder, and the stage
 // keeps its MediaRecorder path (the Whisper workers decode WebM fine).
 
 export interface CaptureSources {
-  /** True where the BROWSER must encode (Windows/Linux); false where the
+  /** True where the BROWSER must encode (Linux); false where the
    *  server records natively (macOS). */
   client?: boolean;
   audio: { available: boolean; granted?: boolean; reason?: string };

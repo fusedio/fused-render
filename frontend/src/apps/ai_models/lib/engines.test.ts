@@ -49,22 +49,22 @@ function mac(over: Partial<CapabilityEngine> = {}): CapabilityEngine {
   };
 }
 
-// The same preferences file, opened on a Windows box — the case the whole
+// The same preferences file, opened on a Linux box — the case the whole
 // ignore-rather-than-honour rule exists for.
-function windows(): CapabilityEngine {
+function linuxBox(): CapabilityEngine {
   return mac({
     selected: "mlx-whisper",
     effective: "faster-whisper",
     effectiveLabel: "Faster Whisper (CTranslate2)",
     effectiveShortLabel: "Faster Whisper",
-    ignoredReason: "needs Apple Silicon (this is windows/amd64)",
+    ignoredReason: "needs Apple Silicon (this is linux/x86_64)",
     choices: [
       {
         code: "mlx-whisper",
         label: "MLX Whisper (Apple Silicon)",
         note: "Transcribes on the GPU.",
         available: false,
-        reason: "needs Apple Silicon (this is windows/amd64)",
+        reason: "needs Apple Silicon (this is linux/x86_64)",
       },
       {
         code: "faster-whisper",
@@ -88,11 +88,11 @@ describe("engineNote", () => {
   });
 
   it("describes the EFFECTIVE engine, never the one that was asked for", () => {
-    // The Windows box stored a preference for MLX Whisper and got CTranslate2.
+    // The Linux box stored a preference for MLX Whisper and got CTranslate2.
     // "Transcribes on the GPU." under that row would be a sentence about a
     // backend this machine is not running — the same discipline `servingLine`
     // follows one line above it.
-    expect(engineNote(windows())).toBe(null);
+    expect(engineNote(linuxBox())).toBe(null);
   });
 
   it("is null for a runner with nothing worth saying", () => {
@@ -116,9 +116,9 @@ describe("servingLine", () => {
     // The SHORT name: this line sits under the picker, which is the one
     // surface that keeps the platform qualifier. What the test is about is
     // WHICH runner gets named, and that is unchanged.
-    expect(servingLine(windows(), AUTO)).toContain("Faster Whisper");
-    expect(servingLine(windows(), AUTO)).not.toContain("CTranslate2");
-    expect(servingLine(windows(), AUTO)).not.toContain("MLX");
+    expect(servingLine(linuxBox(), AUTO)).toContain("Faster Whisper");
+    expect(servingLine(linuxBox(), AUTO)).not.toContain("CTranslate2");
+    expect(servingLine(linuxBox(), AUTO)).not.toContain("MLX");
   });
 
   it("says so plainly when nothing serves the capability here", () => {
@@ -144,7 +144,7 @@ describe("servingLine", () => {
     // The control shows the (ignored) selected choice, not what is actually
     // running — so the serving line is the only place naming reality, exactly
     // as before.
-    expect(servingLine(windows(), AUTO)).toBe("Using Faster Whisper.");
+    expect(servingLine(linuxBox(), AUTO)).toBe("Using Faster Whisper.");
   });
 });
 
@@ -158,12 +158,12 @@ describe("ignoredWarning", () => {
   });
 
   it("names the choice and the reason, in one sentence", () => {
-    const warning = ignoredWarning(windows()) ?? "";
+    const warning = ignoredWarning(linuxBox()) ?? "";
     expect(warning).toContain("MLX Whisper");
     // The registry's own sentence, passed through rather than reworded — the
     // page cannot know this and must not paraphrase it.
     expect(warning).toContain("needs Apple Silicon");
-    expect(warning).toContain("windows/amd64");
+    expect(warning).toContain("linux/x86_64");
     // The whole line, asserted as content rather than by counting full stops:
     // the warning earns its place by being the only thing that contradicts the
     // still-selected option above it, and what must not come back is the
@@ -171,7 +171,7 @@ describe("ignoredWarning", () => {
     // for another machine, which the selection itself already says.
     expect(warning).toBe(
       "MLX Whisper (Apple Silicon) is not used here — needs Apple Silicon"
-      + " (this is windows/amd64).",
+      + " (this is linux/x86_64).",
     );
   });
 
@@ -322,10 +322,10 @@ describe("strandedSelection", () => {
     // already, and an ordinary selection is one of the real choices. Neither is
     // stranded, however the row's `ignoredReason` reads — an override that is
     // merely unavailable HERE is still a listed option, which is the case
-    // `windows()` covers and the one this must not be confused with.
+    // `linuxBox()` covers and the one this must not be confused with.
     expect(strandedSelection(mac(), AUTO)).toBeNull();
     expect(strandedSelection(mac({ selected: "faster-whisper" }), AUTO)).toBeNull();
-    expect(strandedSelection(windows(), AUTO)).toBeNull();
+    expect(strandedSelection(linuxBox(), AUTO)).toBeNull();
   });
 
   it("leaves the warning underneath saying what happened", () => {
@@ -344,7 +344,7 @@ describe("strandedSelection", () => {
 
 describe("choiceReason", () => {
   it("always explains a disabled option", () => {
-    const [mlx] = windows().choices;
+    const [mlx] = linuxBox().choices;
     expect(choiceReason(mlx)).toContain("Apple Silicon");
   });
 
@@ -383,14 +383,14 @@ describe("wouldChangeEngine", () => {
   it("is false for a runner this machine cannot run", () => {
     // Choosing it changes what is STORED and nothing else — no model is
     // unloaded and no suggestion list moves, so warning would be a lie.
-    const row = windows();
+    const row = linuxBox();
     expect(wouldChangeEngine({ ...row, selected: AUTO }, "mlx-whisper", AUTO)).toBe(false);
   });
 
   it("is false when clearing an override that was already being ignored", () => {
-    // The Windows machine resolves to faster-whisper with the MLX preference
+    // The Linux machine resolves to faster-whisper with the MLX preference
     // stored; going back to auto resolves to faster-whisper too. Nothing moves.
-    expect(wouldChangeEngine(windows(), AUTO, AUTO)).toBe(false);
+    expect(wouldChangeEngine(linuxBox(), AUTO, AUTO)).toBe(false);
   });
 
   it("is false when clearing an override that names what auto picks anyway", () => {

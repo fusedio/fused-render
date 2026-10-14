@@ -39,9 +39,8 @@ Everything else is `re.escape`-d. All path patterns compile into a single altern
 with two `fullmatch` closures: `is_ignored` (the directory itself) and
 `is_ignored_tree` (the directory or anything beneath it).
 
-Patterns are normalized to the canonical path form before being sorted, so a
-Windows-style pattern (`C:\Users\me\x`) is recognized as a path rather than mistaken for
-a folder name (`platform.md §1`).
+Patterns are in the canonical path form (`platform.md §1`): one containing `/` is a
+path, anything else a folder name or glob.
 
 Matching is **directory-oriented**: patterns select folders to skip. Ignoring individual
 files by name is not supported. Name matching is **case-sensitive** on every platform;

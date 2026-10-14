@@ -63,10 +63,8 @@ Actions
 import hashlib
 import json
 import os
-import random
 import re
 import shutil
-import time
 
 # NOTE: bare `def main` (no @fused.udf) is deliberate — under the built-in
 # executor the worker calls main() by its own signature; @fused.udf hides that
@@ -96,10 +94,6 @@ def _safe_name(name, default):
     return name or default
 
 
-def _fwd(p: str) -> str:
-    return p.replace(os.sep, "/")
-
-
 def _out_dir(directory, default):
     d = os.path.abspath(os.path.expanduser(directory)) if directory else default
     if not os.path.isdir(d):
@@ -115,23 +109,6 @@ def _unique_path(directory, name):
         dest = os.path.join(directory, f"{stem}-{i}{ext}")
         i += 1
     return dest
-
-
-def _replace(tmp, dst):
-    """os.replace, retried until a 1.5s deadline: on Windows the rename fails
-    outright while anyone else still holds a handle on dst — a superseded worker
-    on its way out, an AV scanner that opened the file behind us. The waits are
-    short and randomized on purpose, to sample many small windows rather than a
-    handful of long ones (a backoff can resonate with a periodic holder)."""
-    deadline = time.monotonic() + 1.5
-    while True:
-        try:
-            os.replace(tmp, dst)
-            return
-        except OSError:
-            if time.monotonic() >= deadline:
-                raise
-            time.sleep(random.uniform(0.01, 0.04))
 
 
 def _parse_pages(spec: str, n: int):
@@ -164,13 +141,13 @@ def _docinfo(path):
     doc = fitz.open(path)
     if doc.needs_pass:
         doc.close()
-        return {"path": _fwd(path), "name": os.path.basename(path),
+        return {"path": path, "name": os.path.basename(path),
                 "size": os.path.getsize(path), "mtime": os.path.getmtime(path),
                 "encrypted": True, "page_count": 0, "pages": []}
     pages = [{"n": i + 1, "width": round(p.rect.width, 2),
               "height": round(p.rect.height, 2), "rotation": p.rotation}
              for i, p in enumerate(doc)]
-    out = {"path": _fwd(path), "name": os.path.basename(path),
+    out = {"path": path, "name": os.path.basename(path),
            "size": os.path.getsize(path), "mtime": os.path.getmtime(path),
            "encrypted": False, "page_count": doc.page_count, "pages": pages}
     doc.close()
@@ -216,7 +193,7 @@ def _open_work(doc):
     if not (meta and os.path.exists(wpath)
             and (meta.get("dirty") or meta.get("base_mtime") == smt)):
         shutil.copyfile(src, wpath)
-        meta = {"src": _fwd(src), "base_mtime": smt, "dirty": False}
+        meta = {"src": src, "base_mtime": smt, "dirty": False}
         _work_save_state(src, meta)
     return wpath, meta
 
@@ -253,8 +230,8 @@ def _work_rename(old, new):
     ow, om = _work_paths(old)
     nw, _ = _work_paths(new)
     if os.path.exists(ow):
-        _replace(ow, nw)
-    meta["src"] = _fwd(os.path.abspath(new))
+        os.replace(ow, nw)
+    meta["src"] = os.path.abspath(new)
     _work_save_state(new, meta)
     os.remove(om)
 
@@ -266,7 +243,7 @@ def _save(doc, force):
     if not (meta and os.path.exists(wpath)):
         raise ValueError("open the document first")
     if not meta.get("dirty"):
-        return {"ok": True, "dirty": False, "file": _fwd(src), "unchanged": True}
+        return {"ok": True, "dirty": False, "file": src, "unchanged": True}
     # RO gate (SPEC §13.5 RO-3) before the conflict check: the write below goes
     # through the parent directory (`os.replace`) and would silently overwrite
     # a chmod -w original — and the conflict dialog's "force" must not either.
@@ -276,11 +253,11 @@ def _save(doc, force):
         return {"conflict": True}
     tmp = src + ".tmp"
     shutil.copyfile(wpath, tmp)
-    _replace(tmp, src)
+    os.replace(tmp, src)
     meta["base_mtime"] = os.path.getmtime(src)
     meta["dirty"] = False
     _work_save_state(src, meta)
-    return {"ok": True, "dirty": False, "file": _fwd(src)}
+    return {"ok": True, "dirty": False, "file": src}
 
 
 def _revert(doc):
@@ -288,7 +265,7 @@ def _revert(doc):
     os.makedirs(WORKDIR, exist_ok=True)
     wpath, _ = _work_paths(src)
     shutil.copyfile(src, wpath)
-    _work_save_state(src, {"src": _fwd(src), "base_mtime": os.path.getmtime(src),
+    _work_save_state(src, {"src": src, "base_mtime": os.path.getmtime(src),
                            "dirty": False})
     return _mut_result(src)
 
@@ -347,7 +324,7 @@ def _push_snapshot(doc, op, pre):
 def _restore(doc, snap):
     tmp = doc + ".tmp"
     shutil.copyfile(snap, tmp)
-    _replace(tmp, doc)
+    os.replace(tmp, doc)
 
 
 def _undo(doc):
@@ -395,9 +372,9 @@ def _mut_result(doc, extra=None):
     wpath, _ = _work_paths(doc)
     meta = _work_state(doc) or {}
     info = _docinfo(wpath)
-    info["path"] = _fwd(doc)
+    info["path"] = doc
     info["name"] = os.path.basename(doc)
-    info["work"] = _fwd(wpath)
+    info["work"] = wpath
     out = {"ok": True, "mtime": os.path.getmtime(wpath), "doc": info,
            "dirty": bool(meta.get("dirty"))}
     out["undo_depth"], out["redo_depth"] = _stack_depths(doc)
@@ -438,7 +415,7 @@ def _rotate_pages(doc, pages, degrees):
             for i in _parse_pages(pages, len(pdf.pages)):
                 pdf.pages[i].rotate(degrees, relative=True)
             pdf.save(tmp)
-        _replace(tmp, path)
+        os.replace(tmp, path)
     return fn(doc)
 
 
@@ -454,7 +431,7 @@ def _delete_pages(doc, pages):
             for i in reversed(idxs):
                 del pdf.pages[i]
             pdf.save(tmp)
-        _replace(tmp, path)
+        os.replace(tmp, path)
     return fn(doc)
 
 
@@ -472,7 +449,7 @@ def _reorder_pages(doc, order):
                 pdf.pages.append(pdf.pages[i])
             del pdf.pages[0:n]
             pdf.save(tmp)
-        _replace(tmp, path)
+        os.replace(tmp, path)
     return fn(doc)
 
 
@@ -488,7 +465,7 @@ def _insert_blank(doc, at, width, height):
         tmp = path + ".tmp"
         d.save(tmp, deflate=True, encryption=fitz.PDF_ENCRYPT_KEEP)
         d.close()
-        _replace(tmp, path)
+        os.replace(tmp, path)
     return fn(doc)
 
 
@@ -507,8 +484,8 @@ def _extract_pages(doc, pages, name):
             name += ".pdf"
         dest = _unique_path(os.path.dirname(doc), name)
         dst.save(dest)
-    return {"name": os.path.basename(dest), "path": _fwd(dest),
-            "size": os.path.getsize(dest), "dir": _fwd(os.path.dirname(dest))}
+    return {"name": os.path.basename(dest), "path": dest,
+            "size": os.path.getsize(dest), "dir": os.path.dirname(dest)}
 
 
 def _merge(sources, name, directory=""):
@@ -527,7 +504,7 @@ def _merge(sources, name, directory=""):
         name += ".pdf"
     dest = _unique_path(out_dir, name)
     dst.save(dest)
-    return {"name": os.path.basename(dest), "path": _fwd(dest), "dir": _fwd(out_dir)}
+    return {"name": os.path.basename(dest), "path": dest, "dir": out_dir}
 
 
 def _split(doc, mode, ranges, prefix, directory=""):
@@ -555,9 +532,9 @@ def _split(doc, mode, ranges, prefix, directory=""):
             label = f"p{g[0] + 1}" if len(g) == 1 else f"p{g[0] + 1}-{g[-1] + 1}"
             dest = _unique_path(out_dir, f"{prefix}-{label}.pdf")
             dst.save(dest)
-            files.append({"name": os.path.basename(dest), "path": _fwd(dest),
+            files.append({"name": os.path.basename(dest), "path": dest,
                           "size": os.path.getsize(dest)})
-    return {"files": files, "dir": _fwd(out_dir)}
+    return {"files": files, "dir": out_dir}
 
 
 def _compress(doc, level):
@@ -589,7 +566,7 @@ def _compress(doc, level):
             os.remove(tmp)
             raise ValueError(
                 f"already optimized — {level} compression would not shrink the file")
-        _replace(tmp, path)
+        os.replace(tmp, path)
         return {"before": before, "after": after}
     return fn(doc)
 
@@ -607,8 +584,8 @@ def _protect(doc, password, owner):
     with pikepdf.open(_cur_path(doc)) as pdf:
         pdf.save(dest, encryption=pikepdf.Encryption(
             user=password, owner=owner or password, R=6))
-    return {"name": os.path.basename(dest), "path": _fwd(dest),
-            "size": os.path.getsize(dest), "dir": _fwd(os.path.dirname(dest))}
+    return {"name": os.path.basename(dest), "path": dest,
+            "size": os.path.getsize(dest), "dir": os.path.dirname(dest)}
 
 
 def _unlock(doc, password):
@@ -624,8 +601,8 @@ def _unlock(doc, password):
     except pikepdf.PasswordError:
         raise ValueError("wrong password") from None
     _add_to_library(dest)
-    return {"name": os.path.basename(dest), "path": _fwd(dest),
-            "dir": _fwd(os.path.dirname(dest))}
+    return {"name": os.path.basename(dest), "path": dest,
+            "dir": os.path.dirname(dest)}
 
 
 # ------------------------------------------------------------------------ ocr
@@ -695,8 +672,8 @@ def _ocr(doc, pages, language):
     copied = src.page_count - len(todo)
     src.close()
     _add_to_library(dest)
-    return {"name": os.path.basename(dest), "path": _fwd(dest),
-            "dir": _fwd(os.path.dirname(dest)),
+    return {"name": os.path.basename(dest), "path": dest,
+            "dir": os.path.dirname(dest),
             "ocr_pages": len(todo), "copied_pages": copied}
 
 
@@ -764,8 +741,8 @@ def _pdf_to_word(doc, pages):
             '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>'
             "</Relationships>")
         z.writestr("word/document.xml", document)
-    return {"name": os.path.basename(dest), "path": _fwd(dest),
-            "size": os.path.getsize(dest), "dir": _fwd(os.path.dirname(dest))}
+    return {"name": os.path.basename(dest), "path": dest,
+            "size": os.path.getsize(dest), "dir": os.path.dirname(dest)}
 
 
 def _find_soffice():
@@ -773,9 +750,7 @@ def _find_soffice():
     cand = shutil.which("soffice")
     if cand:
         return cand
-    for p in (r"C:\Program Files\LibreOffice\program\soffice.exe",
-              r"C:\Program Files (x86)\LibreOffice\program\soffice.exe",
-              "/Applications/LibreOffice.app/Contents/MacOS/soffice",
+    for p in ("/Applications/LibreOffice.app/Contents/MacOS/soffice",
               "/usr/bin/soffice"):
         if os.path.isfile(p):
             return p
@@ -839,8 +814,8 @@ def _word_to_pdf(src):
         if made:
             shutil.copyfile(made, dest)
             _add_to_library(dest)
-            return {"name": os.path.basename(dest), "path": _fwd(dest),
-                    "dir": _fwd(out_dir), "via": "libreoffice"}
+            return {"name": os.path.basename(dest), "path": dest,
+                    "dir": out_dir, "via": "libreoffice"}
     W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
     try:
         with zipfile.ZipFile(src) as z:
@@ -884,8 +859,8 @@ def _word_to_pdf(src):
         raise ValueError("the document has no readable content")
     _html_to_pdf(f"<body>{''.join(chunks)}</body>", dest)
     _add_to_library(dest)
-    return {"name": os.path.basename(dest), "path": _fwd(dest),
-            "dir": _fwd(out_dir), "via": "builtin"}
+    return {"name": os.path.basename(dest), "path": dest,
+            "dir": out_dir, "via": "builtin"}
 
 
 def _excel_to_pdf(src):
@@ -904,8 +879,8 @@ def _excel_to_pdf(src):
         if made:
             shutil.copyfile(made, dest)
             _add_to_library(dest)
-            return {"name": os.path.basename(dest), "path": _fwd(dest),
-                    "dir": _fwd(out_dir), "via": "libreoffice"}
+            return {"name": os.path.basename(dest), "path": dest,
+                    "dir": out_dir, "via": "libreoffice"}
     try:
         import openpyxl
     except ImportError:
@@ -930,8 +905,8 @@ def _excel_to_pdf(src):
         raise ValueError("the workbook has no data to render")
     _html_to_pdf(f"<body>{''.join(chunks)}</body>", dest)
     _add_to_library(dest)
-    return {"name": os.path.basename(dest), "path": _fwd(dest),
-            "dir": _fwd(out_dir), "via": "builtin"}
+    return {"name": os.path.basename(dest), "path": dest,
+            "dir": out_dir, "via": "builtin"}
 
 
 # --------------------------------------------------------- images / scanning
@@ -955,7 +930,7 @@ def _build_image_pdf(blobs, name, directory, default_dir):
     out.save(dest, deflate=True)
     out.close()
     _add_to_library(dest)
-    return {"name": os.path.basename(dest), "path": _fwd(dest), "dir": _fwd(out_dir)}
+    return {"name": os.path.basename(dest), "path": dest, "dir": out_dir}
 
 
 def _images_to_pdf(sources, name, directory):
@@ -1163,7 +1138,7 @@ def _add_image(doc, page, rect, src):
     d.close()
     boxes = _page_images(tmp, page, to_page)
     placed = {"index": len(boxes) - 1, "bbox": boxes[-1]}
-    _replace(tmp, doc)
+    os.replace(tmp, doc)
     return {"image": placed}
 
 
@@ -1246,12 +1221,12 @@ def _edit_image(doc, page, index, rect, to_rect=""):
             del ops[i]
         pg.Contents = pdf.make_stream(pikepdf.unparse_content_stream(ops))
         pdf.save(tmp)
-    _replace(tmp, doc)
+    os.replace(tmp, doc)
 
 
 # -------------------------------------------------------------------- library
 def _doc_entry(path):
-    entry = {"name": os.path.basename(path), "path": _fwd(path),
+    entry = {"name": os.path.basename(path), "path": path,
              "size": os.path.getsize(path), "mtime": os.path.getmtime(path)}
     try:
         import pikepdf
@@ -1296,7 +1271,7 @@ def _list_library():
     for path in _lib_load():
         full = os.path.abspath(path)
         if not os.path.isfile(full):
-            docs.append({"name": os.path.basename(full), "path": _fwd(full),
+            docs.append({"name": os.path.basename(full), "path": full,
                          "size": 0, "mtime": 0, "page_count": None, "missing": True})
             continue
         docs.append(_doc_entry(full))
@@ -1314,7 +1289,7 @@ def _lib_promote(src):
     src = os.path.abspath(src)
     # _lib_load() returns newest-first (pre-v2 files are reversed on load), so
     # prepending src and keeping the head keeps the most recent, never the oldest.
-    paths = [_fwd(src)] + [p for p in _lib_load() if not _same_path(p, src)]
+    paths = [src] + [p for p in _lib_load() if not _same_path(p, src)]
     kept = paths[:RECENT_MAX]
     for p in paths[RECENT_MAX:]:
         if (_work_state(p) or {}).get("dirty"):
@@ -1332,7 +1307,7 @@ def _add_to_library(src):
     if not os.path.isfile(src):
         raise ValueError(f"no such file: {src}")
     _lib_promote(src)
-    return {"name": os.path.basename(src), "path": _fwd(src)}
+    return {"name": os.path.basename(src), "path": src}
 
 
 def _remove_from_library(doc):
@@ -1362,7 +1337,7 @@ def _import_url(url, name):
     with open(dest, "wb") as f:
         f.write(data)
     _add_to_library(dest)
-    return {"name": os.path.basename(dest), "path": _fwd(dest)}
+    return {"name": os.path.basename(dest), "path": dest}
 
 
 def _listdir(path, exts=""):
@@ -1436,9 +1411,9 @@ def _export(doc, kind, pages, name, directory=""):
         files.append(dest)
     else:
         raise ValueError(f"unsupported export kind: {kind}")
-    return {"files": [{"path": _fwd(p), "name": os.path.basename(p),
+    return {"files": [{"path": p, "name": os.path.basename(p),
                        "size": os.path.getsize(p)} for p in files],
-            "dir": _fwd(out)}
+            "dir": out}
 
 
 # ------------------------------------------------------------------ inspection
@@ -1474,7 +1449,7 @@ def _inspect(doc, pages):
                                 disk=os.path.abspath(doc))
     # The report describes the bytes on disk; the identity is the doc the user
     # opened, which is the original even while a working copy is being read.
-    report["doc"]["path"] = _fwd(os.path.abspath(doc))
+    report["doc"]["path"] = os.path.abspath(doc)
     report["doc"]["name"] = os.path.basename(doc)
     return report
 
@@ -1493,8 +1468,8 @@ def _save_markdown(doc, pages, directory, name, text=None):
     dest = _unique_path(out, os.path.splitext(stem)[0] + ".md")
     with open(dest, "w", encoding="utf-8") as f:
         f.write(md)
-    return {"name": os.path.basename(dest), "path": _fwd(dest),
-            "size": os.path.getsize(dest), "dir": _fwd(out)}
+    return {"name": os.path.basename(dest), "path": dest,
+            "size": os.path.getsize(dest), "dir": out}
 
 
 def _health():
@@ -1584,9 +1559,9 @@ def main(
         wpath, wmeta = _open_work(p)   # raises on a missing/unreadable file…
         _lib_promote(p)                # …so a failed open never reorders or evicts
         info = _docinfo(wpath)
-        info["path"] = _fwd(p)
+        info["path"] = p
         info["name"] = os.path.basename(p)
-        info["work"] = _fwd(wpath)
+        info["work"] = wpath
         info["dirty"] = bool(wmeta.get("dirty"))
         if not info["encrypted"]:
             import fitz
@@ -1629,8 +1604,8 @@ def main(
         _work_rename(p, dest)
         paths = _lib_load()
         if any(_same_path(l, p) for l in paths):
-            _lib_save([_fwd(dest) if _same_path(l, p) else l for l in paths])
-        return {"name": os.path.basename(dest), "path": _fwd(dest)}
+            _lib_save([dest if _same_path(l, p) else l for l in paths])
+        return {"name": os.path.basename(dest), "path": dest}
     if action == "save":
         return _save(doc, force)
     if action == "revert":
@@ -1642,7 +1617,7 @@ def main(
             n += ".pdf"
         dest = os.path.join(os.path.abspath(os.path.expanduser(directory or "~")), n)
         shutil.copyfile(_cur_path(p), dest)
-        return {"file": _fwd(dest)}
+        return {"file": dest}
     if action == "export":
         return _export(doc, kind, pages, name, directory)
     if action == "rotate_pages":
@@ -1703,12 +1678,9 @@ def main(
             raise ValueError(f"no such path: {p}")
         if not os.path.isdir(p):
             p = os.path.dirname(p)
-        if os.name == "nt":
-            os.startfile(p)
-        else:
-            import subprocess
-            import sys
-            subprocess.Popen(["open" if sys.platform == "darwin" else "xdg-open", p])
+        import subprocess
+        import sys
+        subprocess.Popen(["open" if sys.platform == "darwin" else "xdg-open", p])
         return {"ok": True}
     if action == "inspect":
         return _inspect(doc, pages)

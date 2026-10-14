@@ -56,9 +56,8 @@ def api_config(
         # suffix so generic templates (code, duckdb, tree) need to know
         # nothing about the call log.
         #
-        # Canonicalized on the way out: `abspath` is backslashed on Windows
-        # while every path the runtime holds is forward-slashed, so the
-        # prefix test in `isCallLog` would never fire there.
+        # Canonicalized on the way out, through the one seam every path the
+        # runtime holds goes through, so the prefix test in `isCallLog` fires.
         "calls_dir": canonical_fs_path(os.path.abspath(shell_calls.store_dir())),
         "calls_suffix": shell_calls.SUFFIX,
         # Where shell code may write SCRATCH files — bytes the app made and can
@@ -71,7 +70,7 @@ def api_config(
         # renders — is a file nobody can tell from a generated one. Path only;
         # whoever writes there creates it, exactly as `fused_dir` above is a
         # path and not a mkdir on this read. Canonicalized for `calls_dir`'s
-        # reason: every path above the OS in this app is forward-slashed.
+        # reason.
         "cache_dir": canonical_fs_path(
             os.path.abspath(os.path.join(shell_home_dir(), "cache"))),
         # Whether POST /api/fs/pick-folder can raise a REAL OS folder dialog
@@ -87,9 +86,7 @@ def api_config(
     # Self-update state (update/mac.py, update/linux.py) — present only when
     # this platform started an in-app manager (mac, or Linux running from an
     # AppImage); the shell shows the sidebar badge / install panel off this.
-    # Rides this endpoint so the ServerStatusBanner poll carries it. Windows
-    # has no in-app manager (its updater lives entirely in the supervisor),
-    # so this stays absent there.
+    # Rides this endpoint so the ServerStatusBanner poll carries it.
     from fused_render import update as self_update
 
     if (update_manager := self_update.manager()) is not None:

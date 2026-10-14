@@ -9,9 +9,8 @@
 // the whole reason this exists in the shell.
 //
 // TWO BACKENDS, ONE CONTRACT. macOS records natively: `POST
-// /api/capture/start` and the OS writes the file. Windows and Linux record
-// through the BROWSER — `GET /api/capture` answers `sources.client: true` —
-// where a MediaRecorder in this window streams timeslices up a WebSocket and
+// /api/capture/start` and the OS writes the file. Linux records through the
+// BROWSER — `GET /api/capture` answers `sources.client: true` — where a MediaRecorder in this window streams timeslices up a WebSocket and
 // the server writes them (R:5004-5014). A CALLER NEVER LEARNS WHICH IT GOT:
 // both resolve with the same handle, and the two wire-only fields that steer
 // it (`transport`, `streamToken`) never leave this module (CP-8, R:5012-5014).
@@ -113,10 +112,9 @@ export interface AudioOptions {
   /** "mic" (default), "system" or "both". macOS records system audio with a
    *  Core Audio process tap (14.2+) or ScreenCaptureKit (13.0-14.1); Linux
    *  records it natively over PipeWire/pulse when that session is reachable,
-   *  and refuses it with a sentence saying so when it is not. Windows has
-   *  neither and refuses it here with the sentence that says to record the
-   *  screen with `audio: "system"` instead. `stop()` may carry a `warning`
-   *  when nothing was heard on the system side (R:5404-5411). */
+   *  and refuses it with a sentence saying so when it is not. `stop()` may
+   *  carry a `warning` when nothing was heard on the system side
+   *  (R:5404-5411). */
   source?: string;
   /** Forwarded, not dropped, so the refusal is the SERVER's one good sentence
    *  rather than two (R:5408-5411). */
@@ -700,17 +698,11 @@ export async function mergeSources(
       "this app can store. Chrome, Edge or a recent Firefox can";
   if (!audioNative) {
     merged.audio = { available: ok, granted: ok, reason: why };
-    // `systemAudio` is only ever NARROWED by this browser, never widened:
-    // Windows answers `true` unconditionally server-side (the screen share's
-    // "share audio" checkbox works there whenever the browser can record at
-    // all) and this is the only place that can catch a browser with no usable
-    // MediaRecorder. Linux's own `false` — no PipeWire/pulse session reachable,
-    // with no browser equivalent to fall back to — must survive untouched;
-    // this window's unrelated screen-recording capability has no business
-    // overriding that honest unavailability with a `true`.
-    if (merged.systemAudio && merged.systemAudio.available) {
-      merged.systemAudio = { available: ok, reason: why };
-    }
+    // `systemAudio` is left exactly as the server answered it: Linux's own
+    // `false` — no PipeWire/pulse session reachable, with no browser
+    // equivalent to fall back to — must survive untouched; this window's
+    // unrelated screen-recording capability has no business overriding that
+    // honest unavailability with a `true`.
   }
   if (ok && !audioNative) {
     // A native Linux recording has no microphone to choose — `device` is

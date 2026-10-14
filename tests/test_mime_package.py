@@ -1,7 +1,8 @@
 """The runtime MIME generator (fused_render._mime_package) and the packaging-time
 generator (scripts/file_associations.py) derive the same artifacts from the same
-winopen data. Assert they are byte-identical so the AppImage build and the Linux
-self-integration can never drift — a stale runtime XML would register a
+association data (fused_render.file_associations). Assert they are
+byte-identical so the AppImage build and the Linux self-integration can never
+drift — a stale runtime XML would register a
 different "Open with" association set than the one the build staged.
 """
 import importlib.util

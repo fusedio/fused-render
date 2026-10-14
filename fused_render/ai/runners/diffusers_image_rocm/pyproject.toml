@@ -7,7 +7,7 @@
 #
 # AMD cards on Linux. The wheels live only on
 # `download.pytorch.org/whl/rocm7.1`; there is no ROCm torch on PyPI, and none for
-# macOS or Windows anywhere, so this variant is a Linux one by construction and the
+# macOS anywhere, so this variant is a Linux one by construction and the
 # registry offers it there.
 #
 # **`triton-rocm` is declared, and deleting it breaks the install.**
@@ -27,7 +27,7 @@
 # (`tests/test_ai_runtime.py`).
 #
 # The `sys_platform == 'linux'` marker is not decoration. A universal resolution
-# considers macOS and Windows too, and there is no `triton-rocm` wheel for either;
+# considers macOS too, and there is no `triton-rocm` wheel for it;
 # without the marker uv has to satisfy a requirement that cannot be satisfied on
 # platforms this variant was never for.
 #

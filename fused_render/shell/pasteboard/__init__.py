@@ -14,10 +14,9 @@ The public surface is deliberately tiny and carries no platform vocabulary:
     fingerprint(paths)  -> str
 
 `token` is a content fingerprint of the ordered path list, *not* a native
-change counter: macOS has `changeCount` and Windows has
-`GetClipboardSequenceNumber`, but Linux has no analog, so hashing the paths is
-the only thing all three platforms can agree on — and it is testable with no
-OS involved. The frontend tracks it as "last seen" so an untouched clipboard
+change counter: macOS has `changeCount`, but Linux has no analog, so hashing
+the paths is the only thing both platforms can agree on — and it is testable
+with no OS involved. The frontend tracks it as "last seen" so an untouched clipboard
 never clobbers a pending in-app cut.
 
 Cut is deliberately not modelled. No platform exposes a reliable cut-vs-copy
@@ -80,8 +79,6 @@ def _load_backend() -> ModuleType | None:
     try:
         if sys.platform == "darwin":
             from fused_render.shell.pasteboard import _darwin as mod  # noqa: F401
-        elif sys.platform == "win32":
-            from fused_render.shell.pasteboard import _win32 as mod  # noqa: F401
         elif sys.platform.startswith("linux"):
             from fused_render.shell.pasteboard import _linux as mod  # noqa: F401
     except Exception:
@@ -112,19 +109,10 @@ def _validate(paths: list[str]) -> list[str]:
         # Absolute-only, same rule the fs mutation routes enforce: a relative
         # path would resolve against the *server's* cwd, which is meaningless
         # to both the file manager and the user.
-        if not _is_abs(p):
+        if not os.path.isabs(p):
             raise ValueError(f"clipboard paths must be absolute: {p!r}")
         out.append(p)
     return out
-
-
-def _is_abs(p: str) -> bool:
-    # Not os.path.isabs: the backends deal in the *other* platforms' paths only
-    # in their own tests, but a POSIX server should still call "/x" absolute
-    # and a Windows one "C:/x" — os.path.isabs on the running platform is
-    # exactly that rule, plus we accept a leading slash everywhere so a
-    # UNC/posix path from a backend is never silently dropped on Windows.
-    return p.startswith("/") or p.startswith("\\") or os.path.isabs(p)
 
 
 def read_files() -> tuple[list[str], str, bool]:
@@ -142,10 +130,9 @@ def read_files() -> tuple[list[str], str, bool]:
             raw = backend.read_files()
     except Exception:
         # A clipboard read is never important enough to fail a request: a
-        # transient "another app owns the clipboard" error on Windows or a
-        # dead wl-paste both just mean "we don't know", i.e. unsupported.
+        # dead wl-paste just means "we don't know", i.e. unsupported.
         return [], "", False
-    paths = [p for p in (raw or []) if isinstance(p, str) and p and _is_abs(p)]
+    paths = [p for p in (raw or []) if isinstance(p, str) and p and os.path.isabs(p)]
     return paths, fingerprint(paths), True
 
 

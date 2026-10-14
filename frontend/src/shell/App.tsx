@@ -80,7 +80,7 @@ import { TASKS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
 import { TaskStatusNotifier } from "@shell/useTaskStatusNotify";
 import { ModelConflictNotifier } from "@shell/useModelConflictNotify";
 import ShortcutsOverlay from "@platform/ui/ShortcutsOverlay";
-import { isMod, isWindows } from "@platform/lib/platform";
+import { isMod } from "@platform/lib/platform";
 import { isOverlayOpen } from "@platform/lib/ui-overlay";
 import { handleSlashKey } from "@platform/lib/chat-focus";
 import { reconcileOsClipboard } from "@apps/explorer/lib/os-clipboard";
@@ -138,7 +138,7 @@ const NO_PAGE_PARAMS: readonly string[] = [];
 let urlScope: TasksScope | undefined;
 function tasksScopeFromUrl(): TasksScope | undefined {
   const raw = new URLSearchParams(location.search).get("project");
-  const project = raw ? raw.replace(/\\/g, "/").replace(/(.)\/+$/, "$1") : "";
+  const project = raw ? raw.replace(/(.)\/+$/, "$1") : "";
   if (!project) return undefined;
   if (urlScope?.project !== project) urlScope = { project, ownFrame: true };
   return urlScope;
@@ -1069,13 +1069,12 @@ export default function App({ config }: { config: Config }) {
       </>
     );
   } else {
-    // Windows expanduser returns backslashes; fsPath is always forward-slash.
     main = (
       <StatView
         key={epoch + ":" + fsPath}
         fsPath={fsPath}
         epoch={epoch}
-        home={config.home.replace(/\\/g, "/")}
+        home={config.home}
       />
     );
   }
@@ -1159,15 +1158,10 @@ export default function App({ config }: { config: Config }) {
             `fsPathFromLocation()`) is the terminal's cwd — the folder
             currently shown in the explorer, per PLAN's "How we'll know it
             works". */}
-        {/* Both gated on `!isWindows` too (platform/lib/platform.ts): the
-            terminal's server routes 501 there regardless
-            (fused_render/server/routers/terminal.py), so the chip/drawer/
-            shortcut (bound inside TerminalDrawer, only while it is mounted)
-            are hidden rather than shown as a control that can only fail. */}
-        {!IS_EMBED && !isWindows && <TerminalDrawer cwd={fsPath} />}
+        {!IS_EMBED && <TerminalDrawer cwd={fsPath} />}
         {!IS_EMBED && (
           <StatusBar
-            terminalDock={!isWindows && <TerminalDock />}
+            terminalDock={<TerminalDock />}
             updates={<UpdatesDock version={config.version} hasUpdater={config.update != null} />}
             system={monitorOn === true && <SystemDock />}
             models={<ModelsDock />}

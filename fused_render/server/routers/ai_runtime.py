@@ -2256,9 +2256,8 @@ def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=No
         "jobId": job,
         # Canonical, like every other path this API hands back (`previewPath`
         # below, and `/api/ai/transcribe`'s own `path`) — this goes back to a
-        # page that will put it in a `/api/fs/raw` URL, and a Windows path that
-        # reached it backslashed would not match what the shell stored for the
-        # same file.
+        # page that will put it in a `/api/fs/raw` URL, and must match what the
+        # shell stored for the same file.
         "path": canonical_fs_path(path),
         # Canonical for the same reason. It is a promise about a PATH, not
         # about a file: a model with no fitted projection writes nothing there,
@@ -2800,15 +2799,14 @@ def api_ai_transcribe(body: dict = Body(...), x_fused: str | None = Header(defau
     return {
         "jobId": job,
         # Canonical, because these go back to a page that will put them in a
-        # /api/fs/raw URL — a Windows path that reached it backslashed would not
-        # match what the shell stored for the same file.
+        # /api/fs/raw URL and must match what the shell stored for the same
+        # file.
         "path": canonical_fs_path(source),
         "output": canonical_fs_path(request["out"]),
         "outputText": canonical_fs_path(request["outText"]),
         # The progressive transcript, canonicalised like its two siblings —
         # `runtime.js` tails it through `/api/fs/raw`, so it is the same URL
-        # with the same Windows hazard, and a third path that skipped this
-        # would be the one that broke there.
+        # with the same requirement.
         "outputPartial": canonical_fs_path(request["outPartial"]),
         "model": model,
         "provider": "local",

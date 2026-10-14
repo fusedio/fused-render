@@ -614,7 +614,7 @@ def _drain_stderr(sess: Turn, proc) -> None:
 def _signal(proc, sig) -> None:
     try:
         os.killpg(proc.pid, sig)
-    except (AttributeError, ProcessLookupError, PermissionError, OSError):  # no killpg on Windows
+    except (AttributeError, OSError):
         try:
             proc.send_signal(sig)
         except (ProcessLookupError, OSError):
@@ -629,7 +629,7 @@ def _terminate(proc, grace: float = 1.5) -> None:
         proc.stdin.close()
     except (OSError, ValueError, AttributeError):
         pass
-    for sig, wait in ((None, grace), (signal.SIGTERM, 2.0), (getattr(signal, "SIGKILL", signal.SIGTERM), 2.0)):
+    for sig, wait in ((None, grace), (signal.SIGTERM, 2.0), (signal.SIGKILL, 2.0)):
         if sig is not None:
             _signal(proc, sig)
         try:

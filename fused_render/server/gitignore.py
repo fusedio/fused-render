@@ -1,14 +1,11 @@
 import logging
 import os
+import select
 import subprocess
-import sys
 import tempfile
 import threading
 import time
 from collections import OrderedDict
-
-if sys.platform != "win32":
-    import select
 
 logger = logging.getLogger(__name__)
 
@@ -57,11 +54,7 @@ def _spawn_kwargs() -> dict:
     reintroduces the fork. Every caller passes `-C <path>` to git instead, which
     is stricter anyway — it cannot be changed by this process's cwd.
     """
-    return {
-        "close_fds": False,
-        "creationflags": (subprocess.CREATE_NO_WINDOW
-                          if sys.platform == "win32" else 0),
-    }
+    return {"close_fds": False}
 
 
 # Every git call site here fails CLOSED, which is right — but "git said no" and
@@ -275,9 +268,8 @@ class _IgnoreOracle:
     up: every read that comes back with bytes pushes a rolling deadline
     forward by `DEADLINE_S`, so `ignored()` gives up only when NOTHING has
     arrived for that long, marks the oracle broken, and returns the same
-    "nothing ignored" rather than hanging the request thread forever. POSIX
-    only (`select` on a pipe) — see `_read_chunk` for why Windows is left
-    unbounded, same as before this existed.
+    "nothing ignored" rather than hanging the request thread forever (via
+    `select` on the pipe — see `_read_chunk`).
     """
 
     # Queries per write/read cycle: bounded so git's stdout can't fill the
@@ -373,19 +365,9 @@ class _IgnoreOracle:
         that many bytes and is now empty, which brings back the exact
         unbounded wait this exists to remove.)
 
-        POSIX only: `select.select` is the portable way to put a timeout on a
-        blocking pipe read, but it does not work on pipes on Windows at all
-        (only sockets). This repo ships on Windows (`_spawn_kwargs`'s
-        `CREATE_NO_WINDOW`), so on that platform this falls back to the old,
-        unbounded `read1` (`os.read` on the fd would work there too, but
-        without `select` there is nothing to bound it with) — a stalled git
-        still hangs the request thread there, same as before this existed.
-        Fixing that would need a reader thread or overlapped I/O, which is a
-        bigger change than this bug fix; POSIX is where the reported hang
-        actually happened.
+        `select.select` is the portable way to put a timeout on a blocking
+        pipe read.
         """
-        if sys.platform == "win32":
-            return self.proc.stdout.read1(self._READ_SIZE)
         remaining = self._deadline - time.monotonic()
         if remaining <= 0 or not select.select(
                 [self.proc.stdout], [], [], remaining)[0]:
@@ -560,7 +542,7 @@ def _repo_toplevel_uncached(path) -> "tuple[bool, str | None]":
 def _canonical(path: str) -> str:
     """A path in the one form two spellings of the same location share:
     symlinks resolved (macOS's /var -> /private/var, a symlinked checkout) and
-    case folded where the platform folds it (HFS+/APFS, NTFS)."""
+    case folded where the platform folds it (HFS+/APFS)."""
     return os.path.normcase(os.path.realpath(path))
 
 

@@ -51,24 +51,15 @@
 
   var document = window.document;
 
-  /* Windows paths are rooted at a drive letter ("C:/…"), not at "/" — the same
-   * rule the shell's own path helpers follow (frontend/src/lib/fs-actions.ts).
-   * The canonical drive root is "C:/": a bare "C:" is cwd-relative to the
-   * server's os.stat and must never be sent as a directory path. */
-  var DRIVE_RE = /^[A-Za-z]:/;
-
   function isRoot(p) {
-    return p === "/" || /^[A-Za-z]:\/?$/.test(p);
+    return p === "/";
   }
 
   /* One level up. The root is its own parent, which is what stops the Up
    * button from walking off the top of the filesystem. */
   function parent(p) {
     var norm = String(p || "").replace(/\/+$/, "");
-    var drive = DRIVE_RE.test(norm) ? norm.slice(0, 2) : null;
-    if (drive && norm.length === drive.length) return drive + "/";
     var i = norm.lastIndexOf("/");
-    if (drive) return i === drive.length ? drive + "/" : norm.slice(0, i);
     return i <= 0 ? "/" : norm.slice(0, i);
   }
 
@@ -79,8 +70,7 @@
 
   /* The last segment of a path — the label a breadcrumb or a shortcut button
    * shows. A root has no last segment, so it answers "" and the caller
-   * substitutes the path itself; "C:" (what stripping the trailing slash would
-   * leave) is not a thing a user should ever be shown. */
+   * substitutes the path itself. */
   function basename(p) {
     if (isRoot(p)) return "";
     var norm = String(p || "").replace(/\/+$/, "");

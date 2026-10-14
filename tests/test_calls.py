@@ -353,9 +353,6 @@ def test_an_attributed_run_is_logged_with_its_detail(app_client):
     assert len(records) == 1
     got = records[0]
     assert got["call_id"] == "known-id"          # the client's id is honoured
-    # canonical_fs_path(...): the store always holds the shell's forward-slash
-    # canonical form (calls.py's _canonicalize_paths), so on Windows a raw
-    # str(path) (backslashed) never equals it — see _view_url_codec.py.
     assert got["page"] == canonical_fs_path(str(d / "p.html"))
     assert got["route"] == "/api/run"
     assert got["outcome"] == "ok"
@@ -1273,27 +1270,6 @@ def test_config_publishes_the_store_so_the_runtime_can_skip_it(app_client):
     assert cfg["calls_suffix"] == calls.SUFFIX
 
 
-def test_the_published_store_path_is_canonical():
-    """`abspath` is backslashed on Windows; every path the runtime holds is
-    forward-slashed. Handing the raw form over would make `isCallLog`'s prefix
-    test dead code there — a call-log file whose name was changed would be
-    watched, and viewing it appends to the store, which is the reload loop the
-    exclusion exists to prevent. (The suffix half still covers every file the
-    writer names itself, which is why this is quiet rather than obvious.)
-
-    Asserted against the CODEC rather than against a hardcoded expectation, so
-    this says "canonicalized" on every platform instead of "unchanged" on POSIX.
-    """
-    from fused_render.server.routers import config as _server_config
-
-    src = open(_server_config.__file__, encoding="utf-8").read()
-    line = next(ln for ln in src.splitlines() if '"calls_dir"' in ln)
-    assert "canonical_fs_path(" in line, (
-        "the published path must go through the codec — os.path.abspath alone "
-        "is the Windows-backslash form the runtime can never match"
-    )
-
-
 def test_a_normal_page_is_still_logged_while_the_log_is_open(app_client):
     """The exclusion must be about the TARGET, not a blanket mute — real activity
     still has to be recorded while you sit watching the log."""
@@ -1570,13 +1546,8 @@ def cli_page(raw):
     """The absolute, canonical form cli.py's own `--page` filter resolves a raw
     argument to (`canonical_fs_path(os.path.abspath(os.path.expanduser(...)))`).
 
-    A record's `page` field must be built through this SAME transform to stay
-    comparable with the filter the CLI computes from the identical raw string —
-    on POSIX a "/..."-rooted literal is already absolute, so this is a no-op,
-    but on Windows `os.path.abspath` prepends the CWD's drive to a driveless
-    "/..." path (there is no such thing as a real Windows absolute path
-    without one), so a fixture that skips this and hardcodes the bare literal
-    into a record silently stops matching the filter the CLI actually applies.
+    A record's `page` field is built through this SAME transform to stay
+    comparable with the filter the CLI computes from the identical raw string.
     """
     return canonical_fs_path(os.path.abspath(os.path.expanduser(raw)))
 
@@ -1665,16 +1636,6 @@ def test_a_page_satisfied_by_today_never_opens_an_older_day(store, monkeypatch):
     assert os.path.basename(old) not in opened, "yesterday must stay unopened"
 
 
-@pytest.mark.skipif(
-    sys.platform == "win32",
-    reason="fds() reads /proc/self/fd (Linux procfs) purely as a test-side probe "
-           "of how many file handles this process holds open — it names no app "
-           "behavior, just counts descriptors the way `lsof`/`ls /proc/self/fd` "
-           "would. Windows has no /proc: there is no bare-stdlib equivalent (the "
-           "nearest real one, enumerating HANDLEs via a Windows API, needs a new "
-           "dependency this repo doesn't otherwise carry), so the probe itself — "
-           "not the merge-closes-its-files guarantee it's checking — is Linux-only.",
-)
 def test_an_abandoned_merge_closes_the_day_s_files(store):
     """A full page or an exhausted budget abandons the walk mid-merge; the day's
     other file handles must not be left to the garbage collector."""
@@ -2220,55 +2181,6 @@ def test_the_store_is_the_logs_dir_under_the_shell_home(tmp_path, monkeypatch):
     assert calls.store_dir() == os.path.join(str(tmp_path), "logs")
 
 
-# Windows is simulated with `ntpath` and with literal drive-shaped strings
-# rather than skipped behind a sys.platform guard: the bug is a disagreement
-# between two *string* forms of a path, so it reproduces and stays fixed on
-# any host. A platform guard here would mean the regression only ever ran on
-# the one CI leg that does not exist for this suite.
-
-WIN_PAGE = "C:/Users/foo/app/mine.html"      # X-Fused-Page: shell canonical
-WIN_PY = "C:/Users/foo/app/sine.py"          # the same, for the .py target
-
-
-def _run_resolved(html: str, py: str) -> str:
-    """What /api/run computes for a relative `py` (server.py), on Windows."""
-    import ntpath
-    return ntpath.normpath(ntpath.join(ntpath.dirname(html), py))
-
-
-def test_run_resolved_target_is_stored_canonically(store, monkeypatch):
-    """The producer this whole finding turns on.
-
-    /api/run builds its target with os.path.normpath, which on Windows answers
-    with backslashes, while every other field arrives forward-slashed from a
-    header. record() is the single write point, so it is where the store is
-    made to hold one form.
-    """
-    backslashed = _run_resolved(WIN_PAGE, "sine.py")
-    assert "\\" in backslashed, "precondition: normpath gives the OS-native form"
-
-    landed = []
-    monkeypatch.setattr(calls, "_ensure_writer", lambda: _CollectingQueue(landed))
-    calls.record(rec(page=WIN_PAGE, entrypoint=backslashed))
-
-    assert landed[0]["entrypoint"] == WIN_PY
-    assert "\\" not in landed[0]["entrypoint"]
-
-
-def test_every_path_field_is_canonicalized_on_write(store, monkeypatch):
-    """All three fields _matches compares, not just the one that was reported."""
-    landed = []
-    monkeypatch.setattr(calls, "_ensure_writer", lambda: _CollectingQueue(landed))
-    calls.record(rec(page="C:\\Users\\foo\\app\\mine.html",
-                     target_file="C:\\Users\\foo\\data\\t.parquet",
-                     entrypoint="C:\\Users\\foo\\app\\sine.py"))
-
-    got = landed[0]
-    assert got["page"] == WIN_PAGE
-    assert got["target_file"] == "C:/Users/foo/data/t.parquet"
-    assert got["entrypoint"] == WIN_PY
-
-
 def test_a_posix_backslash_filename_is_not_mangled(store, monkeypatch):
     """The negative case that forbids an unconditional replace.
 
@@ -2285,76 +2197,9 @@ def test_a_posix_backslash_filename_is_not_mangled(store, monkeypatch):
     assert calls._matches(landed[0], page=odd) is True
 
 
-def log_a_windows_run(call_id="win"):
-    """Log one record through the REAL write path, shaped the way /api/run
-    shapes it on Windows: a canonical page from the header, a backslashed
-    target from normpath.
-
-    Deliberately `record()` + `drain()` rather than the `write_records`
-    shortcut — the shortcut appends straight to disk, which would put the
-    canonicalization under test on the wrong side of the seam and let these
-    read-side assertions pass on the broken parent commit.
-    """
-    calls.record(rec(call_id=call_id, page=WIN_PAGE,
-                     entrypoint=_run_resolved(WIN_PAGE, "sine.py"),
-                     entrypoint_name="sine.py"))
-    assert drain(), "the writer did not land the record"
-
-
-def test_windows_page_filter_finds_its_records(store):
-    """The user-visible failure: on Windows `calls --page` matched nothing at
-    all — not even the page the caller was standing on — because the CLI's
-    abspath answered with backslashes and the store held forward slashes."""
-    import ntpath
-
-    from fused_render._view_url_codec import canonical_fs_path
-
-    log_a_windows_run()
-
-    # Exactly the expression cli.py computes, with ntpath standing in for
-    # Windows' os.path.
-    cli_filter = canonical_fs_path(ntpath.abspath(WIN_PAGE))
-    assert cli_filter == WIN_PAGE
-
-    got = calls.query(limit=10, page=cli_filter)["records"]
-    assert [r["call_id"] for r in got] == ["win"]
-
-    # …and the raw abspath, which is what shipped, finds nothing. Asserted so
-    # the regression is pinned to the cause and not just to the symptom.
-    assert calls.query(limit=10, page=ntpath.abspath(WIN_PAGE))["records"] == []
-
-
-def test_windows_calls_view_on_a_py_finds_its_runs(store):
-    """A `.py` is never a `page`; the Calls view matches it via `entrypoint`.
-    With the target stored backslashed, the view on a data file that the gate
-    had just confirmed has history rendered empty."""
-    log_a_windows_run("run")
-
-    got = calls.query(limit=10, page=WIN_PY)["records"]
-    assert [r["call_id"] for r in got] == ["run"]
-
-
-def test_windows_entrypoint_substring_filter_matches(store):
-    """`--entrypoint` is a substring filter: a full drive path is canonicalized
-    to match the store, and a bare fragment still works untouched."""
-    from fused_render._view_url_codec import canonical_fs_path
-
-    log_a_windows_run("run")
-
-    full = canonical_fs_path("C:\\Users\\foo\\app\\sine.py")
-    assert [r["call_id"] for r in calls.query(limit=10, entrypoint=full)["records"]] == ["run"]
-    assert [r["call_id"] for r in calls.query(limit=10, entrypoint="sine.py")["records"]] == ["run"]
-
-
 def test_posix_page_filter_still_works_through_the_cli(store, monkeypatch, capsys):
-    """Guard on the ordinary path: the canonicalization must be a no-op here.
-
-    "Ordinary" means what a real caller's absolute path resolves to on ITS
-    platform — a no-op on POSIX, but on Windows os.path.abspath prepends the
-    CWD's drive to a driveless "/..." literal (no real Windows absolute path
-    lacks one), so the record has to be built through cli_page() too or it
-    silently stops matching what the CLI's own --page filter computes.
-    """
+    """Guard on the ordinary path: the CLI's --page filter finds a record
+    built through the same transform (cli_page())."""
     write_records([calls._prune(rec(call_id="posix", page=cli_page("/app/p.html"),
                                     entrypoint="/app/d.py", entrypoint_name="d.py"))])
     out = run_cli(monkeypatch, capsys, "--page", "/app/p.html", "--since", "all")
@@ -2441,7 +2286,7 @@ def test_a_record_with_no_page_goes_to_the_unattributed_partition(store):
 
 def test_partition_name_is_bounded_and_filesystem_safe(store):
     """A hostile or merely long folder name must not leak into the layout: the
-    slug is sanitised and capped (Windows MAX_PATH is why the cap exists), and
+    slug is sanitised and capped, and
     the hash carries the identity when the slug contributes nothing."""
     ugly = "/x/" + "Wei rd&Name!" * 8
     name = calls.partition_name(ugly)

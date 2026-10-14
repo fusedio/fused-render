@@ -1,8 +1,6 @@
 from collections import deque
 import os
 import re
-import stat as stat_mod
-import sys
 
 from fused_render.index.ignore import (
     LEAF_DIR_NAMES,
@@ -108,22 +106,6 @@ def junk_path(path: str) -> bool:
     return False
 
 
-def _win_protected(entry: "os.DirEntry") -> bool:
-    """True for a Windows hidden+system entry — the "protected operating system
-    files" Explorer hides by default. Checked with follow_symlinks=False so a
-    reparse junction is judged by its own attributes (the deny-ACL
-    Documents\\My Videos / My Music / My Pictures compat junctions are exactly
-    this), not the target it points at. Always False off Windows."""
-    if sys.platform != "win32":
-        return False
-    try:
-        attrs = entry.stat(follow_symlinks=False).st_file_attributes
-    except OSError:
-        return False
-    return bool(attrs & stat_mod.FILE_ATTRIBUTE_HIDDEN
-                and attrs & stat_mod.FILE_ATTRIBUTE_SYSTEM)
-
-
 def _sort_entries(entries):
     """Sort /api/fs/list items in place and return them: dirs first, then
     case-insensitive by name with the exact name as a deterministic tiebreak so
@@ -186,8 +168,6 @@ def _walk_bfs(path, include_hidden, max_entries=None, max_depth=None):
             name = child.name
             if not include_hidden and name.startswith("."):
                 continue
-            if _win_protected(child):
-                continue  # hide protected OS junctions, as /api/fs/list does
             try:
                 is_dir = child.is_dir()
             except OSError:

@@ -51,44 +51,21 @@ def _tree(tmp_path):
 
 def _point_home_at(monkeypatch, path):
     """Make `os.path.expanduser("~")` — and any `~/...`-prefixed path —
-    answer under `path`, on every platform.
+    answer under `path`.
 
-    `monkeypatch.setenv("HOME", ...)` alone only works on POSIX: Windows'
-    `ntpath.expanduser` reads `USERPROFILE` (falling back to
-    `HOMEDRIVE`+`HOMEPATH`) and never consults `HOME` at all, so a test that
-    only sets `HOME` silently keeps pointing `warm_root()`/`config.home` at
-    the real machine's profile instead of the tree it built.
-
-    D882 (index-search-wedge FIX round, CI finding 2): the previous version
-    of this helper only special-cased the literal string `"~"` and fell
-    through to the REAL `os.path.expanduser` for anything else, including a
-    compound path like `"~/.fused-render"` — exactly what
-    `ignore.default_home_dirs()` passes it directly (not
-    `os.path.join(expanduser("~"), ...)`). On POSIX that fallthrough happened
-    to work anyway, because `posixpath.expanduser` re-reads `os.environ["HOME"]`
-    at call time regardless of which function object is bound to
-    `os.path.expanduser` — but on Windows `ntpath.expanduser` reads
-    `USERPROFILE`/`HOMEDRIVE`+`HOMEPATH`, which this helper never set, so the
-    real function silently resolved against the CI runner's actual profile
-    instead of the test's `path`. That made `MountGuard`'s guarded-roots list
-    (built via `default_home_dirs()`) not include the directory a test
-    expected it to guard, purely as an artifact of this test shim — not of
-    `MountGuard`/`_walk_from` logic, which never runs on Windows-only code
-    (see `test_rank_reason_is_mount_for_a_typed_path_the_guarded_walk_stopped_short_of`'s
-    failure on the Windows CI lane). Fixed by handling every `~`-prefixed
-    path directly, with a plain string join, instead of delegating compound
-    forms to the real (platform-varying) implementation; `USERPROFILE` is
-    also set so any OTHER code path that calls the real `expanduser` without
-    going through this monkeypatch (there is none today, but nothing
-    guarantees that forever) still lands on `path` on Windows too."""
+    D882 (index-search-wedge FIX round): every `~`-prefixed path is handled
+    directly, with a plain string join, including a compound path like
+    `"~/.fused-render"` — exactly what `ignore.default_home_dirs()` passes it
+    directly (not `os.path.join(expanduser("~"), ...)`) — so `MountGuard`'s
+    guarded-roots list (built via `default_home_dirs()`) is the directory a
+    test expects it to guard."""
     real_expanduser = os.path.expanduser
     monkeypatch.setenv("HOME", str(path))
-    monkeypatch.setenv("USERPROFILE", str(path))
 
     def _expanduser(p):
         if p == "~":
             return str(path)
-        if p.startswith("~/") or p.startswith("~\\"):
+        if p.startswith("~/"):
             return os.path.join(str(path), p[2:])
         return real_expanduser(p)
 
@@ -1368,14 +1345,12 @@ def test_scan_roots_are_canonical_so_store_lookups_hit(home, tmp_path, monkeypat
     debounce entry and freshness record under runner.canonical_root(root), and
     scan_roots' output is compared against those keys (the stale-fingerprint
     rescan, routers/git_repos._usable). A raw configured spelling misses —
-    `~/proj` is not `/home/me/proj`, and on Windows `expanduser("~")` gives
-    `C:\\Users\\me` against a stored `C:/Users/me`, so every lookup misses there
-    and the index reads as permanently unreconciled.
+    `~/proj` is not `/home/me/proj`, so every lookup misses and the index
+    reads as permanently unreconciled.
 
     Asserted as "identical to what runner.start would use", not against a
     hand-written string: the whole bug is two spellings drifting, so the test has
-    to pin them together rather than restate one of them (and a separator
-    assertion would only ever fire on Windows, where this suite does not run)."""
+    to pin them together rather than restate one of them."""
     real_expanduser = os.path.expanduser
     fake_home = str(tmp_path / "userhome")
 
@@ -1391,10 +1366,9 @@ def test_scan_roots_are_canonical_so_store_lookups_hit(home, tmp_path, monkeypat
     cfg.roots = ["~/proj", str(tmp_path / "other") + "/"]
     assert index_router.scan_roots(cfg) == [
         runner.canonical_root(r) for r in cfg.roots]
-    # ~ really was expanded, so this is not a tautology over two no-ops. Still
-    # wrapped in canonical_root: the concatenation above (`fake_home + p[1:]`)
-    # is native-separator on Windows, and canonical_root is what scan_roots
-    # itself would produce from that same expansion.
+    # ~ really was expanded, so this is not a tautology over two no-ops.
+    # canonical_root is what scan_roots itself would produce from that same
+    # expansion.
     assert index_router.scan_roots(cfg)[0] == runner.canonical_root(
         str(tmp_path / "userhome" / "proj"))
     # and the default root gets the same treatment
@@ -2025,8 +1999,7 @@ def test_a_root_of_slash_survives_the_config_write(home, tmp_path):
     the empty string and silently drops the root."""
     body = _client(tmp_path).post("/api/index/config", json={"roots": ["/"]},
                                   headers={"X-Fused": "1"}).json()
-    # canonical_root("/") is "/" on POSIX but the drive root ("D:/") on
-    # Windows — still a bare root either way, just not the literal "/".
+    # canonical_root("/") is "/".
     assert body["roots"] == [runner.canonical_root("/")]
 
 
@@ -2622,8 +2595,8 @@ def _write_dirs_index(cfg, dirs):
 
     Keys go through `canonical_root`: `freshness.indexed_mtime_ns` (and
     `enclosing_root`) look a directory up by their OWN `norm(abspath(...))`
-    of it, so a row filed under a raw `str(Path)` literal — native-separator
-    on Windows — would silently miss every such lookup."""
+    of it, so a row filed under any other spelling would silently miss every
+    such lookup."""
     import pyarrow as pa
     import pyarrow.parquet as pq
 

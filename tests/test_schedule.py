@@ -149,7 +149,6 @@ def test_a_new_folder_must_say_where_it_goes(target, monkeypatch):
     schedule.create(str(target / "abs-ok"), "hi", _in(600), create_target=True)
     assert (target / "abs-ok").is_dir()
     monkeypatch.setenv("HOME", str(target))
-    monkeypatch.setenv("USERPROFILE", str(target))
     schedule.create("~/tilde-ok", "hi", _in(600), create_target=True)
     assert (target / "tilde-ok").is_dir()
     schedule.create("./dot-ok", "hi", _in(600), create_target=True)

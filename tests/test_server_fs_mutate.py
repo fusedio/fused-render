@@ -7,13 +7,11 @@ path on disk and the wire error contract shared with _fs_write:
   400 relative/invalid path, 403 readonly ("readonly"), 404 missing source,
   409 conflict ("conflict"). All four also carry the X-Fused guard.
 """
-import ctypes
 import datetime
 import errno
 import json
 import os
 import stat
-import sys
 import urllib.parse
 from pathlib import Path
 
@@ -29,23 +27,8 @@ from fused_render.server.fs_mutate import _fs_trash_move as TRASH_MOVE
 
 # os.access always says yes for root, so the chmod-based gates can't trip.
 skip_root = pytest.mark.skipif(
-    hasattr(os, "geteuid") and os.geteuid() == 0,
+    os.geteuid() == 0,
     reason="read-only bits are ignored when running as root")
-
-# Windows has no POSIX permission-bit model. os.chmod()/os.stat().st_mode there
-# only ever reflect the read-only DACL flag: a file/dir is either "read-only"
-# (reported back as a fixed mode around 0o444/0o555) or "normal" (a fixed mode
-# around 0o666/0o777) — chmod(0o600) or mkdir(mode=0o700) sets or clears that
-# one bit and nothing else, so a subsequent stat can never read back the exact
-# bits this app asked for. A test asserting an exact numeric round-trip of
-# self-chosen bits (0o700 dirs, 0o600 sidecars) is asserting something
-# categorically outside how Windows works, not a bug this app's own chmod call
-# could get right or wrong there.
-skip_no_posix_modes = pytest.mark.skipif(
-    sys.platform == "win32",
-    reason="os.chmod()/stat().st_mode on Windows only reflect the read-only "
-           "DACL flag, never arbitrary POSIX bits — an exact-mode round-trip "
-           "(0o700/0o600) cannot be observed there at all.")
 
 
 def _status(resp) -> int:
@@ -103,16 +86,6 @@ def test_mkdir_existing_path_409(tmp_path):
 
 
 @skip_root
-@pytest.mark.skipif(
-    sys.platform == "win32",
-    reason="the readonly guard falls back to os.access(parent, os.W_OK) for a "
-           "target that doesn't exist yet (mount.py's _writable), and Windows' "
-           "directory read-only attribute is largely vestigial — long used only "
-           "by Explorer's folder-customization UI — so it does not gate creating "
-           "entries inside the directory the way a POSIX missing write-bit does. "
-           "os.access keeps reporting the chmod'd parent writable, mkdir succeeds "
-           "(200), and the 403 this test expects cannot occur: there is no kernel "
-           "mechanism here for the app to have gotten wrong.")
 def test_mkdir_readonly_parent_403(tmp_path):
     os.chmod(tmp_path, stat.S_IRUSR | stat.S_IXUSR)
     try:
@@ -171,7 +144,7 @@ def test_delete_symlink_to_dir_removes_link_not_target(tmp_path):
     target.mkdir()
     (target / "keep.txt").write_text("x")
     link = tmp_path / "link"
-    link.symlink_to(target, target_is_directory=True)
+    link.symlink_to(target)
     out = _data(DELETE({"path": str(link)}, x_fused="1"))
     assert out["deleted"] == str(link)
     assert not link.exists()  # link gone
@@ -319,8 +292,8 @@ def _force_platform(monkeypatch, name: str):
     attribute IS the real sys module, so setting `platform` on it is a
     process-wide change other live code reads — shell/mounts/rcd.py and
     lifecycle.py branch on sys.platform, and _fs_delete is exercised here,
-    so forcing "win32" here would have any concurrent thread on a Mac take the
-    Windows path. The real dispatcher still runs; only its answer to "which OS is
+    so forcing "linux" here would have any concurrent thread on a Mac take the
+    Linux path. The real dispatcher still runs; only its answer to "which OS is
     this?" is substituted."""
     monkeypatch.setattr(_server_fs_mutate, "_platform", lambda: name)
 
@@ -357,14 +330,9 @@ def test_xdg_trash_writes_the_spec_sidecar(tmp_path, monkeypatch):
     info = (trash / "info" / "a b#c.txt.trashinfo").read_text()
     lines = info.splitlines()
     assert lines[0] == "[Trash Info]"
-    # The real quote() call (_trashinfo_body), not a hand-rolled two-character
-    # replace: str(f) on Windows also carries a drive colon and backslash
-    # separators, and quote()'s default-unsafe set percent-encodes those too
-    # (":" -> "%3A", "\\" -> "%5C") — a POSIX path never has either, which is
-    # why the narrower replace happened to agree with quote() there.
+    # The real quote() call (_trashinfo_body), not a hand-rolled replace.
     assert lines[1] == "Path=" + urllib.parse.quote(str(f), safe="/")
-    if os.sep == "/":
-        assert "/" in lines[1]  # separators stay legible (quote's safe="/")
+    assert "/" in lines[1]  # separators stay legible (quote's safe="/")
     date = lines[2].removeprefix("DeletionDate=")
     assert lines[2].startswith("DeletionDate=")
     # YYYY-MM-DDThh:mm:ss, and nothing after it — no "Z", no "+01:00".
@@ -373,7 +341,6 @@ def test_xdg_trash_writes_the_spec_sidecar(tmp_path, monkeypatch):
 
 
 
-@skip_no_posix_modes
 def test_xdg_trash_dirs_are_private(tmp_path, monkeypatch):
     # The bin holds what the user threw away. At the default 0755 every local
     # account on a shared host can list and read it, so all three directories we
@@ -388,7 +355,6 @@ def test_xdg_trash_dirs_are_private(tmp_path, monkeypatch):
         assert stat.S_IMODE(d.stat().st_mode) == 0o700, d
 
 
-@skip_no_posix_modes
 def test_xdg_trash_leaves_an_existing_trash_dir_permissions_alone(tmp_path, monkeypatch):
     # A trash the user (or their desktop) already made is theirs. exist_ok does not
     # chmod, and quietly re-permissioning someone's directory is not this
@@ -588,117 +554,28 @@ def test_xdg_trash_dir_defaults_and_ignores_a_relative_xdg_data_home(tmp_path, m
     assert _server_fs_mutate._xdg_trash_dir() == tmp_path / "abs" / "Trash"
 
 
-# -- Windows: the Recycle Bin, against a fake shell32 ------------------------
-
-
-class _FakeShell32:
-    """Records the SHFILEOPSTRUCTW it is handed, and answers as told."""
-
-    def __init__(self, rc=0, abort=False):
-        self.rc, self.abort = rc, abort
-        self.ops = []
-
-    def SHFileOperationW(self, ptr):
-        op = ptr.contents
-        self.ops.append(op)
-        if self.abort:
-            op.fAnyOperationsAborted = 1
-        return self.rc
-
-
-def _fake_bin(monkeypatch, **kw):
-    shell = _FakeShell32(**kw)
-    _force_platform(monkeypatch, "win32")
-    monkeypatch.setattr(_server_fs_mutate, "_shell32", lambda: shell)
-    return shell
-
-
-def test_recycle_bin_request_is_double_null_terminated_with_allowundo():
-    p_from, flags = _server_fs_mutate._recycle_bin_request(r"C:\Users\me\f.txt")
-    # pFrom is a LIST of paths, read until an empty one: the path's own
-    # terminator plus the list's. A single one leaves the API reading past it.
-    assert p_from == "C:\\Users\\me\\f.txt\0\0"
-    # ALLOWUNDO is what makes this the bin instead of an erase; the other two
-    # keep the shell's dialog and progress window out of a local app's delete.
-    assert flags & 0x0040  # FOF_ALLOWUNDO
-    assert flags & 0x0010  # FOF_NOCONFIRMATION
-    assert flags & 0x0004  # FOF_SILENT
-    # NOERRORUI, without which a locked file raises an unowned error dialog that
-    # SHFileOperationW waits on — parking a worker of the bounded threadpool these
-    # sync routes run on. With it, the failure returns an rc we can report.
-    assert flags & 0x0400  # FOF_NOERRORUI
-
-
-def test_delete_win32_recycles_and_reports_no_destination(tmp_path, monkeypatch):
-    # Recoverable, but NOT undoable: the bin keeps the item as $R… beside its
-    # $I… metadata under C:\$Recycle.Bin\<SID>\ and restoring goes through the
-    # shell, so there is no path a rename could bring it back from. No
-    # `trashed_to` — the same rule the macOS Finder fallback falls under.
-    shell = _fake_bin(monkeypatch)
-    f = tmp_path / "f.txt"
-    f.write_text("x")
-    out = _data(DELETE({"path": str(f), "trash": True}, x_fused="1"))
-    assert out == {"deleted": str(f), "trashed": True}
-    assert "trashed_to" not in out
-    [op] = shell.ops
-    assert op.wFunc == 0x0003  # FO_DELETE
-    # Read the wide chars straight out of the buffer the struct points at, so the
-    # LIST TERMINATOR is part of the assertion: a single NUL leaves the API
-    # reading past the buffer, and that is invisible to any check that stops at
-    # the first one.
-    assert ctypes.wstring_at(op.pFrom, len(str(f)) + 2) == str(f) + "\0\0"
-    assert op.fFlags & 0x0040  # FOF_ALLOWUNDO
-    assert op.pTo is None  # FO_DELETE has no destination
-
-
-def test_delete_win32_failure_is_500_not_501(tmp_path, monkeypatch):
-    # A nonzero return is a FAILED recoverable delete, never "unsupported" —
-    # that signal would route the client into the irreversible hard delete.
-    _fake_bin(monkeypatch, rc=124)
-    f = tmp_path / "f.txt"
-    f.write_text("x")
-    resp = DELETE({"path": str(f), "trash": True}, x_fused="1")
-    assert _status(resp) == 500
-    assert "cannot move to Trash" in _data(resp)["error"]
-
-
-def test_delete_win32_aborted_operation_is_a_failure(tmp_path, monkeypatch):
-    # Zero return, abort flag set: the shell stopped, so the entry may still be
-    # there. Reporting success would tell the user their file is in the bin.
-    _fake_bin(monkeypatch, rc=0, abort=True)
-    f = tmp_path / "f.txt"
-    f.write_text("x")
-    resp = DELETE({"path": str(f), "trash": True}, x_fused="1")
-    assert _status(resp) == 500
-    assert "aborted" in _data(resp)["error"]
-
-
-
 def test_forcing_a_platform_does_not_leak_into_the_real_sys(tmp_path, monkeypatch):
     # The seam's whole point. Patching `_server_fs_mutate.sys.platform` would have
     # patched the REAL sys module — shell/mounts/rcd.py and lifecycle.py read it
-    # live, and _fs_delete runs live — so a Windows-forcing case on a
+    # live, and _fs_delete runs live — so a Linux-forcing case on a
     # Mac changed what every other thread in the process believed about the OS.
     import sys as real_sys
 
     before = real_sys.platform
-    shell = _fake_bin(monkeypatch)
+    trash = _xdg_home(monkeypatch, tmp_path)
     f = tmp_path / "f.txt"
     f.write_text("x")
     out = _data(DELETE({"path": str(f), "trash": True}, x_fused="1"))
-    # The dispatcher really did take the win32 branch: the fake shell was asked to
-    # recycle the path, and the answer has no `trashed_to` (the bin names nothing).
-    # The fake does not itself remove the file, which is why this asserts on the
-    # CALL rather than on the file being gone.
-    assert len(shell.ops) == 1
-    assert out == {"deleted": str(f), "trashed": True}
+    # The dispatcher really did take the linux branch: the entry landed in the
+    # XDG trash it was pointed at.
+    assert out["trashed_to"] == str(trash / "files" / "f.txt")
     # …while the rest of the process still sees the true platform.
     assert real_sys.platform == before
     assert _server_fs_mutate.sys.platform == before
 
 
-def test_trash_supported_on_the_three_desktops_only(monkeypatch):
-    for name in ("darwin", "linux", "win32"):
+def test_trash_supported_on_the_two_desktops_only(monkeypatch):
+    for name in ("darwin", "linux"):
         _force_platform(monkeypatch, name)
         assert _server_fs_mutate._trash_supported()
     for name in ("freebsd13", "emscripten"):
@@ -748,15 +625,12 @@ def test_trash_move_into_the_trash_writes_the_sidecar(tmp_path, monkeypatch):
     assert dst.read_text() == "x"
     info = (trash / "info" / "a b.txt.trashinfo").read_text()
     # Path= names where it came FROM, percent-encoded like the backend's own —
-    # matched with the real quote() call, not a hand-rolled space-only replace
-    # (see test_xdg_trash_writes_the_spec_sidecar: str(src) on Windows also
-    # carries a drive colon and backslashes, which quote() encodes too).
+    # matched with the real quote() call, not a hand-rolled space-only replace.
     assert f"Path={urllib.parse.quote(str(src), safe='/')}\n" in info
     assert "DeletionDate=" in info
 
 
 
-@skip_no_posix_modes
 def test_trash_move_redo_sidecar_is_as_private_as_the_delete_path(tmp_path, monkeypatch):
     # A REDO is the delete happening again, so it must not leave the bin more
     # exposed than the delete did. This branch used to use Path.write_text and a
@@ -775,7 +649,6 @@ def test_trash_move_redo_sidecar_is_as_private_as_the_delete_path(tmp_path, monk
     assert stat.S_IMODE((trash / "info").stat().st_mode) == 0o700
 
 
-@skip_no_posix_modes
 def test_trash_move_redo_leaves_an_existing_info_dir_alone(tmp_path, monkeypatch):
     # Same rule as the delete path: we set modes on what we CREATE and never
     # re-permission a directory the user (or their desktop) already made. The
@@ -801,9 +674,7 @@ def test_trash_move_redo_overwrites_a_stale_sidecar(tmp_path, monkeypatch):
     src.write_text("x")
     _data(TRASH_MOVE({"from": str(src), "to": str(trash / "files" / "a.txt")}, x_fused="1"))
     body = stale.read_text()
-    # quote(), not the bare f-string: see test_xdg_trash_writes_the_spec_sidecar
-    # — on Windows str(src) itself needs percent-encoding (drive colon,
-    # backslash separators), which `_trashinfo_body` applies via quote().
+    # quote(), not the bare f-string: `_trashinfo_body` applies quote().
     assert f"Path={urllib.parse.quote(str(src), safe='/')}\n" in body
     assert "entirely-and-much-longer" not in body  # truncated, not left trailing
 
@@ -860,24 +731,6 @@ def test_trash_move_refuses_to_touch_an_info_file_for_an_outside_path(tmp_path, 
 
 
 
-@pytest.mark.skipif(
-    sys.platform == "win32",
-    reason="the attack this pins only exists on a POSIX kernel. A POSIX "
-           "open()/rename() resolves 'link/..' component-by-component, so it "
-           "genuinely lands at the SYMLINK TARGET's parent — the kernel-vs-"
-           "lexical divergence _xdg_trash_entry_info's docstring is defending "
-           "against. Windows canonicalises a '..' component in an ordinary "
-           "(non \\\\?\\) path purely lexically, in the Win32 path layer, "
-           "before a reparse point is ever opened to see where it points — so "
-           "'…/files/link/../y.txt' collapses to '…/files/y.txt' there no "
-           "matter what 'link' names, and the kernel never takes the wrong "
-           "turn this test needs to exist to prove refused. The victim this "
-           "test plants at the POSIX-resolved location (tmp_path/y.txt) is "
-           "then simply not where Windows' own path resolution looks: the "
-           "rename 404s (the response has no 'path', hence the bare KeyError "
-           "on a real Windows run) before _xdg_trash_entry_info's boundary "
-           "check is ever exercised. Not a fused_render bug, and not an "
-           "attack Windows path resolution can construct this way at all.")
 def test_trash_move_boundary_rejects_a_symlinked_parent(tmp_path, monkeypatch):
     # The docstring's second claim, now actually tested. A path whose parent is a
     # SYMLINK out of files/ used to pass the boundary because the check normalised
@@ -887,14 +740,7 @@ def test_trash_move_boundary_rejects_a_symlinked_parent(tmp_path, monkeypatch):
     trash = _xdg_trash_root(monkeypatch, tmp_path)
     outside = tmp_path / "outside"
     outside.mkdir()
-    # target_is_directory=True: on Windows symlink_to defaults to a FILE-type
-    # reparse point, and a file-type link to a directory does not resolve
-    # `link/..` through it the way this test's attack path needs — the kernel
-    # never gets the chance to take the wrong turn the test is trying to prove
-    # is refused. POSIX symlinks are type-agnostic, so this is a no-op there
-    # (matches the equivalent link in test_delete_symlink_to_dir_removes_link_
-    # not_target above).
-    (trash / "files" / "link").symlink_to(outside, target_is_directory=True)
+    (trash / "files" / "link").symlink_to(outside)
     victim = trash / "info" / "y.txt.trashinfo"
     victim.write_text("[Trash Info]\n")
     # The file must sit where the KERNEL resolves the attack path, or the rename
@@ -928,15 +774,7 @@ def test_trash_move_still_recognises_a_trashed_SYMLINK_as_an_entry(tmp_path, mon
     dst = tmp_path / "link.txt"
     _data(TRASH_MOVE({"from": str(entry), "to": str(dst)}, x_fused="1"))
     assert dst.is_symlink()   # the LINK came home, not a copy of its target
-    # Windows can report the reparse point's target with the "\\?\"
-    # extended-length prefix even though it was created from a plain absolute
-    # path — a cosmetic artifact of how NTFS stores/returns an absolute
-    # SubstituteName, not a different target. Stripped before comparing so
-    # the assertion is still about WHICH file the link names.
-    got_target = os.readlink(dst)
-    if got_target.startswith("\\\\?\\"):
-        got_target = got_target[4:]
-    assert got_target == str(target)
+    assert os.readlink(dst) == str(target)
     assert not info.exists()  # and its sidecar went with it
     assert target.read_text() == "payload"  # the target was never touched
     # NOTE a DANGLING trashed link cannot be restored this way, and not because of

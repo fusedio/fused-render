@@ -1,10 +1,10 @@
 """Resolve the user's shell into a spawn profile for the status-bar terminal.
 
 One resolved profile, not a settings-file *list* of them — VS Code's
-`terminal.integrated.profiles` earns its complexity by serving every shell on
-Windows plus WSL; this app has exactly one platform family in scope this
-round (macOS + Linux, see Task in PLAN-status-bar-terminal.md) and `$SHELL`
-is right by default. Revisit if someone asks for fish-vs-zsh switching.
+`terminal.integrated.profiles` earns its complexity by serving many shells;
+this app targets macOS + Linux (see Task in PLAN-status-bar-terminal.md) and
+`$SHELL` is right by default. Revisit if someone asks for fish-vs-zsh
+switching.
 
 Ports a rule already proven in `fused_render/claude_health.py` rather than
 re-deriving it:
@@ -57,20 +57,11 @@ class TerminalProfile:
 
 
 def resolve_profile(cwd: Optional[str] = None) -> Optional[TerminalProfile]:
-    """The resolved profile for the current platform, or None on Windows.
-
-    Windows is deliberately out of scope this round (see Decisions in
-    PLAN-status-bar-terminal.md): Python's `pty` module is unix-only, and
-    ConPTY support means `pywinpty`, a C extension this app does not bundle.
-    """
-    if os.name == "nt":
-        return None
-
+    """The resolved profile, or None when no usable shell is found."""
     # `$SHELL` can be SET but stale (a shell that was uninstalled, a path
     # that never existed on this machine) — that is not "the user asked for
     # no terminal," so this falls through to /bin/bash and then /bin/sh
-    # instead of reporting "not supported on this platform" for a machine
-    # that plainly has pty support and a POSIX shell.
+    # instead of refusing on a machine that plainly has a POSIX shell.
     for shell in (os.environ.get("SHELL"), "/bin/bash", "/bin/sh"):
         if shell and executable(shell):
             break

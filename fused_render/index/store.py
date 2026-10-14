@@ -11,6 +11,7 @@ module top: this module is imported by the server (routers/index.py), and a
 `stats` call on a missing index should not pay a duckdb import.
 """
 import contextlib
+import fcntl
 import json
 import os
 import threading
@@ -19,11 +20,6 @@ import time
 from fused_render.index.config import IndexConfig
 from fused_render.index.ignore import ignored_for_index
 
-
-# How often the Windows lock re-tries. Short enough to hand the lock over
-# promptly, long enough that a minutes-long compaction costs a trivial number
-# of syscalls to wait out.
-NT_LOCK_POLL_S = 0.05
 
 # Cores the background compaction's DuckDB may use. It runs inside a scan
 # worker, against an interactive `/api/index/rank` that is itself capped by
@@ -65,21 +61,6 @@ def background_connect():
     return con
 
 
-def _acquire_nt(msvcrt, fileno: int) -> None:
-    """Block until the byte is ours, polling the NON-blocking mode.
-
-    NOT msvcrt.LK_LOCK: that one retries for about ten seconds and then
-    raises, and this lock is held for the length of a whole DuckDB merge — so
-    a second root's compaction (or a Delete Index) would fail instead of
-    waiting. Polling LK_NBLCK with no deadline gives flock's semantics."""
-    while True:
-        try:
-            msvcrt.locking(fileno, msvcrt.LK_NBLCK, 1)
-            return
-        except OSError:
-            time.sleep(NT_LOCK_POLL_S)
-
-
 @contextlib.contextmanager
 def store_lock(cfg: IndexConfig):
     """Mutual exclusion for store WRITERS (compactions, delete), blocking.
@@ -92,29 +73,17 @@ def store_lock(cfg: IndexConfig):
     happen inside this lock. Readers never take it: they follow the manifest,
     and generations make that safe (see compact).
 
-    An OS lock (flock / msvcrt), not a lockfile-existence protocol: it is held
+    An OS lock (flock), not a lockfile-existence protocol: it is held
     by an open fd, so a crashed worker releases it with its process instead of
     wedging every future scan."""
     os.makedirs(cfg.dir, exist_ok=True)
     f = open(os.path.join(cfg.dir, ".store.lock"), "a")
     try:
-        if os.name == "nt":
-            import msvcrt
-            f.seek(0)
-            _acquire_nt(msvcrt, f.fileno())
-        else:
-            import fcntl
-            fcntl.flock(f, fcntl.LOCK_EX)
+        fcntl.flock(f, fcntl.LOCK_EX)
         yield
     finally:
         try:
-            if os.name == "nt":
-                import msvcrt
-                f.seek(0)
-                msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
-            else:
-                import fcntl
-                fcntl.flock(f, fcntl.LOCK_UN)
+            fcntl.flock(f, fcntl.LOCK_UN)
         except OSError:
             pass
         f.close()
@@ -755,7 +724,7 @@ def _reclaim_partitions(cfg: IndexConfig, keep) -> None:
             try:
                 os.unlink(os.path.join(cfg.files_dir, name))
             except OSError:
-                pass  # a concurrent reader holds it on Windows: next pass gets it
+                pass  # next pass gets it
 
 
 def delete_store(cfg: IndexConfig) -> None:

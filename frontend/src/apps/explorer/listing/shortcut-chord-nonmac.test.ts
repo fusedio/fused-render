@@ -58,7 +58,7 @@ const SEARCHING = "{ inSearch: true, hasSelection: false }";
 const CTRL = "{ ctrlKey: true }";
 
 test("Ctrl+Y is the redo chord off macOS", () => {
-  // The Windows/Linux redo, which the mac-side test can only ever observe as a
+  // The Linux redo, which the mac-side test can only ever observe as a
   // null indistinguishable from "not a chord at all".
   expect(offMac("y", CTRL, LISTING)).toBe("redo");
 });

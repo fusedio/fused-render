@@ -2,7 +2,7 @@
  * in. Same idea as `_git_view_probe.mjs`: a stub just large enough to run the
  * shipping code verbatim, with no copy of the logic under test.
  *
- * Why this exists: on Windows and Linux a recording is assembled by the page
+ * Why this exists: on Linux a recording is assembled by the page
  * (SPEC CP-10), and its correctness is almost entirely ORDER.
  *   - the share picker must open BEFORE the server allocates anything, or a
  *     cancelled picker leaves a job row over an empty file;

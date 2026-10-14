@@ -339,8 +339,8 @@ function usePreviewFileMenu(
         // top entry describing an older op, so Cmd+Z after it would undo that
         // one instead — and the file stayed unreachable in the Trash.
         //
-        // `to` is absent wherever the OS owns the location (the Recycle Bin, the
-        // macOS cross-device Finder fallback), and then there is no pair to
+        // `to` is absent wherever the OS owns the location (the macOS
+        // cross-device Finder fallback), and then there is no pair to
         // record — recoverable from the OS, just not from here.
         if (r.to) recordFsOp({ kind: "delete", pairs: [{ from: fsPath, to: r.to }] });
         notePathDeleted(fsPath);
@@ -455,10 +455,9 @@ function usePreviewFileMenu(
     let alive = true;
     setIsAppEntry(false);
     if (stat.is_dir) return;
-    const canon = (p: string) => (/^[A-Za-z]:[\\/]/.test(p) ? p.replace(/\\/g, "/") : p);
     getAppEntry(parent)
       .then((r) => {
-        if (alive) setIsAppEntry(r.entry != null && canon(r.entry) === fsPath);
+        if (alive) setIsAppEntry(r.entry != null && r.entry === fsPath);
       })
       .catch(() => {
         /* indeterminate reads as "not an entry" — no verb for nothing */
@@ -586,7 +585,7 @@ function usePreviewFileMenu(
         onClick: () => window.open(urlForFsPath(fsPath), "_blank", "noopener"),
       },
       // Absent where no TerminalDrawer is mounted to open (an embedded pane,
-      // App.tsx) or on Windows, where the drawer's shell isn't offered.
+      // App.tsx).
       ...(canRun
         ? [
             {

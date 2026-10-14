@@ -17,7 +17,6 @@ import json
 import os
 import threading
 import time
-from unittest import mock
 
 import pytest
 
@@ -2456,11 +2455,6 @@ def test_reconcile_never_pops_an_in_flight_spawn_past_the_grace():
     assert owner_key(m) is None
 
 
-@pytest.mark.skipif(
-    os.name != "posix",
-    reason="the in-flight-spawn pid probe is deliberately POSIX-only (D1311): "
-           "Windows has no safe pid-liveness check, so it falls back to the "
-           "SPAWN_GRACE backstop and this premise does not exist there")
 def test_reconcile_never_pops_another_processs_in_flight_spawn_past_the_grace():
     """B1b: `self._spawning` only answers "is MY spawn still running" — a
     SECOND manager over the same state dir (another `open` process, or
@@ -2499,11 +2493,6 @@ def test_reconcile_never_pops_another_processs_in_flight_spawn_past_the_grace():
         other.wait(5)
 
 
-@pytest.mark.skipif(
-    os.name != "posix",
-    reason="the in-flight-spawn pid probe is deliberately POSIX-only (D1311): "
-           "Windows has no safe pid-liveness check, so it falls back to the "
-           "SPAWN_GRACE backstop and this premise does not exist there")
 def test_reconcile_pops_a_starting_owner_whose_spawner_process_died():
     """The other half of B1b: a `starting` owner whose `spawner_pid` names a
     process that is actually gone (crashed mid-spawn) is NOT treated as
@@ -2607,11 +2596,6 @@ def test_reconcile_never_pops_this_processs_own_in_flight_spawn_past_spawn_max()
     assert m.owner(F1)["run_id"] == "run-slow"
 
 
-@pytest.mark.skipif(
-    os.name != "posix",
-    reason="the in-flight-spawn pid probe is deliberately POSIX-only (D1311): "
-           "Windows has no safe pid-liveness check, so it falls back to the "
-           "SPAWN_GRACE backstop and this premise does not exist there")
 def test_reconcile_still_trusts_a_fresh_in_flight_spawn_under_spawn_max():
     """The ordinary case the ceiling must not touch: a `starting` owner well
     under `SPAWN_MAX`, past only `SPAWN_GRACE`, with a live spawner pid is
@@ -3144,64 +3128,6 @@ def test_write_locked_replaces_a_temp_file_in_the_same_directory(state, monkeypa
         assert os.path.dirname(src) == os.path.dirname(dst)
 
 
-def test_write_locked_retries_os_replace_through_a_transient_permission_error(
-        state, monkeypatch):
-    """On Windows, `os.replace` can raise `PermissionError` while another
-    process still has the index open for reading — a brief window, not a
-    real failure. `_write_locked` retries a few times on a short backoff
-    instead of treating the very first `PermissionError` as "could not
-    write" (finding 5)."""
-    world = idle_world()
-    m = world.manager()
-    m.started(F1, "a", "run-a", "sess-a")  # one real write, sets up state
-
-    real_replace = os.replace
-    calls = []
-
-    def flaky_replace(src, dst):
-        calls.append((src, dst))
-        if len(calls) < 3:
-            raise PermissionError("simulated rival holding it open")
-        return real_replace(src, dst)
-
-    monkeypatch.setattr(os, "replace", flaky_replace)
-    slept = []
-    monkeypatch.setattr(qm.time, "sleep", lambda s: slept.append(s))
-
-    m.mark_forced("z")  # the one write this test is actually about
-
-    assert len(calls) == 3
-    assert slept == [qm._REPLACE_RETRY_DELAY_S, qm._REPLACE_RETRY_DELAY_S]
-    index_path = os.path.join(str(state), INDEX_PATH_NAME)
-    with open(index_path, encoding="utf-8") as f:
-        json.load(f)  # the retried write actually landed
-
-
-def test_write_locked_gives_up_after_the_retry_budget_and_keeps_in_memory_state(
-        state, monkeypatch):
-    """Once `_REPLACE_MAX_ATTEMPTS` is exhausted, a still-failing
-    `PermissionError` is swallowed the same way any other write failure is
-    — the in-memory index stays right, nothing crashes — but it is logged
-    at warning (not debug), since by then it's no longer a brief window."""
-    world = idle_world()
-    m = world.manager()
-    m.started(F1, "a", "run-a", "sess-a")
-    assert owner_key(m) == "a"
-
-    monkeypatch.setattr(
-        os, "replace",
-        lambda src, dst: (_ for _ in ()).throw(
-            PermissionError("simulated rival holding it open")))
-    monkeypatch.setattr(qm.time, "sleep", lambda s: None)
-
-    with mock.patch.object(qm.logger, "warning") as warning:
-        m.mark_forced("z")  # a transaction; must not raise
-    assert warning.called
-
-    # The in-memory state is still right even though nothing landed on disk.
-    assert owner_key(m) == "a"
-
-
 # --------------------------------------------------- corrupt index on disk
 
 
@@ -3274,11 +3200,6 @@ def test_valid_json_that_is_not_an_object_is_treated_as_unreadable(state, top_le
     assert owner_key(m) == "a"
 
 
-@pytest.mark.skipif(
-    os.name == "nt",
-    reason="replaces the index file while the reader still holds it open, "
-           "which Windows refuses (os.replace on an open file raises "
-           "PermissionError); the stat-the-handle race only exists on POSIX")
 def test_load_stats_the_handle_it_actually_read_not_the_path_afterward(state):
     """`_load()` has to record the stat of the BYTES it parsed, not whatever
     happens to be at `path` by the time it gets around to calling `os.stat`.

@@ -16,7 +16,6 @@ facts the parser reads.
 import json
 import os
 import shutil
-import sys
 import threading
 
 import pytest
@@ -33,29 +32,11 @@ _RealThread = threading.Thread
 def _fake_thread_class(run_worker):
     """threading.Thread double for the publish tests below.
 
-    The same monkeypatched `threading.Thread` stands in for TWO different
-    callers: github_setup's own worker thread (`target=_guarded,
-    daemon=True, name=...` — no positional `args`/`kwargs`), which each
-    test below wants to run synchronously, not at all, or on demand; and,
-    earlier in the same call, whatever thread(s) the stdlib spins up while
-    `publish_start`'s `_has_commits`/`_has_remote` preflight runs a real
-    `git` subprocess. On Windows, `subprocess.Popen.communicate()` always
-    reads pipes through real `threading.Thread` instances
-    (`Popen._readerthread`), constructed with positional `args=(fh,
-    buffer)` — those have to actually run, with the args they were given,
-    or `communicate()` never gets its pipe data back, and they have to
-    answer to `.join()` once it's done reading. A `Thread` built with no
-    `args`/`kwargs` is never the stdlib's — that shape is how the two
-    callers are told apart.
-
-    `Popen._communicate` on Windows (`Lib/subprocess.py`) drives a reader
-    thread through exactly this surface, in this order: construct it,
-    set `.daemon = True`, `.start()` it, `.join(timeout)` it, then check
-    `.is_alive()` to decide whether the join timed out. `name` is not read
-    by `_communicate` itself, but `threading.Thread.__init__` accepts it
-    and github_setup's own worker thread is constructed with `name=...`,
-    so it is accepted here too rather than left to fall through to
-    `**_ignored` and silently vanish.
+    github_setup's own worker thread (`target=_guarded, daemon=True,
+    name=...` — no positional `args`/`kwargs`) is what each test below wants
+    to run synchronously, not at all, or on demand. A `Thread` built WITH
+    `args`/`kwargs` is never github_setup's, so it simply runs its target.
+    `name` is accepted rather than left to fall through to `**_ignored`.
     """
 
     class T:
@@ -103,8 +84,6 @@ def _fake_cli(tmp_path, name="gh", executable=True):
     `resolve()`'s real `shutil.which` can find on PATH."""
     d = tmp_path / "fake-bin"
     d.mkdir(exist_ok=True)
-    if os.name == "nt" and not name.lower().endswith((".exe", ".cmd", ".bat")):
-        name += ".exe"
     p = d / name
     p.write_text("#!/bin/sh\necho gh version 2.63.0 (2024-10-30)\n")
     p.chmod(0o755 if executable else 0o644)
@@ -140,12 +119,6 @@ def test_nothing_installed_resolves_to_nothing(monkeypatch):
     assert github_setup.resolve() == (None, None)
 
 
-@pytest.mark.skipif(
-    sys.platform == "win32",
-    reason="fakes os.name='posix' on a real filesystem — see the equivalent "
-           "skip in test_claude_health.py for why that is unsafe on real "
-           "Windows.",
-)
 def test_candidate_dirs_are_probed_when_path_is_stripped(tmp_path, monkeypatch):
     """A Finder/Dock-launched .app inherits the supervisor's PATH, not a
     shell's, so the known install dirs — including this app's own install
@@ -155,7 +128,6 @@ def test_candidate_dirs_are_probed_when_path_is_stripped(tmp_path, monkeypatch):
     cli = install / "gh"
     cli.write_text("#!/bin/sh\n")
     cli.chmod(0o755)
-    monkeypatch.setattr(github_setup.os, "name", "posix")
     assert github_setup.resolve() == (str(cli), "candidate")
 
 
@@ -171,12 +143,11 @@ def test_the_apps_own_candidate_is_derived_from_install_dir(tmp_path, monkeypatc
 
 
 def test_the_apps_own_candidate_is_always_first():
-    """The rest of the list (Homebrew, winget, /usr/bin, …) are fixed system
+    """The rest of the list (Homebrew, /usr/bin, …) are fixed system
     locations; this app's own install dir is checked before any of them."""
     own = os.path.join(github_setup.install_dir(), github_setup._binary_name())
     assert github_setup.candidates()[0] == own
     assert own not in github_setup.POSIX_CANDIDATES
-    assert own not in github_setup.WINDOWS_CANDIDATES
 
 
 # -- version parsing --------------------------------------------------------
@@ -481,12 +452,10 @@ def _clean_install(monkeypatch):
     ("macOS", "arm64", "zip"),
     ("linux", "amd64", "tar.gz"),
     ("linux", "arm64", "tar.gz"),
-    ("windows", "amd64", "zip"),
-    ("windows", "arm64", "zip"),
 ])
 def test_asset_name_matches_the_current_release_shape(os_kind, arch, ext):
     """Checked live against api.github.com/repos/cli/cli/releases/latest on
-    2.100.0: every one of these six names is a real asset on that release."""
+    2.100.0: every one of these names is a real asset on that release."""
     name = github_setup._asset_name(os_kind, arch, "2.100.0")
     assert name == f"gh_2.100.0_{os_kind}_{arch}.{ext}"
 
@@ -494,7 +463,6 @@ def test_asset_name_matches_the_current_release_shape(os_kind, arch, ext):
 @pytest.mark.parametrize("os_kind,arch", [
     ("macOS", "amd64"), ("macOS", "arm64"),
     ("linux", "amd64"), ("linux", "arm64"),
-    ("windows", "amd64"), ("windows", "arm64"),
 ])
 def test_release_url_points_at_the_tagged_release(os_kind, arch):
     """NOT `/releases/latest/download/...`: that redirect only works when the
@@ -510,13 +478,10 @@ def test_release_url_points_at_the_tagged_release(os_kind, arch):
     assert url == f"https://github.com/cli/cli/releases/download/v2.100.0/{asset}"
 
 
-def test_target_os_reads_sys_platform_and_os_name(monkeypatch):
+def test_target_os_reads_sys_platform(monkeypatch):
     monkeypatch.setattr(github_setup.sys, "platform", "darwin")
     assert github_setup._target_os() == "macOS"
     monkeypatch.setattr(github_setup.sys, "platform", "linux")
-    monkeypatch.setattr(github_setup.os, "name", "nt")
-    assert github_setup._target_os() == "windows"
-    monkeypatch.setattr(github_setup.os, "name", "posix")
     assert github_setup._target_os() == "linux"
 
 
@@ -535,15 +500,11 @@ def test_target_arch_refuses_an_unpublished_architecture():
 
 def test_member_for_names_the_binary_inside_the_archive():
     """macOS and Linux archives unpack into a versioned root dir
-    (`gh_<version>_<os>_<arch>/bin/...`); the Windows zip is the one shape
-    that doesn't — `gh_2.100.0_windows_amd64.zip`'s full member list is
-    exactly `["LICENSE", "bin/gh.exe"]`, no root directory at all."""
+    (`gh_<version>_<os>_<arch>/bin/...`)."""
     assert (github_setup._member_for("linux", "amd64", "2.100.0")
             == "gh_2.100.0_linux_amd64/bin/gh")
     assert (github_setup._member_for("macOS", "amd64", "2.100.0")
             == "gh_2.100.0_macOS_amd64/bin/gh")
-    assert (github_setup._member_for("windows", "amd64", "2.100.0")
-            == "bin/gh.exe")
 
 
 # -- the install worker --------------------------------------------------------
@@ -592,8 +553,7 @@ def test_a_clean_install_finishes_and_installs_the_binary(tmp_path, monkeypatch)
     assert rec["error"] is None
     dest = os.path.join(github_setup.install_dir(), github_setup._binary_name())
     assert os.path.isfile(dest)
-    if os.name != "nt":
-        assert os.access(dest, os.X_OK)
+    assert os.access(dest, os.X_OK)
 
 
 def test_the_reported_install_job_points_at_preferences(tmp_path, monkeypatch):
@@ -1004,8 +964,7 @@ def test_the_reported_publish_job_points_at_the_repo_root(tmp_path, monkeypatch)
     # macOS) — the reported destination is the realpath'd containment-
     # checked root `_resolve_repo_root` already resolved, same as
     # `_has_commits`/`_has_remote` operate on, not the raw string the page
-    # sent. Canonical (forward-slash) form: `_resolve_repo_root` comes back
-    # backslashed on Windows, and a page is compared against the canonical
+    # sent. Canonical form: a page is compared against the canonical
     # spelling everywhere else it is stored or read.
     assert captured.get("page") == github_setup.canonical_fs_path(
         github_setup._resolve_repo_root(root))

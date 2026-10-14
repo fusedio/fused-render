@@ -38,9 +38,6 @@ from fused_render.server.routers import claude_agent as router
 AGENT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                          "fused_render", "claude_agent")
 
-posix_only = pytest.mark.skipif(os.name == "nt", reason="setsid/killpg are POSIX-only")
-
-
 def _load(name):
     path = os.path.join(AGENT_DIR, name + ".py")
     spec = importlib.util.spec_from_file_location("claude_cancel_" + name, path)
@@ -51,7 +48,6 @@ def _load(name):
 
 # ------------------------------------------------- a Stop before the detach
 
-@posix_only
 def test_a_host_whose_run_was_cancelled_before_it_detached_spawns_nothing(tmp_path):
     """The real host, as a real process: the marker is already there when it
     reads its request, so it returns without loading the agent or spawning a
@@ -70,7 +66,6 @@ def test_a_host_whose_run_was_cancelled_before_it_detached_spawns_nothing(tmp_pa
     assert not (run_dir / "host.json").exists()
 
 
-@posix_only
 def test_kill_tree_signals_the_host_when_it_leads_no_group_yet(tmp_path, monkeypatch):
     """killpg on a pid that is not a group leader is ESRCH even though the
     process is alive. Then the process itself gets the SIGTERM."""
@@ -88,7 +83,6 @@ def test_kill_tree_signals_the_host_when_it_leads_no_group_yet(tmp_path, monkeyp
     assert sent == [("killpg", 4242, signal.SIGTERM), ("kill", 4242, signal.SIGTERM)]
 
 
-@posix_only
 def test_kill_tree_does_not_fall_back_when_the_group_was_signalled(tmp_path, monkeypatch):
     agent = _load("agent")
     (tmp_path / "pid").write_text("4242")
@@ -125,9 +119,7 @@ def test_commit_turn_spawns_git_by_absolute_path(tmp_path, monkeypatch):
     (app / "f.txt").write_text("x")
     monkeypatch.setattr(agent, "_workspace_dir", lambda: str(ws))
     import shutil
-    # Built off sys.executable's own directory, so it is absolute on every
-    # platform (a bare "/opt/bin/git" is not absolute on Windows from 3.13).
-    git = os.path.join(os.path.dirname(sys.executable), "git")
+    git = "/opt/bin/git"
     monkeypatch.setattr(shutil, "which", lambda name, *a, **k: git)
     argv0 = []
 

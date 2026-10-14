@@ -196,7 +196,7 @@ def test_an_absolute_path_is_forwarded_untouched(client, monkeypatch):
                              {"vectors": [[1.0]], "dim": 1})[1])
     _post(client, {"paths": ["/abs/pic.png"], "model": "org/embed-x"})
     # Through `os.path.abspath`, so the one honest expectation is the OS's own
-    # spelling — on Windows an absolute POSIX path gains the current drive.
+    # spelling.
     assert calls == [{"paths": [os.path.abspath("/abs/pic.png")]}]
 
 

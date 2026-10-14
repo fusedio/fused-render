@@ -186,7 +186,6 @@ def test_refresh_leaves_git_locks_alone(tmp_path, community_mod, monkeypatch):
     assert os.path.isfile(old)
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="posix flock path")
 def test_cache_lock_times_out_instead_of_racing(community_mod, monkeypatch):
     import fcntl
 

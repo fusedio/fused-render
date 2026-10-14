@@ -4,7 +4,7 @@
 `ai_runtime._accepts_image`/`_capability_tags` used to call `hub_metadata.
 get(model_id)` directly from `describe_catalog` — a synchronous `urllib` GET
 with an 8-second timeout, on a route the AI Models picker polls. On a
-Linux/Windows box the `llamacpp-text` list is several curated GGUF repos,
+Linux box the `llamacpp-text` list is several curated GGUF repos,
 and a GGUF repo routinely has no `config.json` at all, so one catalog
 request could reissue several timeout-bound fetches; offline or behind a
 captive portal that stalls the page for tens of seconds. `supervisor.

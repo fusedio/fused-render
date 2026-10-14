@@ -156,7 +156,7 @@ def test_an_in_package_runner_folder_still_uses_the_home_store(tmp_path):
     ships INSIDE the installed `fused_render` package — an AI runner folder,
     never staged anywhere, always read directly from the package tree — is
     read-only in every shape the app actually ships (the AppImage squashfs
-    mount, a Windows `Program Files` install), so nothing can be written
+    mount), so nothing can be written
     there at all and its venv has to live under our own home dir instead
     (D376).
 
@@ -445,9 +445,7 @@ def test_the_bundled_uv_is_found_beside_the_interpreter(tmp_path, monkeypatch):
     (fake_app / "Resources" / "bin").mkdir(parents=True)
     interp = fake_app / "MacOS" / "python"
     interp.write_text("")
-    # uv_bin() looks for "uv.exe" on win32 (see uv_bin's own `name` line) —
-    # match that filename, same as the sibling test just below.
-    uv = fake_app / "Resources" / "bin" / ("uv.exe" if os.name == "nt" else "uv")
+    uv = fake_app / "Resources" / "bin" / "uv"
     uv.write_text("")
     monkeypatch.setattr(sys, "executable", str(interp))
     monkeypatch.delenv("FUSED_RENDER_UV_BIN", raising=False)
@@ -459,23 +457,22 @@ def test_the_bundled_uv_is_found_beside_the_interpreter(tmp_path, monkeypatch):
     assert env["PATH"].split(os.pathsep)[0] == str(uv.parent)
 
 
-def test_the_bundled_uv_is_found_beside_the_interpreter_on_linux_and_windows(
+def test_the_bundled_uv_is_found_beside_the_interpreter_on_linux(
     tmp_path, monkeypatch
 ):
-    """The other two packagings put uv in the interpreter's OWN directory.
+    """The Linux packaging puts uv in the interpreter's OWN directory.
 
     Linux AppImage: `usr/python/bin/uv` next to `usr/python/bin/python3`
-    (build_linux_appimage.sh:88). Windows: `<PythonRoot>/uv.exe` next to
-    `pythonw.exe` (.ps1:185). Probing only the macOS `Contents/Resources/bin`
-    layout left both of those bundled binaries unused unless their directory
-    happened to be on PATH — no crash there, since those builds ship a real
+    (build_linux_appimage.sh:88). Probing only the macOS `Contents/Resources/bin`
+    layout left that bundled binary unused unless its directory
+    happened to be on PATH — no crash there, since that build ships a real
     CPython with `venv`, but a shipped tool silently ignored.
     """
     bindir = tmp_path / "python" / "bin"
     bindir.mkdir(parents=True)
     interp = bindir / "python3"
     interp.write_text("")
-    uv = bindir / ("uv.exe" if os.name == "nt" else "uv")
+    uv = bindir / "uv"
     uv.write_text("")
     monkeypatch.setattr(sys, "executable", str(interp))
     monkeypatch.delenv("FUSED_RENDER_UV_BIN", raising=False)
@@ -550,8 +547,8 @@ def test_a_server_already_on_312_builds_script_venvs_from_ITSELF(
 ):
     """None, not a path — and that is the point.
 
-    Every packaged build (DMG's `python@3.12`, the AppImage's and the Windows
-    installer's `uv python install 3.12`) already runs 3.12, and `None` is exactly
+    Every packaged build (DMG's `python@3.12`, the AppImage's
+    `uv python install 3.12`) already runs 3.12, and `None` is exactly
     what the backend has always been given, so `python_identity` produces the
     IDENTICAL key it produces today. Resolving a uv-managed 3.12 for these users
     instead would re-key every venv they own and re-download a second CPython to
@@ -562,7 +559,6 @@ def test_a_server_already_on_312_builds_script_venvs_from_ITSELF(
     assert envinstall.script_python_ready() is True
 
 
-@pytest.mark.skipif(os.name == "nt", reason="needs a POSIX #! stub interpreter")
 def test_a_server_on_the_WRONG_version_resolves_a_uv_managed_312(
     tmp_path, monkeypatch, _fresh_script_python
 ):
@@ -629,7 +625,6 @@ def test_a_machine_with_no_uv_at_all_keeps_working_as_before(
     assert envinstall.script_python_ready() is True
 
 
-@pytest.mark.skipif(os.name == "nt", reason="needs a POSIX #! stub interpreter")
 def test_an_explicit_script_python_override_wins_but_is_still_probed(
     tmp_path, monkeypatch, _fresh_script_python
 ):
@@ -647,7 +642,6 @@ def test_an_explicit_script_python_override_wins_but_is_still_probed(
     assert envinstall.script_python_ready() is False
 
 
-@pytest.mark.skipif(os.name == "nt", reason="needs a POSIX #! stub interpreter")
 def test_the_interpreter_is_resolved_ONCE_per_process(
     tmp_path, monkeypatch, _fresh_script_python
 ):
@@ -708,7 +702,6 @@ def test_the_interpreter_is_never_ANOTHER_VENVS_python(
     assert "--managed-python" in find and "--no-project" in find, repr(find)
 
 
-@pytest.mark.skipif(os.name == "nt", reason="needs a POSIX #! stub interpreter")
 def test_a_not_ready_verdict_is_never_CACHED(tmp_path, monkeypatch, _fresh_script_python):
     """"Nothing here yet" is a fact about this instant, not about the machine.
 
@@ -1090,24 +1083,17 @@ def test_the_mirrored_row_points_at_the_app_folder(
     job_id = f"sys:env-install:{key}"
 
     row = _wait_until(lambda: _job(job_id))
-    # Canonical (forward-slash) form: `project_dir` can reach the mirror
-    # OS-native (backslashed on Windows), and a page is compared against the
-    # canonical spelling everywhere else it is stored or read.
+    # Canonical form: a page is compared against the canonical spelling
+    # everywhere else it is stored or read.
     assert row["page"] == canonical_fs_path(str(proj))
 
 
 def test_the_mirrored_row_accepts_a_pathlib_project_dir(monkeypatch):
     """`envinstall.start` is typed to take a `str`, but `ai/supervisor.py`
     calls it with `runner.folder`, a `pathlib.Path` — and `_mirror_into_jobs`
-    passes `project_dir` straight through to `canonical_fs_path` uncoerced.
-    A `Path` whose string form is drive-shaped reaches `canonical_fs_path`'s
-    `.replace("\\\\", "/")` call, but `Path.replace` takes one argument (a
-    rename target), not two — a `TypeError` that kills the mirror thread
-    silently before the jobs-dock row is ever created. Coercing to `str`
-    first, like the sibling call sites in `ai/supervisor.py` already do,
-    is what a POSIX test host can still catch this on: a `Path` built from a
-    Windows-shaped string is a `PosixPath` here, not a real `WindowsPath`,
-    but it fails the same `.replace` call the same way."""
+    passes `project_dir` on to `canonical_fs_path`. Coercing to `str` first,
+    like the sibling call sites in `ai/supervisor.py` already do, keeps the
+    row's `page` a JSON-serialisable string rather than a `Path`."""
     monkeypatch.setattr(envinstall, "progress", lambda key: {"done": True})
     captured = []
     from fused_render import jobs as jobs_mod
@@ -1116,7 +1102,7 @@ def test_the_mirrored_row_accepts_a_pathlib_project_dir(monkeypatch):
     monkeypatch.setattr(jobs_mod, "clear_cancel_requested", lambda job_id: None)
 
     key = "0123456789abcdef"
-    envinstall._mirror_into_jobs(key, Path(r"C:\Users\runner\app"))
+    envinstall._mirror_into_jobs(key, Path("/Users/runner/app"))
     # The mirror thread's FIRST upsert is the one that carries `page`; a
     # progress-poll upsert (`server=True` alone) can land ahead of it when the
     # thread is scheduled oddly, so wait for the row with a page rather than
@@ -1128,30 +1114,8 @@ def test_the_mirrored_row_accepts_a_pathlib_project_dir(monkeypatch):
     assert captured, "the mirror thread never reported (crashed uncoercing the Path?)"
     paged = [kw for kw in captured if "page" in kw]
     assert paged, f"no upsert carried a page: {captured!r}"
-    assert paged[0]["page"] == "C:/Users/runner/app"
-
-
-def test_the_mirrored_row_canonicalizes_a_windows_shaped_project_dir(monkeypatch):
-    """`_mirror_into_jobs` can be handed an OS-native `project_dir` whatever
-    the CALLER'S own spelling was — `ai/supervisor.py`'s
-    `envinstall.start(runner.folder, ...)` passes one straight through — so a
-    Windows-shaped path reaches its opening `jobs.upsert` even on a POSIX
-    test host. The row's `page` still has to be the canonical spelling."""
-    monkeypatch.setattr(envinstall, "progress", lambda key: {"done": True})
-    captured = []
-    from fused_render import jobs as jobs_mod
-    monkeypatch.setattr(jobs_mod, "upsert",
-                        lambda body, **kw: captured.append(kw) or {})
-    monkeypatch.setattr(jobs_mod, "clear_cancel_requested", lambda job_id: None)
-
-    key = "0123456789abcdef"
-    envinstall._mirror_into_jobs(key, r"C:\Users\runner\app")
-    deadline = time.monotonic() + 5.0
-    while len(captured) < 2 and time.monotonic() < deadline:
-        time.sleep(0.01)
-
-    assert captured, "the mirror thread never reported"
-    assert captured[0].get("page") == "C:/Users/runner/app"
+    assert paged[0]["page"] == "/Users/runner/app"
+    assert type(paged[0]["page"]) is str
 
 
 @requires_fused
@@ -1958,7 +1922,6 @@ def test_a_marked_venv_that_cannot_run_is_not_installed_and_loses_its_marker(
     assert not marker.exists(), "the marker must go, or upstream will not rebuild"
 
 
-@pytest.mark.skipif(os.name == "nt", reason="needs a POSIX #! stub interpreter")
 @requires_fused
 def test_a_marked_venv_whose_python_FAILS_is_not_installed(tmp_path, monkeypatch):
     """Present but broken, which is what the real bug looked like.
@@ -2775,7 +2738,6 @@ def test_a_worker_that_died_unreaped_is_not_reported_alive(tmp_path, monkeypatch
     assert "without finishing" in prog["error"]
 
 
-@pytest.mark.skipif(os.name == "nt", reason="waitpid reaping is POSIX-only")
 def test_a_pid_this_module_did_not_spawn_is_never_reaped():
     """`_pid_alive` must not steal another part of the server's child.
 
@@ -2878,29 +2840,11 @@ def test_cancellation_kills_the_recorded_pid(tmp_path, monkeypatch, detached):
     recycled one inside the SERVER's group would make an unguarded `killpg` take
     the server down with it. It killed a pytest session while this was being
     written, which is why the case is parametrized rather than assumed.
-
-    `start_new_session` is POSIX-only (the stdlib says so explicitly) — on
-    Windows it is silently ignored, so this would otherwise spawn the child
-    into the SAME console/process group as the pytest job itself, whichever
-    way `detached` fell. `cancel`'s Windows road is
-    `os.kill(pid, CTRL_BREAK_EVENT)` (`_kill`, unconditionally — there is no
-    leader check to fall back on there, unlike the POSIX branch), and
-    `GenerateConsoleCtrlEvent` targets a process GROUP id, not a bare pid: fed
-    a pid that never led a group of its own, it can land on whatever group the
-    runner's shell and every worker inherited, breaking the whole job instead
-    of just this one child. `CREATE_NEW_PROCESS_GROUP` is what actually gives
-    the child its own group on Windows — the Windows equivalent of
-    `start_new_session`, needed unconditionally there because `_kill` has no
-    "same-group" road to exercise on that platform at all (`_spawn` always
-    creates a new group); `detached` keeps choosing between the two real
-    POSIX roads.
     """
-    creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
     # A child that will not finish on its own, standing in for a slow download.
     child = subprocess.Popen(
         [sys.executable, "-c", "import time; time.sleep(600)"],
         start_new_session=detached,
-        creationflags=creationflags,
     )
     key = "ca9ce11ed0000001"  # 16 hex: keys are validated now
     d = envinstall.progress_dir(key)
@@ -2924,9 +2868,6 @@ def test_cancellation_kills_the_recorded_pid(tmp_path, monkeypatch, detached):
 
 
 @requires_fused
-@pytest.mark.skipif(os.name == "nt", reason="killpg/getpgid are POSIX-only; "
-                    "_kill's Windows path uses CTRL_BREAK_EVENT/taskkill instead, "
-                    "which this test's own-process-group hazard does not apply to")
 def test_cancelling_a_pid_in_our_own_group_does_not_kill_us(tmp_path, monkeypatch):
     """The guard, asserted directly rather than only via the parametrized case.
 
@@ -3080,12 +3021,8 @@ def test_no_explicit_cache_leaves_an_unset_UV_CACHE_DIR_unset(
 
     def _fake_run(cmd, **kw):
         seen["env"] = kw.get("env")
-        # Derived from `_venv_python`, not re-spelled as `bin/python`: that
-        # function returns `Scripts\python.exe` on Windows, and a literal
-        # POSIX path here is exactly the class of bug `fd50fc88` fixed once
-        # already ("uv sync reported success ... but left no interpreter
-        # at ...python.exe") — a bug in the TEST's assumed venv layout, not
-        # in `_build`.
+        # Derived from `_venv_python`, not re-spelled as `bin/python`, so the
+        # test cannot drift from the venv layout `_build` checks.
         interpreter = worker._venv_python(venv_dir)
         os.makedirs(os.path.dirname(interpreter), exist_ok=True)
         open(interpreter, "w").close()
@@ -3632,9 +3569,8 @@ def test_a_read_only_project_syncs_in_a_mirror_beside_the_venv(tmp_path, monkeyp
     A project folder that cannot be written to therefore failed the sync outright
     — `failed to write to file .../uv.lock: Read-only file system (os error 30)`,
     no environment built. Which is every AI model download on the packaged Linux
-    and Windows builds: the runner folders ship inside the app, the AppImage runs
-    from a read-only squashfs mount, and a `Program Files` install is not
-    user-writable. The venv, cache and interpreter are unchanged; only the
+    build: the runner folders ship inside the app, and the AppImage runs
+    from a read-only squashfs mount. The venv, cache and interpreter are unchanged; only the
     directory uv is allowed to litter moves.
     """
     proj = _project(tmp_path, deps=["pip"])
@@ -3892,17 +3828,14 @@ def test_the_error_for_a_read_only_project_names_the_PROJECT(tmp_path, monkeypat
 
 
 def test_writability_is_a_probe_and_not_os_access(tmp_path, monkeypatch):
-    """`os.access(dir, os.W_OK)` is the wrong question, on the platform that matters.
+    """`os.access(dir, os.W_OK)` is the wrong question.
 
-    On Windows it reports the read-only ATTRIBUTE, which says nothing about a
-    directory: an ACL-protected `C:\\Program Files\\FusedRender\\...` answers
-    "writable", so the sync would run in place and uv would still die — `Access is
-    denied. (os error 5)` instead of `Read-only file system (os error 30)`, the
-    same install failing for the same reason on the platform the mirror was added
-    for. POSIX ACLs and SELinux have the smaller version of the same hole.
+    It consults mode bits, so a directory denied by a POSIX ACL entry or by
+    SELinux still answers "writable", the sync would run in place, and uv would
+    still die.
 
     `os.access` is forced to lie here, which is the only way to describe that from
-    a POSIX test box: the directory really cannot be written to, and the mirror has
+    a test box: the directory really cannot be written to, and the mirror has
     to happen anyway.
     """
     proj = _project(tmp_path, deps=["pip"])
@@ -4215,8 +4148,8 @@ def test_an_empty_interpreter_slot_means_the_workers_OWN_python(tmp_path, monkey
     """None has always meant "the backend's own interpreter", never a version.
 
     `_resolve_script_python` answers `(None, True)` whenever the server is
-    already on the pinned version — the common path for the DMG, the AppImage,
-    the Windows installer and scripts/dev.sh — and `_spawn` carries that None
+    already on the pinned version — the common path for the DMG, the AppImage
+    and scripts/dev.sh — and `_spawn` carries that None
     across argv as "". Mapping it to the literal "3.12" makes `uv sync --python
     3.12` resolve against PATH and uv's managed registry instead of the bundled
     app interpreter, and with uv's default download behaviour it fetches a
@@ -4267,7 +4200,6 @@ def test_the_worker_spawns_with_the_interpreter_that_will_run_the_code(
 
 
 @requires_fused
-@pytest.mark.skipif(os.name == "nt", reason="POSIX detachment; Windows uses flags")
 def test_the_installer_is_spawned_off_the_fork_path(tmp_path, monkeypatch):
     """`start_new_session=True` here is a crash, not a detail.
 
@@ -4305,7 +4237,6 @@ def test_the_installer_is_spawned_off_the_fork_path(tmp_path, monkeypatch):
     assert "cwd" not in seen, "a cwd would force the fork path too"
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX detachment; Windows uses flags")
 def test_the_installer_worker_leads_its_own_session(tmp_path, monkeypatch):
     """The other half: the child takes the session the spawner stopped asking for.
 
@@ -4329,7 +4260,6 @@ def test_the_installer_worker_leads_its_own_session(tmp_path, monkeypatch):
     assert order == ["setsid", "install"]
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX detachment; Windows uses flags")
 def test_an_already_leading_worker_still_installs(monkeypatch):
     """EPERM out of `setsid` means we are ALREADY a group leader — the same end
     state — so it must not take the install down with it."""
@@ -5639,7 +5569,6 @@ def test_a_crash_message_says_how_far_it_got_and_whether_the_log_is_empty(tmp_pa
     assert "killed rather than failing" not in err
 
 
-@pytest.mark.skipif(os.name == "nt", reason="waitpid statuses are POSIX")
 def test_a_worker_we_reaped_ourselves_is_diagnosed_by_its_SIGNAL(tmp_path, monkeypatch):
     """The guess becomes a fact when the status is ours to read.
 
@@ -5699,7 +5628,6 @@ def _has_no_signal_name(number):
     return False
 
 
-@pytest.mark.skipif(os.name == "nt", reason="waitpid statuses are POSIX")
 def test_an_unreaped_or_nameless_ending_degrades_instead_of_failing():
     """The message must survive not knowing. Three ways it can not know: a pid we
     never buried (a record left by a previous server), a pid that is not a number

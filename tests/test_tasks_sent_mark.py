@@ -177,11 +177,8 @@ def test_the_row_lands_in_the_project_the_send_named(client, tmp_path):
     target.write_text("x = 1\n")
     tasks_watch.mark_running(SID, text="go", file=str(target))
     row = _by_key(client)[SID]
-    # `project`/`target` come back in the shell's canonical form (forward
-    # slashes on a drive-letter path — router.ts `rootedFsPath` / D-number
-    # in canonical_fs_path's docstring), not os.path's native separator, so
-    # `str(proj)`/`str(target)` on Windows must be canonicalized before the
-    # comparison rather than compared as-is.
+    # `project`/`target` come back in the shell's canonical form
+    # (canonical_fs_path).
     assert row["project"] == canonical_fs_path(str(proj))
     assert row["target"] == canonical_fs_path(str(target))
 

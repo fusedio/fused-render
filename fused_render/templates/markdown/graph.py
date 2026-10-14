@@ -351,27 +351,12 @@ def _stem(rel: str) -> str:
     return rel
 
 
-def _client_path(path: str) -> str:
-    """An absolute path in the form the PAGE speaks: forward slashes throughout.
-
-    Everything above this line does filesystem work and rightly uses native
-    separators — `os.path.abspath` hands back `C:\\Users\\me\\vault` on Windows.
-    But every path that crosses into a payload is then split and re-joined on
-    "/" by the template, and the shell's own canonical form for a Windows file
-    is the drive path `C:/Users/…`. A native separator therefore survives the
-    trip only to be mis-split at the other end, so it is converted exactly once,
-    here, at the boundary.
-    """
-    return path.replace("\\", "/") if path else path
-
-
 def _client_join(root: str, rel: str) -> str:
     """`root` + a vault-relative `rel`, as one client-facing absolute path.
 
-    Pure string work on purpose: `os.path.join` would reintroduce the native
-    separator this exists to remove, and `rel` is already POSIX by construction.
+    Pure string work on purpose: `rel` is already POSIX by construction.
     """
-    base = _client_path(root).rstrip("/")
+    base = root.rstrip("/")
     return base + "/" + rel if rel else base
 
 
@@ -898,7 +883,7 @@ def _note_payload(root: str, rel: str, scan: dict) -> dict:
             })
     return {
         "error": None,
-        "root": _client_path(root),
+        "root": root,
         "rel": rel,
         "title": _display_title(rel),
         "headings": row["headings"],
@@ -995,7 +980,7 @@ def _candidates_payload(root: str, scan: dict, rel: str = "") -> dict:
     } for asset_rel in scan["assets"]]
     return {
         "error": None,
-        "root": _client_path(root),
+        "root": root,
         "notes": rows,
         "assets": assets,
         "truncated": scan["truncated"],
@@ -1120,7 +1105,7 @@ def _graph_payload(root: str, scan: dict, focus, depth: int) -> dict:
         nodes[edge["target"]]["degree"] += 1
     return {
         "error": None,
-        "root": _client_path(root),
+        "root": root,
         "focus": focus,
         "depth": depth,
         "nodes": [nodes[node] for node in sorted(nodes)],

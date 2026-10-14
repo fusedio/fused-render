@@ -49,7 +49,6 @@ import logging
 import os
 import shutil
 import subprocess
-import sys
 import tempfile
 import time
 
@@ -306,7 +305,6 @@ def _git(args: list, timeout: int) -> subprocess.CompletedProcess:
         capture_output=True, text=True, timeout=timeout,
         encoding="utf-8", errors="replace",
         close_fds=False,
-        creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
     )
 
 
@@ -688,10 +686,9 @@ def export_skill_plugin_env() -> str | None:
     since the plugin system itself (CLI 2.0.12, Oct 2025) on a binary that
     auto-updates, so an install old enough to reject the flag is not a case worth
     paying for. It was paid for: this function used to run `claude --help` here,
-    on the pre-bind path, and a cold 279MB binary facing a Windows Defender
-    first-touch scan took longer to answer than the desktop supervisor's whole
-    20s readiness budget — killing a server that was seconds from healthy, three
-    times, then showing the user a startup-failure dialog.
+    on the pre-bind path, and a cold 279MB binary could take longer to answer
+    than the desktop supervisor's whole readiness budget — killing a server that
+    was seconds from healthy, then showing the user a startup-failure dialog.
     """
     root = sync_skill_plugin()
     if root is None:

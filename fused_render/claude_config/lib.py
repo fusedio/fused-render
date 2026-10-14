@@ -15,6 +15,7 @@ owner of ~/.fused-render in this codebase and the reason FUSED_RENDER_HOME
 redirects the override for tests for free.
 """
 import contextlib
+import fcntl
 import itertools
 import json
 import os
@@ -42,15 +43,6 @@ def _git_bin():
     return git_tools.git_bin()
 
 
-# flock is POSIX-only and this module is imported at server-startup time (the
-# router is registered unconditionally in server/app.py), so a bare
-# `import fcntl` would take the WHOLE server down on Windows over a lock that
-# is not even the one that matters any more — see config_lock().
-try:
-    import fcntl
-except ImportError:  # pragma: no cover - Windows
-    fcntl = None
-
 # --- config-store.md §1: base directory ------------------------------------
 
 CLAUDE_DIR = os.environ.get("CLAUDE_DIR") or os.path.expanduser("~/.claude")
@@ -68,8 +60,7 @@ MARKETPLACES_DIR = os.path.join(CLAUDE_DIR, "plugins", "marketplaces")
 #    Short version: the server has libproj resident, so a plain fork() runs
 #    PROJ's pthread_atfork child handler into a SIGSEGV before exec, and the
 #    default close_fds=True is what takes the fork path on macOS. close_fds=False
-#    makes CPython use posix_spawn, which runs no atfork handlers, and degrades
-#    to CreateProcess on Windows rather than raising.
+#    makes CPython use posix_spawn, which runs no atfork handlers.
 #
 #    This is why the MCP page stayed broken after the UTF-8 fix below: every
 #    `claude` and every `git` in this package died rc=-11 with EMPTY stderr, in
@@ -101,11 +92,10 @@ SUBPROCESS_KWARGS = {
 # other. TWO mechanisms, because the port changed where the concurrency comes
 # from: as an html+py app every action was its own subprocess, and an flock on a
 # shared lock file was the only thing that could serialize them; as a server
-# router they are threadpool workers inside ONE process, and there flock is not
-# available at all on Windows — where the whole feature would otherwise run
-# unserialized. The threading lock covers this process everywhere; the flock
-# still keeps a SEPARATE process (a CLI run of these modules, a second desktop
-# instance, the example app) from interleaving with us on POSIX. Always acquired
+# router they are threadpool workers inside ONE process. The threading lock
+# covers this process; the flock still keeps a SEPARATE process (a CLI run of
+# these modules, a second desktop instance, the example app) from interleaving
+# with us. Always acquired
 # in this order, so the pair can't deadlock.
 _LOCK_PATH = os.path.join(CLAUDE_DIR, ".config-ui.lock")
 _THREAD_LOCK = threading.Lock()
@@ -129,8 +119,7 @@ _INIT_LOCK = threading.Lock()
 def config_lock() -> Generator[None, None, None]:
     os.makedirs(CLAUDE_DIR, exist_ok=True)
     with _THREAD_LOCK, open(_LOCK_PATH, "w") as lock:
-        if fcntl is not None:
-            fcntl.flock(lock, fcntl.LOCK_EX)
+        fcntl.flock(lock, fcntl.LOCK_EX)
         yield
 
 
@@ -339,12 +328,9 @@ def _atomic_write(path: str) -> Generator[str, None, None]:
 
     `os.replace` itself is INSIDE the try, not after it — a version that
     only guarded the write and let `os.replace` run unguarded afterward
-    would leave exactly the orphan class this docstring claims to close: on
-    Windows, `os.replace` over a target another process still holds open (an
-    editor, an AV scanner, a search indexer) raises `PermissionError`
-    rather than replacing, and a cross-device `path` raises too — both
-    leave `tmp` fully written and orphaned if the exception isn't caught
-    here."""
+    would leave exactly the orphan class this docstring claims to close: a
+    cross-device `path` raises, which leaves `tmp` fully written and
+    orphaned if the exception isn't caught here."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = _tmp_path(path)
     try:
@@ -470,8 +456,7 @@ def ensure_repo() -> None:
     takes the lock). Two threads racing `git init` on the same fresh
     CLAUDE_DIR: the loser dies mid-template-copy with "File exists" — git's
     copy_file() lstats each destination and skips existing entries, then opens
-    with O_CREAT|O_EXCL, so EEXIST can only happen in that window. Windows just
-    has a far wider window because process spawn is much slower there.
+    with O_CREAT|O_EXCL, so EEXIST can only happen in that window.
 
     Fixed with _INIT_LOCK (see its own comment for why it is a lock separate
     from config_lock()'s _THREAD_LOCK — routing this through config_lock()
@@ -499,11 +484,10 @@ def ensure_repo() -> None:
     on-disk repo is a stat-class git operation (no network, no working-tree
     walk), so paying it on every call is worth the guarantee.
 
-    That still only serializes threads INSIDE this process. config_lock() also
-    takes an flock, which is a no-op on Windows (fcntl is None — see the import
-    guard above), so on Windows a SECOND process (another desktop instance, a
-    CLI invocation of these modules) racing this bootstrap on the same fresh
-    CLAUDE_DIR is not covered by any lock this module holds. Belt-and-braces
+    That still only serializes threads INSIDE this process: a SECOND process
+    (another desktop instance, a CLI invocation of these modules) racing this
+    bootstrap on the same fresh CLAUDE_DIR is not covered by any lock this
+    function holds. Belt-and-braces
     for that gap: `git init` and the seed `git commit` treat their own
     failure as benign ONLY if the post-condition they exist to establish
     already holds afterward — a valid git dir, HEAD being born — the signature
@@ -512,7 +496,7 @@ def ensure_repo() -> None:
     That post-condition for `git init` is deliberately NOT `os.path.isdir(.git)`
     — checking that would be wrong, and the ORIGINAL bug report is the proof:
     the user's error was `cannot copy … to
-    C:/Users/amynr/.claude/.git/hooks/pre-applypatch.sample: File exists`,
+    ~/.claude/.git/hooks/pre-applypatch.sample: File exists`,
     i.e. `.git/hooks/` already existed while `git init` was genuinely still
     failing. `git init` creates the `.git` directory FIRST, then writes
     `HEAD`/`config`, then copies hook templates — so `.git` existing is not

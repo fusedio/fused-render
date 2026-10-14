@@ -113,8 +113,7 @@ def _munge(path: str) -> str:
 def _bad_id(value: str) -> bool:
     """Whether a session id from the page is unsafe to join into a path. It
     arrives as a URL param and gets joined onto a directory we own, so it may
-    carry no separator and no leading dot — and on Windows a drive prefix
-    ("d:x") makes os.path.join drop our directory entirely."""
+    carry no separator and no leading dot (nor `\\` or `:`)."""
     return not value or value.startswith(".") or any(c in value for c in "/\\:")
 
 

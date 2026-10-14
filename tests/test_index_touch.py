@@ -17,10 +17,7 @@ from fused_render.server.index_touch import RescanQueue
 
 # `RescanQueue.note()` resolves every path it is given through `_folder_of`
 # (index_touch.py), which is `norm(os.path.abspath(...))` — the same
-# canonicalization `canonical_root` does. Every hardcoded "/home/me/..."
-# literal below is a no-op of that on POSIX (already absolute), but on
-# Windows a leading-slash-no-drive literal is only drive-RELATIVE, so it
-# resolves against the runner's current drive (e.g. "D:/home/me/proj"). The
+# canonicalization `canonical_root` does. The
 # FILE paths handed to `q.note(...)` are left as raw literals — that mirrors
 # a real caller, and `_folder_of` canonicalizes them itself — but every
 # FOLDER identity these tests compare against (`Fake(live=...)`,
@@ -133,14 +130,8 @@ def test_a_mount_backed_folder_is_never_scanned():
 def test_the_filesystem_root_is_never_scanned():
     """A file written directly into "/" must not spawn a whole-disk crawl.
 
-    NOT a canonical_root() fixture mismatch like its neighbours: `_folder_of`
-    (index_touch.py) guards against a bare root with `parent in ("", "/")`
-    after `norm(os.path.abspath(...))`, and that guard only recognized the
-    POSIX spelling — on Windows `os.path.dirname("D:/loose.txt")` is `"D:/"`,
-    truthy and not `"/"`, so a drive letter's own root slipped through the
-    same way `query.search_under`'s `.rstrip("/") or "/"` would (both
-    generalize the POSIX bare-root special case, not the Windows one).
-    `_folder_of`'s `_DRIVE_ROOT` regex now recognizes that form too."""
+    `_folder_of` (index_touch.py) guards against a bare root with
+    `parent in ("", "/")` after `norm(os.path.abspath(...))`."""
     f = Fake()
     q = f.queue()
     q.note("/loose.txt")
@@ -258,8 +249,8 @@ def test_note_folders_still_collapses_to_the_outermost():
 
 
 def test_note_folders_never_queues_the_filesystem_root():
-    """`note()` routes through `_folder_of`, which refuses a bare "/" (and a
-    bare Windows drive root). `note_folders` routes through `_canon_folder`
+    """`note()` routes through `_folder_of`, which refuses a bare "/".
+    `note_folders` routes through `_canon_folder`
     instead, whose last line is `return norm(...).rstrip("/") or "/"` — it
     PRODUCES "/" for a root-ish input rather than refusing it. Without the
     same refusal, `note_folders("/")` queues a whole-disk crawl, exactly the

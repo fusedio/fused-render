@@ -4,7 +4,7 @@
 **Why this exists, and what it replaces.** A model this app curates for one
 engine sometimes has no GGUF conversion on any curated list at all — the user
 found it in Discover, or it is one of the handful of repos a llama.cpp-only
-machine (Windows, Linux, D416) cannot read in its original safetensors form.
+machine (Linux, D416) cannot read in its original safetensors form.
 `catalog.py` used to carry `COUNTERPART_IDS`, but that table answers a
 DIFFERENT question by construction — it is two written-by-hand rows mapping a
 curated id to the SAME checkpoint in a different EXPORT FORMAT (ONNX), for

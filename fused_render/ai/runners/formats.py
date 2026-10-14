@@ -1785,8 +1785,7 @@ DECISIVE = ("faster-whisper", "mlx-whisper", "mflux-image", "ltx-video",
             # than via `ONNX_EMBED_RUNNERS` for the same forward-declaration
             # reason `LLAMACPP_RUNNERS` is spelled literally just above.
             "mlx-embed",
-            "onnx-embed", "onnx-embed-directml", "onnx-embed-cuda",
-            "onnx-embed-rocm")
+            "onnx-embed", "onnx-embed-cuda", "onnx-embed-rocm")
 
 
 def unloadable_quant(config: dict) -> str | None:
@@ -2099,7 +2098,7 @@ DIFFUSERS_RUNNERS = ("diffusers-image", "diffusers-image-cuda",
 #: `llamacpp-text` here is exactly the trap this comment already describes for
 #: the other two families (see `test_every_registered_runner_appears_in_loaders`).
 LLAMACPP_RUNNERS = ("llamacpp-text", "llamacpp-text-vulkan")
-#: All four ONNX Runtime embedding builds — CPU, DirectML, CUDA and ROCm — for
+#: All three ONNX Runtime embedding builds — CPU, CUDA and ROCm — for
 #: the same reason as the two tuples above: an `onnx/` tree holding a
 #: `text_model.onnx` is the same FORMAT whichever execution provider's
 #: `InferenceSession` opens it, and a branch that named only the CPU row would be
@@ -2109,11 +2108,10 @@ LLAMACPP_RUNNERS = ("llamacpp-text", "llamacpp-text-vulkan")
 #:
 #: `mlx-embed` stays OUT: it has no hardware variant of its own to enumerate,
 #: and it is appended separately in `loaders()` because it is gated on
-#: `MLX_EMBED_MODEL_TYPES` in a way none of these four are — and, since the
+#: `MLX_EMBED_MODEL_TYPES` in a way none of these three are — and, since the
 #: three `transformers-embed*` rows went, because it reads a different weight
 #: layout entirely (safetensors, not `.onnx`).
-ONNX_EMBED_RUNNERS = ("onnx-embed", "onnx-embed-directml", "onnx-embed-cuda",
-                      "onnx-embed-rocm")
+ONNX_EMBED_RUNNERS = ("onnx-embed", "onnx-embed-cuda", "onnx-embed-rocm")
 
 
 def loaders(*, repo_id: str, names, dirnames, config: dict, torch_weights: bool,

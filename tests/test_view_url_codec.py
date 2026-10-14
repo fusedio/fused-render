@@ -1,9 +1,4 @@
-"""Tests for the shared fs-path -> /view URL codec (_view_url_codec.py).
-
-No sys.platform guard: the codec is built on pathlib.PureWindowsPath, a pure
-path class that performs no OS calls and is instantiable on any platform, so
-these tests run (and must pass) on Windows, macOS, and Linux alike.
-"""
+"""Tests for the shared fs-path -> /view URL codec (_view_url_codec.py)."""
 import pytest
 
 from fused_render._view_url_codec import (
@@ -17,41 +12,9 @@ from fused_render._view_url_codec import (
 )
 
 
-def test_normpath_for_shape_picks_windows_semantics_for_a_drive_path():
-    # A Windows path's '..'/doubled separators collapse with its own rules,
-    # on any host — this is the shared function deeplink.py and
-    # server/dirpicker.py both use.
-    assert normpath_for_shape("C:\\Users\\ada\\..\\code\\") == "C:\\Users\\code"
-
-
 def test_normpath_for_shape_picks_posix_semantics_otherwise():
     assert normpath_for_shape("/home/ada/../code/") == "/home/code"
     assert normpath_for_shape("relative\\path") == "relative\\path"
-
-
-def test_drive_letter_path():
-    assert view_url(8000, "C:\\Users\\x") == "http://127.0.0.1:8000/explorer/view/C%3A/Users/x"
-
-
-def test_drive_letter_path_unicode_and_spaces():
-    # Mirrors the Rust supervisor test path C:\data\résumé.xlsx.
-    assert view_url_path("C:\\data\\résumé.xlsx") == "/explorer/view/C%3A/data/r%C3%A9sum%C3%A9.xlsx"
-    assert (
-        view_url_path("C:\\data\\my résumé v2.xlsx")
-        == "/explorer/view/C%3A/data/my%20r%C3%A9sum%C3%A9%20v2.xlsx"
-    )
-
-
-def test_forward_slash_drive_path_matches_backslash_form():
-    assert view_url_path("C:/Users/x") == view_url_path("C:\\Users\\x")
-
-
-def test_unc_path_stays_one_segment():
-    # router.ts urlForFsPath only normalizes drive-letter paths, so a UNC path
-    # is one percent-encoded segment, backslashes and all.
-    assert view_url(8000, "\\\\server\\share\\file") == (
-        "http://127.0.0.1:8000/explorer/view/%5C%5Cserver%5Cshare%5Cfile"
-    )
 
 
 def test_posix_backslash_filename_untouched():
@@ -146,31 +109,21 @@ def test_open_target_unknown_scheme_fails_loudly():
         open_target_path("ftp://example.com/pub/data.csv")
 
 
-def test_canonical_fs_path_normalizes_only_drive_paths():
-    """The rule the call log stores and compares by (D147).
-
-    A drive path becomes forward-slashed; a POSIX path is returned untouched
-    even when it contains a backslash, because there a backslash is a legal
-    filename character. That second half is why this is not a plain
-    `.replace("\\\\", "/")` — an unconditional replace corrupts the POSIX name.
+def test_canonical_fs_path_leaves_posix_paths_untouched():
+    """The rule the call log stores and compares by (D147): a POSIX path is
+    returned untouched even when it contains a backslash, because there a
+    backslash is a legal filename character.
     """
-    assert canonical_fs_path("C:\\Users\\foo\\app\\mine.html") == "C:/Users/foo/app/mine.html"
-    assert canonical_fs_path("c:\\data\\x.py") == "c:/data/x.py"
-    # Mixed separators, as os.path.join on Windows readily produces.
-    assert canonical_fs_path("C:/Users/foo\\app\\mine.html") == "C:/Users/foo/app/mine.html"
-    # POSIX: a literal backslash in a filename MUST survive.
+    # A literal backslash in a filename MUST survive.
     assert canonical_fs_path("/app/we\\ird.html") == "/app/we\\ird.html"
     assert canonical_fs_path("/app/mine.html") == "/app/mine.html"
     # A bare fragment (what `calls --entrypoint sine.py` passes) is not a path
     # to normalize and must pass through for the substring filter to work.
     assert canonical_fs_path("sine.py") == "sine.py"
-    # A UNC path is not a drive path; it keeps its separators (view_url_path
-    # percent-encodes it as one segment).
-    assert canonical_fs_path("\\\\server\\share\\x.py") == "\\\\server\\share\\x.py"
 
 
 def test_canonical_fs_path_is_idempotent():
-    once = canonical_fs_path("C:\\Users\\foo\\a.py")
+    once = canonical_fs_path("/Users/foo/a.py")
     assert canonical_fs_path(once) == once
 
 
@@ -181,4 +134,3 @@ def test_is_launch_url_classification():
     assert is_launch_url("https://example.com/x")
     assert not is_launch_url("/home/u/a.parquet")
     assert not is_launch_url("relative/path")
-    assert not is_launch_url("C:\\Users\\x")

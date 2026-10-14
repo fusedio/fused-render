@@ -471,7 +471,7 @@ describe("video generation's place in the reading order", () => {
 
   // `ltx-video` does not reach a machine that is not Apple Silicon — unlike
   // text generation or image generation, where a torch/diffusers row keeps
-  // the capability alive on Windows and Linux. Video generation is therefore
+  // the capability alive on Linux. Video generation is therefore
   // the one capability whose row can go fully unavailable. The row renders
   // off whichever runner the SERVER reports as effective, and neither this
   // test nor `mergeSections` cares which one that is — which is why dropping
@@ -494,7 +494,7 @@ describe("video generation's place in the reading order", () => {
   // capability follows (HF-8), and video generation is still the one that can
   // go unavailable on every engine it has: `ltx-video` is gated on Apple
   // Silicon (registry.py's ordering, SPEC §40's LTX-2.3 plan), so it does
-  // not reach a Windows or Linux machine the way a torn-off torch/CUDA row
+  // not reach a Linux machine the way a torn-off torch/CUDA row
   // keeps text or image generation alive there.
   it("still renders, with its reason, when this machine cannot serve video", () => {
     const catalogWithVideo: AiCatalogCapability[] = [

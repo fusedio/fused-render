@@ -27,9 +27,8 @@ double-list an app under ``linked`` with a path the user never chose.
 
 A registry over a symlink into the workspace, for the same reasons as before:
 `app_git.app_dir_for` scopes auto-commits by path prefix and a symlink would
-let fused-render commit inside the user's own repository; symlink creation is
-privileged on Windows; and stale entries just drop out on read instead of
-dangling.
+let fused-render commit inside the user's own repository; and stale entries
+just drop out on read instead of dangling.
 
 Reads degrade like every other listing: a missing or unreadable target folder
 drops out of the app list (read-only — the folder may come back), and a corrupt

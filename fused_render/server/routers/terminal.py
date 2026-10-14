@@ -20,10 +20,6 @@ inside one shape:
     JSON, today only `{"exit": code}` sent once, when the child dies (or
     `{"exit": null}` immediately, for an id the registry no longer knows).
 
-Windows: every route returns 501 with a plain reason, and the chip that would
-reach them is hidden client-side (see PLAN-status-bar-terminal.md's
-Decisions) — a disabled control, not one that fails when clicked.
-
 NOT on the LAN forward allowlist (fused_render/lan.py) — a paired LAN peer's
 attach gets a 1008 close. See the comment there for why that is a deliberate
 UX/scope call, not a security boundary.
@@ -36,7 +32,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from queue import Empty
 
 from fastapi import APIRouter, Body, Header, WebSocket, WebSocketDisconnect
@@ -46,18 +41,9 @@ from fused_render.server.common import _error, _require_fused
 
 router = APIRouter()
 
-_UNSUPPORTED = "terminal is not supported on this platform (Windows is out of scope)"
-
-
-def _windows() -> bool:
-    return os.name == "nt"
-
-
 @router.post("/api/terminal")
 def api_terminal_create(body: dict = Body(default={}),
                         x_fused: str | None = Header(default=None)):
-    if _windows():
-        return _error(_UNSUPPORTED, status=501)
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
@@ -76,8 +62,6 @@ def api_terminal_create(body: dict = Body(default={}),
 
 @router.get("/api/terminal")
 def api_terminal_list():
-    if _windows():
-        return _error(_UNSUPPORTED, status=501)
     # `shell` is what the client labels a tab with when it has no better name
     # and `cwd` the tooltip's directory (live once the shell reports it);
     # `foreground`/`lastCommand`/`lastExit`/`lastActivity` are additive — see
@@ -115,8 +99,6 @@ def api_terminal_focus(body: dict = Body(default={}),
     `terminal_read()` with no id (and `terminal_list`'s `focused`) can answer
     "which terminal do you mean". The drawer reports it on every tab change;
     `{"id": null}` clears it (drawer closed / last tab gone)."""
-    if _windows():
-        return _error(_UNSUPPORTED, status=501)
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
@@ -131,8 +113,6 @@ def api_terminal_focus(body: dict = Body(default={}),
 def api_terminal_text(sid: str, lines: int = pty_session.DEFAULT_TEXT_LINES):
     """The terminal as a human sees it (VT-emulated, not raw bytes) plus the
     metadata of the list entry. Unguarded like the list: a read."""
-    if _windows():
-        return _error(_UNSUPPORTED, status=501)
     lines = max(1, min(lines, pty_session.MAX_TEXT_LINES))
     chat = claude_cmd_log.chat_of(sid)
     if chat is not None:
@@ -154,8 +134,6 @@ def api_terminal_input(sid: str, body: dict = Body(default={}),
     # sends this right after creating a session, before the drawer's
     # WebSocket has necessarily attached, so it cannot depend on a live
     # `stream` connection the way keystrokes typed into an open drawer do.
-    if _windows():
-        return _error(_UNSUPPORTED, status=501)
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
@@ -186,8 +164,6 @@ def api_terminal_input(sid: str, body: dict = Body(default={}),
 def api_terminal_stop(sid: str, x_fused: str | None = Header(default=None)):
     """Stop the commands a chat is running right now (the Claude tab's Stop
     button). Kills the wrapper's process tree, not a pgid: see claude_cmd_log."""
-    if _windows():
-        return _error(_UNSUPPORTED, status=501)
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
@@ -199,8 +175,6 @@ def api_terminal_stop(sid: str, x_fused: str | None = Header(default=None)):
 
 @router.delete("/api/terminal/{sid}")
 def api_terminal_delete(sid: str, x_fused: str | None = Header(default=None)):
-    if _windows():
-        return _error(_UNSUPPORTED, status=501)
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
@@ -250,9 +224,6 @@ async def _stream_claude(ws: WebSocket, chat: str) -> None:
 
 @router.websocket("/api/terminal/{sid}/stream")
 async def api_terminal_stream(ws: WebSocket, sid: str):
-    if _windows():
-        await ws.close(code=1008)
-        return
     chat = claude_cmd_log.chat_of(sid)
     if chat is not None:
         await _stream_claude(ws, chat)

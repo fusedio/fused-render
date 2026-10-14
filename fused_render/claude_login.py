@@ -25,8 +25,8 @@ NEVER HANDLES AN OAUTH CODE. That is the whole reason this module is small.
 forces the user into the manual flow for no reason. The loopback URL is never
 printed — the child hands it straight to the browser — so there is nothing here
 worth capturing, and the child opens the browser itself, which is the one thing
-that works on all three platforms (`BROWSER` is a POSIX convention; macOS and
-Windows shell out to `open`/`start` and ignore it).
+that works on both platforms (`BROWSER` is a POSIX convention; macOS shells out
+to `open` and ignores it).
 
 **Why this is not a third `claude_install` action.** Those two are machine time:
 they run to completion on their own, so the record is progress and the endpoint
@@ -105,18 +105,6 @@ _PROMPT_RE = re.compile(r"Paste code here[^\n>]*>\s*")
 
 class LoginError(RuntimeError):
     """A refusal with a sentence the strip can show as-is."""
-
-
-def _windows() -> bool:
-    """Whether to stop children the Windows way.
-
-    A function rather than an inline `os.name` check so a test can pin the
-    platform to ONE MODULE. Patching `os.name` itself would reach the whole
-    interpreter — pathlib, subprocess, tempfile — and on the Windows runner it
-    would also leave every test that reaches `_stop` firing a real
-    `taskkill /F /T /PID` at whatever process happens to hold a fake pid.
-    """
-    return os.name == "nt"
 
 
 @dataclasses.dataclass
@@ -224,48 +212,8 @@ def _drain(login: _Login) -> None:
 
 
 def _stop(login: _Login, force: bool) -> None:
-    """Stop the child — and on Windows the whole tree under it.
-
-    ON WINDOWS THE DIRECT CHILD MAY NOT BE CLAUDE. npm installs the CLI as a
-    `.cmd` shim, which only cmd.exe can run, so `_probe_cmd` hands us a command
-    string and the spawn is `shell=True`. `terminate()` and `kill()` are both
-    `TerminateProcess` on that cmd.exe and nothing else: the node process under
-    it keeps running, keeps the loopback listener, and keeps the write end of
-    our stdout pipe — so the drain never reaches EOF, the record never settles,
-    and `in_flight` stays true for the life of the app. Cancel and the watchdog
-    would both leave the button wedged, on precisely the install this button
-    exists to serve.
-
-    `taskkill /T` is what walks the tree. `/F` with it because there is no
-    graceful stop to prefer here: a console process is under no obligation to
-    act on the polite form, and a sign-in that will not close is the failure
-    being fixed. CREATE_NO_WINDOW so a packaged GUI app does not flash a
-    console. POSIX is unaffected — `shell=True` never happens there, so the
-    child IS the CLI and a signal reaches it.
-    """
+    """Stop the child. The child IS the CLI, so a signal reaches it."""
     proc = login.proc
-    if _windows():
-        try:
-            done = subprocess.run(
-                ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
-                capture_output=True, timeout=30,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            )
-            if done.returncode == 0:
-                return
-            # NOT `check=True`, and the returncode is NOT ignorable. taskkill
-            # reports "process not found" and "access denied" by exiting
-            # non-zero, which raises nothing — so returning on the strength of
-            # having merely RUN it would skip the fallback in exactly the cases
-            # that need one, leaving the tree alive and the record in flight
-            # for good.
-            logger.warning("taskkill did not stop the Claude Code sign-in tree "
-                           "(exit %s)", done.returncode)
-        except (OSError, subprocess.SubprocessError):
-            logger.warning("taskkill could not be run for the Claude Code sign-in")
-        # Fall through. Killing cmd.exe alone is worth little behind a shim, and
-        # on an already-dead pid it is a no-op, but neither is worse than
-        # walking away from a child we were asked to stop.
     try:
         proc.kill() if force else proc.terminate()
     except OSError:
@@ -373,10 +321,7 @@ def start() -> dict:
     if not path or not claude_health.executable(path):
         raise LoginError("there is no Claude Code on this machine to sign in to")
 
-    # Through `_probe_cmd` for the reason the updater goes through it: npm
-    # installs `claude` as a .cmd shim that CreateProcess cannot run, and a
-    # signed-out npm install on Windows is exactly a machine this button is for.
-    cmd = claude_health._probe_cmd(path, "auth", "login")
+    cmd = [path, "auth", "login"]
 
     global _active
     with _LOCK:
@@ -386,7 +331,6 @@ def start() -> dict:
         try:
             proc = subprocess.Popen(
                 cmd,
-                shell=isinstance(cmd, str),
                 # A PIPE, NOT DEVNULL. Nothing is written to it on the loopback
                 # path — but closing stdin forecloses the paste fallback for a
                 # machine whose browser never opened, and buys nothing for it.

@@ -899,7 +899,7 @@ export function TaskPeek({
    * CONTINUE THIS TASK IN A REAL TERMINAL — the chat's own door, not a new one
    * (`@apps/claude/ui/Kebab`'s `onTerminal`): ask the chat agent for the exact `claude --resume …` line. Where the status-bar drawer exists
    * (`canRunInTerminal()`) this runs it there directly; otherwise — an embed,
-   * or Windows, where the app has no terminal of its own to open — it falls
+   * where the app has no terminal of its own to open — it falls
    * back to putting the command on the clipboard, which is what it does
    * everywhere else it is offered.
    *

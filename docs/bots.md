@@ -1002,7 +1002,7 @@ semantics, `fused_ai.text(prompt, system_prompt, model, effort)` per step.
   of both sources; a sync that changes no interval does not reload the
   agent). Interval routines are left out on purpose: a 5-minute routine would
   relaunch a quit app five minutes after every Quit (owner's call, 2026-10-13).
-  macOS only; Windows and Linux keep the old single-process behaviour.
+  macOS only; Linux keeps the old single-process behaviour.
 - `server.py`: include `bots.routes.router` and `apps` routes; `/` →
   `bots.html`; add `/embed`; third `app_dir_for` rule; remove the showcase /
   dock / launcher / settings / open routes and their imports; `start_ai` adds

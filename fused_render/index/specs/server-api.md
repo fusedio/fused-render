@@ -281,7 +281,7 @@ same-folder precision-glob trade-off): a leading `**` (crosses directories,
 same reasoning as the whitespace collapse), a trailing single `*` (confined to
 one segment — a folder-anchored query like `/*.pdf` must stay anchored to that
 folder, not also match a `.pdf`-free file several segments below it), a leading
-`~`/`/`/drive letter/`..` can peel a `base` off the front,
+`~`/`/`/`..` can peel a `base` off the front,
 and the result decides `mode` — `"glob"` the moment the expanded string contains a
 `*` anywhere, including one introduced purely by whitespace with no character the
 user typed, else `"substring"`. `base` is the resolved search root (equal to the

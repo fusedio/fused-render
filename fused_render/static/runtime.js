@@ -327,7 +327,7 @@
  *     `audio` on a screen recording is false, "mic", "system" or "both", named
  *     rather than boolean and refused rather than coerced. `device` picks a
  *     microphone THERE. `audio({source})` is "mic" (default), "system" or
- *     "both" on macOS; on Windows and Linux only "mic" — the other two are
+ *     "both" on macOS; on Linux only "mic" — the other two are
  *     refused, naming the screen recording that does it. macOS audio-only
  *     "mic" records the system's current input and refuses a `device`;
  *     "system" refuses one too; "both" honours it. `stop()` may add a
@@ -352,14 +352,13 @@
  *     while drawing a record button. `available: false` always carries a
  *     `reason`, and a start rejects .type "unavailable" with the same sentence.
  *     Local only — not available on hosted/exported pages.
- *     WHAT DIFFERS BY PLATFORM, since one API serves three: on macOS the app
+ *     WHAT DIFFERS BY PLATFORM, since one API serves two: on macOS the app
  *     records natively (macOS 15+, 14 for the still) with no picker, and a
- *     recording outlives the page that started it. On Windows and Linux the
- *     browser records and the server writes the file, so the share picker opens
+ *     recording outlives the page that started it. On Linux the browser
+ *     records and the server writes the file, so the share picker opens
  *     when a screen recording starts, `display`/`rect`/`cursor` are REFUSED on
- *     screen() with a sentence saying why (screenshot() still takes all three
- *     on Windows), and a full page reload ends a recording — the file is kept
- *     and its row says so. `device` works on audio() there, and does not on
+ *     screen() with a sentence saying why, and a full page reload ends a
+ *     recording — the file is kept and its row says so. `device` works on audio() there, and does not on
  *     macOS. Ask sources() and read the `reason`s rather than sniffing the
  *     platform: there is deliberately no field naming which one served you.
  *   fused.terminal.open({cwd}?) -> Promise<void> and
@@ -369,8 +368,7 @@
  *     given). Resolves once the request has been handed to the shell that
  *     owns the drawer, not once a shell has actually opened it or run the
  *     command — there is no round trip that would let it mean more. `command`
- *     must be a non-empty string. Rejects .type "unavailable" on Windows
- *     (terminal is POSIX-pty only) or with a plain Error when there is no
+ *     must be a non-empty string. Rejects with a plain Error when there is no
  *     shell to hand the request to (a standalone /render page, the
  *     hosted/exported runtime, or an embedded pane — the drawer itself
  *     doesn't exist there).
@@ -2138,32 +2136,9 @@
     return false;
   }
 
-  // A best-effort, client-side-only Windows check (SPEC's terminal work is
-  // POSIX-pty-backed — see fused_render/pty_session.py — and every server
-  // route 501s on Windows). This is NOT authoritative: the server route is
-  // the real gate, and its 501 still surfaces (through TerminalDrawer's
-  // `createError` banner) if this check is ever wrong for some UA. It exists
-  // so `fused.terminal.open`/`.run` can reject synchronously with a clear
-  // reason on Windows rather than silently opening a drawer that is about to
-  // show a "Couldn't start a terminal" banner.
-  function terminalUnsupportedReason() {
-    const nav = typeof navigator === "object" && navigator ? navigator : {};
-    const platform = (nav.userAgentData && nav.userAgentData.platform) || nav.platform || nav.userAgent || "";
-    // Anchored so it matches only a platform string that NAMES Windows
-    // ("Win32", "Win64", "Windows") as a whole, not one that merely
-    // contains the substring "win" — an unanchored /win/i also matches
-    // "Darwin", macOS's own `uname` string.
-    if (/^win/i.test(platform)) {
-      return "terminal is not supported on this platform (Windows is out of scope)";
-    }
-    return null;
-  }
-
-  // Shared by terminalOpen/terminalRun: reject if unsupported, reject if
-  // there's no drawer to hand the request to, otherwise note it and resolve.
+  // Shared by terminalOpen/terminalRun: reject if there's no drawer to hand
+  // the request to, otherwise note it and resolve.
   function noteTerminalRequestOrReject(req) {
-    const reason = terminalUnsupportedReason();
-    if (reason) return Promise.reject(Object.assign(new Error(reason), { type: "unavailable" }));
     if (!noteOpenTerminal(req)) {
       return Promise.reject(new Error(
         "no terminal drawer to open here (standalone page, hosted export, or an embedded pane)"));
@@ -7226,12 +7201,10 @@
 
   // -------------------------------------------- the page-side recorder
   //
-  // Windows and Linux record through the BROWSER, and this server writes the
-  // file. `fused_render/capture/_sink.py` carries the argument; the short form
-  // is that on Windows no OS API a non-packaged process can reach will write a
-  // movie with system audio in it, while Chromium already does exactly that,
-  // hardware-encoded, through the same WGC/WASAPI and PipeWire paths a native
-  // recorder would use. macOS records natively and never comes through here.
+  // Linux records through the BROWSER, and this server writes the file
+  // (`fused_render/capture/_sink.py`): Chromium already writes the movie,
+  // hardware-encoded, through the same PipeWire paths a native recorder would
+  // use. macOS records natively and never comes through here.
   //
   // A PAGE NEVER LEARNS WHICH IT GOT. Both resolve with the same handle, and
   // the two wire-only fields that steer this (`transport`, `streamToken`) are
@@ -7664,9 +7637,7 @@
   // included. Linux records "system"/"both" natively over PipeWire/pulse —
   // no picker, no screen-share hack — and refuses them with a sentence saying
   // so only when that session is unreachable; "mic" there falls back to the
-  // browser in that case. Windows has no native path at all and refuses
-  // "system"/"both" here, with a sentence saying to record the screen with
-  // `audio: "system"` instead.
+  // browser in that case.
   //
   // `device` picks the microphone for "mic" and "both" — except that macOS
   // audio-only "mic" records the system's current input and REFUSES a `device`
@@ -7682,8 +7653,8 @@
   // recording; its stop is the same request as rec.stop(), so a page's own
   // stop() afterwards just answers with the finished record. rec.pause() /
   // rec.resume() hold the recording (paused time is not in the file and does
-  // not count toward maxSeconds); rec.paused reads the state. Windows, and
-  // Linux falling back to the browser, reject them with `.type "unavailable"`.
+  // not count toward maxSeconds); rec.paused reads the state. Linux falling
+  // back to the browser rejects them with `.type "unavailable"`.
   function captureAudio(opts) {
     opts = opts || {};
     const body = { mode: "audio" };
@@ -7736,11 +7707,9 @@
   // recording is the browser's on every `client: true` platform regardless
   // of audio's own path.
   //
-  // `systemAudio` is only ever NARROWED by this browser, never widened:
-  // Windows answers `true` unconditionally server-side (the screen share's
-  // "share audio" checkbox works there whenever the browser can record at
-  // all) and this is the only place that can catch a browser with no usable
-  // MediaRecorder. Linux's own `false` — no PipeWire/pulse session reachable,
+  // `systemAudio` is only ever NARROWED by this browser, never widened: this
+  // is the only place that can catch a browser with no usable MediaRecorder.
+  // Linux's own `false` — no PipeWire/pulse session reachable,
   // with no browser equivalent to fall back to — must survive untouched;
   // this window's unrelated screen-recording capability has no business
   // overriding that honest unavailability with a `true`.

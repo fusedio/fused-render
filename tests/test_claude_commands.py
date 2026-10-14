@@ -28,7 +28,6 @@ def home(tmp_path, monkeypatch):
     h = tmp_path / "home"
     h.mkdir()
     monkeypatch.setenv("HOME", str(h))
-    monkeypatch.setenv("USERPROFILE", str(h))
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "fr-home"))
     return h
 
@@ -207,7 +206,6 @@ def test_a_first_poll_captures_only_the_last_init(agent, tmp_path, repo, monkeyp
     assert json.loads((run_dir / "capabilities.json").read_text())["slash_commands"] == ["two"]
 
 
-@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="POSIX FIFOs only")
 def test_a_fifo_named_like_a_command_is_not_opened(agent, repo):
     os.mkfifo(str(repo / ".claude" / "commands" / "trap.md"))
     os.mkfifo(str(repo / ".claude" / "skills" / "deploy" / "x.md"))

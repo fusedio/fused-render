@@ -515,8 +515,7 @@ def test_the_export_never_spawns_a_subprocess(home, sources, monkeypatch):
     anything slow here delays the bind — and the desktop supervisor gives the
     whole child 20s (`supervisor/core.py:_READY_TIMEOUT_S`) before killing it and
     retrying. A `claude --help` probe used to live here; on a cold 279MB binary
-    behind a Windows Defender first-touch scan it answered in ~53s, so the
-    supervisor killed a healthy server three times and showed a startup-failure
+    it answered in ~53s, so the supervisor killed a healthy server three times and showed a startup-failure
     dialog. Keep this path filesystem-only."""
     def no_spawn(*a, **kw):
         raise AssertionError("export_skill_plugin_env must not run a subprocess")
@@ -1019,9 +1018,8 @@ def test_appenv_canvases_root_matches_the_servers_own(monkeypatch, tmp_path):
 def test_the_gate_normalizes_before_comparing(tmp_path, monkeypatch):
     """Every normalization step guards a silent withholding of the skills.
 
-    A relative target (`_terminal_command` does not abspath its `file`), a
-    `/tmp` vs `/private/tmp` symlink, or — on Windows — a path differing only in
-    case are all the SAME canvas clone, and the gate answering "no" for any of
+    A relative target (`_terminal_command` does not abspath its `file`) or a
+    `/tmp` vs `/private/tmp` symlink are the SAME canvas clone, and the gate answering "no" for any of
     them hands the session no workbench skills while its CLAUDE.md names them.
     """
     canvases = tmp_path / "canvases"

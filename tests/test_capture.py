@@ -1330,7 +1330,7 @@ def test_pausing_a_recording_the_backend_cannot_pause_is_a_409(backend, client,
 
 def test_a_backend_without_the_hooks_cannot_pause(backend, client, home,
                                                   monkeypatch):
-    """The Windows/Linux backends are browser-fed and define none of them."""
+    """The browser-fed Linux backend defines none of them."""
     class Bare:
         probe = staticmethod(backend.probe)
         ext = staticmethod(backend.ext)

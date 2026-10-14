@@ -87,7 +87,7 @@ APP = [os.path.join(SCRIPT_DIR, "app_entry.py")]
 # Currently none, and D276 is the reason it STAYED none while 541.9 MB came out of
 # the bundle: the size problem was solved by shrinking `[bundled]` itself, so all
 # three platform builds got smaller together. Excluding here would have shrunk
-# only macOS, leaving Linux and Windows carrying packages the extra still
+# only macOS, leaving Linux carrying packages the extra still
 # promises — which is D176's defect exactly, in the other direction. The rule is
 # unchanged: this dict is for a distribution the EXTRA still needs and the macOS
 # BUNDLE cannot carry, not for one the product no longer wants.

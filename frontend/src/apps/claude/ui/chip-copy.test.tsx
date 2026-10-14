@@ -32,7 +32,7 @@ import {
 // `canRunInTerminal()`/`useCanRunInTerminal()` also require a mounted
 // TerminalDrawer, which nothing in this file renders — registered once here
 // (so the `test.if(canRunInTerminal())` gates below read the same
-// !IS_EMBED && !isWindows value they always have) and re-registered before
+// !IS_EMBED value they always have) and re-registered before
 // every test, since `resetTerminalDockForTests()` below clears it again.
 registerTerminalDrawerMounted();
 beforeEach(() => {

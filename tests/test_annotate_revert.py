@@ -20,7 +20,7 @@ from _claude_history import (  # noqa: F401  (claude_home is a fixture)
     claude_home, delta_record, path_hash, write_transcript, write_version)
 
 skip_root = pytest.mark.skipif(
-    hasattr(os, "geteuid") and os.geteuid() == 0,
+    os.geteuid() == 0,
     reason="read-only bits are ignored when running as root")
 
 
@@ -42,8 +42,7 @@ def _home(tmp_path, monkeypatch):
 def _target(tmp_path, content="a\nb\nc\n", name="page.html"):
     f = tmp_path / name
     # `newline=""` — same reason as _claude_history.py's write_version: the
-    # default text-mode write translates "\n" to os.linesep, silently
-    # inflating every byte-size assertion on Windows.
+    # file must hold `content` byte for byte.
     f.write_text(content, newline="")
     return str(f)
 
@@ -687,11 +686,11 @@ def _run(body, tmp_path, prelude=""):
     harness = tmp_path / "harness.mjs"
     harness.write_text(prelude + body, encoding="utf-8")
     # `encoding="utf-8"` explicitly, not bare `text=True`: node writes UTF-8 to
-    # stdout/stderr regardless of platform, but `text=True` alone decodes with
-    # `locale.getpreferredencoding()`, which on Windows is an ANSI codepage
-    # (cp1252 here), not UTF-8. The dot glyphs a few of these harnesses print
-    # (e.g. "●") encode to bytes cp1252 has no mapping for, which crashes
-    # subprocess's own background reader thread with a `UnicodeDecodeError`
+    # stdout/stderr regardless of locale, but `text=True` alone decodes with
+    # `locale.getpreferredencoding()`, which need not be UTF-8. The dot glyphs
+    # a few of these harnesses print (e.g. "●") then fail to decode, which
+    # crashes subprocess's own background reader thread with a
+    # `UnicodeDecodeError`
     # pytest only surfaces as a `PytestUnhandledThreadExceptionWarning` —
     # `out.stdout` then never gets set and comes back `None`, so the visible
     # symptom is `json.loads(None)`, several layers away from the real cause.

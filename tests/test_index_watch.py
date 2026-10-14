@@ -14,7 +14,6 @@ process itself, and a real end-to-end watch, are tested in
 tests/test_index_watcher_process.py.
 """
 import os
-import re
 import threading
 import time
 
@@ -85,13 +84,7 @@ def _added(path):
 def _canon(path):
     """The same canonicalization `_folder_of`/`_clamp_to_root` apply to a
     folder before it ever reaches `forward()` — `norm(os.path.abspath(...))`.
-    A hardcoded POSIX literal like "/home/me/proj" is only that pipeline's
-    OUTPUT on POSIX; on Windows `os.path.abspath` resolves a leading "/"
-    against the current drive (which GitHub's Windows runners check out onto
-    D:, not C:), so the literal and the real output disagree in exactly the
-    way this whole regression is about. Routing every expectation through
-    the same pipeline instead keeps these tests platform-agnostic without
-    weakening what they pin."""
+    Every expectation is routed through the same pipeline."""
     return index_touch._canon_folder(path)
 
 
@@ -206,58 +199,6 @@ def test_a_change_on_the_watched_root_itself_clamps_to_the_root_not_its_parent()
     loop = f.loop("/home/me", source, flush_floor_s=0.0)
     loop._run_one_watch()
     assert f.forwarded == [{"/home/me"}]
-
-
-def test_clamp_to_root_compares_root_and_folder_in_the_same_canonical_form(
-        monkeypatch):
-    """CI repro (Windows-only failure, reproduced here without a Windows
-    runner). `_folder_of` canonicalizes a touched path through
-    `norm(os.path.abspath(...))` before `_clamp_to_root` ever sees the
-    result — on Windows that means `os.path.abspath` prepends a drive
-    letter, turning "/home/me/proj/a.txt" into "C:/home/me/proj". `self.root`
-    is handed to `WatchLoop` as-is, though, and never goes through that same
-    pipeline: on Windows it stays "/home/me", a prefix the canonicalized
-    folder no longer shares. The old `_clamp_to_root` compared the two raw,
-    so on Windows every folder failed the `startswith` check and was
-    replaced by the (still drive-letter-less) root — collapsing a
-    two-folder union down to `{"/home/me"}`, exactly the CI assertion
-    failure this reproduces.
-
-    Simulated on any OS by making `os.path.abspath` prepend "C:" the way
-    Windows' real one does, and forcing `norm`'s backslash conversion on
-    (a no-op off Windows otherwise).
-
-    The prepend has to strip any drive letter the HOST's own `abspath`
-    already attached before adding the synthetic one, not just skip
-    prepending when one happens to start with "C:" already: on this
-    machine (macOS) the real `abspath` never adds a drive, so a naive
-    "skip if it already starts with C:" version works here — but running
-    the identical monkeypatch for real on a GitHub-hosted Windows runner
-    (whose checkout sits on D:, not C:) it would append "C:" onto a real
-    "D:/..." and produce "C:D:/home/me", the duplicate-drive symptom CI
-    actually reported. Stripping first makes the simulation deterministic
-    regardless of which drive the process this runs under happens to use."""
-    import fused_render.index.ignore as ignore_mod
-
-    real_abspath = os.path.abspath
-    drive_prefix = re.compile(r"^[A-Za-z]:")
-
-    def windows_style_abspath(p):
-        p = real_abspath(p).replace("\\", "/")
-        p = drive_prefix.sub("", p)
-        return "C:" + p
-
-    monkeypatch.setattr(index_touch.os.path, "abspath", windows_style_abspath)
-    monkeypatch.setattr(ignore_mod, "WINDOWS", True)
-
-    f = Fake()
-
-    def source(root):
-        yield {_added("/home/me/proj/a.txt"), _added("/home/me/other/b.txt")}
-
-    loop = f.loop("/home/me", source, flush_floor_s=0.0)
-    loop._run_one_watch()
-    assert f.forwarded == [{"C:/home/me/proj", "C:/home/me/other"}]
 
 
 # --------------------------------------------------------------- the floor

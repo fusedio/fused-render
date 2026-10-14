@@ -360,11 +360,10 @@ def test_a_partial_file_that_will_not_DELETE_does_not_fail_a_finished_run(
     """The cleanup runs AFTER the real `.json` and `.txt` have landed, so a
     failure here reports a finished transcript as a failed one.
 
-    It is reachable: the page tails this file through `/api/fs/raw`, and on
-    Windows a read still open over it makes `os.remove` raise PermissionError
-    rather than FileNotFoundError. Antivirus and a backup agent hold the same
-    lock. The tidy-up is worth nothing next to the result it would destroy, so
-    every `os.remove` failure is swallowed, not just the absent-file one.
+    It is reachable: a permissions change or a read-only mount makes
+    `os.remove` raise PermissionError rather than FileNotFoundError. The
+    tidy-up is worth nothing next to the result it would destroy, so every
+    `os.remove` failure is swallowed, not just the absent-file one.
     """
     out = str(tmp_path / "t.partial.jsonl")
 

@@ -3,7 +3,7 @@
 # This folder exists so that `mlx-vlm` is named in exactly one place and lives in
 # exactly one interpreter — not fused-render's. The app is a file explorer; it
 # must start on a machine that has never run a model, and it must not carry a
-# Metal-only dependency into a Windows wheel.
+# Metal-only dependency into a Linux wheel.
 #
 # `envinstall` builds this on first use, with the same detached `uv sync`,
 # progress record and verbatim errors any declaring folder gets.

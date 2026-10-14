@@ -350,11 +350,6 @@ def _ensure_pxr(prog):
             raise RuntimeError(
                 f"no usd-core wheel for Linux/{machine} (x86_64 only)")
         plat = "manylinux"
-    elif system == "Windows":
-        if machine not in ("amd64", "x86_64"):
-            raise RuntimeError(
-                f"no usd-core wheel for Windows/{machine} (amd64 only)")
-        plat = "win_amd64"
     else:
         raise RuntimeError(f"no usd-core wheel for platform: {system}")
 

@@ -27,7 +27,6 @@ from __future__ import annotations
 import collections
 import json
 import logging
-import os
 import subprocess
 import sys
 import threading
@@ -579,15 +578,12 @@ _TAIL_LINES = 40
 
 
 def _spawn_kwargs() -> dict:
-    """Popen kwargs for the worker. On POSIX these MUST stay
-    posix_spawn-compatible: `close_fds=False`, no `cwd=`, no
-    `start_new_session`/`preexec_fn`, and an ABSOLUTE `sys.executable` (not
-    realpath'd). Any of those forces CPython onto fork()+exec, and a fork of a
+    """Popen kwargs for the worker. These MUST stay posix_spawn-compatible:
+    `close_fds=False`, no `cwd=`, no `start_new_session`/`preexec_fn`, and an
+    ABSOLUTE `sys.executable` (not realpath'd). Any of those forces CPython onto fork()+exec, and a fork of a
     server process that has touched pyproj/rasterio runs PROJ's pthread_atfork
     handler and dies with SIGSEGV before Python starts. Same discipline as
     `index/runner.py:_detach_kwargs`/`envinstall.py`."""
-    if os.name == "nt":
-        return {}
     return {"close_fds": False}
 
 

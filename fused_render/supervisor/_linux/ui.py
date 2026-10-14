@@ -1,8 +1,7 @@
-"""Linux native UI + shell helpers — the counterpart to `_win32/ui.py`.
+"""Linux native UI + shell helpers.
 
 Dialogs go through the first available of `zenity`, `kdialog`, then a bundled
-tkinter fallback (tcl/tk ships in the python-build-standalone runtime, the same
-precedent as the Windows file-dialog note). Shell opens (`open_path`,
+tkinter fallback (tcl/tk ships in the python-build-standalone runtime). Shell opens (`open_path`,
 `open_uri`, `open_url`) shell out to `xdg-open`, the same pattern the server
 uses to reveal a path in the file manager (server.py's reveal handler).
 
@@ -170,14 +169,6 @@ def open_uri(uri: str) -> None:
 
 def open_url(url: str, activation_token: str | None = None) -> None:
     _xdg_open(url, activation_token)
-
-
-def open_default_apps() -> None:
-    """No cross-desktop Linux equivalent of the Windows ms-settings:defaultapps
-    page, so raise: core's _safe_call logs an honest no-op
-    (docs/LINUX_DESKTOP_SPEC.md). Kept as a real backend method so core stays
-    platform-neutral and never hardcodes a Windows-only URI."""
-    raise OSError("default-apps settings has no cross-desktop Linux equivalent")
 
 
 def _xdg_open(target: str, activation_token: str | None = None) -> None:

@@ -8,7 +8,7 @@ the preference that starts it may be off). With `ENV_SOCKET` set, `install`
 fills `window_policy.native_hooks` the way `app.py` does for macOS, so the
 shell's "open this app in its own window" (`POST /api/windows/open`) and the
 `native_windows_enabled` preference reach the host. Without it — `fused-render
-serve`, macOS, Windows, a Linux session with no display — nothing is installed
+serve`, macOS, a Linux session with no display — nothing is installed
 and the hooks stay absent, exactly as before.
 
 Every failure of the host degrades to a browser tab at the same address, never

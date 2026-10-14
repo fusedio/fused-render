@@ -94,8 +94,7 @@ _ENGINE_RUNNER_CODES: dict[str, tuple[str, ...]] = {
     "llama.cpp": ("llamacpp-text", "llamacpp-text-vulkan"),
     "MLX": ("mlx-text",),
     "ltx-2-mlx": ("ltx-video",),
-    "ONNX Runtime": ("onnx-embed", "onnx-embed-directml", "onnx-embed-cuda",
-                      "onnx-embed-rocm"),
+    "ONNX Runtime": ("onnx-embed", "onnx-embed-cuda", "onnx-embed-rocm"),
     "Sentence Transformers": (),
 }
 

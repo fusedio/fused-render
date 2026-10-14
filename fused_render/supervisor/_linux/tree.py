@@ -1,8 +1,7 @@
-"""Linux process-tree keeper — the Job-Object counterpart.
+"""Linux process-tree keeper.
 
 This holds the one guarantee the whole desktop supervisor hinges on
-(docs/LINUX_DESKTOP_SPEC.md gate (a), the "no-orphans-on-crash" analog of the
-Windows Job Object's KILL_ON_JOB_CLOSE): when the supervisor dies — including a
+(docs/LINUX_DESKTOP_SPEC.md gate (a), "no orphans on crash"): when the supervisor dies — including a
 hard `kill -9` — the server it spawned and that server's descendants must die
 too, not linger as orphans holding a port.
 
@@ -211,8 +210,8 @@ _spawner = _Spawner()
 
 
 class SupervisedProcess:
-    """Waitable handle over the spawned child, matching the Windows
-    SupervisedProcess surface core.py depends on (`.wait(ms)`, `.id`)."""
+    """Waitable handle over the spawned child: the surface core.py depends
+    on (`.wait(ms)`, `.id`)."""
 
     def __init__(self, popen: "subprocess.Popen"):
         self._popen = popen

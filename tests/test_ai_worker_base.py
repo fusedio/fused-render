@@ -129,11 +129,7 @@ def test_a_refused_post_does_not_desync_the_keep_alive_connection(base):
     This handler is HTTP/1.1, so the connection is kept alive and the NEXT
     request is parsed off the same socket. Leave the refused request's body
     unread and those bytes are consumed as that next request's request-line,
-    which is what this asserts. The same omission also made the eventual close
-    send an RST rather than a FIN on Windows, so the client got
-    ConnectionAbortedError ([WinError 10053]) instead of the 403 — that half is
-    not observable off-Windows, but it is the same missing read, and it flaked
-    this file on the runner.
+    which is what this asserts.
     """
     base.TOKEN = "secret"
     base.set_state(state="ready")
@@ -3547,47 +3543,6 @@ def test_worker_base_imports_nothing_but_the_stdlib():
                 if full not in _STDLIB_EXEMPT_IMPORTS:
                     outside.append(full)
     assert outside == [], f"worker_base gained a non-stdlib module-scope import: {sorted(outside)}"
-
-
-def test_every_os_open_in_worker_base_asks_for_BINARY_mode():
-    """Every `os.open` in the module carries `_BINARY`, checked by READING it.
-
-    A rule POSIX cannot check by running it. Windows opens an `os.open` fd in the
-    CRT's default TEXT mode, so a blob written through one has every `0x0a`
-    turned into `0x0d 0x0a`: a part file longer than the file it describes and
-    wrong in content, while the cursors — which count what was handed to
-    `os.write` — still report the download complete. On POSIX there is no such
-    mode, `_BINARY` is 0, and a correct call is indistinguishable from one
-    missing the flag no matter how many bytes a test moves.
-
-    That is not hypothetical. The append-only fetch route (`_appends_only`) is
-    the first code here ever to write bytes through `os.open` on win32, it
-    shipped without the flag, the local suite was green, and the Windows lane
-    corrupted every blob it fetched — the mirror declining its own sha256 and a
-    28-minute hang in pytest's diff of the result.
-
-    Read out of the SOURCE, like the stdlib rule above, and for the same reason:
-    the question is what the file DECLARES at each call site, and no runtime
-    observation on this platform can answer it.
-    """
-    import ast
-
-    tree = ast.parse(open(BASE_PATH, encoding="utf-8").read())
-    calls = [node for node in ast.walk(tree)
-             if isinstance(node, ast.Call)
-             and isinstance(node.func, ast.Attribute) and node.func.attr == "open"
-             and isinstance(node.func.value, ast.Name) and node.func.value.id == "os"]
-    assert calls, "no os.open call found — did BASE_PATH or the pattern stop resolving?"
-    missing = []
-    for call in calls:
-        flags = call.args[1] if len(call.args) > 1 else None
-        names = {node.id for node in ast.walk(flags) if isinstance(node, ast.Name)} \
-            if flags is not None else set()
-        if "_BINARY" not in names:
-            missing.append(f"line {call.lineno}")
-    assert missing == [], (
-        f"os.open without _BINARY at {missing}: on Windows that fd translates "
-        f"every 0x0a it writes, and no test on this platform can see it")
 
 
 # -- item A: per-variant download's --file plumbing through serve() -------------

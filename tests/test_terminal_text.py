@@ -2,8 +2,7 @@
 `pty_session.render_screen_text` (VT-emulated screen text), the live shell
 integration state (OSC 133 / 7 / 633;E), and `GET /api/terminal/{sid}/text`.
 
-Unix-only like the rest of the pty suite. Real-shell tests skip when the shell
-binary is absent.
+Real-shell tests skip when the shell binary is absent.
 """
 import os
 import shutil
@@ -12,13 +11,10 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
-pytestmark = pytest.mark.skipif(os.name == "nt", reason="pty is unix-only")
-
-if os.name != "nt":
-    from fused_render import pty_session
-    from fused_render.server import create_app
-    from fused_render.shell_integration import ShellEventParser, integrate
-    from fused_render.terminal_profiles import TerminalProfile
+from fused_render import pty_session
+from fused_render.server import create_app
+from fused_render.shell_integration import ShellEventParser, integrate
+from fused_render.terminal_profiles import TerminalProfile
 
 _HEADERS = {"X-Fused": "1"}
 

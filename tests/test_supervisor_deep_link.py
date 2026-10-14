@@ -96,7 +96,7 @@ def test_file_uri_with_encoded_space_decoded_to_view_url(opened, tmp_path):
 
     f = tmp_path / "my report.parquet"  # space forces percent-encoding
     f.write_text("x")
-    uri = f.as_uri()  # e.g. file:///tmp/.../my%20report.parquet, or file:///C:/... on Windows
+    uri = f.as_uri()  # e.g. file:///tmp/.../my%20report.parquet
     assert "%20" in uri
 
     cmd = core._absolute_command(protocol.Open(uri))
@@ -122,8 +122,8 @@ def test_plain_absolute_path_unchanged_by_absolute_command(tmp_path):
 
 # ---- fused-render://launch (D128): ensure running, open NO tab ---------------
 # The server-down banner's "Start fused-render" control is the action-only
-# launch link. macOS (app.py) and Windows (winopen._open) ensure the app/server
-# is up and open no tab; the Linux supervisor must match — routing it to /clone
+# launch link. macOS (app.py) ensures the app/server is up and opens no tab;
+# the Linux supervisor must match — routing it to /clone
 # would open a spurious tab and surface an unsupported-link error.
 
 
@@ -199,11 +199,8 @@ def test_localhost_file_uri_still_opens(opened, tmp_path):
 
     f = tmp_path / "data.parquet"
     f.write_text("x")
-    # Build the localhost URI portably: f.as_uri() yields file:///tmp/.../data.parquet
-    # on POSIX and file:///C:/... on Windows, so grafting "localhost" onto the netloc
-    # gives file://localhost/tmp/... resp. file://localhost/C:/... — both with the
-    # leading slash the netloc parse needs. (Naively concatenating str(f) would make
-    # the Windows drive path part of the netloc.)
+    # f.as_uri() yields file:///tmp/.../data.parquet, so grafting "localhost"
+    # onto the netloc gives file://localhost/tmp/...
     uri = "file://localhost" + f.as_uri()[len("file://"):]
     core._open_command(4242, protocol.Open(uri))
     assert opened == [view_url(4242, str(f))]

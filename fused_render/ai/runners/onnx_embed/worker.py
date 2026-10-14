@@ -2,17 +2,16 @@
 
 Five lines of code and a `pyproject.toml`, and the manifest is the whole of it:
 this folder installs plain `onnxruntime`, the CPU build. Its siblings
-`onnx_embed_directml/`, `onnx_embed_cuda/` and `onnx_embed_rocm/` declare the
-same dependencies at the same versions and differ ONLY in which onnxruntime
-distribution they name; the runner itself is `runners/onnx_embed.py`, shared by
-all four, because which wheel a user installed is a fact about the hardware they
+`onnx_embed_cuda/` and `onnx_embed_rocm/` declare the same dependencies at the
+same versions and differ ONLY in which onnxruntime distribution they name; the
+runner itself is `runners/onnx_embed.py`, shared by all three, because which wheel a user installed is a fact about the hardware they
 picked on the Engines tab and never about how a forward pass through a dual
 encoder runs.
 
 A folder rather than a flag because `uv sync` runs BARE (`_env_install_worker`)
 with cwd set to the runner folder: everything about an environment has to be
-expressible in the `pyproject.toml` sitting beside it, so four environments mean
-four folders. The supervisor spawns THIS file (`registry.Runner.worker`) on THIS
+expressible in the `pyproject.toml` sitting beside it, so three environments
+mean three folders. The supervisor spawns THIS file (`registry.Runner.worker`) on THIS
 folder's venv (`registry.Runner.folder`), which is how the variant a user chose
 becomes the process that runs.
 

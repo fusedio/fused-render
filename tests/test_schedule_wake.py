@@ -9,7 +9,6 @@ existing start-at-login toggle is the only mechanism those platforms get).
 installing one. The two tests that do go through `sync` stub `launchctl`.
 """
 import os
-import sys
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -30,13 +29,8 @@ def no_launchctl(monkeypatch):
 def fake_darwin(monkeypatch, tmp_path):
     """Pretend to be macOS with a real app bundle, writing into tmp_path."""
     monkeypatch.setattr(schedule_wake, "_is_darwin", lambda: True)
-    # sync()/remove() build the launchd domain target with os.getuid(), which
-    # is POSIX-only and does not exist as an os attribute at all on Windows —
-    # in real use that line is unreachable there because _is_darwin() above
-    # already returned False, but "pretend to be macOS" on this CI platform
-    # means faking every part of the illusion, not just the platform check.
-    # raising=False: the attribute may genuinely not exist here to restore.
-    monkeypatch.setattr(schedule_wake.os, "getuid", lambda: 501, raising=False)
+    # sync()/remove() build the launchd domain target with os.getuid().
+    monkeypatch.setattr(schedule_wake.os, "getuid", lambda: 501)
     bundle = tmp_path / "FusedRender.app"
     bundle.mkdir()
     monkeypatch.setattr(schedule_wake, "app_bundle_path", lambda: str(bundle))
@@ -154,7 +148,6 @@ def test_off_darwin_it_is_a_no_op(monkeypatch, tmp_path):
     assert schedule_wake.remove() is False
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX bundle-walk layout")
 def test_app_bundle_path_walks_up_to_the_dot_app(monkeypatch, tmp_path):
     bundle = tmp_path / "FusedRender.app"
     exe = bundle / "Contents" / "MacOS" / "python"

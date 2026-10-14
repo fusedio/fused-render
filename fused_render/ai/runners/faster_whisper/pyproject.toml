@@ -25,8 +25,8 @@
 #
 # What each earns:
 #   faster-whisper  the model, the decoder and the VAD. Pulls in ctranslate2
-#                   (which builds wheels for macOS on both architectures, Linux
-#                   and Windows — the reason this capability is available
+#                   (which builds wheels for macOS on both architectures and
+#                   Linux — the reason this capability is available
 #                   everywhere) and av (the ffmpeg libraries, see above).
 #   huggingface_hub downloads
 #   psutil          answers "how much memory is this costing"

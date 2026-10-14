@@ -238,7 +238,6 @@ def defaults_api(tmp_path, monkeypatch):
     # developer's identity and global config, exactly as test_claude_config_api
     # does.
     monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
     monkeypatch.setenv("GIT_CONFIG_SYSTEM", os.devnull)
     monkeypatch.setenv("GIT_AUTHOR_NAME", "Fixture Author")

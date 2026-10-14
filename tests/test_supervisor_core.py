@@ -2,7 +2,7 @@
 `_safe_call` must run OFF the main loop, never on the thread that services
 pipe_requests.
 
-This imports `fused_render.supervisor.core` directly (no win32 gate): the
+This imports `fused_render.supervisor.core` directly (no platform gate): the
 `_spawn_call`/`_safe_call` helpers under test are platform-neutral, so on Linux
 CI — where a supervisor backend exists — core imports cleanly and these tests
 run. Where no backend exists for the running OS (e.g. darwin) the import raises
@@ -39,7 +39,7 @@ class _Paths:
 
 
 def test_spawn_call_never_blocks_the_loop_thread():
-    # Bugbot: OPEN_LOGS / DEFAULT_APPS called `_safe_call` DIRECTLY on the loop
+    # Bugbot: OPEN_LOGS called `_safe_call` DIRECTLY on the loop
     # thread. On Linux, `ui.open_path` -> `_xdg_open` now waits up to 5s on the
     # child, so a slow/foreground xdg-open blocked the loop that services
     # pipe_requests — a concurrent ShutdownForUpgrade could then time out inside
@@ -82,11 +82,8 @@ def test_open_command_routes_file_uri_to_view(monkeypatch, tmp_path):
     f.write_text("x")
     opened = []
     monkeypatch.setattr(core, "_open_browser", lambda url, token=None: opened.append(url))
-    # Path.as_uri() — not f"file://{f}" — builds a well-formed file URI on every
-    # platform: on Windows the drive path becomes file:///C:/... (three slashes),
-    # whereas f"file://{f}" would read C:\... as the netloc and be rejected as a
-    # remote host. This mirrors what the OS actually hands the app (macOS
-    # openURLs:, RFC 8089 §2).
+    # Path.as_uri() builds a well-formed file URI, mirroring what the OS
+    # actually hands the app (macOS openURLs:, RFC 8089 §2).
     core._open_command(9000, protocol.Open(f.as_uri()))
     assert opened == [f"http://127.0.0.1:9000" + _view_path(str(f))]
 
@@ -257,7 +254,7 @@ def test_uninstall_and_exit_both_confirmed_still_deintegrates(monkeypatch):
 class _FakeStartupWithAppImage:
     """Stand-in for the Linux `startup` module: has `appimage_path()`, the
     capability probe both `_open_command` and `_respawn_after_relaunch` use to
-    tell the Linux backend (has the hook) from win32 (doesn't)."""
+    tell a backend with the hook from one without."""
 
     def __init__(self, path="/opt/FusedRender/FusedRender.AppImage"):
         self._path = path
@@ -267,9 +264,8 @@ class _FakeStartupWithAppImage:
 
 
 class _FakeStartupNoAppImage:
-    """Stand-in for the win32 `startup` module: `enabled()`/`set_enabled()`
-    only, no `appimage_path` attribute at all — matching the real win32
-    backend, which never had a reason to grow one."""
+    """Stand-in for a `startup` module without the hook: `enabled()` only, no
+    `appimage_path` attribute at all."""
 
     def enabled(self):
         return False
@@ -291,7 +287,7 @@ def test_open_command_signals_relaunch_on_linux_backend(monkeypatch):
 
 
 def test_open_command_relaunch_is_noop_without_appimage_path_hook(monkeypatch):
-    # No appimage_path hook (e.g. the win32 backend): a relaunch link
+    # No appimage_path hook: a relaunch link
     # degrades to exactly the same no-tab no-op as fused-render://launch —
     # the queue is never signalled, so run() never attempts a respawn.
     monkeypatch.setattr(core, "startup", _FakeStartupNoAppImage())
@@ -373,7 +369,7 @@ def test_respawn_after_relaunch_exits_quietly_without_an_appimage(monkeypatch):
 
 
 def test_respawn_after_relaunch_exits_quietly_without_the_hook(monkeypatch):
-    # No appimage_path hook at all (e.g. the win32 backend) — same "nothing to
+    # No appimage_path hook at all — same "nothing to
     # respawn, just exit" outcome as the no-AppImage case above.
     monkeypatch.setattr(core, "startup", _FakeStartupNoAppImage())
     spawned = []
@@ -417,43 +413,18 @@ class _FakeRunPaths:
 
 
 class _FakeTrayHandle:
-    """Stand-in for `tray.TrayHandle`. Carries `set_update_available` because
-    `run()` calls it unconditionally whenever a backend `update` module is
-    present (Windows today) — a fake missing it blows up with AttributeError
-    the moment that branch runs, which is exactly what happened when this
-    fake was tray-only and the tests only ever ran where `update` is None."""
+    """Stand-in for `tray.TrayHandle`."""
 
     actions = queue.Queue()
 
-    def __init__(self):
-        self.update_calls = []
-
     def stop(self) -> None:
         pass
-
-    def set_update_available(self, version: str) -> None:
-        self.update_calls.append(version)
-
-
-class _FakeUpdateModule:
-    """Stand-in for the backend's `update` module (see
-    `fused_render.supervisor._win32.update.start_auto_checks`): calls
-    `notify` synchronously so the test can see the real callable —
-    `tray_handle.set_update_available` — actually get invoked, instead of
-    merely skipping past the `update is not None` branch."""
-
-    def start_auto_checks(self, paths, notify) -> None:
-        notify("9.9.9")
 
 
 def _patch_run_up_to_the_event_loop(monkeypatch, calls, *, teardown):
     """Stub out every collaborator `run()` touches before and after
     `_event_loop` so the primary-instance branch runs for real, down to the
-    finally block under test, without spawning a real server, tray or pipe.
-
-    Also installs a fake `update` module so `run()` takes the `update is not
-    None` branch here on Linux too, even though the real backend only
-    supplies one on Windows — that is the branch whose contract regressed."""
+    finally block under test, without spawning a real server, tray or pipe."""
     inst = _FakePrimaryInstance(calls)
     monkeypatch.setattr(core.instance, "acquire", lambda names: inst)
     monkeypatch.setattr(core, "DesktopPaths", _FakeRunPaths)
@@ -471,7 +442,6 @@ def _patch_run_up_to_the_event_loop(monkeypatch, calls, *, teardown):
         return handle
 
     monkeypatch.setattr(core.tray, "start", _start_tray)
-    monkeypatch.setattr(core, "update", _FakeUpdateModule())
     monkeypatch.setattr(core, "_event_loop",
                         lambda *a, **kw: (core._ExitReason.RELAUNCH, None))
     monkeypatch.setattr(core, "_teardown", teardown)
@@ -494,7 +464,6 @@ def test_relaunch_releases_the_lock_before_respawning(monkeypatch):
     core.run(protocol.Open("fused-render://relaunch"))
 
     assert calls == ["release", "respawn"]
-    assert tray_handles[0].update_calls == ["9.9.9"]
 
 
 def test_relaunch_still_respawns_when_teardown_raises_supervisor_stopped_error(monkeypatch):
@@ -516,7 +485,6 @@ def test_relaunch_still_respawns_when_teardown_raises_supervisor_stopped_error(m
         core.run(protocol.Open("fused-render://relaunch"))
 
     assert calls == ["release", "respawn"]
-    assert tray_handles[0].update_calls == ["9.9.9"]
 
 
 # ---- native-window host routing (Linux backend only; core._window_host) ----

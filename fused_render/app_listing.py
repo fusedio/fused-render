@@ -171,7 +171,7 @@ def app_preview_image(dir_path: str) -> str | None:
 
     Resolved by LISTING the directory rather than probing the path, and the
     reason is case: `os.path.isfile` inherits the filesystem's own case-folding,
-    so a `Preview.png` would be a thumbnail on macOS/Windows and not on ext4 —
+    so a `Preview.png` would be a thumbnail on macOS and not on ext4 —
     the same folder answering differently per machine, and disagreeing with the
     explorer's peek rule (apps/explorer/lib/folder-peek.ts), which compares the
     name exactly. An exact membership test is the only rule both sides can hold.
@@ -565,10 +565,7 @@ def is_workspace_app_entry(fs_path: str, root: str) -> bool:
     except OSError:
         return False
     path = os.path.abspath(fs_path)
-    try:
-        rel = os.path.relpath(path, root)
-    except ValueError:
-        return False  # Windows cross-drive: not inside the workspace
+    rel = os.path.relpath(path, root)
     if rel == "." or rel.startswith(".."):
         return False
     segments = rel.split(os.sep)

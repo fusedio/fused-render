@@ -141,9 +141,7 @@ def stub_python():
     from fused_render.shell.storage import home_dir
 
     venv_dir = os.path.join(home_dir(), "venvs", "map-engine-stub")
-    python = os.path.join(
-        venv_dir, "Scripts" if os.name == "nt" else "bin",
-        "python.exe" if os.name == "nt" else "python")
+    python = os.path.join(venv_dir, "bin", "python")
     if not os.path.exists(python):
         subprocess.run([sys.executable, "-m", "venv", "--without-pip", venv_dir],
                        check=True, capture_output=True)

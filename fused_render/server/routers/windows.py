@@ -11,7 +11,7 @@ On Linux the hook is `linux_windows.install`'s: it hands the URL to the
 supervisor's WebKitGTK window host over a unix socket and falls back to a
 browser tab when the host declines or is gone.
 
-``404`` where there is no such hook — `fused-render serve`, Windows, a Linux
+``404`` where there is no such hook — `fused-render serve`, a Linux
 session whose window host never started — so the caller falls back to an in-page navigation.
 """
 import os

@@ -7,7 +7,7 @@
 // THE RULE THIS FILE EXISTS TO ENFORCE: a chord matches on its EXACT modifiers,
 // never on "at least these". The hook used to test `mod && key === "c"` against
 // a lowercased `e.key`, so Ctrl+SHIFT+C matched — and Ctrl+Shift+C is devtools'
-// inspect-element on Linux/Windows and the terminal copy chord besides. The
+// inspect-element on Linux and the terminal copy chord besides. The
 // handler took it and called preventDefault, so the browser binding never ran
 // and the user's inspector stopped opening. Every entry below therefore spells
 // out the modifiers it does NOT want, and anything unmatched returns null so the
@@ -112,22 +112,22 @@ export function matchChord(e: ChordEvent, ctx: ChordContext): ChordAction | null
   if (chord && e.key === "[") return "back";
   if (chord && e.key === "]") return "forward";
   if (shiftChord && key === "n") return "new-folder";
-  // macOS trash chord. Windows/Linux use the Delete key instead. Never while
+  // macOS trash chord. Linux uses the Delete key instead. Never while
   // typing in the search box: Cmd+Delete is the standard macOS "clear to start
   // of line" chord, so trashing there would be a foot-gun.
   if (chord && e.key === "Backspace") {
     return isMac && !ctx.inSearch ? "trash" : null;
   }
   if (bare && e.key === "Backspace") {
-    // Windows/Linux: bare Backspace goes up a folder. On macOS it must stay
+    // Linux: bare Backspace goes up a folder. On macOS it must stay
     // inert — Cmd+Backspace is trash there, and a bare Backspace navigating
     // away would be a foot-gun. Never while typing in the search box.
     return !isMac && !ctx.inSearch ? "parent" : null;
   }
   if (bare && e.key === "Delete") {
-    // Windows/Linux trash key. On macOS the Delete (⌦) key is not the trash
-    // gesture — Cmd+Backspace above is. Shift+Delete is Windows Explorer's
-    // "delete permanently", which this must not answer with an ordinary trash.
+    // Linux trash key. On macOS the Delete (⌦) key is not the trash gesture —
+    // Cmd+Backspace above is. Shift+Delete is the file managers' "delete
+    // permanently", which this must not answer with an ordinary trash.
     return !isMac && !ctx.inSearch ? "trash" : null;
   }
   // Rename. Bare F2 only — Alt+F2 is a desktop-wide run dialog on Linux.

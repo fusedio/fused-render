@@ -36,12 +36,7 @@ def test_the_worker_nices_itself_at_startup(monkeypatch, tmp_path):
     """Self-nicing in the child, never a preexec_fn: this repo's spawns must
     stay on posix_spawn (PROJ's atfork handler SIGSEGVs a fork)."""
     seen = []
-    # `raising=False`: `os.nice` does not exist on Windows at all, so
-    # asserting it existed first (monkeypatch's default) would fail before
-    # the fake is ever installed — this line means "give the module this
-    # attribute for the test", not "override an attribute already there".
-    monkeypatch.setattr(os, "nice", lambda inc: seen.append(inc) or 0,
-                        raising=False)
+    monkeypatch.setattr(os, "nice", lambda inc: seen.append(inc) or 0)
     ran = []
     monkeypatch.setattr(worker, "run_scan", ran.append)
     assert worker.main([str(tmp_path)]) == 0
@@ -49,15 +44,6 @@ def test_the_worker_nices_itself_at_startup(monkeypatch, tmp_path):
     assert ran == [str(tmp_path)]
 
 
-def test_a_worker_on_a_platform_without_nice_still_scans(monkeypatch, tmp_path):
-    monkeypatch.delattr(os, "nice", raising=False)
-    ran = []
-    monkeypatch.setattr(worker, "run_scan", ran.append)
-    assert worker.main([str(tmp_path)]) == 0
-    assert ran == [str(tmp_path)]
-
-
-@pytest.mark.skipif(os.name == "nt", reason="no nice on Windows")
 def test_renicing_really_lowers_a_real_process_priority():
     """The monkeypatched test above proves `main` calls it; this one proves the
     call does something, in a process that is not this one (nicing is one-way,
@@ -131,29 +117,6 @@ def test_set_background_io_policy_skips_unknown_linux_arch(monkeypatch):
     monkeypatch.setattr(worker.ctypes, "CDLL",
                         lambda *a, **k: (_ for _ in ()).throw(AssertionError))
     assert worker._set_background_io_policy() is False
-
-
-def test_set_background_io_policy_invokes_set_priority_class_on_win32(
-        monkeypatch):
-    """Windows has no `os.nice` at all, so this is its first scan
-    mitigation, not just its I/O half — PROCESS_MODE_BACKGROUND_BEGIN."""
-    calls = []
-
-    class FakeKernel32:
-        def GetCurrentProcess(self):
-            return 1234
-
-        def SetPriorityClass(self, handle, flag):
-            calls.append((handle, flag))
-            return 1  # nonzero == success, per SetPriorityClass's contract
-
-    class FakeWindll:
-        kernel32 = FakeKernel32()
-
-    monkeypatch.setattr(worker.sys, "platform", "win32")
-    monkeypatch.setattr(worker.ctypes, "windll", FakeWindll(), raising=False)
-    assert worker._set_background_io_policy() is True
-    assert calls == [(1234, worker.PROCESS_MODE_BACKGROUND_BEGIN)]
 
 
 def test_an_unmatched_platform_is_a_silent_no_op(monkeypatch):

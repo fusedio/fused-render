@@ -35,7 +35,7 @@ export interface Config {
   native_dir_picker: boolean;
   // Self-update state (fused_render/update/mac.py) — present only when the
   // packaged mac app started the update manager; absent on dev servers and
-  // the Windows/Linux packages (those update through their supervisor).
+  // the Linux package (it updates through its supervisor).
   update?: UpdateStatus;
   // Full Disk Access state (fused_render/shell/fda.py) — present only on the
   // packaged mac app when the probe is conclusive. Read through the one store
@@ -478,8 +478,7 @@ export interface ClaudeHealth {
     plan: string | null;
   } | null;
   config_dir: string;
-  /** `sys.platform`. Here so the UI never guesses which install line to show —
-      it used to, and it guessed wrong on Windows. */
+  /** `sys.platform`. Here so the UI never guesses which install line to show. */
   platform: string;
   /** The native install line for THIS platform, stated by the server rather
       than reconstructed here. */
@@ -487,7 +486,7 @@ export interface ClaudeHealth {
   /** Found, and runnable-looking, but it would not report its own version.
       Silent before this existed; `doctor` is what makes it sayable. */
   broken: boolean;
-  /** "native" | "npm" | "brew" | "winget" | "system" | … , or null when we
+  /** "native" | "npm" | "brew" | "system" | … , or null when we
       could not tell. Only ever set from `claude doctor` or, failing that, the
       shape of the resolved path. */
   install_method: string | null;
@@ -510,11 +509,11 @@ export interface ClaudeHealth {
       installer never edits an rc file, so the app can be fully working while
       `claude` in a terminal says "command not found". Only an explicit `false`
       — a login-shell probe that came back empty — may show the fix; `null`
-      means unknown or not ours to say (Windows, an override). */
+      means unknown or not ours to say (an override). */
   on_shell_path: boolean | null;
   /** The exact rc-append line the one-click fix runs, shown before it runs.
-      null when there is nothing safe to offer (fish, Windows, a binary outside
-      the home directory). */
+      null when there is nothing safe to offer (fish, a binary outside the
+      home directory). */
   path_fix_command: string | null;
   checked_at: number;
 }
@@ -1941,8 +1940,7 @@ export function pickFile(
 
 /** `pickFile` with the dialog's multi-select on: a non-empty list of paths,
  *  or null on a cancel. On macOS the user shift/cmd-clicks several; the Linux
- *  and Windows dialogs pick one per click and the server answers a one-item
- *  list, so a caller never branches on the platform — it only gets fewer per
+ *  dialog picks one per click and the server answers a one-item list, so a caller never branches on the platform — it only gets fewer per
  *  click there. Same 409/501/500 as `pickFile`. */
 export function pickFiles(
   opts: { start?: string; title?: string; types?: string[] } = {},
@@ -1957,7 +1955,7 @@ export function mkdir(path: string): Promise<StatResult> {
 // Remove a file or directory. A non-empty directory needs recursive=true (the
 // context menu passes it only after the confirm dialog spells that out).
 // With trash=true the entry is moved to the OS bin instead — ~/.Trash on macOS,
-// the freedesktop XDG trash on Linux, the Recycle Bin on Windows. Where THIS PATH
+// the freedesktop XDG trash on Linux. Where THIS PATH
 // cannot use the bin (a Linux cross-device move, a remote mount, a platform with
 // no backend) the server replies 501 "trash unsupported" and the caller falls
 // back to the irreversible hard delete.

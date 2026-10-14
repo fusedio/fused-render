@@ -505,13 +505,7 @@ def test_load_makes_ffmpeg_resolvable_via_PATH(monkeypatch, base, tmp_path):
 
     resolved = shutil.which("ffmpeg")
     assert resolved is not None, os.environ.get("PATH")
-    if sys.platform == "win32":
-        # Copied there, not symlinked (`_put_ffmpeg_on_path`'s own docstring
-        # says why) — same bytes, different path.
-        with open(resolved, "rb") as a, open(exe, "rb") as b:
-            assert a.read() == b.read()
-    else:
-        assert os.path.realpath(resolved) == os.path.realpath(exe)
+    assert os.path.realpath(resolved) == os.path.realpath(exe)
 
 
 def test_load_sets_the_device_state(monkeypatch, base, tmp_path):

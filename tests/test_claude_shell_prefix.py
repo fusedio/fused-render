@@ -11,8 +11,6 @@ import time
 
 import pytest
 
-pytestmark = pytest.mark.skipif(os.name == "nt", reason="POSIX wrapper")
-
 WRAPPER = os.path.abspath(os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "..", "fused_render",
     "claude_shell_prefix.sh"))

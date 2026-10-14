@@ -15,9 +15,9 @@ only while $APPIMAGE still names the exact file the stamp describes — so a
 user who replaces the AppImage by hand, or moves it, gets an honest "no
 restart signal available" rather than a stale banner.
 
-Windows reports None: unpackaged runs (dev checkouts, pip installs) and the
-Windows package have no restart-drift signal at all, which the shell reads as
-"no restart signal available".
+Unpackaged runs (dev checkouts, pip installs) report None: they have no
+restart-drift signal at all, which the shell reads as "no restart signal
+available".
 """
 from __future__ import annotations
 

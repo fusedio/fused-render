@@ -45,20 +45,6 @@ import urllib.error
 
 import pytest
 
-# Every test in this file drives _segmented_fetch directly and asserts the
-# SEGMENTED layout — four bodies at four offsets, a sidecar of many pieces, a
-# one-byte range probe. A platform without os.pwrite cannot produce one: it
-# fetches each file on a single append-only stream instead (_appends_only), so
-# these assertions would be red there for a reason that is not a defect. That
-# path is not untested — tests/test_ai_hub_fetch_no_pwrite.py drives it, on
-# every OS, and runs against the real platform condition on win32.
-pytestmark = pytest.mark.skipif(
-    not hasattr(os, "pwrite"),
-    reason="this module asserts the multi-segment layout, which needs os.pwrite "
-           "(POSIX). The single-stream path a platform without it takes is "
-           "tested in test_ai_hub_fetch_no_pwrite.py, which runs everywhere.",
-)
-
 #: The only addresses these tests may talk to. Everything here drives a local
 #: `http.server` on 127.0.0.1; nothing may reach huggingface.co.
 _LOOPBACK = frozenset({"127.0.0.1", "::1", "localhost", "0.0.0.0"})
@@ -69,16 +55,11 @@ def no_egress(monkeypatch):
     """Make leaving this machine impossible, for every test in this module.
 
     **By construction, not by remembering.** Every one of these tests stubs the
-    Hub — and the claim that they therefore reach no network was FALSE, proven by
-    Windows CI: the mirror path could not run without `os.pwrite` at the time, so
-    on win32 the branch degraded to the Hub listing, which is real
-    `huggingface_hub`, which made a real HTTPS request and failed on a 401 from
-    huggingface.co. On a machine with a valid `HF_TOKEN` that test would have
-    PASSED by downloading a repo called `org/m`; on an air-gapped runner it would
-    fail for a third unrelated reason. Neither is a test. (The mirror does run
-    without `os.pwrite` now — one append-only stream — but the escape this guards
-    against is any test whose mirror path degrades unexpectedly, which no
-    transport change retires.)
+    Hub — but a test whose mirror path degrades unexpectedly falls back to the
+    Hub listing, which is real `huggingface_hub`, which makes a real HTTPS
+    request. On a machine with a valid `HF_TOKEN` such a test would PASS by
+    downloading a repo called `org/m`; on an air-gapped runner it would fail for
+    an unrelated reason. Neither is a test.
 
     The fix cannot be "stub the Hub in every test", because the escape appears
     exactly where a test did not anticipate falling back. So this refuses the
@@ -89,17 +70,14 @@ def no_egress(monkeypatch):
     `getaddrinfo` as well as `connect`, so the refusal happens before a DNS
     lookup rather than after one.
 
-    **Measured, not assumed.** Running this feature's three test files with
-    `os.pwrite` removed (the win32 condition) and the platform skips disabled,
-    FOUR tests try to resolve huggingface.co — the round-trip test that failed in
-    CI, the two `_401_on_a_mirror_blob` tests here, and
+    **Measured, not assumed.** With the mirror path forced to degrade, FOUR
+    tests try to resolve huggingface.co — a round-trip test, the two
+    `_401_on_a_mirror_blob` tests here, and
     `test_download_file_returns_the_path_to_the_one_file`, which predates this
     feature: it stubs `_repo_files` but not `snapshot_download`, so
-    `download_file`'s own fallback would have gone to the real Hub. That one was
-    protected only by the module-level skip above and by the segmented path
-    happening to work on POSIX. It is left as it is, because a stub there would
-    change what an unrelated test asserts; this fixture is the right fix for all
-    four.
+    `download_file`'s own fallback would go to the real Hub. It is left as it
+    is, because a stub there would change what an unrelated test asserts; this
+    fixture is the right fix for all four.
     """
     connect = socket.socket.connect
     getaddrinfo = socket.getaddrinfo
@@ -2578,7 +2556,7 @@ def test_a_mirror_client_that_raises_at_all_cannot_fail_the_download(base,
 # does not go through it: it fetches ONE GGUF with `download_file`, because a
 # GGUF repo publishes dozens of quantizations (`unsloth/Qwen3.5-9B-GGUF` is
 # 147.81GB whole for a 2.6GB file). Since llama.cpp became the only local text
-# engine on Windows and Linux (D416) that left every suggested TEXT model on
+# engine on Linux (D416) that left every suggested TEXT model on
 # those platforms off the mirror entirely. Hence a second branch, in
 # `download_file`, reading a manifest that lists one named file and makes no
 # completeness claim — and writing no fetch record, which is what makes dropping
@@ -3306,17 +3284,3 @@ def test_these_tests_cannot_reach_the_network():
         socket.getaddrinfo("huggingface.co", 443)
     with pytest.raises(AssertionError, match="tried to reach"):
         socket.socket(socket.AF_INET, socket.SOCK_STREAM).connect(("1.1.1.1", 80))
-
-
-# -- Windows has no `os.pwrite`, and now has a mirror anyway ---------------------
-#
-# `test_without_pwrite_the_mirror_declines_and_the_hub_serves_the_repo` used to
-# live here and asserted the opposite: the mirror declined on win32 because
-# `_segmented_fetch` refused without `os.pwrite`, so every Windows acquisition
-# went to the Hub and none of them reached our access logs. The transport now
-# falls back to a single append-only stream instead of refusing, so that test is
-# replaced by its inverse — the mirror SERVES the repo — in
-# `tests/test_ai_hub_fetch_no_pwrite.py`, along with the rest of the no-pwrite
-# path. It is a file of its own so that those tests escape the module-level skip
-# above and run natively on Windows CI, which is the only place the real platform
-# condition exists.

@@ -2,7 +2,7 @@
 (SPEC §40).
 
 Five lines, and they are the SAME five `onnx_embed/worker.py` holds: the runner
-is `runners/onnx_embed.py`, shared by all four folders, and this shell exists
+is `runners/onnx_embed.py`, shared by all three folders, and this shell exists
 only so the supervisor has a `worker.py` to spawn on THIS folder's venv. Read
 `onnx_embed/worker.py`'s docstring for why a hardware variant is a folder rather
 than a flag, and this folder's `pyproject.toml` for the one line that differs.

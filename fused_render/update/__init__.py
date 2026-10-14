@@ -1,14 +1,12 @@
 """Self-update machinery shared by the desktop packages.
 
 `common` holds the platform-neutral core (signed-manifest fetch/verify and
-the hash-verified download) that the Windows supervisor updater
-(supervisor/_win32/update.py) and the in-app updaters here (`mac`, `linux`)
-all build on. `manager()`/`start()` below are the platform dispatch: callers
+the hash-verified download) that the in-app updaters here (`mac`, `linux`)
+both build on. `manager()`/`start()` below are the platform dispatch: callers
 that just want "the running in-app update manager, whichever platform this
 is" (the /api/config and /api/update routers) go through these instead of
 importing `mac`/`linux` directly, so they don't need their own
-sys.platform branch. Windows has no entry here — its updater lives entirely
-in the supervisor (supervisor/_win32/update.py), not as an in-app manager.
+sys.platform branch.
 
 `manager()` itself is not gated on `sys.platform`: it just reads back
 whichever singleton `start()` already created, and `start()` — the only one
@@ -32,9 +30,10 @@ if TYPE_CHECKING:
 
 def manager() -> "UpdateManager | None":
     """The process-wide in-app update manager, whichever platform module's
-    singleton is actually set — None when none applies (Windows, or start()
-    was never called) — /api/config omits `update` then. See the module
-    docstring for why this checks both modules rather than sys.platform."""
+    singleton is actually set — None when none applies (an unsupported
+    platform, or start() was never called) — /api/config omits `update`
+    then. See the module docstring for why this checks both modules rather
+    than sys.platform."""
     from fused_render.update import linux, mac
 
     if (found := mac.manager()) is not None:

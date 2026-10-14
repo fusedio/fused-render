@@ -1,7 +1,7 @@
 """Tests for GPU/VRAM detection beyond RAM (SPEC AI-18, D519).
 
-`hw_detect.py` is a subprocess-driven probe (`nvidia-smi`, `rocm-smi`, a
-PowerShell WMI/registry query, `sysctl`) — exactly the kind of 50-500ms cold
+`hw_detect.py` is a subprocess-driven probe (`nvidia-smi`, `rocm-smi`,
+`sysctl`) — exactly the kind of 50-500ms cold
 spawn `fit._wired_limit_mb`'s own docstring refuses on the per-request verdict
 path. So every test here drives the small, pure PARSING functions directly
 with canned subprocess output, never `subprocess.run` itself, and separately
@@ -279,48 +279,6 @@ def test_sysfs_named_card_still_reaches_the_bandwidth_table(tmp_path, monkeypatc
     assert hw_detect._bandwidth_for(gpus[0].name) == 960.0
 
 
-# -- Windows AdapterRAM 32-bit cap ------------------------------------------------
-
-
-def test_adapter_ram_at_the_32bit_cap_is_flagged_for_registry_correction():
-    """4278190080 bytes (~3.984 GiB) and above is what a >=4GB card reports
-    through the capped 32-bit `AdapterRAM` field — `Win32_VideoController`
-    ground truth, not a value real cards report on purpose."""
-    assert hw_detect._adapter_ram_is_capped(4_278_190_080) is True
-    assert hw_detect._adapter_ram_is_capped(2 * 1024 ** 3) is False
-
-
-def test_windows_gpu_lines_are_parsed_name_and_bytes():
-    text = "NVIDIA GeForce RTX 4080|4294901760\nIntel(R) UHD Graphics|1073741824\n"
-    rows = hw_detect._parse_windows_adapter_ram(text)
-    assert rows == [("NVIDIA GeForce RTX 4080", 4294901760),
-                     ("Intel(R) UHD Graphics", 1073741824)]
-
-
-def test_registry_qwmemorysize_overrides_a_capped_reading(monkeypatch):
-    """The real fix (ground truth, not WMI's own carveout-affected total RAM
-    reading): a capped AdapterRAM row is re-resolved through the display
-    driver's own registry key, which stores the true 64-bit VRAM size."""
-    monkeypatch.setattr(hw_detect, "_run", lambda args, timeout=None:
-                         "NVIDIA GeForce RTX 4080|4294901760\n")
-    monkeypatch.setattr(hw_detect, "_windows_registry_vram",
-                         lambda: {"NVIDIA GeForce RTX 4080": 17179869184})  # ~16 GiB
-    gpus = hw_detect._windows_gpus()
-    assert gpus is not None
-    # Decimal GB, matching GpuDevice.vram_gb's own unit promise — NOT
-    # `/1024**3` (binary GiB), which under-reports a real card by ~7.4%.
-    assert gpus[0].vram_gb == pytest.approx(17179869184 / 1e9, rel=1e-6)
-
-
-def test_an_uncapped_reading_is_kept_even_when_the_registry_disagrees(monkeypatch):
-    monkeypatch.setattr(hw_detect, "_run", lambda args, timeout=None:
-                         "NVIDIA GeForce RTX 3050|3221225472\n")  # 3 GiB, real
-    monkeypatch.setattr(hw_detect, "_windows_registry_vram", lambda: {})
-    gpus = hw_detect._windows_gpus()
-    assert gpus is not None
-    assert gpus[0].vram_gb == pytest.approx(3221225472 / 1e9, rel=1e-6)
-
-
 # -- unified-memory APU overrides -------------------------------------------------
 
 
@@ -390,7 +348,6 @@ def test_detect_hardware_reads_proc_cpuinfo_on_linux(monkeypatch):
     monkeypatch.setattr(hw_detect, "_amd_gpus", lambda: [
         hw_detect.GpuDevice(name="AMD Radeon 8060S Graphics", vram_gb=0.5)])
     monkeypatch.setattr(hw_detect, "_sysfs_gpus", lambda: None)
-    monkeypatch.setattr(hw_detect, "_windows_gpus", lambda: None)
     monkeypatch.setattr(hw_detect, "_apple_gpu", lambda ram_gb: None)
     monkeypatch.setattr(hw_detect, "_linux_cpu_name",
                         lambda: "AMD Ryzen AI Max+ 395 w/ Radeon 8060S")
@@ -415,7 +372,6 @@ def test_detect_hardware_bandwidth_falls_back_to_the_device_name_first(monkeypat
         hw_detect.GpuDevice(name="NVIDIA GeForce RTX 4090", vram_gb=24.0)])
     monkeypatch.setattr(hw_detect, "_amd_gpus", lambda: None)
     monkeypatch.setattr(hw_detect, "_sysfs_gpus", lambda: None)
-    monkeypatch.setattr(hw_detect, "_windows_gpus", lambda: None)
     monkeypatch.setattr(hw_detect, "_apple_gpu", lambda ram_gb: None)
     monkeypatch.setattr(hw_detect, "_linux_cpu_name", lambda: "AMD Ryzen 9 7950X")
 
@@ -436,17 +392,16 @@ def test_a_discrete_gpu_is_not_overridden():
 # -- every parser must agree on GpuDevice.vram_gb's unit (decimal GB) ------------
 
 
-def test_every_parser_reports_the_same_decimal_gb_for_the_same_real_card(monkeypatch):
-    """A real 24GB (decimal) RTX 4090 reports itself three different ways
+def test_every_parser_reports_the_same_decimal_gb_for_the_same_real_card():
+    """A real 24GB (decimal) RTX 4090 reports itself two different ways
     depending on which probe answered — `nvidia-smi` in MEBIBYTES,
-    `rocm-smi`/the registry correction in raw BYTES, Windows' capped
-    `AdapterRAM` also in bytes. All three parsers must land at the SAME
-    decimal-GB figure for the same physical card; a parser that silently
-    treats its input as already being the output unit (the bug this test
-    guards against: `_parse_nvidia_smi` did `mib / 1024`, `_windows_gpus`
-    did `bytes / 1024**3` — both binary-GiB math against a field documented
-    as decimal GB) under-reports VRAM by ~7.4%, which is enough to flip a
-    borderline model from `gpu` to `cpu-offload` in `fit._select_pool`."""
+    `rocm-smi` in raw BYTES. Both parsers must land at the SAME decimal-GB
+    figure for the same physical card; a parser that silently treats its
+    input as already being the output unit (the bug this test guards
+    against: `_parse_nvidia_smi` did `mib / 1024` — binary-GiB math against
+    a field documented as decimal GB) under-reports VRAM by ~7.4%, which is
+    enough to flip a borderline model from `gpu` to `cpu-offload` in
+    `fit._select_pool`."""
     target_gb = 24.0
     target_bytes = target_gb * 1e9
 
@@ -455,13 +410,9 @@ def test_every_parser_reports_the_same_decimal_gb_for_the_same_real_card(monkeyp
     rocm = hw_detect._parse_rocm_smi(
         json.dumps({"card0": {"Card series": "NVIDIA GeForce RTX 4090",
                               "VRAM Total Memory (B)": str(int(target_bytes))}}))
-    monkeypatch.setattr(hw_detect, "_run", lambda args, timeout=None:
-                        f"NVIDIA GeForce RTX 4090|{int(target_bytes)}\n")
-    monkeypatch.setattr(hw_detect, "_windows_registry_vram", lambda: {})
-    windows = hw_detect._windows_gpus()
 
-    assert nvidia is not None and rocm is not None and windows is not None
-    for gpus in (nvidia, rocm, windows):
+    assert nvidia is not None and rocm is not None
+    for gpus in (nvidia, rocm):
         assert gpus[0].vram_gb == pytest.approx(target_gb, rel=1e-6)
 
 
@@ -628,7 +579,6 @@ def test_detect_hardware_never_raises_when_every_probe_fails(monkeypatch):
     monkeypatch.setattr(hw_detect, "_nvidia_gpus", lambda: None)
     monkeypatch.setattr(hw_detect, "_amd_gpus", lambda: None)
     monkeypatch.setattr(hw_detect, "_sysfs_gpus", lambda: None)
-    monkeypatch.setattr(hw_detect, "_windows_gpus", lambda: None)
     monkeypatch.setattr(hw_detect, "_apple_gpu", lambda ram_gb: None)
     info = hw_detect.detect_hardware(ram_gb=16.0)
     assert info.gpus == []

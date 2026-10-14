@@ -143,10 +143,10 @@ test("new folder is the one chord that WANTS Shift", () => {
 });
 
 test("the destructive keys are bare-key only", () => {
-  // Bare Delete is the Windows/Linux trash key; on macOS the ⌦ key is not the
+  // Bare Delete is the Linux trash key; on macOS the ⌦ key is not the
   // trash gesture at all (Cmd+Backspace is, below).
   expect(matchChord(ev("Delete"), listing)).toBe(isMac ? null : "trash");
-  // Shift+Delete is Windows Explorer's "delete permanently" — answering it with
+  // Shift+Delete is the file managers' "delete permanently" — answering it with
   // an ordinary trash would do the wrong thing under the user's own chord.
   expect(matchChord(ev("Delete", { shift: true }), listing)).toBeNull();
   expect(matchChord(ev("Delete", { alt: true }), listing)).toBeNull();
@@ -162,7 +162,7 @@ test("Backspace: trash on a Mac, up a folder everywhere else", () => {
   // The two halves of the one split, asserted from whichever side this process
   // is on — and each is the OTHER platform's foot-gun, which is why neither may
   // leak across: a bare Backspace navigating away on a Mac (where ⌘⌫ deletes),
-  // or ⌘⌫ deleting on Windows.
+  // or ⌘⌫ deleting on Linux.
   expect(matchChord(ev("Backspace"), listing)).toBe(isMac ? null : "parent");
   expect(matchChord(mod("Backspace"), listing)).toBe(isMac ? "trash" : null);
   // Never while typing, on either platform: ⌘⌫ is "clear to start of line".
@@ -174,14 +174,14 @@ test("Backspace: trash on a Mac, up a folder everywhere else", () => {
 test("undo and redo are the standard three chords", () => {
   expect(matchChord(mod("z"), listing)).toBe("undo");
   expect(matchChord(mod("Z", { shift: true }), listing)).toBe("redo");
-  // Ctrl+Y is the Windows redo. There is no Cmd+Y redo on macOS (⌘Y is
+  // Ctrl+Y is the Linux second redo. There is no Cmd+Y redo on macOS (⌘Y is
   // History/Quick Look), so it must not answer there.
   //
   // ON A MAC THIS ASSERTION IS WEAK, by limit 2 in the header: a literal Ctrl is
   // not the primary modifier there, so the event never reaches the Y branch and
   // the null comes from the final fallthrough — the branch could be deleted and
   // this would still pass. The load-bearing test for Ctrl+Y lives in
-  // shortcut-chord-nonmac.test.ts. Kept anyway, because on a Windows/Linux
+  // shortcut-chord-nonmac.test.ts. Kept anyway, because on a Linux
   // machine it is the direct assertion and there it does fail on a break.
   expect(matchChord(ev("y", { ctrl: true }), listing)).toBe(isMac ? null : "redo");
 });

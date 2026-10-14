@@ -96,11 +96,9 @@ def test_preview_overwrites_stale_read_only_copy(tmp_path, reader, make):
 @pytest.mark.parametrize("reader,make", ARCHIVES, ids=["zip", "tar"])
 def test_a_failed_swap_leaves_the_stale_preview_read_only(
         tmp_path, reader, make, monkeypatch):
-    """The re-preview path clears the stale copy's read-only bit so Windows'
-    os.replace will overwrite it (MoveFileExW refuses a read-only
-    destination). If the replace then FAILS, that stale copy is still the
-    live preview — it must not be left writable, which is the one property
-    the read-only preview contract exists to guarantee.
+    """If the re-preview's replace FAILS, the stale copy is still the live
+    preview — it must not be left writable, which is the one property the
+    read-only preview contract exists to guarantee.
 
     Asserted on the MODE BITS rather than os.access, deliberately: this file's
     other read-only tests carry `skip_root` because os.access always says yes
@@ -110,9 +108,7 @@ def test_a_failed_swap_leaves_the_stale_preview_read_only(
     assert os.stat(first).st_mode & 0o777 == 0o444
 
     def boom(src, dst):
-        # What a Windows sharing violation looks like here: the old preview is
-        # still open somewhere, so the swap cannot land.
-        raise PermissionError(13, "Access is denied")
+        raise PermissionError(13, "Permission denied")
 
     monkeypatch.setattr(reader.os, "replace", boom)
     with pytest.raises(PermissionError):

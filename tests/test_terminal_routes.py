@@ -23,8 +23,6 @@ from fused_render import pty_session
 from fused_render.server import create_app
 from fused_render.terminal_profiles import TerminalProfile
 
-pytestmark = pytest.mark.skipif(os.name == "nt", reason="pty is unix-only")
-
 _HEADERS = {"X-Fused": "1"}
 
 

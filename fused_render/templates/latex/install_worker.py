@@ -24,7 +24,6 @@ import sys
 import tarfile
 import time
 import urllib.request
-import zipfile
 
 CHUNK = 1 << 20
 WARM_TIMEOUT_S = 30 * 60   # generous backstop so a stalled fetch can't hang forever
@@ -75,7 +74,6 @@ def _warm_base(cache_dir, warm_dir, tectonic_bin):
         subprocess.run(
             [tectonic_bin, "-X", "compile", "--keep-logs", "--outdir", scratch, doc],
             env=env, cwd=scratch, capture_output=True, text=True, timeout=WARM_TIMEOUT_S,
-            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
             encoding="utf-8", errors="replace")
     except subprocess.TimeoutExpired:
         _warm_progress(warm_dir, "error", "package fetch timed out", done=True,
@@ -112,33 +110,22 @@ def _asset(version):
     system = platform.system()
     machine = platform.machine().lower()
     if system == "Linux":
-        return f"tectonic-{version}-x86_64-unknown-linux-musl.tar.gz", "tar.gz"
+        return f"tectonic-{version}-x86_64-unknown-linux-musl.tar.gz"
     if system == "Darwin":
         arch = "aarch64" if machine in ("arm64", "aarch64") else "x86_64"
-        return f"tectonic-{version}-{arch}-apple-darwin.tar.gz", "tar.gz"
-    if system == "Windows":
-        return f"tectonic-{version}-x86_64-pc-windows-msvc.zip", "zip"
+        return f"tectonic-{version}-{arch}-apple-darwin.tar.gz"
     raise RuntimeError(f"unsupported platform: {system}")
 
 
-def _extract_binary(archive_path, kind, dest_bin):
+def _extract_binary(archive_path, dest_bin):
     member_name = os.path.basename(dest_bin)
-    if kind == "tar.gz":
-        with tarfile.open(archive_path, "r:gz") as tf:
-            member = next((m for m in tf.getmembers()
-                          if os.path.basename(m.name) == member_name), None)
-            if not member:
-                raise RuntimeError("tectonic binary not found in archive")
-            with tf.extractfile(member) as src, open(dest_bin, "wb") as dst:
-                shutil.copyfileobj(src, dst)
-    else:
-        with zipfile.ZipFile(archive_path) as zf:
-            member = next((n for n in zf.namelist()
-                          if os.path.basename(n) == member_name), None)
-            if not member:
-                raise RuntimeError("tectonic.exe not found in archive")
-            with zf.open(member) as src, open(dest_bin, "wb") as dst:
-                shutil.copyfileobj(src, dst)
+    with tarfile.open(archive_path, "r:gz") as tf:
+        member = next((m for m in tf.getmembers()
+                      if os.path.basename(m.name) == member_name), None)
+        if not member:
+            raise RuntimeError("tectonic binary not found in archive")
+        with tf.extractfile(member) as src, open(dest_bin, "wb") as dst:
+            shutil.copyfileobj(src, dst)
 
 
 def install(version, bin_dir, progress_dir, cache_dir=None, warm_dir=None):
@@ -149,7 +136,7 @@ def install(version, bin_dir, progress_dir, cache_dir=None, warm_dir=None):
         _warm_progress(warm_dir, "install", "installing the LaTeX engine")
     try:
         prog.update("start", 0, "starting Tectonic download")
-        name, kind = _asset(version)
+        name = _asset(version)
         url = (f"https://github.com/tectonic-typesetting/tectonic/releases/"
                f"download/tectonic%40{version}/{name}")
         os.makedirs(bin_dir, exist_ok=True)
@@ -168,9 +155,8 @@ def install(version, bin_dir, progress_dir, cache_dir=None, warm_dir=None):
                 prog.update("download", pct, f"downloading {got >> 20} MB")
 
         prog.update("extract", 92, "extracting")
-        bin_name = "tectonic.exe" if kind == "zip" else "tectonic"
-        dest_bin = os.path.join(bin_dir, bin_name)
-        _extract_binary(archive_path, kind, dest_bin)
+        dest_bin = os.path.join(bin_dir, "tectonic")
+        _extract_binary(archive_path, dest_bin)
         os.remove(archive_path)
         mode = os.stat(dest_bin).st_mode
         os.chmod(dest_bin, mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)

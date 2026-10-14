@@ -329,8 +329,6 @@ def _popen_kwargs():
         # See the note above _argv: required to reach posix_spawn, and only in
         # combination with the absolute argv[0] and no `cwd=`.
         "close_fds": False,
-        "creationflags": (subprocess.CREATE_NO_WINDOW
-                          if sys.platform == "win32" else 0),
     }
 
 

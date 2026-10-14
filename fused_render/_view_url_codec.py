@@ -1,39 +1,21 @@
-"""Shared fs-path -> /view URL codec for the Windows entry points.
+"""Shared fs-path -> /view URL codec for the app's entry points.
 
-Mirrors the frontend codec (frontend/src/platform/lib/router.ts urlForFsPath): only a
-drive-letter path gets its backslashes normalized to '/' before segmenting —
-a UNC path stays one percent-encoded segment, and on POSIX a backslash is a
+Mirrors the frontend codec (frontend/src/platform/lib/router.ts urlForFsPath):
+a path is split on '/' and each segment percent-encoded; a backslash is a
 legal filename character that must round-trip untouched.
 
-Pure path classification only (no filesystem/OS calls), so this module and
-its tests run identically on Windows, macOS, and Linux.
+Pure path classification only (no filesystem/OS calls).
 """
-import ntpath
 import posixpath
 import re
-from pathlib import PureWindowsPath
 from urllib.parse import quote, unquote, urlsplit
 
 from fused_render import _flavor
 
 
-def _is_drive_path(fs_path: str) -> bool:
-    # A drive-letter path has drive 'C:' + a non-empty root; a UNC path's
-    # drive is '\\\\server\\share' (no trailing ':'); a POSIX path's is ''.
-    # 'C:foo' (drive-relative, no root) is excluded.
-    p = PureWindowsPath(fs_path)
-    return p.drive.endswith(":") and bool(p.root)
-
-
 def normpath_for_shape(path: str) -> str:
-    """`normpath` picked by the path's SHAPE, not by the host OS: a drive-
-    letter path (`C:\\...`) is normalized with Windows backslash semantics,
-    anything else with POSIX ones — so a deep link or a dirpicker request can
-    name a POSIX or a Windows path whichever platform this server runs on,
-    and `normpath` still collapses `.`/`..`/doubled separators the way that
-    path's own OS would."""
-    if PureWindowsPath(path).drive:
-        return ntpath.normpath(path)
+    """POSIX `normpath`: collapses `.`/`..`/doubled separators in a path a
+    deep link or a dirpicker request names."""
     return posixpath.normpath(path)
 
 
@@ -43,23 +25,19 @@ def canonical_fs_path(fs_path: str) -> str:
     This is the form a path has *everywhere above the OS* — what a /view URL
     decodes to (router.ts `rootedFsPath`: "the shell's canonical form keeps
     forward slashes"), what the runtime sends as ``X-Fused-Page``, and what
-    therefore must be stored and compared. Anything built with ``os.path`` on
-    Windows (``normpath``, ``abspath``, ``join``) comes back backslashed and
-    has to be brought back to this form before it meets a canonical value.
-
-    Only a drive-letter path is normalized — on POSIX a backslash is a legal
-    filename character and must round-trip untouched, which is why this is not
-    an unconditional ``.replace``. Idempotent: canonical input is returned
-    unchanged.
+    therefore must be stored and compared. A POSIX path is already in that
+    form — a backslash is a legal filename character and must round-trip
+    untouched — so this returns its input unchanged; it stays the one named
+    seam every store and comparison goes through.
     """
-    return fs_path.replace("\\", "/") if _is_drive_path(fs_path) else fs_path
+    return fs_path
 
 
 def view_url_path(fs_path: str) -> str:
     """Explorer URL path (no host/port) for an absolute fs path."""
     norm = canonical_fs_path(fs_path)
     if fs_path.lower().endswith(".fused"):
-        # An OS-delivered .fused open (Finder double-click, Explorer "Open
+        # An OS-delivered .fused open (Finder double-click, a desktop "Open
         # with") lands on the file's own EMBED URL: the fusedapp preview
         # template extracts and renders the app chrome-free — the app
         # experience, not the explorer (SPEC §43, D390). An in-explorer click
@@ -111,9 +89,7 @@ def embed_url(port: int, fs_path: str) -> str:
 
 
 # A launch argument is a URL (not a filesystem path) when it is a
-# `fused-render:` deep link, a `file:` URI, or any `<scheme>://…`. A Windows
-# drive path ('C:\\…') is deliberately NOT a URL: it has no '://' and neither
-# the fused-render nor file scheme, so it round-trips through view_url_path.
+# `fused-render:` deep link, a `file:` URI, or any `<scheme>://…`.
 _SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*://")
 
 
@@ -128,7 +104,7 @@ def is_launch_url(raw: str) -> bool:
 
 def open_target_path(raw: str) -> str:
     """Shell URL path for a raw launch argument, shared by every platform's
-    entry point (macOS app.py, the Windows/Linux supervisor).
+    entry point (macOS app.py, the Linux supervisor).
 
     - a `fused-render:` deep link (case-insensitive) -> the `/clone` confirm
       page with the raw link ferried verbatim as ?src= (deeplink.py parses and

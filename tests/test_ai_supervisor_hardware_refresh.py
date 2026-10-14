@@ -23,7 +23,7 @@ an in-flight probe to land before giving up.
 
 Like the reaper (see `tests/conftest.py::_no_ai_idle_reaper_thread`'s own
 docstring for why), no test here asserts the THREAD gets spawned — that
-would mean spawning a real `nvidia-smi`/`rocm-smi`/`powershell` subprocess
+would mean spawning a real `nvidia-smi`/`rocm-smi` subprocess
 per test. `_hardware_refresh_tick()` is the loop body split out specifically
 so it can be driven directly, with `hw_detect.refresh_hardware` and
 `fit.machine_ram_gb` monkeypatched, the same way `reap_idle(now)` is tested
@@ -147,7 +147,7 @@ def test_concurrent_first_calls_to_start_hardware_refresh_start_exactly_one_thre
 
     `_hardware_refresh_tick` is patched to a harmless counter: the real tick
     spawns a subprocess probe immediately, on thread start, not on a delay,
-    so leaving it real would spawn real `nvidia-smi`/`rocm-smi`/`powershell`
+    so leaving it real would spawn real `nvidia-smi`/`rocm-smi`
     processes here. Every spawned thread is joined before returning so
     nothing outlives the test — `run`'s only other work is `time.sleep`,
     which a daemon thread sitting in forever is fine to leave behind, but

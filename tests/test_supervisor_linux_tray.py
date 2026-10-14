@@ -245,8 +245,6 @@ def test_menu_layout_structure(login_enabled):
     # user could mean, and it is the durable one with settings.
     assert "Open app logs" in labels
     assert "Exit" in labels
-    # Windows-only item is dropped on Linux.
-    assert "Default apps..." not in labels
 
     by_label = {c["properties"].get("label"): c for c in children}
 

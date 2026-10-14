@@ -4,10 +4,9 @@ side it checks against (/api/desktop/ready's desktop_instance echo).
 The contract: a launch publishes its instance id + a per-launch token into the
 env, the server echoes them from /api/desktop/ready, and the probe reports
 ready only when the echo matches — so a decoy server holding the port cannot
-satisfy startup. Pure stdlib + a real local uvicorn instance; no pywin32, so
-this runs on every platform.
+satisfy startup. Pure stdlib + a real local uvicorn instance.
 
-/api/desktop/ready is deliberately dependency-free (the probe formerly polled /api/config, whose live mount check blew the readiness budget on Windows cold start); the last test here pins that decoupling.
+/api/desktop/ready is deliberately dependency-free (the probe formerly polled /api/config, whose live mount check blew the readiness budget on a cold start); the last test here pins that decoupling.
 """
 import contextlib
 import socket

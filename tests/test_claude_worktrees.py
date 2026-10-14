@@ -332,13 +332,6 @@ def test_tag_shadowing_a_branch_still_collides(repo):
     assert wt.create_worktree(repo, "feat")["branch"] == "feat-2"
 
 
-def test_reserved_device_names_refused(repo):
-    for bad in ("CON", "nul", "Aux", "prn", "com1", "LPT9", "com1.txt"):
-        out = wt.create_worktree(repo, bad)
-        assert set(out) == {"error"} and "reserved" in out["error"], bad
-    assert "error" not in wt.create_worktree(repo, "console")
-
-
 def test_branch_collision_case_folded_on_case_insensitive_platforms(repo, monkeypatch):
     _git(repo, "branch", "Feat")
     monkeypatch.setattr(wt.sys, "platform", "darwin")
@@ -410,7 +403,6 @@ def test_list_maps_a_file_target_into_every_worktree(repo):
     assert all(w["mapped"]["path"] == w["path"] for w in out["worktrees"])
 
 
-@pytest.mark.skipif(os.name == "nt", reason="symlinks need privileges on Windows")
 def test_a_symlinked_folder_inside_the_checkout_maps_as_written(repo):
     """`src` as a symlink to a sibling folder: the chat's `src/app.py` is
     carried over lexically, not as its resolved path (Bugbot, PR #1635)."""
@@ -429,7 +421,6 @@ def test_a_symlinked_folder_inside_the_checkout_maps_as_written(repo):
                               "exists": True}
 
 
-@pytest.mark.skipif(os.name == "nt", reason="symlinks need privileges on Windows")
 def test_a_symlinked_prefix_above_the_repo_keeps_the_inner_layout(repo, tmp_path):
     """macOS-style: the repo reached through a symlinked parent (`/tmp` →
     `/private/tmp`) AND `src` a symlink inside it. Only the worktree ancestor

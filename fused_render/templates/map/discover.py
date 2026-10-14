@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 import re
 import stat
-import string
 import sys
 import tempfile
 import time
@@ -99,15 +98,7 @@ def roots() -> list[dict[str, str]]:
     home = Path.home()
     if home.is_dir():
         locations.append({"name": "Home", "path": str(home), "kind": "home"})
-    if os.name == "nt":
-        for letter in string.ascii_uppercase:
-            drive = Path(f"{letter}:\\")
-            if drive.is_dir():
-                locations.append(
-                    {"name": f"{letter}:", "path": str(drive), "kind": "drive"}
-                )
-    else:
-        locations.append({"name": "Computer", "path": os.sep, "kind": "root"})
+    locations.append({"name": "Computer", "path": os.sep, "kind": "root"})
     deduplicated: dict[str, dict[str, str]] = {}
     for location in locations:
         deduplicated.setdefault(os.path.normcase(location["path"]), location)
@@ -217,11 +208,8 @@ def _drops_root() -> str:
     """Where OS drag-and-drops are staged: a per-user tree under the shared
     temp root, the same layout as claude/agent.py's `_runs_root` and for the
     same reason — one shared name cannot be both 0700-private and usable by a
-    second account, and a per-uid root dissolves the contention. POSIX-only
-    suffix: Windows has no `geteuid` and its temp dir is already per-user."""
-    geteuid = getattr(os, "geteuid", None)
-    suffix = "-%d" % geteuid() if geteuid is not None else ""
-    return os.path.join(tempfile.gettempdir(), "fused_render_map" + suffix, "drops")
+    second account, and a per-uid root dissolves the contention."""
+    return os.path.join(tempfile.gettempdir(), "fused_render_map-%d" % os.geteuid(), "drops")
 
 
 DROPS = _drops_root()
@@ -275,22 +263,21 @@ def _drops_dir() -> dict[str, Any]:
     """
     if os.path.isdir(DROPS):
         require_private(DROPS)
-        if hasattr(os, "geteuid"):
-            try:
-                mode = stat.S_IMODE(os.lstat(DROPS).st_mode)
-                if mode & ~0o700:
-                    os.chmod(DROPS, 0o700)
-                    # Re-read rather than trust the call: an ACL, or a
-                    # filesystem that does not carry unix modes, can accept a
-                    # chmod and keep the bits exactly where they were.
-                    mode = stat.S_IMODE(os.lstat(DROPS).st_mode)
-            except OSError as error:
-                return {"error": f"Could not secure the drop directory: {error}"}
+        try:
+            mode = stat.S_IMODE(os.lstat(DROPS).st_mode)
             if mode & ~0o700:
-                return {
-                    "error": "The drop directory is readable by others "
-                    f"(mode {mode:04o}) and could not be tightened"
-                }
+                os.chmod(DROPS, 0o700)
+                # Re-read rather than trust the call: an ACL, or a
+                # filesystem that does not carry unix modes, can accept a
+                # chmod and keep the bits exactly where they were.
+                mode = stat.S_IMODE(os.lstat(DROPS).st_mode)
+        except OSError as error:
+            return {"error": f"Could not secure the drop directory: {error}"}
+        if mode & ~0o700:
+            return {
+                "error": "The drop directory is readable by others "
+                f"(mode {mode:04o}) and could not be tightened"
+            }
     else:
         try:
             private_dir(DROPS, os.path.dirname(DROPS))

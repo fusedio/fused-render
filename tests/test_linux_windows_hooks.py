@@ -207,8 +207,8 @@ def test_prefs_available_needs_apply_specifically(monkeypatch):
     """`available` is one formula everywhere — `"apply" in hooks and
     usable()` — not a platform branch: a `usable` hook with no `apply`
     (impossible in practice, since every installer sets both together) still
-    reads as unavailable, and win32's backend never sets either, so its
-    `native_hooks` stays `{}` and this formula reads False there too without
+    reads as unavailable, and a backend that never sets either leaves
+    `native_hooks` at `{}`, so this formula reads False there too without
     needing to ask `sys.platform` at all."""
     from fused_render.shell import prefs
 
@@ -220,5 +220,5 @@ def test_prefs_available_needs_apply_specifically(monkeypatch):
 
 def test_install_is_a_noop_without_af_unix(monkeypatch):
     monkeypatch.delattr(socket, "AF_UNIX", raising=False)
-    assert linux_windows.install(1, environ={ipc.ENV_SOCKET: "/x/h.sock"}, platform="win32") is False
+    assert linux_windows.install(1, environ={ipc.ENV_SOCKET: "/x/h.sock"}, platform="darwin") is False
     assert window_policy.native_hooks == {}

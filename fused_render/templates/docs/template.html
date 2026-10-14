@@ -1387,16 +1387,15 @@
     // First save of a draft starts in Home — the scratch's own folder is the
     // hidden library, never a place to offer as the default. A copy starts
     // beside the current file.
-    let curDir = firstSave ? "" : FILE.slice(0, Math.max(FILE.lastIndexOf("/"), FILE.lastIndexOf("\\")));
+    let curDir = firstSave ? "" : FILE.slice(0, FILE.lastIndexOf("/"));
     async function render(p) {
       let d;
       try { d = await py({ action: "listdir", path: p || "" }); } catch (e) { toast("Cannot list folder: " + e.message); return; }
       curDir = d.path;
       const segs = d.path.split("/").filter(Boolean);
-      const winRoot = /^[A-Za-z]:$/.test(segs[0] || "");   // "C:" drive paths take no leading "/"
-      const dirAt = (i) => { const q = segs.slice(0, i + 1).join("/"); return winRoot ? (i ? q : q + "/") : "/" + q; };
-      const crumb = (winRoot ? "" : `<span data-dir="/" style="cursor:pointer">/</span>`) + segs.map((s, i) =>
-        `${i || !winRoot ? " › " : ""}<span data-dir="${esc(dirAt(i))}" style="cursor:pointer">${esc(s)}</span>`).join("");
+      const dirAt = (i) => "/" + segs.slice(0, i + 1).join("/");
+      const crumb = `<span data-dir="/" style="cursor:pointer">/</span>` + segs.map((s, i) =>
+        ` › <span data-dir="${esc(dirAt(i))}" style="cursor:pointer">${esc(s)}</span>`).join("");
       const prevName = card.querySelector("#fbName") ? card.querySelector("#fbName").value : (firstSave ? displayName() : BASENAME.replace(DOC_EXT, ""));
       card.innerHTML = `<div style="font-weight:700;font-size:15px;margin-bottom:10px">${firstSave ? "Save document" : "Save a copy"}</div>
         <div style="font-size:12px;color:var(--ink-2);margin-bottom:8px;word-break:break-all">${crumb}</div>
@@ -1416,11 +1415,11 @@
       const nmEl = card.querySelector("#fbName");
       nmEl.value = prevName;
       // Live target preview — honors a full/absolute path typed into the box
-      // (Windows drive, POSIX root, or ~), otherwise joins the browsed folder.
+      // (root or ~), otherwise joins the browsed folder.
       const upd = () => {
         const raw = (nmEl.value.trim() || "document").replace(/^["']|["']$/g, "");
-        const abs = /^([A-Za-z]:[\\/]|\/|~[\\/]?)/.test(raw);
-        const base = abs ? raw.replace(/\\/g, "/") : d.path.replace(/\/$/, "") + "/" + raw;
+        const abs = /^(\/|~\/?)/.test(raw);
+        const base = abs ? raw : d.path.replace(/\/$/, "") + "/" + raw;
         card.querySelector("#fbTarget").textContent = base.replace(DOC_EXT, "") + ".docx";
       };
       nmEl.oninput = upd; upd();

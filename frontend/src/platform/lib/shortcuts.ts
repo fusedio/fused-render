@@ -7,7 +7,7 @@
 //
 // `keys` are already display-formatted glyphs (["⌘", "C"] on macOS,
 // ["Ctrl", "C"] elsewhere) via the *_LABEL constants in lib/platform. How those
-// glyphs are joined — ⌘C on macOS vs Ctrl+C on Windows/Linux — is a rendering
+// glyphs are joined — ⌘C on macOS vs Ctrl+C on Linux — is a rendering
 // decision and stays in the overlay, not here.
 import {
   BACKSPACE_LABEL,
@@ -106,7 +106,7 @@ export function shortcutGroups(): ShortcutGroup[] {
     // would read as a promise about all of them.
     { group: "File operations", keys: [MOD_LABEL, "Z"], label: "Undo a move or rename" },
     { group: "File operations", keys: [SHIFT_LABEL, MOD_LABEL, "Z"], label: "Redo" },
-    // The Windows/Linux second redo chord. ⌘Y is History/Quick Look on macOS,
+    // The Linux second redo chord. ⌘Y is History/Quick Look on macOS,
     // never a redo, so it exists on one platform only.
     { group: "File operations", keys: [MOD_LABEL, "Y"], label: "Redo", only: "other" },
     // NOTE: no "Show info" entry. The shell has no info/stat surface to open

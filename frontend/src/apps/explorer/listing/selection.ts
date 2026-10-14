@@ -270,7 +270,7 @@ export function pathFromSelParam(base: string, raw: string | null): string | nul
 //
 // `dest` and `from` are fs paths in the shell's canonical form; a trailing
 // slash on either is tolerated (the fs root arrives as "/" from the crumbs and
-// as "" from Listing's `base`, and a Windows drive root is "C:/").
+// as "" from Listing's `base`).
 export function cameFromSelParam(dest: string, from: string): string | null {
   const root = dest.replace(/\/+$/, "");
   const rest = from.replace(/\/+$/, "");

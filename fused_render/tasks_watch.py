@@ -342,9 +342,7 @@ def is_turn_ended(session_id: str) -> bool:
         # `>=`, NOT `>`: a mark stamped in the same clock tick as the ended
         # stamp is the NEXT turn's — the queue marks a session running right
         # after dispatching it, and dispatch follows the previous turn's end
-        # by causality. Windows' `time.time()` ticks every ~15 ms, so the two
-        # stamps were routinely equal there and the fresh turn read as ended
-        # (CI, 2026-09-18).
+        # by causality, and a coarse clock can stamp both in one tick.
         if mark is not None and mark["until"] > time.time() and mark["at"] >= ended_at:
             return False
         row = _registry.get(session_id)
@@ -814,44 +812,16 @@ def _note_registry_status(sid: str, status: object) -> None:
 
 def _pid_alive(pid) -> bool:
     """Is there a process with this pid? Asked once a second per live session,
-    so it must be a syscall, not a subprocess — and on Windows it must not be
-    `os.kill(pid, 0)`, which there is TerminateProcess, not a probe (bugbot,
-    PR #892; the same trap envinstall._pid_alive documents)."""
+    so it must be a syscall, not a subprocess."""
     if not isinstance(pid, int) or pid <= 0:
         return True  # no pid to check: trust the file
-    if os.name == "nt":
-        return _pid_alive_windows(pid)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
     except OSError:
-        return True  # exists but not ours (EPERM), or a platform without kill
+        return True  # exists but not ours (EPERM)
     return True
-
-
-def _pid_alive_windows(pid: int) -> bool:
-    """OpenProcess + GetExitCodeProcess: STILL_ACTIVE means alive. Any failure
-    to ask answers True — a probe that cannot run must not un-badge a session."""
-    try:
-        import ctypes
-        from ctypes import wintypes
-
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
-        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-        STILL_ACTIVE = 259
-        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
-        if not handle:
-            return False  # no such process (or one we may not even look at)
-        try:
-            code = wintypes.DWORD()
-            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
-                return True
-            return code.value == STILL_ACTIVE
-        finally:
-            kernel32.CloseHandle(handle)
-    except Exception:  # noqa: BLE001 — a broken probe is "no opinion", not "dead"
-        return True
 
 
 def _wake_schedule() -> None:
@@ -1100,7 +1070,7 @@ def _read_permission_cards() -> set[str]:
         run_dir = os.path.join(runs, name)
         seen.add(run_dir)
         # The stamp is THE FILES, not the directory: a directory's mtime is not
-        # a portable signal (NTFS leaves it alone for a rewrite, and two writes
+        # a portable signal (a rewrite in place leaves it alone, and two writes
         # inside its granularity read as one), and a perm/ dir holds a handful
         # of small files at most — a card and its answer per prompt.
         perm_dir = perm_dir_of(run_dir)

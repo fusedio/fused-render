@@ -20,8 +20,6 @@ describe("escapesBase", () => {
     ["~/a/*/b.csv"],
     ["/tmp"],
     ["/tmp/abc.txt"],
-    ["C:/x"],
-    ["C:\\x"],
     ["../sibling/*.json"],
   ])("%s escapes the box root", (query) => {
     expect(escapesBase(query)).toBe(true);

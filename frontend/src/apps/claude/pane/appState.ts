@@ -277,7 +277,7 @@ let appStateSeq = 0;
 
 /** `dir` + "/" + `name`, T's own join (T:9039). */
 function shotJoin(dir: string, name: string): string {
-  return dir.replace(/[\\/]+$/, "") + "/" + name;
+  return dir.replace(/\/+$/, "") + "/" + name;
 }
 
 /** Marker on the framed DOCUMENT, not its window: a same-origin navigation keeps

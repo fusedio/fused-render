@@ -362,7 +362,7 @@ def watches_whole_tree() -> bool:
     stream nearly free and the many-path cover ruinously expensive (module
     docstring). inotify is the opposite — a recursive watch of `~` walks
     and registers every directory, caches included — so Linux keeps the
-    plan, and Windows (`ReadDirectoryChangesW` per path) with it."""
+    plan."""
     return sys.platform == "darwin"
 
 

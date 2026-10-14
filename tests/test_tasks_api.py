@@ -340,8 +340,7 @@ def test_a_chat_opened_on_a_file_targets_that_file(
     ])
 
     task = _tasks(client)[0]
-    # The API canonicalizes project/target (tasks.py: canonical_fs_path) — a
-    # forward-slash form, unlike the raw native-separator str(Path) on Windows.
+    # The API canonicalizes project/target (tasks.py: canonical_fs_path).
     assert task["target"] == tasks_mod.canonical_fs_path(str(file))
     assert task["project"] == tasks_mod.canonical_fs_path(str(proj))
     assert task["messages"][0]["body"] == "make the wave faster"

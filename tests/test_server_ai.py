@@ -15,8 +15,6 @@ test_runtime_cancellation.py.
 import asyncio
 import json
 import os
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -253,8 +251,7 @@ class _FakeProc:
 
 class _FakeSpawn:
     """Stands in for _server_ai._spawn_claude_stream: hands out _FakeProcs (one
-    per spawn, from `factory`), or raises. `cmd` is an argv list, or one
-    command string on the Windows .cmd-shim path (matching _popen_cmd)."""
+    per spawn, from `factory`), or raises. `cmd` is an argv list."""
 
     def __init__(self, factory=_FakeProc, exc=None):
         self._factory = factory
@@ -731,11 +728,9 @@ def test_relay_happy_path(monkeypatch):
     assert "--include-partial-messages" in argv
     assert "--verbose" in argv
     assert _flag(argv, "--model") == _server_ai._AI_DEFAULT_MODEL
-    # No user text in argv: the system prompt travels via a temp file
-    # (cmd.exe on the shim path re-parses argv; see _ai_cmd).
+    # No user text in argv: the system prompt travels via a temp file.
     assert fake.system_prompts == [_server_ai._AI_DEFAULT_SYSTEM_PROMPT]
-    # Equals form as ONE token — a separate "" element is dropped by cmd.exe's
-    # %* expansion behind a Windows .cmd shim, re-enabling tools/settings.
+    # Equals form as ONE token, never a separate "" element.
     assert "--tools=" in argv
     assert "--setting-sources=" in argv
     assert "" not in argv
@@ -1294,7 +1289,7 @@ def test_relay_rejects_bad_prompt(monkeypatch, body):
 
 def test_relay_large_prompt_travels_over_stdin(monkeypatch):
     # The documented fused.ai pattern embeds JSON aggregates in the prompt; a
-    # ~200KB one would blow the OS argv cap (~32K Windows), so it must never
+    # ~200KB one would risk the OS argv cap, so it must never
     # appear in argv.
     fake = _cli_ok(monkeypatch, _CLI_RESULT)
     big = "x" * 200_000
@@ -1414,33 +1409,13 @@ def test_claude_bin_falls_back_to_install_dirs(monkeypatch, tmp_path):
     monkeypatch.delenv("FUSED_RENDER_CLAUDE_BIN", raising=False)
     monkeypatch.setattr(_server_ai.os.path, "expanduser",
                         lambda p: p.replace("~", str(home), 1))
-    monkeypatch.setattr(_server_ai.os, "name", "posix")
 
     assert _server_ai._claude_bin() is None  # nothing installed anywhere
     bin_path.write_text("#!/bin/sh\n")
     bin_path.chmod(0o755)
-    # normpath: the fake expanduser above naively string-replaces "~" with
-    # str(home) and leaves the candidate's own "/" suffix untouched, so on a
-    # real Windows filesystem (str(home) backslashed, "/.local/bin/claude"
-    # forward-slashed) the resolved path is a mixed-separator string — the
-    # same file bin_path names, but not the same bytes as str(bin_path).
     assert os.path.normpath(_server_ai._claude_bin()) == os.path.normpath(str(bin_path))
 
 
-@pytest.mark.skipif(
-    sys.platform == "win32",
-    reason=(
-        "the skip this pins is unobservable here: claude_health.executable's "
-        "own docstring says the exec bit 'is only consulted off Windows... "
-        "os.access(X_OK) is true for any existing file' there, so os.name is "
-        "forced to 'posix' below to reach that branch — but the underlying "
-        "os.access() call still runs against a REAL Windows filesystem, where "
-        "it is X_OK-true for any existing file regardless of chmod. A dud "
-        "made non-executable by chmod(0o644) is indistinguishable from a real "
-        "one to that syscall on this platform, so the dud wins here for a "
-        "reason that has nothing to do with the skip logic under test."
-    ),
-)
 def test_claude_bin_skips_a_non_executable_dud(monkeypatch, tmp_path):
     """A dud early in the list must not shadow a real install further down.
 
@@ -1463,7 +1438,6 @@ def test_claude_bin_skips_a_non_executable_dud(monkeypatch, tmp_path):
     monkeypatch.delenv("FUSED_RENDER_CLAUDE_BIN", raising=False)
     monkeypatch.setattr(_server_ai.os.path, "expanduser",
                         lambda p: p.replace("~", str(home), 1))
-    monkeypatch.setattr(_server_ai.os, "name", "posix")
 
     assert _server_ai._claude_bin() == str(real)
     # ...and it is the same answer the health probe gives, which is the point.
@@ -1489,7 +1463,6 @@ def test_posix_candidates_are_the_documented_install_locations():
     from fused_render import claude_health
 
     assert _server_ai._CLAUDE_POSIX_CANDIDATES is claude_health.POSIX_CANDIDATES
-    assert _server_ai._CLAUDE_WINDOWS_CANDIDATES is claude_health.WINDOWS_CANDIDATES
     # The canonical three still lead, in order: an install found in two places
     # must resolve to the one Claude Code's own installer writes.
     assert _server_ai._CLAUDE_POSIX_CANDIDATES[:3] == (
@@ -1500,75 +1473,8 @@ def test_posix_candidates_are_the_documented_install_locations():
                  "~/Library/pnpm/claude", "~/.npm-global/bin/claude"):
         assert late in _server_ai._CLAUDE_POSIX_CANDIDATES
     # Every entry is absolute or ~-rooted — never a bare relative path that
-    # would resolve against the server's cwd (the Windows list is checked for
-    # the same property below).
+    # would resolve against the server's cwd.
     assert all(c.startswith(("~", "/")) for c in _server_ai._CLAUDE_POSIX_CANDIDATES)
-
-
-def test_windows_candidates_cover_the_windows_install_locations():
-    """The bug this list fixes: it used to be the POSIX paths with Windows
-    suffixes bolted on, which matches nothing a Windows install produces."""
-    joined = "\n".join(_server_ai._CLAUDE_WINDOWS_CANDIDATES).lower()
-    # native installer (irm https://claude.ai/install.ps1 | iex)
-    assert r"%userprofile%\.local\bin\claude.exe" in joined
-    assert "winget" in joined            # winget install Anthropic.ClaudeCode
-    assert r"%appdata%\npm" in joined   # npm install -g @anthropic-ai/claude-code
-    assert r"%userprofile%\.claude\local" in joined   # legacy local npm install
-    # every entry is rooted in an environment variable, never a bare relative
-    # path that would resolve against the server's cwd
-    assert all(c.startswith("%") for c in _server_ai._CLAUDE_WINDOWS_CANDIDATES)
-    # .exe ahead of any .cmd shim: a shim needs the cmd.exe hop
-    exts = [c.lower().rsplit(".", 1)[1]
-            for c in _server_ai._CLAUDE_WINDOWS_CANDIDATES]
-    assert exts.index("exe") < exts.index("cmd")
-
-
-def test_claude_bin_probes_the_windows_candidates_on_windows(monkeypatch,
-                                                             tmp_path):
-    """A Windows GUI launch inherits its login session's PATH, so an install
-    that appended to the user PATH afterwards is invisible until sign-out."""
-    monkeypatch.setattr(_server_ai.shutil, "which", lambda name: None)
-    monkeypatch.delenv("FUSED_RENDER_CLAUDE_BIN", raising=False)
-    monkeypatch.setattr(_server_ai.os, "name", "nt")
-    installed = tmp_path / "npm" / "claude.cmd"
-    installed.parent.mkdir()
-    installed.write_text("@echo off\n")
-    monkeypatch.setattr(_server_ai, "_CLAUDE_WINDOWS_CANDIDATES",
-                        (str(tmp_path / "missing.exe"), str(installed)))
-    assert _server_ai._claude_bin() == str(installed)
-    # POSIX-only candidates are not consulted on nt, and vice versa
-    monkeypatch.setattr(_server_ai.os, "name", "posix")
-    monkeypatch.setattr(_server_ai, "_CLAUDE_POSIX_CANDIDATES", ())
-    assert _server_ai._claude_bin() is None
-
-
-def test_windows_candidates_expand_environment_variables(monkeypatch, tmp_path):
-    """The %VAR% entries are literal until expanded — an unexpanded candidate
-    would silently never match anything.
-
-    os.path.expandvars only understands %VAR% on Windows (it is ntpath there),
-    which is fine in production because the %VAR% list is only consulted when
-    os.name == "nt" — but it means this host cannot expand them, so ntpath's
-    version is substituted to stand in for the Windows interpreter."""
-    import ntpath
-
-    monkeypatch.setattr(_server_ai.shutil, "which", lambda name: None)
-    monkeypatch.delenv("FUSED_RENDER_CLAUDE_BIN", raising=False)
-    monkeypatch.setattr(_server_ai.os, "name", "nt")
-    monkeypatch.setattr(_server_ai.os.path, "expandvars", ntpath.expandvars)
-    monkeypatch.setenv("APPDATA", str(tmp_path))
-    (tmp_path / "npm").mkdir()
-    (tmp_path / "npm" / "claude.exe").write_text("")
-    # a forward-slash candidate so the joined path is valid on this host too;
-    # only the %VAR% expansion is under test
-    monkeypatch.setattr(_server_ai, "_CLAUDE_WINDOWS_CANDIDATES",
-                        ("%APPDATA%/npm/claude.exe",))
-    # normpath: expandvars substitutes %APPDATA% (native-separator on real
-    # Windows) into a forward-slash template and, like expanduser, leaves the
-    # rest of the string untouched — a mixed-separator result naming the same
-    # file as the cleanly-joined RHS, but not the same string.
-    assert os.path.normpath(_server_ai._claude_bin()) == \
-        os.path.normpath(str(tmp_path / "npm" / "claude.exe"))
 
 
 def test_the_resolver_never_imports_the_chat_template():
@@ -1596,108 +1502,21 @@ def test_relay_uses_the_overridden_binary(monkeypatch):
     assert argv[0] == "/opt/custom/claude"
 
 
-# -- the windows .cmd shim hop ----------------------------------------------------
+# -- the spawn --------------------------------------------------------------------
 
 
-def test_a_plain_binary_is_execed_as_an_argv_list(monkeypatch):
-    # Only a .cmd/.bat shim needs the cmd.exe hop. A real .exe — and anything
-    # at all off win32 — is exec'd directly, where argv needs no quoting rules.
-    monkeypatch.setattr(sys, "platform", "win32")
-    assert _server_ai._popen_cmd(r"C:\u\claude.exe", ["-p"]) == [
-        r"C:\u\claude.exe", "-p"]
-    monkeypatch.setattr(sys, "platform", "darwin")
-    # a .cmd off win32 is not a shim, it is just a file with a funny name
-    assert _server_ai._popen_cmd("/usr/local/bin/claude.cmd", ["-p"]) == [
-        "/usr/local/bin/claude.cmd", "-p"]
-
-
-def test_a_shim_becomes_one_fully_quoted_command_string(monkeypatch):
-    """The paths-with-spaces bug. Handing the exec path the argv list
-    ["cmd.exe", "/c", shim, ...] lets list2cmdline quote each element that
-    needs it, and cmd.exe only preserves inner quoting when the rest of its
-    line holds exactly two quote characters — a shim path with spaces plus any
-    quoted argument makes four, cmd strips the outermost pair instead and
-    re-splits at the spaces.
-
-    So a shim becomes a STRING, spawned through the shell so CPython's comspec
-    wrapping supplies the single outer quote pair cmd can parse."""
-    monkeypatch.setattr(sys, "platform", "win32")
-    shim = r"C:\Users\John Doe\AppData\Roaming\npm\claude.cmd"
-    sp = r"C:\Users\John Doe\AppData\Local\Temp\ai_sp_x.txt"
-    cmd = _server_ai._popen_cmd(shim, ["-p", "--system-prompt-file", sp])
-
-    assert isinstance(cmd, str), (
-        "a shim invocation must be a command string — an argv list would be "
-        "re-joined by list2cmdline and mis-parsed by cmd.exe")
-    # every element quoted, not just the ones with spaces: the outer pair stops
-    # cmd re-parsing quotes, not metacharacters, and a quoted run is where
-    # & | > < ^ stay literal
-    assert cmd == f'"{shim}" "-p" "--system-prompt-file" "{sp}"'
-    # what cmd.exe receives once CPython wraps it, and what it makes of that:
-    # strip exactly the first and last quote, take the rest as written
-    line = f'cmd.exe /c "{cmd}"'
-    assert line[len("cmd.exe /c "):][1:-1] == cmd
-
-
-def test_a_double_quote_in_an_argument_is_refused_not_smuggled(monkeypatch):
-    """Nothing we send can contain a `"` — Windows paths cannot hold one and
-    the rest is static or charset-validated. If that ever changes, fail loudly
-    rather than emit a line that means something else."""
-    monkeypatch.setattr(sys, "platform", "win32")
-    with pytest.raises(ValueError):
-        _server_ai._popen_cmd(r"C:\npm\claude.cmd", ["--model", 'a"b'])
-
-
-def test_relay_runs_windows_shims_through_cmd(monkeypatch):
-    fake = _cli_ok(monkeypatch, _CLI_RESULT)
-    shim = r"C:\Users\John Doe\npm\claude.cmd"
-    monkeypatch.setenv("FUSED_RENDER_CLAUDE_BIN", shim)
-    # the reap path goes through taskkill on "win32" — neutralize it here
-    monkeypatch.setattr(subprocess, "run", lambda *a, **k: None)
-    monkeypatch.setattr(subprocess, "CREATE_NO_WINDOW", 0x08000000,
-                        raising=False)
-    # The event loop must exist before sys.platform reads "win32", or
-    # asyncio.run tries to build the real Windows proactor loop on this box.
-    loop = asyncio.new_event_loop()
-    monkeypatch.setattr(sys, "platform", "win32")
-    try:
-        loop.run_until_complete(_server_ai._ai_relay({"prompt": "hello"}))
-    finally:
-        loop.close()
-    (cmd, _), = fake.calls
-    assert isinstance(cmd, str)
-    assert cmd.startswith(f'"{shim}" ')
-    # the temp system-prompt path is quoted too — it lives under a Windows
-    # profile dir, which is exactly where the spaces come from
-    sp = [t for t in cmd.split('"') if t.endswith(".txt")]
-    assert sp and f'"{sp[0]}"' in cmd
-
-
-def test_a_shim_is_spawned_through_the_shell_and_a_binary_is_not(monkeypatch):
-    """The string form only parses correctly because CPython wraps it as
-    `comspec /c "<payload>"` — so it must go to create_subprocess_shell, and a
-    list must NOT."""
+def test_a_binary_is_execed_directly(monkeypatch):
     seen = {}
 
     class _Proc:
         returncode = 0
 
-    async def fake_shell(cmd, **kw):
-        seen["shell"] = cmd
-        return _Proc()
-
     async def fake_exec(*argv, **kw):
         seen["exec"] = list(argv)
         return _Proc()
 
-    monkeypatch.setattr(asyncio, "create_subprocess_shell", fake_shell)
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
 
-    payload = '"C:\\p ath\\claude.cmd" "-p"'
-    asyncio.run(_server_ai._spawn_claude_stream(payload, dict(os.environ)))
-    assert seen == {"shell": payload}
-
-    seen.clear()
     asyncio.run(_server_ai._spawn_claude_stream(["/usr/local/bin/claude", "-p"],
                                             dict(os.environ)))
     assert seen == {"exec": ["/usr/local/bin/claude", "-p"]}

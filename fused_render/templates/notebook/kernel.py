@@ -53,8 +53,7 @@ EVENT_BUFFER_MAX = 10000
 
 def _ensure_cache_dir():
     os.makedirs(CACHE_DIR, mode=0o700, exist_ok=True)
-    if os.name != "nt":
-        os.chmod(CACHE_DIR, 0o700)
+    os.chmod(CACHE_DIR, 0o700)
 
 
 def _me():
@@ -67,22 +66,12 @@ def _body():
     return os.path.join(os.path.dirname(_me()), "kernel_body.py")
 
 
-def _canon_python(exe):
-    # the daemon runs under pythonw.exe (see spawn below); kernels and the
-    # version string always use the console python.exe next to it
-    if os.name == "nt" and os.path.basename(exe).lower() == "pythonw.exe":
-        py = os.path.join(os.path.dirname(exe), "python.exe")
-        if os.path.exists(py):
-            return py
-    return exe
-
-
 def _version():
     h = hashlib.sha256()
     for p in (_me(), _body()):
         with open(p, "rb") as f:
             h.update(f.read())
-    return h.hexdigest()[:12] + "|" + _canon_python(sys.executable)
+    return h.hexdigest()[:12] + "|" + sys.executable
 
 
 # ================================================================ ensure()
@@ -151,17 +140,16 @@ def _listdir(path):
     dirs.sort(key=str.lower)
     files.sort(key=str.lower)
     parent = os.path.dirname(base) or base
-    return {"path": base.replace(os.sep, "/"),
-            "parent": parent.replace(os.sep, "/"),
+    return {"path": base,
+            "parent": parent,
             "dirs": dirs, "files": files}
 
 
 def _resolve_dest(directory, name):
     """Destination for the new-notebook / save-a-copy modal. `name` may be a
     plain name, a relative subpath, or an absolute path that overrides the
-    browsed `directory`; os.path keeps the semantics platform-correct (both
-    separators on Windows; a backslash stays an ordinary filename character
-    on POSIX). Appends .ipynb unless already present."""
+    browsed `directory`; a backslash stays an ordinary filename character.
+    Appends .ipynb unless already present."""
     name = (name or "").strip()
     if not name:
         return {"error": "Enter a name."}
@@ -174,11 +162,11 @@ def _resolve_dest(directory, name):
     if not full.lower().endswith(".ipynb"):
         full += ".ipynb"
     parent = os.path.dirname(full)
-    missing = {"error": "Folder does not exist: " + parent.replace(os.sep, "/")}
+    missing = {"error": "Folder does not exist: " + parent}
     if not os.path.isdir(parent):
         return missing
-    return {"path": full.replace(os.sep, "/"),
-            "dir": parent.replace(os.sep, "/"),
+    return {"path": full,
+            "dir": parent,
             "name": os.path.basename(full)}
 
 
@@ -218,23 +206,11 @@ def main(action: str = "ensure", path: str = "", name: str = ""):
         # imports the app bundle's packages
         env = {k: v for k, v in os.environ.items()
                if k not in ("PYTHONPATH", "PYTHONHOME")}
-        # a console-subsystem python.exe spawned DETACHED_PROCESS gets a fresh
-        # console window on Windows (the popup) — run pythonw.exe instead, the
-        # same fix db_console/webhook_debugger shipped
-        exe = sys.executable
-        if os.name == "nt":
-            pyw = os.path.join(os.path.dirname(exe), "pythonw.exe")
-            if os.path.exists(pyw):
-                exe = pyw
-        detach = (
-            {"creationflags": subprocess.DETACHED_PROCESS
-             | subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP}
-            if os.name == "nt" else {"start_new_session": True}
-        )
         with open(log, "ab") as lf:
-            subprocess.Popen([exe, _me(), "--serve"],
+            subprocess.Popen([sys.executable, _me(), "--serve"],
                              stdin=subprocess.DEVNULL, stdout=lf, stderr=lf,
-                             env=env, cwd=os.path.dirname(_me()), **detach)
+                             env=env, cwd=os.path.dirname(_me()),
+                             start_new_session=True)
         st = _wait_alive(version, 15)
         if st:
             return {"port": st["port"], "token": st.get("token"),
@@ -289,9 +265,7 @@ def _serve():
             env = {k: v for k, v in os.environ.items()
                    if k not in ("PYTHONPATH", "PYTHONHOME")}
             env["MPLBACKEND"] = "Agg"
-            kw = ({"creationflags": subprocess.CREATE_NO_WINDOW}
-                  if os.name == "nt" else {})
-            kw.update(stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            kw = dict(stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                       stderr=subprocess.DEVNULL, env=env, text=True,
                       encoding="utf-8", errors="replace", bufsize=1)
             # no isdir probe on the notebook dir; a missing dir surfaces from
@@ -449,7 +423,7 @@ def _serve():
 
     def do_ensure(body):
         nb_path = os.path.abspath(os.path.expanduser(body.get("nb_path") or ""))
-        python = body.get("python") or _canon_python(sys.executable)
+        python = body.get("python") or sys.executable
         kid = kernel_id(nb_path, python)
         with klock:
             k = kernels.get(kid)
@@ -498,14 +472,13 @@ def _serve():
         # the app env travels as "" so the saved metadata stays portable;
         # /kernel/ensure resolves "" to sys.executable
         envs = [{"label": "App environment", "path": ""}]
-        seen = {os.path.normcase(_canon_python(sys.executable))}
+        seen = {os.path.normcase(sys.executable)}
         nb = q1(q, "nb_path", "")
         d = os.path.dirname(os.path.abspath(os.path.expanduser(nb))) if nb else ""
         for _ in range(4):
             if not d:
                 break
-            cand = (os.path.join(d, ".venv", "Scripts", "python.exe")
-                    if os.name == "nt" else os.path.join(d, ".venv", "bin", "python"))
+            cand = os.path.join(d, ".venv", "bin", "python")
             if os.path.isfile(cand) and os.path.normcase(cand) not in seen:
                 envs.append({"label": f".venv — {os.path.basename(d)}", "path": cand})
                 seen.add(os.path.normcase(cand))
@@ -614,8 +587,7 @@ def _serve():
     _ensure_cache_dir()
     tmp_state = f"{STATE}.{os.getpid()}.tmp"
     fd = os.open(tmp_state, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    if os.name != "nt":
-        os.fchmod(fd, 0o600)
+    os.fchmod(fd, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
         json.dump({"port": port, "token": TOKEN,
                    "pid": os.getpid(), "version": VERSION}, fh)

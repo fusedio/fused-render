@@ -1,7 +1,7 @@
 """Write latest.json for the download page (scripts/download_page/index.html).
 
 Run by .github/workflows/release.yml's publish-download-page job once the
-macOS/Windows/Linux artifact jobs finish, with the facts each job produced
+macOS/Linux artifact jobs finish, with the facts each job produced
 passed as environment variables; prints the merged manifest JSON to stdout.
 A separate script (not inline in the workflow) so the JSON goes through
 json.dumps rather than shell interpolation, and so it's runnable locally.
@@ -13,8 +13,7 @@ EXISTING_MANIFEST_PATH (if given) — a workflow_dispatch that rebuilds a
 single platform must not blank out the other platforms' still-good links on
 the live page.
 
-    VERSION=0.3.2 DMG_URL=... DMG_SHA256=... WHL_URL=... \
-        WINDOWS_URL=... LINUX_URL=... \
+    VERSION=0.3.2 DMG_URL=... DMG_SHA256=... WHL_URL=... LINUX_URL=... \
         python3 scripts/download_page/write_manifest.py
 """
 import json
@@ -28,7 +27,6 @@ OPTIONAL_FIELDS = [
     ("dmg_url", "DMG_URL"),
     ("dmg_sha256", "DMG_SHA256"),
     ("wheel_url", "WHL_URL"),
-    ("windows_url", "WINDOWS_URL"),
     ("linux_url", "LINUX_URL"),
 ]
 

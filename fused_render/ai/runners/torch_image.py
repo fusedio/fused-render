@@ -464,7 +464,7 @@ def _place(pipe):
     the pipeline runs on; a reproducible seed is worth more than the
     microsecond. The two return values differ on MPS, and collapsing them is
     what hid the device from `/health` for as long as this function only
-    answered the seed's question: a FLUX render on a Windows CPU is tens of
+    answered the seed's question: a FLUX render on a CPU is tens of
     minutes, and nothing on screen said which case the user was in.
 
     Every case reports which one happened via `set_state(placement=...)`,
@@ -598,9 +598,8 @@ def load(model_id, fetched):
             pass
     # See `worker_base.STATE["device"]`: "this machine has a GPU" and "this
     # pipeline is using one" are different facts, and only this process knows the
-    # second. Since D381 that gap is the ORDINARY case rather than a Windows
-    # quirk — the default image engine pins the `whl/cpu` torch on every
-    # platform, so a fitted NVIDIA or AMD card is unused here unless the user
+    # second. Since D381 that gap is the ORDINARY case — the default image
+    # engine pins the `whl/cpu` torch on every platform, so a fitted NVIDIA or AMD card is unused here unless the user
     # opted into the CUDA or ROCm row, while the same pin lands on `mps` on a
     # Mac. Three outcomes from one folder, and none of them visible outside it.
     worker_base.set_state(device=device)

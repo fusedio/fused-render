@@ -131,7 +131,7 @@ def test_the_bundled_uv_is_on_the_path_every_child_inherits(home, tmp_path, monk
     back to the app interpreter — which has neither `imagecodecs`/`pyproj` (geotiff
     loses LZW and JPEG tiles) nor `s3fs`/`gcsfs`/`crc32c` (every remote zarr store
     fails to open), and las/pyramid raised advice the user cannot follow. The
-    Linux and Windows supervisors already prepend their payload's bin dir
+    Linux supervisor already prepends its payload's bin dir
     (`supervisor/paths.py`), so this is the same mechanism, not a second one.
 
     Asserted through `shutil.which` rather than any fused_render helper, because
@@ -144,7 +144,7 @@ def test_the_bundled_uv_is_on_the_path_every_child_inherits(home, tmp_path, monk
     (contents / "Resources" / "bin").mkdir(parents=True)
     interp = contents / "MacOS" / "python"
     interp.write_text("")
-    uv = contents / "Resources" / "bin" / ("uv.exe" if os.name == "nt" else "uv")
+    uv = contents / "Resources" / "bin" / "uv"
     uv.write_text("")
     os.chmod(uv, 0o755)
     monkeypatch.setattr(sys, "executable", str(interp))
@@ -156,12 +156,7 @@ def test_the_bundled_uv_is_on_the_path_every_child_inherits(home, tmp_path, monk
     monkeypatch.setenv("PATH", str(empty))
 
     server.export_app_env()
-    # normcase, not a bare ==: shutil.which() on Windows matches "uv" against
-    # PATHEXT (.COM;.EXE;...) and returns cmd + THAT extension's case, e.g.
-    # "uv.EXE", regardless of the actual on-disk filename's case ("uv.exe"
-    # here) — a case difference on a filesystem where it is not a different
-    # file. Same idiom as claude_agent/agent.py's containment check.
-    assert os.path.normcase(shutil.which("uv")) == os.path.normcase(str(uv))
+    assert shutil.which("uv") == str(uv)
 
 
 # --------------------------------------------------------------- decoupling

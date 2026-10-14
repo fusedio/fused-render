@@ -77,7 +77,7 @@ class MCPServer:
             # `JSON.stringify(msg) + "\n"` as UTF-8 with non-ASCII unescaped. A
             # locale-encoded pipe here would make a non-ASCII payload depend on
             # the runner's LANG instead of pinning what the server actually
-            # receives (test_a_windows_locale_stdio_still_parks_a_non_ascii_write).
+            # receives (test_a_non_utf8_locale_stdio_still_parks_a_non_ascii_write).
             text=True, encoding="utf-8", env={**os.environ, **(env or {})})
         self._lock = threading.Lock()
         self._next_id = 0
@@ -150,7 +150,7 @@ class MCPServer:
         # puts non-ASCII on the wire as UTF-8 BYTES, not as \uXXXX escapes, and
         # an escaping serializer here cannot reach the decoder at all — every
         # payload would be pure ASCII, which any codec accepts (Bugbot, PR #677:
-        # the Windows-locale test passed with the fix reverted).
+        # the non-UTF-8-locale test passed with the fix reverted).
         self.proc.stdin.write(json.dumps({
             "jsonrpc": "2.0", "id": pending.id, "method": method,
             "params": params or {}}, ensure_ascii=False) + "\n")

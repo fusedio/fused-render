@@ -8,11 +8,10 @@ into something that no longer reports the right size on one platform.
 """
 
 import os
-import sys
 
 import pytest
 
-from _big_files import _mark_sparse, sparse_file
+from _big_files import sparse_file
 
 FIVE_GIB = 5 * 1024 ** 3
 
@@ -58,14 +57,3 @@ def test_nothing_is_allocated_on_the_disk(tmp_path):
     path = tmp_path / "model.safetensors"
     sparse_file(path, FIVE_GIB)
     assert os.stat(path).st_blocks * 512 < 1024 * 1024
-
-
-@pytest.mark.skipif(sys.platform == "win32",
-                    reason="the point is the branch NOT taken off windows")
-def test_the_windows_only_flag_is_skipped_rather_than_attempted(tmp_path):
-    """`ctypes.windll` exists only on Windows, so `_mark_sparse` has to return
-    on the platform check — an `except Exception` mopping up an
-    `AttributeError` on every POSIX call would work but would hide a real
-    Windows failure behind the same silence."""
-    with open(tmp_path / "x.bin", "wb") as f:
-        assert _mark_sparse(f.fileno()) is None

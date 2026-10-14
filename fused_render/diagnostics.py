@@ -432,9 +432,7 @@ def _claude_runs_root() -> str:
     import on purpose: the diagnostics bundle must still collect the runs'
     logs when the agent module itself will not import, which is one of the
     failures a bundle exists to explain."""
-    geteuid = getattr(os, "geteuid", None)
-    suffix = "-%d" % geteuid() if geteuid is not None else ""
-    return os.path.join(tempfile.gettempdir(), "fused_render_claude" + suffix, "runs")
+    return os.path.join(tempfile.gettempdir(), "fused_render_claude-%d" % os.geteuid(), "runs")
 
 
 def _plan_claude(plan: _Plan) -> None:
@@ -460,7 +458,7 @@ def _plan_calls(plan: _Plan) -> None:
         return
     found = []
     # Exactly two levels (<root>/<partition>/<file>), suffix-filtered: on
-    # Linux/Windows the app log dir is <root>/app and must not land twice.
+    # Linux the app log dir is <root>/app and must not land twice.
     for part in plan.listdir(root, "calls store"):
         if not part.is_dir():
             continue

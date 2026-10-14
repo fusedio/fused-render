@@ -65,7 +65,6 @@ def test_state_is_the_flat_dotdir_shared_with_cli(monkeypatch, tmp_path):
     # XDG_CACHE_HOME (disposable, out of backup scope) and runtime stays on
     # XDG_RUNTIME_DIR (tmpfs, 0700, socket-safe).
     monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("USERPROFILE", str(tmp_path))  # Path.home()'s expanduser on Windows
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "run"))
     p = paths_mod.DesktopPaths.discover_linux()
@@ -82,7 +81,6 @@ def test_xdg_data_home_no_longer_affects_the_root(monkeypatch, tmp_path):
     # The move off ~/.local/share means XDG_DATA_HOME must NOT steer the state
     # root anymore — it only ever governed the old XDG-data layout.
     monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("USERPROFILE", str(tmp_path))  # Path.home()'s expanduser on Windows
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
     p = paths_mod.DesktopPaths.discover_linux()
     root = tmp_path / ".fused-render"
@@ -94,7 +92,6 @@ def test_xdg_data_home_no_longer_affects_the_root(monkeypatch, tmp_path):
 def test_cache_and_runtime_fallbacks_when_xdg_unset(monkeypatch, tmp_path):
     _clear_xdg(monkeypatch)
     monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("USERPROFILE", str(tmp_path))  # Path.home()'s expanduser on Windows
     p = paths_mod.DesktopPaths.discover_linux()
     root = tmp_path / ".fused-render"
     assert p.root == root
@@ -126,7 +123,7 @@ def test_child_environment_keys_are_contract_identical(monkeypatch, tmp_path):
 
 def test_child_environment_leaves_the_claude_config_dir_alone(monkeypatch, tmp_path):
     """The app must NOT relocate Claude Code's config dir. That dir holds
-    `.credentials.json` on Linux and Windows, so pointing it at app-owned state
+    `.credentials.json` on Linux, so pointing it at app-owned state
     logged the user out of a CLI they were already logged into — unrecoverably,
     since both spawn paths run headless and `/login` cannot run there."""
     monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
@@ -157,9 +154,8 @@ def test_child_environment_passes_a_user_set_claude_config_dir_through(monkeypat
 
 
 def test_child_environment_points_all_temp_vars_at_temp(monkeypatch, tmp_path):
-    # TEMP/TMP cover Windows-conventioned lookups, but POSIX tempfile consults
-    # TMPDIR first — without it the child's temp files land outside the
-    # supervisor-owned temp dir.
+    # tempfile consults TMPDIR first — without it the child's temp files land
+    # outside the supervisor-owned temp dir.
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "run"))
@@ -240,7 +236,7 @@ def test_autostart_write_remove_round_trip(monkeypatch, tmp_path):
 def test_autostart_fails_loudly_on_unresolvable_launcher(monkeypatch, tmp_path):
     # $APPIMAGE points at a nonexistent file and argv[0] is not runnable:
     # fail loudly (OSError) so the tray toggle reverts the checkbox rather than
-    # writing a broken Exec line (mirrors _win32/startup.py's caution).
+    # writing a broken Exec line.
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
     monkeypatch.setenv("APPIMAGE", str(tmp_path / "does-not-exist.AppImage"))
@@ -345,17 +341,6 @@ def test_open_url_passes_the_activation_token_to_xdg_open(monkeypatch):
     ui.open_url("https://example.invalid")
     assert seen[0]["XDG_ACTIVATION_TOKEN"] == seen[0]["DESKTOP_STARTUP_ID"] == "tok-1"
     assert seen[1] is None
-
-
-def test_open_default_apps_raises_on_linux(monkeypatch):
-    # No cross-desktop Linux equivalent of ms-settings:defaultapps: the backend
-    # method must raise so core's _safe_call logs an honest no-op, instead of
-    # core hardcoding the Windows-only URI (a silent dead menu item).
-    called = []
-    monkeypatch.setattr(ui.subprocess, "Popen", lambda *a, **k: called.append(a))
-    with pytest.raises(OSError):
-        ui.open_default_apps()
-    assert called == []  # never shelled out to xdg-open with a Windows URI
 
 
 def test_alert_is_a_no_op_when_tk_cannot_start(monkeypatch):

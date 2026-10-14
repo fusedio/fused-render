@@ -170,7 +170,7 @@ function CalendarIcon() {
  */
 /** The name a chip falls back to when the attachment carried none. */
 export function basenameOf(path: string): string {
-  const cut = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+  const cut = path.lastIndexOf("/");
   return (cut === -1 ? path : path.slice(cut + 1)) || path;
 }
 

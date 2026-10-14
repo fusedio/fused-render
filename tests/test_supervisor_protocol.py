@@ -1,5 +1,5 @@
 """parse_args() for the supervisor CLI. Pure wire-protocol argument parsing —
-no OS backend, no win32pipe — so it imports and runs on every platform."""
+no OS backend — so it imports and runs on every platform."""
 import pytest
 
 from fused_render.supervisor import protocol

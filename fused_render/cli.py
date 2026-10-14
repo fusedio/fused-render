@@ -7,10 +7,7 @@ Three subcommands:
   * ``fused-render open <path>`` — a LEAN server for one app folder or file: no
     background subsystems (see server.create_app's ``lean`` flag), an ephemeral
     port, no server.json (it never claims the desktop instance's identity), the
-    browser opened at that path's embed URL once the server answers. Distinct
-    from the ``fused-render-open`` console script (winopen.py, the Windows
-    "Open with" handler) — that one is a whole separate entry point, this is a
-    subcommand of this CLI.
+    browser opened at that path's embed URL once the server answers.
   * ``fused-render calls`` — read the app call log (calls.py) from a terminal.
     Reads the store directly off disk, so it works with no server running.
   * ``fused-render diagnose`` — write the diagnostics zip (diagnostics.py, SPEC
@@ -143,15 +140,9 @@ _HOST = "127.0.0.1"
 def _port_free(port: int) -> bool:
     """True if no server is listening on ``port`` on the loopback right now.
 
-    A connect probe, not a bind probe — the same one app.pick_port, winopen and
-    the supervisor use. A bind probe must set SO_REUSEADDR to tolerate a port
-    lingering in TIME_WAIT after a clean shutdown (uvicorn, which also sets it,
-    would happily bind that), but on Windows SO_REUSEADDR *also* lets a bind
-    succeed against a port an old server is actively listening on: the probe
-    would then read a live collision as "free", uvicorn would bind the same port
-    a second time, and connections would split nondeterministically between the
-    two servers. Connect instead: a live listener answers (taken), while a
-    TIME_WAIT port refuses the connect (free)."""
+    A connect probe, not a bind probe — the same one app.pick_port and the
+    supervisor use. A live listener answers (taken), while a port lingering in
+    TIME_WAIT after a clean shutdown refuses the connect (free)."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.settimeout(0.25)
         return s.connect_ex((_HOST, port)) != 0
@@ -200,9 +191,7 @@ def _run_serve(args: argparse.Namespace) -> None:
     import uvicorn
 
     from fused_render.server import create_app
-    from fused_render.windows_process import install_no_window_policy
 
-    install_no_window_policy()
     log_file = setup_logging()
     # Fatal-signal / uncaught-exception traces into the log home (crashlog.py,
     # SPEC §50): a segfault in a native extension otherwise leaves nothing.
@@ -425,9 +414,7 @@ def _run_open(args: argparse.Namespace) -> None:
 
     from fused_render._view_url_codec import embed_url
     from fused_render.server import create_app, export_app_env, set_server_origin_env
-    from fused_render.windows_process import install_no_window_policy
 
-    install_no_window_policy()
     setup_logging()
 
     target = _open_target(args.path)
@@ -497,11 +484,8 @@ def _run_calls(args: argparse.Namespace) -> None:
 
     since = _parse_age(args.since)
     # abspath resolves a relative argument, then the result is brought back to
-    # the shell's canonical form: on Windows abspath answers with backslashes
-    # and the store holds forward slashes, so the raw abspath matched nothing
-    # at all there — not even the page the caller was standing on. --entrypoint
-    # is a substring filter, so a bare fragment ("sine.py", no drive) is left
-    # alone by canonical_fs_path and keeps working.
+    # the shell's canonical form. --entrypoint is a substring filter, so a bare
+    # fragment ("sine.py") is left as written and keeps working.
     # A page id with a scheme (`fused-render://claude`, the native chat's
     # X-Fused-Page, D1310) is not a path: abspath would glue it onto the cwd
     # and it would match nothing, so it is passed through as written.
@@ -774,6 +758,10 @@ def _run_diagnose(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
+    if sys.platform == "win32":
+        # The wheel is platform-agnostic, so pip still installs it on Windows;
+        # say so plainly instead of failing later on a POSIX-only import.
+        sys.exit("fused-render does not support Windows (macOS and Linux only).")
     parser = _build_parser()
 
     # Preserve the historical bare invocation: `fused-render`, `fused-render --port N`,

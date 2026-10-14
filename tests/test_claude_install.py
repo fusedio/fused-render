@@ -74,22 +74,13 @@ def _run_install(monkeypatch, lines, code=0, health=None):
 # -- what actually runs -------------------------------------------------------
 
 
-def test_the_install_argv_matches_the_platform_and_the_line_we_show(monkeypatch):
+def test_the_install_argv_matches_the_line_we_show():
     """What the user is told will run and what runs have to be the same
     sentence, or the disclosure beside the button is decoration."""
-    monkeypatch.setattr(claude_install.os, "name", "posix")
     argv, display = claude_install.install_argv()
     assert display == claude_health.INSTALL_COMMAND_POSIX
     assert argv[:2] == ["bash", "-c"]
     assert "claude.ai/install.sh" in argv[2]
-
-    monkeypatch.setattr(claude_install.os, "name", "nt")
-    argv, display = claude_install.install_argv()
-    assert display == claude_health.INSTALL_COMMAND_WINDOWS
-    assert argv[0] == "powershell"
-    # -NoProfile, so a user's PowerShell profile cannot change what this does.
-    assert "-NoProfile" in argv
-    assert "claude.ai/install.ps1" in argv[-1]
 
 
 def test_update_runs_the_binary_we_resolved_not_whatever_is_on_path():
@@ -271,9 +262,8 @@ def test_a_run_that_overruns_is_killed_and_keeps_what_it_said(monkeypatch):
     THE CHILD BLOCKS UNTIL THE WATCHDOG KILLS IT rather than the test racing a
     short timeout. The first version handed a fake two lines and set TIMEOUT_S
     to 0, hoping the deadline would be noticed before the iterator ran dry;
-    that is a race against the clock and it lost on Windows, where time.time()
-    advances in ~15ms steps and the two lines were consumed inside one tick
-    (CI on 029f4b0: `assert 'done' == 'error'`). Nothing about the product was
+    that is a race against the clock: the two lines could be consumed inside
+    one clock tick. Nothing about the product was
     wrong; the test was asking whether a scheduler happened to get there first.
     Blocking makes the kill the only thing that can end the loop, so the
     assertion is causal on every platform.
@@ -397,23 +387,7 @@ def test_doctor_endpoint_returns_the_parsed_report(monkeypatch):
 # -- the four Bugbot findings on PR #879, each pinned ---------------------------
 
 
-def test_update_goes_through_the_cmd_hop_behind_a_windows_shim(monkeypatch):
-    """npm installs `claude` as a `.cmd` shim that CreateProcess cannot run, and
-    npm is one of the two methods `update_plan` calls self-updating — so this is
-    exactly the install type the Update button is offered for. A raw argv list
-    raised OSError on every Windows npm install, i.e. the button was broken for
-    the users it exists to serve."""
-    monkeypatch.setattr(claude_health.os, "name", "nt")
-    cmd, display = claude_install.update_argv(r"C:\Users\a\AppData\Roaming\npm\claude.cmd")
-    # A STRING, not a list: that is the cmd.exe hop, and `_run` passes shell=
-    # from exactly this distinction.
-    assert isinstance(cmd, str)
-    assert cmd == r'"C:\Users\a\AppData\Roaming\npm\claude.cmd" "update"'
-    assert display == "claude update"
-
-
-def test_update_stays_a_plain_argv_list_off_windows(monkeypatch):
-    monkeypatch.setattr(claude_health.os, "name", "posix")
+def test_update_is_a_plain_argv_list():
     cmd, _ = claude_install.update_argv("/home/u/.local/bin/claude")
     assert cmd == ["/home/u/.local/bin/claude", "update"]
 

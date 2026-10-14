@@ -19,16 +19,6 @@ from pathlib import Path
 
 import pytest
 
-pytestmark = pytest.mark.skipif(
-    not hasattr(socket, "AF_UNIX"), reason="Unix domain sockets required"
-)
-
-# instance.py imports fcntl (POSIX-only): importorskip keeps this module from
-# ERRORing at collection on Windows, where fcntl is absent (sibling convention:
-# test_supervisor_linux_tree.py guards the same way). AF_UNIX exists on macOS
-# too, so the tests below still run there — only fcntl gates the import.
-pytest.importorskip("fcntl")
-
 from fused_render.supervisor import protocol
 from fused_render.supervisor._linux import instance
 
@@ -293,7 +283,7 @@ def test_run_reports_open_rejected_on_surrogate_path(runtime, monkeypatch):
 def test_serve_thread_exits_after_shutdown_for_upgrade(served):
     # core._teardown's UPGRADE path skips _stop_pipe on the contract that the
     # serving thread self-stops once a ShutdownForUpgrade is answered. Assert
-    # the backend honors it (mirrors _win32/_serve_pipe's should_stop).
+    # the backend honors it.
     names, requests, thread, _logs = served
     _answer_next(requests, status=0)
     assert _send(names, protocol.encode(protocol.ShutdownForUpgrade())) == 0

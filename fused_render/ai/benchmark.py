@@ -85,14 +85,12 @@ as "this runner does not say", which is the truth.
 """
 from __future__ import annotations
 
-import ctypes
 import logging
 import math
 import os
 import platform
 import secrets
 import struct
-import sys
 import tempfile
 import threading
 import time
@@ -266,44 +264,17 @@ WORKLOADS: Mapping[str, Workload] = MappingProxyType({
 def _total_memory_bytes() -> int | None:
     """Physical RAM, or `None` where nothing here can say — SPEC AI-20.
 
-    `os.sysconf` covers macOS and Linux. Windows has no stdlib equivalent —
-    this used to report `None` there unconditionally, which meant `machine()`
-    recorded `totalMemoryBytes: null` on every Windows benchmark run, and
-    `footprints.py`'s own machine-identity check (`platform`/`arch`/
-    `totalMemoryBytes`) could never actually confirm "same machine" for one.
-    `fit.machine_ram_gb` already carries this exact `GlobalMemoryStatusEx`
-    fallback (its own docstring: `sysconf` covers macOS/Linux, Windows
-    answers through `GlobalMemoryStatusEx`) — ported here rather than
-    imported, because `fit.py` returns decimal GB (its own unit, `GB_BYTES`)
-    cached forever via `functools.lru_cache`, and this function returns raw
-    bytes, uncached, every call (`machine()` is stamped fresh per run — see
-    that function's own docstring for why a benchmark record's machine block
-    must not be a cached snapshot from an earlier run).
+    `os.sysconf` covers macOS and Linux. Not shared with `fit.machine_ram_gb`,
+    because `fit.py` returns decimal GB (its own unit, `GB_BYTES`) cached
+    forever via `functools.lru_cache`, and this function returns raw bytes,
+    uncached, every call (`machine()` is stamped fresh per run — see that
+    function's own docstring for why a benchmark record's machine block must
+    not be a cached snapshot from an earlier run).
     """
     try:
         return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
     except (AttributeError, ValueError, OSError):
         pass
-    if sys.platform == "win32":  # pragma: no cover - the Windows branch
-        # A literal `sys.platform == "win32"` check, not a `hasattr`/try
-        # probe — see `fit.machine_ram_gb`'s own comment: pyright only
-        # declares `ctypes.windll` under exactly this guard, so off Windows
-        # this whole branch is eliminated by static platform inference and
-        # the attribute is never even type-checked.
-        try:
-            class _MemoryStatus(ctypes.Structure):
-                _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
-                            ("ullTotalPhys", ctypes.c_uint64), ("ullAvailPhys", ctypes.c_uint64),
-                            ("ullTotalPageFile", ctypes.c_uint64), ("ullAvailPageFile", ctypes.c_uint64),
-                            ("ullTotalVirtual", ctypes.c_uint64), ("ullAvailVirtual", ctypes.c_uint64),
-                            ("ullAvailExtendedVirtual", ctypes.c_uint64)]
-
-            status = _MemoryStatus()
-            status.dwLength = ctypes.sizeof(status)
-            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
-                return status.ullTotalPhys
-        except Exception:  # noqa: BLE001 - a failed read must not be fatal
-            pass
     return None
 
 

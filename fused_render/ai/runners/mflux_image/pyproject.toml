@@ -3,7 +3,7 @@
 # The Apple Silicon half of image generation, beside `diffusers_image/` which
 # serves every platform on torch. Same reasoning as the two whisper runners:
 # neither dependency set belongs in the other's interpreter, and `mflux` is
-# Metal-only — it would not install on the Windows wheel at all.
+# Metal-only — it would not install on the Linux wheel at all.
 #
 # `envinstall` (PY-18) builds this on first use with the same detached
 # `uv sync`, progress record and verbatim errors any declaring folder gets.

@@ -17,11 +17,9 @@ from fused_render import jobs
 from fused_render.update import common, linux
 from fused_render import installed
 
-# `os.path.realpath()` returns a `\\?\`-prefixed extended-length path on
-# Windows, so a test that asserts the resolved path equals a plain string
-# only holds on POSIX.
+# The symlinked-AppImage tests drive the Linux-only installed-version path.
 linux_only = pytest.mark.skipif(sys.platform != "linux",
-                                reason="os.path.realpath()'s Windows \\\\?\\ prefix")
+                                reason="Linux-only AppImage install path")
 
 
 # ---- method() -----------------------------------------------------------

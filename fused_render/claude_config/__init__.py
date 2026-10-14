@@ -19,7 +19,7 @@ What the port changed, and nothing else:
   * `import lib` -> `from . import lib` (package-relative).
   * `lib.config_lock()` also takes a process-local threading lock, because the
     concurrency source is now a threadpool inside ONE process rather than N
-    subprocesses, and `fcntl` is absent on Windows (see lib.py).
+    subprocesses (see lib.py).
   * `settings_catalog.json` is read from a user-writable override when present
     and only ever WRITTEN there — site-packages must stay read-only (lib.py's
     catalog helpers).

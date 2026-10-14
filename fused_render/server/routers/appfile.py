@@ -137,9 +137,8 @@ def _export_destination_dir() -> str:
 
     No existing helper in the codebase resolves a per-platform user
     directory outside the app's own home (`storage.home_dir()` is a
-    different, sandboxed thing) — `~/Downloads` and
-    `%USERPROFILE%\\Downloads` both come out of `os.path.expanduser("~")`,
-    which resolves correctly on both POSIX and Windows.
+    different, sandboxed thing) — `~/Downloads` comes out of
+    `os.path.expanduser("~")`.
     """
     d = os.path.join(os.path.expanduser("~"), "Downloads")
     os.makedirs(d, exist_ok=True)

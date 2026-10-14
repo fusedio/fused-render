@@ -2,18 +2,18 @@
 verify the signed update manifest, and stream-download the artifact it points
 at while checking its SHA-256 against the signed value.
 
-Factored out of supervisor/_win32/update.py so the macOS in-app updater
-(update/mac.py) shares one implementation of the security-critical path. The
-signing scheme is unchanged: an ed25519 signature over a domain-separated
-`version\nsha256` line (scripts/windows/generate_update_manifest.py), so a
+Shared by the macOS (update/mac.py) and Linux (update/linux.py) in-app
+updaters, so both use one implementation of the security-critical path. The
+signing scheme: an ed25519 signature over a domain-separated
+`version\nsha256` line (scripts/generate_update_manifest.py), so a
 CDN/bucket compromise can't forge a version or point the client at different
 bytes. The artifact URL itself is not signed — its content is pinned by the
 signed sha256 — so downloads additionally require HTTPS end to end.
 
-Note the signing context is shared across platforms: a Windows manifest
+Note the signing context is shared across platforms: a Linux manifest
 replayed at the macOS manifest URL verifies, but the sha256 then pins the
-Windows installer bytes, which the macOS install path cannot mount — the swap
-never happens. Version downgrade replays are rejected by is_newer().
+AppImage bytes, which the macOS install path cannot mount — the swap never
+happens. Version downgrade replays are rejected by is_newer().
 """
 from __future__ import annotations
 
@@ -34,8 +34,8 @@ except ModuleNotFoundError as _exc:
     # `cryptography` is not a core dependency (pyproject.toml) — it only
     # arrives transitively via [bundled]/[fused]'s `mcp<2` -> `pyjwt[crypto]`.
     # A bare `pip install fused-render` therefore has to be able to IMPORT
-    # this module without it: mac.py/linux.py/the win32 supervisor updater
-    # all import `common` at their own module top level, so an unguarded
+    # this module without it: mac.py/linux.py both import `common` at their
+    # own module top level, so an unguarded
     # import here crashes every one of them at import time, which crashes
     # server startup on any platform (`update/__init__.py:start()` -> the
     # platform module -> here). `exc.name` is checked, not a bare except, so
@@ -57,15 +57,6 @@ PUBLIC_KEY = base64.b64decode("u4eiDvccdWmsVCN0nifCEXqmU+xVGIDPe8LP5KRlDns=")
 SIGNING_CONTEXT = f"{_flavor.release_prefix()}-update"
 FETCH_TIMEOUT_S = 15.0
 DOWNLOAD_TIMEOUT_S = 300.0
-# Short — the sidebar's first badge (UpdateBadge, 60s idle poll on top of this)
-# used to be up to ~2 minutes late after launch: 60s startup delay plus up to
-# 60s until the first poll landed. 10s keeps the manifest check off the
-# earliest, busiest moment of startup while getting the badge on screen within
-# about a minute of launch instead of two.
-# Shared with the Windows tray updater (supervisor/_win32/update.py), which
-# competes with a whole app launch at this moment; the mac manager wants the
-# check sooner and uses MAC_STARTUP_DELAY_S instead.
-STARTUP_DELAY_S = 10.0
 # Every FIVE MINUTES (Akshil, 2026-09-10: "check for updates every 5 mins"). It
 # was 6 h, then 1 h (2026-09-09); the argument each time was the same and it
 # holds at this figure too: a check is one ~300-byte signed GET on CloudFront —
@@ -77,7 +68,6 @@ STARTUP_DELAY_S = 10.0
 # that long. The check-on-return trigger (update-status.ts) stays as well — a
 # five-minute loop can still be four minutes from its next tick when the user
 # sits back down.
-# Shared with the Windows tray updater (supervisor/_win32/update.py).
 CHECK_INTERVAL_S = 5 * 60
 MAX_MANIFEST_BYTES = 64 * 1024
 MAX_ARTIFACT_BYTES = 600 * 1024 * 1024
@@ -146,14 +136,12 @@ def verify_signature(version: str, sha256: str, signature: str, *,
         # `cryptography` installed is a bug (mac.start()/linux.start() gate
         # on CRYPTO_AVAILABLE before ever constructing a manager that could
         # call this), not a "verification unavailable, proceed anyway" case.
-        # ValueError, not RuntimeError: callers (supervisor/_win32/update.py
-        # and the manual /api/update/check route) catch exactly
+        # ValueError, not RuntimeError: callers (the manual
+        # /api/update/check route) catch exactly
         # (OSError, ValueError, http.client.HTTPException) to produce the
         # existing "could not check for updates right now" dialog. The
         # caller contract is "verification did not succeed -> report
-        # unavailable", and a missing crypto library is exactly that; using
-        # ValueError keeps the blast radius to this one file instead of
-        # also having to edit the win32 supervisor and the API route.
+        # unavailable", and a missing crypto library is exactly that.
         raise ValueError(
             "cryptography is not installed; cannot verify the update manifest signature")
     # Narrows Ed25519PublicKey/InvalidSignature from `... | None` for the type

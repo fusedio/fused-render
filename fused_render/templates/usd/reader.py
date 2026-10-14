@@ -131,19 +131,13 @@ def main(action: str = "inspect", file: str = "", budget: int = 1000000,
         os.makedirs(cd, exist_ok=True)
         worker = os.path.join(HERE, "convert_worker.py")
         logf = open(os.path.join(cd, "worker.log"), "ab")
-        # detach: outlive this 30 s subprocess. start_new_session (setsid) is
-        # POSIX-only and silently a no-op on Windows, where DETACHED_PROCESS +
-        # CREATE_NEW_PROCESS_GROUP is the equivalent.
-        detach_kwargs = (
-            {"creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP}
-            if os.name == "nt" else {"start_new_session": True}
-        )
+        # detach (start_new_session): outlive this 30 s subprocess.
         child = subprocess.Popen(
             [sys.executable, worker, file, cd, str(int(budget)),
              str(int(crop))],
             stdout=logf, stderr=logf, stdin=subprocess.DEVNULL,
             cwd=HERE,                # the backend's exec dir is deleted after
-            **detach_kwargs)
+            start_new_session=True)
         logf.close()
         # stamp progress immediately: the worker needs a second or two to boot,
         # and a status poll in that window must see "running", not "dead"

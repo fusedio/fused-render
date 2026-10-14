@@ -1,7 +1,7 @@
 """fused_render.app.configure_desktop_instance publishes the desktop instance
 id + token into the env so the in-process macOS server exposes the same
 token-verified /api/config echo and /api/desktop/shutdown contract as the
-Windows supervisor's child server. Module-level and AppKit-free (rumps is
+Linux supervisor's child server. Module-level and AppKit-free (rumps is
 imported lazily inside main()), so it is testable anywhere.
 """
 from fused_render import desktop_probe

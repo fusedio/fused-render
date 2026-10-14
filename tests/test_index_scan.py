@@ -32,16 +32,8 @@ def _guard(tmp_path):
 
 
 def _p(path) -> str:
-    """The forward-slash spelling `scan_dir_once` itself writes (every
-    discovered path leaves through `norm`, platform.md §1) — plain
-    `str(tmp_path / ...)` gives the NATIVE separator instead, which is a
-    no-op of `norm` on POSIX but backslashes on Windows. That matters here
-    for more than cosmetics: `is_leaf_dir`/`ignored_for_index`/`IgnoreRules`
-    all slice the final path component on "/", so a raw Windows path handed
-    to them (or fed back in as a cache key, a `keep_subdirs` candidate, or a
-    monkeypatched fsevents hint) has no "/" at all and every leaf/ignore-name
-    check silently misses — not just a string that fails to `==` the
-    expected literal."""
+    """The spelling `scan_dir_once` itself writes (every discovered path
+    leaves through `norm`, platform.md §1)."""
     return norm(str(path))
 
 
@@ -308,12 +300,8 @@ def _run(cfg, root, full=False, run_name="run", hint=None):
 
     `runner.start` canonicalizes the root before it ever reaches spec.json
     (platform.md §1) — `run_scan` trusts that and never re-normalizes it. A
-    raw `str(tmp_path / ...)` root skips that step, so on Windows the run's
-    OWN top-level row would land in dirs.parquet under the native (backslash)
-    spelling while everything the walk discovers underneath it is `norm`ed
-    to forward slashes by `scan_dir_once` — a corpus split across two forms
-    that then makes `load_dir_cache`'s prefix match miss every child on the
-    very next incremental run.
+    raw `str(tmp_path / ...)` root skips that step, so this helper
+    canonicalizes it itself.
 
     `hint`, when given, is the `{"forced": [...], "subtrees": [...]}` shape
     `runner.start` writes for a caller-supplied hint (SPEC-scan-cost.md part
@@ -766,7 +754,7 @@ def test_a_supplied_hint_works_with_no_fsevents_state_at_all(
     None on every other platform (fsevents.py's `_libs()`). A supplied hint
     must not depend on either: it only reuses `_run_fsevents`'s WALKER, so
     the fast path must still work with no fsevents state to consult at all,
-    exactly as it would have to on Windows/Linux."""
+    exactly as it would have to on Linux."""
     from fused_render.index import fsevents
 
     src = tmp_path / "src"

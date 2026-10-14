@@ -9,12 +9,6 @@ import subprocess
 import sys
 import tempfile
 
-import pytest
-
-pytest.importorskip("win32job")
-pytest.importorskip("pystray")
-
-
 def test_desktop_env_applied_before_supervisor_imports():
     code = (
         "import os\n"
@@ -24,7 +18,7 @@ def test_desktop_env_applied_before_supervisor_imports():
     )
     with tempfile.TemporaryDirectory() as tmp_path:
         env = {**os.environ, "FUSED_RENDER_BRANCH": "feature-x",
-               "LOCALAPPDATA": tmp_path, "USERPROFILE": tmp_path}
+               "HOME": tmp_path}
         out = subprocess.run(
             [sys.executable, "-c", code], env=env, capture_output=True, text=True, timeout=30
         )

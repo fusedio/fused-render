@@ -14,8 +14,6 @@ from fastapi.testclient import TestClient
 from fused_render import claude_cmd_log, pty_session
 from fused_render.server import create_app
 
-pytestmark = pytest.mark.skipif(os.name == "nt", reason="POSIX only")
-
 H = {"X-Fused": "1"}
 WRAPPER = os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
                                        "fused_render", "claude_shell_prefix.sh"))

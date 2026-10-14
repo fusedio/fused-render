@@ -6,8 +6,8 @@ against a stub HTTP server that stands in for fused-render's /api/terminal
 routes. The `claude` CLI is never invoked.
 
 Rules pinned here: the tools appear only when the run was given a server origin
-(`FUSED_RENDER_TERMINAL_ORIGIN`, which agent.py stamps into mcp.json's env and
-only on POSIX); list/read are pre-allowed, send is not (it types into the
+(`FUSED_RENDER_TERMINAL_ORIGIN`, which agent.py stamps into mcp.json's env);
+list/read are pre-allowed, send is not (it types into the
 user's shell, so it keeps its permission card); a busy terminal is a tool error.
 """
 import json
@@ -21,8 +21,6 @@ import pytest
 
 from _mcp_stdio import MCPServer
 from test_claude_app_state import SERVER, _load, _spawn
-
-pytestmark = pytest.mark.skipif(os.name == "nt", reason="terminal tools are POSIX-only")
 
 SESSIONS = [
     {"id": "t1", "alive": True, "shell": "zsh", "cwd": "/a", "foreground": None,
@@ -120,16 +118,6 @@ def test_tools_listed_when_an_origin_is_given(tmp_path, stub):
         assert names == ["approve", "terminal_list", "terminal_read", "terminal_send"]
     finally:
         s.close()
-
-
-def test_tools_absent_on_windows(monkeypatch):
-    srv = _load("permission_server")
-    monkeypatch.setenv("FUSED_RENDER_TERMINAL_ORIGIN", "http://127.0.0.1:1")
-    monkeypatch.setattr(srv, "_IS_WINDOWS", True)
-    names = [t["name"] for t in srv._dispatch("tools/list", {})["tools"]]
-    assert not [n for n in names if n.startswith("terminal_")]
-    with pytest.raises(LookupError):
-        srv._dispatch("tools/call", {"name": "terminal_list", "arguments": {}})
 
 
 def test_terminal_list_returns_sessions_with_focus(tmp_path, stub):
@@ -265,16 +253,6 @@ def test_agent_stamps_the_origin_and_pre_allows_only_the_reads(agent, tmp_path, 
 def test_agent_omits_everything_without_an_origin(agent, tmp_path, monkeypatch):
     agent.RUNS = str(tmp_path / "runs")
     monkeypatch.delenv("FUSED_RENDER_ORIGIN", raising=False)
-    cmd, run_dir = _spawn(agent, monkeypatch, _folder(tmp_path))
-    cfg = json.load(open(os.path.join(run_dir, "mcp.json"), encoding="utf-8"))
-    assert "FUSED_RENDER_TERMINAL_ORIGIN" not in cfg["mcpServers"][agent.PERMISSION_SERVER]["env"]
-    assert "terminal_" not in cmd[cmd.index("--allowed-tools") + 1]
-
-
-def test_agent_omits_everything_on_windows(agent, tmp_path, monkeypatch):
-    agent.RUNS = str(tmp_path / "runs")
-    monkeypatch.setenv("FUSED_RENDER_ORIGIN", "http://127.0.0.1:4321")
-    monkeypatch.setattr(agent, "_terminal_tools_supported", lambda: False)
     cmd, run_dir = _spawn(agent, monkeypatch, _folder(tmp_path))
     cfg = json.load(open(os.path.join(run_dir, "mcp.json"), encoding="utf-8"))
     assert "FUSED_RENDER_TERMINAL_ORIGIN" not in cfg["mcpServers"][agent.PERMISSION_SERVER]["env"]

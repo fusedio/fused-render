@@ -57,12 +57,9 @@ def test_start_spawns_without_forking_the_server(tmp_path, spawned):
     lives in the worker's own main() (os.setsid) instead."""
     runner.start(_cfg(tmp_path), str(tmp_path))
     _, kwargs = spawned[0]
-    if os.name == "nt":
-        assert "creationflags" in kwargs
-    else:
-        assert "start_new_session" not in kwargs
-        assert "preexec_fn" not in kwargs
-        assert kwargs.get("close_fds") is False
+    assert "start_new_session" not in kwargs
+    assert "preexec_fn" not in kwargs
+    assert kwargs.get("close_fds") is False
 
 
 def test_start_writes_a_spec_the_worker_can_read(tmp_path, spawned):
@@ -71,8 +68,7 @@ def test_start_writes_a_spec_the_worker_can_read(tmp_path, spawned):
     started = runner.start(cfg, str(tmp_path), full=True)
     spec = json.load(open(os.path.join(cfg.runs_dir, started["run_id"], "spec.json")))
     # `start` writes `canonical_root(root)`, not the caller's raw spelling
-    # (platform.md §1) — a no-op of that on POSIX, but forward-slashed on
-    # Windows where `str(tmp_path)` itself is backslash-native.
+    # (platform.md §1).
     assert spec["root"] == runner.canonical_root(str(tmp_path))
     assert spec["full"] is True
     # the config travels WITH the run: the detached worker must not re-derive
@@ -86,8 +82,7 @@ def test_start_expands_and_canonicalizes_the_root(tmp_path, spawned):
     sub = tmp_path / "sub"
     sub.mkdir()
     started = runner.start(cfg, str(sub) + "/")
-    # `str(sub)` alone is Windows' backslash-native spelling; `start` records
-    # `canonical_root(root)` (forward-slashed, trailing slash gone) — the
+    # `start` records `canonical_root(root)` (trailing slash gone) — the
     # same reason `test_start_writes_a_spec_the_worker_can_read` above needs
     # the wrap, not a gap in `canonical_root` despite this test's name.
     assert started["root"] == runner.canonical_root(str(sub))

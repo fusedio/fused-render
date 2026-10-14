@@ -1,10 +1,6 @@
 """Coverage for fused_render/pty_session.py: the pty session registry and its
 fork-safe exec helper.
 
-Unix-only (Python's `pty`/`termios`/`fcntl` modules don't exist on Windows —
-see the Decisions section of PLAN-status-bar-terminal.md for why Windows is
-out of scope this round).
-
 Sessions are built from a fake `resolve_profile` in most tests, so each one
 runs a bare `/bin/sh` or the venv's own interpreter rather than the user's
 real login shell — deterministic output, no dependence on the host's dotfiles.
@@ -16,11 +12,8 @@ import time
 
 import pytest
 
-pytestmark = pytest.mark.skipif(os.name == "nt", reason="pty is unix-only")
-
-if os.name != "nt":
-    from fused_render import pty_session
-    from fused_render.terminal_profiles import TerminalProfile
+from fused_render import pty_session
+from fused_render.terminal_profiles import TerminalProfile
 
 
 def _profile(tmp_path, argv, env=None):

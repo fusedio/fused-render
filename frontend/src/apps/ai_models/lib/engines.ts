@@ -17,7 +17,7 @@
 // functions over the server's payload, and `engines.test.ts` drives them.
 //
 // Nothing here invents copy about a MACHINE. Availability reasons ("needs
-// Apple Silicon (this is windows/amd64)") come from the registry and are
+// Apple Silicon (this is linux/x86_64)") come from the registry and are
 // passed through untouched: the page cannot know them, and a second copy
 // would drift from the one the AI Models page shows.
 import type { CapabilityEngine, EngineChoice, Prefs } from "@platform/lib/api";

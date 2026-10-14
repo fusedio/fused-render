@@ -48,14 +48,11 @@ close_fds=True forks here on macOS, so every `git add` died rc=-11 with empty
 stderr the moment the shell first polled /api/prefs (see apps.py's
 _SESSION_HELPER comment for the same crash; verified live in the field
 2026-08-03). close_fds=False makes CPython take the posix_spawn path instead,
-which runs no atfork handlers — and unlike a hand-rolled os.posix_spawnp call,
-subprocess.run degrades to CreateProcess on Windows rather than raising
-AttributeError (there is no fork() to work around there in the first place).
+which runs no atfork handlers.
 """
 import logging
 import os
 import subprocess
-import sys
 import time
 
 from fused_render.shell.seed import fused_dir
@@ -150,7 +147,6 @@ def _git(repo_dir: str, *args: str) -> subprocess.CompletedProcess:
         capture_output=True, text=True, timeout=_GIT_TIMEOUT,
         encoding="utf-8", errors="replace",
         close_fds=False,
-        creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
     )
 
 

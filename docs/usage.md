@@ -177,10 +177,9 @@ where a first model comes from.
     whichever of these its check passes — a real device check for images (an
     NVIDIA or AMD GPU the driver reports), a lighter check for chat's Vulkan
     build (a real driver ICD registered, ruling out a software-only Vulkan
-    implementation on Linux; on Windows, the Vulkan library file present AND
-    a real display adapter registered rather than only Microsoft's software
-    one — still not the same as proof a GPU answers a Vulkan call, just proof
-    the machine is not a headless/RDP/VM session with nothing behind it) —
+    implementation on Linux — still not the same as proof a GPU answers a
+    Vulkan call, just proof the machine is not a headless/VM session with
+    nothing behind it) —
     and only falls back to the unaccelerated build on a machine that check
     refuses.
     That means the first Load on a machine with a GPU is a much larger

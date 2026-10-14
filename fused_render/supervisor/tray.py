@@ -1,16 +1,14 @@
 """Tray icon — platform-neutral seam over the per-OS tray backends.
 
-Port of windows/supervisor/src/tray.rs (feat/windows-desktop-foundation, PR
-#162). This module owns everything that is *not* platform-specific — the
+This module owns everything that is *not* platform-specific — the
 `TrayAction` queue contract, `_State`, `TrayHandle` (icon lifetime + stop
 signal), `start()` and its retry-with-backoff loop. The one function that talks
 to a concrete tray, `_run()`, is a thin dispatcher that lazily imports the
-matching backend for `sys.platform` (`._win32.tray` on Windows via pystray,
-`._linux.tray` on Linux via StatusNotifierItem over D-Bus) and forwards to its
+matching backend for `sys.platform` (`._linux.tray` on Linux via
+StatusNotifierItem over D-Bus) and forwards to its
 `run(port, state, handle, paths)`.
 
-The lazy import is deliberate: importing this module on Linux must never import
-pystray (Windows-only), and the Windows backend must never load off-Windows.
+The lazy import is deliberate: the backend must never load off its platform.
 The backend imports the shared types (`TrayAction`, `_State`, `TrayHandle`)
 back from here at call time, when this module is fully initialized — no cycle.
 Keeping the whole `TrayHandle`/`start()`/retry contract here means `core.py`
@@ -36,8 +34,6 @@ class TrayAction(Enum):
     OPEN = auto()
     OPEN_FILE = auto()
     OPEN_LOGS = auto()
-    DEFAULT_APPS = auto()
-    CHECK_UPDATES = auto()
     UNINSTALL = auto()
     EXIT = auto()
 
@@ -45,25 +41,21 @@ class TrayAction(Enum):
 @dataclass
 class _State:
     login_enabled: bool
-    # The version of a background-discovered update, or None. Read by the
-    # backend's menu-label callable; set via TrayHandle.set_update_available.
-    available_update: str | None = None
 
 
 @dataclass
 class TrayHandle:
     """Returned by `start()`. `actions` is the queue the supervisor's main
-    loop drains; `stop()` removes the tray icon (Windows' NIM_DELETE) when
-    the supervisor has decided to actually exit — without it, the icon
-    lingers in the notification area (ghost icon) until Explorer next
-    refreshes, since nothing else tells pystray to tear it down. `_stopped`
+    loop drains; `stop()` removes the tray icon when the supervisor has
+    decided to actually exit — without it, the icon lingers in the panel
+    (ghost icon), since nothing else tells the backend to tear it down. `_stopped`
     also ends the retry loop in `start()`: if `stop()` lands while the loop
     is backing off between attempts (no icon exists yet), the event keeps a
     later retry from showing a brand-new icon after shutdown began."""
 
     actions: "queue.Queue[TrayAction]"
-    # 0 or 1 backend icon handle — a pystray.Icon on Windows, a stop-shim on
-    # Linux. `stop()` needs `.stop()` on it.
+    # 0 or 1 backend icon handle (a stop-shim on Linux). `stop()` needs
+    # `.stop()` on it.
     _current_icon: list = field(default_factory=list)
     _stopped: threading.Event = field(default_factory=threading.Event)
     _state: "_State | None" = None
@@ -76,23 +68,13 @@ class TrayHandle:
             except Exception:  # noqa: BLE001 - best-effort, process is exiting anyway
                 pass
 
-    def set_update_available(self, version: str) -> None:
-        """Flag a background-discovered update so the tray item reads "Install
-        update X" instead of "Check for updates". Called from the auto-update
-        daemon thread, so this only writes state: the Windows backend re-reads
-        it (the label is a callable) when it rebuilds the menu on the icon's
-        own thread at the next open. Calling `update_menu()` from here would
-        DestroyMenu the handle a TrackPopupMenuEx on the icon thread may be
-        displaying."""
-        self._state.available_update = version
-
 
 def start(port: int, login_enabled: bool, paths: DesktopPaths) -> TrayHandle:
     """Spawns the tray on its own daemon thread and returns immediately — the
-    Job/Python server lifecycle must never depend on tray success. If
-    Explorer's notification-area infrastructure isn't up yet (launched from
-    the sign-in Run key before Explorer's tray is ready), retry with backoff
-    until it succeeds: the icon shows up late, never "not at all.\""""
+    Job/Python server lifecycle must never depend on tray success. If the
+    desktop's tray host isn't up yet (launched at sign-in before the panel is
+    ready), retry with backoff until it succeeds: the icon shows up late,
+    never "not at all.\""""
     state = _State(login_enabled=login_enabled)
     handle = TrayHandle(actions=queue.Queue(), _state=state)
 
@@ -120,9 +102,7 @@ def _run(port: int, state: _State, handle: TrayHandle, paths: DesktopPaths) -> N
     the retry-loop test can monkeypatch `tray._run`. The backend's `run()` has
     the identical signature and the identical "returns on deliberate stop,
     raises to trigger a retry" contract the retry loop in `start()` expects."""
-    if sys.platform == "win32":
-        backend_name = "fused_render.supervisor._win32.tray"
-    elif sys.platform.startswith("linux"):
+    if sys.platform.startswith("linux"):
         backend_name = "fused_render.supervisor._linux.tray"
     else:
         raise RuntimeError(f"no tray backend for {sys.platform!r}")

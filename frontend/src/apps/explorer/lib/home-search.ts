@@ -521,7 +521,7 @@ export function narrowAnswer(answer: HomeAnswer, q: string): HomeHit[] {
 /**
  * The filesystem path a query is really an address for, or null.
  *
- * A pasted or typed `/…`, `~/…` or `C:\…` is an exact address, and searching
+ * A pasted or typed `/…` or `~/…` is an exact address, and searching
  * for it would be answering a question nobody asked. The caller still has to
  * `statPath` it: a path that does not exist falls back to being a search.
  *
@@ -529,39 +529,22 @@ export function narrowAnswer(answer: HomeAnswer, q: string): HomeHit[] {
  * only after stripping, in order: surrounding whitespace/newlines (a paste
  * from a terminal or a chat window often carries one), matching wrapping
  * quotes (`"~/Downloads"`), a `file://` scheme, and a shell backslash-escape
- * before a space (`My\ File` -> `My File`) — that last one applies regardless
- * of platform, unlike the drive-letter de-backslashing below: a `\` followed
- * by a space is overwhelmingly a shell escape, never a real two-character
- * POSIX filename fragment, so unescaping it does not touch the POSIX
- * backslash-is-a-legal-char rule the drive-letter branch exists for.
+ * before a space (`My\ File` -> `My File`) — a `\` followed by a space is
+ * overwhelmingly a shell escape, never a real two-character POSIX filename
+ * fragment, so unescaping it leaves the backslash-is-a-legal-char rule
+ * intact everywhere else.
  */
 export function pathShortcut(query: string, home: string): string | null {
   let q = query.trim().replace(/[\r\n]+/g, " ").trim();
   const quoted = q.match(/^(['"])([\s\S]*)\1$/);
   if (quoted) q = quoted[2].trim();
-  if (/^file:\/\//i.test(q)) {
-    q = q.slice("file://".length);
-    // A Windows file:// URI's third slash is the URI's (empty) authority
-    // separator, not part of the path — file:///C:/Users/x is "C:/Users/x".
-    // Left in, it makes the string start with "/C:/…", which then PASSES the
-    // shape guard below via its leading-slash (POSIX) alternative instead of
-    // failing the drive-letter one, so a bogus absolute path is returned with
-    // full confidence instead of falling back to search. A bare POSIX
-    // file:// URL has no such extra slash: file:///home/x really is
-    // "/home/x", and is left untouched.
-    if (/^\/[A-Za-z]:[\\/]/.test(q)) q = q.slice(1);
-  }
+  // file:///home/x really is "/home/x".
+  if (/^file:\/\//i.test(q)) q = q.slice("file://".length);
   q = q.replace(/\\ /g, " ");
-  if (!/^(\/|~\/|~$|[A-Za-z]:[\\/])/.test(q)) return null;
-  let fsPath = q === "~" || q.startsWith("~/") ? home + q.slice(1) : q;
-  // Backslashes are only separators in drive-letter paths (same rule as the
-  // shell's path codec) — on POSIX "\" is a legal filename char.
-  if (/^[A-Za-z]:[\\/]/.test(fsPath)) fsPath = fsPath.replace(/\\/g, "/");
-  // Strip a trailing slash but keep roots whole: "/" stays "/", and a drive
-  // root keeps its slash (bare "C:" reads as cwd-relative).
-  fsPath = fsPath.replace(/\/+$/, "") || "/";
-  if (/^[A-Za-z]:$/.test(fsPath)) fsPath += "/";
-  return fsPath;
+  if (!/^(\/|~\/|~$)/.test(q)) return null;
+  const fsPath = q === "~" || q.startsWith("~/") ? home + q.slice(1) : q;
+  // Strip a trailing slash but keep the root whole: "/" stays "/".
+  return fsPath.replace(/\/+$/, "") || "/";
 }
 
 /**

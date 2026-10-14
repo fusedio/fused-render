@@ -2,12 +2,11 @@
 and `embed_common` together, not what `test_ai_embed_common.py` already covers
 on its own.
 
-Targets `runners/onnx_embed.py` directly, not any of the four folders'
+Targets `runners/onnx_embed.py` directly, not any of the three folders'
 `worker.py` shells — the same choice `tests/test_ai_diffusers_worker.py` makes
 for `torch_image.py`, and for the identical reason: `onnx_embed/`,
-`onnx_embed_directml/`, `onnx_embed_cuda/` and `onnx_embed_rocm/` each hold a
-five-line shell that imports this file, so testing a shell would test four
-copies of the same five lines rather than the runner itself.
+`onnx_embed_cuda/` and `onnx_embed_rocm/` each hold a five-line shell that
+imports this file, so testing a shell would test three copies of the same five lines rather than the runner itself.
 
 Loaded by PATH with `worker_base` primed in `sys.modules`, exactly as
 `tests/test_ai_transformers_worker.py` does it: the runner finds its base off
@@ -460,8 +459,7 @@ def test_an_accelerated_provider_wins_and_keeps_cpu_as_a_fallback(worker,
 
 
 def test_every_registered_provider_maps_to_a_device_word(worker, monkeypatch):
-    for provider, expected in (("ROCMExecutionProvider", "rocm"),
-                               ("DmlExecutionProvider", "directml")):
+    for provider, expected in (("ROCMExecutionProvider", "rocm"),):
         monkeypatch.setitem(
             sys.modules, "onnxruntime",
             _providers_module([provider, "CPUExecutionProvider"]))

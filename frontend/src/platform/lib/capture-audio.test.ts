@@ -351,7 +351,7 @@ describe("captureAudio, native backend", () => {
   });
 });
 
-// ── the streamed backend (Windows / Linux) ─────────────────────────────────
+// ── the streamed backend (Linux) ───────────────────────────────────────────
 
 describe("captureAudio, browser-records backend", () => {
   test("media FIRST, then the row, then the socket, then the encoder (R:5247)", async () => {
@@ -569,37 +569,6 @@ describe("captureSources", () => {
     // There is no microphone to choose on a native recording — the server's
     // own (empty) list stands, rather than this window's `enumerateDevices`.
     expect(merged.microphones).toEqual([]);
-  });
-
-  test("Windows-shaped systemAudio:true is narrowed by a browser that cannot record", async () => {
-    // `_windows.probe` hard-codes `systemAudio: {available: true}` and leans
-    // on this merge to correct it: a browser with no usable MediaRecorder
-    // must still end up `available: false` here, same as `audio` and `video`.
-    const merged = await mergeSources(
-      {
-        client: true,
-        audio: { available: true, reason: null },
-        systemAudio: { available: true, reason: null },
-      },
-      fakeHost(emptyLog(), { types: [] }),
-    );
-    expect(merged.systemAudio?.available).toBe(false);
-    expect(merged.systemAudio?.reason).toBe(
-      "this browser cannot record — it has no MediaRecorder with a container " +
-        "this app can store. Chrome, Edge or a recent Firefox can",
-    );
-  });
-
-  test("Windows-shaped systemAudio:true survives a browser that CAN record", async () => {
-    const merged = await mergeSources(
-      {
-        client: true,
-        audio: { available: true, reason: null },
-        systemAudio: { available: true, reason: null },
-      },
-      fakeHost(emptyLog()),
-    );
-    expect(merged.systemAudio).toEqual({ available: true, reason: null });
   });
 
   test("Linux-shaped systemAudio:false (no PipeWire reachable) is never widened to true", async () => {

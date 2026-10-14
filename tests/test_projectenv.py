@@ -735,7 +735,7 @@ def test_FUSED_RENDER_VENV_IN_TREE_0_forces_the_home_store(home, tmp_path, monke
 
 def test_a_folder_inside_the_package_resolves_to_the_home_store(home):
     """The packaged app's own tree is read-only in the shapes it ships in (the
-    AppImage's squashfs mount, a Windows `Program Files` install) — reused from
+    AppImage's squashfs mount) — reused from
     `_venv_identity`'s existing package-relative case rather than a second
     derivation of "is this in the package"."""
     runner = os.path.join(projectenv._PACKAGE_DIR, "ai", "runners", "faster_whisper")
@@ -746,8 +746,6 @@ def test_a_folder_inside_the_package_resolves_to_the_home_store(home):
 
 
 def test_a_non_writable_project_folder_falls_back_to_the_home_store(home):
-    if os.name == "nt":
-        pytest.skip("chmod does not model Windows ACL denial the way this probe reads it")
     if os.geteuid() == 0:
         pytest.skip("root writes through a permission-denied directory")
     proj = _write_project(home / "proj")

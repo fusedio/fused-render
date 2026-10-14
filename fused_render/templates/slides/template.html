@@ -1233,7 +1233,7 @@
   // In-app directory browser for Save as (no native dialogs).
   async function saveAsDeck(firstSave=false){ if(!S.doc)return;
     const ov=$("overlay");
-    const fileDir=FILE.slice(0,Math.max(FILE.lastIndexOf("/"),FILE.lastIndexOf("\\"))+1).replace(/\\/g,"/");
+    const fileDir=FILE.slice(0,FILE.lastIndexOf("/")+1);
     // First save of a draft starts in Home (the scratch's own folder is the
     // hidden library — never a place to offer as the default), and defaults the
     // name to the deck's title; a copy starts beside the current file.
@@ -1244,10 +1244,9 @@
       catch(e){ toast("Cannot list folder: "+e.message); return; }
       curDir=d.path;
       const segs=d.path.split("/").filter(Boolean);
-      const winRoot=/^[A-Za-z]:$/.test(segs[0]||"");   // "C:" drive paths take no leading "/"
-      const dirAt=i=>{const p=segs.slice(0,i+1).join("/");return winRoot?(i?p:p+"/"):"/"+p;};
-      const crumb=(winRoot?"":`<span class="seg" data-dir="/">/</span>`)+segs.map((s,i)=>
-        `${i||!winRoot?`<span class="sepc">›</span>`:""}<span class="seg" data-dir="${esc(dirAt(i))}">${esc(s)}</span>`).join("");
+      const dirAt=i=>"/"+segs.slice(0,i+1).join("/");
+      const crumb=`<span class="seg" data-dir="/">/</span>`+segs.map((s,i)=>
+        `<span class="sepc">›</span><span class="seg" data-dir="${esc(dirAt(i))}">${esc(s)}</span>`).join("");
       const prevName=(ov.querySelector("#fbName")||{}).value;
       ov.innerHTML=`<div class="modal" style="width:min(580px,94vw)">
         <h3>${firstSave?"Save deck":"Save as"}</h3>
@@ -1273,11 +1272,11 @@
       ov.style.display="flex";
       const nm=$("fbName"); nm.value=prevName!==undefined?prevName:startName;
       const upd=()=>{
-        // Honor a full/absolute path typed into the name box (Windows drive, POSIX
-        // root, or ~) — otherwise join the browsed folder to a bare name.
+        // Honor a full/absolute path typed into the name box (root or ~) —
+        // otherwise join the browsed folder to a bare name.
         const raw=(nm.value.trim()||"deck").replace(/^["']|["']$/g,"");
-        const abs=/^([A-Za-z]:[\\/]|\/|~[\\/]?)/.test(raw);
-        const base=abs?raw.replace(/\\/g,"/"):d.path.replace(/\/$/,"")+"/"+raw;
+        const abs=/^(\/|~\/?)/.test(raw);
+        const base=abs?raw:d.path.replace(/\/$/,"")+"/"+raw;
         $("fbTarget").textContent=base.replace(/\.pptx$/i,"")+".pptx"; };
       nm.oninput=upd; upd();
       ov.querySelectorAll("[data-dir]").forEach(r=>r.onclick=()=>render(r.dataset.dir));

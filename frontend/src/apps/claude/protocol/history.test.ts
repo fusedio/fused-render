@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { ago, historyToTurns, paneSlashes, sessionTitle } from "./history";
+import { ago, historyToTurns, sessionTitle } from "./history";
 import type { HistoryResponse } from "./types";
 import { parseTerminalAsk } from "../../../platform/lib/terminalFocus";
 import {
@@ -235,12 +235,5 @@ describe("ago (T:17945)", () => {
   });
   test("a future timestamp clamps to \"now\" rather than going negative", () => {
     expect(ago(2_000_000, () => 1_000_000 * 1000)).toBe("now");
-  });
-});
-
-describe("paneSlashes (T:18106)", () => {
-  test("only a drive-letter path has its backslashes rewritten", () => {
-    expect(paneSlashes("C:\\a\\b.py")).toBe("C:/a/b.py");
-    expect(paneSlashes("/a/we\\ird.py")).toBe("/a/we\\ird.py");
   });
 });

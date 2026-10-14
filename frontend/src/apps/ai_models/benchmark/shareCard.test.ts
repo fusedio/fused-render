@@ -37,10 +37,9 @@ describe("hardwareLine", () => {
   });
 
   it("omits what the server did not report rather than printing a gap", () => {
-    // Windows reports no RAM at all (`benchmark._total_memory_bytes`), and a
-    // card saying "— RAM" reads as a bug in the card.
-    expect(hardwareLine({ platform: "Windows", arch: "AMD64", cpuCount: null, totalMemoryBytes: null }, null))
-      .toBe("Windows · AMD64");
+    // A card saying "— RAM" reads as a bug in the card.
+    expect(hardwareLine({ platform: "Linux", arch: "x86_64", cpuCount: null, totalMemoryBytes: null }, null))
+      .toBe("Linux · x86_64");
   });
 
   it("keeps the device even when the machine block has not arrived", () => {

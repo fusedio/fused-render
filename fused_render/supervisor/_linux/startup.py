@@ -1,4 +1,4 @@
-"""Start-at-login toggle — the Linux counterpart to `_win32/startup.py`.
+"""Start-at-login toggle.
 
 Writes/removes a freedesktop autostart entry at
 `$XDG_CONFIG_HOME/autostart/fused-render.desktop` (default `~/.config`). The
@@ -6,10 +6,9 @@ Writes/removes a freedesktop autostart entry at
 AppImage runtime exports it for the launched process and its children),
 otherwise a resolved `sys.argv[0]`.
 
-Mirrors the Windows launcher-discovery caution: fail loudly (raise) rather than
-write a broken Exec line. The tray toggle handler already treats an OSError as
-"revert the checkbox and log" (see tray.py's `_on_toggle_login`), so a raise
-here degrades cleanly to "the setting didn't change", never a corrupt entry.
+Fails loudly (raises) rather than write a broken Exec line. The tray toggle
+handler already treats an OSError as "revert the checkbox and log" (see
+tray.py's `_on_toggle_login`), so a raise here degrades cleanly to "the setting didn't change", never a corrupt entry.
 """
 from __future__ import annotations
 

@@ -5,7 +5,6 @@ PAGE (AF-14) — no page of its own here, nothing written on the GET; a
 malformed payload goes to Home for the shell to report.
 """
 import os
-import sys
 from urllib.parse import quote, unquote, urlsplit
 
 import pytest
@@ -68,15 +67,11 @@ def _redirect(tmp_path, src):
 # ---- parsing -----------------------------------------------------------------
 
 
-@pytest.mark.skipif(sys.platform == "win32",
-                    reason="asserts posix-shaped paths; the deeplink URL path carries os.sep on Windows (pre-existing, #1383)")
 def test_file_link_decodes_the_path_once():
     path = "/Users/me/My Apps/a&b #1 100%.fused"
     assert app_file_path_from(link(path)) == os.path.normpath(path)
 
 
-@pytest.mark.skipif(sys.platform == "win32",
-                    reason="asserts posix-shaped paths; the deeplink URL path carries os.sep on Windows (pre-existing, #1383)")
 def test_file_link_tolerates_a_slash_after_open_and_case():
     assert app_file_path_from("FUSED-RENDER://open/?file=%2Ftmp%2Fx.fused") == os.path.normpath("/tmp/x.fused")
 
@@ -100,8 +95,6 @@ def test_file_link_rejects_non_absolute_or_non_fused(bad):
 # ---- the redirect -----------------------------------------------------------
 
 
-@pytest.mark.skipif(sys.platform == "win32",
-                    reason="asserts posix-shaped paths; the deeplink URL path carries os.sep on Windows (pre-existing, #1383)")
 def test_a_file_link_lands_on_the_files_install_page(tmp_path):
     fused = export(tmp_path)
     path, q = _redirect(tmp_path, link(fused))
@@ -111,8 +104,6 @@ def test_a_file_link_lands_on_the_files_install_page(tmp_path):
     assert not (tmp_path / "workspace" / "app" / "demo").exists()
 
 
-@pytest.mark.skipif(sys.platform == "win32",
-                    reason="asserts posix-shaped paths; the deeplink URL path carries os.sep on Windows (pre-existing, #1383)")
 def test_an_installed_app_still_lands_on_the_install_page(tmp_path):
     """The page is where "already installed / update / diverged" is said; the
     GET never decides for the user."""

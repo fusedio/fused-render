@@ -263,7 +263,7 @@ def test_vendor_dirs_contribute_nothing_whatever_their_case(tmp_path):
     until the same folder lists differently on two machines.
 
     The two spellings go under DIFFERENT parents on purpose. Created as siblings
-    they are one directory on a case-insensitive filesystem (macOS, Windows), so
+    they are one directory on a case-insensitive filesystem (macOS), so
     the second `mkdir` lands inside the first and the case half of this test
     asserts nothing at all — which is exactly how it passed with the rule
     mutated back to case-sensitive.
@@ -560,7 +560,7 @@ def test_only_that_one_name_is_a_preview(tmp_path):
 
 def test_the_name_match_is_case_sensitive_on_every_filesystem(tmp_path):
     """`Preview.png` is not `preview.png`, and it must not become one on a
-    case-INSENSITIVE filesystem (macOS, Windows) — an `os.path.isfile` probe
+    case-INSENSITIVE filesystem (macOS) — an `os.path.isfile` probe
     would say yes there and no on ext4, so the same folder would get a thumbnail
     on one machine and not another. The frontend's own peek rule compares the
     name exactly, and this is the half that has to meet it."""
@@ -743,8 +743,8 @@ def test_entry_check_false_under_an_unlistable_shelf(tmp_path):
     unlistable (execute-only) depth-1 shelf ends its subtree there — the
     helper must probe listability at every depth, not just where the index
     rule applies."""
-    if not hasattr(os, "geteuid") or os.geteuid() == 0:
-        pytest.skip("needs POSIX directory permissions and a non-root user")
+    if os.geteuid() == 0:
+        pytest.skip("needs a non-root user")
     shelf = tmp_path / "shelf"
     app = shelf / "app"
     app.mkdir(parents=True)
@@ -759,8 +759,8 @@ def test_entry_check_false_under_an_unlistable_shelf(tmp_path):
 def test_entry_check_false_under_an_unlistable_root(tmp_path):
     """The walk's first act is listdir(root) — an execute-only workspace root
     lists no apps, so the helper must answer False for anything under it."""
-    if not hasattr(os, "geteuid") or os.geteuid() == 0:
-        pytest.skip("needs POSIX directory permissions and a non-root user")
+    if os.geteuid() == 0:
+        pytest.skip("needs a non-root user")
     root = tmp_path / "ws"
     app = root / "app"
     app.mkdir(parents=True)

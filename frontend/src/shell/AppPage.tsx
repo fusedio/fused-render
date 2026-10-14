@@ -535,10 +535,7 @@ export default function AppPage({
   const gitPeekLayout = useAppPageGitPeekWidth(gitSplitRef);
   const gitTaken = gitOpen ? gitPeekLayout.width : 0;
 
-  // Folded ONCE for every tilde below: `home` is raw expanduser (backslashed on
-  // Windows) while `dir` and the root are forward-slash, and a prefix test
-  // between the two spellings prints the full path instead of "~/…".
-  const home = config.home.replace(/\\/g, "/");
+  const home = config.home;
   const entry = resolved?.kind === "app" ? resolved.entry : null;
 
   // App Doctor: the share-readiness checklist is the `doctor` tab. This copy

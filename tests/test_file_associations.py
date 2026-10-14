@@ -1,7 +1,7 @@
 """The shared file-association table (scripts/file_associations.json) must stay
 in sync with the shipping runtime's own registry + icon map. If a template or
 icon-variant change drifts the two apart, fail here rather than shipping a stale
-"Open with" association set in either packaging pipeline."""
+"Open with" association set in the packaging pipeline."""
 import importlib.util
 import io
 import sys
@@ -21,13 +21,13 @@ def _load_module():
     return module
 
 
-def test_committed_json_matches_winopen():
+def test_committed_json_matches_runtime():
     fa = _load_module()
     committed = [
         {"extension": a.extension, "icon": a.icon, "standard_mime": a.standard_mime}
         for a in fa.associations()
     ]
-    assert committed == fa.derive_from_winopen(), (
+    assert committed == fa.derive_from_runtime(), (
         "scripts/file_associations.json is stale; run "
         "`python scripts/file_associations.py regenerate`"
     )
@@ -95,7 +95,7 @@ def test_heic_and_heif_are_distinct_standard_types():
     # from image/heif — mapping .heic to image/heif would attach the handler to
     # the wrong registered type.
     fa = _load_module()
-    from fused_render.winopen import standard_mime_for_token
+    from fused_render.file_associations import standard_mime_for_token
 
     assert standard_mime_for_token("heic") == "image/heic"
     assert standard_mime_for_token("heif") == "image/heif"

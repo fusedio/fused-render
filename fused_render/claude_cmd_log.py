@@ -37,9 +37,7 @@ _EVAL = re.compile(r"&& eval (.*?) < /dev/null && pwd -P >\|", re.S)
 
 
 def root() -> str:
-    geteuid = getattr(os, "geteuid", None)
-    suffix = "-%d" % geteuid() if geteuid is not None else ""
-    return os.path.join(tempfile.gettempdir(), "fused_render_claude" + suffix,
+    return os.path.join(tempfile.gettempdir(), "fused_render_claude-%d" % os.geteuid(),
                         "claude-cmds")
 
 

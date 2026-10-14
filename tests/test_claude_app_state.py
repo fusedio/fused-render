@@ -190,7 +190,6 @@ def test_an_answer_landing_in_the_same_instant_beats_the_timeout(run_dir):
     assert payload == {"state": {"title": "late but real"}}
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits")
 def test_a_parked_app_state_request_is_private(run_dir, server):
     """It names the app and the reason the agent is looking — the run tree sits
     under a world-readable temp root, so 0600 from the create as everywhere."""

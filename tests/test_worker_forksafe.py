@@ -26,16 +26,12 @@ import asyncio
 import json
 import os
 import subprocess
-import sys
 
 import pytest
 
 from fused_render import executor, server
 from fused_render.server import ai as _server_ai
 from fused_render.templates.pyramid import overview_pyramid as op
-
-_POSIX = os.name == "posix"
-
 
 # --------------------------------------------------------------------------
 # executor._child.py spawn — the site in the crash report (server thread)
@@ -64,7 +60,6 @@ def test_executor_child_spawn_disables_fork(tmp_path, monkeypatch):
     )
 
 
-@pytest.mark.skipif(not _POSIX, reason="pthread_atfork is POSIX-only")
 def test_executor_spawn_runs_no_atfork_child_handler(tmp_path, monkeypatch):
     """Behavioral guard: register a C-level pthread_atfork CHILD handler (the
     same layer PROJ's crashing handler lives at) and prove it does NOT run when
@@ -145,7 +140,6 @@ def test_pyramid_analyze_worker_spawn_disables_fork(monkeypatch):
     assert captured.get("close_fds") is False
 
 
-@pytest.mark.skipif(not _POSIX, reason="posix_spawn is POSIX-only")
 def test_pyramid_build_worker_uses_posix_spawn(tmp_path, monkeypatch):
     """The detached build/cogify spawn must go through os.posix_spawn with
     setsid=True (session detachment, no atfork handlers), NOT subprocess.Popen
@@ -215,11 +209,9 @@ def test_ai_claude_spawn_disables_fork(monkeypatch):
     assert captured.get("stderr") is asyncio.subprocess.PIPE
 
 
-def test_ai_reap_kills_the_windows_process_tree(monkeypatch):
-    """On win32 a .cmd shim runs through cmd.exe, so kill() alone orphans the
-    node/claude child (it keeps running and billing after we answer timeout).
-    Reaping a live claude process must taskkill /T the tree; POSIX keeps
-    plain kill()."""
+def test_ai_reap_kills_a_live_process_only(monkeypatch):
+    """Reaping a live claude process kill()s it; an already-exited process is
+    only waited on, never re-killed."""
     killed = {}
 
     class _Proc:
@@ -232,36 +224,11 @@ def test_ai_reap_kills_the_windows_process_tree(monkeypatch):
         def kill(self):
             killed["kill"] = True
 
-    def fake_taskkill(argv, **kw):
-        killed["taskkill"] = argv
-
-    monkeypatch.setattr(subprocess, "run", fake_taskkill)
-    monkeypatch.setattr(subprocess, "CREATE_NO_WINDOW", 0x08000000,
-                        raising=False)
-
-    def run(coro):
-        # the loop must exist before sys.platform reads "win32", or asyncio
-        # tries to build the real Windows proactor loop on this box
-        loop = asyncio.new_event_loop()
-        try:
-            return loop.run_until_complete(coro)
-        finally:
-            loop.close()
-
-    monkeypatch.setattr(sys, "platform","win32")
-    run(_server_ai._ai_reap(_Proc()))
-    assert killed.get("taskkill") == ["taskkill", "/T", "/F", "/PID", "4242"]
-    assert killed.get("kill") is True  # fallback still fires
-
-    killed.clear()
-    monkeypatch.setattr(sys, "platform","darwin")
-    run(_server_ai._ai_reap(_Proc()))
-    assert "taskkill" not in killed
+    asyncio.run(_server_ai._ai_reap(_Proc()))
     assert killed.get("kill") is True
 
     killed.clear()
-    # an already-exited process is only waited on, never re-killed
     dead = _Proc()
     dead.returncode = 0
-    run(_server_ai._ai_reap(dead))
+    asyncio.run(_server_ai._ai_reap(dead))
     assert killed == {}

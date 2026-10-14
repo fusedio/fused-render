@@ -231,7 +231,7 @@ def test_text_falls_back_to_the_running_scripts_own_path_without_FUSED_RENDER_PA
     own retries are never mistaken for a new stranger on every call the way
     the server's one-off anonymous fallback would read them."""
     payload = {"ok": True, "result": {"text": "hi there", "model": "opus", "usage": None}}
-    # abspath'd like the code under test does: on Windows a bare `\home\…` gains the drive letter.
+    # abspath'd like the code under test does.
     script_path = os.path.abspath(os.path.join(os.sep, "home", "iamsdas", "my_script.py"))
 
     def fake_urlopen(req, timeout=None):

@@ -17,10 +17,9 @@
 // happens when the value actually changes.
 import { useSyncExternalStore } from "react";
 import { IS_EMBED } from "./router";
-import { isWindows } from "./platform";
 
-/** Whether `TerminalDrawer` is actually mounted right now. `!IS_EMBED &&
- * !isWindows` is necessary but not sufficient: App.tsx only mounts the
+/** Whether `TerminalDrawer` is actually mounted right now. `!IS_EMBED` is
+ * necessary but not sufficient: App.tsx only mounts the
  * drawer on its main route, not on the onboarding route (the setup wizard is
  * a pre-app surface with no sidebar, status bar or docks) — a Run affordance
  * rendered there would hand a command to a drawer that does not exist.
@@ -47,7 +46,7 @@ function subscribeMounted(listener: () => void): () => void {
 }
 
 function canRunSnapshot(): boolean {
-  return !IS_EMBED && !isWindows && mounted;
+  return !IS_EMBED && mounted;
 }
 
 /** Whether a "run in terminal" affordance may show at all, read once and not

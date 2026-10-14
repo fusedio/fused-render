@@ -405,7 +405,7 @@ describe("FINDINGS 3 & 4 (code review, 2026-09-10): an unresolvable folder guess
     expect(navigateCalls[0].opts).toEqual({ isDir: true, q: "../*.md" });
   });
 
-  test("a bare absolute guess (no `~`, no drive letter) hands off to the REAL current folder, not the unverified guess", async () => {
+  test("a bare absolute guess (no `~`) hands off to the REAL current folder, not the unverified guess", async () => {
     const renderer = mount("/home/iamsdas/notes.txt");
     await flush(() => configReply.resolve({ home: "/home/iamsdas" }));
     await focusAndType(renderer, "/Users/*/notes.md");

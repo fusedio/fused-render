@@ -34,6 +34,7 @@ rather than a hang. A machine with no usable git is refused BEFORE the clone
 would otherwise sit on "still downloading" forever renders that message.
 """
 import contextlib
+import fcntl
 import json
 import os
 import shutil
@@ -113,12 +114,7 @@ def _cache_lock():
         deadline = time.time() + LOCK_TIMEOUT
         while True:
             try:
-                if sys.platform == "win32":
-                    import msvcrt
-                    msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
-                else:
-                    import fcntl
-                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 break
             except OSError:
                 if time.time() >= deadline:
@@ -128,13 +124,7 @@ def _cache_lock():
         try:
             yield
         finally:
-            if sys.platform == "win32":
-                import msvcrt
-                os.lseek(fd, 0, os.SEEK_SET)
-                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
-            else:
-                import fcntl
-                fcntl.flock(fd, fcntl.LOCK_UN)
+            fcntl.flock(fd, fcntl.LOCK_UN)
     finally:
         os.close(fd)
 
@@ -147,7 +137,6 @@ def _git(cwd, *args, timeout=GIT_TIMEOUT):
             capture_output=True, text=True, timeout=timeout, env=env,
             encoding="utf-8", errors="replace",
             close_fds=False,
-            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
         )
     except FileNotFoundError:
         raise ActionError("git is not installed (or not on PATH) — the "
@@ -271,8 +260,6 @@ def _git_install_hint():
     node, so markup would render as literal characters."""
     if sys.platform == "darwin":
         return "run xcode-select --install to get it, then revisit this page"
-    if sys.platform == "win32":
-        return "install it from https://git-scm.com/download/win, then revisit this page"
     return ("install it with your package manager (apt install git, brew "
             "install git), then revisit this page")
 

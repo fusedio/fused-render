@@ -99,12 +99,9 @@ export function claudeIssues(health: ClaudeHealth | null): ClaudeIssue[] {
         "Fused Render uses Claude Code on this computer to build and fix " +
         "things. Install it and the app will pick it up — no restart needed.",
       helpKind: "notfound",
-      // THE SERVER'S LINE, not the module constant, and the difference is a
-      // bug this fixes: the constant is the macOS/Linux `curl … | bash`, and it
-      // used to be attached here unconditionally — so a Windows user with no
-      // Claude Code was handed a command their shell cannot run. The server
-      // knows its own platform; the fallback is only for a payload from a
-      // server too old to say.
+      // THE SERVER'S LINE, not the module constant: the server knows its own
+      // platform; the fallback is only for a payload from a server too old to
+      // say.
       command: health.install_command || CLAUDE_INSTALL_COMMAND,
       action: { kind: "install", label: "Install Claude Code" },
     });
@@ -154,7 +151,7 @@ export function claudeIssues(health: ClaudeHealth | null): ClaudeIssue[] {
     // WHETHER TO OFFER THE BUTTON AT ALL, and the whole subtlety of this issue.
     //
     // `claude update` only updates a CLI that updates itself — a native or npm
-    // install. Homebrew, WinGet, apt, dnf and apk own their own binary and
+    // install. Homebrew, apt, dnf and apk own their own binary and
     // answer `claude update` with "Claude is up to date!" while changing
     // nothing. An Update button there is a button that cannot work, which is a
     // worse answer than the plain sentence it replaced.
@@ -182,7 +179,7 @@ export function claudeIssues(health: ClaudeHealth | null): ClaudeIssue[] {
       command: health.update_command ?? (selfUpdates ? CLAUDE_UPDATE_COMMAND : undefined),
       // A button ONLY where running it does something. A managed install gets
       // the right command to copy and no button — we will not run a `sudo` line
-      // on someone's behalf, and `brew`/`winget` are theirs to drive.
+      // on someone's behalf, and `brew` is theirs to drive.
       action: selfUpdates
         ? { kind: "update", label: "Update Claude Code" }
         : undefined,
@@ -211,7 +208,7 @@ export function claudeIssues(health: ClaudeHealth | null): ClaudeIssue[] {
   }
 
   // ONLY ON AN EXPLICIT `false` — a login-shell probe that came back empty.
-  // `null` is unknown (Windows, an override, an old server) and unknown never
+  // `null` is unknown (an override, an old server) and unknown never
   // produces advice, the same rule as `signed_in` above. This is the quietest
   // issue here because nothing in the APP is wrong: the installer created the
   // binary and the app adopted it, but the installer never edits an rc file —

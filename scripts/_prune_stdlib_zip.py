@@ -56,7 +56,6 @@ def prune(zip_path):
                 for info in infos:
                     if not _doomed(info.filename):
                         zout.writestr(info, zin.read(info))
-        # The source zip is closed here: Windows refuses to replace an open file.
         os.chmod(tmp, stat.S_IMODE(os.stat(zip_path).st_mode))
         os.replace(tmp, zip_path)
     except BaseException:

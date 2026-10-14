@@ -16,8 +16,8 @@ and a "Restart fused-render" button that actually restarts.
   redirects, streams to a temp file, hashes, compares against the signed
   sha256, `progress` + `should_abort` callbacks, `UpdateCancelled`). Platform
   neutral already. **Do not change its security semantics.**
-- `scripts/windows/generate_update_manifest.py` — signs `latest.json`. Used by
-  both the mac and Windows release jobs. Reuse as-is.
+- `scripts/generate_update_manifest.py` — signs `latest.json`. Used by
+  the macOS release job (and by the Linux one once Task 6 lands). Reuse as-is.
 - `fused_render/update/mac.py` — the `UpdateManager` state machine, the check
   loop, the throttle, the Activity-dock job mirroring, the cancel flag, and
   the DMG install.
@@ -60,8 +60,7 @@ Then `mac.py` becomes `MacUpdateManager(UpdateManager)` keeping `bundle_path`,
 
 **Hard constraint: `tests/test_mac_update.py` must pass unmodified.** If a test
 patches `mac.<name>`, that name must still resolve on `mac`. Re-export from
-`manager` where needed (the `_win32/update.py` module already demonstrates the
-re-export-for-patchability pattern). Mac behaviour must not change at all —
+`manager` where needed. Mac behaviour must not change at all —
 this is a pure move. Do not reword or delete the existing comments; they carry
 decisions and attributions. Move them with the code they explain.
 
@@ -177,7 +176,7 @@ env:
   FUSED_RENDER_UPDATE_SIGNING_KEY: ${{ secrets.FUSED_RENDER_UPDATE_SIGNING_KEY }}
 run: |
   uv run --no-project --with cryptography \
-    scripts/windows/generate_update_manifest.py \
+    scripts/generate_update_manifest.py \
     "$VERSION" "$APPIMAGE" "https://${CDN_DOMAIN}/${LINUX_PREFIX}" \
     dist/linux-latest.json
   aws s3 cp dist/linux-latest.json "s3://${S3_BUCKET}/${LINUX_PREFIX}/latest.json" \
@@ -196,16 +195,14 @@ already covers the manifest path.
   a checksum mismatch leaving the original file untouched, the stamp write,
   and `_disk_version` reading it back.
 - Stamp tests for `installed.py` on Linux: match, moved file, mtime drift.
-- A supervisor test for the RELAUNCH exit reason (follow
-  `tests/test_win_supervisor_update.py` / existing supervisor core tests for
-  how the loop is driven in tests).
+- A supervisor test for the RELAUNCH exit reason (follow the existing
+  supervisor core tests for how the loop is driven in tests).
 - `tests/test_mac_update.py` unchanged and green.
 
 ## Out of scope
 
 - aarch64 AppImages (the build script is x86_64-only today).
 - Any .deb/.rpm/flatpak packaging.
-- Changing the Windows supervisor updater.
 - Any frontend change — the badge is already platform-neutral.
 
 ## Verification
@@ -214,7 +211,7 @@ Scoped, during the build:
 
 ```bash
 .venv/bin/python -m pytest -q tests/test_linux_update.py tests/test_mac_update.py \
-  tests/test_installed.py tests/test_win_supervisor_update.py
+  tests/test_installed.py
 bash -n .github/workflows/release.yml  # or actionlint if available
 ```
 

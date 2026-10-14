@@ -1791,10 +1791,9 @@ Z / Shift+Z — undo / redo · S — save">⌨</span>
     return "/explorer/view/";
   }
   function viewUrlFor(path) {
-    // mirror the shell's /view codec (frontend/src/lib/router.ts): forward
-    // slashes for drive paths, per-segment encoding, no leading slash
-    const norm = /^[A-Za-z]:[\\/]/.test(path) ? path.replace(/\\/g, "/") : path;
-    return shellPrefix() + norm.replace(/^\/+/, "").split("/").filter(Boolean)
+    // mirror the shell's /view codec (frontend/src/lib/router.ts):
+    // per-segment encoding, no leading slash
+    return shellPrefix() + path.replace(/^\/+/, "").split("/").filter(Boolean)
       .map(encodeURIComponent).join("/");
   }
   function navigateShell(path) {
@@ -1867,19 +1866,12 @@ Z / Shift+Z — undo / redo · S — save">⌨</span>
     }
     if (!modalCtx || gen !== modalCtx.gen) return; // superseded / closed
     modalCtx.dir = d.path;
-    const unc = d.path.startsWith("//"); // "//server/share/…" — the "//" is the root
     const segs = d.path.split("/").filter(Boolean);
-    const winRoot = /^[A-Za-z]:$/.test(segs[0] || ""); // "C:" drive paths take no leading "/"
-    const rooted = winRoot || unc; // neither gets a standalone "/" crumb
-    const dirAt = (i) => {
-      const q = segs.slice(0, i + 1).join("/");
-      if (unc) return "//" + q;
-      return winRoot ? (i ? q : q + "/") : "/" + q;
-    };
+    const dirAt = (i) => "/" + segs.slice(0, i + 1).join("/");
     modalLocEl.innerHTML =
-      (rooted ? "" : `<span data-dir="/">/</span>`) +
+      `<span data-dir="/">/</span>` +
       segs.map((s, i) =>
-        `${i || !rooted ? " › " : ""}<span data-dir="${escapeHtml(dirAt(i))}">${escapeHtml(s)}</span>`).join("");
+        ` › <span data-dir="${escapeHtml(dirAt(i))}">${escapeHtml(s)}</span>`).join("");
     const rows = [];
     if (d.path !== d.parent) rows.push(`<div data-dir="${escapeHtml(d.parent)}">⬆ ..</div>`);
     for (const n of d.dirs) {
@@ -1966,13 +1958,9 @@ Z / Shift+Z — undo / redo · S — save">⌨</span>
                 source: "", outputs: [], execution_count: null }],
       metadata: {}, nbformat: 4, nbformat_minor: 5 }, null, 1) + "\n";
   }
-  // mirrors the shell's dirname(): a bare drive letter is cwd-relative to
-  // os.path, so a drive-root notebook yields "C:/" and a POSIX-root one "/"
+  // mirrors the shell's dirname(): a root-level notebook yields "/"
   function dirOf(path) {
-    const i = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
-    const dir = path.slice(0, i);
-    if (!dir) return "/";
-    return /^[A-Za-z]:$/.test(dir) ? dir + "/" : dir;
+    return path.slice(0, path.lastIndexOf("/")) || "/";
   }
   function newNotebook() {
     openModal({

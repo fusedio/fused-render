@@ -234,11 +234,9 @@ def _fake_cli(app, monkeypatch, name="fused"):
     bin_dir = os.path.join(app, "bin")
     os.makedirs(bin_dir, exist_ok=True)
     # The filename has to match what fusedcli.export_fused_cli_env() actually
-    # writes — "<name>.cmd" on Windows, since the wrapper's content is a batch
-    # script that only a .cmd/.bat extension executes — or this fixture writes
-    # a file inspect_app._fused_cli() never goes looking for.
-    filename = name + ".cmd" if os.name == "nt" else name
-    path = os.path.join(bin_dir, filename)
+    # writes, or this fixture writes a file inspect_app._fused_cli() never goes
+    # looking for.
+    path = os.path.join(bin_dir, name)
     with open(path, "w", encoding="utf-8") as fh:
         fh.write("#!/bin/sh\n")
     os.chmod(path, 0o755)
@@ -280,29 +278,21 @@ def test_an_exported_dir_with_no_wrapper_in_it_is_an_empty_string(
     assert inspect_app.main(path=app)["fused"] == ""
 
 
-@pytest.mark.parametrize("nt", [False, True])
 def test_the_reader_finds_exactly_what_the_writer_names(
-    inspect_app, app, monkeypatch, tmp_path, nt
+    inspect_app, app, monkeypatch, tmp_path
 ):
     """`inspect_app._fused_cli()` must look for the exact filename
-    `fusedcli.export_fused_cli_env()` writes, for BOTH `os.name` values — not
-    just the one this test machine happens to run under.
+    `fusedcli.export_fused_cli_env()` writes.
 
     This is the pin `_fused_cli()`'s docstring and `appenv.canvases_root()`
     promise: the reader cannot import `fusedcli` (SPEC PY-15 — templates are
     stdlib-only), so it duplicates the writer's filename rule instead, and a
-    test has to fail the moment the two copies disagree. They did: the writer
-    named the wrapper `fused.cmd` on Windows (batch content only a `.cmd`/
-    `.bat` extension executes) while the reader went looking for `fused.exe`,
-    so `os.path.isfile` never found it and registration silently disabled
-    itself. A POSIX-only run can't see this — both sides agree on the bare
-    name `fused` there — so this test forces the Windows branch explicitly
-    via `nt`, exercising the real writer (`fusedcli.export_fused_cli_env`)
-    rather than a copy of its filename string.
+    test has to fail the moment the two copies disagree. It exercises the real
+    writer (`fusedcli.export_fused_cli_env`) rather than a copy of its
+    filename string.
     """
     from fused_render import fusedcli
 
-    monkeypatch.setattr(os, "name", "nt" if nt else "posix")
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
     monkeypatch.delenv(fusedcli.CLI_DIR_ENV, raising=False)
     monkeypatch.delenv("PATH", raising=False)
@@ -316,8 +306,7 @@ def test_the_reader_finds_exactly_what_the_writer_names(
 
     found = inspect_app.main(path=app)["fused"]
     assert found != "", (
-        f"reader could not find the wrapper the writer wrote in {bin_dir} "
-        f"(os.name={os.name!r})"
+        f"reader could not find the wrapper the writer wrote in {bin_dir}"
     )
     assert os.path.dirname(found) == bin_dir
 

@@ -759,7 +759,7 @@ def _native_windows_state() -> dict:
     hooks = window_policy.native_hooks
     # One hook contract, not a platform if/elif/else: `apply` installed at all
     # is necessary (macOS's app.py and Linux's linux_windows.install both set
-    # it; win32 never does, so hooks stays {} there and this is False). Linux
+    # it; anywhere else hooks stays {} and this is False). Linux
     # additionally installs `usable` — the window host is a separate process
     # that can be absent or have died, so it is asked rather than trusted —
     # while macOS's windows live in-process and installs no such hook; the

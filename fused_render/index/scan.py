@@ -172,8 +172,7 @@ def _child_init(run_dir, no_cache):
     # be a cycle. Inline it here instead, same as the pyarrow imports above.
     from fused_render.index.worker import _set_background_io_policy
     # The man page says a child inherits the parent's I/O policy across
-    # fork/exec, and on Windows background mode is not inherited at all, so
-    # this is cheap insurance for every mp-spawn pool child, not just the
+    # fork/exec, so this is cheap insurance for every mp-spawn pool child, not just the
     # detached worker process itself.
     _set_background_io_policy()
 

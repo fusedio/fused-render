@@ -188,8 +188,7 @@ def move_into_new_dir(
     ``exists()`` check and the move — a concurrent clone, or anything else writing to the
     workspace — would silently nest the payload one level deeper and still report success,
     leaving the page somewhere other than where the caller says it is. `rename` cannot nest:
-    it fails (`ENOTEMPTY` on POSIX, `EEXIST`/`FileExistsError` on Windows), and this retries
-    the next name instead of guessing.
+    it fails (`ENOTEMPTY`), and this retries the next name instead of guessing.
 
     The one case POSIX `rename` *does* replace is an existing **empty** directory. That is
     accepted: an empty folder holds nothing to lose, and no clone has written into one yet.

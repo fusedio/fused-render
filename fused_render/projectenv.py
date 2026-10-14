@@ -153,8 +153,8 @@ def uv_cache_dir() -> str | None:
     deliberate, not a free win.** uv's default is platform-specific (XDG on
     Linux, `~/.cache/uv` on macOS too — NOT `~/Library/Caches`, which
     strengthens rather than weakens the one-filesystem argument, since
-    `~/.cache` and `~/.fused-render` are typically the same volume —
-    `%LOCALAPPDATA%` on Windows) and this module does not hardcode any of
+    `~/.cache` and `~/.fused-render` are typically the same volume) and
+    this module does not hardcode any of
     them — only uv itself gets to decide, correctly, which one applies. A
     user whose app home and that default cache happen to sit on DIFFERENT
     filesystems loses hardlinking and pays full copies again from here on,
@@ -165,7 +165,7 @@ def uv_cache_dir() -> str | None:
 
     **This trade reaches fewer users than it looks like it does.**
     `FUSED_RENDER_HOME` is not only the test suite's isolation — the
-    PACKAGED Linux and Windows desktop app sets it too, unconditionally,
+    PACKAGED Linux desktop app sets it too, unconditionally,
     for every launch (`supervisor.paths.DesktopPaths.self_environment`/
     `child_environment`, D131), pointed at its own durable state dir. For
     those users the `None` branch below is UNREACHABLE: they keep the old,
@@ -249,11 +249,7 @@ def _venv_identity(project_dir: str) -> str:
     and its cost is a rebuild rather than a wrong answer.
     """
     path = os.path.abspath(project_dir)
-    try:
-        rel = os.path.relpath(path, _PACKAGE_DIR)
-    except ValueError:
-        # Windows, different drives — nothing relative to say, so it is not ours.
-        return path
+    rel = os.path.relpath(path, _PACKAGE_DIR)
     if rel == os.pardir or rel.startswith(os.pardir + os.sep) or os.path.isabs(rel):
         return path
     if rel == os.curdir:
@@ -300,9 +296,7 @@ _writable_lock = threading.Lock()
 def _probe_writable(path: str) -> bool:
     """Can a file actually be CREATED in *path*? Answered by doing it, not by
     `os.access(path, os.W_OK)` — that call is wrong for the exact case this
-    predicate exists to catch: on Windows it reports the read-only ATTRIBUTE,
-    which says nothing about an ACL-protected `Program Files` install, and on
-    POSIX it consults mode bits and misses a directory denied by an ACL entry
+    predicate exists to catch: it consults mode bits and misses a directory denied by an ACL entry
     or SELinux. Same probe `_env_install_worker._writable_dir` already uses for
     the same reason, restated rather than shared because that module must not
     import `fused_render` (D152) — two copies of the technique is correct here.
@@ -354,7 +348,7 @@ def _use_home_store(project_dir: str) -> bool:
     1. The escape hatch (`FUSED_RENDER_VENV_IN_TREE=0`) — see its docstring.
     2. The folder ships inside the installed `fused_render` package (an AI
        runner folder) — its own tree is read-only on the AppImage's squashfs
-       mount and under a Windows `Program Files` install (D376), so nothing
+       mount (D376), so nothing
        can be written there at all. Reuses `_venv_identity` rather than a
        second derivation of "is this in the package": that duplication is
        exactly the mistake this function's sibling, `venv_key_for`, already
@@ -414,11 +408,7 @@ def _immediate_child(root: str, path: str) -> str | None:
     *root* (or is *root* itself, or is a file sitting directly in it)."""
     root = os.path.abspath(root)
     path = os.path.abspath(path)
-    try:
-        rel = os.path.relpath(path, root)
-    except ValueError:
-        # Different drives on Windows — relpath raises rather than returning "..".
-        return None
+    rel = os.path.relpath(path, root)
     if rel == os.curdir or rel == os.pardir or rel.startswith(os.pardir + os.sep):
         return None
     child = os.path.join(root, rel.split(os.sep)[0])

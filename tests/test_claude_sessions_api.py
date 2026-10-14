@@ -30,10 +30,8 @@ def client(tmp_path):
 
 
 def _c(path) -> str:
-    """A folder's expected wire form: both endpoints canonicalize `path` to
-    forward slashes on the way out (see canonical_fs_path), even though the
-    transcript's own `cwd` and this test's `str(Path(...))` are backslashed
-    on Windows."""
+    """A folder's expected wire form: both endpoints canonicalize `path` on
+    the way out (see canonical_fs_path)."""
     return canonical_fs_path(str(path))
 
 

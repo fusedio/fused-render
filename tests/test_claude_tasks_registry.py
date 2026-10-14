@@ -424,31 +424,3 @@ def test_history_marks_a_dead_runs_tasks_unknown(agent, run_dir, tmp_path, monke
     assert tasks[0]["status"] == "unknown" and tasks[0]["ended_at"] is None
     assert tasks[0]["started_at"] == 1000.0, "an upgraded record keeps a stable start"
     assert agent._history(str(target), "s")["tasks"][0]["started_at"] == 1000.0
-
-
-def test_a_contended_lock_skips_the_write_and_holds_the_cursor(agent, run_dir, monkeypatch):
-    """CodeRabbit, PR #1635: when another poll holds the registry lock past
-    the retry budget, this poll answers from memory but writes neither the
-    registry nor the poll cursor, so the next poll re-reads the same rows."""
-    _append(run_dir, [_user("one"), {"type": "result", "result": "ok"},
-                      _user("two"),
-                      _sys("task_started", task_id="t1", description="d")])
-    cursor_file = run_dir / "cursor"
-
-    real = agent._RunLock
-
-    class Contended(real):
-        def __enter__(self):
-            self.held_elsewhere = True
-            return self
-
-    monkeypatch.setattr(agent, "_RunLock", Contended)
-    data = agent._poll("run")
-    assert _rec(data, "t1")["status"] == "running", "this answer still applies the row"
-    assert "t1" not in agent._read_bg_tasks(str(run_dir))
-    assert not cursor_file.exists(), "the cursor is held back with the registry"
-
-    monkeypatch.setattr(agent, "_RunLock", real)
-    data = agent._poll("run")
-    assert "t1" in agent._read_bg_tasks(str(run_dir))
-    assert cursor_file.exists() and int(cursor_file.read_text()) > 0

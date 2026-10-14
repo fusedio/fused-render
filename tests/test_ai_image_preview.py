@@ -447,8 +447,8 @@ def test_a_no_op_sink_never_asks_for_the_LATENTS(preview, tmp_path):
 # minutes-long render can be interrupted. Anything that escapes `add` unwinds
 # `pipe()` / `generate_image()` and destroys work that was going to succeed —
 # so the whole of `add` is guarded, and the failures are real ones: a full disk
-# during `save`, a Windows lock held by the page's own <img> during `replace`
-# (the exact hazard `discard` already swallows), a shape nobody predicted.
+# during `save`, a destination briefly unwritable during `replace`, a shape
+# nobody predicted.
 
 
 def test_a_frame_that_CANNOT_BE_WRITTEN_does_not_unwind_the_render(preview, tmp_path,
@@ -512,8 +512,8 @@ def test_a_sink_that_KEEPS_failing_switches_itself_off(preview, tmp_path, monkey
 
 def test_a_frame_that_LANDS_forgives_the_ones_that_did_not(preview, tmp_path,
                                                            monkeypatch):
-    """Consecutive, not cumulative: the Windows collision this guards against is
-    transient by nature — the page's `<img>` releases the file — and a sink that
+    """Consecutive, not cumulative: the collision this guards against is
+    transient by nature, and a sink that
     latched off after three unlucky steps of a long render would have thrown the
     feature away over nothing."""
     real_replace = os.replace

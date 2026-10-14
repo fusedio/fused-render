@@ -61,25 +61,17 @@ test("the root is its own parent, so Up can't escape the filesystem", () => {
   expect(paths.parent("/a")).toBe("/");
 });
 
-test("a Windows drive root is its own parent too", () => {
-  expect(paths.parent("C:/Users/ada")).toBe("C:/Users");
-  expect(paths.parent("C:/Users")).toBe("C:/");
-  expect(paths.parent("C:/")).toBe("C:/");
-});
-
 // -------------------------------------------------------------------- join
 
 test("join does not double the separator at a root", () => {
   expect(paths.join("/", "repo")).toBe("/repo");
   expect(paths.join("/a/b", "repo")).toBe("/a/b/repo");
-  expect(paths.join("C:/", "repo")).toBe("C:/repo");
 });
 
 // ------------------------------------------------------------------ isRoot
 
-test("isRoot recognises both kinds of root", () => {
+test("isRoot recognises the root", () => {
   expect(paths.isRoot("/")).toBe(true);
-  expect(paths.isRoot("C:/")).toBe(true);
   expect(paths.isRoot("/a")).toBe(false);
 });
 
@@ -114,11 +106,8 @@ test("freeName gives up rather than looping forever", () => {
 test("basename labels a folder, and a root has no label of its own", () => {
   expect(paths.basename("/a/b/c")).toBe("c");
   expect(paths.basename("/a/b/c/")).toBe("c");
-  // Both roots answer "" so the caller can substitute the path. Stripping the
-  // trailing slash off "C:/" would otherwise leave the bare "C:", which is a
-  // cwd-relative path, not a folder name, and must never reach the UI.
+  // The root answers "" so the caller can substitute the path.
   expect(paths.basename("/")).toBe("");
-  expect(paths.basename("C:/")).toBe("");
 });
 
 // ------------------------------------------------------------------ crumbs
@@ -128,12 +117,6 @@ test("crumbs walk from the root down to the folder shown", () => {
   // The root's own label falls back to the path — "" would be an unclickable
   // gap at the head of the breadcrumb.
   expect(paths.crumbs("/a/b").map((c) => c.label)).toEqual(["/", "a", "b"]);
-});
-
-test("crumbs on a Windows path stop at the drive root", () => {
-  expect(paths.crumbs("C:/Users/ada").map((c) => c.path)).toEqual([
-    "C:/", "C:/Users", "C:/Users/ada",
-  ]);
 });
 
 test("crumbs of a root are just the root", () => {

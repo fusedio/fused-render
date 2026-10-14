@@ -1,6 +1,6 @@
 # fused-render
 
-**[Download for macOS, Windows, and Linux →](https://render.fused.io)**
+**[Download for macOS and Linux →](https://render.fused.io)**
 
 Your files, your AI, your apps — on your own machine. Browse any directory in
 the browser, run AI models locally, and describe an app for Claude Code to
@@ -15,10 +15,10 @@ machine, your own trusted code.
 Download from **[render.fused.io](https://render.fused.io)**:
 
 - **macOS** — `.dmg`, Apple silicon
-- **Windows** — 64-bit `.exe` installer
 - **Linux** — AppImage
 
-macOS is the native build; Windows and Linux have limited support. Trouble on
+macOS is the native build; Linux has limited support. Windows is not
+supported. Trouble on
 first run? See [troubleshooting](https://render.fused.io/#troubleshooting).
 
 ### Other ways in
@@ -87,20 +87,6 @@ fused-render --start-dir ~/data --port 9000 --no-browser
 
 `--start-dir` is where the explorer starts (default `~/Fused`); the whole
 filesystem stays browsable from there.
-
-### Windows: Explorer "Open with"
-
-![fused-render: right-click a file in Explorer, pick "Open with" → fused-render, and it opens in the browser](docs/screenshots/open_with_right_click.gif)
-
-```
-fused-render-open --register
-```
-
-Registers fused-render into Explorer's right-click "Open with" menu (HKCU
-only, no admin) for every format it previews — double-clicking a file, or
-picking "fused-render" from Open With, reuses a running server or starts one
-detached, then opens the file. `fused-render-open --unregister`
-removes the associations.
 
 ## Authoring
 

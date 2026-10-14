@@ -55,8 +55,8 @@ export function labelForSource(source: string | undefined): string {
   // documented fallback for the same "not a known route" case — see the file
   // header comment above for why this function stops here rather than also
   // resolving a project name.
-  const stripped = withoutQuery.replace(/[/\\]+$/, "");
-  const segments = stripped.split(/[/\\]/).filter(Boolean);
+  const stripped = withoutQuery.replace(/\/+$/, "");
+  const segments = stripped.split("/").filter(Boolean);
   const base = segments[segments.length - 1] || stripped;
   const dot = base.lastIndexOf(".");
   const name = dot > 0 ? base.slice(0, dot) : base;

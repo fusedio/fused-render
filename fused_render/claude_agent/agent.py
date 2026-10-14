@@ -13,11 +13,8 @@ stream-json stdout goes to a log file in tmp; `poll` re-reads that file and
 returns the accumulated assistant text so the page can render the reply as it
 streams in. Stdlib only (plus ../shared/procutil).
 
-Cross-platform: `claude` is looked up on PATH and then in the platform's known
-install locations, because a Windows install commonly isn't on the PATH this
-process inherited (_claude_bin); detaching, liveness and cancel each take the
-win32 route where the POSIX one is absent or destructive (_DETACH, _alive,
-_cancel).
+`claude` is looked up on PATH and then in its known install locations
+(_claude_bin).
 
 Sessions are per-file. Claude runs with cwd = the target file's directory and
 an appended system prompt that scopes it (softly) to the file.
@@ -66,7 +63,7 @@ Actions:
   main(action="cancel", run_id=...)   -> {"cancelled": ...}
 """
 import datetime
-import errno
+import fcntl
 import io
 import json
 import os
@@ -119,14 +116,9 @@ def _runs_root() -> str:
     disclosure the 0700 exists to prevent. Giving each uid its own root
     dissolves the conflict: nobody contends for anybody else's directory, and
     0700 on it is then simply correct.
-
-    POSIX-only suffix: `geteuid` does not exist on Windows, whose temp dir is
-    already per-user (%LOCALAPPDATA%\\Temp), so there is nothing to separate.
     """
-    geteuid = getattr(os, "geteuid", None)
-    suffix = "-%d" % geteuid() if geteuid is not None else ""
     return os.path.join(tempfile.gettempdir(),
-                        "fused_render_claude" + suffix, "runs")
+                        "fused_render_claude-%d" % os.geteuid(), "runs")
 
 
 RUNS = _runs_root()
@@ -171,28 +163,12 @@ SHOTS_KEEP = 1000
 # reading the wrong dir loses history and resume. CLAUDE_CONFIG_DIR wins where
 # it is set, which now means only where the user set it: the supervisor no
 # longer overrides it, because that dir also holds the login credentials on
-# Linux and Windows (see supervisor/paths.py child_environment).
+# Linux (see supervisor/paths.py child_environment).
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
 PROJECTS = os.path.join(CLAUDE_DIR, "projects")
 
-# Where Claude Code installs `claude`, for when it isn't on our PATH. Windows is
-# the case that needs this: a GUI-launched app inherits the PATH of its login
-# session, so an install that appended to the *user* PATH afterwards stays
-# invisible until the next sign-in — and the packaged app's PATH is the
-# supervisor's, not a shell's. Ordered most-canonical first, `.exe` ahead of any
-# `.cmd` shim: a shim's arguments are re-parsed by cmd.exe, and our argv carries
-# arbitrary user text (-p) and the target path (--append-system-prompt).
-_WINDOWS_CANDIDATES = (
-    # native installer (irm https://claude.ai/install.ps1 | iex) — recommended
-    r"%USERPROFILE%\.local\bin\claude.exe",
-    # winget install Anthropic.ClaudeCode, via winget's own shim dir
-    r"%LOCALAPPDATA%\Microsoft\WinGet\Links\claude.exe",
-    # npm install -g @anthropic-ai/claude-code, in npm's global prefix
-    r"%APPDATA%\npm\claude.exe",
-    r"%APPDATA%\npm\claude.cmd",
-    # legacy local npm install, written by older Claude Code versions
-    r"%USERPROFILE%\.claude\local\claude.exe",
-)
+# Where Claude Code installs `claude`, for when it isn't on our PATH: a
+# GUI-launched app inherits its login session's PATH, not a shell's.
 _POSIX_CANDIDATES = ("~/.local/bin/claude", "/opt/homebrew/bin/claude",
                      "/usr/local/bin/claude")
 
@@ -492,7 +468,7 @@ def _claude_bin() -> str:
     found = shutil.which("claude")
     if found:
         return found
-    candidates = _WINDOWS_CANDIDATES if os.name == "nt" else _POSIX_CANDIDATES
+    candidates = _POSIX_CANDIDATES
     for candidate in candidates:
         resolved = os.path.expanduser(os.path.expandvars(candidate))
         if os.path.isfile(resolved):
@@ -519,9 +495,7 @@ def _in_canvases_root(target: str) -> bool:
       cwd the server process happens to have;
     * realpath, because on macOS the root and the target routinely disagree about
       `/tmp` vs `/private/tmp` until both are resolved;
-    * normcase, because Windows paths differing only in case (or in drive-letter
-      case) are the SAME path — `apps.py`'s containment check normcases for the
-      same reason;
+    * normcase, matching `apps.py`'s containment check;
     * commonpath rather than a string prefix, because `<root>-evil` starts with
       the root's characters and is a different directory entirely.
 
@@ -533,8 +507,8 @@ def _in_canvases_root(target: str) -> bool:
         path = os.path.normcase(os.path.realpath(os.path.abspath(target)))
         return os.path.commonpath([root, path]) == root
     except (OSError, ValueError):
-        # ValueError: commonpath refuses to mix an absolute and a relative path,
-        # or paths on different Windows drives — both mean "not inside".
+        # ValueError: commonpath refuses to mix an absolute and a relative
+        # path — that means "not inside".
         return False
 
 
@@ -655,8 +629,7 @@ def _bad_id(value: str) -> bool:
 
     run ids and session ids both arrive as URL params and both get joined onto
     a directory we own, so neither may carry a path separator or a leading dot
-    — and on Windows `\\` escapes exactly like `/`, while a drive prefix
-    ("d:x") makes os.path.join drop our directory entirely."""
+    (nor `\\` or `:`)."""
     return not value or value.startswith(".") or any(c in value for c in "/\\:")
 
 
@@ -925,24 +898,11 @@ def _terminal_command(file: str, session_id: str = "") -> dict:
             return {"error": "malformed session id"}
         argv += ["--resume", session_id]
     cli_dir = _fused_cli_dir()
-    if os.name == "nt":
-        # cmd.exe quoting: bare when safe, double-quoted otherwise. shlex is
-        # POSIX-only and its output misleads on Windows.
-        def quote(s):
-            return '"' + s + '"' if (" " in s or not s) else s
-        parts = ["cd /d {}".format(quote(workdir))]
-        if cli_dir:
-            # `set` scopes to the shell the user pasted into, which is exactly
-            # the lifetime we want: the session they just continued.
-            parts.append('set "PATH={};%PATH%"'.format(cli_dir))
-        parts.append(" ".join(quote(a) for a in argv))
-        command = " && ".join(parts)
-    else:
-        run = shlex.join(argv)
-        if cli_dir:
-            # A one-command env prefix, so nothing outlives the session.
-            run = "PATH={}:$PATH {}".format(shlex.quote(cli_dir), run)
-        command = "cd {} && {}".format(shlex.quote(workdir), run)
+    run = shlex.join(argv)
+    if cli_dir:
+        # A one-command env prefix, so nothing outlives the session.
+        run = "PATH={}:$PATH {}".format(shlex.quote(cli_dir), run)
+    command = "cd {} && {}".format(shlex.quote(workdir), run)
     return {"command": command, "cwd": workdir}
 
 
@@ -986,18 +946,7 @@ def _wire_path(path: str) -> str:
     Two places name this directory and they have to name it identically — the
     `Read(//…/**)` rule on the spawn line, and the crop paths the page puts in
     the annotation JSON — because the CLI matches a rule as TEXT, not as a
-    resolved path (see `_read_rule`). On POSIX they agreed by accident. On
-    Windows `SHOTS` comes off `os.path.join`, so the rule (which has always
-    normalised) said `C:/Users/a/shots` while the page, joining with the
-    separator it read off the directory, produced `C:\\Users\\a\\shots\\x.png`:
-    the rule matched nothing, every crop raised a card, and the whole
-    pre-approval was defeated.
-
-    Forward slashes is the form that wins rather than backslashes because the
-    crop is WRITTEN through `/api/fs/upload`, whose only requirement on the path
-    is `os.path.isabs` — and Windows' `ntpath` accepts either separator, as does
-    `open`. So one spelling satisfies both the rule and the write, and the page
-    can join with a plain `/` instead of guessing a platform.
+    resolved path (see `_read_rule`). The page joins with a plain `/`.
     """
     return path.replace("\\", "/")
 
@@ -1045,12 +994,11 @@ def _attach_dirs(raw: str) -> list:
         if not os.path.isabs(path) or not os.path.isdir(path):
             continue
         wired = _wire_path(os.path.normpath(path))
-        # A root ("/", "C:/") has no parent to scope to — the rule would be the
+        # A root ("/") has no parent to scope to — the rule would be the
         # whole disk. Also drops the shots dir if the page ever names it, since
         # its rule is unconditional.
         # Asked of the OS, not of the spelling: `os.path.dirname` of a root IS
-        # the root on every platform ("/" and "C:\\" alike), where a string
-        # strip of "C:/" left "C" and let the whole drive through on Windows.
+        # the root.
         normed = os.path.normpath(path)
         if os.path.dirname(normed) == normed:
             continue
@@ -1137,32 +1085,24 @@ def _shots_dir() -> dict:
         # (that is what _require_private just established) and it holds nothing
         # but our own crops — the argument that stops us chmod'ing the temp root
         # does not apply to our own directory.
-        #
-        # Skipped entirely where there are no mode bits to reason about, on the
-        # same grounds `_require_private` skips its uid check there: Windows has
-        # no uid model and its temp dir is already per-user, and `os.chmod` can
-        # only move the read-only flag, so enforcing 0700 there would refuse
-        # every Windows user their screenshots for a permission model that does
-        # not exist.
-        if hasattr(os, "geteuid"):
-            try:
-                mode = stat.S_IMODE(os.lstat(SHOTS).st_mode)
-                if mode & ~0o700:
-                    os.chmod(SHOTS, 0o700)
-                    # Re-read rather than trust the call: an ACL, or a filesystem
-                    # that does not carry unix modes, can accept a chmod and keep
-                    # the bits exactly where they were.
-                    mode = stat.S_IMODE(os.lstat(SHOTS).st_mode)
-            except OSError as e:
-                return {"error": "could not secure the screenshot directory: %s" % e}
+        try:
+            mode = stat.S_IMODE(os.lstat(SHOTS).st_mode)
             if mode & ~0o700:
-                # REFUSE, rather than write crops into a directory we have just
-                # proved others can read. This is the asymmetry stated two
-                # paragraphs up, applied to the case where the fix fails: denial
-                # costs the user their screenshots, adopting costs them pictures
-                # of their screen.
-                return {"error": "the screenshot directory is readable by others "
-                                 "(mode %04o) and could not be tightened" % mode}
+                os.chmod(SHOTS, 0o700)
+                # Re-read rather than trust the call: an ACL, or a filesystem
+                # that does not carry unix modes, can accept a chmod and keep
+                # the bits exactly where they were.
+                mode = stat.S_IMODE(os.lstat(SHOTS).st_mode)
+        except OSError as e:
+            return {"error": "could not secure the screenshot directory: %s" % e}
+        if mode & ~0o700:
+            # REFUSE, rather than write crops into a directory we have just
+            # proved others can read. This is the asymmetry stated two
+            # paragraphs up, applied to the case where the fix fails: denial
+            # costs the user their screenshots, adopting costs them pictures
+            # of their screen.
+            return {"error": "the screenshot directory is readable by others "
+                             "(mode %04o) and could not be tightened" % mode}
     else:
         try:
             _private_dir(SHOTS)
@@ -1438,12 +1378,11 @@ def _image_to_png(path: str) -> dict:
 
 def _terminal_tools_supported() -> bool:
     """Whether this run gets the terminal MCP tools (terminal_list / read /
-    send): POSIX only, because every /api/terminal route 501s on Windows, and
-    only with a server origin to reach. One predicate for the three places that
-    must agree — the origin stamped into mcp.json, the roster the server then
-    offers, and the pre-allowance in --allowed-tools — so a tool is never
-    allowed that cannot be called, or callable that cannot answer."""
-    return os.name != "nt" and bool(_origin())
+    send): only with a server origin to reach. One predicate for the three
+    places that must agree — the origin stamped into mcp.json, the roster the
+    server then offers, and the pre-allowance in --allowed-tools — so a tool is
+    never allowed that cannot be called, or callable that cannot answer."""
+    return bool(_origin())
 
 
 def _write_mcp_config(run_dir: str, pane: bool = True) -> str:
@@ -1475,10 +1414,9 @@ def _write_mcp_config(run_dir: str, pane: bool = True) -> str:
         # UTF-8 stdio for the server, whatever the machine's locale is.
         # The CLI's MCP client is Node: it writes raw UTF-8 JSON with
         # non-ASCII unescaped, while Python decodes a pipe at the LOCALE
-        # encoding — the ANSI code page on Windows, where a curly quote
-        # in a `Write` payload used to kill the server before it parked
-        # the request (no card, dead permission bridge, a turn that
-        # simply stopped; see permission_server._utf8_stdio). It has to
+        # encoding, where a non-UTF-8 locale would choke on a curly quote
+        # in a `Write` payload before the server parked the request (see
+        # permission_server._utf8_stdio). It has to
         # be named HERE to reach the child at all: the MCP client passes
         # an allowlist of env vars plus exactly this dict, so an ambient
         # PYTHONUTF8 would not survive the spawn.
@@ -1634,7 +1572,7 @@ def _record_settings(session_id: str, model: str = "", effort: str = "") -> None
     model". Same invariant `tasks_store.record_settings` keeps on the server
     side — the two writers share one file, so they have to share one rule.
 
-    Locked for the whole read-modify-write where the platform has flock, like
+    Locked (flock) for the whole read-modify-write, like
     `tasks_store._update`: two chats sending at the same moment is ordinary (the
     app runs several windows against one server), and an unlocked pair would
     persist a snapshot taken before the other's write and drop it."""
@@ -1645,14 +1583,9 @@ def _record_settings(session_id: str, model: str = "", effort: str = "") -> None
         return   # an id `_defaults` would refuse to read is not worth writing
     path = _state_file(*SESSION_SETTINGS)
     try:
-        import fcntl        # POSIX only — Windows takes the unlocked path,
-    except ImportError:     # the same posture tasks_store takes for the same file
-        fcntl = None
-    try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path + ".lock", "w") as lock:
-            if fcntl is not None:
-                fcntl.flock(lock, fcntl.LOCK_EX)
+            fcntl.flock(lock, fcntl.LOCK_EX)
             try:
                 with open(path, encoding="utf-8") as fh:
                     state = json.load(fh)
@@ -2462,15 +2395,8 @@ def _expire_app_state(run_dir: str, reason: str) -> None:
 
 # ----------------------------------------------------------------- start/poll
 
-# Detach the run so it outlives this 30 s executor subprocess. start_new_session
-# (setsid) is POSIX-only — Windows ignores it silently, where DETACHED_PROCESS +
-# CREATE_NEW_PROCESS_GROUP is the equivalent (mirrors templates/docs, latex and
-# usd). Only the taken branch of the conditional is evaluated, so the win32-only
-# subprocess constants are never touched on POSIX.
-_DETACH = (
-    {"creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP}
-    if os.name == "nt" else {"start_new_session": True}
-)
+# Detach the run so it outlives this 30 s executor subprocess (setsid).
+_DETACH = {"start_new_session": True}
 
 # How `_start` launches the session host FROM THE SERVER PROCESS. `_DETACH`
 # above is for the CLI spawn inside session_host.py (its own process, where a
@@ -2482,12 +2408,8 @@ _DETACH = (
 # with close_fds=False, cwd=None, no start_new_session, no preexec_fn and an
 # absolute argv[0] — exactly these kwargs. The host then detaches ITSELF with
 # os.setsid() as its first act, so it still outlives a server restart and
-# never shares the server's session. Windows has no fork; the detach flags
-# stay.
-_HOST_SPAWN = (
-    {"creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP}
-    if os.name == "nt" else {"close_fds": False}
-)
+# never shares the server's session.
+_HOST_SPAWN = {"close_fds": False}
 
 
 def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
@@ -2619,10 +2541,6 @@ def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
     return cmd
 
 
-def _prefix_supported() -> bool:
-    return os.name != "nt"
-
-
 def _shell_prefix_path() -> str:
     """Absolute path of the packaged CLAUDE_CODE_SHELL_PREFIX wrapper, made
     executable if a packaging step dropped the bit. "" when unavailable."""
@@ -2690,7 +2608,7 @@ def _spawn_env(chat_id: str = "") -> dict:
     # reads (D1327). The CLI runs EVERYTHING it spawns (hooks, MCP servers, the
     # statusline) through the prefix; the wrapper is transparent for all but
     # Bash-tool commands. A prefix the user exported themselves is left alone.
-    if (chat_id and not _bad_id(chat_id) and _prefix_supported()
+    if (chat_id and not _bad_id(chat_id)
             and not env.get("CLAUDE_CODE_SHELL_PREFIX")):
         prefix = _shell_prefix_path()
         if prefix:
@@ -2702,7 +2620,7 @@ def _spawn_env(chat_id: str = "") -> dict:
                 if os.path.isdir(log_dir):
                     _require_private(log_dir)
                     # It refuses group/other WRITE only; the log is readable.
-                    if os.name != "nt" and os.lstat(log_dir).st_mode & 0o077:
+                    if os.lstat(log_dir).st_mode & 0o077:
                         return env
                 else:
                     try:
@@ -2729,10 +2647,9 @@ def _inbox_stamp_ns() -> int:
 
     The inbox name IS the order: the host drains oldest name first and
     `_drained_unechoed` matches the CLI's echoes against the drained entries as a
-    prefix, in name order. On Windows `time.time_ns()` ticks at ~15 ms, so two
-    follow-ups typed (or two tests written) inside one tick drew the same stamp
-    and sorted by the random suffix — the second message could be drained, and
-    matched, before the first (Windows CI, PR #1124). One extra nanosecond per
+    prefix, in name order. Two follow-ups stamped inside one clock tick would
+    draw the same stamp and sort by the random suffix — the second message
+    could be drained, and matched, before the first. One extra nanosecond per
     tie keeps the clock honest and the order the order things were written in."""
     global _last_inbox_stamp_ns
     with _INBOX_STAMP_LOCK:
@@ -3237,12 +3154,7 @@ def _request_sync(app_dir: str) -> None:
 def _alive(run_dir: str) -> bool:
     """Whether this run's claude process is still going.
 
-    procutil.pid_alive, NOT the POSIX `os.kill(pid, 0)` idiom: on Windows
-    signal 0 *is* CTRL_C_EVENT, so os.kill routes it to
-    GenerateConsoleCtrlEvent — it sends a real Ctrl+C where the pid resolves to
-    a process group sharing our console, and raises OSError where it doesn't,
-    which the POSIX idiom reads as "gone". Either way a poll kills or condemns
-    the run it is only supposed to be looking at."""
+    Via procutil.pid_alive."""
     try:
         with open(os.path.join(run_dir, "pid"), encoding="utf-8") as fh:
             return _pid_alive(fh.read().strip())
@@ -5238,85 +5150,18 @@ class _RunLock:
     spawn bookkeeping loop, or two tabs — otherwise both read offset N, and
     the later writer's copy drops whatever the earlier one added.
 
-    POSIX: `flock(LOCK_EX)`. Windows: `msvcrt.locking` on byte 0 with a
-    non-blocking retry loop, the same shape as `tasks_store.locked_path`
-    (`LK_LOCK` gives up after ~10 tries, so it is not a blocking wait;
-    CodeRabbit, PR #1635 — the unlocked Windows path let poll B persist past
-    poll A's row). Neither available: unlocked, the posture `_record_settings`
-    takes on such a build.
-
-    `held_elsewhere` is True only when the Windows retry budget ran out on
-    CONTENTION: another poll holds the lock right now and is writing this
-    very registry, so the caller skips its own write and leaves the poll
-    cursor where it was — the next poll re-reads the same rows and absorbs
-    them (CodeRabbit, PR #1635). A PERMANENT failure (no lock primitive, the
-    lock file will not open, `flock` or the byte lock erroring for any other
-    reason) is still the unlocked fallback: skipping there would mean the
-    registry never persists at all."""
-
-    _RETRY_S = 0.05
-    #: How long the Windows byte lock is retried before the unlocked fallback:
-    #: a permanent `OSError` (not contention) must not wedge a poll thread
-    #: (Bugbot, PR #1635).
-    _RETRY_BUDGET_S = 10.0
+    `flock(LOCK_EX)`. A lock file that will not open, or a `flock` error, is
+    the unlocked fallback: skipping the write there would mean the registry
+    never persists at all."""
 
     def __init__(self, run_dir: str):
         self.path = os.path.join(run_dir, "bg_tasks.lock")
         self.fh = None
-        self.byte_locked = False
-        self.held_elsewhere = False
 
     def __enter__(self):
         try:
-            import fcntl
-        except ImportError:
-            fcntl = None
-        try:
-            import msvcrt
-        except ImportError:
-            msvcrt = None
-        if fcntl is None and msvcrt is None:
-            return self
-        try:
             self.fh = os.fdopen(os.open(self.path, os.O_RDWR | os.O_CREAT, 0o600), "r+b")
-            if fcntl is not None:
-                fcntl.flock(self.fh, fcntl.LOCK_EX)
-            else:
-                # `msvcrt.locking` locks a byte RANGE that must exist: a fresh,
-                # empty lock file has no byte 0 and the call fails for good,
-                # which the retry loop would read as contention forever
-                # (Bugbot, PR #1635). Stamp one byte first, the way
-                # `tasks_store._open_lockfile` does.
-                # The stamp's own failure is NOT the lock's: when two polls
-                # both see an empty file, the second's write fails because
-                # the first already holds byte 0 (Windows byte locks are
-                # mandatory) — and by then the byte exists, so the retry
-                # loop below is exactly where it should go (Bugbot, PR
-                # #1635; `_open_lockfile` swallows the same error).
-                try:
-                    if os.fstat(self.fh.fileno()).st_size == 0:
-                        self.fh.write(b"\0")
-                        self.fh.flush()
-                except OSError:
-                    pass
-                deadline = time.monotonic() + self._RETRY_BUDGET_S
-                while True:
-                    try:
-                        self.fh.seek(0)
-                        msvcrt.locking(self.fh.fileno(), msvcrt.LK_NBLCK, 1)
-                        self.byte_locked = True
-                        break
-                    except OSError as exc:
-                        # EACCES / EDEADLOCK: another holder (contention).
-                        # Anything else will not clear by waiting.
-                        contended = exc.errno in (errno.EACCES,
-                                                  getattr(errno, "EDEADLOCK", errno.EDEADLK))
-                        if not contended or time.monotonic() >= deadline:
-                            self.held_elsewhere = contended
-                            self.fh.close()
-                            self.fh = None
-                            break
-                        time.sleep(self._RETRY_S)
+            fcntl.flock(self.fh, fcntl.LOCK_EX)
         except OSError:
             if self.fh is not None:
                 self.fh.close()
@@ -5325,13 +5170,6 @@ class _RunLock:
 
     def __exit__(self, *exc):
         if self.fh is not None:
-            if self.byte_locked:
-                try:
-                    import msvcrt
-                    self.fh.seek(0)
-                    msvcrt.locking(self.fh.fileno(), getattr(msvcrt, "LK_UNLCK", 0), 1)
-                except (ImportError, OSError):
-                    pass
             self.fh.close()   # closing the descriptor releases the flock
         return False
 
@@ -5355,13 +5193,9 @@ def _update_run_registry(run_dir: str, rows: list, ends: list,
     is True only for a COMPLETE fresh row, so one row is news exactly once.
 
     `cursor`, when given, is the poll cursor `_read_current_turn` held back
-    (its `pending`); it is persisted here, after the registry write, so a
-    poll that could not take the lock (`_RunLock.held_elsewhere`) leaves
-    both where they were and the next poll re-reads the same rows. That
-    poll still answers with this window applied in memory."""
+    (its `pending`); it is persisted here, after the registry write."""
     now = time.time()
-    with _RunLock(run_dir) as lock:
-        writable = not lock.held_elsewhere
+    with _RunLock(run_dir):
         registry, applied, current = _load_registry(run_dir)
         try:
             size = os.path.getsize(os.path.join(run_dir, "out.jsonl"))
@@ -5392,10 +5226,10 @@ def _update_run_registry(run_dir: str, rows: list, ends: list,
                                            tool_inputs, now)
             elif sub == "init":
                 cap_rows = [(row, complete)]
-                commands_changed = commands_changed or (complete and writable)
+                commands_changed = commands_changed or complete
             elif sub == "commands_changed":
                 cap_rows.append((row, complete))
-                commands_changed = commands_changed or (complete and writable)
+                commands_changed = commands_changed or complete
         # A task whose tool call this window only now names gets its kind
         # settled here.
         settled = False
@@ -5407,8 +5241,6 @@ def _update_run_registry(run_dir: str, rows: list, ends: list,
                     if kind != "other":
                         rec["kind"] = kind
                         settled = True
-        if not writable:
-            return registry, False
         for row, _complete in cap_rows:
             _capture_commands(run_dir, row)
         # Nothing new absorbed and nothing settled: the file already says this.
@@ -8768,38 +8600,22 @@ def _kill_tree(run_dir: str) -> None:
         pid = int(open(os.path.join(run_dir, "pid"), encoding="utf-8").read())
     except (OSError, ValueError):
         return
-    if os.name == "nt":
-        # os.killpg doesn't exist on Windows, and CTRL_BREAK only reaches a
-        # shared console — a DETACHED_PROCESS run has none. taskkill /T walks
-        # the tree instead, collecting claude's own children with it.
-        #
-        # CREATE_NO_WINDOW because taskkill is itself a console program and this
-        # worker has no console to lend it (executor.py spawns us with that same
-        # flag), so without it a cancel flashes exactly the console window
-        # _DETACH just removed from the run. The server's global no-window policy
-        # does NOT cover us: it patches Popen in cli.py's process, and the worker
-        # is a bare `python _child.py`.
-        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
-                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                       stderr=subprocess.DEVNULL, check=False,
-                       creationflags=subprocess.CREATE_NO_WINDOW)
-    else:
+    try:
+        os.killpg(pid, signal.SIGTERM)  # the CLI's setsid -> pid is pgid
+    except ProcessLookupError:
+        # No group by that id: the pid file still names the HOST (the CLI
+        # has not spawned to overwrite it), and the host has not reached
+        # its own setsid() yet, so it is no group's leader (D1310 — it is
+        # spawned posix_spawn-style into the server's group and detaches
+        # itself). Signal the process instead; the host also checks the
+        # `cancelled` marker `_cancel` wrote first, for the case where
+        # even this lands too early.
         try:
-            os.killpg(pid, signal.SIGTERM)  # the CLI's setsid -> pid is pgid
-        except ProcessLookupError:
-            # No group by that id: the pid file still names the HOST (the CLI
-            # has not spawned to overwrite it), and the host has not reached
-            # its own setsid() yet, so it is no group's leader (D1310 — it is
-            # spawned posix_spawn-style into the server's group and detaches
-            # itself). Signal the process instead; the host also checks the
-            # `cancelled` marker `_cancel` wrote first, for the case where
-            # even this lands too early.
-            try:
-                os.kill(pid, signal.SIGTERM)
-            except OSError:
-                pass
+            os.kill(pid, signal.SIGTERM)
         except OSError:
             pass
+    except OSError:
+        pass
 
 
 def main(action: str = "start", file: str = "", message: str = "",

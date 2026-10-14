@@ -101,7 +101,7 @@ The listing may show the selected entry's preview beside the list — Finder's l
 
   View state stays best-effort `localStorage`, silent on failure, same posture as the rest of viewstate and AP-1.
 - **FS-14** **Skeleton shimmer** while the pane's content loads (the iframe's first paint, an embedded listing's own fetch) — the pane occupies real width the moment it opens, so an empty rectangle would read as "this folder has no preview" rather than "loading". The list never blocks on the pane: a slow or failing pane leaves the listing fully interactive.
-- **FS-15** **ONE PRESS MODEL, and the pane does not own it.** A plain press **selects, on `pointerdown`** — for **files and directories alike** — and its **matching release OPENS it** (navigates into a folder, opens a file full-screen) provided the press never travelled the drag/sweep slop; `Enter` does the same from the keyboard. This holds on every row, in every listing, at every width, with no exception for a folder: since D460 the pane no longer shows the selection (FS-11), so there is nothing left for a click to make unreachable by opening. **The press is answered on `pointerdown`, not on `click`**, because rows are drag sources and WebKit does not reliably deliver the `click` after a press on a `draggable` element — which is how Shift/Mod-click once went silently dead. Deciding on the press removes that failure class rather than working around it, and it is what Finder and Explorer do: the highlight lands while the button is still down. A **modified** press (Shift/Mod) never opens on release, whatever it selects — Shift/Mod-click means "add to my selection", not "take me there". The one case that cannot be answered on the press at all is a plain press on a row already inside a **multi-selection** — collapsing there would make a multi-row drag impossible, since every such drag begins with a press on one of the dragged rows — so that one **defers to the release**, and the same release both collapses the selection onto it AND opens it, provided the press never became a drag or a sweep. **The row's drag SOURCE is its name cell, not the row: an unmodified press on the icon+name span (`data-fs-drag-handle`) starts a move-drag on its own, whether or not the row was already selected; a press ANYWHERE ELSE on an already-selected row also starts one, since a selection is dragged whole; every other press in the row is marquee ground, and a modified press never drags at all** (D770). *Three shapes, in order. First, TWO models chosen by whether the pane was showing: pane off, a single click selected AND opened (the classic FS-5 behaviour); pane on, it only selected — defensible while the pane was something the user switched on, and wrong the moment the split became a measurement of the window (FS-9), since the same click on the same row then opened a file or not depending on how wide the window was when you clicked it. Second, DOUBLE-CLICK opens uniformly — fixing the width dependency, but only by keeping the plain click reserved for what the pane's selection-driven Preview mode needed it to do (FS-11's old text): select without navigating away. D460 is the third shape: the pane stopped reading the selection at all, so the click is free again, and it goes back to opening on release — this time with no width or pane-state condition anywhere in it.*
+- **FS-15** **ONE PRESS MODEL, and the pane does not own it.** A plain press **selects, on `pointerdown`** — for **files and directories alike** — and its **matching release OPENS it** (navigates into a folder, opens a file full-screen) provided the press never travelled the drag/sweep slop; `Enter` does the same from the keyboard. This holds on every row, in every listing, at every width, with no exception for a folder: since D460 the pane no longer shows the selection (FS-11), so there is nothing left for a click to make unreachable by opening. **The press is answered on `pointerdown`, not on `click`**, because rows are drag sources and WebKit does not reliably deliver the `click` after a press on a `draggable` element — which is how Shift/Mod-click once went silently dead. Deciding on the press removes that failure class rather than working around it, and it is what Finder and Nautilus do: the highlight lands while the button is still down. A **modified** press (Shift/Mod) never opens on release, whatever it selects — Shift/Mod-click means "add to my selection", not "take me there". The one case that cannot be answered on the press at all is a plain press on a row already inside a **multi-selection** — collapsing there would make a multi-row drag impossible, since every such drag begins with a press on one of the dragged rows — so that one **defers to the release**, and the same release both collapses the selection onto it AND opens it, provided the press never became a drag or a sweep. **The row's drag SOURCE is its name cell, not the row: an unmodified press on the icon+name span (`data-fs-drag-handle`) starts a move-drag on its own, whether or not the row was already selected; a press ANYWHERE ELSE on an already-selected row also starts one, since a selection is dragged whole; every other press in the row is marquee ground, and a modified press never drags at all** (D770). *Three shapes, in order. First, TWO models chosen by whether the pane was showing: pane off, a single click selected AND opened (the classic FS-5 behaviour); pane on, it only selected — defensible while the pane was something the user switched on, and wrong the moment the split became a measurement of the window (FS-9), since the same click on the same row then opened a file or not depending on how wide the window was when you clicked it. Second, DOUBLE-CLICK opens uniformly — fixing the width dependency, but only by keeping the plain click reserved for what the pane's selection-driven Preview mode needed it to do (FS-11's old text): select without navigating away. D460 is the third shape: the pane stopped reading the selection at all, so the click is free again, and it goes back to opening on release — this time with no width or pane-state condition anywhere in it.*
 
   **Clicking the listing BACKGROUND — the empty area below or beside the rows — does nothing to the selection.** Finder deselects there and this listing used to copy it, but the pane changed what that click costs: a stray click in the whitespace of a short listing threw away the row the user was reading and blanked the preview beside it, with no gesture to get it back other than finding the row again. **Escape** remains the deliberate clear, and the right-click background menu is unaffected.
 
@@ -132,11 +132,11 @@ Left sidebar in the shell, always visible:
 
 ⌘/Ctrl+C in the explorer and in the native file manager mean the same thing. The bridge is the **local Python backend** — the server always binds `127.0.0.1` (D2/D3), so it is necessarily on the user's own machine — reached over `GET`/`POST /api/clipboard/files` (`server/routers/clipboard.py`) and implemented behind a platform-agnostic contract in `fused_render/shell/pasteboard/`: `read_files() -> (paths, token, supported)`, `write_files(paths) -> (token, supported)`. Only the three leaf backends know what OS they are on.
 
-- **CB-1** **Copy out.** An in-app **copy** also publishes its absolute paths to the system clipboard as real *file references*, so ⌘V in Finder / Explorer / Nautilus / Dolphin pastes the actual files while a paste into a terminal or editor yields the paths. One hook in `setClipboard` (`lib/fs-clipboard.ts`) covers every Copy call site. It is **fire-and-forget**: the in-app copy has already happened, and a failed or unsupported write must leave behaviour exactly as it was rather than break the gesture (same posture as `copyToClipboard`).
+- **CB-1** **Copy out.** An in-app **copy** also publishes its absolute paths to the system clipboard as real *file references*, so ⌘V in Finder / Nautilus / Dolphin pastes the actual files while a paste into a terminal or editor yields the paths. One hook in `setClipboard` (`lib/fs-clipboard.ts`) covers every Copy call site. It is **fire-and-forget**: the in-app copy has already happened, and a failed or unsupported write must leave behaviour exactly as it was rather than break the gesture (same posture as `copyToClipboard`).
 - **CB-2** **Paste in.** Files copied in the native file manager become the app's clipboard on the next **return to the app** (`useRefreshOnReturn`, plus one read on mount since that hook skips mount), so Paste drops them into the current directory. The adopted clipboard is written into the **existing module clipboard store** as a second writer — every Paste site, `disabled: !clipboard` check and cut-dimming keeps working untouched — and the paste itself is the unchanged server-side `/api/fs/copy`: no bytes cross the browser, folders included, instant at any file size. A copy made while the app is already focused is not seen until the next focus change.
-- **CB-3** **The token is a content fingerprint** of the ordered path list (sha256 of the NUL-joined paths), identical on all three platforms — macOS has `changeCount` and Windows `GetClipboardSequenceNumber`, but Linux has no analog. The frontend tracks it as **last seen**, not last written, so an untouched system clipboard never clobbers a pending in-app **cut**. Re-copying an identical selection in the file manager is therefore not detected as a new event, which is harmless (adopting the same paths is idempotent). Adoption never echoes back out to the OS, and neither does **bookkeeping** — `clearClipboardIfDeleted` and `remapClipboardPath` repair the app's own reference after a delete or a rename and keep `op: "copy"`, but the system clipboard belongs to whoever last wrote it, so an unrelated file operation must not rewrite it. Both places that touch the clipboard across an `await` (the reconcile's read, the mirror-write's response) capture a **clipboard epoch** first and discard their result if it moved — otherwise a slow read overwrites a copy or cut made while it was in flight, and a late write restores a token the next reconcile then reads as unchanged and skips.
+- **CB-3** **The token is a content fingerprint** of the ordered path list (sha256 of the NUL-joined paths), identical on both platforms — macOS has `changeCount`, but Linux has no analog. The frontend tracks it as **last seen**, not last written, so an untouched system clipboard never clobbers a pending in-app **cut**. Re-copying an identical selection in the file manager is therefore not detected as a new event, which is harmless (adopting the same paths is idempotent). Adoption never echoes back out to the OS, and neither does **bookkeeping** — `clearClipboardIfDeleted` and `remapClipboardPath` repair the app's own reference after a delete or a rename and keep `op: "copy"`, but the system clipboard belongs to whoever last wrote it, so an unrelated file operation must not rewrite it. Both places that touch the clipboard across an `await` (the reconcile's read, the mirror-write's response) capture a **clipboard epoch** first and discard their result if it moved — otherwise a slow read overwrites a copy or cut made while it was in flight, and a late write restores a token the next reconcile then reads as unchanged and skips.
 - **CB-4** **Cut is in-app only, both directions.** No platform exposes a reliable cut-vs-copy flag on read, so honouring one would mean deleting source files on a guess; the GNOME format's `cut` verb is parsed and ignored, and an in-app cut is never published.
-- **CB-5** **Per-platform mechanism.** macOS: `public.file-url` on the general `NSPasteboard` via pyobjc, written alongside the newline-joined plain-text paths. Windows: `CF_HDROP` via `ctypes` (a wide-char `DROPFILES` block on globally-allocated memory), plus `CF_UNICODETEXT`; paths are backslashed for the OS and returned in the shell's canonical forward-slash form. Linux: `wl-copy`/`wl-paste`, else `xclip`. No new dependencies — pyobjc already ships in the `[app]` extra, `ctypes` is stdlib, and Linux shells out to tools it detects rather than requiring.
+- **CB-5** **Per-platform mechanism.** macOS: `public.file-url` on the general `NSPasteboard` via pyobjc, written alongside the newline-joined plain-text paths. Linux: `wl-copy`/`wl-paste`, else `xclip`. No new dependencies — pyobjc already ships in the `[app]` extra and Linux shells out to tools it detects rather than requiring.
 - **CB-6** **Documented Linux limitation.** X11/Wayland have no OS-owned clipboard: a live process must own the selection, GNOME (`x-special/gnome-copied-files`) and KDE (`text/uri-list`) disagree on the format, and `xclip`/`wl-copy` publish only one target per invocation. **Reading tries both**, so pasting *into* fused-render works on either desktop; **writing serves whichever family `XDG_CURRENT_DESKTOP` reports**. A resident GTK/Qt owner process offering both targets at once is the documented upgrade.
 - **CB-7** **Everything degrades identically.** Missing pyobjc, a hardened sandbox, no `xclip`/`wl-clipboard`, or a failed request all surface as `supported: false` — a normal 200, not an error — and the app keeps today's in-app-only clipboard.
 
@@ -146,7 +146,7 @@ The bar's bordered controls — the labelled mode trigger, and any `.bar-ctl-bor
 
 ### Keyboard chords match EXACT modifiers
 
-The listing's file-op chords (⌘/Ctrl+C/X/V/D, the ⌘/Ctrl+arrow and bracket navigation, F2, Delete, Backspace) are matched on the modifiers they carry **and the ones they do not**. "At least the primary modifier" is not a match: the handler once tested a lowercased `e.key` against `mod && key === "c"`, which also matched **Ctrl+Shift+C** — devtools' inspect-element on Linux/Windows, and a terminal copy chord besides — and called `preventDefault` on it, so the browser's own binding never fired. The same over-match covered ⌘⇧[ / ⌘⇧] (macOS tab switching), Shift+Delete (Windows Explorer's *delete permanently*) and Alt+F2 (a desktop run dialog on Linux).
+The listing's file-op chords (⌘/Ctrl+C/X/V/D, the ⌘/Ctrl+arrow and bracket navigation, F2, Delete, Backspace) are matched on the modifiers they carry **and the ones they do not**. "At least the primary modifier" is not a match: the handler once tested a lowercased `e.key` against `mod && key === "c"`, which also matched **Ctrl+Shift+C** — devtools' inspect-element on Linux, and a terminal copy chord besides — and called `preventDefault` on it, so the browser's own binding never fired. The same over-match covered ⌘⇧[ / ⌘⇧] (macOS tab switching), Shift+Delete (a Linux file manager's *delete permanently*) and Alt+F2 (a desktop run dialog on Linux).
 
 **An unmatched chord is left completely alone** — no `preventDefault`, no state change — so whatever else owns it still works. A matched chord with nothing to act on (an empty selection, an empty clipboard) is likewise left alone rather than swallowed. The only chord that *wants* a secondary modifier is ⌘/Ctrl+Shift+N (new folder), and it takes Shift and nothing else. The table is pure and tested (`listing/shortcut-chord.ts`); the hook around it only wires it to the document and asks whether there is anything to act on.
 
@@ -154,7 +154,7 @@ The listing's file-op chords (⌘/Ctrl+C/X/V/D, the ⌘/Ctrl+arrow and bracket n
 
 - **FS-17** **`⌘/Ctrl+Z` (and `⇧⌘/Ctrl+Z`) undo the explorer's RELOCATIONS — a drag-move, a cut-paste, a rename, and the TRASH delete where the bin's destination is one the server named — and nothing else.** All of them are one primitive at the filesystem: they rename a path, their inverse is another rename, it destroys nothing, and applying the inverse twice is the original op, so undo, redo and undo-again all run the same code (`lib/fs-undo`: an op is a list of `{from, to}` absolute-path pairs, never a closure; `UNDO_CAP` = 50 ops; a module-level in-flight guard, because a move can navigate mid-gesture and a guard living in a component would remount to `false`).
   **The trash delete is in the list because it IS a rename, not because the rule was relaxed.** On macOS `_move_to_macos_trash` renames into `~/.Trash/<deduped name>`; on Linux `_move_to_xdg_trash` renames into `$XDG_DATA_HOME/Trash/files/<name>` (defaulting to `~/.local/share`). In both the SERVER picks the destination, so it can report it as **`trashed_to`** on `/api/fs/delete`; the listing records the batch as one `delete` op, so a single `⌘Z` moves the whole selection back out of the bin and `⇧⌘Z` moves it back in. The restore asks for the **exact recorded path with overwrite off**, so a name retaken since the delete is a 409 the toast says out loud rather than a silent restore as "… copy"; an emptied bin is a 404 per pair, reported the same way; a systemic refusal (a read-only destination) stops the batch and leaves the untried pairs undoable.
-  **RECOVERABLE IS NOT THE SAME PROMISE AS UNDOABLE, and the two are decided by one question: did WE name the destination?** Every desktop platform has an OS-level bin and each has a backend, so a Delete is recoverable everywhere the bin is reachable. It is *undoable* only where the move was a rename to a path the server chose — which is what makes it invertible by another rename. Six cases, and the spec states them rather than letting a reader generalise from macOS:
+  **RECOVERABLE IS NOT THE SAME PROMISE AS UNDOABLE, and the two are decided by one question: did WE name the destination?** Every desktop platform has an OS-level bin and each has a backend, so a Delete is recoverable everywhere the bin is reachable. It is *undoable* only where the move was a rename to a path the server chose — which is what makes it invertible by another rename. Four cases, and the spec states them rather than letting a reader generalise from macOS:
 
   | Case | Backend | Recoverable | Undoable (⌘Z) |
   |---|---|---|---|
@@ -162,11 +162,9 @@ The listing's file-op chords (⌘/Ctrl+C/X/V/D, the ⌘/Ctrl+arrow and bracket n
   | macOS, cross-device | `osascript` → Finder | ✓ (in Finder) | ✗ |
   | Linux, same device | XDG trash (`files/` + `info/` sidecar) | ✓ | **✓** |
   | Linux, cross-device (`EXDEV`) | none — **501**, confirm-then-hard-delete | ✗ | ✗ |
-  | Windows | Recycle Bin (`SHFileOperationW`, `FOF_ALLOWUNDO`) | ✓ (in Explorer) | ✗ |
 
-  **The two ✗-but-recoverable rows are not exceptions; they are the same rule.** The macOS Finder fallback and the Windows Recycle Bin both let the OS choose where the entry goes — the bin stores an item as `$R…` beside a `$I…` metadata file under `C:\$Recycle.Bin\<SID>\` and restores it through the shell, not by a path rename — so there is no destination to record, and **a destination we cannot name is never recorded as an undo pair**. Guessing one would aim an undo at a path nothing is at.
-  **The 501 row really is irreversible, and keeps the confirm dialog that says so.** A Linux cross-device delete is refused — we will **not** copy the bytes across the boundary (no `shutil.move` fallback, and no per-volume `.Trash-$uid` directories), because a delete must not become the most expensive operation in the app. It answers the **501 `trash unsupported`** the client already routes into its confirm-then-hard-delete flow; the Linux one is raised *after* an attempt that moved nothing, so the file is still in place when the dialog appears. Since every desktop now has a backend, that dialog has stopped being the ordinary Windows/Linux delete and is what it always claimed to be: the irreversible case.
-  **`FOF_ALLOWUNDO` still erases permanently in cases nobody can detect up front** — UNC/network shares, most removable and FAT-formatted volumes, and items over the bin's quota. The delete succeeds and is reported `trashed: true` regardless, because the shell did perform the recoverable delete it was asked for and the app cannot promise what the volume does with it. Stated here rather than papered over.
+  **The ✗-but-recoverable row is not an exception; it is the same rule.** The macOS Finder fallback lets the OS choose where the entry goes, so there is no destination to record, and **a destination we cannot name is never recorded as an undo pair**. Guessing one would aim an undo at a path nothing is at.
+  **The 501 row really is irreversible, and keeps the confirm dialog that says so.** A Linux cross-device delete is refused — we will **not** copy the bytes across the boundary (no `shutil.move` fallback, and no per-volume `.Trash-$uid` directories), because a delete must not become the most expensive operation in the app. It answers the **501 `trash unsupported`** the client already routes into its confirm-then-hard-delete flow; the Linux one is raised *after* an attempt that moved nothing, so the file is still in place when the dialog appears. Since every desktop now has a backend, that dialog has stopped being the ordinary Linux delete and is what it always claimed to be: the irreversible case.
   **Undo/redo of a delete goes through ONE endpoint, `POST /api/fs/trash-move {from, to}`, not through `/api/fs/rename`.** It delegates to the rename handler — the same X-Fused guard, absolute-path, snapshot, readonly, 404 and 409 contract, overwrite always off — and adds the only part of a trash that is *not* symmetric: the XDG **`.trashinfo` sidecar**, written when an entry moves into `Trash/files` and removed when it moves back out (both, for a move within the trash). That is server-side bookkeeping, so it lives on the server side of the wire: `applyFsOp` branches on `op.kind` to pick the primitive (`trashMove` for `"delete"`, `renameEntry` otherwise) **and that is its only branch** — the pairs stay plain absolute paths and `invertFsOp`, the reversal semantics, the epoch, the in-flight guard and `UNDO_CAP` know nothing about trash. Restoring with a plain rename would leave the sidecar behind and the bin still claiming to hold an entry that had gone home. **The sidecar branch is a security boundary**: it fires only for a path whose *parent* resolves (`realpath`) to the server-computed trash `files` directory, with the info name taken as a `basename`, so no caller-supplied text can steer the endpoint into unlinking an arbitrary file.
   **Undoability is additionally session-scoped**: the stack is in memory, so a reload — or an eviction past `UNDO_CAP` — leaves the entry sitting in the bin for the user to drag out through the OS. On macOS the rename also writes none of Finder's own put-back record (Finder keeps that in the Trash's private `.DS_Store`, not on the item), so Finder's "Put Back" is not a second way home for what this app trashed. Recents loses the entry in every case (`notePathDeleted`) and the undo does not re-note it: the file returns to the filesystem, its place in the recents list does not.
   **The HARD delete is NOT undoable and its dialog keeps saying so** ("This can't be undone"): its inverse is not a rename, it is the bytes back. Same exclusion, same reason, for the explorer's other asymmetric ops — **copy-paste, duplicate, new file/folder, compress**, whose inverse would be a delete: undo would destroy data on the user's behalf and no redo could reproduce what was lost. A stack whose every entry is one primitive is the reason this can be trusted, not a limitation waiting to be grown out of.
@@ -469,9 +467,9 @@ Deferred to later milestones (needed for data templates):
 - **PY-12** `/api/run` executes the built-in executor **by default**, regardless of whether the `fused` package is importable. `FUSED_RENDER_ENGINE=auto` opts in to running code through its local compute backend (`engine.py`) instead — fresh subprocess per call in a temp exec dir (PY-6 semantics preserved), a script whose folder declares no `pyproject.toml` running on the app's own interpreter (PY-17) and one whose folder does getting that folder's cached venv, built from exactly what it declares (PY-16), params delivered via `_params.json` — falling back to the built-in executor if `fused` isn't importable; `FUSED_RENDER_ENGINE=fused` requires it (startup error if missing); `=builtin` (or unset) always uses the built-in executor (D70). The active engine is reported in `GET /api/config` (`engine`) and logged at startup — the choice changes the code contract, so it is never silent.
 - **PY-13** **Code contract under the fused engine:** a function decorated with **`@fused.udf`** — any name, the last decorated one is the entrypoint — receiving params as **raw JSON values** (no annotation coercion; the calling JS owns types); or a plain script assigning **`result = ...`**. A bare **`main()`** remains supported as a compat bridge with PY-4 coercion and PY-8 cwd semantics, so pages and the built-in templates behave identically under either engine. A file with none of the three → the PY-1 structured error, extended to name the alternatives.
 - **PY-14** Both engines return **one wire shape** — `{ok, result, error: {type, message, traceback}, stdout}` (the fused engine adds `stderr`/`duration_ms`) — so `runtime.js` and templates never see which ran. Tracebacks under the fused engine point at the user's real file (the source is compiled as its own unit under its own filename); backend/wrapper plumbing frames are stripped.
-- **PY-16** A `.py`'s environment is decided by the **folder** it belongs to, never by anything written in the file. The project root is resolved first — the app folder (`<fused_dir()>/<tag>/<name>`), an immediate child of a template root, else the **topmost** ancestor holding a `pyproject.toml` — and that root's `pyproject.toml` `[project].dependencies` is the whole declaration. A manifest that declares **no** dependencies that apply on this platform is not an environment at all and falls through to PY-17 — a bare `uv init` scaffold must not put a script into an empty venv without the bundled stack. Every `.py` under the root shares one venv, however deep it sits; a `pyproject.toml` in a subfolder is **inert** and is surfaced as such (an inert file that looks correct is the failure this rule exists to prevent), and a `# /// script` header is **not read at all** — a leftover block is an ordinary comment, neither honored, merged, nor reported, and a file carrying one runs exactly as it would without it. There is deliberately **no migration tooling and no detection**: this is a clean break in a pre-release product (D233). The venv contains **exactly** what the manifest declares and nothing else — no baseline is unioned in, so it does not contain the rest of the `[bundled]` extra (DM-2), which only the app's own interpreter ships (PY-17). It is built by `uv sync` and stored **in the project itself**, at `<root>/.venv` — the layout `uv run`, VS Code and every other Python tool already expect, and one our own notebook kernel picker already looked for. `FUSED_RENDER_VENV_IN_TREE=0` is an escape hatch back to the old central store, for a project folder that is itself cloud-synced or network-mounted, where a multi-gigabyte `.venv` would otherwise get swept into that sync (D630). The folder additionally gains only `pyproject.toml` and `uv.lock`, both source, both git-tracked (MD-7); `.venv/` itself is gitignored. **The uv cache uv hardlinks wheels out of is NOT forced onto that same home dir any more** (it was, unconditionally, until this cost per-branch/worktree users a multi-gigabyte redownload of the SAME wheel `~/.cache/uv` already held — composition fallout from `home_dir()` quietly becoming branch-aware under an already-shipped `uv_cache_dir()`, not a decision anyone made): `projectenv.uv_cache_dir()` now answers `None` unless `FUSED_RENDER_HOME` is set, and `_env_install_worker._build` leaves `UV_CACHE_DIR` unset in that ordinary case, deferring to uv's own platform default. That is a deliberate trade, stated rather than hidden: the one-filesystem guarantee that made cache-target hardlinking work BY CONSTRUCTION is given up wherever a user's app home and their default uv cache happen to sit on different mounts, in exchange for the guaranteed redownload never happening again. `FUSED_RENDER_HOME` still gets the old, explicit sibling cache — not only the test suite's own isolation, but also the packaged Linux/Windows desktop app, which sets it unconditionally for every launch (`supervisor.paths.DesktopPaths`, D131); the deferred-to-uv's-default behaviour above therefore only actually reaches a macOS packaged build or a source/dev checkout, and `_build` still overrides whatever `UV_CACHE_DIR` the desktop app's own supervisor environment set. Whether the packaged app should get the shared cache too is a separate, open decision, not a side effect of this one. Renaming or moving a project folder no longer orphans its environment: the in-tree venv travels with the folder, so the same `.venv` is found at its new location and `is_installed` needs no rebuild (D630) — this reverses the prior behaviour, which hashed the path **as given**, not canonicalised, so a rename yielded a fresh environment by design. That hash lives on as `venv_key_for`'s **key**, unrelated to storage now: it still names the progress directory, the `/api/env/progress?key=`/`/api/env/cancel` parameter, and the install-dedup lock, and is still taken as given rather than canonicalised for exactly the reason it always was — a folder need not exist yet to get a stable key. **One class of folder keeps the central home-dir store: one that ships inside the app** (the AI runner folders of §40, D376) — that tree is read-only (the AppImage squashfs mount, a Windows `Program Files` install), so an in-tree `.venv` is impossible there regardless of the general rule, and a non-writable folder discovered by probing falls back to the same store for the same reason (D630). It is keyed on its path *relative to the `fused_render` package*, because the app's own path is not stable — the AppImage's mount directory is fresh on every launch, so an absolute-path key handed those folders a new venv on each start and re-downloaded a multi-gigabyte environment that was already on disk and unreachable (D376). The staleness rule is unchanged by this, so a release that edits a runner's manifest rebuilds that venv and one that does not keeps it. Staleness is a **digest of `pyproject.toml`** recorded in a `.fused-source.json` sidecar inside the venv — the manifest only, since `uv.lock` is an output of `uv sync` and not an input to it — never an mtime chain — core templates are re-staged with `copy2` on every release, which would make an mtime rule resync byte-identical dependencies at every upgrade. A template that manages its own venv for a daemon declares its dependencies there, not in the folder manifest — that is the only form the built-in engine can honor too (D174). A core template may declare an environment **only if** it is **necessary** (it names something the platform's app interpreter genuinely lacks — judged against the macOS bundle's real contents, not `[bundled]`'s promises, D176), it is **complete** (it covers every such distribution imported by any `.py` under the folder), it has something a `runPython` call site can actually reach, and it ships a committed `uv.lock` so a released build never resolves against PyPI on first render. All of these are enforced by `tests/test_engine_requirements.py`, `tests/test_bundle_contents.py` and `tests/test_template_locks.py`, which derive entry points from the source (`_runpython_targets`/`_module_refs`) rather than from a maintained list (D172, D177; supersedes the per-file header rule).
-- **PY-17** A script whose project root declares **no** `pyproject.toml` (or one with no `[project]` table) runs on **the app's own interpreter** and gets no venv at all: the app ships `[bundled]` + its core `dependencies`, so numpy/pandas/pyarrow/duckdb/pillow/… are available with no download and no first-run wait — a deliberately small set since D276, which moved polars, matplotlib, scipy, the PDF stack and the geo stack out of `[bundled]` and into the manifests of the templates that use them. The interpreter is **verified, not assumed** — it is run once per server process and must report this app's own `sys.prefix`, probed under the child's stripped environment (the backend removes PYTHONHOME/PYTHONPATH, which a packaged interpreter may need to locate its stdlib). An autodetected candidate whose basename is not python-shaped is rejected without being spawned. If the direct candidate fails, the app generates a **wrapper script** that restores the `PYTHONHOME` this process depends on and `exec`s the real interpreter, then verifies THAT the same way. This is the packaged-macOS path, not an edge case: measured on a real DMG, the bundled interpreter stripped of `PYTHONHOME` reports the *build machine's* Homebrew framework as its prefix, and the bundle ships no `venv` module, so a venv-based rescue is impossible there. The wrapper sets the child's `sys.executable` to itself (`exec -a`), so a daemon re-spawned as `[sys.executable, …]` — geotiff, zarr_aoi, usd — keeps working even though those templates scrub `PYTHONHOME` from the environments they spawn into. Wrappers are POSIX-only and generated **only** when this process actually needs `PYTHONHOME`; Windows and the Linux AppImage self-locate and stay on the direct candidate. If no interpreter can be verified, such a script **fails with a configuration error** naming `FUSED_RENDER_APP_PYTHON` — it is never silently degraded to a venv, because with no baseline requirements that venv has no data stack and would fail on the first import, and because a core template that declares nothing must never reach the network. Nothing in this resolution installs anything. `FUSED_RENDER_APP_PYTHON` overrides the candidate (still probed) (D172, D175). **Both probes spawn with `close_fds=False`, and a probe that reached no verdict is not cached** (D277). They run in the server process, where PROJ is resident, so the default `close_fds=True` takes the `fork()` path and the child dies in PROJ's atfork handler at ~1ms — the crash GT-3 documents, one layer up. The probe is therefore **three-valued**, like the sibling-venv probe D212 already made three-valued and which names this one as its model: a candidate that RAN and answered (a foreign `sys.prefix`, a non-zero exit, unparseable output) is a definite rejection and is remembered, while a spawn that never got a verdict — killed by a **signal**, timed out, or failing with a transient `OSError` — leaves the resolution **unresolved and retryable**, at the cost of one subprocess on the next request. The split is by exception **type**, not by errno: a missing, unreadable or not-a-directory path is a fact about the candidate and stays definite. Rung 2 cannot launder rung 1 — the wrapper is built FROM the candidate, so an inconclusive direct probe makes the whole answer provisional even when the wrapper reached a real verdict. For the same reason `app_packages()` no longer caches its `None` when there is no interpreter: it used to, justified by the interpreter's answer being terminal, which this rule voids. Getting this wrong is not a slow path but a dead one — the resolution is per process and no HTTP route resets it, so a single unlucky spawn disabled **every** header-less script until the server restarted.
-- **PY-18** A script whose **project** declares something not installed yet gets an **explicit install flow**, never a blocking download inside `/api/run`: the endpoint answers `needs_install` (venv key + the project root, its display name and its declared requirements, alongside a normal `error` object), `POST /api/env/install` spawns a detached worker that runs `uv sync` — **in the project directory, or in a manifest-only mirror at `<venvs_root>/<key>.src` when that directory cannot be written to** (D376) — and writes `{stage, pct, detail, done, error, pid, ts}` to `progress.json`: `uv sync` writes `uv.lock` where it runs, which is the point for a user's folder and impossible for the bundled runner folders, whose tree is read-only on the AppImage's squashfs mount and under a Windows `Program Files` install. The mirror persists and keeps the lock uv resolved there, so a rebuild reconciles instead of re-resolving; a lock the folder itself ships overwrites it, and `projectenv.gc()` reclaims a mirror with its venv, `GET /api/env/progress?key=` polls it, and `POST /api/env/cancel` stops it by the recorded pid. **That spawn takes the `posix_spawn` path and the worker detaches ITSELF** (D292): it runs from the server process, where PROJ is resident, so `start_new_session=True` — which forces `fork()+exec` — killed the worker in PROJ's atfork handler before it could write anything, leaving an empty `worker.log`, a record stuck at `spawn`, and an install that failed identically on every retry for the life of the process. `close_fds=False` selects `posix_spawn`; `os.setsid()` as the worker's first statement restores the session `killpg` needs. **The venv readiness probe (D212) obeys the same rule and treats a signal as no verdict at all**: forked, it died `-11`, which read as "this venv cannot run its own python" and unlinked a healthy venv's ready marker — charging the user a full re-download for a crash in the probe. `runtime.js` shows the loader and retries the run **once**, so every template gets this without its own code; concurrent callers resolving to one project share a single POST, poller and progress row. Installer failures reach the user **verbatim** — uv's own message ("no matching distribution / no wheels with a matching platform tag") is the answer, never a generic engine error. **`uv sync` is streamed, not captured** (`_UvProgress` in `_env_install_worker.py`): uv writes plain-text download progress to stderr as it runs (`Downloading numpy (15.9MiB)` / ` Downloaded numpy`), line-buffered even off a tty, so `progress.json` additionally carries `activity` (a compact phrase that never restates the byte pair the row itself already renders — `"downloading torch (2m14s)"`), `bytes_done` and `bytes_total` — the last two `null` until uv has announced its first download, and `bytes_total` a **lower bound that can only rise** as uv announces more concurrent downloads (its own default concurrency is 50). **Package-level alone was not enough**: a venv dominated by one huge wheel (the ROCm/CUDA torch install this shipped for) has no SECOND download to move the aggregate, so it sat flat for the entire multi-minute fetch even with the above. Measuring uv's own cache-directory growth for that was tried and rejected — it tracks UNPACKED size, several times the compressed transfer, with no single file to stat as "bytes so far". What works instead: uv prints per-package IN-FLIGHT bytes when it believes stdout is a terminal (never Downloading/Downloaded lines there — the live redraw replaces them) and suppresses that entirely for a pipe — confirmed empirically with `pty.openpty()` against a real `uv sync`. So on POSIX, `_build` now runs uv under a pty first (`_run_uv_via_pty`) and parses that live multi-package bar for the SAME `bytes_done`/`bytes_total`, falling back to the ordinary pipe path (`_run_uv_piped`, unchanged) whenever a pty cannot be set up — Windows always, or a POSIX sandbox with no `/dev/ptmx` — with the fallback only ever taken BEFORE uv is spawned, so a setup failure can never double-run the sync. **The pty is given a tall winsize** (`_set_pty_winsize`, `TIOCSWINSZ`): `pty.openpty()` alone leaves uv falling back to an 80x24 terminal, which clamps its bar to ~23 rows while up to 50 wheels download concurrently — a package still downloading simply scrolls out of view, and a naive "name vanished from the frame" confirmation reads that as done. Measured on a real 149-package capture: 44 names wrongly vanished under 90% complete, 4 of them still downloading when they reappeared. A tall winsize is the fix at the cause; a package is still only confirmed by elimination when its last reading was AT OR NEAR its own announced total (`_PTY_NEAR_TOTAL_FRACTION`), as a second, independent layer that holds even if the winsize assumption ever breaks. The ring buffer that keeps PY-18's verbatim-error guarantee holds only lines classified as genuine, not chrome — a live redraw is split from a permanent line by a bare CR, not by a newline (a real capture measured 4,586 CRs against 35 LFs), decoded and ANSI-stripped only once a CR/LF-delimited fragment is complete (stripping per read, before the halves are rejoined, leaks a torn escape straight into the ring), and recognised as chrome by any of: a progress row, a spinner glyph, the "Preparing packages…"/"Resolving dependencies…"/"Installing wheels…" headers, or the install-phase bar's own `[n/m]` counter — so merging stdout+stderr through the pty does not degrade a resolver failure's text. The generic `runtime.js` loader still renders the `install` stage as a plain indeterminate bar (stage/pct/detail are unchanged in meaning and format) — the fused.ai model loader (`supervisor._ensure_venv`) is what reads `activity`/`bytes_done`/`bytes_total` onto its own job row so `ModelProgress` can draw a measured bar during a runner's first environment build. `error` still reaches `progress.json` **verbatim**: uv's stderr is teed into a bounded ring buffer (last ~400 lines) while streaming, so a resolver failure's own text is unchanged and a pathological or chatty uv run cannot make the reporter itself expensive. Scope is **per-folder** (PY-16): one venv per project root, shared by every script in it — the sharing D173 deferred. Once the venv exists the run is handed its interpreter directly, so its **location is the backend's business, not the caller's**: an in-tree `.venv`, a home-dir store, or a manifest mirror's venv directory all work identically from here (D630).
+- **PY-16** A `.py`'s environment is decided by the **folder** it belongs to, never by anything written in the file. The project root is resolved first — the app folder (`<fused_dir()>/<tag>/<name>`), an immediate child of a template root, else the **topmost** ancestor holding a `pyproject.toml` — and that root's `pyproject.toml` `[project].dependencies` is the whole declaration. A manifest that declares **no** dependencies that apply on this platform is not an environment at all and falls through to PY-17 — a bare `uv init` scaffold must not put a script into an empty venv without the bundled stack. Every `.py` under the root shares one venv, however deep it sits; a `pyproject.toml` in a subfolder is **inert** and is surfaced as such (an inert file that looks correct is the failure this rule exists to prevent), and a `# /// script` header is **not read at all** — a leftover block is an ordinary comment, neither honored, merged, nor reported, and a file carrying one runs exactly as it would without it. There is deliberately **no migration tooling and no detection**: this is a clean break in a pre-release product (D233). The venv contains **exactly** what the manifest declares and nothing else — no baseline is unioned in, so it does not contain the rest of the `[bundled]` extra (DM-2), which only the app's own interpreter ships (PY-17). It is built by `uv sync` and stored **in the project itself**, at `<root>/.venv` — the layout `uv run`, VS Code and every other Python tool already expect, and one our own notebook kernel picker already looked for. `FUSED_RENDER_VENV_IN_TREE=0` is an escape hatch back to the old central store, for a project folder that is itself cloud-synced or network-mounted, where a multi-gigabyte `.venv` would otherwise get swept into that sync (D630). The folder additionally gains only `pyproject.toml` and `uv.lock`, both source, both git-tracked (MD-7); `.venv/` itself is gitignored. **The uv cache uv hardlinks wheels out of is NOT forced onto that same home dir any more** (it was, unconditionally, until this cost per-branch/worktree users a multi-gigabyte redownload of the SAME wheel `~/.cache/uv` already held — composition fallout from `home_dir()` quietly becoming branch-aware under an already-shipped `uv_cache_dir()`, not a decision anyone made): `projectenv.uv_cache_dir()` now answers `None` unless `FUSED_RENDER_HOME` is set, and `_env_install_worker._build` leaves `UV_CACHE_DIR` unset in that ordinary case, deferring to uv's own platform default. That is a deliberate trade, stated rather than hidden: the one-filesystem guarantee that made cache-target hardlinking work BY CONSTRUCTION is given up wherever a user's app home and their default uv cache happen to sit on different mounts, in exchange for the guaranteed redownload never happening again. `FUSED_RENDER_HOME` still gets the old, explicit sibling cache — not only the test suite's own isolation, but also the packaged Linux desktop app, which sets it unconditionally for every launch (`supervisor.paths.DesktopPaths`, D131); the deferred-to-uv's-default behaviour above therefore only actually reaches a macOS packaged build or a source/dev checkout, and `_build` still overrides whatever `UV_CACHE_DIR` the desktop app's own supervisor environment set. Whether the packaged app should get the shared cache too is a separate, open decision, not a side effect of this one. Renaming or moving a project folder no longer orphans its environment: the in-tree venv travels with the folder, so the same `.venv` is found at its new location and `is_installed` needs no rebuild (D630) — this reverses the prior behaviour, which hashed the path **as given**, not canonicalised, so a rename yielded a fresh environment by design. That hash lives on as `venv_key_for`'s **key**, unrelated to storage now: it still names the progress directory, the `/api/env/progress?key=`/`/api/env/cancel` parameter, and the install-dedup lock, and is still taken as given rather than canonicalised for exactly the reason it always was — a folder need not exist yet to get a stable key. **One class of folder keeps the central home-dir store: one that ships inside the app** (the AI runner folders of §40, D376) — that tree is read-only (the AppImage squashfs mount), so an in-tree `.venv` is impossible there regardless of the general rule, and a non-writable folder discovered by probing falls back to the same store for the same reason (D630). It is keyed on its path *relative to the `fused_render` package*, because the app's own path is not stable — the AppImage's mount directory is fresh on every launch, so an absolute-path key handed those folders a new venv on each start and re-downloaded a multi-gigabyte environment that was already on disk and unreachable (D376). The staleness rule is unchanged by this, so a release that edits a runner's manifest rebuilds that venv and one that does not keeps it. Staleness is a **digest of `pyproject.toml`** recorded in a `.fused-source.json` sidecar inside the venv — the manifest only, since `uv.lock` is an output of `uv sync` and not an input to it — never an mtime chain — core templates are re-staged with `copy2` on every release, which would make an mtime rule resync byte-identical dependencies at every upgrade. A template that manages its own venv for a daemon declares its dependencies there, not in the folder manifest — that is the only form the built-in engine can honor too (D174). A core template may declare an environment **only if** it is **necessary** (it names something the platform's app interpreter genuinely lacks — judged against the macOS bundle's real contents, not `[bundled]`'s promises, D176), it is **complete** (it covers every such distribution imported by any `.py` under the folder), it has something a `runPython` call site can actually reach, and it ships a committed `uv.lock` so a released build never resolves against PyPI on first render. All of these are enforced by `tests/test_engine_requirements.py`, `tests/test_bundle_contents.py` and `tests/test_template_locks.py`, which derive entry points from the source (`_runpython_targets`/`_module_refs`) rather than from a maintained list (D172, D177; supersedes the per-file header rule).
+- **PY-17** A script whose project root declares **no** `pyproject.toml` (or one with no `[project]` table) runs on **the app's own interpreter** and gets no venv at all: the app ships `[bundled]` + its core `dependencies`, so numpy/pandas/pyarrow/duckdb/pillow/… are available with no download and no first-run wait — a deliberately small set since D276, which moved polars, matplotlib, scipy, the PDF stack and the geo stack out of `[bundled]` and into the manifests of the templates that use them. The interpreter is **verified, not assumed** — it is run once per server process and must report this app's own `sys.prefix`, probed under the child's stripped environment (the backend removes PYTHONHOME/PYTHONPATH, which a packaged interpreter may need to locate its stdlib). An autodetected candidate whose basename is not python-shaped is rejected without being spawned. If the direct candidate fails, the app generates a **wrapper script** that restores the `PYTHONHOME` this process depends on and `exec`s the real interpreter, then verifies THAT the same way. This is the packaged-macOS path, not an edge case: measured on a real DMG, the bundled interpreter stripped of `PYTHONHOME` reports the *build machine's* Homebrew framework as its prefix, and the bundle ships no `venv` module, so a venv-based rescue is impossible there. The wrapper sets the child's `sys.executable` to itself (`exec -a`), so a daemon re-spawned as `[sys.executable, …]` — geotiff, zarr_aoi, usd — keeps working even though those templates scrub `PYTHONHOME` from the environments they spawn into. Wrappers are generated **only** when this process actually needs `PYTHONHOME`; the Linux AppImage self-locates and stays on the direct candidate. If no interpreter can be verified, such a script **fails with a configuration error** naming `FUSED_RENDER_APP_PYTHON` — it is never silently degraded to a venv, because with no baseline requirements that venv has no data stack and would fail on the first import, and because a core template that declares nothing must never reach the network. Nothing in this resolution installs anything. `FUSED_RENDER_APP_PYTHON` overrides the candidate (still probed) (D172, D175). **Both probes spawn with `close_fds=False`, and a probe that reached no verdict is not cached** (D277). They run in the server process, where PROJ is resident, so the default `close_fds=True` takes the `fork()` path and the child dies in PROJ's atfork handler at ~1ms — the crash GT-3 documents, one layer up. The probe is therefore **three-valued**, like the sibling-venv probe D212 already made three-valued and which names this one as its model: a candidate that RAN and answered (a foreign `sys.prefix`, a non-zero exit, unparseable output) is a definite rejection and is remembered, while a spawn that never got a verdict — killed by a **signal**, timed out, or failing with a transient `OSError` — leaves the resolution **unresolved and retryable**, at the cost of one subprocess on the next request. The split is by exception **type**, not by errno: a missing, unreadable or not-a-directory path is a fact about the candidate and stays definite. Rung 2 cannot launder rung 1 — the wrapper is built FROM the candidate, so an inconclusive direct probe makes the whole answer provisional even when the wrapper reached a real verdict. For the same reason `app_packages()` no longer caches its `None` when there is no interpreter: it used to, justified by the interpreter's answer being terminal, which this rule voids. Getting this wrong is not a slow path but a dead one — the resolution is per process and no HTTP route resets it, so a single unlucky spawn disabled **every** header-less script until the server restarted.
+- **PY-18** A script whose **project** declares something not installed yet gets an **explicit install flow**, never a blocking download inside `/api/run`: the endpoint answers `needs_install` (venv key + the project root, its display name and its declared requirements, alongside a normal `error` object), `POST /api/env/install` spawns a detached worker that runs `uv sync` — **in the project directory, or in a manifest-only mirror at `<venvs_root>/<key>.src` when that directory cannot be written to** (D376) — and writes `{stage, pct, detail, done, error, pid, ts}` to `progress.json`: `uv sync` writes `uv.lock` where it runs, which is the point for a user's folder and impossible for the bundled runner folders, whose tree is read-only on the AppImage's squashfs mount. The mirror persists and keeps the lock uv resolved there, so a rebuild reconciles instead of re-resolving; a lock the folder itself ships overwrites it, and `projectenv.gc()` reclaims a mirror with its venv, `GET /api/env/progress?key=` polls it, and `POST /api/env/cancel` stops it by the recorded pid. **That spawn takes the `posix_spawn` path and the worker detaches ITSELF** (D292): it runs from the server process, where PROJ is resident, so `start_new_session=True` — which forces `fork()+exec` — killed the worker in PROJ's atfork handler before it could write anything, leaving an empty `worker.log`, a record stuck at `spawn`, and an install that failed identically on every retry for the life of the process. `close_fds=False` selects `posix_spawn`; `os.setsid()` as the worker's first statement restores the session `killpg` needs. **The venv readiness probe (D212) obeys the same rule and treats a signal as no verdict at all**: forked, it died `-11`, which read as "this venv cannot run its own python" and unlinked a healthy venv's ready marker — charging the user a full re-download for a crash in the probe. `runtime.js` shows the loader and retries the run **once**, so every template gets this without its own code; concurrent callers resolving to one project share a single POST, poller and progress row. Installer failures reach the user **verbatim** — uv's own message ("no matching distribution / no wheels with a matching platform tag") is the answer, never a generic engine error. **`uv sync` is streamed, not captured** (`_UvProgress` in `_env_install_worker.py`): uv writes plain-text download progress to stderr as it runs (`Downloading numpy (15.9MiB)` / ` Downloaded numpy`), line-buffered even off a tty, so `progress.json` additionally carries `activity` (a compact phrase that never restates the byte pair the row itself already renders — `"downloading torch (2m14s)"`), `bytes_done` and `bytes_total` — the last two `null` until uv has announced its first download, and `bytes_total` a **lower bound that can only rise** as uv announces more concurrent downloads (its own default concurrency is 50). **Package-level alone was not enough**: a venv dominated by one huge wheel (the ROCm/CUDA torch install this shipped for) has no SECOND download to move the aggregate, so it sat flat for the entire multi-minute fetch even with the above. Measuring uv's own cache-directory growth for that was tried and rejected — it tracks UNPACKED size, several times the compressed transfer, with no single file to stat as "bytes so far". What works instead: uv prints per-package IN-FLIGHT bytes when it believes stdout is a terminal (never Downloading/Downloaded lines there — the live redraw replaces them) and suppresses that entirely for a pipe — confirmed empirically with `pty.openpty()` against a real `uv sync`. So `_build` now runs uv under a pty first (`_run_uv_via_pty`) and parses that live multi-package bar for the SAME `bytes_done`/`bytes_total`, falling back to the ordinary pipe path (`_run_uv_piped`, unchanged) whenever a pty cannot be set up — a sandbox with no `/dev/ptmx` — with the fallback only ever taken BEFORE uv is spawned, so a setup failure can never double-run the sync. **The pty is given a tall winsize** (`_set_pty_winsize`, `TIOCSWINSZ`): `pty.openpty()` alone leaves uv falling back to an 80x24 terminal, which clamps its bar to ~23 rows while up to 50 wheels download concurrently — a package still downloading simply scrolls out of view, and a naive "name vanished from the frame" confirmation reads that as done. Measured on a real 149-package capture: 44 names wrongly vanished under 90% complete, 4 of them still downloading when they reappeared. A tall winsize is the fix at the cause; a package is still only confirmed by elimination when its last reading was AT OR NEAR its own announced total (`_PTY_NEAR_TOTAL_FRACTION`), as a second, independent layer that holds even if the winsize assumption ever breaks. The ring buffer that keeps PY-18's verbatim-error guarantee holds only lines classified as genuine, not chrome — a live redraw is split from a permanent line by a bare CR, not by a newline (a real capture measured 4,586 CRs against 35 LFs), decoded and ANSI-stripped only once a CR/LF-delimited fragment is complete (stripping per read, before the halves are rejoined, leaks a torn escape straight into the ring), and recognised as chrome by any of: a progress row, a spinner glyph, the "Preparing packages…"/"Resolving dependencies…"/"Installing wheels…" headers, or the install-phase bar's own `[n/m]` counter — so merging stdout+stderr through the pty does not degrade a resolver failure's text. The generic `runtime.js` loader still renders the `install` stage as a plain indeterminate bar (stage/pct/detail are unchanged in meaning and format) — the fused.ai model loader (`supervisor._ensure_venv`) is what reads `activity`/`bytes_done`/`bytes_total` onto its own job row so `ModelProgress` can draw a measured bar during a runner's first environment build. `error` still reaches `progress.json` **verbatim**: uv's stderr is teed into a bounded ring buffer (last ~400 lines) while streaming, so a resolver failure's own text is unchanged and a pathological or chatty uv run cannot make the reporter itself expensive. Scope is **per-folder** (PY-16): one venv per project root, shared by every script in it — the sharing D173 deferred. Once the venv exists the run is handed its interpreter directly, so its **location is the backend's business, not the caller's**: an in-tree `.venv`, a home-dir store, or a manifest mirror's venv directory all work identically from here (D630).
 
 - **PY-19** **A Python client for `fused.ai`, mirroring `runtime.js`'s surface, for a process that is not a rendered page (D470-D472).** `fused_render/templates/shared/fused_ai.py` — stdlib only (`json`/`os`/`socket`/`time`/`urllib`), no `fused_render` import (same rule as PY-15), imports its sibling `appenv.py` for the shell-home-dir contract rather than re-deriving it. Surface: `ai.text`/`ai.stream`/`ai.transcribe`/`ai.image`/`ai.embed`/`ai.models.{list,catalog,load,download,unload}`/`ai.cancel` — same names and option names as `fused.ai`, pinned against the server's own `_IMAGE_OPTIONS`/`_TRANSCRIBE_OPTIONS`/`_EMBED_OPTIONS` (`routers/ai_runtime.py`) by a test, the same drift guard `runtime.js` already has. `ai.embed` carries `kind=` (`"query"`/`"document"`) beside `texts=`/`paths=`/`model=`, and it is in that pinned set for a sharper reason than the others: `kind` is refused per MODEL rather than per endpoint (a dual encoder has no retrieval convention), so a client that could not send it would leave every retrieval model embedding queries as documents — unit-length vectors of the right dimension, and worse, with nothing a caller could measure to say so. **The reply carries the `model` it actually used beside `vectors`/`dim`, and a caller that persists the vectors is expected to persist that too, refusing a query embedded under a different one**: two models on a SINGLE engine's curated list can share a dimension — `nomic-ai/nomic-embed-text-v1.5` and `onnx-community/siglip2-base-patch16-384-ONNX` are both 768 — so an index built under one and searched under the other has the right shape, raises nothing, and ranks plausible neighbours out of two unrelated spaces; a `dim` check cannot see it, and neither can the endpoint, which holds one call's context and no knowledge of what the index was built with (this is why the field is RETURNED rather than enforced). The module does not re-validate the request envelope itself (D413 stands — an unknown option is the server's 400 to raise). `ServerNotRunning` is a distinct exception from `AiError` (carries `type`/`message`/`status` off the `{ok, error:{type, message}}` wire shape, or the plainer `{"error": "..."}` a job-backed endpoint's own validation returns) — the two want different caller responses ("start the app" vs. "the call failed"). **Blocking by default**: `transcribe`/`image`/`models.load`/`models.download` POST to a job-backed endpoint and by default poll `GET /api/jobs` for that id until terminal before returning — `wait=False` returns the immediate `{jobId, ...}` reply, `on_progress=` observes each polled row, `timeout=` bounds the wait; a `stalled` row (`jobs.py`'s reporter-died flag) raises immediately rather than being polled out to the registry's ten-minute eviction. Relative paths are resolved with `os.path.abspath()` locally rather than sent with a `base` — the server's `base` names a calling *page*, and `_child.py` already chdirs a running `.py` to its own directory (RH-1), so a relative path already means "beside this file". Every POST carries `X-Fused: 1`, set by the module so no caller has to know why.
   - **Discovery for a process the server did not spawn.** A server child inherits `FUSED_RENDER_ORIGIN` (PY-15 above); a user-launched process does not and cannot compute the port (the desktop launcher auto-picks a free one). The server writes `<home_dir()>/server.json` (`{origin, pid, shared, version, started}`) at the same lifecycle point as `set_server_origin_env`/`export_app_env` — before it starts serving — and removes it on ordinary shutdown; the write is best-effort and non-fatal, since this runs before the socket bind and a failed write must not read as a failed start. A stale file (a crashed server) is expected and is the CLIENT's problem: `resolve_origin()` connect-probes the file's origin before trusting it, rather than the server maintaining a heartbeat. Resolution order: `FUSED_RENDER_ORIGIN` -> `server.json` (probed) -> `ServerNotRunning`. No `branch_port()` fallback — this module cannot re-derive branch-ref resolution without importing `fused_render`, and a guessed-but-wrong port is worse than a clear failure.
@@ -612,10 +610,10 @@ const page = await fused.runPython("./reader.py",
 
 ## 12. macOS Distribution (DMG) — M3
 
-Distribute as a DMG containing a menu-bar app. On macOS the UI lives in the app's own windows — `NSWindow` + `WKWebView` on the in-process server (`fused_render/mac_window.py`, decisions in `window_policy.py`): one shell window at launch, and a new window for what would have been a new tab (`target=_blank`, `window.open`, ⌘-click, a Finder open, a deep link). External links go to the default browser; "Open in Browser" (title bar, View menu, popover) still hands the current page to it. Windows and Linux stay browser-based. Should the window manager fail to build, every surface falls back to a browser tab.
+Distribute as a DMG containing a menu-bar app. On macOS the UI lives in the app's own windows — `NSWindow` + `WKWebView` on the in-process server (`fused_render/mac_window.py`, decisions in `window_policy.py`): one shell window at launch, and a new window for what would have been a new tab (`target=_blank`, `window.open`, ⌘-click, a Finder open, a deep link). External links go to the default browser; "Open in Browser" (title bar, View menu, popover) still hands the current page to it. Linux stays browser-based. Should the window manager fail to build, every surface falls back to a browser tab.
 
 - **DM-1** **DECIDED (v2, D33):** the `.app` is built by **py2app** from a framework-build python (Homebrew `python@3.12`, bootstrapped by the build script). py2app ships a real re-invokable interpreter in-bundle (`Contents/MacOS/python`) — `sys.executable` subprocess executor works unchanged — and its compiled stub gives proper LaunchServices/AppKit process identity (the earlier hand-rolled bash-shim caused flaky NSStatusItem behavior under Finder launches).
-- **DM-2** **DECIDED:** user `runPython` code executes on the **bundled interpreter only**. `[bundled]` is the dev-install list and the Linux/Windows shipping list; on macOS py2app **copies** only what `scripts/setup_py2app.py` names — which now DERIVES that list from the installed distributions and excludes nothing, so all three platforms ship the whole extra (D176). `BUNDLED_EXCLUDED` is empty but stays as the mechanism: a `[bundled]` distribution the bundle does not carry must be named there with its measured cost, never merely absent. "Is this dependency available?" therefore has one answer today, and `tests/test_bundle_contents.py` is what keeps it that way — the templates that genuinely need an install declare dependencies **outside** `[bundled]` (`pyproj`, `imagecodecs`, `py360convert`, `pypandoc-binary`, and since D276 the geo/PDF stacks named below), which is what exercises the install loader on a shipped build. **The extra is a size budget, not a wish list (D276).** It ships preinstalled: numpy, pandas, pyarrow, duckdb, pillow, openpyxl, requests, httpx, msgpack, python-pptx, drain3, botocore, google-auth, the `fused` engine + the core `dependencies`. It deliberately does NOT ship polars (197.0 MB, imported by nothing in the product), scipy (70.3 MB), matplotlib (25.0 MB), pymupdf + pikepdf (68.9 MB) or the geo stack geopandas/rasterio/rio-tiler/shapely/zarr and their exclusive transitives (180.1 MB) — 541.9 MB removed, taking the installed set from 954.3 MB to 412.4 MB (D276 states the measurement method; absolutes are only comparable against it, deltas against anything). Those live in the `pyproject.toml` of each template that imports them (`map`, `vector`, `geometry_editor`, `pdf_studio`) or in the venv a daemon manages itself (`geotiff`, `netcdf`, `zarr_aoi`, `pyramid`, D174), and are installed on first render through PY-18 — `map`'s environment resolves to 472.8 MB on that same measure, since a declaration is the complete list (D172) and it additionally carries duckdb + requests for the user-supplied Python targets `worker.py` executes in-process. **The unit of that decision is the FOLDER, not the wheel** (PY-16): `fpdf2` stays in the extra at a measured 14.1 MB precisely because moving it would have put all of `excel` and `slides` behind a project venv, gating every `.xlsx`/`.csv`/`.pptx` on a first-render install of packages the app already ships. **The built-in executor cannot honour any of this** — it owns no venv machinery (D174) — so `executor.explain_missing_module` replaces a bare `ModuleNotFoundError` with one naming the folder, its manifest, the missing distributions and both fixes, whenever the failed import resolves to something that folder declares. At FAILURE time, never before the run: a pre-flight refusal keyed on the folder's state breaks every stdlib-only entry point in a folder that declares one heavy optional dependency (`geotiff`'s `ensure()`, `model_card`'s `inspect_model.py`, `pano`, `docs`, `latex`), and an AST pre-scan would refuse the lazy imports that make `pdf_studio`'s `health` action answerable while its venv builds. That obligation is enforced in both directions: a template may not declare what the bundle already ships (`test_a_declaration_is_needed_for_what_the_MACOS_BUNDLE_lacks`) and MUST declare what it does not (`test_a_template_declares_whatever_the_app_does_not_ship`), and a documented library list may not promise a library the app lacks (`test_the_documented_library_list_only_promises_what_ships`, over `skills/fused-render-authoring/SKILL.md` — the Learn page's own table was the second copy that test pinned until the learn content left the app, D419). Removing from the extra rather than excluding from the bundle is the deliberate choice: `BUNDLED_EXCLUDED` would have shrunk macOS alone and left Linux and Windows carrying what the extra still promised — D176's defect in the other direction. py2app note: these are force-copied via `packages` — the executor imports them only in child processes, so import tracing can't see them. **The standard library ships WHOLE** (D305): py2app freezes only the stdlib its modulegraph reaches from `app_entry.py`, and that subset is inherited by every environment built on the bundled interpreter (PY-18) — a DMG shipped without `filecmp`, and an MLX load died inside transformers with a message about the model. `setup_py2app.STDLIB_EXCLUDED` names the few omissions with reasons (tkinter and turtle, idlelib, turtledemo, ensurepip, lib2to3, antigravity, this), and `build_dmg.sh` §4b-ter fails the build when either the bundled interpreter OR a venv built on it cannot import what that list says ships. This holds under the fused engine too: a script whose folder declares no `pyproject.toml` runs on that same interpreter (PY-17), and only a folder that declares one gets an environment of its own (PY-16/PY-18).
+- **DM-2** **DECIDED:** user `runPython` code executes on the **bundled interpreter only**. `[bundled]` is the dev-install list and the Linux shipping list; on macOS py2app **copies** only what `scripts/setup_py2app.py` names — which now DERIVES that list from the installed distributions and excludes nothing, so both platforms ship the whole extra (D176). `BUNDLED_EXCLUDED` is empty but stays as the mechanism: a `[bundled]` distribution the bundle does not carry must be named there with its measured cost, never merely absent. "Is this dependency available?" therefore has one answer today, and `tests/test_bundle_contents.py` is what keeps it that way — the templates that genuinely need an install declare dependencies **outside** `[bundled]` (`pyproj`, `imagecodecs`, `py360convert`, `pypandoc-binary`, and since D276 the geo/PDF stacks named below), which is what exercises the install loader on a shipped build. **The extra is a size budget, not a wish list (D276).** It ships preinstalled: numpy, pandas, pyarrow, duckdb, pillow, openpyxl, requests, httpx, msgpack, python-pptx, drain3, botocore, google-auth, the `fused` engine + the core `dependencies`. It deliberately does NOT ship polars (197.0 MB, imported by nothing in the product), scipy (70.3 MB), matplotlib (25.0 MB), pymupdf + pikepdf (68.9 MB) or the geo stack geopandas/rasterio/rio-tiler/shapely/zarr and their exclusive transitives (180.1 MB) — 541.9 MB removed, taking the installed set from 954.3 MB to 412.4 MB (D276 states the measurement method; absolutes are only comparable against it, deltas against anything). Those live in the `pyproject.toml` of each template that imports them (`map`, `vector`, `geometry_editor`, `pdf_studio`) or in the venv a daemon manages itself (`geotiff`, `netcdf`, `zarr_aoi`, `pyramid`, D174), and are installed on first render through PY-18 — `map`'s environment resolves to 472.8 MB on that same measure, since a declaration is the complete list (D172) and it additionally carries duckdb + requests for the user-supplied Python targets `worker.py` executes in-process. **The unit of that decision is the FOLDER, not the wheel** (PY-16): `fpdf2` stays in the extra at a measured 14.1 MB precisely because moving it would have put all of `excel` and `slides` behind a project venv, gating every `.xlsx`/`.csv`/`.pptx` on a first-render install of packages the app already ships. **The built-in executor cannot honour any of this** — it owns no venv machinery (D174) — so `executor.explain_missing_module` replaces a bare `ModuleNotFoundError` with one naming the folder, its manifest, the missing distributions and both fixes, whenever the failed import resolves to something that folder declares. At FAILURE time, never before the run: a pre-flight refusal keyed on the folder's state breaks every stdlib-only entry point in a folder that declares one heavy optional dependency (`geotiff`'s `ensure()`, `model_card`'s `inspect_model.py`, `pano`, `docs`, `latex`), and an AST pre-scan would refuse the lazy imports that make `pdf_studio`'s `health` action answerable while its venv builds. That obligation is enforced in both directions: a template may not declare what the bundle already ships (`test_a_declaration_is_needed_for_what_the_MACOS_BUNDLE_lacks`) and MUST declare what it does not (`test_a_template_declares_whatever_the_app_does_not_ship`), and a documented library list may not promise a library the app lacks (`test_the_documented_library_list_only_promises_what_ships`, over `skills/fused-render-authoring/SKILL.md` — the Learn page's own table was the second copy that test pinned until the learn content left the app, D419). Removing from the extra rather than excluding from the bundle is the deliberate choice: `BUNDLED_EXCLUDED` would have shrunk macOS alone and left Linux carrying what the extra still promised — D176's defect in the other direction. py2app note: these are force-copied via `packages` — the executor imports them only in child processes, so import tracing can't see them. **The standard library ships WHOLE** (D305): py2app freezes only the stdlib its modulegraph reaches from `app_entry.py`, and that subset is inherited by every environment built on the bundled interpreter (PY-18) — a DMG shipped without `filecmp`, and an MLX load died inside transformers with a message about the model. `setup_py2app.STDLIB_EXCLUDED` names the few omissions with reasons (tkinter and turtle, idlelib, turtledemo, ensurepip, lib2to3, antigravity, this), and `build_dmg.sh` §4b-ter fails the build when either the bundled interpreter OR a venv built on it cannot import what that list says ships. This holds under the fused engine too: a script whose folder declares no `pyproject.toml` runs on that same interpreter (PY-17), and only a folder that declares one gets an environment of its own (PY-16/PY-18).
 - **DM-3** **DECIDED (v2, D34):** regular app — **Dock icon AND menu bar ✦** (Open in browser / Copy URL / Quit). No LSUIElement. Dock right-click → Quit is the discoverable lifecycle path.
 - **DM-4** **DECIDED (v2, D73):** signing is credential-driven in `scripts/build_dmg.sh` — a **Developer ID** identity in the keychain (auto-detected or via `FUSED_RENDER_CODESIGN_IDENTITY`) triggers hardened-runtime, inside-out signing + optional notarization (`FUSED_RENDER_NOTARY_PROFILE`); with no identity it **ad-hoc signs** (local testing, unchanged). Developer-ID signing is also the general fix for the repeated Downloads/Desktop/Documents prompt (one Team ID unifies the app + its executor subprocess, complementing the D72 in-process reader split). Details: `docs/signing.md`. Supersedes the earlier "Briefcase external-app" plan (D35 — Briefcase's template breaks `sys.executable`).
 - **DM-5** Launch flow: pidfile+portfile in `~/Library/Application Support/fused-render/`; liveness probe = GET `/` (file-backed, catches zombies); already running (a second source run) ⇒ open browser only; else start (1777, fall forward to 1787), write pidfile, open a Home window (`FUSED_RENDER_NO_BROWSER=1` suppresses it). A Dock click on the running app brings the Home window forward, or opens one when none is open (same rule as the menu-bar Dock's Home tile and the launcher's Home row). With "Single window experience" on (`apps_open_in_home`) it brings forward the last-used window instead (an app's own run window excepted), Home when none. The Dock icon's right-click menu carries "New Window" (same as File → New Window) when native windows are on.
@@ -2051,11 +2049,11 @@ when one exists, else the folder itself.
 - **DL-2** OS registration: macOS via `CFBundleURLTypes` in the py2app plist
   (scheme deliberately not branch-suffixed, like the bookmark UTI — every
   build speaks the same links), delivered to `application:openURLs:` in
-  app.py; Windows via an HKCU `Software\Classes\fused-render` URL-protocol
-  class written by the same `--register` as the Open-With keys, delivered as
-  `%1` to `fused-render-open`. Linux deferred. Both handlers reuse a live
-  server or spawn one (the winopen/app dance), then open the browser at the
-  confirm page — they never parse or clone themselves.
+  app.py; Linux via the `x-scheme-handler/fused-render` registration in the
+  AppImage's self-integrated `.desktop` entry (`Exec=… %u`, D130), delivered
+  as the single argument to the supervisor. Both handlers reuse a live
+  server or spawn one, then open the browser at the confirm page — they
+  never parse or clone themselves.
 - **DL-3** Confirm gate (`GET /clone?src=…`): a self-contained server-served
   page (`static/clone.html`, no shell, no external assets). Nothing touches
   disk until its button is clicked. The page previews repo / subdirectory /
@@ -2568,7 +2566,7 @@ reload. Design + rationale: `docs/CALL_LOG_DESIGN.md`.
   has its own home and retention (DG-1, D1307; under D68 it lived in the system
   temp dir), while this store is durable and pruned by code (CL-10), so the two
   never share a directory despite both being called logs in the UI. On macOS
-  the app log is in `~/Library/Logs/fused-render/`; on Windows/Linux it is
+  the app log is in `~/Library/Logs/fused-render/`; on Linux it is
   `<home>/logs/app/` — a subdirectory beside the call partitions, but still its
   own directory: the store's walks match only `.calls.jsonl` names, so nothing
   in `app/` is ever read as a call record.
@@ -2745,18 +2743,15 @@ reload. Design + rationale: `docs/CALL_LOG_DESIGN.md`.
   new records appear, so "open the page and I'll check" is one round trip
   rather than two.
 - **CL-14b** **One path form in the store: the shell's canonical form.** Every
-  path-valued field (`page`, `target_file`, `entrypoint`) is written
-  forward-slashed, via `_view_url_codec.canonical_fs_path`, at the single write
-  point (`record()`). That is the form a path already has everywhere above the
-  OS — what a `/view` URL decodes to and what the runtime sends as
-  `X-Fused-Page` — but not what `os.path` returns on Windows, where
-  `normpath`/`abspath`/`join` answer with backslashes. Enforced at the writer
-  rather than per producer because one backslashed field is enough to make an
-  exact-match filter miss a record forever; readers may then compare with `==`,
-  which is what CL-10's three-role match assumes. `--page`/`--entrypoint` are
-  canonicalized the same way on the way in. Normalization applies **only** to
-  drive-letter paths: on POSIX a backslash is a legal filename character and
-  must round-trip untouched.
+  path-valued field (`page`, `target_file`, `entrypoint`) is written through
+  `_view_url_codec.canonical_fs_path` at the single write point (`record()`).
+  That is the form a path already has everywhere above the OS — what a `/view`
+  URL decodes to and what the runtime sends as `X-Fused-Page`. A POSIX path is
+  already in that form, so the seam returns it unchanged (a backslash is a
+  legal filename character and must round-trip untouched), but it stays the
+  one named seam at the writer rather than per producer, so readers may
+  compare with `==`, which is what CL-10's three-role match assumes.
+  `--page`/`--entrypoint` go through the same seam on the way in.
 - **CL-14a** **Preference reads are snapshot-cached for 1 s.** `enabled()` and
   the param-redaction mode are consulted per call, and each was opening and
   parsing `prefs.json` — measured ~2.8 ms per run, most of the feature's
@@ -3150,8 +3145,7 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
     is not a link to the GFM parser at all, so the readable path is *displayed*
     (`displayLabel`) while the encoded one lands in the document, where MD-4a's
     widget decodes it again. This is pure string work — no filesystem call, and
-    no path rebuilt from segments, so the Windows drive form `C:/…` never gains
-    the leading slash `resolvePath` warns about.
+    no path rebuilt from segments.
   * `![](` — the same, filtered to **image extensions**, because only an image
     renders there.
   * `](#` — this note's own headings, mirroring `[[#`, encoded the same way.
@@ -4859,9 +4853,7 @@ wanting "what has this file been through" wants §33.
   `<claude-config-dir>/file-history/<sessionId>/<sha256(abspath)[:16]>@v<N>`,
   where each `@vN` is a **full copy** of the file at a checkpoint, never a diff.
   `<claude-config-dir>` is `CLAUDE_CONFIG_DIR` when set, else `~/.claude`,
-  resolved through `expanduser` on a `join` rather than a literal `"~/.claude"`
-  (this package ships a `windows/` dir, and a hardcoded forward slash survives
-  `expanduser` unchanged there and then never matches a normalized path). Git
+  resolved through `expanduser` on a `join` rather than a literal `"~/.claude"`. Git
   answers "what did the last commit say"; this answers "what did this file look
   like before the agent touched it", which is the question a reviewer sitting in
   a view actually asks — and it has an answer in a directory that is not a
@@ -5091,8 +5083,8 @@ wanting "what has this file been through" wants §33.
   count. Text mode applied universal-newline translation, so a CRLF file stashed
   as LF — the recovered content was not the bytes that were destroyed, and it
   disagreed with the `size`
-  stored beside it. This package ships a `windows/` dir, so CRLF is a live case,
-  not a hypothetical. Each of the three refusals (too large, unreadable, not
+  stored beside it. CRLF files arrive by clone and download, so this was a live
+  case, not a hypothetical. Each of the three refusals (too large, unreadable, not
   UTF-8) is reported separately and truthfully; folding an EACCES into "not UTF-8
   text", or a `getsize` failure into "nothing on disk to stash" (which reads as
   "the file is absent"), described a fixable machine problem as a fact about the
@@ -6106,8 +6098,7 @@ later with nothing on screen to say so.
   `snapshots/` is a symlink back into the same repo's `blobs/`, so a walk that
   followed them would multiply a repo by its revision count — on a real cache
   that is a page about disk usage being wrong by hundreds of GB. Hardlinks (one
-  blob shared by two entries, and what Windows falls back to when it cannot
-  symlink) are de-duplicated by `(st_dev, st_ino)` for the same reason. The
+  blob shared by two entries) are de-duplicated by `(st_dev, st_ino)` for the same reason. The
   per-row sizes therefore sum to the reported total.
 - **HF-5** **Newest-file time, directories excluded.** A repo's stamp is the
   newest mtime among its files *and its snapshot symlinks* — a blob is written
@@ -6723,8 +6714,8 @@ an AI Models page that could say what was on disk but not what was *running*.
 - **AI-2** **A runner is a folder, and its environment is `envinstall`'s.** Each
   backend is a folder holding a `pyproject.toml` and a `worker.py`. The
   declaration is the ONLY place mlx/torch are named — fused-render's own venv
-  must stay a file explorer's, and must not carry a Metal-only dependency into a
-  Windows wheel — and it is built by the existing detached `uv sync` loader
+  must stay a file explorer's, and must not carry a Metal-only dependency onto
+  Linux — and it is built by the existing detached `uv sync` loader
   (PY-18), with the same progress record and the same verbatim uv errors any
   declaring folder gets. No second install mechanism exists for AI. **One library
   may occupy SEVERAL folders, one per hardware build of it, and then the shared
@@ -6732,8 +6723,8 @@ an AI Models page that could say what was on disk but not what was *running*.
   it** (D381). Diffusers is three folders — `diffusers_image`,
   `diffusers_image_cuda`, `diffusers_image_rocm` — llama.cpp is two
   (`llamacpp_text`, `llamacpp_text_vulkan`), and the transformers embeddings
-  runner is four (`onnx_embed`, `onnx_embed_directml`, `onnx_embed_cuda`,
-  `onnx_embed_rocm`), whose manifests are identical except for the
+  runner is three (`onnx_embed`, `onnx_embed_cuda`, `onnx_embed_rocm`), whose
+  manifests are identical except for the
   index the accelerated distribution is resolved from, and whose `worker.py`
   is a `sys.path` insert and a call into `runners/torch_image.py`,
   `runners/llama_text.py` or `runners/onnx_embed.py`. (D416 removed an
@@ -6815,8 +6806,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   prevent. The conservative default is the point of the split: before it, the
   unlabelled torch row silently installed the CUDA build on Linux, so every
   Linux user paid gigabytes of `nvidia-*` wheels whether or not they owned a
-  card, while every Windows user got a CPU-only build with no way to opt out —
-  both wrong, and neither visible. macOS is unaffected by the CPU pin: the CPU
+  card — wrong, and not visible. macOS is unaffected by the CPU pin: the CPU
   index resolves darwin to the ordinary wheel PyPI ships, MPS compiled in, which
   matters because this runner is what a Mac falls back to when its MLX runner is
   unavailable.
@@ -7087,54 +7077,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   write with `os.pwrite`, and per-segment offsets go to a sidecar in the order
   that makes them true: snapshot the cursors, **fsync the data, then write the
   sidecar** — a recorded byte is always a durable byte, so a resume never
-  skips one that was still in flight. **A platform with no `os.pwrite` —
-  Windows, and nothing else — fetches each file on ONE append-only stream
-  instead, which is the same guarantee by another route rather than a weaker
-  one.** `pwrite` is required because segments write OUT OF ORDER into a
-  pre-sized file, where a buffered seek-and-write would let the count run ahead
-  of the disk; with a single `O_APPEND` stream there is no out-of-order write
-  left to make, so the file's LENGTH is the progress and a resume is a `Range`
-  from that length. The pre-sized file goes with it, and so do the two things
-  that existed for it: no sparse-filesystem requirement on this route, and a bar
-  that can read the length rather than the allocated blocks (AI-5b). The sidecar
-  still LICENSES the resume, and the one segment this plan derives is also what
-  refuses to append into a part file the segmented path left — many recorded
-  segments against one derived, so the layout check discards it exactly like no
-  sidecar at all — with the refusal holding in the other direction too, since a
-  segmented run finds an appended part file shorter than the pre-sized one it
-  requires. The recorded cursor and the file are then made to AGREE before a
-  byte moves, by truncating the file back to the cursor: appending cannot
-  overwrite an un-fsynced tail the way a positional write does, so that tail
-  goes rather than being counted, which costs at most one flush interval of
-  re-fetched bytes. The serialization is per FILE and not repo-wide — two files
-  are two fds and nothing between them is out of order — so a repo of shards
-  still moves on `MAX_CONNECTIONS` connections and only a single huge shard
-  loses its parallelism. It was a flat refusal until this, and the refusal was
-  invisible exactly where it mattered: the model mirror's only transport is this
-  fetch, so a win32 client declined every time and no Windows acquisition ever
-  reached the access logs the mirror exists to produce (AI-5l). **That route is
-  also the first code here to need `O_BINARY` and a LENGTH check, and it needed
-  both for the same reason.** Windows opens an `os.open` fd in the CRT's default
-  TEXT mode, so every `0x0a` written becomes `0x0d 0x0a`: a part file longer than
-  the file it describes and wrong in content, while the cursors — which count
-  what was handed to `os.write` — go on saying the download is complete. The flag
-  was missing from the segmented call site too and always had been, harmlessly,
-  because `os.pwrite` does not exist on the one platform that translates, so no
-  `os.open` here had ever written a byte there; the first route that did was
-  green on POSIX and corrupted every blob it fetched on win32. Since `_BINARY` is
-  0 on POSIX, a correct call is indistinguishable from one missing the flag by
-  any means a run on this platform has, so the rule is enforced by reading the
-  module's own AST — the same mechanism as the stdlib-only rule, and for the same
-  reason. **The length check is the other half**: on the append-only route the
-  part file's length is an INDEPENDENT witness, because the cursors count what
-  was handed to the kernel and the length is what the kernel kept, so the two
-  disagreeing is exactly the class of corruption neither a cursor nor a
-  `Content-Length` can notice. It is worth a syscall because the HUB path
-  carries no digest — the mirror's sha256 did catch the translated blob, but on
-  the Hub path the same bytes would have been published under a real etag and
-  served out of the cache forever. On the segmented route that check would be
-  theatre, the file being pre-sized before a byte arrives, which is why
-  publishing there is gated on the cursors alone. **The sidecar
+  skips one that was still in flight. **The sidecar
   carries its own version
   number** (`SIDECAR_VERSION`), because the chunk queue changed what a segment
   list MEANS — fixed pieces rather than equal shares — so a sidecar written
@@ -7146,11 +7089,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   sidecar at all. The partial file is `<blob>.fusedpart`, deliberately **not**
   hf's `.incomplete`: hf resumes one of those by seeking to its length, ours
   are written out of order,
-  and handing it one would produce a silently corrupt blob. (A prefix, on the
-  append-only route — but which of the two wrote a given part file is not
-  something hf could tell, so the suffix stays ours on both and the fallback
-  deletes them rather than offering hf a file whose meaning depends on the
-  platform.) Resume demands that
+  and handing it one would produce a silently corrupt blob. Resume demands that
   etag and size still agree and that the recorded LAYOUT is the one resumed with;
   anything that does not agree starts clean, never a guess. **The range probe is
   therefore three-valued**, because two rules turn on the difference between a
@@ -7184,10 +7123,8 @@ an AI Models page that could say what was on disk but not what was *running*.
   No hash, like huggingface_hub itself, which relies on TLS and `Content-Length`.
   **Every failure and every incapability falls back to `snapshot_download` /
   `hf_hub_download`** — no range support, a Hub API that moved, a cache
-  filesystem that allocates rather than holding a sparse file (asked only where
-  a file is pre-sized, so not on the append-only route), an argument ours does
-  not understand; a platform with no `os.pwrite` was on this list and is not any
-  more — logging the reason to stderr and
+  filesystem that allocates rather than holding a sparse file, an argument ours
+  does not understand — logging the reason to stderr and
   clearing our part files first, because a download that got faster and sometimes
   broken would be a bad trade. Resume therefore covers the app being killed, quit
   or crashed — the case that motivated it — and not a fetch that fell back, which
@@ -7422,33 +7359,14 @@ an AI Models page that could say what was on disk but not what was *running*.
   refuse would report a target published when nothing that ever runs that
   code could read it. It needs neither `aws` nor `huggingface_hub` and writes
   nothing, so it is meant to gate a release the way the version bump in
-  `making-a-release` does. **Windows fetches from the mirror like every other platform**, and that is a
-  change from how this shipped. The mirror's only transport is
-  `_segmented_fetch`, which used to refuse outright without `os.pwrite`, so a
-  win32 client made the one manifest request, declined, and took the Hub path
-  like any other download — which decided what the access logs MEANT, since
-  Windows acquisitions were invisible to them and the count is the entire point
-  of the feature. That transport now degrades to a single append-only stream
-  rather than refusing (AI-5i), so the count is complete across platforms and
-  what Windows gives up is parallelism within one file, not the mirror. The
-  generator/client round-trip test is still split in two, an agreement half and
-  a fetch half, but no longer BY PLATFORM: both halves run everywhere, and the
-  fetch half is what exercises a real Windows download end to end. **What
-  Windows found the first time it ran one is worth recording, because it is not
-  the failure this rule used to describe**: the route ran, fetched the whole
-  repo, and was refused by its own sha256 — the part file had been opened in the
-  CRT's default TEXT mode, so every `0x0a` in the weights arrived as `0x0d 0x0a`
-  (AI-5i, `_BINARY`). A mirror declining is the degradation working exactly as
-  specified; a mirror declining *for that reason* is a bug, and the distance
-  between those two readings of one stderr line is most of what hashing on this
-  path is for. The cost of learning the old behaviour the hard way was a
-  Windows CI failure reporting a 401
-  from huggingface.co: the mirror declined, the download fell through to a REAL
-  Hub listing, and the test had no business being able to leave the machine at
-  all. Every test in this feature now runs under a fixture that refuses a
-  non-loopback `connect` or `getaddrinfo`, so a broken mirror path fails saying
-  so instead of reporting somebody else's status code — and on a machine with a
-  valid `HF_TOKEN` that same test would have PASSED by downloading a real repo.
+  `making-a-release` does. The generator/client round-trip test is split in two, an agreement half and a
+  fetch half, and both halves run on every platform. **Every test in this
+  feature runs under a fixture that refuses a non-loopback `connect` or
+  `getaddrinfo`**, so a broken mirror path fails saying so instead of reporting
+  somebody else's status code: a mirror that declined once fell through to a
+  REAL Hub listing and surfaced as a CI 401 from huggingface.co, and on a
+  machine with a valid `HF_TOKEN` that same test would have PASSED by
+  downloading a real repo.
   **`FUSED_MODEL_MIRROR` ships ON**, defaulting to `https://render.fused.io/mirror`
   (`mirror.DEFAULT_BASE`) when unset; the documented opt-out is setting it to
   `""` (D421 amendment). The per-model permission above is unchanged by that —
@@ -7465,8 +7383,8 @@ an AI Models page that could say what was on disk but not what was *running*.
   and `llama_text.download` does not go through it: it fetches one GGUF with
   `download_file`, because a GGUF repo publishes dozens of quantizations of the
   same model (`unsloth/Qwen3.5-9B-GGUF` is 147.81GB whole for a 2.6GB file).
-  Since D416 made llama.cpp the only local text engine on Windows and Linux, that
-  left every suggested TEXT model on those platforms off the mirror entirely —
+  Since D416 made llama.cpp the only local text engine on Linux, that
+  left every suggested TEXT model there off the mirror entirely —
   invisibly, since a download that never asks is a perfectly normal download.
   Routing it through `download_snapshot(allow_patterns=[file])` is NOT the fix:
   the per-repo manifest is accepted only when it asserts `complete: true` for the
@@ -7652,16 +7570,13 @@ an AI Models page that could say what was on disk but not what was *running*.
   to the `render` group" cannot fix a `/dev/dri` a container was never given, and
   one sentence for both sent half its readers after a `usermod` that could not
   have helped.
-- **AI-7** **Liveness is `poll()`, and stopping is platform-specific.** Never
-  `os.kill(pid, 0)`: on POSIX an unreaped child is a zombie and signal 0 to a
-  zombie succeeds, so the check answers "alive" for a model that crashed; on
-  Windows `os.kill` maps onto `TerminateProcess`, so the *liveness probe kills the
-  process it asks about*. Stopping takes the whole process group — a worker
-  spawns children that would otherwise keep the weights — through `killpg` on
-  POSIX **only when the pid is its own group leader** (the guard `envinstall`
-  carries for the same reason: a stale pid in the server's group once shut down a
-  test session) and `CTRL_BREAK` + `taskkill /T /F` on Windows, which has no
-  `killpg` at all.
+- **AI-7** **Liveness is `poll()`, and stopping takes the process group.** Never
+  `os.kill(pid, 0)`: an unreaped child is a zombie and signal 0 to a zombie
+  succeeds, so the check answers "alive" for a model that crashed. Stopping
+  takes the whole process group — a worker spawns children that would otherwise
+  keep the weights — through `killpg`, **only when the pid is its own group
+  leader** (the guard `envinstall` carries for the same reason: a stale pid in
+  the server's group once shut down a test session).
 - **AI-7a** **The AI Models page shows what is RUNNING, not only what is on
   disk.** A cached card carries a live state row — downloading (with bytes, from
   the job row, because that is the only place byte counts exist), loading (text
@@ -8157,9 +8072,8 @@ an AI Models page that could say what was on disk but not what was *running*.
   land by `os.replace` from a temp beside the target, because the page is
   reading the file through `/api/fs/raw` while the worker rewrites it — and
   **nothing escapes the sink**, because it is called from the one interruption
-  point in a render that runs for minutes: a full disk, or a Windows lock held
-  by the page's own `<img>` over the destination, must cost the thumbnail and
-  never the picture. A sink that fails three times in a row switches itself off
+  point in a render that runs for minutes: a full disk or a failed rename over
+  the destination must cost the thumbnail and never the picture. A sink that fails three times in a row switches itself off
   rather than paying a device sync and a doomed syscall per remaining step. And
   it is removed on success, on cancel AND **on error** — the one place this diverges
   from the progressive transcript (AI-10a), whose file is kept on a failure
@@ -8234,7 +8148,7 @@ an AI Models page that could say what was on disk but not what was *running*.
 - **AI-10** **Speech to text is the third capability, and it is the first one
   that works EVERYWHERE** (D288). `automatic-speech-recognition` — the Hub's own
   tag — served by a `faster_whisper` runner folder built on CTranslate2, which
-  publishes wheels for macOS on both architectures, Linux and Windows. That
+  publishes wheels for macOS on both architectures and Linux. That
   choice is the point of the bullet: mlx-whisper would be quicker on Apple
   Silicon and would have made ASR a *third* Apple-Silicon-only feature, and an
   app whose local AI is something most users read about is not the app this is
@@ -8376,7 +8290,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   CTranslate2 so the capability would exist everywhere and said an MLX runner
   could be added later above it; this is that addition, and it is the first use
   AI-2's ordering has had for a capability that already worked. Macs take MLX;
-  Windows, Linux and Intel macOS are untouched, which is the property that had
+  Linux and Intel macOS are untouched, which is the property that had
   to hold. **The result dict, the two output files, the job row and the
   seconds-of-audio progress are identical**, because `fused.ai.transcribe` is
   about audio and not about backends — a page must not be able to tell which
@@ -8486,7 +8400,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   a runner that cannot run HERE is dropped and the ordering decides**, with the
   reason carried out for the page to show. That asymmetry is the design rather
   than a safety net: prefs.json is a plain file in a home directory people sync,
-  copy and restore, so a preference set on a Mac must not arrive on a Windows
+  copy and restore, so a preference set on a Mac must not arrive on a Linux
   machine and take speech to text away — a preference that quietly does nothing
   is recoverable, a capability that has silently vanished is a bug report. The
   stored value is never corrected on read either, because a choice the user can
@@ -8586,24 +8500,24 @@ an AI Models page that could say what was on disk but not what was *running*.
   backend that suits the machine — and TWO runners share one capability for the
   first time** (D293).
   MLX is Metal-only, so the app's flagship local capability was something a
-  Windows or Linux user could read about and not use: the exact complaint AI-10
+  Linux user could read about and not use: the exact complaint AI-10
   answers for transcription, still standing for chat. A `transformers_text`
   runner folder (torch + transformers) is registered BELOW `mlx_text`, and
   AI-2's first-match-wins ordering does the rest — Apple Silicon prefers MLX
   (faster on Metal, and its 4-bit catalog is sized for a 16GB laptop) but can
-  fall through to torch when MLX is unavailable, while Windows and Linux reach
-  torch directly. Intel macOS is not a distribution target and is not
+  fall through to torch when MLX is unavailable, while Linux reaches torch
+  directly. Intel macOS is not a distribution target and is not
   advertised by the runner. Nothing else in the app learned that a capability
   can have two runners, which is the claim AI-2 made and this is the test of it.
   **The backend was chosen on packaging, not on benchmarks.** llama.cpp would be
   the obvious pick and was refused by AI-2a at the time: `llama-cpp-python`
   publishes an sdist and no wheels at all on PyPI, so declaring it would put
-  cmake and a C++ toolchain — MSVC, on Windows — between a user and the
+  cmake and a C++ toolchain between a user and the
   Download button, with its prebuilt wheels on a private index that is a
   second thing to trust. torch is the runtime this app already builds on
   users' machines for the image runner, so its install path and its failure
   modes are known rather than guessed at. `onnxruntime-genai` is the credible
-  alternative (tiny, fast int4 on CPU, DirectML reaching every Windows GPU)
+  alternative (tiny, fast int4 on CPU)
   and was deferred rather than dismissed: it only loads pre-converted ONNX
   repos, so the Hub models the page already offers a Load button for would
   refuse — and as a SECOND text runner it would break the rule that a model
@@ -8613,8 +8527,8 @@ an AI Models page that could say what was on disk but not what was *running*.
   the cross-platform default is unaffected: this did not change which backend
   `auto` reaches for on any platform, only what a user can additionally choose.
   **Superseded in part (D416): the `transformers_text` runner and its two
-  hardware variants are REMOVED, and `llamacpp-text` is now what Windows and
-  Linux resolve to.** The CLAIM of this item stands — text generation still runs
+  hardware variants are REMOVED, and `llamacpp-text` is now what Linux
+  resolves to.** The CLAIM of this item stands — text generation still runs
   on every supported desktop platform, MLX on Apple Silicon and one
   cross-platform row below it, and nothing in the app knows a capability can have
   two runners — but the backend named above is no longer the one serving it, and
@@ -8628,7 +8542,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   that has MLX. So `catalog.SUGGESTIONS` moved from capability keys to RUNNER
   keys, and `catalog.describe()` resolves the runner the way a LOAD resolves it
   — it used to take the first runner REGISTERED for a capability whatever its
-  availability, which with two rows would have told a Windows machine that text
+  availability, which with two rows would have told a Linux machine that text
   generation "needs Apple Silicon" while a runner sat ready to serve it, under a
   heading whose four suggestions it could not load. The curation rules for the
   cross-platform list are three, each a failure this app has already shipped
@@ -8739,9 +8653,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   broken.** torch runs on whatever it can see, and what it can see is not
   knowable from outside the process: **the default rows pin an unaccelerated
   build on every platform** (AI-2b, D381), so the ordinary outcome on ANY machine
-  with a graphics card in it — not the Windows machine it used to be, back when
-  the PyPI wheel's `nvidia-*` dependencies were the only thing marked
-  `platform_system == "Linux"` — is a perfectly healthy model answering at a few
+  with a graphics card in it is a perfectly healthy model answering at a few
   words a second, with a green LOADED card and a healthy memory figure and
   nothing on screen to explain the speed. The one exception is what makes the
   device worth reporting rather than assuming: that same CPU pin resolves darwin
@@ -8750,7 +8662,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   claim beside a card reporting `mps` is one page contradicting itself. The
   llama.cpp CPU row does the same thing through a different mechanism: the
   maintainer's `whl/cpu` wheel links `libggml-metal.dylib`, so it reports device
-  `gpu` there, and D416 made that row the DEFAULT on two more platforms, which
+  `gpu` there, and D416 made that row the DEFAULT on Linux, which
   raises how much this reporting matters rather than lowering it.
   `worker_base.STATE` therefore carries a `device` that each runner sets
   in its own `load()` — the same argument AI-8 makes about resident bytes: only
@@ -8759,29 +8671,20 @@ an AI Models page that could say what was on disk but not what was *running*.
   warning-coloured, beside the memory figure), while Discover shows a standing
   fact about the backend above the cards, before any download, since that is
   when it can still change a decision. All three runners report it — the image
-  runner has had the same Windows CPU-only problem since D257 and never said so.
+  runner had the same CPU-only blind spot since D257 and never said so.
   (Written when three runners reported it; the text half is now llama.cpp's
   `"cpu"`/`"gpu"`/`"gpu (partial)"`/`"gpu (experts on cpu)"`, which is the same
   statement with a backoff outcome folded in — see AI-11f.)
-  **Windows CUDA IS offered as of D381, and the objection that used to block it
-  is void.** That objection — pulling torch from `download.pytorch.org` through a
-  `[[tool.uv.index]]` would cost EVERY Windows user a ~3GB CUDA runtime to serve
-  the ones with an NVIDIA card — died the moment an accelerated build became a
-  row of its own that nobody installs by accident (AI-2b). PyPI still publishes
-  no CUDA-enabled Windows torch, so reaching one does mean a per-toolkit URL
-  (`whl/cu130`); what makes that acceptable rather than a third source to keep in
-  step everywhere is that the override is asked PER PLATFORM —
-  `torch = [{ index = "pytorch-cu130", marker = "sys_platform == 'win32'" }]` —
-  so Linux keeps resolving from PyPI, whose wheel already IS the CUDA build, and
-  the mirror is consulted only where PyPI has nothing to offer. The lock carries
-  two torch entries as a result, and the CUDA row means the same thing on both
-  platforms. **A CUDA row that installed a CPU wheel would be the one outcome
-  AI-2b's hard gate exists to prevent**: `_cuda()` admits Windows, so the row is
-  genuinely offered there, and offering it while silently resolving to CPU would
-  charge a user a multi-gigabyte install for a name that was not true.
+  **CUDA IS offered as of D381**: an accelerated build is a row of its own that
+  nobody installs by accident (AI-2b), and on Linux PyPI's own torch wheel
+  already IS the CUDA build, so the CUDA folder resolves from PyPI unchanged and
+  names no index of its own. **A CUDA row that installed a CPU wheel would be the
+  one outcome AI-2b's hard gate exists to prevent**: offering it while silently
+  resolving to CPU would charge a user a multi-gigabyte install for a name that
+  was not true.
 - **AI-11c** **No text has ever been generated by this runner, and AI-10b's
   disclaimer applies verbatim.** torch cannot run on CI, so the registry, the
-  catalog, the resolution across four platforms and the API are exercised
+  catalog, the resolution across platforms and the API are exercised
   against fakes, and the runner's OWN logic is tested a level down — a text
   runner module is stdlib-only at import time, so its format refusals, its
   device placement and its prompt-encoding paths are all driven on CI with
@@ -8798,7 +8701,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   `llama-cpp-python`, registered BELOW all three `transformers-text` rows so
   `auto` never reaches it on any platform** (D411). **AMENDED (D416): those three
   rows are gone and this one is now SECOND, so it IS what `auto` reaches on
-  Windows and Linux. Everything below about the wheel index still holds; what
+  Linux. Everything below about the wheel index still holds; what
   changed is that its risk is now carried by the default rather than by an opt-in
   — see AI-11h for why that trade was taken.** AI-11's original refusal
   rested on one fact — PyPI publishes an sdist for `llama-cpp-python` and no
@@ -8882,8 +8785,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   architecture outright. Where it differs from `_cuda`/`_rocm` is WHY a
   missing device still needs a hard gate at all: a Vulkan wheel links its
   GPU backend directly (`DT_NEEDED libvulkan.so.1` in `libggml-vulkan.so`,
-  `libggml.so`/`libllama.so` needing that in turn; the identical import on
-  `vulkan-1.dll` on Windows), so a machine with the wheel installed but no
+  `libggml.so`/`libllama.so` needing that in turn), so a machine with the wheel installed but no
   Vulkan loader on its library path fails `import llama_cpp` itself rather
   than degrading — refused before `uv sync` ever runs, the same way a
   missing NVIDIA/AMD device already is. A loader present with no driver ICD
@@ -8969,7 +8871,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   come from the maintainer's GitHub Pages index rather than PyPI, where 4 of 16
   audited macOS arm64 releases fail `testzip()`. What makes it affordable is that
   the failure is loud and at install time (`uv sync` reports it verbatim through
-  PY-18), the pinned `0.3.29` Linux and Windows wheels were verified intact and
+  PY-18), the pinned `0.3.29` Linux wheels were verified intact and
   working, and macOS arm64 — where the audit's failures were — still resolves to
   `mlx-text` ahead of this row. Second, `llamacpp-text-vulkan` is now the only
   GPU text path on Linux/AMD, and its `_offload_schedule` over-commit backoff is
@@ -9002,8 +8904,8 @@ an AI Models page that could say what was on disk but not what was *running*.
   `mlx-text`, and nothing downstream depends on telling the two apart.
   **No platform this app ships to is stranded**, which is pinned by
   `test_every_shipped_platform_keeps_a_local_text_engine` over an enumerated
-  platform table rather than left to be inferred — the coverage on Windows and
-  Linux is now one runner deep, so a future removal has to argue with a test.
+  platform table rather than left to be inferred — the coverage on Linux is now
+  one runner deep, so a future removal has to argue with a test.
 - **AI-11i** **`recommended` is a SECOND curation axis on a catalog entry —
   EXACTLY ONE per runner list, which is one per capability and engine — and the
   Playground is the only surface that filters on it: it draws that model plus the
@@ -9248,8 +9150,8 @@ an AI Models page that could say what was on disk but not what was *running*.
     returned text — that would be a different tokenizer's answer wearing this
     model's label. `loadSeconds` is null for an already-resident model, because
     nothing was loaded and a zero would read as an impossibly fast load. The same
-    rule governs the machine block: `totalMemoryBytes` is null on Windows, where
-    the stdlib will not say. A consumer must render null as "—" and must never
+    rule governs the machine block: `totalMemoryBytes` is null wherever
+    `os.sysconf` will not say. A consumer must render null as "—" and must never
     treat a real `0` as an absence.
   - **AI-14d** **The primary metric is per capability, and one of the four runs
     the other way.** Text generation reports `tokensPerSecond` (with `ttftMs`
@@ -9663,8 +9565,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   different, usually much smaller number. `fused_render/ai/hw_detect.py` is
   the missing half.
 
-  Detection is a subprocess probe (`nvidia-smi`, `rocm-smi`, a PowerShell
-  WMI/registry query, `sysctl`) — 50-500ms cold, the same cost
+  Detection is a subprocess probe (`nvidia-smi`, `rocm-smi`, `sysctl`) — 50-500ms cold, the same cost
   `fit._wired_limit_mb`'s own docstring refuses on a route the picker polls.
   So the split mirrors that function's: `detect_hardware()`/
   `refresh_hardware()` do the probing and persist
@@ -9674,12 +9575,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   probe`) pins that boundary so it stays true after a later phase wires
   either module up to read it, not just by accident today.
 
-  Three traps, each with its own test: Windows' `Win32_VideoController.
-  AdapterRAM` is a 32-bit field that caps a 16GB card's reading at ~4GB — the
-  fix is the display driver's own registry key
-  (`HardwareInformation.qwMemorySize`, a 64-bit `REG_QWORD`), not a bigger
-  read of the same WMI field, and NOT `Win32_PhysicalMemory` (total system
-  RAM, a different number used only for the next trap). Unified-memory APUs
+  Two traps, each with its own test. Unified-memory APUs
   (AMD Ryzen AI Max/"Strix Halo", NVIDIA Grace/DGX Spark parts) report a tiny
   BIOS-assigned carveout as their "VRAM"; detected by name and overridden to
   system RAM, exactly like Apple Silicon already is. And a cold spawn must
@@ -9826,10 +9722,10 @@ an AI Models page that could say what was on disk but not what was *running*.
   every `_PEAK_SAMPLE_INTERVAL_S` (0.25s) DURING the pass and keeps the
   running max, bracketing only the timed measurement (never the discarded
   warm-up) and torn down unconditionally in the same `finally` that already
-  closes the measurement row.** (D523) Also gives `benchmark._total_memory_
-  bytes()` the `GlobalMemoryStatusEx` Windows fallback `fit.machine_ram_gb`
-  already carries, ported rather than shared since one returns decimal GB
-  cached forever and the other raw bytes, uncached, per `machine()` call.
+  closes the measurement row.** (D523) `benchmark._total_memory_bytes()`
+  reads physical RAM through `os.sysconf` as `fit.machine_ram_gb` does, ported
+  rather than shared since one returns decimal GB cached forever and the other
+  raw bytes, uncached, per `machine()` call.
 
   A single post-pass reading misses exactly the two things a benchmark
   exists to catch: a decode's own KV cache is still growing right up to the
@@ -10299,11 +10195,10 @@ world from one the user typed.
   do at all. Intervals are written in **local time** (what launchd evaluates
   against), capped to the soonest few (the plist is a wake-up list, not the
   schedule), and `open -g -a` launches **without stealing focus** from whatever a
-  3am wake interrupted. **Windows and Linux get nothing new, deliberately:** both
-  already have a start-at-login toggle the supervisor owns (`_win32/startup.py`'s
-  Run key, `_linux/startup.py`'s autostart entry), and a schedule-specific timer
-  would be a third mechanism that can disagree with those two about whether the
-  app should be running. Everything here is best-effort: a failed plist write
+  3am wake interrupted. **Linux gets nothing new, deliberately:** it already has
+  a start-at-login toggle the supervisor owns (`_linux/startup.py`'s autostart
+  entry), and a schedule-specific timer would be a second mechanism that can
+  disagree with it about whether the app should be running. Everything here is best-effort: a failed plist write
   makes messages fire less reliably, never lost, and must not fail the store
   write that triggered it.
   - **SCH-8a** **The wake stub reads the store; nobody hands it a view of it.**
@@ -10807,12 +10702,9 @@ our vocabulary, with nowhere to go. Four failures, one answer.
   repair that held.
 - **TR-10** **The install command is pinned by a test**, because it is shown as
   a thing to copy into a terminal and a wrong one there is worse than none.
-  **Two commands now**, one per platform: the strip attached the macOS/Linux
-  `curl … | bash` line to every not-found card regardless of platform, so a
-  Windows user with no Claude Code was handed a command their shell cannot run
-  and the PowerShell one was reachable only through the help link. The server
-  states `platform` and `install_command` on the health snapshot and the UI
-  stops guessing (D517).
+  It is the one native line, `curl … | bash`, which serves macOS and Linux
+  alike. The server states `platform` and `install_command` on the health
+  snapshot and the UI renders what it is given rather than guessing (D517).
 - **TR-12** **Where the app can apply the fix, it applies it** (D517). Three of
   the setup findings are mechanisable and are mechanised: a missing install runs
   the native installer as a background job, an install that will not report its
@@ -10820,7 +10712,7 @@ our vocabulary, with nowhere to go. Four failures, one answer.
   words, and an outdated CLI runs `claude update`. The strip stops being a place
   that describes a fix and becomes the place that performs one.
 - **TR-13** **An update is offered only where updating would do something.**
-  Homebrew, WinGet, apt, dnf and apk own their own binary and answer
+  Homebrew, apt, dnf and apk own their own binary and answer
   `claude update` with "Claude is up to date!" while changing nothing, so those
   installs get the owning manager's real upgrade line and NO button;
   `DISABLE_UPDATES` withholds it too. The refusal is enforced server-side as a
@@ -10857,7 +10749,7 @@ our vocabulary, with nowhere to go. Four failures, one answer.
   puts the bundle in the same place, so it finds no new path, but it says who
   MANAGES that path, and that is what decides whether the repair ends in `brew
   reinstall --cask` or in dragging a DMG over the top (`reinstall_advice` splits
-  on exactly this); then the Windows install dir. **No `python3 -c "import
+  on exactly this). **No `python3 -c "import
   fused_render"` and no `pip show`**: neither is a supported way to install
   this, and both mislead, because a bare `python3` on PATH is not the
   interpreter inside the bundle — it either fails or finds an unrelated copy,
@@ -11001,13 +10893,13 @@ an ordinary editable app folder of their own.
   routes still accept an optional `preview` upload (PNG magic + 8 MiB cap;
   the authored still always wins; an over-cap upload is dropped rather than
   failing the download) — no shell caller sends one any more.
-- **AF-9** `.fused` is an owned file type on all three platforms: macOS
+- **AF-9** `.fused` is an owned file type on both platforms: macOS
   Owner-rank document type + exported UTI `io.fused.render.app` (conforms to
-  `public.data`, not the zip UTI, so archive tools don't claim it); Windows
-  and Linux associations flow from `templates/registry.json` like every other
-  previewable extension — `.fused` IS a registry key now (D390 made it the
-  `fusedapp` template's binding), so the D387-era `winopen.extensions()`
-  hardcoded seed is gone.
+  `public.data`, not the zip UTI, so archive tools don't claim it); Linux
+  associations flow from `templates/registry.json` like every other
+  previewable extension (`fused_render/file_associations.py`) — `.fused` IS a
+  registry key now (D390 made it the `fusedapp` template's binding), so the
+  D387-era hardcoded seed is gone.
 - **AF-12** *(D397, retired by AF-14)* Clone, "Clone & overwrite" and the
   preview-header/EmbedStrip `CloneAppFileButton`, with `GET/POST
   /api/appfile/clone` and `POST /api/appfile/overwrite`, are gone: install IS
@@ -11308,33 +11200,19 @@ manifest is the entire contract between them.
   direction before the answer was in would be asserting the opposite of what
   might be true.
 - **MC-12** **The registration entry's `command` is the resolved `fused`
-  path, VERBATIM — including the bare `fused.cmd` `inspect_app._fused_cli()`
-  reports on Windows — never routed through a `cmd.exe /c` hop we add
-  ourselves (D549).** A `.cmd` cannot be handed to `CreateProcess` directly,
-  which reads as an obvious bug to a reader who has not checked how the MCP
-  host actually spawns it — the fix a `cmd.exe` hop resembles is real for a
-  process THIS codebase spawns itself, and wrong here: the MCP TS SDK's
-  stdio transport spawns via `cross-spawn` with `shell: false`, and
-  cross-spawn decides whether to build its OWN safe `cmd.exe /c` hop by
-  reading the command's file extension (only `.com`/`.exe` skip it) — naming
-  `cmd.exe` ourselves makes that check see an `.exe` and skip the hop
-  cross-spawn would otherwise have applied correctly, which is a regression,
-  not a fix, under that theory, and still not reliably safer under the
-  alternative one (a spaced path breaks a hand-rolled `cmd.exe /c` too, once
-  both the wrapper path and the served path need their own quoting). Neither
-  host theory has been verified against a real Windows Claude Code install —
-  D549 names the check that would. Extracted into a pure
+  path, VERBATIM — never routed through a shell hop we add ourselves (D549).**
+  The MCP host spawns it directly, so the path `inspect_app._fused_cli()`
+  resolved is exactly what it runs. Extracted into a pure
   `registrationDefinition(fused, path)` function specifically so
-  `tests/test_mcp_panel.py` can pin the shape (no `cmd.exe`, no `/c`, for
-  both a POSIX- and a Windows-shaped `fused` path) and turn a well-meaning
-  revert of this decision into a loud, specific test failure.
+  `tests/test_mcp_panel.py` can pin the shape and turn a well-meaning wrapper
+  into a loud, specific test failure.
 
 ## 45. Native Capture — Recording the Screen, the Mic and a Still (D409, D410)
 
 `fused.capture` lets a page record the screen, record the microphone, and grab
 a single still — and the result is a FILE on this machine, at a path known before
-the first frame, rather than a blob a page has to round-trip through JS. All
-three platforms, one API, no field naming which one served you.
+the first frame, rather than a blob a page has to round-trip through JS. Both
+platforms, one API, no field naming which one served you.
 
 - **CP-0** The surface is deliberately small, because a bridge method is a
   forever contract. Cut in review before shipping: `onTick` (a recording
@@ -11393,12 +11271,12 @@ three platforms, one API, no field naming which one served you.
 - **CP-6** `audio` on a screen recording is `false`, `"mic"`, `"system"` or
   `"both"` — named, and refused rather than coerced, the posture AI-10 takes on
   `task`. **System audio is what a browser cannot do on macOS at all**, and that
-  is what justifies the native path there — and, read the other way, why the
-  other two platforms do not need one (CP-10): Chromium shares system audio on
-  Windows and through the PipeWire portal on Linux. Audio-only `source` is
+  is what justifies the native path there — and, read the other way, why Linux
+  does not need one (CP-10): Chromium shares system audio through the PipeWire
+  portal there. Audio-only `source` is
   `"mic"` (default), `"system"` or `"both"`: on macOS 14.2+ the latter two are a
   Core Audio process tap (no Screen Recording grant) and on 13.0–14.1 the
-  ScreenCaptureKit stream with no video track; Windows and Linux refuse them,
+  ScreenCaptureKit stream with no video track; Linux refuses them,
   naming the screen recording that does it (D1343). On 13.0–14.1 the grant is Screen Recording (sound only, no
   picture), the app must be quit and reopened after granting it, and the
   recording carries ALL system sound, notifications included; `stop()`'s
@@ -11408,7 +11286,7 @@ three platforms, one API, no field naming which one served you.
   recording's `audio: "mic"`, or audio-only `"both"`) — see D409 for why the
   API that could do both deadlocked. `"system"` refuses `device` too: it
   records no microphone. On
-  the streamed platforms both paths are `getUserMedia`, so `device` is honoured
+  the streamed platform (Linux) both paths are `getUserMedia`, so `device` is honoured
   on `audio()` too; that asymmetry is a refusal sentence on one platform, never
   a flag a page reads.
 - **CP-7** **The probe never prompts.** `sources()` answers permission from
@@ -11428,8 +11306,8 @@ three platforms, one API, no field naming which one served you.
   still's is 13 too, and audio-only microphone never needed ScreenCaptureKit at all (audio-only
   system audio needs it only below 14.2). Below
   13 a Mac gets `available: false, reason: "needs macOS 13"` and a start rejects
-  `"unavailable"` with the same sentence (D417). Windows and Linux get the same
-  shape with their own reason (CP-10, CP-11). **That holds for a backend that will not IMPORT
+  `"unavailable"` with the same sentence (D417). Linux gets the same
+  shape with its own reason (CP-10, CP-11). **That holds for a backend that will not IMPORT
   too** — the macOS module loads its frameworks at module top and
   `ScreenCaptureKit.framework` does not exist below macOS 12.3, so an
   unimportable backend is `Unsupported` (a 409) rather than an ImportError (a
@@ -11439,20 +11317,15 @@ three platforms, one API, no field naming which one served you.
   `com.apple.security.device.audio-input` in the hardened-runtime entitlements
   (without it the mic is refused whatever TCC says). Screen recording needs
   neither — only the System Settings grant, which macOS 15+ re-confirms after
-  ~30 idle days. Windows and Linux need no packaging step at all: the still is
-  ordinary GDI/D-Bus, and the recording permission is the browser's to ask for.
-- **CP-10** **Windows and Linux split by CAPABILITY, not by platform: a native
-  still, and a recording the PAGE encodes into a file this server writes.**
-  A still is one `BitBlt` (Windows) or one `org.freedesktop.portal.Screenshot`
-  call (Linux) — instant, no picker, no permission — so it stays native and
-  keeps `display`, `rect` and `cursor` working where the OS supports them.
-  A recording with SYSTEM AUDIO in it has no OS API a non-packaged Python
-  process can reach on Windows: `AppRecordingManager` needs MSIX identity,
-  `Windows.Graphics.Capture` hands out D3D surfaces with no muxer,
-  Media Foundation has no screen source, and ffmpeg's Windows inputs are
-  dshow/gdigrab/vfwcap — **no WASAPI, so no loopback without a third-party
-  driver**. Chromium already does what a native recorder would (WGC plus WASAPI
-  loopback; the PipeWire portal on Linux; hardware-encoded), so the page runs
+  ~30 idle days. Linux needs no packaging step at all: the still is
+  ordinary D-Bus, and the recording permission is the browser's to ask for.
+- **CP-10** **Linux splits by CAPABILITY: a native still, and a recording the
+  PAGE encodes into a file this server writes.** A still is one
+  `org.freedesktop.portal.Screenshot` call — instant, no picker, no
+  permission — so it stays native and keeps `display`, `rect` and `cursor`
+  working where the desktop supports them. A recording goes through the
+  browser: Chromium already does what a native recorder would (the PipeWire
+  portal, system audio included, hardware-encoded), so the page runs
   `MediaRecorder` and `capture/_sink.py` appends its chunks over a WebSocket.
   Everything that makes this feature worth having is unchanged: the path is
   decided at start (CP-2), it is a job row with the same three endings (CP-3,
@@ -11465,13 +11338,12 @@ three platforms, one API, no field naming which one served you.
   macOS, and it fails safely: both containers are playable AS WRITTEN, so the
   socket closing keeps the file, marks the row done and says why — there is no
   `moov` atom to lose and never a row claiming to record over a file nothing is
-  writing. Rejected: bundling ffmpeg (40–60 MB, and still no system audio),
-  and WGC through `MediaStreamSource` (per-frame Python and D3D copies for
-  hours). The socket is guarded by the per-recording token from its own start
+  writing. Rejected: bundling ffmpeg (40–60 MB) for what the browser already
+  does. The socket is guarded by the per-recording token from its own start
   reply plus an `Origin` check, because a browser cannot put `X-Fused` on a
   handshake.
 - **CP-11** **What only the browser knows is answered by the browser.** On the
-  streamed platforms whether a recording is possible is a fact about the BROWSER
+  streamed platform (Linux) whether a recording is possible is a fact about the BROWSER
   — has it `MediaRecorder`, will it share system audio — and a server route
   cannot know which one is asking. So those probes answer `client: true` and
   `runtime.js` replaces `video`, `audio`, `systemAudio` and `microphones` from
@@ -11535,7 +11407,7 @@ three platforms, one API, no field naming which one served you.
   tap hold the recorder; the ScreenCaptureKit mux route (13.0-14.1) cannot, since
   the stream keeps delivering, so it drops buffers while paused and subtracts the
   gap from every later timestamp — the file has no hole. Screen recordings and
-  the streamed (Windows/Linux) recorder refuse. The pill is the native
+  the streamed (Linux) recorder refuse. The pill is the native
   `recording_pill_panel.py` (a non-activating, never-key panel hosting
   `/recording-pill`), shown on every audio start and hidden on every ending path
   (stop, cancel, cap, a lost backend, the job row's ✕, `stop_all`); the page polls
@@ -12079,8 +11951,8 @@ per-row fix.
   `.js`/`.svg` files (the `.fused` exporter's own gitignore-aware walk,
   bounded to 40 files / 256 KB, numbered lines) with
   `skills/fused-render-cross-browser/SKILL.md` read from disk as the rubric,
-  `--json-schema` for a structured verdict, prompt over stdin (newlines vs.
-  the Windows `.cmd` shim), `--no-session-persistence`, `--tools=`. It NEVER
+  `--json-schema` for a structured verdict, prompt over stdin,
+  `--no-session-persistence`, `--tools=`. It NEVER
   runs on a GET: `report()`/`report_one()` only read the cache at
   `.fused/cache/app-doctor/cross-browser.json`, whose `checksum` is a sha256
   of exactly the bytes the model was shown. Cache matches → the stored
@@ -12099,9 +11971,7 @@ per-row fix.
   go wrong, in which browser, no code) and a `fix` (one sentence) — the
   panel draws those as wrapping prose, never the source line, and the fix
   prompt carries `fix` as "suggested fix". No free text rides in argv
-  (system prompt via `--system-prompt-file`, `_popen_cmd` for the `.cmd`
-  shim, and on that shim the schema goes into the prompt instead of
-  `--json-schema`, whose quotes `_cmd_quote` refuses).
+  (system prompt via `--system-prompt-file`).
   Every row carries `ondemand: bool` so the panel never keeps its own list.
   The row is a `candidate` (a model's reading earns a second look), so its
   fix task is the ordinary per-row task with the triage-first prompt, routed
@@ -12183,7 +12053,7 @@ Goal: when the shell's red "fused-render isn't running" card appears, or a
 "Python quit unexpectedly" dialog does, the user can hand over one zip that
 says which of three things happened. **No platform self-restarts a dead
 server** — on macOS uvicorn runs on a daemon thread inside the AppKit process
-and nothing watches it; on Windows/Linux the desktop supervisor turns
+and nothing watches it; on Linux the desktop supervisor turns
 `SERVER_DIED` into a dialog and exits 1 — so a card that clears by itself is
 the banner's own down→reconnected cycle, never a restart. Every process in
 the bundle runs as `Contents/MacOS/python`, so the crash dialog is usually a
@@ -12201,13 +12071,13 @@ disk and leaves only inside a zip the user chooses to send (D421's posture).
 ### 50.1 Log home and retention
 
 - **DG-1 Log home.** The app log's directory is `~/Library/Logs/fused-render/`
-  on macOS (so Console.app lists it) and `<home>/logs/app/` on Windows/Linux,
+  on macOS (so Console.app lists it) and `<home>/logs/app/` on Linux,
   where the desktop supervisor sets `FUSED_RENDER_LOG_DIR` to that
   subdirectory. `FUSED_RENDER_LOG_DIR` still overrides on every platform. The
   home is persistent: the system temp dir (D68's default) is erased by the
   reboot every reporter does before reporting. It holds the per-pid session
   logs (DG-2), relaunch logs, `crash/` (DG-11), `outages.jsonl` (DG-9) and
-  `resources.jsonl` (DG-16). On Windows/Linux it sits beside the call-store
+  `resources.jsonl` (DG-16). On Linux it sits beside the call-store
   partitions but is not one of them (CL-7). **Rejected:** staying in
   `$TMPDIR`; one path on every platform (Console.app visibility on macOS is
   worth the split).
@@ -12353,7 +12223,7 @@ disk and leaves only inside a zip the user chooses to send (D421's posture).
   | `claude/` | claude run `err.log` tails only |
   | `calls/` | `*.calls.jsonl` in the window (§31) |
   | `state/` | `server.json` minus its token; `current_apps.json`, `background_apps.json`, `registered_apps.json`; `claude-health.json`; `prefs.json` redacted |
-  | `desktop/` | `server-console.log` and `supervisor.log` tails (Windows/Linux) |
+  | `desktop/` | `server-console.log` and `supervisor.log` tails (Linux) |
 
 - **DG-21 Never collected.** openfused secrets and credentials,
   `rclone.conf` (a leftover from the removed mount feature, still never collected), `lan_tls/`, `claude-config/`, drafts, `held_answers`, and

@@ -46,13 +46,10 @@ def require_private(path: str) -> None:
     if not stat.S_ISDIR(st.st_mode):
         raise NotADirectoryError(
             "%s is not a directory (a symlink or file is in the way)" % path)
-    geteuid = getattr(os, "geteuid", None)
-    if geteuid is None:
-        return  # Windows: no uid model here, and its temp dir is already per-user
-    if st.st_uid != geteuid():
+    if st.st_uid != os.geteuid():
         raise PermissionError(
             "%s belongs to uid %d, not %d — refusing to keep this conversation "
-            "under a directory another account controls" % (path, st.st_uid, geteuid()))
+            "under a directory another account controls" % (path, st.st_uid, os.geteuid()))
     if st.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
         raise PermissionError(
             "%s is writable by others (mode %04o) — refusing to keep this "

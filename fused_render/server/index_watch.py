@@ -9,7 +9,7 @@ SPEC-index-live-watch.md §1 for the three designs that failed on exactly
 that question).
 
 This module OBSERVES instead: `watchfiles` (the `notify` Rust crate —
-FSEvents on macOS, inotify on Linux, ReadDirectoryChangesW on Windows),
+FSEvents on macOS, inotify on Linux),
 running in a watcher process per configured root (`fused_render.index.
 watcher`, which explains why it cannot run in this process and how it
 prunes what it watches), feeds a `WatchLoop` per root over a pipe. The loop
@@ -95,13 +95,9 @@ class WatchLoop:
         self.root = root
         # `_folder_of` (used on every touched path below) canonicalizes
         # through `norm(os.path.abspath(...))` before `_clamp_to_root` ever
-        # sees the result — on Windows that adds a drive letter, turning
-        # "/home/me/proj/a.txt" into "C:/home/me/proj". `root` is handed to
-        # this class as-is and never goes through that same pipeline, so
-        # comparing a folder against raw `root` compares two different
-        # canonical forms on Windows and every folder fails containment
-        # (see DECISIONS.md for the CI failure this fixed). Canonicalize
-        # once, the same way, so the comparison is apples to apples.
+        # sees the result. `root` is handed to this class as-is and never
+        # goes through that same pipeline, so canonicalize it once, the same
+        # way, so the comparison is apples to apples.
         self._root_canon = _canon_folder(root) or root
         self.open_source = open_source
         self.dropped = dropped
@@ -305,7 +301,7 @@ def _end_process(proc: subprocess.Popen) -> None:
 
 
 def _spawn_kwargs() -> dict:
-    """Popen kwargs for the watcher. On POSIX, `close_fds=False` (with an
+    """Popen kwargs for the watcher. `close_fds=False` (with an
     absolute `sys.executable`, no `cwd` and no `start_new_session`) keeps
     CPython on `posix_spawn`: a fork() of a server that has loaded PROJ runs
     its `pthread_atfork` handler and the child dies with SIGSEGV before exec.
@@ -313,8 +309,6 @@ def _spawn_kwargs() -> dict:
     non-inheritable (PEP 446): the child gets its two pipes and not the
     server's listening socket, and no other child holds the watcher's stdin
     open past the server's exit. Same rule as `index.runner._detach_kwargs`."""
-    if sys.platform == "win32":
-        return {"creationflags": subprocess.CREATE_NO_WINDOW}
     return {"close_fds": False}
 
 

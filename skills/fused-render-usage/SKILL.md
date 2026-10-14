@@ -9,7 +9,7 @@ Local file-explorer desktop app, single instance per user, serves on `127.0.0.1`
 
 ## Open path via app
 
-macOS `open -a FusedRender <path>` · Linux `gtk-launch fused-render <path>` (or AppImage binary) · Windows `FusedRenderPy.exe <path>`. Dir → explorer; file → preview; `.html` → rendered view.
+macOS `open -a FusedRender <path>` · Linux `gtk-launch fused-render <path>` (or AppImage binary). Dir → explorer; file → preview; `.html` → rendered view.
 
 ## Open by URL
 

@@ -39,7 +39,7 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _CLAUDE = os.path.join(_ROOT, "fused_render", "claude_agent")
 
 skip_root = pytest.mark.skipif(
-    hasattr(os, "geteuid") and os.geteuid() == 0,
+    os.geteuid() == 0,
     reason="read-only bits are ignored when running as root")
 
 
@@ -295,14 +295,10 @@ def test_a_user_who_set_it_themselves_keeps_their_value(
 
 
 def _target(tmp_path, content, name="notes.md"):
-    # `newline=""` disables universal-newline translation — same fix, same
-    # reason, as _claude_history.write_version's own comment: file_history.py
-    # compares this file's on-disk bytes against a checkpoint's bytes exactly
-    # (`differs` is a byte comparison, by design — see file_history._locate),
-    # and `Path.write_text`'s default text mode would silently inflate every
-    # "\n" here to "\r\n" on Windows, making a target deliberately written to
-    # equal a checkpoint's content ("disk\n" == "disk\n") no longer equal it
-    # on disk, and derailing the positional walk that test is asserting about.
+    # `newline=""` — same reason as _claude_history.write_version's own
+    # comment: file_history.py compares this file's on-disk bytes against a
+    # checkpoint's bytes exactly (`differs` is a byte comparison, by design —
+    # see file_history._locate).
     f = tmp_path / name
     with open(f, "w", encoding="utf-8", newline="") as fh:
         fh.write(content)

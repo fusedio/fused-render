@@ -150,9 +150,9 @@ def test_export_surfaces_a_pypandoc_failure(eng, tmp_path, monkeypatch):
 
 def test_pandoc_venv_returns_cached_without_building(eng, tmp_path, monkeypatch):
     pandoc = tmp_path / "_pandoc"
-    vdir = pandoc / "venv" / ("Scripts" if os.name == "nt" else "bin")
+    vdir = pandoc / "venv" / "bin"
     vdir.mkdir(parents=True)
-    vpy = vdir / ("python.exe" if os.name == "nt" else "python")
+    vpy = vdir / "python"
     vpy.write_text("", encoding="utf-8")
     (pandoc / "deps_ok").write_text("ok", encoding="utf-8")
     monkeypatch.setattr(eng, "PANDOC_DIR", str(pandoc))

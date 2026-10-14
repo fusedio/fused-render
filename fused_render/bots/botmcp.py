@@ -46,7 +46,7 @@ def _log(msg: str) -> None:
 
 def _utf8_stdio() -> None:
     """UTF-8 on the wire whatever the locale (permission_server._utf8_stdio:
-    the CLI is Node and writes raw UTF-8; a cp1252 pipe on Windows dies on the
+    the CLI is Node and writes raw UTF-8; a non-UTF-8 locale pipe dies on the
     first curly quote). Never raises."""
     for stream, extra in ((sys.stdin, {"errors": "replace"}),
                           (sys.stdout, {"newline": "\n"})):

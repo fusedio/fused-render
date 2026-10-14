@@ -171,11 +171,9 @@ def is_native_template_path(path) -> bool:
     # realpath + case-folding on BOTH sides (D1310): a symlinked spelling of
     # the folder, or a differently-cased one on a case-insensitive volume (the
     # macOS default), is the same folder and must be refused the same way.
-    # `normcase` folds on Windows only — on macOS it is the identity — so
     # darwin lowers explicitly. On a case-sensitive APFS volume that can only
     # widen the root match; `_native_folder` stats the real, unfolded path.
     def fold(x):
-        x = os.path.normcase(x)
         return x.lower() if sys.platform == "darwin" else x
 
     p = os.path.realpath(path).rstrip(os.sep)

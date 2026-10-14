@@ -430,9 +430,7 @@ def _ensure_cache(file):
         # Instead the leftover is renamed aside to a _TMP_PREFIX name — atomic,
         # and if it turns out we moved a just-published winner, our own
         # equivalent build claims `d` on the next pass so readers still find a
-        # complete cache there. On Windows the rename-aside also fails while
-        # any process holds files inside `d` open, so a cache in active use
-        # can't be yanked away; we just retry and end up adopting it.
+        # complete cache there.
         # Adopting is committed to only once a winner's metadata is actually in
         # hand: our own complete build is still sitting in tmp_d, so a winner
         # that vanishes mid-read (renamed aside by yet another builder) means

@@ -317,9 +317,8 @@ def scan_roots(cfg: IndexConfig, start_dir: str | None = None) -> list:
     started but COMPARED against those keys (the stale-fingerprint scan below,
     freshness.note_folder_opened, routers/git_repos._usable), and the user's raw
     configured spelling is not the stored one: `~/proj` never matches
-    `/Users/me/proj`, and on Windows `expanduser("~")` returns `C:\\Users\\me`
-    against a stored `C:/Users/me`, so every lookup misses on that platform and the
-    index reads as permanently unreconciled."""
+    `/Users/me/proj`, so every lookup would miss and the index would read as
+    permanently unreconciled."""
     if cfg.roots:
         return [runner.canonical_root(r) for r in cfg.roots]
     return [runner.canonical_root("~")]
@@ -846,14 +845,10 @@ def _display_root(root: str) -> str:
     `platform/lib` — none of them shorten a path against home), so this is
     the smallest version that does it, scoped to this one call site.
 
-    `root` arrives already run through `runner.canonical_root` (forward
-    slashes, however this run's spec was recorded). Comparing it against a
-    raw `os.path.expanduser("~")` fails on Windows, where that returns
-    backslashes (`C:\\Users\\x`) — the prefix could never match, and the
-    card would always show the full absolute path. Running `home` through
-    `runner.canonical_root` too — the same function that produced `root`'s
-    spelling — keeps this a single normalization, not a second hand-rolled
-    one that could drift from the first."""
+    `root` arrives already run through `runner.canonical_root`. Running
+    `home` through `runner.canonical_root` too — the same function that
+    produced `root`'s spelling — keeps this a single normalization, not a
+    second hand-rolled one that could drift from the first."""
     home = runner.canonical_root("~")
     if root == home:
         return "~"

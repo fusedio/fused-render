@@ -302,12 +302,6 @@ describe("pathShortcut", () => {
     expect(pathShortcut("/", HOME)).toBe("/");
   });
 
-  it("normalizes drive-letter paths and keeps a drive root's slash", () => {
-    expect(pathShortcut("C:\\Users\\me", HOME)).toBe("C:/Users/me");
-    // Bare "C:" reads as cwd-relative, so a drive root keeps its slash.
-    expect(pathShortcut("C:/", HOME)).toBe("C:/");
-  });
-
   it("is null for anything that is not a path — that is a search, not a jump", () => {
     expect(pathShortcut("weather csv", HOME)).toBeNull();
     expect(pathShortcut("Downloads", HOME)).toBeNull();
@@ -329,16 +323,6 @@ describe("pathShortcut", () => {
 
   it("strips a file:// scheme, same as a terminal or Finder paste would carry", () => {
     expect(pathShortcut("file:///etc/hosts", HOME)).toBe("/etc/hosts");
-  });
-
-  it("strips a Windows file:// URI's authority slash ahead of the drive letter", () => {
-    // file:///C:/Users/x is "C:/Users/x", not "/C:/Users/x" — the third slash
-    // is the URI's (empty) authority separator, not part of the path. Getting
-    // this wrong used to pass the leading-slash guard branch as if it were an
-    // absolute POSIX path, producing a confidently wrong address.
-    expect(pathShortcut("file:///C:/Users/x", HOME)).toBe("C:/Users/x");
-    // A bare POSIX file:// URL has no such extra slash to drop.
-    expect(pathShortcut("file:///home/x", HOME)).toBe("/home/x");
   });
 
   it("tolerates a trailing newline from a multi-line paste", () => {

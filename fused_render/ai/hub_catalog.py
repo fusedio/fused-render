@@ -24,6 +24,7 @@ up in `raw` on the next rebuild and `_model_row` picks it up like always.
 from __future__ import annotations
 
 import contextlib
+import fcntl
 import json
 import os
 import time
@@ -69,28 +70,11 @@ def store_lock(cfg: HubCatalogConfig):
     os.makedirs(cfg.dir, exist_ok=True)
     f = open(os.path.join(cfg.dir, ".catalog.lock"), "a")
     try:
-        if os.name == "nt":
-            import msvcrt
-            f.seek(0)
-            while True:
-                try:
-                    msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
-                    break
-                except OSError:
-                    time.sleep(0.05)
-        else:
-            import fcntl
-            fcntl.flock(f, fcntl.LOCK_EX)
+        fcntl.flock(f, fcntl.LOCK_EX)
         yield
     finally:
         try:
-            if os.name == "nt":
-                import msvcrt
-                f.seek(0)
-                msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
-            else:
-                import fcntl
-                fcntl.flock(f, fcntl.LOCK_UN)
+            fcntl.flock(f, fcntl.LOCK_UN)
         except OSError:
             pass
         f.close()
