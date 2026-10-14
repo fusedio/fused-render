@@ -11,8 +11,7 @@
 // shows its INSTALL PAGE (AF-14). Nothing in the file runs until the user
 // installs it there; the page is the confirm.
 //
-// Deliberately NOT native-window.ts's openAppWindow, even inside a native
-// window. A deep link always arrives in a FRESH window (app.py `_open_target`
+// The same document load inside a native window. A deep link always arrives in a FRESH window (app.py `_open_target`
 // → `WindowManager.open`), which the 303 parked on Home; loading the embed
 // into that same window makes it the file's window, and the install's own
 // navigation then turns it into the app's — the URL observer re-keys it

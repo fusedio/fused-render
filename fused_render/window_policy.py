@@ -41,9 +41,7 @@ from fused_render._view_url_codec import (
 
 #: Filled by app.py on macOS once the run loop is up: ``apply(enabled)`` builds
 #: or drops the window manager when the ``native_windows_enabled`` preference
-#: flips (shell/prefs.py); ``open_app(path)`` focuses-or-opens an app's own
-#: window (POST /api/windows/open — the shell's app clicks inside a native
-#: window). Empty under ``fused-render serve`` and on every other platform —
+#: flips (shell/prefs.py). Empty under ``fused-render serve`` and on every other platform —
 #: the preference still stores, nothing changes hands.
 native_hooks: dict = {}
 
@@ -81,23 +79,6 @@ def app_window_path(fs_path: str) -> str:
         if entry:
             return embed_url_path(entry)
     return shell_path_for(fs_path)
-
-
-def app_home_path(fs_path: str) -> str:
-    """The URL PATH an app opens at INSIDE the Home window (the
-    ``apps_open_in_home`` preference): the explorer view of its entry page,
-    or of the folder when it has none — what the browser shell navigates to
-    on an app click, NOT the chrome-free embed of `app_window_path`."""
-    fs_path = os.path.abspath(fs_path)
-    target = fs_path
-    if os.path.isdir(fs_path):
-        try:
-            from fused_render.app_listing import app_entry
-
-            target = app_entry(fs_path) or fs_path
-        except OSError:
-            pass
-    return explorer_view_path(target)
 
 
 def edit_target(view: str | None, key: str | None) -> str | None:

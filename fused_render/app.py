@@ -1351,7 +1351,8 @@ QUIT_APPKIT_REPLY_WAIT_S = QUIT_HARD_DEADLINE_S + 5.0
 
 def launcher_home_action(state: dict, url: str, nsapp) -> None:
     """The launcher's Home row / <modifier>+0 (main thread): the same rule as
-    the macOS Dock icon — raise the Home window, else open one
+    the macOS Dock icon — raise the window last used (an app's own run
+    window excepted), else open Home
     (`WindowManager.focus_or_open_home`; a browser tab with the windows
     off). ``nsapp`` is passed in so a test can drive this without AppKit.
     With no window manager at all (its build failed) the fallback is a
@@ -1741,11 +1742,10 @@ def main() -> None:
     # AppKit sends applicationShouldHandleReopen:hasVisibleWindows: when the
     # user clicks the Dock icon (or double-clicks the app in Finder) while the
     # app is already running. rumps's delegate doesn't implement it, so without
-    # this patch a Dock click does nothing. The click raises the Home window,
-    # opening one only when none is open (a browser tab only when the
-    # window manager failed to build) — or, with "Single window experience"
-    # on (`prefs.apps_open_in_home`), the window last used instead
-    # (`WindowManager.reopen` picks); if the server is still
+    # this patch a Dock click does nothing. The click raises the window last
+    # used (an app's own run window excepted), opening Home only when none is
+    # open (`WindowManager.reopen`; a browser tab only when the window
+    # manager failed to build); if the server is still
     # booting, queue the home URL on the same pending list the bootstrap
     # flushes.
     # Must return a BOOL — returning None here breaks the pyobjc bridge.
@@ -2126,25 +2126,6 @@ def main() -> None:
         _apply_windows(native_windows_enabled())
         window_policy.native_hooks["apply"] = lambda on: AppHelper.callAfter(_apply_windows, on)
 
-        def _open_app_window(fs_path: str) -> None:
-            # POST /api/windows/open: the shell, running inside one of our
-            # windows, was clicked on an app. Its own window, focused if
-            # already open (`WindowManager.focus_or_open_app`). The route
-            # answers before this runs; with no manager (the preference off
-            # since the page loaded) the click becomes a browser tab at the
-            # same address, never nothing.
-            manager = state["windows"]
-            if manager is None:
-                webbrowser.open(url.rstrip("/") + window_policy.app_window_path(fs_path))
-                return
-            if prefs_mod.apps_open_in_home():
-                manager.open_app_in_home(fs_path)
-                return
-            manager.focus_or_open_app(fs_path)
-
-        window_policy.native_hooks["open_app"] = (
-            lambda fs_path: AppHelper.callAfter(_open_app_window, fs_path))
-
         def _open_window(target: str) -> None:
             # The popover's `window.open` / target=_blank (menubar_pin), main
             # thread already. Classified FIRST, like a window's own policy:
@@ -2174,11 +2155,9 @@ def main() -> None:
 
             # Dock semantics; the panel is non-activating, so bring
             # this app forward or the window opens behind the caller.
-            # An app lands in its own run window, as a shell click does.
+            # Only these native doors give an app a window of its own; a
+            # click inside the shell opens it in that same window.
             NSApp.activateIgnoringOtherApps_(True)
-            if prefs_mod.apps_open_in_home():
-                manager.open_app_in_home(fs_path)
-                return
             manager.focus_or_open_app(fs_path)
 
         def _open_bot_native(bid: str) -> None:
@@ -2334,8 +2313,9 @@ def main() -> None:
         }
 
         def _show_home_native() -> None:
-            # The Dock's Home tile / "Open <app>": raise an open Home window,
-            # else open one; a browser tab with the windows off.
+            # The Dock's Home tile / "Open <app>": raise the window last used
+            # (an app's own run window excepted), else open Home; a browser
+            # tab with the windows off.
             manager = state["windows"]
             if manager is None or not manager.enabled:
                 webbrowser.open(url)

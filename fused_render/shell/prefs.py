@@ -219,16 +219,14 @@ def native_windows_enabled() -> bool:
     return read_prefs().get("native_windows_enabled") is not False
 
 
-def apps_open_in_home() -> bool:
-    """Whether the desktop app (macOS and Linux) opens an app inside the Home
-    window's explorer, like the browser shell, instead of in a window of its
-    own (default OFF — opt-in). Read at open time by the click route, the
-    launcher and the window hooks; there is no live hook to apply.
-
-    Shown as "Single window experience". On macOS it also governs the Dock
-    icon click: ON, it brings back the window last used (an app's own run
-    window excepted) instead of always going to Home (`WindowManager.reopen`)."""
-    return read_prefs().get("apps_open_in_home") is True
+def apps_open_in_explorer() -> bool:
+    """Whether an app clicked inside a native window opens in the explorer
+    view (sidebar, crumb, header) instead of its chrome-free embed (default
+    OFF — opt-in). Either way it loads into the window it was clicked in;
+    the embed turns that window into the app's window. Read by the client
+    at click time (appEntry.ts `openAppEntry`); the browser shell always
+    opens the explorer."""
+    return read_prefs().get("apps_open_in_explorer") is True
 
 
 def app_sharing_enabled() -> bool:
@@ -671,16 +669,14 @@ def _prefs_response() -> dict:
         # `fused-render serve` or another platform has no windows to offer, so
         # the Preferences section stays hidden there.
         "native_windows": _native_windows_state(),
+        # An app clicked inside a native window opens in the explorer view
+        # instead of its embed (opt-in, default off).
+        "apps_open_in_explorer": {"enabled": apps_open_in_explorer()},
         # Which surface the macOS status item shows: the menu-bar Dock
         # (default) or the pinned-file popover (`menubar_pin_enabled`, opt-in).
         # `available` is the same test as the windows above: this process is
         # the macOS app (the hook is installed), not a `fused-render serve`.
         "menubar": _menubar_state(),
-        # Apps open inside the Home window's explorer instead of per-app
-        # native windows (desktop app only; opt-in, default off). This is the
-        # "Single window experience" pref; on macOS it also makes a Dock click
-        # bring back the last-used window instead of Home.
-        "apps_open_in_home": {"enabled": apps_open_in_home()},
         # A task on the Tasks page opens in a side panel beside the list —
         # always, since 2026-09-20 (`task_peek_enabled`). Still sent, because
         # the client's flag module reads it.
@@ -975,11 +971,11 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
             if apply_menubar is not None:
                 apply_menubar(value)
             changed = True
-        if "apps_open_in_home" in body:
-            value = body.get("apps_open_in_home")
+        if "apps_open_in_explorer" in body:
+            value = body.get("apps_open_in_explorer")
             if not isinstance(value, bool):
-                return JSONResponse({"error": "'apps_open_in_home' must be a boolean"}, status_code=400)
-            prefs["apps_open_in_home"] = value
+                return JSONResponse({"error": "'apps_open_in_explorer' must be a boolean"}, status_code=400)
+            prefs["apps_open_in_explorer"] = value
             changed = True
         if "task_notify_terminal_sessions" in body:
             value = body.get("task_notify_terminal_sessions")
@@ -1142,7 +1138,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
             return JSONResponse(
                 {"error": "no known preference in request (expected 'engine', "
                           "'engines', 'reader_enabled', 'canvases_enabled', 'app_sharing_enabled', 'live_previews_enabled', 'monitor_enabled', "
-                          "'native_windows_enabled', 'apps_open_in_home', "
+                          "'native_windows_enabled', 'apps_open_in_explorer', "
                           "'task_notify_terminal_sessions', "
                           "'project_queue_enabled', "
                           "'lan_enabled', "

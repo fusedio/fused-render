@@ -41,6 +41,7 @@
 // The active tab lives in the URL (`?tab=indexing`), same pattern as
 // Templates' bindings/library tabs.
 // Template bindings live in the dedicated /view/_templates view.
+import { isMac } from "@platform/lib/platform";
 import { useCallback, useEffect, useState } from "react";
 import {
   buildDiagnostics,
@@ -59,8 +60,8 @@ import {
   putCanvasesEnabled,
   putLivePreviewsEnabled,
   putMonitorEnabled,
-  putAppsOpenInHome,
   putMenubarPinEnabled,
+  putAppsOpenInExplorer,
   putNativeWindowsEnabled,
   putGitAutoSyncEnabled,
   putAutoDownloadUpdates,
@@ -906,14 +907,14 @@ function NativeWindowsSection({ prefs, onChange }: { prefs: Prefs; onChange: (p:
   const nw = prefs.native_windows;
   if (!nw || !nw.available) return null;
   const enabled = nw.enabled;
-  const inHome = prefs.apps_open_in_home?.enabled === true;
+  const inExplorer = prefs.apps_open_in_explorer?.enabled === true;
 
-  const toggleInHome = async () => {
+  const toggleInExplorer = async () => {
     if (busy) return;
     setBusy(true);
     setError(null);
     try {
-      onChange(await putAppsOpenInHome(!inHome));
+      onChange(await putAppsOpenInExplorer(!inExplorer));
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -938,8 +939,8 @@ function NativeWindowsSection({ prefs, onChange }: { prefs: Prefs; onChange: (p:
     <section className="prefs-section">
       <h2>Native windows</h2>
       <p className="deploy-muted">
-        Open {displayName()} in its own windows instead of browser tabs: a window per app, with
-        native window controls. On by default. Turning it off closes the open windows and the app
+        Open {displayName()} in its own windows instead of browser tabs, with native window
+        controls. An app opened from the launcher gets a window of its own. On by default. Turning it off closes the open windows and the app
         opens everything in your default browser instead.
       </p>
       <label className="prefs-radio">
@@ -948,23 +949,26 @@ function NativeWindowsSection({ prefs, onChange }: { prefs: Prefs; onChange: (p:
           <b>Use native windows</b> instead of browser tabs.
         </span>
       </label>
-      <label className="prefs-radio">
-        <input
-          type="checkbox"
-          checked={inHome}
-          disabled={busy || !enabled}
-          onChange={toggleInHome}
-        />
-        <span>
-          <b>Single window experience</b>
-          <br />
-          <span className="deploy-muted">
-            Apps open inside the Home window's file explorer, like in a browser, instead of each in
-            its own window. On macOS, clicking the Dock icon brings back the window you last used
-            instead of going to Home.
+      {/* macOS only: a Linux window always opens apps in the explorer
+          (appEntry.ts `openAppEntry`), so there is nothing to choose. */}
+      {isMac && (
+        <label className="prefs-radio">
+          <input
+            type="checkbox"
+            checked={inExplorer}
+            disabled={busy || !enabled}
+            onChange={toggleInExplorer}
+          />
+          <span>
+            <b>Open apps in the file explorer</b>
+            <br />
+            <span className="deploy-muted">
+              An app you click inside a window opens there with the explorer around it, instead of
+              on its own with the window becoming the app's.
+            </span>
           </span>
-        </span>
-      </label>
+        </label>
+      )}
       {error && <ErrorBanner>{error}</ErrorBanner>}
     </section>
   );
