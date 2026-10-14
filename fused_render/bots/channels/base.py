@@ -47,6 +47,15 @@ OUT_ROLES = ("done", "question", "approval", "error")
 APPROVAL_OPTIONS = ("Approve", "Deny")
 
 
+def relay_of(ev) -> dict | None:
+    """The card another bot waits on, when `ev` is Super Bot's relay of it (docs §11
+    relay): {"bot": <target id>, "seq": <that card's seq>, "kind": "approval" |
+    "question", "options": [...]}; None for every other event. A reply to the
+    relayed card answers the TARGET's card, through the router, never Super Bot."""
+    r = (ev or {}).get("relay")
+    return r if isinstance(r, dict) and r.get("bot") and r.get("seq") is not None else None
+
+
 def approvals_by_text(meta) -> bool:
     """Super Bot's "Approve by text" switch (Settings > Phone, `imessage_approvals`):
     a phone-started task's approval cards are texted and the reply may settle

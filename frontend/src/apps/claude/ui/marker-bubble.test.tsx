@@ -18,7 +18,7 @@ import { act, create, type ReactTestRendererJSON } from "react-test-renderer";
 
 // Loaded AFTER the shim: `Turn` reaches the platform router through the receipt
 // row, and that module reads `location` at import time.
-const { MARKER_FILE, MARKER_JOIN, MARKER_VIEW } = await import("../protocol/wire");
+const { MARKER_ANN, MARKER_FILE, MARKER_JOIN, MARKER_VIEW } = await import("../protocol/wire");
 const { Turn } = await import("./Turn");
 type UserTurn = import("../protocol/controller-api").UserTurn;
 
@@ -112,4 +112,67 @@ test("a terminal ask draws a chip, a selection block and the words, never the ra
   expect(bubbleText(r)).not.toContain("```");
   const plain = mount(<Turn turn={user("hello [terminal x]")} />);
   expect(bubbleText(plain)).toBe("hello [terminal x]");
+});
+
+// ANNOTATED SENDS: the bubble reads what the reader wrote on the picture.
+const { annStanza } = await import("../protocol/wire");
+const annWire = (typed: string, notes: Array<{ label: string; content: string; tag?: string }>) =>
+  (typed ? typed + "\n" : "") +
+  "<annotations>\n" +
+  notes.map((n) => annStanza(n)).join("\n\n") +
+  "\n</annotations>";
+
+function classCount(r: ReturnType<typeof create>, cls: string): number {
+  let n = 0;
+  walk(r.toJSON() as Json, (node) => {
+    if (typeof node === "string") return;
+    const c = (node.props as { className?: string } | undefined)?.className;
+    if (typeof c === "string" && c.split(/\s+/).includes(cls)) n += 1;
+  });
+  return n;
+}
+
+test("a wordless annotated send's bubble is the note, with no marker words", () => {
+  const raw = annWire("", [{ label: "A", content: "make this bigger", tag: "button" }]);
+  const r = mount(<Turn turn={{ role: "user", key: "u:a", text: MARKER_ANN, raw }} />);
+  expect(bubbleText(r)).toBe("make this bigger");
+  expect(classCount(r, "bubble-ann")).toBe(1);
+  expect(classCount(r, "bubble-ann-lbl")).toBe(0);
+});
+
+test("two notes carry their letters", () => {
+  const raw = annWire("", [
+    { label: "A", content: "first", tag: "div" },
+    { label: "B", content: "second", tag: "div" },
+  ]);
+  const r = mount(<Turn turn={{ role: "user", key: "u:b", text: MARKER_ANN, raw }} />);
+  expect(classCount(r, "bubble-ann")).toBe(2);
+  expect(classCount(r, "bubble-ann-lbl")).toBe(2);
+  expect(bubbleText(r)).toBe("Afirst" + "Bsecond");
+});
+
+test("typed words come first, then the note", () => {
+  const raw = annWire("fix this", [{ label: "A", content: "too small", tag: "div" }]);
+  const r = mount(<Turn turn={{ role: "user", key: "u:c", text: "fix this", raw }} />);
+  expect(bubbleText(r)).toBe("fix this" + "too small");
+  expect(classCount(r, "bubble-typed")).toBe(1);
+});
+
+test("annotated sends draw no note rows and no overview caption", () => {
+  const raw = annWire("", [{ label: "A", content: "x", tag: "div" }]);
+  const r = mount(<Turn turn={{ role: "user", key: "u:d", text: MARKER_ANN, raw }} />);
+  expect(classCount(r, "annsum-note")).toBe(0);
+  expect(JSON.stringify(r.toJSON())).not.toContain("annotated overview attached");
+});
+
+test("a marker-only send without annotations still says its marker words", () => {
+  const r = mount(<Turn turn={user(MARKER_FILE + MARKER_JOIN + MARKER_VIEW)} />);
+  expect(bubbleText(r)).toBe("files" + MARKER_JOIN + "pane screenshot");
+});
+
+test("a marker-only send whose only annotation has no words says its marker words, not an empty bubble", () => {
+  const raw = annWire("", [{ label: "A", content: "", tag: "button" }]);
+  const r = mount(<Turn turn={{ role: "user", key: "u:e", text: MARKER_ANN, raw }} />);
+  expect(classCount(r, "bubble-ann")).toBe(0);
+  expect(bubbleText(r)).toBe("annotations");
 });

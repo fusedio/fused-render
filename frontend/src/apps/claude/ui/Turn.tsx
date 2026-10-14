@@ -2,7 +2,7 @@
 // reply behind the spark avatar (T:13446-13504, and the skin note at T:7-12 —
 // "right-aligned user bubbles, full-width assistant prose behind a spark
 // avatar", the shape claude.ai / v0 / ChatGPT all settled on).
-import { memo, useId } from "react";
+import { memo, useId, useMemo } from "react";
 
 import { SquareTerminal } from "lucide-react";
 import { cn } from "@platform/lib/utils";
@@ -12,7 +12,7 @@ import type { AssistantTurn, Turn as TurnRow, UserTurn } from "../protocol/contr
 import { splitCommand } from "../protocol/commands";
 import { viewKind, type SegmentKind } from "../protocol/segments";
 import { toolChipSummary } from "../protocol/summaries";
-import { INTERRUPT_MARK, isInterruptMark, isMarkerOnly } from "../protocol/wire";
+import { INTERRUPT_MARK, isInterruptMark, isMarkerOnly, parseInbound, type AnnotationWire } from "../protocol/wire";
 import type { Viewable } from "./attachApi";
 import { MarkerText } from "./AttachIcon";
 import { Caret } from "./Caret";
@@ -30,6 +30,28 @@ import { TroubleMessage } from "./TroubleView";
  *  named here so the callers that already say `from "./Turn"` still read the
  *  one definition. */
 export { INTERRUPT_MARK, isInterruptMark };
+
+const NO_NOTES: AnnotationWire[] = [];
+
+/** The words inside an ANNOTATED user bubble: the typed words first when there
+ *  are any, then one line per comment that has words, lettered only when there
+ *  are two or more so they still match the badges burned into the overview.
+ *  Hook-free; `Turn` reads the notes once, above its early returns. */
+function UserBubbleBody({ turn, notes }: { turn: UserTurn; notes: AnnotationWire[] }) {
+  const typed = turn.text && !isMarkerOnly(turn.text) ? turn.text : "";
+  const lettered = notes.length > 1;
+  return (
+    <>
+      {typed ? <div className="bubble-typed">{splitCommand(typed) ? <UserWords text={typed} /> : typed}</div> : null}
+      {notes.map((note, i) => (
+        <div className="bubble-ann" key={(note.id || note.label || "n") + ":" + i}>
+          {lettered ? <span className="bubble-ann-lbl">{note.label || "•"}</span> : null}
+          {note.content}
+        </div>
+      ))}
+    </>
+  );
+}
 
 export interface TurnProps {
   turn: TurnRow;
@@ -101,6 +123,17 @@ export const Turn = memo(function Turn({
   // BEFORE the early returns below: a hook may not sit behind one, and the id
   // is only used on the assistant branch (see `bodyId`).
   const uid = useId();
+  // The comments an annotated send carried, only those with words: a wordless
+  // pin draws no line, and a send of nothing but those falls back to the
+  // marker words / typed text below.
+  const rawWire = turn.role === "user" ? turn.raw : undefined;
+  const notes = useMemo(
+    () =>
+      rawWire === undefined
+        ? NO_NOTES
+        : (parseInbound(rawWire).annotations ?? []).filter((n) => (n.content ?? "").trim()),
+    [rawWire],
+  );
   if (turn.role === "user" && isInterruptMark(turn.text)) {
     // A STATUS LINE, not a bubble (R2-2). Same shape as a `note` turn — the
     // muted centred one-liner every other "this happened beside the
@@ -157,11 +190,14 @@ export const Turn = memo(function Turn({
               {stamp}
             </span>
           ) : null}
-        {/* A WORDLESS SEND'S BUBBLE says what the message carried instead —
-            "pane screenshot", "files", "annotations" — and each of those gets
-            the same lucide glyph the chip and the receipt wear (P2-7). Anything
-            the reader actually typed is their own words and gets none. The
-            bubble's TEXT is identical either way. */}
+        {/* WHAT THE BUBBLE SAYS. An annotated send reads as the comments the
+            reader wrote on the picture: the typed words first when there are
+            any, then one line per comment, lettered only when there are two or
+            more so they still match the badges burned into the overview. A
+            send with no comments and no typed text says what it carried
+            instead — "pane screenshot", "files" — each with the lucide glyph
+            the chip and the receipt wear (P2-7). Anything the reader actually
+            typed is their own words and gets none. */}
           <div className={cn("bubble", termAsk && "is-terminal-ask")}>
             {termAsk ? (
               <>
@@ -176,6 +212,8 @@ export const Turn = memo(function Turn({
                 {termAsk.selection !== undefined ? <pre className="term-ask-sel">{termAsk.selection}</pre> : null}
                 <div className="term-ask-body">{termAsk.body}</div>
               </>
+            ) : notes.length ? (
+              <UserBubbleBody turn={turn} notes={notes} />
             ) : isMarkerOnly(turn.text) ? (
               <MarkerText text={turn.text} />
             ) : splitCommand(turn.text) ? (

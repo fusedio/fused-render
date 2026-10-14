@@ -14,6 +14,10 @@ policy (docs/bots.md §10).
               switch is on and the card fits in one text; the reply is stamped
               for that one card (`via["answers"]`), which is the only way a
               texted yes or no ever settles a card (channels.base.answers_card).
+              A hand-off target's card comes the same way, relayed through Super
+              Bot's chat (handoffs._relay_card, docs §11 relay): the record names
+              the TARGET, and the reply goes to the target's gate, never into
+              Super Bot's inbox (_relay). One live card per door; the next waits.
 
 The router exists only while `registry.start()` ran (the full server): tests
 and a lean `fused-render open` have none, and `on_event` is a no-op then.
@@ -68,9 +72,19 @@ def render(ev: dict, caps: Caps, approvals: bool = True) -> tuple[str, list[str]
     elif suffix:
         numbered = opts
     text += suffix
-    if approval and not numbered:
+    if (approval or (base.relay_of(ev) is not None and not caps.buttons)) and not numbered:
         text += "\n\nNeeds your OK at the Mac."
     return text, numbered
+
+
+def _yes():
+    from fused_render.bots.agent_engine import YES  # lazy: the router imports without the engine's dependencies
+    return YES
+
+
+def _no():
+    from fused_render.bots.agent_engine import NO
+    return NO
 
 
 def map_answer(text: str, options: list[str]) -> str:
@@ -96,12 +110,15 @@ class Router:
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
         self._pending: dict[str, tuple] = {}  # bot id -> (seq, options) of the numbered question still awaiting a texted answer
-        # bot id -> (seq, options, sent_at) of the approval card texted with its Approve / Deny numbering. Kept apart
-        # from _pending, which any user event pops: a Mac-typed instruction ("wait, check the price") leaves the card
-        # up, and the phone's later "1" must still map and still count for that card. `sent_at` is the clock the
-        # reply's own time is held against: a reply written before the card went out answers an older one, not this.
-        # Cleared when the task ends.
-        self._texted_card: dict[str, tuple] = {}
+        # door bot id -> the one card texted with a numbering a reply may settle: {"bot": the bot that waits on it
+        # (Super Bot itself for its own approval card, the hand-off target for a relayed card, docs §11 relay), "seq":
+        # that card's seq on THAT bot, "opts", "sent_at", "text"}. Kept apart from _pending, which any user event pops:
+        # a Mac-typed instruction ("wait, check the price") leaves the card up, and the phone's later "1" must still
+        # map and still count for that card. `sent_at` is the clock the reply's own time is held against: a reply
+        # written before the card went out answers an older one, not this. One live card per door: a second one
+        # waits in _parked and is texted when this one settles (_settle), so a "1" never has two readings.
+        self._texted_card: dict[str, dict] = {}
+        self._parked: dict[str, list] = {}  # door bot id -> [(bot, ev)] cards waiting their turn, FIFO
         self._errors: dict[str, str] = {}         # kind -> last router-side error for Settings
         self._lock = threading.Lock()
 
@@ -166,31 +183,120 @@ class Router:
         if seq is not None and waiting != seq:
             opts = []
         via = base.via(ch.kind, m.addr)
-        if card and waiting == card[0] and (m.ts or 0) >= card[2]:
+        if card and card["bot"] != bid and not opts:
+            # A relayed card (docs §11 relay): the reply settles the TARGET's card, and only a reply that reads as a
+            # verdict (a number of the card's, a yes, a no). It never enters Super Bot's inbox: the target's own gate
+            # reads it as the web's, under the same stamp. Super Bot's own live numbered question, when it has one
+            # (`opts`), takes the reply instead: it went out later and is what the phone is looking at.
+            if self._relay(ch, bot, card, text, m.ts or 0, via):
+                return
+        elif card and card["bot"] == bid and waiting == card["seq"] and (m.ts or 0) >= card["sent_at"]:
+            # (card["bot"] == bid: a relay's seq is the TARGET's counter and may collide with Super Bot's own.)
             # The bot still waits on the card this sender was texted, and the reply was written after the card went
             # out: it is that card's answer and nothing else's (docs §10). A reply older than the card (typed for an
             # earlier card the Mac then answered, delivered late) is left unstamped, so the gate treats it as an
             # instruction and _texted_approval holds a bare yes/no. "1" maps to Approve even after a Mac instruction
             # popped _pending; the words are then read by the gate as the web's are (YES approves, NO denies,
             # anything else is an instruction).
-            opts = opts or list(card[1])
-            via["answers"] = card[0]
+            opts = opts or list(card["opts"])
+            via["answers"] = card["seq"]
         text = map_answer(text, opts)
         bot.receive(text, via=via)
+
+    def _relay(self, ch: Channel, door, card: dict, text: str, ts: float, via: dict) -> bool:
+        """A reply while a relayed card is the live texted card. True when it was
+        taken (answered the target's card, or held because that card is gone);
+        False when the words are not a verdict at all (Super Bot's instruction
+        or new task, as ever: free text never redirects)."""
+        verdict = map_answer(text, list(card["opts"]))
+        if verdict == text and not (_yes().match(text) or _no().match(text)):
+            return False
+        try:
+            target = self._registry.get(card["bot"])
+        except Exception:  # noqa: BLE001 — the target is gone (deleted mid-wait)
+            target = None
+        twait = (getattr(target, "meta", None) or {}).get("waiting_on") if target is not None else None
+        who = card.get("name") or "the bot"
+        if target is None or twait != card["seq"]:
+            # Answered at the Mac already (or the task ended): one text back, nothing starts. Without this an idle
+            # Super Bot would start a task named "1".
+            door.emit("system", f"Texted \"{text.strip()[:80]}\" for {who}'s card after it was settled; not applied.", via=None)
+            door.emit("error", f"That card of {who}'s was answered already (at the Mac, or the task ended).", via=dict(via), source="hold")
+            self._settle(door.id, card)
+            return True
+        if ts < card["sent_at"]:
+            # Written before the card went out (typed for an earlier one, delivered late): not this card's answer. The
+            # card is still up and still waited on, so the record STAYS: the next "1" must still reach it.
+            door.emit("system", f"Texted \"{text.strip()[:80]}\" before {who}'s card went out; not applied.", via=None)
+            door.emit("error", f"That reply was sent before {who}'s card reached you. Reply again to answer it.", via=dict(via), source="hold")
+            return True
+        via["answers"] = card["seq"]
+        try:
+            # `answers` binds it in receive() too: judged again under the target's lock at the inbox write, so the
+            # gap between the check above and the write cannot turn it into the verdict on a later card.
+            target.receive(verdict, via=via, answers=card["seq"])
+        except Exception as e:  # noqa: BLE001 — CardSettled: the card went in the gap
+            if e.__class__.__name__ != "CardSettled":
+                raise
+            door.emit("system", f"Texted \"{text.strip()[:80]}\" for {who}'s card after it was settled; not applied.", via=None)
+            door.emit("error", f"That card of {who}'s was answered already (at the Mac, or the task ended).", via=dict(via), source="hold")
+            self._settle(door.id, card)
+            return True
+        self._settle(door.id, card)
+        # Super Bot's transcript records that the USER answered, as a plain line the model reads as data.
+        did = "approved" if _yes().match(verdict) else "denied" if _no().match(verdict) else f"answered \"{verdict.strip()[:80]}\" to"
+        # source "handoff" without a `handoff` ref: the page shows it as a quiet hand-off line (not a card), and
+        # past_conversation labels it as the user's act.
+        door.emit("system", f"You {did} {card.get('name') or 'the bot'}'s card from your phone: {card.get('text') or ''}"[:400],
+                  via=None, source="handoff")
+        return True
+
+    def _settle(self, door: str, card: dict | None = None) -> None:
+        """The live texted card of `door` is answered or gone: forget it, and text
+        the next card waiting its turn (deliver re-checks that one is still live)."""
+        with self._lock:
+            cur = self._texted_card.get(door)
+            if card is not None and cur is not card:
+                return
+            self._texted_card.pop(door, None)
+        self._advance(door)
+
+    def _advance(self, door: str) -> None:
+        """The slot of `door` is free (nothing recorded): queue the next parked card,
+        if any. deliver re-checks it is still waited on and, if not, calls back here."""
+        with self._lock:
+            if self._texted_card.get(door) is not None:
+                return
+            nxt = self._parked.get(door) or []
+            item = nxt.pop(0) if nxt else None
+        if item is not None:
+            b, ev = item
+            self._q.put((b, {**ev, "parked": True}))
 
     # ----------------------------------------------------------------- outbound
     def on_event(self, bot, ev: dict) -> None:
         """Called by bot.emit() for every event; cheap: enqueue or ignore."""
         role = ev.get("role")
+        bid = getattr(bot, "id", None)
         ended = role in ("done", "error") and not ev.get("source")
         if self._pending and (role == "user" or ended):
             # The numbered question was answered (at the Mac or here) or its task ended: numbers mean nothing
             # now. A hand-off or build card from another thread is not the task's end.
             with self._lock:
-                self._pending.pop(getattr(bot, "id", None), None)
-        if self._texted_card and ended:
+                self._pending.pop(bid, None)
+        if self._texted_card:
+            # The live texted card follows the bot that WAITS on it (docs §11 relay): Super Bot's own card goes when
+            # its task ends; a relayed card when the target acts again (its wait is over, answered at the Mac or by
+            # the relay), ends, or is stopped. Checked before the hand-off early return below: a target's events
+            # all carry the hand-off via. Super Bot finishing an unrelated task leaves a relay alone.
+            stopped = role == "system" and (ev.get("text") or "").strip() == "Stopped"
+            fatal = role == "error" and ev.get("trace")
+            done = role == "done" and ev.get("source") != "build"
             with self._lock:
-                self._texted_card.pop(getattr(bot, "id", None), None)
+                hits = [(d, c) for d, c in self._texted_card.items() if c["bot"] == bid
+                        and ((c["bot"] == d and ended) or (c["bot"] != d and (done or fatal or stopped or role in ("action", "thought"))))]
+            for d, c in hits:
+                self._settle(d, c)
         if ev.get("role") not in OUT_ROLES or not (ev.get("text") or "").strip():
             return
         if ((ev.get("via") or {}).get("kind") or "") == base.HANDOFF_KIND:
@@ -213,6 +319,31 @@ class Router:
         if not addrs:
             return []
         text, numbered = render(ev, ch.caps, approvals=base.approvals_by_text(getattr(bot, "meta", None)))
+        relay = base.relay_of(ev)
+        if numbered and (relay is not None or ev.get("role") == "approval"):
+            # A card a reply may settle takes the door's one slot. A card flushed from _parked may have been answered
+            # at the Mac while it waited: then it is dropped, the Mac saw it. A FRESH card is never checked: it is
+            # queued inside the waiting bot's own emit(), before that bot has written waiting_on (the engines emit
+            # first, set_status next), so a check here would drop every card. Slot taken by another card: park it,
+            # _settle texts it when that one is answered. The same reply must never have two readings.
+            wbot, wseq = (relay["bot"], relay["seq"]) if relay else (bot.id, ev.get("seq"))
+            parked = ev.pop("parked", False)
+            try:
+                waiter = bot if wbot == bot.id else self._registry.get(wbot)
+                twait = (getattr(waiter, "meta", None) or {}).get("waiting_on")
+            except Exception:  # noqa: BLE001
+                waiter, twait = None, None
+            # A parked card must still be THE wait. A fresh one may not have been written yet (None); it is obsolete
+            # only when the waiter already waits on something else (it sat in the queue behind a retrying send and
+            # the Mac answered it meanwhile). A dropped card hands the slot on (_advance), so the queue never stalls.
+            if waiter is None or (twait != wseq and (parked or twait is not None)):
+                self._advance(bot.id)
+                return []
+            with self._lock:
+                cur = self._texted_card.get(bot.id)
+                if cur is not None and (cur["bot"], cur["seq"]) != (wbot, wseq):
+                    self._parked.setdefault(bot.id, []).append((bot, ev))
+                    return []
         if ch.identity().get("mode") == "own":
             # The bot speaks through the user's own account: the name in front is
             # the one token that tells its lines from theirs.
@@ -246,12 +377,18 @@ class Router:
                          **({"error": err} if err else {}))
             except Exception:  # noqa: BLE001
                 logger.debug("delivery row not written", exc_info=True)
+        if not sent and numbered and (relay is not None or ev.get("role") == "approval"):
+            self._advance(bot.id)  # every attempt failed: the slot stays free, the next parked card gets its turn
         if sent and numbered:
             with self._lock:
                 self._pending[bot.id] = (ev.get("seq"), numbered)
-                if ev.get("role") == "approval":
-                    # The one card a texted yes may settle, and the clock a reply must postdate (dispatch).
-                    self._texted_card[bot.id] = (ev.get("seq"), numbered, sent_at)
+                if relay is not None or ev.get("role") == "approval":
+                    # The one card a texted reply may settle, and the clock a reply must postdate (dispatch). A relayed
+                    # card records the TARGET and its seq: the reply goes to that bot's gate (dispatch → _relay).
+                    name = (ev.get("handoff") or {}).get("target_name") if relay else (bot.meta.get("name") or "")
+                    self._texted_card[bot.id] = {"bot": relay["bot"] if relay else bot.id, "seq": relay["seq"] if relay else ev.get("seq"),
+                                                 "opts": numbered, "sent_at": sent_at, "name": name or "",
+                                                 "text": " ".join((ev.get("text") or "").split())[:120]}
         return sent
 
     def _send_loop(self) -> None:
