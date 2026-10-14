@@ -940,3 +940,85 @@ def test_the_bulk_reuse_tail_credits_progress_more_than_once(tmp_path, monkeypat
     # sitting at 0 until the final one.
     assert progress[0]["reused"] > 0
     assert progress[0]["reused"] < progress[-1]["reused"]
+
+
+# -- a dead pool child fails the run instead of hanging it ------------------------
+
+def _wide_tree(root, n=50):
+    """More subdirs than `nproc * 24` (the frontier size at which the parent
+    stops walking and fans out to the process pool), so the pool is used."""
+    for i in range(n):
+        d = root / f"d{i:02d}"
+        d.mkdir()
+        (d / "f.txt").write_text("x", encoding="utf-8")
+
+
+def _spec_run_dir(cfg, src, name):
+    run_dir = os.path.join(cfg.runs_dir, name)
+    os.makedirs(run_dir)
+    with open(os.path.join(run_dir, "spec.json"), "w") as f:
+        json.dump({"root": canonical_root(str(src)), "full": False,
+                   "started": 0, "config": cfg.to_dict()}, f)
+    return run_dir
+
+
+def test_a_pool_child_killed_mid_scan_fails_the_run_instead_of_hanging(
+        tmp_path, monkeypatch):
+    """multiprocessing.Pool replaces a killed child and the task it was running
+    never completes, so `map_async` never became ready and the parent looped
+    for ever (a memory-pressure kill). The run must end `failed` instead; a
+    later scan redoes the work."""
+    import threading
+
+    src = tmp_path / "src"
+    src.mkdir()
+    _wide_tree(src)
+    cfg = _cfg(tmp_path, nproc=2)
+    run_dir = _spec_run_dir(cfg, src, "die")
+    monkeypatch.setenv("FUSED_RENDER_TEST_SCAN_CHILD_DIE", "d07")
+    t = threading.Thread(target=run_scan, args=(run_dir,), daemon=True)
+    t.start()
+    t.join(timeout=60)
+    assert not t.is_alive(), "run_scan hung after a pool child died"
+    end = _events(run_dir)[-1]
+    assert end["type"] == "run_end" and end["msg"] == "failed"
+    assert ("BrokenProcessPool" in end["error"]
+            or "terminated abruptly" in end["error"])
+    assert read_manifest(cfg) is None  # nothing half-compacted
+
+
+def test_a_cancel_during_the_pool_phase_ends_the_run_cancelled(
+        tmp_path, monkeypatch):
+    """Drives the pool loop's cancel branch deterministically: the executor is
+    faked so no task ever finishes, and the cancel flag appears on the first
+    wait."""
+    import concurrent.futures as cf
+    import fused_render.index.scan as scan_mod
+
+    src = tmp_path / "src"
+    src.mkdir()
+    _wide_tree(src)
+    cfg = _cfg(tmp_path, nproc=2)
+    run_dir = _spec_run_dir(cfg, src, "cancel-in-pool")
+
+    class FakeExecutor:
+        def __init__(self, *a, **k):
+            pass
+
+        def submit(self, fn, *a):
+            return cf.Future()  # never resolves
+
+        def shutdown(self, wait=True, cancel_futures=False):
+            pass
+
+    real_wait = cf.wait
+
+    def wait_then_cancel(fs, timeout=None, return_when=cf.ALL_COMPLETED):
+        open(os.path.join(run_dir, "cancel"), "w").close()
+        return real_wait(fs, timeout=0.01, return_when=return_when)
+
+    monkeypatch.setattr(cf, "ProcessPoolExecutor", FakeExecutor)
+    monkeypatch.setattr(cf, "wait", wait_then_cancel)
+    scan_mod.run_scan(run_dir)
+    assert _summary(run_dir)["msg"] == "cancelled"
+    assert read_manifest(cfg) is None

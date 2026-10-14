@@ -613,3 +613,56 @@ def test_discarding_the_inbox_never_eats_a_control_request(agent, run_dir):
     left = [json.loads((run_dir / "inbox" / n.name).read_text())
             for n in sorted((run_dir / "inbox").glob("*.json"))]
     assert [r["type"] for r in left] == ["control_request"]
+
+
+def test_the_clis_turn_preamble_between_result_and_echo_is_still_a_seam(agent):
+    """Claude Code 2.1.29x writes `system/init` and `system/status` between a
+    turn's `result` and the echo of the next message, on every follow-up.
+    Demanding the echo sit directly after the `result` reported no seam for
+    any genuine boundary at all, so a freshly opened page had nothing to
+    subtract and typed the previous reply into the new bubble (Akshil,
+    2026-10-14). Those rows are the CLI picking the message up, not the run
+    speaking — unlike a wake's rows, which still refuse the seam."""
+    rows = [
+        _user_row("q1"), _text_row("A."), _result_row("A."),
+        {"type": "system", "subtype": "init", "session_id": "s"},
+        {"type": "system", "subtype": "status", "session_id": "s"},
+        _user_row("q2"), _text_row("B."),
+    ]
+    assert agent._absorbed_turn_breaks(rows) == [{"segments": 1, "text": len("A.")}]
+    assert [seg["text"] for seg in agent._segments_from_rows(rows)] == ["A.", "B."]
+
+
+def test_a_wake_with_the_preamble_in_front_still_refuses_the_seam(agent):
+    """The preamble rows are exempt, the wake's own rows are not: a
+    `task_notification` (or its synthetic string-content user row) between
+    the `result` and the next echo still means the turn reopened on its own,
+    and a seam at that `result` would file the wake's text under the turn
+    that had not started yet."""
+    rows = [
+        _user_row("q1"), _text_row("A."), _result_row("A."),
+        {"type": "system", "subtype": "init", "session_id": "s"},
+        {"type": "system", "subtype": "status", "session_id": "s"},
+        {"type": "system", "subtype": "task_notification",
+         "message": "a task finished"},
+        {"type": "user", "message": {"role": "user",
+                                     "content": "<task-notification>done"}},
+        _text_row("And the task is done."),
+        _user_row("q2"), _text_row("B."),
+    ]
+    assert agent._absorbed_turn_breaks(rows) == []
+
+
+def test_a_wake_without_a_task_notification_row_still_refuses_the_seam(agent):
+    """A persisted-transcript wake has only the synthetic string-content user
+    row. It is not an echo (`_starts_new_turn` wants list content) and it is
+    not preamble, so it resets the quiet stretch and the seam is refused."""
+    rows = [
+        _user_row("q1"), _text_row("A."), _result_row("A."),
+        {"type": "system", "subtype": "init", "session_id": "s"},
+        {"type": "user", "message": {"role": "user",
+                                     "content": "<task-notification>done"}},
+        _text_row("And the task is done."),
+        _user_row("q2"), _text_row("B."),
+    ]
+    assert agent._absorbed_turn_breaks(rows) == []

@@ -214,6 +214,11 @@ def _scan_subtree(subroot):
     when metadata is warm), but if dirs start blocking — sandbox containers,
     dataless iCloud dirs — hands the rest of the subtree to a thread pool,
     where the blocked syscalls overlap (they release the GIL while waiting)."""
+    # Test-only fault injection: simulates a memory-pressure kill of this pool
+    # child (spawn children inherit the parent's environment).
+    die = os.environ.get("FUSED_RENDER_TEST_SCAN_CHILD_DIE")
+    if die and os.path.basename(subroot) == die:
+        os._exit(137)
     sink, cache = _CHILD["sink"], _CHILD["cache"]
     rules, guard = _CHILD["rules"], _CHILD["guard"]
     stack = [subroot]
@@ -570,24 +575,41 @@ def run_scan(run_dir: str) -> None:
                   "reused": sink.reused, "udirs": sink.udirs}
 
         if frontier and not cancelled:
+            import concurrent.futures
             import multiprocessing as mp
             # "spawn", never fork: a forked child re-runs PROJ's SQLite atfork
             # handler and dies with SIGSEGV (the pyramid-worker crash class).
             ctx = mp.get_context("spawn")
-            pool = ctx.Pool(cfg.nproc, initializer=_child_init,
-                            initargs=(run_dir, not incremental))
-            res = pool.map_async(_scan_subtree, sorted(frontier), chunksize=1)
-            while not res.ready():
-                res.wait(0.5)
-                c = child_totals()
-                _emit(ev, type="progress",
-                      dirs=totals["dirs"] + c["dirs"],
-                      files=totals["files"] + c["files"],
-                      reused=totals["reused"] + c["reused"],
-                      current=c["current"])
-            pool.close()
-            pool.join()
-            res.get()  # surface any child exception
+            # ProcessPoolExecutor, not multiprocessing.Pool: when a child is
+            # killed (a memory-pressure kill), Pool silently replaces it and
+            # the task it was running is lost — it never completes, so
+            # `map_async(...).ready()` stays False and the parent loops for
+            # ever. The executor marks itself broken instead and every pending
+            # future raises BrokenProcessPool, which the handler below turns
+            # into a `failed` run_end; a later scan redoes the work.
+            ex = concurrent.futures.ProcessPoolExecutor(
+                max_workers=cfg.nproc, mp_context=ctx,
+                initializer=_child_init,
+                initargs=(run_dir, not incremental))
+            try:
+                pending = {ex.submit(_scan_subtree, d) for d in sorted(frontier)}
+                while pending:
+                    done, pending = concurrent.futures.wait(
+                        pending, timeout=0.5,
+                        return_when=concurrent.futures.FIRST_EXCEPTION)
+                    for fut in done:
+                        fut.result()  # BrokenProcessPool, or a child's own error
+                    c = child_totals()
+                    _emit(ev, type="progress",
+                          dirs=totals["dirs"] + c["dirs"],
+                          files=totals["files"] + c["files"],
+                          reused=totals["reused"] + c["reused"],
+                          current=c["current"])
+                    if os.path.exists(cancel_flag):
+                        cancelled = True
+                        break
+            finally:
+                ex.shutdown(wait=True, cancel_futures=True)
             c = child_totals()
             for k in ("dirs", "files", "reused", "udirs"):
                 totals[k] += c[k]
@@ -601,6 +623,13 @@ def run_scan(run_dir: str) -> None:
                   summary={"dirs": totals["dirs"], "files": totals["files"]})
             return
 
+        # Nothing below reads the dir cache again (the walk is over and
+        # compaction re-reads dirs.parquet itself), yet on a large index it is
+        # the biggest thing this worker holds — and compaction may wait on the
+        # store lock behind another scan for minutes with it resident. `keys`
+        # (the sorted-key list the pool split built) shares its strings.
+        cache.clear()
+        keys = subtree_n = None
         summary = compact(cfg, root, shards_dir, pa, pq,
                           emit=lambda **e: _emit(ev, **e),
                           cancel_flag=cancel_flag)
@@ -731,6 +760,12 @@ def _run_fsevents(cfg, rules, guard, root, hint, cache, sink, ev, cancel_flag,
         _emit(ev, type="run_end", msg="cancelled",
               summary={"dirs": totals["dirs"], "files": totals["files"]})
         return None
+    # Everything the walk and the carry-forward needed is dead weight now
+    # (only `totals`, `t0` and the summary are read below), and compaction can
+    # wait on the store lock with it resident. `cache` is the caller's dict,
+    # also unused after this returns, so it is cleared in place.
+    cache.clear()
+    children = scanned = dead = keys = stack = deleted = None
     summary = compact(cfg, root, sink.shards_dir, pa, pq,
                       emit=lambda **e: _emit(ev, **e), cancel_flag=cancel_flag)
     if summary is None:  # cancelled at the store lock (delete raced the scan)

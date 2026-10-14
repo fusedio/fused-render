@@ -106,7 +106,13 @@ The loop, per configured root (`index_routes.scan_roots(load_config())`):
    outermost-only collapse, "wait out a live run covering it", the per-folder
    floor, the deferral deadline, the mount / ignored / foreign-device refusal
    (`_real_blocked`), and wakes the job bridge so the search box shows
-   "indexing…". Reuse it; do not write a second queue.
+   "indexing…". Reuse it; do not write a second queue. It also caps live
+   index runs at `runner.MAX_CONCURRENT_RUNS` (2, counted process-wide by
+   `runner.live_run_count`, cancelled-but-still-exiting runs included): a
+   cycle starts at most the remaining budget, the rest stay pending and
+   re-arm, and `DEFER_DEADLINE_S` never overrides the cap. Each run is a
+   worker holding hundreds of MB and runs serialize on the store lock, so
+   more than two only adds waiting memory.
 7. **Collapse to the root** when a single flush holds more than
    `index_touch.MAX_FOLDERS` distinct outermost folders: forward `{root}`
    instead. One whole-root incremental walk (4.4 s) beats sixteen folder

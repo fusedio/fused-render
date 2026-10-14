@@ -377,7 +377,7 @@ def test_the_blocking_merge_statement_itself_heartbeats(tmp_path, monkeypatch):
             return getattr(self._real, name)
 
     monkeypatch.setattr(store_mod, "background_connect",
-                        lambda: _SlowDuringMerge(real_connect()))
+                        lambda **kw: _SlowDuringMerge(real_connect(**kw)))
 
     cfg = _cfg(tmp_path, part_rows=5)
     rows = [_row(f"/r/f{i}.txt") for i in range(23)]
@@ -775,3 +775,214 @@ def test_partial_merge_at_the_boundary_one_partition_short_of_everything(tmp_pat
     assert any(p["file"] == before_file for p in after)
     assert os.stat(os.path.join(cfg.files_dir, before_file)).st_mtime_ns == before_mtime
     assert len(after) == 3
+
+
+# -- store_lock: a wait that can be cancelled and that heartbeats ----------------
+
+def _hold_lock(cfg):
+    """Hold the store lock from a second open file description, so the
+    lock under test contends with it the way another worker's would."""
+    import fcntl
+
+    os.makedirs(cfg.dir, exist_ok=True)
+    f = open(os.path.join(cfg.dir, ".store.lock"), "a")
+    fcntl.flock(f, fcntl.LOCK_EX)
+    return f
+
+
+def test_uncontended_store_lock_works_and_releases(tmp_path):
+    cfg = _cfg(tmp_path)
+    with store_mod.store_lock(cfg):
+        pass
+    with store_mod.store_lock(cfg):  # would block forever if never released
+        pass
+
+
+def test_compact_waiting_on_the_store_lock_returns_none_when_cancelled(tmp_path):
+    """A cancelled run used to notice its flag only AFTER acquiring the lock,
+    holding its whole scan's memory while it waited behind a long merge."""
+    import threading
+
+    cfg = _cfg(tmp_path)
+    shards = _shard(tmp_path, cfg, [("/r", _scanned("s", [_row("/r/a.txt")], 10, 1, 0))])
+    flag = str(tmp_path / "cancel")
+    held = _hold_lock(cfg)
+    out = {}
+    t = threading.Thread(target=lambda: out.update(
+        r=compact(cfg, "/r", shards, pa, pq, cancel_flag=flag)))
+    try:
+        t.start()
+        time.sleep(0.4)
+        assert t.is_alive()  # still waiting on the held lock
+        open(flag, "w").close()
+        t.join(timeout=2.5)
+        assert not t.is_alive(), "a cancelled waiter must give up promptly"
+        assert out == {"r": None}
+    finally:
+        held.close()
+        t.join(timeout=5)
+
+
+def test_a_waiting_store_lock_heartbeats(tmp_path, monkeypatch):
+    """A waiting worker emits nothing otherwise, so the liveness watchdog
+    (runner.ABANDONED_RUN_S) would call it dead while it is merely queued."""
+    import threading
+
+    monkeypatch.setattr(store_mod, "_LOCK_WAIT_HEARTBEAT_S", 0.1)
+    cfg = _cfg(tmp_path)
+    beats = []
+    held = _hold_lock(cfg)
+    got = []
+
+    def waiter():
+        with store_mod.store_lock(cfg, on_wait=lambda: beats.append(1)):
+            got.append(True)
+
+    t = threading.Thread(target=waiter)
+    t.start()
+    try:
+        time.sleep(0.8)
+        assert len(beats) >= 2
+        assert not got
+    finally:
+        held.close()  # releases the flock
+        t.join(timeout=5)
+    assert got == [True]
+
+
+def test_compact_reports_a_waiting_phase_while_queued(tmp_path, monkeypatch):
+    import threading
+
+    monkeypatch.setattr(store_mod, "_LOCK_WAIT_HEARTBEAT_S", 0.1)
+    cfg = _cfg(tmp_path)
+    shards = _shard(tmp_path, cfg, [("/r", _scanned("s", [_row("/r/a.txt")], 10, 1, 0))])
+    events = []
+    held = _hold_lock(cfg)
+    t = threading.Thread(target=lambda: compact(
+        cfg, "/r", shards, pa, pq, emit=lambda **kw: events.append(kw)))
+    t.start()
+    try:
+        time.sleep(0.6)
+    finally:
+        held.close()
+        t.join(timeout=10)
+    assert {"type": "phase", "msg": "waiting for another scan to finish"} in events
+
+
+# -- load_dir_cache filters in Arrow before it materializes ----------------------
+
+def _write_dirs_rg(cfg, rows, row_group_size=3, with_n_subdirs=True):
+    """dirs.parquet sorted by dir, in small row groups so the statistics
+    pushdown has several groups to skip across."""
+    os.makedirs(cfg.dir, exist_ok=True)
+    rows = sorted(rows)
+    cols = {"dir": [r[0] for r in rows], "n_files": [r[2] for r in rows],
+            "mtime_ns": [r[1] for r in rows]}
+    if with_n_subdirs:
+        cols["n_subdirs"] = [r[3] for r in rows]
+    pq.write_table(pa.table(cols), cfg.dirs_parquet, row_group_size=row_group_size)
+
+
+_TRAPS = [
+    ("/a", 1, 1, 1), ("/r", 2, 2, 3), ("/r/a", 3, 4, 2), ("/r/a/x", 4, 5, 0),
+    ("/r/a/x/y", 5, 6, 0), ("/r/a-b", 6, 7, 0), ("/r/a.b", 7, 8, 0),
+    ("/r/ab", 8, 9, 0), ("/r/b", 9, 10, 0), ("/z", 10, 11, 0),
+]
+
+
+def test_load_dir_cache_returns_exactly_the_root_and_its_descendants(tmp_path):
+    """`/r/a-b`, `/r/a.b` and `/r/ab` sort inside the `[root, root+'0')` range
+    the row-group filter admits; the mask must remove them."""
+    cfg = _cfg(tmp_path)
+    _write_dirs_rg(cfg, _TRAPS)
+    assert load_dir_cache(cfg, "/r/a", pq) == {
+        "/r/a": (3, 4, 2), "/r/a/x": (4, 5, 0), "/r/a/x/y": (5, 6, 0)}
+
+
+def test_load_dir_cache_with_a_trailing_slash_root_gives_the_same_answer(tmp_path):
+    cfg = _cfg(tmp_path)
+    _write_dirs_rg(cfg, _TRAPS)
+    assert load_dir_cache(cfg, "/r/a/", pq) == load_dir_cache(cfg, "/r/a", pq)
+    assert "/r/a" in load_dir_cache(cfg, "/r/a/", pq)
+
+
+def test_load_dir_cache_of_the_filesystem_root_returns_everything(tmp_path):
+    cfg = _cfg(tmp_path)
+    _write_dirs_rg(cfg, _TRAPS)
+    assert sorted(load_dir_cache(cfg, "/", pq)) == sorted(r[0] for r in _TRAPS)
+
+
+def test_load_dir_cache_without_n_subdirs_reports_minus_one(tmp_path):
+    cfg = _cfg(tmp_path)
+    _write_dirs_rg(cfg, _TRAPS, with_n_subdirs=False)
+    got = load_dir_cache(cfg, "/r/a", pq)
+    assert sorted(got) == ["/r/a", "/r/a/x", "/r/a/x/y"]
+    assert all(v[2] == -1 for v in got.values())
+    assert got["/r/a/x"] == (4, 5, -1)
+
+
+def test_load_dir_cache_still_drops_an_ignored_descendant(tmp_path):
+    cfg = _cfg(tmp_path, ignore=["x"])
+    _write_dirs_rg(cfg, _TRAPS)
+    assert sorted(load_dir_cache(cfg, "/r/a", pq)) == ["/r/a"]
+
+
+
+# -- compaction DuckDB memory cap --------------------------------------------------
+
+def _fake_sysconf(monkeypatch, total_bytes):
+    page = 4096
+
+    def sysconf(name):
+        if name == "SC_PAGE_SIZE":
+            return page
+        if name == "SC_PHYS_PAGES":
+            return total_bytes // page
+        raise ValueError(name)
+
+    monkeypatch.setattr(os, "sysconf", sysconf)
+
+
+@pytest.mark.parametrize("gb,expect", [(4, 512), (8, 1024), (16, 2048), (64, 2048)])
+def test_compaction_memory_clamps_an_eighth_of_ram(monkeypatch, gb, expect):
+    _fake_sysconf(monkeypatch, gb * 1024 ** 3)
+    assert store_mod.compaction_memory_mb() == expect
+
+
+def test_compaction_memory_with_unknown_ram_is_a_gigabyte(monkeypatch):
+    def boom(name):
+        raise ValueError(name)
+
+    monkeypatch.setattr(os, "sysconf", boom)
+    assert store_mod.compaction_memory_mb() == 1024
+
+
+def test_background_connect_caps_memory_and_spills_to_the_temp_dir(
+        tmp_path, monkeypatch):
+    import duckdb
+
+    _fake_sysconf(monkeypatch, 8 * 1024 ** 3)  # 8 GB -> 1024 MB
+    tmp = tmp_path / "t"
+    con = store_mod.background_connect(temp_dir=str(tmp))
+    ref = duckdb.connect()
+    ref.execute("SET memory_limit = '1024MB'")
+    assert (con.execute("SELECT current_setting('memory_limit')").fetchone()
+            == ref.execute("SELECT current_setting('memory_limit')").fetchone())
+    assert con.execute("SELECT current_setting('temp_directory')").fetchone()[0] == str(tmp)
+    assert tmp.is_dir()
+
+
+def test_compact_gives_the_merge_a_temp_directory_under_the_store(
+        tmp_path, monkeypatch):
+    seen = {}
+    real = store_mod.background_connect
+
+    def spy(temp_dir=None):
+        seen["temp_dir"] = temp_dir
+        return real(temp_dir=temp_dir)
+
+    monkeypatch.setattr(store_mod, "background_connect", spy)
+    cfg = _cfg(tmp_path)
+    shards = _shard(tmp_path, cfg, [("/r", _scanned("s", [_row("/r/a.txt")], 10, 1, 0))])
+    compact(cfg, "/r", shards, pa, pq)
+    assert seen["temp_dir"] == os.path.join(cfg.dir, "duckdb-tmp")
