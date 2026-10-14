@@ -5245,6 +5245,10 @@ class _RunLock:
     takes on such a build."""
 
     _RETRY_S = 0.05
+    #: How long the Windows byte lock is retried before the unlocked fallback:
+    #: a permanent `OSError` (not contention) must not wedge a poll thread
+    #: (Bugbot, PR #1635).
+    _RETRY_BUDGET_S = 10.0
 
     def __init__(self, run_dir: str):
         self.path = os.path.join(run_dir, "bg_tasks.lock")
@@ -5263,10 +5267,19 @@ class _RunLock:
         if fcntl is None and msvcrt is None:
             return self
         try:
-            self.fh = os.fdopen(os.open(self.path, os.O_RDWR | os.O_CREAT, 0o600), "r+")
+            self.fh = os.fdopen(os.open(self.path, os.O_RDWR | os.O_CREAT, 0o600), "r+b")
             if fcntl is not None:
                 fcntl.flock(self.fh, fcntl.LOCK_EX)
             else:
+                # `msvcrt.locking` locks a byte RANGE that must exist: a fresh,
+                # empty lock file has no byte 0 and the call fails for good,
+                # which the retry loop would read as contention forever
+                # (Bugbot, PR #1635). Stamp one byte first, the way
+                # `tasks_store._open_lockfile` does.
+                if os.fstat(self.fh.fileno()).st_size == 0:
+                    self.fh.write(b"\0")
+                    self.fh.flush()
+                deadline = time.monotonic() + self._RETRY_BUDGET_S
                 while True:
                     try:
                         self.fh.seek(0)
@@ -5274,6 +5287,10 @@ class _RunLock:
                         self.byte_locked = True
                         break
                     except OSError:
+                        if time.monotonic() >= deadline:
+                            self.fh.close()
+                            self.fh = None
+                            break
                         time.sleep(self._RETRY_S)
         except OSError:
             if self.fh is not None:
