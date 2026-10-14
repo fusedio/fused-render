@@ -75,6 +75,13 @@ ROUTINE_MIN_MINUTES = 5  # "Every N minutes" floor; the dialog refuses less, rou
 ROUTINE_RUNS = 10        # run rows kept per routine (Settings › Routines shows the newest 5)
 
 
+class CardSettled(Exception):
+    """A card button's answer arrived for a card the bot no longer waits on
+    (`answers`: the seq the click meant). Raised before anything is written, so
+    a late click after a poll lag never settles the NEXT card; the route answers
+    409 reason `settled` and the page leaves the button settled."""
+
+
 class AppRefused(Exception):
     """The app door (receive_app / app_stop, docs §13) could not take the message
     now: `reason` is `busy` | `headed` | `control`, the route answers 409 with it."""
@@ -2019,12 +2026,14 @@ class Bot:
     def running(self):
         return self.thread is not None and self.thread.is_alive()
 
-    def send(self, text, reply_to=None, forever=False):
+    def send(self, text, reply_to=None, forever=False, answers=None):
         """A message typed on the web page (the composer, a card button).
-        `forever`: the approval card's third button; the yes also writes an allow rule (tools.add_allow_rule)."""
-        return self.receive(text, via=None, reply_to=reply_to, forever=forever)
+        `forever`: the approval card's third button; the yes also writes an allow rule (tools.add_allow_rule).
+        `answers`: the seq of the card a button click meant (a relayed card in Super Bot's chat, docs §11):
+        refused with CardSettled unless that is still the card this bot waits on."""
+        return self.receive(text, via=None, reply_to=reply_to, forever=forever, answers=answers)
 
-    def receive(self, text, via=None, reply_to=None, forever=False, images=None):
+    def receive(self, text, via=None, reply_to=None, forever=False, images=None, answers=None):
         """A message from the user, from any channel (docs §10): the one entry
         point. `via` is where it came from (channels/base.py; None = the web).
         `reply_to` is the seq of an earlier message the user is replying to: the
@@ -2036,6 +2045,12 @@ class Bot:
         A running task gets it as an instruction or an answer; an idle bot starts
         a task from it, tagged with the channel so replies go back there."""
         via = dict(via) if via else dict(chan.WEB)
+        if answers is not None:
+            # Bound to one card: judged before the user line is written (and again at the inbox write), so a click
+            # that outlived its card is refused, never read as the verdict on the card after it.
+            with self.lock:
+                if self.meta.get("waiting_on") != answers:
+                    raise CardSettled(f"that card (#{answers}) was answered already")
         if not chan.is_web(via) and via.get("kind") not in ("imessage", chan.APP_KIND) and is_super(self.meta):
             # Super Bot has shell and file access: only the user's own chat, a text from the handle set
             # on it (the router lets no other sender through), or an app page on this Mac (docs §13: it
@@ -2071,9 +2086,9 @@ class Bot:
                                      {"seq": uev.get("seq"), "text": text, "shown": shown, "via": via}]
                 self.save()
                 return
-        self._deliver_message(text, shown, via, uev, forever=forever and chan.is_web(via), images=images)
+        self._deliver_message(text, shown, via, uev, forever=forever and chan.is_web(via), images=images, answers=answers)
 
-    def _deliver_message(self, text, shown, via, uev, forever=False, images=None):
+    def _deliver_message(self, text, shown, via, uev, forever=False, images=None, answers=None):
         """receive()'s second half: a written user line reaches the task (an instruction or an answer) or starts one."""
         with self.lock:
             running = self.thread is not None and self.thread.is_alive()
@@ -2107,6 +2122,11 @@ class Bot:
                 # The user line is already written: mark it ignored so past_conversation leaves it out.
                 self.emit("system", "Texted while busy on a task from the Mac; not applied.", via=None, ignored_seq=uev.get("seq"))
                 self.emit("error", "Busy with a task from the Mac; text again when it's done.", via=dict(via))
+                return
+            if answers is not None and self.meta.get("waiting_on") != answers:
+                # receive() judged this before the user line; the card settled in the gap (a poll-lagged click at
+                # the Mac answered it). Under the lock the engine's wait takes: nothing reaches the inbox.
+                self.emit("system", "A click for a card that was answered already; not applied.", via=None, ignored_seq=uev.get("seq"))
                 return
             if not running and not self.start_task(text, label=shown, via=via, images=images) and self.running():
                 running = True  # a hand-off started a task first: this message becomes an instruction to it
@@ -3486,13 +3506,14 @@ def activity_line(name, a, b=None, now=None) -> str:
     frm = f" (from {_origin_words(a['origin'])})" if a["status"] in ("running", "waiting", "paused") and a["busy"] else ""
     st, bl = a["status"], a.get("blocked")
     if st == "waiting" and bl:
-        who = "answered by the user: the card is in your chat and on their phone; never by you"
         if bl["kind"] == "approval":
-            what = f'waiting {ago} for the user to approve: "{bl["text"]}" ({who})'
+            what = (f'waiting {ago} for the user to approve: "{bl["text"]}" (answered by the user, from the card in your chat or '
+                    f"their phone when you handed this off, else at its own chat; never by you)")
         elif bl["kind"] == "login":
             what = f"waiting {ago} for the user to sign in at its browser (done by the user at the Mac, not by you)"
         else:
-            what = f'waiting {ago}, asked the user: "{bl["text"]}" ({who})'
+            what = (f'waiting {ago}, asked the user: "{bl["text"]}" (answered by the user: a choice from the card in your chat or '
+                    f"their phone when you handed this off, else at its own chat; never by you)")
         what = f"BLOCKED{task}{frm}: {what}"
     elif st == "paused" or (st == "waiting" and a.get("control_by")):
         drv = a.get("control_by")

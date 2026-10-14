@@ -10,12 +10,12 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { AppCard } from "../apps/AppCard";
 import { appFromText, showAppBeside, useAppsRoot } from "../apps/apps";
 import { openBuilds, getBuildRows } from "../builds/builds";
-import { api, stepThumbUrl, type AppRef, type Bot, type BotEvent } from "../lib/api";
+import { ApiError, api, stepThumbUrl, type AppRef, type Bot, type BotEvent } from "../lib/api";
 import { esc, fmtDay, fmtSecs, fmtTime, fmtWhen } from "../lib/format";
 import { md } from "../lib/md";
 import { botsRoot } from "../lib/root";
 import { chosenOption, clearIndex, firstNewIndex, foldHint, foldStretches, isHandoff, isNoise, isTaskEnd, liveCards, optionKey, rowKeys, searchCountText, searchHit, sessionBreak } from "../lib/thread";
-import { act, clearScrollSeq, cur, eventsOf, getState, jumpTo, markSeen, openDialog, select, setNewCount, setScrollToEnd, showBanner, unviewed, useBots, viewedSet } from "../state/store";
+import { act, clearScrollSeq, cur, errMsg, eventsOf, getState, jumpTo, markSeen, openDialog, poll, select, setNewCount, setScrollToEnd, showBanner, unviewed, useBots, viewedSet } from "../state/store";
 import { END_GAP, clearSearchHighlight, gapOf, evBox, highlightSearch, pinToEnd, restoreAnchor, topVisible, updateToBottom, type Anchor } from "./threadDom";
 import { HandBackRow, HandoverNote } from "./HandoverCard";
 import { SetupLines } from "./SetupLines";
@@ -148,8 +148,17 @@ function HandoffCard({ e, state: rawState, targetLive, targetWaiting }: { e: Bot
   // confirms it (a second click would send another answer).
   const [sent, setSent] = useState(false);
   const live = !!relay && targetLive && targetWaiting === relay.seq && !sent;
-  // act() swallows the error (banner) and resolves undefined: that is the failed send, and the buttons come back.
-  const answer = (t: string) => { setSent(true); void act(() => api.send(relay!.bot, t)).then((r) => { if (r === undefined) setSent(false); }); };
+  // The click names the card (`answers`): the server refuses it (409 "settled") once that bot waits on another card,
+  // so a click that outlived a poll never approves the next card. A settled refusal stays settled; any other failure
+  // brings the buttons back.
+  const answer = (t: string) => {
+    setSent(true);
+    void (async () => {
+      try { await api.send(relay!.bot, t, null, false, relay!.seq); }
+      catch (e) { if (!(e instanceof ApiError && e.status === 409)) { setSent(false); showBanner(errMsg(e)); } }
+      await poll();
+    })();
+  };
   return (
     <div className={`handoff-card ${state}`} data-seq={e.seq} title={fmtWhen(e.ts)}>
       <div className="hd"><span className="ttl">{head}</span><span className={`pill ${state}`}>{state}</span></div>

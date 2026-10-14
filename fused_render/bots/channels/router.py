@@ -249,11 +249,19 @@ class Router:
             if card is not None and cur is not card:
                 return
             self._texted_card.pop(door, None)
+        self._advance(door)
+
+    def _advance(self, door: str) -> None:
+        """The slot of `door` is free (nothing recorded): queue the next parked card,
+        if any. deliver re-checks it is still waited on and, if not, calls back here."""
+        with self._lock:
+            if self._texted_card.get(door) is not None:
+                return
             nxt = self._parked.get(door) or []
             item = nxt.pop(0) if nxt else None
         if item is not None:
             b, ev = item
-            self._q.put((b, {**ev, "parked": True}))  # deliver re-checks a parked card is still waited on
+            self._q.put((b, {**ev, "parked": True}))
 
     # ----------------------------------------------------------------- outbound
     def on_event(self, bot, ev: dict) -> None:
@@ -309,13 +317,18 @@ class Router:
             # first, set_status next), so a check here would drop every card. Slot taken by another card: park it,
             # _settle texts it when that one is answered. The same reply must never have two readings.
             wbot, wseq = (relay["bot"], relay["seq"]) if relay else (bot.id, ev.get("seq"))
-            if ev.pop("parked", False):
-                try:
-                    waiter = bot if wbot == bot.id else self._registry.get(wbot)
-                except Exception:  # noqa: BLE001
-                    return []
-                if (getattr(waiter, "meta", None) or {}).get("waiting_on") != wseq:
-                    return []
+            parked = ev.pop("parked", False)
+            try:
+                waiter = bot if wbot == bot.id else self._registry.get(wbot)
+                twait = (getattr(waiter, "meta", None) or {}).get("waiting_on")
+            except Exception:  # noqa: BLE001
+                waiter, twait = None, None
+            # A parked card must still be THE wait. A fresh one may not have been written yet (None); it is obsolete
+            # only when the waiter already waits on something else (it sat in the queue behind a retrying send and
+            # the Mac answered it meanwhile). A dropped card hands the slot on (_advance), so the queue never stalls.
+            if waiter is None or (twait != wseq and (parked or twait is not None)):
+                self._advance(bot.id)
+                return []
             with self._lock:
                 cur = self._texted_card.get(bot.id)
                 if cur is not None and (cur["bot"], cur["seq"]) != (wbot, wseq):
@@ -354,6 +367,8 @@ class Router:
                          **({"error": err} if err else {}))
             except Exception:  # noqa: BLE001
                 logger.debug("delivery row not written", exc_info=True)
+        if not sent and numbered and (relay is not None or ev.get("role") == "approval"):
+            self._advance(bot.id)  # every attempt failed: the slot stays free, the next parked card gets its turn
         if sent and numbered:
             with self._lock:
                 self._pending[bot.id] = (ev.get("seq"), numbered)

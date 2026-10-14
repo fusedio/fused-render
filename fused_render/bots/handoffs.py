@@ -176,7 +176,8 @@ def _relay_card(sb, t, hd, ev, card):
     opts = []
     if role == "approval":
         opts = list(chan.APPROVAL_OPTIONS)
-    elif not (ev.get("login") or "browser window" in (ev.get("text") or "")):
+    elif not (ev.get("login") or "browser window" in (ev.get("text") or "") or ev.get("multi")):
+        # (a multi-select question stays a notice: one tap here or one number on the phone cannot carry several picks)
         opts = [str(o).strip()[:80] for o in (ev.get("options") or []) if str(o).strip()][:5]
     if len(opts) < 2 or ev.get("seq") is None:
         sb.emit("question", f"{name} needs you at the laptop: {card} Answer it at the Mac.",
