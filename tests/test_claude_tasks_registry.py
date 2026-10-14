@@ -71,7 +71,7 @@ def _rec(data, task_id):
 
 _KEYS = {"id", "description", "kind", "type", "subagent_type", "tool_use_id",
          "status", "started_at", "ended_at", "backgrounded", "usage", "error",
-         "summary", "events", "isolation"}
+         "summary", "events", "isolation", "model", "effort"}
 
 
 def test_a_background_shell_runs_then_completes(agent, run_dir):
@@ -226,6 +226,7 @@ def test_the_old_flat_file_is_upgraded(agent, run_dir):
     assert set(rec) == _KEYS
     assert rec["description"] == "sleep 30" and rec["status"] == "running"
     assert rec["isolation"] == ""
+    assert rec["model"] == "" and rec["effort"] == ""
     assert data["activity"]["tasks"] == [{"id": "t1", "description": "sleep 30"}]
     stored = json.loads((run_dir / "bg_tasks.json").read_text())
     assert stored["tasks"]["t1"]["status"] == "running"
@@ -425,3 +426,13 @@ def test_history_marks_a_dead_runs_tasks_unknown(agent, run_dir, tmp_path, monke
     assert tasks[0]["status"] == "unknown" and tasks[0]["ended_at"] is None
     assert tasks[0]["started_at"] == 1000.0, "an upgraded record keeps a stable start"
     assert agent._history(str(target), "s")["tasks"][0]["started_at"] == 1000.0
+
+
+def test_an_agent_rows_model_and_effort_come_from_its_call(agent, run_dir):
+    _append(run_dir, [_tool("toolu_a", "Agent", {"description": "d", "model": "sonnet",
+                                                 "effort": "medium", "subagent_type": "Explore"}),
+                      _sys("task_started", task_id="a1", tool_use_id="toolu_a",
+                           description="d", is_backgrounded=True,
+                           task_type="local_agent")])
+    rec = _rec(agent._poll("run"), "a1")
+    assert rec["model"] == "sonnet" and rec["effort"] == "medium"

@@ -156,3 +156,30 @@ def test_history_returns_the_final_worktree_hint(agent, tmp_path):
     assert agent._history(str(target), "sid")["worktree_hint"] is None
     _write(path, base)
     assert agent._history(str(target), "sid")["worktree_hint"] is None
+
+
+def test_streaming_agent_captures_model_and_effort(agent, run_dir):
+    rows = [_tool_start("Agent"),
+            _input_json(
+                '{"description": "D", "subagent_type": "Explore", "prompt": "'
+                + "x" * 600 + '", "model": "sonnet", "eff'),
+            _input_json('ort": "medium"')]
+    tool = _poll(agent, run_dir, rows)["activity"]["tool"]
+    assert tool["model"] == "sonnet" and tool["effort"] == "medium"
+
+
+def test_finalized_agent_row_carries_model_and_effort(agent, run_dir):
+    rows = [_tool_start("Agent"), _input_json('{"description": "D"'),
+            _assistant_tool("Agent", {"description": "D", "subagent_type": "Plan",
+                                      "model": "haiku", "effort": "low"})]
+    tool = _poll(agent, run_dir, rows)["activity"]["tool"]
+    assert tool["model"] == "haiku" and tool["effort"] == "low"
+    assert tool["streaming"] is False
+
+
+def test_scan_stops_once_streaming_ends(agent, run_dir):
+    rows = [_tool_start("Agent"),
+            _assistant_tool("Agent", {"description": "D"}),
+            _input_json('{"model": "opus"}')]
+    tool = _poll(agent, run_dir, rows)["activity"]["tool"]
+    assert "model" not in tool

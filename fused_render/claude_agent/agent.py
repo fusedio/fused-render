@@ -4964,14 +4964,15 @@ def _tool_detail(name, inp) -> str:
     return d if len(d) <= 80 else d[:77] + "…"
 
 
+_AGENT_SCAN_KEYS = ("description", "subagent_type", "model", "effort")
 _AGENT_FIELD_RES = {
     k: re.compile(r'"%s"\s*:\s*"((?:[^"\\]|\\.)*)"' % k)
-    for k in ("description", "subagent_type")}
+    for k in _AGENT_SCAN_KEYS}
 _AGENT_SCAN_OVERLAP = 256
 
 
 _AGENT_OPENER_RES = {
-    k: re.compile(r'"%s"\s*:\s*"' % k) for k in ("description", "subagent_type")}
+    k: re.compile(r'"%s"\s*:\s*"' % k) for k in _AGENT_SCAN_KEYS}
 
 
 def _scan_agent_fields(buf: str, frag: str, found: dict) -> str:
@@ -5165,6 +5166,7 @@ def _new_task_record(task_id: str, description: str = "",
                      started_at: float | None = None) -> dict:
     return {"id": task_id, "description": description, "kind": "other",
             "type": "", "subagent_type": "", "isolation": "",
+            "model": "", "effort": "",
             "tool_use_id": "", "status": "running",
             "started_at": started_at if started_at is not None else time.time(),
             "ended_at": None, "backgrounded": False, "usage": None,
@@ -5199,8 +5201,8 @@ def _upgrade_task_record(task_id: str, value) -> dict | None:
                            value.get("started_at")
                            if isinstance(value.get("started_at"), (int, float))
                            else None)
-    for key in ("kind", "type", "subagent_type", "isolation", "tool_use_id",
-                "error", "summary"):
+    for key in ("kind", "type", "subagent_type", "isolation", "model",
+                "effort", "tool_use_id", "error", "summary"):
         if isinstance(value.get(key), str):
             rec[key] = value[key]
     rec["status"] = _task_status(value.get("status"))
@@ -5432,9 +5434,12 @@ def _apply_task_row(registry: dict, row: dict, tool_names: dict,
         if subagent:
             rec["subagent_type"] = str(subagent)
         if tool_names.get(rec["tool_use_id"]) in ("Agent", "Task"):
-            iso = (tool_inputs.get(rec["tool_use_id"]) or {}).get("isolation")
-            if iso == "worktree":
+            t_inp = tool_inputs.get(rec["tool_use_id"]) or {}
+            if t_inp.get("isolation") == "worktree":
                 rec["isolation"] = "worktree"
+            for key in ("model", "effort"):
+                if isinstance(t_inp.get(key), str):
+                    rec[key] = t_inp[key]
         if "is_backgrounded" in row:
             rec["backgrounded"] = bool(row.get("is_backgrounded"))
         _task_end(rec, "running", now)
@@ -6487,6 +6492,10 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
                             tools_open[blk["id"]]["streaming"] = False
                             tools_open[blk["id"]]["subagent_type"] = str(
                                 tool_inputs[blk["id"]].get("subagent_type") or "")
+                            for key in ("model", "effort"):
+                                v = tool_inputs[blk["id"]].get(key)
+                                if isinstance(v, str) and v:
+                                    tools_open[blk["id"]][key] = v
         elif t == "user":
             # The tool's result went back in. From here until `status:
             # requesting` (or the next delta) the run is packing the result
@@ -6525,8 +6534,11 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
                     frag = delta.get("partial_json") or ""
                     tool_input_bytes += len(frag)
                     sid = streaming_tid
+                    # Optional model/effort keep the scan alive only until the
+                    # finalized input lands (`streaming` False); the buffer is
+                    # bounded either way.
                     if frag and sid in stream_bufs and sid in tools_open \
-                            and len(stream_found[sid]) < 2:
+                            and tools_open[sid].get("streaming"):
                         found = stream_found[sid]
                         stream_bufs[sid] = _scan_agent_fields(
                             stream_bufs[sid], frag, found)
@@ -6535,6 +6547,9 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
                                 tools_open[sid]["name"], found)
                         if "subagent_type" in found:
                             tools_open[sid]["subagent_type"] = found["subagent_type"]
+                        for key in ("model", "effort"):
+                            if key in found:
+                                tools_open[sid][key] = found[key]
             elif et == "message_start":
                 thinking_tokens = 0
                 # THE EARLIEST THE WINDOW CAN BE KNOWN: `message_start` carries

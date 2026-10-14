@@ -469,6 +469,9 @@ export interface ActivityTool {
   detail: string;
   /** Agent/Task only, and only once the streaming input has named it. */
   subagent_type?: string;
+  /** Agent/Task only, when the call set them explicitly. */
+  model?: string;
+  effort?: string;
   /** Agent/Task only: true from `content_block_start` until the finalized
    *  input arrives, i.e. while the brief is still being written. */
   streaming?: boolean;
@@ -1040,6 +1043,9 @@ export interface TaskRecord {
   subagent_type: string;
   /** "worktree" when the agent was started with isolation: "worktree", else "". */
   isolation: string;
+  /** The Agent call's explicit `model` / `effort`, "" when it set none (inherits). */
+  model?: string;
+  effort?: string;
   /** "" unless known — the `ToolSegment.id` this task was started by. */
   tool_use_id: string;
   status: TaskStatus;
