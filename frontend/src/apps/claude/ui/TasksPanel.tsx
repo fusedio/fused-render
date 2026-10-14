@@ -9,7 +9,7 @@
 //
 // The words are `protocol/tasks.ts`'s; this file only lays them out. The
 // open/closed bit is the host's (`ClaudeChat`), because `/tasks` toggles it.
-import { Bot, ChevronRight, CircleDot, GitBranch, Radio, Terminal } from "lucide-react";
+import { Bot, ChevronRight, CircleDot, GitBranch, Radio, Square, Terminal, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { cn } from "@platform/lib/utils";
@@ -26,7 +26,7 @@ import {
   statusLabel,
   summarizeTasks,
 } from "../protocol/tasks";
-import type { ErrorOnly, TaskKind, TaskOutputResponse, TaskRecord } from "../protocol/types";
+import type { ErrorOnly, TaskKind, TaskOutputResponse, TaskRecord, TaskStopResponse } from "../protocol/types";
 import { CollapsiblePre } from "./CollapsiblePre";
 
 import "../styles/tasks.css";
@@ -71,6 +71,10 @@ function hideAfterMs(t: TaskRecord): number | null {
 
 export type FetchTaskOutput = (runId: string, taskId: string) => Promise<TaskOutputResponse | ErrorOnly>;
 
+export type StopTask = (runId: string, taskId: string) => Promise<TaskStopResponse | ErrorOnly>;
+
+const defaultStop: StopTask = (runId, taskId) => runAgent("task_stop", { run_id: runId, task_id: taskId });
+
 const defaultFetch: FetchTaskOutput = (runId, taskId) =>
   runAgent("task_output", { run_id: runId, task_id: taskId });
 
@@ -87,6 +91,8 @@ export interface TasksPanelProps {
   parentModel?: string;
   /** Test seam: the `task_output` call. */
   fetchOutput?: FetchTaskOutput;
+  /** Test seam: the `task_stop` call. */
+  stopTask?: StopTask;
   /** Test seam: the clock (ms). */
   now?: () => number;
 }
@@ -112,15 +118,24 @@ function KindIcon({ kind }: { kind: TaskKind }) {
   return <CircleDot {...props} />;
 }
 
-export function TasksPanel({ tasks, runId, open, onToggle, parentModel, fetchOutput = defaultFetch, now = Date.now }: TasksPanelProps) {
+export function TasksPanel({ tasks, runId, open, onToggle, parentModel, fetchOutput = defaultFetch, stopTask = defaultStop, now = Date.now }: TasksPanelProps) {
   const [outputs, setOutputs] = useState<Record<string, OutputState>>({});
   // Answers for a run that is no longer the panel's are dropped on arrival.
   const runRef = useRef(runId);
   runRef.current = runId;
   const [showEnded, setShowEnded] = useState(false);
+  // Rows the user dismissed (client-side only), per run; they count toward
+  // "Show N finished". Stop requests in flight and their refusals, by task.
+  const [dismissed, setDismissed] = useState<ReadonlySet<string>>(new Set());
+  const [stopping, setStopping] = useState<Record<string, { phase: "pending" } | { phase: "error"; message: string }>>({});
+  // Failed rows whose error line the user opened to its full text.
+  const [errOpen, setErrOpen] = useState<ReadonlySet<string>>(new Set());
   useEffect(() => {
     setOutputs({});
     setShowEnded(false);
+    setDismissed(new Set());
+    setStopping({});
+    setErrOpen(new Set());
   }, [runId]);
 
   // THE ELAPSED CLOCK TICKS ONLY WHILE SOMETHING IS LIVE AND THE ROWS SHOW: a
@@ -182,12 +197,39 @@ export function TasksPanel({ tasks, runId, open, onToggle, parentModel, fetchOut
     [outputs, runId, fetchOutput],
   );
 
+  const stop = (taskId: string) => {
+    if (!runId || stopping[taskId]?.phase === "pending") return;
+    const asked = runId;
+    setStopping((m) => ({ ...m, [taskId]: { phase: "pending" } }));
+    const land = (message: string) => {
+      if (runRef.current !== asked) return;
+      setStopping((m) => {
+        const next = { ...m };
+        if (message) next[taskId] = { phase: "error", message };
+        else delete next[taskId];
+        return next;
+      });
+    };
+    stopTask(asked, taskId).then(
+      (res) => land(res && typeof res.error === "string" && res.error ? res.error : ""),
+      (err: unknown) => land(err instanceof Error ? err.message : String(err)),
+    );
+  };
+  const toggleErr = (taskId: string) =>
+    setErrOpen((s) => {
+      const next = new Set(s);
+      if (!next.delete(taskId)) next.add(taskId);
+      return next;
+    });
+  const dismiss = (taskId: string) => setDismissed((s) => new Set(s).add(taskId));
+
   if (!open && !tasks.length) return null;
   const summary = summarizeTasks(tasks);
   const sorted = sortTasks(tasks);
   const rows = showEnded
     ? sorted
     : sorted.filter((t) => {
+        if (dismissed.has(t.id)) return false;
         const at = hideAfterMs(t);
         return at == null || nowMs <= at;
       });
@@ -240,10 +282,51 @@ export function TasksPanel({ tasks, runId, open, onToggle, parentModel, fetchOut
                         {out?.phase === "loading" ? "Loading…" : out ? "Hide output" : "Output"}
                       </button>
                     ) : null}
+                    {isLive(t.status) && runId ? (
+                      <button
+                        type="button"
+                        className="chat-task-icon-btn"
+                        aria-label="Stop task"
+                        title="Stop"
+                        disabled={stopping[t.id]?.phase === "pending"}
+                        onClick={() => stop(t.id)}
+                      >
+                        <Square size={12} aria-hidden="true" />
+                      </button>
+                    ) : null}
+                    {!isActive(t.status) ? (
+                      <button
+                        type="button"
+                        className="chat-task-icon-btn"
+                        aria-label="Dismiss"
+                        title="Dismiss"
+                        onClick={() => dismiss(t.id)}
+                      >
+                        <X size={12} aria-hidden="true" />
+                      </button>
+                    ) : null}
                   </div>
                   {t.error ? (
-                    <div className="chat-task-error is-clamped" title={t.error}>
+                    <div
+                      className={cn("chat-task-error", "is-toggle", !errOpen.has(t.id) && "is-clamped")}
+                      title={t.error}
+                      role="button"
+                      tabIndex={0}
+                      aria-expanded={errOpen.has(t.id)}
+                      onClick={() => toggleErr(t.id)}
+                      onKeyDown={(ev) => {
+                        if (ev.key === "Enter" || ev.key === " ") {
+                          ev.preventDefault();
+                          toggleErr(t.id);
+                        }
+                      }}
+                    >
                       {t.error}
+                    </div>
+                  ) : null}
+                  {stopping[t.id]?.phase === "error" ? (
+                    <div className="chat-task-error is-clamped" title={(stopping[t.id] as { message: string }).message}>
+                      {(stopping[t.id] as { message: string }).message}
                     </div>
                   ) : null}
                   {out?.phase === "shown" ? (

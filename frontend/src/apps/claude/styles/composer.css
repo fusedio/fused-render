@@ -1603,16 +1603,20 @@ select.c-pill {
 }
 
 /* ---- The folded card's one line: model · effort ------------------------
-   Hung off the card's own top-right edge (the form is `position: relative`
-   for Send), in the gap the transcript's bottom padding leaves above it, so
-   nothing in the column moves for it. Hidden — not removed — as the card
-   opens, on the same 80ms the shelf's pills use to leave, so the two never
-   say the same thing twice. */
+   INSIDE the folded card, immediately left of Send and centred on it. Send is
+   itself pinned to the card's bottom-right corner (see above), so this is
+   seated against Send's own box: 14px card padding + 32px button + 8px gap
+   from the right edge, 32px tall at the idle `bottom: 6px`. It is only ever
+   visible while folded, so it needs that one seat. The folded textarea
+   reserves room for it (`:has` rule below) so typed text never runs under it.
+   Hidden — not removed — as the card opens, on the same 80ms the shelf's
+   pills use to leave, so the two never say the same thing twice. */
 .c-composer-meta {
   position: absolute;
-  right: 2px;
-  bottom: 100%;
-  margin-bottom: 1px;
+  right: 54px;
+  bottom: 6px;
+  height: 32px;
+  flex-shrink: 0;
   display: flex;
   align-items: center;
   /* THE PILLS' OWN TYPE AND SPACING (Akshil, 2026-10-01: "keep the font-size
@@ -1622,7 +1626,6 @@ select.c-pill {
   line-height: 1.4;
   color: var(--c-dim);
   gap: 5px;
-  padding: 0 2px 1px 0;
   white-space: nowrap;
   pointer-events: none;
   user-select: none;
@@ -1635,6 +1638,11 @@ select.c-pill {
   border-radius: 50%;
   background: currentColor;
   opacity: 0.7;
+}
+/* The folded box gives up the width of the label beside Send (40px for Send
+   itself, plus ~110px for "Sonnet · medium"). */
+.c-composer.is-idle:has(.c-composer-meta:not(.is-hidden)) textarea {
+  padding-right: 150px;
 }
 .c-composer-meta.is-hidden {
   opacity: 0;

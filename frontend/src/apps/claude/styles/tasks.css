@@ -9,10 +9,7 @@
   max-width: 720px;
   width: 100%;
   margin: 0 auto;
-  /* The composer's folded "model · effort" line (`.c-composer-meta`) is hung
-     off the card's top edge, into whatever sits above it. 22px of room keeps
-     it out of this strip's rounded box, collapsed or open. */
-  padding: 0 20px 22px;
+  padding: 0 20px 6px;
   font-size: 12px;
   line-height: 1.45;
 }
@@ -183,6 +180,29 @@
   color: var(--c-dim);
   cursor: default;
   text-decoration: none;
+}
+.chat-root .chat-task-icon-btn {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  padding: 2px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--c-dim);
+  cursor: pointer;
+}
+.chat-root .chat-task-icon-btn:hover:not(:disabled) {
+  color: var(--c-fg);
+}
+.chat-root .chat-task-icon-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.chat-root .chat-task-error.is-toggle {
+  cursor: pointer;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 .chat-root .chat-task-error,
 .chat-root .chat-task-note,

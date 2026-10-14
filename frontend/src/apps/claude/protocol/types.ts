@@ -28,7 +28,8 @@ export type Action =
   | "live_host"
   | "send"
   | "commands"
-  | "task_output";
+  | "task_output"
+  | "task_stop";
 
 /** A permission mode as the CLI spells it (PERMISSION_MODES, agent.py). */
 export type PermissionMode = "plan" | "prompt" | "acceptEdits" | "auto";
@@ -220,6 +221,7 @@ export interface AgentRequests {
   send: SendRequest;
   commands: FileRequest;
   task_output: TaskOutputRequest;
+  task_stop: TaskOutputRequest;
 }
 
 // ---- segments (agent.py:3253 _segments_from_rows; T:15591-15635) -----------
@@ -988,6 +990,7 @@ export interface AgentResponses {
   send: SendResponse;
   commands: CommandsResponse | ErrorOnly;
   task_output: TaskOutputResponse | ErrorOnly;
+  task_stop: TaskStopResponse | ErrorOnly;
 }
 
 /** One slash command the CLI (or the disk scan) knows (SPEC C-2). */
@@ -1064,6 +1067,11 @@ export interface TaskRecord {
 export interface TaskOutputRequest {
   run_id: string;
   task_id: string;
+}
+/** `task_stop {run_id, task_id}`: `{ok: true}` once the CLI accepted it. */
+export interface TaskStopResponse {
+  ok: true;
+  error?: undefined;
 }
 export interface TaskOutputResponse {
   /** The tail, capped at 64 KiB (`truncated` says when it was cut). */

@@ -132,6 +132,73 @@ describe("TasksPanel", () => {
     expect(err.props.title).toBe("boom\nlong");
   });
 
+  describe("stop and dismiss", () => {
+    const stopBtn = (row: ReactTestInstance) => row.findAll((n) => n.props["aria-label"] === "Stop task" && typeof n.type === "string");
+    const dismissBtn = (row: ReactTestInstance) => row.findAll((n) => n.props["aria-label"] === "Dismiss" && typeof n.type === "string");
+
+    test("Stop shows only for live rows with a runId", () => {
+      const r = mount(<TasksPanel tasks={TASKS} runId="r1" open onToggle={() => {}} now={() => 70_000} />);
+      expect(byClass(r.root, "chat-task").map((n) => stopBtn(n).length)).toEqual([1, 1, 0]);
+      expect(stopBtn(byClass(r.root, "chat-task")[0]!)[0]!.props.title).toBe("Stop");
+      const none = mount(<TasksPanel tasks={TASKS} runId={null} open onToggle={() => {}} now={() => 70_000} />);
+      expect(stopBtn(none.root).length).toBe(0);
+    });
+
+    test("clicking Stop calls the seam, disables while in flight, and shows an error", async () => {
+      const asked: Array<[string, string]> = [];
+      let resolve!: (v: { error: string }) => void;
+      const stopTask = (run: string, id: string) => {
+        asked.push([run, id]);
+        return new Promise<{ error: string }>((res) => (resolve = res));
+      };
+      const r = mount(<TasksPanel tasks={TASKS} runId="r1" open onToggle={() => {}} stopTask={stopTask} now={() => 70_000} />);
+      const btn = () => stopBtn(byClass(r.root, "chat-task")[0]!)[0]!;
+      act(() => btn().props.onClick());
+      expect(asked).toEqual([["r1", "ag"]]);
+      expect(btn().props.disabled).toBe(true);
+      await act(async () => {
+        resolve({ error: "No task found" });
+      });
+      expect(btn().props.disabled).toBe(false);
+      expect(text(byClass(byClass(r.root, "chat-task")[0]!, "chat-task-error")[0]!)).toBe("No task found");
+    });
+
+    test("Dismiss hides an ended row and raises the Show N finished count", () => {
+      const failed = rec({ id: "f", kind: "shell", description: "bad", status: "failed", error: "boom", started_at: 1, ended_at: 2 });
+      const live = rec({ id: "l", kind: "shell", description: "live" });
+      const r = mount(<TasksPanel tasks={[failed, live]} runId="r1" open onToggle={() => {}} now={() => 100_000} />);
+      expect(stopBtn(byClass(r.root, "chat-task")[0]!).length).toBe(1);
+      expect(dismissBtn(byClass(r.root, "chat-task")[0]!).length).toBe(0);
+      expect(byClass(r.root, "chat-tasks-more").length).toBe(0);
+      const row = () => byClass(r.root, "chat-task").find((n) => text(byClass(n, "chat-task-desc")[0]!) === "bad")!;
+      act(() => dismissBtn(row())[0]!.props.onClick());
+      expect(byClass(r.root, "chat-task").map((n) => text(byClass(n, "chat-task-desc")[0]!))).toEqual(["live"]);
+      expect(text(byClass(r.root, "chat-tasks-more")[0]!)).toBe("Show 1 finished");
+      act(() => byClass(r.root, "chat-tasks-more")[0]!.props.onClick());
+      expect(byClass(r.root, "chat-task").length).toBe(2);
+    });
+
+    test("dismissals reset when the run changes", () => {
+      const failed = rec({ id: "f", kind: "shell", description: "bad", status: "failed", error: "boom" });
+      const r = mount(<TasksPanel tasks={[failed]} runId="r1" open onToggle={() => {}} now={() => 100_000} />);
+      act(() => dismissBtn(r.root)[0]!.props.onClick());
+      expect(byClass(r.root, "chat-task").length).toBe(0);
+      act(() => r.update(<TasksPanel tasks={[failed]} runId="r2" open onToggle={() => {}} now={() => 100_000} />));
+      expect(byClass(r.root, "chat-task").length).toBe(1);
+    });
+
+    test("clicking a failed row's error line expands it", () => {
+      const failed = rec({ id: "f", kind: "shell", status: "failed", error: "boom\nlong reason" });
+      const r = mount(<TasksPanel tasks={[failed]} runId="r1" open onToggle={() => {}} />);
+      const err = () => byClass(r.root, "chat-task-error")[0]!;
+      expect(err().props.className).toContain("is-clamped");
+      act(() => err().props.onClick());
+      expect(err().props.className).not.toContain("is-clamped");
+      act(() => err().props.onClick());
+      expect(err().props.className).toContain("is-clamped");
+    });
+  });
+
   test("no run to ask → no Output buttons", () => {
     const r = mount(<TasksPanel tasks={TASKS} runId={null} open onToggle={() => {}} />);
     expect(byClass(r.root, "chat-task-out-btn").length).toBe(0);
