@@ -189,16 +189,18 @@ def phone_presets():
 @router.get(PREFIX + "/{bid}")
 @routes._handled
 def phone_bot_detail(bid: str, since: str = Query(default="0"), before: str = Query(default=""),
-                     limit: str = Query(default=""), detail: str = Query(default="0")):
+                     limit: str = Query(default=""), detail: str = Query(default="0"), after: str = Query(default="")):
     """One bot (PhoneBotDetail) and its events: `since=0` the last `limit`, `before=<seq>` (with since=0) the
-    `limit` before it ("Load earlier"), `since=<seq>` everything after the cursor (`events_since`)."""
+    `limit` before it ("Load earlier"), `since=<seq>` everything after the cursor (`events_since`). `after=<seq>`
+    is `since` that also takes 0 as a cursor (every line, uncapped): the chat's read of all it has not seen."""
     b = routes._bot(bid)
-    cur = max(0, _int(since, 0, "since"))
+    whole = after != ""
+    cur = max(0, _int(after if whole else since, 0, "after" if whole else "since"))
     lim = min(LIMIT_MAX, max(1, _int(limit, LIMIT_DEFAULT, "limit")))
     upto = _int(before, 0, "before")
     # The next cursor is what this read consumed, not `b.seq` read afterwards: an event the task emits between
     # the read and that later read (`_detail` runs in between) would move the cursor past a line never sent.
-    if cur:
+    if cur or whole:
         events = b.events_since(cur)
         nxt = cur + len(events)
     else:

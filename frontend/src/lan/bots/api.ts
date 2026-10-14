@@ -52,9 +52,10 @@ const enc = encodeURIComponent;
 export const api = {
   list: () => call<BotsList>("GET", BASE),
   presets: () => call<{ presets: Preset[] }>("GET", `${BASE}/presets`),
-  page: (id: string, q: { since?: number; before?: number; limit?: number; detail?: boolean } = {}) => {
+  page: (id: string, q: { since?: number; after?: number; before?: number; limit?: number; detail?: boolean } = {}) => {
     const p = new URLSearchParams();
     p.set("since", String(q.since ?? 0));
+    if (q.after != null) p.set("after", String(q.after)); // every line after this cursor, 0 included
     if (q.before != null) p.set("before", String(q.before));
     if (q.limit != null) p.set("limit", String(q.limit));
     if (q.detail) p.set("detail", "1");

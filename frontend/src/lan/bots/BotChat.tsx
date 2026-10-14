@@ -46,9 +46,9 @@ import { Toaster, toast } from "./Toast";
 import type { BotDetail, BotEvent, Setup } from "./types";
 
 const PAGE = 80;
-const BACKFILL_PAGES = 5; // on open, at most this many earlier pages to reach the last line seen
 /** Whether "Load earlier" has anything left: the window does not start at the log's first line (seq 1). */
 const hasMore = (evs: BotEvent[]) => evs.length > 0 && evs[0].seq > 1;
+const GAP_RETRY_MS = [4_000, 15_000, 60_000]; // waits between retries of a failed unread read, then the last
 const HOLD_MAX_MS = 20_000; // a card's local "Sending…" hold at most
 const END_GAP = 96; // px from the bottom that still counts as "following along"
 const READABLE = new Set(["done", "question", "approval", "error"]);
@@ -74,13 +74,23 @@ export function BotChat({ id }: { id: string }) {
   // The seen cursor as it was when the chat opened (null: nothing unread then); the "New" divider sits
   // above the first readable line after it among the events held.
   const unreadAfter = useRef<number | null>(null);
-  // The oldest line held and whether earlier ones exist: while unread lines between the last seen and the
-  // oldest held are not loaded yet (a failed or capped backfill), the seen cursor is not advanced, so the
-  // badge and the next visit's divider still count them. "Load earlier" closing the gap lifts it.
-  const oldest = useRef<number | null>(null);
-  const earlier = useRef(false);
-  const unloadedUnread = () =>
-    earlier.current && unreadAfter.current != null && oldest.current != null && oldest.current > unreadAfter.current + 1;
+  // Set while the unread lines older than the opening tail failed to load: every poll retries them, and
+  // until they are in, the seen cursor is not written (the badge and the next visit still count them).
+  const unreadGap = useRef<number | null>(null);
+  const gapTries = useRef(0);
+  const gapNext = useRef(0);
+  // An in-flight read finishing after the chat closed must not write the seen cursor for lines never shown.
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+  const gapFailed = () => {
+    if (gapTries.current++ === 0 && mounted.current) toast("Couldn't load the older unread messages; retrying.", "error");
+    gapNext.current = Date.now() + GAP_RETRY_MS[Math.min(gapTries.current - 1, GAP_RETRY_MS.length - 1)];
+  };
   const newSeq = useMemo(() => {
     const was = unreadAfter.current;
     return was == null ? null : (events.find((e) => e.seq > was && READABLE.has(e.role))?.seq ?? null);
@@ -89,6 +99,7 @@ export function BotChat({ id }: { id: string }) {
   const thread = useRef<HTMLDivElement>(null);
   const atEnd = useRef(true);
   const prepend = useRef<{ height: number; top: number } | null>(null);
+  const firstHeld = useRef(0); // the oldest seq rendered (set below), for telling older rows from new ones
 
   const host = location.host;
   const skey = seenKey(host, id);
@@ -110,39 +121,56 @@ export function BotChat({ id }: { id: string }) {
     try {
       const first = seqRef.current == null;
       const d = await api.page(id, first ? { since: 0, limit: PAGE } : { since: seqRef.current! });
+      if (!mounted.current) return;
       setBot(d.bot);
       setNow(d.ts || Date.now() / 1000);
       setError(null);
       if (first) {
-        // The seen cursor is written to the end below, so page back (capped) until the window reaches the
-        // last line seen: the unread lines are then loaded and under the "New" divider. A failed earlier
-        // page only stops the walk; the tail already here is shown.
+        // Open on the tail. Unread lines older than it (the tail starts after the last line seen) come in
+        // one `since=<seen>` read, which returns everything after the cursor: no paging, no cap.
         let evs = d.events;
-        let more = evs.length >= PAGE && hasMore(evs);
         const was = seen.current?.at ?? null;
-        try {
-          for (let i = 0; was != null && more && evs[0].seq > was + 1 && i < BACKFILL_PAGES; i++) {
-            const e = await api.page(id, { since: 0, before: evs[0].seq, limit: PAGE });
-            more = e.events.length >= PAGE;
-            evs = mergeEvents(evs, e.events);
-            more = more && hasMore(evs);
+        if (was != null && evs.length && evs[0].seq > was + 1) {
+          try {
+            evs = mergeEvents(evs, (await api.page(id, { after: was })).events);
+          } catch {
+            unreadGap.current = was; // show the tail now; the polls below retry the rest
+            gapFailed();
           }
-        } catch {
-          // keep `more`: "Load earlier" picks up where the walk stopped
+          if (!mounted.current) return;
         }
-        // The divider sits above the first unread line among the events held, so a backlog past the cap
-        // that "Load earlier" brings in later lands under it too.
-        const unread = was != null && (evs.some((e) => e.seq > was && READABLE.has(e.role)) || (more && evs[0].seq > was + 1));
+        const unread = was != null && (unreadGap.current != null || evs.some((e) => e.seq > was && READABLE.has(e.role)));
         unreadAfter.current = unread ? was : null;
-        oldest.current = evs.length ? evs[0].seq : null;
-        earlier.current = more;
         setEvents(evs);
-        setHasEarlier(more);
-      } else if (d.events.length) {
-        setEvents((old) => mergeEvents(old, d.events));
+        setHasEarlier(d.events.length >= PAGE && hasMore(evs));
+      } else {
+        let evs = d.events;
+        const gap = unreadGap.current;
+        if (gap != null && Date.now() >= gapNext.current) {
+          let got: BotEvent[] | null = null;
+          try {
+            got = (await api.page(id, { after: gap })).events;
+            unreadGap.current = null;
+          } catch {
+            gapFailed();
+          }
+          if (!mounted.current) return;
+          const above = got ? got.filter((e) => e.seq < firstHeld.current) : [];
+          const el = thread.current;
+          if (above.length && el && !atEnd.current) {
+            // Scrolled up: the older rows land alone this poll, anchored like Load earlier, and the cursor is not
+            // moved, so the next poll brings the new end rows in a commit of their own (one commit holding both
+            // would count the end rows' height as prepended and shift the view).
+            prepend.current = { height: el.scrollHeight, top: el.scrollTop };
+            setEvents((old) => mergeEvents(old, above));
+            return;
+          }
+          if (got) evs = mergeEvents(evs, got);
+        }
+        if (evs.length) setEvents((old) => mergeEvents(old, evs));
       }
       seqRef.current = Math.max(seqRef.current ?? 0, d.seq);
-      if (document.visibilityState === "visible" && !unloadedUnread()) writeSeen(skey, d.seq);
+      if (document.visibilityState === "visible" && unreadGap.current == null) writeSeen(skey, d.seq);
       // The poll that brings a card's answer back releases its local hold.
       for (const s of heldRef.current) if (d.bot.waiting_seq !== s) heldRef.current.delete(s);
       setHeld((h) => (h.size ? new Set([...h].filter((s) => d.bot.waiting_seq === s)) : h));
@@ -171,6 +199,7 @@ export function BotChat({ id }: { id: string }) {
   };
   const lastSeq = events.length ? events[events.length - 1].seq : 0;
   const firstSeq = events.length ? events[0].seq : 0;
+  firstHeld.current = firstSeq;
   useLayoutEffect(() => {
     const el = thread.current;
     if (!el) return;
@@ -204,11 +233,7 @@ export function BotChat({ id }: { id: string }) {
       const el = thread.current;
       if (el && d.events.length) prepend.current = { height: el.scrollHeight, top: el.scrollTop };
       setEvents((old) => mergeEvents(old, d.events));
-      if (d.events.length) oldest.current = Math.min(oldest.current ?? Infinity, d.events[0].seq);
-      earlier.current = d.events.length >= PAGE && hasMore(d.events);
-      setHasEarlier(earlier.current);
-      // The gap closed: save the cursor now, not at the next poll (leaving first would keep the backlog unread).
-      if (seqRef.current != null && document.visibilityState === "visible" && !unloadedUnread()) writeSeen(skey, seqRef.current);
+      setHasEarlier(d.events.length >= PAGE && hasMore(d.events));
     } catch (e) {
       toast((e as Error).message, "error");
     } finally {
