@@ -84,13 +84,7 @@ def _added(path):
 def _canon(path):
     """The same canonicalization `_folder_of`/`_clamp_to_root` apply to a
     folder before it ever reaches `forward()` — `norm(os.path.abspath(...))`.
-    A hardcoded POSIX literal like "/home/me/proj" is only that pipeline's
-    OUTPUT on POSIX; on Windows `os.path.abspath` resolves a leading "/"
-    against the current drive (which GitHub's Windows runners check out onto
-    D:, not C:), so the literal and the real output disagree in exactly the
-    way this whole regression is about. Routing every expectation through
-    the same pipeline instead keeps these tests platform-agnostic without
-    weakening what they pin."""
+    Every expectation is routed through the same pipeline."""
     return index_touch._canon_folder(path)
 
 

@@ -36,13 +36,6 @@ from fused_render.ai import hub_cache as ai_models_mod
 from fused_render.ai import tasks as ai_tasks
 from _hardware_probe_helpers import force_no_accelerators
 
-# Windows makes symlinks a privileged operation, and huggingface_hub itself
-# falls back to copies there — the dedup rule under test is a POSIX-cache one.
-requires_symlinks = pytest.mark.skipif(
-    os.name == "nt", reason="symlink creation needs privileges on Windows"
-)
-
-
 @pytest.fixture()
 def client(tmp_path):
     return TestClient(create_app(start_dir=str(tmp_path)))
@@ -136,7 +129,6 @@ def test_reports_revisions_and_refs(client, hub):
     assert repo["refs"] == ["main", "v1.0"]
 
 
-@requires_symlinks
 def test_a_repo_folder_symlinked_in_from_another_disk_is_listed(client, hub, tmp_path):
     # Moving a big model off the boot volume and symlinking it back is a normal
     # thing to do; the repo is still cached, and its bytes are still real.
@@ -158,7 +150,6 @@ def test_path_points_at_the_repo_folder(client, hub):
 # -- footprint -----------------------------------------------------------------
 
 
-@requires_symlinks
 def test_snapshot_symlinks_are_not_counted_again(client, hub):
     # One 1000-byte blob, materialised into two revisions: on disk that is
     # 1000 bytes plus the two 8-byte refs files, NOT 3000.
@@ -174,7 +165,6 @@ def test_snapshot_symlinks_are_not_counted_again(client, hub):
     assert repo["files"] == 2  # the blob and the ref file; the links are not files
 
 
-@requires_symlinks
 def test_size_is_bytes_on_disk_not_apparent_size(client, hub):
     _repo(hub, "models--a", blobs={"b": 1000}, snapshots={"c1": {"f": "b"}})
     _repo(hub, "models--b", blobs={"b": 1000})
@@ -335,7 +325,6 @@ def _revisions(client, repo):
     return {rev["commit"]: rev for rev in r.json()["revisions"]}
 
 
-@requires_symlinks
 def test_revision_sizes_split_exclusive_from_shared(client, hub):
     _repo(
         hub,
@@ -354,7 +343,6 @@ def test_revision_sizes_split_exclusive_from_shared(client, hub):
     assert revs["aaa"]["files"] == 2
 
 
-@requires_symlinks
 def test_a_lone_revision_owns_everything_it_references(client, hub):
     _repo(hub, "models--solo", blobs={"a": 900}, snapshots={"c1": {"m.bin": "a"}}, refs={"main": "c1"})
     (rev,) = _revisions(client, "models--solo").values()
@@ -400,7 +388,6 @@ def test_deleting_a_repo_takes_its_lock_folder_with_it(client, hub):
     assert not locks.exists()
 
 
-@requires_symlinks
 def test_deleting_a_revision_keeps_a_blob_its_sibling_shares(client, hub):
     repo = _repo(
         hub,
@@ -424,7 +411,6 @@ def test_deleting_a_revision_keeps_a_blob_its_sibling_shares(client, hub):
     assert (repo / "snapshots" / "bbb" / "model.bin").read_bytes() == b"x" * 4000
 
 
-@requires_symlinks
 def test_deleting_a_revision_drops_the_refs_that_pointed_at_it(client, hub):
     repo = _repo(
         hub,
@@ -439,7 +425,6 @@ def test_deleting_a_revision_drops_the_refs_that_pointed_at_it(client, hub):
     assert (repo / "refs" / "main").read_text() == "bbb"
 
 
-@requires_symlinks
 def test_deleting_the_last_revision_removes_the_whole_repo(client, hub):
     repo = _repo(
         hub,
@@ -504,7 +489,6 @@ def test_a_target_that_is_not_a_repo_folder_name_is_refused(client, hub, tmp_pat
 
 
 @pytest.mark.parametrize("revision", ["../../../../etc", "..", "/abs", "", "a/b", 0, False])
-@requires_symlinks
 def test_a_revision_that_is_not_a_plain_name_is_refused(client, hub, tmp_path, revision):
     # Including the falsy ones: a malformed revision must be an error, never a
     # fallback to "delete the whole repo" — the widest possible reading of the
@@ -516,7 +500,6 @@ def test_a_revision_that_is_not_a_plain_name_is_refused(client, hub, tmp_path, r
     assert repo.exists()
 
 
-@requires_symlinks
 def test_a_symlinked_repo_folder_is_refused_rather_than_followed(client, hub, tmp_path):
     elsewhere = tmp_path / "big-disk"
     elsewhere.mkdir()
@@ -597,7 +580,6 @@ def test_last_used_reads_the_newest_atime(client, hub):
     assert out["mtime"] == 5_000_000
 
 
-@requires_symlinks
 def test_reading_the_page_does_not_mark_a_repo_as_freshly_used(client, hub):
     # The endpoints open ref files to resolve revisions, which bumps their
     # atime. Left alone, a trip through this page would mark every repo it
@@ -659,7 +641,6 @@ def _repo_row(client, repo_id):
     return next(r for r in _get(client)["repos"] if r["id"] == repo_id)
 
 
-@requires_symlinks
 def test_pipeline_tag_from_the_model_card_wins(client, hub):
     repo = _repo(hub, "models--org--m", blobs={"w": 10}, snapshots={"c1": {"model.bin": "w"}},
                  refs={"main": "c1"})
@@ -674,7 +655,6 @@ def test_pipeline_tag_from_the_model_card_wins(client, hub):
     assert row["library"] == "diffusers"
 
 
-@requires_symlinks
 @pytest.mark.parametrize(
     "architectures,model_type,expected",
     [
@@ -703,7 +683,6 @@ def test_task_inferred_from_the_architecture(client, hub, architectures, model_t
     assert row["taskSource"] == ("the architecture in config.json" if expected else None)
 
 
-@requires_symlinks
 @pytest.mark.parametrize("architecture,model_type,extra", [
     # Qwen3.5 — a vision tower and no audio. Every MLX conversion of it, which
     # is the whole of this app's own Apple Silicon catalog since D3xx.
@@ -738,7 +717,6 @@ def test_a_multimodal_wrapper_is_a_TEXT_model_not_a_t5(client, hub, architecture
     assert row["capability"] == _ai_registry.TEXT_GENERATION
 
 
-@requires_symlinks
 def test_an_AUDIO_language_model_is_not_called_a_vision_one(client, hub):
     """An audio tower is not evidence of a vision tower.
 
@@ -762,7 +740,6 @@ def test_an_AUDIO_language_model_is_not_called_a_vision_one(client, hub):
     assert row["engine"] is None
 
 
-@requires_symlinks
 def test_a_text_only_encoder_decoder_is_still_text_to_text(client, hub):
     """The other half of the same branch: no vision and no audio is a T5, and
     reading THAT as a chat model would put a Load button on a translation
@@ -779,7 +756,6 @@ def test_a_text_only_encoder_decoder_is_still_text_to_text(client, hub):
     assert row["supportReason"]
 
 
-@requires_symlinks
 def test_diffusers_and_sentence_transformers_are_recognised(client, hub):
     a = _repo(hub, "models--org--sd", blobs={"w": 10}, snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
     _snapshot_file(a, "c1", "model_index.json", json.dumps({"_class_name": "StableDiffusionXLPipeline"}))
@@ -790,7 +766,6 @@ def test_diffusers_and_sentence_transformers_are_recognised(client, hub):
     assert _repo_row(client, "org/st")["task"] == "embeddings"
 
 
-@requires_symlinks
 def test_parameter_count_sums_the_safetensors_shapes(client, hub):
     repo = _repo(hub, "models--org--m", blobs={"w": 10}, snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
     # Two shards, as a real multi-GB model is stored.
@@ -802,7 +777,6 @@ def test_parameter_count_sums_the_safetensors_shapes(client, hub):
     assert _repo_row(client, "org/m")["params"] == expected
 
 
-@requires_symlinks
 def test_no_parameter_count_is_reported_rather_than_a_guess(client, hub):
     # .bin pickles and .gguf carry no cheap header, so the count is absent —
     # never estimated from the file size.
@@ -814,14 +788,12 @@ def test_no_parameter_count_is_reported_rather_than_a_guess(client, hub):
     assert row["task"] == "text generation"
 
 
-@requires_symlinks
 def test_a_truncated_safetensors_header_is_survived(client, hub):
     repo = _repo(hub, "models--org--m", blobs={"w": 10}, snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
     _snapshot_file(repo, "c1", "model.safetensors", _safetensors({"a": (8, 8)})[:12])
     assert _repo_row(client, "org/m")["params"] is None
 
 
-@requires_symlinks
 def test_the_default_revision_is_the_one_described(client, hub):
     repo = _repo(
         hub,
@@ -835,7 +807,6 @@ def test_the_default_revision_is_the_one_described(client, hub):
     assert _repo_row(client, "org/m")["task"] == "text generation"
 
 
-@requires_symlinks
 def test_reading_the_metadata_does_not_count_as_using_the_model(client, hub):
     # Same rule as the ref files: a model card and a safetensors header are
     # reached THROUGH the snapshot symlink, so reading them touches the blob's
@@ -863,7 +834,6 @@ def test_added_is_the_oldest_file_not_the_newest(client, hub):
     assert row["mtime"] == 8_000_000
 
 
-@requires_symlinks
 def test_diffusers_weights_in_component_subfolders_are_counted(client, hub):
     # A pipeline keeps its weights per component, which is exactly the layout
     # behind the repos whose task we detect from model_index.json — a top-level
@@ -879,7 +849,6 @@ def test_diffusers_weights_in_component_subfolders_are_counted(client, hub):
     assert row["params"] == 12000 * 1_000_000 + 32000 * 4096 + 512 * 512
 
 
-@requires_symlinks
 def test_a_precision_variant_is_not_counted_twice(client, hub):
     # fp16 variants sit beside the file they are a variant of; both hold the
     # same tensors, so a repo that pulled both must not report double.
@@ -889,7 +858,6 @@ def test_a_precision_variant_is_not_counted_twice(client, hub):
     assert _repo_row(client, "org/sd")["params"] == 1000 * 1000
 
 
-@requires_symlinks
 def test_a_lone_variant_still_counts(client, hub):
     # …but a repo that only ever pulled the fp16 build has no plain counterpart
     # to prefer, and must not report nothing.
@@ -913,7 +881,6 @@ def test_a_hardlinked_weight_alias_counts_once(client, hub):
     assert _repo_row(client, "org/m")["params"] == 128 * 128
 
 
-@requires_symlinks
 def test_the_same_blob_under_two_names_counts_once(client, hub):
     repo = _repo(hub, "models--org--m", blobs={"shared": 4096}, snapshots={"c1": {"m": "shared"}},
                  refs={"main": "c1"})
@@ -940,7 +907,6 @@ def _quantized_safetensors(shapes_by_dtype):
     return len(blob).to_bytes(8, "little") + blob
 
 
-@requires_symlinks
 def test_a_4bit_checkpoint_reports_weights_not_storage_slots(client, hub):
     repo = _repo(hub, "models--mlx-community--m-4bit", blobs={"w": 10},
                  snapshots={"c1": {"x": "w"}}, refs={"main": "c1"})
@@ -959,7 +925,6 @@ def test_a_4bit_checkpoint_reports_weights_not_storage_slots(client, hub):
     assert row["quantization"] == "4-bit"
 
 
-@requires_symlinks
 def test_an_unquantized_checkpoint_is_not_marked_estimated(client, hub):
     repo = _repo(hub, "models--org--m", blobs={"w": 10}, snapshots={"c1": {"x": "w"}}, refs={"main": "c1"})
     _snapshot_file(repo, "c1", "config.json", json.dumps({"architectures": ["LlamaForCausalLM"]}))
@@ -970,7 +935,6 @@ def test_an_unquantized_checkpoint_is_not_marked_estimated(client, hub):
     assert row["quantization"] is None
 
 
-@requires_symlinks
 @pytest.mark.parametrize(
     "config_block,expected_bits",
     [
@@ -990,7 +954,6 @@ def test_the_declared_width_is_read_not_the_repo_name(client, hub, config_block,
     assert _repo_row(client, "org/plain-name")["quantization"] == expected_bits
 
 
-@requires_symlinks
 def test_quantization_is_read_even_when_the_card_named_the_task(client, hub):
     # The gemma case: the task came from the model card, so a config read that
     # only happened when the task was still unknown would miss the bit width.
@@ -1002,7 +965,6 @@ def test_quantization_is_read_even_when_the_card_named_the_task(client, hub):
     assert row["quantization"] == "4-bit"
 
 
-@requires_symlinks
 def test_a_vision_recipe_overrules_a_card_that_says_image_text_to_text(client, hub):
     # Moondream 2's card would otherwise send it to the text runner (SPEC AI-33).
     repo = _repo(hub, "models--vikhyatk--moondream2", blobs={"w": 10},
@@ -1014,7 +976,6 @@ def test_a_vision_recipe_overrules_a_card_that_says_image_text_to_text(client, h
     assert row["taskSource"] == "its vision-torch recipe"
 
 
-@requires_symlinks
 def test_a_gguf_repo_is_named_but_not_given_a_task(client, hub):
     """No config.json, no card, no real GGUF header either — a fixture whose
     `.gguf` file is fake bytes, not a real one — and the library is all that
@@ -1043,7 +1004,6 @@ def test_a_gguf_repo_is_named_but_not_given_a_task(client, hub):
     assert row["params"] is None  # no cheap header to read
 
 
-@requires_symlinks
 @pytest.mark.parametrize(
     "class_name,expected,tag",
     [
@@ -1064,7 +1024,6 @@ def test_a_diffusers_pipeline_names_its_medium(client, hub, class_name, expected
     assert row["taskTag"] == tag
 
 
-@requires_symlinks
 def test_a_card_without_front_matter_falls_through_to_the_config(client, hub):
     repo = _repo(hub, "models--org--m", blobs={"w": 10}, snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
     _snapshot_file(repo, "c1", "README.md", "# Just a heading, no front matter\n")
@@ -1074,7 +1033,6 @@ def test_a_card_without_front_matter_falls_through_to_the_config(client, hub):
     assert row["taskSource"] == "the architecture in config.json"
 
 
-@requires_symlinks
 def test_without_a_main_ref_the_newest_snapshot_describes_the_repo(client, hub):
     repo = _repo(hub, "models--org--m", blobs={"w": 10},
                  snapshots={"old": {"m": "w"}, "new": {"m": "w"}}, refs={})
@@ -1084,7 +1042,6 @@ def test_without_a_main_ref_the_newest_snapshot_describes_the_repo(client, hub):
     assert _repo_row(client, "org/m")["task"] == "text generation"
 
 
-@requires_symlinks
 def test_metadata_is_read_once_per_snapshot(client, hub):
     # The cache's promise ("a Refresh over forty repos re-reads nothing") and
     # its accepted cost, in one test: the key is the snapshot directory's own
@@ -1202,7 +1159,6 @@ def test_a_repo_that_vanishes_mid_listing_costs_one_row_not_the_page(client, hub
     assert [r["id"] for r in data["repos"]] == ["survivor"]
 
 
-@requires_symlinks
 def test_a_revision_that_vanishes_mid_scan_costs_one_revision(client, hub, monkeypatch):
     repo = _repo(hub, "models--org--m", blobs={"a": 100}, snapshots={"c1": {"m": "a"}}, refs={"main": "c1"})
     _snapshot_file(repo, "c1", "config.json", json.dumps({"architectures": ["LlamaForCausalLM"]}))
@@ -1213,7 +1169,6 @@ def test_a_revision_that_vanishes_mid_scan_costs_one_revision(client, hub, monke
     assert row["task"] == "text generation"
 
 
-@requires_symlinks
 def test_a_task_carries_a_sentence_explaining_what_it_means(client, hub):
     # "image + text to text" is the Hub's vocabulary, which is jargon until
     # someone says what goes in and what comes out.
@@ -1224,7 +1179,6 @@ def test_a_task_carries_a_sentence_explaining_what_it_means(client, hub):
     assert "image AND a prompt" in row["taskHelp"]
 
 
-@requires_symlinks
 def test_an_architecture_derived_task_is_explained_too(client, hub):
     # One glossary serves both paths: the label is the key, not the raw tag.
     repo = _repo(hub, "models--org--m", blobs={"w": 10}, snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
@@ -1234,7 +1188,6 @@ def test_an_architecture_derived_task_is_explained_too(client, hub):
     assert row["taskHelp"].startswith("Fills in blanked-out words")
 
 
-@requires_symlinks
 def test_a_tag_this_build_never_heard_of_still_shows_its_label_and_source(client, hub):
     """The Hub's vocabulary GROWS, and this table is a snapshot of it — so an
     unvendored tag degrades to label + provenance rather than to nothing.
@@ -1253,7 +1206,6 @@ def test_a_tag_this_build_never_heard_of_still_shows_its_label_and_source(client
     assert row["capability"] is None
 
 
-@requires_symlinks
 def test_a_task_nothing_here_runs_says_which_and_why(client, hub):
     """The state the page could not draw before: not a missing button, a
     sentence. `graph-ml` is a task we recognise perfectly well and serve not at
@@ -1333,7 +1285,6 @@ def test_every_suggested_model_could_be_loaded_by_the_page():
         assert entries, f"{code} suggests nothing"
 
 
-@requires_symlinks
 def test_both_evidence_paths_agree_on_the_label(client, hub):
     # Same model, same concept: whichever evidence answers, the card reads the
     # same and the hover explains it.
@@ -1358,7 +1309,6 @@ def test_both_evidence_paths_agree_on_the_label(client, hub):
 # model, and a diffusion model as one too.
 
 
-@requires_symlinks
 def test_a_repo_reports_the_capability_that_could_load_it(client, hub):
     text = _repo(hub, "models--org--chat", blobs={"w": 10}, snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
     _snapshot_file(text, "c1", "config.json",
@@ -1369,7 +1319,6 @@ def test_a_repo_reports_the_capability_that_could_load_it(client, hub):
     assert _repo_row(client, "org/sd")["capability"] == "text-to-image"
 
 
-@requires_symlinks
 def test_a_repo_no_runner_serves_reports_no_capability(client, hub):
     """None is the honest answer, and the page turns it into "no Load button" —
     rather than a button that is offered and always fails.
@@ -1397,7 +1346,6 @@ def test_a_repo_no_runner_serves_reports_no_capability(client, hub):
     assert _repo_row(client, "org/st")["capability"] is None
 
 
-@requires_symlinks
 def test_a_downloaded_repo_absent_from_the_suggestion_catalog_still_appears_in_the_listing(
         client, hub):
     """The Discover tab's Hub search can download ANY repo, curated or not.
@@ -1419,7 +1367,6 @@ def test_a_downloaded_repo_absent_from_the_suggestion_catalog_still_appears_in_t
     assert row["capability"] == _ai_registry.TEXT_GENERATION
 
 
-@requires_symlinks
 def test_a_dataset_is_never_loadable(client, hub):
     # A dataset folder can carry a config.json that reads like a model's. The
     # kind is what settles it: nothing here loads a dataset into a text runner.
@@ -1441,7 +1388,6 @@ def _engine(client, repo_id):
     return _repo_row(client, repo_id)["engine"]
 
 
-@requires_symlinks
 def test_a_ctranslate2_whisper_repo_is_recognised_and_loadable(client, hub, monkeypatch):
     """`deepdml/faster-whisper-large-v3-turbo-ct2` — this app's own recommended
     speech model everywhere but Apple Silicon — showed no task line and no Load
@@ -1461,7 +1407,6 @@ def test_a_ctranslate2_whisper_repo_is_recognised_and_loadable(client, hub, monk
     assert row["engine"]["available"] is True
 
 
-@requires_symlinks
 def test_an_mlx_whisper_repo_names_the_engine_it_needs_off_a_mac(client, hub, monkeypatch):
     """"Nothing here reads this" and "what reads it does not run here" are
     different sentences, and only the second tells a Linux user that the
@@ -1476,7 +1421,6 @@ def test_an_mlx_whisper_repo_names_the_engine_it_needs_off_a_mac(client, hub, mo
     assert "Apple Silicon" in engine["reason"]
 
 
-@requires_symlinks
 def test_a_gguf_only_repo_is_not_called_a_text_model(client, hub):
     """`unsloth/FLUX.2-klein-4B-GGUF` is an IMAGE model — and in this app it is
     not even a model, it is the quantized transformer the diffusers recipe
@@ -1497,7 +1441,6 @@ def test_a_gguf_only_repo_is_not_called_a_text_model(client, hub):
     assert row["engine"] is None
 
 
-@requires_symlinks
 def test_the_apps_own_recommended_image_model_is_loadable(client, hub, monkeypatch,
                                                           tmp_path):
     """`black-forest-labs/FLUX.2-klein-4B` is the FLUX.2 base pipeline the
@@ -1528,7 +1471,6 @@ def test_the_apps_own_recommended_image_model_is_loadable(client, hub, monkeypat
     assert row["engine"]["code"] == "diffusers-image"
 
 
-@requires_symlinks
 def test_the_engine_payload_carries_the_family_name_beside_the_hardware_one(
         client, hub, monkeypatch, tmp_path):
     """Three names on the wire, because the card wants two different things.
@@ -1570,7 +1512,6 @@ def test_the_engine_payload_carries_the_family_name_beside_the_hardware_one(
     assert other["familyLabel"] == "Diffusers"
 
 
-@requires_symlinks
 def test_a_repo_the_OTHER_engine_reads_is_not_offered_a_load(client, hub, monkeypatch):
     """A capability holds one resident model and the registry picks which
     backend loads it — so on a Mac, whose image engine is MLX FLUX, a Diffusers
@@ -1595,7 +1536,6 @@ def test_a_repo_the_OTHER_engine_reads_is_not_offered_a_load(client, hub, monkey
     assert "MLX FLUX" in engine["reason"] and "Engines tab" in engine["reason"]
 
 
-@requires_symlinks
 def test_the_two_FLUX_klein_repos_read_the_same_and_the_label_matches_the_gate(
         client, hub, monkeypatch):
     """One model, two conversions, two cards in the same row — and they used to
@@ -1628,7 +1568,6 @@ def test_the_two_FLUX_klein_repos_read_the_same_and_the_label_matches_the_gate(
     assert ai_tasks.capability_for_tag(row["taskTag"]) == row["capability"]
 
 
-@requires_symlinks
 def test_no_card_offers_a_load_under_a_task_the_app_cannot_serve(client, hub, monkeypatch):
     """The invariant behind (b) and (c), over a cache of every shape at once.
 
@@ -1675,7 +1614,6 @@ def test_no_card_offers_a_load_under_a_task_the_app_cannot_serve(client, hub, mo
         assert ai_tasks.capability_for_tag(row["taskTag"]) == row["capability"], row
 
 
-@requires_symlinks
 def test_a_decisive_format_cannot_overrule_a_task_we_have_ruled_out(client, hub, monkeypatch):
     """The general gate, exercised against a still-ruled-out video task.
 
@@ -1715,7 +1653,6 @@ def test_a_decisive_format_cannot_overrule_a_task_we_have_ruled_out(client, hub,
     assert ai_models_mod.cached_capability("org/vid").capability is None
 
 
-@requires_symlinks
 def test_a_diffusers_video_pipeline_is_supported_but_has_no_engine(client, hub, monkeypatch):
     """The NEW, correct shape for a diffusers video pipeline, now that
     `text-to-video` genuinely has a runner (`ltx-video`).
@@ -1748,7 +1685,6 @@ def test_a_diffusers_video_pipeline_is_supported_but_has_no_engine(client, hub, 
             == _ai_registry.VIDEO_GENERATION)
 
 
-@requires_symlinks
 def test_a_genuine_image_to_image_repo_keeps_its_label_and_gets_no_load(client, hub):
     """D1235: `image-to-image` now maps to IMAGE_GENERATION in tasks.py (the
     hub_catalog spec — the FLUX.2-klein family and the mflux edit path do
@@ -1768,7 +1704,6 @@ def test_a_genuine_image_to_image_repo_keeps_its_label_and_gets_no_load(client, 
     assert row["engine"] is None
 
 
-@requires_symlinks
 def test_an_mlx_text_checkpoint_reports_the_mlx_engine(client, hub, monkeypatch):
     monkeypatch.setattr(_ai_registry.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(_ai_registry.platform, "machine", lambda: "arm64")
@@ -1791,7 +1726,6 @@ def test_an_mlx_text_checkpoint_reports_the_mlx_engine(client, hub, monkeypatch)
     assert engine["code"] == "mlx-text" and engine["available"] is False
 
 
-@requires_symlinks
 def test_a_cards_engine_reason_comes_from_the_probe_that_PICKED_the_row(
         client, hub, monkeypatch):
     """One probe per candidate, and the row is described by ITS answer.
@@ -1841,7 +1775,6 @@ def test_a_cards_engine_reason_comes_from_the_probe_that_PICKED_the_row(
     assert engine["reason"] == "refusal 1", (engine["reason"], len(seen))
 
 
-@requires_symlinks
 def test_a_plain_safetensors_causal_lm_is_MLXS_AND_UNAVAILABLE_off_a_mac(client, hub, monkeypatch):
     """A cached bf16 causal LM off a Mac names `mlx-text` and says it cannot run.
 
@@ -1875,7 +1808,6 @@ def test_a_plain_safetensors_causal_lm_is_MLXS_AND_UNAVAILABLE_off_a_mac(client,
 # there is one reading and both read it.
 
 
-@requires_symlinks
 def test_the_card_and_a_load_without_a_capability_agree(client, hub):
     """Every repo the PAGE offers a capability for resolves to that same
     capability when a load leaves it out. The forbidden direction is a card
@@ -1909,7 +1841,6 @@ def test_a_repo_id_can_never_become_a_path(hub):
         assert ai_models_mod.cached_capability(hostile)[:3] == (False, None, None)
 
 
-@requires_symlinks
 def test_an_unreadable_cached_repo_reports_what_it_looks_like(client, hub):
     """The sentence the load route refuses with is built from this."""
     repo = _repo(hub, "models--org--sfx", blobs={"w": 10},
@@ -1920,7 +1851,6 @@ def test_an_unreadable_cached_repo_reports_what_it_looks_like(client, hub):
     assert reading.looks_like == "an audio generation model"
 
 
-@requires_symlinks
 def test_what_it_looks_like_reads_as_a_sentence(client, hub):
     """"a image to image model" is the kind of thing that makes a generated
     error look machine-written, in the one message meant to be acted on."""
@@ -1931,7 +1861,6 @@ def test_what_it_looks_like_reads_as_a_sentence(client, hub):
         "an image to image model")
 
 
-@requires_symlinks
 def test_a_dataset_has_no_engine(client, hub):
     data = _repo(hub, "datasets--org--corpus", blobs={"w": 10},
                  snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
@@ -1943,7 +1872,6 @@ def test_a_dataset_has_no_engine(client, hub):
 # -- repos the user never chose --------------------------------------------------
 
 
-@requires_symlinks
 def test_a_component_repo_says_what_it_is_a_part_of(client, hub):
     """The GGUF transformer the diffusers recipe fetches is 2.4GB of somebody
     else's model sitting in the cache under its own name. It read `cached=True,
@@ -1966,7 +1894,6 @@ def test_a_component_repo_says_what_it_is_a_part_of(client, hub):
     assert row["size"] > 0
 
 
-@requires_symlinks
 def test_a_two_megabyte_helper_reads_the_same_way(client, hub):
     """Silero is 2MB and ours, not the user's. The same treatment has to make
     sense at that scale: it had no task, no library and no engine, so its card
@@ -1985,7 +1912,6 @@ def test_a_two_megabyte_helper_reads_the_same_way(client, hub):
     assert "slower" in row["component"]["what"]
 
 
-@requires_symlinks
 def test_an_ordinary_model_is_not_a_component(client, hub):
     repo = _repo(hub, "models--org--m", blobs={"w": 10},
                  snapshots={"c1": {"model.bin": "w"}}, refs={"main": "c1"})
@@ -1993,7 +1919,6 @@ def test_an_ordinary_model_is_not_a_component(client, hub):
     assert _repo_row(client, "org/m")["component"] is None
 
 
-@requires_symlinks
 def test_loading_a_component_is_refused_by_name(client, hub):
     """`cached_capability` is what the load route refuses with (D321). "a
     speech detector that belongs to MLX Whisper" is a far more useful
@@ -2014,7 +1939,6 @@ def test_loading_a_component_is_refused_by_name(client, hub):
 # perfectly complete SigLIP tower looks like.
 
 
-@requires_symlinks
 def test_a_part_file_marks_the_repo_partly_downloaded(client, hub):
     """The bug this whole reading exists for.
 
@@ -2037,7 +1961,6 @@ def test_a_part_file_marks_the_repo_partly_downloaded(client, hub):
     assert row["revisions"] == 1
 
 
-@requires_symlinks
 def test_hugging_faces_own_incomplete_file_counts_too(client, hub):
     """The cache is shared. A pull by `hf`, transformers or a template a user
     pasted in leaves `.incomplete`, and this page reads that cache too."""
@@ -2057,7 +1980,6 @@ def test_a_repo_with_no_snapshot_at_all_is_partly_downloaded(client, hub):
     assert _repo_row(client, "org/m")["partial"] is True
 
 
-@requires_symlinks
 def test_a_completed_repo_no_engine_reads_is_NOT_partial(client, hub):
     """The false positive that would have been worse than the bug.
 
@@ -2077,7 +1999,6 @@ def test_a_completed_repo_no_engine_reads_is_NOT_partial(client, hub):
     assert row["partial"] is False
 
 
-@requires_symlinks
 def test_a_repo_pinned_at_a_commit_is_not_partial_for_having_no_ref(client, hub):
     """The other tempting reading, and the other false positive: neither hf nor
     `_write_ref` writes a ref named after a sha, so "no refs/" is the ordinary
@@ -2088,7 +2009,6 @@ def test_a_repo_pinned_at_a_commit_is_not_partial_for_having_no_ref(client, hub)
     assert _repo_row(client, "org/pinned")["partial"] is False
 
 
-@requires_symlinks
 def test_a_repo_this_app_never_fetched_is_not_partial(client, hub):
     """`.fused-fetch-<commit>.json` is written only by our own fetcher, so its
     ABSENCE describes every repo pulled by the `hf` CLI or by a build older than
@@ -2121,7 +2041,6 @@ def test_the_part_suffix_is_the_fetchers_own(client):
         worker_base.PART_SUFFIX, worker_base._HF_PART_SUFFIX}
 
 
-@requires_symlinks
 def test_deleting_a_partly_downloaded_repo_frees_it_and_it_leaves_the_listing(
         client, hub):
     """The second of the two ways out. Discarding the bytes is what puts the
@@ -2143,7 +2062,6 @@ def test_deleting_a_partly_downloaded_repo_frees_it_and_it_leaves_the_listing(
     assert not repo.exists()
 
 
-@requires_symlinks
 def test_cached_models_does_not_offer_half_a_snapshot(client, hub):
     """`cached_models()` is what `/api/ai/catalog` and every page's picker read
     (D323). A repo whose download stopped is not a model this disk HAS, and a
@@ -2192,7 +2110,6 @@ def test_a_stopped_fetch_with_bytes_on_disk_is_KEPT(client, hub):
     assert repo.exists()
 
 
-@requires_symlinks
 def test_a_finished_download_is_never_discarded(client, hub):
     """Called on every fetch's way out, including the successful ones — so the
     successful ones have to be a no-op. Read off the FOLDER, never off the job's
@@ -2289,7 +2206,6 @@ def test_hf_incomplete_files_count_their_length(client, hub):
     assert _repo_row(client, "org/hf")["fetchedBytes"] == 1000
 
 
-@requires_symlinks
 def test_a_finished_repo_reports_every_byte_as_fetched(client, hub):
     """The ordinary case, and the one the fraction never draws: nothing is
     outstanding, so the two numbers agree."""
@@ -2377,7 +2293,6 @@ def test_has_cached_snapshot_is_false_for_a_hostile_repo_id(hub):
 # -- the partly downloaded, engine-stranded repo (PR #830 regression) ----------
 
 
-@requires_symlinks
 def test_a_partial_MLX_ONLY_repo_names_the_engine_and_is_unservable(
         client, hub, monkeypatch):
     """**`engine` must not be null here, and that was the bug.**
@@ -2416,7 +2331,6 @@ def test_a_partial_MLX_ONLY_repo_names_the_engine_and_is_unservable(
     assert "onnx-community/siglip2-base-patch16-384-ONNX" in engine["reason"]
 
 
-@requires_symlinks
 def test_the_same_repo_on_a_MAC_is_servable(client, hub, monkeypatch):
     """The Mac path: `mlx-embed` serves there, so nothing is stranded and the
     resume must stay offered. A fix that flagged this everywhere would have
@@ -2437,7 +2351,6 @@ def test_the_same_repo_on_a_MAC_is_servable(client, hub, monkeypatch):
     assert engine is None or not engine.get("unservable")
 
 
-@requires_symlinks
 def test_a_partial_UNCURATED_repo_still_reports_no_engine(client, hub,
                                                           monkeypatch):
     """"No information" stays no information. Nobody here has an opinion about a

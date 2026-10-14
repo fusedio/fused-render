@@ -559,7 +559,6 @@ def test_a_server_already_on_312_builds_script_venvs_from_ITSELF(
     assert envinstall.script_python_ready() is True
 
 
-@pytest.mark.skipif(os.name == "nt", reason="needs a POSIX #! stub interpreter")
 def test_a_server_on_the_WRONG_version_resolves_a_uv_managed_312(
     tmp_path, monkeypatch, _fresh_script_python
 ):
@@ -626,7 +625,6 @@ def test_a_machine_with_no_uv_at_all_keeps_working_as_before(
     assert envinstall.script_python_ready() is True
 
 
-@pytest.mark.skipif(os.name == "nt", reason="needs a POSIX #! stub interpreter")
 def test_an_explicit_script_python_override_wins_but_is_still_probed(
     tmp_path, monkeypatch, _fresh_script_python
 ):
@@ -644,7 +642,6 @@ def test_an_explicit_script_python_override_wins_but_is_still_probed(
     assert envinstall.script_python_ready() is False
 
 
-@pytest.mark.skipif(os.name == "nt", reason="needs a POSIX #! stub interpreter")
 def test_the_interpreter_is_resolved_ONCE_per_process(
     tmp_path, monkeypatch, _fresh_script_python
 ):
@@ -705,7 +702,6 @@ def test_the_interpreter_is_never_ANOTHER_VENVS_python(
     assert "--managed-python" in find and "--no-project" in find, repr(find)
 
 
-@pytest.mark.skipif(os.name == "nt", reason="needs a POSIX #! stub interpreter")
 def test_a_not_ready_verdict_is_never_CACHED(tmp_path, monkeypatch, _fresh_script_python):
     """"Nothing here yet" is a fact about this instant, not about the machine.
 
@@ -1926,7 +1922,6 @@ def test_a_marked_venv_that_cannot_run_is_not_installed_and_loses_its_marker(
     assert not marker.exists(), "the marker must go, or upstream will not rebuild"
 
 
-@pytest.mark.skipif(os.name == "nt", reason="needs a POSIX #! stub interpreter")
 @requires_fused
 def test_a_marked_venv_whose_python_FAILS_is_not_installed(tmp_path, monkeypatch):
     """Present but broken, which is what the real bug looked like.
@@ -2743,7 +2738,6 @@ def test_a_worker_that_died_unreaped_is_not_reported_alive(tmp_path, monkeypatch
     assert "without finishing" in prog["error"]
 
 
-@pytest.mark.skipif(os.name == "nt", reason="waitpid reaping is POSIX-only")
 def test_a_pid_this_module_did_not_spawn_is_never_reaped():
     """`_pid_alive` must not steal another part of the server's child.
 
@@ -2874,9 +2868,6 @@ def test_cancellation_kills_the_recorded_pid(tmp_path, monkeypatch, detached):
 
 
 @requires_fused
-@pytest.mark.skipif(os.name == "nt", reason="killpg/getpgid are POSIX-only; "
-                    "_kill's Windows path uses CTRL_BREAK_EVENT/taskkill instead, "
-                    "which this test's own-process-group hazard does not apply to")
 def test_cancelling_a_pid_in_our_own_group_does_not_kill_us(tmp_path, monkeypatch):
     """The guard, asserted directly rather than only via the parametrized case.
 
@@ -4209,7 +4200,6 @@ def test_the_worker_spawns_with_the_interpreter_that_will_run_the_code(
 
 
 @requires_fused
-@pytest.mark.skipif(os.name == "nt", reason="POSIX detachment; Windows uses flags")
 def test_the_installer_is_spawned_off_the_fork_path(tmp_path, monkeypatch):
     """`start_new_session=True` here is a crash, not a detail.
 
@@ -4247,7 +4237,6 @@ def test_the_installer_is_spawned_off_the_fork_path(tmp_path, monkeypatch):
     assert "cwd" not in seen, "a cwd would force the fork path too"
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX detachment; Windows uses flags")
 def test_the_installer_worker_leads_its_own_session(tmp_path, monkeypatch):
     """The other half: the child takes the session the spawner stopped asking for.
 
@@ -4271,7 +4260,6 @@ def test_the_installer_worker_leads_its_own_session(tmp_path, monkeypatch):
     assert order == ["setsid", "install"]
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX detachment; Windows uses flags")
 def test_an_already_leading_worker_still_installs(monkeypatch):
     """EPERM out of `setsid` means we are ALREADY a group leader — the same end
     state — so it must not take the install down with it."""
@@ -5581,7 +5569,6 @@ def test_a_crash_message_says_how_far_it_got_and_whether_the_log_is_empty(tmp_pa
     assert "killed rather than failing" not in err
 
 
-@pytest.mark.skipif(os.name == "nt", reason="waitpid statuses are POSIX")
 def test_a_worker_we_reaped_ourselves_is_diagnosed_by_its_SIGNAL(tmp_path, monkeypatch):
     """The guess becomes a fact when the status is ours to read.
 
@@ -5641,7 +5628,6 @@ def _has_no_signal_name(number):
     return False
 
 
-@pytest.mark.skipif(os.name == "nt", reason="waitpid statuses are POSIX")
 def test_an_unreaped_or_nameless_ending_degrades_instead_of_failing():
     """The message must survive not knowing. Three ways it can not know: a pid we
     never buried (a record left by a previous server), a pid that is not a number

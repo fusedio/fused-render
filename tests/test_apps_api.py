@@ -180,8 +180,8 @@ def test_title_beyond_first_4kb_is_null_not_an_error(client, workspace):
     assert apps[0]["title"] is None
 
 
-@pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0,
-                    reason="chmod-based unreadable dir needs POSIX non-root")
+@pytest.mark.skipif(os.geteuid() == 0,
+                    reason="chmod-based unreadable dir needs a non-root uid")
 def test_unreadable_tag_dir_is_skipped_not_fatal(client, workspace):
     _app_dir(workspace, "ok")
     locked = workspace / "locked"
@@ -194,8 +194,8 @@ def test_unreadable_tag_dir_is_skipped_not_fatal(client, workspace):
     assert [a["name"] for a in apps] == ["ok"]  # unreadable tag dir skipped, no 500
 
 
-@pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0,
-                    reason="chmod-based unreadable dir needs POSIX non-root")
+@pytest.mark.skipif(os.geteuid() == 0,
+                    reason="chmod-based unreadable dir needs a non-root uid")
 def test_unreadable_project_dir_is_skipped_not_fatal(client, workspace):
     _app_dir(workspace, "ok")
     locked = workspace / "local" / "locked"
@@ -219,8 +219,7 @@ def test_an_unreadable_project_dir_is_skipped_at_any_uid(client, workspace,
     the `OSError` and turned "skip this directory" into "list it with no entry".
 
     Raising from `app_entry` itself reproduces the condition deterministically,
-    for every uid and on Windows too, and is what the listing actually has to
-    survive.
+    for every uid, and is what the listing actually has to survive.
     """
     _app_dir(workspace, "ok")
     (workspace / "local" / "locked").mkdir()
@@ -938,7 +937,6 @@ def test_a_missing_claude_cli_reports_the_fix_not_a_traceback_tail(
     assert "render.fused.io/#troubleshooting-notfound" in entry["error"]
 
 
-@pytest.mark.skipif(os.name == "nt", reason="/bin/sh stub claude is POSIX-only")
 def test_spawn_really_delivers_the_prompt_to_the_claude_process(
         tmp_path, workspace, monkeypatch, request):
     """The regression the mocked tests could never catch.
@@ -1115,8 +1113,6 @@ def test_poll_serves_a_run_started_by_the_server(tmp_path, workspace, monkeypatc
     for a run the SERVER spawned (the POST) exactly as for one the page did —
     same runs dir, same meta, so the page replays the user's prompt and streams
     the reply. Pinned against a real spawn (stub claude) rather than a mock."""
-    if os.name == "nt":
-        pytest.skip("/bin/sh stub claude is POSIX-only")
     entry = workspace / "app" / "index.html"
     entry.parent.mkdir()
     entry.write_text('<html><head><meta name="fused-app" /></head></html>')

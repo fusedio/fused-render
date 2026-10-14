@@ -117,14 +117,8 @@ def test_stage_covers_an_untracked_file(ops, repo):
     # this part of the next commit", and a user does not think of a new file as a
     # different operation from an edited one.
     #
-    # Raw bytes here, not the shared `write()` helper: that helper opens in
-    # Python TEXT mode, which silently turns every `\n` into `\r\n` on Windows.
-    # This file is staged a moment later by `ops.py`'s OWN git subprocess — a
-    # different invocation than the one `status()` below uses to read the
-    # result back — so whatever line-ending handling that git decides to apply
-    # while staging is not guaranteed to still agree with the worktree bytes by
-    # the time this test checks the exact status code. Pure `\n` bytes make
-    # that question moot rather than needing to be right about git's answer.
+    # Raw bytes here: pure `\n` bytes keep the staged blob and the worktree
+    # byte-identical, so the exact status code below is unambiguous.
     with open(os.path.join(repo, "pkg", "fresh.txt"), "wb") as handle:
         handle.write(b"new\n")
     assert ops.main(os.path.join(repo, "pkg"), op="stage",
@@ -1000,10 +994,7 @@ def test_app_restore_commits_the_app_folder_back_to_an_older_version(ops, app_re
     root, old_sha = app_repo
     before_branch = git(root, "symbolic-ref", "--short", "HEAD").strip()
     before_log = len(git(root, "log", "--oneline").strip().split("\n"))
-    # What `write()` actually put in `old_sha`'s blob — on Windows that's
-    # `\r\n` (no `core.autocrlf` here, see `_git_repo.py`), so comparing
-    # against a re-typed `\n`-only literal would fail for a reason that has
-    # nothing to do with the restore logic under test.
+    # What `write()` actually put in `old_sha`'s blob.
     old_content = git(root, "show", f"{old_sha}:app/main.py")
 
     got = ops.main(_app_file(root), op="app_restore", sha=old_sha)
@@ -1074,10 +1065,7 @@ def test_app_restore_leaves_files_outside_the_app_folder_byte_identical(
         after = fh.read()
     # Byte-identical means the restore didn't touch this file at all — so the
     # honest check is the working-tree bytes before vs. after, and the index
-    # blob before vs. after. Neither side is compared to a re-typed literal:
-    # on Windows `write()` puts `\r\n` in both the working tree and the blob
-    # (no `core.autocrlf` here), and a hard-coded `\n` literal would fail for
-    # a reason that has nothing to do with app_restore's own scoping.
+    # blob before vs. after.
     assert after == before
     assert git(root, "show", "HEAD:outside.txt") == index_before
 

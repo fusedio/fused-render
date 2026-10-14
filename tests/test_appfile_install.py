@@ -11,7 +11,6 @@ update over a copy the user edited since (diverged).
 import json
 import os
 import shutil
-import sys
 
 import pytest
 from fastapi.testclient import TestClient
@@ -258,8 +257,6 @@ def test_an_id_less_file_over_an_identified_app_is_a_clash_too(tmp_path):
 # -- the run-in-place era's state ----------------------------------------------
 
 
-@pytest.mark.skipif(sys.platform == "win32",
-                    reason="the run-in-place era's symlink needs Developer Mode on the Windows runner")
 def test_install_adopts_the_shared_state_dir_and_retires_extracts(tmp_path):
     import pathlib
 

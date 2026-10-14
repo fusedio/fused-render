@@ -1636,16 +1636,6 @@ def test_a_page_satisfied_by_today_never_opens_an_older_day(store, monkeypatch):
     assert os.path.basename(old) not in opened, "yesterday must stay unopened"
 
 
-@pytest.mark.skipif(
-    sys.platform == "win32",
-    reason="fds() reads /proc/self/fd (Linux procfs) purely as a test-side probe "
-           "of how many file handles this process holds open — it names no app "
-           "behavior, just counts descriptors the way `lsof`/`ls /proc/self/fd` "
-           "would. Windows has no /proc: there is no bare-stdlib equivalent (the "
-           "nearest real one, enumerating HANDLEs via a Windows API, needs a new "
-           "dependency this repo doesn't otherwise carry), so the probe itself — "
-           "not the merge-closes-its-files guarantee it's checking — is Linux-only.",
-)
 def test_an_abandoned_merge_closes_the_day_s_files(store):
     """A full page or an exhausted budget abandons the walk mid-merge; the day's
     other file handles must not be left to the garbage collector."""

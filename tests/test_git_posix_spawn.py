@@ -239,7 +239,7 @@ def test_a_signal_death_is_not_mistaken_for_a_missing_repo(monkeypatch, caplog,
 # precisely how five forking sites slipped through.
 
 _SPAWNERS = {"run", "Popen", "call", "check_call", "check_output"}
-_GIT_NAMES = {"git", "git.exe"}
+_GIT_NAMES = {"git"}
 
 
 def _is_git_argv(node):
@@ -639,21 +639,10 @@ def test_the_sweeps_skip_a_runner_venv(tmp_path):
     (pkg / "server" / "real.py").write_text(
         'import subprocess\nsubprocess.run(["git", "status"])\n')
 
-    # `as_posix()`, not `str()`: `_sources` hands back `pathlib.Path`s, so a
-    # relative path stringifies with the OS separator and every forward-slash
-    # literal below is `server\\real.py` on Windows. That is exactly how this
-    # test first failed — on `test-python-windows` only, with the sweep behaving
-    # perfectly and the COMPARISON wrong. Normalising the found side keeps the
-    # literals readable and keeps the set equality EXACT, which is the strictness
-    # that makes this test non-tautological; loosening it to a substring or a
-    # length check would have hidden the real bug it exists to catch.
-    #
-    # `test_subprocess_encoding.test_an_installed_runner_venv_is_skipped` is the
-    # sibling of this test and builds its expected value with `os.path.join`
-    # instead. That is not an inconsistency to tidy up: its `_py_files` yields
-    # `os.path.relpath` STRINGS, so a native-separator expectation is the
-    # same-shaped comparison there, exactly as `as_posix()` is here. Converting
-    # either one to the other's style reintroduces this bug.
+    # `as_posix()` on the found side keeps the literals readable and keeps the
+    # set equality EXACT, which is the strictness that makes this test
+    # non-tautological; loosening it to a substring or a length check would
+    # hide the real bug it exists to catch.
     root, files = _sources(pkg)
     found = {p.relative_to(root).as_posix() for p in files}
     assert found == {"server/real.py"}, (

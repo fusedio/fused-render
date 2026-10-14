@@ -46,7 +46,6 @@ def home(tmp_path, monkeypatch):
     house = tmp_path / "home"
     (house / ".fused-render").mkdir(parents=True)
     monkeypatch.setenv("HOME", str(house))
-    monkeypatch.setenv("USERPROFILE", str(house))
     monkeypatch.setenv("FUSED_RENDER_HOME", str(house / ".fused-render"))
     monkeypatch.setenv("FUSED_RENDER_DIR", str(house / "Fused"))
 

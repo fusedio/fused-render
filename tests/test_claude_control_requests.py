@@ -23,14 +23,6 @@ import time
 
 import pytest
 
-# WINDOWS: SKIPPED, NOT FIXED. The persistent session host (#979) never writes
-# `host.json` on the Windows runner - every test below waits for it and times
-# out - and `interrupted_offset` lands one byte off there (CRLF). That is a
-# platform gap in the host itself, not in these tests, and it needs a Windows
-# box to close; marking it here keeps main's Windows job honest about what it
-# does cover instead of red for everything (2026-09-04, red since #979).
-pytestmark = pytest.mark.skipif(os.name == "nt", reason="claude session host does not start on Windows yet (#979)")
-
 from _claude_stub_cli import reap_host, write_stub_cli
 
 AGENT_DIR = os.path.join("fused_render", "claude_agent")

@@ -137,13 +137,7 @@ def test_legacy_per_app_repo_keeps_committing_into_itself(workspace):
     assert app_git.commit(str(d / "index.html"), "Edit old app")
     out = subprocess.run(["git", "-C", str(d), "rev-parse", "--show-toplevel"],
                          capture_output=True, text=True)
-    # Compared as paths, not as strings: `git rev-parse` prints POSIX
-    # separators on every platform (`C:/Users/...`), while `str(d)` on Windows
-    # is backslashed (`C:\Users\...`). The two name the same directory and a
-    # string compare called them different, which is what reddened
-    # test-python-windows. `Path.__eq__` normalises separators (and case) on
-    # Windows and is an exact compare on POSIX, so this still asserts the
-    # thing that matters: the nested repo, not the workspace one, won.
+    # The nested repo, not the workspace one, won.
     assert Path(out.stdout.strip()) == d
     assert _log(d)[0] == "Edit old app"
 
@@ -160,13 +154,6 @@ def test_commit_records_changes_and_noops_when_clean(workspace):
     assert not app_git.commit(str(d / "index.html"), "Edit index.html")
 
 
-@pytest.mark.skipif(
-    sys.platform == "win32",
-    reason="os.fork() (and os.register_at_fork with it) does not exist on "
-           "Windows — there is no fork() there at all, so a forked child "
-           "cannot hold a stale copy of parent state, which is exactly the "
-           "hazard this test simulates and the reason app_git spawns via "
-           "posix_spawnp rather than fork+exec in the first place")
 def test_commit_survives_a_fork_hostile_process(workspace):
     # The server ends up with libproj resident (the fused-engine availability
     # probe imports it), and PROJ's pthread_atfork child handler SIGSEGVs
@@ -253,11 +240,9 @@ def test_local_monorepo_migration_adopts_per_app_repos(workspace, monkeypatch,
     (b / ".gitignore").write_text(app_git._GITIGNORE)
     # The old starter's unscoped-git instructions must be rewritten on adopt.
     # `encoding="utf-8"` is load-bearing, not tidiness. `_OLD_VC` contains two
-    # em-dashes, and `write_text()` with no encoding uses the locale default —
-    # utf-8 on Linux, cp1252 on a Windows runner. `_update_claude_md` opens the
-    # file as utf-8 and treats `UnicodeError` as "leave it alone", so a cp1252
-    # em-dash (0x97, not valid utf-8) silently skipped the rewrite and the
-    # assertion below failed on Windows only.
+    # em-dashes, and `write_text()` with no encoding uses the locale default.
+    # `_update_claude_md` opens the file as utf-8 and treats `UnicodeError` as
+    # "leave it alone", so a non-utf-8 locale would silently skip the rewrite.
     (b / "CLAUDE.md").write_text("# App\n\n" + local_monorepo._OLD_VC + "\n",
                                  encoding="utf-8")
     c = local / "gamma"; c.mkdir()

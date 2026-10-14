@@ -61,7 +61,6 @@ def test_nothing_pruned_means_one_recursive_watch_of_the_root(tmp_path):
     assert (recursive, flat) == (_n(tmp_path, ""), [])
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges")
 def test_a_symlinked_directory_keeps_its_parent_off_the_recursive_watch(tmp_path):
     """The recursive watch follows symlinks and the index walk does not, so
     a directory holding a link to another tree must not be watched
@@ -311,7 +310,7 @@ def _wait_for(source, want, timeout=30.0):
 
 def test_a_real_change_arrives_from_the_real_watcher(tmp_path):
     """End to end against the real `watchfiles` in the real process, generously
-    timed: the Windows CI lane is starved. The root holds a pruned folder, so
+    timed. The root holds a pruned folder, so
     it is watched non-recursively — a file in the root, one in a recursively
     watched child, and one in a folder created after the watch opened (which
     only a re-plan can cover) all have to arrive."""

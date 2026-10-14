@@ -665,17 +665,12 @@ def test_resolve_captures_the_blocked_candidate_even_though_base_stops_short(
     so a caller (`routers/index.py`'s `_rank_body`/`_rank_reason`) can still
     answer "mount" correctly even though `base` alone would miss it.
 
-    D882 (index-search-wedge FIX round): the regression test for this exact
-    contract, `tests/test_index_api.py::
+    D882 (index-search-wedge FIX round): this exercises the same
+    base-shortfall/blocked_out contract as `tests/test_index_api.py::
     test_rank_reason_is_mount_for_a_typed_path_the_guarded_walk_stopped_short_of`,
-    failed on Windows CI — but the cause traced to that test's OWN
-    HOME-mocking shim (`_point_home_at`), which never redirected Windows'
-    `ntpath.expanduser` for a compound `"~/..."` path, not to any defect in
-    this logic. This test exercises the same base-shortfall/blocked_out
-    contract directly against an explicit `guard` (no HOME monkeypatching
-    of any kind, beyond what `_home` already does for the literal `"~"`
-    `resolve_query` itself calls) so a REAL regression here would still fail
-    on any platform, including this one."""
+    directly against an explicit `guard` (no HOME monkeypatching of any kind,
+    beyond what `_home` already does for the literal `"~"` `resolve_query`
+    itself calls)."""
     from fused_render.index.ignore import MountGuard
 
     guard = MountGuard(home_dirs=[_home + "/guarded"])
@@ -789,10 +784,8 @@ def test_resolve_relative_dotdot_clamps_at_the_filesystem_root(monkeypatch):
     real_dirs = {"/", "/etc"}
     monkeypatch.setattr(
         os.path, "isdir",
-        # The fake filesystem is described in POSIX terms, so it has to be
-        # collapsed with POSIX rules too — `os.path.normpath` follows the
-        # host platform's separator conventions and would fold "/.." into
-        # "\\etc"-shaped strings on Windows, matching nothing in `real_dirs`.
+        # The fake filesystem is described in POSIX terms, so it is
+        # collapsed with POSIX rules too.
         lambda p: posixpath.normpath(p) in real_dirs)
     out = resolve_query("/", "../../../etc/*.conf")
     assert out == {"base": "/etc", "pattern": "*.conf", "mode": "glob"}

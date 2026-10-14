@@ -23,9 +23,9 @@ import os
 import pytest
 # `no_egress` is imported for its SIDE EFFECT — it is an autouse fixture, and
 # binding the name here installs it for every test in this file. THIS is the
-# file that needed it: its round-trip test drove `download_snapshot`, whose Hub
-# fallback is real `huggingface_hub`, and on Windows (where the mirror cannot
-# run at all) that made a real request to huggingface.co and failed on its 401.
+# file that needed it: its round-trip test drives `download_snapshot`, whose Hub
+# fallback is real `huggingface_hub`, and without it a fallback would make a
+# real request to huggingface.co.
 from test_ai_hub_fetch import _fresh_base, _start_server, no_egress  # noqa: F401
 from test_ai_model_mirror import _fresh_mirror
 
@@ -264,14 +264,9 @@ def test_the_client_accepts_what_the_script_wrote_field_for_field(
         script, mirror_and_base, tmp_path, monkeypatch):
     """Half one of the round trip: the agreement between generator and parser.
 
-    Split out from the download below because the two had different platform
-    requirements — this one is true on every OS, while fetching needed
-    `os.pwrite`, and keeping them in one test meant Windows either skipped the
-    agreement check too or ran a fetch half on a platform that could not fetch.
-    Both halves run everywhere now that the fetch has an append-only route, and
-    the split is kept because a manifest that parses and a manifest that
-    downloads are still two different claims: one can fail while the other
-    holds, and a single test would not say which.
+    Split from the download below because a manifest that parses and a
+    manifest that downloads are two different claims: one can fail while the
+    other holds, and a single test would not say which.
     """
     mirror, _base = mirror_and_base
     _source, manifest, state = _served(script, mirror, tmp_path, monkeypatch)
@@ -282,8 +277,7 @@ def test_the_client_accepts_what_the_script_wrote_field_for_field(
     assert read["commit"] == manifest["commit"]
     assert read["files"] == manifest["files"]
     # Nested names survive the trip as `/`-separated wire names, which is the
-    # boundary `script.wire_name` owns — on Windows the generator's own
-    # `os.path.relpath` produces `\` and the client rejects that as traversal.
+    # boundary `script.wire_name` owns.
     assert "tokenizer/vocab.json" in [entry["name"] for entry in read["files"]]
     assert [r["path"] for r in state["requests"]] == [
         "/models/org/m/manifest.json"]
@@ -694,27 +688,8 @@ def test_the_client_reads_a_per_file_manifest_the_script_wrote(script,
 # -- the one boundary where a path becomes a name (and back) ---------------------
 
 
-def test_a_platform_separator_never_reaches_the_wire(script, monkeypatch):
-    """`wire_name` is the ONE place a filesystem path becomes a manifest name.
-
-    Exercised directly rather than through a walk, because the bug it prevents
-    cannot happen on this machine: `os.sep` is `/` here, so a nested name comes
-    out right by accident. On Windows `os.path.relpath` returns
-    `tokenizer\\vocab.json`, and the client rejects a `\\` outright — it is a
-    traversal character there — so the generator would publish a manifest its own
-    client refuses. Nothing downstream converts separators, deliberately: a wire
-    name is `/`-separated everywhere, and both POSIX and Windows accept `/` in
-    every filesystem call the client makes.
-    """
-    monkeypatch.setattr(script.os, "sep", "\\")
-    monkeypatch.setattr(script.os.path, "relpath",
-                        lambda path, root: "tokenizer\\vocab.json")
-
-    assert script.wire_name("ignored", "ignored") == "tokenizer/vocab.json"
-
-
 def test_a_wire_name_is_left_alone_when_it_is_already_one(script):
-    """The POSIX case, which must stay a no-op."""
+    """A nested path comes out as a `/`-separated wire name."""
     root = os.path.join("a", "b")
     assert script.wire_name(os.path.join(root, "t", "v.json"), root) == "t/v.json"
 
@@ -864,9 +839,8 @@ def test_the_check_flag_needs_no_model_argument_and_uses_the_suggested_list(
 def test_these_tests_cannot_reach_the_network():
     """The imported guard, asserted here too — see the import comment.
 
-    This is the file where it mattered: Windows CI failed here on a 401 from
-    huggingface.co, and on a machine with an `HF_TOKEN` it would have PASSED by
-    downloading a real repo instead.
+    This is the file where it matters: on a machine with an `HF_TOKEN` a leaked
+    request would PASS by downloading a real repo instead.
     """
     import socket
 

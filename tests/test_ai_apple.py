@@ -11,7 +11,7 @@ the transcript files `speech.py` writes in the Whisper workers' shape.
 
 `platform_problem` is monkeypatched to None so the tier believes it is on a
 qualifying Mac; nothing here depends on the host OS beyond being able to
-exec a Python script (the helper-backed tests skip on Windows for that).
+exec a Python script.
 """
 
 from __future__ import annotations
@@ -30,10 +30,6 @@ from fused_render.ai.apple import host, speech
 from fused_render.server import create_app
 from fused_render.server.common import (AI_PROVIDERS, APPLE_MODELS, apple_model_for,
                                         provider_of_model)
-
-needs_exec = pytest.mark.skipif(sys.platform == "win32",
-                                reason="the stand-in helper is a script the host execs directly")
-
 
 # -- the stand-in helper --------------------------------------------------------
 
@@ -217,7 +213,6 @@ def test_native_containers_and_extensionless_files_are_let_through():
 # -- host.frames: the three exits ----------------------------------------------
 
 
-@needs_exec
 def test_frames_yields_the_helpers_frames_through_its_done(fake_helper):
     frames = list(host.frames("text", {"prompt": "hi", "history": [{"role": "user", "content": "a"}]}))
     assert [f["type"] for f in frames] == ["chunk", "chunk", "done"]
@@ -227,7 +222,6 @@ def test_frames_yields_the_helpers_frames_through_its_done(fake_helper):
     assert frames[-1]["history"] == 1
 
 
-@needs_exec
 def test_a_cancel_mid_stream_is_a_cancelled_done_frame_not_an_error(fake_helper):
     """The one-shot design has no cancel protocol: cancel = terminate. The
     resulting SIGTERM exit must read back as the same `done` the local
@@ -243,7 +237,6 @@ def test_a_cancel_mid_stream_is_a_cancelled_done_frame_not_an_error(fake_helper)
     assert child["proc"].poll() is not None
 
 
-@needs_exec
 def test_no_first_frame_in_time_is_a_timeout(fake_helper):
     with pytest.raises(host.AppleError) as caught:
         list(host.frames("text", {"prompt": "slow"}, first_timeout=0.2))
@@ -251,7 +244,6 @@ def test_no_first_frame_in_time_is_a_timeout(fake_helper):
     assert "produced nothing" in str(caught.value)
 
 
-@needs_exec
 def test_a_child_that_dies_without_a_done_is_an_ai_error(fake_helper):
     with pytest.raises(host.AppleError) as caught:
         list(host.frames("text", {"prompt": "die"}))
@@ -259,7 +251,6 @@ def test_a_child_that_dies_without_a_done_is_an_ai_error(fake_helper):
     assert "code 3" in str(caught.value)
 
 
-@needs_exec
 def test_a_child_gone_before_it_reads_stdin_is_its_own_error_and_gets_reaped(fake_helper):
     """Bugbot on #1000: the `finally` used to touch an Event created AFTER the
     stdin write, so a broken pipe surfaced as UnboundLocalError and the child
@@ -273,7 +264,6 @@ def test_a_child_gone_before_it_reads_stdin_is_its_own_error_and_gets_reaped(fak
     assert child["proc"].poll() is not None
 
 
-@needs_exec
 def test_a_consumer_that_stops_early_terminates_the_child(fake_helper):
     child = {}
     events = host.frames("text", {"prompt": "hang"}, on_spawn=lambda p: child.setdefault("proc", p))
@@ -282,7 +272,6 @@ def test_a_consumer_that_stops_early_terminates_the_child(fake_helper):
     assert child["proc"].poll() is not None
 
 
-@needs_exec
 def test_cancel_text_stops_every_tracked_child(fake_helper):
     child = {}
     events = host.frames("text", {"prompt": "hang"}, on_spawn=lambda p: child.setdefault("proc", p))
@@ -296,7 +285,6 @@ def test_cancel_text_stops_every_tracked_child(fake_helper):
 # -- host.probe ----------------------------------------------------------------
 
 
-@needs_exec
 def test_the_probe_reads_the_helpers_frame_and_caches_it(fake_helper):
     got = host.probe()
     assert got.ok and got.state == "available" and got.os == "26.6.2"
@@ -316,7 +304,6 @@ def test_the_probe_never_raises_off_a_qualifying_machine(monkeypatch):
     assert "needs macOS" in got.reason
 
 
-@needs_exec
 def test_a_missing_helper_is_an_unavailability_with_the_reason(tmp_path, monkeypatch):
     monkeypatch.setenv(host.HELPER_ENV, str(tmp_path / "nope"))
     monkeypatch.setattr(host, "platform_problem", lambda: None)
@@ -359,7 +346,6 @@ def test_provider_apple_off_a_qualifying_machine_is_a_409_with_the_reason(client
         assert "needs macOS" in reply.json()["error"]["message"]
 
 
-@needs_exec
 def test_the_text_relay_answers_in_the_shared_result_frame(client, fake_helper):
     """Both spellings, same answer: `provider: "apple"` and `model: "afm-text"`."""
     for body in ({"provider": "apple"}, {"model": "afm-text"}):
@@ -374,7 +360,6 @@ def test_the_text_relay_answers_in_the_shared_result_frame(client, fake_helper):
         assert any(w["setting"] == "effort" for w in result["warnings"])
 
 
-@needs_exec
 def test_a_guardrail_refusal_is_finish_reason_content_filter(client, fake_helper):
     result = _post_ai(client, provider="apple", prompt="please refuse").json()["result"]
     assert result["finishReason"] == "content-filter"
@@ -382,7 +367,6 @@ def test_a_guardrail_refusal_is_finish_reason_content_filter(client, fake_helper
     assert result["providerMetadata"]["apple"]["refusal"] == "guardrail"
 
 
-@needs_exec
 def test_the_relay_streams_chunks_then_the_result(client, fake_helper):
     with client.stream("POST", "/api/ai", json={"prompt": "hi", "provider": "apple", "stream": True},
                        headers={"X-Fused": "1"}) as reply:
@@ -391,14 +375,12 @@ def test_the_relay_streams_chunks_then_the_result(client, fake_helper):
     assert lines[-1]["ok"] is True and lines[-1]["result"]["text"] == "hello world"
 
 
-@needs_exec
 def test_a_helper_error_before_any_text_is_a_counted_failure_not_a_500(client, fake_helper):
     reply = _post_ai(client, provider="apple", prompt="overflow")
     assert reply.status_code == 502
     assert reply.json()["error"]["message"] == "context window exceeded"
 
 
-@needs_exec
 def test_a_helper_that_dies_mid_stream_is_an_envelope_not_a_500(client, fake_helper, monkeypatch):
     """Bugbot on #1000: the non-stream loop let a late AppleError escape as
     an unhandled exception. `die` exits after reading the request and
@@ -409,7 +391,6 @@ def test_a_helper_that_dies_mid_stream_is_an_envelope_not_a_500(client, fake_hel
     assert "code 3" in reply.json()["error"]["message"]
 
 
-@needs_exec
 def test_raw_and_images_are_refused_for_the_apple_tier(client, fake_helper):
     reply = _post_ai(client, provider="apple", raw=True)
     assert reply.status_code == 400
@@ -437,7 +418,6 @@ def take(tmp_path):
     return str(path)
 
 
-@needs_exec
 def test_a_browser_recording_is_a_400_before_any_row_opens(client, fake_helper, tmp_path):
     webm = tmp_path / "playground-mic.webm"
     webm.write_bytes(b"\x1aE\xdf\xa3")
@@ -448,7 +428,6 @@ def test_a_browser_recording_is_a_400_before_any_row_opens(client, fake_helper, 
     assert jobs.list_jobs() == []
 
 
-@needs_exec
 def test_translate_and_diarize_are_400s_and_tunables_are_warnings(client, fake_helper, take):
     assert _post_transcribe(client, provider="apple", path=take, task="translate").status_code == 400
     assert _post_transcribe(client, model="afm-speech", path=take, diarize=True).status_code == 400
@@ -457,13 +436,11 @@ def test_translate_and_diarize_are_400s_and_tunables_are_warnings(client, fake_h
     assert sorted(w["setting"] for w in reply.json()["warnings"]) == ["initialPrompt", "vad"]
 
 
-@needs_exec
 def test_a_language_apple_lacks_is_a_400(client, fake_helper, take):
     reply = _post_transcribe(client, provider="apple", path=take, language="tlh")
     assert reply.status_code == 400 and "no 'tlh'" in _message(reply)
 
 
-@needs_exec
 def test_the_transcript_files_land_in_the_whisper_workers_shape(client, fake_helper, take):
     reply = _post_transcribe(client, provider="apple", path=take, language="de", words=True)
     assert reply.status_code == 200, reply.json()

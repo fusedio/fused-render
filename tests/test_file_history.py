@@ -21,7 +21,6 @@ The three semantics that are easy to get wrong and are each pinned below:
 """
 import importlib.util
 import os
-import sys
 
 import pytest
 
@@ -29,21 +28,8 @@ from _claude_history import (  # noqa: F401  (claude_home is a fixture)
     claude_home, delta_record, path_hash, write_transcript, write_version)
 
 skip_root = pytest.mark.skipif(
-    hasattr(os, "geteuid") and os.geteuid() == 0,
+    os.geteuid() == 0,
     reason="read-only bits are ignored when running as root")
-
-# Windows has no POSIX permission-bit model: os.chmod() on a DIRECTORY there
-# only flips the cosmetic FILE_ATTRIBUTE_READONLY flag, which does not stop
-# os.listdir/open-for-write inside it the way a missing POSIX write-bit does
-# (unlike a read-only FILE, which Windows does enforce for writes). So
-# `os.chmod(some_dir, 0o000)` — used below to force an unlistable/unwritable
-# session dir or history root — is a no-op there, and the refusal each of
-# these tests pins simply cannot be produced on that platform.
-skip_windows_dir_perms = pytest.mark.skipif(
-    sys.platform == "win32",
-    reason="Windows ignores chmod() on directories (no POSIX write-bit); "
-           "os.listdir/open still succeed there, so this refusal can't be "
-           "forced the way it can on POSIX")
 
 
 def _load():
@@ -58,9 +44,7 @@ def _load():
 def _target(tmp_path, content="a\nb\nc\n", name="page.html"):
     f = tmp_path / name
     # `newline=""` — same reason as `write_version`'s in _claude_history.py:
-    # the default text-mode write translates "\n" to os.linesep, which
-    # inflates every size/byte assertion below on Windows for no reason this
-    # test cares about.
+    # write the bytes exactly as given.
     f.write_text(content, newline="")
     return str(f)
 
@@ -74,7 +58,6 @@ def test_config_dir_honors_the_env_var(claude_home):
 def test_config_dir_defaults_under_the_home_dir(monkeypatch):
     monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
     fh = _load()
-    # expanduser, not a hardcoded POSIX join — this ships on Windows too.
     assert fh.config_dir() == os.path.expanduser(os.path.join("~", ".claude"))
 
 
@@ -90,11 +73,7 @@ def test_the_hash_is_sha256_of_the_absolute_path_truncated_to_16(claude_home):
     fh = _load()
     # Must already be a fixed point of os.path.abspath, or this test's own
     # `want` and what path_hash() (which calls abspath internally) hashes
-    # would diverge. `os.sep + "abs"` is enough on POSIX (a leading "/" is a
-    # complete absolute path there), but on Windows it is only
-    # drive-relative — os.path.isabs() calls it absolute, yet os.path.abspath
-    # still rewrites it by prepending the current drive (e.g. "C:"), which
-    # would silently hash a different string than `p`.
+    # would diverge.
     p = os.path.abspath(os.path.join(os.sep + "abs", "some", "file.py"))
     want = hashlib.sha256(p.encode()).hexdigest()[:16]
     assert fh.path_hash(p) == want
@@ -527,7 +506,6 @@ def test_a_read_only_file_is_not_reverted(claude_home, tmp_path):
 
 
 @skip_root
-@skip_windows_dir_perms
 def test_a_read_only_directory_is_not_reverted(claude_home, tmp_path):
     fh = _load()
     f = _target(tmp_path, "current\n")
@@ -621,7 +599,6 @@ def test_a_file_with_no_versions_but_a_live_store(claude_home, tmp_path):
 
 
 @skip_root
-@skip_windows_dir_perms
 def test_an_unreadable_session_dir_is_skipped_not_fatal(claude_home, tmp_path):
     fh = _load()
     f = _target(tmp_path)
@@ -1006,7 +983,6 @@ def test_the_plan_and_the_write_always_see_the_did_not_exist_rows(claude_home,
 # --- M2: an unreadable store is not a fact about the file ----------------
 
 @skip_root
-@skip_windows_dir_perms
 def test_an_unlistable_history_root_is_named_not_reported_as_no_versions(
         claude_home, tmp_path):
     fh = _load()
@@ -1025,7 +1001,6 @@ def test_an_unlistable_history_root_is_named_not_reported_as_no_versions(
 
 
 @skip_root
-@skip_windows_dir_perms
 def test_an_unlistable_session_dir_names_the_path_and_errno(claude_home,
                                                              tmp_path):
     fh = _load()

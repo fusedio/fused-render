@@ -22,7 +22,6 @@ def test_log_root_matches_agent_runs_sibling(agent):
     assert os.path.dirname(agent.CMD_LOGS) == os.path.dirname(agent.RUNS)
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX only")
 def test_spawn_env_sets_prefix_and_chat_log(agent, monkeypatch):
     monkeypatch.setattr(agent, "CMD_LOGS", os.path.join(
         os.environ.get("TMPDIR", "/tmp"), "fr-cmds-test-%d" % os.getpid()))
@@ -46,7 +45,6 @@ def test_unsafe_chat_id_gets_no_prefix(agent):
     assert "FUSED_CLAUDE_CMD_LOG" not in env
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX only")
 def test_users_own_prefix_is_not_clobbered(agent, monkeypatch):
     monkeypatch.setenv("CLAUDE_CODE_SHELL_PREFIX", "/their/prefix")
     env = agent._spawn_env("chat-9")
@@ -54,7 +52,6 @@ def test_users_own_prefix_is_not_clobbered(agent, monkeypatch):
     assert "FUSED_CLAUDE_CMD_LOG" not in env
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX only")
 def test_second_spawn_for_same_chat_keeps_prefix(agent, monkeypatch, tmp_path):
     monkeypatch.setattr(agent, "CMD_LOGS", str(tmp_path / "cmds"))
     first = agent._spawn_env("chat-again")
@@ -64,7 +61,6 @@ def test_second_spawn_for_same_chat_keeps_prefix(agent, monkeypatch, tmp_path):
         assert env["FUSED_CLAUDE_CMD_LOG"] == str(tmp_path / "cmds" / "chat-again")
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX only")
 def test_preexisting_non_private_log_dir_gets_no_prefix(agent, monkeypatch, tmp_path):
     root = tmp_path / "cmds"
     monkeypatch.setattr(agent, "CMD_LOGS", str(root))

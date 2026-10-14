@@ -149,15 +149,6 @@ def test_path_beats_the_candidate_list(tmp_path, monkeypatch):
     assert source == "path"
 
 
-@pytest.mark.skipif(
-    sys.platform == "win32",
-    reason="fakes os.name='posix' on a real filesystem — executable()'s "
-           "os.access(X_OK) branch that gates on it is then a REAL syscall, "
-           "and on real Windows os.access(X_OK) is true for any existing "
-           "file regardless of chmod (see executable()'s own docstring), so "
-           "the POSIX candidate-list behaviour this exercises can only be "
-           "tested where os.name='posix' is also true.",
-)
 def test_candidate_dirs_are_probed_when_path_is_stripped(tmp_path, monkeypatch):
     """A Finder/Dock-launched .app inherits the supervisor's PATH, not a
     shell's, so the known install dirs are all that is left."""
@@ -173,12 +164,6 @@ def test_candidate_dirs_are_probed_when_path_is_stripped(tmp_path, monkeypatch):
     assert claude_health.resolve() == (str(cli), "candidate")
 
 
-@pytest.mark.skipif(
-    sys.platform == "win32",
-    reason="fakes os.name='posix' on a real filesystem — see the skip on "
-           "test_candidate_dirs_are_probed_when_path_is_stripped just above "
-           "for why that's unsafe on real Windows.",
-)
 def test_a_non_executable_file_does_not_shadow_a_real_install(tmp_path, monkeypatch):
     """isfile alone was not enough: a non-executable file in an earlier
     candidate dir would win and then fail to spawn."""

@@ -15,12 +15,6 @@ import pytest
 
 from fused_render.capture import _linux, _linux_audio
 
-#: AF_UNIX exists on Linux and macOS (and modern Windows), but a test that
-#: needs a real listening socket should skip cleanly rather than fail on a
-#: platform where it is simply absent.
-_HAS_AF_UNIX = hasattr(socket, "AF_UNIX")
-_needs_af_unix = pytest.mark.skipif(not _HAS_AF_UNIX, reason="no AF_UNIX on this platform")
-
 RATE = _linux_audio.RATE
 CHUNK_SAMPLES = _linux_audio.CHUNK_SAMPLES
 
@@ -113,7 +107,6 @@ def _rms(pcm16: bytes) -> float:
 # ----------------------------------------------------------------------- probe
 
 
-@_needs_af_unix
 def test_available_true_when_pasimple_lib_and_a_real_socket_are_reachable(
         monkeypatch, tmp_path):
     # A real listening unix socket at the default
@@ -141,7 +134,6 @@ def test_unavailable_without_pasimple(monkeypatch):
     assert "pasimple" in _linux_audio.unavailable_reason()
 
 
-@_needs_af_unix
 def test_unavailable_when_the_socket_path_has_nothing_listening(monkeypatch, tmp_path):
     # A dead path: exists on disk as a concept (the directory does), but
     # nothing bound a socket there — the old `os.path.exists` check would have
@@ -155,7 +147,6 @@ def test_unavailable_when_the_socket_path_has_nothing_listening(monkeypatch, tmp
     assert "PipeWire" in _linux_audio.unavailable_reason()
 
 
-@_needs_af_unix
 def test_unavailable_when_pulse_server_names_a_remote_host(monkeypatch, tmp_path):
     # `tcp:` (or anything else non-`unix:`) is a remote server — this module
     # only supports a local PipeWire/pulse session, so this is unsupported
@@ -167,7 +158,6 @@ def test_unavailable_when_pulse_server_names_a_remote_host(monkeypatch, tmp_path
     assert "local" in _linux_audio.unavailable_reason()
 
 
-@_needs_af_unix
 def test_available_true_with_pulse_server_naming_a_reachable_unix_socket(
         monkeypatch, tmp_path):
     sock_path = str(tmp_path / "native")
@@ -183,7 +173,6 @@ def test_available_true_with_pulse_server_naming_a_reachable_unix_socket(
         server.close()
 
 
-@_needs_af_unix
 def test_available_true_with_pulse_server_naming_a_bare_absolute_path(
         monkeypatch, tmp_path):
     # libpulse treats a bare absolute path (no `unix:` prefix) as a local
@@ -201,7 +190,6 @@ def test_available_true_with_pulse_server_naming_a_bare_absolute_path(
         server.close()
 
 
-@_needs_af_unix
 def test_available_true_with_pulse_server_machine_id_prefixed_unix_path(
         monkeypatch, tmp_path):
     # An entry may carry an optional `{machine-id}` prefix ahead of the
@@ -220,7 +208,6 @@ def test_available_true_with_pulse_server_machine_id_prefixed_unix_path(
         server.close()
 
 
-@_needs_af_unix
 def test_available_true_with_pulse_server_list_tcp_first_then_local_path(
         monkeypatch, tmp_path):
     # `$PULSE_SERVER` may be a whitespace-separated list of entries tried in
@@ -240,7 +227,6 @@ def test_available_true_with_pulse_server_list_tcp_first_then_local_path(
         server.close()
 
 
-@_needs_af_unix
 def test_unavailable_when_pulse_server_names_only_tcp_entries(monkeypatch):
     # A server string with no local entry at all is still correctly reported
     # as remote/unsupported, not probed.

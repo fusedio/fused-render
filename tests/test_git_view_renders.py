@@ -202,10 +202,8 @@ def render(reader, repo, tmp_path, params=None, github=None, repo_patch=None,
         fixture_obj["gitAppFolder"] = git_app_folder
     fixture.write_text(json.dumps(fixture_obj))
     # `encoding="utf-8"` is explicit here, not implied by `text=True`: the
-    # confirm-modal question text now carries a real em dash, and on a
-    # Windows runner `text=True` alone decodes the probe's UTF-8 stdout with
-    # the ANSI codepage (cp1252), mangling it into mojibake before this
-    # string ever reaches an assertion.
+    # confirm-modal question text carries a real em dash, and `text=True`
+    # alone decodes with the locale's preferred encoding.
     proc = subprocess.run([node, PROBE, TEMPLATE, str(fixture)],
                           capture_output=True, text=True, encoding="utf-8",
                           timeout=90)
@@ -378,9 +376,7 @@ def test_the_probe_fails_on_a_template_that_throws(reader, tmp_path):
                       "let streamed = \"\";\nlet streamed = \"\";", 1)
     # `encoding="utf-8"`, matching the read above: the template carries real
     # non-ASCII text (a U+2212 MINUS SIGN, at least), and `Path.write_text`
-    # with no encoding falls back to `locale.getpreferredencoding()` — cp1252
-    # on a Windows runner, which cannot represent it and raises
-    # UnicodeEncodeError before the probe ever runs.
+    # with no encoding falls back to `locale.getpreferredencoding()`.
     broken.write_text(src, encoding="utf-8")
 
     payloads = {"overview": reader.main(file=str(tmp_path), op="overview")}
@@ -415,8 +411,7 @@ def test_the_probe_fails_on_a_template_that_paints_nothing(reader, tmp_path):
     assert "function render(data, stashes, diff) {" in src
     src = src.replace("function render(data, stashes, diff) {",
                       "function render(data, stashes, diff) {\n  return;", 1)
-    # See the twin fixture above: without an explicit encoding this is a
-    # UnicodeEncodeError on Windows, not a broken-template test.
+    # See the twin fixture above for the explicit encoding.
     broken.write_text(src, encoding="utf-8")
 
     fixture = tmp_path / "f2.json"

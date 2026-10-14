@@ -17,10 +17,7 @@ from fused_render.server.index_touch import RescanQueue
 
 # `RescanQueue.note()` resolves every path it is given through `_folder_of`
 # (index_touch.py), which is `norm(os.path.abspath(...))` — the same
-# canonicalization `canonical_root` does. Every hardcoded "/home/me/..."
-# literal below is a no-op of that on POSIX (already absolute), but on
-# Windows a leading-slash-no-drive literal is only drive-RELATIVE, so it
-# resolves against the runner's current drive (e.g. "D:/home/me/proj"). The
+# canonicalization `canonical_root` does. The
 # FILE paths handed to `q.note(...)` are left as raw literals — that mirrors
 # a real caller, and `_folder_of` canonicalizes them itself — but every
 # FOLDER identity these tests compare against (`Fake(live=...)`,

@@ -168,7 +168,7 @@ _IMPORT_TO_DIST = {
     # `[desktop]`, so the map must name it like any other.
     "zeroconf": "zeroconf",
     # AppKit, for the macOS clipboard bridge (shell/pasteboard/_darwin.py).
-    # Only installed on darwin, so on Linux and Windows these map names nothing
+    # Only installed on darwin, so on Linux these map names nothing
     # provides — the same harmless shape as `tomli` above, and listing them is
     # what keeps `test_the_import_map_covers_everything_the_app_ships` honest on
     # every platform. One distribution, three import names: pyobjc splits its

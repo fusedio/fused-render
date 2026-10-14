@@ -175,8 +175,7 @@ def test_the_boot_wait_outlasts_the_successors_own_readiness_ceiling():
 
 # The three tests below RUN the generated shell rather than reading it, and are
 # therefore darwin-only — the relauncher exists to drive LaunchServices
-# (`open -a`), there is no /bin/sh on the Windows runner at all, and `pgrep -f`'s
-# matching differs on Linux. Everything ABOVE this line is a string assertion on
+# (`open -a`), and `pgrep -f`'s matching differs on Linux. Everything ABOVE this line is a string assertion on
 # the script and runs everywhere, which is where the rules themselves are
 # pinned; these add "and the shell really does that".
 mac_only = pytest.mark.skipif(sys.platform != "darwin",

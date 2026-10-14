@@ -16,7 +16,6 @@ facts the parser reads.
 import json
 import os
 import shutil
-import sys
 import threading
 
 import pytest
@@ -33,29 +32,11 @@ _RealThread = threading.Thread
 def _fake_thread_class(run_worker):
     """threading.Thread double for the publish tests below.
 
-    The same monkeypatched `threading.Thread` stands in for TWO different
-    callers: github_setup's own worker thread (`target=_guarded,
-    daemon=True, name=...` — no positional `args`/`kwargs`), which each
-    test below wants to run synchronously, not at all, or on demand; and,
-    earlier in the same call, whatever thread(s) the stdlib spins up while
-    `publish_start`'s `_has_commits`/`_has_remote` preflight runs a real
-    `git` subprocess. On Windows, `subprocess.Popen.communicate()` always
-    reads pipes through real `threading.Thread` instances
-    (`Popen._readerthread`), constructed with positional `args=(fh,
-    buffer)` — those have to actually run, with the args they were given,
-    or `communicate()` never gets its pipe data back, and they have to
-    answer to `.join()` once it's done reading. A `Thread` built with no
-    `args`/`kwargs` is never the stdlib's — that shape is how the two
-    callers are told apart.
-
-    `Popen._communicate` on Windows (`Lib/subprocess.py`) drives a reader
-    thread through exactly this surface, in this order: construct it,
-    set `.daemon = True`, `.start()` it, `.join(timeout)` it, then check
-    `.is_alive()` to decide whether the join timed out. `name` is not read
-    by `_communicate` itself, but `threading.Thread.__init__` accepts it
-    and github_setup's own worker thread is constructed with `name=...`,
-    so it is accepted here too rather than left to fall through to
-    `**_ignored` and silently vanish.
+    github_setup's own worker thread (`target=_guarded, daemon=True,
+    name=...` — no positional `args`/`kwargs`) is what each test below wants
+    to run synchronously, not at all, or on demand. A `Thread` built WITH
+    `args`/`kwargs` is never github_setup's, so it simply runs its target.
+    `name` is accepted rather than left to fall through to `**_ignored`.
     """
 
     class T:
@@ -138,12 +119,6 @@ def test_nothing_installed_resolves_to_nothing(monkeypatch):
     assert github_setup.resolve() == (None, None)
 
 
-@pytest.mark.skipif(
-    sys.platform == "win32",
-    reason="fakes os.name='posix' on a real filesystem — see the equivalent "
-           "skip in test_claude_health.py for why that is unsafe on real "
-           "Windows.",
-)
 def test_candidate_dirs_are_probed_when_path_is_stripped(tmp_path, monkeypatch):
     """A Finder/Dock-launched .app inherits the supervisor's PATH, not a
     shell's, so the known install dirs — including this app's own install

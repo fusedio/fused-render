@@ -6,7 +6,6 @@ import sys
 
 import pytest
 
-from fused_render import tasks_store
 
 CHILD = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_lean_sched_child.py")
 
@@ -24,7 +23,6 @@ def _wait_all(procs, timeout=120):
 # ------------------------------------------------------------------ H7
 
 
-@pytest.mark.skipif(tasks_store.fcntl is None, reason="needs real flock")
 def test_locked_path_serialises_real_processes(tmp_path):
     counter = tmp_path / "counter"
     counter.write_text("0")
@@ -131,11 +129,6 @@ def test_sweep_leaves_a_turn_another_live_process_is_watching(sched_home):
         child.wait()
 
 
-@pytest.mark.skipif(
-    os.name != "posix",
-    reason="a dead watcher pid is only detectable on POSIX: schedule._pid_running "
-           "is POSIX-only (os.kill(pid, 0) is CTRL_C_EVENT on Windows), so there "
-           "the heartbeat going stale alone closes the turn")
 def test_sweep_closes_a_turn_once_its_watcher_process_is_dead(sched_home):
     from fused_render import schedule
 
@@ -224,7 +217,6 @@ def _until(cond, timeout=20.0):
     return cond()
 
 
-@pytest.mark.skipif(os.name != "posix", reason="kills a process by signal")
 def test_simultaneous_lean_processes_elect_one_leader_and_hand_over_without_a_request(tmp_path):
     """Several `fused-render open` processes launched at once, none ever asked
     for /api/tasks: exactly one runs the scheduler, and when it is killed

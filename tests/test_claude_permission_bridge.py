@@ -159,13 +159,12 @@ def _result_payload(response):
 # claim and it is no longer true of any shipping server.
 
 
-def test_a_windows_locale_stdio_still_parks_a_non_ascii_write(tmp_path, agent):
+def test_a_non_utf8_locale_stdio_still_parks_a_non_ascii_write(tmp_path, agent):
     """A payload with typographic characters must survive a NON-UTF-8 locale.
 
-    The Windows bug, reproduced on any platform by giving the child the stdio
-    encoding Windows gives it. The CLI's client is Node — raw UTF-8 on the wire,
-    non-ASCII unescaped — while Python decodes a pipe at the locale encoding,
-    which on Windows is the ANSI code page. cp1252 leaves 0x9D undefined, and
+    Reproduced by giving the child a cp1252 stdio encoding. The CLI's client is
+    Node — raw UTF-8 on the wire, non-ASCII unescaped — while Python decodes a
+    pipe at the locale encoding. cp1252 leaves 0x9D undefined, and
     0x9D is the third byte of U+201D, so `Write`-ing an index.html with a curly
     quote in it raised UnicodeDecodeError in the read loop: the server died
     BEFORE parking the request, so no card ever reached the chat, the CLI's
@@ -181,8 +180,8 @@ def test_a_windows_locale_stdio_still_parks_a_non_ascii_write(tmp_path, agent):
     here would silently corrupt the user's file instead of hanging their turn.
     """
     perm_dir = tmp_path / "perm"
-    # PYTHONIOENCODING rather than a real Windows box: it sets exactly what is
-    # wrong there (the std streams' codec) and nothing else, and it also OUTRANKS
+    # PYTHONIOENCODING rather than a real locale: it sets exactly the std
+    # streams' codec and nothing else, and it also OUTRANKS
     # UTF-8 mode — so this pins the in-process reconfigure on its own, without
     # the PYTHONUTF8 that agent.py stamps into the server's env.
     s = _Server(perm_dir, env={"PYTHONIOENCODING": "cp1252"})
@@ -191,7 +190,7 @@ def test_a_windows_locale_stdio_still_parks_a_non_ascii_write(tmp_path, agent):
                               "capabilities": {}, "clientInfo": {"name": "test"}})
         content = ('<h1>Caf\u00e9 \u2014 \u201cwelcome\u201d</h1>\n'
                    '<p>na\u00efve \u2192 r\u00e9sum\u00e9 \U0001f600</p>\n')
-        tool_input = {"file_path": "C:/Users/x/app/index.html", "content": content}
+        tool_input = {"file_path": "/Users/x/app/index.html", "content": content}
         pending = s.send_async("tools/call", {
             "name": "approve",
             "arguments": {"tool_name": "Write", "input": tool_input,
@@ -2028,8 +2027,8 @@ def test_the_mcp_config_forces_utf8_stdio_on_the_server(agent, tmp_path):
     of env vars plus this dict and nothing else, so an ambient PYTHONUTF8 (or
     a UTF-8 mode the server itself was started in) does not reach it. Belt and
     braces with the reconfigure — either alone is enough, and the failure they
-    prevent is a dead permission bridge on Windows the moment a payload carries
-    a curly quote.
+    prevent is a dead permission bridge under a non-UTF-8 locale the moment a
+    payload carries a curly quote.
     """
     run_dir = tmp_path / "run"
     os.makedirs(run_dir / "perm")
@@ -2226,7 +2225,6 @@ _EVERY_SURFACE = [
 ]
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits")
 def test_the_run_tree_is_not_readable_by_other_local_accounts(agent, tmp_path,
                                                               monkeypatch):
     """A run dir is the whole conversation — out.jsonl is the transcript,
@@ -2262,7 +2260,6 @@ def test_the_run_tree_is_not_readable_by_other_local_accounts(agent, tmp_path,
         assert mode == 0o600, f"{name} is {oct(mode)}"
 
 
-@pytest.mark.skipif(not hasattr(os, "geteuid"), reason="POSIX uid")
 def test_the_runs_root_is_per_user(agent):
     """One shared `fused_render_claude` cannot be both private and usable: at
     0700 the first account to open a chat owns the namespace and everyone else
@@ -2345,7 +2342,6 @@ def test_the_run_dir_itself_is_still_an_exclusive_create(agent, tmp_path):
         agent._private_dir(str(run_dir))
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX uids")
 def test_a_parent_owned_by_someone_else_is_refused(agent, tmp_path, monkeypatch):
     """Our path under the temp root is predictable — `fused_render_claude-<uid>`
     names the victim — so another account can pre-create it. Adopting theirs
@@ -2373,7 +2369,6 @@ def test_a_parent_owned_by_someone_else_is_refused(agent, tmp_path, monkeypatch)
         agent._private_dir(str(planted / "20260101-000000-abcdef"))
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits")
 def test_a_world_writable_parent_is_refused(agent, tmp_path, monkeypatch):
     """Ours by uid but writable by everyone is the same hole: anyone can still
     swap the run dir out from under us."""
@@ -2385,7 +2380,6 @@ def test_a_world_writable_parent_is_refused(agent, tmp_path, monkeypatch):
         agent._private_dir(str(planted / "20260101-000000-abcdef"))
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX symlinks")
 def test_a_symlinked_parent_is_refused(agent, tmp_path, monkeypatch):
     """lstat, not stat: a symlink is not a directory we own, however good its
     target looks — following it would put the transcript wherever it points."""
@@ -2417,7 +2411,6 @@ def test_a_file_blocking_a_parent_still_raises(agent, tmp_path):
         agent._private_dir(str(tmp_path / "fused_render_claude" / "runs" / "r1"))
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits")
 def test_a_parked_request_file_is_private(tmp_path, server):
     """The request body is the tool payload itself, so it must land 0600 — set
     by the create, never a chmod after the content is already on disk."""

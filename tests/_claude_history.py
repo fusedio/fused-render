@@ -65,14 +65,9 @@ def write_version(root, session, target, content, mtime=None):
          if n.startswith(path_hash(target) + "@v") and n.split("@v")[1].isdigit()],
         default=0)
     p = os.path.join(d, "%s@v%d" % (path_hash(target), version))
-    # `newline=""` disables universal-newline translation. The docstring above
-    # promises a FULL COPY of `content`, byte for byte, and file_history.py
-    # reads checkpoints in binary (`open(path, "rb")`) expecting exactly that
-    # — but the default text-mode write translates every "\n" to os.linesep
-    # on write, which is a no-op on POSIX and silently inflates every "\n" to
-    # "\r\n" on Windows (doubling any "\r" already in `content`, and turning
-    # an assertion like `size == len(content)` into an off-by-however-many-
-    # lines failure there).
+    # `newline=""` disables newline translation: the docstring above promises
+    # a FULL COPY of `content`, byte for byte, and file_history.py reads
+    # checkpoints in binary (`open(path, "rb")`) expecting exactly that.
     with open(p, "w", encoding="utf-8", newline="") as fh:
         fh.write(content)
     if mtime is not None:

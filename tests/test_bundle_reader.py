@@ -34,18 +34,6 @@ READER = os.path.join(
 
 pytestmark = pytest.mark.skipif(not git_available(), reason="git binary not installed")
 
-# Windows has no POSIX permission-bit model: os.chmod() on a DIRECTORY there
-# only flips the cosmetic FILE_ATTRIBUTE_READONLY flag, which does not stop
-# writes inside it the way a missing POSIX write-bit does — so
-# `os.chmod(holder, 0o555)` below cannot actually make `holder` refuse a
-# write on Windows, and the "readonly" refusal these two tests pin can never
-# fire there.
-skip_windows_dir_perms = pytest.mark.skipif(
-    sys.platform == "win32",
-    reason="Windows ignores chmod() on directories (no POSIX write-bit), so "
-           "a chmod'd-read-only holder still accepts the write")
-
-
 @pytest.fixture(scope="module")
 def reader():
     spec = importlib.util.spec_from_file_location("bundle_reader", READER)
@@ -250,7 +238,7 @@ def test_previewing_writes_nothing_beside_the_bundle(reader, repo, tmp_path):
 def test_previewing_a_bundle_in_a_read_only_directory(reader, repo, tmp_path):
     # The scratch repo the reader needs must live in temp, never beside the
     # file — otherwise a bundle on read-only media could not be previewed.
-    if hasattr(os, "geteuid") and os.geteuid() == 0:
+    if os.geteuid() == 0:
         pytest.skip("read-only bits are ignored when running as root")
     holder = tmp_path / "ro"
     holder.mkdir()
@@ -300,9 +288,8 @@ def test_cloning_a_thin_bundle_is_refused_with_a_reason(reader, thin_bundle):
     assert not os.path.exists(os.path.join(os.path.dirname(thin_bundle), "increment"))
 
 
-@skip_windows_dir_perms
 def test_cloning_into_a_read_only_directory_is_refused(reader, repo, tmp_path):
-    if hasattr(os, "geteuid") and os.geteuid() == 0:
+    if os.geteuid() == 0:
         pytest.skip("read-only bits are ignored when running as root")
     holder = tmp_path / "ro"
     holder.mkdir()
@@ -396,9 +383,8 @@ def test_a_dest_whose_parent_is_a_file_is_refused(reader, bundle, tmp_path):
     assert out["reason"] == "missing-parent"
 
 
-@skip_windows_dir_perms
 def test_a_dest_in_a_read_only_parent_is_refused(reader, bundle, tmp_path):
-    if hasattr(os, "geteuid") and os.geteuid() == 0:
+    if os.geteuid() == 0:
         pytest.skip("read-only bits are ignored when running as root")
     holder = tmp_path / "ro"
     holder.mkdir()

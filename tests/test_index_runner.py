@@ -82,8 +82,7 @@ def test_start_expands_and_canonicalizes_the_root(tmp_path, spawned):
     sub = tmp_path / "sub"
     sub.mkdir()
     started = runner.start(cfg, str(sub) + "/")
-    # `str(sub)` alone is Windows' backslash-native spelling; `start` records
-    # `canonical_root(root)` (forward-slashed, trailing slash gone) — the
+    # `start` records `canonical_root(root)` (trailing slash gone) — the
     # same reason `test_start_writes_a_spec_the_worker_can_read` above needs
     # the wrap, not a gap in `canonical_root` despite this test's name.
     assert started["root"] == runner.canonical_root(str(sub))

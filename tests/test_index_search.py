@@ -27,17 +27,10 @@ def _index(tmp_path, root, files, dirs=()):
     """Build a real index over `paths` (absolute, already canonical).
 
     `root`, `dirs` and every file path are hardcoded POSIX-looking literals in
-    most callers ("/r", "/r/sub", ...) — never real directories on disk. That
-    is a no-op of `canonical_root` on POSIX (`os.path.abspath("/r") == "/r"`),
-    but on Windows a leading-slash-no-drive path is only drive-RELATIVE, so
-    `abspath` resolves it against the runner's current drive (e.g. "D:/r").
+    most callers ("/r", "/r/sub", ...) — never real directories on disk.
     `search_under`/`search_ranked` canonicalize their OWN `root` argument
-    before querying, so storing rows under the raw literal while the query
-    resolves to the drive-qualified form makes every lookup miss on Windows —
-    the corpus comes back empty even though the row is right there. Routing
-    every stored key through the same `canonical_root` the query side uses
-    keeps storage and lookup agreeing regardless of platform; it is a no-op
-    everywhere this already passed."""
+    before querying, so routing every stored key through the same
+    `canonical_root` the query side uses keeps storage and lookup agreeing."""
     cfg = IndexConfig(dir=str(tmp_path / "ix"))
     shards = str(tmp_path / "run" / "shards")
     os.makedirs(shards, exist_ok=True)
@@ -692,7 +685,7 @@ def test_the_corpus_is_ordered_by_the_stored_depth_column(tmp_path):
                  dirs=["/r/a", "/r/a/b"])
     # `_index` stores every path through `canonical_root` (same reasoning as
     # its docstring), so the keys read back here are that canonical spelling
-    # too — "/r/..." on POSIX, "D:/r/..." on Windows — not the bare literal.
+    # too.
     t = pq.read_table(partition_files(cfg)[0])
     assert dict(zip(t.column("path").to_pylist(),
                     t.column("depth").to_pylist())) == {

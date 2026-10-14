@@ -200,8 +200,8 @@ def test_install_rejects_markerless_entry(tmp_path):
 
 
 def test_install_rejects_backslash_entry(tmp_path):
-    # `..\..\x.html` passes a `/`-split ".." check but joins as traversal on
-    # Windows; backslashes are rejected outright (the exporter never writes them).
+    # `..\..\x.html` passes a `/`-split ".." check; backslashes are rejected
+    # outright (the exporter never writes them).
     bad = tmp_path / "evil.fused"
     bad.write_bytes(
         _zip_bytes(
@@ -329,11 +329,9 @@ def test_export_to_disk_writes_the_real_file_and_notes_the_mutation(tmp_path, mo
 
     out_path = body["path"]
     assert os.path.isfile(out_path)
-    # `out_path` is `canonical_fs_path(...)` (forward-slashed, per
-    # `_view_url_codec.py`'s documented convention: "the form a path has
-    # everywhere above the OS"); `dest_dir` is a raw `pathlib.Path`, which is
-    # backslashed on Windows, so it needs the same canonicalization before
-    # the comparison is separator-correct on every platform.
+    # `out_path` is `canonical_fs_path(...)` (per `_view_url_codec.py`'s
+    # documented convention: "the form a path has everywhere above the OS"), so
+    # `dest_dir` gets the same canonicalization before the comparison.
     assert os.path.dirname(out_path) == canonical_fs_path(str(dest_dir))
     assert appfile_container.is_container(out_path)
     # The FILE that was written, not the folder it landed in —

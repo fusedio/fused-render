@@ -401,7 +401,7 @@ def test_a_task_draft_is_a_row_with_a_number(client, tmp_path):
     # The same rule every other row's project follows (`_workdir`): a folder
     # target IS the project, a file target is the folder it sits in. Compared
     # through `canonical_fs_path`, the same normalisation the row itself
-    # applies — `str(target)` is backslashed on Windows, and the row is not.
+    # applies.
     assert row["target"] == canonical_fs_path(str(target))
     assert row["project"] == canonical_fs_path(str(target))
     assert row["when"] is None

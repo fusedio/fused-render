@@ -20,9 +20,6 @@ import pytest
 
 AGENT_DIR = os.path.join("fused_render", "claude_agent")
 
-posix_only = pytest.mark.skipif(os.name == "nt", reason="posix_spawn is POSIX-only")
-
-
 def _load(name):
     path = os.path.join(AGENT_DIR, name + ".py")
     spec = importlib.util.spec_from_file_location("claude_forksafe_" + name, path)
@@ -69,13 +66,11 @@ def spawned(tmp_path, monkeypatch):
     return agent, calls[0]
 
 
-@posix_only
 def test_the_host_spawn_kwargs_are_exactly_the_posix_spawn_safe_set(spawned):
     agent, _ = spawned
     assert agent._HOST_SPAWN == {"close_fds": False}
 
 
-@posix_only
 def test_start_spawns_the_host_through_posix_spawn_not_fork(spawned):
     _agent, (argv, kw) = spawned
     # Absent, not merely falsy: each of these, when passed at all, is one more
@@ -88,7 +83,6 @@ def test_start_spawns_the_host_through_posix_spawn_not_fork(spawned):
     assert os.path.basename(argv[1]) == "session_host.py", argv
 
 
-@posix_only
 def test_the_host_detaches_itself_before_reading_its_request(monkeypatch):
     """os.setsid() is the host's FIRST act. The request read off stdin is the
     next, so a host that read first and crashed on a bad request would still
@@ -122,7 +116,6 @@ def test_the_host_detaches_itself_before_reading_its_request(monkeypatch):
     assert order == ["setsid", ("closerange", 3), "stdin"]
 
 
-@posix_only
 def test_the_inherited_fd_sweep_is_capped(monkeypatch):
     """RLIM_INFINITY or -1 from sysconf must not become a closerange over
     billions of descriptors."""
@@ -135,7 +128,6 @@ def test_the_inherited_fd_sweep_is_capped(monkeypatch):
     assert seen == [(3, host._FD_CLOSE_CAP), (3, host._FD_CLOSE_CAP), (3, 1024)]
 
 
-@posix_only
 def test_a_host_that_is_already_a_session_leader_carries_on(monkeypatch):
     """EPERM from setsid means the process already leads a session; that is
     not a reason to abandon the chat."""

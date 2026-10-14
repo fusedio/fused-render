@@ -1054,7 +1054,6 @@ def test_uv_actually_line_flushes_to_a_pipe_not_just_at_exit():
 # --- `_run_uv_via_pty`: setup-failure fallback, and a REAL pty end to end ---
 
 
-@pytest.mark.skipif(worker.pty is None, reason="no pty module on this platform (Windows) -- worker.pty is the module's own import guard")
 def test_pty_setup_failure_falls_back_to_the_piped_path(tmp_path, monkeypatch):
     """`pty.openpty()` failing (no `/dev/ptmx`, a locked-down sandbox) is the
     ONE thing that may fall back to the piped path -- and only because it
@@ -1091,7 +1090,6 @@ def test_pty_setup_failure_falls_back_to_the_piped_path(tmp_path, monkeypatch):
     assert tracker.phase == "installed"  # the piped parser still ran to completion
 
 
-@pytest.mark.skipif(worker.pty is None, reason="no pty module on this platform (Windows) -- worker.pty is the module's own import guard")
 def test_pty_unavailable_only_fires_before_the_child_is_spawned(monkeypatch):
     """The safety property the fallback rests on: once `Popen` has been
     called, a failure must NOT be `_PtyUnavailable` (which `_build` treats as
@@ -1110,7 +1108,6 @@ def test_pty_unavailable_only_fires_before_the_child_is_spawned(monkeypatch):
         worker._run_uv_via_pty(["uv", "sync"], "/tmp", {}, worker._UvProgress())
 
 
-@pytest.mark.skipif(worker.pty is None, reason="no pty module on this platform (Windows) -- worker.pty is the module's own import guard")
 def test_stdin_is_devnull_not_the_pty_slave(monkeypatch):
     """Review issue #4: uv's bar keys off stdout/stderr, not stdin, so
     handing it a real terminal on stdin buys this feature nothing. What it
@@ -1144,7 +1141,6 @@ def test_stdin_is_devnull_not_the_pty_slave(monkeypatch):
     assert captured["stdout"] == captured["stderr"]
 
 
-@pytest.mark.skipif(worker.pty is None, reason="no pty module on this platform (Windows) -- worker.pty is the module's own import guard")
 def test_a_read_loop_exception_both_kills_and_reaps_the_child(monkeypatch):
     """Review issue #5: `proc.kill()` with no `proc.wait()` re-introduces
     the unreaped child fixed once already -- the piped path gets its reap

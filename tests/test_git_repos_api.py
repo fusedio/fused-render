@@ -99,10 +99,8 @@ def test_a_repo_is_the_parent_of_a_dot_git_row(home, tmp_path, client):
     _write_dirs_index([str(tmp_path), str(repo), _git(repo)])
     body = client.get("/api/git-repos").json()
     assert body["indexed"] is True
-    # `.as_posix()`, not `str()`: the endpoint canonicalizes every path it
-    # returns to forward slashes (`_view_url_codec.canonical_fs_path`), while a
-    # bare `str(Path)` on Windows is backslashed — comparing against that raw
-    # spelling fails on Windows for no reason the app got wrong.
+    # The endpoint canonicalizes every path it returns
+    # (`_view_url_codec.canonical_fs_path`).
     assert [r["path"] for r in body["repos"]] == [repo.as_posix()]
 
 
@@ -331,9 +329,8 @@ def test_a_partially_rescanned_multi_root_index_serves_what_it_has(home, tmp_pat
     _set_roots([a, b])
     cfg = _write_dirs_index([str(repo), _git(repo)], applied=False)
     # `_fresh` looks up `applied_ignore_sig(cfg, r)` for `r in scan_roots(cfg)`,
-    # which hands back `runner.canonical_root` spellings — so stamping the RAW
-    # `str(a)` key would never match that lookup on Windows (`C:\...\a` vs the
-    # stored `C:/.../a`), and this root would read as never-reconciled forever.
+    # which hands back `runner.canonical_root` spellings — so the key is stamped
+    # in that same spelling.
     save_applied_ignore(cfg, runner.canonical_root(str(a)))   # only /a reconciled
     body = client.get("/api/git-repos").json()
     assert body["indexed"] is True
@@ -350,13 +347,9 @@ def test_a_root_configured_in_a_NON_canonical_spelling_still_reads_usable(
         home, tmp_path, client, monkeypatch):
     """The fingerprint is stamped under runner.canonical_root(root), so looking it
     up with the user's raw configured spelling misses and the tab would sit in the
-    not-indexed empty state forever — even after a successful scan. On Windows that
-    is EVERY root (`expanduser("~")` -> `C:\\Users\\me` vs a stored `C:/Users/me`),
-    which is strictly worse than the multi-root staleness the per-root check fixed.
+    not-indexed empty state forever — even after a successful scan.
 
-    Exercised through `~` rather than through separators: expansion is a
-    normalization every platform performs, so this fails on POSIX too if the
-    lookup key is raw."""
+    Exercised through `~`: this fails if the lookup key is raw."""
     from fused_render.index import runner
 
     real_expanduser = os.path.expanduser
@@ -469,8 +462,7 @@ def test_opening_the_tab_fires_a_freshness_check_on_the_scan_roots(
     # A configured root, and nothing else: the tab is machine-wide, so a root is
     # the only path it can name. `scan_roots()` hands `note_folder_opened` the
     # `runner.canonical_root` spelling, not the raw configured one — so the
-    # expectation has to be built the same way, or this compares canonical
-    # against raw on Windows for no reason the app got wrong.
+    # expectation is built the same way.
     assert checked == [runner.canonical_root(str(a))]
 
 
@@ -526,10 +518,7 @@ def test_a_freshness_check_that_explodes_does_not_fail_the_tab(
     checked = []
     # `boom` is handed whatever `note_folder_opened` is actually called with —
     # the `runner.canonical_root` spelling `scan_roots()` returns, not the raw
-    # configured one — so it has to recognise "root a" in that same spelling or
-    # it never raises on Windows and this test silently stops exercising the
-    # "a bad root must not take the rotation down with it" scenario it exists
-    # to pin.
+    # configured one — so it recognises "root a" in that same spelling.
     canonical_a = runner.canonical_root(str(a))
 
     def boom(path):

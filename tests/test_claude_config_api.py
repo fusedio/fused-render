@@ -76,10 +76,7 @@ def claude_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(skills, "SKILL_LOCK_PATH",
                         str(tmp_path / ".agents" / ".skill-lock.json"))
     # HOME drives claude_md's ~/.claude.json probe (and nothing else here).
-    # os.path.expanduser reads USERPROFILE on Windows (ntpath.expanduser never
-    # looks at HOME), so both have to be set for the redirect to actually land.
     monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     # Identity + no global config, so `git commit` works on a machine with an
     # empty ~/.gitconfig and a developer's own settings can't change the result
     # (same posture as tests/_git_repo.py).
@@ -1409,12 +1406,7 @@ def test_git_runs_with_dash_c_rather_than_cwd():
     # (tests/test_git_posix_spawn.py). basename alone would pass a
     # regression to a bare "git".
     assert os.path.isabs(seen["argv"][0])
-    # `.lower()`: `shutil.which("git")` on Windows resolves the bare name by
-    # trying each `PATHEXT` entry as-is, and the default `PATHEXT` spells its
-    # entries `.EXE` — so the resolved path this app actually runs is
-    # literally `...\git.EXE`, uppercase extension, with no lowercase form on
-    # disk to fall back to. That is still "git", not a different binary.
-    assert os.path.basename(seen["argv"][0]).lower() in ("git", "git.exe")
+    assert os.path.basename(seen["argv"][0]) == "git"
     assert seen["argv"][1:3] == ["-C", lib.CLAUDE_DIR]
     assert "cwd" not in seen["kwargs"]
     assert seen["kwargs"]["close_fds"] is False
@@ -1523,7 +1515,7 @@ def test_ensure_repo_reraises_a_genuine_init_failure_even_though_git_created_the
         claude_dir):
     """`.git` existing is NOT proof `git init` succeeded -- the original bug
     report proves it: the user's error was `cannot copy ... to
-    C:/Users/amynr/.claude/.git/hooks/pre-applypatch.sample: File exists`,
+    ~/.claude/.git/hooks/pre-applypatch.sample: File exists`,
     i.e. `.git/hooks/` already existed while init was genuinely still
     failing. git creates the `.git` directory FIRST, then writes
     `HEAD`/`config`, then copies hook templates -- so a real failure partway

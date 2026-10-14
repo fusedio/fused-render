@@ -86,7 +86,7 @@ def test_overview_of_a_file_scopes_to_that_file(reader, repo):
     assert got["repo"]["is_dir"] is False
 
 
-def test_rel_is_posix_even_on_windows_separators(reader, repo):
+def test_rel_is_posix_with_a_trailing_separator(reader, repo):
     # The UI prints `rel` and every pathspec is built from it, so it is
     # normalized to forward slashes once, here, rather than at each use.
     got = reader.main(os.path.join(repo, "pkg") + os.sep)
@@ -506,12 +506,7 @@ def test_every_invocation_is_pinned_hardened_and_bounded(reader, repo, monkeypat
         # tests/test_git_posix_spawn.py). Still exactly one basename, still a list,
         # still no shell — which is what this assertion is really about.
         assert os.path.isabs(argv[0])
-        # `.lower()`: `shutil.which("git")` on Windows resolves the bare name by
-        # trying each `PATHEXT` entry as-is, and the default `PATHEXT` spells its
-        # entries `.EXE` — so the resolved path this app actually runs is
-        # literally `...\git.EXE`, uppercase extension, with no lowercase form on
-        # disk to fall back to. That is still "git", not a different binary.
-        assert os.path.basename(argv[0]).lower() in ("git", "git.exe")
+        assert os.path.basename(argv[0]) == "git"
         assert "--no-pager" in argv
         assert "-C" in argv
         # Exactly one invocation is pinned to the TARGET rather than the root:

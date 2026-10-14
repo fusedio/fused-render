@@ -89,38 +89,8 @@ def claude_store(tmp_path, monkeypatch):
 
 
 def _absent_root() -> str:
-    """An absolute path that does not exist, on POSIX **and** on Windows.
-
-    `os.path.join(os.sep, "somewhere", ...)` is not enough. On Windows that is
-    `\\somewhere\\else\\demo` — drive-RELATIVE: `ntpath.isabs` says True, but
-    `splitdrive` returns no drive, so `os.path.abspath` prepends the current
-    drive and the string CHANGES. Every path function under test abspaths its
-    input (`claude_session_move.munge`, `_under`, `_path_rewrites`;
-    `workspace_migration._remap` documents that it requires it), so a fixture
-    seeded with the un-drived spelling never matches what production searches
-    for: the transcript's `cwd` is left unrewritten, and the assertions that
-    follow it fail — on Windows only.
-
-    Calling `abspath` here is what makes the fixture and production agree, and
-    is the same thing `test_file_history.py` does for its own absent path.
-    """
-    return os.path.abspath(os.path.join(os.sep, "somewhere", "else", "demo"))
-
-
-def test_the_absent_root_fixture_is_absolute_on_every_platform():
-    """The guard for the Windows-only breakage this file had.
-
-    `abspath(p) == p` is the contract every path function under test relies on,
-    and `os.path.isabs` is NOT that contract: on Windows it answers True for the
-    drive-relative `\\somewhere\\else\\demo`, which `abspath` then rewrites by
-    prepending a drive. A fixture whose spelling changes under `abspath` can
-    never match what production searches for — which is why these tests passed
-    on POSIX and failed on Windows. Assert the fixed point, not `isabs`.
-    """
-    root = _absent_root()
-    assert os.path.abspath(root) == root      # the load-bearing one
-    assert os.path.isabs(root)
-    assert not os.path.exists(root)           # still absent, or it is not a move
+    """An absolute path that does not exist."""
+    return os.path.join(os.sep, "somewhere", "else", "demo")
 
 
 def _transcript(projects, cwd, sid, extra_line=None):
@@ -207,19 +177,14 @@ def test_a_moved_app_carries_its_claude_sessions_and_repoints_meta(app, claude_s
     assert json.loads(moved[2])["cwd"] == new_root
     assert (dst / "aaaa-1" / "tool-results" / "x.txt").read_text() == "r"
     # The pane identity moved too — both spellings, nothing left of the old.
-    # Spelled as the FILE holds them, not as `os.path.join` returns them: these
-    # paths sit inside JSON strings, so on Windows their separators are escaped
-    # and the single-backslash form never appears in the raw bytes at all (the
-    # assertion could not pass there, however correct the rewrite).
-    # `json.dumps(p)[1:-1]` is precisely the spelling
-    # `claude_session_move._path_rewrites` rewrites, and is a no-op on POSIX.
+    # Spelled as the FILE holds them: `json.dumps(p)[1:-1]` is precisely the
+    # spelling `claude_session_move._path_rewrites` rewrites.
     import urllib.parse
     body = (dst / "aaaa-1.jsonl").read_text()
     entry = os.path.join(new_root, "index.html")
     assert json.dumps(entry)[1:-1] in body
     assert urllib.parse.quote(entry, safe="") in body
-    # The escaped spelling is the one that was there to remove — plain `old`
-    # never appears on Windows, so asserting it alone is vacuous there.
+    # The JSON-string spelling is the one that was there to remove.
     assert json.dumps(old)[1:-1] not in body
     sub = projects / munge(os.path.join(new_root, "sub", "deeper"))
     assert json.loads((sub / "bbbb-2.jsonl").read_text().splitlines()[1])["cwd"] == \
@@ -273,13 +238,8 @@ def test_a_move_re_roots_bookmarks_and_app_stores(app, claude_store, tmp_path, m
     old = os.path.join(fused_dir(), "local", "demo-viz")
     new_root = os.path.abspath(str(app))  # tmp_path/Fused/local/demo
 
-    # The shell's own encoder, not a hand-rolled one: `old.lstrip("/")` and
-    # `.split("/")` assume forward slashes, so on Windows the whole backslashed
-    # path became ONE segment and `quote` turned it into
-    # `C%3A%5CUsers%5C...%5Cdemo-viz` — a spelling `_remap_url` cannot decode,
-    # so the bookmark was never re-rooted and only this test noticed.
-    # `view_url_path` canonicalises first, which is the form bookmarks.json
-    # actually holds on every platform.
+    # The shell's own encoder, not a hand-rolled one: `view_url_path` is the
+    # form bookmarks.json actually holds.
     from fused_render._view_url_codec import view_url_path
 
     enc_url = view_url_path(os.path.join(old, "index.html"))
@@ -444,9 +404,7 @@ def test_a_file_where_the_app_should_be_is_false(tmp_path):
     assert app_fused_dir.ensure(str(f)) is False
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
-@pytest.mark.skipif(os.geteuid() == 0 if hasattr(os, "geteuid") else False,
-                    reason="root ignores the write bit")
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores the write bit")
 def test_an_unwritable_app_folder_is_false_not_an_exception(app):
     """The failure a read-only medium produces. It must never reach the render
     that called it."""

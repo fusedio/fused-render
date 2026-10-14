@@ -256,9 +256,8 @@ def test_lean_still_serves_ordinary_routes():
 
 
 def _alive(p: int) -> bool:
-    """Is this pid a live process? `tasks_watch._pid_alive` rather than
-    `os.kill(p, 0)`, which on Windows is a real signal (and raises WinError 87
-    for a pid that is gone), not a probe."""
+    """Is this pid a live process? `tasks_watch._pid_alive`, the production
+    probe."""
     from fused_render import tasks_watch
 
     return tasks_watch._pid_alive(p)

@@ -160,18 +160,15 @@ def test_the_shots_dir_is_created_private_and_adopted_on_a_second_call(
     monkeypatch.setattr(agent, "RUNS", str(root))
     shots = tmp_path / "fr" / "shots"
     monkeypatch.setattr(agent, "SHOTS", str(shots))
-    # The dir comes back through _wire_path (forward slashes on every
-    # platform, so the page's crop paths match the Read(//…/**) rule) — not
-    # the raw join, which is backslashed on Windows.
+    # The dir comes back through _wire_path, so the page's crop paths match
+    # the Read(//…/**) rule.
     assert agent.main(action="shots_dir") == {"dir": agent._wire_path(str(shots))}
     assert os.path.isdir(shots)
-    if hasattr(os, "geteuid"):
-        assert stat.S_IMODE(os.lstat(shots).st_mode) == 0o700
+    assert stat.S_IMODE(os.lstat(shots).st_mode) == 0o700
     # second message, same directory
     assert agent.main(action="shots_dir") == {"dir": agent._wire_path(str(shots))}
 
 
-@pytest.mark.skipif(not hasattr(os, "geteuid"), reason="POSIX mode bits")
 def test_a_shots_dir_anyone_can_write_to_is_refused(agent, tmp_path, monkeypatch):
     """The temp root is world-writable and our path under it is predictable, so
     another account can pre-create this directory. Adopting theirs would hand
@@ -184,7 +181,6 @@ def test_a_shots_dir_anyone_can_write_to_is_refused(agent, tmp_path, monkeypatch
         agent._shots_dir()
 
 
-@pytest.mark.skipif(not hasattr(os, "geteuid"), reason="POSIX mode bits")
 def test_an_adopted_shots_dir_is_tightened_to_owner_only(agent, tmp_path,
                                                          monkeypatch):
     """`_require_private` only refuses a directory others can WRITE to, which is
@@ -199,7 +195,6 @@ def test_an_adopted_shots_dir_is_tightened_to_owner_only(agent, tmp_path,
     assert stat.S_IMODE(os.lstat(shots).st_mode) == 0o700
 
 
-@pytest.mark.skipif(not hasattr(os, "geteuid"), reason="POSIX mode bits")
 def test_an_adopted_dir_that_cannot_be_tightened_is_refused(agent, tmp_path,
                                                             monkeypatch):
     """The failure path of the tightening above, and it must not be best-effort.

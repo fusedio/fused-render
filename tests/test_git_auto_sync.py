@@ -28,7 +28,7 @@ def _clean_state(monkeypatch):
     monkeypatch.setattr(git_upstream, "_pending", {})
     monkeypatch.setattr(git_upstream, "auto_sync_enabled", lambda: True)
     # Production bounds every git call at 20s and treats a timeout as silence
-    # (no row, no failure). A loaded Windows runner needs minutes for one git
+    # (no row, no failure). A loaded CI runner can be slow for one git
     # spawn, which turns a slow check into "nothing was recorded". Widen only
     # the bound here; behaviour and call arguments are untouched.
     real_run = git_upstream._run

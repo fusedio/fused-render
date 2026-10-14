@@ -6,8 +6,8 @@ against a stub HTTP server that stands in for fused-render's /api/terminal
 routes. The `claude` CLI is never invoked.
 
 Rules pinned here: the tools appear only when the run was given a server origin
-(`FUSED_RENDER_TERMINAL_ORIGIN`, which agent.py stamps into mcp.json's env and
-only on POSIX); list/read are pre-allowed, send is not (it types into the
+(`FUSED_RENDER_TERMINAL_ORIGIN`, which agent.py stamps into mcp.json's env);
+list/read are pre-allowed, send is not (it types into the
 user's shell, so it keeps its permission card); a busy terminal is a tool error.
 """
 import json
@@ -21,8 +21,6 @@ import pytest
 
 from _mcp_stdio import MCPServer
 from test_claude_app_state import SERVER, _load, _spawn
-
-pytestmark = pytest.mark.skipif(os.name == "nt", reason="terminal tools are POSIX-only")
 
 SESSIONS = [
     {"id": "t1", "alive": True, "shell": "zsh", "cwd": "/a", "foreground": None,
