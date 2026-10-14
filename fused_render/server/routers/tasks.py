@@ -7905,8 +7905,10 @@ def _opt_str(body: dict, field: str):
     return value.strip(), None
 
 
-#: A bot id as bots/bot.py mints one: `uuid4().hex[:8]`.
-_BOT_ID_RE = re.compile(r"[0-9a-f]{8}")
+#: A bot id: bots/bot.py mints `uuid4().hex[:8]`, but a bot is any data-dir
+#: folder holding a bot.json (bots/store.py `list_ids`), so the shape is "a
+#: folder name", not eight hex — only a label with spaces or a path is refused.
+_BOT_ID_RE = re.compile(r"[A-Za-z0-9_.-]{1,64}")
 
 
 _UI_VIEWS = ("list", "board", "cards", "calendar")
@@ -8028,8 +8030,8 @@ def api_task_create(body: dict = Body(...),
             return refusal
     # `bot`: the id of the bot starting this task (bots/bot.py `build`), kept on
     # the entry and handed back on the row so the bot's panel can list what it
-    # started. A bot id is eight hex characters; anything else is refused rather
-    # than stored as a label.
+    # started. Checked for the shape of an id (`_BOT_ID_RE`), so a label never
+    # gets stored as one.
     if fields["bot"] and not _BOT_ID_RE.fullmatch(fields["bot"]):
         return _error("bot: expected a bot id", status=400)
     target = fields["target"] or _page_scope(x_fused_page)[2]
