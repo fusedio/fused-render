@@ -212,6 +212,17 @@ _perm_stamps: dict[str, tuple] = {}
 # has to be: a run the listing will not look at cannot become a parked ROW, so
 # watching further back would ring about news no page could draw.
 PERM_SCAN_LIMIT = 120
+# run_dir -> (out.jsonl size, {session ids}) for every hosted run the last
+# listing found HOLDING BACKGROUND WORK (`watch_background`). See
+# `_read_background_runs`.
+_bg_runs: dict[str, tuple] = {}
+# A handful at most in practice (one per chat with a background Bash/Agent/
+# Monitor still going); the cap only keeps a pathological machine's tick cheap.
+BG_WATCH_LIMIT = 32
+# The most new `out.jsonl` bytes one tick reads per watched run. More than that
+# in a second is rung without looking — the listing re-reads it anyway.
+BG_READ_MAX = 4 * 1024 * 1024
+_BG_MARKER = b"background_tasks_changed"
 _started = False
 # Guards `start()`'s check-then-set so two concurrent first callers can't both
 # see `_started` as False and both spawn a watcher thread.
@@ -252,6 +263,23 @@ def registry_row(session_id: str) -> dict | None:
     with _cond:
         row = _registry.get(session_id)
         return dict(row) if row else None
+
+
+def session_has_pid(session_id: str, pid) -> bool:
+    """Is `session_id` held in the live registry by the `claude` process `pid`?
+
+    Every file naming the session counts, not only the row `_settle` stands
+    (two processes can hold one session). Dead pids have already been dropped
+    by `_read_registry`, which is what makes this the check that a pid in a
+    stale file elsewhere (a run dir's `pid`, a `host.json`) is the process it
+    claims to be."""
+    if not session_id or not pid:
+        return False
+    pid = str(pid)
+    with _cond:
+        return any(owner == session_id and path in _sess_rows
+                   and str(_sess_rows[path][0].get("pid") or "") == pid
+                   for path, owner in _sess_sids.items())
 
 
 def session_for_pid(pid) -> str:
@@ -1238,6 +1266,69 @@ def _read_permission_cards() -> set[str]:
     return keys
 
 
+def watch_background(runs: dict) -> None:
+    """Replace the set of runs `tick` stats for background-work news.
+
+    `runs` is `{run_dir: (bytes of out.jsonl the listing parsed, {session
+    ids})}` — `routers/tasks.py _hosted_runs`' pending half, handed over by
+    every listing build. A run already watched keeps the size this module last
+    saw (news it has already rung is not news again); a new one starts from the
+    size the listing read, so a row that changed between that read and this
+    call still rings."""
+    global _bg_runs
+    fresh: dict[str, tuple] = {}
+    with _cond:
+        for run_dir, (size, sids) in list(runs.items())[:BG_WATCH_LIMIT]:
+            held = _bg_runs.get(run_dir)
+            fresh[run_dir] = (held[0] if held else size, frozenset(sids))
+        _bg_runs = fresh
+
+
+def _read_background_runs() -> set[str]:
+    """Session ids whose run is holding background work and whose `out.jsonl`
+    just gained a `background_tasks_changed` row.
+
+    THE ONE CHANGE TO THAT WORK NOTHING ELSE ANNOUNCES. A row whose reply has
+    ended with a `run_in_background` Bash (or a background Agent, or a Monitor)
+    still going carries `pending_background` (`routers/tasks.py
+    _hosted_runs`), and the registry has ALREADY flipped to idle by then — so
+    when the CLI writes the row that empties that list and stays idle (a task
+    killed, or one that finished with nothing to wake the model for), no
+    registry rewrite and no transcript growth says so. The host writes that row
+    into `out.jsonl`, so the watch is one `stat` per run, and on growth a read
+    of the NEW bytes only, ringing just when they hold the row that changes the
+    answer. A background Agent streams its own rows into the same file every
+    second; those are not news and must not cost a rebuild each."""
+    with _cond:
+        watched = dict(_bg_runs)
+    keys: set[str] = set()
+    for run_dir, (seen, sids) in watched.items():
+        path = os.path.join(run_dir, "out.jsonl")
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            size = None
+        if size == seen:
+            continue
+        news = True
+        if size is not None and seen is not None and seen < size <= seen + BG_READ_MAX:
+            # Back up by the marker's length, so a row split across two
+            # ticks' reads is still seen whole by the second.
+            start = max(0, seen - len(_BG_MARKER))
+            try:
+                with open(path, "rb") as fh:
+                    fh.seek(start)
+                    news = _BG_MARKER in fh.read(size - start)
+            except OSError:
+                news = True
+        if news:
+            keys |= sids
+        with _cond:
+            if run_dir in _bg_runs:
+                _bg_runs[run_dir] = (size, sids)
+    return keys
+
+
 # (mtime_ns, size) of each shared store last seen, keyed by path. These are
 # edited by OTHER processes — the machine-duties leader's scheduler writes the
 # schedule store and the queue index for every app on the machine — and a lean
@@ -1340,6 +1431,9 @@ def tick() -> set[str]:
             # first sighting is a baseline that names nobody, so `card_keys` is
             # empty there.
             _wake_schedule()
+    # Unconditional: a handful of stats at most, and empty unless a listing
+    # found a run holding background work.
+    keys |= _read_background_runs()
     # LAST, so a mark whose registry row arrived in the same tick is retired
     # against a listing that already knows better. The row does not flicker
     # either way — `_live` reads `busy` over a mark — but the announcement
@@ -1409,6 +1503,7 @@ def reset() -> None:
         _mark_turns.clear()
         _mark_busy_seen.clear()
         _last_idle_turn.clear()
+        _bg_runs.clear()
         # Wake, not just drop: a parked wait_async would otherwise sleep out
         # its full deadline against a generation that just went back to 0.
         waiters = list(_async_waiters)

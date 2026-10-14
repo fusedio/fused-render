@@ -129,6 +129,8 @@ import {
   QUEUED_WORD,
   QUEUE_CAPTION_SEP,
   usageLimitCaption,
+  backgroundCaption,
+  BACKGROUND_HINT,
   projectMatches,
   projectOptions,
   relativeWhen,
@@ -3246,6 +3248,10 @@ function TaskNode({
    *  named and dated ("Usage limit · resumes 4:00 AM"). "" on every row the usage
    *  limit did not stop. */
   const limit = usageLimitCaption(task);
+  /** …and a third: Claude is still holding background work for this chat
+   *  (`backgroundCaption`). The limit wins the seat — one caption at a time.
+   *  "" on every other row. */
+  const background = limit ? "" : backgroundCaption(task);
   /** IS THE QUEUE ON. Only the thread's per-message word needs it — every other
    *  `queued` on this row comes from the server's status, which is never written
    *  while the flag is down, while `messageState` derives its own from "pending
@@ -3723,6 +3729,29 @@ function TaskNode({
    *  go — no session and no folder, or a folder the disk has lost — which is
    *  what keeps the quick door off the rows it could not honour. */
   const page = folderMissing ? null : href;
+  /** THE ROW'S PRESS, for a caption that sits over the stretched link — the
+   *  file and schedule marks' three handlers, once. `z-index: 2` (for its
+   *  tooltip) puts a caption above `.tasks-rowlink`, and without these it is a
+   *  dead run of pixels: a plain press opens THIS row, a modified or middle one
+   *  a new tab, and a middle press never starts autoscroll. */
+  const pressRow = {
+    onClick: (e: React.MouseEvent) => {
+      if (!href) return;
+      if (opensElsewhere(e)) {
+        window.open(href, "_blank", "noopener");
+        return;
+      }
+      activate();
+    },
+    onAuxClick: (e: React.MouseEvent) => {
+      if (e.button !== 1 || !href) return;
+      e.preventDefault();
+      window.open(href, "_blank", "noopener");
+    },
+    onMouseDown: (e: React.MouseEvent) => {
+      if (e.button === 1 && href) e.preventDefault();
+    },
+  };
 
   /**
    * Does this row's press DO anything — and therefore, may the row claim to be a
@@ -4226,8 +4255,22 @@ function TaskNode({
             states a row can be WAITING in and a reader should find both in one
             place; never both at once, since a row has one status. */}
         {limit && (
-          <span className="tasks-row-queue" data-hint={limit}>
+          <span className="tasks-row-queue" data-hint={limit} {...pressRow}>
             <span className="tasks-queue-text">{limit}</span>
+          </span>
+        )}
+        {/* …AND BACKGROUND WORK, in the same seat and the same register
+            (`backgroundCaption`): the reply is in, the row reads its status,
+            and this says Claude is still holding a job for it. One caption at
+            a time — the limit's, when there is one. Both spend the row's
+            press (`pressRow`), like the marks above. */}
+        {background && (
+          <span
+            className="tasks-row-queue tasks-row-queue--bg"
+            data-hint={BACKGROUND_HINT}
+            {...pressRow}
+          >
+            <span className="tasks-queue-text">{background}</span>
           </span>
         )}
 

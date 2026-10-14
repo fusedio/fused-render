@@ -238,3 +238,26 @@ test("the press posts to /api/tasks/queue/force, and names this row's task", asy
     (globalThis as { fetch: unknown }).fetch = realFetch;
   }
 });
+
+test("a press on the background-job caption opens THIS row", () => {
+  // The caption sits over the stretched link (`z-index: 2`, for its hint), so
+  // without the row's press it was a dead run of pixels — the fault the file
+  // and schedule marks were fixed for. Same for the usage limit's caption.
+  const opened: string[] = [];
+  const r = row(queued({ status: "done", queue_position: 0,
+                         pending_background: true } as Partial<Task>), opened);
+  const [caption] = byClass(r, "tasks-row-queue--bg");
+  expect(caption).toBeDefined();
+  click(byClass(r, "tasks-queue-text")[0]);
+  expect(opened).toEqual(["sess-1"]);
+});
+
+test("a press on the usage-limit caption opens THIS row too", () => {
+  const opened: string[] = [];
+  const r = row(queued({ status: "blocked", queue_position: 0,
+                         blocked_reason: "usage_limit" } as Partial<Task>), opened);
+  const seats = byClass(r, "tasks-row-queue");
+  expect(seats).toHaveLength(1);
+  click(byClass(r, "tasks-queue-text")[0]);
+  expect(opened).toEqual(["sess-1"]);
+});

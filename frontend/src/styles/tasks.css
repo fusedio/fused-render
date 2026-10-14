@@ -2169,6 +2169,16 @@ button.tasks-caret,
   white-space: nowrap;
 }
 
+/* …EXCEPT THE BACKGROUND-JOB CAPTION, WHICH DOES NOT GIVE WAY. The queue
+   sentence yields first because its front survives a cut; this one is two
+   words that mean nothing cut, and beside an ordinary prompt-length title the
+   `0 100 auto` above measured it at 0px — a caption that almost never shows.
+   So it keeps its width and the TITLE ellipsises instead. Kept short for that
+   reason ("background job"; the full sentence is the hint). */
+.tasks-row-queue--bg {
+  flex: 0 0 auto;
+}
+
 .tasks-card-queue {
   /* A LINE OF ITS OWN on the card — the card is a column flex box, so this is a
      row rather than something trailing the title. Wraps freely for the reason
