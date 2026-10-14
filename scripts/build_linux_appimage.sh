@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 # Build the FusedRender Linux desktop app as a single-file AppImage.
 #
-# Mirrors the STAGES of scripts/build_windows_installer.ps1 (wheel build →
-# relocatable CPython → pip install the desktop extra → pre-install DuckDB
-# extensions → copy uv → smoke tests → package), not its structure. The result
+# Stages: wheel build → relocatable CPython → pip install the desktop extra →
+# pre-install DuckDB extensions → copy uv → smoke tests → package. The result
 # is dist/FusedRender-<version>-x86_64.AppImage: download, `chmod +x`, run — no
 # admin, no package manager.
 #
@@ -74,22 +73,20 @@ log "Pre-installing DuckDB extensions"
 # Under bin/ (next to uv), because tools_dir — where the supervisor's
 # child_environment points FUSED_RENDER_DUCKDB_EXTENSION_DIR — resolves to the
 # interpreter's directory, which is $PYTHON_ROOT/bin on Linux (python3 lives in
-# bin/), NOT $PYTHON_ROOT. Windows keeps python.exe directly in PythonRoot, so
-# its ps1 stages them at PythonRoot; the destinations differ, the contract
-# (tools_dir/duckdb_extensions) is identical.
+# bin/), NOT $PYTHON_ROOT.
 DUCKDB_EXTENSIONS="$PYTHON_ROOT/bin/duckdb_extensions"
 mkdir -p "$DUCKDB_EXTENSIONS"
 "$BUNDLE_PYTHON" -I -c \
     "import duckdb, sys; con = duckdb.connect(config=dict(extension_directory=sys.argv[1])); [con.install_extension(name) for name in sys.argv[2:]]" \
     "$DUCKDB_EXTENSIONS" httpfs excel spatial
 
-# --- copy uv into the payload (next to python, same idiom as the ps1) --------
+# --- copy uv into the payload (next to python) -------------------------------
 UV_BIN="$(command -v uv)"
 cp "$UV_BIN" "$PYTHON_ROOT/bin/uv"
 
 # --- prune dead weight (mirrors build_dmg.sh's D116/D118 pruning) ------------
 # manylinux wheels ship native libs with full debug + local symbol tables that
-# the Windows PE / macOS Mach-O wheels of the same libraries don't — the main
+# the macOS Mach-O wheels of the same libraries don't — the main
 # reason the Linux payload dwarfed the other platforms. strip -S drops debug
 # info, -x drops local symbols; globals stay so dlopen/linking is untouched.
 # The macOS DMG strips the same way. Per-file `|| true`: `find` matches by
@@ -108,8 +105,7 @@ find "$PYTHON_ROOT/lib/python3.12/site-packages" -type d \
 # Drop `ty` (Astral's type checker, ~27 MB): the `fused` wheel declares it as a
 # runtime dependency, but nothing in fused_render imports it and the packaged
 # app never type-checks — it's pure dead weight in the bundle. Remove both the
-# console-script binary and the package. macOS/Windows can prune it the same
-# way; keep this in sync if that lands there too.
+# console-script binary and the package. macOS can prune it the same way; keep this in sync if that lands there too.
 rm -rf "$PYTHON_ROOT/bin/ty" \
     "$PYTHON_ROOT"/lib/python3.12/site-packages/ty \
     "$PYTHON_ROOT"/lib/python3.12/site-packages/ty-*.dist-info

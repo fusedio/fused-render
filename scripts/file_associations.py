@@ -1,15 +1,13 @@
-"""Shared file-association table for BOTH desktop packaging pipelines.
+"""Shared file-association table for the Linux AppImage packaging pipeline.
 
-The Windows installer registry generator (scripts/windows/generate_installer_
-registry.py) and the Linux AppImage build (scripts/build_linux_appimage.sh, via
-this module's `mime-types` / `mime-xml` commands) must agree on the exact set of
-file extensions FusedRender registers as an "Open with" handler, and on each
-extension's icon variant. That single source of truth is
-`scripts/file_associations.json`; neither pipeline owns its own copy.
+The Linux AppImage build (scripts/build_linux_appimage.sh, via this module's
+`mime-types` / `mime-xml` commands) reads the exact set of file extensions
+FusedRender registers as an "Open with" handler, and each extension's icon
+variant, from `scripts/file_associations.json`.
 
 The JSON is *derived* from the shipping runtime's own association data
-(`fused_render.winopen`) so a template/registry change flows to both packagers.
-`regenerate` rewrites the JSON from winopen; a test
+(`fused_render.file_associations`) so a template/registry change flows to the
+packager. `regenerate` rewrites the JSON from that module; a test
 (tests/test_file_associations.py) asserts the committed JSON stays in sync, so
 drift fails CI rather than shipping a stale association set.
 """
@@ -27,7 +25,7 @@ _JSON = os.path.join(_HERE, "file_associations.json")
 # "Open with" work for extensions with NO standard shared-mime-info type
 # (parquet, pmtiles, …) without guessing — and mis-guessing — a canonical type.
 # Extensions that DO have a standard type carry it in `standard_mime` and reuse
-# it instead (macOS "Alternate rank" parity — see fused_render.winopen's
+# it instead (macOS "Alternate rank" parity — see fused_render.file_associations'
 # _STANDARD_MIME_FOR_TOKEN), so we never mint a new global type identity for an
 # extension the shared database already names.
 _MIME_PREFIX = "application/x-fused-render-"
@@ -35,7 +33,7 @@ _MIME_PREFIX = "application/x-fused-render-"
 # The freedesktop MIME "type" that registers an app as the handler for a URL
 # scheme. Appended to the .desktop MimeType= list so the OS routes
 # `fused-render://` deep links to the AppImage (SPEC §26, D110). Not a file
-# association, so it stays out of the winopen-derived table and the drift test.
+# association, so it stays out of the derived table and the drift test.
 _SCHEME_HANDLER = "x-scheme-handler/fused-render"
 
 
@@ -81,11 +79,11 @@ def associations() -> list[Association]:
     ]
 
 
-def derive_from_winopen() -> list[dict[str, str | None]]:
+def derive_from_runtime() -> list[dict[str, str | None]]:
     """The canonical association list, derived from the shipping runtime's own
     registry, icon map, and standard-MIME table. `regenerate` writes this to the
     JSON; the sync test compares against it."""
-    from fused_render.winopen import (
+    from fused_render.file_associations import (
         _ICON_VARIANT_FOR_TOKEN,
         extensions,
         standard_mime_for_token,
@@ -133,7 +131,7 @@ def _mime_xml(assocs: list[Association]) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("regenerate", help="rewrite file_associations.json from winopen")
+    sub.add_parser("regenerate", help="rewrite file_associations.json from fused_render.file_associations")
     sub.add_parser("mime-types", help="print the ;-joined MIME type list (for a .desktop MimeType=)")
     xml = sub.add_parser("mime-xml", help="write the freedesktop MIME package XML")
     xml.add_argument("output")
@@ -141,7 +139,7 @@ def main() -> None:
 
     if args.command == "regenerate":
         with open(_JSON, "w", encoding="utf-8") as handle:
-            json.dump({"associations": derive_from_winopen()}, handle, indent=2)
+            json.dump({"associations": derive_from_runtime()}, handle, indent=2)
             handle.write("\n")
         print(f"wrote {_JSON}")
     elif args.command == "mime-types":

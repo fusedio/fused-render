@@ -937,8 +937,6 @@ if [[ "$RELOAD" -eq 1 ]]; then
   # default `serve` only when argv[0] isn't already a subcommand, so a leading
   # `serve` (e.g. `dev.sh serve --port N`) must stay argv[0]. Prepending
   # --no-browser would shift it and trigger a duplicate-`serve` parse error.
-  # `bash` by name, not $BASH: under git-bash the Windows python that runs
-  # watchfiles cannot resolve an msys /usr/bin path, but finds bash on PATH.
   CMD="bash $(printf '%q' "$SERVE_WRAPPER")"
   for a in "$@"; do CMD+=" $(printf '%q' "$a")"; done
   CMD+=" --no-browser"
@@ -966,7 +964,7 @@ if [[ "$RELOAD" -eq 1 ]]; then
   # exists, the listener's pid must sit in this run's tree under $SERVER_PID
   # (tree_pids, defined with the cleanup helpers above). A foreign listener —
   # one that appeared between the pre-check above and the bind — is reported
-  # as NOT ready, never as ready. Without lsof (git-bash) the pre-check is the
+  # as NOT ready, never as ready. Without lsof the pre-check is the
   # only ownership test, which is the state this probe was in before.
   if [[ -n "$PORT" && "$PORT_TAKEN" -eq 0 ]]; then
     (
@@ -998,9 +996,8 @@ if [[ "$RELOAD" -eq 1 ]]; then
         URL="http://127.0.0.1:$PORT/"
         echo "==> ready: $URL"
         if [[ "$NO_BROWSER" -eq 0 ]]; then
-          # Open via Python's webbrowser (cross-platform, matches cli.py); a shell
-          # open/xdg-open/start chain misses Windows/git-bash (start is a cmd
-          # builtin, not a binary on PATH). Pass the URL through argv, not
+          # Open via Python's webbrowser (cross-platform, matches cli.py). Pass
+          # the URL through argv, not
           # interpolated into the -c source: a path with an apostrophe
           # (e.g. a home dir containing ') would otherwise break the string literal.
           "$PY" -c "import sys, webbrowser; webbrowser.open(sys.argv[1])" "$URL" >/dev/null 2>&1 || true

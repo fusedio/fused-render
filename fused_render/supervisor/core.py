@@ -3,9 +3,8 @@
 Owns the lifecycle every desktop backend shares — single-instance election,
 the supervised server process, the tray, forwarded opens, graceful shutdown
 and teardown — and reaches all genuinely OS-specific behavior only through
-`supervisor._backend` (job / instance / startup / ui). The Windows pieces this
-was first ported from live in `supervisor/_win32/`; a new OS is a new backend,
-not a new copy of this loop.
+`supervisor._backend` (job / instance / startup / ui). A new OS is a new
+backend, not a new copy of this loop.
 """
 from __future__ import annotations
 
@@ -28,7 +27,7 @@ from fused_render.desktop_probe import DESKTOP_INSTANCE_ID as _INSTANCE_ID
 from fused_render.supervisor import _backend, protocol, tray
 from fused_render.supervisor.paths import DesktopPaths
 
-# The single live backend (win32 today). Every platform-specific call in this
+# The single live backend (Linux today). Every platform-specific call in this
 # module goes through these names; see supervisor/_backend.py for the contract.
 Job = _backend.Job
 instance = _backend.instance
@@ -64,7 +63,6 @@ _host_start_lock = threading.Lock()
 #: keeps starting either way.
 _HOST_WAIT_S = 3.0
 
-update = getattr(_backend, "update", None)  # optional hook (Windows only)
 deintegrate = getattr(_backend, "deintegrate", None)  # optional hook (Linux only)
 
 _READY_TIMEOUT_S = 20.0
@@ -130,11 +128,6 @@ def run(initial: protocol.Command) -> None:
     # Primary instance.
     if isinstance(initial, protocol.ShutdownForUpgrade):
         inst.release()
-        # No primary to tear down, but detached workers (template daemons)
-        # may still hold payload\ locked (win32-only hook).
-        reap = getattr(instance, "reap_payload_processes", None)
-        if reap is not None:
-            reap(20.0)
         return
 
     paths = DesktopPaths.discover()
@@ -144,8 +137,8 @@ def run(initial: protocol.Command) -> None:
     job, process, port = _start_ready_server(paths, token)
     _start_window_host_at_launch(paths, port)
 
-    # Dispatched off-thread like every other open: a hung Path.exists()/
-    # os.startfile (disconnected UNC path) must not stall run() before the
+    # Dispatched off-thread like every other open: a hung Path.exists() or
+    # xdg-open (stale network mount) must not stall run() before the
     # tray and pipe server exist, or the supervisor is alive but can't answer
     # ShutdownForUpgrade. A failed open is logged and ignored, never fatal.
     _spawn_open(port, initial, paths)
@@ -157,8 +150,6 @@ def run(initial: protocol.Command) -> None:
         login_enabled = False
 
     tray_handle = tray.start(port, login_enabled, paths)
-    if update is not None:
-        update.start_auto_checks(paths, tray_handle.set_update_available)
     pipe_requests: "queue.Queue[instance.Request]" = queue.Queue()
     pipe_thread = inst.serve(pipe_requests, paths.log)
 
@@ -248,10 +239,6 @@ def _event_loop(
                 _spawn_file_dialog(port, paths, relaunch=relaunch_requested)
             elif action is tray.TrayAction.OPEN_LOGS:
                 _spawn_call(paths, lambda: ui.open_path(paths.logs))
-            elif action is tray.TrayAction.DEFAULT_APPS:
-                _spawn_call(paths, ui.open_default_apps)
-            elif action is tray.TrayAction.CHECK_UPDATES:
-                _spawn_update_check(paths)
             elif action is tray.TrayAction.UNINSTALL:
                 _spawn_uninstall_confirm(uninstall_confirm)
             elif action is tray.TrayAction.EXIT:
@@ -391,8 +378,8 @@ def _safe_open(
 
 
 def _safe_call(paths: DesktopPaths, action) -> None:
-    """Run a tray action (Open app logs, Default apps, ...) without letting an
-    `OSError` from `os.startfile` unwind `run()` — a routine tray click must
+    """Run a tray action (Open app logs, ...) without letting an
+    `OSError` from the opener unwind `run()` — a routine tray click must
     never tear down the already-running Job-owned server (same rule as
     `_safe_open`, generalized to actions that aren't a browser open)."""
     try:
@@ -416,7 +403,7 @@ def _spawn_open(
     relaunch: "queue.Queue[None] | None" = None,
 ) -> None:
     """Open on a dedicated thread: `_open_command` can hang (Path.exists on a
-    disconnected UNC path, os.startfile on a stuck association) and the loop
+    stale network mount, an opener on a stuck association) and the loop
     must stay free to answer a concurrent ShutdownForUpgrade. A forwarded
     command's response is put from this worker once the open finishes, so a
     hung open times out that client, not the loop. `relaunch` — the
@@ -433,17 +420,8 @@ def _spawn_open(
     threading.Thread(target=worker, daemon=True, name="fused-render-open").start()
 
 
-def _spawn_update_check(paths: DesktopPaths) -> None:
-    """Run the manual update check off the loop — it blocks on network I/O and
-    its own dialogs. update.check is self-guarded, so a second click while a
-    check is already running is a no-op."""
-    threading.Thread(
-        target=update.check, args=(paths,), daemon=True, name="fused-render-update"
-    ).start()
-
-
 def _spawn_call(paths: DesktopPaths, action) -> None:
-    """Run a tray action (Open app logs, Default apps, ...) on a dedicated thread
+    """Run a tray action (Open app logs, ...) on a dedicated thread
     (same idiom as `_spawn_open`). These land on the loop thread that services
     tray actions AND pipe_requests, so they must not block it: on Linux
     `ui.open_path` -> `_xdg_open` waits up to `_XDG_OPEN_WAIT_S` on the child, so
@@ -549,9 +527,9 @@ def _open_command(
                 # must run on the loop thread that owns those queues/handles.
                 # `hasattr(startup, "appimage_path")` is the same capability
                 # probe `_respawn_after_relaunch` uses for the actual respawn:
-                # present on the Linux backend, absent on win32 — where this
-                # degrades to the untouched pre-Task-5 behaviour below (no
-                # tab, no relaunch; same as is_launch_url). `?reason=fda`
+                # present on the Linux backend; a backend without it degrades
+                # to the untouched pre-Task-5 behaviour below (no tab, no
+                # relaunch; same as is_launch_url). `?reason=fda`
                 # (deeplink.is_fda_relaunch_url) never reaches this branch —
                 # the two match disjoint, mutually exclusive URL forms — so it
                 # keeps falling through exactly as before.
@@ -563,7 +541,7 @@ def _open_command(
                 # (and a forwarded Open reaches here only after startup). The
                 # server-down banner just needs the app running — the page that
                 # linked here reconnects on its own, so open NO tab (matching
-                # macOS app.py and Windows winopen._open).
+                # macOS app.py).
                 return
         if is_launch_url(command.path):
             # A `fused-render:` deep link or a `file:`/scheme:// URL: there is
@@ -779,10 +757,10 @@ def _current_python_dir() -> Path:
 
 def _port_in_use(port: int) -> bool:
     """True if something is actively listening on the loopback port. A connect
-    probe — the same one app.pick_port and winopen use — is correct where a bind
-    probe is not: a live listener reads as taken, but a port merely lingering in
-    TIME_WAIT after a clean shutdown reads as free (TIME_WAIT refuses connects),
-    and it can't be fooled by Windows SO_REUSEADDR bind semantics."""
+    probe — the same one app.pick_port uses — is correct where a bind probe is
+    not: a live listener reads as taken, but a port merely lingering in
+    TIME_WAIT after a clean shutdown reads as free (TIME_WAIT refuses
+    connects)."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.settimeout(0.25)
         return sock.connect_ex(("127.0.0.1", port)) == 0
@@ -840,7 +818,7 @@ def _start_ready_server(paths: DesktopPaths, token: str):
         t0 = time.monotonic()
         try:
             # job.spawn must be inside this try too: its failure modes
-            # (pywintypes.error, FileNotFoundError) would otherwise escape the
+            # (FileNotFoundError, OSError) would otherwise escape the
             # loop and skip job.close() below.
             process = _start_server(job, paths, port, token)
             _wait_until_ready(process, port, token, _READY_TIMEOUT_S)

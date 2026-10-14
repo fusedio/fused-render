@@ -122,8 +122,8 @@ def test_plain_absolute_path_unchanged_by_absolute_command(tmp_path):
 
 # ---- fused-render://launch (D128): ensure running, open NO tab ---------------
 # The server-down banner's "Start fused-render" control is the action-only
-# launch link. macOS (app.py) and Windows (winopen._open) ensure the app/server
-# is up and open no tab; the Linux supervisor must match — routing it to /clone
+# launch link. macOS (app.py) ensures the app/server is up and opens no tab;
+# the Linux supervisor must match — routing it to /clone
 # would open a spurious tab and surface an unsupported-link error.
 
 

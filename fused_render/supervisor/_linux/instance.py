@@ -1,11 +1,10 @@
 """Single-instance election + Unix-socket IPC.
 
-The Linux counterpart to `_win32/instance.py`, solved the Linux-native way:
+Solved the Linux-native way:
 
   Election  — `flock(LOCK_EX|LOCK_NB)` on `supervisor.lock`. The kernel releases
               an flock on *any* death, including SIGKILL, so a crashed primary
-              never wedges the next launch — the same "abandoned mutex" property
-              the Windows named mutex has, without a heartbeat.
+              never wedges the next launch, without a heartbeat.
   IPC       — a Unix stream socket (`supervisor.sock`, mode 0600) in the same
               0700 runtime dir, carrying the *identical* `protocol.py` frames
               plus a 4-byte status reply.
@@ -45,8 +44,7 @@ _CLIENT_READ_DEADLINE_S = 5.0  # DoS guard: a slow/hung client is dropped, not a
 _SELECT_TICK_S = 0.25          # how often the accept loop re-checks the stop flag
 _REQUEST_ANSWER_TIMEOUT_S = 20.0
 
-# bind()/listen() retry (same resilience rule as _win32/_serve_pipe's
-# CreateNamedPipe retry): a transient bind failure must not silently kill IPC.
+# bind()/listen() retry: a transient bind failure must not silently kill IPC.
 _BIND_RETRY_START_S = 0.05
 _BIND_RETRY_CAP_S = 2.0
 _BIND_GIVE_UP_AFTER_ATTEMPTS = 10
@@ -89,8 +87,7 @@ def acquire(names: InstanceNames) -> "PrimaryInstance | SecondaryInstance":
         # as EWOULDBLOCK/EAGAIN (EACCES on some filesystems). Any other errno
         # (ENOLCK, EIO, ...) is a genuine fault: close the fd and re-raise so
         # __main__'s fatal path reports it, rather than silently demoting to a
-        # secondary that then just times out forwarding. Mirrors _win32, which
-        # branches only on ERROR_ALREADY_EXISTS.
+        # secondary that then just times out forwarding.
         os.close(fd)
         if error.errno in (errno.EWOULDBLOCK, errno.EAGAIN, errno.EACCES):
             return SecondaryInstance(names)
@@ -245,8 +242,7 @@ def _bind_listen(
     names: InstanceNames, stop: threading.Event, log
 ) -> "socket.socket | None":
     """Bind + listen on the IPC socket, retrying a transient bind failure with
-    backoff before giving up loudly. Mirrors _win32/_serve_pipe's CreateNamedPipe
-    retry: an unhandled OSError here would kill the IPC daemon thread silently,
+    backoff before giving up loudly: an unhandled OSError here would kill the IPC daemon thread silently,
     leaving the primary alive but undiscoverable and unable to answer a
     forwarded open or ShutdownForUpgrade. Returns a listening socket, or None
     once it gives up (a stop request during backoff also returns None)."""
@@ -323,8 +319,8 @@ def _handle_client(
         conn.sendall(struct.pack("<I", status))
     except OSError:
         pass
-    # Self-stop the accept loop after answering a ShutdownForUpgrade, matching
-    # _win32/_serve_pipe. core._teardown's UPGRADE path skips _stop_pipe on the
+    # Self-stop the accept loop after answering a ShutdownForUpgrade.
+    # core._teardown's UPGRADE path skips _stop_pipe on the
     # contract that the serving thread stops itself once the upgrade is
     # answered; the select loop notices the flag within one _SELECT_TICK_S.
     if isinstance(command, protocol.ShutdownForUpgrade):

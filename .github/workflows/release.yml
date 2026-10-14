@@ -17,7 +17,6 @@ on:
         options:
           - all
           - macos
-          - windows
           - linux
 
 jobs:
@@ -120,8 +119,8 @@ jobs:
 
       # build_dmg.sh copies the host's uv INTO the bundle: the macOS app ships no
       # `venv`, `ensurepip` or `pip` module, so the install loader (SPEC PY-18) has
-      # no other way to build a script venv there (D176). The Linux and Windows
-      # build scripts already require uv on the host the same way; macOS runners
+      # no other way to build a script venv there (D176). The Linux build
+      # script already requires uv on the host the same way; macOS runners
       # do not have it preinstalled, so the build fails loudly without this.
       - uses: astral-sh/setup-uv@v9.0.0
 
@@ -215,8 +214,8 @@ jobs:
 
       - name: Publish signed macOS update manifest
         # The in-app updater (fused_render/update/mac.py) polls this fixed
-        # name — same signing scheme and script as the Windows manifest
-        # (docs/PYTHON_SUPERVISOR_SPEC.md "Software updates"). The manifest
+        # name — same signing scheme and script as the Linux manifest
+        # (docs/LINUX_AUTO_UPDATE_SPEC.md). The manifest
         # URL points at the already-uploaded DMG, so this runs strictly after
         # the S3 upload above.
         env:
@@ -226,7 +225,7 @@ jobs:
           set -euo pipefail
           VERSION="$(basename "$DMG_PATH" .dmg | sed 's/^FusedRender-//')"
           uv run --no-project --with cryptography \
-            scripts/windows/generate_update_manifest.py \
+            scripts/generate_update_manifest.py \
             "$VERSION" "$DMG_PATH" "https://${CDN_DOMAIN}/fused-render-dmgs" \
             dist/macos-latest.json
           # no-cache: the updater polls this fixed name; a stale CDN copy
@@ -238,7 +237,7 @@ jobs:
         # The root download page (index.html/latest.json/og-image.png) is
         # published once, after every platform build, by the
         # publish-download-page job below — not here, so its manifest can
-        # carry the Windows/Linux links too instead of racing those jobs to
+        # carry the Linux link too instead of racing those jobs to
         # read-modify-write the same S3 object.
         run: |
           set -euo pipefail
@@ -297,8 +296,8 @@ jobs:
 
       # build_dmg.sh copies the host's uv INTO the bundle: the macOS app ships no
       # `venv`, `ensurepip` or `pip` module, so the install loader (SPEC PY-18) has
-      # no other way to build a script venv there (D176). The Linux and Windows
-      # build scripts already require uv on the host the same way; macOS runners
+      # no other way to build a script venv there (D176). The Linux build
+      # script already requires uv on the host the same way; macOS runners
       # do not have it preinstalled, so the build fails loudly without this.
       - uses: astral-sh/setup-uv@v9.0.0
 
@@ -393,7 +392,7 @@ jobs:
           set -euo pipefail
           VERSION="$(basename "$DMG_PATH" .dmg | sed 's/^FusedBot-//')"
           uv run --no-project --with cryptography \
-            scripts/windows/generate_update_manifest.py \
+            scripts/generate_update_manifest.py \
             "$VERSION" "$DMG_PATH" "https://${CDN_DOMAIN}/fused-bot-dmgs" \
             dist/macos-latest.json
           # no-cache: the updater polls this fixed name; a stale CDN copy
@@ -416,83 +415,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "$RELEASE_TAG" "$DMG_PATH" --clobber
-
-  build-windows-release:
-    # See docs/PYTHON_SUPERVISOR_SPEC.md "Software updates".
-    needs: prepare-release
-    if: github.event_name == 'push' || github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'windows'
-    runs-on: windows-latest
-    outputs:
-      version: ${{ steps.artifacts.outputs.version }}
-      installer_url: ${{ steps.artifacts.outputs.installer_url }}
-    permissions:
-      contents: write # attach the installer to the GitHub Release
-      id-token: write # assume the AWS role via OIDC
-    env:
-      RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}
-      AWS_DEFAULT_REGION: us-west-2
-      S3_BUCKET: fused-render
-      CDN_DOMAIN: d2ic19jpchjovp.cloudfront.net
-      CLOUDFRONT_DISTRIBUTION_ID: E393B7TS7Y3EDS
-      WINDOWS_PREFIX: fused-render-windows
-    steps:
-      - uses: actions/checkout@v5
-
-      # Dropped from the windows-2025 runner image
-      # (actions/runner-images#11644); the build script finds ISCC.exe where
-      # choco installs it.
-      - name: Install Inno Setup
-        shell: pwsh
-        run: choco install innosetup --no-progress -y
-
-      - uses: astral-sh/setup-uv@v9.0.0
-
-      - name: Build installer
-        shell: pwsh
-        run: .\scripts\build_windows_installer.ps1
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v6
-        with:
-          role-to-assume: arn:aws:iam::926411091187:role/github_fused_render_role
-          role-session-name: GithubFusedRenderReleaseWindows
-          aws-region: us-west-2
-
-      - name: Sign manifest, publish installer, attach to release
-        id: artifacts
-        shell: bash
-        env:
-          FUSED_RENDER_UPDATE_SIGNING_KEY: ${{ secrets.FUSED_RENDER_UPDATE_SIGNING_KEY }}
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          INSTALLER="$(ls dist/FusedRenderPy-*-setup.exe)"
-          # Version from the built artifact, not the tag — same rule as the DMG.
-          VERSION="$(basename "$INSTALLER" | sed -E 's/^FusedRenderPy-(.*)-setup\.exe$/\1/')"
-          BASE_URL="https://${CDN_DOMAIN}/${WINDOWS_PREFIX}"
-          aws s3 cp "$INSTALLER" "s3://${S3_BUCKET}/${WINDOWS_PREFIX}/$(basename "$INSTALLER")"
-          # Exposed as job outputs for the publish-download-page job, right
-          # after the one command that makes installer_url actually true —
-          # not after the update-manifest/CloudFront/release steps below,
-          # which are unrelated to whether this URL is live (an unrelated
-          # failure there must not withhold an otherwise-good link).
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "installer_url=${BASE_URL}/$(basename "$INSTALLER")" >> "$GITHUB_OUTPUT"
-          # --no-project --with cryptography: the script's only third-party
-          # import. Resolving the whole project here buys nothing and can fail
-          # for reasons unrelated to signing a manifest (see the same flag on
-          # the registry script in scripts/build_windows_installer.ps1).
-          uv run --no-project --with cryptography \
-            scripts/windows/generate_update_manifest.py \
-            "$VERSION" "$INSTALLER" "$BASE_URL" dist/latest.json
-          # no-cache: the updater polls this fixed name; a stale CDN copy
-          # would mask a release.
-          aws s3 cp dist/latest.json "s3://${S3_BUCKET}/${WINDOWS_PREFIX}/latest.json" \
-            --cache-control no-cache
-          aws cloudfront create-invalidation \
-            --distribution-id "$CLOUDFRONT_DISTRIBUTION_ID" \
-            --paths "/${WINDOWS_PREFIX}/*"
-          gh release upload "$RELEASE_TAG" "$INSTALLER" --clobber
 
   build-linux-release:
     needs: prepare-release
@@ -573,8 +495,8 @@ jobs:
 
       - name: Publish signed Linux update manifest
         # The in-app updater (fused_render/update/linux.py) polls this fixed
-        # name — same signing scheme and script as the macOS/Windows
-        # manifests (docs/PYTHON_SUPERVISOR_SPEC.md "Software updates"). The
+        # name — same signing scheme and script as the macOS manifest
+        # (docs/LINUX_AUTO_UPDATE_SPEC.md). The
         # manifest URL points at the already-uploaded AppImage, so this runs
         # strictly after the S3 upload above.
         env:
@@ -582,7 +504,7 @@ jobs:
         run: |
           set -euo pipefail
           uv run --no-project --with cryptography \
-            scripts/windows/generate_update_manifest.py \
+            scripts/generate_update_manifest.py \
             "$VERSION" "$APPIMAGE" "https://${CDN_DOMAIN}/${LINUX_PREFIX}" \
             dist/linux-latest.json
           # no-cache: the updater polls this fixed name; a stale CDN copy
@@ -606,9 +528,9 @@ jobs:
             --paths "/${LINUX_PREFIX}/*"
 
   publish-download-page:
-    # Runs once, after all three OS builds, so the manifest can carry every
-    # platform's link at the same time — a single writer avoids the three
-    # platform jobs racing to read-modify-write the same S3 object.
+    # Runs once, after both OS builds, so the manifest can carry every
+    # platform's link at the same time — a single writer avoids the platform
+    # jobs racing to read-modify-write the same S3 object.
     # `!cancelled()` (rather than a hard `needs` success check) so a
     # workflow_dispatch that only rebuilds one platform, or a platform build
     # that fails, still publishes a manifest — merged against the live one
@@ -616,7 +538,7 @@ jobs:
     # link is already live instead of losing it. Deliberately NOT always():
     # that also runs on a manually cancelled run, which could rewrite the
     # live page from only whichever platform jobs happened to finish first.
-    needs: [prepare-release, build-sign-notarize-release, build-windows-release, build-linux-release]
+    needs: [prepare-release, build-sign-notarize-release, build-linux-release]
     if: ${{ !cancelled() && needs.prepare-release.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
@@ -645,12 +567,10 @@ jobs:
         env:
           VERSION: >-
             ${{ needs.build-sign-notarize-release.outputs.version ||
-            needs.build-windows-release.outputs.version ||
             needs.build-linux-release.outputs.version }}
           DMG_URL: ${{ needs.build-sign-notarize-release.outputs.dmg_url }}
           DMG_SHA256: ${{ needs.build-sign-notarize-release.outputs.dmg_sha256 }}
           WHL_URL: ${{ needs.build-sign-notarize-release.outputs.wheel_url }}
-          WINDOWS_URL: ${{ needs.build-windows-release.outputs.installer_url }}
           LINUX_URL: ${{ needs.build-linux-release.outputs.appimage_url }}
         run: |
           set -euo pipefail

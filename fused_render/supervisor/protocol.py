@@ -1,8 +1,7 @@
-"""Supervisor IPC wire protocol — port of
-windows/supervisor/src/protocol.rs (feat/windows-desktop-foundation, PR
-#162). Keep this byte-identical to the Rust version: a secondary launch of
-either implementation must be able to talk to a primary instance of the
-other during a migration.
+"""Supervisor IPC wire protocol: the frames a secondary launch sends to the
+primary instance. Keep it stable across releases — a secondary launch of one
+version must be able to talk to a primary instance of another during an
+upgrade.
 """
 from __future__ import annotations
 

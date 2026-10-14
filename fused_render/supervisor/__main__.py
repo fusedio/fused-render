@@ -1,4 +1,4 @@
-"""Entry point: `pythonw.exe -I -m fused_render.supervisor <args>`.
+"""Entry point: `python -I -m fused_render.supervisor <args>`.
 
 The desktop env (branch opt-out, state/cache/log dirs) is applied at the very
 top of this module body, before the `protocol`/`core` import statement runs —
@@ -23,14 +23,11 @@ except Exception:  # noqa: BLE001 - discovery must never block startup
 
 import sys  # noqa: E402
 
-# `ui` is stdlib-only at import time on every backend (Win32's pywin32 pieces
-# load lazily; Linux's dialog tools are exec'd), so it stays importable — and
-# `ui.alert` usable — even when the full backend import below fails (e.g. a
-# broken pywin32 after a bad upgrade). Import it straight from the OS package,
-# not via `_backend`, whose Job/instance imports are the fragile ones.
-if sys.platform == "win32":
-    from fused_render.supervisor._win32 import ui  # noqa: E402
-elif sys.platform.startswith("linux"):
+# `ui` is stdlib-only at import time (Linux's dialog tools are exec'd), so it
+# stays importable — and `ui.alert` usable — even when the full backend import
+# below fails. Import it straight from the OS package, not via `_backend`,
+# whose Job/instance imports are the fragile ones.
+if sys.platform.startswith("linux"):
     from fused_render.supervisor._linux import ui  # noqa: E402
 else:
     from fused_render.supervisor import _backend  # noqa: E402 - raises with a clear message
@@ -39,10 +36,10 @@ else:
 
 try:
     from fused_render.supervisor import core, protocol  # noqa: E402
-except Exception as import_error:  # noqa: BLE001 - e.g. "DLL load failed" from a
-    # broken pywin32 after a bad upgrade. This runs windowless (no console) and
-    # before main() exists, so a bare raise here is an invisible exit — report
-    # it the same way main()'s fatal path does.
+except Exception as import_error:  # noqa: BLE001 - e.g. a broken install after a
+    # bad upgrade. This runs windowless (no console) and before main() exists,
+    # so a bare raise here is an invisible exit — report it the same way
+    # main()'s fatal path does.
     try:
         DesktopPaths.discover().log(str(import_error))
     except Exception:  # noqa: BLE001 - logging is best-effort, never the point of failure
@@ -50,14 +47,12 @@ except Exception as import_error:  # noqa: BLE001 - e.g. "DLL load failed" from 
     ui.alert(f"FusedRender could not start:\n\n{import_error}")
     sys.exit(1)
 
-_APP_USER_MODEL_ID = "Fused.FusedRender.Desktop"
-
 
 def main() -> None:
     # Crash hooks (SPEC §50, D4). Here, not at the top of the module: the
     # crash file lives under `FUSED_RENDER_LOG_DIR`, which only exists once
-    # `self_environment()` has been applied above — and this runs windowless
-    # (pythonw), so a native fault would otherwise leave no trace at all.
+    # `self_environment()` has been applied above — and this runs windowless,
+    # so a native fault would otherwise leave no trace at all.
     # Guarded: diagnostics must never stop the app starting.
     try:
         from fused_render.crashlog import install as _install_crashlog
@@ -65,13 +60,6 @@ def main() -> None:
         _install_crashlog("supervisor")
     except Exception:  # noqa: BLE001
         pass
-    if sys.platform == "win32":
-        import ctypes
-
-        try:
-            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(_APP_USER_MODEL_ID)
-        except OSError:
-            pass  # cosmetic (tray/taskbar identity) — never fatal
 
     command: protocol.Command | None = None
     try:
@@ -83,10 +71,9 @@ def main() -> None:
         except Exception:  # noqa: BLE001 - logging is best-effort, never the point of failure
             pass
         if not isinstance(command, protocol.ShutdownForUpgrade):
-            # The installer execs --shutdown-for-upgrade with
-            # ewWaitUntilTerminated and reports failure itself from the exit
-            # code — a blocking dialog here would stall a silent upgrade
-            # until someone dismisses it.
+            # The caller of --shutdown-for-upgrade reports failure itself
+            # from the exit code — a blocking dialog here would stall a
+            # silent upgrade until someone dismisses it.
             if isinstance(error, core.SupervisorStoppedError):
                 # The app DID start (server was ready, tray was up) and then
                 # broke — "could not start" would misreport the failure mode.

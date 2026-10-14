@@ -240,7 +240,7 @@ def test_autostart_write_remove_round_trip(monkeypatch, tmp_path):
 def test_autostart_fails_loudly_on_unresolvable_launcher(monkeypatch, tmp_path):
     # $APPIMAGE points at a nonexistent file and argv[0] is not runnable:
     # fail loudly (OSError) so the tray toggle reverts the checkbox rather than
-    # writing a broken Exec line (mirrors _win32/startup.py's caution).
+    # writing a broken Exec line.
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
     monkeypatch.setenv("APPIMAGE", str(tmp_path / "does-not-exist.AppImage"))
@@ -345,17 +345,6 @@ def test_open_url_passes_the_activation_token_to_xdg_open(monkeypatch):
     ui.open_url("https://example.invalid")
     assert seen[0]["XDG_ACTIVATION_TOKEN"] == seen[0]["DESKTOP_STARTUP_ID"] == "tok-1"
     assert seen[1] is None
-
-
-def test_open_default_apps_raises_on_linux(monkeypatch):
-    # No cross-desktop Linux equivalent of ms-settings:defaultapps: the backend
-    # method must raise so core's _safe_call logs an honest no-op, instead of
-    # core hardcoding the Windows-only URI (a silent dead menu item).
-    called = []
-    monkeypatch.setattr(ui.subprocess, "Popen", lambda *a, **k: called.append(a))
-    with pytest.raises(OSError):
-        ui.open_default_apps()
-    assert called == []  # never shelled out to xdg-open with a Windows URI
 
 
 def test_alert_is_a_no_op_when_tk_cannot_start(monkeypatch):

@@ -959,9 +959,9 @@ echo "    fused --help / share --help / env list OK"
 #     --python <Contents/MacOS/python>` succeeds and `uv pip install` into it
 #     works, because uv constructs venvs itself instead of importing `venv`.
 #
-#     The Linux AppImage (build_linux_appimage.sh) and the Windows installer
-#     (build_windows_installer.ps1) already ship uv next to their python; this
-#     brings macOS in line. Copied from the build host's uv, like those two do.
+#     The Linux AppImage (build_linux_appimage.sh) already ships uv next to its
+#     python; this brings macOS in line. Copied from the build host's uv, like
+#     that build does.
 # ---------------------------------------------------------------------------
 
 echo "==> bundling uv"

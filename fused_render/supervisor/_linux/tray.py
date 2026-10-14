@@ -1,8 +1,7 @@
 """Linux tray backend — StatusNotifierItem + com.canonical.dbusmenu over D-Bus.
 
-The Linux counterpart to `_win32/tray.py`. Where Windows drives Shell_NotifyIcon
-through pystray, Linux exports the freedesktop/KDE StatusNotifierItem interface
-(plus its dbusmenu) so any StatusNotifier host — waybar, KDE's panel, GNOME's
+Exports the freedesktop/KDE StatusNotifierItem interface (plus its dbusmenu) so
+any StatusNotifier host — waybar, KDE's panel, GNOME's
 AppIndicator extension — renders the icon. No X11/XEmbed, so it works on Wayland.
 
 This file is split into two layers so the logic is testable without a bus:
@@ -11,7 +10,7 @@ This file is split into two layers so the logic is testable without a bus:
   `_tint_for_color_scheme`/`_color_scheme_from_reply`/`_apply_tint` (the glyph
   tint follows the desktop's light/dark preference — D135), `_menu_layout` (the
   dbusmenu tree), and `_dispatch_event` (menu id → the same `TrayAction` queue
-  the Windows backend feeds, or the inline login toggle).
+  the run loop drains, or the inline login toggle).
 - The D-Bus glue (`run()` and the ServiceInterface classes) is thin and calls
   into the helpers above.
 
@@ -58,9 +57,7 @@ _ID_EXIT = 8
 _ID_UNINSTALL = 9
 
 # Menu ids that map straight to a queued TrayAction. The login id is handled
-# inline (see _dispatch_event), and "Default apps..." is Windows-only so it is
-# never built into the Linux menu — TrayAction.DEFAULT_APPS is simply unused
-# here, so core.py needs no change.
+# inline (see _dispatch_event).
 _ACTION_BY_ID: dict[int, TrayAction] = {
     _ID_OPEN: TrayAction.OPEN,
     _ID_OPEN_FILE: TrayAction.OPEN_FILE,
@@ -229,8 +226,7 @@ def _item(item_id: int, properties: dict) -> dict:
 
 
 def _menu_layout(login_enabled: bool, port: int) -> tuple[int, list]:
-    """Build the com.canonical.dbusmenu layout: the root id plus its children,
-    mirroring the Windows menu minus the Windows-only "Default apps..." item.
+    """Build the com.canonical.dbusmenu layout: the root id plus its children.
     `toggle-state` tracks `login_enabled` so the host draws the live checkmark.
     """
     children = [
@@ -266,8 +262,8 @@ def _dispatch_event(item_id, state: _State, handle: TrayHandle, paths: DesktopPa
     """Handle a menu click. Plain items enqueue their `TrayAction` on the same
     queue the supervisor's run loop drains. The login id flips
     `state.login_enabled` via the injected `set_enabled` (so this is testable
-    without `_backend`); an OSError leaves the state unchanged and is logged,
-    matching the Windows backend's "revert the checkbox and log" behavior."""
+    without `_backend`); an OSError leaves the state unchanged and is logged
+    ("revert the checkbox and log")."""
     if item_id == _ID_LOGIN:
         want = not state.login_enabled
         try:
@@ -568,8 +564,8 @@ def run(port: int, state: _State, handle: TrayHandle, paths: DesktopPaths) -> No
     loop until stopped. `call_register_status_notifier_item` raises when no
     watcher owns the name (stock GNOME) — that propagates out to the retry loop
     in `tray.start()`, which backs off and retries so a late waybar is still
-    picked up. Teardown is the same `_current_icon` / `stop()` contract the
-    Windows backend uses: a stop-shim calls `loop.stop()` cross-thread, the loop
+    picked up. Teardown is the `_current_icon` / `stop()` contract from
+    `tray.TrayHandle`: a stop-shim calls `loop.stop()` cross-thread, the loop
     unwinds, the bus name drops and the icon vanishes."""
     import asyncio
     import os
@@ -586,8 +582,7 @@ def run(port: int, state: _State, handle: TrayHandle, paths: DesktopPaths) -> No
     asyncio.set_event_loop(loop)
 
     class _StopShim:
-        # Mirrors pystray's Icon.stop() shape so TrayHandle.stop() (unchanged)
-        # can iterate _current_icon and call .stop() cross-thread.
+        # The `.stop()` shape TrayHandle.stop() expects, so it can iterate _current_icon and call .stop() cross-thread.
         def stop(self) -> None:
             loop.call_soon_threadsafe(loop.stop)
 

@@ -1,5 +1,5 @@
 """Runtime generation of the freedesktop MIME associations, from the shipping
-runtime's own registry (`fused_render.winopen`) — no dependency on `scripts/`.
+runtime's own registry (`fused_render.file_associations`) — no dependency on `scripts/`.
 
 The Linux self-integration (`supervisor/_linux/integration.py`) needs, at
 runtime, the exact same two artifacts the AppImage build stages via
@@ -14,7 +14,7 @@ runtime, the exact same two artifacts the AppImage build stages via
     extension the shared database already names is the global-type-identity
     hijack the standard-MIME tiering removes).
 
-Both derive from the same winopen data `scripts/file_associations.py` derives
+Both derive from the same association data `scripts/file_associations.py` derives
 its JSON from, so the packaging-time and runtime artifacts cannot drift; a test
 (tests/test_mime_package.py) asserts the two XML/MimeType renderings are
 byte-identical.
@@ -36,7 +36,7 @@ def custom_mime(token: str) -> str:
 def effective_mime(extension: str) -> str:
     """The MIME type to register for an extension: its standard type if one
     exists, else the custom glob type."""
-    from fused_render.winopen import standard_mime_for_token
+    from fused_render.file_associations import standard_mime_for_token
 
     token = _token(extension)
     return standard_mime_for_token(token) or custom_mime(token)
@@ -44,7 +44,7 @@ def effective_mime(extension: str) -> str:
 
 def desktop_mime_types() -> list[str]:
     """Ordered, deduped `MimeType=` list, with the deep-link scheme appended."""
-    from fused_render.winopen import extensions
+    from fused_render.file_associations import extensions
 
     seen: dict[str, None] = {}  # dict preserves insertion order while deduping
     for extension in extensions():
@@ -57,7 +57,7 @@ def custom_mime_xml() -> str:
     """shared-mime-info package XML for the custom glob types only (extensions
     with no standard type). Byte-identical to scripts/file_associations.py's
     `mime-xml` output for the same association set."""
-    from fused_render.winopen import extensions, standard_mime_for_token
+    from fused_render.file_associations import extensions, standard_mime_for_token
 
     lines = [
         '<?xml version="1.0" encoding="UTF-8"?>',

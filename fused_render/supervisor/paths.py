@@ -5,20 +5,19 @@ itself uses): this module is the desktop supervisor's own view of where its
 state/cache/runtime/temp/logs live, and how it builds the child server
 process's environment block.
 
-Durable state IS the flat ~/.fused-render dotdir on both Linux and Windows —
+Durable state IS the flat ~/.fused-render dotdir —
 byte-for-byte the same dir the dev/CLI and the released macOS app use
 (shell/storage.home_dir() with no FUSED_RENDER_HOME set), so all user
 config lives in one known place. Sharing
 with the dev/CLI is the product intent, not an accident: the desktop app and
 the CLI operate on the same prefs, and templates. logs/ and temp/
-are subdirs of that root. The disposable cache stays OS-native
-($XDG_CACHE_HOME on Linux, %LOCALAPPDATA% on Windows) to stay out of backup
-scope; on Linux runtime stays on $XDG_RUNTIME_DIR (tmpfs, 0700, socket-safe).
+are subdirs of that root. The disposable cache stays under $XDG_CACHE_HOME
+to stay out of backup scope; runtime stays on $XDG_RUNTIME_DIR (tmpfs, 0700,
+socket-safe).
 """
 from __future__ import annotations
 
 import os
-import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,9 +25,7 @@ from pathlib import Path
 
 # Python interpreter-identity vars stripped from a child's inherited env: a
 # bundled child interpreter must never latch onto its parent's home/path.
-# Single-sourced here (this module owns the child env-block contract) and shared
-# by both backends — the POSIX plain merge below, and _win32/job.py's
-# case-folding variant, which imports this same tuple.
+# Single-sourced here (this module owns the child env-block contract).
 STRIPPED_ENV_VARS = (
     "PYTHONHOME",
     "PYTHONPATH",
@@ -40,10 +37,7 @@ STRIPPED_ENV_VARS = (
 
 def environment_block(overrides: dict[str, str] | None) -> dict[str, str]:
     """Complete child environment: the current process env minus the Python
-    interpreter-identity vars (STRIPPED_ENV_VARS), plus `overrides`. This is the
-    plain, case-sensitive merge the POSIX backends use directly; the Windows
-    backend needs a case-folding variant (env var names are case-insensitive
-    there) and keeps its own in _win32/job.py, built on the same tuple."""
+    interpreter-identity vars (STRIPPED_ENV_VARS), plus `overrides`."""
     env = {name: value for name, value in os.environ.items() if name not in STRIPPED_ENV_VARS}
     env.update(overrides or {})
     return env
@@ -85,29 +79,7 @@ class DesktopPaths:
 
     @classmethod
     def discover(cls) -> "DesktopPaths":
-        if sys.platform.startswith("linux"):
-            return cls.discover_linux()
-        # Windows. Durable state IS the flat ~/.fused-render dotdir (one known
-        # place, shared with the dev/CLI by design — same layout as Linux and
-        # macOS); logs/temp/runtime are subdirs of it. Only the disposable
-        # cache stays OS-native under %LOCALAPPDATA%. LOCALAPPDATA missing is
-        # not fatal — it only steers cache, so fall back to a cache dir under
-        # the dotdir root rather than raising.
-        root = Path.home() / ".fused-render"
-        local_app_data = os.environ.get("LOCALAPPDATA")
-        cache = (
-            Path(local_app_data) / "FusedRender" / "cache"
-            if local_app_data
-            else root / "cache"
-        )
-        return cls(
-            root=root,
-            state=root,
-            cache=cache,
-            runtime=root / "runtime",
-            temp=root / "temp",
-            logs=root / "logs",
-        )
+        return cls.discover_linux()
 
     @classmethod
     def discover_linux(cls) -> "DesktopPaths":
@@ -118,8 +90,7 @@ class DesktopPaths:
         stays OS-native under $XDG_CACHE_HOME (~/.cache) so its GBs of
         uv/duckdb caches stay out of backup scope; runtime stays under
         $XDG_RUNTIME_DIR (see linux_runtime_dir — tmpfs, 0700, socket-safe).
-        XDG_DATA_HOME no longer steers the root. child_environment() is
-        contract-identical to Windows regardless — same FUSED_RENDER_* keys.
+        XDG_DATA_HOME no longer steers the root.
 
         Exposed as its own classmethod (not folded into discover) so the pure
         path computation is unit-testable on any platform, not only Linux.
@@ -205,7 +176,7 @@ class DesktopPaths:
             # CLAUDE_CONFIG_DIR is deliberately NOT set here. It used to point at
             # <state>/claude to keep our run transcripts out of ~/.claude/projects,
             # but that dir is also where Claude Code keeps `.credentials.json` on
-            # Linux and Windows — so relocating it logged the user out of a CLI
+            # Linux — so relocating it logged the user out of a CLI
             # they were already logged into, with no way back: both spawn paths run
             # headless (`claude -p`), where the "run /login" it prints can never be
             # actioned. macOS hid the bug, its credentials living in the login
@@ -216,9 +187,9 @@ class DesktopPaths:
             "FUSED_RENDER_DUCKDB_TEMP_DIR": str(self.cache / "duckdb" / "temp"),
             "TEMP": str(self.temp),
             "TMP": str(self.temp),
-            # POSIX tempfile consults TMPDIR first (TEMP/TMP are the Windows
-            # conventions) — set all three so the child's temp files land in
-            # the supervisor-owned temp dir on every platform.
+            # POSIX tempfile consults TMPDIR first; set all three so the child's
+            # temp files land in the supervisor-owned temp dir whichever one a
+            # tool reads.
             "TMPDIR": str(self.temp),
         }
         current_path = os.environ.get("PATH") or ""

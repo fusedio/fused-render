@@ -1,10 +1,9 @@
 """What the macOS bundle actually ships, versus what templates assume (D176).
 
 `pyproject.toml`'s `[bundled]` is **not** the bundle. It is the dev-install and
-Linux/Windows shipping list:
+Linux shipping list:
 
   * Linux   — `uv pip install "<wheel>[bundled,...]"` (build_linux_appimage.sh)
-  * Windows — `uv pip install "<wheel>[bundled,...]"` (build_windows_installer.ps1)
   * macOS   — installs the extra into a build venv, then **py2app copies only
               what setup_py2app.py names**
 
@@ -87,7 +86,7 @@ def _pyproject():
 
 @functools.lru_cache(maxsize=1)
 def _declared_dists() -> frozenset[str]:
-    """Everything `fused-render[bundled]` installs — what Linux and Windows ship.
+    """Everything `fused-render[bundled]` installs — what Linux ships.
 
     Read through setup_py2app's `declared_requirements`, which expands the
     `fused-render[all]` self-reference into the feature extras it names.
@@ -381,7 +380,7 @@ def test_all_is_every_feature_extra_and_every_build_takes_it():
         f"guards {sorted(fr_extras.EXTRAS)}"
     )
     assert set(fr_extras.EXTRAS) <= set(table), "every guarded extra must be declared"
-    for build in ("dev", "bundled", "app", "windows-desktop", "linux-desktop"):
+    for build in ("dev", "bundled", "app", "linux-desktop"):
         assert "fused-render[all]" in table[build], f"`[{build}]` must include fused-render[all]"
 
 

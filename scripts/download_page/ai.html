@@ -1051,9 +1051,6 @@
         <a class="os primary" id="dmg" rel="noopener" href="https://github.com/fusedio/fused-render/releases">
           <b>macOS</b><span>Apple silicon</span>
         </a>
-        <a class="os" id="windows-exe" rel="noopener" href="https://github.com/fusedio/fused-render/releases">
-          <b>Windows</b><span>64-bit installer</span>
-        </a>
         <a class="os" id="linux-appimage" rel="noopener" href="https://github.com/fusedio/fused-render/releases">
           <b>Linux</b><span>AppImage</span>
         </a>
@@ -1087,7 +1084,7 @@
       if (!m) return;
       var v = document.getElementById("version");
       if (m.version && v) { v.textContent = "v" + m.version; v.hidden = false; }
-      var map = { dmg: m.dmg_url, "windows-exe": m.windows_url, "linux-appimage": m.linux_url };
+      var map = { dmg: m.dmg_url, "linux-appimage": m.linux_url };
       Object.keys(map).forEach(function (id) {
         var el = document.getElementById(id);
         if (el && map[id]) el.href = map[id];

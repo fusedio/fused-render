@@ -4,7 +4,7 @@
 # ///
 """Emit the signed update manifest (latest.json) the desktop updater polls.
 
-Run via `uv run scripts/windows/generate_update_manifest.py <version>
+Run via `uv run scripts/generate_update_manifest.py <version>
 <installer> <base-url> <output>` from release CI. The ed25519 private key
 (base64 raw 32-byte seed) comes from the FUSED_RENDER_UPDATE_SIGNING_KEY
 env var; the matching public key is pinned in the client. The signature

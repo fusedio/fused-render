@@ -1,5 +1,5 @@
-"""User-level desktop self-integration — the Linux counterpart to the Windows
-installer's HKCU associations and the macOS bundle's LaunchServices metadata.
+"""User-level desktop self-integration — the Linux counterpart to the macOS
+bundle's LaunchServices metadata.
 
 An AppImage is a single relocatable file with no install step, so nothing has
 registered its `.desktop` entry, MIME types, or icon with the desktop
