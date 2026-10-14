@@ -6522,8 +6522,6 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
         except (OSError, ValueError):
             pending_offset = 0
         saw_echo_since_send = False
-        # Whether the new turn has ALSO closed inside this tail — see below.
-        result_after_echo = False
         try:
             with open(os.path.join(run_dir, "out.jsonl"), "rb") as fh:
                 fh.seek(pending_offset)
@@ -6537,26 +6535,29 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
                 row = json.loads(raw_line.decode("utf-8", "replace"))
             except ValueError:
                 continue
-            if not saw_echo_since_send:
-                if _starts_new_turn(row):
-                    saw_echo_since_send = True
-            elif row.get("type") == "result":
-                result_after_echo = True
+            if _starts_new_turn(row):
+                saw_echo_since_send = True
+                echo_row = row
                 break
+        # THE ECHO CAN LAND BETWEEN THE TWO READS: `rows` above came off the
+        # file a moment earlier and may end on the preamble alone — `result`,
+        # `init`, `status` — while this newer tail already has the echo. The
+        # payload built from `rows` is still the previous reply with no seam,
+        # so believing the tail here would hand exactly that to the page (and
+        # `done`, if the tail held the new `result` too — Bugbot/CodeRabbit,
+        # PR #1650). The echo counts only once the WINDOW has it; until then
+        # this poll stays pending and the marker stays on disk for the next
+        # one, whose window will carry the echo and its seam.
+        # The same row, parsed from the same bytes, so dict equality is the
+        # exact test — and it holds for a fold-in echo mid-reply just as for
+        # one after a `result`.
+        if saw_echo_since_send and echo_row not in rows:
+            saw_echo_since_send = False
         if saw_echo_since_send:
             try:
                 os.remove(pending_echo_path)
             except OSError:
                 pass
-            # THE ECHO CAN LAND BETWEEN THE TWO READS: `rows` above came off
-            # the file a moment earlier and may end on the preamble alone —
-            # `result`, `init`, `status` — which `echo_outstanding` told the
-            # loop to leave `idle` for. This tail is newer and has the echo,
-            # so the turn is open unless the tail also holds its `result`;
-            # without this the poll reported `done` with the previous reply
-            # as the new turn's whole text (second review, 2026-10-14).
-            if not result_after_echo:
-                idle = False
         else:
             # `idle` is read BEFORE it is forced: it is the "nothing in
             # flight" test the comment above turns on, and the force below

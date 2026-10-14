@@ -216,6 +216,46 @@ def test_an_echo_landing_between_the_rows_read_and_the_tail_scan_keeps_the_turn_
         return out
     monkeypatch.setattr(agent, "_read_current_turn", read_then_echo_lands)
     poll = agent._poll("run")
-    assert poll["done"] is False, (
-        "the tail has the echo and no `result` after it: the new turn is open")
+    assert poll["done"] is False
+    # Still BLANK: the window this payload was built from has no echo and no
+    # seam, so handing it over would paint the previous reply (Bugbot). The
+    # marker stays for the next poll, whose window carries the echo.
+    assert poll["text"] == "" and poll["segments"] == [] and poll["turn_breaks"] == []
+    assert (run_dir / "pending_echo").exists()
+    monkeypatch.setattr(agent, "_read_current_turn", real)
+    poll = agent._poll("run")
+    assert poll["done"] is False
+    assert poll["text"] == "Turn one answer."
+    assert poll["turn_breaks"] == [{"segments": 1, "text": len("Turn one answer.")}]
     assert not (run_dir / "pending_echo").exists()
+
+
+def test_a_whole_turn_landing_in_the_tail_is_not_finalised_from_the_old_window(
+        agent, run_dir, monkeypatch):
+    """Same race, but the tail also holds the new turn's text and `result`:
+    reporting `done` off a window that still holds the PREVIOUS reply would
+    finalise the wrong text (CodeRabbit, PR #1650). Pending now; the next
+    poll's window has the whole new turn and ends it properly."""
+    _write(run_dir, [_user_row("turn one"), _text_row("Turn one answer."),
+                     _result_row("Turn one answer.")])
+    _setup(agent, run_dir)
+    assert agent._send("run", "second message", "") == {"sent": True}
+    with (run_dir / "out.jsonl").open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(_system_row("init")) + "\n")
+    real = agent._read_current_turn
+
+    def read_then_turn_lands(*args, **kwargs):
+        out = real(*args, **kwargs)
+        with (run_dir / "out.jsonl").open("a", encoding="utf-8") as fh:
+            for r in (_user_row("second message"), _text_row("Turn two answer."),
+                      _result_row("Turn two answer.")):
+                fh.write(json.dumps(r) + "\n")
+        return out
+    monkeypatch.setattr(agent, "_read_current_turn", read_then_turn_lands)
+    poll = agent._poll("run")
+    assert poll["done"] is False and poll["text"] == ""
+    monkeypatch.setattr(agent, "_read_current_turn", real)
+    poll = agent._poll("run")
+    assert poll["done"] is True
+    assert poll["text"] == "Turn one answer.Turn two answer."
+    assert poll["turn_breaks"] == [{"segments": 1, "text": len("Turn one answer.")}]
