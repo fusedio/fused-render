@@ -100,8 +100,54 @@ def test_default_ignore_covers_caches_outside_library_caches():
     assert r.is_ignored_tree(norm(f"{home}/Library/Containers/net.whatsapp.WhatsApp/Data/Library/Caches/x"))
     assert r.is_ignored_tree(norm(f"{home}/Library/Developer/Xcode/DerivedData/App-abc"))
     assert r.is_ignored_tree(norm(f"{home}/.npm/_cacache/index-v5"))
-    assert not r.is_ignored_tree(chrome)
+    # An app-support folder with real user content (VS Code's settings,
+    # snippets, keybindings) stays indexed; only its cache subfolders go.
+    code = norm(f"{home}/Library/Application Support/Code/User")
+    assert not r.is_ignored_tree(code)
+    assert r.is_ignored_tree(f"{code}/../CachedData/x")
     assert not r.is_ignored_tree(norm(f"{home}/code/app/src/cache"))
+
+
+def test_default_ignore_covers_library_churn_roots_but_not_user_containers():
+    """`LIBRARY_CHURN_PATHS`: the `~/Library` subtrees that re-triggered a
+    rescan every few seconds on a diagnostics bundle (Chrome/WhatsApp/Slack
+    profiles, Apple widget containers, Spotlight's store, Biome, daemon
+    containers). Each is a path pattern, so `~/Library` itself and a
+    third-party sandboxed app's container — which CAN hold user documents —
+    stay walkable."""
+    r = IgnoreRules(default_ignore())
+    home = os.path.expanduser("~")
+    lib = norm(f"{home}/Library")
+    for churn in (
+        "Application Support/Google/Chrome/Profile 3",
+        "Application Support/Slack/IndexedDB/https_app.slack.com_0.indexeddb.blob/1/4f",
+        "Application Support/AddressBook/Sources/ABC/Metadata",
+        "Containers/net.whatsapp.WhatsApp/Data/Library/Application Support/x",
+        "Group Containers/group.net.whatsapp.WhatsApp.shared/x",
+        "Containers/com.apple.findmy.FindMyWidgetItems/Data/SystemData/x",
+        "Group Containers/group.com.apple.replicatord/replicatord",
+        "Metadata/CoreSpotlight/Priority/index.spotlightV3",
+        "Biome/sets/Default/App.InstalledApp/Database",
+        "Daemon Containers/72E8A7B1-2505-47A0-8258-E43214E62FC5/Data",
+        "Preferences/com.apple.finder.plist",
+        "IdentityServices",
+        "HomeKit",
+        "KeyboardServices",
+        "Trial/v7/tmp",
+    ):
+        assert r.is_ignored_tree(f"{lib}/{churn}"), churn
+    for kept in (
+        "",
+        "Documents",
+        "Application Support",
+        "Application Support/Code/User",
+        "Application Support/Obsidian",
+        "Containers",
+        "Containers/com.example.editor/Data/Documents/notes.md",
+        "Group Containers/group.com.example.editor/notes",
+        "Mobile Documents/com~apple~CloudDocs/report.pdf",
+    ):
+        assert not r.is_ignored_tree(f"{lib}/{kept}".rstrip("/")), kept
 
 
 def test_ignore_sig_is_order_sensitive_and_stable():

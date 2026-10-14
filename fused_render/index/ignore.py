@@ -228,6 +228,55 @@ DEFAULT_IGNORE_NAMES = [
 ]
 
 
+# macOS `~/Library` subtrees that are pure machine churn: system daemons,
+# widget timelines, browser/chat profiles and Spotlight's own store. None of
+# them hold a file a user would search for by name, and all of them are
+# written continuously. These are PATH patterns (they contain a slash), so
+# each matches exactly that path — `~/Library` as a whole stays walkable, the
+# way `default_ignore()`'s docstring insists — and `~`-relative so they are
+# inert on Linux/Windows the same way `~/Library/Caches` is.
+#
+# Why they are here: a diagnostics bundle from a 16 GB machine running two
+# app processes showed 1186 rescans in ~3 hours, 928 of them (78%) rooted
+# under `~/Library`, each one a `fused_render.index.worker` process that
+# loads the 1M-row index and compacts it. 44 of those workers were alive at
+# once, swap sat at 4-17 GB and the server missed its own health pings for
+# minutes at a time. The top roots, by rescan count, were:
+#
+#   212  Application Support/Google          (Chrome profile writes)
+#   225  Containers / Group Containers for WhatsApp
+#    79  Containers/com.apple.*Widget*       (widget timelines)
+#    43  Application Support/Slack
+#    17  Metadata/CoreSpotlight
+#    18  Biome/*
+#    12  Daemon Containers
+#    11  Application Support/AddressBook
+#
+# Bare `Cache`-style names in DEFAULT_IGNORE_NAMES already drop the cache
+# subfolders of these apps; the profile roots themselves (History, Cookies,
+# IndexedDB blobs, sqlite journals) are what still re-triggered a rescan every
+# few seconds. Apple's own sandboxed containers (`com.apple.*`) are listed by
+# prefix rather than wholesale because third-party sandboxed apps CAN keep
+# user documents under `Containers/<bundle>/Data/Documents`.
+LIBRARY_CHURN_PATHS = [
+    "~/Library/Preferences",
+    "~/Library/Metadata",
+    "~/Library/Biome",
+    "~/Library/Daemon Containers",
+    "~/Library/IdentityServices",
+    "~/Library/HomeKit",
+    "~/Library/KeyboardServices",
+    "~/Library/Trial",
+    "~/Library/Containers/com.apple.*",
+    "~/Library/Group Containers/group.com.apple.*",
+    "~/Library/Containers/net.whatsapp.*",
+    "~/Library/Group Containers/group.net.whatsapp.*",
+    "~/Library/Application Support/Google",
+    "~/Library/Application Support/Slack",
+    "~/Library/Application Support/AddressBook",
+]
+
+
 def default_home_dirs() -> list[str]:
     """Every fused-render home this machine might have: the default one and,
     when it differs, whatever FUSED_RENDER_HOME points at.
@@ -278,6 +327,7 @@ def default_ignore() -> list[str]:
     from fused_render.logs import log_dir  # stdlib-only module; no cycle
 
     out = [norm(os.path.expanduser("~/Library/Caches")), norm(log_dir())]
+    out += [norm(os.path.expanduser(p)) for p in LIBRARY_CHURN_PATHS]
     return DEFAULT_IGNORE_NAMES + out
 
 
