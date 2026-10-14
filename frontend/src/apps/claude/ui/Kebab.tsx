@@ -351,6 +351,15 @@ export function Kebab({
   // belongs to the LATEST press only, so a reader who reopens the menu and
   // unarchives while the archive is still in flight stays on the chat.
   const archiveSeq = useRef(0);
+  // …AND A SESSION CHANGE IS A PRESS TOO. Leaving session A and coming back to
+  // it while A's archive is still in flight left both guards true (the live id
+  // matches again, no later press), so the old request's answer hopped the
+  // reader out of a chat they had just reopened (CodeRabbit, PR #1655).
+  // Spending the counter on every change of `sessionId` — away AND back —
+  // makes the pending hop belong to the conversation it was pressed in.
+  useEffect(() => {
+    archiveSeq.current += 1;
+  }, [sessionId]);
 
   const refresh = useCallback(async () => {
     if (!sessionId) return;
