@@ -367,6 +367,16 @@ def is_turn_ended(session_id: str) -> bool:
         row = _registry.get(session_id)
         reg_mtime = _registry_mtime.get(session_id)
         ended_pid = _ended_pid.get(session_id)
+        # A stamp scoped to one pid says nothing about ANOTHER process still
+        # running on the session — two busy at once (a mid-turn host on one
+        # surface, a resume on another), the newer one finishing first.
+        other_running = ended_pid is not None and any(
+            owner == session_id and path in _sess_rows
+            and _sess_rows[path][0].get("status") in RUNNING_STATUSES
+            and str(_sess_rows[path][0].get("pid") or "") != str(ended_pid)
+            for path, owner in _sess_sids.items())
+    if other_running:
+        return False
     if (row is not None and ended_pid is not None
             and str(row.get("pid") or "") != str(ended_pid)):
         return False   # the stamp is about another process on this session

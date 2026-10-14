@@ -741,6 +741,22 @@ def test_an_ended_event_from_another_process_on_the_session_is_not_this_turns(
     assert tasks_watch.is_turn_ended(SID)
 
 
+def test_the_newer_of_two_busy_processes_ending_leaves_the_older_running(
+        claude_home):
+    """Bugbot, PR #1642: both processes on the session busy, the newer (the
+    standing row) finishes first. Its own scoped stamp must not end a session
+    another process is still working in."""
+    tasks_watch.reset()
+    tasks_watch.tick()
+    _registry(claude_home, SID, pid=os.getppid(), status="busy", name="old")
+    _registry(claude_home, SID, status="busy", name="new")
+    tasks_watch.tick()
+    assert str(tasks_watch.registry_row(SID)["pid"]) == str(os.getpid())
+    tasks_watch.mark_turn_ended(SID, "run-new", at=_STAMP[0] + 5, pid=os.getpid())
+    assert not tasks_watch.is_turn_ended(SID)
+    assert tasks_watch.live_from_registry(SID)[0] is True
+
+
 def test_an_ended_event_from_a_pid_the_registry_never_showed_stays_unscoped(
         claude_home):
     """Windows `.cmd` installs: the host's `cli.pid` is the shim, not the pid
