@@ -347,6 +347,10 @@ export function Kebab({
   // value with a copy of itself can never fire.
   const liveSession = useRef(sessionId);
   liveSession.current = sessionId;
+  // Bumped by every Archive/Unarchive press: the hop out after an archive
+  // belongs to the LATEST press only, so a reader who reopens the menu and
+  // unarchives while the archive is still in flight stays on the chat.
+  const archiveSeq = useRef(0);
 
   const refresh = useCallback(async () => {
     if (!sessionId) return;
@@ -524,6 +528,7 @@ export function Kebab({
   const onArchive = useCallback(async () => {
     if (!sessionId || !hasTask) return;
     const wasFiled = !!filed;
+    const seq = ++archiveSeq.current;
     // Optimistic, and before the await: `hasTask`/`restingArchive` are read off
     // this map, so the reopened menu — or the next one — says the new word.
     remember(archiveStates, sessionId, !wasFiled);
@@ -558,8 +563,14 @@ export function Kebab({
     // not be dressed as "Could not archive" with the flip put back. Only once
     // the call is home, and only if this menu still belongs to the conversation
     // that was filed: a chat the reader already left during the await must not
-    // be hopped out of twice.
-    if (!wasFiled && liveSession.current === sessionId) onArchived?.(sessionId);
+    // be hopped out of twice. And only if no later press (an Unarchive made
+    // while this call was out) has overtaken it.
+    if (
+      !wasFiled &&
+      liveSession.current === sessionId &&
+      archiveSeq.current === seq
+    )
+      onArchived?.(sessionId);
   }, [sessionId, hasTask, filed, later, refresh, onArchived]);
 
   // `rev` is read so a cache write repaints the items it decides.
