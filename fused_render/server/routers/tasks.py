@@ -8030,10 +8030,16 @@ def api_task_create(body: dict = Body(...),
             return refusal
     # `bot`: the id of the bot starting this task (bots/bot.py `build`), kept on
     # the entry and handed back on the row so the bot's panel can list what it
-    # started. Checked for the shape of an id (`_BOT_ID_RE`), so a label never
-    # gets stored as one.
-    if fields["bot"] and not _BOT_ID_RE.fullmatch(fields["bot"]):
-        return _error("bot: expected a bot id", status=400)
+    # started. Checked for the shape of an id (`_BOT_ID_RE`) and then against
+    # the bots that exist, so the tag is a fact about a bot and never a label
+    # some page sent: the bots side lists every tagged row as that bot's build
+    # (builds.ts `isBuild`), which is only true of a bot (CodeRabbit, PR #1646).
+    if fields["bot"]:
+        if not _BOT_ID_RE.fullmatch(fields["bot"]):
+            return _error("bot: expected a bot id", status=400)
+        from fused_render.bots import store as bot_store  # noqa: PLC0415
+        if fields["bot"] not in bot_store.list_ids():
+            return _error(f"bot: no bot {fields['bot']!r}", status=400)
     target = fields["target"] or _page_scope(x_fused_page)[2]
     if not target:
         return _error("target: required — no target given and no X-Fused-Page "

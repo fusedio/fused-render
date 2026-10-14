@@ -3910,6 +3910,12 @@ def _materialize(now: datetime) -> None:
                 "turn_at": "",
                 "claude_session_id": "",
             }
+            # The bot that asked travels with every run, like the title: a
+            # listing filtered to that bot (`?bot=`) must see the occurrences,
+            # and `_collect` never lists the template (CodeRabbit, PR #1646).
+            # Written only when there is one, as `create` writes it.
+            if entry.get("bot"):
+                occurrence["bot"] = str(entry["bot"])
             fresh.append(occurrence)
             # The template's own `due` mirrors its next occurrence — it is what
             # the listing sorts and shows for the recurring row.
@@ -4747,7 +4753,11 @@ def resend(entry_id: str, now: datetime | None = None) -> dict:
         # still that chat's message, and the composer it belongs to should no
         # more be shut by the second ask than it was by the first. An original
         # with no origin copies "" and the new entry has none either.
-        origin=str(original.get("origin") or ""))
+        origin=str(original.get("origin") or ""),
+        # Same rule for the bot that asked (Bugbot, PR #1646): a re-ask of a
+        # bot's build is still that bot's task, and the fresh id matches
+        # nothing else the bot recorded.
+        bot=str(original.get("bot") or ""))
     # Provenance, and the ONLY link between the two rows — the original is not
     # written to, so without this nothing records that the second message is a
     # re-ask of the first. Written after creation rather than threaded through

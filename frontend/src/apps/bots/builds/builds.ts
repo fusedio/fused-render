@@ -87,19 +87,29 @@ const panelShown = onTasksPage;
 // A row without an entry id (a bare session) must never match a recorded build whose id is "" — seen live: one such
 // record made EVERY session row a build, and the panel showed the whole task list.
 const sameEntry = (b: BuildRow, t: TaskRow): boolean => !!t.entry_id && b.entryId === t.entry_id;
-// A row tagged with a bot id (`bot`, the server's answer since the bot's create carried it) is a build by definition:
-// a bot's only road into the tasks API is `build`. Older rows carry no tag and still match the two heuristics.
+// A row tagged with a bot id (`bot`, the server's answer since the bot's create carried it; the server refuses a tag
+// that names no bot) is a build by definition: a bot's only road into the tasks API is `build`. Older rows carry no
+// tag and match the two heuristics, or the bot's own record of them (`botEntryIds`, below).
 export const isBuild = (t: TaskRow): boolean =>
-  !!t.bot || builds.some((b) => sameEntry(b, t)) || marked(t.title) || (t.messages || []).some((m) => marked(m.body));
+  !!t.bot || (!!t.entry_id && botEntryIds.has(t.entry_id)) || builds.some((b) => sameEntry(b, t))
+  || marked(t.title) || (t.messages || []).some((m) => marked(m.body));
 export const mine = (): TaskRow[] => buildRows.filter(isBuild);
 
-/** The tasks ONE bot started, newest activity first (pure, for tests). By the row's `bot` tag, or — for a task made
- *  before the tag existed — by the bot's own record of it (`meta.builds[].entry_id`, bot.py `build`). */
+// Entry ids of builds the bots recorded themselves (`meta.builds[].entry_id`, bot.py `build`), gathered from every bot
+// panel drawn this page load. A build made before the row tag existed is a build the Tasks page must still list, or
+// the panel's row would open onto a filtered-out task (Bugbot, PR #1646); builds.json and the prompt markers cover
+// most of them, this covers the rest. A bot's own record is the one source that cannot be wrong about its own builds.
+const botEntryIds = new Set<string>();
+/** The tasks ONE bot started, newest activity first. By the row's `bot` tag, or — for a task made before the tag
+ *  existed — by the bot's own record of it, which this also remembers for `isBuild`. */
 export function botTasks(rows: TaskRow[], botId: string, botBuilds: { entry_id?: string }[] | null | undefined): TaskRow[] {
   const ids = new Set((botBuilds || []).map((b) => b.entry_id).filter((id): id is string => !!id));
+  for (const id of ids) botEntryIds.add(id);
   return rows.filter((t) => t.bot === botId || (!!t.entry_id && ids.has(t.entry_id)))
     .sort((a, b) => (b.last_active || b.started || 0) - (a.last_active || a.started || 0));
 }
+/** Tests: forget the bots' recorded builds. */
+export function _resetBotEntryIds(): void { botEntryIds.clear(); }
 /** The name/folder a build prompt (or its title) carries. */
 export const BUILD_RE = /(?:named|Build) "([^"]+)"(?: in the folder | · (?:new fused-render app|update to the fused-render app) in )(\S+)/;
 let adoptSeen: Set<string> | null = null;
