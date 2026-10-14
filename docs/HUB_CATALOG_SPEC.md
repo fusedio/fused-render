@@ -117,7 +117,7 @@ Progress as of this session (see git log on `worktree-hub-catalog` for commits):
 2. **Done this session**: `fused_render/ai/hub_catalog_config.py` +
    `fused_render/ai/hub_catalog.py` — the store primitives. `HubCatalogConfig`
    (dir = `storage.home_dir()/hub_catalog`, `pools_dir`/`metadata_dir`/
-   `manifest_json`), `store_lock` (OS flock/msvcrt over an open fd, ported
+   `manifest_json`), `store_lock` (flock over an open fd, ported
    pattern not code from `index/store.py`), `read_manifest`/`pool_entry`/
    `pool_exists`/`is_blocked`/`set_blocked_until`/`write_pool`/`query_pool`/
    `delete_catalog`. Row shape: a few DuckDB-filterable columns (id,

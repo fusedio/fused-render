@@ -746,13 +746,13 @@ def _no_ai_hardware_refresh_thread(monkeypatch):
     the thread fires one probe immediately and then sleeps
     `_HARDWARE_REFRESH_INTERVAL_S` (hours) — the immediate probe alone is
     enough to matter here, since `hw_detect.detect_hardware` spawns REAL
-    subprocesses (`nvidia-smi`, `rocm-smi`, `powershell`, `sysctl`) and
+    subprocesses (`nvidia-smi`, `rocm-smi`, `sysctl`) and
     writes `~/.fused-render/ai_hardware.json` under whatever
     `FUSED_RENDER_HOME` happens to be current when the daemon thread gets
     scheduled — not necessarily the tmp home of the test that triggered
     `create_app`, for the identical race the reaper fixture's docstring
     demonstrates. A suite that let this run would also be spawning a real
-    `nvidia-smi`/`rocm-smi`/`powershell` process per `TestClient` on any
+    `nvidia-smi`/`rocm-smi` process per `TestClient` on any
     machine that has one, which is both slow and a false positive waiting to
     happen in CI.
 

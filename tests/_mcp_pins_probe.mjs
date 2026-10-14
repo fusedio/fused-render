@@ -6,11 +6,10 @@
 //   say they exist; only running them can say a boolean default seeds a
 //   boolean.
 // * `registrationDefinition` is the {command, args} shape written into the
-//   user's GLOBAL ~/.claude.json on Register (MC-12) — the shape a Windows
-//   "fix" would silently corrupt by routing `command` through a `cmd.exe`
-//   hop (see its own comment in template.html, D549). Running it, not just
-//   grepping the literal, is what makes that revert fail loudly regardless
-//   of how it's phrased.
+//   user's GLOBAL ~/.claude.json on Register (MC-12) — the verbatim
+//   command path, with no shell hop of ours in front of it. Running it, not
+//   just grepping the literal, is what makes a regression fail loudly
+//   regardless of how it's phrased.
 //
 // The panel's script cannot be evaluated whole (its top level touches
 // `document` and `window.fused` and starts a load), so this slices out those

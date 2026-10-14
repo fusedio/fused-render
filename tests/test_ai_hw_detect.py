@@ -1,7 +1,7 @@
 """Tests for GPU/VRAM detection beyond RAM (SPEC AI-18, D519).
 
-`hw_detect.py` is a subprocess-driven probe (`nvidia-smi`, `rocm-smi`, a
-PowerShell WMI/registry query, `sysctl`) — exactly the kind of 50-500ms cold
+`hw_detect.py` is a subprocess-driven probe (`nvidia-smi`, `rocm-smi`,
+`sysctl`) — exactly the kind of 50-500ms cold
 spawn `fit._wired_limit_mb`'s own docstring refuses on the per-request verdict
 path. So every test here drives the small, pure PARSING functions directly
 with canned subprocess output, never `subprocess.run` itself, and separately

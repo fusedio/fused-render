@@ -14,8 +14,8 @@ import { fileURLToPath } from "node:url";
 
 const SRC = fileURLToPath(new URL("../src", import.meta.url));
 
-// All layer/spec comparisons use forward slashes; path.relative/normalize
-// emit backslashes on Windows, so normalize every derived path through this.
+// All layer/spec comparisons use forward slashes; every derived path goes
+// through this so the comparisons never depend on path.sep.
 const posix = (p) => p.split(path.sep).join("/");
 
 const files = [];
