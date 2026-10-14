@@ -1,7 +1,7 @@
 """The native folder chooser: fused_render/server/dirpicker.py + the endpoint.
 
 The point of this module is that the folder picker is the USER'S file dialog —
-NSOpenPanel, IFileDialog, zenity — not a div. That means the interesting parts
+NSOpenPanel, zenity — not a div. That means the interesting parts
 are all at the seams: which backend a machine gets, whether a cancel is
 distinguishable from a failure, and whether a second request can stack a second
 modal. Those are what this pins.
@@ -15,7 +15,7 @@ What is faked and what is not, deliberately:
   for the cancel path, `path to home folder` for the success path). A canned
   `CompletedProcess` would assert our own fiction about pipes, timeouts and
   exit codes — this project has been bitten by exactly that before.
-* the Windows and Linux backends are faked (there is no runner for them here),
+* the Linux backend is faked (there is no runner for it here),
   and the assertions are about argv and the cancel-vs-error contract.
 * the AppKit backend's THREAD hop is tested for real (a background thread, a
   real Event, a real timeout); the panel itself needs a live AppKit run loop,
@@ -87,10 +87,6 @@ def test_macos_with_neither_has_no_backend():
         "darwin", {}, has_osascript=False, appkit_live=False) == ""
 
 
-def test_windows_always_has_the_shell_dialog():
-    assert dirpicker._choose_backend("win32", {}) == "win32"
-
-
 def test_linux_needs_a_display():
     # The hosted case, and the reason /api/config advertises the capability at
     # all: a headless deploy must never be told to wait on a modal nobody can
@@ -98,19 +94,6 @@ def test_linux_needs_a_display():
     assert dirpicker._choose_backend("linux", {}) == ""
     assert dirpicker._choose_backend("linux", {"DISPLAY": ":0"}) == "linux"
     assert dirpicker._choose_backend("linux", {"WAYLAND_DISPLAY": "wayland-0"}) == "linux"
-
-
-def test_backend_selection_ignores_the_machine_it_runs_on(monkeypatch):
-    # It answers about the platform it is ASKED about, never the ambient one.
-    # This is not hypothetical: the first version also consulted `os.name`, so
-    # every case above passed here and `_choose_backend("linux", …)` would have
-    # answered "win32" on the Windows CI runner — a failure only that runner
-    # could see. Faking os.name is the cheapest way to be that runner.
-    monkeypatch.setattr(dirpicker.os, "name", "nt")
-    assert dirpicker._choose_backend("linux", {"DISPLAY": ":0"}) == "linux"
-    assert dirpicker._choose_backend("darwin", {}, has_osascript=True) == "osascript"
-    monkeypatch.setattr(dirpicker.os, "name", "posix")
-    assert dirpicker._choose_backend("win32", {}) == "win32"
 
 
 def test_availability_is_just_whether_there_is_a_backend(monkeypatch):
@@ -346,141 +329,6 @@ def test_a_linux_cancel_is_none_but_a_crash_raises(monkeypatch):
         ui.pick_directory()
 
 
-# ----------------------------------------------------------- windows backend
-# No Windows runner here, so pywin32 is stood in for. What is asserted is what a
-# runner could not tell us anyway: that the dialog is put in FOLDER mode at all
-# (GetOpenFileNameW, which pick_file uses, has no folder mode, so getting this
-# wrong silently gives a FILE chooser), and that the cancel HRESULT is the one
-# thing not treated as a breakage.
-
-
-class _FakeShellItem:
-    def __init__(self, path):
-        self._path = path
-
-    def GetDisplayName(self, _kind):
-        return self._path
-
-
-class _FakeDialog:
-    def __init__(self, log, on_show):
-        self._log = log
-        self._on_show = on_show
-
-    def GetOptions(self):
-        return 0x1  # a pre-existing flag, which must survive the OR
-
-    def SetOptions(self, options):
-        self._log["options"] = options
-
-    def SetTitle(self, title):
-        self._log["title"] = title
-
-    def SetFolder(self, item):
-        self._log["folder"] = item
-
-    def Show(self, _owner):
-        self._on_show()
-
-    def GetResult(self):
-        return _FakeShellItem("C:\\Users\\ada\\code")
-
-
-class _FakePywintypesError(Exception):
-    pass
-
-
-def _fake_win32(monkeypatch, on_show):
-    """Put a fake pywin32 in sys.modules and return the dialog's call log."""
-    import types
-
-    log = {}
-    consts = types.SimpleNamespace(
-        FOS_PICKFOLDERS=0x20, FOS_FORCEFILESYSTEM=0x40,
-        FOS_PATHMUSTEXIST=0x800, SIGDN_FILESYSPATH=0x80058000)
-    shell = types.SimpleNamespace(
-        CLSID_FileOpenDialog="clsid", IID_IFileOpenDialog="iid",
-        IID_IShellItem="iid-item",
-        SHCreateItemFromParsingName=lambda path, _b, _i: _FakeShellItem(path))
-    pythoncom = types.SimpleNamespace(
-        CLSCTX_INPROC_SERVER=1,
-        CoInitialize=lambda: log.setdefault("co", []).append("init"),
-        CoUninitialize=lambda: log.setdefault("co", []).append("uninit"),
-        CoCreateInstance=lambda *a: _FakeDialog(log, on_show))
-    shell_pkg = types.ModuleType("win32com.shell")
-    shell_pkg.shell = shell
-    shell_pkg.shellcon = consts
-    win32com = types.ModuleType("win32com")
-    win32com.shell = shell_pkg
-    pywintypes = types.ModuleType("pywintypes")
-    pywintypes.error = _FakePywintypesError
-    for name, module in (("pythoncom", pythoncom), ("pywintypes", pywintypes),
-                        ("win32com", win32com), ("win32com.shell", shell_pkg)):
-        monkeypatch.setitem(sys.modules, name, module)
-    return log, consts
-
-
-def test_the_windows_dialog_is_put_in_folder_mode(monkeypatch):
-    from fused_render.supervisor._win32 import ui
-
-    log, consts = _fake_win32(monkeypatch, on_show=lambda: None)
-    assert ui.pick_directory(title="Clone into…",
-                             start="C:\\Users\\ada") == "C:\\Users\\ada\\code"
-    # FOS_PICKFOLDERS is the whole difference between this and a file chooser.
-    assert log["options"] & consts.FOS_PICKFOLDERS
-    # FORCEFILESYSTEM too, or the dialog can answer a virtual shell folder
-    # ("This PC", a library) that has no path to give back.
-    assert log["options"] & consts.FOS_FORCEFILESYSTEM
-    assert log["options"] & 0x1, "the dialog's existing options were overwritten"
-    assert log["title"] == "Clone into…"
-    assert log["folder"]._path == "C:\\Users\\ada"
-    # The apartment is initialised and handed back even on the happy path.
-    assert log["co"] == ["init", "uninit"]
-
-
-def test_a_windows_cancel_is_a_cancel_and_anything_else_is_an_error(monkeypatch):
-    from fused_render.supervisor._win32 import ui
-
-    def cancelled():
-        raise _FakePywintypesError(ui._ERROR_CANCELLED, "Show", "Operation cancelled")
-
-    log, _ = _fake_win32(monkeypatch, on_show=cancelled)
-    assert ui.pick_directory() is None
-    assert log["co"] == ["init", "uninit"], "the apartment leaked on a cancel"
-
-    def broken():
-        raise _FakePywintypesError(-2147467259, "Show", "Unspecified error")
-
-    log, _ = _fake_win32(monkeypatch, on_show=broken)
-    with pytest.raises(OSError):
-        ui.pick_directory()
-    assert log["co"] == ["init", "uninit"], "the apartment leaked on a failure"
-
-
-def test_the_windows_backend_runs_the_dialog_off_the_request_thread(monkeypatch):
-    # IFileDialog pumps its own message loop and needs an STA, so it must not run
-    # on the threadpool worker that served the request — which is why the backend
-    # owns a thread rather than calling straight through.
-    seen = {}
-    _fake_win32(monkeypatch, on_show=lambda: seen.update(
-        thread=threading.current_thread().name))
-    # _pick_win32, not pick_directory: the entry point normalizes and requires an
-    # absolute path, and a Windows path is not absolute to a POSIX os.path.
-    assert dirpicker._pick_win32("C:\\Users\\ada", "Pick") == "C:\\Users\\ada\\code"
-    assert seen["thread"] == "fused-dir-dialog"
-    assert threading.current_thread() is threading.main_thread()
-
-
-def test_a_windows_dialog_failure_reaches_the_calling_thread(monkeypatch):
-    # The thread swallowing it would leave the request looking like a cancel.
-    def broken():
-        raise _FakePywintypesError(-2147467259, "Show", "Unspecified error")
-
-    _fake_win32(monkeypatch, on_show=broken)
-    with pytest.raises(OSError):
-        dirpicker._pick_win32(None, "Pick")
-
-
 # ----------------------------------------------------------- appkit thread hop
 
 
@@ -646,8 +494,8 @@ def test_a_backend_answering_a_relative_path_is_a_failure(monkeypatch):
 
 # ------------------------------------------------- a dialog we gave up waiting on
 # The hard case, and the one the first version got wrong. When a backend CANNOT
-# take the dialog down — the win32 STA thread and the AppKit main thread both own
-# a modal we have no handle on — giving up on the wait leaves the dialog on
+# take the dialog down — the AppKit main thread owns a modal we have no handle
+# on — giving up on the wait leaves the dialog on
 # screen. Releasing the claim there stacks a second modal over the first; never
 # releasing it wedges the picker for the life of the process. So the claim passes
 # to the dialog, and clears when the dialog itself finishes.
@@ -658,8 +506,8 @@ def _abandoning_backend(monkeypatch, finished):
     def abandon(start, title):
         raise dirpicker.DialogAbandoned(finished)
 
-    monkeypatch.setattr(dirpicker, "_backend", lambda: "win32")
-    monkeypatch.setitem(dirpicker._BACKENDS, "win32", abandon)
+    monkeypatch.setattr(dirpicker, "_backend", lambda: "appkit")
+    monkeypatch.setitem(dirpicker._BACKENDS, "appkit", abandon)
 
 
 def test_an_abandoned_dialog_keeps_the_claim_until_it_really_finishes(monkeypatch):
@@ -671,7 +519,7 @@ def test_an_abandoned_dialog_keeps_the_claim_until_it_really_finishes(monkeypatc
 
     # The dialog is STILL on screen, so a second request must be refused rather
     # than stacking another modal on top of it.
-    monkeypatch.setitem(dirpicker._BACKENDS, "win32",
+    monkeypatch.setitem(dirpicker._BACKENDS, "appkit",
                         lambda start, title: "/Users/ada/code")
     with pytest.raises(dirpicker.PickerBusy):
         dirpicker.pick_directory()
@@ -691,24 +539,9 @@ def test_a_dialog_that_finished_while_we_gave_up_does_not_wedge(monkeypatch):
     _abandoning_backend(monkeypatch, already_done)
     with pytest.raises(dirpicker.PickerFailed):
         dirpicker.pick_directory()
-    monkeypatch.setitem(dirpicker._BACKENDS, "win32",
+    monkeypatch.setitem(dirpicker._BACKENDS, "appkit",
                         lambda start, title: "/Users/ada/code")
     assert dirpicker.pick_directory() == "/Users/ada/code"
-
-
-def test_the_win32_timeout_really_reports_the_dialog_as_still_up(monkeypatch):
-    # Not a fake at this level: the STA thread is a real thread, still alive with
-    # the (faked) modal, and `_pick_win32` must say so rather than raise a plain
-    # failure that would let the claim go.
-    monkeypatch.setattr(dirpicker, "_DIALOG_TIMEOUT_S", 0.3)
-    let_go = threading.Event()
-    _fake_win32(monkeypatch, on_show=lambda: let_go.wait(20))
-    with pytest.raises(dirpicker.DialogAbandoned) as caught:
-        dirpicker._pick_win32(None, "Pick")
-    finished = caught.value.finished
-    assert not finished.is_set(), "the dialog thread is still running"
-    let_go.set()
-    assert finished.wait(5), "the dialog thread never marked itself finished"
 
 
 @darwin_only
@@ -788,55 +621,9 @@ def test_an_os_error_from_a_backend_becomes_a_picker_failure(monkeypatch):
 # --------------------------------------------------- the shape of the path out
 
 
-def test_a_windows_path_comes_back_forward_slashed(monkeypatch):
-    # The shell, /api/fs/*, and folder-picker.js's parent()/join() all assume the
-    # canonical forward-slashed form (see canonical_fs_path, and the same note on
-    # /api/config's calls_dir). A backslashed path would feed mixed separators
-    # into clone-destination naming and every call after it.
-    monkeypatch.setattr(dirpicker, "_backend", lambda: "win32")
-    monkeypatch.setitem(dirpicker._BACKENDS, "win32",
-                        lambda start, title: "C:\\Users\\ada\\code")
-    assert dirpicker.pick_directory() == "C:/Users/ada/code"
-
-
-def test_the_endpoint_answers_a_windows_pick_forward_slashed(monkeypatch):
-    monkeypatch.setattr(dirpicker, "_backend", lambda: "win32")
-    monkeypatch.setitem(dirpicker._BACKENDS, "win32",
-                        lambda start, title: "C:\\Users\\ada\\My Repos\\")
-    assert _data(_pick({})) == {"path": "C:/Users/ada/My Repos"}
-
-
-def test_a_windows_drive_root_survives_as_a_drive_root(monkeypatch):
-    # "C:/" is the canonical drive root folder-picker.js's isRoot() recognises; a
-    # bare "C:" is cwd-relative and must never be produced.
-    monkeypatch.setattr(dirpicker, "_backend", lambda: "win32")
-    monkeypatch.setitem(dirpicker._BACKENDS, "win32", lambda start, title: "C:\\")
-    assert dirpicker.pick_directory() == "C:/"
-
-
-def test_a_drive_path_counts_as_absolute_off_windows_too(monkeypatch):
-    # The absoluteness test must CLASSIFY rather than ask the running OS:
-    # posixpath.isabs("C:/Users/ada") is False, and that is exactly the value a
-    # Windows server produces — so asking os.path would reject the real answer
-    # everywhere this is tested.
-    assert dirpicker._canonical_absolute("C:\\Users\\ada") == "C:/Users/ada"
-
-
-def test_a_unc_path_is_left_exactly_as_the_codec_leaves_it():
-    # Deliberately NOT forward-slashed: canonical_fs_path only normalizes
-    # drive-letter paths, because the /view codec keeps a UNC path as one opaque
-    # segment (and on POSIX a backslash is a legal filename character). Inventing
-    # a second convention here would make this the only place in the app that
-    # disagrees. Its absoluteness is judged by the running OS, which for a UNC
-    # path means Windows, so only the canonical form is asserted here.
-    from fused_render._view_url_codec import canonical_fs_path
-
-    assert canonical_fs_path("\\\\server\\share\\dir") == "\\\\server\\share\\dir"
-
-
 def test_a_posix_path_with_a_backslash_in_a_name_round_trips(monkeypatch):
     # A backslash is a legal POSIX filename character, so it must NOT be swapped
-    # for a separator — the reason canonical_fs_path is conditional.
+    # for a separator — canonical_fs_path leaves it untouched.
     if os.name == "nt":
         pytest.skip("a backslash cannot be a filename character on Windows")
     monkeypatch.setattr(dirpicker, "_backend", lambda: "linux")
@@ -1026,7 +813,7 @@ def test_this_machine_really_can_raise_a_folder_dialog():
 # ------------------------------------------------------------- several at once
 #
 # `pick_files` is `pick_file` with the panel's multi-select on. On macOS both
-# backends genuinely answer a list; Linux and Windows pick one per dialog and
+# backends genuinely answer a list; Linux picks one per dialog and
 # `_pick` wraps it, so the contract (a non-empty list, or None) holds on every
 # platform and a caller never branches on the OS.
 

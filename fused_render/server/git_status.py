@@ -82,18 +82,18 @@ _RANK = {name: i for i, name in enumerate(STATUS_ORDER)}
 # Whether this platform's paths fold case. Decided once, here, because the two
 # spellings being compared come from different authorities: the listing's names
 # come from `scandir` (the filesystem's spelling) and git's paths come from its
-# index (the spelling that was committed). On APFS/HFS+/NTFS those can differ
+# index (the spelling that was committed). On APFS/HFS+ those can differ
 # in case for the same path, and a prefix test that missed would silently drop
 # every decoration in a subdirectory rather than fail loudly.
 #
 # `os.path.normcase` is NOT that test: `posixpath.normcase` is the identity
 # function on every POSIX platform, macOS included, so `os.path.normcase("A")
-# == "a"` is only ever True on Windows. A `Pkg/` committed to the index but
+# == "a"` is never True here. A `Pkg/` committed to the index but
 # checked out as `pkg/` on an APFS volume would then miss the prefix test here
 # and lose every decoration beneath it — the exact failure this comment used
-# to say the line prevented. `sys.platform` names the two case-insensitive-by-
-# default platforms directly instead.
-_FOLDS_CASE = sys.platform in ("win32", "darwin")
+# to say the line prevented. `sys.platform` names the case-insensitive-by-
+# default platform directly instead.
+_FOLDS_CASE = sys.platform == "darwin"
 
 
 def classify(xy: str) -> str | None:
@@ -252,7 +252,7 @@ def _prefix_of(cwd: str, top: str) -> str | None:
     """
     try:
         rel = os.path.relpath(os.path.realpath(cwd), os.path.realpath(top))
-    except (OSError, ValueError):  # unrelated Windows drives raise ValueError
+    except (OSError, ValueError):
         return None
     if rel == os.curdir:
         return ""
@@ -270,14 +270,9 @@ def _spawn_kwargs() -> dict:
     not follow an import to check another module's literal. Kept field-for-
     field identical to gitignore.py's `_spawn_kwargs` on purpose — `close_fds`
     is the half of the posix_spawn condition git_bin()'s absolute path does not
-    cover, and `creationflags` keeps a spawned git from popping a console
-    window on Windows.
+    cover.
     """
-    return {
-        "close_fds": False,
-        "creationflags": (subprocess.CREATE_NO_WINDOW
-                          if sys.platform == "win32" else 0),
-    }
+    return {"close_fds": False}
 
 
 # Memoizes `_run_status`'s answer, keyed on `cwd`. Every one of `/api/fs/list`'s

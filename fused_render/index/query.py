@@ -34,31 +34,10 @@ from fused_render.index.store import (
 
 logger = logging.getLogger(__name__)
 
-# A bare drive letter ("C:") is what rstrip("/") leaves a Windows drive root
-# ("C:/") reduced to — the same way rstrip("/") leaves a POSIX root ("/")
-# reduced to "". Every root normalization below restores the trailing "/" for
-# the POSIX case (the existing `or "/"`); this is the matching restoration for
-# the Windows one, without which a scan root that IS a whole drive would
-# resolve here to "C:" while canonical_root() (index/runner.py) — what every
-# stored dirs.parquet row is actually keyed under — resolves the identical
-# input to "C:/", and the two would never compare equal.
-_BARE_DRIVE = re.compile(r"^[A-Za-z]:$")
-
-# A typed string starting "C:\" or "C:/" is unambiguously a Windows absolute
-# path — there is no POSIX-style "leading slash means depth-1 anchor at the
-# box root" reading for it to be confused with (that ambiguity is specific to
-# a bare "/", which a drive letter never looks like). `resolve_query` below
-# treats a match the same way it treats "~": always walked as an escape from
-# the box's own root, never falling back to `root` the way the bare-"/" branch
-# can.
-_DRIVE_ABS = re.compile(r"^[A-Za-z]:[\\/]")
-
-
 def _root_or_bare(stripped: str) -> str:
     """`stripped` (already rstripped of "/") restored to its canonical bare-
-    root spelling if it collapsed to one — "" -> "/", "C:" -> "C:/" — else
-    unchanged."""
-    return stripped + "/" if not stripped or _BARE_DRIVE.match(stripped) else stripped
+    root spelling if it collapsed to one — "" -> "/" — else unchanged."""
+    return stripped or "/"
 
 # Entries an in-folder corpus may return — the same cap /api/fs/walk uses, so
 # swapping the corpus source cannot change how much the client holds.
@@ -356,10 +335,9 @@ def stats(cfg: IndexConfig, root: str = "", breakdown: bool = False,
     try:
         root = norm(os.path.expanduser(root.strip())) if root.strip() else ""
         root = _root_or_bare((root or m.get("last_root") or "").rstrip("/"))
-        # `root` already ends in "/" for a bare root (POSIX "/", or a Windows
-        # drive root "C:/" via _root_or_bare above) — appending another "/"
-        # unconditionally, as a plain `root != "/"` check used to, would double
-        # it on the drive-root case and match nothing.
+        # `root` already ends in "/" for the bare root "/" (via _root_or_bare
+        # above) — appending another "/" unconditionally would double it and
+        # match nothing.
         prefix = root if root.endswith("/") else root + "/"
         inside = (f"(dir = '{_q(root)}' "
                   f"OR {_prefix_predicate_sql('dir', prefix)})")
@@ -539,7 +517,7 @@ def search_under(cfg: IndexConfig, root: str, q: str = "", limit: int = MAX_CORP
         if not covered:
             return {**empty, "updated": updated, "age_s": age}
         # See stats()'s identical fix above: root already ends in "/" for
-        # any bare root (POSIX or a Windows drive), not only "/" itself.
+        # the bare root.
         prefix = root if root.endswith("/") else root + "/"
         limit = max(0, min(int(limit), MAX_CORPUS))
         hit = prune(m["partitions"], prefix)
@@ -1006,8 +984,8 @@ def resolve_query(root: str, raw: str, guard: "MountGuard | None" = None,
     mode)` triple. `root` is the box's own root (home sends the home dir, the
     explorer sends the open folder); `raw` is the string exactly as typed,
     unstripped of anything meaningful — with one exception, below: a LEADING
-    run of whitespace in front of a path-escape (`~`, a leading `/`, a
-    Windows drive letter, a `..` segment) is stripped before that escape is
+    run of whitespace in front of a path-escape (`~`, a leading `/`, a `..`
+    segment) is stripped before that escape is
     detected, since it carries no meaning for that grammar and would
     otherwise be folded into a `**` token that hides the very prefix being
     looked for. A leading run in front of anything else, and any TRAILING
@@ -1076,15 +1054,6 @@ def resolve_query(root: str, raw: str, guard: "MountGuard | None" = None,
     instead as the depth-1 anchor it looks like — base stays the box root,
     pattern is `raw` with only the leading slash stripped.
 
-    A Windows drive-letter path (`C:\\` or `C:/`) has no such ambiguity to
-    resolve — nothing else starts that way — so it always walks as an escape,
-    the same as `~`: `_walk_from` runs from the drive root (`"C:/"`) over the
-    rest of the string with backslashes folded to `/` first (the drive
-    letter's own separator is native; the walk only ever splits on `/`), and
-    whatever it reaches is the base regardless of `_walk_from`'s `advanced`
-    flag — there is no bare-root fallback to `root` for this branch the way
-    there is for a bare leading `/`.
-
     The implicit `**/` prefix — a glob with no `/` anywhere searches any
     depth — is decided from `raw` BEFORE any of the base-splitting above, not
     from the leftover pattern. Deciding it after would silently anchor every
@@ -1100,11 +1069,11 @@ def resolve_query(root: str, raw: str, guard: "MountGuard | None" = None,
 
     raw = raw or ""
     # A LEADING run of whitespace carries no meaning for the path-escape
-    # grammar (`~`, a leading `/`, a Windows drive letter, a `..` segment) —
+    # grammar (`~`, a leading `/`, a `..` segment) —
     # unlike a TRAILING run, which must keep counting (that is the bug this
     # whole round's earlier fix was for). Left alone, `expand_whitespace_
     # query` below folds a leading space into a `**` token glued onto the
-    # very prefix (`~/`, `/`, `C:`, `..`) the checks further down look for —
+    # very prefix (`~/`, `/`, `..`) the checks further down look for —
     # `" ~/Documents"` becomes `"**~/**Documents**"`, which starts with `*`,
     # not `~`, so the escape is silently missed and the query falls back to
     # a box-relative search that (almost always) matches nothing. Detected
@@ -1118,31 +1087,11 @@ def resolve_query(root: str, raw: str, guard: "MountGuard | None" = None,
             raw_lstripped == "~"
             or raw_lstripped.startswith("~/")
             or raw_lstripped.startswith("/")
-            or _DRIVE_ABS.match(raw_lstripped)
             or any(seg == ".." for seg in raw_lstripped.split("/"))):
         raw = raw_lstripped
     # The implicit `**/` decision below is defined to read the RAW typed
-    # string (before any of this function's own mutations) for a `/` —
-    # captured here, before the drive-path backslash normalization that
-    # follows, so an all-backslash Windows path (no `/` at all, as typed)
-    # still widens to any depth exactly as it always has, rather than
-    # picking up a "/" this function itself inserted.
+    # string (before any of this function's own mutations) for a `/`.
     raw_had_slash = "/" in raw
-    if _DRIVE_ABS.match(raw.strip()):
-        # A Windows drive path's own separator is "\", never "/" — normalize
-        # it to "/" BEFORE `expand_whitespace_query` runs, so that function's
-        # own "/"-segment split (and its "wrap only the FINAL segment" rule)
-        # actually sees the path's real segments (code review finding: doing
-        # this AFTER expansion left the whole path as one opaque segment,
-        # `raw`'s leading `C:\` got swallowed into the wrap's own `*` prefix,
-        # and `_DRIVE_ABS.match(raw)` below stopped matching at all — a
-        # drive path with a space, e.g. `C:\My Files\rep`, silently stopped
-        # resolving as an absolute path). `_DRIVE_ABS` only tests the drive
-        # PREFIX (`[A-Za-z]:[\\/]`), so this is safe to do unconditionally
-        # once that prefix is confirmed present — nothing past it is a POSIX
-        # path where a literal backslash would be a legal filename character
-        # this might mangle.
-        raw = raw.replace("\\", "/")
     raw = expand_whitespace_query(raw)
     is_glob = "*" in raw
     if raw == "~" or raw.startswith("~/"):
@@ -1150,18 +1099,6 @@ def resolve_query(root: str, raw: str, guard: "MountGuard | None" = None,
         rest = raw[2:] if raw.startswith("~/") else ""
         base, pattern, _, blocked = _walk_from(home, rest, guard=guard, token=token)
         _note(blocked)
-    elif _DRIVE_ABS.match(raw):
-        drive_root = raw[:2] + "/"
-        rest = raw[3:].replace("\\", "/")
-        base, pattern, _, blocked = _walk_from(drive_root, rest, guard=guard, token=token)
-        _note(blocked)
-        # A bare drive letter with nothing after it (`rest == ""`) leaves
-        # `_walk_from` at its own bare-root collapse, `"C:"` — the same
-        # bare spelling `_root_or_bare` exists to restore to `"C:/"`
-        # (this module's own `_BARE_DRIVE` comment), so the canonical form
-        # matches what `canonical_root()` (index/runner.py) actually stores
-        # this drive under.
-        base = _root_or_bare(base.rstrip("/"))
     elif raw.startswith("/"):
         rest = raw[1:]
         abs_base, abs_pattern, advanced, blocked = _walk_from("/", rest, guard=guard, token=token)
@@ -2515,7 +2452,7 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
         if miss:
             return {**empty, "reason": miss}
         # See stats()'s identical fix above: root already ends in "/" for
-        # any bare root (POSIX or a Windows drive), not only "/" itself.
+        # the bare root.
         prefix = root if root.endswith("/") else root + "/"
         limit = max(0, min(int(limit), MAX_GLOB_RANK_LIMIT if glob else MAX_RANK_LIMIT))
         hit = prune(m["partitions"], prefix)

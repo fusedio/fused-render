@@ -564,45 +564,6 @@ def test_a_root_stamped_without_a_legacy_file_stays_unknown(tmp_path):
     assert applied_ignore_sig(cfg, "/b") is None
 
 
-# -- the Windows store lock ---------------------------------------------------
-
-class _FakeMsvcrt:
-    """msvcrt's locking() surface: LK_NBLCK raises OSError while the lock is
-    held by someone else, LK_LOCK blocks internally and then gives up."""
-
-    LK_LOCK = 0
-    LK_NBLCK = 1
-
-    def __init__(self, fails: int):
-        self.fails = fails
-        self.modes: list = []
-
-    def locking(self, fd, mode, nbytes):
-        self.modes.append(mode)
-        if len(self.modes) <= self.fails:
-            raise OSError(36, "Resource deadlock avoided")
-
-
-def test_the_windows_lock_waits_instead_of_giving_up(monkeypatch):
-    """msvcrt's LK_LOCK retries for ~10 seconds and then RAISES. A compaction
-    holds this lock for a whole DuckDB merge — far longer on a real home index
-    — so a second root's compact, or a Delete Index, would fail outright
-    instead of waiting. Poll LK_NBLCK with no deadline, like flock."""
-    fake = _FakeMsvcrt(fails=3)
-    monkeypatch.setattr(store_mod.time, "sleep", lambda s: None)
-    store_mod._acquire_nt(fake, 7)
-    assert len(fake.modes) == 4  # three refusals, then the acquire
-    assert set(fake.modes) == {_FakeMsvcrt.LK_NBLCK}  # never the 10s LK_LOCK
-
-
-def test_the_windows_lock_returns_as_soon_as_it_is_free(monkeypatch):
-    fake = _FakeMsvcrt(fails=0)
-    monkeypatch.setattr(store_mod.time, "sleep",
-                        lambda s: pytest.fail("slept before even trying"))
-    store_mod._acquire_nt(fake, 7)
-    assert fake.modes == [_FakeMsvcrt.LK_NBLCK]
-
-
 def test_compact_never_deletes_a_like_metachar_sibling(tmp_path):
     """`_` matches any char in LIKE: a scan of /x/proj_a must not silently
     drop /x/proj-a's rows — the `outside` predicate escapes LIKE metachars."""

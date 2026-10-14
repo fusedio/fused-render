@@ -37,20 +37,14 @@ IOPOL_THROTTLE = 3       # IOPOL_THROTTLE
 
 # `ioprio_set(2)` constants (linux). No libc wrapper exists for this one —
 # it has to go through the raw syscall table, and the number is arch-specific
-# (there is no stable cross-arch symbol like the darwin/win32 calls have).
+# (there is no stable cross-arch symbol like the darwin call has).
 # The kernel only honors priority under I/O schedulers that implement
 # classes (BFQ); under mq-deadline/none this is a harmless no-op, which is
-# fine — best-effort by design, same as the darwin and win32 branches.
+# fine — best-effort by design, same as the darwin branch.
 IOPRIO_WHO_PROCESS = 1
 IOPRIO_CLASS_IDLE = 3
 IOPRIO_CLASS_SHIFT = 13
 _IOPRIO_SET_SYSCALL_NR = {"x86_64": 251, "aarch64": 30}
-
-# `SetPriorityClass` constant (win32). `os.nice` does not exist on Windows at
-# all, so this is Windows' FIRST scan mitigation, not just its I/O half:
-# PROCESS_MODE_BACKGROUND_BEGIN lowers CPU, I/O, *and* memory priority
-# together in one call.
-PROCESS_MODE_BACKGROUND_BEGIN = 0x00100000
 
 
 def _renice_self() -> None:
@@ -60,7 +54,7 @@ def _renice_self() -> None:
     try:
         os.nice(SCAN_NICE_INCREMENT)
     except (AttributeError, OSError):
-        pass  # no nice (Windows) or not permitted — scan at full priority
+        pass  # not permitted — scan at full priority
 
 
 def _set_background_io_policy() -> bool:
@@ -86,11 +80,6 @@ def _set_background_io_policy() -> bool:
             prio = (IOPRIO_CLASS_IDLE << IOPRIO_CLASS_SHIFT) | 0
             rc = lib.syscall(nr, IOPRIO_WHO_PROCESS, 0, prio)
             return rc == 0
-        if sys.platform == "win32":
-            kernel32 = ctypes.windll.kernel32
-            rc = kernel32.SetPriorityClass(kernel32.GetCurrentProcess(),
-                                           PROCESS_MODE_BACKGROUND_BEGIN)
-            return bool(rc)
         return False  # unmatched platform — documented no-op
     except (AttributeError, OSError):
         return False

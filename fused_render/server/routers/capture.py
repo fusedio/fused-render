@@ -192,9 +192,9 @@ def api_capture_shot_region(body: dict = Body(...),
 
 @router.websocket("/api/capture/{cid}/stream")
 async def api_capture_stream(cid: str, ws: WebSocket):
-    """The chunk feed for a recording the PAGE encodes (Windows, Linux).
+    """The chunk feed for a recording the PAGE encodes (Linux).
 
-    On those platforms `MediaRecorder` produces the bytes and this appends them
+    On that platform `MediaRecorder` produces the bytes and this appends them
     to the file the start reply already named (see `capture/_sink.py` for why
     the encoder is the page's there and native on macOS). A WebSocket rather
     than repeated POSTs for the reason D74 gives for `/api/fs/events`: a chunk

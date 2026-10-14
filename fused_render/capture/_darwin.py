@@ -208,7 +208,7 @@ def refuse(mode: str, spec: dict) -> str | None:
 
     One option, one platform, one sentence — and it lives HERE rather than in
     the neutral half because the sentence names System Settings, which is wrong
-    advice on Windows and on Linux.
+    advice on Linux.
 
     Audio-only MICROPHONE records through `AVAudioRecorder`, which has no device
     selection. The API that did — `AVCaptureAudioFileOutput` — deadlocked on a run loop

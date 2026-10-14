@@ -1,6 +1,6 @@
 """Recording fed by the page's own encoder (capture/_sink.py, SPEC CP-10).
 
-This is the Windows and Linux recording path, and unlike the Apple one it is
+This is the Linux recording path, and unlike the Apple one it is
 testable in full: the bytes arrive over a WebSocket, so a test can BE the
 browser. What is exercised here is everything that decides whether a recording
 survives — the token on the socket, the ordering guarantee the `eos` handshake
@@ -8,10 +8,9 @@ buys, and the two ways this backend can lose a recording without anything
 raising. The one ending left out is the closed socket, for the harness reason
 written where that test would be.
 
-`_windows.py` and `_linux.py` add a native still on top of this, and the pure
-parts of both (the monitor maths, the portal's reply) are at the bottom — those
-run on every platform on purpose, because CI has no Windows box and no
-compositor.
+`_linux.py` adds a native still on top of this, and its pure parts (the
+portal's reply) are at the bottom — those run on every platform on purpose,
+because CI has no compositor.
 """
 import os
 import time
@@ -22,7 +21,7 @@ from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from fused_render import capture, jobs
-from fused_render.capture import _linux, _sink, _windows
+from fused_render.capture import _linux, _sink
 from fused_render.server import create_app
 
 H = {"X-Fused": "1"}
@@ -347,48 +346,6 @@ def test_attaching_a_stream_where_there_is_none_is_a_sentence(monkeypatch):
     assert "captured by the app itself" in str(caught.value)
 
 
-# ------------------------------------------------ the pure parts of Windows
-
-
-def test_a_display_of_none_means_every_screen():
-    """A still of "the screen" on a two-monitor desk is both of them."""
-    monitors = [
-        {"id": 1, "x": 0, "y": 0, "width": 1920, "height": 1080, "main": True},
-        {"id": 2, "x": 1920, "y": -200, "width": 2560, "height": 1440,
-         "main": False},
-    ]
-    whole = _windows._pick(None, monitors)
-    # The union, not the primary and not a bounding box of the sizes: monitor 2
-    # starts 200px above the origin and ends 160px below monitor 1's bottom.
-    assert (whole["x"], whole["y"]) == (0, -200)
-    assert (whole["width"], whole["height"]) == (4480, 1440)
-    assert _windows._pick(2, monitors)["width"] == 2560
-
-
-def test_an_unknown_display_names_the_ones_that_exist():
-    monitors = [{"id": 1, "x": 0, "y": 0, "width": 8, "height": 6,
-                 "main": True}]
-    with pytest.raises(capture.CaptureError) as caught:
-        _windows._pick(7, monitors)
-    assert "this machine has 1" in str(caught.value)
-    with pytest.raises(capture.CaptureError):
-        _windows._pick("left", monitors)
-
-
-def test_a_rect_is_relative_to_the_chosen_monitor():
-    """`rect` means the same thing on every backend — points inside the display
-    the caller named — so the second monitor's own origin has to be added."""
-    monitor = {"id": 2, "x": 1920, "y": -200, "width": 2560, "height": 1440,
-               "main": False}
-    assert _windows._region(monitor, None) == (1920, -200, 2560, 1440)
-    assert _windows._region(monitor, (10, 20, 100, 50)) == (1930, -180, 100, 50)
-
-
-def test_windows_refuses_only_what_the_sink_refuses():
-    assert _windows.refuse("screenshot", {"display": 2, "cursor": True}) is None
-    assert _windows.refuse("screen", {"display": 2}) is not None
-
-
 # -------------------------------------------------- the pure parts of Linux
 
 
@@ -555,8 +512,8 @@ def test_capture_merge_leaves_system_audio_to_the_server_when_native_is_unavaila
 
 
 def test_capture_merge_narrows_but_never_widens_a_true_system_audio():
-    """Windows-shaped: the server hard-codes `systemAudio: {available: true}`
-    and leans on this merge to narrow it to what the browser can actually do.
+    """A server that reports `systemAudio: {available: true}` leans on this
+    merge to narrow it to what the browser can actually do.
     The probe's stub browser CAN record, so `true` survives — the "a browser
     that cannot" half of this is covered in the TS test for `mergeSources`,
     which this merge is kept exactly in step with."""
@@ -582,11 +539,9 @@ def test_capture_merge_leaves_everything_to_the_server_when_native_is_available(
 @pytest.mark.parametrize("source", ["system", "both"])
 def test_audio_only_system_audio_is_refused_on_the_sink_platforms(source):
     """Chromium gives no audio-only system audio; the sentence says where it
-    does. Windows has no other path and refuses this unconditionally; Linux
-    records it natively instead (`test_capture_linux_audio.py` covers both of
+    does. Linux records it natively instead (`test_capture_linux_audio.py` covers both of
     its states) and so is not a "sink platform" for audio any more."""
-    for refuse in (_sink.refuse, _windows.refuse):
-        why = refuse("audio", {"audio": source})
-        assert why and "microphone only" in why and "audio: 'system'" in why
+    why = _sink.refuse("audio", {"audio": source})
+    assert why and "microphone only" in why and "audio: 'system'" in why
     assert _sink.refuse("audio", {"audio": "mic"}) is None
     assert _sink.refuse("screen", {"audio": source}) is None

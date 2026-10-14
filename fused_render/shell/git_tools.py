@@ -3,7 +3,7 @@
 The wizard's Git row (frontend shell/onboarding/ToolsStep.tsx) and the
 onboarding meter (shell/onboarding.py `_observe`) ask `probe()`; the row's
 Install button calls `start_install()`. macOS only: the owner's call — the
-stage is `n/a` elsewhere and nothing here is tuned for Linux or Windows.
+stage is `n/a` elsewhere and nothing here is tuned for Linux.
 
 WHY NOT `shutil.which("git")`. Every Mac ships `/usr/bin/git`, whether or not
 the Command Line Tools are installed: it is an xcode-select SHIM that, run on

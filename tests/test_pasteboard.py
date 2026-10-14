@@ -2,7 +2,7 @@
 (fused_render/shell/pasteboard/__init__.py).
 
 Everything here monkeypatches the backend seam, so no OS clipboard is ever
-touched and the whole file runs identically on macOS, Windows and Linux.
+touched and the whole file runs identically on macOS and Linux.
 The per-platform backends get their own test files; this one only pins the
 contract they all have to satisfy: absolute paths in, (paths, token,
 supported) out, and every backend failure degrading to unsupported rather

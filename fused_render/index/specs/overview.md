@@ -25,7 +25,7 @@ that app's specs, updated to the ported reality.
 - **Server API** — the `/api/index/*` routes and the startup scan scheduler
   (`server-api.md`).
 - **Platform support** — the canonical path form every other spec assumes, plus what
-  differs on macOS / Linux / Windows (`platform.md`).
+  differs on macOS / Linux (`platform.md`).
 
 ## Architecture at a glance
 

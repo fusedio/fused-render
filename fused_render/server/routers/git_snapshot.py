@@ -101,7 +101,6 @@ import os
 import re
 import shutil
 import subprocess
-import sys
 import tempfile
 import threading
 from typing import IO, TypedDict
@@ -190,7 +189,6 @@ class _PopenKwargs(TypedDict):
     env: dict[str, str]
     stdin: "int | IO[bytes] | None"
     close_fds: bool
-    creationflags: int
 
 
 def _popen_kwargs(
@@ -209,8 +207,6 @@ def _popen_kwargs(
         # `cwd=`, to reach posix_spawn rather than fork — see git_show.py's
         # comment above its own `_GIT_BIN` for the full story.
         "close_fds": False,
-        "creationflags": (subprocess.CREATE_NO_WINDOW
-                          if sys.platform == "win32" else 0),
     }
 
 

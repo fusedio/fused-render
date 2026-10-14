@@ -289,8 +289,8 @@ def _export_bundled_uv_path() -> None:
     Fixed here, once, rather than in five templates: the /api/run child and the
     daemon it spawns both inherit this process's environment, so prepending the
     directory makes every existing ``shutil.which("uv")`` start working with no
-    template edit. It is also the SAME mechanism the Linux and Windows desktop
-    supervisors already use — they prepend their payload's tools dir to the
+    template edit. It is also the SAME mechanism the Linux desktop
+    supervisor already uses — it prepends its payload's tools dir to the
     server's PATH (``supervisor/paths.py``) — so this closes the platform gap
     instead of adding a second pattern.
 
@@ -1228,7 +1228,7 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     #   the sidebar's "Check for updates" row would have nowhere to try
     #   against. Each platform's own start() already contains this fallback,
     #   so there is nothing left for this hook to gate on.
-    # - Windows, or the env var unset and nothing packaged: a no-op (None).
+    # - the env var unset and nothing packaged: a no-op (None).
     # Last, and off the request path: the manager's first manifest fetch runs
     # on its own thread.
     # Kept as `_startup_update_dev_manager` (not renamed to match the comment

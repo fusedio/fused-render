@@ -7,9 +7,9 @@ poll-friendly append-only log OpenIndex's page used, which drops in unchanged.
 
 The worker is spawned as `python -m fused_render.index.worker`, not
 `Popen([python, __file__])`: inside a py2app bundle there is no source file to
-point at. Detached so the scan outlives the request — via DETACHED_PROCESS on
-Windows, and via the worker's own `os.setsid()` on POSIX (see _detach_kwargs
-for why it must NOT be `start_new_session=True`).
+point at. Detached so the scan outlives the request — via the worker's own
+`os.setsid()` (see _detach_kwargs for why it must NOT be
+`start_new_session=True`).
 
 See specs/scan.md.
 """
@@ -62,9 +62,7 @@ def canonical_root(root: str) -> str:
     `save_applied_ignore` and `_record_scan` — meaning every fingerprint, debounce
     entry and freshness comparison in the store is filed under this spelling. A
     caller that looks one of those up with the user's raw spelling misses:
-    `~/proj` and `/Users/me/proj` are the same root, and on Windows
-    `os.path.expanduser("~")` hands back `C:\\Users\\me` while this stores
-    `C:/Users/me`, so EVERY lookup misses on that platform.
+    `~/proj` and `/Users/me/proj` are the same root.
 
     Exists as a function rather than a line inside `start` for exactly that
     reason: the bug is two spellings drifting apart, so there is one definition
@@ -76,7 +74,7 @@ def canonical_root(root: str) -> str:
 def _detach_kwargs() -> dict:
     """Popen kwargs that let the worker outlive the request and the page.
 
-    On POSIX these MUST stay posix_spawn-compatible: no `start_new_session`,
+    These MUST stay posix_spawn-compatible: no `start_new_session`,
     no `preexec_fn`, and `close_fds=False`. Any of those forces CPython onto
     fork()+exec, and a fork of a server process that has touched
     pyproj/rasterio runs PROJ's pthread_atfork handler and dies with SIGSEGV
@@ -84,10 +82,6 @@ def _detach_kwargs() -> dict:
     every later on-demand scan dies with an empty worker.log. Same discipline
     as envinstall.py. The session detach (`os.setsid`) happens inside the
     worker itself, after exec, where it is safe."""
-    if os.name == "nt":
-        return {"creationflags": (getattr(subprocess, "DETACHED_PROCESS", 0x8)
-                                 | getattr(subprocess,
-                                           "CREATE_NEW_PROCESS_GROUP", 0x200))}
     return {"close_fds": False}
 
 

@@ -27,17 +27,12 @@ import hashlib
 import os
 import re
 
-WINDOWS = os.sep == "\\"
-
 
 def norm(p: str) -> str:
     """Canonical path form for everything stored, matched, or compared:
-    forward slashes, no trailing slash (except a bare root). Windows accepts
-    `/` in every filesystem call, so the canonical form stays usable as-is —
-    which is why normalizing at the edges is enough and no code downstream
-    needs to think about separators. See specs/platform.md."""
-    if WINDOWS:
-        p = p.replace("\\", "/")
+    forward slashes, no trailing slash (except a bare root). A POSIX path is
+    already in that form, so this is the identity — kept as the one named
+    seam every stored or compared path goes through. See specs/platform.md."""
     return p
 
 
@@ -207,8 +202,8 @@ DEFAULT_IGNORE_NAMES = [
     # Cache folders that live OUTSIDE `~/Library/Caches` / `.cache`, which is
     # where most of a home directory's churn actually sits. Bare names on
     # purpose: the same Chromium/Electron folder names appear under
-    # `~/Library/Application Support` (macOS), `~/.config` (Linux) and
-    # `~/AppData/Local` (Windows), so one entry covers all three, and the
+    # `~/Library/Application Support` (macOS) and `~/.config` (Linux), so one
+    # entry covers both, and the
     # watcher drops events under them before it ever plans a rescan — a
     # browser profile writing its disk cache every few seconds no longer
     # re-triggers "rescanning .../Chrome/Profile 3" (seen on a 16 GB machine
@@ -338,9 +333,6 @@ class IgnoreRules:
         self.patterns = list(patterns)
         names, globs, paths = set(), [], []
         for p in self.patterns:
-            # normalize first: a Windows-style pattern (C:\Users\me\x) must be
-            # recognized as a path, not mistaken for a folder name
-            p = norm(p)
             if "/" in p:
                 paths.append(_path_regex(norm(os.path.expanduser(p))))
             elif any(c in p for c in "*?["):

@@ -7,7 +7,6 @@ path on disk and the wire error contract shared with _fs_write:
   400 relative/invalid path, 403 readonly ("readonly"), 404 missing source,
   409 conflict ("conflict"). All four also carry the X-Fused guard.
 """
-import ctypes
 import datetime
 import errno
 import json
@@ -319,8 +318,8 @@ def _force_platform(monkeypatch, name: str):
     attribute IS the real sys module, so setting `platform` on it is a
     process-wide change other live code reads — shell/mounts/rcd.py and
     lifecycle.py branch on sys.platform, and _fs_delete is exercised here,
-    so forcing "win32" here would have any concurrent thread on a Mac take the
-    Windows path. The real dispatcher still runs; only its answer to "which OS is
+    so forcing "linux" here would have any concurrent thread on a Mac take the
+    Linux path. The real dispatcher still runs; only its answer to "which OS is
     this?" is substituted."""
     monkeypatch.setattr(_server_fs_mutate, "_platform", lambda: name)
 
@@ -588,117 +587,28 @@ def test_xdg_trash_dir_defaults_and_ignores_a_relative_xdg_data_home(tmp_path, m
     assert _server_fs_mutate._xdg_trash_dir() == tmp_path / "abs" / "Trash"
 
 
-# -- Windows: the Recycle Bin, against a fake shell32 ------------------------
-
-
-class _FakeShell32:
-    """Records the SHFILEOPSTRUCTW it is handed, and answers as told."""
-
-    def __init__(self, rc=0, abort=False):
-        self.rc, self.abort = rc, abort
-        self.ops = []
-
-    def SHFileOperationW(self, ptr):
-        op = ptr.contents
-        self.ops.append(op)
-        if self.abort:
-            op.fAnyOperationsAborted = 1
-        return self.rc
-
-
-def _fake_bin(monkeypatch, **kw):
-    shell = _FakeShell32(**kw)
-    _force_platform(monkeypatch, "win32")
-    monkeypatch.setattr(_server_fs_mutate, "_shell32", lambda: shell)
-    return shell
-
-
-def test_recycle_bin_request_is_double_null_terminated_with_allowundo():
-    p_from, flags = _server_fs_mutate._recycle_bin_request(r"C:\Users\me\f.txt")
-    # pFrom is a LIST of paths, read until an empty one: the path's own
-    # terminator plus the list's. A single one leaves the API reading past it.
-    assert p_from == "C:\\Users\\me\\f.txt\0\0"
-    # ALLOWUNDO is what makes this the bin instead of an erase; the other two
-    # keep the shell's dialog and progress window out of a local app's delete.
-    assert flags & 0x0040  # FOF_ALLOWUNDO
-    assert flags & 0x0010  # FOF_NOCONFIRMATION
-    assert flags & 0x0004  # FOF_SILENT
-    # NOERRORUI, without which a locked file raises an unowned error dialog that
-    # SHFileOperationW waits on — parking a worker of the bounded threadpool these
-    # sync routes run on. With it, the failure returns an rc we can report.
-    assert flags & 0x0400  # FOF_NOERRORUI
-
-
-def test_delete_win32_recycles_and_reports_no_destination(tmp_path, monkeypatch):
-    # Recoverable, but NOT undoable: the bin keeps the item as $R… beside its
-    # $I… metadata under C:\$Recycle.Bin\<SID>\ and restoring goes through the
-    # shell, so there is no path a rename could bring it back from. No
-    # `trashed_to` — the same rule the macOS Finder fallback falls under.
-    shell = _fake_bin(monkeypatch)
-    f = tmp_path / "f.txt"
-    f.write_text("x")
-    out = _data(DELETE({"path": str(f), "trash": True}, x_fused="1"))
-    assert out == {"deleted": str(f), "trashed": True}
-    assert "trashed_to" not in out
-    [op] = shell.ops
-    assert op.wFunc == 0x0003  # FO_DELETE
-    # Read the wide chars straight out of the buffer the struct points at, so the
-    # LIST TERMINATOR is part of the assertion: a single NUL leaves the API
-    # reading past the buffer, and that is invisible to any check that stops at
-    # the first one.
-    assert ctypes.wstring_at(op.pFrom, len(str(f)) + 2) == str(f) + "\0\0"
-    assert op.fFlags & 0x0040  # FOF_ALLOWUNDO
-    assert op.pTo is None  # FO_DELETE has no destination
-
-
-def test_delete_win32_failure_is_500_not_501(tmp_path, monkeypatch):
-    # A nonzero return is a FAILED recoverable delete, never "unsupported" —
-    # that signal would route the client into the irreversible hard delete.
-    _fake_bin(monkeypatch, rc=124)
-    f = tmp_path / "f.txt"
-    f.write_text("x")
-    resp = DELETE({"path": str(f), "trash": True}, x_fused="1")
-    assert _status(resp) == 500
-    assert "cannot move to Trash" in _data(resp)["error"]
-
-
-def test_delete_win32_aborted_operation_is_a_failure(tmp_path, monkeypatch):
-    # Zero return, abort flag set: the shell stopped, so the entry may still be
-    # there. Reporting success would tell the user their file is in the bin.
-    _fake_bin(monkeypatch, rc=0, abort=True)
-    f = tmp_path / "f.txt"
-    f.write_text("x")
-    resp = DELETE({"path": str(f), "trash": True}, x_fused="1")
-    assert _status(resp) == 500
-    assert "aborted" in _data(resp)["error"]
-
-
-
 def test_forcing_a_platform_does_not_leak_into_the_real_sys(tmp_path, monkeypatch):
     # The seam's whole point. Patching `_server_fs_mutate.sys.platform` would have
     # patched the REAL sys module — shell/mounts/rcd.py and lifecycle.py read it
-    # live, and _fs_delete runs live — so a Windows-forcing case on a
+    # live, and _fs_delete runs live — so a Linux-forcing case on a
     # Mac changed what every other thread in the process believed about the OS.
     import sys as real_sys
 
     before = real_sys.platform
-    shell = _fake_bin(monkeypatch)
+    trash = _xdg_home(monkeypatch, tmp_path)
     f = tmp_path / "f.txt"
     f.write_text("x")
     out = _data(DELETE({"path": str(f), "trash": True}, x_fused="1"))
-    # The dispatcher really did take the win32 branch: the fake shell was asked to
-    # recycle the path, and the answer has no `trashed_to` (the bin names nothing).
-    # The fake does not itself remove the file, which is why this asserts on the
-    # CALL rather than on the file being gone.
-    assert len(shell.ops) == 1
-    assert out == {"deleted": str(f), "trashed": True}
+    # The dispatcher really did take the linux branch: the entry landed in the
+    # XDG trash it was pointed at.
+    assert out["trashed_to"] == str(trash / "files" / "f.txt")
     # …while the rest of the process still sees the true platform.
     assert real_sys.platform == before
     assert _server_fs_mutate.sys.platform == before
 
 
-def test_trash_supported_on_the_three_desktops_only(monkeypatch):
-    for name in ("darwin", "linux", "win32"):
+def test_trash_supported_on_the_two_desktops_only(monkeypatch):
+    for name in ("darwin", "linux"):
         _force_platform(monkeypatch, name)
         assert _server_fs_mutate._trash_supported()
     for name in ("freebsd13", "emscripten"):

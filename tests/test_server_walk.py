@@ -1,6 +1,5 @@
 """Tests for GET /api/fs/walk (fused_render/server.py) — the recursive listing
 backing the explorer search."""
-import pytest
 from fastapi.testclient import TestClient
 
 from fused_render.server import walk as _server_walk
@@ -352,20 +351,3 @@ def test_walk_stream_prunes_default_ignored_too(tmp_path):
     lines = _stream_lines(client, str(tmp_path))
     streamed = {e["rel"] for line in lines if "entries" in line for e in line["entries"]}
     assert streamed == _rels(client, tmp_path)  # stream/non-stream parity
-
-
-def test_walk_hides_windows_hidden_system_entries(tmp_path):
-    # Search must hide the same HIDDEN+SYSTEM junctions /api/fs/list hides, or
-    # opening one from a search result errors (WinError 5).
-    import subprocess
-    import sys
-
-    if sys.platform != "win32":
-        pytest.skip("hidden+system attributes are Windows-only")
-    (tmp_path / "visible.txt").write_text("v", encoding="utf-8")
-    protected = tmp_path / "protected.txt"
-    protected.write_text("p", encoding="utf-8")
-    subprocess.run(["attrib", "+h", "+s", str(protected)], check=True)
-    data = _client(tmp_path).get("/api/fs/walk", params={"path": str(tmp_path)}).json()
-    rels = {e["rel"] for e in data["entries"]}
-    assert "visible.txt" in rels and "protected.txt" not in rels

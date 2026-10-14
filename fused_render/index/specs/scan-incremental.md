@@ -191,7 +191,7 @@ each shipping green unit tests and failing the same real test: no clock-based gu
 tell a genuinely quiet folder from one that changed five seconds after the last check.
 
 The watcher instead observes the real change stream — `watchfiles` (the `notify` Rust
-crate: FSEvents on macOS, inotify on Linux, ReadDirectoryChangesW on Windows) — one
+crate: FSEvents on macOS, inotify on Linux) — one
 `WatchLoop` per configured root (`server/routers/index.py`'s `scan_roots`), running on
 its own background thread from app startup to shutdown. A batch of raw events is
 filtered at arrival by the same two structural refusals the rest of the index uses

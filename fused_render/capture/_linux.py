@@ -15,8 +15,8 @@ alternative here is real — portal ScreenCast hands out a PipeWire node and
 GStreamer can encode it — but it needs `gst-launch-1.0` plus
 `gst-plugins-good`, `gst-plugins-bad` and `gst-libav` present on the user's
 machine, and it is a second implementation of something Chromium already does
-through that exact portal. One sink shared with Windows costs nothing extra
-and works wherever the browser does. See `_sink.py`.
+through that exact portal. The sink costs nothing extra and works wherever
+the browser does. See `_sink.py`.
 
 **Audio recording is native (`_linux_audio`), not a screen-share.** Unlike
 video, PipeWire's pulse-compatible layer is a few-line ctypes call away with no

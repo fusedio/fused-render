@@ -135,8 +135,7 @@ their presence never flips the mode. There is deliberately **no escape hatch** f
 a literal space in a filename — quoting is out of scope (SPEC-search-space-
 wildcard.md).
 
-Base resolution (peeling a leading `~`, an absolute path, a Windows drive letter,
-or a `..`-containing relative query off into `base`, with whatever is left as
+Base resolution (peeling a leading `~`, an absolute path, or a `..`-containing relative query off into `base`, with whatever is left as
 `pattern`) runs on the ALREADY-expanded string, so a leading folder path is
 subject to the same whitespace-as-wildcard rule as the trailing name — "apply
 everywhere" is a deliberate scope choice, not an oversight. The walk that does
@@ -146,8 +145,7 @@ trying to resolve a glob against the filesystem.
 
 **Fixed this round**: a LEADING run of whitespace in front of one of these
 escape forms is stripped BEFORE `expand_whitespace_query` runs, not after —
-`" ~/Documents"`, `" /etc/hosts"`, `" ../notes"` and a leading-space Windows
-drive path all resolve exactly as they would without the leading space.
+`" ~/Documents"`, `" /etc/hosts"` and `" ../notes"` all resolve exactly as they would without the leading space.
 Left unstripped, the leading run collapses into a `**` token glued onto the
 prefix these checks look for (`raw.startswith("~/")` etc.), so `" ~/Documents"`
 used to resolve to `"**~/**Documents**"` — a pattern that no longer starts

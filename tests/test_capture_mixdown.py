@@ -2,7 +2,7 @@
 
 `capture/_mixdown.py` deliberately imports nothing from Apple so that the part
 of the macOS 13–14 recorder with actual ARITHMETIC in it can be tested on every
-runner, which is the split D410 already uses for the Windows and Linux stills.
+runner, which is the split D410 already uses for the Linux stills.
 What cannot be tested here is the sample buffers arriving — that lives in
 `_darwin_mux` and needs a display, a microphone and an OS two versions behind
 this one.

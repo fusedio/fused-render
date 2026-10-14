@@ -54,7 +54,6 @@ from fused_render.server.walk import (
     _list_response,
     _sort_entries,
     _walk_bfs,
-    _win_protected,
 )
 from fused_render.server.watch import _WATCH_REGISTRY
 
@@ -141,11 +140,6 @@ def api_fs_list(path: str, cursor: str | None = None):
         dents = dents[:_server_walk.LIST_MAX_ENTRIES]
     for de in dents:
         try:
-            if _win_protected(de):
-                # Windows hidden+system entries (e.g. the deny-ACL
-                # Documents\My Videos compat junction) — Explorer hides
-                # these, and scandir'ing into them raises WinError 5.
-                continue
             st = de.stat()
             is_dir = de.is_dir()
         except OSError:
@@ -495,16 +489,10 @@ def api_fs_reveal(body: dict = Body(...), x_fused: str | None = Header(default=N
     is_dir = os.path.isdir(path)
     if sys.platform == "darwin":
         cmd = ["open", path] if is_dir else ["open", "-R", path]
-    elif os.name == "nt":
-        # Explorer needs native backslash paths — forward slashes make
-        # /select, silently open the default folder instead.
-        win_path = os.path.normpath(path)
-        cmd = ["explorer", win_path] if is_dir else f'explorer /select,"{win_path}"'
     else:
         cmd = ["xdg-open", path if is_dir else os.path.dirname(path)]
-    # posix-spawn-exempt: `cmd` is assembled above as "open"/"explorer"/
-    # "xdg-open" (or a Windows format string for the /select case) — the OS's
-    # file-manager launcher, never git. The static sweep in
+    # posix-spawn-exempt: `cmd` is assembled above as "open"/"xdg-open" — the
+    # OS's file-manager launcher, never git. The static sweep in
     # tests/test_git_posix_spawn.py cannot see through the variable to know
     # that, and this file's own `e["git"] = status` a few lines up (a JSON
     # field name, not an argv) is enough to put it in the sweep's scope.

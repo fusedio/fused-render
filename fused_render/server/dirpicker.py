@@ -2,7 +2,7 @@
 
 A template that has to write something somewhere needs a destination, and the
 honest way to ask for one is the dialog the operating system already provides:
-NSOpenPanel, IFileDialog, zenity. Every alternative is worse. The app's UI runs
+NSOpenPanel, zenity. Every alternative is worse. The app's UI runs
 in the user's real default browser (`webbrowser.open`, app.py), not an app-owned
 webview, so `webkitdirectory` and `showDirectoryPicker` are both dead ends —
 a browser deliberately strips the absolute path, and every `/api/fs/*` endpoint
@@ -20,9 +20,6 @@ tested as one):
   block posted with `callAfter` would never be delivered; `choose folder` in a
   child process is the established way this server already shells out to
   AppleScript.
-* **Windows** → `win32`, in-process on a dedicated STA thread. The tray is a
-  SEPARATE process there and `supervisor/protocol.py` has no reply payload, so
-  routing the dialog through it could not carry the answer back.
 * **Linux** → `linux` (zenity / kdialog / tkinter), but only with a display.
 * **anything else, or a headless Linux** → no backend at all, which is what
   `/api/config`'s `native_dir_picker: false` tells the templates so they use the
@@ -40,7 +37,7 @@ subprocess:
   worker for the life of the process.
 
   Those two pull against each other when a wait times out over a dialog that is
-  STILL UP, which the in-process backends cannot take down. Freeing the claim
+  STILL UP, which the in-process backend cannot take down. Freeing the claim
   there stacks a second modal on the first; keeping it forever wedges the picker.
   So the claim is handed to the dialog itself and clears when the dialog really
   ends — see the one-dialog claim section below, and `DialogAbandoned`.
@@ -53,7 +50,7 @@ import sys
 import threading
 from collections.abc import Sequence
 
-from fused_render._view_url_codec import _is_drive_path, canonical_fs_path, normpath_for_shape
+from fused_render._view_url_codec import canonical_fs_path, normpath_for_shape
 from fused_render.server.common import logger
 
 # Long enough that a human really can browse to a folder, short enough that a
@@ -78,8 +75,8 @@ class PickerFailed(RuntimeError):
 class DialogAbandoned(RuntimeError):
     """We stopped waiting, but the dialog is STILL ON SCREEN.
 
-    Raised only by the backends that own a modal they cannot take down: the
-    Windows STA thread and the AppKit main thread. `finished` is set when that
+    Raised only by the backend that owns a modal it cannot take down: the
+    AppKit main thread. `finished` is set when that
     dialog really does end, which is what lets `pick_directory` keep refusing new
     requests until then without wedging the picker forever.
 
@@ -122,12 +119,6 @@ def _choose_backend(platform: str, environ, *, has_osascript: bool = True,
         if appkit_live:
             return "appkit"
         return "osascript" if has_osascript else ""
-    # `sys.platform` alone, never `os.name`: reading the ambient os.name here
-    # would make this function answer differently on the machine it runs on than
-    # on the platform it was asked about — i.e. not pure, and its tests would
-    # pass everywhere except on a Windows runner.
-    if platform == "win32":
-        return "win32"
     if platform.startswith("linux"):
         # No display means no dialog: a hosted or headless deploy must advertise
         # the capability as false rather than open something nobody can dismiss.
@@ -274,10 +265,10 @@ def _pick_osascript(start, title, *, files=False, types=None, multiple=False):
     raise PickerFailed(stderr or f"osascript exited with status {proc.returncode}")
 
 
-# --------------------------------------------------------------- Linux / Windows
-# Both live with their platform's other native UI, behind the same `_backend`
-# seam the supervisor uses, so this module holds no per-OS dialog code of its
-# own. They raise OSError for "the dialog broke" and return None for a cancel.
+# --------------------------------------------------------------------- Linux
+# Lives with the platform's other native UI, behind the same `_backend` seam the
+# supervisor uses, so this module holds no per-OS dialog code of its own. It
+# raises OSError for "the dialog broke" and returns None for a cancel.
 
 
 def _pick_linux(start, title, *, files=False, types=None, multiple=False):
@@ -304,56 +295,12 @@ def _pick_linux(start, title, *, files=False, types=None, multiple=False):
     return pick_directory(title=title, start=start)
 
 
-def _pick_win32(start, title, *, files=False, types=None, multiple=False):
-    """The Windows shell dialog, on its own STA thread. `multiple` is not
-    forwarded, for `_pick_linux`'s reason: `GetOpenFileNameW`'s multi-select
-    answers a NUL-packed buffer with its own parsing rules, and `_pick` wraps
-    the single answer in a list instead.
-
-    `IFileDialog` pumps its own message loop and shell extensions need a
-    single-threaded apartment, so it cannot run on a threadpool worker that
-    something else has already CoInitialized differently — the same discipline
-    `supervisor/core.py` documents around `pick_file`. The lock in
-    `pick_directory` is the single-dialog half of it.
-    """
-    from fused_render.supervisor._win32.ui import pick_directory, pick_file
-
-    cell = {}
-    # Set by the dialog thread itself, whatever the outcome. On the timeout path
-    # this is the ONLY thing that can tell anyone the modal has gone: nothing here
-    # can dismiss an IFileDialog pumping its own message loop.
-    finished = threading.Event()
-
-    def run():
-        try:
-            # `pick_file` is the tray's own GetOpenFileNameW dialog and takes
-            # neither a title nor a start — see `_pick_linux` for the same
-            # trade, made for the same reason. It does take `types`: that is one
-            # `Filter` string, not a dialog's worth of options.
-            cell["path"] = (pick_file(types=types) if files
-                            else pick_directory(title=title, start=start))
-        except BaseException as exc:  # noqa: BLE001 - carried to the caller below
-            cell["error"] = exc
-        finally:
-            finished.set()
-
-    thread = threading.Thread(target=run, daemon=True, name="fused-dir-dialog")
-    thread.start()
-    thread.join(_DIALOG_TIMEOUT_S)
-    if thread.is_alive():
-        raise DialogAbandoned(finished)
-    if "error" in cell:
-        raise cell["error"]
-    return cell.get("path")
-
-
 # A dict, not an if-chain, so a test can substitute one backend without
 # monkeypatching platform detection as well.
 _BACKENDS = {
     "appkit": _pick_appkit,
     "osascript": _pick_osascript,
     "linux": _pick_linux,
-    "win32": _pick_win32,
 }
 
 
@@ -419,28 +366,18 @@ def _canonical_absolute(chosen: str) -> str:
     Three steps, in this order and for three different reasons.
 
     `normpath` first: it is what drops the trailing slash AppleScript's `POSIX
-    path of` puts on a folder, and collapses any `..` a backend hands back. On a
-    Windows path it is also what makes every separator a backslash — so
-    canonicalizing after it is the only order that catches them all.
+    path of` puts on a folder, and collapses any `..` a backend hands back.
 
-    `canonical_fs_path` second. Every path above the OS in this app is
-    forward-slashed: it is what a /view URL decodes to, what the runtime sends as
-    X-Fused-Page, and what `/api/config` already applies this same call to for
-    `calls_dir` with the same note attached. The shell and folder-picker.js's
-    `parent`/`join` both assume it, so a backslashed path here would feed mixed
-    separators into clone-destination naming and every /api/fs/* call after it.
-    Conditional, not a blind replace: on POSIX a backslash is a legal filename
-    character. A UNC path is deliberately left alone too — the codec keeps it as
-    one opaque segment, and inventing a second convention here would make this the
-    only place in the app that disagrees.
+    `canonical_fs_path` second. Every path above the OS in this app is in that
+    one canonical form: it is what a /view URL decodes to, what the runtime
+    sends as X-Fused-Page, and what `/api/config` already applies this same call
+    to for `calls_dir`. A backslash is a legal POSIX filename character and is
+    left untouched.
 
-    The absolute test comes LAST, and classifies rather than asking the running
-    OS. `posixpath.isabs("C:/Users/ada")` is False, and that is exactly the value
-    a Windows server produces — so `os.path.isabs` alone would reject the real
-    answer anywhere but Windows.
+    The absolute test comes LAST, on the canonical value.
     """
     canonical = canonical_fs_path(normpath_for_shape(chosen))
-    if not (os.path.isabs(canonical) or _is_drive_path(canonical)):
+    if not os.path.isabs(canonical):
         raise PickerFailed(
             f"the folder chooser answered a relative path: {canonical!r}")
     return canonical
@@ -550,7 +487,7 @@ def pick_files(start: str | None = None,
 
     `pick_file` with the panel's multi-select on. On macOS (AppKit and
     osascript alike) the user shift/cmd-clicks as many as they like; the Linux
-    and Windows backends pick one per dialog and answer a one-item list, so a
+    backend picks one per dialog and answers a one-item list, so a
     caller written against this never has to branch on the platform — it only
     gets fewer per click there. Same claim, same timeout, same `types` filter.
     """

@@ -21,8 +21,8 @@ control plane and the work are split:
 | `runner.list_runs(cfg)` | `{runs}` — 20 most recent | no |
 
 `start` spawns **`python -m fused_render.index.worker <run_dir>`** with the detach
-kwargs from `_detach_kwargs` — `start_new_session` on POSIX, creation flags on Windows
-(`platform.md §2`) — so the scan outlives the request and any page reload. The module
+kwargs from `_detach_kwargs` — posix_spawn-safe, with the session detach done by the
+worker's own `os.setsid()` (`platform.md §2`) — so the scan outlives the request and any page reload. The module
 form (OpenIndex used `Popen([python, __file__, "--worker", …])`) is what makes it work
 inside a py2app bundle, where there is no source file to point at.
 
@@ -114,12 +114,6 @@ per-platform and always best-effort — a failure never takes the scan down:
 - **Linux**: `ioprio_set` (a raw syscall, arch-specific number, no libc wrapper) at
   `IOPRIO_CLASS_IDLE`. Only honored under I/O schedulers that implement priority
   classes (BFQ); a harmless no-op under mq-deadline/none.
-- **Windows**: `SetPriorityClass(..., PROCESS_MODE_BACKGROUND_BEGIN)`. Since
-  `os.nice` does not exist on Windows at all, this is that platform's *only* scan
-  mitigation, covering CPU, I/O, and memory priority together — not just the I/O
-  half the other two platforms get on top of `nice`. Background mode is not
-  inherited by child processes there, which is why `_child_init` calls it again
-  rather than relying on inheritance.
 
 The invariant, completed: an interactive keystroke wins both the CPU scheduler and
 the disk queue.

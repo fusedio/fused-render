@@ -5029,7 +5029,7 @@ def _path_within(path: str, root_real: str) -> bool:
     try:
         real = os.path.realpath(expanded)
         return os.path.commonpath([real, root_real]) == root_real
-    except ValueError:  # different drives on Windows, or a relative mix
+    except ValueError:  # a relative mix
         return False
 
 

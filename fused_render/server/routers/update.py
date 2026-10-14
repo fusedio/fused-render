@@ -2,9 +2,7 @@
 /api/config's `update` field so the shell's existing 5s poll carries it —
 these POSTs only trigger work. Both mutate (network + an artifact swap), so
 they carry the D3 X-Fused guard; they 404 when no update manager is running
-(dev server, CLI, or Windows — which updates entirely through the
-supervisor's own path, supervisor/_win32/update.py, with no in-app
-manager)."""
+(dev server or CLI)."""
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel
 

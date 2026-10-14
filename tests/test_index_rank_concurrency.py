@@ -133,29 +133,6 @@ def test_set_background_io_policy_skips_unknown_linux_arch(monkeypatch):
     assert worker._set_background_io_policy() is False
 
 
-def test_set_background_io_policy_invokes_set_priority_class_on_win32(
-        monkeypatch):
-    """Windows has no `os.nice` at all, so this is its first scan
-    mitigation, not just its I/O half — PROCESS_MODE_BACKGROUND_BEGIN."""
-    calls = []
-
-    class FakeKernel32:
-        def GetCurrentProcess(self):
-            return 1234
-
-        def SetPriorityClass(self, handle, flag):
-            calls.append((handle, flag))
-            return 1  # nonzero == success, per SetPriorityClass's contract
-
-    class FakeWindll:
-        kernel32 = FakeKernel32()
-
-    monkeypatch.setattr(worker.sys, "platform", "win32")
-    monkeypatch.setattr(worker.ctypes, "windll", FakeWindll(), raising=False)
-    assert worker._set_background_io_policy() is True
-    assert calls == [(1234, worker.PROCESS_MODE_BACKGROUND_BEGIN)]
-
-
 def test_an_unmatched_platform_is_a_silent_no_op(monkeypatch):
     monkeypatch.setattr(worker.sys, "platform", "some-future-os")
     assert worker._set_background_io_policy() is False
