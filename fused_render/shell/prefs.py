@@ -219,16 +219,6 @@ def native_windows_enabled() -> bool:
     return read_prefs().get("native_windows_enabled") is not False
 
 
-def apps_open_in_explorer() -> bool:
-    """Whether an app clicked inside a native window opens in the explorer
-    view (sidebar, crumb, header) instead of its chrome-free embed (default
-    OFF — opt-in). Either way it loads into the window it was clicked in;
-    the embed turns that window into the app's window. Read by the client
-    at click time (appEntry.ts `openAppEntry`); the browser shell always
-    opens the explorer."""
-    return read_prefs().get("apps_open_in_explorer") is True
-
-
 def app_sharing_enabled() -> bool:
     """Whether the unified Share sheet is offered (default off — opt-in).
 
@@ -671,7 +661,6 @@ def _prefs_response() -> dict:
         "native_windows": _native_windows_state(),
         # An app clicked inside a native window opens in the explorer view
         # instead of its embed (opt-in, default off).
-        "apps_open_in_explorer": {"enabled": apps_open_in_explorer()},
         # Which surface the macOS status item shows: the menu-bar Dock
         # (default) or the pinned-file popover (`menubar_pin_enabled`, opt-in).
         # `available` is the same test as the windows above: this process is
@@ -971,12 +960,6 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
             if apply_menubar is not None:
                 apply_menubar(value)
             changed = True
-        if "apps_open_in_explorer" in body:
-            value = body.get("apps_open_in_explorer")
-            if not isinstance(value, bool):
-                return JSONResponse({"error": "'apps_open_in_explorer' must be a boolean"}, status_code=400)
-            prefs["apps_open_in_explorer"] = value
-            changed = True
         if "task_notify_terminal_sessions" in body:
             value = body.get("task_notify_terminal_sessions")
             if not isinstance(value, bool):
@@ -1138,7 +1121,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
             return JSONResponse(
                 {"error": "no known preference in request (expected 'engine', "
                           "'engines', 'reader_enabled', 'canvases_enabled', 'app_sharing_enabled', 'live_previews_enabled', 'monitor_enabled', "
-                          "'native_windows_enabled', 'apps_open_in_explorer', "
+                          "'native_windows_enabled', "
                           "'task_notify_terminal_sessions', "
                           "'project_queue_enabled', "
                           "'lan_enabled', "

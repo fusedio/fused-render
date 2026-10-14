@@ -1568,13 +1568,3 @@ def test_put_rejects_bad_auto_download_updates(tmp_path, monkeypatch):
         "/api/prefs", json={"auto_download_updates": "yes"}, headers=FUSED
     ).status_code == 400
     assert not (home / "prefs.json").exists()
-
-
-def test_apps_open_in_explorer_defaults_off_and_round_trips(tmp_path, monkeypatch):
-    client, home = _client(tmp_path, monkeypatch)
-    assert client.get("/api/prefs", headers=FUSED).json()["apps_open_in_explorer"] == {"enabled": False}
-    body = client.put("/api/prefs", json={"apps_open_in_explorer": True}, headers=FUSED).json()
-    assert body["apps_open_in_explorer"] == {"enabled": True}
-    assert json.loads((home / "prefs.json").read_text())["apps_open_in_explorer"] is True
-    assert client.put("/api/prefs", json={"apps_open_in_explorer": "yes"},
-                      headers=FUSED).status_code == 400

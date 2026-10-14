@@ -36,9 +36,8 @@
 // click handler — which is the second reason this module exists: `hrefFor` and
 // `openTargetFor` resolve the same target, so a new tab and a left click can't
 // land in different places.
-import { type AppInfo, getPrefs } from "./api";
-import { isMac } from "./platform";
-import { embedUrlForFsPath, IS_NATIVE_WINDOW, navigate, urlForFsPath } from "./router";
+import { type AppInfo } from "./api";
+import { navigate, urlForFsPath } from "./router";
 
 // The ONE ordering every app grid uses (/home's strip, the /apps hub):
 // recently-OPENED desc; an app never opened falls back to its modified time,
@@ -118,30 +117,13 @@ export function hrefFor(app: AppInfo): string {
   return urlForFsPath(openTargetFor(app).path);
 }
 
+// An app clicked inside the shell lands on its entry page in the explorer, in
+// the window it was clicked in — a browser tab and a native window alike. Only
+// the launcher and the menu-bar Dock's app tiles run an app as a chrome-free
+// embed, in a window of its own (mac_window.py `focus_or_open_app`).
 export function openApp(app: AppInfo): void {
   const { path, opts } = openTargetFor(app);
-  if (opts?.isDir) navigate(path, opts);
-  else openAppEntry(path, () => navigate(path, opts));
-}
-
-// An app's entry page, clicked inside the shell. A browser tab opens it in the
-// explorer (`inExplorer`). Inside a native window (router.ts IS_NATIVE_WINDOW)
-// it loads the chrome-free EMBED into this same window — a document load, as
-// IS_EMBED is fixed at load — and the window becomes the app's window (the URL
-// observer re-keys it, mac_window.py; its title-bar Edit is the way into the
-// explorer). The `apps_open_in_explorer` preference keeps the explorer there
-// too. A failed prefs read takes the default, the embed. macOS only: a Linux
-// window has no title-bar Edit and EmbedStrip hides in native windows, so an
-// embed there would leave no way back — Linux keeps the explorer.
-export function openAppEntry(entry: string, inExplorer: () => void): void {
-  if (!IS_NATIVE_WINDOW || !isMac) {
-    inExplorer();
-    return;
-  }
-  const toEmbed = () => window.location.assign(embedUrlForFsPath(entry));
-  getPrefs()
-    .then((p) => (p.apps_open_in_explorer?.enabled === true ? inExplorer() : toEmbed()))
-    .catch(toEmbed);
+  navigate(path, opts);
 }
 
 // Structural, like platform.ts's ModifierEvent: a React MouseEvent satisfies it,
