@@ -9,7 +9,10 @@
   max-width: 720px;
   width: 100%;
   margin: 0 auto;
-  padding: 0 20px 6px;
+  /* The composer's folded "model · effort" line (`.c-composer-meta`) is hung
+     off the card's top edge, into whatever sits above it. 22px of room keeps
+     it out of this strip's rounded box, collapsed or open. */
+  padding: 0 20px 22px;
   font-size: 12px;
   line-height: 1.45;
 }
