@@ -701,13 +701,16 @@ class _WebDelegate(NSObject):
             was_embed = window.view == "embed"
             window.key = window_policy.window_key_of(current)
             window.view = window_policy.window_view_of(current)
-            if window.view == "embed" and not was_embed and window.key:
-                # A shell window turned into an app's run window (an app
-                # clicked inside it, appEntry.ts `openAppEntry`): it takes the
-                # app window's frame and lets go of the one it was opened
-                # under, so Home's saved frame is never the app's to move.
+            if (window.view == "embed") != was_embed and not window._popup:
+                # The window crossed between shell and an app's run window —
+                # an app clicked inside it (appEntry.ts `openAppEntry`), or
+                # the title bar's Home/Edit back out: it takes the frame of
+                # what it shows now and lets go of the old one, so neither
+                # side's saved frame is the other's to move. Edit hands
+                # before loading, so it is already a no-op here. A popup
+                # never holds a saved frame (`_place`).
                 self._manager.hand_frame(
-                    window, window_policy.frame_autosave_name(window.key, "embed"))
+                    window, window_policy.frame_autosave_name(window.key, window.view))
             window.sync_edit_button()
 
     # ---- NSWindowDelegate --------------------------------------------------
