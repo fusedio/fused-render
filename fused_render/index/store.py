@@ -11,6 +11,7 @@ module top: this module is imported by the server (routers/index.py), and a
 `stats` call on a missing index should not pay a duckdb import.
 """
 import contextlib
+import errno
 import fcntl
 import json
 import os
@@ -61,9 +62,22 @@ def background_connect():
     return con
 
 
+class StoreLockCancelled(Exception):
+    """The run was cancelled while it waited for `store_lock`."""
+
+
+# How often a waiter polls for the lock, and how often it tells its caller it
+# is still alive while it waits. The heartbeat mirrors _MERGE_HEARTBEAT_S
+# (comfortably under runner.ABANDONED_RUN_S): a worker queued behind another
+# scan's merge writes nothing, so without it the liveness watchdog reports a
+# healthy waiter dead.
+LOCK_POLL_S = 0.25
+_LOCK_WAIT_HEARTBEAT_S = 20.0
+
+
 @contextlib.contextmanager
-def store_lock(cfg: IndexConfig):
-    """Mutual exclusion for store WRITERS (compactions, delete), blocking.
+def store_lock(cfg: IndexConfig, cancel_flag=None, on_wait=None):
+    """Mutual exclusion for store WRITERS (compactions, delete).
 
     Two concurrent compactions — two configured roots scanned at startup, or a
     config-save rescan racing the startup scan — would otherwise both read the
@@ -75,17 +89,44 @@ def store_lock(cfg: IndexConfig):
 
     An OS lock (flock), not a lockfile-existence protocol: it is held
     by an open fd, so a crashed worker releases it with its process instead of
-    wedging every future scan."""
+    wedging every future scan.
+
+    With no arguments it blocks until it has the lock (delete-index and the
+    other callers want exactly that). A scan worker passes `cancel_flag` and
+    `on_wait`: the wait then polls instead of blocking in flock, so a cancelled
+    run raises `StoreLockCancelled` at once rather than sitting on its memory
+    until the lock frees, and `on_wait()` is called every
+    `_LOCK_WAIT_HEARTBEAT_S` so the run still looks alive."""
     os.makedirs(cfg.dir, exist_ok=True)
     f = open(os.path.join(cfg.dir, ".store.lock"), "a")
+    acquired = False
     try:
-        fcntl.flock(f, fcntl.LOCK_EX)
+        if cancel_flag is None and on_wait is None:
+            fcntl.flock(f, fcntl.LOCK_EX)
+        else:
+            last_beat = time.monotonic()
+            while True:
+                try:
+                    fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except OSError as e:
+                    if e.errno not in (errno.EWOULDBLOCK, errno.EAGAIN):
+                        raise
+                if cancel_flag is not None and os.path.exists(cancel_flag):
+                    raise StoreLockCancelled()
+                if (on_wait is not None
+                        and time.monotonic() - last_beat >= _LOCK_WAIT_HEARTBEAT_S):
+                    last_beat = time.monotonic()
+                    on_wait()
+                time.sleep(LOCK_POLL_S)
+        acquired = True
         yield
     finally:
-        try:
-            fcntl.flock(f, fcntl.LOCK_UN)
-        except OSError:
-            pass
+        if acquired:
+            try:
+                fcntl.flock(f, fcntl.LOCK_UN)
+            except OSError:
+                pass
         f.close()
 
 
@@ -375,17 +416,28 @@ def compact(cfg: IndexConfig, root, shards_dir, pa, pq, emit=None,
     behind this one and merges on top of ITS output instead of on the stale
     generation both of them read.
 
-    `cancel_flag` is re-checked after the lock is acquired: a Delete Index
+    `cancel_flag` is also polled WHILE waiting for the lock (a cancelled run
+    gives up at once instead of holding its memory behind another scan's
+    merge), and the wait emits a heartbeat phase so the run still reads as
+    alive. It is re-checked after the lock is acquired: a Delete Index
     pressed while this run was walking cancels the run and takes the lock, so
     a compaction that was about to rebuild the store the user just emptied
     aborts here (returns None) instead of quietly undoing the delete.
 
     `emit` is the worker's event writer (or None when compaction is driven
     directly, e.g. by a test)."""
-    with store_lock(cfg):
-        if cancel_flag is not None and os.path.exists(cancel_flag):
-            return None
-        return _compact_locked(cfg, root, shards_dir, pa, pq, emit)
+    def phase(msg):
+        if emit is not None:
+            emit(type="phase", msg=msg)
+
+    try:
+        with store_lock(cfg, cancel_flag=cancel_flag,
+                        on_wait=lambda: phase("waiting for another scan to finish")):
+            if cancel_flag is not None and os.path.exists(cancel_flag):
+                return None
+            return _compact_locked(cfg, root, shards_dir, pa, pq, emit)
+    except StoreLockCancelled:
+        return None
 
 
 # Heartbeat cadence for the blocking merge statement below — comfortably

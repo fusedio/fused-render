@@ -128,6 +128,19 @@ Three consequences worth knowing:
   deliberately left on disk one compaction longer for a reader that loaded the manifest
   microseconds before the swap.
 
+## 4b. The store lock wait
+
+`store_lock(cfg, cancel_flag=None, on_wait=None)` is the flock every store writer
+takes. With no arguments it blocks (delete-index wants that). `compact` passes the
+run's `cancel_flag` and an `on_wait` that emits a `waiting for another scan to finish`
+phase, so the wait **polls** (`LOCK_NB` every `LOCK_POLL_S` = 0.25 s) instead of
+blocking in `flock`: a cancelled run raises `StoreLockCancelled` and `compact` returns
+`None` ("cancelled at the store lock") at once rather than holding its scan memory
+until the lock frees, and `on_wait` fires every `_LOCK_WAIT_HEARTBEAT_S` (20 s) so a
+queued worker keeps touching its run dir and `runner._with_liveness` does not declare
+it dead after `ABANDONED_RUN_S`. Before the wait, `scan.py` drops the dir cache (and,
+on the FSEvents path, its walk structures) so a queued worker is not parked on them.
+
 ## 5. Compaction threads
 
 The merge connects through `background_connect()`, which issues

@@ -775,3 +775,95 @@ def test_partial_merge_at_the_boundary_one_partition_short_of_everything(tmp_pat
     assert any(p["file"] == before_file for p in after)
     assert os.stat(os.path.join(cfg.files_dir, before_file)).st_mtime_ns == before_mtime
     assert len(after) == 3
+
+
+# -- store_lock: a wait that can be cancelled and that heartbeats ----------------
+
+def _hold_lock(cfg):
+    """Hold the store lock from a second open file description, so the
+    lock under test contends with it the way another worker's would."""
+    import fcntl
+
+    os.makedirs(cfg.dir, exist_ok=True)
+    f = open(os.path.join(cfg.dir, ".store.lock"), "a")
+    fcntl.flock(f, fcntl.LOCK_EX)
+    return f
+
+
+def test_uncontended_store_lock_works_and_releases(tmp_path):
+    cfg = _cfg(tmp_path)
+    with store_mod.store_lock(cfg):
+        pass
+    with store_mod.store_lock(cfg):  # would block forever if never released
+        pass
+
+
+def test_compact_waiting_on_the_store_lock_returns_none_when_cancelled(tmp_path):
+    """A cancelled run used to notice its flag only AFTER acquiring the lock,
+    holding its whole scan's memory while it waited behind a long merge."""
+    import threading
+
+    cfg = _cfg(tmp_path)
+    shards = _shard(tmp_path, cfg, [("/r", _scanned("s", [_row("/r/a.txt")], 10, 1, 0))])
+    flag = str(tmp_path / "cancel")
+    held = _hold_lock(cfg)
+    out = {}
+    t = threading.Thread(target=lambda: out.update(
+        r=compact(cfg, "/r", shards, pa, pq, cancel_flag=flag)))
+    try:
+        t.start()
+        time.sleep(0.4)
+        assert t.is_alive()  # still waiting on the held lock
+        open(flag, "w").close()
+        t.join(timeout=2.5)
+        assert not t.is_alive(), "a cancelled waiter must give up promptly"
+        assert out == {"r": None}
+    finally:
+        held.close()
+        t.join(timeout=5)
+
+
+def test_a_waiting_store_lock_heartbeats(tmp_path, monkeypatch):
+    """A waiting worker emits nothing otherwise, so the liveness watchdog
+    (runner.ABANDONED_RUN_S) would call it dead while it is merely queued."""
+    import threading
+
+    monkeypatch.setattr(store_mod, "_LOCK_WAIT_HEARTBEAT_S", 0.1)
+    cfg = _cfg(tmp_path)
+    beats = []
+    held = _hold_lock(cfg)
+    got = []
+
+    def waiter():
+        with store_mod.store_lock(cfg, on_wait=lambda: beats.append(1)):
+            got.append(True)
+
+    t = threading.Thread(target=waiter)
+    t.start()
+    try:
+        time.sleep(0.8)
+        assert len(beats) >= 2
+        assert not got
+    finally:
+        held.close()  # releases the flock
+        t.join(timeout=5)
+    assert got == [True]
+
+
+def test_compact_reports_a_waiting_phase_while_queued(tmp_path, monkeypatch):
+    import threading
+
+    monkeypatch.setattr(store_mod, "_LOCK_WAIT_HEARTBEAT_S", 0.1)
+    cfg = _cfg(tmp_path)
+    shards = _shard(tmp_path, cfg, [("/r", _scanned("s", [_row("/r/a.txt")], 10, 1, 0))])
+    events = []
+    held = _hold_lock(cfg)
+    t = threading.Thread(target=lambda: compact(
+        cfg, "/r", shards, pa, pq, emit=lambda **kw: events.append(kw)))
+    t.start()
+    try:
+        time.sleep(0.6)
+    finally:
+        held.close()
+        t.join(timeout=10)
+    assert {"type": "phase", "msg": "waiting for another scan to finish"} in events

@@ -601,6 +601,13 @@ def run_scan(run_dir: str) -> None:
                   summary={"dirs": totals["dirs"], "files": totals["files"]})
             return
 
+        # Nothing below reads the dir cache again (the walk is over and
+        # compaction re-reads dirs.parquet itself), yet on a large index it is
+        # the biggest thing this worker holds — and compaction may wait on the
+        # store lock behind another scan for minutes with it resident. `keys`
+        # (the sorted-key list the pool split built) shares its strings.
+        cache.clear()
+        keys = subtree_n = None
         summary = compact(cfg, root, shards_dir, pa, pq,
                           emit=lambda **e: _emit(ev, **e),
                           cancel_flag=cancel_flag)
@@ -731,6 +738,12 @@ def _run_fsevents(cfg, rules, guard, root, hint, cache, sink, ev, cancel_flag,
         _emit(ev, type="run_end", msg="cancelled",
               summary={"dirs": totals["dirs"], "files": totals["files"]})
         return None
+    # Everything the walk and the carry-forward needed is dead weight now
+    # (only `totals`, `t0` and the summary are read below), and compaction can
+    # wait on the store lock with it resident. `cache` is the caller's dict,
+    # also unused after this returns, so it is cleared in place.
+    cache.clear()
+    children = scanned = dead = keys = stack = deleted = None
     summary = compact(cfg, root, sink.shards_dir, pa, pq,
                       emit=lambda **e: _emit(ev, **e), cancel_flag=cancel_flag)
     if summary is None:  # cancelled at the store lock (delete raced the scan)

@@ -121,6 +121,12 @@ the disk queue.
 **Device ids** are collected during the walk — a root spanning more than one volume
 disqualifies the FSEvents fast path (`scan-incremental.md §3`).
 
+**Memory before compaction.** Compaction can wait on the store lock for minutes, so
+immediately before it `run_scan` clears the dir `cache` (and the `keys`/`subtree_n`
+split helpers sharing its strings), and `_run_fsevents` clears `cache` and drops
+`children`, `scanned`, `dead`, `keys`, `stack`, `deleted` — nothing after that point
+reads them (it needs only `totals`, `t0` and the summary).
+
 ## 5. Cancellation
 
 The client writes the `cancel` flag; every walker polls for it — the in-process walk
