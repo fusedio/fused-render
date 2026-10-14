@@ -71,7 +71,7 @@ def _rec(data, task_id):
 
 _KEYS = {"id", "description", "kind", "type", "subagent_type", "tool_use_id",
          "status", "started_at", "ended_at", "backgrounded", "usage", "error",
-         "summary", "events"}
+         "summary", "events", "isolation"}
 
 
 def test_a_background_shell_runs_then_completes(agent, run_dir):
@@ -225,6 +225,7 @@ def test_the_old_flat_file_is_upgraded(agent, run_dir):
     rec = _rec(data, "t1")
     assert set(rec) == _KEYS
     assert rec["description"] == "sleep 30" and rec["status"] == "running"
+    assert rec["isolation"] == ""
     assert data["activity"]["tasks"] == [{"id": "t1", "description": "sleep 30"}]
     stored = json.loads((run_dir / "bg_tasks.json").read_text())
     assert stored["tasks"]["t1"]["status"] == "running"
