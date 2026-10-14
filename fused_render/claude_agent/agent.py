@@ -4932,6 +4932,84 @@ def _tool_detail(name, inp) -> str:
     return d if len(d) <= 80 else d[:77] + "…"
 
 
+_AGENT_FIELD_RES = {
+    k: re.compile(r'"%s"\s*:\s*"((?:[^"\\]|\\.)*)"' % k)
+    for k in ("description", "subagent_type")}
+_AGENT_SCAN_OVERLAP = 256
+
+
+def _scan_agent_fields(buf: str, start: int, found: dict) -> None:
+    """Fill `found` with the complete `description` / `subagent_type` string
+    values of a still-streaming Agent/Task input. Scans only `buf[start:]`
+    plus a little overlap (a value may straddle the chunk boundary), so a
+    30 s brief is not re-scanned from the top on every delta."""
+    tail = buf[max(0, start - _AGENT_SCAN_OVERLAP):]
+    for key, rx in _AGENT_FIELD_RES.items():
+        if key in found:
+            continue
+        m = rx.search(tail)
+        if m:
+            try:
+                found[key] = json.loads('"' + m.group(1) + '"')
+            except ValueError:
+                pass
+
+
+def _worktree_hint(name, inp) -> dict | None:
+    """What a finalized tool call says about work moving into a git worktree,
+    or None. `via` is "bash" (a `git worktree add`), "enter" (EnterWorktree)
+    or "agent" (an Agent/Task started with `isolation: "worktree"`)."""
+    if not isinstance(inp, dict):
+        return None
+    name = str(name or "")
+    if name == "Bash":
+        return _bash_worktree_hint(str(inp.get("command") or ""))
+    if name == "EnterWorktree":
+        return {"path": str(inp.get("path") or inp.get("name") or ""),
+                "branch": "", "via": "enter"}
+    if name in ("Agent", "Task") and inp.get("isolation") == "worktree":
+        return {"path": "", "branch": "", "via": "agent",
+                "label": str(inp.get("description")
+                             or inp.get("subagent_type") or "")}
+    return None
+
+
+_WT_BRANCH_FLAGS = ("-b", "-B", "--orphan")
+
+
+def _bash_worktree_hint(command: str) -> dict | None:
+    for seg in re.split(r"&&|\|\||;|\n", command):
+        try:
+            words = shlex.split(seg)
+        except ValueError:
+            continue
+        if "git" not in words:
+            continue
+        i = words.index("git") + 1
+        while i < len(words) and words[i] != "worktree":
+            if words[i] in ("-C", "-c", "--git-dir", "--work-tree"):
+                i += 1
+            i += 1
+        if i + 1 >= len(words) or words[i] != "worktree" or words[i + 1] != "add":
+            continue
+        args, branch, path, j = words[i + 2:], "", "", 0
+        while j < len(args):
+            a = args[j]
+            if a in _WT_BRANCH_FLAGS and j + 1 < len(args):
+                branch = args[j + 1]
+                j += 2
+            elif a == "--reason" and j + 1 < len(args):
+                j += 2
+            elif a.startswith("-"):
+                j += 1
+            else:
+                path = path or a  # later positionals are the commit-ish
+                j += 1
+        if path:
+            return {"path": path, "branch": branch, "via": "bash"}
+    return None
+
+
 def _read_poll_cursor(run_dir: str, size: int) -> int:
     """The byte offset in `out.jsonl` that `_poll` last proved safe to resume
     from — see the advance logic at the bottom of `_read_current_turn` for
@@ -5011,8 +5089,8 @@ def _task_kind(rec: dict, tool_name: str = "") -> str:
 def _new_task_record(task_id: str, description: str = "",
                      started_at: float | None = None) -> dict:
     return {"id": task_id, "description": description, "kind": "other",
-            "type": "", "subagent_type": "", "tool_use_id": "",
-            "status": "running",
+            "type": "", "subagent_type": "", "isolation": "",
+            "tool_use_id": "", "status": "running",
             "started_at": started_at if started_at is not None else time.time(),
             "ended_at": None, "backgrounded": False, "usage": None,
             "error": "", "summary": "", "events": 0}
@@ -5046,8 +5124,8 @@ def _upgrade_task_record(task_id: str, value) -> dict | None:
                            value.get("started_at")
                            if isinstance(value.get("started_at"), (int, float))
                            else None)
-    for key in ("kind", "type", "subagent_type", "tool_use_id", "error",
-                "summary"):
+    for key in ("kind", "type", "subagent_type", "isolation", "tool_use_id",
+                "error", "summary"):
         if isinstance(value.get(key), str):
             rec[key] = value[key]
     rec["status"] = _task_status(value.get("status"))
@@ -5278,6 +5356,10 @@ def _apply_task_row(registry: dict, row: dict, tool_names: dict,
                 "subagent_type")
         if subagent:
             rec["subagent_type"] = str(subagent)
+        if tool_names.get(rec["tool_use_id"]) in ("Agent", "Task"):
+            iso = (tool_inputs.get(rec["tool_use_id"]) or {}).get("isolation")
+            if iso == "worktree":
+                rec["isolation"] = "worktree"
         if "is_backgrounded" in row:
             rec["backgrounded"] = bool(row.get("is_backgrounded"))
         _task_end(rec, "running", now)
@@ -6221,6 +6303,10 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
     tools_open = {}        # tool_use id -> {"id", "name", "detail"}
     tool_input_bytes = 0   # input_json_delta bytes streamed for the newest block
     tool_inputs = {}       # tool_use id -> finalized input (from `assistant` rows)
+    streaming_tid = ""     # tool_use id of the block whose input is streaming
+    stream_bufs = {}       # Agent/Task id -> partial_json so far
+    stream_found = {}      # Agent/Task id -> {"description"/"subagent_type": str}
+    worktree_hint = None   # latest `_worktree_hint` over finalized inputs
     thinking_tokens = 0    # CLI's running estimate for the message in flight
     hooks_open = {}        # hook_id -> hook_name, started and not yet responded
     # Seeded from what the last poll persisted (see `_write_bg_tasks`), not
@@ -6316,9 +6402,15 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
                         and blk.get("id"):
                     tool_inputs[blk["id"]] = blk.get("input") or {}
                     tool_names[blk["id"]] = str(blk.get("name") or "")
+                    hint = _worktree_hint(blk.get("name"), tool_inputs[blk["id"]])
+                    if hint is not None:
+                        worktree_hint = hint
                     if blk["id"] in tools_open:
                         tools_open[blk["id"]]["detail"] = _tool_detail(
                             blk.get("name"), tool_inputs[blk["id"]])
+                        if blk.get("name") in ("Agent", "Task"):
+                            tools_open[blk["id"]]["subagent_type"] = str(
+                                tool_inputs[blk["id"]].get("subagent_type") or "")
         elif t == "user":
             # The tool's result went back in. From here until `status:
             # requesting` (or the next delta) the run is packing the result
@@ -6354,7 +6446,20 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
                 elif delta.get("type") == "thinking_delta":
                     phase = "thinking"
                 elif delta.get("type") == "input_json_delta":
-                    tool_input_bytes += len(delta.get("partial_json") or "")
+                    frag = delta.get("partial_json") or ""
+                    tool_input_bytes += len(frag)
+                    sid = streaming_tid
+                    if frag and sid in stream_bufs and sid in tools_open \
+                            and len(stream_found[sid]) < 2:
+                        found = stream_found[sid]
+                        old = len(stream_bufs[sid])
+                        stream_bufs[sid] += frag
+                        _scan_agent_fields(stream_bufs[sid], old, found)
+                        if found:
+                            tools_open[sid]["detail"] = _tool_detail(
+                                tools_open[sid]["name"], found)
+                        if "subagent_type" in found:
+                            tools_open[sid]["subagent_type"] = found["subagent_type"]
             elif et == "message_start":
                 thinking_tokens = 0
                 # THE EARLIEST THE WINDOW CAN BE KNOWN: `message_start` carries
@@ -6386,6 +6491,10 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
                         "id": tid, "name": str(cb.get("name") or "tool"),
                         "detail": _tool_detail(cb.get("name"), tool_inputs.get(tid, {}))}
                     tool_input_bytes = 0
+                    streaming_tid = tid
+                    if cb.get("name") in ("Agent", "Task"):
+                        stream_bufs[tid] = ""
+                        stream_found[tid] = {}
         elif t == "rate_limit_event":
             # Latest wins: the CLI writes one per API response and the newest
             # is the current state of the plan window, warning or not.
@@ -6732,6 +6841,12 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
             # this field — see the `cancelled`/`interrupted_offset` handling
             # above.
             "cancelled": cancelled,
+            # THE LATEST HINT THAT WORK MOVED INTO A GIT WORKTREE, from the
+            # finalized tool inputs this window holds (`_worktree_hint`):
+            # `{"path", "branch", "via": "bash"|"enter"|"agent", "label"?}`.
+            # `None` when this poll's window held none — "nothing new", which
+            # the page reads as "keep what you have".
+            "worktree_hint": worktree_hint,
             # Same array `activity.tasks` renders from, collapsed to the
             # yes/no a session host's reap loop wants: background work still
             # running is what holds a host open past an otherwise-idle turn
