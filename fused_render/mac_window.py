@@ -450,9 +450,28 @@ class _WebDelegate(NSObject):
             logger.warning("web content process terminated under window %s again; "
                            "not reloading automatically", label)
             return
+        # `reload()` reloads the CURRENT history item, and a renderer that
+        # died before its first page committed has none — the call would
+        # start nothing and the one reload would be spent on it. That case
+        # loads the window's URL afresh instead. (A main-frame POST cannot be
+        # what was in flight: no page had committed to submit one from.)
+        has_item = False
+        try:
+            has_item = webview.backForwardList().currentItem() is not None
+        except Exception:  # noqa: BLE001 — diagnostics only
+            has_item = False
+        url = None if has_item else (window.current_url() if window is not None else None)
+        if not has_item and not url:
+            logger.warning("web content process terminated under window %s before any "
+                           "page committed, and no URL to load; leaving it", label)
+            return
         self._crash_reloaded = True
-        logger.warning("web content process terminated under window %s; reloading once", label)
-        webview.reload()
+        logger.warning("web content process terminated under window %s; %s once",
+                       label, "reloading" if has_item else f"loading {url}")
+        if has_item:
+            webview.reload()
+        else:
+            webview.loadRequest_(NSURLRequest.requestWithURL_(_nsurl(url)))
 
     # ---- downloads (WKDownloadDelegate) ------------------------------------
 
