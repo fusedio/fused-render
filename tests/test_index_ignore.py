@@ -88,8 +88,10 @@ def test_default_ignore_covers_caches_outside_library_caches():
     browser profile's disk cache, an Electron app's GPU/code caches, a
     sandboxed app's `Containers/*/Data/Library/Caches`, Xcode's DerivedData.
     Bare capitalized names cover them at any depth on every platform, while
-    the profile / app-support folders themselves stay indexed and a lowercase
-    `cache` (real source in many repos) is left alone."""
+    an app-support folder with user content stays indexed and a lowercase
+    `cache` (real source in many repos) is left alone. (Chrome's profile root
+    itself is no longer the example of "stays indexed": it is now a
+    `LIBRARY_CHURN_PATHS` entry, see the next test.)"""
     r = IgnoreRules(default_ignore())
     home = os.path.expanduser("~")
     chrome = norm(f"{home}/Library/Application Support/Google/Chrome/Profile 3")
@@ -113,19 +115,28 @@ def test_default_ignore_covers_library_churn_roots_but_not_user_containers():
     rescan every few seconds on a diagnostics bundle (Chrome/WhatsApp/Slack
     profiles, Apple widget containers, Spotlight's store, Biome, daemon
     containers). Each is a path pattern, so `~/Library` itself and a
-    third-party sandboxed app's container — which CAN hold user documents —
-    stay walkable."""
+    sandboxed app's container — Apple's or anyone's, both CAN hold user
+    documents (TextEdit, Notes) — stay walkable. Only the per-container
+    `Data/SystemData` subtree and the named Apple daemons go."""
     r = IgnoreRules(default_ignore())
     home = os.path.expanduser("~")
     lib = norm(f"{home}/Library")
     for churn in (
         "Application Support/Google/Chrome/Profile 3",
+        "Application Support/Google/Chrome Canary/Default",
         "Application Support/Slack/IndexedDB/https_app.slack.com_0.indexeddb.blob/1/4f",
         "Application Support/AddressBook/Sources/ABC/Metadata",
         "Containers/net.whatsapp.WhatsApp/Data/Library/Application Support/x",
         "Group Containers/group.net.whatsapp.WhatsApp.shared/x",
         "Containers/com.apple.findmy.FindMyWidgetItems/Data/SystemData/x",
+        "Containers/com.example.editor/Data/SystemData/com.apple.chrono/x",
+        "Containers/com.apple.routined/Data/Library/Preferences",
+        "Containers/com.apple.lighthouse.IFTelemetrySELFIngestor/Data/x",
         "Group Containers/group.com.apple.replicatord/replicatord",
+        "Group Containers/group.com.apple.findmy.findmylocateagent/Library/x",
+        "Group Containers/group.com.apple.siri.GMSSELFIngestor/Library/x",
+        "Group Containers/group.com.apple.icloud.searchpartyuseragent/Library/Storage",
+        "Group Containers/group.com.apple.PegasusConfiguration/session/local",
         "Metadata/CoreSpotlight/Priority/index.spotlightV3",
         "Biome/sets/Default/App.InstalledApp/Database",
         "Daemon Containers/72E8A7B1-2505-47A0-8258-E43214E62FC5/Data",
@@ -144,7 +155,12 @@ def test_default_ignore_covers_library_churn_roots_but_not_user_containers():
         "Application Support/Obsidian",
         "Containers",
         "Containers/com.example.editor/Data/Documents/notes.md",
+        "Containers/com.apple.TextEdit/Data/Documents/notes.rtf",
+        "Containers/com.apple.routinedx",
         "Group Containers/group.com.example.editor/notes",
+        "Group Containers/group.com.apple.notes/Accounts/x/Media/photo.jpg",
+        "Application Support/Google/Drive",
+        "Application Support/Google/DriveFS",
         "Mobile Documents/com~apple~CloudDocs/report.pdf",
     ):
         assert not r.is_ignored_tree(f"{lib}/{kept}".rstrip("/")), kept

@@ -243,9 +243,9 @@ DEFAULT_IGNORE_NAMES = [
 # once, swap sat at 4-17 GB and the server missed its own health pings for
 # minutes at a time. The top roots, by rescan count, were:
 #
-#   212  Application Support/Google          (Chrome profile writes)
+#   212  Application Support/Google/Chrome   (profile writes)
 #   225  Containers / Group Containers for WhatsApp
-#    79  Containers/com.apple.*Widget*       (widget timelines)
+#    79  Containers/com.apple.*Widget*/Data/SystemData (widget timelines)
 #    43  Application Support/Slack
 #    17  Metadata/CoreSpotlight
 #    18  Biome/*
@@ -255,9 +255,18 @@ DEFAULT_IGNORE_NAMES = [
 # Bare `Cache`-style names in DEFAULT_IGNORE_NAMES already drop the cache
 # subfolders of these apps; the profile roots themselves (History, Cookies,
 # IndexedDB blobs, sqlite journals) are what still re-triggered a rescan every
-# few seconds. Apple's own sandboxed containers (`com.apple.*`) are listed by
-# prefix rather than wholesale because third-party sandboxed apps CAN keep
-# user documents under `Containers/<bundle>/Data/Documents`.
+# few seconds.
+#
+# Deliberately NARROW on the sandbox side. A container is where a sandboxed
+# app keeps the user's own files — TextEdit saves to
+# `Containers/com.apple.TextEdit/Data/Documents`, Notes attachments sit under
+# `Group Containers/group.com.apple.notes` — so neither `Containers/com.apple.*`
+# nor `Group Containers/group.com.apple.*` is acceptable as a pattern. What
+# is listed is the per-container `Data/SystemData` (widget timelines,
+# `com.apple.chrono`, written by every widget on a schedule — the one
+# subtree of ANY container that is system-owned) and the specific Apple
+# daemons the bundle showed re-triggering: none of them has a document
+# folder. Same for Google: only Chrome's profile, not every Google app.
 LIBRARY_CHURN_PATHS = [
     "~/Library/Preferences",
     "~/Library/Metadata",
@@ -267,11 +276,17 @@ LIBRARY_CHURN_PATHS = [
     "~/Library/HomeKit",
     "~/Library/KeyboardServices",
     "~/Library/Trial",
-    "~/Library/Containers/com.apple.*",
-    "~/Library/Group Containers/group.com.apple.*",
+    "~/Library/Containers/*/Data/SystemData",
+    "~/Library/Containers/com.apple.routined",
+    "~/Library/Containers/com.apple.lighthouse.*",
+    "~/Library/Group Containers/group.com.apple.icloud.searchpartyuseragent",
+    "~/Library/Group Containers/group.com.apple.replicatord",
+    "~/Library/Group Containers/group.com.apple.findmy.*",
+    "~/Library/Group Containers/group.com.apple.siri.*",
+    "~/Library/Group Containers/group.com.apple.PegasusConfiguration",
     "~/Library/Containers/net.whatsapp.*",
     "~/Library/Group Containers/group.net.whatsapp.*",
-    "~/Library/Application Support/Google",
+    "~/Library/Application Support/Google/Chrome*",
     "~/Library/Application Support/Slack",
     "~/Library/Application Support/AddressBook",
 ]
