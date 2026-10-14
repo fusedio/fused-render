@@ -6948,3 +6948,10 @@ Design page, owner-approved: <https://claude.ai/artifact/CmgeDrXCDscEcHtzTn4PoF>
 
 - **Panel renamed.** "Background tasks" read as one thing when agents and shells differ, and "tasks" in fused-render means Claude sessions. The strip is now "Agents & shells"; its summary is the live breakdown plus paused and failed counts ("1 agent · 2 shells running · 1 failed"). Done, stopped and ended counts are dropped (the "Show N finished" row stays). Rows sort active first, then agents, shells, monitors, other, each by start time. Identifiers, CSS classes and the Python slash-command text are unchanged.
 - **Orphan header.** A subagent whose Agent call was in an earlier turn is titled by the linked record: description, else "Subagent: <type>", else the old "Subagent (started earlier)". The type, the model/effort label (`agentModelLabel`) and a "Started in an earlier turn" tooltip show up with it; non-orphan Agent chips get the model label too.
+
+## D1364 — Claude chat: Bugbot fixes on the agents panel and file preview (2026-10-14, feat/chat-agent-worktree-visibility)
+
+- **Session-scoped panel state.** TasksPanel resets dismissed/showEnded/stopping/errOpen on runId plus session id; history-only sessions all have a null runId.
+- **Landing keeps window.open.** FilePreviewProvider takes `enabled` (= inChat) and hands out null on the landing, staying mounted so the tree does not remount.
+- **Paused rows** carry `is-paused` instead of `is-ended`, so the finished fade skips them.
+- **Task index subscription** lives in ChipHeader, not the memoized ToolChip body, so registry updates do not rerender every chip.
