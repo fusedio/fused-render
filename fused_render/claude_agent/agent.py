@@ -2743,7 +2743,7 @@ def _inbox_stamp_ns() -> int:
         return now
 
 
-def _write_inbox_row(run_dir: str, row: dict) -> None:
+def _write_inbox_row(run_dir: str, row: dict) -> str:
     """Queue one raw stream-json row into `run_dir/inbox/` for the session
     host to drain into the CLI's stdin verbatim (`session_host._drain_inbox`
     copies bytes, never parses them, so any row shape the CLI's
@@ -2781,13 +2781,14 @@ def _write_inbox_row(run_dir: str, row: dict) -> None:
         json.dump(row, f)
         f.write("\n")
     os.replace(tmp_path, final_path)
+    return final_path
 
 
-def _write_inbox_entry(run_dir: str, message: str) -> None:
+def _write_inbox_entry(run_dir: str, message: str) -> str:
     """Queue one user-turn line for the session host to drain into the CLI's
     stdin — the one place both `_start` (the turn's first message) and
-    `_send` (every follow-up) write from."""
-    _write_inbox_row(run_dir, {"type": "user", "message": {
+    `_send` (every follow-up) write from. Returns the entry's path."""
+    return _write_inbox_row(run_dir, {"type": "user", "message": {
         "role": "user",
         "content": [{"type": "text", "text": message}]}})
 
@@ -3744,7 +3745,12 @@ def _supersede_fresh(run_dir: str) -> bool:
     The marker holds the `time.time()` it was written at; empty or garbled
     (read in the instant between `_end_idle_hosts`' exclusive create and its
     write) falls back to the file's mtime, which is that same moment."""
-    path = _superseded_path(run_dir)
+    return _marker_fresh(_superseded_path(run_dir))
+
+
+def _marker_fresh(path: str) -> bool:
+    """`_supersede_fresh` for the marker file at `path` (which may be one
+    `_clear_stale_marker` has just renamed aside)."""
     try:
         with open(path, encoding="utf-8") as fh:
             raw = fh.read().strip()
@@ -3758,6 +3764,41 @@ def _supersede_fresh(run_dir: str) -> bool:
         except OSError:
             return False
     return time.time() - stamp <= _SUPERSEDE_STALE_SEC
+
+
+def _clear_stale_marker(run_dir: str) -> bool:
+    """Clear a STALE `superseded` marker so a new pass can take its own;
+    True when the slot is now free. Never deletes a fresh one by path.
+
+    Check-then-unlink cannot be made safe: between the two, another pass can
+    clear the same stale file and create its own, and the unlink then erases
+    that pass's live marker (it goes on to kill a host whose sends no longer
+    see it). So the file is RENAMED aside first — atomic, and whatever is
+    grabbed is grabbed whole — and judged by what was grabbed: stale is
+    unlinked; fresh (another pass won the race) is linked back into place,
+    which fails if yet another marker is already there, and either way the
+    slot is not ours (False). The slot is empty only between that rename and
+    that link — an instant, against a check-then-unlink that could erase a
+    live marker outright."""
+    path = _superseded_path(run_dir)
+    grabbed = "%s.%s" % (path, uuid.uuid4().hex)
+    try:
+        os.rename(path, grabbed)
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    fresh = _marker_fresh(grabbed)
+    if fresh:
+        try:
+            os.link(grabbed, path)
+        except OSError:
+            pass  # a newer marker took the slot: that pass owns the host
+    try:
+        os.unlink(grabbed)
+    except OSError:
+        pass
+    return not fresh
 
 
 def _echo_pending(run_dir: str) -> bool:
@@ -3890,13 +3931,11 @@ def _end_idle_hosts(session_id: str,
             if _supersede_fresh(run_dir):
                 foreign.append(run_dir)
                 continue
-            # A stale one is cleared, asked again at the unlink itself so a
-            # pass that wrote its own in between is not erased. (Two passes
-            # both clearing the SAME stale marker can still race inside that
-            # read-then-unlink; that needs a dead pass, a host alive past
-            # its kill and two resumes at once.)
-            if os.path.exists(marker) and not _supersede_fresh(run_dir):
-                os.remove(marker)
+            # A stale one is cleared by rename, never by path — a pass that
+            # wrote its own in between keeps it (`_clear_stale_marker`).
+            if os.path.exists(marker) and not _clear_stale_marker(run_dir):
+                foreign.append(run_dir)
+                continue
             try:
                 fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL,
                              0o600)
@@ -3928,32 +3967,45 @@ def _end_idle_hosts(session_id: str,
     return [os.path.basename(d) for d in ending if d not in waiting]
 
 
-def _superseded_outcome(run_dir: str) -> bool:
-    """`_send` found `superseded` on its host: wait for `_end_idle_hosts` to
-    settle it. True = the host is gone (the caller must respawn), False = the
-    supersede was called off (or never took) and the host is live.
+def _superseded_outcome(run_dir: str, entry: str = "") -> bool:
+    """`_send` found `superseded` on its host: wait for it to settle. True =
+    this message cannot reach that host (take back whatever it queued and
+    `respawn`); False = the host is live and has it, or will.
 
-    It settles fast — the abort is the next statement after the marker write,
-    the kill is reaped within a drain tick — and a marker stops counting once
-    stale (`_SUPERSEDE_STALE_SEC`), so this is bounded by that same wait plus
-    a margin; past it the host is live as far as this send is concerned.
+    `entry` is the inbox file this send already wrote ("" for the check made
+    before writing anything).
+
+    WAITED ON THE SAME CLOCK THE DRAIN IS GATED ON. While the marker is fresh
+    the host delivers nothing (session_host `_drain_inbox`), so answering
+    `sent` before it goes stale would promise a delivery the host cannot make
+    — and a kill landing after that would strand the entry. So this never
+    gives up while the marker is fresh; staleness (`_SUPERSEDE_STALE_SEC`) is
+    the bound, plus a margin for a drain tick.
 
     THE MARKER IS ASKED FIRST. Only a kill KEEPS it (`_end_idle_hosts`), so a
     marker that is gone means the supersede was called off — and a host that
     is dead in the same tick died of its own idle reap, whose final drain
-    delivered this message: answering `respawn` there would send it twice. A
-    STALE marker (`_supersede_fresh`) is a pass that is over: the host's own
-    liveness is the whole answer then."""
-    deadline = time.monotonic() + _SUPERSEDE_WAIT_SEC + 1.0
+    delivered this message: answering `respawn` there would send it twice.
+
+    STALE, HOST ALIVE: the drain is open again, but the SIGTERM that made the
+    marker may still land. So a written entry is waited on until the host has
+    actually drained it; a host that dies first left it in the inbox (its
+    final drain into a dead CLI fails before moving it), and it is taken back.
+    A host that died AFTER draining it to a CLI that never echoed it is the
+    same loss and the same answer; one that echoed it ran it."""
+    deadline = time.monotonic() + _SUPERSEDE_STALE_SEC + 2.0
     while True:
         if not os.path.exists(_superseded_path(run_dir)):
             return False
-        if not _supersede_fresh(run_dir):
-            return not _host_alive(run_dir)
         if not _host_alive(run_dir):
-            return True
+            if not entry or os.path.exists(entry):
+                return True
+            return _echo_pending(run_dir)
+        if not _supersede_fresh(run_dir):
+            if not entry or not os.path.exists(entry):
+                return False
         if time.monotonic() >= deadline:
-            return False
+            return False  # a host this slow to drain is still the one to own it
         time.sleep(0.05)
 
 
@@ -4090,18 +4142,22 @@ def _send(run_id: str, message: str, read_dirs: str = "", model: str = "",
         pending_offset = 0
     with open(os.path.join(run_dir, "pending_echo"), "w", encoding="utf-8") as f:
         f.write(str(pending_offset))
-    _write_inbox_entry(run_dir, _with_terminal_hint(message, terminal_hint))
+    entry = _write_inbox_entry(run_dir,
+                               _with_terminal_hint(message, terminal_hint))
     # …AND LOOK AGAIN, AFTER THE WRITE — the other half of `_end_idle_hosts`'
     # marker-then-recheck. If a supersede began after the check above, either
     # it sees `pending_echo`/this entry and calls itself off (then this waits
     # that out and the host delivers as usual), or this sees its marker and
     # the host is killed. Only once the host is GONE is anything taken back:
-    # session_host drains nothing while the marker stands, and `host.json` is
-    # removed after its last drain, so no drain can still be holding the entry
-    # — taking it back cannot race a delivery into a second copy. What is
-    # left undrained is everything this send queued (control requests too),
-    # in a run that will never drain again.
-    if os.path.exists(_superseded_path(run_dir)) and _superseded_outcome(run_dir):
+    # session_host drains nothing while the marker is fresh, and `host.json`
+    # is removed after its last drain, so no drain can still be holding the
+    # entry — taking it back cannot race a delivery into a second copy. What
+    # is left undrained is everything this send queued (control requests
+    # too), in a run that will never drain again. `_superseded_outcome` also
+    # waits out a STALE marker until the host has drained this entry, so a
+    # late SIGTERM cannot strand it after a `sent`.
+    if os.path.exists(_superseded_path(run_dir)) \
+            and _superseded_outcome(run_dir, entry):
         inbox = _inbox_dir(run_dir)
         try:
             for name in os.listdir(inbox):

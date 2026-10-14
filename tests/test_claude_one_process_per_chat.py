@@ -198,6 +198,7 @@ def test_a_kill_that_outlives_the_wait_stays_muted_but_not_shut(
 
     _stale_marker(old)
     assert agent._live_host(note, SID) == {"run_id": "20261014-100000-aaaaaa"}
+    _drain_soon(old)
     assert agent._send("20261014-100000-aaaaaa", "hi") == {"sent": True}
     assert os.path.exists(marker), "reading a stale marker never unlinks it"
 
@@ -267,6 +268,20 @@ def test_live_host_skips_a_superseded_host(agent, files, monkeypatch):
     assert agent._live_host(note, SID) == {"run_id": "20261014-100000-aaaaaa"}
     open(os.path.join(old, "superseded"), "w").close()
     assert agent._live_host(note, SID) == {"run_id": ""}
+
+
+def _drain_soon(run_dir, delay=0.2):
+    """What a live host's next drain tick does: move the inbox to done/."""
+    def drain():
+        inbox = os.path.join(run_dir, "inbox")
+        os.makedirs(os.path.join(inbox, "done"), exist_ok=True)
+        for n in os.listdir(inbox):
+            if n.endswith(".json"):
+                os.replace(os.path.join(inbox, n),
+                           os.path.join(inbox, "done", n))
+    t = threading.Timer(delay, drain)
+    t.start()
+    return t
 
 
 def _live_json(run_dir):
@@ -453,10 +468,11 @@ def test_a_stale_marker_on_a_live_host_holds_nothing(agent, files, monkeypatch):
     monkeypatch.setattr(agent, "_host_alive", lambda run_dir: True)
 
     t0 = time.monotonic()
+    _drain_soon(old)
     assert agent._send("20261014-100000-aaaaaa", "hi") == {"sent": True}
-    # A fresh marker is waited out for ~4 s; a stale one not at all.
+    # Only until the host drains it — not the fresh marker's ~5 s.
     assert time.monotonic() - t0 < 3.0, "a stale marker must not be waited out"
-    assert len(_inbox_left(old)) == 1
+    assert _inbox_left(old) == []
     assert agent._live_host(note, SID) == {"run_id": "20261014-100000-aaaaaa"}
     # Still on disk: it no longer gates, but it still mutes `exited`.
     assert os.path.exists(os.path.join(old, "superseded"))
@@ -617,3 +633,177 @@ def test_a_stale_marker_still_mutes_exited(tmp_path, monkeypatch):
     host._reap_loop(agent, str(run_dir), _Cli(), str(run_dir / "host.json"))
     assert (run_dir / "superseded").exists()
     assert "exited" not in posted
+
+
+# ------------------------------- round 4: one clock for the send and the drain
+
+def test_a_send_is_never_called_sent_while_the_drain_is_still_shut(
+        agent, files, monkeypatch):
+    """Bugbot: the send used to give up at `_SUPERSEDE_WAIT_SEC + 1` and say
+    `sent` while the marker — and so the host's drain — stayed shut until
+    `_SUPERSEDE_STALE_SEC`; a SIGTERM landing after that stranded the entry.
+    Here the kill lands after the old give-up point but while the marker is
+    still fresh: the send must still be waiting, and take its entry back."""
+    folder, note = files
+    old = _run(agent, "20261014-100000-aaaaaa", note)
+    _live_json(old)
+    monkeypatch.setattr(agent, "_SUPERSEDE_WAIT_SEC", 0.1)
+    monkeypatch.setattr(agent, "_SUPERSEDE_STALE_SEC", 3.0)
+    real_write = agent._write_inbox_entry
+    t0 = []
+
+    def write(run_dir, message):
+        path = real_write(run_dir, message)
+        with open(os.path.join(run_dir, "superseded"), "w") as f:
+            f.write(str(time.time()))
+        t0.append(time.monotonic())
+        return path
+
+    monkeypatch.setattr(agent, "_write_inbox_entry", write)
+    monkeypatch.setattr(agent, "_host_alive",
+                        lambda run_dir: not t0 or time.monotonic() - t0[0] < 1.5)
+
+    assert agent._send("20261014-100000-aaaaaa", "hi") == {"respawn": True}
+    assert _inbox_left(old) == []
+
+
+def test_a_host_that_dies_after_going_stale_does_not_strand_the_send(
+        agent, files, monkeypatch):
+    """Stale, host alive: the drain is open again, but the late SIGTERM can
+    still land before the next tick. The send waits for its entry to be
+    drained; the host dying first means it never was — taken back, respawn."""
+    folder, note = files
+    old = _run(agent, "20261014-100000-aaaaaa", note)
+    _live_json(old)
+    _stale_marker(old)
+    deadline = time.monotonic() + 0.4
+    monkeypatch.setattr(agent, "_host_alive",
+                        lambda run_dir: time.monotonic() < deadline)
+
+    assert agent._send("20261014-100000-aaaaaa", "hi") == {"respawn": True}
+    assert _inbox_left(old) == []
+    assert not os.path.exists(os.path.join(old, "pending_echo"))
+
+
+def test_drained_to_a_cli_that_died_unechoed_is_respawned(agent, files,
+                                                          monkeypatch):
+    """The host's last drain and its death land in one tick: the entry went to
+    a CLI that never echoed it (never ran it), so it belongs to the new run."""
+    folder, note = files
+    old = _run(agent, "20261014-100000-aaaaaa", note)
+    _live_json(old)
+    _stale_marker(old)
+    dead = []
+    real_write = agent._write_inbox_entry
+
+    def write(run_dir, message):
+        path = real_write(run_dir, message)
+        _drain_soon(run_dir, 0.1).join()  # drained…
+        dead.append(True)                 # …and the late SIGTERM lands
+        return path
+
+    monkeypatch.setattr(agent, "_write_inbox_entry", write)
+    monkeypatch.setattr(agent, "_host_alive", lambda run_dir: not dead)
+    assert agent._send("20261014-100000-aaaaaa", "hi") == {"respawn": True}
+
+
+def test_a_stale_hosts_final_drain_into_a_dead_cli_leaves_the_entry(
+        tmp_path, monkeypatch):
+    """The host side of the stale-then-dies path: its final drain writes
+    into a dead CLI, fails before moving the entry, and stays muted — so the
+    waiting send finds the entry and takes it back."""
+    host, agent = _load("session_host"), _load("agent")
+    monkeypatch.setattr(host, "_DRAIN_INTERVAL_SECONDS", 0.01)
+    posted = []
+    monkeypatch.setattr(host, "_post_event",
+                        lambda rd, kind, **k: posted.append(kind))
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "host.json").write_text("{}")
+    _stale_marker(str(run_dir))
+    agent._write_inbox_entry(str(run_dir), "late")
+
+    class _DeadStdin:
+        def write(self, d): raise BrokenPipeError(32, "Broken pipe")
+        def flush(self): pass
+        def close(self): pass
+
+    class _Cli:
+        stdin = _DeadStdin()
+        def poll(self): return -15
+        def wait(self, timeout=None): pass
+
+    host._reap_loop(agent, str(run_dir), _Cli(), str(run_dir / "host.json"))
+    assert len(_inbox_left(str(run_dir))) == 1
+    assert not (run_dir / "host.json").exists()
+    assert "exited" not in posted
+
+
+# ------------------------------------- round 4: stale clear by rename, not path
+
+def _leftovers(run_dir):
+    return [n for n in os.listdir(run_dir) if n.startswith("superseded.")]
+
+
+def test_clearing_a_stale_marker_frees_the_slot(agent, tmp_path):
+    run_dir = str(tmp_path)
+    _stale_marker(run_dir)
+    assert agent._clear_stale_marker(run_dir) is True
+    assert not os.path.exists(os.path.join(run_dir, "superseded"))
+    assert _leftovers(run_dir) == []
+
+
+def test_clearing_never_erases_a_marker_another_pass_just_wrote(agent,
+                                                                tmp_path):
+    """CodeRabbit: between `is it stale?` and the unlink, another pass
+    cleared it and wrote its own. What the rename grabbed is fresh, so it goes
+    back where it was."""
+    run_dir = str(tmp_path)
+    marker = os.path.join(run_dir, "superseded")
+    with open(marker, "w") as f:
+        f.write("%r" % time.time())
+    stamp = open(marker).read()
+    assert agent._clear_stale_marker(run_dir) is False
+    assert open(marker).read() == stamp
+    assert _leftovers(run_dir) == []
+
+
+def test_a_newer_marker_in_the_slot_wins_over_the_put_back(agent, tmp_path,
+                                                          monkeypatch):
+    run_dir = str(tmp_path)
+    marker = os.path.join(run_dir, "superseded")
+    with open(marker, "w") as f:
+        f.write("%r" % time.time())
+    real = agent._marker_fresh
+
+    def fresh(path):
+        if path != marker:  # judging the grabbed file: a third pass lands now
+            with open(marker, "w") as f:
+                f.write("third")
+        return real(path)
+
+    monkeypatch.setattr(agent, "_marker_fresh", fresh)
+    assert agent._clear_stale_marker(run_dir) is False
+    assert open(marker).read() == "third"
+    assert _leftovers(run_dir) == []
+
+
+def test_a_pass_that_finds_another_passs_fresh_marker_mid_clear_waits_on_it(
+        agent, fake_spawn, files, monkeypatch):
+    folder, note = files
+    old = _run(agent, "20261014-100000-aaaaaa", note)
+    _stale_marker(old)
+    monkeypatch.setattr(agent, "_SUPERSEDE_WAIT_SEC", 0.2)
+    real = agent._marker_fresh
+    marker = os.path.join(old, "superseded")
+
+    def fresh(path):
+        if path != marker:  # the grabbed file turns out to be another pass's
+            with open(path, "w") as f:
+                f.write("%r" % time.time())
+        return real(path)
+
+    monkeypatch.setattr(agent, "_marker_fresh", fresh)
+    agent._start(folder, "follow-up", SID, "", "", has_pane=False)
+    assert fake_spawn["killed"] == []
+    assert os.path.exists(marker), "the other pass's marker was put back"
