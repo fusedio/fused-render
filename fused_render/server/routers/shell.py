@@ -73,9 +73,19 @@ def shell_explorer(path: str = "", shell_path: str = Depends(get_shell_path)):
 # per-canvas workspace (/canvases/<name>, matched by the wildcard below).
 @router.get("/canvases")
 # Bots (frontend apps/bots, backend fused_render/bots, docs/bots.md): the
-# browser-bots page; `?bot=<id>` / `?new=1` are client-side query state.
+# browser-bots page. The selected bot and the pages inside it are SUB-PATHS
+# (`/bots/<id>`, `/bots/tasks`, `/bots/apps/<folder>`, `/bots/preferences` —
+# frontend apps/bots/routes.ts owns the list), served by the wildcard below;
+# `?new=1` / `?phone=1` stay client-side query state.
 @router.get("/bots")
 def shell_page(shell_path: str = Depends(get_shell_path)):
+    return FileResponse(shell_path)
+
+
+# Everything under /bots/ (two levels at most today; the client parses it and
+# an unknown shape lands on the nearest page, so a wildcard costs nothing).
+@router.get("/bots/{path:path}")
+def shell_bots_page(path: str, shell_path: str = Depends(get_shell_path)):
     return FileResponse(shell_path)
 
 

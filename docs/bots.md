@@ -34,9 +34,12 @@
 >   `set_server_origin_env` before serving), else `<home>/server.json`
 >   (`write_server_json`), else the bare `fused-render` port
 >   (`_branch.branch_port()`, 1777 on the baseline; FusedBot's was 2777).
-> - The page is the shell route **`/bots`** (`?bot=<id>`, `?new=1`), sidebar
->   entry "Bots" below Home; `frontend/src/apps/bots/`. There is no
->   `bots.html` Vite input.
+> - The page is the shell route **`/bots`** and its sub-paths — `/bots/<id>`
+>   (the selected bot), `/bots/tasks`, `/bots/apps[/<folder>]`,
+>   `/bots/preferences`; `?new=1` / `?phone=1` are one-shots — owned by
+>   `frontend/src/apps/bots/routes.ts` (2026-10-14; `?bot=<id>` before that,
+>   still rewritten by the platform router). Sidebar entry "Bots" below Home;
+>   `frontend/src/apps/bots/`. There is no `bots.html` Vite input.
 > - Lifecycle: `@on_startup _startup_bots` (`paths.migrate_layout()` then
 >   `registry.start()`: scheduler + iMessage bridge; skipped by a lean
 >   `fused-render open`), `@on_shutdown_always _shutdown_bots`
@@ -359,9 +362,10 @@ task peek). A `GET /embed?path=<abs html>&…` route serves the page like
 app without `/explorer/embed`. `runtime.js`'s `findTarget()` returns the
 frame's own `window` when `_preview=1` is on its URL, so a gallery
 thumbnail's params never land on the host page's URL (twelve sandboxed
-thumbnails would otherwise fight over `?bot=`); the viewer, the side app and
+thumbnails would otherwise fight over the host URL); the viewer, the side app and
 the inline card carry no `_preview`, so their params write to the host URL
-exactly as in OpenBot (HOST_KEYS = `bot`, "Copy state" reads them back).
+exactly as in OpenBot (HOST_KEYS = `task`, `new`, `phone`, `peek`; the selected
+bot is the path; "Copy state" reads them back).
 
 ## 4. Frontend (`frontend/src/apps/bots/`)
 
@@ -379,7 +383,7 @@ One module per OpenBot file so behaviour can be diffed:
 
 | OpenBot | React | holds |
 | --- | --- | --- |
-| core.js | `state/store.ts`, `lib/api.ts`, `lib/format.ts`, `lib/md.ts`, `components/Face.tsx`, `lib/face.ts` | poll loop (one in flight), events merge, 600-event cap, toasts, md(), face SVG + anime.js moods, select(), URL `?bot=` |
+| core.js | `state/store.ts`, `lib/api.ts`, `lib/format.ts`, `lib/md.ts`, `components/Face.tsx`, `lib/face.ts` | poll loop (one in flight), events merge, 600-event cap, toasts, md(), face SVG + anime.js moods, select(), URL `/bots/<id>` (routes.ts) |
 | chat.js | `components/BotList.tsx`, `components/Thread.tsx`, `components/Composer.tsx`, `components/ThreadSearch.tsx`, `components/ToBottom.tsx`, `components/BotMenu.tsx`, `lib/unread.ts`, `lib/notify.ts` | list order (pinned → waiting-unread → last user ts), FLIP glide, unread/seen (localStorage `browser-bot.seen`), New rule, tobottom pill, reactions, reply quote, attachments (paste/drop), dictation, search, notifications, document.title |
 | live.js | `components/PreviewPane.tsx`, `components/LiveView.tsx`, `lib/cdp.ts`, `lib/layout.ts` | right column (shot, cap, inbox, routines, usage strip, side app), full-screen live view: CDP screencast WebSocket to `tabs[active].ws`, take over / hand back, input forwarding (toPage, keyParams), tab strip, popup follow, panel widths + collapse (localStorage `browser-bot.layout`), fit hysteresis |
 | dialogs.js | `dialogs/shell.ts`, `dialogs/BotSettings.tsx` (+ `SkillsSection.tsx`, `RoutinesSection.tsx`, `PhoneSection.tsx`), `dialogs/CreateBot.tsx`, `dialogs/FacePopover.tsx`, `dialogs/Confirm.tsx`, `dialogs/Usage.tsx`, `dialogs/PresetPicker.tsx`, `lib/presets.ts` | the dialogs (one shell, one size), dirty guard, iMessage status line, profiles list; the new-bot chooser ("+" asks for a preset or a blank bot first: four named blanks, every preset's brand face, search over names and playbook titles, Enter picks the first match) and the "Comes with N playbooks" note in the bot dialog |
@@ -1007,7 +1011,7 @@ semantics, `fused_ai.text(prompt, system_prompt, model, effort)` per step.
 - First run (October 2026, `onboarding.py` + `routes/claude_health.py`,
   the audit in `docs/AUDIT-onboarding.md`): `/` answers 307 → `/onboarding`
   while the wizard has never been on screen — the bare front door only, so
-  the dock's `/?bot=…` and any other query are honoured — and `/onboarding`
+  the dock's `/bots/<id>` and any query are honoured — and `/onboarding`
   serves `bots.html` like `/`. `make_server` calls
   `onboarding.seed_for_existing_users()` before the first request: an install
   that already has a bot under `<home>/bots/data` is stamped completed, so an
@@ -1055,15 +1059,16 @@ one. `hidden` bots are never listed. ⎋ or a click anywhere outside the
 tray dismisses it.
 
 - **Clicks.** A bot tile selects that bot in a FusedBot window: an open
-  bots-page window is pointed at it in place (`?bot=` rewritten plus the
-  page's own `fused:urlchange` listener, no reload), else a new window opens
-  on `/?bot=<id>`, which the page reads at boot. An app tile raises a window
+  bots-page window is pointed at it in place (the `fused:bots-open` event,
+  else `/bots/<id>` rewritten plus the page's own `fused:urlchange` listener,
+  no reload), else a new window opens on `/bots/<id>`, which the page reads
+  at boot. An app tile raises a window
   already on `/render?path=<dir>/index.html` (spelled like the page's "Open
   in tab") or opens one. The tray closes first either way.
 - **Tile menu (right-click).** A native `NSMenu` laid out like the Dock's:
   the name (checked while a bot is busy), Open, then Options ▸ with Keep in
   Dock / Remove from Dock, Show in Finder (apps only) and Open in Browser
-  (the same `/?bot=<id>` or `/render?path=…` in the default browser).
+  (the same `/bots/<id>` or `/render?path=…` in the default browser).
 - **Status-item right-click (or ⌃-click).** The utility menu: Open
   FusedBot, Tasks…, Open in Browser, Open App Logs, Quit FusedBot (⌘Q). If
   the tray cannot be built, rumps's plain menu with those same items stays
@@ -1238,7 +1243,7 @@ tile (`menubar_dock.item_open` → `show_bot` / `show_url`), the tile's
 right-click NSMenu, the status item's right-click utility menu, pinning from
 the menu, the separator drag, the Home button (`mainwindow.goHome_`); a
 plate-less bot tile has not been seen natively (the page rules are in
-`frontend/dock.html`); the `?bot=` boot deep link; the Google starters'
+`frontend/dock.html`); the `/bots/<id>` boot deep link; the Google starters'
 "Needs setup → Ready" badge (needs a service-account key).
 
 Not exercised live: dictation (needs a microphone grant), iMessage (needs

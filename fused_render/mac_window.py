@@ -211,6 +211,12 @@ def _nsurl(url: str):
     return NSURL.URLWithString_(url)
 
 
+def _is_bots_path(path: str) -> bool:
+    """``path`` (no trailing slash) is anywhere on the Bots page: ``/bots`` or a
+    sub-path (frontend apps/bots/routes.ts ``isBotsPath``)."""
+    return path == "/bots" or path.startswith("/bots/")
+
+
 def _open_external(url: str) -> None:
     """Hand a URL to the default browser via LaunchServices."""
     if not NSWorkspace.sharedWorkspace().openURL_(_nsurl(url)):
@@ -1243,7 +1249,10 @@ class WindowManager:
         path = urllib.parse.urlsplit(w.current_url() or "").path.rstrip("/")
         if path in ("", "/home"):
             return True
-        if path == "/bots":
+        # The whole /bots/* space (the selected bot is a sub-path now,
+        # frontend apps/bots/routes.ts): a Bots window is Home under the bot
+        # flavor whichever chat or page it shows.
+        if _is_bots_path(path):
             from fused_render import _flavor
 
             return _flavor.is_bot()
@@ -1277,25 +1286,24 @@ class WindowManager:
         window. An open one (the key/front one if several) is told in place
         through the page's ``fused:bots-open`` event (apps/bots/state/store.ts
         `onOpenEvent` → `openBot`: the full select — reply quote and toast
-        cleared, the open call sent — exactly as a row click; it writes
-        ``?bot=`` itself, keeping `history.state`), no reload — else a new
-        window opens on ``/bots?bot=<id>``, which the page reads at boot.
+        cleared, the open call sent — exactly as a row click; it pushes
+        ``/bots/<id>`` itself), no reload — else a new window opens on
+        ``/bots/<id>`` (dock.bot_view_path), which the page reads at boot.
 
         The event is heard only while the store is mounted; the listener
         marks it handled with `preventDefault`. A page still loading, mid
         remount or torn down leaves it unhandled, and then the URL itself
-        carries the bot: ``?bot=`` is rewritten (keeping `history.state`,
+        carries the bot: the path is rewritten (keeping `history.state`,
         which holds the shell's nav hints) and ``fused:urlchange`` fired, so
-        the store reads it on mount (`initialSel`) or follows it
-        (`onUrlChange`) — never a raised window on the wrong chat. Main
-        thread."""
+        the store reads it on mount or follows it (`syncFromUrl`) — never a
+        raised window on the wrong chat. Main thread."""
         import json
 
         from fused_render import dock
 
         view = dock.bot_view_path(bid)
         bots = [w for w in self._windows if w.ns is not None
-                and urllib.parse.urlsplit(w.current_url() or "").path.rstrip("/") == "/bots"]
+                and _is_bots_path(urllib.parse.urlsplit(w.current_url() or "").path.rstrip("/"))]
         win = self._pick(bots)
         if win is None:
             self.open(f"http://127.0.0.1:{self.port}{view}")

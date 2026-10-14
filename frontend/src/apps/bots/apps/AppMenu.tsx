@@ -7,7 +7,7 @@ import { useEffect, useLayoutEffect, useRef, type ReactNode } from "react";
 import { api } from "../lib/api";
 import { errMsg, showBanner } from "../state/store";
 import { buildsOn, newAppTask } from "../builds/builds";
-import { appEmbedBase, appOpenUrl, appStateParams, closeApps, copyAppState, getViewedApp, viewFrameSrc } from "./apps";
+import { appOpenUrl, appStateParams, closeApps, copyAppState, type AppLike } from "./apps";
 import { showAppBeside } from "./side";
 import { openUninstallApp } from "@platform/lib/uninstall-app";
 
@@ -25,11 +25,10 @@ const AMI = {
 };
 type Act = keyof typeof AMI;
 
-function run(a: Act) {
-  const app = getViewedApp(); if (!app) return;
+function run(a: Act, app: AppLike, reload: () => void) {
   const params = appStateParams();
   switch (a) {
-    case "reload": viewFrameSrc(appEmbedBase(app.dir, params)); break;  // reload keeps the state, like a browser does
+    case "reload": reload(); break;  // reload keeps the state, like a browser does (AppViewer re-reads the params)
     case "copy": copyAppState(app); break;
     case "side": closeApps(); showAppBeside({ ...app, params }); break;
     case "tab": window.open(appOpenUrl(app.dir, params), "_blank", "noopener"); break;
@@ -40,8 +39,8 @@ function run(a: Act) {
   }
 }
 
-/** `anchor` is the kebab's rect while the menu is open, else null. */
-export function AppMenu({ anchor, onClose }: { anchor: DOMRect | null; onClose: () => void }) {
+/** `anchor` is the kebab's rect while the menu is open, else null; `app` is the viewed app (AppViewer's prop). */
+export function AppMenu({ app, anchor, onClose, onReload }: { app: AppLike; anchor: DOMRect | null; onClose: () => void; onReload: () => void }) {
   const ref = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
     const m = ref.current; if (!m || !anchor) return;
@@ -56,7 +55,7 @@ export function AppMenu({ anchor, onClose }: { anchor: DOMRect | null; onClose: 
     document.addEventListener("click", onClick); document.addEventListener("keydown", onKey); window.addEventListener("blur", onClose);
     return () => { document.removeEventListener("click", onClick); document.removeEventListener("keydown", onKey); window.removeEventListener("blur", onClose); };
   }, [anchor, onClose]);
-  const item = (a: Act, label: string) => <button data-a={a} onClick={() => { onClose(); run(a); }}>{AMI[a]}{label}</button>;
+  const item = (a: Act, label: string) => <button data-a={a} onClick={() => { onClose(); run(a, app, onReload); }}>{AMI[a]}{label}</button>;
   return (
     <div id="amenu" ref={ref} className={`cmenu${anchor ? " show" : ""}`}>
       {anchor ? (<>

@@ -1,13 +1,22 @@
 // Builds (OpenBot src/builds.js): hand a prompt to Claude Code through the tasks API and track it here. One build =
 // one Claude task that creates a fused app. State is module-level like OpenBot's; the footer chip's numbers go out
-// through the store's setBuildsChip, the panel's iframe is a registered element this module drives directly (as
-// OpenBot drove #bframe), and the build dialog is a promise (buildDialog) the BuildDialog component renders.
+// through the store's setBuildsChip, the Tasks page (/bots/tasks, builds/TasksPage.tsx) owns its own iframe and only
+// registers it here so the build filter can reach into it, and the build dialog is a promise (buildDialog) the
+// BuildDialog component renders.
+//
+// NO SRC CACHE HERE. Until 2026-10-14 this module held the frame element, a pending src and "which task the frame
+// shows" (buildFrameFor). The shell remounts the Bots tree on navigation, which handed the panel a NEW, empty iframe
+// while the module still believed it showed the list — so the second visit to Tasks after a reload was blank. The
+// page's src is React state derived from its route now (I3 in the design page).
 //
 // Differences from builds.js, all forced by the host: builds.json is GET/POST /api/bots/builds (no appDir, no
 // .fused/data); the folder is made by POST /api/bot-apps/mkdir (mkbuild.py); fused.tasks.* are builds/tasks.ts.
 import { useSyncExternalStore } from "react";
 import { api, type BuildRow } from "../lib/api";
-import { errMsg, getState, openPanel, closePanel, setBuildsChip, showBanner, showToast } from "../state/store";
+import { errMsg, goChat, setBuildsChip, showBanner, showToast } from "../state/store";
+import { botsMounted } from "../lib/root";
+import { parseBotsPath, tasksHref } from "../routes";
+import { navigateUrl } from "@platform/lib/router";
 import { tasksCreate, tasksList, tasksMarkRead, tasksUi, tasksWatch, type TaskHandle, type TaskRow } from "./tasks";
 
 // ------------------------------------------------------------------ root ----
@@ -40,7 +49,6 @@ export const buildsOn = (): boolean => true;
 let builds: BuildRow[] = [];
 let buildRows: TaskRow[] = [];
 let buildsLoaded = false;
-let buildFrameFor = "", buildsUiUrl = "";
 /** entryId → handle, this page load only (handles do not survive a reload). */
 const buildHandles: Record<string, TaskHandle> = {};
 export const getBuilds = (): BuildRow[] => builds;
@@ -55,8 +63,6 @@ export const slugOf = (s: unknown): string =>
 
 export async function loadBuilds(): Promise<void> {
   await rootReady();
-  // The machine-wide Tasks UI is what the panel frames (builds live in other folders).
-  try { buildsUiUrl = await tasksUi({ view: "list", scope: "all" }); } catch { buildsUiUrl = ""; }
   try { builds = (await api.builds()).builds || []; } catch { builds = []; }
   buildsLoaded = true;
 }
@@ -66,7 +72,9 @@ export async function saveBuilds(): Promise<void> {
   try { await api.saveBuilds(builds); } catch (e) { console.warn("builds.json", e); }
 }
 
-const panelShown = (): boolean => getState().ui.panel === "builds";
+/** The Tasks page is on screen (routes.ts). */
+export const onTasksPage = (): boolean => botsMounted() && parseBotsPath(location.pathname).kind === "tasks";
+const panelShown = onTasksPage;
 
 // A task is a build when we recorded it, or when its prompt carries the build marker (adopted into builds.json on sight).
 // A row without an entry id (a bare session) must never match a recorded build whose id is "" — seen live: one such
@@ -134,34 +142,28 @@ The change:
 ${ask.trim()}`;
 }
 
-// ------------------------------------------------------------------ panel: the shell's Tasks UI in an iframe ----
-let frameEl: HTMLIFrameElement | null = null, pendingSrc = "";
-/** BuildsPanel's #bframe ref. */
-export function setBuildFrame(el: HTMLIFrameElement | null): void {
-  frameEl = el;
-  if (el && pendingSrc) { el.src = pendingSrc; pendingSrc = ""; }
-}
-function setFrameSrc(src: string) { if (frameEl) frameEl.src = src; else pendingSrc = src; }
+// ------------------------------------------------------------------ the Tasks page: the shell's Tasks UI in an iframe ----
+/** The page's frame, registered while it is mounted so the build filter can reach into it (TasksPage's ref). */
+let frameEl: HTMLIFrameElement | null = null;
+export function setFilterFrame(el: HTMLIFrameElement | null): void { frameEl = el; }
+/** The frame's src for a route: one task's peek, or the machine-wide list (builds live in other folders). */
+export const tasksPageUrl = (taskKey: string | null): Promise<string> =>
+  taskKey ? tasksUi({ task: taskKey, scope: "all" }) : tasksUi({ view: "list", scope: "all" });
 
-export async function showBuildFrame(taskKey?: string): Promise<void> {
-  const want = taskKey || "list";
-  if (buildFrameFor === want) return;
-  buildFrameFor = want;
-  try {
-    setFrameSrc(taskKey ? await tasksUi({ task: taskKey, scope: "all" }) : buildsUiUrl || await tasksUi({ view: "list", scope: "all" }));
-  } catch (e) { buildFrameFor = ""; console.warn("builds ui", e); }
-}
-// Opened from code (a new build/task) rather than the footer chip: the chip keeps its `fresh` mark.
+// Opened ON A TASK (a new build or task, a build card's "Open in Builds") rather than the footer chip's bare list: the
+// chip keeps its `fresh` mark, as OpenBot did. The chip itself calls openBuilds() with no key, and that visit is what
+// clears the mark (Bugbot, #1637: a flag set for every open never let it clear).
 let openedByCode = false;
-/** BuildsPanel, when the panel opens: true when openBuilds() opened it (consumes the flag). */
+/** TasksPage, on mount: true when openBuilds(taskKey) opened it (consumes the flag). */
 export function takeOpenedByCode(): boolean { const v = openedByCode; openedByCode = false; return v; }
+/** Go to the Tasks page (/bots/tasks), on one task's peek when `taskKey` is given. The host URL's query (a side
+ *  app's params, the shell's `peek`) rides along. */
 export function openBuilds(taskKey?: string): void {
   if (!buildsOn()) return;
-  if (!panelShown()) openedByCode = true;
-  openPanel("builds");
-  void showBuildFrame(taskKey);
+  if (taskKey && !panelShown()) openedByCode = true;
+  navigateUrl(tasksHref(taskKey, location.search));
 }
-export function closeBuilds(): void { if (panelShown()) closePanel(); }
+export function closeBuilds(): void { if (panelShown()) goChat(); }
 
 /** The row-filter stylesheet for the framed Tasks list (pure, for tests). */
 export function buildFilterCss(keys: Iterable<string>): string {
@@ -287,7 +289,8 @@ export function followBuild(h: TaskHandle, name: string, _dir: string): void {
 }
 
 // ------------------------------------------------------------------ boot ----
-/** Load builds.json, list once, then ride the shared long poll (one per document). Returns the teardown. Call once (BuildsPanel). */
+/** Load builds.json, list once, then ride the shared long poll (one per document). Returns the teardown. Call once per
+ *  mount (App): the chip and the thread's build cards show on every route, not only on the Tasks page. */
 export function startBuilds(): () => void {
   if (!buildsOn()) { setBuildsChip({ hidden: true }); return () => {}; }
   let alive = true;
