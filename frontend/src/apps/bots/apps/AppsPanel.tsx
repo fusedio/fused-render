@@ -1,7 +1,10 @@
-// #apanel (OpenBot index.html + apps.js): a gallery of every fused app under the apps root (builds, uploads and
-// installed starters alike), shown while ui.panel === "apps". Each card is a live, scaled-down render of the app's
-// entry page (a sandboxed lazy iframe with _preview=1); clicking it opens the app full-size inside this page (#vpanel,
-// AppViewer), with modifier clicks keeping the plain /render link (new tab). A card whose folder is an installed
+// /bots/apps and /bots/apps/<folder> (routes.ts; OpenBot's #apanel): a gallery of every fused app under the apps root
+// (builds, uploads and installed starters alike). Mounted only while one of the two routes is active, so the listing
+// loads on mount and the cards' iframes go with the route (idle apps stop). Each card is a live, scaled-down render
+// of the app's entry page (a sandboxed lazy iframe with _preview=1); clicking it navigates to the app's own route,
+// where AppViewer shows it full-size above the gallery, with modifier clicks keeping the plain /render link (new tab).
+// A deep link to /bots/apps/<folder> shows the viewer as soon as the apps root is known (the folder names the dir);
+// the card's name and description fill in when the listing lands. A card whose folder is an installed
 // starter (matched on dir) also carries the starter's badge (Installed / Needs setup / Ready) and an Update button
 // when a newer version ships. Above the gallery, the strip of starters not installed yet (StartersStrip.tsx).
 // Upload: a zipped fused app (Finder "Compress", a .fused export),
@@ -11,9 +14,11 @@ import { ArrowLeftIcon, PlusIcon, RefreshCwIcon, UploadIcon } from "lucide-react
 import { useEffect, useRef, useState, type DragEvent, type MouseEvent } from "react";
 import { askConfirm } from "../dialogs/ask";
 import { api, appIconUrl, type AppRow } from "../lib/api";
-import { errMsg, showBanner, useBotsSelector } from "../state/store";
+import { errMsg, showBanner } from "../state/store";
 import { isBuildDialogOpen, newBuild } from "../builds/builds";
-import { agoShort, appEmbed, appOpenUrl, closeApps, closeView, getViewedApp, useAppsRoot, viewApp } from "./apps";
+import { agoShort, appEmbed, appOpenUrl, closeApps, closeView, folderOf, useAppsRoot, viewApp, type AppLike } from "./apps";
+import { appsHref } from "../routes";
+import { replaceSearch } from "@platform/lib/router";
 import { AppViewer } from "./AppViewer";
 import { StartersStrip } from "./StartersStrip";
 import { busyLabel, needsStatus, starterBadge, starterOf, starterRows, updateButton, updateConfirm, withStatus, type StarterRow } from "./starters";
@@ -62,8 +67,8 @@ function Card({ a, starter, reloadApps }: { a: AppRow; starter: StarterRow | nul
   );
 }
 
-export function AppsPanel() {
-  const open = useBotsSelector((s) => s.ui.panel === "apps");
+/** `folder`: the viewed app's route segment (/bots/apps/<folder>), or null on the gallery. */
+export function AppsPanel({ folder }: { folder: string | null }) {
   const root = useAppsRoot();
   const [grid, setGrid] = useState<Grid>({ kind: "looking" });
   const [busy, setBusy] = useState(false);
@@ -103,27 +108,30 @@ export function AppsPanel() {
     return out;
   };
 
-  // Opening lists the folder; closing (Back, Esc, another panel taking the slot) closes the viewer, drops the
-  // gallery's iframes so idle apps stop running, and hides the starter strip.
-  const wasOpen = useRef(false);
+  // Mounting lists the folder; unmounting (Back, Esc, another route) drops the gallery's iframes and the strip with it.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { void loadApps(); }, []);
+
+  // The viewed app: the listing's row for the folder when it has landed, else (a deep link, the listing still in
+  // flight) the folder itself under the root. A listing that landed WITHOUT it is a stale link: the gallery shows,
+  // with a banner, and the URL drops the folder (a replace: the dead address is not worth a history entry).
+  const missing = !!folder && grid.kind === "rows" && !grid.rows.some((a) => folderOf(a) === folder);
+  const viewed: AppLike | null = !folder || missing ? null
+    : (grid.kind === "rows" && grid.rows.find((a) => folderOf(a) === folder)) || (root ? { name: folder, folder, dir: `${root}/${folder}` } : null);
   useEffect(() => {
-    if (open) { wasOpen.current = true; void loadApps(); return; }
-    if (!wasOpen.current) return;
-    seq.current++;
-    closeView();
-    setGrid({ kind: "blank" });
-    setStarters([]);
-  }, [open]);
+    if (!missing) return;
+    showBanner(`No app named "${folder}" under ${root || "the apps root"}.`);
+    replaceSearch(appsHref());
+  }, [missing, folder, root]);
 
   useEffect(() => {
-    if (!open) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape" || isBuildDialogOpen()) return;
-      if (getViewedApp()) closeView(); else closeApps();  // Esc steps back one level: app → gallery → bots
+      if (folder) closeView(); else closeApps();  // Esc steps back one level: app → gallery → bots
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [open]);
+  }, [folder]);
 
   // importapp strips the wrapper folder, refuses paths that escape the target and never overwrites an existing app.
   const uploadApp = async (file: File | null | undefined) => {
@@ -140,7 +148,7 @@ export function AppsPanel() {
     finally { setBusy(false); }
   };
 
-  const dropOk = () => open && !getViewedApp();
+  const dropOk = () => !folder;
   const onDragOver = (e: DragEvent<HTMLDivElement>) => { if (dropOk()) { e.preventDefault(); setDrag(true); } };
   const onDragLeave = (e: DragEvent<HTMLDivElement>) => { if (!panelRef.current?.contains(e.relatedTarget as Node | null)) setDrag(false); };
   const onDrop = (e: DragEvent<HTMLDivElement>) => { e.preventDefault(); setDrag(false); if (dropOk()) void uploadApp(e.dataTransfer?.files?.[0]); };
@@ -148,7 +156,7 @@ export function AppsPanel() {
   const under = root ? ` under ${root}` : "";
   return (
     <>
-      <div id="apanel" ref={panelRef} className={[open ? "show" : "", drag ? "drag" : "", busy ? "busy" : ""].filter(Boolean).join(" ")}
+      <div id="apanel" ref={panelRef} className={["show", drag ? "drag" : "", busy ? "busy" : ""].filter(Boolean).join(" ")}
         onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}>
         <div className="topbar">
           <button id="aback" className="backtxt" aria-label="Back" title="Back to bots (Esc)" onClick={closeApps}><ArrowLeftIcon /></button>
@@ -163,9 +171,9 @@ export function AppsPanel() {
           </span>
         </div>
         <div className="ascroll">
-          <StartersStrip rows={open ? starters : []} reloadApps={loadApps} />
+          <StartersStrip rows={starters} reloadApps={loadApps} />
           <div className="agrid" id="agrid">
-            {!open || grid.kind === "blank" ? null
+            {grid.kind === "blank" ? null
               : grid.kind === "looking" ? <div className="empty">Looking for apps…</div>
               : grid.kind === "error" ? <div className="empty">Could not read the apps folder.<br />{grid.msg}</div>
               : !grid.rows.length ? <div className="empty">No apps yet.<br />Start one with New app; it shows up here when Claude has written its page.</div>
@@ -173,7 +181,7 @@ export function AppsPanel() {
           </div>
         </div>
       </div>
-      <AppViewer />
+      {viewed ? <AppViewer app={viewed} /> : null}
     </>
   );
 }

@@ -34,11 +34,15 @@ import {
 } from "../protocol/summaries";
 import { COPY_RESET_MS } from "../protocol/markdown";
 import { useCanRunInTerminal, openTerminal } from "@platform/lib/terminalDockStore";
-import type { ToolSegment } from "../protocol/types";
+import { isAgentTool, subagentChipModel, taskFor } from "../protocol/tasks";
+import type { Segment, ToolSegment } from "../protocol/types";
 import { useCardOpen } from "./cardPolicy";
 import { MarkdownView } from "./MarkdownView";
 import { activateOnKey } from "./planAffordance";
 import { PlanModal } from "./PlanModal";
+import { useTaskIndex } from "./tasksContext";
+
+import "../styles/tasks.css";
 
 function asRecord(v: unknown): Record<string, unknown> {
   return v && typeof v === "object" ? (v as Record<string, unknown>) : {};
@@ -203,14 +207,29 @@ function usedKeys(seg: ToolSegment, inp: Record<string, unknown>): string[] {
   }
 }
 
-function ChipBody({ seg, cwd }: { seg: ToolSegment; cwd?: string | null }) {
+function ChipBody({
+  seg,
+  cwd,
+  nested,
+}: {
+  seg: ToolSegment;
+  cwd?: string | null;
+  nested?: NestedRenderer;
+}) {
   const inp = asRecord(seg.input);
   const extra = leftoverInput(inp, usedKeys(seg, inp));
   const out = chipOutput(seg.output);
+  const children = Array.isArray(seg.children) ? seg.children : [];
   return (
     <>
       {renderInput(seg, inp, cwd)}
       {extra ? <CopyPre copy={JSON.stringify(extra, null, 2)}>{JSON.stringify(extra, null, 2)}</CopyPre> : null}
+      {/* THE SUBAGENT'S OWN TRANSCRIPT (SPEC T-5), between what it was asked
+          and what it handed back — drawn by the SAME segment renderer the
+          turn uses, indented. */}
+      {children.length && nested ? (
+        <div className="chat-subagent">{nested(children, seg.status === "running")}</div>
+      ) : null}
       {out === null ? null : (
         <CopyPre className="chip-out" copy={out}>
           {out}
@@ -361,6 +380,31 @@ function PathLabel({ value }: { value: unknown }) {
   return s ? <div className="chip-label chip-label-path">{s}</div> : null;
 }
 
+/** Renders a subagent's segments with the transcript's own renderer
+ *  (`SegmentView`, which passes this down — a prop rather than an import, so
+ *  the two modules do not import each other). */
+export type NestedRenderer = (segments: Segment[], live: boolean) => React.ReactNode;
+
+/**
+ * A LINKED CHIP'S HEADER EXTRAS (SPEC T-5): the subagent type, the task's live
+ * status and usage, or a Monitor's "watching · 3 events". The one consumer of
+ * the task index, so a task's progress re-renders this span and nothing else.
+ */
+function ChipTaskInfo({ seg }: { seg: ToolSegment }) {
+  const index = useTaskIndex();
+  const m = subagentChipModel(seg, taskFor(seg, index));
+  const title = seg.orphan ? "" : m.title.replace(/^Subagent: /, "");
+  if (!title && !m.status && !m.usage && !m.monitor) return null;
+  return (
+    <span className="chip-task">
+      {title && title !== "Subagent" ? <span className="chip-task-type">{title}</span> : null}
+      {m.status ? <span className={"chip-task-status is-" + m.statusKey}>{m.status}</span> : null}
+      {m.monitor ? <span className="chip-task-meta">{m.monitor}</span> : null}
+      {m.usage ? <span className="chip-task-meta">{m.usage}</span> : null}
+    </span>
+  );
+}
+
 export interface ToolChipProps {
   seg: ToolSegment;
   /** Collapse-policy key (cardPolicy.cardKey). */
@@ -369,14 +413,22 @@ export interface ToolChipProps {
    *  first, so re-running a past command lands where the chat is actually
    *  working rather than wherever the drawer happens to be. */
   cwd?: string | null;
+  /** How a subagent's `children` are drawn — `SegmentView` hands itself down. */
+  nested?: NestedRenderer;
 }
 
 /** MEMOIZED: a replayed tool call is the same segment object poll after poll,
  *  and a chip's body is the most expensive thing in a long turn. */
-export const ToolChip = memo(function ToolChip({ seg, cardKey, cwd }: ToolChipProps) {
+export const ToolChip = memo(function ToolChip({ seg, cardKey, cwd, nested }: ToolChipProps) {
   const [open, toggle] = useCardOpen(cardKey);
   const raw = String(seg.name || "tool");
-  const pretty = prettyToolName(raw);
+  // A synthetic parent (its tool_use was before this window) has no input to
+  // describe, only the subagent's rows: it says so instead of "Agent".
+  const pretty = seg.orphan ? "Subagent (started earlier)" : prettyToolName(raw);
+  // Whether the header asks the task registry anything at all.
+  const linked =
+    !!seg.task_id || !!seg.orphan || (Array.isArray(seg.children) && seg.children.length > 0) ||
+    isAgentTool(raw) || raw === "Monitor";
   const parts = toolChipSummaryParts(seg);
   const full = toolChipSummary(seg);
   const status = String(seg.status || "running");
@@ -387,7 +439,7 @@ export const ToolChip = memo(function ToolChip({ seg, cardKey, cwd }: ToolChipPr
     <Collapsible
       open={open}
       onOpenChange={toggle}
-      className={cn("toolchip", open && "is-open")}
+      className={cn("toolchip", open && "is-open", !!seg.children?.length && "has-subagent")}
     >
       {/* WHEN THIS CALL WAS MADE, in the lane beside the chip — the message
           stamp's words (`chipWhen`), shown on hover like the message stamp is,
@@ -425,10 +477,11 @@ export const ToolChip = memo(function ToolChip({ seg, cardKey, cwd }: ToolChipPr
               <bdi>{parts.path}</bdi>
             </span>
           </span>
+          {linked ? <ChipTaskInfo seg={seg} /> : null}
         </span>
       </CollapsibleTrigger>
       <CollapsibleContent className="chip-body">
-        <ChipBody seg={seg} cwd={cwd} />
+        <ChipBody seg={seg} cwd={cwd} {...(nested ? { nested } : {})} />
       </CollapsibleContent>
     </Collapsible>
   );

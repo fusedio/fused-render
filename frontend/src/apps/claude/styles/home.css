@@ -601,3 +601,11 @@
 .chat-root .c-topbar .task-side-peek-project {
   line-height: normal;
 }
+
+/* The worktree menu on the landing (SPEC W-4), centred under the path and
+   pulled up into the path's own bottom margin. */
+.c-home-worktree {
+  display: flex;
+  justify-content: center;
+  margin: -20px 0 20px;
+}

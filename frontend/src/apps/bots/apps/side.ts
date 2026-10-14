@@ -19,10 +19,14 @@ export function useSideApp(): SideAppState | null {
 }
 
 let frame: HTMLIFrameElement | null = null, frameKey = "", pending = "";
-/** SideApp's #saframe ref. */
+/** SideApp's #saframe ref. A new element forgets the key: the Bots tree can remount (a route change out and back)
+ *  while `sideApp` lives on in this module, and the next showAppBeside of the SAME app must load the fresh, empty
+ *  frame rather than believe it still runs there (the blank-frame bug builds.ts describes). */
 export function setSideFrame(el: HTMLIFrameElement | null): void {
   frame = el;
-  if (el && pending) { el.src = pending; el.dataset.key = frameKey; pending = ""; }
+  if (!el) { frameKey = ""; return; }
+  if (pending) { el.src = pending; el.dataset.key = frameKey; pending = ""; }
+  else if (sideApp) { const key = appEmbedBase(sideApp.dir, sideApp.params); frameKey = key; el.src = key; el.dataset.key = key; }
 }
 function load(src: string, key: string) {
   frameKey = key;

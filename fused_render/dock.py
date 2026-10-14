@@ -285,10 +285,12 @@ def bot_exists(bid) -> bool:
 
 
 def bot_view_path(bid: str) -> str:
-    """The shell path that selects bot ``bid`` on the bots page."""
+    """The shell path of bot ``bid``'s chat (frontend apps/bots/routes.ts
+    ``botHref``; until 2026-10-14 ``/bots?bot=<id>``, which the client still
+    rewrites)."""
     import urllib.parse
 
-    return "/bots?bot=" + urllib.parse.quote(bid, safe="")
+    return "/bots/" + urllib.parse.quote(bid, safe="")
 
 
 def _bot_rows() -> list[dict]:

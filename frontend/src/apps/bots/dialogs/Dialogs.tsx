@@ -38,7 +38,7 @@ export function Dialogs() {
   const needDetail = !!b && req?.kind === "settings" && (b.memory == null || b.skills == null);
   useEffect(() => {
     if (!needDetail || !b) return;
-    if (getState().sel !== b.id) select(b.id);
+    if (getState().sel !== b.id) select(b.id, { replace: true });  // incidental to the dialog, not a hop worth a history entry
     void poll();
   }, [needDetail, b?.id]);
 

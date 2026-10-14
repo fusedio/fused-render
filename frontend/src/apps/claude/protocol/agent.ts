@@ -58,7 +58,7 @@ function newCallId(): string {
  *  `error` is the structured `{type, message, traceback}` becomes an
  *  `AgentError`; a string `error` (400 bad action/params, 403) stays the
  *  platform's `HttpError`; an abort rethrows untouched. */
-async function post<T>(url: string, body: Record<string, unknown>, opts: RunOpts = {}): Promise<T> {
+export async function post<T>(url: string, body: Record<string, unknown>, opts: RunOpts = {}): Promise<T> {
   try {
     return await postJson<T>(url, body, {
       ...(opts.signal ? { signal: opts.signal } : {}),

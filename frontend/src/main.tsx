@@ -2,6 +2,8 @@
 // load, React mount.
 import { createRoot } from "react-dom/client";
 import { TroubleCard } from "@platform/ui/TroubleCard";
+import { ShellErrorBoundary } from "@platform/ui/ShellErrorBoundary";
+import { installShellErrorReporter, reportShellError } from "@platform/lib/shell-errors";
 import { IS_EMBED, IS_SNAPSHOT } from "@platform/lib/router";
 import { clearListPrefetch, getConfig } from "@platform/lib/api";
 import { notifyFsChanged } from "@apps/explorer/listing/fsChangeBus";
@@ -12,6 +14,11 @@ import { displayName, isBot, seedFlavor } from "@platform/lib/flavor";
 import { openTerminal, type TerminalRequest } from "@platform/lib/terminalDockStore";
 import App from "@shell/App";
 import "./shell.css";
+
+// FIRST, before any of the wiring below: a throw anywhere in this module's
+// own evaluation — or in a lazy chunk, or in a render — is otherwise a blank
+// window that the server log never hears about (lib/shell-errors.ts).
+installShellErrorReporter();
 
 // The preview iframe's injected runtime writes view params via
 // parent.history.replaceState (same history object), which fires no event.
@@ -91,14 +98,25 @@ if (IS_SNAPSHOT) document.body.classList.add("snapshot");
 
 const root = createRoot(document.getElementById("root")!);
 
-getConfig().then(
+// Bounded, because an unsettled /api/config is the one boot failure that
+// shows NOTHING: no render, no error card, a themed empty page at a valid
+// URL. A local server answers this in milliseconds; a cold start under load
+// was measured at under 2 s. Past the bound the fetch rejects like any other
+// failure and the card below says what to do.
+const CONFIG_TIMEOUT_MS = 20_000;
+
+getConfig({ signal: AbortSignal.timeout(CONFIG_TIMEOUT_MS) }).then(
   (config) => {
     // Flavor first: the sidebar and the title read it synchronously in this
     // very render, and a seed a tick later is a flash of the wrong brand.
     seedFlavor(config);
     document.title = displayName();
     if (isBot()) setDefaultFavicon("favicon-bot.png");
-    root.render(<App config={config} />);
+    root.render(
+      <ShellErrorBoundary>
+        <App config={config} />
+      </ShellErrorBoundary>
+    );
     // Embed documents are display-only panes/previews. They have no global
     // sidebar, so hydrating its bookmark and recents stores in every iframe is
     // unrelated work — and multiplies the two bounded filesystem checks by the
@@ -138,7 +156,8 @@ getConfig().then(
     // ServerStatusBanner's health probe (D126).
     window.addEventListener("focus", pollBookmarks);
   },
-  (err: Error) =>
+  (err: Error) => {
+    reportShellError({ where: "boot", message: String(err.message || err), stack: err.stack });
     // THE BOOT FAILURE, and the one error surface that cannot describe itself:
     // /api/config is what failed, so there is no version, no install path and
     // no platform to put in the report — the card degrades to the error and the
@@ -155,5 +174,6 @@ getConfig().then(
           onRetry={() => location.reload()}
         />
       </div>
-    )
+    );
+  }
 );

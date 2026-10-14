@@ -47,6 +47,24 @@ export function rewriteLegacyUrl(url: string): string {
   // here because the alternative is carrying a dead URL shape forever.
   if (mapped) return mapped + q;
   if (p.startsWith("/view/") || p.startsWith("/embed/")) return "/explorer" + p + q;
+  // `/bots?bot=<id>` → `/bots/<id>` (2026-10-14; the path shape is owned by
+  // apps/bots/routes.ts, which the platform may not import, so the rule is
+  // spelled here beside the other legacy shapes). Kept for good, unlike the
+  // AI Models `?tab=` shape: this one was written by the native Dock and
+  // mac_window.show_bot, so a running older Fused Bot build keeps opening
+  // the right chat, and so do bookmarks and bot-written links. The rest of
+  // the query (`?new=1`, an app's params) rides along. The id is passed on
+  // as-is; the page's own parser decides whether it names a bot.
+  if (p === "/bots" && q) {
+    const hash = q.indexOf("#");
+    const params = new URLSearchParams(hash === -1 ? q.slice(1) : q.slice(1, hash));
+    const id = params.get("bot");
+    if (id) {
+      params.delete("bot");
+      const tail = params.toString();
+      return "/bots/" + encodeURIComponent(id) + (tail ? "?" + tail : "") + (hash === -1 ? "" : q.slice(hash));
+    }
+  }
   return url;
 }
 

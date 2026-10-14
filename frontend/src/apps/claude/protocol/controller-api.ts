@@ -21,6 +21,7 @@ import type {
   Segment,
   SkillRow,
   SwitchableMode,
+  TaskRecord,
   TranscriptStat,
 } from "./types";
 /** PR2: the attachment pipeline's own contract (`shots/types.ts`). Pure types —
@@ -283,6 +284,21 @@ export interface ChatState {
    * `null` is "nothing to draw": no meter, rather than a truthful-looking 0%.
    */
   context: ContextUsage | null;
+  /**
+   * SPEC T-5: THE BACKGROUND TASKS OF THE RUN ON SCREEN — subagents, shells,
+   * monitors — as the poll's `tasks` (or, on a restore, history's) reports
+   * them, running first. Drives the tasks panel, the working line's verb and
+   * the agent chips' live status.
+   *
+   * STICKY FOR THE RUN: a poll that carries no list (an older agent.py, or an
+   * empty registry on the same run) leaves the last non-empty one standing, so
+   * the panel does not flicker; a poll of a DIFFERENT run with none clears it,
+   * and so does replacing the conversation. `[]` = nothing to show.
+   */
+  tasks: TaskRecord[];
+  /** The run `tasks` belongs to — what `task_output` is asked of. `null` when
+   *  the list came from a history read with nothing live (its host is gone). */
+  tasksRunId: string | null;
   /** T:16411 `ownRunEndedAt` — the clock reading at which a run THIS frame was
    *  streaming last ended, or 0 if none has. D415's transcript follower (PR4)
    *  compares against it so rows this page just wrote are not read back as
@@ -744,6 +760,10 @@ export interface ControllerDeps {
      */
     refused?: boolean;
   }) => void;
+  /** A poll window held an `init` or `commands_changed` row
+   *  (`PollResponse.commands_changed`, SPEC C-2): the folder's slash-command
+   *  list may have moved, so the host re-fetches it once. */
+  onCommandsChanged?: () => void;
 }
 
 export type { HistoryTurn };

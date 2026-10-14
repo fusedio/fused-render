@@ -26,7 +26,9 @@ export type Action =
   | "terminal_command"
   | "cancel"
   | "live_host"
-  | "send";
+  | "send"
+  | "commands"
+  | "task_output";
 
 /** A permission mode as the CLI spells it (PERMISSION_MODES, agent.py). */
 export type PermissionMode = "plan" | "prompt" | "acceptEdits" | "auto";
@@ -216,6 +218,8 @@ export interface AgentRequests {
   cancel: CancelRequest;
   live_host: FileSessionRequest;
   send: SendRequest;
+  commands: FileRequest;
+  task_output: TaskOutputRequest;
 }
 
 // ---- segments (agent.py:3253 _segments_from_rows; T:15591-15635) -----------
@@ -259,6 +263,19 @@ export interface ToolSegment extends SegmentClock {
   /** null while running; capped at SEGMENT_OUTPUT_CAP=4000 chars once settled. */
   output: string | null;
   images: ToolImage[];
+  /** SPEC T-2: the subagent's own transcript, built by the same reader — rows
+   *  whose `parent_tool_use_id` is this tool_use. One level: a subagent's own
+   *  subagents are flattened into its group. Absent when it has none. */
+  children?: Segment[];
+  /** SPEC T-2: the task registry's id for the background task this call
+   *  started (`Task`/`Agent`/`Monitor`/backgrounded `Bash`) — the key into
+   *  `TaskRecord.id`. */
+  task_id?: string;
+  /** SPEC T-2: a SYNTHETIC parent — its tool_use was before this window, so
+   *  only the children are real (`name: "Agent"`, `input: {}`). */
+  orphan?: boolean;
+  /** Only on a synthetic orphan parent (always ""). */
+  detail?: string;
 }
 export interface NoticeSegment extends SegmentClock {
   kind: "notice";
@@ -541,6 +558,14 @@ export interface PollResponse {
    * which is the same as an empty one: the optimistic bubbles are all there is.
    */
   inbox?: InboxMessage[];
+  /** True on a window that held an `init` or `commands_changed` row: the
+   *  slash-command list may have moved, so the page re-fetches `commands`
+   *  once (SPEC C-2). Absent on an older agent.py. */
+  commands_changed?: boolean;
+  /** SPEC T-1: every background task this run has seen — subagents, shells,
+   *  monitors — running first, then by `started_at`. Absent on an older
+   *  agent.py. */
+  tasks?: TaskRecord[];
 }
 
 /**
@@ -771,6 +796,9 @@ export interface HistoryResponse {
    * same reading.
    */
   context?: ContextUsage | null;
+  /** SPEC T-1: the task registry of this session's LAST run, while its run
+   *  dir is still on disk; `[]` otherwise. Absent on an older server. */
+  tasks?: TaskRecord[];
 }
 
 /**
@@ -938,6 +966,24 @@ export interface AgentResponses {
   cancel: CancelResponse;
   live_host: RunIdResponse | ErrorOnly;
   send: SendResponse;
+  commands: CommandsResponse | ErrorOnly;
+  task_output: TaskOutputResponse | ErrorOnly;
+}
+
+/** One slash command the CLI (or the disk scan) knows (SPEC C-2). */
+export interface CommandRow {
+  name: string;
+  description: string;
+  source: string;
+}
+
+/** `commands {file}` — the folder's slash-command list. `from: "cli"` when the
+ *  last session's `init` row was captured, `"disk"` for the fallback scan. */
+export interface CommandsResponse {
+  commands: CommandRow[];
+  agents: string[];
+  stale: boolean;
+  from: "cli" | "disk";
 }
 
 // ---- sibling scripts ---------------------------------------------------------
@@ -952,4 +998,52 @@ export interface AppEntryResponse {
 export interface ArtifactsListResponse {
   artifacts?: unknown[];
   error?: string;
+}
+
+// ---- background tasks (SPEC T) -----------------------------------------------
+
+export type TaskKind = "shell" | "agent" | "monitor" | "other";
+/** `unknown`: the run that owned the task is gone while the task was still
+ *  active (agent.py on a restore; the page itself when a run ends) — its real
+ *  outcome was never reported. `ended_at` is null then. */
+export type TaskStatus = "running" | "completed" | "failed" | "killed" | "paused" | "pending" | "unknown";
+export interface TaskUsage {
+  total_tokens: number;
+  tool_uses: number;
+  duration_ms: number;
+}
+/** One entry of `<run_dir>/bg_tasks.json` (agent.py task registry, SPEC T-1). */
+export interface TaskRecord {
+  id: string;
+  description: string;
+  kind: TaskKind;
+  /** The raw CLI `task_type` (`local_bash`, `local_agent`, `monitor_mcp`…), "" when unknown. */
+  type: string;
+  /** "" unless an agent. */
+  subagent_type: string;
+  /** "" unless known — the `ToolSegment.id` this task was started by. */
+  tool_use_id: string;
+  status: TaskStatus;
+  /** Wall clock, epoch SECONDS. */
+  started_at: number;
+  ended_at: number | null;
+  backgrounded: boolean;
+  usage: TaskUsage | null;
+  error: string;
+  /** The last `task_notification` summary. */
+  summary: string;
+  /** Notifications seen — a monitor's line count. */
+  events: number;
+}
+/** `task_output {run_id, task_id}` (SPEC T-3). */
+export interface TaskOutputRequest {
+  run_id: string;
+  task_id: string;
+}
+export interface TaskOutputResponse {
+  /** The tail, capped at 64 KiB (`truncated` says when it was cut). */
+  output: string;
+  status: string;
+  truncated: boolean;
+  error?: undefined;
 }

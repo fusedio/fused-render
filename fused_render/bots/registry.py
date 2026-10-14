@@ -100,7 +100,11 @@ def get(bid: str):
     process may not hold Bots (the forward middleware answers that before any
     route reaches here, so a NotOwner out of a route is a bug, not a state)."""
     bid = os.path.basename(bid or "")
-    if not bid:
+    # `.`/`..` survive basename (`x\..` on Windows becomes `..`) and would make
+    # the bots root's parent a "bot" whenever a bot.json sits there (CodeRabbit,
+    # #1637). The page's route parser refuses them too (apps/bots/routes.ts
+    # isBotId); this is the guard every API caller passes through.
+    if not bid or bid in (".", ".."):
         raise ValueError("no bot id given")
     require_owner()
     key = _key(bid)

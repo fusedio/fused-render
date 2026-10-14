@@ -281,7 +281,10 @@ export function toolChipSummaryParts(seg: Pick<ToolSegment, "name" | "input"> | 
     case "Write":
       return { lead: "+" + segLineCount(inp.content), path: pick("file_path") };
     case "Task":
+    case "Agent":
       return lead(pick("description", "subagent_type"));
+    case "Monitor":
+      return lead(pick("description", "command"));
     case "TodoWrite": {
       const todos = Array.isArray(inp.todos) ? inp.todos : [];
       const done = todos.filter((t) => asRecord(t).status === "completed").length;

@@ -41,6 +41,7 @@ import { useCanvasesLoggedIn } from "@apps/canvases/logged-in";
 import { useCanvasesFeature } from "@apps/canvases/feature-flag";
 import { useAiRuntime } from "@apps/ai_models/lib/aiRuntime";
 import { isAiModelsPath, tabHref } from "@apps/ai_models/routes";
+import { isBotsPath } from "@apps/bots/routes";
 import { markTasksSeen, useTasksPulse } from "@shell/tasksPulse";
 import { attentionLabel, pulseTitle, runningLabel } from "@shell/tasks-lib";
 import { formatSize } from "@platform/lib/format";
@@ -505,7 +506,9 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // highlighting both the row and the thing you opened read as two selections.
   const pathname = location.pathname;
   const homeActive = pathname === "/home";
-  const botsActive = pathname === "/bots";
+  // PREFIX, like AI Models below: /bots/<id> and /bots/tasks are the same page
+  // through a different door, not a second destination (apps/bots/routes.ts).
+  const botsActive = isBotsPath(pathname);
   const tasksActive = pathname === "/tasks";
   // Exact, for the reason Home is: /canvases/<name> is a workspace you opened,
   // not the list page, and lighting the row while you are inside a canvas reads
