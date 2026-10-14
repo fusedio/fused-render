@@ -41,6 +41,7 @@
 // The active tab lives in the URL (`?tab=indexing`), same pattern as
 // Templates' bindings/library tabs.
 // Template bindings live in the dedicated /view/_templates view.
+import { isMac } from "@platform/lib/platform";
 import { useCallback, useEffect, useState } from "react";
 import {
   buildDiagnostics,
@@ -948,22 +949,26 @@ function NativeWindowsSection({ prefs, onChange }: { prefs: Prefs; onChange: (p:
           <b>Use native windows</b> instead of browser tabs.
         </span>
       </label>
-      <label className="prefs-radio">
-        <input
-          type="checkbox"
-          checked={inExplorer}
-          disabled={busy || !enabled}
-          onChange={toggleInExplorer}
-        />
-        <span>
-          <b>Open apps in the file explorer</b>
-          <br />
-          <span className="deploy-muted">
-            An app you click inside a window opens there with the explorer around it, instead of
-            on its own with the window becoming the app's.
+      {/* macOS only: a Linux window always opens apps in the explorer
+          (appEntry.ts `openAppEntry`), so there is nothing to choose. */}
+      {isMac && (
+        <label className="prefs-radio">
+          <input
+            type="checkbox"
+            checked={inExplorer}
+            disabled={busy || !enabled}
+            onChange={toggleInExplorer}
+          />
+          <span>
+            <b>Open apps in the file explorer</b>
+            <br />
+            <span className="deploy-muted">
+              An app you click inside a window opens there with the explorer around it, instead of
+              on its own with the window becoming the app's.
+            </span>
           </span>
-        </span>
-      </label>
+        </label>
+      )}
       {error && <ErrorBanner>{error}</ErrorBanner>}
     </section>
   );
