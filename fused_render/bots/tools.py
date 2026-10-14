@@ -1048,6 +1048,26 @@ def _copied(info: dict, cap: int = 500) -> str:
     return f"; COPIED to the browser clipboard: \"{text[:cap]}\"" + (f" …[{len(text) - cap} more chars]" if len(text) > cap else "")
 
 
+_WEB_SCHEMES = {"http", "https", "data", "blob", "javascript"}
+# Chromium rewrites most about:X to chrome://X (about:settings), so only the inert pages pass.
+_ABOUT_OK = re.compile(r"about:(blank|srcdoc)([#?].*)?", re.IGNORECASE | re.DOTALL)
+
+
+def _url_refusal(bot, url: str) -> str | None:
+    """An ordinary bot has no file tools on purpose, so its browser must not read local files
+    or browser-internal pages either. Normalise like a browser's URL parser (tab/CR/LF dropped
+    anywhere, edge controls and spaces stripped), default a bare host to https, then allowlist."""
+    if is_super(bot):
+        return None
+    from fused_render.bots import browser as _browser
+    u = re.sub(r"[\t\r\n]", "", url or "").strip("".join(chr(c) for c in range(0x21)))
+    scheme = _browser._with_scheme(u).split(":", 1)[0].lower()
+    if scheme in _WEB_SCHEMES or _ABOUT_OK.fullmatch(u):
+        return None
+    return (f"error: this bot can't open {scheme}: pages (local files and browser-internal pages are off limits). "
+            "Ask the user to attach the files to the task, or to give it to Super Bot.")
+
+
 # --------------------------------------------------------------- execute ---
 def execute(bot, act: str, d: dict, obs: dict) -> tuple[str, str]:
     """Run one tool (OpenBot `_execute`); never raises. Control-flow tools
@@ -1064,6 +1084,9 @@ def execute(bot, act: str, d: dict, obs: dict) -> tuple[str, str]:
             url = d.get("url") or ""
             if not url:
                 return "goto", "error: no url"
+            refusal = _url_refusal(bot, url)
+            if refusal:
+                return f"goto {url}", refusal
             info = b.goto(url)
             if info.get("error"):
                 return f"goto {url}", f"error: {info['error']}; still at {info.get('url')}"
@@ -1198,6 +1221,9 @@ def execute(bot, act: str, d: dict, obs: dict) -> tuple[str, str]:
             sub = (d.get("tab") or d.get("value") or "").lower()
             idx = d.get("index")
             if sub == "new":
+                refusal = _url_refusal(bot, d.get("url") or "")
+                if refusal:
+                    return f"tab new {d.get('url')}", refusal
                 info = b.tab_new(d.get("url") or "about:blank")
                 return f"tab new {d.get('url') or ''}".rstrip(), f"ok, now in a new tab at {info.get('url')}"
             if sub == "switch":
