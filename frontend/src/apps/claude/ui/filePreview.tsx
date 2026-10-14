@@ -22,9 +22,14 @@ export { FilePreviewContext };
 
 export function FilePreviewProvider({
   cwd,
+  enabled = true,
   children,
 }: {
   cwd?: string | null;
+  /** Off on the landing: no chat, so rows there keep their `window.open`. The
+   *  provider stays mounted (the tree under it must not remount when the chat
+   *  starts) and only hands out `null`. */
+  enabled?: boolean;
   children: ReactNode;
 }) {
   const [path, setPath] = useState<string | null>(null);
@@ -35,11 +40,11 @@ export function FilePreviewProvider({
     [cwd],
   );
   const close = useCallback(() => setPath(null), []);
-  const value = useMemo(() => open, [open]);
+  const value = useMemo(() => (enabled ? open : null), [open, enabled]);
   return (
     <FilePreviewContext.Provider value={value}>
       {children}
-      {path ? <FilePreviewModal path={path} onClose={close} /> : null}
+      {enabled && path ? <FilePreviewModal path={path} onClose={close} /> : null}
     </FilePreviewContext.Provider>
   );
 }

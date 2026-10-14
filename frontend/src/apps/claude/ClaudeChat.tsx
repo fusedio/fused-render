@@ -4719,7 +4719,7 @@ function ChatBody(props: ChatBodyProps) {
 
   return (
    <CardPolicyProvider value={cardPolicy}>
-   <FilePreviewProvider cwd={chatWorkdir(file, pane.noun)}>
+   <FilePreviewProvider cwd={chatWorkdir(file, pane.noun)} enabled={inChat}>
     <div
       ref={rootRef}
       className={rootClass(

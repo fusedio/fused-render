@@ -13,7 +13,7 @@ import { afterEach, expect, test } from "bun:test";
 import { act, create, type ReactTestInstance } from "react-test-renderer";
 
 import { ArtifactRow } from "./ArtifactRow";
-import { FilePreviewContext } from "./filePreview";
+import { FilePreviewContext, FilePreviewProvider } from "./filePreview";
 import { FilePreviewModal } from "./FilePreviewModal";
 import { PathLabel } from "./ToolChip";
 
@@ -119,6 +119,24 @@ test("an artifact row with no provider still window.opens", () => {
   }
   expect(calls).toHaveLength(1);
   expect(String(calls[0][0])).toContain("/explorer/view/p/a.html");
+});
+
+test("a disabled provider (the landing) leaves artifact rows on window.open", () => {
+  const calls: unknown[][] = [];
+  const w = globalThis as unknown as { window: { open?: unknown } };
+  const prev = w.window.open;
+  w.window.open = (...a: unknown[]) => calls.push(a);
+  try {
+    const r = mount(
+      <FilePreviewProvider cwd="/p" enabled={false}>
+        <ArtifactRow artifact={art} />
+      </FilePreviewProvider>,
+    );
+    act(() => byType(r, "div")[0].props.onClick());
+  } finally {
+    w.window.open = prev;
+  }
+  expect(calls).toHaveLength(1);
 });
 
 test("a gone file falls back to the hosted page even inside a chat", () => {
