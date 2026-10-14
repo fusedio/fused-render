@@ -12,7 +12,7 @@ import type { AssistantTurn, Turn as TurnRow, UserTurn } from "../protocol/contr
 import { splitCommand } from "../protocol/commands";
 import { viewKind, type SegmentKind } from "../protocol/segments";
 import { toolChipSummary } from "../protocol/summaries";
-import { INTERRUPT_MARK, isInterruptMark, isMarkerOnly, parseInbound } from "../protocol/wire";
+import { INTERRUPT_MARK, isInterruptMark, isMarkerOnly, parseInbound, type AnnotationWire } from "../protocol/wire";
 import type { Viewable } from "./attachApi";
 import { MarkerText } from "./AttachIcon";
 import { Caret } from "./Caret";
@@ -31,17 +31,14 @@ import { TroubleMessage } from "./TroubleView";
  *  one definition. */
 export { INTERRUPT_MARK, isInterruptMark };
 
-/** The words inside a user bubble. A component of its own because reading the
- *  turn's annotations is a hook, and the user branch of `Turn` sits behind an
- *  early return. */
-function UserBubbleBody({ turn }: { turn: UserTurn }) {
-  const notes = useMemo(() => parseInbound(turn.raw).annotations ?? [], [turn.raw]);
-  const markerOnly = isMarkerOnly(turn.text);
-  if (!notes.length) {
-    if (markerOnly) return <MarkerText text={turn.text} />;
-    return splitCommand(turn.text) ? <UserWords text={turn.text} /> : <>{turn.text}</>;
-  }
-  const typed = turn.text && !markerOnly ? turn.text : "";
+const NO_NOTES: AnnotationWire[] = [];
+
+/** The words inside an ANNOTATED user bubble: the typed words first when there
+ *  are any, then one line per comment that has words, lettered only when there
+ *  are two or more so they still match the badges burned into the overview.
+ *  Hook-free; `Turn` reads the notes once, above its early returns. */
+function UserBubbleBody({ turn, notes }: { turn: UserTurn; notes: AnnotationWire[] }) {
+  const typed = turn.text && !isMarkerOnly(turn.text) ? turn.text : "";
   const lettered = notes.length > 1;
   return (
     <>
@@ -49,7 +46,7 @@ function UserBubbleBody({ turn }: { turn: UserTurn }) {
       {notes.map((note, i) => (
         <div className="bubble-ann" key={(note.id || note.label || "n") + ":" + i}>
           {lettered ? <span className="bubble-ann-lbl">{note.label || "•"}</span> : null}
-          {note.content || ""}
+          {note.content}
         </div>
       ))}
     </>
@@ -126,6 +123,17 @@ export const Turn = memo(function Turn({
   // BEFORE the early returns below: a hook may not sit behind one, and the id
   // is only used on the assistant branch (see `bodyId`).
   const uid = useId();
+  // The comments an annotated send carried, only those with words: a wordless
+  // pin draws no line, and a send of nothing but those falls back to the
+  // marker words / typed text below.
+  const rawWire = turn.role === "user" ? turn.raw : undefined;
+  const notes = useMemo(
+    () =>
+      rawWire === undefined
+        ? NO_NOTES
+        : (parseInbound(rawWire).annotations ?? []).filter((n) => (n.content ?? "").trim()),
+    [rawWire],
+  );
   if (turn.role === "user" && isInterruptMark(turn.text)) {
     // A STATUS LINE, not a bubble (R2-2). Same shape as a `note` turn — the
     // muted centred one-liner every other "this happened beside the
@@ -204,8 +212,14 @@ export const Turn = memo(function Turn({
                 {termAsk.selection !== undefined ? <pre className="term-ask-sel">{termAsk.selection}</pre> : null}
                 <div className="term-ask-body">{termAsk.body}</div>
               </>
+            ) : notes.length ? (
+              <UserBubbleBody turn={turn} notes={notes} />
+            ) : isMarkerOnly(turn.text) ? (
+              <MarkerText text={turn.text} />
+            ) : splitCommand(turn.text) ? (
+              <UserWords text={turn.text} />
             ) : (
-              <UserBubbleBody turn={turn} />
+              turn.text
             )}
           </div>
         </div>
