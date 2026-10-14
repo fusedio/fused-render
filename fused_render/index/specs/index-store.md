@@ -65,6 +65,12 @@ derived at read time because every query opens a fresh in-memory DuckDB over
 column and parquet has no computed-column concept. It measures 92 ms vs 148 ms on
 300k rows at the real `LIMIT 200_001`, for +0.10% on disk.
 
+`load_dir_cache(cfg, root, pq)` filters in Arrow before materializing: for a root other
+than `/` it reads with `dir >= root` / `dir < root + "0"` (`0` follows `/`, so the range is
+the root plus every descendant, and row-group statistics skip the rest of a sorted
+file), masks out range-neighbours like `/r/a-b` with an exact-prefix test, and only then
+builds the Python dict. A trailing slash on `root` is irrelevant.
+
 Readers tolerate older files: `load_dir_cache` treats a `dirs.parquet` without
 `mtime_ns` as no cache at all, and `compact` synthesizes missing `mtime_ns` /
 `n_subdirs` / `depth` columns so an old index can still be merged forward.

@@ -867,3 +867,62 @@ def test_compact_reports_a_waiting_phase_while_queued(tmp_path, monkeypatch):
         held.close()
         t.join(timeout=10)
     assert {"type": "phase", "msg": "waiting for another scan to finish"} in events
+
+
+# -- load_dir_cache filters in Arrow before it materializes ----------------------
+
+def _write_dirs_rg(cfg, rows, row_group_size=3, with_n_subdirs=True):
+    """dirs.parquet sorted by dir, in small row groups so the statistics
+    pushdown has several groups to skip across."""
+    os.makedirs(cfg.dir, exist_ok=True)
+    rows = sorted(rows)
+    cols = {"dir": [r[0] for r in rows], "n_files": [r[2] for r in rows],
+            "mtime_ns": [r[1] for r in rows]}
+    if with_n_subdirs:
+        cols["n_subdirs"] = [r[3] for r in rows]
+    pq.write_table(pa.table(cols), cfg.dirs_parquet, row_group_size=row_group_size)
+
+
+_TRAPS = [
+    ("/a", 1, 1, 1), ("/r", 2, 2, 3), ("/r/a", 3, 4, 2), ("/r/a/x", 4, 5, 0),
+    ("/r/a/x/y", 5, 6, 0), ("/r/a-b", 6, 7, 0), ("/r/a.b", 7, 8, 0),
+    ("/r/ab", 8, 9, 0), ("/r/b", 9, 10, 0), ("/z", 10, 11, 0),
+]
+
+
+def test_load_dir_cache_returns_exactly_the_root_and_its_descendants(tmp_path):
+    """`/r/a-b`, `/r/a.b` and `/r/ab` sort inside the `[root, root+'0')` range
+    the row-group filter admits; the mask must remove them."""
+    cfg = _cfg(tmp_path)
+    _write_dirs_rg(cfg, _TRAPS)
+    assert load_dir_cache(cfg, "/r/a", pq) == {
+        "/r/a": (3, 4, 2), "/r/a/x": (4, 5, 0), "/r/a/x/y": (5, 6, 0)}
+
+
+def test_load_dir_cache_with_a_trailing_slash_root_gives_the_same_answer(tmp_path):
+    cfg = _cfg(tmp_path)
+    _write_dirs_rg(cfg, _TRAPS)
+    assert load_dir_cache(cfg, "/r/a/", pq) == load_dir_cache(cfg, "/r/a", pq)
+    assert "/r/a" in load_dir_cache(cfg, "/r/a/", pq)
+
+
+def test_load_dir_cache_of_the_filesystem_root_returns_everything(tmp_path):
+    cfg = _cfg(tmp_path)
+    _write_dirs_rg(cfg, _TRAPS)
+    assert sorted(load_dir_cache(cfg, "/", pq)) == sorted(r[0] for r in _TRAPS)
+
+
+def test_load_dir_cache_without_n_subdirs_reports_minus_one(tmp_path):
+    cfg = _cfg(tmp_path)
+    _write_dirs_rg(cfg, _TRAPS, with_n_subdirs=False)
+    got = load_dir_cache(cfg, "/r/a", pq)
+    assert sorted(got) == ["/r/a", "/r/a/x", "/r/a/x/y"]
+    assert all(v[2] == -1 for v in got.values())
+    assert got["/r/a/x"] == (4, 5, -1)
+
+
+def test_load_dir_cache_still_drops_an_ignored_descendant(tmp_path):
+    cfg = _cfg(tmp_path, ignore=["x"])
+    _write_dirs_rg(cfg, _TRAPS)
+    assert sorted(load_dir_cache(cfg, "/r/a", pq)) == ["/r/a"]
+

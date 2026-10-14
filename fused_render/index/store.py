@@ -282,25 +282,44 @@ def load_dir_cache(cfg: IndexConfig, root: str, pq) -> dict:
     asks `ignored_for_index`, the one predicate all three gates share, rather than
     the raw rules — otherwise a LEAF dir the user's ignore list names (a `.git`,
     for every config saved before it left the default list) is written by a full
-    rescan and then deleted by the very next incremental one."""
+    rescan and then deleted by the very next incremental one.
+
+    The subtree is selected in Arrow, BEFORE anything becomes a Python object:
+    each pool child and each folder-rooted scan used to `to_pylist()` every row
+    of the whole index (~800 MB resident with a million dirs) only to throw
+    nearly all of them away. The root may be given with or without a trailing
+    slash; `/` selects everything."""
     if not os.path.exists(cfg.dirs_parquet):
         return {}
     names = pq.read_schema(cfg.dirs_parquet).names
     if "mtime_ns" not in names:
         return {}
+    import pyarrow.compute as pc
+
     cols = ["dir", "n_files", "mtime_ns"] + (
         ["n_subdirs"] if "n_subdirs" in names else [])
-    t = pq.read_table(cfg.dirs_parquet, columns=cols)
+    rootp = root.rstrip("/") or "/"
+    if rootp == "/":
+        t = pq.read_table(cfg.dirs_parquet, columns=cols)
+    else:
+        prefix = rootp + "/"
+        # '0' is the code point right after '/', so [rootp, rootp + "0")
+        # holds the root and every descendant; row-group statistics let
+        # pyarrow skip the rest of the file. It also admits siblings that
+        # sort between them (`/a/b-x`, `/a/b.x`), which the mask removes.
+        t = pq.read_table(cfg.dirs_parquet, columns=cols,
+                          filters=[("dir", ">=", rootp),
+                                   ("dir", "<", rootp + "0")])
+        d = t.column("dir")
+        t = t.filter(pc.or_(pc.equal(d, rootp), pc.starts_with(d, prefix)))
     subs = (t.column("n_subdirs").to_pylist() if "n_subdirs" in names
             else [-1] * t.num_rows)
     rules = cfg.rules
-    prefix = root.rstrip("/") + "/"
     cache = {}
     for d, m, n, ns in zip(t.column("dir").to_pylist(),
                            t.column("mtime_ns").to_pylist(),
                            t.column("n_files").to_pylist(), subs):
-        if ((d == root or d.startswith(prefix))
-                and not ignored_for_index(rules, d, tree=True)):
+        if not ignored_for_index(rules, d, tree=True):
             cache[d] = (m, n, ns)
     return cache
 
