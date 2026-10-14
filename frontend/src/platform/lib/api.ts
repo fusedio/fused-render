@@ -286,8 +286,8 @@ export const postJson = <T>(
   opts?: { signal?: AbortSignal; headers?: Record<string, string> },
 ) => mutateJson<T>("POST", url, body, opts);
 
-export function getConfig(): Promise<Config> {
-  return getJson<Config>("/api/config");
+export function getConfig(opts?: { signal?: AbortSignal }): Promise<Config> {
+  return getJson<Config>("/api/config", opts);
 }
 
 // -- Diagnostics bundle (SPEC §50; Preferences → Diagnostics) ----------------

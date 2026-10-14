@@ -1898,7 +1898,26 @@ def api_calls_event(body: dict = Body(...), x_fused: str | None = Header(default
             return JSONResponse(
                 {"error": "'call_ids' must be a list of call ids"}, status_code=400)
         return {"marked": mark_superseded(ids)}
+    if kind == "shell-error":
+        # The SHELL's own errors (frontend platform/lib/shell-errors.ts): a
+        # render throw, a chunk that failed to import, a boot that never
+        # settled. Not a store record — there is no page file to key it on
+        # and nothing reads the store for the shell — but a WARNING in the
+        # session log, beside the request lines, which is exactly where a
+        # "GET / -> 200 and then nothing" blank window has been unexplainable.
+        # Capped at the sender (5 per document); capped here too, per field.
+        message, _ = _cap_text(body.get("message"), 2_000)
+        stack, _ = _cap_text(body.get("stack"), 4_000)
+        page, _ = _cap_text(body.get("page"), 1_024)
+        where, _ = _cap_text(body.get("where"), 64)
+        source, _ = _cap_text(body.get("source"), 1_024)
+        logger.warning("shell error (%s) on %s: %s%s%s",
+                       where or "?", page or "?", message or "(no message)",
+                       f" at {source}" if source else "",
+                       f"\n{stack}" if stack else "")
+        return {"logged": True}
     if kind != "page-error":
         return JSONResponse(
-            {"error": "'kind' must be 'page-error' or 'superseded'"}, status_code=400)
+            {"error": "'kind' must be 'page-error', 'shell-error' or 'superseded'"},
+            status_code=400)
     return record_page_error(body)

@@ -374,6 +374,7 @@ class _WebDelegate(NSObject):
         self._manager = manager
         self._window = window  # the _Window record, not the NSWindow
         self._downloads = []   # strong refs: a WKDownload's delegate is weak too
+        self._crash_reloaded = False  # one automatic reload per window, ever
         return self
 
     # ---- navigation policy -------------------------------------------------
@@ -427,8 +428,56 @@ class _WebDelegate(NSObject):
     def webView_didFailProvisionalNavigation_withError_(self, webview, nav, error):
         # -999 is "cancelled": every navigation turned into a new window, a
         # browser hand-off or a download reports as one. Not a failure.
+        # Anything else leaves the window BLANK at its URL (WebKit paints no
+        # error page; the window background is the theme colour), so the log
+        # line names the code and the URL — the one trace a black window
+        # leaves. Recovery is the user's ⌘R: an automatic retry was tried
+        # (#1625) and grew into a navigation state machine for one observed
+        # relaunch race; not worth the surface.
         if error is not None and int(error.code()) != -999:
-            logger.warning("navigation failed: %s", error.localizedDescription())
+            failing = None
+            try:
+                failing = (error.userInfo() or {}).get("NSErrorFailingURLStringKey")
+            except Exception:  # noqa: BLE001 — diagnostics only
+                failing = None
+            logger.warning("navigation failed (%s): %s%s", error.code(),
+                           error.localizedDescription(), f" — {failing}" if failing else "")
+
+    def webViewWebContentProcessDidTerminate_(self, webview):
+        """WebKit's content process died under this window — memory pressure,
+        a renderer crash — and WebKit's own response is to show NOTHING: the
+        view is empty at the same URL until somebody reloads it. Apple's
+        documented handling is a reload; done ONCE per window, so a page that
+        kills its renderer on every load does not loop. After that it is the
+        user's ⌘R, and the log says so."""
+        window = self._window
+        label = (window.key or "home") if window is not None else "?"
+        if self._crash_reloaded:
+            logger.warning("web content process terminated under window %s again; "
+                           "not reloading automatically", label)
+            return
+        # `reload()` reloads the CURRENT history item, and a renderer that
+        # died before its first page committed has none — the call would
+        # start nothing and the one reload would be spent on it. That case
+        # loads the window's URL afresh instead. (A main-frame POST cannot be
+        # what was in flight: no page had committed to submit one from.)
+        has_item = False
+        try:
+            has_item = webview.backForwardList().currentItem() is not None
+        except Exception:  # noqa: BLE001 — diagnostics only
+            has_item = False
+        url = None if has_item else (window.current_url() if window is not None else None)
+        if not has_item and not url:
+            logger.warning("web content process terminated under window %s before any "
+                           "page committed, and no URL to load; leaving it", label)
+            return
+        self._crash_reloaded = True
+        logger.warning("web content process terminated under window %s; %s once",
+                       label, "reloading" if has_item else f"loading {url}")
+        if has_item:
+            webview.reload()
+        else:
+            webview.loadRequest_(NSURLRequest.requestWithURL_(_nsurl(url)))
 
     # ---- downloads (WKDownloadDelegate) ------------------------------------
 

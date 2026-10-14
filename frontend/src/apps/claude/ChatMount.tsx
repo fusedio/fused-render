@@ -22,6 +22,8 @@ import {
  * shell's entry graph, for routes that never mount one. `Suspense` covers the
  * chunk load with the chat's own skeleton.
  */
+import { isChunkLoadError } from "@platform/lib/chunk-load";
+
 const ClaudeChat = lazy(() => import("./ClaudeChat"));
 
 /**
@@ -43,14 +45,9 @@ const ClaudeChat = lazy(() => import("./ClaudeChat"));
  * get a plain "the chat hit an error" card with the message. Reload is still
  * the only recovery the boundary has for either, and the copy says so.
  */
-/** The messages a failed dynamic import rejects with: Chromium, WebKit, and
- *  webpack/vite-style chunk loaders' own names for it. */
-const CHUNK_LOAD = /Failed to fetch dynamically imported module|Importing a module script failed|ChunkLoadError|Loading chunk/i;
-
-/** Did this render-time throw come from the chat's chunk failing to load? */
-export function isChunkLoadError(message: string): boolean {
-  return CHUNK_LOAD.test(message);
-}
+/** Re-exported: the classifier moved to `@platform/lib/chunk-load` when the
+ *  shell grew its own boundary (`ShellErrorBoundary`) asking the same question. */
+export { isChunkLoadError } from "@platform/lib/chunk-load";
 
 export class ChatChunkBoundary extends Component<
   { children: ReactNode },
