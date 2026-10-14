@@ -105,8 +105,9 @@ def _drain_inbox(agent, run_dir: str, cli_stdin) -> None:
         # arrives now is `_send`'s to take back once we are gone, and
         # delivering it here too would be the second copy. A supersede that
         # is called off removes the marker, and the next tick delivers; a
-        # STALE one (a pass that never finished) is removed by that same
-        # call and ignored, so it cannot hold this inbox shut for good.
+        # STALE one (a pass that is over, its kill never landing) no longer
+        # counts here, so it cannot hold this inbox shut for good — it stays
+        # on disk to keep `exited` muted below.
         return
     try:
         names = sorted(n for n in os.listdir(inbox) if n.endswith(".json"))

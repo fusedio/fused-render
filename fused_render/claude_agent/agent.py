@@ -3726,18 +3726,20 @@ def _superseded_path(run_dir: str) -> str:
     return os.path.join(run_dir, "superseded")
 
 
-# A marker older than this belongs to a pass that never finished — a server
-# that died between the write and the kill or the clean-up — and nothing will
-# ever remove it: a host still alive under it would hold every follow-up
-# forever (`_send` waits it out, the host drains nothing). Every honest pass
-# settles within its own wait, so past that plus a margin it is ignored and
-# removed.
+# A marker older than this no longer GATES anything: every honest pass settles
+# within its own wait, so past that plus a margin it belongs to a pass that is
+# over — a kill that never landed, or a server that died mid-pass — and a host
+# still alive under it must take its follow-ups again (`_send` stops waiting,
+# the host drains). It is NOT removed for being old, though: it still MUTES
+# the host's `exited` (session_host.py), which is the half that has to outlive
+# a slow SIGTERM. Only `_end_idle_hosts` clears one, to start a pass of its own.
 _SUPERSEDE_STALE_SEC = _SUPERSEDE_WAIT_SEC + 2.0
 
 
 def _supersede_fresh(run_dir: str) -> bool:
     """Whether `run_dir` carries a LIVE `superseded` marker — one an ending
-    pass is still acting on. A stale one is removed here and answers False.
+    pass is still acting on. A stale one answers False and is left in place
+    (see `_SUPERSEDE_STALE_SEC`); reading never unlinks.
 
     The marker holds the `time.time()` it was written at; empty or garbled
     (read in the instant between `_end_idle_hosts`' exclusive create and its
@@ -3755,13 +3757,7 @@ def _supersede_fresh(run_dir: str) -> bool:
             stamp = os.path.getmtime(path)
         except OSError:
             return False
-    if time.time() - stamp <= _SUPERSEDE_STALE_SEC:
-        return True
-    try:
-        os.remove(path)
-    except OSError:
-        pass
-    return False
+    return time.time() - stamp <= _SUPERSEDE_STALE_SEC
 
 
 def _echo_pending(run_dir: str) -> bool:
@@ -3848,9 +3844,18 @@ def _end_idle_hosts(session_id: str,
     `exited` (session_host.py): the queue matches an event against an owner
     with no run id yet by SESSION, and this very resume is claimed under that
     session — the old run's exit would release the folder out from under the
-    new run before `gate._file_owner` names it. So the marker is KEPT only for
-    a host this saw die; one the kill did not reach gets it back, or it would
-    go on living with its `exited` muted and its sends refused.
+    new run before `gate._file_owner` names it. So once the kill is sent the
+    marker is KEPT, even for a host still alive when the wait runs out: a
+    SIGTERM slower than the wait must still die muted. It stops gating sends
+    and the drain once stale (`_supersede_fresh`), so a host the kill never
+    reached is not held shut — it just never announces `exited`, which the
+    queue's reconcile covers.
+
+    A HOST ANOTHER PASS IS ENDING is waited for too, not skipped: two resumes
+    of one session at once, and the one that lost the marker would otherwise
+    spawn while the other's kill is still landing. Its outcome is the host
+    dying, or the marker going (called off — the host is busy, so this spawns
+    beside it, as for any busy host).
 
     Best-effort: never raises, and anything it cannot decide is left alone."""
     if not session_id:
@@ -3861,7 +3866,7 @@ def _end_idle_hosts(session_id: str,
         return []
     if limit is not None:
         names = names[:limit]
-    ending = []
+    ending, foreign = [], []
     for name in names:
         run_dir = os.path.join(RUNS, name)
         marker = _superseded_path(run_dir)
@@ -3880,14 +3885,23 @@ def _end_idle_hosts(session_id: str,
             # file, and a pass that saw a send and removed "the" marker would
             # be removing the other pass's — which then kills a host whose
             # follow-up was told `sent`. So the marker is created EXCLUSIVELY
-            # (a stale one cleared first, `_supersede_fresh`), and a pass that
-            # cannot create it leaves the host to the pass that did.
+            # (a stale one cleared first — the one place that clears one), and
+            # a pass that cannot create it waits on the pass that did.
             if _supersede_fresh(run_dir):
+                foreign.append(run_dir)
                 continue
+            # A stale one is cleared, asked again at the unlink itself so a
+            # pass that wrote its own in between is not erased. (Two passes
+            # both clearing the SAME stale marker can still race inside that
+            # read-then-unlink; that needs a dead pass, a host alive past
+            # its kill and two resumes at once.)
+            if os.path.exists(marker) and not _supersede_fresh(run_dir):
+                os.remove(marker)
             try:
                 fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL,
                              0o600)
             except FileExistsError:
+                foreign.append(run_dir)
                 continue
             owned = True
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
@@ -3906,14 +3920,11 @@ def _end_idle_hosts(session_id: str,
             continue
     deadline = time.monotonic() + _SUPERSEDE_WAIT_SEC
     waiting = list(ending)
-    while waiting and time.monotonic() < deadline:
+    while (waiting or foreign) and time.monotonic() < deadline:
         time.sleep(0.05)
         waiting = [d for d in waiting if _host_alive(d)]
-    for run_dir in waiting:
-        try:
-            os.remove(_superseded_path(run_dir))
-        except OSError:
-            pass
+        foreign = [d for d in foreign
+                   if _host_alive(d) and _supersede_fresh(d)]
     return [os.path.basename(d) for d in ending if d not in waiting]
 
 
@@ -3923,16 +3934,16 @@ def _superseded_outcome(run_dir: str) -> bool:
     supersede was called off (or never took) and the host is live.
 
     It settles fast — the abort is the next statement after the marker write,
-    the kill is reaped within a drain tick — and `_end_idle_hosts` removes the
-    marker itself once its own wait runs out, so this is bounded by that same
-    wait plus a margin.
+    the kill is reaped within a drain tick — and a marker stops counting once
+    stale (`_SUPERSEDE_STALE_SEC`), so this is bounded by that same wait plus
+    a margin; past it the host is live as far as this send is concerned.
 
     THE MARKER IS ASKED FIRST. Only a kill KEEPS it (`_end_idle_hosts`), so a
     marker that is gone means the supersede was called off — and a host that
     is dead in the same tick died of its own idle reap, whose final drain
     delivered this message: answering `respawn` there would send it twice. A
-    STALE marker (`_supersede_fresh`, removed on the way) is a pass that never
-    finished: the host's own liveness is the whole answer then."""
+    STALE marker (`_supersede_fresh`) is a pass that is over: the host's own
+    liveness is the whole answer then."""
     deadline = time.monotonic() + _SUPERSEDE_WAIT_SEC + 1.0
     while True:
         if not os.path.exists(_superseded_path(run_dir)):

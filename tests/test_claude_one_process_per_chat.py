@@ -178,19 +178,28 @@ def test_a_failing_scan_never_blocks_the_spawn(agent, fake_spawn, files,
     assert len(fake_spawn["spawned"]) == 2
 
 
-def test_a_kill_that_never_lands_gives_the_marker_back(agent, files,
-                                                        monkeypatch):
-    """L1: a host the kill did not reach must not keep `superseded` — it would
-    live on with its `exited` muted and every send refused."""
+def test_a_kill_that_outlives_the_wait_stays_muted_but_not_shut(
+        agent, files, monkeypatch):
+    """A host still alive when the wait runs out keeps `superseded` — a SIGTERM
+    slower than the wait must still die without announcing `exited` (it could
+    release the resumed run's folder) — but once the marker is stale it gates
+    nothing: the host is found and takes sends again."""
     folder, note = files
     old = _run(agent, "20261014-100000-aaaaaa", note)
+    _live_json(old)
     monkeypatch.setattr(agent, "_kill_tree", lambda run_dir: None)
     monkeypatch.setattr(agent, "_host_alive", lambda run_dir: True)
     monkeypatch.setattr(agent, "_SUPERSEDE_WAIT_SEC", 0.2)
     t0 = time.monotonic()
     assert agent._end_idle_hosts(SID) == []
     assert time.monotonic() - t0 < 3.0
-    assert not os.path.exists(os.path.join(old, "superseded"))
+    marker = os.path.join(old, "superseded")
+    assert os.path.exists(marker)
+
+    _stale_marker(old)
+    assert agent._live_host(note, SID) == {"run_id": "20261014-100000-aaaaaa"}
+    assert agent._send("20261014-100000-aaaaaa", "hi") == {"sent": True}
+    assert os.path.exists(marker), "reading a stale marker never unlinks it"
 
 
 def _pending_echo(run_dir, offset=None):
@@ -448,11 +457,9 @@ def test_a_stale_marker_on_a_live_host_holds_nothing(agent, files, monkeypatch):
     # A fresh marker is waited out for ~4 s; a stale one not at all.
     assert time.monotonic() - t0 < 3.0, "a stale marker must not be waited out"
     assert len(_inbox_left(old)) == 1
-    assert not os.path.exists(os.path.join(old, "superseded"))
-
-    _stale_marker(old)
     assert agent._live_host(note, SID) == {"run_id": "20261014-100000-aaaaaa"}
-    assert not os.path.exists(os.path.join(old, "superseded"))
+    # Still on disk: it no longer gates, but it still mutes `exited`.
+    assert os.path.exists(os.path.join(old, "superseded"))
 
 
 def test_a_stale_marker_does_not_shut_the_hosts_inbox(tmp_path):
@@ -470,12 +477,14 @@ def test_a_stale_marker_does_not_shut_the_hosts_inbox(tmp_path):
     stdin = _Stdin()
     host._drain_inbox(agent, run_dir, stdin)
     assert len(stdin.written) == 1 and _inbox_left(run_dir) == []
-    assert not os.path.exists(os.path.join(run_dir, "superseded"))
+    assert os.path.exists(os.path.join(run_dir, "superseded"))
 
 
-def test_a_marker_another_pass_holds_is_left_to_it(agent, fake_spawn, files):
+def test_a_marker_another_pass_holds_is_left_to_it(agent, fake_spawn, files,
+                                                   monkeypatch):
     """Two ending passes on one host: the one that did not create the marker
     neither kills nor removes it."""
+    monkeypatch.setattr(agent, "_SUPERSEDE_WAIT_SEC", 0.2)
     folder, note = files
     old = _run(agent, "20261014-100000-aaaaaa", note)
     with open(os.path.join(old, "superseded"), "w", encoding="utf-8") as f:
@@ -493,8 +502,14 @@ def test_losing_the_exclusive_create_race_leaves_the_host_alone(
     folder, note = files
     old = _run(agent, "20261014-100000-aaaaaa", note)
     marker = os.path.join(old, "superseded")
+    monkeypatch.setattr(agent, "_SUPERSEDE_WAIT_SEC", 0.2)
+    real_fresh = agent._supersede_fresh
+    calls = []
 
     def fresh(run_dir):
+        calls.append(run_dir)
+        if len(calls) > 1:
+            return real_fresh(run_dir)  # the wait loop asking about it
         with open(marker, "w", encoding="utf-8") as f:  # the other pass, now
             f.write(str(time.time()))
         return False
@@ -524,3 +539,81 @@ def test_called_off_while_the_host_reaps_itself_is_sent_not_respawned(
     monkeypatch.setattr(agent, "_host_alive", lambda run_dir: alive[0])
     threading.Timer(0.15, both).start()
     assert agent._superseded_outcome(old) is False
+
+
+# ------------------------------------- round 3: waiting on another pass, mute
+
+def test_a_resume_waits_for_another_pass_to_finish_its_kill(agent, fake_spawn,
+                                                            files, monkeypatch):
+    """Bugbot: the pass that lost the marker used to return at once and spawn
+    while the other pass's kill was still landing — two CLIs again."""
+    folder, note = files
+    old = _run(agent, "20261014-100000-aaaaaa", note)
+    with open(os.path.join(old, "superseded"), "w", encoding="utf-8") as f:
+        f.write(str(time.time()))
+    gone = []
+    monkeypatch.setattr(agent, "_host_alive", lambda run_dir: not (
+        os.path.basename(run_dir) == "20261014-100000-aaaaaa" and gone)
+        and os.path.exists(os.path.join(run_dir, "host.json")))
+    seen = []
+    real_popen = agent.subprocess.Popen
+
+    def popen(cmd, **kw):
+        seen.append(agent._host_alive(old))
+        return real_popen(cmd, **kw)
+
+    monkeypatch.setattr(agent.subprocess, "Popen", popen)
+    threading.Timer(0.3, gone.append, (True,)).start()  # the other pass's kill
+
+    agent._start(folder, "follow-up", SID, "", "", has_pane=False)
+    assert seen == [False], "spawned beside a host another pass was ending"
+    assert fake_spawn["killed"] == []
+
+
+def test_another_pass_calling_it_off_releases_the_wait(agent, fake_spawn,
+                                                       files):
+    folder, note = files
+    old = _run(agent, "20261014-100000-aaaaaa", note)
+    marker = os.path.join(old, "superseded")
+    with open(marker, "w", encoding="utf-8") as f:
+        f.write(str(time.time()))
+    threading.Timer(0.2, os.remove, (marker,)).start()
+    t0 = time.monotonic()
+    agent._start(folder, "follow-up", SID, "", "", has_pane=False)
+    assert time.monotonic() - t0 < 2.0
+    assert fake_spawn["killed"] == []
+
+
+def test_a_stale_marker_still_mutes_exited(tmp_path, monkeypatch):
+    """CodeRabbit: age must never unmute a superseded host — not by a reader,
+    not by the host's own drain — or a SIGTERM slower than the wait announces
+    an `exited` the queue can match to the resumed run by session."""
+    host, agent = _load("session_host"), _load("agent")
+    monkeypatch.setattr(host, "_DRAIN_INTERVAL_SECONDS", 0.01)
+    posted = []
+    monkeypatch.setattr(host, "_post_event",
+                        lambda rd, kind, **k: posted.append(kind))
+    monkeypatch.setattr(host, "_turn_state_if_grown", lambda a, rd, c: (False, False))
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "host.json").write_text("{}")
+    _stale_marker(str(run_dir))
+    assert agent._supersede_fresh(str(run_dir)) is False
+
+    ticks = []
+
+    class _Stdin:
+        def write(self, d): pass
+        def flush(self): pass
+        def close(self): pass
+
+    class _Cli:
+        stdin = _Stdin()
+        def poll(self):
+            ticks.append(1)
+            return None if len(ticks) < 4 else -15  # dies a few ticks in
+        def wait(self, timeout=None): pass
+
+    host._reap_loop(agent, str(run_dir), _Cli(), str(run_dir / "host.json"))
+    assert (run_dir / "superseded").exists()
+    assert "exited" not in posted
