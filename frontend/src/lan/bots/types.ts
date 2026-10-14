@@ -196,7 +196,7 @@ export interface SettingsBody {
   model?: string;
   effort?: string;
   approval?: "ask" | "auto";
-  max_steps?: number | null;
+  max_steps?: number | "";
   memory?: string;
 }
 

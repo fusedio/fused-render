@@ -46,6 +46,7 @@ import { Toaster, toast } from "./Toast";
 import type { BotDetail, BotEvent, Setup } from "./types";
 
 const PAGE = 80;
+const BACKFILL_PAGES = 5; // on open, at most this many earlier pages to reach the last line seen
 const HOLD_MAX_MS = 20_000; // a card's local "Sending…" hold at most
 const END_GAP = 96; // px from the bottom that still counts as "following along"
 const READABLE = new Set(["done", "question", "approval", "error"]);
@@ -98,11 +99,21 @@ export function BotChat({ id }: { id: string }) {
       setNow(d.ts || Date.now() / 1000);
       setError(null);
       if (first) {
-        setEvents(d.events);
-        setHasEarlier(d.events.length >= PAGE && (d.first_seq ?? 0) > 1);
+        // The seen cursor is written to the end below, so every unread line must be loaded now: page back
+        // until the window reaches the last line seen (capped), or older unread would sit above the
+        // "New" divider unmarked and drop out of the badge.
+        let evs = d.events;
+        let more = evs.length >= PAGE && (d.first_seq ?? 0) > 1;
         const was = seen.current?.at ?? null;
+        for (let i = 0; was != null && more && evs.length && evs[0].seq > was + 1 && i < BACKFILL_PAGES; i++) {
+          const e = await api.page(id, { since: 0, before: evs[0].seq, limit: PAGE });
+          evs = mergeEvents(evs, e.events);
+          more = e.events.length >= PAGE;
+        }
+        setEvents(evs);
+        setHasEarlier(more);
         if (was != null) {
-          const n = d.events.find((e) => e.seq > was && READABLE.has(e.role));
+          const n = evs.find((e) => e.seq > was && READABLE.has(e.role));
           setNewSeq(n ? n.seq : null);
         }
       } else if (d.events.length) {
@@ -111,6 +122,7 @@ export function BotChat({ id }: { id: string }) {
       seqRef.current = Math.max(seqRef.current ?? 0, d.seq);
       if (document.visibilityState === "visible") writeSeen(skey, d.seq);
       // The poll that brings a card's answer back releases its local hold.
+      for (const s of heldRef.current) if (d.bot.waiting_seq !== s) heldRef.current.delete(s);
       setHeld((h) => (h.size ? new Set([...h].filter((s) => d.bot.waiting_seq === s)) : h));
     } catch (e) {
       if (e instanceof ApiError && e.status === 404) setGone(true);
@@ -201,31 +213,40 @@ export function BotChat({ id }: { id: string }) {
     [id, kick],
   );
 
-  const release = (seq: number) =>
+  // `held` drives the render; heldRef is the same set read synchronously, so a second tap that lands
+  // before the re-render is still refused (it would pass the server's waiting check as a second answer).
+  const heldRef = useRef<Set<number>>(new Set());
+  const release = (seq: number) => {
+    heldRef.current.delete(seq);
     setHeld((h) => {
       if (!h.has(seq)) return h;
       const n = new Set(h);
       n.delete(seq);
       return n;
     });
+  };
   // The hold stops a double tap while the answer is in flight; the poll that shows the bot moved on clears
   // it. A hold the poll never clears (a question the bot did not take as its answer, a message parked while
   // the Mac holds the browser) would leave the card dead, so every hold also expires on its own.
-  const hold = (seq: number) => {
+  /** Take the hold on a card; false when it is already held (a double tap). */
+  const hold = (seq: number): boolean => {
+    if (heldRef.current.has(seq)) return false;
+    heldRef.current.add(seq);
     setHeld((h) => new Set(h).add(seq));
     window.setTimeout(() => release(seq), HOLD_MAX_MS);
+    return true;
   };
 
   const onVerdict = useCallback(
     (seq: number, yes: boolean) => {
-      hold(seq);
+      if (!hold(seq)) return;
       void send(yes ? "approve" : "deny", { answer: seq }).then((ok) => !ok && release(seq));
     },
     [send],
   );
   const onAnswer = useCallback(
     (seq: number, text: string) => {
-      hold(seq);
+      if (!hold(seq)) return;
       void send(text).then((ok) => !ok && release(seq));
     },
     [send],

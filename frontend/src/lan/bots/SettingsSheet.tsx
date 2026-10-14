@@ -97,8 +97,9 @@ export function SettingsSheet({
   if (form.effort && form.effort !== base.effort) changes.effort = form.effort;
   if (form.approval !== base.approval) changes.approval = form.approval;
   if (form.max_steps.trim() !== base.max_steps) {
-    const n = form.max_steps.trim() === "" ? null : Math.round(Number(form.max_steps));
-    if (n === null || Number.isFinite(n)) changes.max_steps = n;
+    // "" clears the override (routes._settings drops it on "" or 0; null reads as "not sent").
+    const n = form.max_steps.trim() === "" ? "" : Math.round(Number(form.max_steps));
+    if (n === "" || Number.isFinite(n)) changes.max_steps = n;
   }
   const dirty = Object.keys(changes).length > 0;
 
