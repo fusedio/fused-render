@@ -182,6 +182,20 @@
   white-space: pre-wrap;
   word-break: break-word;
 }
+/* AN ANNOTATED SEND (Turn.tsx, UserBubbleBody): the typed words, then one block
+   per comment. The letter prefix shows only when there are two or more, and is
+   the same letter as the badge burned into the overview picture. */
+.chat-root .turn.user .bubble-ann + .bubble-ann {
+  margin-top: 4px;
+}
+.chat-root .turn.user .bubble-typed + .bubble-ann {
+  margin-top: 6px;
+}
+.chat-root .turn.user .bubble-ann-lbl {
+  font-weight: 600;
+  margin-right: 6px;
+  color: var(--c-accent);
+}
 /* A TERMINAL ASK (Turn.tsx, parseTerminalAsk): the user bubble leads with a
    chip naming the terminal, then the selected lines as a block, then the words. */
 .chat-root .turn.user .term-ask-chip {
