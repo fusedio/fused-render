@@ -46,6 +46,7 @@ import { Toaster, toast } from "./Toast";
 import type { BotDetail, BotEvent, Setup } from "./types";
 
 const PAGE = 80;
+const HOLD_MAX_MS = 20_000; // a card's local "Sending…" hold at most
 const END_GAP = 96; // px from the bottom that still counts as "following along"
 const READABLE = new Set(["done", "question", "approval", "error"]);
 
@@ -200,13 +201,20 @@ export function BotChat({ id }: { id: string }) {
     [id, kick],
   );
 
-  const hold = (seq: number) => setHeld((h) => new Set(h).add(seq));
   const release = (seq: number) =>
     setHeld((h) => {
+      if (!h.has(seq)) return h;
       const n = new Set(h);
       n.delete(seq);
       return n;
     });
+  // The hold stops a double tap while the answer is in flight; the poll that shows the bot moved on clears
+  // it. A hold the poll never clears (a question the bot did not take as its answer, a message parked while
+  // the Mac holds the browser) would leave the card dead, so every hold also expires on its own.
+  const hold = (seq: number) => {
+    setHeld((h) => new Set(h).add(seq));
+    window.setTimeout(() => release(seq), HOLD_MAX_MS);
+  };
 
   const onVerdict = useCallback(
     (seq: number, yes: boolean) => {

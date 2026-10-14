@@ -59,6 +59,9 @@ export function SettingsSheet({
   onDeleted: () => void;
 }) {
   const [form, setForm] = useState<Form>(() => formOf(bot));
+  // What the sheet opened with. The diff is against this, not the live `bot` (polling refreshes it): a field
+  // changed at the Mac while the sheet is open must not read as the user's edit and be written back over.
+  const [base, setBase] = useState<Form>(() => formOf(bot));
   const [memory, setMemory] = useState<string | null | undefined>(undefined);
   const [skills, setSkills] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
@@ -69,7 +72,9 @@ export function SettingsSheet({
   // (since=<seq>: no events, just the bot).
   useEffect(() => {
     if (!open) return;
-    setForm(formOf(bot));
+    const opened = formOf(bot);
+    setForm(opened);
+    setBase(opened);
     setMemory(undefined);
     let alive = true;
     api
@@ -85,7 +90,6 @@ export function SettingsSheet({
     };
   }, [open, bot.id]);
 
-  const base = formOf(bot);
   const changes: SettingsBody = {};
   if (form.name.trim() && form.name.trim() !== base.name) changes.name = form.name.trim();
   if (form.instructions !== base.instructions) changes.instructions = form.instructions;

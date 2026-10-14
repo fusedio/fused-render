@@ -14,14 +14,22 @@ private let log = Logger(subsystem: "io.fused.render", category: "manifest")
 @MainActor
 enum ManifestSync {
     private static var lastRefresh: Date = .distantPast
+    private static var lastHost = ""
+    /// Bumped per refresh; a run that finished for an earlier one must not put its
+    /// host's Bots shortcut back over the computer the user has since switched to.
+    private static var generation = 0
 
     static func refresh(from webView: WKWebView, server: Server) {
-        guard Date().timeIntervalSince(lastRefresh) > 5 else { return }
+        // Throttled per computer: switching computers within the window still refreshes.
+        guard server.host != lastHost || Date().timeIntervalSince(lastRefresh) > 5 else { return }
         lastRefresh = Date()
-        Task { await run(webView: webView, server: server) }
+        lastHost = server.host
+        generation += 1
+        let gen = generation
+        Task { await run(webView: webView, server: server, generation: gen) }
     }
 
-    private static func run(webView: WKWebView, server: Server) async {
+    private static func run(webView: WKWebView, server: Server, generation gen: Int) async {
         let cookies = await webView.configuration.websiteDataStore.httpCookieStore.allCookies()
         let cookieHeader = cookies
             .filter { server.host.hasSuffix($0.domain.trimmingCharacters(in: CharacterSet(charactersIn: "."))) }
@@ -54,7 +62,10 @@ enum ManifestSync {
         let merged = (apps + others).sorted { $0.recency > $1.recency }
         Manifest.save(merged)
         WidgetCenter.shared.reloadAllTimelines()
-        installQuickActions(merged, host: server.host)
+        // The manifest is right for any computer; the Bots shortcut names ONE, the current one.
+        if gen == generation {
+            installQuickActions(merged, host: server.host)
+        }
         log.info("manifest: \(apps.count) apps from \(server.host, privacy: .public)")
     }
 

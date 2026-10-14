@@ -229,7 +229,7 @@ function AddRoutine({ busy, onCancel, onAdd }: { busy: boolean; onCancel: () => 
                     type="button"
                     aria-pressed={on}
                     aria-label={DAY_NAMES[d]}
-                    onClick={() => setDays((p) => (on ? p.filter((x) => x !== d) : [...p, d].sort()))}
+                    onClick={() => setDays((p) => (on ? p.filter((x) => x !== d) : [...p, d].sort((a, b) => a - b)))}
                     className={cn(
                       "flex h-11 flex-1 items-center justify-center rounded-xl text-[15px] font-medium",
                       on ? "bg-[var(--fg)] text-[var(--bg)]" : "bg-[var(--bg-alt)] text-[var(--fg-muted)]",
