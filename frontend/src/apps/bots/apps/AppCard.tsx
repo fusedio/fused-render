@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import type { AppRef } from "../lib/api";
 import { appEmbedBase, appOpenUrl, applyAppParams, holdAppParams, paramString } from "./apps";
 import { showAppBeside } from "./side";
+import { hasTabHost, openInTab } from "@platform/lib/open-in-tab";
 
 export interface AppCardProps {
   app: AppRef;
@@ -38,7 +39,10 @@ export function AppCard({ app, onBeside }: AppCardProps) {
         <span className="abtns">
           <button data-app="here" className="primary" onClick={() => toggle(!open)}>{open ? "Close" : "Open here"}</button>
           <button data-app="side" onClick={() => { toggle(false); (onBeside || showAppBeside)({ name, dir: app.dir, params }); }}>Beside chat</button>
-          <a className="btnlink" href={appOpenUrl(app.dir, params)} target="_blank" rel="noopener">New tab</a>
+          {/* A real anchor still (copy link, middle-click); under a shell tabs host the click becomes a host tab
+              instead of a separate window (open-in-tab.ts). */}
+          <a className="btnlink" href={appOpenUrl(app.dir, params)} target="_blank" rel="noopener"
+            onClick={(e) => { if (hasTabHost()) { e.preventDefault(); openInTab(appOpenUrl(app.dir, params)); } }}>New tab</a>
         </span>
       </div>
       {/* Unmounting the iframe on close stops the app running. */}

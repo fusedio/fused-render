@@ -179,3 +179,120 @@ def test_frame_autosave_name():
 )
 def test_window_key_of(url, key):
     assert wp.window_key_of(url) == key
+
+
+# ---- Shell Tabs: the host URL's `_tabs` mirror ------------------------------
+
+HOST3 = f"{APP}/apps/Users/me/map?_tabs=%2Fhome,.,%2Ftasks"
+
+
+def test_tab_urls_reads_every_tab_in_strip_order():
+    assert wp.tab_urls(HOST3) == ["/home", "/apps/Users/me/map", "/tasks"]
+
+
+def test_tab_urls_without_the_param_is_the_url_itself():
+    assert wp.tab_urls(f"{APP}/apps/Users/me/map?_tab=files") == ["/apps/Users/me/map?_tab=files"]
+    assert wp.tab_urls(f"{APP}/") == ["/"]
+    assert wp.tab_urls(None) == []
+    assert wp.tab_urls("") == []
+
+
+def test_tab_urls_keeps_each_items_own_query_and_commas():
+    other = "/explorer/view/Users/me/a,b.csv?x=1&y=2"
+    url = f"{APP}/tasks?q=1&_tabs=.,{wp.tab_url_of(other)}"
+    assert wp.tab_urls(url) == ["/tasks?q=1", other]
+
+
+def test_tab_urls_counts_the_active_tab_even_without_its_dot():
+    assert wp.tab_urls(f"{APP}/tasks?_tabs=%2Fhome") == ["/tasks", "/home"]
+
+
+def test_bang_slot_is_an_active_tab_the_host_cannot_sit_on():
+    render = "/render?path=/Users/me/a.py"
+    url = f"{APP}/home?_tabs=%2Ftasks,!{wp.tab_url_of(render)}"
+    assert wp.tab_urls(url) == ["/tasks", render]  # /home itself is no tab
+    assert wp.tab_urls(f"{APP}/home?_tabs=!{wp.tab_url_of(render)}") == [render]
+    assert wp.active_tab_url(url) == APP + render
+    assert wp.tab_path(url) == render
+    assert wp.tab_keys(url) == set() and wp.tab_identities(url) == set()
+    view = "/explorer/embed/Users/me/b.html"
+    mixed = f"{APP}/home?_tabs={wp.tab_url_of(view)},!{wp.tab_url_of(render)}"
+    assert wp.tab_identities(mixed) == {("/Users/me/b.html", "view")}
+    assert wp.active_tab_url(HOST3) == f"{APP}/apps/Users/me/map"
+
+
+def test_strip_tabs_keeps_the_rest_of_the_url():
+    assert wp.strip_tabs(HOST3) == f"{APP}/apps/Users/me/map"
+    assert wp.strip_tabs(f"{APP}/tasks?a=1&_tabs=.,%2Fhome&b=2#f") == f"{APP}/tasks?a=1&b=2#f"
+    assert wp.strip_tabs(f"{APP}/tasks?a=1") == f"{APP}/tasks?a=1"
+    assert wp.strip_tabs(None) == ""
+
+
+def test_tab_path_is_path_and_query_without_tabs():
+    assert wp.tab_path(HOST3) == "/apps/Users/me/map"
+    assert wp.tab_path(f"{APP}/tasks?a=1&_tabs=.,%2Fhome#sec") == "/tasks?a=1#sec"
+    assert wp.tab_path(f"{APP}/tasks?a=1&_tabs=.,%2Fhome") == "/tasks?a=1"
+    assert wp.tab_path(APP) == "/"
+
+
+def test_has_tabs_only_for_multi_tab_or_bang_hosts():
+    assert wp.has_tabs(HOST3) is True
+    assert wp.has_tabs(f"{APP}/home?_tabs=!%2Frender") is True
+    assert wp.has_tabs(f"{APP}/apps/Users/me/map?_tab=files") is False
+    assert wp.has_tabs(None) is False
+
+
+def test_same_tab_page_follows_the_hosts_rule():
+    assert wp.same_tab_page("/", "/home")
+    assert wp.same_tab_page("/explorer/view/a/b.html", "/explorer/embed/a/b.html?x=1")
+    assert wp.same_tab_page("/tasks?a=1", "/tasks")
+    assert not wp.same_tab_page("/bots", "/bots/x")
+
+
+def test_tab_edit_target_treats_a_view_tab_as_running():
+    assert wp.tab_edit_target("view", "/nope/a.html") == "/explorer/view/nope/a.html"
+    assert wp.tab_edit_target("embed", "/nope/a.html") == "/explorer/view/nope/a.html"
+    assert wp.tab_edit_target("view", None) is None
+    assert wp.tab_edit_target(None, "/nope/a.html") is None
+
+
+def test_window_key_and_view_ignore_the_tabs_param():
+    # The host's own identity is its ACTIVE tab's.
+    assert wp.window_key_of(HOST3) == "/Users/me/map"
+    assert wp.window_view_of(HOST3) == "app"
+
+
+def test_tab_keys_and_identities_cover_every_keyed_tab():
+    embed = "/explorer/embed/Users/me/app/index.html"
+    url = f"{APP}/apps/Users/me/map?_tabs=%2Fhome,.,{wp.tab_url_of(embed)},%2Ftasks"
+    assert wp.tab_keys(url) == {"/Users/me/map", "/Users/me/app/index.html"}
+    # An embed tab and an explorer-view tab are one page inside a tab.
+    assert wp.tab_identities(url) == {("/Users/me/map", "app"),
+                                      ("/Users/me/app/index.html", "view")}
+    assert wp.tab_view("embed") == "view" and wp.tab_view("app") == "app"
+    assert wp.tab_keys(f"{APP}/home") == set()
+    assert wp.tab_keys(None) == set()
+
+
+def test_bot_home_selects_any_bots_tab_without_navigating():
+    js = wp.tabs_bots_home_js()
+    assert "p.indexOf('/bots/')===0" in js and "t.select(l[i].id)" in js
+    assert "navigateActive" not in js
+    assert 't.open("/bots",{focusExisting:true})' in js
+    # The bot-chat idiom is the same scan plus the route.
+    assert 't.navigateActive("/bots/x")' in wp.tabs_bot_js("/bots/x")
+    for path in ("/", "/home", "/bots"):
+        assert wp.tabs_open_or_home_js(path, True) == js
+    assert wp.tabs_open_or_home_js("/bots/x", True) == wp.tabs_open_js("/bots/x")
+    assert wp.tabs_open_or_home_js("/home", False) == wp.tabs_open_js("/home")
+
+
+def test_context_menu_says_new_tab_only_in_tab_mode():
+    ident = "WKMenuItemIdentifierOpenLinkInNewWindow"
+    link = f"{APP}/apps/Users/me/map"
+    assert wp.context_menu_item(ident, PORT, link_url=link) == ("keep", None)
+    assert wp.context_menu_item(ident, PORT, link_url=link, tab_mode=True) == (
+        "retitle", "Open Link in New Tab")
+    # An external link still goes to the browser, tabs or not.
+    assert wp.context_menu_item(ident, PORT, link_url="https://x.org/", tab_mode=True) == (
+        "retitle", "Open Link in Browser")

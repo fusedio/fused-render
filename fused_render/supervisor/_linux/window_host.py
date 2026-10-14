@@ -25,6 +25,15 @@ WebKitGTK and GTK come from the system, never the bundle. Layout:
   no GTK import, unit-tested on every OS against a fake `Backend`;
 * `load_toolkit` and `GtkBackend` are the only code that imports ``gi``, always
   lazily and only reached from `main()`.
+
+Shell Tabs (`shell_tabs_enabled` in prefs.json, read per call by
+`shell_tabs_preference`): every window's page is then a tab host, and what
+would open or focus a window — an `open`, `open_in_home`, a `target=_blank`
+or Ctrl-click — first asks the most recently used window's page to open or
+select a TAB (`window_policy.tabs_open_js`, through `Backend.run_js`). Only
+an answer of ``true`` counts; anything else is today's window. Ctrl+T,
+Ctrl+W, Ctrl+PageUp/PageDown and Ctrl+1…9 drive the strip the same way —
+the macOS menu's ⌘ chords (mac_window.py), on the keyboard.
 """
 from __future__ import annotations
 
@@ -115,6 +124,35 @@ def map_new_window(url: str | None, port: int) -> str:
     return "ignore" if verdict == "allow" else verdict
 
 
+_TABS_PREF_CACHE: dict = {}  # prefs.json path -> ((mtime_ns, size), value)
+
+
+def shell_tabs_preference(state_dir) -> bool:
+    """`shell_tabs_enabled` from prefs.json (default OFF, opt-in), read the
+    way `windows.preference_enabled` reads the windows switch — no import of
+    the server's prefs module. Asked at every use (the switch has no live
+    hook; a host page reads it at boot, so the next open simply follows it),
+    but `_on_key` asks on every key press, so the file is only re-parsed
+    when its mtime or size changed — a stat per press, not a JSON parse."""
+    path = Path(state_dir) / "prefs.json"
+    try:
+        st = path.stat()
+        stamp = (st.st_mtime_ns, st.st_size)
+    except OSError:
+        _TABS_PREF_CACHE.pop(str(path), None)
+        return False
+    cached = _TABS_PREF_CACHE.get(str(path))
+    if cached is not None and cached[0] == stamp:
+        return cached[1]
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        data = None
+    value = isinstance(data, dict) and data.get("shell_tabs_enabled") is True
+    _TABS_PREF_CACHE[str(path)] = (stamp, value)
+    return value
+
+
 def map_response(*, can_show: bool, content_disposition: str | None) -> str:
     return window_policy.response_action(
         is_main_frame=True, can_show_mime=can_show, content_disposition=content_disposition)
@@ -164,11 +202,18 @@ class Host:
     runs through ``backend.run_on_main`` so GTK only ever sees its own thread;
     the book itself is only touched from there."""
 
-    def __init__(self, port: int, backend, *, enabled: bool = True) -> None:
+    def __init__(self, port: int, backend, *, enabled: bool = True,
+                 tab_mode=None) -> None:
         self.port = port
         self.backend = backend
         self.enabled = enabled
         self._windows: list = []  # handles, in creation order
+        # Shell Tabs: a zero-argument callable (`main` reads prefs.json per
+        # call); absent means off, so a backend that never runs JS — the
+        # tests' fake — never sees `run_js`.
+        self._tab_mode = tab_mode
+        # The window last presented or focused: where a tab opens.
+        self._recent = None
 
     # -- IPC entry point (runs on the ipc thread) --
     def dispatch(self, command: dict) -> dict:
@@ -215,15 +260,88 @@ class Host:
         self.focus_or_open(url, activation_token)
         return {"ok": True}
 
-    def focus_or_open(self, url: str, activation_token: str | None = None):
+    # -- Shell Tabs --
+    def tab_mode(self) -> bool:
+        if self._tab_mode is None:
+            return False
+        try:
+            return bool(self._tab_mode())
+        except Exception:  # noqa: BLE001 - an unreadable pref is "off"
+            return False
+
+    def touch(self, handle) -> None:
+        """``handle`` was presented or took focus: tabs open there next."""
+        if handle in self._windows:
+            self._recent = handle
+
+    def _present(self, handle, activation_token: str | None = None) -> None:
+        self.backend.present(handle, activation_token)
+        self.touch(handle)
+
+    def _tab_host(self, prefer=None):
+        """Where a tab opens: ``prefer`` if still open, else the window last
+        used (`touch`), else the newest."""
+        for handle in (prefer, self._recent):
+            if handle is not None and handle in self._windows:
+                return handle
+        return self._windows[-1] if self._windows else None
+
+    def _host_open(self, url: str, fallback, activation_token: str | None = None,
+                   prefer=None) -> bool:
+        """Ask a window's page to open or select ``url`` as a tab; present
+        that window on ``true``, ``fallback()`` on anything else. False (and
+        nothing done) when tabs are off, ``url`` is not ours or there is no
+        window — the caller then takes its own window path at once."""
+        if not self.tab_mode() or window_policy.classify(url, self.port) != "app":
+            return False
+        target = self._tab_host(prefer)
+        if target is None:
+            return False
+
+        def answered(value) -> None:
+            if value is True:
+                self._present(target, activation_token)
+            else:
+                fallback()
+
+        # Home under Fused Bot selects any Bots tab instead of opening a
+        # second one on `/bots` (`tabs_open_or_home_js`). `_flavor` is
+        # stdlib-only, safe in this `-I` process.
+        from fused_render import _flavor
+
+        js = window_policy.tabs_open_or_home_js(window_policy.tab_path(url), _flavor.is_bot())
+        self.backend.run_js(target, js, answered)
+        return True
+
+    def tab_action(self, handle, js: str, fallback=None) -> None:
+        """A key chord's `window_policy.tabs_js` string in ``handle``'s page;
+        ``fallback`` (if any) when that page is no host."""
+        def answered(value) -> None:
+            if value is not True and fallback is not None:
+                fallback()
+
+        self.backend.run_js(handle, js, answered)
+
+    def focus_or_open(self, url: str, activation_token: str | None = None,
+                      prefer=None):
+        """The window already showing ``url``, else a new one. Shell Tabs: a
+        TAB of the window that has it (selected), else of ``prefer`` / the
+        window last used, with that window path as the fallback."""
+        target = self._find(url) if prefer is None else prefer
+        if self._host_open(url, lambda: self._focus_or_open_window(url, activation_token),
+                           activation_token, prefer=target):
+            return target
+        return self._focus_or_open_window(url, activation_token)
+
+    def _focus_or_open_window(self, url: str, activation_token: str | None = None):
         existing = self._find(url)
         if existing is not None:
-            self.backend.present(existing, activation_token)
+            self._present(existing, activation_token)
             return existing
         key, view = window_policy.window_key_of(url), window_policy.window_view_of(url)
         handle = self.backend.new_window(url, window_policy.frame_autosave_name(key, view))
         self._windows.append(handle)
-        self.backend.present(handle, activation_token)
+        self._present(handle, activation_token)
         return handle
 
     def open_in_home(self, url: str, activation_token: str | None = None) -> dict:
@@ -235,6 +353,14 @@ class Host:
             return {"ok": False, "reason": "unsupported url"}
         if not self.enabled:
             return {"ok": False, "reason": "disabled"}
+        # Shell Tabs: the app's explorer is a tab of the window last used;
+        # loading it over Home below is the fallback.
+        if self._host_open(url, lambda: self._open_in_home_window(url, activation_token),
+                           activation_token):
+            return {"ok": True}
+        return self._open_in_home_window(url, activation_token)
+
+    def _open_in_home_window(self, url: str, activation_token: str | None = None) -> dict:
         target = None
         for handle in reversed(self._windows):
             if _is_home(self.backend.current_url(handle)):
@@ -243,30 +369,39 @@ class Host:
         if target is None and self._windows:
             target = self._windows[-1]
         if target is None:
-            self.focus_or_open(url, activation_token)
+            self._focus_or_open_window(url, activation_token)
             return {"ok": True}
         self.backend.load(target, url)
-        self.backend.present(target, activation_token)
+        self._present(target, activation_token)
         return {"ok": True}
 
     def _find(self, url: str):
         key, view = window_policy.window_key_of(url), window_policy.window_view_of(url)
+        tabs = self.tab_mode()
+        # Shell Tabs: every TAB of a host counts (`window_policy.tab_urls` off
+        # its URL mirror), each in a tab's terms (`tab_view`: an embed and the
+        # explorer view of one file are the same page inside a tab).
+        same_view = ((lambda a, b: window_policy.tab_view(a) == window_policy.tab_view(b))
+                     if tabs else (lambda a, b: a == b))
         for handle in self._windows:
-            live = self.backend.current_url(handle)
-            if key is None:
-                # Only Home reuses a keyless window; other keyless pages
-                # (/tasks, /preferences) always open fresh, as on macOS.
-                if (_is_home(url) and window_policy.window_key_of(live) is None
-                        and _is_home(live)):
+            live_url = self.backend.current_url(handle)
+            for live in (window_policy.tab_urls(live_url) if tabs else [live_url]):
+                if key is None:
+                    # Only Home reuses a keyless window; other keyless pages
+                    # (/tasks, /preferences) always open fresh, as on macOS.
+                    if (_is_home(url) and window_policy.window_key_of(live) is None
+                            and _is_home(live)):
+                        return handle
+                elif (window_policy.window_key_of(live) == key
+                      and same_view(window_policy.window_view_of(live), view)):
                     return handle
-            elif (window_policy.window_key_of(live) == key
-                  and window_policy.window_view_of(live) == view):
-                return handle
         return None
 
     def window_closed(self, handle) -> None:
         if handle in self._windows:
             self._windows.remove(handle)
+        if self._recent is handle:
+            self._recent = None
 
     def quit(self) -> None:
         """Every open window's frame, saved before the process actually
@@ -285,15 +420,16 @@ class Host:
                 self.backend.close(handle)
             self._windows.clear()
 
-    def popup(self, url: str, kind: str) -> None:
+    def popup(self, url: str, kind: str, origin=None) -> None:
         """A `new_window` / `open_external` decision from a window's own policy
-        (`map_navigation` / `map_new_window`)."""
+        (`map_navigation` / `map_new_window`). ``origin`` is the window it
+        came from: under Shell Tabs the new page is a tab THERE."""
         if _is_blank(url):
             return
         if kind == "open_external":
             self.backend.open_external(url)
         elif kind == "new_window":
-            self.focus_or_open(url)
+            self.focus_or_open(url, prefer=origin if origin in self._windows else None)
 
 
 def _is_blank(url: str | None) -> bool:
@@ -365,11 +501,26 @@ def load_toolkit() -> SimpleNamespace:
                            unix_signal_add=unix_signal_add)
 
 
+def _js_result(value):
+    """A JavaScriptCore value as Python: bool or str, None for anything else
+    (the tab idioms only ever answer one of those)."""
+    if value is None:
+        return None
+    if value.is_boolean():
+        return bool(value.to_boolean())
+    if value.is_string():
+        return str(value.to_string())
+    return None
+
+
 class _Win:
     """One window: the opaque handle `Host` keeps."""
 
     def __init__(self, window, view, frame_name: str) -> None:
         self.window, self.view, self.frame_name = window, view, frame_name
+        # Shell Tabs: this page has answered a tab call ``true`` at least
+        # once — it is a host (`GtkBackend._is_host`).
+        self.host_seen = False
 
 
 # Strictly below window_host_ipc.CALLER_TIMEOUT_S, so when the host gives up
@@ -458,6 +609,7 @@ class GtkBackend:
         window.connect("delete-event", lambda _w, _e: self.save_frame(win) and False)
         window.connect("destroy", lambda _w: self._host().window_closed(win))
         window.connect("key-press-event", lambda _w, e: self._on_key(win, e))
+        window.connect("focus-in-event", lambda _w, _e: self._host().touch(win) or False)
         view.load_uri(url)
         return win
 
@@ -480,6 +632,43 @@ class GtkBackend:
 
     def current_url(self, win: _Win):
         return win.view.get_uri()
+
+    def run_js(self, win: _Win, js: str, done) -> None:
+        """Evaluate ``js`` in ``win``'s top document; ``done(value)`` runs on
+        the GTK thread with a bool or str result, or None on ANY failure — no
+        host there is the fallback, never an exception out of a GLib
+        callback. `evaluate_javascript` (WebKitGTK 2.40+) first, the older
+        `run_javascript` where it is missing or refuses the call."""
+        def deliver(value) -> None:
+            if value is True or value == "tab":
+                win.host_seen = True
+            try:
+                done(value)
+            except Exception as error:  # noqa: BLE001 - see the docstring
+                self._log(f"tab host answer failed: {error}")
+
+        def finish_eval(view, result, *_):
+            try:
+                deliver(_js_result(view.evaluate_javascript_finish(result)))
+            except Exception:  # noqa: BLE001 - "no host"
+                deliver(None)
+
+        def finish_run(view, result, *_):
+            try:
+                deliver(_js_result(view.run_javascript_finish(result).get_js_value()))
+            except Exception:  # noqa: BLE001 - "no host"
+                deliver(None)
+
+        view = win.view
+        try:
+            view.evaluate_javascript(js, -1, None, None, None, finish_eval, None)
+            return
+        except Exception:  # noqa: BLE001 - older WebKitGTK; try the old call
+            pass
+        try:
+            view.run_javascript(js, None, finish_run, None)
+        except Exception:  # noqa: BLE001 - "no host"
+            deliver(None)
 
     def open_external(self, url: str) -> None:
         # Called on the GTK thread; `ui.open_url` can block up to 5s and raise
@@ -512,6 +701,43 @@ class GtkBackend:
         ctrl = bool(event.state & Gdk.ModifierType.CONTROL_MASK)
         alt = bool(event.state & Gdk.ModifierType.MOD1_MASK)
         key = event.keyval
+        host = self._host()
+        if host.tab_mode():
+            # Shell Tabs: the page actions act on the ACTIVE tab and the tab
+            # chords drive the strip (macOS's menu, on the keyboard). Each
+            # falls back to what the key did before, or to nothing, when this
+            # page is no host.
+            tabs_js = window_policy.tabs_js
+            if key == Gdk.KEY_F5 or (ctrl and key == Gdk.KEY_r):
+                host.tab_action(win, tabs_js("t.reloadActive()"), win.view.reload)
+            elif alt and key == Gdk.KEY_Left:
+                host.tab_action(win, tabs_js("t.back()"), win.view.go_back)
+            elif alt and key == Gdk.KEY_Right:
+                host.tab_action(win, tabs_js("t.forward()"), win.view.go_forward)
+            elif ctrl and key == Gdk.KEY_w:
+                # The last tab closes the WINDOW, not the tab (the host would
+                # only open a fresh Home in its place); no host closes it too.
+                self.run_js(win, window_policy.TABS_CLOSE_JS,
+                            lambda v: v != "tab" and win.window.close())
+            else:
+                chord = None
+                if ctrl and key == Gdk.KEY_t:
+                    chord = tabs_js("t.openHome()")
+                elif ctrl and key == Gdk.KEY_Page_Up:
+                    chord = tabs_js("t.prev()")
+                elif ctrl and key == Gdk.KEY_Page_Down:
+                    chord = tabs_js("t.next()")
+                elif ctrl and Gdk.KEY_1 <= key <= Gdk.KEY_9:
+                    chord = window_policy.tabs_nth_js(key - Gdk.KEY_1 + 1)
+                if chord is None:
+                    return False
+                host.tab_action(win, chord)
+                # Consumed only on a page known to be a host (`_is_host`);
+                # anywhere else the key also goes on to the page, as before
+                # tabs — the call above is a harmless `false` there, and its
+                # `true` marks a host that had not said so yet.
+                return self._is_host(win)
+            return True
         if key == Gdk.KEY_F5 or (ctrl and key == Gdk.KEY_r):
             win.view.reload()
         elif alt and key == Gdk.KEY_Left:
@@ -523,6 +749,15 @@ class GtkBackend:
         else:
             return False
         return True
+
+    @staticmethod
+    def _is_host(win: _Win) -> bool:
+        """Known to be a tab host: its URL carries a ``_tabs`` list, or it has
+        answered a tab call ``true`` before (`run_js` sets ``host_seen``)."""
+        try:
+            return win.host_seen or window_policy.has_tabs(win.view.get_uri())
+        except Exception:  # noqa: BLE001 - unknown is "not a host"
+            return False
 
     def _on_decide_policy(self, view, decision, decision_type) -> bool:
         wk = self.tk.WebKit2
@@ -543,7 +778,7 @@ class GtkBackend:
                 decision.use()
             else:
                 decision.ignore()
-                host.popup(url, verdict)
+                host.popup(url, verdict, self._win_of(view))
             return True
         if decision_type == T.RESPONSE:
             if not decision.is_main_frame_main_resource():
@@ -566,7 +801,14 @@ class GtkBackend:
         host = self._host()
         verdict = map_new_window(url, host.port)
         if verdict != "ignore":
-            host.popup(url, verdict)
+            host.popup(url, verdict, self._win_of(view))
+        return None
+
+    def _win_of(self, view):
+        """The open `_Win` whose web view is ``view``, or None."""
+        for handle in list(getattr(self._host(), "_windows", ())):
+            if getattr(handle, "view", None) is view:
+                return handle
         return None
 
     def _on_permission(self, view, request) -> bool:
@@ -652,7 +894,8 @@ def main(argv: list[str] | None = None) -> int:
         # is dispatched against a Host that does not exist yet.
         from fused_render.supervisor._linux.windows import preference_enabled
 
-        holder["host"] = Host(args.port, backend, enabled=preference_enabled(state_dir))
+        holder["host"] = Host(args.port, backend, enabled=preference_enabled(state_dir),
+                              tab_mode=lambda: shell_tabs_preference(state_dir))
 
     stop = threading.Event()
     window_host_ipc.serve(args.socket, lambda command: holder["host"].dispatch(command),

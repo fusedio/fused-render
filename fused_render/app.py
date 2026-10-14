@@ -2140,6 +2140,10 @@ def main() -> None:
             if prefs_mod.apps_open_in_home():
                 manager.open_app_in_home(fs_path)
                 return
+            # Under Shell Tabs (`prefs.shell_tabs_enabled`) this same call
+            # opens or selects the app's TAB in the key window, falling back
+            # to its own window when no page there hosts tabs — the decision
+            # is the manager's, read at call time, so nothing branches here.
             manager.focus_or_open_app(fs_path)
 
         window_policy.native_hooks["open_app"] = (

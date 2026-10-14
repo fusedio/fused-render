@@ -11,6 +11,11 @@ On Linux the hook is `linux_windows.install`'s: it hands the URL to the
 supervisor's WebKitGTK window host over a unix socket and falls back to a
 browser tab when the host declines or is gone.
 
+Under Shell Tabs (`prefs.shell_tabs_enabled`) the route and the hook are
+unchanged: the window side opens or selects the app's TAB in the key window
+instead of a window (`WindowManager._host_open`, `window_host.Host`), and
+falls back to the window itself when that page hosts no tabs.
+
 ``404`` where there is no such hook — `fused-render serve`, a Linux
 session whose window host never started — so the caller falls back to an in-page navigation.
 """

@@ -231,6 +231,23 @@ def apps_open_in_home() -> bool:
     return read_prefs().get("apps_open_in_home") is True
 
 
+def shell_tabs_enabled() -> bool:
+    """Whether every native window's shell is a TAB HOST (default off — opt-in).
+
+    ON, the desktop app (macOS native windows, the Linux WebKitGTK host)
+    stops answering an in-app open with a window of its own: the top
+    document draws a tab strip and shows each surface — Home, an app, a
+    file, Tasks, a bot — as an iframe tab beside the others, the way a
+    browser would, while the sidebar and status bar stay put. The window
+    code asks the host page (`window._fusedTabs`) to open or select the
+    tab and keeps today's window as the fallback whenever no host answers.
+    Read at call time by the window managers, like `apps_open_in_home`;
+    there is no live hook to apply — a host page reads `/api/config` once
+    at boot, so the switch lands on the next window (or reload).
+    Same idiom as `canvases_enabled`: only a stored `true` is on."""
+    return read_prefs().get("shell_tabs_enabled") is True
+
+
 def app_sharing_enabled() -> bool:
     """Whether the unified Share sheet is offered (default off — opt-in).
 
@@ -681,6 +698,10 @@ def _prefs_response() -> dict:
         # "Single window experience" pref; on macOS it also makes a Dock click
         # bring back the last-used window instead of Home.
         "apps_open_in_home": {"enabled": apps_open_in_home()},
+        # Every native window's shell hosts its surfaces as tabs (desktop app
+        # only; opt-in, default off). Also on /api/config, which is what the
+        # shell reads at boot; see `shell_tabs_enabled`.
+        "shell_tabs": {"enabled": shell_tabs_enabled()},
         # A task on the Tasks page opens in a side panel beside the list —
         # always, since 2026-09-20 (`task_peek_enabled`). Still sent, because
         # the client's flag module reads it.
@@ -981,6 +1002,12 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                 return JSONResponse({"error": "'apps_open_in_home' must be a boolean"}, status_code=400)
             prefs["apps_open_in_home"] = value
             changed = True
+        if "shell_tabs_enabled" in body:
+            value = body.get("shell_tabs_enabled")
+            if not isinstance(value, bool):
+                return JSONResponse({"error": "'shell_tabs_enabled' must be a boolean"}, status_code=400)
+            prefs["shell_tabs_enabled"] = value
+            changed = True
         if "task_notify_terminal_sessions" in body:
             value = body.get("task_notify_terminal_sessions")
             if not isinstance(value, bool):
@@ -1142,7 +1169,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
             return JSONResponse(
                 {"error": "no known preference in request (expected 'engine', "
                           "'engines', 'reader_enabled', 'canvases_enabled', 'app_sharing_enabled', 'live_previews_enabled', 'monitor_enabled', "
-                          "'native_windows_enabled', 'apps_open_in_home', "
+                          "'native_windows_enabled', 'apps_open_in_home', 'shell_tabs_enabled', "
                           "'task_notify_terminal_sessions', "
                           "'project_queue_enabled', "
                           "'lan_enabled', "

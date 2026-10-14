@@ -6,7 +6,8 @@
 // survive this component's per-folder remount, which a move can cause mid-flight
 // by spring-loading a crumb.
 import { useEffect, useRef, useState } from "react";
-import { navigate, navigateUrl, urlForFsPath } from "@platform/lib/router";
+import { navigate, navigateUrl, urlForFsPath, viewUrlForFsPath } from "@platform/lib/router";
+import { hasTabHost, openInTab } from "@platform/lib/open-in-tab";
 import {
   writeFile,
   mkdir,
@@ -574,9 +575,13 @@ export function useFileOps({
   // (urlForFsPath, which is what `navigate` pushes), handed to the browser
   // instead of to history. No search string: `navigate` starts a destination on
   // a fresh query string too, so the new tab lands where a click would.
-  // `noopener` because the opened tab has no business reaching back at us.
+  // Through openInTab: a tab of the shell tabs host when one is above, else
+  // window.open with `noopener` (the opened tab has no business reaching back).
+  // The host gets the VIEW url: tab documents run under the embed prefix, so urlForFsPath would make an embed tab.
   const doOpenInNewTab = (path: string) => {
-    window.open(urlForFsPath(path), "_blank", "noopener");
+    openInTab(hasTabHost() ? viewUrlForFsPath(path) : urlForFsPath(path), {
+      features: "noopener",
+    });
   };
 
   const startNewFile = (dir: string) =>

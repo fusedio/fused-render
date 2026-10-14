@@ -186,8 +186,12 @@ def test_new_window_after_mru_touch_does_not_land_on_newest():
 def _reopen_mgr(mw, windows, key=None, front=None):
     opened = []
     m = types.SimpleNamespace(
-        _windows=windows, home_url="http://127.0.0.1:1/", open=opened.append
+        _windows=windows, home_url="http://127.0.0.1:1/",
+        # Shell Tabs off: `focus_or_open_home` then takes the window path, and
+        # `open` is asked for a window explicitly (`force_window=True`).
+        open=lambda url, **kw: opened.append(url), _tab_mode=lambda: False,
     )
+    m._focus_or_open_home_window = lambda: mw.WindowManager._focus_or_open_home_window(m)
     m.key = lambda: key
     m.front = lambda: front
     m._pick = lambda c: mw.WindowManager._pick(m, c)
@@ -297,6 +301,6 @@ def test_new_window_activates_the_app_and_opens_home(monkeypatch):
     monkeypatch.setattr(
         mw, "NSApp", types.SimpleNamespace(
             activateIgnoringOtherApps_=lambda f: calls.append(("activate", f))))
-    m.open = lambda url: calls.append(("open", url))
+    m.open = lambda url, **kw: calls.append(("open", url))
     m._menu_target.newWindow_(None)
     assert calls == [("activate", True), ("open", "http://h/")]
