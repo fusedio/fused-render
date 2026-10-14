@@ -28,6 +28,9 @@ Export action — opt-in, default off; see ``app_sharing_enabled``),
 in a scaled iframe — opt-in, default off; see ``live_previews_enabled``),
 **monitor_enabled** (whether the process Monitor — status-bar System chip
 and /monitor page — is offered; opt-in, default off; see ``monitor_enabled``),
+**marketplace_enabled** (whether the Marketplace — sidebar row and the
+/marketplace pages — is offered; opt-in, default off; see
+``marketplace_enabled``),
 **default_model** (the preferred Claude model as a short
 name, unset by default; see ``default_model``), **indexing_enabled** (whether
 background file-index scanning may run — default ON, see ``indexing_enabled``),
@@ -278,6 +281,23 @@ def monitor_enabled() -> bool:
     (missing/legacy) reads as off, so every install has to opt in.
     """
     return read_prefs().get("monitor_enabled") is True
+
+
+def marketplace_enabled() -> bool:
+    """Whether the Marketplace is offered (default off — opt-in).
+
+    ON, the shell offers its entry points: a sidebar row and the `/marketplace`
+    pages (browse, installed/updates, app detail) that install community apps
+    from the fused-render-community-apps repo into `<workspace>/community/`.
+    OFF, those entry points are hidden and `/marketplace` shows a notice
+    pointing at Preferences.
+
+    A SWITCH OVER THE ENTRY POINTS, like `monitor_enabled`: the
+    /api/marketplace routes (fused_render/marketplace.py) keep answering
+    regardless. Any non-`true` stored value (missing/legacy) reads as off, so
+    every install has to opt in.
+    """
+    return read_prefs().get("marketplace_enabled") is True
 
 
 def task_peek_enabled() -> bool:
@@ -653,6 +673,9 @@ def _prefs_response() -> dict:
         # is offered (opt-in, default off). Not an API guard; see
         # `monitor_enabled`.
         "monitor": {"enabled": monitor_enabled()},
+        # Whether the Marketplace (sidebar row + /marketplace pages) is offered
+        # (opt-in, default off). Not an API guard; see `marketplace_enabled`.
+        "marketplace": {"enabled": marketplace_enabled()},
         # Whether the macOS app opens the shell in native windows rather than
         # browser tabs (default ON, opt-out). `available` says whether THIS
         # process can honour it — the packaged macOS app installs the hook; a
@@ -909,6 +932,12 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                 return JSONResponse({"error": "'monitor_enabled' must be a boolean"}, status_code=400)
             prefs["monitor_enabled"] = value
             changed = True
+        if "marketplace_enabled" in body:
+            value = body.get("marketplace_enabled")
+            if not isinstance(value, bool):
+                return JSONResponse({"error": "'marketplace_enabled' must be a boolean"}, status_code=400)
+            prefs["marketplace_enabled"] = value
+            changed = True
         if "native_windows_enabled" in body:
             value = body.get("native_windows_enabled")
             if not isinstance(value, bool):
@@ -1120,7 +1149,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
         if not changed:
             return JSONResponse(
                 {"error": "no known preference in request (expected 'engine', "
-                          "'engines', 'reader_enabled', 'canvases_enabled', 'app_sharing_enabled', 'live_previews_enabled', 'monitor_enabled', "
+                          "'engines', 'reader_enabled', 'canvases_enabled', 'app_sharing_enabled', 'live_previews_enabled', 'monitor_enabled', 'marketplace_enabled', "
                           "'native_windows_enabled', "
                           "'task_notify_terminal_sessions', "
                           "'project_queue_enabled', "
