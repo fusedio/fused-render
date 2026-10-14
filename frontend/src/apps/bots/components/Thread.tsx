@@ -16,7 +16,7 @@ import { md } from "../lib/md";
 import { botsRoot } from "../lib/root";
 import { chosenOption, clearIndex, firstNewIndex, foldHint, foldStretches, isHandoff, isNoise, isTaskEnd, liveCards, optionKey, rowKeys, searchCountText, searchHit, sessionBreak } from "../lib/thread";
 import { act, clearScrollSeq, cur, errMsg, eventsOf, getState, jumpTo, markSeen, openDialog, poll, select, setNewCount, setScrollToEnd, showBanner, unviewed, useBots, viewedSet } from "../state/store";
-import { END_GAP, clearSearchHighlight, gapOf, evBox, highlightSearch, pinToEnd, restoreAnchor, tableToCsv, topVisible, updateToBottom, type Anchor } from "./threadDom";
+import { END_GAP, clearSearchHighlight, gapOf, evBox, highlightSearch, pinToEnd, restoreAnchor, copyCsv, tableToCsv, topVisible, updateToBottom, type Anchor } from "./threadDom";
 import { HandBackRow, HandoverNote } from "./HandoverCard";
 import { SetupLines } from "./SetupLines";
 
@@ -669,9 +669,7 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
     if (csv) {
       const table = csv.closest(".wide")?.querySelector("table");
       if (table) {
-        void navigator.clipboard.writeText(tableToCsv(table));
-        csv.textContent = "Copied";
-        setTimeout(() => { csv.textContent = "Copy as CSV"; }, 1200);
+        copyCsv(csv, tableToCsv(table));
       }
       return;
     }
