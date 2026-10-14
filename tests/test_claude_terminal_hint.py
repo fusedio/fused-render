@@ -125,3 +125,39 @@ def test_strip_inverts_with_terminal_hint(agent):
     sent = agent._with_terminal_hint(msg, HINT)
     assert "<terminal-hint>" in sent
     assert agent._strip_terminal_hint(sent) == msg
+
+
+# --- slash commands go to the CLI bare ---------------------------------------
+# The CLI runs a command only when the turn's text STARTS with it, so any
+# machinery block in front turns `/compact` into plain text for the model.
+
+STATE = '<live-app-state>pane {"entry": "/a/b.html"}</live-app-state>\n\n'
+
+
+@pytest.mark.parametrize("words", [
+    "/compact", "/compact  ", "/plugin:skill args here", "/foo.bar-baz x\nmore"])
+def test_slash_command_is_sent_bare(agent, words):
+    for prefix in ("", STATE, STATE + "<pane-shot>x</pane-shot>\n\n"):
+        out = agent._compose_turn(prefix + words, HINT)
+        assert out == words
+        assert "<terminal-hint>" not in out and "<live-app-state>" not in out
+
+
+@pytest.mark.parametrize("words", [
+    "/Users/me/file.txt what is this", "please /compact", "/", "/1abc", "hello"])
+def test_non_command_still_gets_hint(agent, words):
+    out = agent._compose_turn(STATE + words, HINT)
+    assert out.startswith(STATE) and "<terminal-hint>" in out
+    assert out.endswith("\n\n" + words)
+    assert agent._pane_file(out) == "/a/b.html"
+
+
+def test_bare_command_tolerated_by_readers(agent):
+    assert agent._pane_file("/compact") == ""
+    assert agent._strip_terminal_hint("/compact") == "/compact"
+
+
+def test_send_and_start_use_compose_turn(agent):
+    src = inspect.getsource(agent)
+    assert src.count("_compose_turn(message, terminal_hint)") == 2
+    assert "_write_inbox_entry(run_dir, _with_terminal_hint(" not in src

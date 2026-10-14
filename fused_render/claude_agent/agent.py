@@ -2344,6 +2344,37 @@ def _with_terminal_hint(message: str, raw) -> str:
     return message[:pos] + block + "\n\n" + message[pos:]
 
 
+_SLASH_COMMAND = re.compile(r"^/[A-Za-z][\w:.-]*(\s|$)")
+
+
+def _is_slash_command(words: str) -> bool:
+    """True when the user's own words are a CLI slash command (`/compact`,
+    `/plugin:skill args`). The token may hold no further `/`, so a path like
+    `/Users/x` is not one."""
+    return bool(_SLASH_COMMAND.match((words or "").strip()))
+
+
+def _compose_turn(message: str, raw_hint) -> str:
+    """The final user-turn text: `message` plus the terminal hint, except that
+    a slash command goes out BARE.
+
+    The CLI recognizes a command only at the very start of the turn's text, so
+    any machinery block in front (app state, pane-shot, annotations, the
+    terminal hint) made `/compact` plain text for the model and it did nothing.
+    The leading blocks are peeled and dropped for that one turn; readers
+    (`_pane_file`, the Tasks title strip) already tolerate their absence."""
+    pos = 0
+    while True:
+        match = _LEADING_MACHINERY.match(message, pos)
+        if not match:
+            break
+        pos = match.end()
+    words = message[pos:]
+    if _is_slash_command(words):
+        return words
+    return _with_terminal_hint(message, raw_hint)
+
+
 def _app_state_requests(run_dir: str) -> list:
     """The app-state requests still waiting for an answer.
 
@@ -2941,7 +2972,7 @@ def _start(file: str, message: str, session_id: str, model: str,
     # (a later follow-up) writes the exact same shape into the exact same
     # directory, and the host does not know or care which one started the
     # session versus which one rode in on the CLI's own queue mid-turn.
-    _write_inbox_entry(run_dir, _with_terminal_hint(message, terminal_hint))
+    _write_inbox_entry(run_dir, _compose_turn(message, terminal_hint))
 
     # The session host owns the CLI's stdin pipe for the life of the session
     # — see session_host.py's own module docstring for the fork-safety and
@@ -3769,7 +3800,7 @@ def _send(run_id: str, message: str, read_dirs: str = "", model: str = "",
         pending_offset = 0
     with open(os.path.join(run_dir, "pending_echo"), "w", encoding="utf-8") as f:
         f.write(str(pending_offset))
-    _write_inbox_entry(run_dir, _with_terminal_hint(message, terminal_hint))
+    _write_inbox_entry(run_dir, _compose_turn(message, terminal_hint))
     return {"sent": True}
 
 
