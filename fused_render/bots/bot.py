@@ -2127,8 +2127,8 @@ class Bot:
             if answers is not None and self.meta.get("waiting_on") != answers:
                 # receive() judged this before the user line; the card settled in the gap (a poll-lagged click at
                 # the Mac answered it). Under the lock the engine's wait takes: nothing reaches the inbox.
-                self.emit("system", "A click for a card that was answered already; not applied.", via=None, ignored_seq=uev.get("seq"))
-                return
+                self.emit("system", "An answer for a card that was answered already; not applied.", via=None, ignored_seq=uev.get("seq"))
+                raise CardSettled(f"that card (#{answers}) was answered already")  # the caller holds or 409s, never "approved"
             if not running and not self.start_task(text, label=shown, via=via, images=images) and self.running():
                 running = True  # a hand-off started a task first: this message becomes an instruction to it
             if running:
@@ -2435,6 +2435,8 @@ class Bot:
                     # card, and _deliver_message drops it if that card settled meanwhile.
                     self._deliver_message(h.get("text") or "", h.get("shown") or "", h.get("via") or dict(chan.WEB), {"seq": h.get("seq")},
                                           answers=h.get("answers"))
+                except CardSettled:
+                    pass  # its card settled during the take-over; the line is marked ignored already
                 except Exception:  # noqa: BLE001 — one bad message must not strand the rest
                     logger.warning("bot %s: queued message %s not delivered", self.id, h.get("seq"), exc_info=True)
         finally:
