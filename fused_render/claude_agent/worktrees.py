@@ -351,7 +351,17 @@ def list_worktrees(path: str) -> dict:
     # file added on one branch only), so a switch never lands on a path that
     # is not on disk. `relative` is the path under `current`; the current
     # worktree maps to the target itself.
-    target = os.path.realpath(path)
+    # The LEXICAL path first: a symlink INSIDE the checkout (`src` → a
+    # sibling folder) is the user's own layout and the same on every branch,
+    # so `src/app.py` must be carried over as written, not as resolved
+    # (Bugbot, PR #1635). The resolved path is only the fallback for a
+    # symlinked prefix ABOVE the repo (macOS `/tmp` → `/private/tmp`), where
+    # the lexical path does not sit under the worktree root at all.
+    lexical = os.path.normpath(os.path.abspath(path))
+    if lexical == current or _within(lexical, current):
+        target = lexical
+    else:
+        target = os.path.realpath(path)
     relative = ""
     if target != current and _within(target, current):
         relative = os.path.relpath(target, current)

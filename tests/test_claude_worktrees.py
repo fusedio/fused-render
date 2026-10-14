@@ -408,3 +408,22 @@ def test_list_maps_a_file_target_into_every_worktree(repo):
     out = wt.list_worktrees(repo)
     assert out["relative"] == ""
     assert all(w["mapped"]["path"] == w["path"] for w in out["worktrees"])
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlinks need privileges on Windows")
+def test_a_symlinked_folder_inside_the_checkout_maps_as_written(repo):
+    """`src` as a symlink to a sibling folder: the chat's `src/app.py` is
+    carried over lexically, not as its resolved path (Bugbot, PR #1635)."""
+    os.mkdir(os.path.join(repo, "real"))
+    with open(os.path.join(repo, "real", "app.py"), "w") as f:
+        f.write("x = 1\n")
+    os.symlink("real", os.path.join(repo, "src"))
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "link")
+    made = wt.create_worktree(repo, "feat")
+    assert "error" not in made
+    out = wt.list_worktrees(os.path.join(repo, "src", "app.py"))
+    assert out["relative"] == os.path.join("src", "app.py")
+    feat = next(w for w in out["worktrees"] if w["name"] == "feat")
+    assert feat["mapped"] == {"path": os.path.join(made["path"], "src", "app.py"),
+                              "exists": True}
