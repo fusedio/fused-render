@@ -1857,6 +1857,7 @@
 }
 .chat-root .toolchip .chip-sub {
   display: flex;
+  align-items: baseline;
   min-width: 0;
   flex: 0 1 auto;
   color: var(--c-dim);
@@ -1897,6 +1898,12 @@
    at all, and a margin on the path would double the space after the name. */
 .chat-root .toolchip .chip-sub > .chip-lead:not(:empty) {
   margin-right: 6px;
+}
+/* An empty lead must leave layout: as `.chip-sub`'s first flex item it would
+   supply the box's baseline from its bottom edge, lifting a Read's path above
+   the name it sits beside. */
+.chat-root .toolchip .chip-sub > .chip-lead:empty {
+  display: none;
 }
 /* Fixed width whether or not the glyph is drawn, so every chip's name starts at
    the same x. `is-*` prefixed because a bare `error` collides with .turn.error. */
@@ -2631,4 +2638,18 @@
   font-style: italic;
   white-space: normal;
   word-break: break-word;
+}
+
+/* A user turn that is a slash command (SPEC C-3): its first token as a chip,
+   the rest as the plain words they were. Inline, so the bubble's text reads
+   exactly as sent. */
+.chat-root .turn.user .chat-cmd-chip {
+  display: inline-block;
+  padding: 0 6px;
+  font-family: var(--c-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 0.92em;
+  border: 1px solid var(--c-border);
+  border-radius: 4px;
+  background: var(--c-surface);
+  color: var(--c-fg-strong);
 }

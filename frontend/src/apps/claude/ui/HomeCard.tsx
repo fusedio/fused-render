@@ -7,7 +7,7 @@
 // subject is the composer under it. MEASURED, off-DOM, and deliberately not a
 // container query: the thing worth measuring is whether THIS name fits, not how
 // wide the column is.
-import { useLayoutEffect, useRef } from "react";
+import { useLayoutEffect, useRef, type ReactNode } from "react";
 import { ClaudeMark } from "./ClaudeMark";
 import { ComposerCard, type ComposerCardProps } from "./Composer";
 import { HOME_TITLE_STEPS, measureTextIn, pickHomeTitleStep } from "./fit";
@@ -56,9 +56,12 @@ export type HomeCardProps = Omit<ComposerCardProps, "variant"> & {
    *  (`#home-path`). */
   name: string;
   path?: string;
+  /** The worktree menu (SPEC W-4, `ui/WorktreeMenu`) for a folder in a git
+   *  repo: the landing has no top bar, and a fresh worktree OPENS here. */
+  worktree?: ReactNode;
 };
 
-export function HomeCard({ name, path, ...card }: HomeCardProps) {
+export function HomeCard({ name, path, worktree, ...card }: HomeCardProps) {
   const titleRef = useRef<HTMLDivElement | null>(null);
   useHomeTitleFit(titleRef, name);
   return (
@@ -71,6 +74,7 @@ export function HomeCard({ name, path, ...card }: HomeCardProps) {
         <span>{name}</span>
       </div>
       {path ? <div className="c-home-sub">{path}</div> : null}
+      {worktree ? <div className="c-home-worktree">{worktree}</div> : null}
       <ComposerCard {...card} variant="home" />
     </>
   );

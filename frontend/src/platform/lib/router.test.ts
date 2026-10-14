@@ -240,6 +240,11 @@ describe("navigate carries a git snapshot only within its app folder", () => {
 });
 
 test("legacy view/embed prefixes gain the /explorer namespace", () => {
+  // The bots page's pre-2026-10-14 selection: `?bot=` becomes the path, the rest of the query stays.
+  expect(rewriteLegacyUrl("/bots?bot=859e80cc")).toBe("/bots/859e80cc");
+  expect(rewriteLegacyUrl("/bots?bot=859e80cc&tab=2#x")).toBe("/bots/859e80cc?tab=2#x");
+  expect(rewriteLegacyUrl("/bots?new=1")).toBe("/bots?new=1");
+  expect(rewriteLegacyUrl("/bots/859e80cc")).toBe("/bots/859e80cc");
   expect(rewriteLegacyUrl("/view/Users/me/data.csv")).toBe("/explorer/view/Users/me/data.csv");
   expect(rewriteLegacyUrl("/embed/Users/me/map.html")).toBe("/explorer/embed/Users/me/map.html");
   // Saved view params (the whole point of a bookmark url) ride along.

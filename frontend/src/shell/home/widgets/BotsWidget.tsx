@@ -1,11 +1,10 @@
 import type { Bot } from "@apps/bots/lib/api";
+import { botHref, listHref } from "@apps/bots/routes";
 import { Face } from "@apps/bots/components/Face";
 import { useHomeBots } from "../data";
 import { homeBots } from "../bots";
 import { itemCapacity, type Widget } from "../layout";
 import { BigCount, EmptyLine, ErrorLine, ItemList, ListSkeleton, type WidgetItem } from "./bits";
-
-const BOTS_HREF = "/bots";
 
 const TONE: Record<string, "ok" | "warn" | "err" | "idle"> = {
   running: "ok",
@@ -35,7 +34,7 @@ export function toItem(b: Bot): WidgetItem {
     name: b.name,
     icon: <Face b={b} />,
     sub,
-    href: `${BOTS_HREF}?bot=${encodeURIComponent(b.id)}`,
+    href: botHref(b.id),
     pill: { label: b.status, tone: TONE[b.status] ?? "idle" },
   };
 }
@@ -68,7 +67,7 @@ export function BotsWidget({ widget }: { widget: Widget }) {
   if (!shown.length) return <div className="hw-body"><EmptyLine>All bots are hidden.</EmptyLine></div>;
   return (
     <div className="hw-body">
-      <ItemList items={shown.map(toItem)}cap={itemCapacity(widget.size, "list")} moreHref={BOTS_HREF} variant="tall" />
+      <ItemList items={shown.map(toItem)}cap={itemCapacity(widget.size, "list")} moreHref={listHref()} variant="tall" />
     </div>
   );
 }

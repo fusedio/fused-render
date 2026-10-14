@@ -778,7 +778,7 @@ export const Transcript = memo(function Transcript({
                 actions={actions}
               />
               {state.working ? (
-                <WorkingLine working={state.working} status={state.status} onStop={onStop} />
+                <WorkingLine working={state.working} status={state.status} onStop={onStop} tasks={state.tasks} />
               ) : null}
             </div>
           </>

@@ -592,8 +592,52 @@ function sameChip(a: Segment, b: Segment): boolean {
   if (!x.id || x.id !== y.id) return false;
   if (x.status !== y.status) return false;
   if (x.output !== y.output) return false;
-  return (Array.isArray(x.images) ? x.images.length : 0) ===
-    (Array.isArray(y.images) ? y.images.length : 0);
+  if ((Array.isArray(x.images) ? x.images.length : 0) !==
+      (Array.isArray(y.images) ? y.images.length : 0)) return false;
+  // A SUBAGENT'S ROWS GROW UNDER A CHIP WHOSE OWN STATUS DOES NOT MOVE: the
+  // Agent call stays `running` with no output for the whole of its child's
+  // turn, so without this the carried-over object hid every child segment
+  // until the parent's result landed (seen live, 2026-10-13). The task link
+  // arrives on a later poll the same way.
+  return subagentKey(a) === subagentKey(b) && sameSubagentContent(a, b);
+}
+
+/** The key above stands in for the children's content by LENGTH; a child
+ *  result that changed to another string of the same length would slip past
+ *  it (CodeRabbit, PR #1635), so a matching key is followed by this direct
+ *  comparison — string equality, no re-serialisation. */
+function sameSubagentContent(a: Segment, b: Segment): boolean {
+  const xKids = (a as { children?: Segment[] }).children ?? [];
+  const yKids = (b as { children?: Segment[] }).children ?? [];
+  if (xKids.length !== yKids.length) return false;
+  for (let i = 0; i < xKids.length; i++) {
+    const x = xKids[i]!;
+    const y = yKids[i]!;
+    if (segText(x) !== segText(y)) return false;
+    if ((x as { output?: unknown }).output !== (y as { output?: unknown }).output) return false;
+  }
+  return true;
+}
+
+/** The cheap signature of what a tool chip draws BESIDES its own call: the
+ *  task registry link and the subagent rows nested under it. EVERY child is
+ *  in it, not just the tail: a parallel tool call inside the subagent
+ *  finishes out of order (Bugbot, PR #1635). Child text is streamed, so its
+ *  length stands in for its content; a child's output and image count stand
+ *  in for its result. */
+function subagentKey(seg: Segment): string {
+  const s = seg as { task_id?: string; orphan?: boolean; children?: Segment[] };
+  const kids = Array.isArray(s.children) ? s.children : [];
+  const parts: (string | number)[] = [s.task_id || "", s.orphan ? 1 : 0, kids.length];
+  for (const kid of kids) {
+    const k = kid as { kind?: string; status?: unknown; output?: unknown; images?: unknown[] };
+    parts.push(
+      k.kind || "", String(k.status ?? ""), segText(kid).length,
+      typeof k.output === "string" ? k.output.length : 0,
+      Array.isArray(k.images) ? k.images.length : 0,
+    );
+  }
+  return parts.join("|");
 }
 
 /** Which body a poll's payload is: segments when it has any, the flat legacy

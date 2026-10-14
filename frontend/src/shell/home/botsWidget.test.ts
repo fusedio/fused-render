@@ -5,7 +5,7 @@ import { homeBots } from "./bots";
 const bot = (o: Record<string, unknown>) => ({ id: "a b", name: "Ada", status: "running", ...o }) as any;
 
 test("toItem: row opens that bot's chat", () => {
-  expect(toItem(bot({})).href).toBe("/bots?bot=a%20b");
+  expect(toItem(bot({})).href).toBe("/bots/a%20b");
 });
 test("toItem: empty sub falls back to a status phrase", () => {
   expect(toItem(bot({ status: "running" })).sub).toBe("Working");

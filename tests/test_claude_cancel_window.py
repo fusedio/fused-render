@@ -250,8 +250,12 @@ def test_run_hands_the_future_to_on_cancel_and_reraises():
 def test_stop_allow_and_app_state_ride_their_own_lane():
     for action in ("cancel", "decide", "app_state"):
         assert pool.pool_for(action) is pool.CONTROL_POOL, action
-    for action in set(router.ACTIONS) - {"cancel", "decide", "app_state"}:
+    for action in set(router.ACTIONS) - {"cancel", "decide", "app_state"} \
+            - set(pool.SIDE_POOLS):
         assert pool.pool_for(action) is pool.POOL, action
+    for action, lane in pool.SIDE_POOLS.items():
+        assert pool.pool_for(action) is lane, action
+        assert lane is not pool.POOL and lane is not pool.CONTROL_POOL
     assert pool.CONTROL_POOL is not pool.POOL
     assert pool.CONTROL_POOL._max_workers == 2
     assert pool.POOL._max_workers == 8

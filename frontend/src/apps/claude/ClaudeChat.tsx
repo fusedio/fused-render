@@ -136,6 +136,13 @@ import {
   type Viewable,
 } from "./ui";
 import { debugSentEnabled } from "./ui/debug-sent";
+import type { ClassifiedCommand } from "./protocol/commands";
+import { useSlashCommands } from "./ui/useSlashCommands";
+import { planLocalCommand } from "./ui/local-commands";
+import { notify } from "@platform/lib/notifications";
+import { WorktreeMenu, paneChatUrl, type WorktreeRequest } from "./ui";
+import { TasksContext, TasksPanel, tasksPanelScope, useTasksOpen } from "./ui";
+import { taskIndex } from "./protocol/tasks";
 import { recapAnchor } from "./protocol/recap";
 import {
   queueEnabled,
@@ -277,9 +284,23 @@ export interface ClaudeChatProps {
    * how this bug arrived. (.claude-design/session-recap.md, "Trigger".)
    */
   recap?: boolean;
+  /**
+   * `/tasks` (SPEC C-1): toggle the background-tasks panel. Optional — the
+   * panel's host fills it; absent, the command is answered and does nothing.
+   */
+  onToggleTasks?: () => void;
 }
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/** WHETHER A WORKTREE MENU IS MOUNTED for this target: any file or folder the
+ *  pane has named — the menu then hides itself unless its list says repo. */
+export function worktreeMenuTarget(file: string | null, noun: TargetNoun): boolean {
+  return !!file && !!noun;
+}
+
+// `/model` and `/effort` parsing moved to `ui/local-commands.ts`; re-exported.
+export { localEffortArg, localModelArg } from "./ui/local-commands";
 
 /**
  * THE FOLDER THE READER IS WORKING IN, for a shell fence's or a Bash chip's
@@ -1104,6 +1125,8 @@ function ChatBody(props: ChatBodyProps) {
   // cards wall share this module and their chip keys collide by construction
   // (ui/cardPolicy.ts).
   const [cardPolicy] = useState(createCardPolicy);
+  /** `onCommandsChanged`'s target — a ref, because the controller is built once. */
+  const commandsChanged = useRef<() => void>(() => {});
   const controller = useMemo(
     () =>
       createChatController({
@@ -1119,6 +1142,8 @@ function ChatBody(props: ChatBodyProps) {
         // The controller already announces on THIS document
         // (`announceTasksChanged`); the stamp is for every OTHER one (T:16435).
         onActivity: stampChatActivity,
+        // A poll saw the slash-command list move (SPEC C-2): re-fetch it.
+        onCommandsChanged: () => commandsChanged.current(),
         // Follow-ups the CLI never delivered come back as "not sent" bubbles
         // in place, one each, never into the box (`still_queued`, T:15911;
         // browser QA 2026-09-24).
@@ -1247,6 +1272,8 @@ function ChatBody(props: ChatBodyProps) {
     controller.getState,
     controller.getState,
   );
+  // The task registry by id, for the agent / monitor chips (`ui/tasksContext`).
+  const tasksById = useMemo(() => taskIndex(state.tasks), [state.tasks]);
 
   /**
    * THE DOOR OPENS WHEN THE RUN IS LIVE, not when the controller took the
@@ -3503,6 +3530,86 @@ function ChatBody(props: ChatBodyProps) {
     },
     [openSessionNow],
   );
+
+  // ── SLASH COMMANDS (SPEC C-1/C-3) ──────────────────────────────────────────
+  //
+  // The folder's list, fetched per `_file` and again when a poll says it moved.
+  const { commands: slashCommands, refetch: refetchCommands } = useSlashCommands(file);
+  commandsChanged.current = refetchCommands;
+  // The worktree menu's `/worktree` requests (`ui/WorktreeMenu`).
+  const wtSeq = useRef(0);
+  const [wtRequest, setWtRequest] = useState<WorktreeRequest | null>(null);
+  // ANY TARGET THE PANE HAS NAMED — a folder OR a file inside a repo (user
+  // feedback, 2026-10-14: a file chat must offer the same worktrees). The
+  // menu's own list answers "is this a repo"; `worktreeReady` carries it.
+  const worktreeTarget = worktreeMenuTarget(file, pane.noun);
+  /** A worktree menu is MOUNTED and has said this folder is in a repo
+   *  (`WorktreeMenu.onReady`). Peek/compact mount none; a non-repo says false. */
+  const worktreeReady = useRef(false);
+  const onWorktreeReady = useCallback((isRepo: boolean) => {
+    worktreeReady.current = isRepo;
+  }, []);
+  // THE TASKS PANEL'S OPEN BIT (SPEC T-5): collapsed by default, toggled by its
+  // own head and by `/tasks`, and scoped to the run and conversation on screen
+  // (`tasksPanelScope`) so it does not stay open into the next one. The host's
+  // `onToggleTasks` still hears `/tasks`.
+  const [tasksOpen, toggleTasksPanel] = useTasksOpen(
+    tasksPanelScope({
+      lastRunId: state.lastRunId,
+      tasksRunId: state.tasksRunId,
+      sessionId: state.sessionId,
+      transcriptGen: state.transcriptGen,
+    }),
+  );
+  const hostToggleTasks = props.onToggleTasks;
+  const onToggleTasks = useCallback(() => {
+    toggleTasksPanel();
+    hostToggleTasks?.();
+  }, [toggleTasksPanel, hostToggleTasks]);
+  const setModelPick = defaults.setModel;
+  const setEffortPick = defaults.setEffort;
+  /** A local command from the composer. `false` = refused (bad argument), and
+   *  the composer puts the words back. `/help` never arrives: it is the
+   *  composer's own menu. */
+  const onLocalCommand = useCallback(
+    (cmd: ClassifiedCommand): boolean => {
+      const plan = planLocalCommand(cmd, {
+        worktreeReady: worktreeTarget && worktreeReady.current,
+      });
+      if ("refuse" in plan) {
+        // The words stay in the box (`false`), and the reader is told why.
+        notify({ title: plan.refuse, tone: "info" });
+        return false;
+      }
+      switch (plan.do) {
+        case "clear":
+          // THE SAME DOOR AS `← Chats`: a new conversation in this folder.
+          onBack();
+          return true;
+        case "model":
+          setModelPick(plan.value);
+          return true;
+        case "effort":
+          setEffortPick(plan.value);
+          return true;
+        case "worktree":
+          wtSeq.current += 1;
+          setWtRequest({ seq: wtSeq.current, ...(plan.name ? { name: plan.name } : {}) });
+          return true;
+        case "tasks":
+          onToggleTasks();
+          return true;
+      }
+    },
+    [onBack, setModelPick, setEffortPick, worktreeTarget, onToggleTasks],
+  );
+  /** SWITCHING WORKTREE IS OPENING THAT FOLDER'S CHAT, FRESH — the URL the Home
+   *  lists open a folder chat on (`paneChatUrl`), with no session, through the
+   *  same `onNavigate` (so the composer's leave guard is asked). */
+  const onWorktreeSwitch = useCallback(
+    (path: string) => onNavigate(paneChatUrl(path, "")),
+    [onNavigate],
+  );
   /**
    * A DRAFT ROW PRESSED — THE WORDS COME TO THE BOX (Akshil, 2026-09-15).
    *
@@ -3615,6 +3722,16 @@ function ChatBody(props: ChatBodyProps) {
   const name = file ? file.split(/[\\/]/).filter(Boolean).pop() || file : "Claude";
   const running =
     state.status === "running" || state.status === "starting" || state.status === "stopping";
+  const worktreeMenu = worktreeTarget ? (
+    <WorktreeMenu
+      key={file as string}
+      file={file as string}
+      onSwitch={onWorktreeSwitch}
+      request={wtRequest}
+      running={running}
+      onReady={onWorktreeReady}
+    />
+  ) : null;
   // The picker moves into the shared strip below the breakpoint: there is no
   // persistent left column to hang a bar on (`pickerHost`).
   const host = pickerHost(narrowView.narrow, pane.noPane, pane.decision?.leftModes.length ?? 0);
@@ -4396,6 +4513,8 @@ function ChatBody(props: ChatBodyProps) {
       // and a count of follow-ups the live host will drain in seconds is the one
       // waiting state with nothing to act on.
       queueOn,
+      slashCommands,
+      onLocalCommand,
       // ONLY INSIDE A CONVERSATION. `card` is spread into `Home`'s composer as
       // well as the chat's, and a hand-back is about the turn that was running
       // — the landing has none.
@@ -4450,6 +4569,8 @@ function ChatBody(props: ChatBodyProps) {
       sched.placeholder,
       sched.reason,
       queueOn,
+      slashCommands,
+      onLocalCommand,
     ],
   );
   /**
@@ -4818,6 +4939,7 @@ function ChatBody(props: ChatBodyProps) {
                 (T:1412-1438). */}
             {!compact && !peek ? (
               <Topbar
+                worktree={worktreeMenu}
                 sessionId={state.sessionId ?? ""}
                 subtitle={name}
                 {...(taskId ? { taskId } : {})}
@@ -4856,6 +4978,7 @@ function ChatBody(props: ChatBodyProps) {
                 }
               />
             ) : null}
+            <TasksContext.Provider value={tasksById}>
             <Transcript
               followRef={transcriptFollow}
               cwd={chatWorkdir(file, pane.noun)}
@@ -4939,6 +5062,18 @@ function ChatBody(props: ChatBodyProps) {
                 </>
               }
             />
+            </TasksContext.Provider>
+            {/* THE RUN'S BACKGROUND TASKS (SPEC T-5), between the transcript and
+                the box: one line until opened. Not in the compact cut — a tile
+                is read, and its chips already say what is running. */}
+            {!compact ? (
+              <TasksPanel
+                tasks={state.tasks}
+                runId={state.tasksRunId}
+                open={tasksOpen}
+                onToggle={toggleTasksPanel}
+              />
+            ) : null}
             {/* …AND ONE SUMMARY OVER THE BOX. The rows are in a transcript that
                 scrolls; this is pinned where the composer is, so a reader twenty
                 turns down still knows something of theirs is held, what by, and
@@ -4995,6 +5130,7 @@ function ChatBody(props: ChatBodyProps) {
             heldKey={held?.key ?? null}
             heldForm={heldForm}
             onHeldGone={onHeldGone}
+            worktree={worktreeMenu}
           />
         )}
         {/* THE NOTE COMPOSER'S IDLE HOME (T:7291): ONE node, parked in the chat

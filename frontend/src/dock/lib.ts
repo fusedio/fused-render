@@ -77,7 +77,7 @@ export const openBody = (r: Row): { kind: "bot"; id: string } | { kind: "app" | 
 
 /** The HTML menu's "Open in Browser": an app at its shell URL, a bot's chat on the bots page. */
 export const browserHref = (r: Row, origin: string): string =>
-  r.kind === "bot" ? origin + "/bots?bot=" + encodeURIComponent(r.id) : origin + r.url;
+  r.kind === "bot" ? origin + "/bots/" + encodeURIComponent(r.id) : origin + r.url;
 
 /**
  * A bot's face, drawn as Face.tsx draws it: viewBox -1.25 -1.25 102.5 102.5; a brand face is the disc with the
