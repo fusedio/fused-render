@@ -180,8 +180,14 @@ async def api_tasks_queue_event(payload: dict | None = Body(default=None),
                 at = float(at)
             except (TypeError, ValueError):
                 at = time.time()
+            # `pid` is the CLI the host was holding — the event is news about
+            # THAT process, not every process on the session (a resumed run
+            # can be live beside an old host still idling toward its reap).
+            # Absent from an old host's body, which keeps the unscoped stamp.
+            pid = body.get("pid")
+            pid = pid if type(pid) is int and pid > 0 else None
             await run_in_threadpool(tasks_watch.mark_turn_ended, task_key,
-                                    run_id, at)
+                                    run_id, at, pid)
 
     if not await run_in_threadpool(project_queue.enabled):
         return {"ok": True, "ignored": True}
