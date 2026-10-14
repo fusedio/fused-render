@@ -15,7 +15,7 @@
 // design page): the store reads `sel` from the path, a bot click is a pushState, Back steps between bots.
 //
 // A reserved first segment (`tasks`, `apps`, `preferences`) can never be a bot id: ids are eight hex characters,
-// and a bot imported from FusedBot (its directory's basename) is still refused these names by the parser. An
+// and a bot imported from FusedBot (its directory's basename, any characters) is still refused these names. An
 // unknown shape (`/bots/<id>/x`, `/bots/tasks/x`) falls back to the nearest page rather than erroring — the same
 // forgiving posture AI Models takes for an unknown tab.
 //
@@ -41,10 +41,12 @@ export function isBotsPath(pathname: string): boolean {
   return pathname === BOTS_PREFIX || pathname.startsWith(BOTS_PREFIX + "/");
 }
 
-const ID_RE = /^[A-Za-z0-9_-]+$/;
 const isReserved = (s: string): boolean => (RESERVED as readonly string[]).includes(s);
-/** A bot id as the path may carry it: the id alphabet, and never a page name. */
-export const isBotId = (s: string): boolean => ID_RE.test(s) && !isReserved(s);
+/** A DECODED path segment that may be a bot id: one segment (no `/`), not `.`/`..`, never a page name. Ids are
+ *  `uuid4().hex[:8]`, but a bot imported from FusedBot is named by its directory's basename (registry.py checks only
+ *  that), so the alphabet is "whatever a basename can be" — botHref encodes it, parseBotsPath decodes it, and the two
+ *  round-trip (CodeRabbit, #1637: validating the RAW segment refused every encoded one). */
+export const isBotId = (s: string): boolean => !!s && !s.includes("/") && s !== "." && s !== ".." && !isReserved(s);
 
 const decode = (s: string): string => { try { return decodeURIComponent(s); } catch { return s; } };
 
@@ -61,7 +63,8 @@ export function parseBotsPath(pathname: string, search: string = ""): BotsRoute 
   }
   if (head === "apps") return { kind: "apps", folder: second ? decode(second) : null };
   if (head === "preferences") return { kind: "prefs" };
-  if (isBotId(head)) return { kind: "bot", id: decode(head) };
+  const id = decode(head);
+  if (isBotId(id)) return { kind: "bot", id };
   return { kind: "list" };
 }
 

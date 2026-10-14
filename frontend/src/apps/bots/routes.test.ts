@@ -3,6 +3,10 @@ import { BOTS_PREFIX, RESERVED, appsHref, botHref, isBotId, isBotsPath, parseBot
 
 test("every page round-trips through its own href", () => {
   expect(parseBotsPath(botHref("859e80cc"))).toEqual({ kind: "bot", id: "859e80cc" });
+  // An imported bot is named by its directory: botHref encodes, parseBotsPath decodes, the id round-trips.
+  expect(botHref("a b")).toBe("/bots/a%20b");
+  expect(parseBotsPath(botHref("a b"))).toEqual({ kind: "bot", id: "a b" });
+  expect(parseBotsPath("/bots/%74asks")).toEqual({ kind: "list" });  // decodes to a reserved name
   expect(parseBotsPath(tasksHref())).toEqual({ kind: "tasks", task: null });
   expect(parseBotsPath("/bots/tasks", "?task=pending%3Ae1")).toEqual({ kind: "tasks", task: "pending:e1" });
   expect(parseBotsPath(appsHref())).toEqual({ kind: "apps", folder: null });
@@ -27,7 +31,9 @@ test("reserved names are pages, never bot ids", () => {
   for (const r of RESERVED) expect(isBotId(r)).toBe(false);
   expect(isBotId("859e80cc")).toBe(true);
   expect(isBotId("imported-bot_1")).toBe(true);
+  expect(isBotId("a b")).toBe(true);
   expect(isBotId("a/b")).toBe(false);
+  expect(isBotId("..")).toBe(false);
   expect(isBotId("")).toBe(false);
 });
 
@@ -35,6 +41,7 @@ test("unknown shapes land on the nearest page instead of erroring", () => {
   expect(parseBotsPath("/bots/859e80cc/extra")).toEqual({ kind: "bot", id: "859e80cc" });
   expect(parseBotsPath("/bots/tasks/x")).toEqual({ kind: "tasks", task: null });
   expect(parseBotsPath("/bots/%2F")).toEqual({ kind: "list" });
+  expect(parseBotsPath("/bots/..")).toEqual({ kind: "list" });
   expect(parseBotsPath("/home")).toEqual({ kind: "list" });
 });
 
