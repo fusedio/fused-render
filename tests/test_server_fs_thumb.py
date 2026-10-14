@@ -121,3 +121,20 @@ def test_a_decompression_bomb_is_a_415_not_a_500(client, tmp_path, monkeypatch):
     monkeypatch.setattr(_Image, "MAX_IMAGE_PIXELS", 10)
     resp = client.get("/api/fs/thumb", params={"path": src})
     assert resp.status_code == 415
+
+
+@pytest.mark.skipif(sys.platform == "win32" or os.geteuid() == 0,
+                    reason="needs a mode bit the reader cannot override")
+def test_a_cache_hit_still_needs_read_access_to_the_source(client, tmp_path):
+    """A thumbnail made while the photo was readable must stop answering
+    once it is not: the cached JPEG is served only after the source opens,
+    exactly as `/api/fs/raw` probes before every send."""
+    src = _png(tmp_path / "private.png")
+    assert client.get("/api/fs/thumb", params={"path": src}).status_code == 200
+    os.chmod(src, 0)
+    try:
+        resp = client.get("/api/fs/thumb", params={"path": src})
+        assert resp.status_code == 403, resp.text
+    finally:
+        os.chmod(src, 0o644)
+    assert client.get("/api/fs/thumb", params={"path": src}).status_code == 200

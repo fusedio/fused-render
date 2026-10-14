@@ -718,6 +718,16 @@ async def api_fs_thumb(path: str, request: Request, size: int = 160):
         return _error(f"no such file: {path}", status=404)
     if not stat.S_ISREG(st.st_mode):
         return _error(f"no such file: {path}", status=404)
+    # Probe-open the SOURCE on every request, cache hit included — `/api/fs/raw`'s
+    # rule. A cached JPEG must not keep answering for a photo whose read
+    # access was revoked (TCC, a chmod) after the thumbnail was made; the
+    # stat above still succeeds then, and only an open says no.
+    try:
+        await asyncio.to_thread(lambda: open(path, "rb").close())
+    except PermissionError as e:
+        return shell_fda.refused(path, e)
+    except OSError:
+        return _error(f"no such file: {path}", status=404)
     import hashlib
 
     key = hashlib.sha1(
