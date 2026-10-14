@@ -23,7 +23,7 @@ import { Dialogs } from "./dialogs/Dialogs";
 import { openApps } from "./apps/apps";
 import { getSideApp, sideAppBrowser, sideAppShow } from "./apps/side";
 import { useBotsRoute } from "./hooks/useBotsRoute";
-import { prefsHref } from "./routes";
+import { prefsHref, searchSansTask } from "./routes";
 import { navigateUrl } from "@platform/lib/router";
 import { PrefsPanel } from "./components/PrefsPanel";
 import { useLayout } from "./hooks/useLayout";
@@ -122,7 +122,7 @@ export function Bots() {
           onOpenBrowsers={() => openDialog({ kind: "browsers" })}
           onOpenBuilds={() => openBuilds()}
           onOpenApps={openApps}
-          onOpenPrefs={isBot() ? () => navigateUrl(prefsHref()) : undefined}
+          onOpenPrefs={isBot() ? () => navigateUrl(prefsHref(searchSansTask(location.search))) : undefined}
           onContextMenu={(id, x, y) => openMenu({ id, x, y })}
         />
         <div className="gutter l" title="Drag to resize · double-click to reset" {...gutter("l")} />

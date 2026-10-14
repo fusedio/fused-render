@@ -14,7 +14,7 @@ import { sentByYou } from "../lib/derive";
 import { chime, notifyEvents, notifyHandover, updateTitle } from "../lib/notify";
 import type { NewBotPick } from "../lib/presets";
 import { botsMounted } from "../lib/root";
-import { BOTS_PREFIX, botHref, isBotsPath, parseBotsPath } from "../routes";
+import { BOTS_PREFIX, botHref, isBotsPath, parseBotsPath, searchSansTask } from "../routes";
 import { navigateUrl, replaceSearch } from "@platform/lib/router";
 
 export { SLOW_MS, STALL_MS } from "../lib/api";
@@ -279,7 +279,8 @@ function writeUrl(id: string | null, mode: "push" | "replace") {
 export function goChat(): void {
   try {
     if (!isBotsPath(location.pathname) || parseBotsPath(location.pathname).kind === "bot") return;
-    navigateUrl((S.sel ? botHref(S.sel) : BOTS_PREFIX) + location.search);
+    // The query rides along minus the Tasks page's own `task` key, which names nothing on a chat.
+    navigateUrl((S.sel ? botHref(S.sel) : BOTS_PREFIX) + searchSansTask(location.search));
   } catch { /* no history (tests) */ }
 }
 

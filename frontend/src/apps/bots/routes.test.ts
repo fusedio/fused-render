@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { BOTS_PREFIX, RESERVED, appsHref, botHref, isBotId, isBotsPath, parseBotsPath, prefsHref, tasksHref } from "./routes";
+import { BOTS_PREFIX, RESERVED, appsHref, botHref, isBotId, isBotsPath, parseBotsPath, prefsHref, searchSansTask, tasksHref } from "./routes";
 
 test("every page round-trips through its own href", () => {
   expect(parseBotsPath(botHref("859e80cc"))).toEqual({ kind: "bot", id: "859e80cc" });
@@ -10,6 +10,17 @@ test("every page round-trips through its own href", () => {
   expect(parseBotsPath(prefsHref())).toEqual({ kind: "prefs" });
   expect(parseBotsPath(BOTS_PREFIX)).toEqual({ kind: "list" });
   expect(parseBotsPath(BOTS_PREFIX + "/")).toEqual({ kind: "list" });
+});
+
+test("hrefs keep the current query; tasksHref owns the task key", () => {
+  expect(botHref("859e80cc", "?tab=2&peek=k")).toBe("/bots/859e80cc?tab=2&peek=k");
+  expect(appsHref(null, "?tab=2")).toBe("/bots/apps?tab=2");
+  expect(prefsHref("?x=1")).toBe("/bots/preferences?x=1");
+  expect(tasksHref("k2", "?task=k1&tab=2")).toBe("/bots/tasks?tab=2&task=k2");
+  expect(tasksHref(null, "?task=k1&tab=2")).toBe("/bots/tasks?tab=2");
+  expect(searchSansTask("?task=k1&tab=2")).toBe("?tab=2");
+  expect(searchSansTask("?task=k1")).toBe("");
+  expect(botHref("a", "?")).toBe("/bots/a");
 });
 
 test("reserved names are pages, never bot ids", () => {

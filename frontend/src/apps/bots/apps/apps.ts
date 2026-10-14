@@ -10,7 +10,7 @@ import type { AppRef } from "../lib/api";
 import { goChat, showToast } from "../state/store";
 import { buildsRoot, rootReady, setBuildsRoot, useBuildsRoot } from "../builds/builds";
 import { botsMounted } from "../lib/root";
-import { appsHref, parseBotsPath, type BotsRoute } from "../routes";
+import { appsHref, parseBotsPath, searchSansTask, type BotsRoute } from "../routes";
 import { navigateUrl } from "@platform/lib/router";
 
 export { showAppBeside, sideAppBrowser, sideAppShow, closeSideApp } from "./side";
@@ -159,8 +159,8 @@ export function closeView(): void {
 }
 
 // ------------------------------------------------------------------ the gallery (#apanel) ----
-/** The footer #apps chip: the gallery route. AppsPanel lists the folder on mount. */
-export function openApps(): void { navigateUrl(appsHref()); }
+/** The footer #apps chip: the gallery route (the host URL's query rides along). AppsPanel lists the folder on mount. */
+export function openApps(): void { navigateUrl(appsHref(null, searchSansTask(location.search))); }
 /** Back / Esc from the gallery or the viewer: the selected bot's chat; the gallery unmounts, so its iframes go and
  *  idle apps stop. A viewed app's params leave the URL unless another surface still holds them. */
 export function closeApps(): void {

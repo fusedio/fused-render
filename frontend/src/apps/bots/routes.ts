@@ -65,8 +65,24 @@ export function parseBotsPath(pathname: string, search: string = ""): BotsRoute 
   return { kind: "list" };
 }
 
-export const listHref = (): string => BOTS_PREFIX;
-export const botHref = (id: string): string => `${BOTS_PREFIX}/${encodeURIComponent(id)}`;
-export const tasksHref = (task?: string | null): string => `${BOTS_PREFIX}/tasks${task ? "?task=" + encodeURIComponent(task) : ""}`;
-export const appsHref = (folder?: string | null): string => `${BOTS_PREFIX}/apps${folder ? "/" + encodeURIComponent(folder) : ""}`;
-export const prefsHref = (): string => `${BOTS_PREFIX}/preferences`;
+// Every href takes the current query (`search`) and KEEPS it: a side app's fused.params and the shell's `peek` live
+// on the host URL whichever page is on top, and a hop that dropped them would blank "Copy state" and the app's next
+// param sync. tasksHref owns the `task` key (set or dropped); nothing else here touches a key.
+const withSearch = (path: string, search: string): string => path + (search && search !== "?" ? (search.startsWith("?") ? search : "?" + search) : "");
+export const listHref = (search = ""): string => withSearch(BOTS_PREFIX, search);
+export const botHref = (id: string, search = ""): string => withSearch(`${BOTS_PREFIX}/${encodeURIComponent(id)}`, search);
+export const tasksHref = (task?: string | null, search = ""): string => {
+  const q = new URLSearchParams(search);
+  q.delete("task");
+  if (task) q.set("task", task);
+  return withSearch(`${BOTS_PREFIX}/tasks`, q.toString());
+};
+export const appsHref = (folder?: string | null, search = ""): string => withSearch(`${BOTS_PREFIX}/apps${folder ? "/" + encodeURIComponent(folder) : ""}`, search);
+export const prefsHref = (search = ""): string => withSearch(`${BOTS_PREFIX}/preferences`, search);
+/** The query minus the Tasks page's own `task` key: what a hop OFF that page carries. */
+export function searchSansTask(search: string): string {
+  const q = new URLSearchParams(search);
+  q.delete("task");
+  const s = q.toString();
+  return s ? "?" + s : "";
+}

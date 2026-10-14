@@ -150,15 +150,18 @@ export function setFilterFrame(el: HTMLIFrameElement | null): void { frameEl = e
 export const tasksPageUrl = (taskKey: string | null): Promise<string> =>
   taskKey ? tasksUi({ task: taskKey, scope: "all" }) : tasksUi({ view: "list", scope: "all" });
 
-// Opened from code (a new build/task) rather than the footer chip: the chip keeps its `fresh` mark.
+// Opened ON A TASK (a new build or task, a build card's "Open in Builds") rather than the footer chip's bare list: the
+// chip keeps its `fresh` mark, as OpenBot did. The chip itself calls openBuilds() with no key, and that visit is what
+// clears the mark (Bugbot, #1637: a flag set for every open never let it clear).
 let openedByCode = false;
-/** TasksPage, on mount: true when openBuilds() opened it (consumes the flag). */
+/** TasksPage, on mount: true when openBuilds(taskKey) opened it (consumes the flag). */
 export function takeOpenedByCode(): boolean { const v = openedByCode; openedByCode = false; return v; }
-/** Go to the Tasks page (/bots/tasks), on one task's peek when `taskKey` is given. */
+/** Go to the Tasks page (/bots/tasks), on one task's peek when `taskKey` is given. The host URL's query (a side
+ *  app's params, the shell's `peek`) rides along. */
 export function openBuilds(taskKey?: string): void {
   if (!buildsOn()) return;
-  if (!panelShown()) openedByCode = true;
-  navigateUrl(tasksHref(taskKey));
+  if (taskKey && !panelShown()) openedByCode = true;
+  navigateUrl(tasksHref(taskKey, location.search));
 }
 export function closeBuilds(): void { if (panelShown()) goChat(); }
 
