@@ -28,7 +28,8 @@ export type Action =
   | "live_host"
   | "send"
   | "commands"
-  | "task_output";
+  | "task_output"
+  | "task_stop";
 
 /** A permission mode as the CLI spells it (PERMISSION_MODES, agent.py). */
 export type PermissionMode = "plan" | "prompt" | "acceptEdits" | "auto";
@@ -220,6 +221,7 @@ export interface AgentRequests {
   send: SendRequest;
   commands: FileRequest;
   task_output: TaskOutputRequest;
+  task_stop: TaskOutputRequest;
 }
 
 // ---- segments (agent.py:3253 _segments_from_rows; T:15591-15635) -----------
@@ -467,6 +469,25 @@ export interface ActivityTool {
   id: string;
   name: string;
   detail: string;
+  /** Agent/Task only, and only once the streaming input has named it. */
+  subagent_type?: string;
+  /** Agent/Task only, when the call set them explicitly. */
+  model?: string;
+  effort?: string;
+  /** Agent/Task only: true from `content_block_start` until the finalized
+   *  input arrives, i.e. while the brief is still being written. */
+  streaming?: boolean;
+}
+/** Latest hint that work moved into a git worktree (agent.py `_worktree_hint`).
+ *  `via: "exit"` is the "work left the worktree" marker; the page clears on it. */
+export interface WorktreeHint {
+  path: string;
+  branch: string;
+  via: "bash" | "enter" | "agent" | "exit";
+  label?: string;
+  /** On `via: "exit"` from `git worktree remove <path>`: the absolute path
+   *  removed. A different hint path stays standing. */
+  removed?: string;
 }
 export interface ActivityTask {
   id: string;
@@ -506,6 +527,8 @@ export interface PollResponse {
   /** Absent on an older agent.py. */
   quota?: Quota | null;
   cancelled: boolean;
+  /** Absent on an older agent.py; null when this window held no hint. */
+  worktree_hint?: WorktreeHint | null;
   tasks_pending: boolean;
   activity: Activity;
   segments: Segment[];
@@ -762,6 +785,8 @@ export interface TranscriptStat {
 export interface HistoryResponse {
   turns: HistoryTurn[];
   transcript: TranscriptStat;
+  /** The worktree hint the transcript's tool calls end on (agent.py `_history`). */
+  worktree_hint?: WorktreeHint | null;
   /** agent.py `_history_live`: the run still going for this chat, with its
    *  cards, so transcript and card paint in one frame. `""` = nothing live (an
    *  answer too); absent = an older server, and the page discovers as before. */
@@ -968,6 +993,7 @@ export interface AgentResponses {
   send: SendResponse;
   commands: CommandsResponse | ErrorOnly;
   task_output: TaskOutputResponse | ErrorOnly;
+  task_stop: TaskStopResponse | ErrorOnly;
 }
 
 /** One slash command the CLI (or the disk scan) knows (SPEC C-2). */
@@ -1021,6 +1047,11 @@ export interface TaskRecord {
   type: string;
   /** "" unless an agent. */
   subagent_type: string;
+  /** "worktree" when the agent was started with isolation: "worktree", else "". */
+  isolation: string;
+  /** The Agent call's explicit `model` / `effort`, "" when it set none (inherits). */
+  model?: string;
+  effort?: string;
   /** "" unless known — the `ToolSegment.id` this task was started by. */
   tool_use_id: string;
   status: TaskStatus;
@@ -1039,6 +1070,11 @@ export interface TaskRecord {
 export interface TaskOutputRequest {
   run_id: string;
   task_id: string;
+}
+/** `task_stop {run_id, task_id}`: `{ok: true}` once the CLI accepted it. */
+export interface TaskStopResponse {
+  ok: true;
+  error?: undefined;
 }
 export interface TaskOutputResponse {
   /** The tail, capped at 64 KiB (`truncated` says when it was cut). */

@@ -76,6 +76,34 @@
   padding: 5px 0;
   border-top: 1px solid var(--c-border);
 }
+.chat-root .chat-task.is-ended:not(.is-failed) {
+  opacity: 0.5;
+}
+.chat-root .chat-tasks-more {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--c-dim);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.chat-root .chat-tasks-more-row {
+  display: block;
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.chat-root .chat-task-model {
+  flex-shrink: 0;
+  color: var(--c-dim);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.chat-root .chat-tasks-more:hover {
+  text-decoration: underline;
+}
 .chat-root .chat-task:first-child {
   border-top: 0;
 }
@@ -127,8 +155,11 @@
   color: var(--c-error);
   border-color: color-mix(in srgb, var(--c-error) 40%, var(--c-border));
 }
-.chat-root .chat-task-time,
-.chat-root .chat-task-meta {
+.chat-root .chat-task-wt {
+  flex-shrink: 0;
+  color: var(--c-dim);
+}
+.chat-root .chat-task-time {
   flex-shrink: 0;
   color: var(--c-dim);
   font-variant-numeric: tabular-nums;
@@ -150,20 +181,44 @@
   cursor: default;
   text-decoration: none;
 }
-.chat-root .chat-task-sub,
-.chat-root .chat-task-summary,
+.chat-root .chat-task-icon-btn {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  padding: 2px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--c-dim);
+  cursor: pointer;
+}
+.chat-root .chat-task-icon-btn:hover:not(:disabled) {
+  color: var(--c-fg);
+}
+.chat-root .chat-task-icon-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.chat-root .chat-task-error.is-toggle {
+  cursor: pointer;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 .chat-root .chat-task-error,
 .chat-root .chat-task-note,
 .chat-root .chat-task-out {
   margin: 2px 0 0 22px;
 }
-.chat-root .chat-task-sub,
-.chat-root .chat-task-summary,
 .chat-root .chat-task-note {
   color: var(--c-dim);
 }
 .chat-root .chat-task-error {
   color: var(--c-error);
+}
+.chat-root .chat-task-error.is-clamped {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 /* The Output pre: CollapsiblePre's clip, mirrored from `.perm pre` in

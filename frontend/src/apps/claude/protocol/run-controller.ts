@@ -87,6 +87,7 @@ import type {
   SkillRow,
   StartResponse,
   SwitchableMode,
+  WorktreeHint,
 } from "./types";
 import { composeBlocks, composeOutgoing, isInterruptMark, isMarkerOnly, stripBlocks } from "./wire";
 /** PR2: the attachment pipeline's receipt row — carried, never built here. */
@@ -278,6 +279,7 @@ function emptyState(file: string | null): ChatState {
     context: null,
     tasks: [],
     tasksRunId: null,
+    worktreeHint: null,
     ownRunEndedAt: 0,
     repaired: 0,
     transcriptGen: 0,
@@ -585,10 +587,34 @@ export function createChatController(deps: ControllerDeps): ChatController {
     if (owner && !rows.length && state.tasksRunId === owner && state.tasks.length) return;
     publishTasks(rows, owner);
   };
+  /** Publish a worktree hint, only when it differs from the current one (an
+   *  equal hint on every poll must not bump `rev`). `via: "exit"` is the
+   *  backend's "work left the worktree" marker and clears it. */
+  const landWorktreeHint = (hint: WorktreeHint | null | undefined) => {
+    if (hint === undefined) return;
+    const cur = state.worktreeHint ?? null;
+    // `git worktree remove <other>` leaves a hint for a different absolute
+    // path standing; everything else that exits clears it.
+    if (hint && hint.via === "exit" && hint.removed && cur && cur.path.startsWith("/") && cur.path !== hint.removed) return;
+    const next = hint && hint.via !== "exit" ? hint : null;
+    if (
+      next === cur ||
+      (next &&
+        cur &&
+        next.path === cur.path &&
+        next.branch === cur.branch &&
+        next.via === cur.via &&
+        (next.label ?? "") === (cur.label ?? ""))
+    )
+      return;
+    emit({ worktreeHint: next });
+  };
   /** The conversation on screen is leaving: its tasks go with it. */
   const clearTasks = () => {
     tasksSig = "";
     if (state.tasks.length || state.tasksRunId !== null) emit({ tasks: [], tasksRunId: null });
+    // …and so does the worktree hint the model's tool calls raised.
+    if (state.worktreeHint) emit({ worktreeHint: null });
   };
 
   // ---- params (the exact moments T writes them) ---------------------------
@@ -1520,6 +1546,8 @@ export function createChatController(deps: ControllerDeps): ChatController {
         // call. Clearing belongs to history alone, which is the only reader
         // that knows WHICH conversation is on screen.
         if (poll.context) emit({ context: poll.context });
+        // LATEST WORKTREE HINT WINS; a window with none says nothing.
+        if (poll.worktree_hint) landWorktreeHint(poll.worktree_hint);
         noteSkills(poll.skills);
         surfaceAppState(poll.app_state, runId);
         // THE LIVE HOST'S UNDRAINED FOLLOW-UPS, republished verbatim — see
@@ -2935,6 +2963,9 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // it left. An empty answer about the run already drawn keeps the list —
     // the poll owns a live run's tasks.
     landHistoryTasks(res);
+    // THE HINT THE TRANSCRIPT ENDS ON (`_history`'s walk), so a reload keeps
+    // the chip. After `clearTasks()` (openSession ran it before the fetch).
+    landWorktreeHint(res.worktree_hint);
     emit({
       turns: historyToTurns(res),
       transcript: res.transcript ?? null,

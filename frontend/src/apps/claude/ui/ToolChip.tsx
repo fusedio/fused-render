@@ -34,12 +34,13 @@ import {
 } from "../protocol/summaries";
 import { COPY_RESET_MS } from "../protocol/markdown";
 import { useCanRunInTerminal, openTerminal } from "@platform/lib/terminalDockStore";
-import { isAgentTool, subagentChipModel, taskFor } from "../protocol/tasks";
+import { isAgentTool, subagentChipModel, taskFor, type SubagentChipModel } from "../protocol/tasks";
 import type { Segment, ToolSegment } from "../protocol/types";
 import { useCardOpen } from "./cardPolicy";
 import { MarkdownView } from "./MarkdownView";
 import { activateOnKey } from "./planAffordance";
 import { PlanModal } from "./PlanModal";
+import { useFilePreview } from "./filePreview";
 import { useTaskIndex } from "./tasksContext";
 
 import "../styles/tasks.css";
@@ -187,6 +188,11 @@ function usedKeys(seg: ToolSegment, inp: Record<string, unknown>): string[] {
       return ["file_path", "old_string", "new_string", "replace_all"];
     case "Write":
       return ["file_path", "content"];
+    case "Read":
+    case "MultiEdit":
+      return ["file_path"];
+    case "NotebookEdit":
+      return ["notebook_path"];
     case "Bash":
       return ["command", "description"];
     case "TodoWrite":
@@ -268,6 +274,19 @@ function renderInput(seg: ToolSegment, inp: Record<string, unknown>, cwd?: strin
           <CopyPre copy={typeof inp.content === "string" ? inp.content : ""}>
             {typeof inp.content === "string" ? inp.content : ""}
           </CopyPre>
+        </>
+      );
+    case "Read":
+    case "MultiEdit":
+      return (
+        <>
+          <PathLabel value={inp.file_path} />
+        </>
+      );
+    case "NotebookEdit":
+      return (
+        <>
+          <PathLabel value={inp.notebook_path} />
         </>
       );
     case "Bash":
@@ -375,9 +394,26 @@ function PlanChipBody({ plan, savedTo }: { plan: string; savedTo?: string }) {
   );
 }
 
-function PathLabel({ value }: { value: unknown }) {
+/** The target path. A button that opens the file in the overlay when the chat
+ *  provides an opener; the plain label everywhere else. */
+export function PathLabel({ value }: { value: unknown }) {
   const s = text(value);
-  return s ? <div className="chip-label chip-label-path">{s}</div> : null;
+  const openPreview = useFilePreview();
+  if (!s) return null;
+  if (!openPreview) return <div className="chip-label chip-label-path">{s}</div>;
+  return (
+    <button
+      type="button"
+      className="chip-label chip-label-path is-link"
+      title="Preview this file"
+      onClick={(ev) => {
+        ev.stopPropagation();
+        openPreview(s);
+      }}
+    >
+      {s}
+    </button>
+  );
 }
 
 /** Renders a subagent's segments with the transcript's own renderer
@@ -390,18 +426,86 @@ export type NestedRenderer = (segments: Segment[], live: boolean) => React.React
  * status and usage, or a Monitor's "watching · 3 events". The one consumer of
  * the task index, so a task's progress re-renders this span and nothing else.
  */
-function ChipTaskInfo({ seg }: { seg: ToolSegment }) {
-  const index = useTaskIndex();
-  const m = subagentChipModel(seg, taskFor(seg, index));
-  const title = seg.orphan ? "" : m.title.replace(/^Subagent: /, "");
-  if (!title && !m.status && !m.usage && !m.monitor) return null;
+function ChipTaskInfo({ seg, m }: { seg: ToolSegment; m: SubagentChipModel }) {
+  const title = seg.orphan ? m.agentType : m.title.replace(/^Subagent: /, "");
+  if (!title && !m.status && !m.usage && !m.monitor && !m.model) return null;
   return (
     <span className="chip-task">
       {title && title !== "Subagent" ? <span className="chip-task-type">{title}</span> : null}
       {m.status ? <span className={"chip-task-status is-" + m.statusKey}>{m.status}</span> : null}
+      {m.model ? <span className="chip-task-meta">{m.model}</span> : null}
       {m.monitor ? <span className="chip-task-meta">{m.monitor}</span> : null}
       {m.usage ? <span className="chip-task-meta">{m.usage}</span> : null}
     </span>
+  );
+}
+
+/**
+ * THE CHIP'S HEADER. Only a task-linked chip reads the task index (through
+ * `LinkedChipHeader`): the orphan title, the subagent type, the model label and
+ * the "Started in an earlier turn" tooltip depend on the task's record, so a
+ * registry update re-renders those headers and not every chip (Bugbot, PR #1653).
+ * An unlinked chip has no record to look up and never subscribes.
+ */
+interface ChipHeaderProps {
+  seg: ToolSegment;
+  raw: string;
+  linked: boolean;
+  parts: ReturnType<typeof toolChipSummaryParts>;
+  full: string;
+  status: string;
+}
+
+function LinkedChipHeader(props: ChipHeaderProps) {
+  const taskIndex = useTaskIndex();
+  return <ChipHeaderView {...props} model={subagentChipModel(props.seg, taskFor(props.seg, taskIndex))} />;
+}
+
+function ChipHeader(props: ChipHeaderProps) {
+  if (props.linked) return <LinkedChipHeader {...props} />;
+  return <ChipHeaderView {...props} model={subagentChipModel(props.seg, null)} />;
+}
+
+function ChipHeaderView({
+  seg,
+  raw,
+  linked,
+  parts,
+  full,
+  status,
+  model,
+}: ChipHeaderProps & { model: SubagentChipModel }) {
+  const pretty = seg.orphan ? model.title : prettyToolName(raw);
+  return (
+      <CollapsibleTrigger
+        className="chip-summary"
+        {...(model.hint ? { title: model.hint } : pretty !== raw ? { title: raw } : {})}
+      >
+        <span className="chip-marker" aria-hidden="true">
+          ▶
+        </span>
+        <span className="chip-row">
+          {/* `is-` prefixed, and not the bare status word: `error` alone
+              collided with `.turn.error`'s red pill, which repainted a
+              one-character glyph as a badge. */}
+          <span className={"chip-status is-" + status}>{toolStatusGlyph(status)}</span>
+          <span className="chip-name">{pretty}</span>
+          {/* Two spans, not one string: `lead` keeps the row's fixed width and
+              `path` is the one item allowed to shrink, so it ellipsizes from
+              the LEFT and the filename survives. The <bdi> keeps the path's own
+              characters in logical order inside that rtl box. */}
+          <span
+            className={cn("chip-sub", parts.path && "has-path")}
+            {...(full ? { title: full } : {})}
+          >
+            <span className="chip-lead">{parts.lead}</span>
+            <span className="chip-path">
+              <bdi>{parts.path}</bdi>
+            </span>
+          </span>
+          {linked ? <ChipTaskInfo seg={seg} m={model} /> : null}
+        </span>
+      </CollapsibleTrigger>
   );
 }
 
@@ -424,7 +528,6 @@ export const ToolChip = memo(function ToolChip({ seg, cardKey, cwd, nested }: To
   const raw = String(seg.name || "tool");
   // A synthetic parent (its tool_use was before this window) has no input to
   // describe, only the subagent's rows: it says so instead of "Agent".
-  const pretty = seg.orphan ? "Subagent (started earlier)" : prettyToolName(raw);
   // Whether the header asks the task registry anything at all.
   const linked =
     !!seg.task_id || !!seg.orphan || (Array.isArray(seg.children) && seg.children.length > 0) ||
@@ -451,35 +554,7 @@ export const ToolChip = memo(function ToolChip({ seg, cardKey, cwd, nested }: To
           {chipWhen(seg.ts)}
         </span>
       ) : null}
-      <CollapsibleTrigger
-        className="chip-summary"
-        {...(pretty !== raw ? { title: raw } : {})}
-      >
-        <span className="chip-marker" aria-hidden="true">
-          ▶
-        </span>
-        <span className="chip-row">
-          {/* `is-` prefixed, and not the bare status word: `error` alone
-              collided with `.turn.error`'s red pill, which repainted a
-              one-character glyph as a badge. */}
-          <span className={"chip-status is-" + status}>{toolStatusGlyph(status)}</span>
-          <span className="chip-name">{pretty}</span>
-          {/* Two spans, not one string: `lead` keeps the row's fixed width and
-              `path` is the one item allowed to shrink, so it ellipsizes from
-              the LEFT and the filename survives. The <bdi> keeps the path's own
-              characters in logical order inside that rtl box. */}
-          <span
-            className={cn("chip-sub", parts.path && "has-path")}
-            {...(full ? { title: full } : {})}
-          >
-            <span className="chip-lead">{parts.lead}</span>
-            <span className="chip-path">
-              <bdi>{parts.path}</bdi>
-            </span>
-          </span>
-          {linked ? <ChipTaskInfo seg={seg} /> : null}
-        </span>
-      </CollapsibleTrigger>
+      <ChipHeader seg={seg} raw={raw} linked={linked} parts={parts} full={full} status={status} />
       <CollapsibleContent className="chip-body">
         <ChipBody seg={seg} cwd={cwd} {...(nested ? { nested } : {})} />
       </CollapsibleContent>

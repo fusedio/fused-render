@@ -71,7 +71,7 @@ def _rec(data, task_id):
 
 _KEYS = {"id", "description", "kind", "type", "subagent_type", "tool_use_id",
          "status", "started_at", "ended_at", "backgrounded", "usage", "error",
-         "summary", "events"}
+         "summary", "events", "isolation", "model", "effort"}
 
 
 def test_a_background_shell_runs_then_completes(agent, run_dir):
@@ -225,6 +225,8 @@ def test_the_old_flat_file_is_upgraded(agent, run_dir):
     rec = _rec(data, "t1")
     assert set(rec) == _KEYS
     assert rec["description"] == "sleep 30" and rec["status"] == "running"
+    assert rec["isolation"] == ""
+    assert rec["model"] == "" and rec["effort"] == ""
     assert data["activity"]["tasks"] == [{"id": "t1", "description": "sleep 30"}]
     stored = json.loads((run_dir / "bg_tasks.json").read_text())
     assert stored["tasks"]["t1"]["status"] == "running"
@@ -301,6 +303,34 @@ def test_task_output_tolerates_an_unknown_shape(agent, run_dir, monkeypatch):
 def test_task_output_passes_the_clis_refusal_through(agent, run_dir, monkeypatch):
     _fake_host(agent, monkeypatch, run_dir, RuntimeError("No task found with ID: b9"))
     assert agent._task_output("run", "b9") == {"error": "No task found with ID: b9"}
+
+
+# --------------------------------------------------------------- task_stop
+
+def test_task_stop_rejects_bad_ids_and_a_dead_host(agent, run_dir):
+    assert "error" in agent._task_stop("run", "b1")  # no live host
+    assert "error" in agent._task_stop("../x", "b1")
+    assert "error" in agent._task_stop("run", "")
+
+
+def test_task_stop_writes_a_stop_task_request(agent, run_dir, monkeypatch):
+    seen = _fake_host(agent, monkeypatch, run_dir, {})
+    res = agent.main("task_stop", run_id="run", task_id="b1")
+    assert res == {"ok": True}
+    assert seen == {"subtype": "stop_task", "task_id": "b1", "timeout": 10.0}
+
+
+def test_task_stop_passes_the_clis_refusal_through(agent, run_dir, monkeypatch):
+    _fake_host(agent, monkeypatch, run_dir, RuntimeError("No task found with ID: b9"))
+    assert agent._task_stop("run", "b9") == {"error": "No task found with ID: b9"}
+
+
+def test_task_stop_has_its_own_lane():
+    import importlib
+    pool = importlib.import_module("fused_render.claude_agent.pool")
+    assert pool.pool_for("task_stop") is pool.TASK_STOP_POOL
+    assert pool.pool_for("task_stop") is not pool.pool_for("task_output")
+    assert pool.budget("task_stop") == 15.0
 
 
 def test_await_control_response_reports_an_error_answer(agent, run_dir):
@@ -424,3 +454,13 @@ def test_history_marks_a_dead_runs_tasks_unknown(agent, run_dir, tmp_path, monke
     assert tasks[0]["status"] == "unknown" and tasks[0]["ended_at"] is None
     assert tasks[0]["started_at"] == 1000.0, "an upgraded record keeps a stable start"
     assert agent._history(str(target), "s")["tasks"][0]["started_at"] == 1000.0
+
+
+def test_an_agent_rows_model_and_effort_come_from_its_call(agent, run_dir):
+    _append(run_dir, [_tool("toolu_a", "Agent", {"description": "d", "model": "sonnet",
+                                                 "effort": "medium", "subagent_type": "Explore"}),
+                      _sys("task_started", task_id="a1", tool_use_id="toolu_a",
+                           description="d", is_backgrounded=True,
+                           task_type="local_agent")])
+    rec = _rec(agent._poll("run"), "a1")
+    assert rec["model"] == "sonnet" and rec["effort"] == "medium"

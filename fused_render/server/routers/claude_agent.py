@@ -88,6 +88,7 @@ ACTIONS: dict[str, str] = {
     "send": "_send",
     "commands": "_commands",
     "task_output": "_task_output",
+    "task_stop": "_task_stop",
 }
 
 #: The engine name the call log records for these routes. `/api/run` wrote

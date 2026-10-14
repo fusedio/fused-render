@@ -67,8 +67,14 @@ CONTROL_ACTIONS = frozenset({"cancel", "decide", "app_state"})
 TASK_OUTPUT_POOL = ThreadPoolExecutor(max_workers=2,
                                       thread_name_prefix="claude-agent-out")
 
+#: `task_stop` waits on a control response too, so it gets its own small lane
+#: rather than queueing behind a few "Output" clicks.
+TASK_STOP_POOL = ThreadPoolExecutor(max_workers=2,
+                                    thread_name_prefix="claude-agent-stop")
+
 #: Actions with a lane of their own, beside the control lane.
-SIDE_POOLS: dict[str, ThreadPoolExecutor] = {"task_output": TASK_OUTPUT_POOL}
+SIDE_POOLS: dict[str, ThreadPoolExecutor] = {"task_output": TASK_OUTPUT_POOL,
+                                              "task_stop": TASK_STOP_POOL}
 
 
 def pool_for(action: str) -> ThreadPoolExecutor:
@@ -96,6 +102,7 @@ BUDGETS_S: dict[str, float] = {
     "cancel": 15.0,
     # SPEC T-3: a 10 s control-response wait plus the request write.
     "task_output": 15.0,
+    "task_stop": 15.0,
     "commands": 30.0,
 }
 

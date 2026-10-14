@@ -50,6 +50,10 @@ export interface CardStackProps {
    *  a resolved card sits after the tool chip it answered, so a turn with three
    *  approvals has three stacks in three places rather than one at its tail. */
   ids?: string[];
+  /** `placement="open"` only: ids `parkPlan` filed inline after their chip —
+   *  answered cards that must not ALSO draw in the bottom stack, whether or not
+   *  they carry a `parkedIn`. */
+  placed?: ReadonlySet<string>;
   liveMode?: PermissionMode;
   /** The picker's `permission` param, for a plan's landing mode. */
   pickerMode?: string;
@@ -64,6 +68,7 @@ export function CardStack({
   placement,
   turnKey,
   ids,
+  placed,
   liveMode,
   pickerMode,
   actions,
@@ -77,8 +82,10 @@ export function CardStack({
     !p || !p.id || (only && !only.has(p.id))
       ? false
       : placement === "open"
-        ? !p.decision || !p.parkedIn
-        : !!p.decision && p.parkedIn === turnKey,
+        ? !p.decision || (!p.parkedIn && !placed?.has(p.id))
+        : // With `ids`, `parkPlan` already decided which turn and position;
+          // trust it over `parkedIn`, which can name a different turn.
+          !!p.decision && (only ? true : p.parkedIn === turnKey),
   );
   if (!shown.length) return null;
   return (

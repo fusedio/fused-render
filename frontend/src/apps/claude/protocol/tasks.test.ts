@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+  agentModelLabel,
   durationWords,
   elapsedLabel,
   endActiveTasks,
@@ -25,6 +26,7 @@ function rec(over: Partial<TaskRecord>): TaskRecord {
     kind: "other",
     type: "",
     subagent_type: "",
+    isolation: "",
     tool_use_id: "",
     status: "running",
     started_at: 100,
@@ -43,16 +45,17 @@ function tool(over: Partial<ToolSegment>): ToolSegment {
 }
 
 describe("summarizeTasks", () => {
-  test("running by kind, then ended by outcome", () => {
+  test("running by kind; done is not counted", () => {
     const line = summarizeTasks([
       rec({ id: "a", kind: "agent" }),
       rec({ id: "b", kind: "shell" }),
+      rec({ id: "b2", kind: "shell" }),
       rec({ id: "c", kind: "monitor" }),
       rec({ id: "d", kind: "shell", status: "completed" }),
     ]);
-    expect(line).toBe("3 running (1 agent, 1 shell, 1 monitor) · 1 done");
+    expect(line).toBe("1 agent · 2 shells · 1 monitor running");
   });
-  test("plurals, and failures are never folded into done", () => {
+  test("one kind running; failures stay, done and stopped are dropped", () => {
     const line = summarizeTasks([
       rec({ id: "a", kind: "agent" }),
       rec({ id: "b", kind: "agent", status: "pending" }),
@@ -61,10 +64,12 @@ describe("summarizeTasks", () => {
       rec({ id: "e", kind: "agent", status: "completed" }),
       rec({ id: "f", kind: "agent", status: "completed" }),
     ]);
-    expect(line).toBe("2 running (2 agents) · 2 done · 1 failed · 1 stopped");
+    expect(line).toBe("2 agents running · 1 failed");
+    expect(summarizeTasks([rec({ kind: "shell" }), rec({ id: "s2", kind: "shell" })])).toBe("2 shells running");
   });
   test("nothing running", () => {
-    expect(summarizeTasks([rec({ status: "completed" })])).toBe("1 done");
+    expect(summarizeTasks([rec({ status: "completed" })])).toBe("");
+    expect(summarizeTasks([rec({ status: "killed" }), rec({ id: "f", status: "failed" })])).toBe("1 failed");
     expect(summarizeTasks([])).toBe("");
   });
 });
@@ -80,6 +85,17 @@ describe("sortTasks", () => {
       rec({ id: "failed", status: "failed", started_at: 0 }),
     ]);
     expect(out.map((t) => t.id)).toEqual(["paused", "run-tie-1", "run-tie-2", "run-late", "failed", "ended-early"]);
+  });
+  test("agents, then shells, then other kinds; started_at within a kind", () => {
+    const out = sortTasks([
+      rec({ id: "other", kind: "other", started_at: 1 }),
+      rec({ id: "shell-1", kind: "shell", started_at: 2 }),
+      rec({ id: "mon", kind: "monitor", started_at: 3 }),
+      rec({ id: "agent-late", kind: "agent", started_at: 9 }),
+      rec({ id: "agent-early", kind: "agent", started_at: 4 }),
+      rec({ id: "shell-0", kind: "shell", started_at: 1 }),
+    ]);
+    expect(out.map((t) => t.id)).toEqual(["agent-early", "agent-late", "shell-0", "shell-1", "mon", "other"]);
   });
   test("does not mutate the input", () => {
     const input = [rec({ id: "x", status: "completed" }), rec({ id: "y" })];
@@ -111,6 +127,29 @@ describe("elapsed / labels", () => {
   });
 });
 
+describe("agentModelLabel", () => {
+  test("short names for aliases and full ids; effort appended", () => {
+    expect(agentModelLabel({ model: "sonnet", effort: "medium" })).toBe("Sonnet · medium");
+    expect(agentModelLabel({ model: "claude-sonnet-5-5", effort: "" })).toBe("Sonnet");
+    expect(agentModelLabel({ model: "claude-opus-4-1" })).toBe("Opus");
+    expect(agentModelLabel({ model: "haiku" })).toBe("Haiku");
+    expect(agentModelLabel({ model: "fable", effort: "max" })).toBe("Fable · max");
+    expect(agentModelLabel({ model: "gpt-x" })).toBe("gpt-x");
+  });
+  test("no model: the parent's, marked inherited", () => {
+    expect(agentModelLabel({ model: "", effort: "" }, "opus")).toBe("Opus (inherited)");
+    expect(agentModelLabel({ model: "", effort: "high" }, "opus")).toBe("Opus (inherited) · high");
+    expect(agentModelLabel({ model: "" }, "")).toBe("");
+    expect(agentModelLabel({}, undefined)).toBe("");
+  });
+  test("taskVerb names an explicit model for one agent only", () => {
+    const a = rec({ id: "a", kind: "agent", subagent_type: "Explore", model: "sonnet", effort: "medium" });
+    expect(taskVerb([a])).toBe("Running Explore subagent (Sonnet · medium)");
+    expect(taskVerb([rec({ id: "b", kind: "agent" })])).toBe("Running a subagent");
+    expect(taskVerb([a, rec({ id: "c", kind: "agent", model: "haiku" })])).toBe("Running 2 subagents: 1 Explore, 1 other");
+  });
+});
+
 describe("taskVerb", () => {
   test("agents, then monitors, then shells", () => {
     const shell = rec({ id: "s", kind: "shell" });
@@ -121,6 +160,16 @@ describe("taskVerb", () => {
     expect(taskVerb([shell, mon])).toBe("Watching a monitor");
     expect(taskVerb([shell])).toBe("Running a background command");
     expect(taskVerb([shell, rec({ id: "s2", kind: "shell" })])).toBe("Running 2 background commands");
+  });
+  test("typed subagents are named, grouped by type", () => {
+    const a = (id: string, t = "") => rec({ id, kind: "agent", subagent_type: t });
+    expect(taskVerb([a("1", "Explore")])).toBe("Running Explore subagent");
+    expect(taskVerb([a("1", "Explore"), a("2", "Explore")])).toBe("Running 2 subagents: 2 Explore");
+    expect(taskVerb([a("1", "Explore"), a("2", "general-purpose"), a("3", "Explore")])).toBe(
+      "Running 3 subagents: 2 Explore, 1 general-purpose",
+    );
+    expect(taskVerb([a("1", "Explore"), a("2")])).toBe("Running 2 subagents: 1 Explore, 1 other");
+    expect(taskVerb([a("1"), a("2")])).toBe("Running 2 subagents");
   });
   test("ended and unnamed tasks say nothing", () => {
     expect(taskVerb([rec({ kind: "agent", status: "completed" })])).toBe("");
@@ -143,6 +192,9 @@ describe("chip expand model", () => {
       statusKey: "running",
       usage: "2.0k tokens · 3 tool uses",
       monitor: "",
+      agentType: "",
+      model: "",
+      hint: "",
     });
   });
   test("no children → not expandable; type falls back to the tool input", () => {
@@ -155,6 +207,31 @@ describe("chip expand model", () => {
     const m = subagentChipModel(tool({ orphan: true, children: [child] }), null);
     expect(m.title).toBe("Subagent (started earlier)");
     expect(m.expandable).toBe(true);
+  });
+  test("an orphan with a description is titled by it, with type, model and hint", () => {
+    const r = rec({ kind: "agent", description: "Fix the build", subagent_type: "Explore", model: "sonnet", effort: "medium" });
+    const m = subagentChipModel(tool({ orphan: true, children: [child] }), r);
+    expect(m.title).toBe("Fix the build");
+    expect(m.agentType).toBe("Explore");
+    expect(m.model).toBe("Sonnet · medium");
+    expect(m.hint).toBe("Started in an earlier turn");
+  });
+  test("an orphan with only a type is titled by it", () => {
+    const m = subagentChipModel(tool({ orphan: true, children: [child] }), rec({ kind: "agent", subagent_type: "Explore" }));
+    expect(m.title).toBe("Subagent: Explore");
+    expect(m.agentType).toBe("");
+    expect(m.hint).toBe("Started in an earlier turn");
+  });
+  test("an orphan with no record keeps the old text and no extras", () => {
+    const m = subagentChipModel(tool({ orphan: true, children: [child] }), null);
+    expect(m.title).toBe("Subagent (started earlier)");
+    expect(m.model).toBe("");
+    expect(m.hint).toBe("");
+  });
+  test("a non-orphan agent chip shows the model too", () => {
+    const m = subagentChipModel(tool({ children: [child] }), rec({ kind: "agent", model: "opus", effort: "high" }));
+    expect(m.model).toBe("Opus · high");
+    expect(m.hint).toBe("");
   });
   test("a plain tool has no header extras", () => {
     const m = subagentChipModel(tool({ name: "Read", input: { file_path: "/a" } }), null);
@@ -174,7 +251,7 @@ describe("review #1: unknown (the owning run died)", () => {
   test("labelled ended, counted with the ended group", () => {
     expect(statusLabel("unknown")).toBe("ended");
     expect(summarizeTasks([rec({ id: "a" }), rec({ id: "u", status: "unknown" }), rec({ id: "d", status: "completed" })])).toBe(
-      "1 running (1 task) · 1 done · 1 ended",
+      "1 task running",
     );
   });
   test("no clock against now when not live and ended_at is null", () => {
@@ -209,7 +286,7 @@ describe("review #1: unknown (the owning run died)", () => {
 describe("review #7: paused", () => {
   test("its own word in the summary, not running", () => {
     expect(summarizeTasks([rec({ id: "a", kind: "agent" }), rec({ id: "p", kind: "shell", status: "paused" })])).toBe(
-      "1 running (1 agent) · 1 paused",
+      "1 agent running · 1 paused",
     );
     expect(isLive("paused")).toBe(false);
   });

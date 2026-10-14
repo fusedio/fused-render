@@ -2100,10 +2100,9 @@ export function ComposerCard({
         {/* WHAT THE NEXT TURN RUNS WITH, READABLE WHILE THE CARD IS FOLDED
             (Akshil, 2026-10-01): the pills live in the shelf, and the shelf is
             gone while idle, so a folded card said nothing about model or
-            effort. One dim line hung off the card's top-right edge — INSIDE the
-            form, because the form is the one box whose top edge is the card's
-            (the chip tray and the context line are in-flow siblings above it)
-            and it is already `position: relative` for Send. It fades as the
+            effort. One dim line INSIDE the card, immediately left of Send and
+            centred on it (the form is `position: relative` and Send is pinned
+            to its corner, so the label is seated against Send). It fades as the
             shelf opens and the pills take over saying the same thing, and it
             says nothing while the pills are still settling. */}
         {variant === "chat" ? (

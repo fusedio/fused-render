@@ -141,7 +141,12 @@ import { useSlashCommands } from "./ui/useSlashCommands";
 import { planLocalCommand } from "./ui/local-commands";
 import { notify } from "@platform/lib/notifications";
 import { WorktreeMenu, paneChatUrl, type WorktreeRequest } from "./ui";
+import { WorktreeHintChip, visibleWorktreeHint } from "./ui/WorktreeHintChip";
 import { TasksContext, TasksPanel, tasksPanelScope, useTasksOpen } from "./ui";
+import { FilePreviewProvider } from "./ui/filePreview";
+import { SessionFiles } from "./ui/SessionFiles";
+import { DockRow } from "./ui/DockRow";
+import { touchedFiles } from "./protocol/filePaths";
 import { taskIndex } from "./protocol/tasks";
 import { recapAnchor } from "./protocol/recap";
 import {
@@ -4310,6 +4315,8 @@ function ChatBody(props: ChatBodyProps) {
     inChat,
   );
   artTick.current = art.poll;
+  // The files this chat wrote or edited, for the "Files (N)" list.
+  const sessionFiles = useMemo(() => touchedFiles(state.turns), [state.turns]);
   const [snapNonce, setSnapNonce] = useState(0);
   snapInvalidate.current = () => setSnapNonce((n) => n + 1);
 
@@ -4713,6 +4720,7 @@ function ChatBody(props: ChatBodyProps) {
 
   return (
    <CardPolicyProvider value={cardPolicy}>
+   <FilePreviewProvider cwd={chatWorkdir(file, pane.noun)} enabled={inChat} sessionKey={state.sessionId}>
     <div
       ref={rootRef}
       className={rootClass(
@@ -4952,6 +4960,9 @@ function ChatBody(props: ChatBodyProps) {
             {!compact && !peek ? (
               <Topbar
                 worktree={worktreeMenu}
+                worktreeHint={
+                  <WorktreeHintChip hint={visibleWorktreeHint(state.worktreeHint, state.tasks)} currentPath={chatWorkdir(file, pane.noun) ?? undefined} />
+                }
                 sessionId={state.sessionId ?? ""}
                 subtitle={name}
                 {...(taskId ? { taskId } : {})}
@@ -5078,12 +5089,22 @@ function ChatBody(props: ChatBodyProps) {
             {/* THE RUN'S BACKGROUND TASKS (SPEC T-5), between the transcript and
                 the box: one line until opened. Not in the compact cut — a tile
                 is read, and its chips already say what is running. */}
+            {/* Files (N) shares this row: a pill at the right, its list a popover. */}
             {!compact ? (
-              <TasksPanel
-                tasks={state.tasks}
-                runId={state.tasksRunId}
-                open={tasksOpen}
-                onToggle={toggleTasksPanel}
+              <DockRow
+                tasks={
+                  state.tasks.length || tasksOpen ? (
+                    <TasksPanel
+                      tasks={state.tasks}
+                      runId={state.tasksRunId}
+                      sessionId={state.sessionId ?? null}
+                      open={tasksOpen}
+                      onToggle={toggleTasksPanel}
+                      parentModel={defaults.model}
+                    />
+                  ) : null
+                }
+                files={sessionFiles.length ? <SessionFiles files={sessionFiles} /> : null}
               />
             ) : null}
             {/* …AND ONE SUMMARY OVER THE BOX. The rows are in a transcript that
@@ -5167,6 +5188,7 @@ function ChatBody(props: ChatBodyProps) {
         onDiscard={onDiscardShot}
       />
     </div>
+   </FilePreviewProvider>
    </CardPolicyProvider>
   );
 }

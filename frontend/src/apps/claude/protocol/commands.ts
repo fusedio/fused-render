@@ -37,7 +37,7 @@ export const LOCAL_COMMANDS: readonly LocalCommand[] = [
   { name: "model", description: "Set the model for the next turn", hint: "<name>" },
   { name: "effort", description: "Set the effort for the next turn", hint: "<low|medium|high|max>" },
   { name: "worktree", description: "Switch to or create a git worktree", hint: "[name]" },
-  { name: "tasks", description: "Show background tasks", hint: "" },
+  { name: "tasks", description: "Show agents and shells", hint: "" },
 ];
 
 const LOCAL_NAMES = new Set(LOCAL_COMMANDS.map((c) => c.name));

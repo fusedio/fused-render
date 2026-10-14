@@ -849,6 +849,47 @@ def _munge(path: str) -> str:
     return re.sub(r"[^A-Za-z0-9]", "-", os.path.abspath(path))
 
 
+def _session_transcript_path(workdir: str, session_id: str) -> str:
+    """Where this session's transcript is: `<PROJECTS>/<munge(workdir)>/<sid>.jsonl`,
+    unless the CLI MOVED it. Its EnterWorktree tool relocates the file into the
+    worktree's own project dir (`<root>/.claude/worktrees/<name>` munges to
+    `<munge(root)>--claude-worktrees-<name>`) and leaves nothing behind, so a
+    read from the original folder alone finds no conversation. The original
+    wins when it exists; else the newest `<sid>.jsonl` under a worktrees
+    sibling of the workdir OR OF ANY ANCESTOR (the worktree lives under the
+    repo root, and the chat may be in a subfolder or on a file); else the original (missing) path, so a caller's not-found
+    handling is unchanged. `session_id` is `_bad_id`-checked by callers."""
+    munged = _munge(workdir)
+    mine = os.path.join(PROJECTS, munged, session_id + ".jsonl")
+    if os.path.isfile(mine):
+        return mine
+    prefixes = []
+    a = os.path.abspath(workdir)
+    while True:
+        prefixes.append(_munge(a) + "--claude-worktrees-")
+        parent = os.path.dirname(a)
+        if parent == a:
+            break
+        a = parent
+    prefix = tuple(prefixes)
+    best, best_mtime = "", -1.0
+    try:
+        with os.scandir(PROJECTS) as it:
+            for ent in it:
+                if not ent.name.startswith(prefix):
+                    continue
+                cand = os.path.join(ent.path, session_id + ".jsonl")
+                try:
+                    mtime = os.stat(cand).st_mtime
+                except OSError:
+                    continue
+                if mtime > best_mtime and os.path.isfile(cand):
+                    best, best_mtime = cand, mtime
+    except OSError:
+        pass
+    return best or mine
+
+
 def _terminal_command(file: str, session_id: str = "") -> dict:
     """The shell command that continues (or starts) this target's session in a
     real terminal, for the page's "in terminal" menu item to put on the
@@ -2312,6 +2353,42 @@ def _with_terminal_hint(message: str, raw) -> str:
     return message[:pos] + block + "\n\n" + message[pos:]
 
 
+_SLASH_COMMAND = re.compile(r"^/[A-Za-z][\w:.-]*(\s|$)")
+
+
+def _is_slash_command(words: str) -> bool:
+    """True when the user's own words are a CLI slash command (`/compact`,
+    `/plugin:skill args`). The token may hold no further `/`, so a path like
+    `/Users/x` is not one, nor is prose that opens with a root path
+    (`/tmp is filling up`)."""
+    text = (words or "").strip()
+    if not _SLASH_COMMAND.match(text):
+        return False
+    name = text.split(None, 1)[0][1:]
+    return not os.path.exists("/" + name)
+
+
+def _compose_turn(message: str, raw_hint) -> str:
+    """The final user-turn text: `message` plus the terminal hint, except that
+    a slash command goes out BARE.
+
+    The CLI recognizes a command only at the very start of the turn's text, so
+    any machinery block in front (app state, pane-shot, annotations, the
+    terminal hint) made `/compact` plain text for the model and it did nothing.
+    The leading blocks are peeled and dropped for that one turn; readers
+    (`_pane_file`, the Tasks title strip) already tolerate their absence."""
+    pos = 0
+    while True:
+        match = _LEADING_MACHINERY.match(message, pos)
+        if not match:
+            break
+        pos = match.end()
+    words = message[pos:]
+    if _is_slash_command(words):
+        return words
+    return _with_terminal_hint(message, raw_hint)
+
+
 def _app_state_requests(run_dir: str) -> list:
     """The app-state requests still waiting for an answer.
 
@@ -2909,7 +2986,7 @@ def _start(file: str, message: str, session_id: str, model: str,
     # (a later follow-up) writes the exact same shape into the exact same
     # directory, and the host does not know or care which one started the
     # session versus which one rode in on the CLI's own queue mid-turn.
-    _write_inbox_entry(run_dir, _with_terminal_hint(message, terminal_hint))
+    _write_inbox_entry(run_dir, _compose_turn(message, terminal_hint))
 
     # The session host owns the CLI's stdin pipe for the life of the session
     # — see session_host.py's own module docstring for the fork-safety and
@@ -3763,7 +3840,7 @@ def _send(run_id: str, message: str, read_dirs: str = "", model: str = "",
         pending_offset = 0
     with open(os.path.join(run_dir, "pending_echo"), "w", encoding="utf-8") as f:
         f.write(str(pending_offset))
-    _write_inbox_entry(run_dir, _with_terminal_hint(message, terminal_hint))
+    _write_inbox_entry(run_dir, _compose_turn(message, terminal_hint))
     return {"sent": True}
 
 
@@ -4958,6 +5035,187 @@ def _tool_detail(name, inp) -> str:
     return d if len(d) <= 80 else d[:77] + "…"
 
 
+_AGENT_SCAN_KEYS = ("description", "subagent_type", "model", "effort")
+_AGENT_FIELD_RES = {
+    k: re.compile(r'"%s"\s*:\s*"((?:[^"\\]|\\.)*)"' % k)
+    for k in _AGENT_SCAN_KEYS}
+_AGENT_SCAN_OVERLAP = 256
+
+
+_AGENT_OPENER_RES = {
+    k: re.compile(r'"%s"\s*:\s*"' % k) for k in _AGENT_SCAN_KEYS}
+
+
+def _scan_agent_fields(buf: str, frag: str, found: dict) -> str:
+    """Append `frag` to `buf`, fill `found` with the complete `description` /
+    `subagent_type` string values of a still-streaming Agent/Task input, and
+    return the BOUNDED text to carry to the next fragment: from the earliest
+    still-unclosed opener (`"description": "` whose value has not ended yet),
+    else only the last `_AGENT_SCAN_OVERLAP` bytes, so a key split across
+    chunks still matches. A long brief is never re-copied whole."""
+    buf += frag
+    keep = None
+    for key, rx in _AGENT_FIELD_RES.items():
+        if key in found:
+            continue
+        m = rx.search(buf)
+        if m:
+            try:
+                found[key] = json.loads('"' + m.group(1) + '"')
+            except ValueError:
+                pass
+            continue
+        last = None
+        for om in _AGENT_OPENER_RES[key].finditer(buf):
+            last = om
+        if last is not None and (keep is None or last.start() < keep):
+            keep = last.start()
+    if keep is not None:
+        return buf[keep:]
+    return buf[-_AGENT_SCAN_OVERLAP:]
+
+
+def _worktree_hint(name, inp, cwd: str = "") -> dict | None:
+    """What a finalized tool call says about work moving into a git worktree,
+    or None. `via` is "bash" (a `git worktree add`), "enter" (EnterWorktree)
+    or "agent" (an Agent/Task started with `isolation: "worktree"`)."""
+    if not isinstance(inp, dict):
+        return None
+    name = str(name or "")
+    if name == "Bash":
+        return _bash_worktree_hint(str(inp.get("command") or ""), cwd)
+    if name == "ExitWorktree":
+        return dict(_WT_EXIT)
+    if name == "EnterWorktree":
+        return {"path": str(inp.get("path") or inp.get("name") or ""),
+                "branch": "", "via": "enter"}
+    if name in ("Agent", "Task") and inp.get("isolation") == "worktree":
+        return {"path": "", "branch": "", "via": "agent",
+                "label": str(inp.get("description")
+                             or inp.get("subagent_type") or "")}
+    return None
+
+
+_WT_BRANCH_FLAGS = ("-b", "-B", "--orphan")
+#: Marker for "the work left the worktree" (ExitWorktree, `git worktree
+#: remove` / `prune`): the page drops its hint on it.
+_WT_EXIT = {"via": "exit", "path": "", "branch": ""}
+_ENV_ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+
+
+def _git_words(words: list) -> list | None:
+    """`words` from the `git` command word on, or None when the segment's
+    command is not git. Skips leading `NAME=value` assignments and one
+    `sudo` / `env` / `command` prefix (with its own assignments)."""
+    i = 0
+    while i < len(words) and _ENV_ASSIGN.match(words[i]):
+        i += 1
+    if i < len(words) and words[i] in ("sudo", "env", "command"):
+        i += 1
+        while i < len(words) and _ENV_ASSIGN.match(words[i]):
+            i += 1
+    if i < len(words) and words[i] == "git":
+        return words[i:]
+    return None
+
+
+#: Tokens made only of these chars split a command into segments. Newline is a
+#: separator token (not whitespace) so `a\ngit worktree add x` splits too.
+_SHELL_SEP_CHARS = frozenset(";&|\n()")
+
+
+def _shell_segments(command: str) -> list:
+    """`command` as a list of word lists, one per simple command. Tokenized
+    FIRST (so a quoted `;` or `&&` is just a word) and split on the operator
+    tokens after. [] when the command does not tokenize."""
+    try:
+        lex = shlex.shlex(command, posix=True, punctuation_chars=";&|\n()<>")
+        lex.whitespace_split = True
+        lex.whitespace = " \t\r"
+        tokens = list(lex)
+    except ValueError:
+        return []
+    segs, cur = [], []
+    for tok in tokens:
+        if tok and all(ch in _SHELL_SEP_CHARS for ch in tok):
+            if cur:
+                segs.append(cur)
+            cur = []
+        else:
+            cur.append(tok)
+    if cur:
+        segs.append(cur)
+    return segs
+
+
+def _wt_resolve(path: str, base: str) -> str:
+    """`path` as an absolute normalized path: absolute stays, relative joins
+    `base`. With no usable base a relative path is returned as typed."""
+    if os.path.isabs(path):
+        return os.path.normpath(path)
+    if base and os.path.isabs(base):
+        return os.path.normpath(os.path.join(base, path))
+    return path
+
+
+def _bash_worktree_hint(command: str, cwd: str = "") -> dict | None:
+    for words in _shell_segments(command):
+        words = _git_words(words)
+        if words is None:
+            continue
+        i = 1
+        base = cwd
+        while i < len(words) and words[i] != "worktree":
+            if words[i] == "-C" and i + 1 < len(words):
+                base = _wt_resolve(words[i + 1], base)
+            if words[i] in ("-C", "-c", "--git-dir", "--work-tree"):
+                i += 1
+            i += 1
+        if i + 1 >= len(words) or words[i] != "worktree":
+            continue
+        if words[i + 1] == "remove":
+            marker = dict(_WT_EXIT)
+            target = next((w for w in words[i + 2:] if not w.startswith("-")), "")
+            if target:
+                resolved = _wt_resolve(target, base)
+                if os.path.isabs(resolved):
+                    marker["removed"] = resolved
+            return marker
+        if words[i + 1] != "add":
+            continue
+        args, branch, path, j = words[i + 2:], "", "", 0
+        while j < len(args):
+            a = args[j]
+            if a in _WT_BRANCH_FLAGS and j + 1 < len(args):
+                branch = args[j + 1]
+                j += 2
+            elif a == "--reason" and j + 1 < len(args):
+                j += 2
+            elif a.startswith("-"):
+                j += 1
+            else:
+                path = path or a  # later positionals are the commit-ish
+                j += 1
+        if path:
+            return {"path": _wt_resolve(path, base), "branch": branch,
+                    "via": "bash"}
+    return None
+
+
+def _next_worktree_hint(cur: dict | None, hint: dict) -> dict | None:
+    """The hint state after `hint` lands on `cur`. An exit marker clears it,
+    except `git worktree remove <other path>`: removing a checkout that is not
+    the one the hint names leaves the hint standing."""
+    if hint.get("via") != "exit":
+        return hint
+    removed = hint.get("removed")
+    if removed and cur and cur.get("via") == "bash" \
+            and os.path.isabs(str(cur.get("path") or "")) \
+            and cur["path"] != removed:
+        return cur
+    return None
+
+
 def _read_poll_cursor(run_dir: str, size: int) -> int:
     """The byte offset in `out.jsonl` that `_poll` last proved safe to resume
     from — see the advance logic at the bottom of `_read_current_turn` for
@@ -5037,8 +5295,9 @@ def _task_kind(rec: dict, tool_name: str = "") -> str:
 def _new_task_record(task_id: str, description: str = "",
                      started_at: float | None = None) -> dict:
     return {"id": task_id, "description": description, "kind": "other",
-            "type": "", "subagent_type": "", "tool_use_id": "",
-            "status": "running",
+            "type": "", "subagent_type": "", "isolation": "",
+            "model": "", "effort": "",
+            "tool_use_id": "", "status": "running",
             "started_at": started_at if started_at is not None else time.time(),
             "ended_at": None, "backgrounded": False, "usage": None,
             "error": "", "summary": "", "events": 0}
@@ -5072,8 +5331,8 @@ def _upgrade_task_record(task_id: str, value) -> dict | None:
                            value.get("started_at")
                            if isinstance(value.get("started_at"), (int, float))
                            else None)
-    for key in ("kind", "type", "subagent_type", "tool_use_id", "error",
-                "summary"):
+    for key in ("kind", "type", "subagent_type", "isolation", "model",
+                "effort", "tool_use_id", "error", "summary"):
         if isinstance(value.get(key), str):
             rec[key] = value[key]
     rec["status"] = _task_status(value.get("status"))
@@ -5304,6 +5563,13 @@ def _apply_task_row(registry: dict, row: dict, tool_names: dict,
                 "subagent_type")
         if subagent:
             rec["subagent_type"] = str(subagent)
+        if tool_names.get(rec["tool_use_id"]) in ("Agent", "Task"):
+            t_inp = tool_inputs.get(rec["tool_use_id"]) or {}
+            if t_inp.get("isolation") == "worktree":
+                rec["isolation"] = "worktree"
+            for key in ("model", "effort"):
+                if isinstance(t_inp.get(key), str):
+                    rec[key] = t_inp[key]
         if "is_backgrounded" in row:
             rec["backgrounded"] = bool(row.get("is_backgrounded"))
         _task_end(rec, "running", now)
@@ -5741,6 +6007,37 @@ def _task_output(run_id: str, task_id: str) -> dict:
     return {"output": output, "status": status, "truncated": truncated}
 
 
+def _task_stop(run_id: str, task_id: str) -> dict:
+    """Stop a running task: a `stop_task` control request to the live session
+    host (10 s). `{"ok": True}`, or `{"error"}` (no live host, the CLI's
+    refusal for an unknown id, or no answer)."""
+    if _bad_id(run_id):
+        return {"error": "unknown run_id"}
+    task_id = str(task_id or "")
+    if not task_id or len(task_id) > 200:
+        return {"error": "missing task_id"}
+    run_dir = os.path.join(RUNS, run_id)
+    if not os.path.isdir(run_dir):
+        return {"error": "unknown run_id"}
+    if not _host_alive(run_dir):
+        return {"error": "no live session"}
+    try:
+        start_offset = os.path.getsize(os.path.join(run_dir, "out.jsonl"))
+    except OSError:
+        start_offset = 0
+    try:
+        request_id = _write_control_request(run_dir, "stop_task",
+                                            task_id=task_id)
+    except OSError as exc:
+        return {"error": f"could not reach the session: {exc}"}
+    refused = []
+    resp = _await_control_response(run_dir, request_id, timeout=10.0,
+                                   start_offset=start_offset, errors=refused)
+    if resp is None:
+        return {"error": refused[0] if refused else "the session did not answer"}
+    return {"ok": True}
+
+
 def _starts_new_turn(row: dict) -> bool:
     """Whether `row` is the CLI's own echo (`--replay-user-messages`) of a
     message `_write_inbox_entry` put on the wire — the one row shape that
@@ -6161,6 +6458,18 @@ def _cancelled_marker_state(run_dir: str, cursor: int) -> bool:
     return False
 
 
+def _run_workdir(run_dir: str, file: str = "") -> str:
+    """The session's working directory for a run: its recorded target
+    (`meta.json` `file`), else the polling page's `file`; "" when neither."""
+    try:
+        with open(os.path.join(run_dir, "meta.json"), encoding="utf-8") as fh:
+            target = json.load(fh).get("file", "")
+    except (OSError, ValueError, AttributeError):
+        target = ""
+    target = target or file
+    return _workdir(target) if target else ""
+
+
 def _poll(run_id: str, file: str = "", app_reads: bool = False,
           inbox: bool = True) -> dict:
     run_dir = os.path.join(RUNS, run_id)
@@ -6260,6 +6569,11 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
     tools_open = {}        # tool_use id -> {"id", "name", "detail"}
     tool_input_bytes = 0   # input_json_delta bytes streamed for the newest block
     tool_inputs = {}       # tool_use id -> finalized input (from `assistant` rows)
+    streaming_tid = ""     # tool_use id of the block whose input is streaming
+    stream_bufs = {}       # Agent/Task id -> partial_json so far
+    stream_found = {}      # Agent/Task id -> {"description"/"subagent_type": str}
+    worktree_hint = None   # latest `_worktree_hint` over finalized inputs
+    wt_cwd = _run_workdir(run_dir, file)
     thinking_tokens = 0    # CLI's running estimate for the message in flight
     hooks_open = {}        # hook_id -> hook_name, started and not yet responded
     # Seeded from what the last poll persisted (see `_write_bg_tasks`), not
@@ -6366,9 +6680,28 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
                         and blk.get("id"):
                     tool_inputs[blk["id"]] = blk.get("input") or {}
                     tool_names[blk["id"]] = str(blk.get("name") or "")
+                    hint = _worktree_hint(blk.get("name"), tool_inputs[blk["id"]],
+                                          wt_cwd)
+                    if hint is not None:
+                        if hint["via"] == "exit":
+                            # Stays a marker unless this window can see the
+                            # hint is for another checkout; the page makes the
+                            # same comparison for state this window cannot see.
+                            kept = _next_worktree_hint(worktree_hint, hint)
+                            worktree_hint = kept if kept is not None else hint
+                        else:
+                            worktree_hint = hint
                     if blk["id"] in tools_open:
                         tools_open[blk["id"]]["detail"] = _tool_detail(
                             blk.get("name"), tool_inputs[blk["id"]])
+                        if blk.get("name") in ("Agent", "Task"):
+                            tools_open[blk["id"]]["streaming"] = False
+                            tools_open[blk["id"]]["subagent_type"] = str(
+                                tool_inputs[blk["id"]].get("subagent_type") or "")
+                            for key in ("model", "effort"):
+                                v = tool_inputs[blk["id"]].get(key)
+                                if isinstance(v, str) and v:
+                                    tools_open[blk["id"]][key] = v
         elif t == "user":
             # The tool's result went back in. From here until `status:
             # requesting` (or the next delta) the run is packing the result
@@ -6404,7 +6737,25 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
                 elif delta.get("type") == "thinking_delta":
                     phase = "thinking"
                 elif delta.get("type") == "input_json_delta":
-                    tool_input_bytes += len(delta.get("partial_json") or "")
+                    frag = delta.get("partial_json") or ""
+                    tool_input_bytes += len(frag)
+                    sid = streaming_tid
+                    # Optional model/effort keep the scan alive only until the
+                    # finalized input lands (`streaming` False); the buffer is
+                    # bounded either way.
+                    if frag and sid in stream_bufs and sid in tools_open \
+                            and tools_open[sid].get("streaming"):
+                        found = stream_found[sid]
+                        stream_bufs[sid] = _scan_agent_fields(
+                            stream_bufs[sid], frag, found)
+                        if found:
+                            tools_open[sid]["detail"] = _tool_detail(
+                                tools_open[sid]["name"], found)
+                        if "subagent_type" in found:
+                            tools_open[sid]["subagent_type"] = found["subagent_type"]
+                        for key in ("model", "effort"):
+                            if key in found:
+                                tools_open[sid][key] = found[key]
             elif et == "message_start":
                 thinking_tokens = 0
                 # THE EARLIEST THE WINDOW CAN BE KNOWN: `message_start` carries
@@ -6436,6 +6787,11 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
                         "id": tid, "name": str(cb.get("name") or "tool"),
                         "detail": _tool_detail(cb.get("name"), tool_inputs.get(tid, {}))}
                     tool_input_bytes = 0
+                    streaming_tid = tid
+                    if cb.get("name") in ("Agent", "Task"):
+                        stream_bufs[tid] = ""
+                        stream_found[tid] = {}
+                        tools_open[tid]["streaming"] = True
         elif t == "rate_limit_event":
             # Latest wins: the CLI writes one per API response and the newest
             # is the current state of the plan window, warning or not.
@@ -6807,6 +7163,12 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
             # this field — see the `cancelled`/`interrupted_offset` handling
             # above.
             "cancelled": cancelled,
+            # THE LATEST HINT THAT WORK MOVED INTO A GIT WORKTREE, from the
+            # finalized tool inputs this window holds (`_worktree_hint`):
+            # `{"path", "branch", "via": "bash"|"enter"|"agent", "label"?}`.
+            # `None` when this poll's window held none — "nothing new", which
+            # the page reads as "keep what you have".
+            "worktree_hint": worktree_hint,
             # Same array `activity.tasks` renders from, collapsed to the
             # yes/no a session host's reap loop wants: background work still
             # running is what holds a host open past an otherwise-idle turn
@@ -7024,8 +7386,8 @@ def _defaults(file: str, session_id: str = "") -> dict:
         # THIS CHAT'S TRANSCRIPT, and then done — see the docstring for why
         # the global read below is not reached from here.
         if not (model and effort):
-            proj = os.path.join(PROJECTS, _munge(_workdir(os.path.abspath(file))))
-            mine = os.path.join(proj, session_id + ".jsonl")
+            mine = _session_transcript_path(_workdir(os.path.abspath(file)),
+                                            session_id)
             if os.path.exists(mine):
                 m, e = _scan_transcript(mine)
                 model = model or m
@@ -7686,8 +8048,7 @@ def _history(file: str, session_id: str, app_reads: bool = False,
         return {"turns": [], "transcript": _transcript_stat(""), "context": None,
                 "tasks": []}
     file = os.path.abspath(file)
-    path = os.path.join(PROJECTS, _munge(_workdir(file)),
-                        session_id + ".jsonl")
+    path = _session_transcript_path(_workdir(file), session_id)
     # SPEC T-1: the task registry of this session's LAST run, while its run
     # dir is still on disk — a reload shows the tasks panel it left.
     task_registry = _session_task_registry(file, session_id)
@@ -7763,6 +8124,7 @@ def _history(file: str, session_id: str, app_reads: bool = False,
                 reply["uuid"] = opener
             turns.append(reply)
 
+    worktree_hint = None  # `_worktree_hint` over every assistant tool_use, in order
     for line in open(path, encoding="utf-8", errors="replace"):
         try:
             row = json.loads(line)
@@ -7773,6 +8135,13 @@ def _history(file: str, session_id: str, app_reads: bool = False,
         msg = row.get("message") or {}
         role = msg.get("role")
         content = msg.get("content")
+        if role == "assistant" and isinstance(content, list):
+            for blk in content:
+                if isinstance(blk, dict) and blk.get("type") == "tool_use":
+                    hint = _worktree_hint(blk.get("name"), blk.get("input"),
+                                          _workdir(file))
+                    if hint is not None:
+                        worktree_hint = _next_worktree_hint(worktree_hint, hint)
         if row.get("type") == "system" and row.get("subtype") == "compact_boundary":
             meta = row.get("compactMetadata")
             compacted = meta if isinstance(meta, dict) else {}
@@ -7917,7 +8286,7 @@ def _history(file: str, session_id: str, app_reads: bool = False,
     # (origin/main, D406) — the stat taken BEFORE this read, so a row appended
     # while we were parsing shows up as a change rather than being missed.
     return {"turns": turns, "transcript": stat, "context": context,
-            "tasks": tasks,
+            "tasks": tasks, "worktree_hint": worktree_hint,
             **_history_live(file, session_id, inbox=inbox)}
 
 
@@ -8842,4 +9211,7 @@ def main(action: str = "start", file: str = "", message: str = "",
     if action == "task_output":
         # A shell/monitor task's output, asked of the live CLI (SPEC T-3).
         return _task_output(run_id, task_id)
+    if action == "task_stop":
+        # Stop a running task: `stop_task` control request.
+        return _task_stop(run_id, task_id)
     return {"error": f"unknown action: {action}"}
