@@ -1736,6 +1736,14 @@ select.c-pill {
   border-color: var(--c-border-strong);
   background: var(--c-surface);
 }
+.chat-worktree-hint {
+  flex: 0 0 auto;
+  margin-left: auto;
+  cursor: default;
+}
+.chat-worktree-menu + .chat-worktree-hint {
+  margin-left: 6px;
+}
 .chat-worktree-btn > span {
   min-width: 0;
   overflow: hidden;

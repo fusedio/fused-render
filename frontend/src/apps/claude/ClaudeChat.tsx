@@ -141,6 +141,7 @@ import { useSlashCommands } from "./ui/useSlashCommands";
 import { planLocalCommand } from "./ui/local-commands";
 import { notify } from "@platform/lib/notifications";
 import { WorktreeMenu, paneChatUrl, type WorktreeRequest } from "./ui";
+import { WorktreeHintChip } from "./ui/WorktreeHintChip";
 import { TasksContext, TasksPanel, tasksPanelScope, useTasksOpen } from "./ui";
 import { taskIndex } from "./protocol/tasks";
 import { recapAnchor } from "./protocol/recap";
@@ -4940,6 +4941,9 @@ function ChatBody(props: ChatBodyProps) {
             {!compact && !peek ? (
               <Topbar
                 worktree={worktreeMenu}
+                worktreeHint={
+                  <WorktreeHintChip hint={state.worktreeHint ?? null}currentPath={chatWorkdir(file, pane.noun) ?? undefined} />
+                }
                 sessionId={state.sessionId ?? ""}
                 subtitle={name}
                 {...(taskId ? { taskId } : {})}

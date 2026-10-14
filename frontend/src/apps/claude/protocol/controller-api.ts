@@ -22,6 +22,7 @@ import type {
   SkillRow,
   SwitchableMode,
   TaskRecord,
+  WorktreeHint,
   TranscriptStat,
 } from "./types";
 /** PR2: the attachment pipeline's own contract (`shots/types.ts`). Pure types —
@@ -299,6 +300,9 @@ export interface ChatState {
   /** The run `tasks` belongs to — what `task_output` is asked of. `null` when
    *  the list came from a history read with nothing live (its host is gone). */
   tasksRunId: string | null;
+  /** The latest `worktree_hint` a poll carried for this conversation (agent.py
+   *  `_worktree_hint`); `null` until one lands, cleared with the conversation. */
+  worktreeHint?: WorktreeHint | null;
   /** T:16411 `ownRunEndedAt` — the clock reading at which a run THIS frame was
    *  streaming last ended, or 0 if none has. D415's transcript follower (PR4)
    *  compares against it so rows this page just wrote are not read back as

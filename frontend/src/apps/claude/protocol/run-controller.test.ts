@@ -4652,6 +4652,24 @@ describe("the run's tasks", () => {
     expect(controller.getState().tasksRunId).toBe(null);
   });
 
+  test("the worktree hint is kept through polls that omit it and cleared with the conversation", async () => {
+    const hint = { path: "../wt", branch: "feat/x", via: "bash" as const };
+    const { controller } = makeController({
+      start: () => ({ run_id: "r1" }),
+      poll: (_f, n) =>
+        n === 0
+          ? poll({ worktree_hint: hint })
+          : n === 1
+            ? poll({ worktree_hint: null })
+            : poll({ done: true, segments: [text("ok")], text: "ok" }),
+      history: () => ({ turns: [], transcript: null }),
+    });
+    await controller.sendMessage("go");
+    expect(controller.getState().worktreeHint).toEqual(hint);
+    controller.newChat();
+    expect(controller.getState().worktreeHint).toBe(null);
+  });
+
   test("a different run's empty list clears the last run's", async () => {
     let run = 0;
     const { controller } = makeController({

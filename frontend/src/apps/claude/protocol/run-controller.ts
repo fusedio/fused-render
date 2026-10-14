@@ -278,6 +278,7 @@ function emptyState(file: string | null): ChatState {
     context: null,
     tasks: [],
     tasksRunId: null,
+    worktreeHint: null,
     ownRunEndedAt: 0,
     repaired: 0,
     transcriptGen: 0,
@@ -589,6 +590,8 @@ export function createChatController(deps: ControllerDeps): ChatController {
   const clearTasks = () => {
     tasksSig = "";
     if (state.tasks.length || state.tasksRunId !== null) emit({ tasks: [], tasksRunId: null });
+    // …and so does the worktree hint the model's tool calls raised.
+    if (state.worktreeHint) emit({ worktreeHint: null });
   };
 
   // ---- params (the exact moments T writes them) ---------------------------
@@ -1520,6 +1523,8 @@ export function createChatController(deps: ControllerDeps): ChatController {
         // call. Clearing belongs to history alone, which is the only reader
         // that knows WHICH conversation is on screen.
         if (poll.context) emit({ context: poll.context });
+        // LATEST WORKTREE HINT WINS; a window with none says nothing.
+        if (poll.worktree_hint) emit({ worktreeHint: poll.worktree_hint });
         noteSkills(poll.skills);
         surfaceAppState(poll.app_state, runId);
         // THE LIVE HOST'S UNDRAINED FOLLOW-UPS, republished verbatim — see

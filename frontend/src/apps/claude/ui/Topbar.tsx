@@ -126,6 +126,10 @@ export interface TopbarProps {
   /** THE WORKTREE MENU's seat (SPEC W-4, `ui/WorktreeMenu`), at the line's right
    *  end — the host passes it for a folder target only. */
   worktree?: ReactNode;
+  /** `ui/WorktreeHintChip`, right after the worktree menu: work the model moved
+   *  into another worktree (a `git worktree add`, EnterWorktree, an isolated
+   *  subagent). Nothing when there is nothing to say. */
+  worktreeHint?: ReactNode;
 }
 
 export function Topbar({
@@ -139,6 +143,7 @@ export function Topbar({
   status,
   queue,
   worktree,
+  worktreeHint,
 }: TopbarProps) {
   // Null on every row that is not waiting in a line, which is the common case.
   const line = queue ? queueCaption(queue) : null;
@@ -200,6 +205,7 @@ export function Topbar({
             header's last inch on nothing. The page's own turn clock still
             drives the composer's stop square; the header defers to the ring. */}
         {worktree}
+        {worktreeHint}
       </div>
     );
   }
@@ -226,6 +232,7 @@ export function Topbar({
           <span className="c-skel-bar is-title" />
         </span>
         {worktree}
+        {worktreeHint}
       </div>
     );
   }
@@ -279,6 +286,7 @@ export function Topbar({
         </span>
       ) : null}
       {worktree}
+      {worktreeHint}
     </div>
   );
 }
