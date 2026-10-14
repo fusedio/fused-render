@@ -175,7 +175,7 @@ function Row({
   children?: ReactNode;
 }) {
   return (
-    <li className="flex flex-col gap-2 px-4 py-3">
+    <li className="flex flex-col gap-2 border-t border-border px-4 py-3">
       <div className="flex items-start gap-3">
         <StateIcon state={state} optional={optional && state !== "done"} />
         <div className="min-w-0 flex-1">
@@ -198,10 +198,13 @@ function Row({
 }
 
 // A small uppercase label between groups of rows: "Claude Code · optional",
-// "Git", "Chrome" — where a group says what it is for.
+// "Git", "Chrome" — where a group says what it is for. Rows draw their own
+// top border (not `divide-y` on the list) so a label sits flush over its
+// first row with no hairline between; the label's own top border parts it
+// from the group above, except the first.
 function Group({ label, optional }: { label: string; optional?: boolean }) {
   return (
-    <li className="flex items-center gap-2 px-4 pt-3 pb-1 text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
+    <li className="flex items-center gap-2 border-t border-border px-4 pt-3 pb-1 text-[11px] font-medium tracking-wide text-muted-foreground uppercase first:border-t-0 [&+li]:border-t-0">
       {label}
       {optional && (
         <span className="rounded-full border border-border px-1.5 py-px text-[10px] font-normal normal-case tracking-normal">
@@ -297,8 +300,9 @@ export function ToolsStep({
   const chrome = stages?.chrome;
   const chromeFound = chrome?.status === "complete";
   const chromePath = typeof chrome?.meta?.path === "string" ? (chrome.meta.path as string) : null;
-  // Where no bot will run (Render, bots off → the server says `n/a`), Chrome
-  // is advisory: its button is quiet and it never holds the yellow.
+  // Chrome owns the yellow button while missing. (`n/a` was Render with bots
+  // off; the flag is gone, the server never writes it now, the guard stays
+  // cheap.)
   const chromeNeeded = isBot() || chrome?.status === "pending";
 
   // ---- The step -----------------------------------------------------------
@@ -357,7 +361,7 @@ export function ToolsStep({
         </Button>
       </div>
 
-      <ol className="m-0 flex list-none flex-col divide-y divide-border rounded-xl border border-border bg-card p-0">
+      <ol className="m-0 flex list-none flex-col rounded-xl border border-border bg-card p-0">
         <Group label="Claude Code" optional />
         {!rows &&
           [0, 1, 2, 3].map((i) => (
@@ -436,7 +440,6 @@ export function ToolsStep({
         <Row
           state={chromeFound ? "done" : chrome ? "open" : "unknown"}
           label="Google Chrome installed"
-          optional={!chromeNeeded}
           hint={
             chromeFound
               ? chromePath
