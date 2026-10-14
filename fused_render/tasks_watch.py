@@ -124,8 +124,8 @@ _sess_rows: dict[str, tuple] = {}
 # session_id -> every pid a registry file has shown holding it, departed ones
 # included, until the session itself departs. What `mark_turn_ended` scopes a
 # host's `pid` by: the CLI the host spawned is not always the pid Claude Code
-# registers (a Windows `.cmd` shim is `cmd.exe`), and a pid this has never seen
-# on the session cannot be told apart from that — so it stays unscoped.
+# registers (a launcher shim), and a pid no registry file has shown on the
+# session cannot be told apart from that — so it stays unscoped.
 _session_pids: dict[str, set] = {}
 _tr_paths: dict[str, str] = {}        # session_id -> transcript path
 _tr_sizes: dict[str, int] = {}        # session_id -> size
@@ -779,8 +779,10 @@ def mark_turn_ended(session_id: str, run_id: str = "",
     another pid, and its turn is not over. Such an event retires the send
     mark only when its pid is the session's standing row: the mark is the
     standing run's floor, not the other process's. `None` (the stop paths, an
-    old host) and a pid never seen on the session (a Windows `.cmd` shim is
-    `cmd.exe`, not the pid Claude Code registers) stamp `_ended`, unscoped.
+    old host) and a pid that holds no registry file for the session — not the
+    pid Claude Code registered (a launcher shim), or one that never got to
+    write its file — stamp `_ended`, unscoped. A pid whose file is written but
+    not yet read by the watcher is looked up directly (`session_for_pid`).
 
     Bumps and notifies at once, like `mark_running`/`mark_idle` — but only when
     something actually changed; an ignored older/duplicate event costs no
@@ -789,6 +791,14 @@ def mark_turn_ended(session_id: str, run_id: str = "",
         return
     ended_at = time.time() if at is None else float(at)
     pid_s = "" if pid is None else str(pid)
+    with _cond:
+        known = pid_s in _session_pids.get(session_id, ())
+    # A process can have written its registry file before the watcher's next
+    # tick has read it (CodeRabbit, PR #1642): ask the file itself before
+    # calling the pid unknown. Outside the lock — it can read a file.
+    if pid_s and not known and session_for_pid(pid_s) == session_id:
+        with _cond:
+            _session_pids.setdefault(session_id, set()).add(pid_s)
     with _cond:
         scoped = pid_s in _session_pids.get(session_id, ())
         stamps = _ended_by_pid.setdefault(session_id, {}) if scoped else _ended

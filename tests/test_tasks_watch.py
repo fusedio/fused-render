@@ -765,10 +765,26 @@ def test_the_newer_of_two_busy_processes_ending_leaves_the_older_running(
     assert tasks_watch.live_from_registry(SID)[0] is True
 
 
+def test_an_ended_event_from_a_pid_whose_file_the_watcher_has_not_read_is_scoped(
+        claude_home):
+    """CodeRabbit, PR #1642: the new process has written its registry file but
+    no tick has read it yet. Its pid is looked up in the file, so its end is
+    scoped to it and cannot end the older process still busy on the session."""
+    tasks_watch.reset()
+    tasks_watch.tick()
+    _registry(claude_home, SID, pid=os.getppid(), status="busy", name="old")
+    tasks_watch.tick()
+    # Named `<pid>.json`, as Claude Code names it — the direct lookup reads that.
+    _registry(claude_home, SID, status="busy", name=str(os.getpid()))  # not ticked
+    tasks_watch.mark_turn_ended(SID, "run-new", at=_later(5), pid=os.getpid())
+    assert not tasks_watch.is_turn_ended(SID)
+    assert tasks_watch.live_from_registry(SID)[0] is True
+
+
 def test_an_ended_event_from_a_pid_the_registry_never_showed_stays_unscoped(
         claude_home):
-    """Windows `.cmd` installs: the host's `cli.pid` is the shim, not the pid
-    Claude Code registers. A pid never seen on the session cannot be scoped,
+    """A launcher shim: the host's `cli.pid` is not the pid Claude Code
+    registers. A pid with no registry file on the session cannot be scoped,
     so the event ends the turn exactly as an unscoped one always did."""
     tasks_watch.reset()
     tasks_watch.tick()
