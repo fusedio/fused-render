@@ -16,8 +16,10 @@ second window comes from what would have been a second tab: `target=_blank`,
 link, the launcher.
 
 ONLY THE NATIVE DOORS SPAWN APP WINDOWS. An app click inside the shell — a
-card, the app page's Open — navigates the window it happened in, like any
-other shell link. The launcher's pick and the menu-bar Dock's app tile
+card, the app page's Open — loads the app's embed into the window it
+happened in (appEntry.ts `openAppEntry`), and the URL observer re-keys that
+window as the app's; with `prefs.apps_open_in_explorer` on it loads the
+explorer view there instead. The launcher's pick and the menu-bar Dock's app tile
 focus-or-open the app's OWN window (`focus_or_open_app`), which runs its
 entry page as a chrome-free embed (`window_policy.app_window_path`) under its
 own saved size and place. The title bar's Edit button (⌘⇧E) switches the SAME window to the explorer

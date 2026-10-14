@@ -81,7 +81,8 @@ import {
 import { useFavicon, useUrlVersion } from "@platform/lib/hooks";
 import { isRasterIconUrl, useThemedIconSrc } from "@platform/lib/app-icon-src";
 import { isOverlayOpen } from "@platform/lib/ui-overlay";
-import { navigateUrl, spaLinkProps, urlForFsPath } from "@platform/lib/router";
+import { IS_NATIVE_WINDOW, navigateUrl, spaLinkProps, urlForFsPath } from "@platform/lib/router";
+import { openAppEntry } from "@platform/lib/appEntry";
 import { snapshotFrameSrc } from "@platform/lib/snapshot-param";
 import {
   AppWindow,
@@ -704,13 +705,15 @@ export default function AppPage({
                     new tab; the explorer's own header now carries a fullscreen
                     control that does that hop, so this page offers one route (the
                     explorer) and the explorer offers the next (the embed). The
-                    folder link opposite is the same route one level up. */}
+                    folder link opposite is the same route one level up. Inside
+                    a native window it runs the app's embed in this window
+                    instead (appEntry.ts `openAppEntry`). */}
                 <Button
                   size="sm"
                   variant="default"
                   className="app-page-open"
-                  title="Open the app in the Explorer"
-                  onClick={() => navigateUrl(urlForFsPath(entry), { isDir: false })}
+                  title={IS_NATIVE_WINDOW ? "Open the app" : "Open the app in the Explorer"}
+                  onClick={() => openAppEntry(entry, () => navigateUrl(urlForFsPath(entry), { isDir: false }))}
                 >
                   <span className={APP_PAGE_FIT_LABEL}>Open</span>
                   <FolderOpen data-icon="inline-end" />
