@@ -4,8 +4,9 @@
 // changed, and per-bot event arrays keep their identity when that bot got nothing new (memo-friendly).
 // Changes made inside batch() publish once, at the end. Module code reads getState(); React reads useBots().
 //
-// Also here: the poll loop (one in flight), act(), the banner, the status toast, select() + the `?bot=` URL,
-// the UI request slots (dialog / panel / context menu) the panes open each other with, and the Builds chip.
+// Also here: the poll loop (one in flight), act(), the banner, the status toast, select() + the `/bots/<id>` URL
+// (routes.ts: the selection IS the path), the UI request slots (dialog / context menu) the panes open each other
+// with, and the Builds chip. The Tasks / Apps / Preferences pages are routes too (App.tsx reads them), not a slot.
 import { useSyncExternalStore } from "react";
 import { api, apiHooks, type Bot, type BotEvent, type ImessageState, type SlowCall, type UsageSummary } from "../lib/api";
 import { loadSeen, newMarkFor, saveSeen, unreadOf, unviewedOf } from "../lib/unread";
@@ -13,6 +14,8 @@ import { sentByYou } from "../lib/derive";
 import { chime, notifyEvents, notifyHandover, updateTitle } from "../lib/notify";
 import type { NewBotPick } from "../lib/presets";
 import { botsMounted } from "../lib/root";
+import { BOTS_PREFIX, botHref, isBotsPath, parseBotsPath } from "../routes";
+import { navigateUrl, replaceSearch } from "@platform/lib/router";
 
 export { SLOW_MS, STALL_MS } from "../lib/api";
 
@@ -24,7 +27,6 @@ export interface BuildsChip { n: string; live: boolean; warn: boolean; fresh: bo
 export interface DialogReq { kind: "newBot" | "settings" | "usage" | "browsers" | "failures" | (string & {}); id?: string | null; pick?: NewBotPick; [k: string]: unknown }
 /** The bot context menu (components/BotMenu.tsx): openMenu(id, x, y, live, alignRight); one row set wherever it opens. */
 export interface MenuReq { id: string; x: number; y: number; live?: boolean; alignRight?: boolean }
-export type PanelName = "builds" | "apps" | "prefs";
 
 export interface BotsState {
   bots: Bot[];
@@ -62,7 +64,7 @@ export interface BotsState {
   banner: { show: boolean; text: string };
   toasts: Toast[];
   buildsChip: BuildsChip;
-  ui: { dialog: DialogReq | null; panel: PanelName | null; menu: MenuReq | null };
+  ui: { dialog: DialogReq | null; menu: MenuReq | null };
   /** One-shot after a hand back (the bot's `handback.seq` moved): the composer of bot `id` offers "Anything <name> should know?" until `until`. */
   noteFor: { id: string; until: number } | null;
 }
@@ -70,18 +72,19 @@ export interface BotsState {
 export const EVENT_CAP = 600;
 const EMPTY: BotEvent[] = [];
 
-const initialSel = (): string | null => {
-  try { return new URLSearchParams(location.search).get("bot") || null; } catch { return null; }
+/** The bot the URL names (`/bots/<id>`), else null. */
+const urlSel = (): string | null => {
+  try { const r = parseBotsPath(location.pathname); return r.kind === "bot" ? r.id : null; } catch { return null; }
 };
 
 let S: BotsState = {
-  bots: [], events: {}, cursors: {}, sel: typeof location === "undefined" ? null : initialSel(),
+  bots: [], events: {}, cursors: {}, sel: typeof location === "undefined" ? null : urlSel(),
   usage: null, imessage: null,
   seen: typeof localStorage === "undefined" ? {} : loadSeen(), base: {}, viewed: {}, newMark: null, newCount: 0, pinned: true,
   showHidden: false, slow: [], fast: false, scrollThread: 0, scrollToEnd: false, scrollSeq: null,
   banner: { show: false, text: "" }, toasts: [],
   buildsChip: { n: "", live: false, warn: false, fresh: false, title: "Tasks · Claude tasks that create fused apps", hidden: false },
-  ui: { dialog: null, panel: null, menu: null },
+  ui: { dialog: null, menu: null },
   noteFor: null,
 };
 
@@ -254,16 +257,29 @@ const selectListeners = new Set<(id: string | null) => void>();
 /** Called when the selection moves to another bot (before it moves): the composer drops its reply quote here. */
 export function onSelectChange(cb: (id: string | null) => void): () => void { selectListeners.add(cb); return () => { selectListeners.delete(cb); }; }
 
-/** The route this page lives on in the shell. The store outlives the route (module state), so a poll that lands
- *  after the reader navigated away must not write `?bot=` onto whatever page they are on now. */
-export const BOTS_PATH = "/bots";
-
-function writeUrlBot(id: string | null) {
+/** Put the selection on the URL (routes.ts: `/bots/<id>` IS the selection). The store outlives the route (module
+ *  state), so a poll that lands after the reader navigated away must not write onto whatever page they are on now.
+ *  `push` is a user gesture (a row click, the Dock): a history entry, so Back steps between bots, and it always lands
+ *  on the chat — from the Tasks / Apps page too. `replace` is the store's own fallback (the first poll's default
+ *  pick, a deleted bot): no entry, and it never yanks the reader off a page they deep-linked to; it only fills in
+ *  the bare `/bots`. The query rides along: a side app's params and the `?new=1` / `?phone=1` one-shots live there. */
+function writeUrl(id: string | null, mode: "push" | "replace") {
   try {
-    if (location.pathname !== BOTS_PATH) return;
-    const u = new URL(location.href);
-    if (id) u.searchParams.set("bot", id); else u.searchParams.delete("bot");
-    if (u.href !== location.href) history.replaceState(history.state, "", u.href);
+    if (!isBotsPath(location.pathname)) return;
+    const r = parseBotsPath(location.pathname);
+    if (r.kind === "bot" && r.id === id) return;
+    if (mode === "replace" && r.kind !== "list" && r.kind !== "bot") return;
+    const href = (id ? botHref(id) : BOTS_PREFIX) + location.search + location.hash;
+    if (mode === "push") navigateUrl(href); else replaceSearch(href);
+  } catch { /* no history (tests) */ }
+}
+
+/** Leave the Tasks / Apps / Preferences page for the selected bot's chat (their Back button, Esc, Stage opening).
+ *  Already on a chat: nothing. */
+export function goChat(): void {
+  try {
+    if (!isBotsPath(location.pathname) || parseBotsPath(location.pathname).kind === "bot") return;
+    navigateUrl((S.sel ? botHref(S.sel) : BOTS_PREFIX) + location.search);
   } catch { /* no history (tests) */ }
 }
 
@@ -288,11 +304,12 @@ export function openBot(id: string): void {
   sendOpen(id);
 }
 
-export function select(id: string | null): void {
+/** `replace`: the store's own fallback pick (see writeUrl); a user gesture pushes. */
+export function select(id: string | null, opts: { replace?: boolean } = {}): void {
   batch(() => {
     if (id !== S.sel) { for (const cb of [...selectListeners]) cb(id); clearToast(); }  // a reply and a status toast belong to one bot
     commit({ sel: id, scrollThread: S.scrollThread + 1 });
-    writeUrlBot(id);
+    writeUrl(id, opts.replace ? "replace" : "push");
     const b = cur(); if (b) { setNewMark(b); markSeen(b.id, b.seq); }
     // A bot waiting for you in its browser opens Stage the moment you pick it.
     if (b && stageable(b)) requestStage(b.id);
@@ -306,10 +323,11 @@ export function jumpTo(id: string, seq: number): void {
 }
 export const clearScrollSeq = (): void => { if (S.scrollSeq) commit({ scrollSeq: null }); };
 
-// Another writer (an embedded app's params, back/forward) moved `?bot=`: follow it without the select() resets.
-function onUrlChange() {
-  const id = new URLSearchParams(location.search).get("bot");
-  if (id && id !== S.sel && S.bots.find((b) => b.id === id)) commit({ sel: id, scrollThread: S.scrollThread + 1 });
+// The URL moved under us (back/forward, the Dock's fallback rewrite, a sidebar link): follow the path's bot without
+// the select() resets. A gesture of ours already committed `sel` before it navigated, so this is a no-op for it.
+function syncFromUrl() {
+  const id = urlSel();
+  if (id && id !== S.sel && (!S.bots.length || S.bots.some((b) => b.id === id))) commit({ sel: id, scrollThread: S.scrollThread + 1 });
 }
 
 /** The menu-bar Dock's bot tile (fused_render/mac_window.py `show_bot`) lands here: a user gesture from outside
@@ -326,8 +344,6 @@ function onOpenEvent(e: Event) {
 // ------------------------------------------------------------------ ui slots ----
 export const openDialog = (req: DialogReq): void => commit({ ui: { ...S.ui, dialog: req, menu: null } });
 export const closeDialog = (): void => { if (S.ui.dialog) { commit({ ui: { ...S.ui, dialog: null } }); flushPendingStage(); } };
-export const openPanel = (panel: PanelName): void => commit({ ui: { ...S.ui, panel, menu: null } });
-export const closePanel = (): void => { if (S.ui.panel) commit({ ui: { ...S.ui, panel: null } }); };
 export const openMenu = (req: MenuReq): void => commit({ ui: { ...S.ui, menu: req } });
 export const closeMenu = (): void => { if (S.ui.menu) { commit({ ui: { ...S.ui, menu: null } }); flushPendingStage(); } };
 /** builds/ owns the numbers; the list footer renders them. */
@@ -399,8 +415,8 @@ export async function pollOnce(): Promise<void> {
       // A bot picked from the URL skips select(): place its "New" rule and clear its dot once, on first load. Later polls leave "seen" alone so the dot lights while you watch.
       if (first && S.sel && !document.hidden) { const c = cur(); if (c) { setNewMark(c); markSeen(c.id, c.seq); } }
       // Nothing selected yet: Super Bot (seeded on first run, registry.seed_super) is the chat a new user should land in.
-      if (!S.sel && r.bots.length) select(r.bots.find((b) => b.kind === "super" && !b.hidden)?.id || r.bots.filter((b) => !b.hidden)[0]?.id || r.bots[0].id);
-      if (S.sel && !r.bots.find((b) => b.id === S.sel)) select(r.bots[0]?.id || null);
+      if (!S.sel && r.bots.length) select(r.bots.find((b) => b.kind === "super" && !b.hidden)?.id || r.bots.filter((b) => !b.hidden)[0]?.id || r.bots[0].id, { replace: true });
+      if (S.sel && !r.bots.find((b) => b.id === S.sel)) select(r.bots[0]?.id || null, { replace: true });
       // The bot on screen is open: the Bots page shows it (by a click, a deep link or landing here). Only this page
       // polls, so onboarding or another page never counts. Once per bot per page load; the server ignores repeats.
       if (S.sel && !document.hidden) sendOpen(S.sel);
@@ -457,18 +473,19 @@ function kickLoop(): void {
 }
 
 /** Boot: wire the api hooks and URL listeners, start the loop. Returns the teardown. Call once per mount (App).
- *  The state outlives a remount (leaving /bots and coming back): the URL's `?bot=` wins when it names one, else
- *  the bot that was open goes back onto the URL. */
+ *  The state outlives a remount (leaving /bots and coming back): the URL's `/bots/<id>` wins when it names one, else
+ *  the bot that was open goes back onto the URL (a replace: the bare `/bots` becomes its chat). */
 export function startStore(): () => void {
   apiHooks.onStall = showBanner;
   apiHooks.onSettle = hideBanner;
   apiHooks.onSlow = (rec) => { const slow = [...S.slow, rec]; if (slow.length > 30) slow.shift(); commit({ slow }); };
-  window.addEventListener("popstate", onUrlChange);
-  window.addEventListener("fused:urlchange", onUrlChange);
+  window.addEventListener("popstate", syncFromUrl);
+  window.addEventListener("fused:navigate", syncFromUrl);
+  window.addEventListener("fused:urlchange", syncFromUrl);
   window.addEventListener(OPEN_EVENT, onOpenEvent);
-  const urlBot = initialSel();
+  const urlBot = urlSel();
   if (urlBot && urlBot !== S.sel) commit({ sel: urlBot, scrollThread: S.scrollThread + 1 });
-  else if (!urlBot && S.sel) writeUrlBot(S.sel);
+  else if (!urlBot && S.sel) writeUrl(S.sel, "replace");
   const gen = Math.abs(loopGen) + 1;
   loopGen = gen;
   void loop(gen);
@@ -482,10 +499,11 @@ export function startStore(): () => void {
     if (loopGen === gen) loopGen = -gen;  // stops this loop; a newer mount has already moved loopGen on
     if (loopTimer) { clearTimeout(loopTimer); loopTimer = null; }  // null: kickLoop reads a non-null timer as "pending"
     document.removeEventListener("visibilitychange", onVisible);
-    if (S.ui.dialog || S.ui.panel || S.ui.menu) commit({ ui: { dialog: null, panel: null, menu: null } });  // a route change closes them
+    if (S.ui.dialog || S.ui.menu) commit({ ui: { dialog: null, menu: null } });  // a route change closes them
     pendingStage = null; if (S.fast) closeStage();  // Stage does not outlive the route (and a queued auto-open must not fire into it)
-    window.removeEventListener("popstate", onUrlChange);
-    window.removeEventListener("fused:urlchange", onUrlChange);
+    window.removeEventListener("popstate", syncFromUrl);
+    window.removeEventListener("fused:navigate", syncFromUrl);
+    window.removeEventListener("fused:urlchange", syncFromUrl);
     window.removeEventListener(OPEN_EVENT, onOpenEvent);
   };
 }

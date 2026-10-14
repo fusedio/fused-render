@@ -99,6 +99,7 @@ import {
   DEFAULT_TAB,
   isAiModelsPath,
 } from "@apps/ai_models/routes";
+import { isBotsPath } from "@apps/bots/routes";
 
 // The boot-time "send a fresh install to the wizard" decision is made once
 // per page load (App's render below), not on every re-render — a user who
@@ -739,7 +740,11 @@ export default function App({ config }: { config: Config }) {
   // constrained to the CLI's own canvas-name alphabet, so the match below is
   // also the validation.
   const isCanvases = pathname === "/canvases";
-  const isBots = pathname === "/bots";
+  // Bots: a PREFIX like AI Models — the selected bot and the Tasks / Apps /
+  // Preferences pages are sub-paths (apps/bots/routes.ts), asked through the
+  // app's own predicate so the route is spelled once. test_shell_routes.py
+  // derives this page's paths from that module, as it does for AI Models.
+  const isBots = isBotsPath(pathname);
   const canvasWorkspaceName =
     /^\/canvases\/([A-Za-z0-9_]+)$/.exec(pathname)?.[1] ?? null;
   // `/apps/<tag>/<name>` used to resolve HERE, to the app folder under the
@@ -951,10 +956,19 @@ export default function App({ config }: { config: Config }) {
     );
   } else if (isBots) {
     // Bots — chrome-free like Canvases; the page owns its three columns.
+    //
+    // **Not keyed on `epoch`, like AI Models above and for the same reason.**
+    // The selected bot and the page inside (Tasks, Apps, Preferences) are
+    // PATHS (apps/bots/routes.ts), and a hop between two of them must not
+    // remount: the page holds the status poll loop, the live-view socket and
+    // Stage, framed apps and typed composer text. One branch, one mount, the
+    // page reading the path itself (useBotsRoute). Arriving from any other
+    // route still mounts it fresh. (The epoch key is also what used to hand
+    // the Tasks page a new, empty iframe on every navigation — builds.ts.)
     main = (
-      <div id="content" key={epoch}>
+      <div id="content">
         <Suspense fallback={<RouteFallback />}>
-          <Bots key={epoch} />
+          <Bots />
         </Suspense>
       </div>
     );

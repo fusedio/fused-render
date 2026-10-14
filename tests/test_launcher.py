@@ -290,7 +290,7 @@ def test_bot_registry_orders_pinned_then_recent(home, bot, monkeypatch):
     assert [r["pinned"] for r in reg] == [True, True, False, False]
     assert [r["recent"] for r in reg] == [False, False, True, True]
     new = reg[2]
-    assert new["kind"] == "bot" and new["path"] == "new" and new["url"] == "/bots?bot=new"
+    assert new["kind"] == "bot" and new["path"] == "new" and new["url"] == "/bots/new"
     assert new["name"] == new["title"] == "New" and new["icon"] is None
     assert new["face"] == {"emoji": "x"} and new["status"] == "busy" and new["running"] is True
     assert [r["id"] for r in launcher.search("", reg)] == ["alp", "zed", "new", "old"]
