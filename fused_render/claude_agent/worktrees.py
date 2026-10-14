@@ -37,12 +37,6 @@ MANAGED_DIR = os.path.join(".claude", "worktrees")
 EXCLUDE_LINE = ".claude/worktrees/"
 
 NAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
-#: Windows device names: a folder called `nul` or `com1` cannot be created (or
-#: removed) there, whatever the extension, so they are refused everywhere —
-#: a repo is shared between machines.
-RESERVED_NAMES = frozenset(
-    ["con", "prn", "aux", "nul"]
-    + [f"com{i}" for i in range(1, 10)] + [f"lpt{i}" for i in range(1, 10)])
 
 #: Seconds. ONE DEADLINE PER CALL, not a timeout per git command: the route
 #: gives the whole call 20 s (SPEC W-3), and a create is six git commands, so
@@ -100,25 +94,18 @@ def _git(root: str, *args: str, timeout: float = QUICK_S,
     long version. Raises `subprocess.TimeoutExpired` (the child is killed), and
     a `_Refusal` when there is no git or `deadline` (monotonic) has passed;
     the public functions catch both.
-
-    On Windows, `subprocess.run` reads the pipes once more after killing a
-    timed-out child, so a grandchild still holding them (a hook, a credential
-    helper) can make that read block past `timeout`. POSIX only waits on the
-    child, which the kill has ended.
     """
     if deadline is not None:
         timeout = min(timeout, deadline - time.monotonic())
         if timeout <= 0.05:
             raise _Refusal("git ran out of time")
-    argv = [shutil.which("git") or "git", "--no-pager", *_CONFIG, "-C", root,
-            *args]
     try:
         proc = subprocess.run(
-            argv, capture_output=True, timeout=timeout, check=False,
+            [shutil.which("git") or "git", "--no-pager", *_CONFIG, "-C", root,
+             *args],
+            capture_output=True, timeout=timeout, check=False,
             stdin=subprocess.DEVNULL, env=_child_env(),
-            close_fds=False,
-            creationflags=(subprocess.CREATE_NO_WINDOW
-                           if sys.platform == "win32" else 0))
+            close_fds=False)
     except FileNotFoundError:
         raise _Refusal("git is not installed") from None
     return (proc.returncode, proc.stdout.decode("utf-8", "replace"),
@@ -278,11 +265,7 @@ def _located_or_refuse(path: str, deadline: float
 
 def _within(child: str, parent: str) -> bool:
     """Is `child` strictly inside `parent` (both resolved)?"""
-    try:
-        return (child != parent
-                and os.path.commonpath([child, parent]) == parent)
-    except ValueError:  # different drives on Windows
-        return False
+    return child != parent and os.path.commonpath([child, parent]) == parent
 
 
 def _managed_dir(root: str) -> str:
@@ -406,8 +389,6 @@ def _carry(path: str, current: str) -> tuple:
 def _check_name(name: str) -> str:
     if not isinstance(name, str) or not NAME_RE.match(name) or name in (".", ".."):
         raise _Refusal("a worktree name is 1-64 letters, digits, '.', '_' or '-'")
-    if name.split(".")[0].lower() in RESERVED_NAMES:
-        raise _Refusal(f"{name!r} is a reserved device name on Windows")
     return name
 
 
@@ -436,14 +417,13 @@ def _free_branch(root: str, name: str, deadline: float) -> str:
 
     `lstrip=2`, not `:short`: `:short` prints `heads/x` for a branch `x`
     that a tag `x` shadows, and the collision would go unseen. Compared
-    case-folded where the filesystem is (macOS, Windows): loose refs are
+    case-folded where the filesystem is (macOS): loose refs are
     files there, so `Feat` and `feat` are one ref."""
     rc, out, err = _git(root, "for-each-ref", "--format=%(refname:lstrip=2)",
                         "refs/heads/", deadline=deadline)
     if rc != 0:
         raise _Refusal(_said(err))
-    fold = (str.casefold if sys.platform in ("darwin", "win32")
-            else (lambda s: s))
+    fold = str.casefold if sys.platform == "darwin" else (lambda s: s)
     taken = {fold(b) for b in out.split()}
     candidate, n = name, 1
     while fold(candidate) in taken:
