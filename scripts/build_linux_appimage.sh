@@ -130,7 +130,7 @@ if [ -n "$(find "$PYTHON_ROOT" -type f \( -name 'libglib-2*' -o -name 'libgobjec
     echo "warning: a wheel vendors glib/gobject; native windows still use the system copy" >&2
 fi
 
-# --- smoke tests (drop the pywin32 imports; add supervisor + tray) -----------
+# --- smoke tests (supervisor + tray imports) ----------------------------------
 log "Smoke tests"
 # The Linux tray is StatusNotifierItem over D-Bus (dbus-fast), which imports
 # without a display — so no headless-backend workaround is needed here.
