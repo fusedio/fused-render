@@ -3,6 +3,9 @@
 // table, the bot's raw HTML is text, links open away — not the sanitizer.
 import { describe, expect, test } from "bun:test";
 
+import { Marked } from "marked";
+
+import { esc } from "./format";
 import { md, parseMdStage } from "./md";
 
 const parse = parseMdStage;
@@ -82,5 +85,32 @@ describe("md", () => {
       expect(html).toContain('<td class="nw">What it is</td>');
       expect(html).toContain("<td>" + "y".repeat(40) + "</td>");
     });
+  });
+  test("markdown with no wide block is byte-identical to plain marked with the same renderer", () => {
+    // Mirrors the renderer md.ts configures: what this pins is that lexer -> wrapWide -> parser adds nothing when nothing is wide.
+    const plain = new Marked({
+      gfm: true,
+      breaks: true,
+      renderer: {
+        html: (html: string) => esc(html),
+        link(href: string, _title: string | null | undefined, text: string) {
+          return `<a href="${esc(href || "")}" target="_blank" rel="noopener">${text}</a>`;
+        },
+        tablecell(content: string, flags: { header: boolean; align: "center" | "left" | "right" | null }) {
+          const tag = flags.header ? "th" : "td";
+          const nw = content.replace(/<[^>]+>/g, "").trim().length <= 24 ? ' class="nw"' : "";
+          return `<${tag}${nw}${flags.align ? ` align="${flags.align}"` : ""}>${content}</${tag}>\n`;
+        },
+        table(header: string, body: string) {
+          return `<div class="tablewrap"><table><thead>${header}</thead>${body ? `<tbody>${body}</tbody>` : ""}</table></div>`;
+        },
+      },
+    });
+    const fixtures = [
+      "Some **prose** with `inline code` and a [link](https://example.com/a?b=1).\nSecond line.",
+      "| Name | Value |\n|---|---|\n| a | 1 |\n| b | 2 |\n| c | 3 |\n",
+      "```ts\nconst x = 1;\nconsole.log(x);\n```\n",
+    ];
+    for (const text of fixtures) expect(parse(text)).toBe(plain.parse(text) as string);
   });
 });
