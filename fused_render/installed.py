@@ -86,6 +86,38 @@ def _linux_installed_version(appimage: str | None) -> str | None:
     return stamp.get("version")
 
 
+def pending_restart() -> str | None:
+    """The version that is on disk but NOT the one running — None when they
+    agree or when there is no drift signal at all (dev checkouts, Windows).
+
+    The in-app updater (update/mac.py) and a manual DMG drag both replace the
+    bundle UNDER the running process. Modules already in sys.modules keep
+    working on their old inodes, but every lazy import from then on reads the
+    NEW files into the OLD process — and a newer module calling a helper the
+    older one never had is an AttributeError in the user's face (bots: the new
+    agent_engine asked a pre-#1617 bot.py for `step_cap`). The restart card
+    (platform/ui/UpdateNotifier.tsx) is dismissible, and the "Automatically
+    download updates" pref can land the swap with nobody watching, so work
+    that lazy-loads code checks this and says "restart" instead of tripping
+    over the skew. Same comparison `app.py`'s relaunch deep link makes
+    (`installed == running` means nothing to swap).
+
+    The mac bundle only. Linux's AppImage is a squashfs the runtime keeps
+    mounted: update/linux.py's os.replace() leaves the old image open for the
+    running process, so its lazy imports still read the OLD code and the
+    banner there is only "restart to finish", never a skew. Either way the
+    disk version is what the restart card shows; this answers a narrower
+    question, "would a lazy import now load foreign code"."""
+    from fused_render import __version__  # lazy: keep this module cheap to import
+
+    if getattr(sys, "frozen", None) != "macosx_app":
+        return None
+    installed = installed_version()
+    if installed is None or installed == __version__:
+        return None
+    return installed
+
+
 def installed_version() -> str | None:
     # `sys.frozen == "macosx_app"` (py2app's own marker) is checked before
     # the platform test, not after: the unit tests fake a py2app bundle by
