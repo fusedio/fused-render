@@ -4,7 +4,7 @@
 //
 // NO PROVIDER = `null`, deliberately: ArtifactRow also renders on the landing
 // page outside any chat, and falls back to its old behaviour there.
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import "../styles/filepreview.css";
 import { resolveAgainst } from "../protocol/filePaths";
@@ -38,8 +38,15 @@ export function FilePreviewProvider({
   const [path, setPath] = useState<string | null>(null);
   // Leaving the chat or switching session drops the file, so coming back never
   // remounts the modal with a leftover path.
+  // A brand-new chat goes null -> id when its first turn names the session;
+  // that is the same chat, so only a change away from a real key resets.
+  const prev = useRef({ enabled, sessionKey });
   useEffect(() => {
-    setPath(null);
+    const before = prev.current;
+    prev.current = { enabled, sessionKey };
+    if (before.enabled !== enabled || (before.sessionKey !== null && before.sessionKey !== sessionKey)) {
+      setPath(null);
+    }
   }, [enabled, sessionKey]);
   const open = useCallback<OpenPreview>(
     (p) => {

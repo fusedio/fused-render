@@ -191,3 +191,18 @@ test("a different session drops the open preview", () => {
   act(() => r.update(tree("s2")));
   expect(modals(r)).toHaveLength(0);
 });
+
+test("a new chat's session id arriving (null -> id) keeps the open preview", () => {
+  const tree = (sessionKey: string | null) => (
+    <FilePreviewProvider cwd="/p" sessionKey={sessionKey}>
+      <Opener p="/p/a.html" />
+    </FilePreviewProvider>
+  );
+  const r = mount(tree(null));
+  act(() => byType(r, "button")[0].props.onClick());
+  expect(modals(r)).toHaveLength(1);
+  act(() => r.update(tree("s1")));
+  expect(modals(r)).toHaveLength(1);
+  act(() => r.update(tree("s2")));
+  expect(modals(r)).toHaveLength(0);
+});
