@@ -35,11 +35,11 @@ export interface ReceiptsProps {
   /** The HEAD probe, injectable so a render test makes no request (T:10875). */
   probe?: (receipt: Receipt) => Promise<boolean>;
   /**
-   * "What was sent". A comment ROW is the door — no separate button, the row
-   * itself is the affordance (T:11053-11056) — and when comments ride the
-   * message the screenshot thumbs open the same popup instead of the plain
-   * viewer, because the picture belongs to the comments there (T:11068-11077).
-   * A picture-only send is never wired, so a lone picture keeps the viewer.
+   * "What was sent". When comments ride the message, the overview thumbnail is
+   * the door to this popup (or the overview's glyph when there is no
+   * thumbnail), opening it instead of the plain viewer because the picture
+   * belongs to the comments (T:11068-11077). A picture-only send is never
+   * wired, so a lone picture keeps the viewer.
    */
   onShowSent?(turn: UserTurn): void;
 }
