@@ -349,19 +349,6 @@ def _private(selector: bytes, signature: bytes):
     return wrap
 
 
-#: A failed main-frame load retries on a growing delay (1 s, 2 s, … capped),
-#: this many times. Sized for the one measured cause — a relaunch's server
-#: coming up a few seconds after its windows — with room for a slow boot.
-_NAV_RETRY_MAX = 8
-_NAV_RETRY_BASE_S = 1.0
-_NAV_RETRY_CAP_S = 4.0
-#: A dead content process is reloaded at most this many times in a row, on a
-#: growing delay, before the window is left as it is for the user's ⌘R — a
-#: page that kills its renderer on every load must not reload forever.
-_TERMINATE_RELOAD_MAX = 3
-_TERMINATE_RELOAD_BASE_S = 1.0
-
-
 class _WebDelegate(NSObject):
     """One per window: navigation + UI + download delegate of its web view,
     and the window's own delegate (close → forget the window). WebKit keeps
@@ -381,24 +368,7 @@ class _WebDelegate(NSObject):
         self._manager = manager
         self._window = window  # the _Window record, not the NSWindow
         self._downloads = []   # strong refs: a WKDownload's delegate is weak too
-        self._nav_retries = 0  # failed main-frame loads since the last commit
-        # Navigation generation: bumped on every provisional start, captured
-        # by a scheduled retry, checked before it fires — so a retry queued
-        # for a load that was since superseded (⌘R, Home, an in-page link)
-        # never drags the window back to the URL that failed.
-        self._nav_gen = 0
-        # How many of the next provisional starts are OUR OWN (a retry, a
-        # crash reload) rather than the user's. A count, not a flag: a
-        # renderer dying mid-load fires BOTH the navigation failure and the
-        # termination hook, so two recoveries can be scheduled for one event,
-        # and a flag consumed by the first start would let the second pass as
-        # a user navigation and hand the budgets back.
-        self._own_loads = 0
-        self._terminations = 0  # content-process deaths since the user last navigated
-        # The HTTP method of the main-frame request last allowed through the
-        # policy hook: a retry rebuilds the request from its URL alone, which
-        # is only honest for a GET. A failed form POST is not retried.
-        self._main_method = "GET"
+        self._crash_reloaded = False  # one automatic reload per window, ever
         return self
 
     # ---- navigation policy -------------------------------------------------
@@ -422,11 +392,6 @@ class _WebDelegate(NSObject):
         )
         logger.debug("navigation %s -> %s", url, verdict)
         if verdict == "allow":
-            if is_main and request is not None:
-                try:
-                    self._main_method = str(request.HTTPMethod() or "GET").upper()
-                except Exception:  # noqa: BLE001 — diagnostics only
-                    self._main_method = "GET"
             decision(WKNavigationActionPolicyAllow)
         elif verdict == "download":
             decision(WKNavigationActionPolicyDownload)
@@ -457,137 +422,37 @@ class _WebDelegate(NSObject):
     def webView_didFailProvisionalNavigation_withError_(self, webview, nav, error):
         # -999 is "cancelled": every navigation turned into a new window, a
         # browser hand-off or a download reports as one. Not a failure.
-        if error is None or int(error.code()) == -999:
-            return
-        # Anything else leaves the window BLANK at its URL: WebKit paints no
-        # error page, and the window's background is the theme colour, so a
-        # refused connection reads as a black (or white) window with the
-        # right title. Observed on a relaunch (2026-10-12 19:22:41: the
-        # restored window's first load hit the port a second before uvicorn
-        # listened, -1004); that one was rescued by a second load that
-        # happened to follow, and nothing guaranteed it. So: retry the same
-        # URL on a short backoff, a bounded number of times, and log every
-        # attempt. The user's own ⌘R is still the fallback after that.
-        failing = None
-        try:
-            info = error.userInfo() or {}
-            failing = info.get("NSErrorFailingURLStringKey")
-        except Exception:  # noqa: BLE001 — diagnostics only
+        # Anything else leaves the window BLANK at its URL (WebKit paints no
+        # error page; the window background is the theme colour), so the log
+        # line names the code and the URL — the one trace a black window
+        # leaves. Recovery is the user's ⌘R: an automatic retry was tried
+        # (#1625) and grew into a navigation state machine for one observed
+        # relaunch race; not worth the surface.
+        if error is not None and int(error.code()) != -999:
             failing = None
-        url = str(failing) if failing else (self._window.current_url() if self._window else None)
-        if self._main_method != "GET":
-            # A retry is a fresh GET of the URL; replaying a POST's body is not
-            # something this layer can do, and silently turning a submission
-            # into a GET would be worse than the blank view. Log and leave it.
-            logger.warning("navigation failed (%s): %s; %s request, not retried: %s",
-                           error.code(), error.localizedDescription(), self._main_method, url)
-            return
-        gen = self._nav_gen
-        self._nav_retries += 1
-        if url is None or self._nav_retries > _NAV_RETRY_MAX:
-            logger.warning("navigation failed (%s), giving up after %d retries: %s",
-                           error.code(), self._nav_retries - 1, error.localizedDescription())
-            return
-        delay = min(_NAV_RETRY_BASE_S * self._nav_retries, _NAV_RETRY_CAP_S)
-        logger.warning("navigation failed (%s): %s; retry %d/%d in %.1fs: %s",
-                       error.code(), error.localizedDescription(),
-                       self._nav_retries, _NAV_RETRY_MAX, delay, url)
-        from PyObjCTools import AppHelper
-
-        # A closure, not a method: pyobjc turns methods of an NSObject
-        # subclass into selectors, and a plain Python helper there is the
-        # unbound-selector trap (menubar_pin.py learned it the hard way, PR #1609).
-        def retry():
-            window = self._window
-            if window is None or window.webview is None or getattr(window, "_torn", False):
-                return
-            if self._nav_gen != gen:
-                return  # something else navigated meanwhile; it owns the view now
-            # Bump NOW, synchronously: a crash reload scheduled for the same
-            # moment (see `_own_loads`) checks the generation next and bails,
-            # instead of racing this load before WebKit reports its start.
-            self._nav_gen += 1
-            self._own_loads += 1
-            window.webview.loadRequest_(NSURLRequest.requestWithURL_(_nsurl(url)))
-
-        AppHelper.callLater(delay, retry)
-
-    def webView_didStartProvisionalNavigation_(self, webview, nav):
-        """Every main-frame load starts here: our own retry included.
-
-        Bumps the generation (stale retries check it), and when the load is
-        NOT our own retry or crash reload — ⌘R, Home, a link — gives it fresh
-        budgets: a window that spent its eight retries on one outage is not
-        mute on the next, and a page the user navigates to afresh gets its
-        crash reloads back. The crash budget is deliberately NOT reset on
-        commit: a page that kills its renderer after its HTML arrived would
-        otherwise reload on a 1 s loop forever."""
-        self._nav_gen += 1
-        if self._own_loads > 0:
-            self._own_loads -= 1
-        else:
-            self._nav_retries = 0
-            self._terminations = 0
-
-    def webView_didCommitNavigation_(self, webview, nav):
-        """A document arrived: the navigation retry budget belongs to the next
-        failure. (The crash-reload budget is the user's to reset, above.)"""
-        self._nav_retries = 0
+            try:
+                failing = (error.userInfo() or {}).get("NSErrorFailingURLStringKey")
+            except Exception:  # noqa: BLE001 — diagnostics only
+                failing = None
+            logger.warning("navigation failed (%s): %s%s", error.code(),
+                           error.localizedDescription(), f" — {failing}" if failing else "")
 
     def webViewWebContentProcessDidTerminate_(self, webview):
         """WebKit's content process died under this window — memory pressure,
         a renderer crash — and WebKit's own response is to show NOTHING: the
         view is empty at the same URL until somebody reloads it. Apple's
-        documented handling is exactly that reload, done here so a dead
-        process is a brief flash, not a dead window waiting for ⌘R.
-
-        Bounded: a page that kills its renderer on every load gets
-        `_TERMINATE_RELOAD_MAX` reloads on a growing delay, then is left as it
-        is. The count resets only when the USER navigates (⌘R, Home, a link),
-        never on commit — a renderer can die after its HTML arrived."""
+        documented handling is a reload; done ONCE per window, so a page that
+        kills its renderer on every load does not loop. After that it is the
+        user's ⌘R, and the log says so."""
         window = self._window
         label = (window.key or "home") if window is not None else "?"
-        self._terminations += 1
-        if self._terminations > _TERMINATE_RELOAD_MAX:
+        if self._crash_reloaded:
             logger.warning("web content process terminated under window %s again; "
-                           "not reloading after %d attempts", label, _TERMINATE_RELOAD_MAX)
+                           "not reloading automatically", label)
             return
-        delay = _TERMINATE_RELOAD_BASE_S * self._terminations
-        logger.warning("web content process terminated under window %s; reload %d/%d in %.0fs",
-                       label, self._terminations, _TERMINATE_RELOAD_MAX, delay)
-        gen = self._nav_gen
-        # The URL this view was showing or fetching, captured NOW: a renderer
-        # that dies before its first page commits leaves the back-forward
-        # list without a current item, and `reload()` on such a view starts
-        # no navigation at all — the window would stay blank, and a load we
-        # counted as ours would never arrive. That case loads the URL afresh.
-        url = window.current_url() if window is not None else None
-        from PyObjCTools import AppHelper
-
-        def reload():
-            w = self._window
-            if w is None or w.webview is None or getattr(w, "_torn", False):
-                return
-            if self._nav_gen != gen:
-                return  # the user (or a sibling retry) already navigated
-            has_item = False
-            try:
-                has_item = w.webview.backForwardList().currentItem() is not None
-            except Exception:  # noqa: BLE001 — diagnostics only
-                has_item = False
-            if not has_item and not url:
-                logger.warning("web content process terminated before any page "
-                               "committed and no URL to reload; leaving window %s", label)
-                return
-            # Count the load only once one is actually issued.
-            self._nav_gen += 1  # synchronous, so a sibling retry bails
-            self._own_loads += 1  # our own load: keeps the budgets
-            if has_item:
-                w.webview.reload()
-            else:
-                w.webview.loadRequest_(NSURLRequest.requestWithURL_(_nsurl(url)))
-
-        AppHelper.callLater(delay, reload)
+        self._crash_reloaded = True
+        logger.warning("web content process terminated under window %s; reloading once", label)
+        webview.reload()
 
     # ---- downloads (WKDownloadDelegate) ------------------------------------
 
