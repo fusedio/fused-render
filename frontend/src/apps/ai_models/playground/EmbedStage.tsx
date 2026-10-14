@@ -583,13 +583,15 @@ export function EmbedStage({
     new Promise<void>((resolve) => {
       if (!pumping.current && planBatches(picturesRef.current, indexRef.current).length) void pumpIndex();
       const check = () => {
-        // Three ways out: the index is idle, the search was abandoned, or the
+        // Four ways out: the index is idle, the search was abandoned, the
         // runner STOPPED on a run-level error (`halted`) — files still
-        // pending but nothing working on them. The last must resolve too,
-        // or Search waits forever on a runner that has already given up,
+        // pending but nothing working on them — or Lines took over, which
+        // aborts the runner without halting it. The last two must resolve
+        // too, or Search waits forever on a runner that is not coming back,
         // with `busy` holding every other control shut.
         const idle = !indexProgress(picturesRef.current, indexRef.current).busy;
-        if (signal.aborted || idle || (!pumping.current && halted.current)) resolve();
+        if (signal.aborted || idle || !filesMode.current
+            || (!pumping.current && halted.current)) resolve();
         else window.setTimeout(check, 150);
       };
       check();
@@ -757,7 +759,10 @@ export function EmbedStage({
       if (indexProgress(picturesRef.current, indexRef.current).busy) {
         setStatus("Finishing the index first…");
         await whenIndexed(controller.signal);
-        if (controller.signal.aborted) return;
+        // Lines took over mid-wait: this search belongs to the mode that
+        // was left, so it steps aside rather than rank under the other's
+        // heading.
+        if (controller.signal.aborted || !filesMode.current) return;
         if (halted.current) {
           // The runner gave up (its sentence is on the error line); rank
           // what IS indexed rather than nothing, and say what is missing —
