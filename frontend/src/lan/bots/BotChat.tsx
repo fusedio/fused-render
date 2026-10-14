@@ -163,6 +163,9 @@ export function BotChat({ id }: { id: string }) {
             // would count the end rows' height as prepended and shift the view).
             prepend.current = { height: el.scrollHeight, top: el.scrollTop };
             setEvents((old) => mergeEvents(old, above));
+            // The gap is filled: every line up to the cursor is now held, so it is seen (leaving before the
+            // next poll must not keep these lines unread).
+            if (seqRef.current != null && document.visibilityState === "visible") writeSeen(skey, seqRef.current);
             return;
           }
           if (got) evs = mergeEvents(evs, got);

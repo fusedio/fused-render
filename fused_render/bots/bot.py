@@ -2111,7 +2111,9 @@ class Bot:
             return
         if pending and running and pending.get("seq") != getattr(self, "_offer_seq", None):
             self._settle_offer()  # the offer timed out earlier and the user has moved on: it is stale, not pending
-        if running and outside and self._texted_approval(shown, via):
+        if answers is not None:
+            self._settled_answer(answers, uev)  # before the texted hold below, which would take it as a held-back yes
+        if running and outside and self._texted_approval(shown, via, uev):
             return
         with self.lock:
             if (via.get("kind") == chan.APP_KIND and self.running()
@@ -2132,11 +2134,8 @@ class Bot:
                 self.emit("system", "Texted while busy on a task from the Mac; not applied.", via=None, ignored_seq=uev.get("seq"))
                 self.emit("error", "Busy with a task from the Mac; text again when it's done.", via=dict(via))
                 return
-            if answers is not None and self.meta.get("waiting_on") != answers:
-                # receive() judged this before the user line; the card settled in the gap (a poll-lagged click at
-                # the Mac answered it). Under the lock the engine's wait takes: nothing reaches the inbox.
-                self.emit("system", "An answer for a card that was answered already; not applied.", via=None, ignored_seq=uev.get("seq"))
-                raise CardSettled(f"that card (#{answers}) was answered already")  # the caller holds or 409s, never "approved"
+            if answers is not None:
+                self._settled_answer(answers, uev)  # again under the lock the engine's wait takes: nothing reaches the inbox
             if not running and not self.start_task(text, label=shown, via=via, images=images) and self.running():
                 running = True  # a hand-off started a task first: this message becomes an instruction to it
             if running:
@@ -2151,7 +2150,18 @@ class Bot:
                     # not an answer. Clearing here would settle the card for a poll.
                     self.set_status("running")
 
-    def _texted_approval(self, text, via=None):
+    def _settled_answer(self, answers, uev):
+        """A card answer (`answers`: the card's seq) whose card is no longer the one waited on: receive() judged it
+        before the user line, and the card settled in the gap (a poll-lagged click at the Mac answered it, and the
+        bot may already wait on the next card). The written line is marked ignored and CardSettled raised, so the
+        caller holds or refuses it and no chat reads it as that card's verdict."""
+        with self.lock:
+            if self.meta.get("waiting_on") == answers:
+                return
+            self.emit("system", "An answer for a card that was answered already; not applied.", via=None, ignored_seq=uev.get("seq"))
+        raise CardSettled(f"that card (#{answers}) was answered already")  # the caller holds or 409s, never "approved"
+
+    def _texted_approval(self, text, via=None, uev=None):
         """A yes/no from an outside sender while the task waits on an approval
         card. It is the answer only when the router stamped it for this very card
         (`via["answers"]`: the card was texted to that sender, docs §10); then it
@@ -2175,7 +2185,9 @@ class Bot:
             return False
         if not (YES.match(text or "") or NO.match(text or "")):
             return False
-        self.emit("system", "This approval card is answered here at the Mac: use Approve or Deny on the card.", via=None)
+        # ignored_seq: the held-back yes/no settled nothing, so no chat reads it as this card's verdict.
+        self.emit("system", "This approval card is answered here at the Mac: use Approve or Deny on the card.", via=None,
+                  **({"ignored_seq": uev.get("seq")} if uev and uev.get("seq") is not None else {}))
         if (via or {}).get("kind") == "imessage":
             # source="hold": the router reads a sourceless error as the task's end (it would forget the texted card
             # and the numbered question); this one is a reply to the phone while the task goes on.
