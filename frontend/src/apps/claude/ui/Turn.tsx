@@ -2,7 +2,7 @@
 // reply behind the spark avatar (T:13446-13504, and the skin note at T:7-12 —
 // "right-aligned user bubbles, full-width assistant prose behind a spark
 // avatar", the shape claude.ai / v0 / ChatGPT all settled on).
-import { memo, useId } from "react";
+import { memo, useId, useMemo } from "react";
 
 import { SquareTerminal } from "lucide-react";
 import { cn } from "@platform/lib/utils";
@@ -11,7 +11,7 @@ import { parseTerminalAsk } from "@platform/lib/terminalFocus";
 import type { AssistantTurn, Turn as TurnRow, UserTurn } from "../protocol/controller-api";
 import { viewKind, type SegmentKind } from "../protocol/segments";
 import { toolChipSummary } from "../protocol/summaries";
-import { INTERRUPT_MARK, isInterruptMark, isMarkerOnly } from "../protocol/wire";
+import { INTERRUPT_MARK, isInterruptMark, isMarkerOnly, parseInbound } from "../protocol/wire";
 import type { Viewable } from "./attachApi";
 import { MarkerText } from "./AttachIcon";
 import { Caret } from "./Caret";
@@ -29,6 +29,28 @@ import { TroubleMessage } from "./TroubleView";
  *  named here so the callers that already say `from "./Turn"` still read the
  *  one definition. */
 export { INTERRUPT_MARK, isInterruptMark };
+
+/** The words inside a user bubble. A component of its own because reading the
+ *  turn's annotations is a hook, and the user branch of `Turn` sits behind an
+ *  early return. */
+function UserBubbleBody({ turn }: { turn: UserTurn }) {
+  const notes = useMemo(() => parseInbound(turn.raw).annotations ?? [], [turn.raw]);
+  const markerOnly = isMarkerOnly(turn.text);
+  if (!notes.length) return markerOnly ? <MarkerText text={turn.text} /> : <>{turn.text}</>;
+  const typed = turn.text && !markerOnly ? turn.text : "";
+  const lettered = notes.length > 1;
+  return (
+    <>
+      {typed ? <div className="bubble-typed">{typed}</div> : null}
+      {notes.map((note, i) => (
+        <div className="bubble-ann" key={(note.id || note.label || "n") + ":" + i}>
+          {lettered ? <span className="bubble-ann-lbl">{note.label || "•"}</span> : null}
+          {note.content || ""}
+        </div>
+      ))}
+    </>
+  );
+}
 
 export interface TurnProps {
   turn: TurnRow;
@@ -156,11 +178,14 @@ export const Turn = memo(function Turn({
               {stamp}
             </span>
           ) : null}
-        {/* A WORDLESS SEND'S BUBBLE says what the message carried instead —
-            "pane screenshot", "files", "annotations" — and each of those gets
-            the same lucide glyph the chip and the receipt wear (P2-7). Anything
-            the reader actually typed is their own words and gets none. The
-            bubble's TEXT is identical either way. */}
+        {/* WHAT THE BUBBLE SAYS. An annotated send reads as the comments the
+            reader wrote on the picture: the typed words first when there are
+            any, then one line per comment, lettered only when there are two or
+            more so they still match the badges burned into the overview. A
+            send with no comments and no typed text says what it carried
+            instead — "pane screenshot", "files" — each with the lucide glyph
+            the chip and the receipt wear (P2-7). Anything the reader actually
+            typed is their own words and gets none. */}
           <div className={cn("bubble", termAsk && "is-terminal-ask")}>
             {termAsk ? (
               <>
@@ -175,10 +200,8 @@ export const Turn = memo(function Turn({
                 {termAsk.selection !== undefined ? <pre className="term-ask-sel">{termAsk.selection}</pre> : null}
                 <div className="term-ask-body">{termAsk.body}</div>
               </>
-            ) : isMarkerOnly(turn.text) ? (
-              <MarkerText text={turn.text} />
             ) : (
-              turn.text
+              <UserBubbleBody turn={turn} />
             )}
           </div>
         </div>
