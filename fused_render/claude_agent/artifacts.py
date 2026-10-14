@@ -230,7 +230,10 @@ def _live(session_id: str, file: str, cwd: str = "") -> dict:
     ground = cwd or _workdir(file)
     if not ground:
         return {"artifacts": []}
-    path = os.path.join(PROJECTS, _munge(ground), session_id + ".jsonl")
+    # Imported here: the agent module's body is heavy, and its helper also
+    # finds a transcript the CLI relocated into a worktree's project dir.
+    from fused_render.claude_agent import agent_module
+    path = agent_module()._session_transcript_path(ground, session_id)
 
     found = {}
     icons = {}

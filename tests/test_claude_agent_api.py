@@ -578,3 +578,21 @@ def test_a_cancel_with_no_session_marks_nothing(client, stub, monkeypatch):
     stub["install"](main)
     assert _post(client, {"action": "cancel", "run_id": "nope"}).status_code == 200
     assert marked == []
+
+
+def test_artifacts_live_finds_a_relocated_transcript(tmp_path, monkeypatch):
+    import json
+    from fused_render.claude_agent import artifacts
+    projects = tmp_path / "projects"
+    ground = tmp_path / "repo"
+    ground.mkdir()
+    sibling = projects / (artifacts._munge(str(ground)) + "--claude-worktrees-x")
+    sibling.mkdir(parents=True)
+    page = tmp_path / "page.html"
+    url = "https://claude.ai/code/artifact/aaaaaaaa-0000-0000-0000-000000000000"
+    (sibling / "s1.jsonl").write_text(json.dumps(
+        {"type": "frame-link", "sessionId": "s1", "path": str(page),
+         "frameUrl": url, "title": "T", "timestamp": "2026-01-01T00:00:00Z"}) + "\n")
+    monkeypatch.setattr(claude_agent.agent_module(), "PROJECTS", str(projects))
+    out = artifacts._live("s1", "", cwd=str(ground))
+    assert [a["remote_url"] for a in out["artifacts"]] == [url]
