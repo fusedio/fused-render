@@ -456,10 +456,15 @@ export function EmbedStage({
     if (merged.next.length !== before.length || retried) {
       setRankedPictures(null);
       // Every new file starts its journey now, not at Search time.
+      const picked = new Set(ok);
       for (const path of merged.next) {
         const entry = indexRef.current.get(path);
-        // New, or added back after a failure: adding again IS the retry.
-        if (!entry || entry.state === "failed") indexRef.current.set(path, { state: "pending" });
+        // New, or picked again after a failure: adding again IS the retry —
+        // for that file only. Other failed rows keep their error until the
+        // reader re-picks them too.
+        if (!entry || (entry.state === "failed" && picked.has(path))) {
+          indexRef.current.set(path, { state: "pending" });
+        }
       }
       bumpIndex();
       // Only in Files mode: an upload that finishes after the reader switched
