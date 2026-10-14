@@ -1203,6 +1203,16 @@ class _MenuTarget(NSObject):
             self._m._tab_or(w, window_policy.tabs_js("t.reloadActive()"),
                             lambda: w.webview.reload())
 
+    def reloadWindow_(self, _s):
+        # ⌘⇧R: the WINDOW's own document — under Shell Tabs the host around
+        # the tabs, which ⌘R never touches. The tabs come back from the URL
+        # (`_tabs`). Also the one way to pick up a rebuilt shell bundle in the
+        # host: a host and its tabs must run the same bundle (the navigation
+        # sink is a protocol between them), and a dev watcher rebuilds under a
+        # running window.
+        if (w := self._m.key()) is not None:
+            w.webview.reload()
+
     def goBack_(self, _s):
         if (w := self._m.key()) is not None:
             self._m._tab_or(w, window_policy.tabs_js("t.back()"),
@@ -2033,6 +2043,7 @@ def _build_main_menu(target) -> NSMenu:
     # to the front door, which is the Bots page there.
     submenu("View", [
         item("Reload Page", b"reload:", "r"),
+        item("Reload Window", b"reloadWindow:", "R", CMD | _SHIFT),
         item("Back", b"goBack:", "["),
         item("Forward", b"goForward:", "]"),
         item("Home", b"goHome:", "H", CMD | _SHIFT),
