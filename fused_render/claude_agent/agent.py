@@ -849,6 +849,38 @@ def _munge(path: str) -> str:
     return re.sub(r"[^A-Za-z0-9]", "-", os.path.abspath(path))
 
 
+def _session_transcript_path(workdir: str, session_id: str) -> str:
+    """Where this session's transcript is: `<PROJECTS>/<munge(workdir)>/<sid>.jsonl`,
+    unless the CLI MOVED it. Its EnterWorktree tool relocates the file into the
+    worktree's own project dir (`<root>/.claude/worktrees/<name>` munges to
+    `<munge(root)>--claude-worktrees-<name>`) and leaves nothing behind, so a
+    read from the original folder alone finds no conversation. The original
+    wins when it exists; else the newest `<sid>.jsonl` under a worktrees
+    sibling; else the original (missing) path, so a caller's not-found
+    handling is unchanged. `session_id` is `_bad_id`-checked by callers."""
+    munged = _munge(workdir)
+    mine = os.path.join(PROJECTS, munged, session_id + ".jsonl")
+    if os.path.isfile(mine):
+        return mine
+    prefix = munged + "--claude-worktrees-"
+    best, best_mtime = "", -1.0
+    try:
+        with os.scandir(PROJECTS) as it:
+            for ent in it:
+                if not ent.name.startswith(prefix):
+                    continue
+                cand = os.path.join(ent.path, session_id + ".jsonl")
+                try:
+                    mtime = os.stat(cand).st_mtime
+                except OSError:
+                    continue
+                if mtime > best_mtime and os.path.isfile(cand):
+                    best, best_mtime = cand, mtime
+    except OSError:
+        pass
+    return best or mine
+
+
 def _terminal_command(file: str, session_id: str = "") -> dict:
     """The shell command that continues (or starts) this target's session in a
     real terminal, for the page's "in terminal" menu item to put on the
@@ -7064,8 +7096,8 @@ def _defaults(file: str, session_id: str = "") -> dict:
         # THIS CHAT'S TRANSCRIPT, and then done — see the docstring for why
         # the global read below is not reached from here.
         if not (model and effort):
-            proj = os.path.join(PROJECTS, _munge(_workdir(os.path.abspath(file))))
-            mine = os.path.join(proj, session_id + ".jsonl")
+            mine = _session_transcript_path(_workdir(os.path.abspath(file)),
+                                            session_id)
             if os.path.exists(mine):
                 m, e = _scan_transcript(mine)
                 model = model or m
@@ -7726,8 +7758,7 @@ def _history(file: str, session_id: str, app_reads: bool = False,
         return {"turns": [], "transcript": _transcript_stat(""), "context": None,
                 "tasks": []}
     file = os.path.abspath(file)
-    path = os.path.join(PROJECTS, _munge(_workdir(file)),
-                        session_id + ".jsonl")
+    path = _session_transcript_path(_workdir(file), session_id)
     # SPEC T-1: the task registry of this session's LAST run, while its run
     # dir is still on disk — a reload shows the tasks panel it left.
     task_registry = _session_task_registry(file, session_id)
