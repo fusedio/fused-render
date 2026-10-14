@@ -32,10 +32,15 @@ export function touchedFiles(turns: ReadonlyArray<HasSegments>): string[] {
   return Array.from(new Set(all));
 }
 
+/** POSIX `/x`, a Windows drive path (`C:\x`, `C:/x`) or a UNC path (`\\host\x`). */
+export function isAbsolutePath(path: string): boolean {
+  return path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(path) || path.startsWith("\\\\");
+}
+
 /** Absolute paths pass through; a relative one joins `cwd`, with `.`/`..`
  *  folded. No cwd leaves a relative path as it is. */
 export function resolveAgainst(path: string, cwd: string | null | undefined): string {
-  if (path.startsWith("/") || !cwd) return path;
+  if (isAbsolutePath(path) || !cwd) return path;
   const parts: string[] = [];
   for (const seg of (cwd.replace(/\/+$/, "") + "/" + path).split("/")) {
     if (!seg || seg === ".") continue;

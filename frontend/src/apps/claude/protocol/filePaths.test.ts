@@ -26,6 +26,9 @@ test("resolveAgainst", () => {
   expect(resolveAgainst("src/x.ts", "/w")).toBe("/w/src/x.ts");
   expect(resolveAgainst("./src/../x.ts", "/w/")).toBe("/w/x.ts");
   expect(resolveAgainst("x.ts", null)).toBe("x.ts");
+  expect(resolveAgainst("C:\\p\\a.ts", "/w")).toBe("C:\\p\\a.ts");
+  expect(resolveAgainst("c:/p/a.ts", "/w")).toBe("c:/p/a.ts");
+  expect(resolveAgainst("\\\\host\\share\\a.ts", "/w")).toBe("\\\\host\\share\\a.ts");
 });
 
 test("pathCandidate", () => {
