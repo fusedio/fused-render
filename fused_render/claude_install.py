@@ -67,7 +67,7 @@ class InstallError(RuntimeError):
 
 
 def install_argv() -> tuple:
-    """(argv, display) for the native installer on this platform.
+    """(argv, display) for the native installer.
 
     NOT `shell=True` with a user-visible string. The command is a fixed literal
     of ours either way, but the argv form is what makes that legible at the call
@@ -79,15 +79,6 @@ def install_argv() -> tuple:
     is told will run and what runs are the same sentence.
     """
     display = claude_health.install_command()
-    if os.name == "nt":
-        # -NoProfile so a user's PowerShell profile cannot change what this
-        # does; -ExecutionPolicy Bypass because the default policy blocks a
-        # piped script and this is the vendor's own documented one-liner.
-        return (
-            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
-             "-Command", "irm https://claude.ai/install.ps1 | iex"],
-            display,
-        )
     return (["bash", "-c", "curl -fsSL https://claude.ai/install.sh | bash"], display)
 
 
@@ -98,20 +89,8 @@ def update_argv(path: str) -> tuple:
     the app actually spawns — on a machine with two installs, `claude` on the
     PATH and the one we resolved are not always the same file, and updating the
     other one would leave the app on the old version reporting success.
-
-    THROUGH `_probe_cmd`, WHICH IS NOT A DETAIL ON WINDOWS. npm installs `claude`
-    as a `.cmd` shim, which `CreateProcess` cannot run — only cmd.exe can — and
-    npm is one of the two methods `update_plan` calls self-updating, so this is
-    precisely the install type the Update button is offered for. Spawning the
-    shim as a raw argv list raises OSError on every Windows npm install, i.e.
-    the button would be broken for the users it exists to serve. `claude_health`
-    already solved this for its own probes; reusing it is what keeps the spawn
-    and the probe agreeing about how to start the same file.
-
-    So `cmd` is an argv LIST normally and one command STRING behind a shim; the
-    caller passes `shell=` accordingly.
     """
-    return (claude_health._probe_cmd(path, "update"), "claude update")
+    return ([path, "update"], "claude update")
 
 
 # --- the single record --------------------------------------------------------
@@ -191,8 +170,7 @@ def _child_env() -> dict:
 def _run(action: str, cmd, display: str) -> None:
     """The worker body: spawn, drain, re-probe. Never raises out of the thread.
 
-    `cmd` is an argv list, or — behind a Windows `.cmd` shim — one command
-    string for the cmd.exe hop (see `update_argv`). `shell=` follows from which.
+    `cmd` is an argv list.
     """
     tail: list = []
     timed_out = threading.Event()
@@ -207,7 +185,6 @@ def _run(action: str, cmd, display: str) -> None:
     try:
         proc = subprocess.Popen(
             cmd,
-            shell=isinstance(cmd, str),
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,

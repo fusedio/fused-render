@@ -60,16 +60,11 @@ def _fake_cli(tmp_path, name="claude", executable=True):
 
     Never actually spawned by anything below (every test here patches
     `probe_version`/`subprocess.run` rather than running it) — it only has to
-    be a file `resolve()`'s real `shutil.which` can find on PATH. That is a
-    file with an exec bit on POSIX and a file with a PATHEXT extension on
-    Windows, which is why the name gets `.exe` there: a bare `claude` with a
-    shebang is invisible to Windows' extension-based PATH lookup no matter
-    what `chmod` says about it.
+    be a file with an exec bit that `resolve()`'s real `shutil.which` can
+    find on PATH.
     """
     d = tmp_path / "fake-bin"
     d.mkdir(exist_ok=True)
-    if os.name == "nt" and not name.lower().endswith((".exe", ".cmd", ".bat")):
-        name += ".exe"
     p = d / name
     p.write_text("#!/bin/sh\necho 2.1.220\n")
     p.chmod(0o755 if executable else 0o644)
@@ -150,13 +145,7 @@ def test_path_beats_the_candidate_list(tmp_path, monkeypatch):
     bin_path = _fake_cli(tmp_path)
     monkeypatch.setenv("PATH", os.path.dirname(bin_path))
     resolved, source = claude_health.resolve()
-    # normcase, not a bare ==: shutil.which() on Windows matches "claude"
-    # against PATHEXT (.COM;.EXE;...) and returns it with THAT extension's
-    # case, e.g. "claude.EXE", regardless of the actual on-disk filename's
-    # case ("claude.exe" here) — a case difference on a filesystem where it is
-    # not a different file. Same idiom as claude_agent/agent.py's
-    # containment check.
-    assert os.path.normcase(resolved) == os.path.normcase(bin_path)
+    assert resolved == bin_path
     assert source == "path"
 
 
@@ -179,7 +168,6 @@ def test_candidate_dirs_are_probed_when_path_is_stripped(tmp_path, monkeypatch):
     cli.chmod(0o755)
     monkeypatch.setattr(claude_health.os.path, "expanduser",
                         lambda p: p.replace("~", str(home), 1))
-    monkeypatch.setattr(claude_health.os, "name", "posix")
     # ~/.bun/bin is the case that used to resolve for the Claude-config tab and
     # not for fused.ai — the divergence the shared list closes.
     assert claude_health.resolve() == (str(cli), "candidate")
@@ -205,7 +193,6 @@ def test_a_non_executable_file_does_not_shadow_a_real_install(tmp_path, monkeypa
     real.chmod(0o755)
     monkeypatch.setattr(claude_health.os.path, "expanduser",
                         lambda p: p.replace("~", str(home), 1))
-    monkeypatch.setattr(claude_health.os, "name", "posix")
     assert claude_health.resolve()[0] == str(real)
 
 
@@ -364,13 +351,6 @@ def test_augmented_path_appends_install_dirs_without_duplicating(monkeypatch):
     parts = claude_health.augmented_path().split(os.pathsep)
     assert parts[0] == "/usr/bin"
     assert len(parts) == len(set(parts))
-    # candidates() (and so the dirs augmented_path() appends) is platform-
-    # specific — WINDOWS_CANDIDATES on os.name == "nt", POSIX_CANDIDATES
-    # elsewhere — so "/opt/homebrew/bin" is only ever a real member of that
-    # list on the POSIX branch; asserting it unconditionally is a POSIX-only
-    # literal masquerading as a platform-independent one. Deriving the
-    # expectation from candidates() itself is what makes this check the same
-    # guarantee on both platforms.
     for candidate in claude_health.candidates():
         expected_dir = os.path.dirname(
             os.path.expanduser(os.path.expandvars(candidate)))
@@ -425,37 +405,6 @@ def test_probe_version_survives_a_hung_or_missing_binary(monkeypatch):
     monkeypatch.setattr(claude_health.subprocess, "run",
                         lambda *a, **k: (_ for _ in ()).throw(OSError("nope")))
     assert claude_health.probe_version("/x/claude") is None
-
-
-def test_a_windows_cmd_shim_goes_through_cmd_exe(monkeypatch):
-    """npm installs claude as a .cmd, which CreateProcess cannot run directly.
-    Without the hop both probes OSError on every npm-installed Windows CLI and
-    report everything as unknown."""
-    monkeypatch.setattr(claude_health.os, "name", "nt")
-    cmd = claude_health._probe_cmd(r"C:\Users\A B\npm\claude.cmd", "auth", "status")
-    assert isinstance(cmd, str)
-    # every element quoted, so a space in the path cannot re-split the line
-    assert cmd == r'"C:\Users\A B\npm\claude.cmd" "auth" "status"'
-    # ...and an .exe on the same platform stays a plain argv list
-    assert claude_health._probe_cmd(r"C:\npm\claude.exe", "--version") == [
-        r"C:\npm\claude.exe", "--version"]
-
-
-def test_a_posix_path_is_never_shelled(monkeypatch):
-    monkeypatch.setattr(claude_health.os, "name", "posix")
-    # a POSIX file that merely ENDS in .cmd is still exec'd directly
-    assert claude_health._probe_cmd("/home/a/claude.cmd", "--version") == [
-        "/home/a/claude.cmd", "--version"]
-
-
-def test_a_quote_in_the_path_is_refused_not_misquoted(monkeypatch):
-    monkeypatch.setattr(claude_health.os, "name", "nt")
-    with pytest.raises(ValueError):
-        claude_health._probe_cmd('C:\\ev"il\\claude.cmd', "auth", "status")
-    # and the probes turn that into "unknown" rather than a 500
-    monkeypatch.setattr(claude_health, "_auth_status", _REAL_AUTH_STATUS)
-    assert claude_health.probe_version('C:\\ev"il\\claude.cmd') is None
-    assert claude_health.signed_in('C:\\ev"il\\claude.cmd') is None
 
 
 def test_the_version_probe_never_forks(monkeypatch):
@@ -565,17 +514,14 @@ def test_a_blank_env_token_is_not_a_credential(monkeypatch):
 def test_absent_local_evidence_is_never_false_on_any_platform(monkeypatch):
     """THE REGRESSION THIS REPLACED A PLATFORM RULE TO PREVENT.
 
-    This used to conclude "no credentials file on Linux/Windows, therefore
+    This used to conclude "no credentials file on Linux, therefore
     signed out". Measured on a container that is demonstrably logged in
     (`claude auth status` → loggedIn: true) with no credentials file and no
     token in the environment, that rule answered False: the credential arrived
     on an inherited file descriptor. Absence of a file is not evidence of being
     signed out, on any platform — only the CLI's own answer is.
     """
-    for platform in ("linux", "win32", "darwin"):
-        monkeypatch.setattr(claude_health.os, "name",
-                            "nt" if platform == "win32" else "posix")
-        assert claude_health.signed_in() is None, platform
+    assert claude_health.signed_in() is None
 
 
 def test_a_missing_binary_is_not_asked_for_its_auth_state(monkeypatch):
@@ -884,8 +830,6 @@ def test_doctor_wins_over_the_path_when_it_names_a_method():
     ("/opt/homebrew/bin/claude", "brew"),
     ("/home/u/.local/bin/claude", "native"),
     ("/usr/bin/claude", "system"),
-    (r"C:\Users\a\AppData\Local\Microsoft\WinGet\Links\claude.exe", "winget"),
-    (r"C:\Users\a\AppData\Roaming\npm\claude.cmd", "npm"),
     ("/home/u/.npm-global/bin/claude", "npm"),
     # Somewhere nobody's list knows about. UNKNOWN IS THE RIGHT ANSWER — a
     # guess here would decide whether an Update button appears.
@@ -911,7 +855,6 @@ def test_doctor_saying_unknown_is_not_a_method():
     # These do not: `claude update` answers "Claude is up to date!" and changes
     # nothing, so we name the command that WOULD work and offer no button.
     ("brew", False, "brew upgrade claude-code"),
-    ("winget", False, "winget upgrade Anthropic.ClaudeCode"),
     ("apt", False, "sudo apt update && sudo apt upgrade claude-code"),
     ("dnf", False, "sudo dnf upgrade claude-code"),
     ("apk", False, "apk update && apk upgrade claude-code"),
@@ -950,11 +893,8 @@ def test_disable_updates_beats_the_install_method():
     assert still_on["updatable"] is True
 
 
-def test_the_install_command_matches_the_platform(monkeypatch):
-    monkeypatch.setattr(claude_health.os, "name", "posix")
+def test_the_install_command_is_the_native_installer():
     assert claude_health.install_command() == claude_health.INSTALL_COMMAND_POSIX
-    monkeypatch.setattr(claude_health.os, "name", "nt")
-    assert claude_health.install_command() == claude_health.INSTALL_COMMAND_WINDOWS
 
 
 # -- the gate: doctor runs only when there is something to explain -------------
@@ -1027,8 +967,7 @@ def test_a_missing_cli_is_never_broken_and_never_asked_for_a_doctor(monkeypatch,
 
 
 def test_the_snapshot_carries_the_platform_and_its_own_install_line(monkeypatch, tmp_path):
-    """The UI used to guess which install line to show and guessed wrong on
-    Windows. The server knows its own platform, so it states it."""
+    """The server knows its own platform, so it states it."""
     snap = claude_health._measure(allow_shell=False)
     assert snap["platform"] == sys.platform
     assert snap["install_command"] == claude_health.install_command()

@@ -100,7 +100,7 @@ def get(bid: str):
     process may not hold Bots (the forward middleware answers that before any
     route reaches here, so a NotOwner out of a route is a bug, not a state)."""
     bid = os.path.basename(bid or "")
-    # `.`/`..` survive basename (`x\..` on Windows becomes `..`) and would make
+    # `.`/`..` survive basename and would make
     # the bots root's parent a "bot" whenever a bot.json sits there (CodeRabbit,
     # #1637). The page's route parser refuses them too (apps/bots/routes.ts
     # isBotId); this is the guard every API caller passes through.
@@ -319,10 +319,7 @@ def owner_info() -> dict | None:
 def _try_probe_lock() -> bool:
     """True when the flock is free right now (nobody owns). Takes and releases
     it without keeping it: a probe, not an election — a lean server asks this."""
-    try:
-        import fcntl
-    except ImportError:
-        return False
+    import fcntl
     try:
         fh = open(os.path.join(bpaths.data_root(), "routines.lock"), "a+")
     except OSError:
@@ -554,14 +551,8 @@ def _take_routines_lock() -> bool:
     pre-2026-10-13 name so an installed older app, which takes the same flock
     to tick routines, and this one never both own. Same flock pattern the
     iMessage channel uses (bots/channels/imessage.py; the owner holds that one
-    too, through the router). The fd is kept until shutdown(). Windows has no
-    fcntl and only one app, so it just proceeds (macOS is the target; owner's
-    call, 2026-10-13)."""
-    try:
-        import fcntl
-    except ImportError:
-        _OWNER["fh"] = open(os.devnull, "a+")  # "owns" with nothing to hold
-        return True
+    too, through the router). The fd is kept until shutdown()."""
+    import fcntl
     path = os.path.join(bpaths.data_root(), "routines.lock")
     try:
         fh = open(path, "a+")

@@ -161,8 +161,7 @@ def test_recap_comes_back_capped_with_the_turn_it_is_about(
     argv = call["argv"]
     # The flags that make this safe: no JSONL written, no tools, one turn, and
     # the tail passed as a stream-json message over stdin — never an argv
-    # element, or a Windows .bat/.cmd shim's cmd.exe would truncate it at its
-    # first newline — rather than the live session resumed.
+    # element — rather than the live session resumed.
     assert "--no-session-persistence" in argv
     assert "--resume" not in argv and "--fork-session" not in argv
     assert argv[argv.index("--tools") + 1] == ""

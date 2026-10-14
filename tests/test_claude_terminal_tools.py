@@ -122,16 +122,6 @@ def test_tools_listed_when_an_origin_is_given(tmp_path, stub):
         s.close()
 
 
-def test_tools_absent_on_windows(monkeypatch):
-    srv = _load("permission_server")
-    monkeypatch.setenv("FUSED_RENDER_TERMINAL_ORIGIN", "http://127.0.0.1:1")
-    monkeypatch.setattr(srv, "_IS_WINDOWS", True)
-    names = [t["name"] for t in srv._dispatch("tools/list", {})["tools"]]
-    assert not [n for n in names if n.startswith("terminal_")]
-    with pytest.raises(LookupError):
-        srv._dispatch("tools/call", {"name": "terminal_list", "arguments": {}})
-
-
 def test_terminal_list_returns_sessions_with_focus(tmp_path, stub):
     s = _server(tmp_path, {"FUSED_RENDER_TERMINAL_ORIGIN": stub.origin})
     try:
@@ -265,16 +255,6 @@ def test_agent_stamps_the_origin_and_pre_allows_only_the_reads(agent, tmp_path, 
 def test_agent_omits_everything_without_an_origin(agent, tmp_path, monkeypatch):
     agent.RUNS = str(tmp_path / "runs")
     monkeypatch.delenv("FUSED_RENDER_ORIGIN", raising=False)
-    cmd, run_dir = _spawn(agent, monkeypatch, _folder(tmp_path))
-    cfg = json.load(open(os.path.join(run_dir, "mcp.json"), encoding="utf-8"))
-    assert "FUSED_RENDER_TERMINAL_ORIGIN" not in cfg["mcpServers"][agent.PERMISSION_SERVER]["env"]
-    assert "terminal_" not in cmd[cmd.index("--allowed-tools") + 1]
-
-
-def test_agent_omits_everything_on_windows(agent, tmp_path, monkeypatch):
-    agent.RUNS = str(tmp_path / "runs")
-    monkeypatch.setenv("FUSED_RENDER_ORIGIN", "http://127.0.0.1:4321")
-    monkeypatch.setattr(agent, "_terminal_tools_supported", lambda: False)
     cmd, run_dir = _spawn(agent, monkeypatch, _folder(tmp_path))
     cfg = json.load(open(os.path.join(run_dir, "mcp.json"), encoding="utf-8"))
     assert "FUSED_RENDER_TERMINAL_ORIGIN" not in cfg["mcpServers"][agent.PERMISSION_SERVER]["env"]

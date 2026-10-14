@@ -2305,8 +2305,7 @@ def test_a_shared_parent_won_by_another_run_is_not_an_error(agent, tmp_path,
     run_dir = str(runs / "20260101-000000-abcdef")
     agent._private_dir(run_dir)  # must not raise
     assert os.path.isdir(run_dir)
-    if os.name != "nt":
-        assert stat.S_IMODE(os.stat(run_dir).st_mode) == 0o700
+    assert stat.S_IMODE(os.stat(run_dir).st_mode) == 0o700
 
 
 def test_concurrent_first_runs_all_get_a_directory(agent, tmp_path):

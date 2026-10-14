@@ -29,6 +29,7 @@ disk are dropped rather than listed — the point of this tab is "open it", and
 a folder that isn't there can't be opened.
 """
 import collections
+import fcntl
 import glob
 import json
 import logging
@@ -46,12 +47,6 @@ from pydantic import BaseModel
 from fused_render import session_liveness, tasks_store
 from fused_render._view_url_codec import canonical_fs_path
 from fused_render.server.common import _require_fused
-
-try:
-    import fcntl  # POSIX only — Windows falls back to no inter-process lock,
-    # the same posture as the Inbox's set_triage.py, whose file this shares.
-except ImportError:  # pragma: no cover
-    fcntl = None
 
 logger = logging.getLogger(__name__)
 
@@ -113,7 +108,7 @@ def api_claude_sessions():
                 latest[cwd] = mtime
     # Canonicalized on the way out: the frontend's path helpers (basename,
     # FolderStack's joinPath) are forward-slash-only, matching every other
-    # fs path the runtime hands them — a raw Windows cwd would break both.
+    # fs path the runtime hands them.
     folders = [
         {
             "path": canonical_fs_path(path),
@@ -481,7 +476,7 @@ def _summarize(path: str, now: float, names: dict, triage: dict) -> dict | None:
         "session_id": session_id,
         "name": name,
         # Canonicalized like /api/claude-sessions: the frontend's path helpers
-        # are forward-slash-only and a raw Windows cwd would break them.
+        # are forward-slash-only.
         "cwd": canonical_fs_path(cwd or _decode_project_dir(
             os.path.basename(os.path.dirname(path)))),
         "started_at": started.isoformat(),
@@ -910,17 +905,7 @@ def _recap_generate(agent, file: str, session_id: str) -> str:
 
     The tail travels over stdin as a `--input-format stream-json` message,
     never as an argv element — same rule as every other prompt this template
-    sends (`_write_inbox_entry`, `ai.py`'s `_ai_cmd`), and load-bearing here
-    for a reason unique to this one caller: a transcript tail is the only
-    prompt in the app built out of the CONVERSATION rather than typed by a
-    person, so it is the one guaranteed to contain embedded newlines. On the
-    Windows `.bat`/`.cmd` shim an npm install of the CLI commonly resolves to,
-    CreateProcess reroutes the whole argv through `cmd.exe /c`, which reads
-    its command line ONE LINE AT A TIME — a raw newline inside a quoted argv
-    string ends that line as far as cmd.exe is concerned, silently
-    truncating the prompt at the first turn break no matter how it was
-    quoted. Passed over stdin instead, the tail never touches the command
-    line cmd.exe parses, on any platform.
+    sends (`_write_inbox_entry`, `ai.py`'s `_ai_cmd`).
 
     `--output-format stream-json` is not a choice: the CLI rejects
     `--input-format stream-json` paired with anything else
@@ -983,8 +968,7 @@ def _recap(agent, file: str, session_id: str, for_uuid: str) -> str:
     show an error because a nicety could not be computed.
     """
     # The FILE is part of the key, not just the session: see the cache block's
-    # "KEYED ON THE FILE TOO". Canonical, because the same folder reaches this
-    # endpoint spelled both ways on Windows and two spellings of one chat are
+    # "KEYED ON THE FILE TOO". Canonical, so two spellings of one folder are
     # one conversation.
     key = (canonical_fs_path(file), session_id, for_uuid)
     with _recap_lock:
@@ -1160,8 +1144,7 @@ def write_triage(session_id: str, status: str) -> None:
     triage_path = os.path.join(STATE_DIR, "triage.json")
     lock_path = triage_path + ".lock"
     with open(lock_path, "w") as lock:
-        if fcntl is not None:
-            fcntl.flock(lock, fcntl.LOCK_EX)
+        fcntl.flock(lock, fcntl.LOCK_EX)
         triage = _load_state("triage.json")
         rec = triage.get(session_id)
         if not isinstance(rec, dict):
@@ -1197,8 +1180,7 @@ def clear_triage(session_id: str) -> bool:
     triage_path = os.path.join(STATE_DIR, "triage.json")
     lock_path = triage_path + ".lock"
     with open(lock_path, "w") as lock:
-        if fcntl is not None:
-            fcntl.flock(lock, fcntl.LOCK_EX)
+        fcntl.flock(lock, fcntl.LOCK_EX)
         triage = _load_state("triage.json")
         rec = triage.get(session_id)
         if not isinstance(rec, dict) or "status" not in rec:
@@ -1228,8 +1210,7 @@ def forget_triage(session_id: str) -> bool:
     triage_path = os.path.join(STATE_DIR, "triage.json")
     lock_path = triage_path + ".lock"
     with open(lock_path, "w") as lock:
-        if fcntl is not None:
-            fcntl.flock(lock, fcntl.LOCK_EX)
+        fcntl.flock(lock, fcntl.LOCK_EX)
         triage = _load_state("triage.json")
         if session_id not in triage:
             return False

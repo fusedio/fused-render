@@ -36,13 +36,3 @@ def test_the_install_command_matches_the_server_s_own_constant():
     assert claude_health.INSTALL_COMMAND_POSIX == command
     assert command in _shell()
 
-
-def test_the_windows_install_command_is_pinned_too():
-    """It is shown to Windows users and piped into PowerShell on their behalf,
-    which is exactly the reason TR-10 pins the POSIX one. Absent this, the
-    Windows half of D517's platform fix could be silently reworded — and the one
-    platform that had the wrong command for longest is the one nobody developing
-    this runs."""
-    from fused_render import claude_health
-
-    assert claude_health.INSTALL_COMMAND_WINDOWS == "irm https://claude.ai/install.ps1 | iex"

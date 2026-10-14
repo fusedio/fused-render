@@ -228,11 +228,8 @@ def _drain(login: _Login) -> None:
 def _stop(login: _Login, force: bool) -> None:
     """Stop the child.
 
-    `gh` ships as a real, native executable on every platform this app
-    targets — never an npm-style `.cmd` shim — so, unlike
-    `claude_login._stop`, there is no `shell=True` indirection to walk a
-    process tree through: the child IS `gh` everywhere, and `terminate`/`kill`
-    reach it directly on POSIX and Windows alike.
+    The child IS `gh`, a native executable, so `terminate`/`kill` reach it
+    directly.
 
     `terminate`, not `kill`, for a plain cancel: the child is mid-OAuth-flow
     and possibly about to write a credential, and asking it to stop is the

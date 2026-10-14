@@ -15,7 +15,6 @@ it.
 import importlib.util
 import io
 import os
-import sys
 
 import pytest
 
@@ -168,7 +167,4 @@ def test_the_cli_spawn_inside_the_host_still_detaches():
     harmless), and `_cancel`'s killpg needs it to lead its own group — so
     `_DETACH` keeps start_new_session there, unlike `_HOST_SPAWN`."""
     agent = _load("agent")
-    if sys.platform == "win32":
-        assert "creationflags" in agent._DETACH
-    else:
-        assert agent._DETACH == {"start_new_session": True}
+    assert agent._DETACH == {"start_new_session": True}

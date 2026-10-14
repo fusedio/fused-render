@@ -113,8 +113,6 @@ def test_the_read_rule_uses_the_double_slash_the_cli_needs(agent):
     rule path as RELATIVE unless it starts with `//`, so a single-slash rule
     matches nothing and every crop raises a card instead."""
     assert agent._read_rule("/tmp/fr/shots") == "Read(//tmp/fr/shots/**)"
-    # Windows: backslashes become forward ones, the drive letter survives.
-    assert agent._read_rule(r"C:\Users\a\shots") == "Read(//C:/Users/a/shots/**)"
 
 
 def test_the_directory_handed_to_the_page_is_the_one_the_rule_names(
@@ -125,20 +123,6 @@ def test_the_directory_handed_to_the_page_is_the_one_the_rule_names(
     shots = tmp_path / "fr" / "shots"
     monkeypatch.setattr(agent, "SHOTS", str(shots))
     assert agent._shots_dir() == {"dir": agent._wire_path(str(shots))}
-
-
-def test_a_forward_slash_windows_path_is_still_writable_by_the_upload(agent):
-    """Why forward slashes are the form that WINS rather than backslashes: the
-    crop is written through `/api/fs/upload`, whose only path shape requirement
-    is `os.path.isabs`. Windows' `ntpath` treats both separators as separators,
-    so the one spelling the allow-rule can name is also a path the server
-    writes — checked against ntpath directly, since this suite cannot run on
-    Windows."""
-    import ntpath
-    p = agent._wire_path(r"C:\Users\a\shots") + "/x.png"
-    assert ntpath.isabs(p)
-    assert ntpath.dirname(p) == "C:/Users/a/shots"
-    assert ntpath.basename(p) == "x.png"
 
 
 def test_the_spawn_line_pre_approves_reading_a_crop_and_nothing_else(
@@ -944,7 +928,7 @@ def test_the_spawn_line_grows_a_read_rule_per_attachment_directory(
     assert "Read" not in allowed, "never a blanket rule"
 
     # what the validator refuses, and never as an error
-    root = "C:\\" if os.name == "nt" else "/"
+    root = "/"
     assert agent._attach_dirs(json.dumps(["relative/x", str(project / "nope"),
                                           root, str(project / "..")])) \
         == [agent._wire_path(str(tmp_path))], \

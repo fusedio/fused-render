@@ -46,12 +46,6 @@ def test_unsafe_chat_id_gets_no_prefix(agent):
     assert "FUSED_CLAUDE_CMD_LOG" not in env
 
 
-def test_windows_never_sets_prefix(agent, monkeypatch):
-    monkeypatch.setattr(agent, "_prefix_supported", lambda: False)
-    env = agent._spawn_env("chat-1")
-    assert "CLAUDE_CODE_SHELL_PREFIX" not in env
-
-
 @pytest.mark.skipif(os.name == "nt", reason="POSIX only")
 def test_users_own_prefix_is_not_clobbered(agent, monkeypatch):
     monkeypatch.setenv("CLAUDE_CODE_SHELL_PREFIX", "/their/prefix")

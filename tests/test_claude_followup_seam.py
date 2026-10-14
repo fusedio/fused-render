@@ -23,7 +23,6 @@ the same window:
 import importlib.util
 import json
 import os
-import subprocess
 
 import pytest
 
@@ -88,35 +87,14 @@ def _setup(agent, run_dir, alive=True):
 
 
 def _record_tree_kills(agent, monkeypatch):
-    """Record the pids `_kill_tree` ends, on whichever road THIS platform takes.
-
-    `_kill_tree` is the same platform split `_cancel`'s tail always had: POSIX
-    signals the process group (`start_new_session=True` makes the pid the pgid),
-    while Windows has neither `os.killpg` nor a console for CTRL_BREAK to reach
-    (the run is spawned DETACHED_PROCESS) and shells out to `taskkill /T /F` to
-    walk the tree instead.
-
-    A test that patches `os.killpg` alone therefore records nothing on Windows
-    AND lets a real `taskkill /F` loose on whatever process happens to own that
-    pid on the runner — which is how the R2-12 stops went red on
-    `test-python-windows` while passing everywhere else. Patching the road the
-    platform actually takes keeps the assertion honest on both, and the
-    `/T`/`/F` check pins the tree-walking flags the Windows road depends on.
+    """Record the pids `_kill_tree` ends: it signals the process group
+    (`start_new_session=True` makes the pid the pgid).
 
     Returns a list of pids, appended to in call order.
     """
     killed = []
-    if os.name == "nt":
-        def _run(cmd, **kwargs):
-            assert cmd[:2] == ["taskkill", "/PID"], cmd
-            assert "/T" in cmd, "must walk the tree, not just the named pid"
-            assert "/F" in cmd, "the CLI does not answer a polite close"
-            killed.append(int(cmd[2]))
-            return subprocess.CompletedProcess(cmd, 0)
-        monkeypatch.setattr(agent.subprocess, "run", _run)
-    else:
-        monkeypatch.setattr(agent.os, "killpg",
-                            lambda pid, _sig: killed.append(pid))
+    monkeypatch.setattr(agent.os, "killpg",
+                        lambda pid, _sig: killed.append(pid))
     return killed
 
 

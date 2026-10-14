@@ -133,15 +133,6 @@ def valid_winsize(rows: object, cols: object) -> Optional[tuple[int, int]]:
 
 def _set_winsize(fd: int, rows: int, cols: int) -> None:
     """TIOCSWINSZ on `fd`; an unrepresentable size or a failed ioctl is a no-op."""
-    # fcntl/termios imported here, not at module scope: both are
-    # POSIX-only and would raise ImportError on Windows the moment
-    # ANYTHING imports this module — including `server/app.py`'s
-    # unconditional `from ...routers.terminal import router`, which
-    # would then take the whole app down before `resolve_profile()`'s
-    # `os.name == "nt"` guard ever got a chance to degrade gracefully
-    # (see `_pty_exec_helper.py` and `_env_install_worker.py`'s own
-    # local `import fcntl` for the same reason). No live session is ever
-    # constructed on Windows, so this function is simply never reached there.
     import fcntl
     import termios
     try:
@@ -467,7 +458,7 @@ class PtySessionRegistry:
                     f"terminal session cap ({MAX_SESSIONS}) reached")
             profile = resolve_profile(cwd=cwd)
             if profile is None:
-                raise RuntimeError("terminal is not supported on this platform")
+                raise RuntimeError("no usable shell found ($SHELL, /bin/bash, /bin/sh)")
             profile = integrate(profile)
             sid = uuid.uuid4().hex
             session = PtySession(sid, profile, rows=rows, cols=cols)

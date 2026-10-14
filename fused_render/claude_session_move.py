@@ -146,29 +146,9 @@ def _live_session_ids(sessions_dir: str) -> set:
 
 def _pid_alive(pid: int) -> bool:
     """Is the process still going. Mirrors `templates/shared/procutil.pid_alive`
-    (which server code may not import, D166): on Windows `os.kill(pid, 0)` is
-    NOT a probe — signal 0 aliases CTRL_C_EVENT and reaches the process — so
-    the exit code is asked for through the Win32 API instead. A probe that
-    cannot answer says alive: the cost of a wrong "alive" is a deferred move,
-    the cost of a wrong "gone" is a split conversation."""
-    if os.name == "nt":
-        try:
-            import ctypes
-            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-            STILL_ACTIVE = 259
-            handle = ctypes.windll.kernel32.OpenProcess(
-                PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
-            if not handle:
-                return False
-            try:
-                code = ctypes.c_ulong()
-                if not ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
-                    return True
-                return code.value == STILL_ACTIVE
-            finally:
-                ctypes.windll.kernel32.CloseHandle(handle)
-        except Exception:  # noqa: BLE001 — a failed probe must not free the move
-            return True
+    (which server code may not import, D166). A probe that cannot answer says
+    alive: the cost of a wrong "alive" is a deferred move, the cost of a wrong
+    "gone" is a split conversation."""
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -198,15 +178,14 @@ def _path_rewrites(old_root: str, new_root: str) -> list:
 
     old = os.path.abspath(old_root).rstrip(os.sep)
     new = os.path.abspath(new_root).rstrip(os.sep)
-    # On Windows the abspath spelling is backslashed while the shell writes
-    # its canonical forward-slash form into urls and app-state blocks; on
-    # POSIX the two collapse into one (deduped below).
+    # The shell writes its canonical form into urls and app-state blocks; on
+    # POSIX it is the abspath spelling itself (deduped below).
     cold, cnew = canonical_fs_path(old), canonical_fs_path(new)
     plain = rb'(?=$|[/\\"\'\s?&#)\],:;])'
     pairs = [
         (old, new, plain),
         (cold, cnew, plain),
-        # A JSON string doubles backslashes, so a Windows path has another
+        # A JSON string escapes some characters, so a path can have another
         # spelling inside the very lines being rewritten.
         (json.dumps(old)[1:-1], json.dumps(new)[1:-1],
          rb'(?=$|["\'\s?&#)\],:;]|\\\\)'),
@@ -221,7 +200,7 @@ def _path_rewrites(old_root: str, new_root: str) -> list:
         if ob == nb or ob in seen:
             continue
         seen.add(ob)
-        # `sub` reads the replacement as a template: a backslash in a Windows
+        # `sub` reads the replacement as a template: a backslash in the
         # destination would be an escape (or a raised re.error), so it is
         # doubled to mean itself literally.
         out.append((re.compile(re.escape(ob) + tail), nb.replace(b"\\", b"\\\\")))

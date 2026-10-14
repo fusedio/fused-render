@@ -31,15 +31,8 @@ _PROMPT = "Paste code here"
 
 @pytest.fixture(autouse=True)
 def _clean(monkeypatch):
-    """Reset the record, and PIN THE PLATFORM.
-
-    Without the pin, every test that reaches `_stop` behaves differently on the
-    Windows runner: it would fire a real `taskkill /F /T /PID 4242` at whatever
-    process holds that pid on the runner, never close the fake child, and hang
-    to the grace period before failing. Tests about Windows opt in explicitly.
-    """
+    """Reset the record."""
     claude_login.reset()
-    monkeypatch.setattr(claude_login, "_windows", lambda: False)
     # AND STUB THE RE-PROBE. On a clean exit `_run` calls
     # `claude_health.summary_refreshed()` from its worker thread, which spawns a
     # real `claude auth status` through whatever `subprocess.Popen` is patched at
@@ -187,19 +180,6 @@ def test_the_child_gets_the_augmented_path(monkeypatch):
     seen = _spawn(monkeypatch, proc)
     claude_login.start()
     assert seen["kw"]["env"]["PATH"] == "/augmented"
-    proc.finish()
-
-
-def test_it_goes_through_the_cmd_hop_behind_a_windows_shim(monkeypatch):
-    """npm installs `claude` as a .cmd shim CreateProcess cannot run — and a
-    signed-out npm install on Windows is exactly what this button is for."""
-    monkeypatch.setattr(claude_health.os, "name", "nt")
-    _found(monkeypatch, r"C:\npm\claude.cmd")
-    proc = _FakeProc()
-    seen = _spawn(monkeypatch, proc)
-    claude_login.start()
-    assert isinstance(seen["cmd"], str)
-    assert seen["kw"]["shell"] is True
     proc.finish()
 
 
@@ -376,30 +356,9 @@ def test_an_abandoned_sign_in_is_killed_by_the_watchdog(monkeypatch):
     assert "not finished" in claude_login.status()["error"]
 
 
-def test_on_windows_the_whole_process_tree_is_stopped(monkeypatch):
-    """Behind a .cmd shim the direct child is cmd.exe, and TerminateProcess on
-    it leaves the node process holding the loopback listener and our stdout
-    pipe — so the drain never sees EOF and the record never settles. Cancel and
-    the watchdog would both wedge the button, on exactly the npm-on-Windows
-    install this button exists to serve."""
-    monkeypatch.setattr(claude_login, "_windows", lambda: True)
-    killed = []
-    monkeypatch.setattr(
-        claude_login.subprocess, "run",
-        lambda argv, **kw: killed.append(argv)
-        or subprocess.CompletedProcess(argv, 0))
-    proc = _FakeProc(text=PROMPT, pid=9182)
-    claude_login._stop(claude_login._Login(proc=proc, started_at=0.0, tail=[]),
-                       force=False)
-    assert killed == [["taskkill", "/T", "/F", "/PID", "9182"]]
-    # And NOT the plain terminate, which is the thing that does not work here.
-    assert proc.terminated is False
-    proc.finish()
-
-
-def test_off_windows_the_child_itself_is_signalled(monkeypatch):
-    """`shell=True` never happens on POSIX, so the child IS the CLI and a
-    signal reaches it — no taskkill, and terminate stays the polite form."""
+def test_the_child_itself_is_signalled(monkeypatch):
+    """The child IS the CLI, so a signal reaches it, and terminate stays the
+    polite form."""
     proc = _FakeProc(text=PROMPT)
     login = claude_login._Login(proc=proc, started_at=0.0, tail=[])
     claude_login._stop(login, force=False)
@@ -474,38 +433,6 @@ def test_a_re_probe_that_itself_fails_does_not_wedge_the_record(monkeypatch):
     proc.finish()
     assert _settle(lambda: not claude_login.status()["in_flight"])
     assert claude_login.status()["error"] is None
-
-
-def test_taskkill_failing_still_falls_back_to_signalling_the_child(monkeypatch):
-    """taskkill reports "process not found" and "access denied" by exiting
-    non-zero, and `subprocess.run` raises nothing for either. Returning on the
-    strength of having merely RUN it would skip the fallback in exactly the
-    cases that need one."""
-    monkeypatch.setattr(claude_login, "_windows", lambda: True)
-    monkeypatch.setattr(
-        claude_login.subprocess, "run",
-        lambda argv, **kw: subprocess.CompletedProcess(argv, 128))
-    proc = _FakeProc(text=PROMPT)
-    claude_login._stop(claude_login._Login(proc=proc, started_at=0.0, tail=[]),
-                       force=False)
-    assert proc.terminated is True
-    proc.finish()
-
-
-def test_taskkill_missing_falls_back_to_signalling_the_child(monkeypatch):
-    """Killing cmd.exe alone is worth little behind a shim, but it beats not
-    trying — and the fallback must not raise out of a cancel."""
-    monkeypatch.setattr(claude_login, "_windows", lambda: True)
-
-    def no_taskkill(*a, **k):
-        raise FileNotFoundError("taskkill")
-
-    monkeypatch.setattr(claude_login.subprocess, "run", no_taskkill)
-    proc = _FakeProc(text=PROMPT)
-    claude_login._stop(claude_login._Login(proc=proc, started_at=0.0, tail=[]),
-                       force=False)
-    assert proc.terminated is True
-    proc.finish()
 
 
 def test_a_child_that_will_not_reap_is_not_called_a_login_timeout(monkeypatch):

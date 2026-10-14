@@ -62,28 +62,12 @@ BIN_ENV = "FUSED_RENDER_CLAUDE_BIN"
 
 # Where Claude Code installs `claude`, for when it isn't on the PATH this process
 # inherited — a Finder/Dock-launched .app gets the supervisor's PATH, not a
-# shell's, so it misses ~/.local/bin and Homebrew. On Windows it is worse: a GUI
-# launch inherits the PATH of its login session, so an install that appended to
-# the *user* PATH afterwards stays invisible until the next sign-in.
+# shell's, so it misses ~/.local/bin and Homebrew.
 #
 # This is the UNION of the four lists that used to exist independently across
 # server/ai.py, claude_config/lib.py, and the retired learn and sessions
 # bundled content. A directory only one of them knew about was a
 # directory where the app disagreed with itself.
-#
-# Ordered most-canonical first, `.exe` ahead of any `.cmd` shim: a shim has to be
-# run through cmd.exe, which re-parses the command line (server/ai.py:_popen_cmd).
-WINDOWS_CANDIDATES = (
-    # native installer (irm https://claude.ai/install.ps1 | iex) — recommended
-    r"%USERPROFILE%\.local\bin\claude.exe",
-    # winget install Anthropic.ClaudeCode, via winget's own shim dir
-    r"%LOCALAPPDATA%\Microsoft\WinGet\Links\claude.exe",
-    # npm install -g @anthropic-ai/claude-code, in npm's global prefix
-    r"%APPDATA%\npm\claude.exe",
-    r"%APPDATA%\npm\claude.cmd",
-    # legacy local npm install, written by older Claude Code versions
-    r"%USERPROFILE%\.claude\local\claude.exe",
-)
 POSIX_CANDIDATES = (
     "~/.local/bin/claude",
     "/opt/homebrew/bin/claude",
@@ -97,8 +81,8 @@ POSIX_CANDIDATES = (
 
 
 def candidates() -> tuple:
-    """The platform's known install locations, unexpanded."""
-    return WINDOWS_CANDIDATES if os.name == "nt" else POSIX_CANDIDATES
+    """The known install locations, unexpanded."""
+    return POSIX_CANDIDATES
 
 
 # The lowest `claude` this app's spawn line is known to work with.
@@ -138,41 +122,10 @@ _AUTH_TIMEOUT_S = 10
 _DOCTOR_TIMEOUT_S = 20
 
 
-def _probe_cmd(path: str, *args: str):
-    """How to spawn `path` with `args` for a probe: an argv list, or — behind a
-    Windows .cmd/.bat shim — one command STRING for the cmd.exe hop.
-
-    npm installs claude as a .cmd shim, which CreateProcess cannot run directly;
-    only cmd.exe can. Without this both probes below would raise OSError on
-    every npm-installed Windows CLI and report version and sign-in as "unknown"
-    — safe, since unknown never produces advice, but useless to the one platform
-    where the PATH problem this module exists for is worst.
-
-    server/ai.py:_popen_cmd solves the same problem for the completion spawn and
-    is not reused here: it cannot be (ai.py imports THIS module, so the
-    dependency only runs one way), and it does not need to be. Its difficulty is
-    quoting values that came from a caller; every argument here is a static
-    literal of ours plus a path we resolved, so the simple form is correct. A
-    path containing a quote is refused rather than mis-quoted — Windows paths
-    cannot contain one, so this is an assertion, not a fallback.
-    """
-    if not (os.name == "nt" and path.lower().endswith((".cmd", ".bat"))):
-        return [path, *args]
-    if '"' in path:
-        raise ValueError(f"path may not contain a double quote: {path!r}")
-    return " ".join(f'"{part}"' for part in (path, *args))
-
-
 def _run_probe(path: str, *args: str, timeout: float):
-    """Run a bounded probe, returning the completed process (or raising).
-
-    `shell=True` ONLY on the .cmd path, where `_probe_cmd` returned a string:
-    that is the cmd.exe hop, not a shell-injection surface — the payload is
-    ours, fully quoted, and carries no user text.
-    """
-    cmd = _probe_cmd(path, *args)
+    """Run a bounded probe, returning the completed process (or raising)."""
     return subprocess.run(
-        cmd, capture_output=True, timeout=timeout, shell=isinstance(cmd, str),
+        [path, *args], capture_output=True, timeout=timeout,
         env={**os.environ, "PATH": augmented_path()}, **SUBPROCESS_KWARGS,
     )
 
@@ -236,17 +189,10 @@ def executable(path: str) -> bool:
     between them would put the health report and the spawn on different
     binaries — health calling the install ready while the session dies on the
     dud, which is precisely the contradiction this module exists to end.
-
-    The exec bit is only consulted off Windows. There it means nothing —
-    `os.access(X_OK)` is true for any existing file, so the test would be
-    isfile twice — and what actually decides runnability is the extension,
-    which the candidate list spells out (`.exe` ahead of `.cmd`). Skipping it
-    explicitly rather than relying on that no-op also keeps this honest under a
-    test that simulates Windows on a POSIX filesystem.
     """
     if not os.path.isfile(path):
         return False
-    return os.name == "nt" or os.access(path, os.X_OK)
+    return os.access(path, os.X_OK)
 
 
 def _shell_probe() -> Optional[str]:
@@ -273,10 +219,6 @@ def _shell_probe() -> Optional[str]:
     profile. Only reached when the override, PATH and every candidate missed,
     and its answer is cached like everything else here.
     """
-    if os.name == "nt":
-        # cmd/PowerShell have no login-shell profile in this sense, and the
-        # `where` equivalent adds nothing over PATH + the candidate list.
-        return None
     shell = os.environ.get("SHELL") or "/bin/bash"
     if not executable(shell):
         return None
@@ -350,10 +292,7 @@ def resolve(allow_shell: bool = True) -> tuple:
         path = os.path.expanduser(os.path.expandvars(candidate))
         if executable(path):
             return path, "candidate"
-    # One more pass over the candidate dirs through `which`, which is not
-    # redundant on Windows: PATHEXT resolution is how a `claude.cmd` beside a
-    # missing `claude.exe` gets found, and spelling every extension into the
-    # candidate list by hand is what that list used to get wrong.
+    # One more pass over the candidate dirs through `which`.
     augmented = shutil.which("claude", path=augmented_path())
     if augmented:
         return augmented, "candidate"
@@ -476,7 +415,7 @@ def signed_in(path: Optional[str] = None) -> Optional[bool]:
     3. **Otherwise None.**
 
     STEP 2 CAN NEVER ANSWER FALSE, and that is a correction rather than caution.
-    This used to conclude "no credential file on Linux/Windows, therefore signed
+    This used to conclude "no credential file on Linux, therefore signed
     out", reasoning from supervisor/paths.py's note that macOS keeps its
     credential in the login Keychain while the others keep it in the config dir.
     That note is true and the inference from it was still wrong: a credential
@@ -512,22 +451,17 @@ def signed_in(path: Optional[str] = None) -> Optional[bool]:
 # every state below was DETECTED and then handed to the user as a sentence to go
 # and act on. Answering them is what lets the app act instead.
 
-#: How the native installers spell their target, per platform. The app runs this
-#: itself now (`claude_install.py`), so it is no longer only a thing to copy —
-#: but it is still shown before it runs, and `test_trouble_parity.py` pins it,
-#: because a wrong command in front of a user is worse than no command.
-#:
-#: The POSIX line is the one the download page and the chat template already
-#: carry. THE WINDOWS LINE IS NEW, and its absence was a real bug: the strip
-#: attached the bash line to every `missing` card regardless of platform, so a
-#: Windows user with no Claude Code was handed a command their shell cannot run.
+#: How the native installer spells its target. The app runs this itself now
+#: (`claude_install.py`), so it is no longer only a thing to copy — but it is
+#: still shown before it runs, and `test_trouble_parity.py` pins it, because a
+#: wrong command in front of a user is worse than no command. It is the line
+#: the download page and the chat template already carry.
 INSTALL_COMMAND_POSIX = "curl -fsSL https://claude.ai/install.sh | bash"
-INSTALL_COMMAND_WINDOWS = "irm https://claude.ai/install.ps1 | iex"
 
 
 def install_command() -> str:
-    """The native install line for THIS platform, as a user would type it."""
-    return INSTALL_COMMAND_WINDOWS if os.name == "nt" else INSTALL_COMMAND_POSIX
+    """The native install line, as a user would type it."""
+    return INSTALL_COMMAND_POSIX
 
 
 # --- the terminal's PATH, as opposed to ours ----------------------------------
@@ -669,17 +603,14 @@ def _shell_quote_rc(rc: str) -> str:
 def path_fix(path: str) -> Optional[dict]:
     """The command that puts `path`'s directory on the terminal's PATH, or None.
 
-    None when there is nothing safe to offer: Windows (install.ps1 edits the
-    user PATH itself), a shell we cannot write a correct line for (fish), or a
-    directory outside the user's home (a system dir missing from PATH is a
+    None when there is nothing safe to offer: a shell we cannot write a
+    correct line for (fish), or a directory outside the user's home (a system dir missing from PATH is a
     machine configuration problem, not something to append over).
 
     `$HOME`-relative on purpose, in both the line and what the user sees: the
     literal expansion would bake a username into a dotfile that may be synced
     between machines.
     """
-    if os.name == "nt":
-        return None
     rc = _shell_rc()
     if not rc:
         return None
@@ -756,7 +687,7 @@ def add_to_shell_path() -> dict:
 #: Install methods where `claude update` genuinely updates something, and the
 #: ones where it is a documented no-op.
 #:
-#: THE NO-OP LIST IS THE WHOLE POINT. Homebrew, WinGet and the Linux package
+#: THE NO-OP LIST IS THE WHOLE POINT. Homebrew and the Linux package
 #: managers do not auto-update and do not update through the CLI either: `claude
 #: update` answers "Claude is up to date!" and changes nothing, so putting an
 #: Update button in front of those users offers a fix that cannot work. The
@@ -765,7 +696,6 @@ def add_to_shell_path() -> dict:
 UPDATES_ITSELF = ("native", "npm")
 MANAGED_UPDATE_COMMANDS = {
     "brew": "brew upgrade claude-code",
-    "winget": "winget upgrade Anthropic.ClaudeCode",
     "apt": "sudo apt update && sudo apt upgrade claude-code",
     "dnf": "sudo dnf upgrade claude-code",
     "apk": "apk update && apk upgrade claude-code",
@@ -786,11 +716,9 @@ MANAGED_UPDATE_COMMANDS = {
 #: Ordered most-specific first — a Homebrew Cellar path also contains "bin".
 _PATH_METHODS = (
     ("brew", ("/opt/homebrew/", "/usr/local/cellar/", "/home/linuxbrew/"), False),
-    ("winget", ("\\microsoft\\winget\\", "/microsoft/winget/"), False),
-    ("npm", ("/node_modules/", "\\node_modules\\", "\\appdata\\roaming\\npm\\",
-             "/.npm-global/", "/library/pnpm/", "/.bun/bin/"), False),
-    ("native", ("/.local/bin/", "\\.local\\bin\\", "/.local/share/claude/",
-                "\\.local\\share\\claude\\"), False),
+    ("npm", ("/node_modules/", "/.npm-global/", "/library/pnpm/",
+             "/.bun/bin/"), False),
+    ("native", ("/.local/bin/", "/.local/share/claude/"), False),
     # A system bindir means a system package manager put it there. Which one is
     # not knowable from the path, so this stays the generic answer and
     # `update_plan` refuses to guess a command for it.
@@ -887,8 +815,7 @@ def install_method(path: Optional[str], doctor: Optional[dict]) -> Optional[str]
         return aliases.get(named, named)
     if not path:
         return None
-    # Lowercased only — the needle lists spell both separators, because a
-    # Windows path can carry either and normalising to one would have to pick.
+    # Lowercased only.
     lowered = path.lower()
     for method, needles, anchored in _PATH_METHODS:
         match = lowered.startswith if anchored else lowered.__contains__
@@ -1102,10 +1029,9 @@ def _measure(allow_shell: bool = True) -> dict:
     #     login shell; silence means the terminal really cannot see it. The
     #     probe costs a second or two and runs only on exactly the machines
     #     where the answer might be False.
-    #   * "override" / Windows / not found — None: unknown or not ours to say
-    #     (install.ps1 edits the user PATH itself).
+    #   * "override" / not found — None: unknown or not ours to say.
     on_shell_path: Optional[bool] = None
-    if usable and os.name != "nt":
+    if usable:
         if source in ("path", "shell"):
             on_shell_path = True
         elif source == "candidate" and allow_shell:
@@ -1134,8 +1060,7 @@ def _measure(allow_shell: bool = True) -> dict:
         # says "as <email>" or "using an API key" from it; nothing else reads it.
         "account": account(auth),
         "config_dir": config_dir(),
-        # Which platform this is, so the UI never has to guess which install
-        # line to show. It used to guess, and it guessed wrong on Windows.
+        # Which platform this is, so the UI never has to guess.
         "platform": sys.platform,
         "install_command": install_command(),
         # None whenever doctor was not run or could not answer — never inferred
@@ -1154,8 +1079,8 @@ def _measure(allow_shell: bool = True) -> dict:
         # back empty — never inferred from where WE found the binary.
         "on_shell_path": on_shell_path,
         # The exact line the one-click fix will run, shown before it runs.
-        # None whenever there is nothing safe to offer (fish, Windows, a
-        # binary outside the home directory).
+        # None whenever there is nothing safe to offer (fish, a binary
+        # outside the home directory).
         "path_fix_command": fix["command"] if fix else None,
         "checked_at": time.time(),
         "fingerprint": _fingerprint(path),

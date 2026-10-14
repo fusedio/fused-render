@@ -140,8 +140,8 @@ def artifact_dict(
     return {
         # The local file that was published, in the shell's canonical form
         # (forward slashes — see canonical_fs_path, and the same call in the
-        # sessions router): a Windows transcript records the backslashed form,
-        # and frontend helpers like `basename` split on "/" only. Not otherwise
+        # sessions router): frontend helpers like `basename` split on "/"
+        # only. Not otherwise
         # re-resolved: that string is what the publish actually used, and it is
         # already absolute.
         "file_path": canonical_fs_path(file_path),

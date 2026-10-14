@@ -71,7 +71,7 @@ BIN_ENV = "FUSED_RENDER_GH_BIN"
 # Where `gh` gets installed, for when it isn't on the PATH this process
 # inherited — a Finder/Dock-launched .app gets the supervisor's PATH, not a
 # shell's, so it misses ~/.local/bin and Homebrew (see claude_health.py's
-# WINDOWS_CANDIDATES/POSIX_CANDIDATES docstring for the full argument).
+# POSIX_CANDIDATES docstring for the full argument).
 #
 # This app's OWN install directory (`install_dir()`, where the installer
 # below actually writes `gh`) is deliberately NOT a literal in these tuples:
@@ -81,10 +81,6 @@ BIN_ENV = "FUSED_RENDER_GH_BIN"
 # ever looks at again. `candidates()` below derives that entry fresh on
 # every call instead. The rest of these are fixed, well-known locations a
 # package manager puts `gh` in, so a literal is exactly right for them.
-WINDOWS_CANDIDATES = (
-    r"%ProgramFiles%\GitHub CLI\gh.exe",
-    r"%LOCALAPPDATA%\Microsoft\WinGet\Links\gh.exe",
-)
 POSIX_CANDIDATES = (
     "/opt/homebrew/bin/gh",
     "/usr/local/bin/gh",
@@ -94,13 +90,12 @@ POSIX_CANDIDATES = (
 
 
 def candidates() -> tuple:
-    """The platform's known install locations, unexpanded except for this
+    """The known install locations, unexpanded except for this
     app's own entry (first), which is already an absolute path — it comes
     from `install_dir()`, which already resolves `FUSED_RENDER_HOME` and any
     active branch ref via `storage.home_dir()`."""
     own = os.path.join(install_dir(), _binary_name())
-    literal = WINDOWS_CANDIDATES if os.name == "nt" else POSIX_CANDIDATES
-    return (own,) + literal
+    return (own,) + POSIX_CANDIDATES
 
 
 # `gh --version` prints e.g. "gh version 2.63.0 (2024-10-30)". Take the first
@@ -126,12 +121,10 @@ def parse_version(text: str) -> Optional[str]:
 
 def executable(path: str) -> bool:
     """Whether `path` is a file we could actually exec. Same discipline as
-    claude_health.executable: isfile AND the exec bit off Windows, because the
-    exec bit means nothing there (os.access(X_OK) is true for any existing
-    file)."""
+    claude_health.executable: isfile AND the exec bit."""
     if not os.path.isfile(path):
         return False
-    return os.name == "nt" or os.access(path, os.X_OK)
+    return os.access(path, os.X_OK)
 
 
 def resolve() -> tuple:
@@ -426,12 +419,10 @@ _ARCH_ALIASES = {
 
 
 def _target_os() -> str:
-    """gh's release-asset OS name for this machine: `macOS`, `linux`, or
-    `windows` — the exact three spellings its asset filenames use."""
+    """gh's release-asset OS name for this machine: `macOS` or `linux` — the
+    exact spellings its asset filenames use."""
     if sys.platform == "darwin":
         return "macOS"
-    if os.name == "nt":
-        return "windows"
     return "linux"
 
 
@@ -452,8 +443,8 @@ def _asset_name(os_kind: str, arch: str, version: str) -> str:
     """The release asset filename `gh` publishes for `(os_kind, arch,
     version)` — e.g. `gh_2.100.0_linux_amd64.tar.gz`.
 
-    Pure: no network, no filesystem. All three platforms' names (and the
-    zip-vs-tar.gz split — macOS and Windows ship zip, Linux ships tar.gz) are
+    Pure: no network, no filesystem. Both platforms' names (and the
+    zip-vs-tar.gz split — macOS ships zip, Linux ships tar.gz) are
     checked without a `gh` release or a network connection in play.
     """
     ext = "tar.gz" if os_kind == "linux" else "zip"
@@ -473,20 +464,15 @@ def _member_for(os_kind: str, arch: str, version: str) -> str:
     `gh_2.100.0_linux_amd64/bin/gh`. The Linux tar.gz and macOS zip both
     unpack into one top-level dir named after the asset (minus its
     extension) containing a `bin/` with the binary, a LICENSE, and man
-    pages/shell completions this app has no use for. The Windows zip is the
-    one shape without that root dir: `gh_2.100.0_windows_amd64.zip`'s full
-    member list is exactly `["LICENSE", "bin/gh.exe"]`."""
-    name = "gh.exe" if os_kind == "windows" else "gh"
-    if os_kind == "windows":
-        return f"bin/{name}"
+    pages/shell completions this app has no use for."""
     root = f"gh_{version}_{os_kind}_{arch}"
-    return f"{root}/bin/{name}"
+    return f"{root}/bin/gh"
 
 
 def _binary_name() -> str:
     """What the installed binary is called once it is out of the archive —
     the same name every probe in this module already looks for."""
-    return "gh.exe" if os.name == "nt" else "gh"
+    return "gh"
 
 
 def install_dir() -> str:
@@ -529,7 +515,7 @@ def _download(url: str, dest_path: str) -> None:
 def _unpack(archive_path: str, member: str, dest_path: str) -> None:
     """Extract exactly the `gh` binary named `member` out of `archive_path`
     (zip or tar.gz, told apart by the archive's own extension) to
-    `dest_path`, then chmod +x on POSIX.
+    `dest_path`, then chmod +x.
 
     Extracts ONLY the binary — not the whole archive — because everything
     else in it (LICENSE, man pages, shell completions) is the vendor's own
@@ -551,9 +537,8 @@ def _unpack(archive_path: str, member: str, dest_path: str) -> None:
             with src:
                 with open(dest_path, "wb") as dst:
                     shutil.copyfileobj(src, dst)
-    if os.name != "nt":
-        st = os.stat(dest_path)
-        os.chmod(dest_path, st.st_mode | 0o111)
+    st = os.stat(dest_path)
+    os.chmod(dest_path, st.st_mode | 0o111)
 
 
 # --- the single-flight install record -----------------------------------------
@@ -892,9 +877,8 @@ def _report_publish(snapshot: dict) -> None:
         # This row's destination is the repository it publishes, not a page
         # — `_resolve_repo_root`'s own containment-checked, realpath'd root,
         # set once at claim time (below), never the raw string a page
-        # happened to send. Canonical (forward-slash) form: `os.path.realpath`
-        # comes back backslashed on Windows, and a page is compared against
-        # the canonical spelling everywhere else it is stored or read.
+        # happened to send. Canonical form: a page is compared against the
+        # canonical spelling everywhere else it is stored or read.
         }, page=canonical_fs_path(snapshot.get("root") or ""), server=True)
     except Exception:  # noqa: BLE001 - reporting must never break the publish
         logger.debug("could not report the gh publish job")
