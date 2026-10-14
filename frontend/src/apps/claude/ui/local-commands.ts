@@ -33,7 +33,7 @@ export type LocalPlan =
   | { refuse: string };
 
 export interface LocalContext {
-  /** A worktree menu is mounted AND has said this folder is in a git repo. */
+  /** A worktree menu is mounted AND has said this target is in a git repo. */
   worktreeReady: boolean;
 }
 
@@ -61,7 +61,7 @@ export function planLocalCommand(cmd: ClassifiedCommand, ctx: LocalContext): Loc
     }
     case "worktree": {
       if (!ctx.worktreeReady) {
-        return { refuse: "/worktree works in a folder chat inside a git repository" };
+        return { refuse: "/worktree works in a chat on a file or folder inside a git repository" };
       }
       const parsed = parseWorktreeCommand(cmd.arg);
       if ("error" in parsed) return { refuse: `Usage: /worktree ${hint("worktree")}. ${parsed.error}` };

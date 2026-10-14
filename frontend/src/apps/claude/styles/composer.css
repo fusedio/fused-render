@@ -1793,6 +1793,12 @@ select.c-pill {
   color: var(--c-dim);
   font-weight: 400;
 }
+.chat-worktree-miss {
+  display: block;
+  font-size: 11px;
+  color: var(--c-faint);
+  white-space: normal;
+}
 .chat-worktree-dirty {
   flex: 0 0 auto;
   width: 6px;

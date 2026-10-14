@@ -1,8 +1,10 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+  createAndTarget,
   currentWorktree,
   defaultWorktreeName,
+  switchTarget,
   dirtyState,
   isDirtyRefusal,
   removeLabel,
@@ -155,5 +157,63 @@ describe("resolveWorktree prefers a managed worktree by name", () => {
     expect(await resolveWorktree("/r", "r", { list: async () => SHADOWED })).toEqual({
       path: "/r/.claude/worktrees/r",
     });
+  });
+});
+
+describe("a chat on a FILE switches to the same file in the other checkout", () => {
+  const FILE_LIST: WorktreeList = {
+    root: "/r",
+    current: "/r",
+    branch_current: "main",
+    relative: "src/app.py",
+    worktrees: [
+      { path: "/r", branch: "main", head: "a", name: "r", managed: false, is_main: true, dirty: false, mapped: { path: "/r/src/app.py", exists: true } },
+      { path: "/r/.claude/worktrees/has", branch: "has", head: "b", name: "has", managed: true, is_main: false, dirty: false, mapped: { path: "/r/.claude/worktrees/has/src/app.py", exists: true } },
+      { path: "/r/.claude/worktrees/lacks", branch: "lacks", head: "c", name: "lacks", managed: true, is_main: false, dirty: false, mapped: { path: "/r/.claude/worktrees/lacks/src/app.py", exists: false } },
+    ],
+  };
+
+  test("switchTarget: the mapped path when it exists, else the worktree root", () => {
+    expect(switchTarget(FILE_LIST.worktrees[1]!)).toBe("/r/.claude/worktrees/has/src/app.py");
+    expect(switchTarget(FILE_LIST.worktrees[2]!)).toBe("/r/.claude/worktrees/lacks");
+    // An older server sends no `mapped`: the root, as before.
+    expect(switchTarget({ path: "/r/x" })).toBe("/r/x");
+  });
+
+  test("rows carry the target, and flag a file that is not on the branch", () => {
+    const rows = worktreeRows(FILE_LIST);
+    expect(rows.map((r) => [r.name, r.target, r.missing])).toEqual([
+      ["r", "/r/src/app.py", false],
+      ["has", "/r/.claude/worktrees/has/src/app.py", false],
+      ["lacks", "/r/.claude/worktrees/lacks", true],
+    ]);
+    // A folder-root target never says "missing".
+    expect(worktreeRows({ ...FILE_LIST, relative: "" }).some((r) => r.missing)).toBe(false);
+  });
+
+  test("/worktree switches to the mapped file; a create lands on the new row's file", async () => {
+    expect(await resolveWorktree("/r/src/app.py", "has", { list: async () => FILE_LIST })).toEqual({
+      path: "/r/.claude/worktrees/has/src/app.py",
+    });
+    const after: WorktreeList = {
+      ...FILE_LIST,
+      worktrees: [
+        ...FILE_LIST.worktrees,
+        { path: "/r/.claude/worktrees/new", branch: "new", head: "d", name: "new", managed: true, is_main: false, dirty: false, mapped: { path: "/r/.claude/worktrees/new/src/app.py", exists: true } },
+      ],
+    };
+    let lists = 0;
+    const out = await resolveWorktree("/r/src/app.py", "new", {
+      list: async () => (lists++ === 0 ? FILE_LIST : after),
+      create: async () => ({ path: "/r/.claude/worktrees/new", branch: "new" }),
+    });
+    expect(out).toEqual({ path: "/r/.claude/worktrees/new/src/app.py" });
+    // The re-read failing falls back to the new worktree's root.
+    expect(
+      await createAndTarget("/r/src/app.py", "new", {
+        list: async () => ({ error: "boom" }),
+        create: async () => ({ path: "/r/.claude/worktrees/new", branch: "new" }),
+      }),
+    ).toEqual({ path: "/r/.claude/worktrees/new" });
   });
 });

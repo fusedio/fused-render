@@ -293,6 +293,12 @@ export interface ClaudeChatProps {
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
+/** WHETHER A WORKTREE MENU IS MOUNTED for this target: any file or folder the
+ *  pane has named — the menu then hides itself unless its list says repo. */
+export function worktreeMenuTarget(file: string | null, noun: TargetNoun): boolean {
+  return !!file && !!noun;
+}
+
 // `/model` and `/effort` parsing moved to `ui/local-commands.ts`; re-exported.
 export { localEffortArg, localModelArg } from "./ui/local-commands";
 
@@ -3533,7 +3539,10 @@ function ChatBody(props: ChatBodyProps) {
   // The worktree menu's `/worktree` requests (`ui/WorktreeMenu`).
   const wtSeq = useRef(0);
   const [wtRequest, setWtRequest] = useState<WorktreeRequest | null>(null);
-  const folderTarget = !!file && !!pane.noun && pane.noun !== "file";
+  // ANY TARGET THE PANE HAS NAMED — a folder OR a file inside a repo (user
+  // feedback, 2026-10-14: a file chat must offer the same worktrees). The
+  // menu's own list answers "is this a repo"; `worktreeReady` carries it.
+  const worktreeTarget = worktreeMenuTarget(file, pane.noun);
   /** A worktree menu is MOUNTED and has said this folder is in a repo
    *  (`WorktreeMenu.onReady`). Peek/compact mount none; a non-repo says false. */
   const worktreeReady = useRef(false);
@@ -3565,7 +3574,7 @@ function ChatBody(props: ChatBodyProps) {
   const onLocalCommand = useCallback(
     (cmd: ClassifiedCommand): boolean => {
       const plan = planLocalCommand(cmd, {
-        worktreeReady: folderTarget && worktreeReady.current,
+        worktreeReady: worktreeTarget && worktreeReady.current,
       });
       if ("refuse" in plan) {
         // The words stay in the box (`false`), and the reader is told why.
@@ -3592,7 +3601,7 @@ function ChatBody(props: ChatBodyProps) {
           return true;
       }
     },
-    [onBack, setModelPick, setEffortPick, folderTarget, onToggleTasks],
+    [onBack, setModelPick, setEffortPick, worktreeTarget, onToggleTasks],
   );
   /** SWITCHING WORKTREE IS OPENING THAT FOLDER'S CHAT, FRESH — the URL the Home
    *  lists open a folder chat on (`paneChatUrl`), with no session, through the
@@ -3713,7 +3722,7 @@ function ChatBody(props: ChatBodyProps) {
   const name = file ? file.split(/[\\/]/).filter(Boolean).pop() || file : "Claude";
   const running =
     state.status === "running" || state.status === "starting" || state.status === "stopping";
-  const worktreeMenu = folderTarget ? (
+  const worktreeMenu = worktreeTarget ? (
     <WorktreeMenu
       key={file as string}
       file={file as string}

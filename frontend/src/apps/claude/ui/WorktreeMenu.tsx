@@ -1,10 +1,11 @@
-// THE WORKTREE MENU (SPEC W-4) — in the top bar of a FOLDER chat that is inside
-// a git repository: which checkout this chat is working in, and the door to the
-// others.
+// THE WORKTREE MENU (SPEC W-4) — in the top bar of a chat on a FILE OR FOLDER
+// inside a git repository: which checkout this chat is working in, and the door
+// to the others.
 //
 // SWITCHING IS NAVIGATING. A worktree is just another folder, so moving to one
-// is opening that folder's chat with no session — `onSwitch(path)`, which the
-// host turns into the same URL the Home lists open a folder chat on
+// is opening the chat's same file (or the worktree's folder, when the file is
+// not on that branch — `switchTarget`) with no session — `onSwitch(path)`,
+// which the host turns into the same URL the Home lists open a chat on
 // (`list-rows.paneChatUrl`). Nothing here knows a URL.
 //
 // The popover is the pills' own (`PillSelect`: shadcn's Popover over Base UI)
@@ -21,7 +22,8 @@ import {
   isWorktreeError,
   removeLabel,
   listWorktrees,
-  createWorktree,
+  createAndTarget,
+  switchTarget,
   removeWorktree,
   resolveWorktree,
   triggerLabel,
@@ -87,10 +89,15 @@ export function WorktreeMenuBody({
           aria-current={row.current ? "true" : undefined}
           title={row.path}
           disabled={busy}
-          onClick={row.current ? undefined : () => onSwitch(row.path)}
+          onClick={row.current ? undefined : () => onSwitch(row.target)}
         >
           <span className="chat-worktree-name">{row.name}</span>
-          <span className="chat-worktree-branch">{row.branch}</span>
+          <span className="chat-worktree-branch">
+            {row.branch}
+            {row.missing && !row.current ? (
+              <span className="chat-worktree-miss">opens the folder: file not on this branch</span>
+            ) : null}
+          </span>
           {row.dirty ? (
             <span className="chat-worktree-dirty" title="Uncommitted changes" aria-label="Uncommitted changes" />
           ) : null}
@@ -290,7 +297,7 @@ export function WorktreeMenu({ file, onSwitch, request, running, onReady }: Work
       setBusy(true);
       setError("");
       try {
-        const out = await createWorktree(at, name);
+        const out = await createAndTarget(at, name);
         if (stale(at)) return;
         if (isWorktreeError(out)) setError(out.error);
         else go(out.path);
@@ -331,7 +338,11 @@ export function WorktreeMenu({ file, onSwitch, request, running, onReady }: Work
         // A dirty refusal keeps the confirm up, and the next press forces.
         if (out.dirty) setRefusedDirty(true);
         else setConfirming(false);
-      } else go(list.root);
+      } else {
+        // Back to the main checkout — on the chat's own file there when it exists.
+        const main = list.worktrees.find((w) => w.is_main);
+        go(main ? switchTarget(main) : list.root);
+      }
     } catch (err) {
       if (!stale(at)) setError(err instanceof Error ? err.message : String(err));
     } finally {

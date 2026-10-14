@@ -190,3 +190,70 @@ describe("review fixes", () => {
     expect(ready[ready.length - 1]).toBe(false);
   });
 });
+
+describe("a chat on a file", () => {
+  const FILE_LIST: WorktreeList = {
+    root: "/r",
+    current: "/r",
+    branch_current: "main",
+    relative: "src/app.py",
+    worktrees: [
+      { path: "/r", branch: "main", head: "a", name: "r", managed: false, is_main: true, dirty: false, mapped: { path: "/r/src/app.py", exists: true } },
+      { path: "/r/.claude/worktrees/lacks", branch: "lacks", head: "c", name: "lacks", managed: true, is_main: false, dirty: false, mapped: { path: "/r/.claude/worktrees/lacks/src/app.py", exists: false } },
+      { path: "/r/.claude/worktrees/has", branch: "has", head: "b", name: "has", managed: true, is_main: false, dirty: false, mapped: { path: "/r/.claude/worktrees/has/src/app.py", exists: true } },
+    ],
+  };
+
+  test("rows switch to the mapped file, and say when it is not on the branch", () => {
+    const switched: string[] = [];
+    let r: ReactTestRenderer | undefined;
+    act(() => {
+      r = create(
+        <WorktreeMenuBody
+          rows={worktreeRows(FILE_LIST)}
+          onSwitch={(p) => switched.push(p)}
+          creating={null}
+          onCreating={() => {}}
+          onCreate={() => {}}
+          confirming={false}
+          onRemove={() => {}}
+        />,
+      );
+    });
+    const notes = r!.root.findAll((n) => n.props.className === "chat-worktree-miss");
+    expect(notes).toHaveLength(1);
+    expect(notes[0]!.props.children).toBe("opens the folder: file not on this branch");
+    const rows = r!.root.findAll((n) => n.type === "button" && n.props.title && n.props.onClick);
+    for (const b of rows) act(() => b.props.onClick());
+    expect(switched).toEqual(["/r/.claude/worktrees/has/src/app.py", "/r/.claude/worktrees/lacks"]);
+    act(() => r!.unmount());
+  });
+
+  test("the mount gate takes a file target; the list says repo for a file path", async () => {
+    const { worktreeMenuTarget } = await import("../ClaudeChat");
+    expect(worktreeMenuTarget("/r/src/app.py", "file")).toBe(true);
+    expect(worktreeMenuTarget("/r", "folder")).toBe(true);
+    expect(worktreeMenuTarget("/r/src/app.py", "")).toBe(false);
+    expect(worktreeMenuTarget(null, "file")).toBe(false);
+
+    const ready: boolean[] = [];
+    let seen: { list: WorktreeList | null } | null = null;
+    const asked: string[] = [];
+    function Probe() {
+      seen = await_import.useWorktreeList(
+        "/r/src/app.py",
+        async (f) => (asked.push(f), FILE_LIST),
+        (v) => ready.push(v),
+      );
+      return null;
+    }
+    let r: ReactTestRenderer | undefined;
+    await act(async () => {
+      r = create(<Probe />);
+    });
+    expect(asked).toEqual(["/r/src/app.py"]);
+    expect(seen!.list?.relative).toBe("src/app.py");
+    expect(ready).toEqual([true]);
+    act(() => r!.unmount());
+  });
+});

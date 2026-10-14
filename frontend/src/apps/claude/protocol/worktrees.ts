@@ -20,6 +20,11 @@ export interface WorktreeRow {
   is_main: boolean;
   /** `null` when `git status` ran out of time. */
   dirty: boolean | null;
+  /** THE CHAT'S TARGET MAPPED INTO THIS WORKTREE — the same file or subfolder
+   *  under this checkout, and whether it is on disk here (a file added on one
+   *  branch only is not). The current row maps to the target itself. Absent
+   *  on an older server, which knew folder targets only. */
+  mapped?: { path: string; exists: boolean };
 }
 
 export interface WorktreeList {
@@ -28,6 +33,9 @@ export interface WorktreeList {
   /** The worktree the chat's file is in (or the root). */
   current: string;
   branch_current: string;
+  /** The target's path under `current` — "" for a folder-root target. Absent
+   *  on an older server. */
+  relative?: string;
   worktrees: WorktreeRow[];
 }
 
@@ -101,8 +109,19 @@ export function triggerLabel(list: WorktreeList): string {
   return cur.name;
 }
 
+/** WHERE A SWITCH TO THIS WORKTREE LANDS: the chat's own file (or subfolder)
+ *  in that checkout when it exists there, else the checkout's root. */
+export function switchTarget(row: Pick<WorktreeRow, "path" | "mapped">): string {
+  return row.mapped?.exists ? row.mapped.path : row.path;
+}
+
 export interface WorktreeMenuRow {
   path: string;
+  /** Where a switch lands (`switchTarget`). */
+  target: string;
+  /** The chat is on a file/subfolder that is NOT on this worktree's branch, so
+   *  a switch opens the worktree's folder instead — the row says so. */
+  missing: boolean;
   name: string;
   branch: string;
   /** Known dirty — draws the dot. */
@@ -118,8 +137,11 @@ export interface WorktreeMenuRow {
 /** One row per worktree, main checkout first, then by name. */
 export function worktreeRows(list: WorktreeList): WorktreeMenuRow[] {
   const cur = trim(list.current || list.root);
+  const sub = !!list.relative;
   const rows = list.worktrees.map((w) => ({
     path: w.path,
+    target: switchTarget(w),
+    missing: sub && !!w.mapped && !w.mapped.exists,
     name: w.is_main ? w.name || w.branch : w.name,
     branch: w.branch,
     dirty: w.dirty === true,
@@ -163,9 +185,36 @@ export async function resolveWorktree(
     list.worktrees.find((w) => w.name === name);
   // THE ONE ALREADY OPEN is not a switch: navigating would only start a fresh
   // chat in the same folder, so the caller opens the menu instead.
-  if (hit) return trim(hit.path) === trim(list.current || list.root) ? { path: hit.path, current: true } : { path: hit.path };
+  if (hit) {
+    return trim(hit.path) === trim(list.current || list.root)
+      ? { path: switchTarget(hit), current: true }
+      : { path: switchTarget(hit) };
+  }
+  return createAndTarget(file, name, deps);
+}
+
+/**
+ * CREATE, THEN LAND ON THE CHAT'S OWN TARGET in the new checkout: the list is
+ * read again so the new row's `mapped` says where the same file is (a new
+ * worktree is a full checkout, so it usually is). A failed re-read falls back
+ * to the new worktree's root.
+ */
+export async function createAndTarget(
+  file: string,
+  name: string,
+  deps: { list?: typeof listWorktrees; create?: typeof createWorktree } = {},
+): Promise<{ path: string } | WorktreeError> {
   const made = await (deps.create ?? createWorktree)(file, name);
   if (isWorktreeError(made)) return made;
+  try {
+    const list = await (deps.list ?? listWorktrees)(file);
+    if (!isWorktreeError(list)) {
+      const row = list.worktrees.find((w) => trim(w.path) === trim(made.path));
+      if (row) return { path: switchTarget(row) };
+    }
+  } catch {
+    /* the root is still a right answer */
+  }
   return { path: made.path };
 }
 
