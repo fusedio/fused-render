@@ -599,7 +599,24 @@ function sameChip(a: Segment, b: Segment): boolean {
   // turn, so without this the carried-over object hid every child segment
   // until the parent's result landed (seen live, 2026-10-13). The task link
   // arrives on a later poll the same way.
-  return subagentKey(a) === subagentKey(b);
+  return subagentKey(a) === subagentKey(b) && sameSubagentContent(a, b);
+}
+
+/** The key above stands in for the children's content by LENGTH; a child
+ *  result that changed to another string of the same length would slip past
+ *  it (CodeRabbit, PR #1635), so a matching key is followed by this direct
+ *  comparison — string equality, no re-serialisation. */
+function sameSubagentContent(a: Segment, b: Segment): boolean {
+  const xKids = (a as { children?: Segment[] }).children ?? [];
+  const yKids = (b as { children?: Segment[] }).children ?? [];
+  if (xKids.length !== yKids.length) return false;
+  for (let i = 0; i < xKids.length; i++) {
+    const x = xKids[i]!;
+    const y = yKids[i]!;
+    if (segText(x) !== segText(y)) return false;
+    if ((x as { output?: unknown }).output !== (y as { output?: unknown }).output) return false;
+  }
+  return true;
 }
 
 /** The cheap signature of what a tool chip draws BESIDES its own call: the

@@ -5232,24 +5232,49 @@ def _write_bg_tasks(run_dir: str, bg_tasks: dict, offset: int = 0) -> None:
 
 
 class _RunLock:
-    """`flock` on `<run_dir>/bg_tasks.lock` for one read-apply-write of the
-    registry (POSIX; Windows takes the unlocked path, the same posture
-    `_record_settings` takes). Two polls of one run — a page and the spawn
-    bookkeeping loop, or two tabs — otherwise both read offset N, and the
-    later writer's copy drops whatever the earlier one added."""
+    """An exclusive, cross-process lock on `<run_dir>/bg_tasks.lock` for one
+    read-apply-write of the registry. Two polls of one run — a page and the
+    spawn bookkeeping loop, or two tabs — otherwise both read offset N, and
+    the later writer's copy drops whatever the earlier one added.
+
+    POSIX: `flock(LOCK_EX)`. Windows: `msvcrt.locking` on byte 0 with a
+    non-blocking retry loop, the same shape as `tasks_store.locked_path`
+    (`LK_LOCK` gives up after ~10 tries, so it is not a blocking wait;
+    CodeRabbit, PR #1635 — the unlocked Windows path let poll B persist past
+    poll A's row). Neither available: unlocked, the posture `_record_settings`
+    takes on such a build."""
+
+    _RETRY_S = 0.05
 
     def __init__(self, run_dir: str):
         self.path = os.path.join(run_dir, "bg_tasks.lock")
         self.fh = None
+        self.byte_locked = False
 
     def __enter__(self):
         try:
             import fcntl
         except ImportError:
+            fcntl = None
+        try:
+            import msvcrt
+        except ImportError:
+            msvcrt = None
+        if fcntl is None and msvcrt is None:
             return self
         try:
             self.fh = os.fdopen(os.open(self.path, os.O_RDWR | os.O_CREAT, 0o600), "r+")
-            fcntl.flock(self.fh, fcntl.LOCK_EX)
+            if fcntl is not None:
+                fcntl.flock(self.fh, fcntl.LOCK_EX)
+            else:
+                while True:
+                    try:
+                        self.fh.seek(0)
+                        msvcrt.locking(self.fh.fileno(), msvcrt.LK_NBLCK, 1)
+                        self.byte_locked = True
+                        break
+                    except OSError:
+                        time.sleep(self._RETRY_S)
         except OSError:
             if self.fh is not None:
                 self.fh.close()
@@ -5258,6 +5283,13 @@ class _RunLock:
 
     def __exit__(self, *exc):
         if self.fh is not None:
+            if self.byte_locked:
+                try:
+                    import msvcrt
+                    self.fh.seek(0)
+                    msvcrt.locking(self.fh.fileno(), getattr(msvcrt, "LK_UNLCK", 0), 1)
+                except (ImportError, OSError):
+                    pass
             self.fh.close()   # closing the descriptor releases the flock
         return False
 
