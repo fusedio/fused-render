@@ -99,3 +99,24 @@ def test_missing_id_keeps_the_empty_shape(agent, tmp_path):
     hist = agent._history(target, "nope")
     assert hist["turns"] == []
     assert hist["tasks"] == []
+
+
+def test_relocated_found_from_nested_folder_workdir(agent, tmp_path):
+    # EnterWorktree puts the worktree under the REPO ROOT, so a chat in a
+    # subfolder must look for `<munge(root)>--claude-worktrees-*`.
+    root = tmp_path / "repo"
+    sub = root / "sub" / "dir"
+    sub.mkdir(parents=True)
+    cand = os.path.join(agent.PROJECTS, agent._munge(str(root)) + "--claude-worktrees-foo", "sid.jsonl")
+    _write(cand, _rows("x"))
+    assert agent._session_transcript_path(str(sub), "sid") == cand
+
+
+def test_relocated_found_from_file_workdir(agent, tmp_path):
+    root = tmp_path / "repo"
+    (root / "sub").mkdir(parents=True)
+    f = root / "sub" / "x.py"
+    f.write_text("")
+    cand = os.path.join(agent.PROJECTS, agent._munge(str(root)) + "--claude-worktrees-foo", "sid.jsonl")
+    _write(cand, _rows("x"))
+    assert agent._session_transcript_path(str(f), "sid") == cand

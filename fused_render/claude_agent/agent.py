@@ -856,13 +856,22 @@ def _session_transcript_path(workdir: str, session_id: str) -> str:
     `<munge(root)>--claude-worktrees-<name>`) and leaves nothing behind, so a
     read from the original folder alone finds no conversation. The original
     wins when it exists; else the newest `<sid>.jsonl` under a worktrees
-    sibling; else the original (missing) path, so a caller's not-found
+    sibling of the workdir OR OF ANY ANCESTOR (the worktree lives under the
+    repo root, and the chat may be in a subfolder or on a file); else the original (missing) path, so a caller's not-found
     handling is unchanged. `session_id` is `_bad_id`-checked by callers."""
     munged = _munge(workdir)
     mine = os.path.join(PROJECTS, munged, session_id + ".jsonl")
     if os.path.isfile(mine):
         return mine
-    prefix = munged + "--claude-worktrees-"
+    prefixes = []
+    a = os.path.abspath(workdir)
+    while True:
+        prefixes.append(_munge(a) + "--claude-worktrees-")
+        parent = os.path.dirname(a)
+        if parent == a:
+            break
+        a = parent
+    prefix = tuple(prefixes)
     best, best_mtime = "", -1.0
     try:
         with os.scandir(PROJECTS) as it:
