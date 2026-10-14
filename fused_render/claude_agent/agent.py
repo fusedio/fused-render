@@ -5276,9 +5276,18 @@ class _RunLock:
                 # which the retry loop would read as contention forever
                 # (Bugbot, PR #1635). Stamp one byte first, the way
                 # `tasks_store._open_lockfile` does.
-                if os.fstat(self.fh.fileno()).st_size == 0:
-                    self.fh.write(b"\0")
-                    self.fh.flush()
+                # The stamp's own failure is NOT the lock's: when two polls
+                # both see an empty file, the second's write fails because
+                # the first already holds byte 0 (Windows byte locks are
+                # mandatory) — and by then the byte exists, so the retry
+                # loop below is exactly where it should go (Bugbot, PR
+                # #1635; `_open_lockfile` swallows the same error).
+                try:
+                    if os.fstat(self.fh.fileno()).st_size == 0:
+                        self.fh.write(b"\0")
+                        self.fh.flush()
+                except OSError:
+                    pass
                 deadline = time.monotonic() + self._RETRY_BUDGET_S
                 while True:
                     try:
