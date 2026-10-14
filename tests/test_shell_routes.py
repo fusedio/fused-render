@@ -30,6 +30,9 @@ _APP_TSX = os.path.join("frontend", "src", "shell", "App.tsx")
 # that gap is invisible until someone presses ⌘R. So the tab list is derived
 # from the frontend module that OWNS it, the same posture as the App.tsx scrape.
 _AI_MODELS_ROUTES_TS = os.path.join("frontend", "src", "apps", "ai_models", "routes.ts")
+# Bots went the same way on 2026-10-14: the selected bot and the Tasks / Apps /
+# Preferences pages are sub-paths, dispatched through `isBotsPath`.
+_BOTS_ROUTES_TS = os.path.join("frontend", "src", "apps", "bots", "routes.ts")
 
 
 @pytest.fixture(scope="module")
@@ -47,6 +50,7 @@ def shell_routes() -> list[str]:
         source = f.read()
     found = re.findall(r'(?:location\.)?pathname === "([^"]+)"', source)
     found += ai_models_routes()
+    found += bots_routes()
     # Order-preserving dedupe: the same sentinel can be compared twice.
     seen, routes = set(), []
     for path in found:
@@ -72,6 +76,24 @@ def ai_models_routes() -> list[str]:
     return [prefix.group(1)] + [f"{prefix.group(1)}/{tab}" for tab in tabs]
 
 
+def bots_routes() -> list[str]:
+    """`/bots`, its reserved pages and one bot / one app, read out of the
+    frontend's own codec (apps/bots/routes.ts), the same posture as
+    `ai_models_routes`: App.tsx dispatches Bots through `isBotsPath`, not a
+    literal, so the scrape above sees none of these. The bot id and the app
+    folder are hand-requested samples of the two parameterised shapes."""
+    with open(_BOTS_ROUTES_TS, encoding="utf-8") as f:
+        source = f.read()
+    prefix = re.search(r'BOTS_PREFIX = "([^"]+)"', source)
+    block = re.search(r"RESERVED = \[(.*?)\]", source, re.S)
+    assert prefix and block, "routes.ts no longer declares its prefix and reserved pages"
+    pages = re.findall(r'"([^"]+)"', block.group(1))
+    assert pages, "routes.ts declares no reserved pages"
+    p = prefix.group(1)
+    return [p] + [f"{p}/{page}" for page in pages] + [f"{p}/859e80cc", f"{p}/apps/some-app",
+                                                      f"{p}/tasks?task=pending%3Ae1"]
+
+
 def test_the_shell_actually_declares_routes():
     """A guard on the guard: if the `pathname ===` idiom is ever replaced, this
     file would silently assert nothing at all."""
@@ -81,6 +103,8 @@ def test_the_shell_actually_declares_routes():
     # The predicate-dispatched page, which the App.tsx scrape cannot see.
     assert "/ai-models" in routes
     assert "/ai-models/playground" in routes
+    assert "/bots" in routes
+    assert "/bots/tasks" in routes
 
 
 def test_the_app_page_survives_a_refresh(client):

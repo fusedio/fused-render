@@ -45,10 +45,17 @@ into `platform/` instead.
   - `agent.ts` `runAgent(action, fields)` → `POST /api/claude/agent`; `runAppEntry`, `runArtifacts`; `AgentNeedsInstall`, `AgentError`.
   - `markdown.ts` `renderMd` (marked + DOMPurify) and `enhanceCodeBlocks` (hljs + copy button) — the one innerHTML funnel.
   - `recap.ts` `fetchRecap` (`GET /api/claude-sessions/recap`) + `recapAnchor` — the session-recap read.
+  - `commands.ts` slash commands (SPEC C): `classifyCommand` (local / cli / unknown), `LOCAL_COMMANDS`, `menuCommands`, `filterCommands`, `splitCommand`, `fetchCommands` (the `commands` action).
+  - `tasks.ts` background tasks (SPEC T-5): `summarizeTasks` (the panel's one line), `sortTasks` (live first), `elapsedLabel`, `kindLabel`, `statusLabel`, `usageLabel`, `taskVerb` (the working line's verb), `taskFor` / `taskIndex` (a tool segment's linked record), `subagentChipModel` (the agent / Monitor chip header). Fed by `ChatState.tasks` / `tasksRunId` (poll and history `tasks`, sticky per run in `run-controller.ts`).
+  - `worktrees.ts` git worktrees (SPEC W): `listWorktrees` / `createWorktree` / `removeWorktree` → `POST /api/claude/worktrees`, `WorktreeRow`, the menu's row model and the `/worktree` parse.
   - later: `run-controller.ts`, `segments.ts`, `wire.ts`, `summaries.ts`, `typer.ts`.
 - `params/` — `ParamsStore`: `createUrlParamsStore()` (shell URL, runtime.js D99 coalescing) and `createMemoryParamsStore()` (cards / peek); `useChatParam(s)`.
 - `styles/chat.css` — `T:13-101` tokens as `--c-*` under `.chat-root`; `styles/hljs.css` scoped highlight theme.
 - `ui/`, `pane/`, `shots/`, `ann/`, `sched/`, `live/` — where each old subsystem lands (design.md §1).
+  - `ui/CommandMenu.tsx` the slash-command menu over the composer (`menuQuery`, `menuKey`); `Composer.tsx` intercepts local commands before `onSend`.
+  - `ui/TasksPanel.tsx` the background-tasks strip between transcript and composer (`.chat-tasks`, `styles/tasks.css`): collapsed summary, rows, "Output" via the `task_output` action. Open state is `ClaudeChat`'s; `/tasks` toggles it.
+  - `ui/tasksContext.ts` the task registry by id for `ToolChip`'s header (`ChipTaskInfo`); an agent chip with `children` draws them with `SegmentView` in a `.chat-subagent` block.
+  - `ui/WorktreeMenu.tsx` the worktree switcher — in `Topbar` for a file or folder chat inside a repo, under the path on the landing (`HomeCard`); a switch is `paneChatUrl(switchTarget(row), "")` through `onNavigate` (the same file in the other checkout when it exists there, else its folder).
 
 ## Where the old subsystems go
 

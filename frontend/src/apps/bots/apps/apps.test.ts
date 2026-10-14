@@ -58,7 +58,8 @@ describe("host params bridge", () => {
   let events: string[] = [];
   beforeEach(() => {
     for (const k of ["location", "history", "window"]) saved[k] = g[k];
-    const loc = { href: "http://127.0.0.1:8765/?bot=b1", search: "?bot=b1", origin: "http://127.0.0.1:8765" };
+    // `task` is a host key (the Tasks page's `?task=`), never an app's state; the selected bot is the PATH now.
+    const loc = { href: "http://127.0.0.1:8765/bots/tasks?task=k1", search: "?task=k1", origin: "http://127.0.0.1:8765" };
     g.location = loc;
     g.history = { state: null, replaceState: (_s: unknown, _t: string, url: string) => { const u = new URL(url); loc.href = u.href; loc.search = u.search; } };
     events = [];
@@ -67,9 +68,9 @@ describe("host params bridge", () => {
   afterEach(() => { for (const k of Object.keys(saved)) g[k] = saved[k]; });
 
   test("applyAppParams writes app keys onto this page's URL, never host/path/_ keys", () => {
-    applyAppParams("tab=2&q=x&bot=evil&path=/etc&_preview=1");
+    applyAppParams("tab=2&q=x&task=evil&path=/etc&_preview=1");
     const q = new URLSearchParams((g.location as { search: string }).search);
-    expect(q.get("bot")).toBe("b1");
+    expect(q.get("task")).toBe("k1");
     expect(q.get("tab")).toBe("2");
     expect(q.get("q")).toBe("x");
     expect(q.has("path")).toBe(false);
@@ -81,7 +82,7 @@ describe("host params bridge", () => {
   test("round trip: appStateParams reads back exactly the app's params", () => {
     applyAppParams("tab=2&q=a b");
     expect(appStateParams()).toBe("tab=2&q=a+b");
-    expect(appStateParams("?bot=b1&_x=1&path=/p&sort=asc")).toBe("sort=asc");
+    expect(appStateParams("?task=k1&_x=1&path=/p&sort=asc")).toBe("sort=asc");
   });
   test("no change, no event", () => {
     applyAppParams("");
@@ -91,7 +92,7 @@ describe("host params bridge", () => {
     applyAppParams("tab=2&q=x");
     applyAppParams("sort=asc");
     const q = new URLSearchParams((g.location as { search: string }).search);
-    expect(q.get("bot")).toBe("b1");
+    expect(q.get("task")).toBe("k1");
     expect(q.get("sort")).toBe("asc");
     expect(q.has("tab")).toBe(false);
     expect(q.has("q")).toBe(false);
@@ -101,16 +102,16 @@ describe("host params bridge", () => {
     const b = holdAppParams();
     expect(anyAppOpen()).toBe(true);
     a();
-    expect((g.location as { search: string }).search).toBe("?bot=b1&tab=2");
+    expect((g.location as { search: string }).search).toBe("?task=k1&tab=2");
     b();
-    expect((g.location as { search: string }).search).toBe("?bot=b1");
+    expect((g.location as { search: string }).search).toBe("?task=k1");
     expect(anyAppOpen()).toBe(false);
     b();  // releasing twice is a no-op
   });
   test("clearAppParams drops every app key and keeps the host's", () => {
     applyAppParams("tab=2&q=x");
     clearAppParams();
-    expect((g.location as { search: string }).search).toBe("?bot=b1");
+    expect((g.location as { search: string }).search).toBe("?task=k1");
   });
 });
 

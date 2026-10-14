@@ -9,6 +9,7 @@ import { cn } from "@platform/lib/utils";
 import { parseTerminalAsk } from "@platform/lib/terminalFocus";
 
 import type { AssistantTurn, Turn as TurnRow, UserTurn } from "../protocol/controller-api";
+import { splitCommand } from "../protocol/commands";
 import { viewKind, type SegmentKind } from "../protocol/segments";
 import { toolChipSummary } from "../protocol/summaries";
 import { INTERRUPT_MARK, isInterruptMark, isMarkerOnly } from "../protocol/wire";
@@ -177,6 +178,8 @@ export const Turn = memo(function Turn({
               </>
             ) : isMarkerOnly(turn.text) ? (
               <MarkerText text={turn.text} />
+            ) : splitCommand(turn.text) ? (
+              <UserWords text={turn.text} />
             ) : (
               turn.text
             )}
@@ -542,3 +545,18 @@ export function firstLine(text: string): string {
 }
 
 export default Turn;
+
+/** A user turn's own words — and a SLASH COMMAND's first token as a chip
+ *  (SPEC C-3), the rest plain. The pieces join back into exactly the text, so
+ *  the bubble reads the same to everything that reads its `textContent`. */
+export function UserWords({ text }: { text: string }) {
+  const cmd = splitCommand(text);
+  if (!cmd) return <>{text}</>;
+  return (
+    <>
+      {cmd.lead}
+      <span className="chat-cmd-chip">{cmd.token}</span>
+      {cmd.rest}
+    </>
+  );
+}

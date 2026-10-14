@@ -94,6 +94,13 @@ export const SegmentView = memo(function SegmentView({
   // members it opens are two positions in the list below, and a hook per run
   // cannot be called from the loop that builds it (`useCardOpens`).
   const [isRunOpen, toggleRun] = useCardOpens();
+  // A subagent's rows (a tool segment's `children`, SPEC T-5) are drawn by
+  // THIS renderer, one level in — handed to the chip so the two modules do
+  // not import each other. Stable per `cwd`, so the memoized chips keep.
+  const nested = useCallback(
+    (segs: Segment[], isLive: boolean) => <SegmentView segments={segs} live={isLive} cwd={cwd} />,
+    [cwd],
+  );
   // WHERE EVERY TRIGGER SITS, decided BEFORE anything is built (design.md §A,
   // Q1 revised 2026-09-15): in the bottom-right corner of the prose before the
   // run, or — for the run a turn OPENS on — the corner of the prose that
@@ -169,7 +176,7 @@ export const SegmentView = memo(function SegmentView({
         // the collapse map, and a chip that changed key on being folded into
         // a run would close itself every time the run was opened.
         const mk = cardKey(seq, seg, row.start + j);
-        if (seg.kind === "tool") nodes.push(<ToolChip key={mk} seg={seg} cardKey={mk} cwd={cwd} />);
+        if (seg.kind === "tool") nodes.push(<ToolChip key={mk} seg={seg} cardKey={mk} cwd={cwd} nested={nested} />);
         else if (seg.kind === "thinking")
           nodes.push(<ThinkingView key={mk} cardKey={mk} text={seg.text} />);
         else nodes.push(<NoticeView key={mk} text={segText(seg)} />);
@@ -192,7 +199,7 @@ export const SegmentView = memo(function SegmentView({
         node
       );
     if (seg.kind === "tool") {
-      nodes.push(withFiled(<ToolChip key={key} seg={seg} cardKey={key} cwd={cwd} />));
+      nodes.push(withFiled(<ToolChip key={key} seg={seg} cardKey={key} cwd={cwd} nested={nested} />));
       return;
     }
     if (seg.kind === "thinking") {

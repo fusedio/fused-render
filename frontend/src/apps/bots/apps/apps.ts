@@ -6,10 +6,12 @@
 // every extra key is appended with `&`. A gallery thumbnail carries `_preview=1`, which makes the framed runtime its
 // own params target (runtime.js findTarget), so twelve thumbnails never write onto this page's URL; the viewer, the
 // side app and the inline card carry no `_preview`, so their params land on THIS page's URL exactly as in OpenBot.
-import { useSyncExternalStore } from "react";
 import type { AppRef } from "../lib/api";
-import { closePanel, getState, openPanel, showToast } from "../state/store";
+import { goChat, showToast } from "../state/store";
 import { buildsRoot, rootReady, setBuildsRoot, useBuildsRoot } from "../builds/builds";
+import { botsMounted } from "../lib/root";
+import { appsHref, parseBotsPath, searchSansTask, type BotsRoute } from "../routes";
+import { navigateUrl } from "@platform/lib/router";
 
 export { showAppBeside, sideAppBrowser, sideAppShow, closeSideApp } from "./side";
 
@@ -41,9 +43,10 @@ export const paramString = (p: AppRef["params"] | undefined | null): string =>
 // Inside this page an embedded app's fused.params are THIS page's URL params: the runtime syncs to the outermost
 // same-origin window, not to the embed frame. So the app's live state = our params minus our own keys, and reopening
 // an app at a state means setting those params here.
-// `new` is this page's own one-shot (?new=1); `peek` is the shell's task side peek (shell/task-peek-store PEEK_PARAM),
-// which can sit on /bots too. Neither is an app's state.
-export const HOST_KEYS = new Set(["bot", "new", "peek"]);
+// `new` and `phone` are this page's own one-shots (?new=1, ?phone=1); `task` is the Tasks page's peek key
+// (/bots/tasks?task=, routes.ts); `peek` is the shell's task side peek (shell/task-peek-store PEEK_PARAM), which can
+// sit on /bots too. None is an app's state. (The selected bot left the query for the path on 2026-10-14.)
+export const HOST_KEYS = new Set(["task", "new", "phone", "peek"]);
 export const appParamOk = (k: string): boolean => !HOST_KEYS.has(k) && k !== "path" && !k.startsWith("_");
 
 /** The app's live state: this page's query minus host keys, `path` and `_*`. */
@@ -72,7 +75,7 @@ export function clearAppParams(): void { applyAppParams(""); }
 
 /** Every surface that is currently showing an app whose live state is this URL's params: the side app and each
  *  expanded inline AppCard take a hold while their iframe runs and release it when it goes. The viewer is tracked by
- *  `viewed` itself. The params are cleared only when the LAST holder lets go, so closing one surface never wipes the
+ *  `viewerOpen` (AppViewer's mount). The params are cleared only when the LAST holder lets go, so closing one surface never wipes the
  *  `fused.params` of an app still running in another. (A Set of tokens, not a predicate: side.ts and AppCard import
  *  this module, so apps.ts cannot ask them.) */
 const holders = new Set<symbol>();
@@ -81,10 +84,10 @@ export function holdAppParams(): () => void {
   holders.add(token);
   return () => {
     if (!holders.delete(token)) return;
-    if (viewed === null && holders.size === 0) clearAppParams();
+    if (!viewerOpen && holders.size === 0) clearAppParams();
   };
 }
-export const anyAppOpen = (): boolean => viewed !== null || holders.size > 0;
+export const anyAppOpen = (): boolean => viewerOpen || holders.size > 0;
 
 // "Copy state": a /render link carrying the app's current params. Paste it to any bot: the chat turns it into an app
 // card that reopens the app exactly like this (appFromText below; _app_at in the backend for the bot's `show`).
@@ -121,41 +124,47 @@ export const agoShort = (t: number): string => {
   return s < 60 ? "just now" : s < 3600 ? `${Math.round(s / 60)} min ago` : s < 86400 ? `${Math.round(s / 3600)} h ago` : `${Math.round(s / 86400)} d ago`;
 };
 
-// ------------------------------------------------------------------ the viewer (#vpanel) ----
-// Full-size embed. Unlike the card thumbnails this iframe is unsandboxed and focusable, so the app's own buttons, params
-// and runPython work. Closing blanks the frame so the app stops running. The frame is AppViewer's, driven from here.
-let viewed: AppLike | null = null;
-const viewSubs = new Set<() => void>();
-const viewEmit = () => { for (const l of [...viewSubs]) l(); };
-let vframe: HTMLIFrameElement | null = null;
-export const getViewedApp = (): AppLike | null => viewed;
-export function useViewedApp(): AppLike | null {
-  return useSyncExternalStore((l) => { viewSubs.add(l); return () => { viewSubs.delete(l); }; }, getViewedApp, getViewedApp);
-}
-export function setViewFrame(el: HTMLIFrameElement | null): void { vframe = el; }
-export function viewFrameSrc(src: string): void { if (vframe) vframe.src = src; }
+// ------------------------------------------------------------------ the viewer (/bots/apps/<folder>) ----
+// Full-size embed, a route of its own (routes.ts): AppViewer mounts on it and owns the iframe. Unlike the card
+// thumbnails that iframe is unsandboxed and focusable, so the app's own buttons, params and runPython work. Leaving
+// the route unmounts it, so the app stops running.
+let viewerOpen = false;
+/** AppViewer's mount/unmount: the viewer counts as a holder of the host URL's app params while it shows. */
+export function setViewerOpen(on: boolean): void { viewerOpen = on; }
+/** The route segment for an app folder: its basename under the apps root. */
+export const folderOf = (a: AppLike): string => a.folder || a.dir.replace(/\/+$/, "").split("/").pop() || "";
+const routeNow = (): BotsRoute => (botsMounted() ? parseBotsPath(location.pathname) : { kind: "list" });
+const onAppsPage = (): boolean => routeNow().kind === "apps";
+const viewing = (): boolean => { const r = routeNow(); return r.kind === "apps" && !!r.folder; };
 
-export function viewApp(a: AppLike): void {
-  viewed = a;
-  applyAppParams(a.params);
-  viewFrameSrc(appEmbedBase(a.dir, a.params));
-  viewEmit();
+/** The query a navigation inside the Apps page carries: the host keys that are there, plus `params` as the app's
+ *  state (REPLACING the previous app's keys, as applyAppParams does) — or no app keys at all when `params` is null. */
+function appsQuery(params: string | null): string {
+  const q = new URLSearchParams();
+  try { for (const [k, v] of new URLSearchParams(location.search)) if (!appParamOk(k)) q.set(k, v); } catch { /* unreadable */ }
+  if (params !== null) for (const [k, v] of new URLSearchParams(params)) if (appParamOk(k)) q.set(k, v);
+  const s = q.toString();
+  return s ? "?" + s : "";
 }
+
+/** Open `a` full-size: its params go onto the URL with the navigation, so the viewer's frame reads them at mount. */
+export function viewApp(a: AppLike): void {
+  navigateUrl(appsHref(folderOf(a)) + appsQuery(a.params || ""));
+}
+/** Back to the gallery. The closed app's state must not linger on the URL for the next one to read — unless the
+ *  side app or an expanded inline card still shows one, in which case the params are ITS live state. */
 export function closeView(): void {
-  if (!viewed) return;
-  viewed = null;
-  viewFrameSrc("about:blank");
-  // The closed app's state must not linger on the URL for the next one to read — unless the side app or an
-  // expanded inline card still shows one, in which case the params are ITS live state.
-  if (holders.size === 0) clearAppParams();
-  viewEmit();
+  if (!viewing()) return;
+  navigateUrl(appsHref() + appsQuery(holders.size ? appStateParams() : null));
 }
 
 // ------------------------------------------------------------------ the gallery (#apanel) ----
-/** The footer #apps chip. AppsPanel (re)loads the listing whenever the panel opens. */
-export function openApps(): void { openPanel("apps"); }
-/** Back / Esc / leaving for another panel: the viewer closes and the gallery drops its iframes so idle apps stop. */
+/** The footer #apps chip: the gallery route (the host URL's query rides along). AppsPanel lists the folder on mount. */
+export function openApps(): void { navigateUrl(appsHref(null, searchSansTask(location.search))); }
+/** Back / Esc from the gallery or the viewer: the selected bot's chat; the gallery unmounts, so its iframes go and
+ *  idle apps stop. A viewed app's params leave the URL unless another surface still holds them. */
 export function closeApps(): void {
-  closeView();
-  if (getState().ui.panel === "apps") closePanel();
+  if (!onAppsPage()) return;
+  if (viewing() && !holders.size) { clearAppParams(); }
+  goChat();
 }

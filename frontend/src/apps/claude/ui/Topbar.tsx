@@ -24,6 +24,7 @@
 // "which conversation am I in, and how is it doing". The peek answers exactly
 // that, so the chat borrows the peek's own component rather than growing a
 // second header that must be kept looking like it.
+import type { ReactNode } from "react";
 import type { Task } from "@platform/lib/api";
 // THE QUEUE'S WORDS, from the one builder four surfaces share — "after TASK-046
 // | 2nd" (platform/lib/queue). The header says the same sentence the Tasks row
@@ -122,6 +123,9 @@ export interface TopbarProps {
    * and the composer's own clock to say so.
    */
   queue?: (QueueFacts & Pick<Partial<Task>, "task_id" | "title">) | null;
+  /** THE WORKTREE MENU's seat (SPEC W-4, `ui/WorktreeMenu`), at the line's right
+   *  end — the host passes it for a folder target only. */
+  worktree?: ReactNode;
 }
 
 export function Topbar({
@@ -134,6 +138,7 @@ export function Topbar({
   running,
   status,
   queue,
+  worktree,
 }: TopbarProps) {
   // Null on every row that is not waiting in a line, which is the common case.
   const line = queue ? queueCaption(queue) : null;
@@ -194,6 +199,7 @@ export function Topbar({
             already says it, and one line saying one thing twice spends the
             header's last inch on nothing. The page's own turn clock still
             drives the composer's stop square; the header defers to the ring. */}
+        {worktree}
       </div>
     );
   }
@@ -219,6 +225,7 @@ export function Topbar({
           <span className="c-skel-dot" />
           <span className="c-skel-bar is-title" />
         </span>
+        {worktree}
       </div>
     );
   }
@@ -271,6 +278,7 @@ export function Topbar({
           running
         </span>
       ) : null}
+      {worktree}
     </div>
   );
 }
