@@ -88,8 +88,10 @@ def test_default_ignore_covers_caches_outside_library_caches():
     browser profile's disk cache, an Electron app's GPU/code caches, a
     sandboxed app's `Containers/*/Data/Library/Caches`, Xcode's DerivedData.
     Bare capitalized names cover them at any depth on every platform, while
-    the profile / app-support folders themselves stay indexed and a lowercase
-    `cache` (real source in many repos) is left alone."""
+    an app-support folder with user content stays indexed and a lowercase
+    `cache` (real source in many repos) is left alone. (Chrome's profile root
+    itself is no longer the example of "stays indexed": it is now a
+    `LIBRARY_CHURN_PATHS` entry, see the next test.)"""
     r = IgnoreRules(default_ignore())
     home = os.path.expanduser("~")
     chrome = norm(f"{home}/Library/Application Support/Google/Chrome/Profile 3")
@@ -100,8 +102,76 @@ def test_default_ignore_covers_caches_outside_library_caches():
     assert r.is_ignored_tree(norm(f"{home}/Library/Containers/net.whatsapp.WhatsApp/Data/Library/Caches/x"))
     assert r.is_ignored_tree(norm(f"{home}/Library/Developer/Xcode/DerivedData/App-abc"))
     assert r.is_ignored_tree(norm(f"{home}/.npm/_cacache/index-v5"))
-    assert not r.is_ignored_tree(chrome)
+    # An app-support folder with real user content (VS Code's settings,
+    # snippets, keybindings) stays indexed; only its cache subfolders go.
+    code = norm(f"{home}/Library/Application Support/Code/User")
+    assert not r.is_ignored_tree(code)
+    assert r.is_ignored_tree(f"{code}/../CachedData/x")
     assert not r.is_ignored_tree(norm(f"{home}/code/app/src/cache"))
+
+
+def test_default_ignore_covers_library_churn_roots_but_not_user_containers():
+    """`LIBRARY_CHURN_PATHS`: the `~/Library` subtrees that re-triggered a
+    rescan every few seconds on a diagnostics bundle (Chrome/WhatsApp/Slack
+    profiles, Apple widget containers, Spotlight's store, Biome, daemon
+    containers). Each is a path pattern, so `~/Library` itself and a
+    sandboxed app's container — Apple's or anyone's, both CAN hold user
+    documents (TextEdit, Notes) — stay walkable. Only the per-container
+    `Data/SystemData` subtree and the named Apple daemons go."""
+    r = IgnoreRules(default_ignore())
+    home = os.path.expanduser("~")
+    lib = norm(f"{home}/Library")
+    for churn in (
+        "Application Support/Google/Chrome/Profile 3",
+        "Application Support/Google/Chrome Canary/Default",
+        "Application Support/Slack/IndexedDB/https_app.slack.com_0.indexeddb.blob/1/4f",
+        "Application Support/AddressBook/Sources/ABC/Metadata",
+        "Containers/net.whatsapp.WhatsApp/Data/Library/Application Support/net.whatsapp.WhatsApp/analytics",
+        "Containers/net.whatsapp.WhatsApp/Data/Library/Preferences",
+        "Containers/net.whatsapp.WhatsApp/Data/tmp/TemporaryItems",
+        "Containers/net.whatsapp.WhatsApp/Data/Documents/cask/+prepackaged/x",
+        "Containers/com.example.editor/Data/tmp/scratch",
+        "Group Containers/group.net.whatsapp.WhatsApp.shared/Library/Preferences",
+        "Group Containers/group.net.whatsapp.WhatsApp.shared/FieldStats2/WhatsApp/wam-a",
+        "Group Containers/group.net.whatsapp.WhatsApp.shared/fts",
+        "Containers/com.apple.findmy.FindMyWidgetItems/Data/SystemData/x",
+        "Containers/com.example.editor/Data/SystemData/com.apple.chrono/x",
+        "Containers/com.apple.routined/Data/Library/Preferences",
+        "Containers/com.apple.lighthouse.IFTelemetrySELFIngestor/Data/x",
+        "Group Containers/group.com.apple.replicatord/replicatord",
+        "Group Containers/group.com.apple.findmy.findmylocateagent/Library/x",
+        "Group Containers/group.com.apple.siri.GMSSELFIngestor/Library/x",
+        "Group Containers/group.com.apple.icloud.searchpartyuseragent/Library/Storage",
+        "Group Containers/group.com.apple.PegasusConfiguration/session/local",
+        "Metadata/CoreSpotlight/Priority/index.spotlightV3",
+        "Biome/sets/Default/App.InstalledApp/Database",
+        "Daemon Containers/72E8A7B1-2505-47A0-8258-E43214E62FC5/Data",
+        "Preferences/com.apple.finder.plist",
+        "IdentityServices",
+        "HomeKit",
+        "KeyboardServices",
+        "Trial/v7/tmp",
+    ):
+        assert r.is_ignored_tree(f"{lib}/{churn}"), churn
+    for kept in (
+        "",
+        "Documents",
+        "Application Support",
+        "Application Support/Code/User",
+        "Application Support/Obsidian",
+        "Containers",
+        "Containers/com.example.editor/Data/Documents/notes.md",
+        "Containers/com.apple.TextEdit/Data/Documents/notes.rtf",
+        "Containers/net.whatsapp.WhatsApp/Data/Documents/report.pdf",
+        "Group Containers/group.net.whatsapp.WhatsApp.shared/Message/Media/1@g.us/d/1/photo.jpg",
+        "Containers/com.apple.routinedx",
+        "Group Containers/group.com.example.editor/notes",
+        "Group Containers/group.com.apple.notes/Accounts/x/Media/photo.jpg",
+        "Application Support/Google/Drive",
+        "Application Support/Google/DriveFS",
+        "Mobile Documents/com~apple~CloudDocs/report.pdf",
+    ):
+        assert not r.is_ignored_tree(f"{lib}/{kept}".rstrip("/")), kept
 
 
 def test_ignore_sig_is_order_sensitive_and_stable():

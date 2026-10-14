@@ -228,6 +228,80 @@ DEFAULT_IGNORE_NAMES = [
 ]
 
 
+# macOS `~/Library` subtrees that are pure machine churn: system daemons,
+# widget timelines, browser/chat profiles and Spotlight's own store. None of
+# them hold a file a user would search for by name, and all of them are
+# written continuously. These are PATH patterns (they contain a slash), so
+# each matches exactly that path — `~/Library` as a whole stays walkable, the
+# way `default_ignore()`'s docstring insists — and `~`-relative so they are
+# inert on Linux/Windows the same way `~/Library/Caches` is.
+#
+# Why they are here: a diagnostics bundle from a 16 GB machine running two
+# app processes showed 1186 rescans in ~3 hours, 928 of them (78%) rooted
+# under `~/Library`, each one a `fused_render.index.worker` process that
+# loads the 1M-row index and compacts it. 44 of those workers were alive at
+# once, swap sat at 4-17 GB and the server missed its own health pings for
+# minutes at a time. The top roots, by rescan count, were:
+#
+#   212  Application Support/Google/Chrome   (profile writes)
+#   225  WhatsApp containers: Data/Library (analytics, sqlite), Data/tmp,
+#        Documents/cask (bloks stash), the group container's Preferences,
+#        FieldStats2, fts — NOT Message/Media, which is the user's received
+#        photos and files and stays indexed
+#    79  Containers/com.apple.*Widget*/Data/SystemData (widget timelines)
+#    43  Application Support/Slack
+#    17  Metadata/CoreSpotlight
+#    18  Biome/*
+#    12  Daemon Containers
+#    11  Application Support/AddressBook
+#
+# Bare `Cache`-style names in DEFAULT_IGNORE_NAMES already drop the cache
+# subfolders of these apps; the profile roots themselves (History, Cookies,
+# IndexedDB blobs, sqlite journals) are what still re-triggered a rescan every
+# few seconds.
+#
+# Deliberately NARROW on the sandbox side. A container is where a sandboxed
+# app keeps the user's own files — TextEdit saves to
+# `Containers/com.apple.TextEdit/Data/Documents`, Notes attachments sit under
+# `Group Containers/group.com.apple.notes` — so neither `Containers/com.apple.*`
+# nor `Group Containers/group.com.apple.*` is acceptable as a pattern. What
+# is listed is the per-container `Data/SystemData` (widget timelines,
+# `com.apple.chrono`, written by every widget on a schedule) and `Data/tmp`
+# (TemporaryItems) — the two subtrees of ANY container that are never user
+# content — the specific Apple daemons the bundle showed re-triggering (none
+# has a document folder), and for WhatsApp the exact churn subtrees rather
+# than the container roots, so received media stays searchable. Same for
+# Google: only Chrome's profile, not every Google app.
+LIBRARY_CHURN_PATHS = [
+    "~/Library/Preferences",
+    "~/Library/Metadata",
+    "~/Library/Biome",
+    "~/Library/Daemon Containers",
+    "~/Library/IdentityServices",
+    "~/Library/HomeKit",
+    "~/Library/KeyboardServices",
+    "~/Library/Trial",
+    "~/Library/Containers/*/Data/SystemData",
+    "~/Library/Containers/com.apple.routined",
+    "~/Library/Containers/com.apple.lighthouse.*",
+    "~/Library/Group Containers/group.com.apple.icloud.searchpartyuseragent",
+    "~/Library/Group Containers/group.com.apple.replicatord",
+    "~/Library/Group Containers/group.com.apple.findmy.*",
+    "~/Library/Group Containers/group.com.apple.siri.*",
+    "~/Library/Group Containers/group.com.apple.PegasusConfiguration",
+    "~/Library/Containers/*/Data/tmp",
+    "~/Library/Containers/net.whatsapp.*/Data/Library",
+    "~/Library/Containers/net.whatsapp.*/Data/Documents/cask",
+    "~/Library/Group Containers/group.net.whatsapp.*/Library",
+    "~/Library/Group Containers/group.net.whatsapp.*/FieldStats2",
+    "~/Library/Group Containers/group.net.whatsapp.*/fts",
+    "~/Library/Group Containers/group.net.whatsapp.*/fba_extentions_event_store",
+    "~/Library/Application Support/Google/Chrome*",
+    "~/Library/Application Support/Slack",
+    "~/Library/Application Support/AddressBook",
+]
+
+
 def default_home_dirs() -> list[str]:
     """Every fused-render home this machine might have: the default one and,
     when it differs, whatever FUSED_RENDER_HOME points at.
@@ -278,6 +352,7 @@ def default_ignore() -> list[str]:
     from fused_render.logs import log_dir  # stdlib-only module; no cycle
 
     out = [norm(os.path.expanduser("~/Library/Caches")), norm(log_dir())]
+    out += [norm(os.path.expanduser(p)) for p in LIBRARY_CHURN_PATHS]
     return DEFAULT_IGNORE_NAMES + out
 
 
