@@ -75,6 +75,14 @@ def _registry(root, sid, pid=None, status="busy", name="p"):
     return path
 
 
+def _later(seconds):
+    """An event stamp strictly after every registry write AND every mark so
+    far. `_STAMP` starts ten seconds ahead of collection, and a long suite run
+    (CI) can outlive that lead — a mark stamped "now" would then read newer
+    than an `_STAMP`-relative event."""
+    return max(_STAMP[0], time.time()) + seconds
+
+
 # ------------------------------------------------------------------ the tick
 
 def test_first_tick_is_a_baseline(claude_home):
@@ -728,16 +736,16 @@ def test_an_ended_event_from_another_process_on_the_session_is_not_this_turns(
     old.unlink()
     tasks_watch.tick()
     tasks_watch.mark_running(SID, ttl_sec=60)
-    tasks_watch.mark_turn_ended(SID, "run-old", at=_STAMP[0] + 5, pid=os.getppid())
+    tasks_watch.mark_turn_ended(SID, "run-old", at=_later(5), pid=os.getppid())
     assert not tasks_watch.is_turn_ended(SID)
     assert tasks_watch.is_marked_running(SID)
     assert tasks_watch.live_from_registry(SID)[0] is True
     # The live process's own end still ends it…
-    tasks_watch.mark_turn_ended(SID, "run-new", at=_STAMP[0] + 6, pid=os.getpid())
+    tasks_watch.mark_turn_ended(SID, "run-new", at=_later(6), pid=os.getpid())
     assert tasks_watch.is_turn_ended(SID)
     assert not tasks_watch.is_marked_running(SID)
     # …and a later foreign event cannot overwrite that stamp while the row lags.
-    tasks_watch.mark_turn_ended(SID, "run-old", at=_STAMP[0] + 7, pid=os.getppid())
+    tasks_watch.mark_turn_ended(SID, "run-old", at=_later(7), pid=os.getppid())
     assert tasks_watch.is_turn_ended(SID)
 
 
@@ -752,7 +760,7 @@ def test_the_newer_of_two_busy_processes_ending_leaves_the_older_running(
     _registry(claude_home, SID, status="busy", name="new")
     tasks_watch.tick()
     assert str(tasks_watch.registry_row(SID)["pid"]) == str(os.getpid())
-    tasks_watch.mark_turn_ended(SID, "run-new", at=_STAMP[0] + 5, pid=os.getpid())
+    tasks_watch.mark_turn_ended(SID, "run-new", at=_later(5), pid=os.getpid())
     assert not tasks_watch.is_turn_ended(SID)
     assert tasks_watch.live_from_registry(SID)[0] is True
 
@@ -767,7 +775,7 @@ def test_an_ended_event_from_a_pid_the_registry_never_showed_stays_unscoped(
     _registry(claude_home, SID, status="busy", name="new")
     tasks_watch.tick()
     tasks_watch.mark_running(SID, ttl_sec=60)
-    tasks_watch.mark_turn_ended(SID, "run-1", at=_STAMP[0] + 5, pid=2 ** 22 + 777)
+    tasks_watch.mark_turn_ended(SID, "run-1", at=_later(5), pid=2 ** 22 + 777)
     assert tasks_watch.is_turn_ended(SID)
     assert not tasks_watch.is_marked_running(SID)
 
