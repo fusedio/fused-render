@@ -255,6 +255,31 @@ def test_a_parked_send_keeps_its_photos(client, ws, monkeypatch):
     assert delivered[0][0].startswith("what is this?") and "shot.png" in delivered[0][0]
 
 
+def test_a_card_settled_after_the_check_refuses_the_answer_cleanly(client, ws, gated, monkeypatch):
+    # The router checks the card, then calls receive: a card answered at the Mac in that gap must refuse the
+    # phone's answer before any line is written (bot.CardSettled through receive's `answers`), never leave a
+    # held-back "approve" in the chat or settle the card after it.
+    bid = make(client)
+    b = registry.get(bid)
+    client.post(f"{P}/{bid}/send", {"text": "buy it"}, headers=DEV)
+    card = _waiting_card(b)
+    real = b.event_by_seq
+
+    def settle_meanwhile(seq):
+        ev = real(seq)
+        b.meta["waiting_on"] = card + 1  # the Mac answered it; the bot now waits on the next card
+        return ev
+    monkeypatch.setattr(b, "event_by_seq", settle_meanwhile)
+    n = b.seq
+    st, out = j(client.post(f"{P}/{bid}/send", {"text": "approve", "answer": card}, headers=DEV))
+    assert st == 400 and out["error"] == "that card is not waiting on an answer"
+    assert b.seq == n and "verdict" not in gated  # nothing written, nothing approved
+    monkeypatch.setattr(b, "event_by_seq", real)
+    b.meta["waiting_on"] = card
+    b.stop()
+    b.thread.join(10)
+
+
 def test_controls_settings_routines_create_delete(client, ws):
     bid = make(client, model="sonnet", effort="high", instructions="be brief", approval="auto", preset="")
     d = j(client.get(f"{P}/{bid}"))[1]["bot"]

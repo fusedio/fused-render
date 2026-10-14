@@ -314,7 +314,12 @@ def _send(b, body, device):
     text, images = routes.save_files(b, text, decoded, names)
     with b.lock:
         held = bool(b.meta.get("control"))  # receive parks it in `held` until the Mac hands the browser back
-    b.receive(text, via=via, reply_to=reply_to or None, images=images or None)
+    try:
+        # `answers` binds the click to its card in receive too (bot.CardSettled): a card that settled between the
+        # check above and here refuses the send before any line is written, instead of a held-back "yes".
+        b.receive(text, via=via, reply_to=reply_to or None, images=images or None, answers=via.get("answers"))
+    except _botmod().CardSettled:
+        raise ValueError("that card is not waiting on an answer") from None
     return {"ok": True, "seq": b.seq, "held": held, "files": names}
 
 
