@@ -5877,6 +5877,37 @@ def _task_output(run_id: str, task_id: str) -> dict:
     return {"output": output, "status": status, "truncated": truncated}
 
 
+def _task_stop(run_id: str, task_id: str) -> dict:
+    """Stop a running task: a `stop_task` control request to the live session
+    host (10 s). `{"ok": True}`, or `{"error"}` (no live host, the CLI's
+    refusal for an unknown id, or no answer)."""
+    if _bad_id(run_id):
+        return {"error": "unknown run_id"}
+    task_id = str(task_id or "")
+    if not task_id or len(task_id) > 200:
+        return {"error": "missing task_id"}
+    run_dir = os.path.join(RUNS, run_id)
+    if not os.path.isdir(run_dir):
+        return {"error": "unknown run_id"}
+    if not _host_alive(run_dir):
+        return {"error": "no live session"}
+    try:
+        start_offset = os.path.getsize(os.path.join(run_dir, "out.jsonl"))
+    except OSError:
+        start_offset = 0
+    try:
+        request_id = _write_control_request(run_dir, "stop_task",
+                                            task_id=task_id)
+    except OSError as exc:
+        return {"error": f"could not reach the session: {exc}"}
+    refused = []
+    resp = _await_control_response(run_dir, request_id, timeout=10.0,
+                                   start_offset=start_offset, errors=refused)
+    if resp is None:
+        return {"error": refused[0] if refused else "the session did not answer"}
+    return {"ok": True}
+
+
 def _starts_new_turn(row: dict) -> bool:
     """Whether `row` is the CLI's own echo (`--replay-user-messages`) of a
     message `_write_inbox_entry` put on the wire — the one row shape that
@@ -8979,4 +9010,7 @@ def main(action: str = "start", file: str = "", message: str = "",
     if action == "task_output":
         # A shell/monitor task's output, asked of the live CLI (SPEC T-3).
         return _task_output(run_id, task_id)
+    if action == "task_stop":
+        # Stop a running task: `stop_task` control request.
+        return _task_stop(run_id, task_id)
     return {"error": f"unknown action: {action}"}

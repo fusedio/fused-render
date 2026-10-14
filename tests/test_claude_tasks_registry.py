@@ -305,6 +305,33 @@ def test_task_output_passes_the_clis_refusal_through(agent, run_dir, monkeypatch
     assert agent._task_output("run", "b9") == {"error": "No task found with ID: b9"}
 
 
+# --------------------------------------------------------------- task_stop
+
+def test_task_stop_rejects_bad_ids_and_a_dead_host(agent, run_dir):
+    assert "error" in agent._task_stop("run", "b1")  # no live host
+    assert "error" in agent._task_stop("../x", "b1")
+    assert "error" in agent._task_stop("run", "")
+
+
+def test_task_stop_writes_a_stop_task_request(agent, run_dir, monkeypatch):
+    seen = _fake_host(agent, monkeypatch, run_dir, {})
+    res = agent.main("task_stop", run_id="run", task_id="b1")
+    assert res == {"ok": True}
+    assert seen == {"subtype": "stop_task", "task_id": "b1", "timeout": 10.0}
+
+
+def test_task_stop_passes_the_clis_refusal_through(agent, run_dir, monkeypatch):
+    _fake_host(agent, monkeypatch, run_dir, RuntimeError("No task found with ID: b9"))
+    assert agent._task_stop("run", "b9") == {"error": "No task found with ID: b9"}
+
+
+def test_task_stop_shares_the_task_output_lane():
+    import importlib
+    pool = importlib.import_module("fused_render.claude_agent.pool")
+    assert pool.pool_for("task_stop") is pool.pool_for("task_output")
+    assert pool.budget("task_stop") == 15.0
+
+
 def test_await_control_response_reports_an_error_answer(agent, run_dir):
     _append(run_dir, [{"type": "control_response", "response": {
         "request_id": "r1", "subtype": "error", "error": "No task found"}}])
