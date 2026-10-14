@@ -32,7 +32,7 @@ from fused_render.ai import supervisor
 from fused_render.server import ai as _server_ai
 from fused_render.server import create_app
 
-from tests.test_ai_apple import fake_helper, needs_exec  # noqa: F401 (fixture + marker reuse)
+from tests.test_ai_apple import fake_helper  # noqa: F401 (fixture reuse)
 
 
 @pytest.fixture()
@@ -73,7 +73,6 @@ def test_a_local_text_rows_source_comes_from_the_ambient_X_Fused_Source(
 # -- text generation, site 2: `_apple_relay` (Apple's on-device model) --------
 
 
-@needs_exec
 def test_an_apple_text_rows_source_comes_from_the_ambient_X_Fused_Source(
         client, fake_helper):
     """`_apple_relay` is `_local_relay`'s shape on purpose (its own docstring
