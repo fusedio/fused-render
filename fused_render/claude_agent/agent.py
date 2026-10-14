@@ -66,6 +66,7 @@ Actions:
   main(action="cancel", run_id=...)   -> {"cancelled": ...}
 """
 import datetime
+import errno
 import io
 import json
 import os
@@ -5242,7 +5243,16 @@ class _RunLock:
     (`LK_LOCK` gives up after ~10 tries, so it is not a blocking wait;
     CodeRabbit, PR #1635 — the unlocked Windows path let poll B persist past
     poll A's row). Neither available: unlocked, the posture `_record_settings`
-    takes on such a build."""
+    takes on such a build.
+
+    `held_elsewhere` is True only when the Windows retry budget ran out on
+    CONTENTION: another poll holds the lock right now and is writing this
+    very registry, so the caller skips its own write and leaves the poll
+    cursor where it was — the next poll re-reads the same rows and absorbs
+    them (CodeRabbit, PR #1635). A PERMANENT failure (no lock primitive, the
+    lock file will not open, `flock` or the byte lock erroring for any other
+    reason) is still the unlocked fallback: skipping there would mean the
+    registry never persists at all."""
 
     _RETRY_S = 0.05
     #: How long the Windows byte lock is retried before the unlocked fallback:
@@ -5254,6 +5264,7 @@ class _RunLock:
         self.path = os.path.join(run_dir, "bg_tasks.lock")
         self.fh = None
         self.byte_locked = False
+        self.held_elsewhere = False
 
     def __enter__(self):
         try:
@@ -5295,8 +5306,13 @@ class _RunLock:
                         msvcrt.locking(self.fh.fileno(), msvcrt.LK_NBLCK, 1)
                         self.byte_locked = True
                         break
-                    except OSError:
-                        if time.monotonic() >= deadline:
+                    except OSError as exc:
+                        # EACCES / EDEADLOCK: another holder (contention).
+                        # Anything else will not clear by waiting.
+                        contended = exc.errno in (errno.EACCES,
+                                                  getattr(errno, "EDEADLOCK", errno.EDEADLK))
+                        if not contended or time.monotonic() >= deadline:
+                            self.held_elsewhere = contended
                             self.fh.close()
                             self.fh = None
                             break
@@ -5321,7 +5337,8 @@ class _RunLock:
 
 
 def _update_run_registry(run_dir: str, rows: list, ends: list,
-                         tool_names: dict, tool_inputs: dict) -> tuple:
+                         tool_names: dict, tool_inputs: dict,
+                         cursor: int | None = None) -> tuple:
     """(registry, commands_changed) after applying this window's task and
     command rows that the persisted registry has not absorbed yet.
 
@@ -5335,9 +5352,16 @@ def _update_run_registry(run_dir: str, rows: list, ends: list,
     captured (each one replaces the last anyway, and a run dir polled for
     the first time would otherwise rewrite the state file once per turn),
     plus any `commands_changed` after it. `commands_changed` on the payload
-    is True only for a COMPLETE fresh row, so one row is news exactly once."""
+    is True only for a COMPLETE fresh row, so one row is news exactly once.
+
+    `cursor`, when given, is the poll cursor `_read_current_turn` held back
+    (its `pending`); it is persisted here, after the registry write, so a
+    poll that could not take the lock (`_RunLock.held_elsewhere`) leaves
+    both where they were and the next poll re-reads the same rows. That
+    poll still answers with this window applied in memory."""
     now = time.time()
-    with _RunLock(run_dir):
+    with _RunLock(run_dir) as lock:
+        writable = not lock.held_elsewhere
         registry, applied, current = _load_registry(run_dir)
         try:
             size = os.path.getsize(os.path.join(run_dir, "out.jsonl"))
@@ -5368,10 +5392,10 @@ def _update_run_registry(run_dir: str, rows: list, ends: list,
                                            tool_inputs, now)
             elif sub == "init":
                 cap_rows = [(row, complete)]
-                commands_changed = commands_changed or complete
+                commands_changed = commands_changed or (complete and writable)
             elif sub == "commands_changed":
                 cap_rows.append((row, complete))
-                commands_changed = commands_changed or complete
+                commands_changed = commands_changed or (complete and writable)
         # A task whose tool call this window only now names gets its kind
         # settled here.
         settled = False
@@ -5383,6 +5407,8 @@ def _update_run_registry(run_dir: str, rows: list, ends: list,
                     if kind != "other":
                         rec["kind"] = kind
                         settled = True
+        if not writable:
+            return registry, False
         for row, _complete in cap_rows:
             _capture_commands(run_dir, row)
         # Nothing new absorbed and nothing settled: the file already says this.
@@ -5390,6 +5416,8 @@ def _update_run_registry(run_dir: str, rows: list, ends: list,
             _write_bg_tasks(run_dir,
                             persist if persist is not None else registry,
                             new_applied)
+        if cursor is not None:
+            _write_poll_cursor(run_dir, cursor)
     return registry, commands_changed
 
 
@@ -6050,7 +6078,8 @@ def _seam(breaks: list, rows: list, end: int, shape: tuple,
     })
 
 
-def _read_current_turn(run_dir: str, ends: list | None = None) -> tuple:
+def _read_current_turn(run_dir: str, ends: list | None = None,
+                       pending: list | None = None) -> tuple:
     """(rows, cursor) — the parsed rows of `out.jsonl` from the last proven-safe
     offset onward, and the offset `_poll` should persist for next time.
 
@@ -6113,7 +6142,11 @@ def _read_current_turn(run_dir: str, ends: list | None = None) -> tuple:
     offset in `out.jsonl` (just past its newline) — NEGATED for a parsed but
     half-written tail row (no newline yet), whose end is where its bytes stop
     today. `_poll` uses it to apply task rows exactly once (see
-    `_update_run_registry`)."""
+    `_update_run_registry`).
+
+    `pending`, when given, receives the advanced cursor INSTEAD of it being
+    written here: `_poll` hands it to `_update_run_registry`, which persists
+    it only once the registry has absorbed the rows before it."""
     path = os.path.join(run_dir, "out.jsonl")
     try:
         size = os.path.getsize(path)
@@ -6202,7 +6235,10 @@ def _read_current_turn(run_dir: str, ends: list | None = None) -> tuple:
             pass  # half-written last line; next poll gets it, same as before
 
     if advance_to is not None:
-        _write_poll_cursor(run_dir, advance_to)
+        if pending is not None:
+            pending.append(advance_to)
+        else:
+            _write_poll_cursor(run_dir, advance_to)
     return rows, cursor
 
 
@@ -6374,7 +6410,8 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
     parsed = []
 
     ends = []
-    rows, scan_cursor = _read_current_turn(run_dir, ends)
+    pending_cursor = []
+    rows, scan_cursor = _read_current_turn(run_dir, ends, pending_cursor)
 
     for row in rows:
         parsed.append(row)
@@ -6538,7 +6575,8 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
     # this window holds that the persisted registry has not absorbed yet,
     # applied once, under the run's registry lock.
     bg_tasks, commands_changed = _update_run_registry(
-        run_dir, rows, ends, tool_names, tool_inputs)
+        run_dir, rows, ends, tool_names, tool_inputs,
+        pending_cursor[-1] if pending_cursor else None)
 
     # Last word on the verb: a run sitting in a retry is not thinking, and
     # saying so is the whole point — "Thinking…" with a frozen token count is
