@@ -113,18 +113,6 @@ def _pid_is_rcd(pid: int, *, runner, platform) -> bool:
     recycled pid is never signalled."""
     if not isinstance(pid, int) or pid <= 1:
         return False
-    if platform == "win32":
-        # Positive evidence only: the process's command line must be an
-        # `rclone ... rcd`. An image name alone (tasklist) would also match the
-        # user's own rclone, so without PowerShell we skip rather than guess.
-        powershell = _which("powershell.exe")
-        if not powershell:
-            return False
-        res = _run([powershell, "-NoProfile", "-NonInteractive", "-Command",
-                    f"(Get-CimInstance Win32_Process -Filter 'ProcessId={int(pid)}')"
-                    ".CommandLine"], runner)
-        out = (res.stdout or "").lower() if res and res.returncode == 0 else ""
-        return "rclone" in out and " rcd" in out
     ps = _which("ps", ("/bin/ps", "/usr/bin/ps"))
     if not ps:
         return False
@@ -134,11 +122,6 @@ def _pid_is_rcd(pid: int, *, runner, platform) -> bool:
 
 
 def _stop_pid(pid: int, *, runner, kill, platform, sleep) -> None:
-    if platform == "win32":
-        taskkill = _which("taskkill.exe")
-        if taskkill:
-            _run([taskkill, "/PID", str(pid), "/F"], runner)
-        return
     try:
         kill(pid, signal.SIGTERM)  # lets rclone unmount cleanly
     except OSError:
@@ -202,8 +185,6 @@ def _unmount_argvs(path: str, platform: str) -> list[list[str]]:
         umount = _which("umount", ("/bin/umount", "/usr/bin/umount"))
         if umount:
             argvs.append([umount, "-l", path])
-    # Windows: rclone's cmount dies with the process we just stopped; there is
-    # no mountpoint directory to force-unmount.
     return argvs
 
 
@@ -233,8 +214,7 @@ def _unmount_all(mounts_dir: str, *, runner, platform) -> list[str]:
 def _cache_dirs(environ, platform, user_home) -> list[str]:
     """The rclone VFS cache dirs fused-render itself configured on the old
     build (supervisor/paths.py: `RCLONE_CACHE_DIR = <cache>/rclone`):
-    Linux `$XDG_CACHE_HOME|~/.cache` + `/fused-render/rclone`; Windows
-    `%LOCALAPPDATA%/FusedRender/cache/rclone` (else `~/.fused-render/cache/rclone`).
+    Linux `$XDG_CACHE_HOME|~/.cache` + `/fused-render/rclone`.
     Resolved here, not read from RCLONE_CACHE_DIR: an inherited value can be the
     user's own rclone cache and must never be deleted. The supervisor-provided
     `<FUSED_RENDER_CACHE_DIR>/rclone` is fused-render's own and is included."""
@@ -243,12 +223,6 @@ def _cache_dirs(environ, platform, user_home) -> list[str]:
         xdg = environ.get("XDG_CACHE_HOME")
         base = xdg if xdg and os.path.isabs(xdg) else os.path.join(user_home, ".cache")
         out.append(os.path.join(base, "fused-render", "rclone"))
-    elif platform == "win32":
-        local = environ.get("LOCALAPPDATA")
-        if local:
-            out.append(os.path.join(local, "FusedRender", "cache", "rclone"))
-        else:
-            out.append(os.path.join(user_home, ".fused-render", "cache", "rclone"))
     base = environ.get("FUSED_RENDER_CACHE_DIR")
     if base:
         out.append(os.path.join(base, "rclone"))

@@ -1,8 +1,8 @@
 """Platform-neutral in-app updater state machine (docs/PYTHON_SUPERVISOR_SPEC.md
-"Software updates" gives the Windows design this mirrors). A silent background
-loop checks the signed manifest and surfaces a newer version only through
-/api/config's `update` field — the shell shows a badge. Downloading and
-installing happen solely on an explicit POST /api/update/install.
+"Software updates"). A silent background loop checks the signed manifest and
+surfaces a newer version only through /api/config's `update` field — the
+shell shows a badge. Downloading and installing happen solely on an explicit
+POST /api/update/install.
 
 Factored out of update/mac.py so the macOS and Linux in-app updaters share one
 state machine, one throttle, and one Activity-dock job mirroring; each
@@ -168,8 +168,8 @@ class UpdateManager:
 
         `check()`, `install()`, `_beat_installing()` etc. all live here in the
         shared base, but `tests/test_mac_update.py` patches constants like
-        `MIN_CHECK_GAP_S` on the `mac` module directly (the same
-        re-export-for-patchability idiom `_win32/update.py` uses) — a bare
+        `MIN_CHECK_GAP_S` on the `mac` module directly (a
+        re-export-for-patchability idiom) — a bare
         module global in THIS file would never see that patch, since it lives
         in a different module's namespace. Looking the name up on
         `sys.modules[type(self).__module__]` first means a subclass's
@@ -248,7 +248,7 @@ class UpdateManager:
             swept = False
             while True:
                 try:
-                    # Inside the try, like the Windows loop's sweep: it walks
+                    # Inside the try: it walks
                     # the updates dir, and an OSError there must cost one tick,
                     # not the whole auto-check thread. Still only once per
                     # process — the leftovers it clears are a previous

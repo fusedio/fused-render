@@ -9,9 +9,9 @@ environment; the server echoes them from `/api/desktop/ready` (see
 This module polls that endpoint with the token header and reports ready only
 when the echoed id + token match.
 
-`/api/desktop/ready` is dependency-free on purpose: it once polled `/api/config`, whose live mount check timed out on Windows cold start and made the supervisor kill a healthy server.
+`/api/desktop/ready` is dependency-free on purpose: it once polled `/api/config`, whose live mount check timed out on a cold start and made the supervisor kill a healthy server.
 
-Shared by both backends: the Windows supervisor (out-of-process child server)
+Shared by both backends: the Linux supervisor (out-of-process child server)
 and the macOS app (in-process server thread). urllib + json only, so it stays
 importable and testable on every platform.
 """
@@ -67,9 +67,9 @@ def wait_until_ready(
 
     Returns True once the matching server answers, False on timeout. `on_poll`,
     if given, runs once per iteration before the readiness check — raise from
-    it to abort early (the Windows backend passes a check that raises when the
-    child server process has already exited, so a dead child fails fast instead
-    of waiting out the whole deadline)."""
+    it to abort early (e.g. a check that raises when the child server process
+    has already exited, so a dead child fails fast instead of waiting out the
+    whole deadline)."""
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         if on_poll is not None:

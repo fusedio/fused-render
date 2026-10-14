@@ -460,7 +460,7 @@ def _plan_calls(plan: _Plan) -> None:
         return
     found = []
     # Exactly two levels (<root>/<partition>/<file>), suffix-filtered: on
-    # Linux/Windows the app log dir is <root>/app and must not land twice.
+    # Linux the app log dir is <root>/app and must not land twice.
     for part in plan.listdir(root, "calls store"):
         if not part.is_dir():
             continue

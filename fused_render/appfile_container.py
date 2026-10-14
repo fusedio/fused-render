@@ -87,18 +87,14 @@ def is_container(path: str) -> bool:
 def path_problem(rel: object) -> str | None:
     """Why ``rel`` is not a safe payload-relative path, or None if it is.
 
-    Forward slashes only: the writer never emits a backslash, and on Windows
-    a backslash inside a "segment" would act as a separator after
-    ``os.path.join`` — ``..\\..\\x`` style paths would escape the extract
-    dir while passing a ``/``-split ``..`` check. NUL is refused because it
+    Forward slashes only: the writer never emits a backslash or a colon, so
+    a path carrying one was not written by it. NUL is refused because it
     truncates a C path.
     """
     if not isinstance(rel, str) or not rel:
         return "empty path"
     if "\\" in rel or "\x00" in rel or ":" in rel:
-        # ':' covers a Windows drive-relative segment (`C:foo`, which isabs()
-        # does not catch) and NTFS alternate data streams (`a:b`); nothing
-        # legitimate in an app folder needs one.
+        # Nothing legitimate in an app folder needs a ':'.
         return f"path carries a backslash, colon or NUL: {rel!r}"
     if rel.startswith("/") or os.path.isabs(rel):
         return f"absolute path not allowed: {rel!r}"

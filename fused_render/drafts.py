@@ -72,16 +72,11 @@ it over a moved file would be the store failing at its only job (Akshil,
 """
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import re
 import time
-
-try:
-    import fcntl  # POSIX only — Windows falls back to no inter-process lock,
-    # the same posture (and the same directory) as tasks_store._update.
-except ImportError:  # pragma: no cover
-    fcntl = None
 
 # Derived from the env at import, exactly like `tasks_store.STATE_DIR` — same
 # deliberate local duplication, same consequence for tests: a test that
@@ -606,8 +601,7 @@ def _update(mutate):
     os.makedirs(STATE_DIR, exist_ok=True)
     path = os.path.join(STATE_DIR, DRAFTS_FILE)
     with open(path + ".lock", "w") as lock:
-        if fcntl is not None:
-            fcntl.flock(lock, fcntl.LOCK_EX)
+        fcntl.flock(lock, fcntl.LOCK_EX)
         data = load()
         before = {section: dict(data[section]) for section in (CHAT, TASK)}
         result, changed = mutate(data)

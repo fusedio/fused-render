@@ -38,8 +38,7 @@ bash has no preexec, so the command line comes from a DEBUG trap plus
 
 The shim files are generated from the strings below into a per-user directory
 under the system temp dir (not shipped as package data, so every bundle layout
-gets them for free). Windows never reaches `integrate`: `resolve_profile`
-returns None there.
+gets them for free).
 """
 from __future__ import annotations
 

@@ -44,7 +44,6 @@ import json
 import logging
 import os
 import shutil
-import stat
 import threading
 
 logger = logging.getLogger(__name__)
@@ -61,13 +60,6 @@ _HOUSEKEEPING = {".git", ".gitignore", ".DS_Store"}
 def _stamp_path() -> str:
     base = os.environ.get("FUSED_RENDER_HOME") or os.path.expanduser("~/.fused-render")
     return os.path.join(base, _STAMP_NAME)
-
-
-def _force_rm(func, path, _exc):
-    """rmtree onerror hook: `.git` objects are read-only (0444) by design, and
-    on Windows that alone fails the unlink — lift the bit and retry once."""
-    os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
-    func(path)
 
 
 def _settle(old: str, new: str, witnessed: bool) -> None:
@@ -245,7 +237,7 @@ def _remove_empty_old_root(root: str) -> bool:
                     old_root, len(leftover), "y" if len(leftover) == 1 else "ies")
         return False
     try:
-        shutil.rmtree(old_root, onerror=_force_rm)
+        shutil.rmtree(old_root)
     except Exception:
         logger.warning("apps root migration: could not delete empty %s", old_root,
                        exc_info=True)

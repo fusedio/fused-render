@@ -28,7 +28,6 @@ import json
 import logging
 import os
 import shutil
-import stat
 import threading
 
 from fused_render import app_git
@@ -41,16 +40,6 @@ _STAMP_NAME = "local_monorepo.json"
 def _stamp_path() -> str:
     base = os.environ.get("FUSED_RENDER_HOME") or os.path.expanduser("~/.fused-render")
     return os.path.join(base, _STAMP_NAME)
-
-
-def _force_rm(func, path, _exc):
-    """rmtree onerror hook: `.git` objects are read-only (0444) by design, and
-    on Windows that alone fails the unlink — lift the bit and retry once."""
-    try:
-        os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
-        func(path)
-    except OSError:
-        raise
 
 
 def _remote_state(app_dir: str) -> str:
@@ -221,7 +210,7 @@ def migrate(root: str) -> tuple[int, bool]:
                                    "read (half-deleted earlier run?) — "
                                    "deleting it and adopting", name)
                 _merge_excludes(app_dir, local)
-                shutil.rmtree(git_dir, onerror=_force_rm)
+                shutil.rmtree(git_dir)
             _drop_boilerplate_gitignore(app_dir)
             _update_claude_md(app_dir)
             # Adopt whatever the folder holds — a dirty tree as-is (its adopt

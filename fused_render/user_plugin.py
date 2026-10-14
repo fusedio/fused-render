@@ -412,8 +412,8 @@ def start() -> None:
     A THREAD, unlike the file copy this replaced: the work is a `claude` spawn
     that clones over the network, and the caller is a startup event that runs
     before the server serves. D228 is the precedent that matters — a single
-    `claude --help` on the pre-bind path, against a cold binary facing a Windows
-    Defender first-touch scan, outran the desktop supervisor's 20s readiness
+    `claude --help` on the pre-bind path, against a cold binary facing an
+    antivirus first-touch scan, outran the desktop supervisor's 20s readiness
     budget and killed the server three times. Nothing here is load-bearing
     enough to be worth one second of startup, let alone a clone.
 

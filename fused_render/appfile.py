@@ -444,9 +444,7 @@ def app_id_of(manifest: dict) -> str | None:
 
 def _entry_problem(entry: object) -> bool:
     # `\\` is rejected outright rather than normalized: the exporter always
-    # writes forward slashes, and on Windows a backslash inside a "component"
-    # would act as a separator after os.path.join — `..\\..\\x` style entries
-    # would escape the extract dir while passing a `/`-split ".." check.
+    # writes forward slashes, so an entry carrying one was not written by it.
     return (
         not isinstance(entry, str)
         or not entry

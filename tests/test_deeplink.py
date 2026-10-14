@@ -211,7 +211,7 @@ def test_parse_rejects(bad):
         parse_github_url(bad)
 
 
-# ---- entry-point helpers (macOS app / Windows winopen) ------------------------
+# ---- entry-point helpers (macOS app) -------------------------------------------
 
 
 def test_app_clone_url_path_encodes_whole_link():
@@ -220,16 +220,6 @@ def test_app_clone_url_path_encodes_whole_link():
     from fused_render.app import clone_url_path
 
     assert clone_url_path(DEEPLINK) == "/clone?src=" + quote(DEEPLINK, safe="")
-
-
-def test_winopen_clone_url():
-    from urllib.parse import quote
-
-    from fused_render.winopen import _clone_url
-
-    assert _clone_url(9000, DEEPLINK) == (
-        "http://127.0.0.1:9000/clone?src=" + quote(DEEPLINK, safe="")
-    )
 
 
 def test_openurls_target_path_routes_deeplink_to_clone():
@@ -315,13 +305,9 @@ def test_reclick_pulls_updates(env, source_repo):
     assert (env / "how_it_works" / "examples" / "how_it_works" / "new.txt").is_file()
 
 
-def test_view_url_path_normalizes_windows_drive_paths():
+def test_view_url_path_encodes_posix_paths():
     from fused_render.deeplink import _view_url_path
 
-    assert (
-        _view_url_path("C:\\Users\\v\\Documents\\Fused\\x\\index.html")
-        == "/explorer/view/C%3A/Users/v/Documents/Fused/x/index.html"
-    )
     assert _view_url_path("/Users/v/a b/index.html") == "/explorer/view/Users/v/a%20b/index.html"
 
 

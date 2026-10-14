@@ -69,7 +69,7 @@ logger = logging.getLogger("fused_render.lan")
 HOSTNAME = "render.fused.local"
 ALIAS_HOSTNAME = "render.local"
 #: Port 80 first so the URL carries no port (macOS ≥ 10.14 lets a non-root
-#: process bind it); the fallbacks are for Linux/Windows or a taken 80.
+#: process bind it); the fallbacks are for Linux or a taken 80.
 PORT_CANDIDATES = (80, 8080, 1888)
 #: The https listener beside it (lan_tls.py): trusted by the native shell,
 #: which pins our private CA from the pairing QR; browsers keep http. 443

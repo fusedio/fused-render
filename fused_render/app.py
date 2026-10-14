@@ -55,10 +55,10 @@ def view_url_path(fs_path: str) -> str:
     `/view/<path>`. Module-level (not a closure) so it is testable without
     AppKit.
 
-    Delegates to the shared `_view_url_codec` (the single body, now 4/4
-    consumers with winopen/deeplink/shell.seed) so macOS encodes paths exactly
-    as the frontend router and the Windows supervisor do — per-segment with the
-    `!*'()` safe set of `encodeURIComponent`.
+    Delegates to the shared `_view_url_codec` (the single body, shared with
+    deeplink/shell.seed) so macOS encodes paths exactly as the frontend router
+    and the Linux supervisor do — per-segment with the `!*'()` safe set of
+    `encodeURIComponent`.
     """
     from fused_render._view_url_codec import view_url_path as _shared
 
@@ -72,7 +72,7 @@ def clone_url_path(raw_url: str) -> str:
     string. Module-level (not a closure) so it is testable without AppKit.
 
     Delegates to the shared `_view_url_codec.open_target_path` so all three
-    platforms (macOS here, the Windows/Linux supervisor) ferry a deep link
+    platforms (macOS here, the Linux supervisor) ferry a deep link
     identically."""
     from fused_render._view_url_codec import open_target_path
 
@@ -91,7 +91,7 @@ def openurls_target_path(raw_url: str) -> str:
     closure) so it is testable without AppKit.
 
     Delegates to the shared `_view_url_codec.open_target_path` — the single
-    implementation shared with the Windows/Linux supervisor.
+    implementation shared with the Linux supervisor.
     """
     from fused_render._view_url_codec import open_target_path
 
@@ -182,25 +182,6 @@ def _close_duckdb_stash() -> None:
 
 
 def _is_process_alive(pid: int) -> bool:
-    # os.kill(pid, 0) is the POSIX no-op liveness check, but on Windows signal 0
-    # aliases CTRL_C_EVENT: it broadcasts a real Ctrl+C via
-    # GenerateConsoleCtrlEvent to the whole console process group rather than
-    # probing `pid` alone. Use the Win32 exit-code API instead.
-    if os.name == "nt":
-        import ctypes
-        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-        STILL_ACTIVE = 259
-        handle = ctypes.windll.kernel32.OpenProcess(
-            PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
-        if not handle:
-            return False
-        try:
-            code = ctypes.c_ulong()
-            if not ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
-                return False
-            return code.value == STILL_ACTIVE
-        finally:
-            ctypes.windll.kernel32.CloseHandle(handle)
     try:
         os.kill(pid, 0)
     except OSError:
@@ -257,7 +238,7 @@ def configure_desktop_instance() -> tuple[str, str]:
     `fused_render.paths.desktop_instance()`, so `/api/config` echoes the id
     (and the token, only to a caller that already knows it) and the token-gated
     `POST /api/desktop/shutdown` endpoint becomes available — parity with the
-    Windows supervisor's child server. Readiness is then verified against this
+    Linux supervisor's child server. Readiness is then verified against this
     exact token (shared `desktop_probe`), so a decoy server on the port cannot
     fool startup. Module-level (AppKit-free) so it is testable."""
     token = secrets.token_hex(32)  # 32 bytes == 256 bits, 64 hex chars
@@ -1074,11 +1055,7 @@ def spawn_relauncher(bundle: str, pid: int, *, popen=subprocess.Popen,
         f"pidfile={shlex.quote(pidfile)}; "
         f"log={shlex.quote(log)}; "
         f"opener={shlex.quote(opener)}; "
-        # `posixpath.join`, not `os.path.join`: `bundle` is always a macOS bundle
-        # path (forward slashes) regardless of the host OS running this code —
-        # in production that's always macOS, but the test suite also exercises
-        # this string-building on Windows, where `os.path.join` would splice in
-        # backslashes and corrupt the path.
+        # `bundle` is always a macOS bundle path (forward slashes).
         f"exe={shlex.quote(posixpath.join(bundle, 'Contents', 'MacOS', bundle_executable(bundle)))}; "
         # THE CLOCK STARTS HERE, not when the pid dies. This shell is spawned by
         # `begin_quit`'s `on_claim`, at the very start of the teardown, so its
@@ -1700,8 +1677,7 @@ def main() -> None:
     # AppKit also routes plain document opens (Finder double-click on a
     # registered file type, e.g. .fused) through this same selector as a
     # file:// URL on some launches, not through application:openFiles:.
-    # openurls_target_path tells the two apart (mirrors the scheme check in
-    # winopen.py's _open()).
+    # openurls_target_path tells the two apart.
     def application_openURLs_(self, _app, urls):
         from fused_render.deeplink import (
             is_fda_relaunch_url,

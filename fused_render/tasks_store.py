@@ -102,6 +102,7 @@ two lines.
 from __future__ import annotations
 
 import contextlib
+import fcntl
 import glob
 import json
 import os
@@ -112,19 +113,6 @@ import urllib.parse
 from datetime import datetime, timezone
 
 from fused_render._view_url_codec import canonical_fs_path
-
-try:
-    import fcntl  # POSIX only — Windows falls back to no inter-process lock,
-    # the same posture as claude_sessions.api_claude_session_triage, whose
-    # directory (and locking convention) this shares.
-except ImportError:  # pragma: no cover
-    fcntl = None
-
-try:
-    import msvcrt  # Windows only — the counterpart to `fcntl` above, used by
-    # the lease functions further down for real cross-process locking there.
-except ImportError:  # pragma: no cover
-    msvcrt = None
 
 # CLAUDE_CONFIG_DIR wins where set — same rule (and same deliberate local
 # duplication) as server/routers/claude_sessions.py and claude_artifacts.py.
@@ -222,29 +210,13 @@ def load_state(filename: str) -> dict:
         return {}
 
 
-# How long the Windows `locked_path` loop sleeps between `LK_NBLCK` tries. Much
-# shorter than `_LEASE_RETRY_INTERVAL`: a critical section held under
-# `locked_path` is a read-modify-write of one small json file, not a role held
-# for the life of a process, so a rival is normally gone within milliseconds.
-_LOCK_RETRY_INTERVAL = 0.02
-
-
 def _open_lockfile(path: str):
     """Open (creating if needed, NEVER truncating) the sibling lock file at
-    `path`, ready for either platform's locking call, seeked to 0. Shared by
-    the lease functions and `locked_path` so the one-byte stamp `msvcrt`
-    needs and the "do not truncate a byte a rival holds locked" rule
-    (94c742931) are written once."""
+    `path`, seeked to 0. Shared by the lease functions and `locked_path` so
+    the "do not truncate a file a rival holds locked" rule (94c742931) is
+    written once."""
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     handle = open(path, "a+")
-    if fcntl is None and msvcrt is not None:
-        handle.seek(0, os.SEEK_END)
-        if handle.tell() == 0:
-            try:
-                handle.write("\0")
-                handle.flush()
-            except OSError:
-                pass
     handle.seek(0)
     return handle
 
@@ -252,40 +224,16 @@ def _open_lockfile(path: str):
 @contextlib.contextmanager
 def locked_path(lock_path: str):
     """Hold the lock file at `lock_path` exclusively, across processes, for an
-    arbitrary critical section — blocking until it is free. NOT REENTRANT
-    (`flock` is per open file description, and the Windows byte lock is per
-    handle): taking it twice in one process, on one thread or two, waits on
-    yourself. A caller that nests must keep its own depth guard — see
-    `schedule._store_lock`.
-
-    POSIX: `flock(LOCK_EX)`. Windows: `msvcrt.locking` byte 0 with a
-    hand-rolled `LK_NBLCK` retry loop (`LK_LOCK` gives up after ~10 tries, so
-    it is not a blocking wait). Neither available: yields unlocked, the
-    posture this module always had on such a build."""
+    arbitrary critical section — blocking until it is free (`flock(LOCK_EX)`).
+    NOT REENTRANT (`flock` is per open file description): taking it twice in
+    one process, on one thread or two, waits on yourself. A caller that nests
+    must keep its own depth guard — see `schedule._store_lock`."""
     handle = _open_lockfile(lock_path)
-    held = False
     try:
-        if fcntl is not None:
-            fcntl.flock(handle, fcntl.LOCK_EX)
-            held = True
-        elif msvcrt is not None:
-            while True:
-                try:
-                    handle.seek(0)
-                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-                    held = True
-                    break
-                except OSError:
-                    time.sleep(_LOCK_RETRY_INTERVAL)
+        fcntl.flock(handle, fcntl.LOCK_EX)
         yield
     finally:
-        if held and fcntl is None and msvcrt is not None:
-            try:
-                handle.seek(0)
-                msvcrt.locking(handle.fileno(), getattr(msvcrt, "LK_UNLCK", 0), 1)
-            except OSError:
-                pass
-        # Closing the handle drops the flock on POSIX.
+        # Closing the handle drops the flock.
         handle.close()
 
 
@@ -299,8 +247,7 @@ def locked(filename: str):
     the fresh read, and write back, all under one hold, which `_update`'s
     single-callback shape cannot express.
 
-    Cross-process on POSIX (`flock`) and Windows (`msvcrt`); see
-    `locked_path`. Not reentrant."""
+    Cross-process (`flock`); see `locked_path`. Not reentrant."""
     with locked_path(os.path.join(STATE_DIR, filename) + ".lock"):
         yield
 
@@ -334,37 +281,10 @@ _lease_handles: dict[str, object] = {}
 _lease_lock = threading.Lock()
 
 
-# How long `acquire_lease_blocking`'s Windows loop sleeps between `LK_NBLCK`
-# retries — `LK_LOCK` itself gives up after ~10 tries over about a second, so
-# it cannot stand in for a true blocking wait; this is the interval of the
-# hand-rolled loop that replaces it. A module constant so a test can read or
-# shorten it without reaching past `time.sleep`.
-_LEASE_RETRY_INTERVAL = 0.5
-
-
 def _open_lease_file(name: str):
-    """Open (creating if needed) `name`'s lease file in STATE_DIR, ready for
-    either platform's locking call, WITHOUT EVER TRUNCATING IT. On the
-    simulated/real Windows path the file needs at least one byte in it
-    before `msvcrt.locking` can lock anything — a zero-length lock is a
-    silent no-op there — so a still-empty file gets one byte stamped;
-    POSIX's `flock` locks the whole file regardless of its length, so the
-    stamp is harmless there too.
-
-    Non-truncating (`"a+"`) on purpose: a rival process can already hold
-    `msvcrt.locking` on byte 0 by the time this runs, and real Windows
-    raises `PermissionError` for any access to a byte another process has
-    locked. The old truncating `"w"` open wrote that byte on EVERY call —
-    including a second process's — which raised outside any try/except and
-    outside `acquire_lease_blocking`'s retry loop, killing the waiter thread
-    that calls this. Stamping only once, when the file is still empty, means
-    every call after the first winner's never touches byte 0 at all; and the
-    stamp attempt itself tolerates losing that race, since the point is
-    "at least one process has stamped this, ever", not that THIS call must
-    be the one that does it.
-
-    Always returns the handle seeked to 0: both locking calls lock starting
-    from the current/given position, and every caller expects position 0."""
+    """Open (creating if needed) `name`'s lease file in STATE_DIR WITHOUT
+    EVER TRUNCATING IT (`"a+"`): a rival process may already hold the lock
+    by the time this runs. Always returns the handle seeked to 0."""
     return _open_lockfile(os.path.join(STATE_DIR, name))
 
 
@@ -383,20 +303,8 @@ def acquire_lease_blocking(name: str) -> None:
     from a thread you can afford to park (a background worker, never a
     request-handling thread).
 
-    POSIX (`fcntl`): a plain `flock(LOCK_EX)`, no `LOCK_NB` — the kernel
-    parks this thread until the lock is free, which is a true indefinite
-    wait.
-
-    Windows (`msvcrt`): there is no equivalent primitive. `LK_LOCK` looks
-    like the blocking mode but isn't one — per Windows/CPython's own
-    documented behavior it retries roughly 10 times over about a second and
-    then raises, same as a failed `LK_NBLCK`. So this hand-rolls the wait:
-    loop `LK_NBLCK`, and on `OSError` sleep `_LEASE_RETRY_INTERVAL` and try
-    again, until it succeeds.
-
-    Neither primitive available (a build of Python missing both, which is
-    not a real platform either of us ships to): falls back to claiming the
-    lease unconditionally, no cross-process guarantee.
+    A plain `flock(LOCK_EX)`, no `LOCK_NB` — the kernel parks this thread
+    until the lock is free, which is a true indefinite wait.
 
     `_lease_lock` is held only around the bookkeeping (the idempotence check
     and registering the winning handle), never across the actual wait —
@@ -406,21 +314,8 @@ def acquire_lease_blocking(name: str) -> None:
     with _lease_lock:
         if name in _lease_handles:
             return
-    if fcntl is None and msvcrt is None:
-        with _lease_lock:
-            if name not in _lease_handles:
-                _lease_handles[name] = _open_lease_file(name)
-        return
     handle = _open_lease_file(name)
-    if fcntl is not None:
-        fcntl.flock(handle, fcntl.LOCK_EX)
-    else:
-        while True:
-            try:
-                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-                break
-            except OSError:
-                time.sleep(_LEASE_RETRY_INTERVAL)
+    fcntl.flock(handle, fcntl.LOCK_EX)
     with _lease_lock:
         if name in _lease_handles:
             handle.close()
@@ -506,18 +401,8 @@ def erased(key: str = "") -> set[str]:
 
 def _counter(project: str) -> str:
     """The name of the counter a project's numbers come out of: its canonical
-    spelling (`canonical_fs_path` — forward slashes on a drive path, unchanged
-    on POSIX).
-
-    ONE FOLDER, ONE COUNTER, HOWEVER IT WAS SPELLED. A task's project reaches
-    this store by two roads: a transcript's `cwd`, written by Claude Code in the
-    OS's own spelling, and a scheduled entry's `target`, which the router ran
-    through `os.path.abspath` — and on Windows those two spell the same folder
-    with different slashes. Keyed on the raw string, each spelling had a counter
-    of its own and a queued chat's row and the row holding its folder were both
-    TASK-001 (Windows CI, PR #1124). The record still stores the project as it
-    was given; only the counter is looked up by the canonical name, so a store
-    written before this rule counts on unchanged.
+    spelling (`canonical_fs_path`). The record still stores the project as it
+    was given; only the counter is looked up by the canonical name.
 
     A guessed project (the lossy directory-name decode) mints no number at all
     under the queue (`routers/tasks.py::_numbers`), so no counter is keyed on

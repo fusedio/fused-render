@@ -4,7 +4,7 @@ fused-render://open?url=<http(s) link to a .fused>.
 
 A `fused-render://open?git=https://github.com/{owner}/{repo}/tree/{ref}/{subpath}`
 link, caught by the OS protocol registration (macOS CFBundleURLTypes /
-Windows HKCU `fused-render` URL-protocol class), lands the browser on
+the Linux desktop entry's MimeType), lands the browser on
 `GET /clone?src=…` — a server-served confirm page. Nothing touches disk until
 the user confirms there; the page then calls `POST /api/clone` (X-Fused
 guarded, same D3 posture as every mutating route) which sparse-clones the
@@ -50,7 +50,6 @@ import os
 import posixpath
 import re
 import shutil
-import stat
 import subprocess
 from urllib.parse import quote, unquote, urlsplit
 
@@ -58,7 +57,6 @@ from fastapi import APIRouter, Body, Header
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 
 from fused_render import _flavor
-from fused_render._view_url_codec import canonical_fs_path, normpath_for_shape
 from fused_render._view_url_codec import view_url_path as _view_url_path
 
 from fused_render.shell.seed import fused_dir
@@ -221,7 +219,7 @@ def app_file_path_from(src: str) -> str | None:
         raise DeeplinkError(f"file link needs an absolute path: {path or '(empty)'}")
     if not path.lower().endswith(".fused"):
         raise DeeplinkError(f"file link must name a .fused app file: {path}")
-    return canonical_fs_path(normpath_for_shape(path))
+    return os.path.normpath(path)
 
 
 def file_payload_from(src: str) -> str | None:
@@ -464,28 +462,6 @@ def destination(spec: dict) -> str:
     return os.path.join(fused_dir(), spec["name"])
 
 
-def _clear_readonly_and_retry(func, path, _exc_info):
-    """`shutil.rmtree`'s `onerror` hook: drop the read-only bit and retry once.
-
-    A failed clone's `.git/objects/` holds loose objects git wrote read-only —
-    POSIX and Windows disagree about what that means for DELETING them: POSIX
-    consults the parent DIRECTORY's write permission (a read-only file under a
-    writable dest unlinks fine, so `rmtree` never even calls this hook there),
-    while Windows enforces the file's own read-only attribute against the
-    delete itself. `ignore_errors=True` used to swallow exactly that
-    PermissionError, which meant a failed clone (this exact function's job:
-    the sparse subpath check below fails, or the caller retries after another
-    error) left its half-written `dest` behind instead of being retryable —
-    same fix as `templates/bundle/reader.py`'s scratch-repo cleanup, same root
-    cause. A second failure (something genuinely locked) is left alone.
-    """
-    try:
-        os.chmod(path, stat.S_IWRITE)
-        func(path)
-    except OSError:
-        pass
-
-
 def _clone_into(spec: dict, remote: str, dest: str) -> None:
     """One clone attempt against one remote; removes the half-clone on any
     failure so a retry (other remote, next click) never hits an 'exists and
@@ -519,10 +495,7 @@ def _clone_into(spec: dict, remote: str, dest: str) -> None:
                 f"{spec['owner']}/{spec['repo']} at ref {spec['ref'] or 'HEAD'}"
             )
     except DeeplinkError:
-        # onerror= rather than ignore_errors=True — see
-        # _clear_readonly_and_retry. `onerror` (not the 3.12+ `onexc`) is the
-        # spelling that still works on every Python version this ships on.
-        shutil.rmtree(dest, onerror=_clear_readonly_and_retry)
+        shutil.rmtree(dest, ignore_errors=True)
         raise
 
 

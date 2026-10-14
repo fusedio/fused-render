@@ -36,48 +36,13 @@ def job_dir(upload_id):
 
 
 def _record_cancel_signal(monkeypatch):
-    """Record the pid `cancel_upload` signals, on whichever road THIS platform
-    takes.
-
-    `cancel_upload` is the same platform split `engine_host._kill_tree` uses:
-    POSIX signals the process group (`os.killpg`/`os.getpgid`, since
-    `_spawn_upload`'s `start_new_session=True` makes the pid the pgid), while
-    Windows has neither `os.killpg` nor `os.getpgid` at all — not just
-    unsupported, the attributes are absent from the frozen `os` module — and
-    falls to `os.kill(pid, CTRL_BREAK_EVENT)`, then `taskkill /T /F` when that
-    raises.
-
-    `os.kill` is patched too, not just `subprocess.run`: these pids are
-    synthetic (seeded straight into a marker file, no real process behind
-    them), so there is no process group of this test's own for
-    `GenerateConsoleCtrlEvent` to land on — but it targets a process GROUP id,
-    not a bare pid, and a pid that happens to collide with one (the runner
-    shell's own, say) would send a real Ctrl+Break into whatever shares this
-    job's console instead of raising. Not patching `os.kill` bets this test's
-    safety on that collision never happening; patching it removes the real
-    syscall from the test entirely.
-
-    A test that patches `os.killpg` alone therefore raises `AttributeError`
-    on Windows instead of recording anything (`monkeypatch.setattr` refuses
-    to patch an attribute that does not exist). Patching the road the
-    platform actually takes keeps the assertion honest on both.
-    """
+    """Record the pgid `cancel_upload` signals: `_spawn_upload`'s
+    `start_new_session=True` makes the pid the pgid, so `os.killpg` /
+    `os.getpgid` are patched and the pid seeded into the marker file is what
+    gets recorded."""
     killed = []
-    if os.name == "nt":
-        def _kill(pid, sig):
-            raise OSError("synthetic pid: no such process group")
-        monkeypatch.setattr(os, "kill", _kill)
-
-        def _run(cmd, **kwargs):
-            assert cmd[:2] == ["taskkill", "/PID"], cmd
-            assert "/T" in cmd, "must walk the tree, not just the named pid"
-            assert "/F" in cmd, "the CLI does not answer a polite close"
-            killed.append(int(cmd[2]))
-            return subprocess.CompletedProcess(cmd, 0)
-        monkeypatch.setattr(share_file_mod.subprocess, "run", _run)
-    else:
-        monkeypatch.setattr(os, "killpg", lambda pgid, sig: killed.append(pgid))
-        monkeypatch.setattr(os, "getpgid", lambda pid: pid)
+    monkeypatch.setattr(os, "killpg", lambda pgid, sig: killed.append(pgid))
+    monkeypatch.setattr(os, "getpgid", lambda pid: pid)
     return killed
 
 
@@ -105,9 +70,7 @@ def seed(upload_id, *, size=1234, started_at=None, pid=None, done=None, log=None
 def a_dead_pid():
     """A pid that is very unlikely to be alive: spawn a subprocess that
     exits immediately, wait for it to finish, and hand back its now-dead
-    pid. `os.fork` doesn't exist on Windows, so this goes through
-    `subprocess` (portable everywhere the interpreter itself runs) rather
-    than forking directly."""
+    pid."""
     proc = subprocess.Popen([sys.executable, "-c", "pass"])
     proc.wait()
     return proc.pid

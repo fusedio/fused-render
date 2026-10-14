@@ -1,7 +1,7 @@
 """macOS in-app updater (fused_render/update/mac.py) and its API surface.
 
-The signed-manifest crypto path is shared with the Windows updater and covered
-by tests/test_win_supervisor_update.py; these tests cover what's new on mac:
+The signed-manifest crypto path lives in update/common.py; these tests cover
+what's specific to mac:
 the brew/dmg method decision, the manager's state machine (including that a
 brew-managed bundle installs down the same DMG path and carries no terminal
 command at all), and the /api/update endpoints' guards.
@@ -557,14 +557,12 @@ def test_the_auto_loop_forces_its_tick(monkeypatch):
     # Review finding: the loop's own `time.sleep(common.CHECK_INTERVAL_S)`
     # (300s, real) after this one tick was left UNPATCHED — daemon or not,
     # that is 300 real seconds of a background thread alive in the pytest
-    # WORKER PROCESS, easily outliving the rest of a slower (Windows) CI
+    # WORKER PROCESS, easily outliving the rest of a slower CI
     # run, and an interpreter shutdown with a thread still parked mid-sleep
     # is exactly the kind of leak `conftest.py`'s `_no_schedule_loop_thread`/
     # `_no_tasks_watch_thread`/`_no_ai_idle_reaper_thread`/etc. exist to
     # prevent for every OTHER background loop this app starts — this one
-    # just wasn't one of them, since nothing but this test ever calls
-    # `start_auto_checks()` on Windows (`update.start()` is a no-op there,
-    # see `update/__init__.py`). Same fix as the sibling test just above
+    # just wasn't one of them. Same fix as the sibling test just above
     # (`test_the_check_only_manager_never_sweeps_the_shared_updates_dir`):
     # patch `time.sleep` itself so the SAME call that reports the tick also
     # ends the loop, and drain the thread before returning rather than
@@ -723,11 +721,8 @@ def test_start_noop_when_cryptography_is_unavailable(monkeypatch, caplog):
 
 
 def test_the_interval_is_five_minutes():
-    # Akshil, 2026-09-10: "check for updates every 5 mins". The Windows tray
-    # updater re-exports the same constant, so this pins both loops.
+    # Akshil, 2026-09-10: "check for updates every 5 mins".
     assert common.CHECK_INTERVAL_S == 300
-    from fused_render.supervisor._win32 import update as win_update
-    assert win_update._CHECK_INTERVAL_S == 300
 
 
 def test_a_dev_run_gets_a_check_only_manager_when_asked(monkeypatch):

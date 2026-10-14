@@ -20,7 +20,6 @@ def machine(tmp_path, monkeypatch):
     """A fake home: (legacy dir, new dir, shell home dir). Nothing exists yet."""
     monkeypatch.delenv("FUSED_RENDER_DIR", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("USERPROFILE", str(tmp_path))  # expanduser on Windows
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / ".fused-render"))
     legacy = tmp_path / "Documents" / "Fused"
     new = tmp_path / "Fused"
@@ -39,28 +38,9 @@ def _marker(home) -> str:
 def _view_url(path) -> str:
     """A /explorer/view url for an absolute fs path, built exactly the way
     _view_url_codec.view_url_path (and wm._encode) build one: the PREFIX
-    supplies the separating slash, then each canonical_fs_path segment is
-    percent-quoted and joined onto it.
-
-    Two things bare string concatenation (`"/explorer/view" +
-    canonical_fs_path(path)`) gets wrong at once:
-
-    1. It looks right and passes on POSIX only by accident: a POSIX absolute
-       path already starts with "/", so the missing separator between "view"
-       and the path is invisible. A Windows drive path (`C:/Users/...`) has no
-       leading slash (canonical_fs_path never adds one — a drive path is
-       already absolute without it), so the same concatenation glues into
-       `"/explorer/viewC:/Users/..."`, which starts with none of
-       wm._VIEW_PREFIXES. wm._remap_url then silently returns None and the
-       migration leaves the url exactly as it was — still pointing at the
-       legacy `Documents/Fused` location — which is what a run on real
-       Windows CI showed.
-    2. Even with the separator fixed, a raw drive letter's `:` must be
-       percent-encoded (`C%3A`, not `C:`) to match what wm._encode's
-       `quote(seg, safe="!*'()")` actually produces on the way back out — the
-       existing hardcoded-Windows-path tests below use `%3A` for exactly this
-       reason."""
-    norm = wm.canonical_fs_path(str(path)).lstrip("/")
+    supplies the separating slash, then each path segment is percent-quoted
+    and joined onto it."""
+    norm = str(path).lstrip("/")
     return "/explorer/view/" + "/".join(
         quote(seg, safe="!*'()") for seg in norm.split("/") if seg)
 
@@ -261,9 +241,6 @@ def test_rewrites_bookmark_urls_including_nested_folders(machine):
     legacy, new, home = machine
     legacy.mkdir(parents=True)
     bookmarks = os.path.join(str(home), "bookmarks.json")
-    # A view url's path is always canonical_fs_path form (forward slashes,
-    # per _remap's own docstring) — never the raw, backslashed-on-Windows
-    # str(Path) that a filesystem `target`/`path` field would hold.
     storage.write_json(bookmarks, [
         {"id": "1", "name": "app", "url": _view_url(legacy / "my app" / "index.html")
          .replace(" ", "%20") + "?sort=name"},
@@ -510,31 +487,11 @@ def test_a_stray_file_at_the_legacy_path_changes_nothing(machine):
 
 
 # ---------------------------------------------------- path shapes (no real fs)
-# These drive the pure helpers directly with Windows-shaped and
-# backslash-bearing POSIX input, so they assert the cross-platform behaviour on
-# any host — the same discipline _view_url_codec is written for.
-
-def test_a_windows_view_url_is_remapped_despite_the_backslashed_source():
-    """The url decodes to a FORWARD-slashed drive path while the legacy dir
-    comes back from os.path.abspath backslashed; comparing them literally
-    matched nothing, so a Windows user kept every bookmark pointing at the
-    folder that just moved."""
-    src = "C:\\Users\\v\\Documents\\Fused"
-    dst = "C:\\Users\\v\\Fused"
-
-    assert (wm._remap_url("/explorer/view/C%3A/Users/v/Documents/Fused/x/index.html",
-                          src, dst)
-            == "/explorer/view/C%3A/Users/v/Fused/x/index.html")
-    # The workspace root itself, and a path outside it.
-    assert (wm._remap_url("/explorer/view/C%3A/Users/v/Documents/Fused", src, dst)
-            == "/explorer/view/C%3A/Users/v/Fused")
-    assert wm._remap_url("/explorer/view/C%3A/Users/v/Elsewhere/x", src, dst) is None
-
+# These drive the pure helpers directly with backslash-bearing POSIX input.
 
 def test_a_posix_backslash_in_a_filename_round_trips():
-    """On POSIX a backslash is a legal filename character (storage and the
-    frontend codec both normalize it ONLY for drive paths). Splitting on it
-    turned one bookmark into a path that does not exist."""
+    """A backslash is a legal filename character. Splitting on it turned one
+    bookmark into a path that does not exist."""
     src = "/Users/x/Documents/Fused"
     dst = "/Users/x/Fused"
 
@@ -562,9 +519,6 @@ def test_a_corrupt_value_does_not_abort_the_rewrite(machine, monkeypatch):
     legacy.mkdir(parents=True)
 
     bookmarks = os.path.join(str(home), "bookmarks.json")
-    # url fields are canonical_fs_path form (see the two tests above); the
-    # scheduled-message paths below stay raw str(Path) — an OS-native
-    # record, per _remap's own docstring.
     storage.write_json(bookmarks, [
         {"id": "1", "name": "bad", "url": None},
         {"id": "2", "name": "worse", "url": {"nested": 1}},

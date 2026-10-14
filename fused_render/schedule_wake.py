@@ -18,15 +18,14 @@ machine next wakes, which `cron` simply does not do. The agent's program is
 `open -g -a <bundle>` — the same thing double-clicking the app does, only
 without stealing focus — so nothing here needs to know how the app starts.
 
-**Windows and Linux: nothing new, deliberately.** Both already have a
-start-at-login toggle that the supervisor owns (`_win32/startup.py`'s Run key,
-`_linux/startup.py`'s freedesktop autostart entry), and both platforms' packaged
-app is a supervisor-managed process. Writing a second, schedule-specific timer
-(a Task Scheduler task, a systemd user timer) would be a third mechanism that
-can disagree with those two about whether the app should be running. What the
-user gets on those platforms is therefore weaker and worth saying out loud: a
-message fires if the app is running or gets started (including at login), and
-waits if it is not.
+**Linux: nothing new, deliberately.** It already has a start-at-login toggle
+that the supervisor owns (`_linux/startup.py`'s freedesktop autostart entry),
+and its packaged app is a supervisor-managed process. Writing a second,
+schedule-specific timer (a systemd user timer) would be another mechanism that
+can disagree with that one about whether the app should be running. What the
+user gets on Linux is therefore weaker and worth saying out loud: a message
+fires if the app is running or gets started (including at login), and waits
+if it is not.
 
 Everything here is BEST-EFFORT and the caller treats it that way. A failure to
 write a plist means messages fire a bit less reliably; it never means a message

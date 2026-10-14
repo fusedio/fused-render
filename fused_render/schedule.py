@@ -103,7 +103,6 @@ import contextlib
 import json
 import logging
 import os
-import re
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -1339,10 +1338,7 @@ def _watcher_stamp() -> dict:
 
 
 def _pid_running(pid: int) -> bool:
-    """POSIX probe only. `os.kill(pid, 0)` on Windows is CTRL_C_EVENT, so there
-    the heartbeat alone decides."""
-    if os.name != "posix":
-        return True
+    """`os.kill(pid, 0)` sends no signal, it only probes."""
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -1506,7 +1502,7 @@ def _names_a_place(target: str) -> bool:
     """Does this target say WHERE it is, rather than leaving it to whoever
     resolves it?
 
-    Absolute, `~`-rooted, or a Windows drive path. A bare name does not: it is a
+    Absolute or `~`-rooted. A bare name does not: it is a
     name, and `abspath` would answer it with the server process's own cwd. The
     same shape the card's field calls path-shaped
     (`apps/explorer/listing/path-shaped-query`), spelled here because a template
@@ -1521,9 +1517,7 @@ def _names_a_place(target: str) -> bool:
         return False
     if raw.startswith(("/", "~")):
         return True
-    if raw.startswith(("./", "../", ".\\", "..\\")) or raw in (".", ".."):
-        return True
-    return bool(re.match(r"^[A-Za-z]:[\\/]", raw))
+    return raw.startswith(("./", "../")) or raw in (".", "..")
 
 
 def create(target: str, message: str, due=None, session_id: str = "",
@@ -2674,10 +2668,7 @@ def _attachments_block(entry: dict) -> str:
         noun = "a picture" if len(shots) == 1 else "pictures"
     what = noun if len(shots) == 1 and noun.startswith("a ") \
         else f"{len(shots)} {noun}"
-    # Forward slashes on the wire on every platform — the chat template's
-    # reader and the agent's Read rule both spell paths that way (agent.py
-    # `_wire_path`), and a stored Windows path still carries its backslashes.
-    payload = json.dumps([{"kind": a["kind"], "view": a["path"].replace("\\", "/"),
+    payload = json.dumps([{"kind": a["kind"], "view": a["path"],
                            "name": a["name"], "viewNote": ""} for a in shots])
     # The chat's own two kind sentences, minus the two kinds a scheduled run
     # cannot have: "pane" and "overview" are pictures of a screen taken at send
