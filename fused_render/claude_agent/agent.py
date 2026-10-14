@@ -6522,23 +6522,28 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
         except (OSError, ValueError):
             pending_offset = 0
         saw_echo_since_send = False
+        # Where the echo's line ENDS in `out.jsonl` — the same absolute
+        # offsets `ends` records for the window's rows, so the two compare.
+        echo_end = 0
         try:
             with open(os.path.join(run_dir, "out.jsonl"), "rb") as fh:
                 fh.seek(pending_offset)
                 tail = fh.read()
         except OSError:
             tail = b""
+        line_off = pending_offset
         for raw_line in tail.split(b"\n"):
-            if not raw_line:
-                continue
-            try:
-                row = json.loads(raw_line.decode("utf-8", "replace"))
-            except ValueError:
-                continue
-            if _starts_new_turn(row):
-                saw_echo_since_send = True
-                echo_row = row
-                break
+            line_end = line_off + len(raw_line) + 1
+            if raw_line:
+                try:
+                    row = json.loads(raw_line.decode("utf-8", "replace"))
+                except ValueError:
+                    row = None
+                if row is not None and _starts_new_turn(row):
+                    saw_echo_since_send = True
+                    echo_end = line_end
+                    break
+            line_off = line_end
         # THE ECHO CAN LAND BETWEEN THE TWO READS: `rows` above came off the
         # file a moment earlier and may end on the preamble alone — `result`,
         # `init`, `status` — while this newer tail already has the echo. The
@@ -6548,10 +6553,15 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
         # PR #1650). The echo counts only once the WINDOW has it; until then
         # this poll stays pending and the marker stays on disk for the next
         # one, whose window will carry the echo and its seam.
-        # The same row, parsed from the same bytes, so dict equality is the
-        # exact test — and it holds for a fold-in echo mid-reply just as for
-        # one after a `result`.
-        if saw_echo_since_send and echo_row not in rows:
+        # BY POSITION, NOT BY VALUE (Bugbot/CodeRabbit, PR #1650 round 2): a
+        # message sent twice has an older echo of the same shape already in
+        # the window, so a row match would lift the gate for the wrong one.
+        # `ends` holds each window row's absolute end offset (a half-written
+        # last line is recorded negative and never counts as read), so the
+        # echo is in the window exactly when its own line ended at or before
+        # the last complete row the window read.
+        window_end = max((e for e in ends if e > 0), default=0)
+        if saw_echo_since_send and echo_end > window_end:
             saw_echo_since_send = False
         if saw_echo_since_send:
             try:

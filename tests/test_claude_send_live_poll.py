@@ -259,3 +259,35 @@ def test_a_whole_turn_landing_in_the_tail_is_not_finalised_from_the_old_window(
     assert poll["done"] is True
     assert poll["text"] == "Turn one answer.Turn two answer."
     assert poll["turn_breaks"] == [{"segments": 1, "text": len("Turn one answer.")}]
+
+
+def test_a_repeated_message_landing_in_the_tail_is_not_matched_to_its_older_echo(
+        agent, run_dir, monkeypatch):
+    """Same race, same words twice: the window already holds turn one's echo
+    of "again", shaped exactly like the one the tail just found. Matching by
+    value lifted the gate off the OLD echo and finalised turn one's reply as
+    the answer (Bugbot/CodeRabbit, PR #1650); matching by file position does
+    not."""
+    _write(run_dir, [_user_row("again"), _text_row("Turn one answer."),
+                     _result_row("Turn one answer.")])
+    _setup(agent, run_dir)
+    assert agent._send("run", "again", "") == {"sent": True}
+    with (run_dir / "out.jsonl").open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(_system_row("init")) + "\n")
+    real = agent._read_current_turn
+
+    def read_then_turn_lands(*args, **kwargs):
+        out = real(*args, **kwargs)
+        with (run_dir / "out.jsonl").open("a", encoding="utf-8") as fh:
+            for r in (_user_row("again"), _text_row("Turn two answer."),
+                      _result_row("Turn two answer.")):
+                fh.write(json.dumps(r) + "\n")
+        return out
+    monkeypatch.setattr(agent, "_read_current_turn", read_then_turn_lands)
+    poll = agent._poll("run")
+    assert poll["done"] is False and poll["text"] == ""
+    assert (run_dir / "pending_echo").exists()
+    monkeypatch.setattr(agent, "_read_current_turn", real)
+    poll = agent._poll("run")
+    assert poll["done"] is True
+    assert poll["text"] == "Turn one answer.Turn two answer."
