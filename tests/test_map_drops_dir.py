@@ -58,8 +58,7 @@ def test_the_drops_dir_is_created_private_and_adopted_on_a_second_call(
     monkeypatch.setattr(discover, "DROPS", str(drops))
     assert discover.main(action="drops_dir") == {"dir": str(drops)}
     assert os.path.isdir(drops)
-    if hasattr(os, "geteuid"):
-        assert stat.S_IMODE(os.lstat(drops).st_mode) == 0o700
+    assert stat.S_IMODE(os.lstat(drops).st_mode) == 0o700
     assert discover.main(action="drops_dir") == {"dir": str(drops)}
 
 

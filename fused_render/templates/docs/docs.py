@@ -79,7 +79,7 @@ def _typst_bin():
     found = shutil.which("typst")
     if found:
         return found
-    candidate = os.path.join(BIN_DIR, "typst.exe" if os.name == "nt" else "typst")
+    candidate = os.path.join(BIN_DIR, "typst")
     return candidate if os.path.exists(candidate) else None
 
 
@@ -111,13 +111,10 @@ def _typst_install():
     os.makedirs(BIN_DIR, exist_ok=True)
     worker = os.path.join(HERE, "install_worker.py")
     logf = open(os.path.join(TYPST_INSTALL_DIR, "worker.log"), "ab")
-    detach_kwargs = (
-        {"creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP}
-        if os.name == "nt" else {"start_new_session": True}
-    )
     child = subprocess.Popen(
         [sys.executable, worker, TYPST_VERSION, BIN_DIR, TYPST_INSTALL_DIR],
-        stdout=logf, stderr=logf, stdin=subprocess.DEVNULL, cwd=HERE, **detach_kwargs)
+        stdout=logf, stderr=logf, stdin=subprocess.DEVNULL, cwd=HERE,
+        start_new_session=True)
     logf.close()
     stamp = os.path.join(TYPST_INSTALL_DIR, "progress.json")
     with open(stamp + ".tmp", "w", encoding="utf-8") as f:
@@ -202,12 +199,12 @@ def _resolve_dest(path: str, directory: str) -> str:
     existing directory."""
     raw = (path or "").strip().strip('"').strip("'")
     expanded = os.path.expanduser(raw)
-    if raw and (os.path.isabs(expanded) or re.match(r"^[A-Za-z]:[\\/]", raw)):
+    if raw and os.path.isabs(expanded):
         dest = os.path.abspath(expanded)
     else:
         # A bare name is seeded from the free-text document title, so strip only
-        # the characters a filesystem forbids (a title like "Q3: report" would
-        # otherwise be a Windows-invalid path and fail the write). Same rule as
+        # the characters a filesystem forbids, plus the reserved punctuation
+        # some volumes reject (a title like "Q3: report"). Same rule as
         # _unique_path — don't touch Unicode or other legal characters.
         base = re.sub(r'[\\/:*?"<>|]+', "", raw).strip() or "Untitled document"
         joined = os.path.join(directory, base) if directory else base

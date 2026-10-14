@@ -234,15 +234,10 @@ def _vault(tmp_path, files):
 
 
 def _client(path):
-    """The forward-slash form graph.py's client-facing payload fields carry
-    (`note["root"]`, every link/backlink `path` — see graph.py's
-    `_client_path`/`_client_join`, and `test_every_path_a_payload_carries_
-    uses_forward_slashes` above). An expected value built with `os.path.join`
-    or a raw `tmp_path` string is native-separated, which is backslashed on
-    Windows and would never match those fields there — this converts it the
-    same way graph.py does, rather than the test predicting a native path a
-    forward-slash-only payload was never going to return."""
-    return path.replace("\\", "/") if path else path
+    """The form graph.py's client-facing payload fields carry (`note["root"]`,
+    every link/backlink `path` — see graph.py's `_client_join`): the path
+    itself."""
+    return path
 
 
 def test_scan_collects_notes_and_assets_and_skips_noise(graph, tmp_path):
@@ -1016,24 +1011,10 @@ def test_an_unwritable_index_home_still_answers_from_a_plain_walk(graph, tmp_pat
     assert [b["rel"] for b in out["backlinks"]] == []
 
 
-# --------------------------------------------- client-facing paths (Windows)
+# ------------------------------------------------------ client-facing paths
 
 
-def test_a_payload_path_is_forward_slash_even_from_a_windows_root(graph):
-    """Every path in a payload is POSIX-shaped, whatever the platform.
-
-    The filesystem side rightly uses native separators — `os.path.abspath`
-    returns `C:\\Users\\me\\vault` on Windows — but the template splits and
-    re-joins these values on "/", and the shell's canonical form for a Windows
-    file is the drive path `C:/Users/…`. A native separator crossing the
-    boundary is silently mis-split at the other end, so it is converted once,
-    here. Driven directly rather than through a payload so the Windows shape is
-    exercised on every platform.
-    """
-    assert graph._client_path("C:\\Users\\me\\vault") == "C:/Users/me/vault"
-    assert graph._client_join("C:\\Users\\me\\vault", "docs/a.md") == \
-        "C:/Users/me/vault/docs/a.md"
-    # A POSIX root is already in that form and must come back untouched.
+def test_client_join_appends_a_vault_relative_path(graph):
     assert graph._client_join("/home/me/vault", "docs/a.md") == \
         "/home/me/vault/docs/a.md"
     # No empty segment when the root carries a trailing slash, and no trailing

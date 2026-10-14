@@ -14,7 +14,7 @@ of a cache key, which is how a loader ends up filling a directory no run reads.
 `projectenv.uv_cache_dir() is None` — which is the ordinary case now, not the
 exception: `_build` then runs `uv sync` with no `UV_CACHE_DIR` override at all,
 deferring to uv's OWN default (XDG on Linux, `~/.cache/uv` on macOS too —
-NOT `~/Library/Caches`, `%LOCALAPPDATA%` on Windows) instead of an explicit
+NOT `~/Library/Caches`) instead of an explicit
 sibling of the venv store — and to whatever `UV_CACHE_DIR` is already
 AMBIENT in this process's own environment, if one is: `_uv_env`'s base is a
 plain copy of `os.environ`, so a value set by the shell, or by CI's own
@@ -26,7 +26,7 @@ accepts (giving up the one-filesystem hardlink guarantee everywhere the two
 happen to already coincide, to stop a guaranteed multi-gigabyte redownload
 everywhere they used to differ). An explicit path still arrives when the
 caller set `FUSED_RENDER_HOME` — not only the test suite's own isolation,
-but also the packaged Linux/Windows desktop app, which sets it
+but also the packaged Linux desktop app, which sets it
 unconditionally for every launch (`supervisor.paths.DesktopPaths`, D131).
 
 `<python_executable>` is the base interpreter the environment is built on, and it
@@ -82,29 +82,23 @@ Stdlib only: no `fused_render` import, and (since the switch to `uv sync`) no
 `fused` import either. It runs on whatever `sys.executable` the server used.
 """
 import collections
+import fcntl
 import hashlib
 import json
 import os
+import pty
 import re
 import select
 import shutil
 import struct
 import subprocess
 import sys
+import termios
 import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
-
-try:
-    import fcntl  # POSIX only; Windows raises ImportError, handled below.
-    import pty
-    import termios
-except ImportError:  # pragma: no cover - exercised on Windows CI, not here
-    fcntl = None
-    pty = None
-    termios = None
 
 # Stages and their percentages, kept in step with fused_render/envinstall.py's
 # STAGES/STAGE_PCT. Duplicated rather than imported because this file must stay
@@ -148,8 +142,8 @@ _SIDECAR_NAME = ".fused-source.json"
 # None has always meant "the backend's own interpreter", never a version. It is
 # also the COMMON case: `envinstall._resolve_script_python` answers `(None, True)`
 # whenever the server is already on the pinned version, which is every packaged
-# build (the DMG's `python@3.12`, the AppImage's and the Windows installer's
-# `uv python install 3.12`) and every `scripts/dev.sh` checkout since D214.
+# build (the DMG's `python@3.12` and the AppImage's `uv python install 3.12`)
+# and every `scripts/dev.sh` checkout since D214.
 #
 # Translating that None into the literal "3.12" was a real bug: `uv sync --python
 # 3.12` then resolves against PATH and uv's managed registry rather than the
@@ -263,17 +257,7 @@ def _write(progress_dir, stage, pct, detail="", done=False, error=None,
                    "bytes_total": bytes_total, "needs_build": needs_build,
                    "platform_incompatible": platform_incompatible,
                    "manifest_digest": manifest_digest}, f)
-    # Windows refuses to replace a file a poller has open for a few ms
-    # (PermissionError); ride it out rather than crash a healthy install.
-    deadline = time.monotonic() + 10.0
-    while True:
-        try:
-            os.replace(tmp, path)
-            return
-        except PermissionError:
-            if os.name != "nt" or time.monotonic() >= deadline:
-                raise
-            time.sleep(0.02)
+    os.replace(tmp, path)
 
 
 def _elapsed(seconds):
@@ -725,9 +709,8 @@ _STDERR_RING_LINES = 400
 # anchored regexes below ever matched: `phase` stuck at `downloading`
 # forever, confirmed by replaying the capture.
 #
-# POSIX only, and optional even there. `pty` does not exist on Windows —
-# guarded at import time above — and pty SETUP (not the sync itself) can fail
-# on a POSIX box with no `/dev/ptmx` available (a locked-down container,
+# Optional, never required: pty SETUP (not the sync itself) can fail
+# on a box with no `/dev/ptmx` available (a locked-down container,
 # some CI sandboxes). Either way this must never be the reason an install
 # fails: `_PtyUnavailable` is raised only for a failure BEFORE `uv sync` is
 # spawned, so `_build` can fall back to the ORIGINAL, already-tested pipe
@@ -934,9 +917,8 @@ class _PtyProgressReader:
 
 def _run_uv_piped(cmd, cwd, env, tracker):
     """`uv sync` behind an ordinary pipe: the ORIGINAL streaming path (before
-    the pty), kept byte-for-byte as the fallback every platform still gets
-    when a pty is unavailable or unsupported (Windows, always; a POSIX
-    sandbox with no `/dev/ptmx`). Returns `(returncode, ring)`.
+    the pty), kept byte-for-byte as the fallback for when a pty is
+    unavailable (a sandbox with no `/dev/ptmx`). Returns `(returncode, ring)`.
 
     `stdout=DEVNULL, stderr=PIPE`: uv's own progress text goes to STDERR
     (confirmed by probe), so stdout has nothing this needs and piping it too
@@ -957,8 +939,7 @@ def _run_uv_piped(cmd, cwd, env, tracker):
     with subprocess.Popen(cmd, cwd=cwd, env=env,
                           stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
                           text=True, bufsize=1, close_fds=False,
-                          encoding="utf-8", errors="replace",
-                          creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0) as proc:
+                          encoding="utf-8", errors="replace") as proc:
         try:
             for line in proc.stderr:
                 line = line.rstrip("\n")
@@ -1151,12 +1132,9 @@ def _acquire_python(version):
     # handle and SIGSEGVs before exec — a bare returncode -11 with no stderr. `uv` is
     # dir-qualified here (it comes from `shutil.which`), which posix_spawn also
     # requires; a bare command name forks despite the flag.
-    # This worker runs detached with no console of its own, so Windows would
-    # otherwise pop a fresh one for a console-subsystem child like uv.exe.
     proc = subprocess.run([uv, "python", "install", version], env=_uv_env(),
                           capture_output=True, text=True, close_fds=False,
-                          encoding="utf-8", errors="replace",
-                          creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
+                          encoding="utf-8", errors="replace")
     if proc.returncode != 0:
         # Verbatim, exactly like the requirements install below: uv's own text names
         # the real problem (an offline machine, a proxy refusing the download, no
@@ -1168,13 +1146,11 @@ def _acquire_python(version):
 
 
 def _venv_python(venv_dir):
-    """Where a venv keeps its own interpreter, on this OS.
+    """Where a venv keeps its own interpreter.
 
     Kept in step with `envinstall._venv_python`; duplicated rather than imported
     for the same reason the stage percentages are (D152).
     """
-    if os.name == "nt":
-        return os.path.join(venv_dir, "Scripts", "python.exe")
     return os.path.join(venv_dir, "bin", "python")
 
 
@@ -1283,11 +1259,7 @@ def _source_identity(project_dir):
     than imported for the reason every constant in this file is (D152).
     """
     path = os.path.abspath(project_dir)
-    try:
-        rel = os.path.relpath(path, _PACKAGE_DIR)
-    except ValueError:
-        # Windows, different drives — nothing relative to say, so it is not ours.
-        return path
+    rel = os.path.relpath(path, _PACKAGE_DIR)
     if rel == os.pardir or rel.startswith(os.pardir + os.sep) or os.path.isabs(rel):
         return path
     if rel == os.curdir:
@@ -1326,14 +1298,10 @@ _MIRROR_OWN_OUTPUT = "uv.lock"
 def _writable_dir(path):
     """Can a file actually be CREATED in *path*? Answered by doing it.
 
-    `os.access(path, os.W_OK)` is the obvious call and it is the wrong one. On
-    Windows it reports the read-only ATTRIBUTE, which is meaningless for a
-    directory: an ACL-protected `C:\\Program Files\\FusedRender\\...` answers
-    "writable", `_sync_root` then runs the sync in place, and uv dies with
-    `Access is denied. (os error 5)` — the exact platform the mirror exists to
-    cover, silently mis-answered. POSIX has a smaller version of the same hole:
+    `os.access(path, os.W_OK)` is the obvious call and it is the wrong one:
     `os.access` consults the mode bits, so a directory denied by an ACL entry or
-    by SELinux also reports writable.
+    by SELinux still reports writable, `_sync_root` then runs the sync in place,
+    and uv dies on the write.
 
     A probe answers the question that is actually being asked ("can uv put
     `uv.lock` here"), because it IS that operation. `O_CREAT|O_EXCL` so it can
@@ -1390,9 +1358,8 @@ def _sync_root(project_dir, venv_dir):
 
     That is not a hypothetical: the AI runner folders (`fused_render/ai/runners/*`)
     ship INSIDE the app, and the app's own tree is read-only in the shapes it is
-    normally installed in — the AppImage runs from a squashfs mount, and a Windows
-    install under `Program Files` is not user-writable. Every model download on
-    those builds died here. A user's folder on a read-only mount (a mounted
+    normally installed in — the AppImage runs from a squashfs mount. Every model
+    download on that build died here. A user's folder on a read-only mount (a mounted
     archive, a `ro` network share) is the same failure.
 
     So: when the folder cannot hold uv's output, the sync runs in
@@ -1444,8 +1411,7 @@ def _sync_root(project_dir, venv_dir):
     user will never look.
 
     Writability is a question about the DIRECTORY and it is asked by probing, not
-    by `os.access` — see `_writable_dir` for why that distinction is the
-    difference between working and not on Windows.
+    by `os.access` — see `_writable_dir` for why that distinction matters.
     """
     # A folder that is not there is not a read-only folder, and mirroring it would
     # answer "no pyproject.toml in an empty directory" where the direct sync says
@@ -1610,7 +1576,7 @@ def _build(project_dir, venv_dir, uv_cache_dir, python_executable, tracker=None,
             "and try again. Until then, scripts in folders WITHOUT a "
             "pyproject.toml still run normally on this app's own interpreter — "
             "only folders that declare their own dependencies are affected.\n\n"
-            "(The packaged macOS, Windows and Linux builds ship uv, so this only "
+            "(The packaged macOS and Linux builds ship uv, so this only "
             "happens in a source checkout.)" % project_dir
         )
     if os.path.isdir(venv_dir) and not os.path.exists(os.path.join(venv_dir, _READY_MARKER)):
@@ -1666,8 +1632,8 @@ def _build(project_dir, venv_dir, uv_cache_dir, python_executable, tracker=None,
         # `UV_CACHE_DIR` already in this process's environment (`_uv_env`'s
         # base is a plain `dict(os.environ)` copy, so it is never stripped —
         # CI's own `setup-uv` action exports one), or failing that its own
-        # platform default (XDG on Linux, `~/.cache/uv` on macOS too,
-        # `%LOCALAPPDATA%` on Windows). See `projectenv.uv_cache_dir()` for
+        # platform default (XDG on Linux, `~/.cache/uv` on macOS too).
+        # See `projectenv.uv_cache_dir()` for
         # why an explicit sibling of the venv store is no longer the
         # unconditional choice: it made cache-target hardlinking work BY
         # CONSTRUCTION, and fragmented the cache per branch/worktree as an
@@ -1683,14 +1649,14 @@ def _build(project_dir, venv_dir, uv_cache_dir, python_executable, tracker=None,
     if tracker is None:
         tracker = _UvProgress()  # nobody is watching; feed it anyway for one code path
 
-    # Pty first, pipe as the fallback — POSIX only, and only when the pty
-    # module actually loaded (it does not exist on Windows) and its SETUP
-    # succeeds (see `_run_uv_via_pty`'s docstring for what "setup" means and
-    # why a failure there, and only there, is safe to fall back from). Every
-    # other platform/failure keeps running exactly the path this feature
-    # shipped with — `_run_uv_piped` is that same code, unchanged, just
-    # pulled into its own function so this call site could pick either.
-    if pty is not None and os.name != "nt":
+    # Pty first, pipe as the fallback — only when its SETUP succeeds (see
+    # `_run_uv_via_pty`'s docstring for what "setup" means and why a failure
+    # there, and only there, is safe to fall back from). Every other failure
+    # keeps running exactly the path this feature shipped with —
+    # `_run_uv_piped` is that same code, unchanged, just pulled into its own
+    # function so this call site could pick either. Tests set `pty` to None
+    # to force the piped path.
+    if pty is not None:
         try:
             returncode, ring = _run_uv_via_pty(cmd, sync_root, env, tracker)
         except _PtyUnavailable:
@@ -1906,7 +1872,7 @@ _PLATFORM_TAG_PREFIXES = (
     ("linux", "linux"),
 )
 _PLATFORM_DISPLAY_NAME = {"macosx": "macOS", "win": "Windows", "linux": "Linux"}
-_CURRENT_PLATFORM_FAMILY = {"darwin": "macosx", "win32": "win", "linux": "linux"}.get(sys.platform)
+_CURRENT_PLATFORM_FAMILY = {"darwin": "macosx", "linux": "linux"}.get(sys.platform)
 _CURRENT_PLATFORM_NAME = _PLATFORM_DISPLAY_NAME.get(_CURRENT_PLATFORM_FAMILY, sys.platform)
 
 
@@ -2183,8 +2149,6 @@ def _detach():
     state; anything else here is not worth failing an install over, since the
     only thing lost is the tidiness of the teardown.
     """
-    if os.name == "nt" or not hasattr(os, "setsid"):
-        return  # Windows detaches at spawn time (DETACHED_PROCESS) and never forks
     try:
         os.setsid()
     except OSError:

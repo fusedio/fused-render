@@ -778,7 +778,7 @@ function dialog({ title, message = "", label = "", value = "", okText = "OK", da
   return m.done;
 }
 
-const cleanPath = (s) => (s || "").trim().replace(/^["']+|["']+$/g, "").replace(/\\/g, "/");
+const cleanPath = (s) => (s || "").trim().replace(/^["']+|["']+$/g, "");
 const docDir = () => state.doc.split("/").slice(0, -1).join("/");
 
 // pdf.py's folder listing.
@@ -811,7 +811,6 @@ function browseModal({ title, okText = "Open", dirOnly = false, start = "", exts
     ok.onclick = () => m.close(cur);
   }
   async function show(path) {
-    if (/^[A-Za-z]:$/.test(path)) path += "/";
     const res = await listDir(path, exts);
     if (res.error) { toast(res.error, true); return null; }
     cur = res.path;

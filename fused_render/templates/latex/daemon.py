@@ -30,7 +30,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 import engine  # noqa: E402 — the existing main(action=…) dispatcher, reused verbatim
-from procutil import clean_env, file_lock, spawn_python  # noqa: E402 — engine put templates/shared on the path
+from procutil import clean_env, file_lock  # noqa: E402 — engine put templates/shared on the path
 
 STATE = os.path.join(engine.CACHE_ROOT, "daemon.json")
 LOCK = os.path.join(engine.CACHE_ROOT, "daemon.spawn.lock")
@@ -129,14 +129,10 @@ def _await_daemon(version):
 
 def _spawn():
     log = os.path.join(engine.CACHE_ROOT, "daemon.log")
-    # DETACHED_PROCESS + CREATE_NEW_PROCESS_GROUP (NOT CREATE_NO_WINDOW — the two
-    # combined fail to spawn on Windows); start_new_session is the POSIX equal.
-    detach = ({"creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP}
-              if os.name == "nt" else {"start_new_session": True})
     with open(log, "ab") as lf:
-        subprocess.Popen([spawn_python(), os.path.join(HERE, "daemon.py"), "--serve"],
+        subprocess.Popen([sys.executable, os.path.join(HERE, "daemon.py"), "--serve"],
                          stdout=lf, stderr=lf, stdin=subprocess.DEVNULL, cwd=HERE,
-                         env=clean_env(), **detach)
+                         env=clean_env(), start_new_session=True)
 
 
 def main():

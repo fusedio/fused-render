@@ -108,7 +108,7 @@ def test_a_wedged_child_is_replaced(
 
 
 def test_a_python_outside_the_venv_store_is_refused(engine_host, stub_daemon, tmp_path):
-    rogue = tmp_path / "python.exe"
+    rogue = tmp_path / "python"
     rogue.write_text("", encoding="utf-8")
     with pytest.raises(engine_host.EngineError):
         engine_host.ensure(engine_id=ENGINE, python=str(rogue), daemon=stub_daemon,

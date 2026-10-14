@@ -184,8 +184,8 @@ def test_a_proxied_post_to_a_template_child_is_untouched_by_busy_marking(
 
 
 def test_a_traversal_path_is_rejected(client, stub_python, stub_daemon, tmp_path):
-    # The proxied path is opaque and forwarded verbatim; a backslash (a Windows
-    # separator) must not reach the child. %5C survives URL normalization to hit
+    # The proxied path is opaque and forwarded verbatim; a backslash must not
+    # reach the child. %5C survives URL normalization to hit
     # the guard, unlike ".." which the client collapses before the request.
     _ensure(client, stub_python, stub_daemon, tmp_path)
     assert client.get(f"{PROXY}/tiles/a%5Cb/0/0/0.png").status_code == 404

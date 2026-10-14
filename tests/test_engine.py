@@ -669,7 +669,7 @@ def test_real_backend_error_points_at_user_file(monkeypatch, tmp_path):
 # A header-less script runs with `interpreter=<the app's real python>` and gets
 # no venv. Everything here is about the one way that ships broken: `interpreter=`
 # is spawned verbatim as argv[0], so handing it something that is not a genuine
-# python (a py2app launcher stub, a `pythonw` with no console, an interpreter
+# python (a py2app launcher stub, an interpreter
 # that cannot self-locate its stdlib once the backend strips PYTHONHOME) would
 # spawn the wrong process instead of running the script — and `requirements` is
 # silently ignored on that branch, so there is no fallback to notice.
@@ -747,26 +747,6 @@ def test_app_interpreter_probe_survives_the_stripped_child_env(monkeypatch):
         assert var not in seen, f"{var} must be stripped from the probe env"
 
 
-def test_windows_launcher_pythonw_resolves_to_the_console_python(monkeypatch, tmp_path):
-    """On Windows the app runs under `pythonw.exe`; prefer `python.exe`.
-
-    Same install (so same site-packages and the same `sys.prefix`), but with a
-    usable standard-stream setup — `pythonw` is the windowless build the
-    launcher stub and the AppRun analog exec, and the backend captures the
-    child's stdout/stderr.
-    """
-    (tmp_path / "pythonw.exe").write_text("")
-    (tmp_path / "python.exe").write_text("")
-    monkeypatch.setattr(sys, "executable", str(tmp_path / "pythonw.exe"))
-    assert engine._interpreter_candidate() == (str(tmp_path / "python.exe"), True)
-
-
-def test_pythonw_without_a_console_sibling_keeps_itself(monkeypatch, tmp_path):
-    (tmp_path / "pythonw.exe").write_text("")
-    monkeypatch.setattr(sys, "executable", str(tmp_path / "pythonw.exe"))
-    assert engine._interpreter_candidate() == (str(tmp_path / "pythonw.exe"), True)
-
-
 def test_an_autodetected_non_python_name_is_never_spawned(monkeypatch, tmp_path):
     """A launcher-stub `sys.executable` is rejected WITHOUT creating a process.
 
@@ -793,16 +773,6 @@ def test_an_explicit_override_is_probed_even_with_an_odd_name(monkeypatch, tmp_p
     It still has to pass the probe — the escape hatch relaxes the name guard,
     not the verification.
     """
-    if os.name == "nt":
-        # The wrapper below IS a shebang script (`#!/bin/sh\nexec ...`), made
-        # runnable with chmod +x — a POSIX exec mechanism Windows has none of.
-        # CreateProcess cannot launch it at all (no interpreter association,
-        # no shebang support), so the probe would fail for a reason that has
-        # nothing to do with what this test is actually pinning: that an
-        # explicit override skips the NAME guard. A `.bat`/`.cmd` stand-in
-        # would exercise a different, shell-mediated spawn path instead of
-        # the direct one under test, so this is skipped rather than faked.
-        pytest.skip("the wrapper is a POSIX shebang script by construction")
     wrapper = tmp_path / "app-python-wrapper"
     wrapper.write_text(f"#!/bin/sh\nexec {sys.executable} \"$@\"\n")
     wrapper.chmod(wrapper.stat().st_mode | stat.S_IEXEC)
@@ -1416,8 +1386,6 @@ def _stripped():
 @pytest.fixture
 def bundle_like(tmp_path, monkeypatch):
     """This process as it is inside the .app: PYTHONHOME set, foreign raw prefix."""
-    if os.name == "nt":
-        pytest.skip("the wrapper is POSIX-only by design")
     base, home, sentinel = _bundle_like_python(tmp_path)
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "state"))
     monkeypatch.setenv("FUSED_RENDER_APP_PYTHON", base)
@@ -1433,8 +1401,6 @@ def test_the_stand_in_really_needs_pythonhome(tmp_path):
     A stand-in that worked WITHOUT PYTHONHOME would make every test below pass
     while testing nothing — the failure mode of any simulated environment.
     """
-    if os.name == "nt":
-        pytest.skip("POSIX-only")
     base, home, sentinel = _bundle_like_python(tmp_path)
     env = _stripped()
     bare = subprocess.run([base, "-c", f"import {sentinel}"], capture_output=True,
@@ -1536,14 +1502,6 @@ def test_a_wrapper_that_does_not_work_is_rejected(bundle_like, monkeypatch):
 
 def test_the_wrapper_quotes_paths_with_spaces(tmp_path, monkeypatch):
     """A DMG can be mounted at `/Volumes/Fused Render`; nothing may split on it."""
-    if os.name == "nt":
-        # Same gate `_wrapper_interpreter` itself documents: "Windows
-        # interpreters self-locate; there is no PYTHONHOME to restore and no
-        # POSIX shell to do it with." It returns None before ever generating
-        # a body to inspect, regardless of PYTHONHOME below — this is the
-        # `bundle_like` fixture's own skip, just reached directly instead of
-        # through that fixture.
-        pytest.skip("the wrapper is POSIX-only by design")
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "a state dir"))
     home = tmp_path / "home with spaces"
     (home / "lib").mkdir(parents=True)
@@ -1565,11 +1523,6 @@ def test_the_wrapper_quotes_paths_with_spaces(tmp_path, monkeypatch):
 def test_the_wrapper_is_private_and_regenerated_only_when_it_changes(
     tmp_path, monkeypatch
 ):
-    if os.name == "nt":
-        # Same gate as test_the_wrapper_quotes_paths_with_spaces above: no
-        # wrapper is ever generated on Windows, so there is no 0700 mode or
-        # regenerated body to assert on.
-        pytest.skip("the wrapper is POSIX-only by design")
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "state"))
     home = tmp_path / "home"
     (home / "lib").mkdir(parents=True)
@@ -1595,7 +1548,7 @@ def test_the_wrapper_is_private_and_regenerated_only_when_it_changes(
 def test_no_wrapper_without_a_pythonhome_to_restore(tmp_path, monkeypatch):
     """Gated to the case that needs it: a self-locating interpreter gets none.
 
-    This is what keeps Windows and the Linux AppImage on rung 1.
+    This is what keeps the Linux AppImage on rung 1.
     """
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "state"))
     monkeypatch.delenv("PYTHONHOME", raising=False)
@@ -1698,8 +1651,6 @@ def test_two_threads_writing_the_wrapper_both_succeed(tmp_path, monkeypatch):
     FileNotFoundError, reported as "could not write the interpreter wrapper" for a
     wrapper that is perfectly fine — and that spurious failure is then cached.
     """
-    if os.name == "nt":
-        pytest.skip("the wrapper is POSIX-only by design")
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "state"))
     home = tmp_path / "home"
     (home / "lib").mkdir(parents=True)

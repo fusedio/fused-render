@@ -1814,12 +1814,7 @@ def test_every_mutating_invocation_is_pinned_hardened_and_bounded(
         # tests/test_git_posix_spawn.py). Still exactly one basename, still a list,
         # still no shell — which is what this assertion is really about.
         assert os.path.isabs(argv[0])
-        # `.lower()`: `shutil.which("git")` on Windows resolves the bare name by
-        # trying each `PATHEXT` entry as-is, and the default `PATHEXT` spells its
-        # entries `.EXE` — so the resolved path this app actually runs is
-        # literally `...\git.EXE`, uppercase extension, with no lowercase form on
-        # disk to fall back to. That is still "git", not a different binary.
-        assert os.path.basename(argv[0]).lower() in ("git", "git.exe")
+        assert os.path.basename(argv[0]) == "git"
         assert "--no-pager" in argv
         # Exactly one invocation is pinned to the TARGET rather than the root:
         # the `--show-toplevel` bootstrap that discovers the root in the first

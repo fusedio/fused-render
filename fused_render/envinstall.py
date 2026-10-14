@@ -360,8 +360,8 @@ def _resolve_script_python() -> tuple[str | None, bool]:
        `engine._APP_PYTHON_ENV`: an override that is not a usable 3.12 is a
        misconfiguration to refuse, not a reason to build on it.
     2. **Ourselves, when we are already 3.12** — and this is the common path, not a
-       shortcut. All three packaged builds run 3.12 (the DMG's `python@3.12`, the
-       AppImage's and the Windows installer's `uv python install 3.12`), and so does
+       shortcut. Both packaged builds run 3.12 (the DMG's `python@3.12` and the
+       AppImage's `uv python install 3.12`), and so does
        a `scripts/dev.sh` checkout since D214. Resolving a uv-MANAGED 3.12 for them
        instead would re-key every venv they own and download a second CPython to
        reach a version they already had: `uv python find --managed-python` only
@@ -509,9 +509,7 @@ def venv_python_for(project_dir: str) -> str:
 
 
 def _venv_python(venv_dir: str) -> str:
-    """Where a venv keeps its own interpreter, on this OS."""
-    if os.name == "nt":
-        return os.path.join(venv_dir, "Scripts", "python.exe")
+    """Where a venv keeps its own interpreter."""
     return os.path.join(venv_dir, "bin", "python")
 
 
@@ -1031,26 +1029,6 @@ def _claim_within_grace(claim: str) -> bool:
     return age <= _CLAIM_GRACE_S
 
 
-def _replace_retrying(tmp: str, path: str) -> None:
-    """`os.replace`, riding out Windows' sharing violation.
-
-    Windows refuses to replace a file another handle has open (WinError 5/32,
-    `PermissionError`) — and `progress.json` is polled constantly by the
-    server and the worker's own readers. The window is a few ms, so a short
-    bounded retry turns what was a dead install into a no-op. POSIX never
-    raises here.
-    """
-    deadline = time.monotonic() + 10.0
-    while True:
-        try:
-            os.replace(tmp, path)
-            return
-        except PermissionError:
-            if os.name != "nt" or time.monotonic() >= deadline:
-                raise
-            time.sleep(0.02)
-
-
 def _write(key: str, record: dict) -> None:
     """Atomically replace `progress.json` — a poll must never read a half-write.
 
@@ -1067,7 +1045,7 @@ def _write(key: str, record: dict) -> None:
     tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(record, f)
-    _replace_retrying(tmp, path)
+    os.replace(tmp, path)
 
 
 def _write_if_absent(key: str, record: dict) -> dict | None:
@@ -1111,13 +1089,6 @@ def _write_if_absent(key: str, record: dict) -> dict | None:
 def _pid_alive(pid: int) -> bool:
     if not isinstance(pid, int) or pid <= 0:
         return False
-    if os.name == "nt":
-        out = subprocess.run(
-            ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
-            capture_output=True, text=True,
-            encoding="utf-8", errors="replace",
-        )
-        return str(pid) in (out.stdout or "")
     # Reap it first if WE spawned it. `start_new_session=True` does not reparent
     # the worker — it stays our child until someone waits on it — and a ZOMBIE
     # answers `os.kill(pid, 0)` successfully. So a worker that died before writing
@@ -1167,16 +1138,6 @@ def _kill(pid: int) -> bool:
     server down. (It did exactly that to a pytest session, which is how the
     guard got here.) Anything not a group leader gets a plain single-pid kill.
     """
-    if os.name == "nt":
-        try:
-            # The worker is spawned CREATE_NEW_PROCESS_GROUP, so CTRL_BREAK
-            # reaches it and its children; taskkill /T is the fallback.
-            os.kill(pid, signal.CTRL_BREAK_EVENT)
-            return True
-        except (OSError, AttributeError, ValueError):
-            return subprocess.run(
-                ["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True
-            ).returncode == 0
     try:
         leader = os.getpgid(pid) == pid
     except OSError:
@@ -1309,10 +1270,6 @@ def _how_it_ended(pid: object) -> str:
 #: four guesses this message used to end with — a user told "an OOM kill, a
 #: cancel, the app quitting, or the machine sleeping" has been told nothing,
 #: whereas a SIGKILL narrows it to the first and a SIGTERM to the middle two.
-#:
-#: Keyed by NAME rather than by number so this table can be written on a platform
-#: that has no SIGKILL: `getattr(signal, "SIGKILL", -1)` as a key would put every
-#: absent signal on -1 and silently drop all but the last.
 _KILLED_BY = {
     "SIGKILL": (
         "it was killed by SIGKILL (signal 9) — on an install this size that is "
@@ -1548,16 +1505,15 @@ def uv_bin() -> str | None:
 
       1. FUSED_RENDER_UV_BIN, if it points at a real file;
       2. the interpreter's OWN directory — where the Linux AppImage
-         (`usr/python/bin/uv`, build_linux_appimage.sh:88) and the Windows
-         installer (`<PythonRoot>/uv.exe`, .ps1:185) put it;
+         (`usr/python/bin/uv`, build_linux_appimage.sh:88) puts it;
       3. `Contents/Resources/bin/uv`, the macOS bundle's separate `bin` dir
          (build_dmg.sh), which is not beside the interpreter;
       4. whatever is on PATH (dev checkout).
 
-    Steps 2 and 3 are both needed because the three packaged builds disagree on
-    the layout. Probing only the macOS one meant the uv that Linux and Windows
-    already ship went unused unless its directory happened to be on PATH — not a
-    crash there (those builds carry a real CPython with `venv` and `pip`, so the
+    Steps 2 and 3 are both needed because the packaged builds disagree on
+    the layout. Probing only the macOS one meant the uv that Linux
+    already ships went unused unless its directory happened to be on PATH — not a
+    crash there (that build carries a real CPython with `venv` and `pip`, so the
     fallback works) but a silently-unused bundled tool.
 
     This matters more than a convenience wrapper: `fused`'s venv builder calls
@@ -1578,10 +1534,9 @@ def uv_bin() -> str | None:
     if override and os.path.isfile(override):
         return override
     exe_dir = os.path.dirname(os.path.abspath(sys.executable))
-    name = "uv.exe" if os.name == "nt" else "uv"
     candidates = (
-        os.path.join(exe_dir, name),                                    # Linux, Windows
-        os.path.join(os.path.dirname(exe_dir), "Resources", "bin", name),  # macOS .app
+        os.path.join(exe_dir, "uv"),                                    # Linux
+        os.path.join(os.path.dirname(exe_dir), "Resources", "bin", "uv"),  # macOS .app
     )
     for candidate in candidates:
         if os.path.isfile(candidate):
@@ -1639,10 +1594,6 @@ def _spawn(key: str, project_dir: str, acquire_python: str | None = None,
     between exec and that call is a few milliseconds, and `_kill` already
     handles a pid that is not (yet) a group leader.
 
-    Windows keeps `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP`: there is no
-    fork there, so there is nothing to avoid, and `CTRL_BREAK_EVENT` (which
-    `_kill` sends) needs the group flag.
-
     Every path the worker needs travels in argv rather than being re-derived
     there, because the worker must not import `fused_render` (D152: importing the
     package in a detached child is a bootstrap that broke once already) and so
@@ -1684,15 +1635,6 @@ def _spawn(key: str, project_dir: str, acquire_python: str | None = None,
     worker = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_env_install_worker.py")
     d = progress_dir(key)
     os.makedirs(d, exist_ok=True)
-    # Annotated, because the two branches have different value types (`int` on
-    # Windows, `bool` elsewhere) and a type checker unpacking `**detach` into
-    # `Popen` otherwise matches the inferred `bool` against whichever keyword
-    # parameters happen to come next — `errors`, `extra_groups`, `preexec_fn` —
-    # and reports errors about arguments this call never passes.
-    detach: dict[str, Any] = (
-        {"creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP}
-        if os.name == "nt" else {"close_fds": False}
-    )
     with open(os.path.join(d, "worker.log"), "ab") as logf:
         child = subprocess.Popen(
             [sys.executable, worker, key, d,
@@ -1707,7 +1649,7 @@ def _spawn(key: str, project_dir: str, acquire_python: str | None = None,
              _python_executable() or "", acquire_python or "",
              "1" if allow_build else ""],
             stdout=logf, stderr=logf, stdin=subprocess.DEVNULL,
-            env=_worker_env(), **detach,
+            env=_worker_env(), close_fds=False,
         )
     # Recorded before the pid reaches anyone else: `_pid_alive` reaps only pids in
     # here, so a worker missing from the set would never be reaped and a dead one
@@ -1899,11 +1841,9 @@ def _mirror_into_jobs(key: str, project_dir: str, downloading_python: bool = Fal
                 # above as `project_dir` for the title, and the only sensible
                 # destination for a row that says an app's install failed: an
                 # app-doctor error or a stalled venv build points squarely at
-                # that folder. Canonical (forward-slash) form, like every
-                # other fs path a row's `page` carries — `project_dir` can
-                # reach here OS-native (backslashed on Windows) depending on
-                # the caller, and a page is compared against the canonical
-                # spelling everywhere else it is stored or read.
+                # that folder. Canonical form, like every other fs path a
+                # row's `page` carries — a page is compared against the
+                # canonical spelling everywhere else it is stored or read.
                 page=canonical_fs_path(str(project_dir)), server=True,
             )
         except (jobs.JobError, ValueError):

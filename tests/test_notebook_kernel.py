@@ -106,7 +106,7 @@ def test_execution_timing_events(kernel):
     types = [e["type"] for e in events]
     assert types.index("started") < types.index("done")
     done = _of_type(events, "done")[0]
-    # Windows sleep/monotonic granularity undershoots — allow slack
+    # timer granularity can undershoot — allow slack
     assert done["duration_ms"] >= 150
 
 
@@ -218,7 +218,7 @@ def test_interrupt_aborts_queued_cells(kernel):
 def test_interrupt_while_idle_is_a_noop(kernel):
     kernel.run("e1", "1")
     # a stray interrupt with nothing running must not leave a pending SIGINT
-    # that swallows the next execute (Windows lock waits are uninterruptible)
+    # that swallows the next execute
     kernel.send({"op": "interrupt"})
     events = kernel.run("e2", "2 + 2")
     assert _of_type(events, "execute_result")[0]["data"] == {"text/plain": "4"}
@@ -289,18 +289,8 @@ def test_resolve_absolute_overrides_directory(kernel_mod, tmp_path):
     other = tmp_path / "other"
     other.mkdir()
     r = kernel_mod._resolve_dest(str(tmp_path), str(other / "abs"))
-    assert r["dir"] == str(other).replace(os.sep, "/")
+    assert r["dir"] == str(other)
     assert r["path"].endswith("/other/abs.ipynb")
-
-
-@pytest.mark.skipif(os.name != "nt", reason="Windows separator semantics")
-def test_resolve_windows_backslashes(kernel_mod, tmp_path):
-    sub = tmp_path / "sub"
-    sub.mkdir()
-    r = kernel_mod._resolve_dest(str(tmp_path), "sub\\y")
-    assert r["path"].endswith("/sub/y.ipynb")
-    r = kernel_mod._resolve_dest(str(tmp_path), str(sub) + "\\z")
-    assert r["path"].endswith("/sub/z.ipynb")
 
 
 def test_resolve_missing_parent_is_error(kernel_mod, tmp_path):
@@ -461,8 +451,7 @@ def _daemon_get(state, path_and_query):
 
 
 def _fake_venv(root):
-    py = (root / ".venv" / "Scripts" / "python.exe" if os.name == "nt"
-          else root / ".venv" / "bin" / "python")
+    py = root / ".venv" / "bin" / "python"
     py.parent.mkdir(parents=True)
     py.write_bytes(b"")
 

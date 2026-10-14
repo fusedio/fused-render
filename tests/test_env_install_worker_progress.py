@@ -880,11 +880,8 @@ def test_build_feeds_every_stderr_line_to_the_tracker_it_is_given(tmp_path, monk
     venv_dir = str(tmp_path / "venv")
 
     def _fake_popen(cmd, **kw):
-        # Derived from `_venv_python`, not re-spelled as `bin/python`: that
-        # function returns `Scripts\python.exe` on Windows, and a literal
-        # POSIX path here passed Linux CI while failing on Windows with
-        # "uv sync reported success but left no interpreter at ...python.exe"
-        # — a bug in the TEST's assumed venv layout, not in `_build`.
+        # Derived from `_venv_python`, not re-spelled as `bin/python`, so the
+        # test cannot drift from the venv layout `_build` checks.
         interpreter = worker._venv_python(venv_dir)
         os.makedirs(os.path.dirname(interpreter), exist_ok=True)
         open(interpreter, "w").close()
@@ -1057,47 +1054,6 @@ def test_uv_actually_line_flushes_to_a_pipe_not_just_at_exit():
 # --- `_run_uv_via_pty`: setup-failure fallback, and a REAL pty end to end ---
 
 
-def test_a_platform_with_no_pty_module_takes_the_piped_path(tmp_path, monkeypatch):
-    """The branch Windows actually runs: `worker.pty` is `None` there (no
-    `pty` module at all -- confirmed by CI, not just reasoned about), so
-    `_build` must go straight to `_run_uv_piped` and never so much as touch
-    `_run_uv_via_pty`. Every OTHER piped-path test forces this by setting
-    `pty = None` too, but none of them pinned that the PTY FUNCTION ITSELF
-    is skipped rather than merely failing over into it -- this asserts the
-    dispatch, not just the outcome.
-    """
-    proj = tmp_path / "proj"
-    proj.mkdir()
-    (proj / "pyproject.toml").write_text(
-        "[project]\nname = 't'\nversion = '0.1'\ndependencies = ['pip']\n",
-        encoding="utf-8",
-    )
-    venv_dir = str(tmp_path / "venv")
-
-    def _fake_popen(cmd, **kw):
-        interpreter = worker._venv_python(venv_dir)
-        os.makedirs(os.path.dirname(interpreter), exist_ok=True)
-        open(interpreter, "w").close()
-        return _FakeStreamingPopen(_SAMPLE_TRANSCRIPT)
-
-    monkeypatch.setattr(worker.subprocess, "Popen", _fake_popen)
-    monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
-    monkeypatch.setattr(worker, "pty", None)
-
-    called = []
-    monkeypatch.setattr(
-        worker, "_run_uv_via_pty",
-        lambda *a, **kw: called.append("pty") or pytest.fail("must not be called"),
-    )
-
-    venv_python = worker._build(str(proj), venv_dir, str(tmp_path / "cache"), "3.12")
-
-    assert not called
-    assert venv_python == worker._venv_python(venv_dir)
-
-
-
-
 @pytest.mark.skipif(worker.pty is None, reason="no pty module on this platform (Windows) -- worker.pty is the module's own import guard")
 def test_pty_setup_failure_falls_back_to_the_piped_path(tmp_path, monkeypatch):
     """`pty.openpty()` failing (no `/dev/ptmx`, a locked-down sandbox) is the
@@ -1251,9 +1207,6 @@ def test_a_real_pty_child_streams_partial_bytes_into_the_tracker():
     100% before the last row, is exactly the kind of test that let issue #1
     and #2 ship unnoticed.
     """
-    if worker.pty is None:
-        pytest.skip("no pty support on this platform")
-
     child_script = (
         "import sys, time\n"
         "def w(s):\n"

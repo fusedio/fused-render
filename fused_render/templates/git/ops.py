@@ -292,8 +292,6 @@ def _popen_kwargs():
         # refused read, while a `git commit` that dies before exec is work the
         # user believes they recorded.
         "close_fds": False,
-        "creationflags": (subprocess.CREATE_NO_WINDOW
-                          if sys.platform == "win32" else 0),
     }
 
 

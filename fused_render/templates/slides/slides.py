@@ -54,26 +54,6 @@ EXPORTS = os.path.join(tempfile.gettempdir(), "fused_render_slides_exports")
 # read-only and wiped on upgrade); each then flows through the ordinary `open` path.
 LIBRARY = os.path.expanduser(os.path.join("~", ".fused-render", "slides"))
 
-# Translate a stored path (may be WSL /mnt/c/... or native C:\...) to this OS's convention.
-_WSL_MOUNT_RE = re.compile(r"^/mnt/([A-Za-z])(/.*)?$")
-_WIN_DRIVE_RE = re.compile(r"^([A-Za-z]):[\\/](.*)$")
-
-
-def _to_native_path(p):
-    if not p:
-        return p
-    if os.name == "nt":
-        m = _WSL_MOUNT_RE.match(p)
-        if m:
-            drive, rest = m.group(1).upper(), (m.group(2) or "").replace("/", "\\")
-            return f"{drive}:{rest or chr(92)}"
-    else:
-        m = _WIN_DRIVE_RE.match(p)
-        if m:
-            drive, rest = m.group(1).lower(), m.group(2).replace("\\", "/")
-            return f"/mnt/{drive}/{rest}"
-    return p
-
 
 # --------------------------------------------------------------------------- #
 #  content-hash cache                                                         #
@@ -141,13 +121,13 @@ def _resolve_save_dest(name, directory=None, default_dir=None):
     file name (joined onto `directory`) or a full/absolute path (used verbatim,
     with any surrounding quotes stripped). Always lands on a .pptx under an
     existing directory."""
-    raw = _to_native_path((name or "").strip().strip('"').strip("'"))
+    raw = (name or "").strip().strip('"').strip("'")
     expanded = os.path.expanduser(raw)
-    if raw and (os.path.isabs(expanded) or re.match(r"^[A-Za-z]:[\\/]", raw)):
+    if raw and os.path.isabs(expanded):
         dst = os.path.abspath(expanded)
     else:
         base = re.sub(r'[\\/:*?"<>|]+', "", raw).strip() or "Untitled"
-        d = (os.path.abspath(os.path.expanduser(_to_native_path(directory))) if directory
+        d = (os.path.abspath(os.path.expanduser(directory)) if directory
              else (default_dir or os.path.expanduser("~")))
         dst = os.path.join(d, base)
     if not dst.lower().endswith(".pptx"):
@@ -175,7 +155,7 @@ def main(action: str = "open",
     if action == "open":
         if not file:
             raise ValueError("open requires `file` (path to a .pptx)")
-        file = _to_native_path(os.path.abspath(os.path.expanduser(file)))
+        file = os.path.abspath(os.path.expanduser(file))
         if not os.path.exists(file):
             raise FileNotFoundError(file)
         d = _content_hash(file)
@@ -225,7 +205,6 @@ def main(action: str = "open",
 
     # ----------------------------------------- directory browser (Save as)
     if action == "listdir":
-        path = _to_native_path(path)
         base = os.path.abspath(os.path.expanduser(path)) if path else os.path.expanduser("~")
         dirs, files = [], []
         if not os.path.isdir(base):
@@ -547,7 +526,6 @@ def main(action: str = "open",
 
     # --------- Save = materialize model -> `file` itself (atomic overwrite)
     if action == "save":
-        file = _to_native_path(file)
         # RO-3 fs gate FIRST (before _load_model and the mkstemp below): the
         # atomic tempfile-in-parent-dir + os.replace would otherwise silently
         # overwrite a chmod -w file via the directory's write bit.
@@ -577,7 +555,7 @@ def main(action: str = "open",
         model = _load_model(doc)
         dst = _resolve_save_dest(name or "Untitled", directory)
         engine.build_pptx(model, dst, _media_dir(doc))
-        src_file = _to_native_path(file) if file else ""
+        src_file = file or ""
         if src_file:
             # Drop the scratch draft — but never when the user saved back onto
             # the scratch itself (browsing into LIBRARY under the same name),
@@ -595,7 +573,7 @@ def main(action: str = "open",
         model = _load_model(doc)
         default = os.path.splitext(os.path.basename(file))[0] if file else "deck"
         dst = _resolve_save_dest(name or f"{default} copy", directory,
-                                 default_dir=os.path.dirname(_to_native_path(file)) or None)
+                                 default_dir=os.path.dirname(file) or None)
         engine.build_pptx(model, dst, _media_dir(doc))
         return {"path": dst.replace(os.sep, "/"), "name": os.path.basename(dst)}
 

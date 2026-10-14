@@ -634,12 +634,7 @@ def test_every_git_call_is_an_argv_list_with_no_shell_and_a_timeout(
         # basename alone would pass a regression to a bare "git".
         assert isinstance(cmd, list)
         assert os.path.isabs(cmd[0])
-        # Case-insensitive: shutil.which() builds the candidate by appending
-        # PATHEXT's own casing (Windows' default PATHEXT is uppercase,
-        # ".COM;.EXE;..."), so the resolved path is literally "...\\git.EXE"
-        # there — not a different executable, just Windows' case-insensitive
-        # filesystem letting a case this test never chose survive unchanged.
-        assert os.path.basename(cmd[0]).lower() in ("git", "git.exe")
+        assert os.path.basename(cmd[0]) == "git"
         # The other two thirds of the same rule — this module forked until
         # they were added, and this test passed the whole time.
         assert kw.get("close_fds") is False

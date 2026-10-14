@@ -210,7 +210,6 @@ def _warn_suspicious_negative(kind, path, detail):
 def main(path: str) -> bool:
     import os
     import subprocess
-    import sys
 
     try:
         if not path:
@@ -254,8 +253,6 @@ def main(path: str) -> bool:
             # pipe-filling risk.
             stderr=subprocess.PIPE,
             timeout=_TIMEOUT_S,
-            creationflags=(subprocess.CREATE_NO_WINDOW
-                           if sys.platform == "win32" else 0),
             close_fds=False,
         )
         if proc.returncode != 0:

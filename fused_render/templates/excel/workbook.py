@@ -312,7 +312,6 @@ def _formula_values(file, key, cells, volatile, cache=True, only=None):
             timeout=_PYCEL_TIMEOUT,
             close_fds=False,  # see executor.py's own subprocess call: avoids a
             # fork() + pthread_atfork crash when pyproj/PROJ is resident
-            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
         )
     except (subprocess.TimeoutExpired, OSError):
         return {}

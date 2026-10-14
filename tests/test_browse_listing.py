@@ -25,7 +25,7 @@ def test_local_listing(tmp_path):
 def test_file_path_descends_to_parent(tmp_path):
     (tmp_path / "a.tif").write_bytes(b"x")
     res = br.main(dir=str(tmp_path / "a.tif"), exts=".tif")
-    assert res["dir"] == str(tmp_path).replace("\\", "/")
+    assert res["dir"] == str(tmp_path)
     assert [f["name"] for f in res["files"]] == ["a.tif"]
 
 
@@ -40,12 +40,8 @@ def test_zarr_store_classified_as_loadable(tmp_path):
 
 
 # --------------------------------------------------------------------------
-# breadcrumb roots (both copies of browse.py)
+# breadcrumbs (both copies of browse.py)
 # --------------------------------------------------------------------------
-# `main()` derives `dir` from os.path.abspath, so on a POSIX test host it is
-# always "/..." — a Windows drive root and a UNC root cannot be produced
-# through it at all. _crumbs is a pure string helper for exactly that reason:
-# these are the two roots that shipped broken and the only way to pin them here.
 
 @pytest.mark.parametrize("mod", [br, zbr], ids=["geotiff", "zarr_aoi"])
 def test_posix_crumbs_are_unchanged(mod):
@@ -55,30 +51,3 @@ def test_posix_crumbs_are_unchanged(mod):
     ]
     assert mod._crumbs("/only") == [{"label": "only", "path": "/only"}]
     assert mod._crumbs("/") == []
-
-
-@pytest.mark.parametrize("mod", [br, zbr], ids=["geotiff", "zarr_aoi"])
-def test_a_windows_drive_root_crumbs_to_the_drive_ROOT(mod):
-    """"C:" alone is DRIVE-RELATIVE — it means "wherever this process last was
-    on C:", not the top of the drive — so the root crumb's path must be "C:/".
-    Clicking it has to land on the drive root, not somewhere unpredictable."""
-    assert mod._crumbs("C:/Users/foo") == [
-        {"label": "C:", "path": "C:/"},
-        {"label": "Users", "path": "C:/Users"},
-        {"label": "foo", "path": "C:/Users/foo"},
-    ]
-    assert mod._crumbs("C:/") == [{"label": "C:", "path": "C:/"}]
-
-
-@pytest.mark.parametrize("mod", [br, zbr], ids=["geotiff", "zarr_aoi"])
-def test_a_unc_root_keeps_its_server_and_share(mod):
-    """The leading "//" is dropped by the empty-segment filter, and "//server"
-    without the share is not a path at all — so server+share are ONE root
-    crumb, not two, and the "//" survives."""
-    assert mod._crumbs("//server/share/a/b") == [
-        {"label": "//server/share", "path": "//server/share"},
-        {"label": "a", "path": "//server/share/a"},
-        {"label": "b", "path": "//server/share/a/b"},
-    ]
-    assert mod._crumbs("//server/share") == [
-        {"label": "//server/share", "path": "//server/share"}]

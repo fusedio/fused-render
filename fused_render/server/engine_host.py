@@ -4,9 +4,8 @@ A template that needs a long-lived worker (the map viewer's tile daemon is the
 first) hands one over here and the :1777 process owns its whole lifecycle. Each
 engine_id names one child: it binds :0 and publishes {port, token, pid, version}
 to a status file — binding in the child and reporting back is the only version
-with no race — and the host keeps the Popen so it can reap via poll() (never
-os.kill(pid, 0), which kills the process on Windows), replace a wedged child,
-and kill the whole tree from the app's shutdown event. The browser never sees
+with no race — and the host keeps the Popen so it can reap via poll(), replace
+a wedged child, and kill the whole tree from the app's shutdown event. The browser never sees
 the port or token: routers/engines.py proxies everything through the stable
 server origin.
 
@@ -163,12 +162,7 @@ _reinit: dict[str, "OrderedDict[str, dict]"] = {}
 #: heal-restart mid-call still counts the live call; guards warm-app idle-retire.
 _busy: dict[str, int] = {}
 
-SPAWN_KWARGS = (
-    {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
-    if os.name == "nt" else {"start_new_session": True}
-)
-
-_SIGKILL = getattr(signal, "SIGKILL", signal.SIGTERM)
+SPAWN_KWARGS = {"start_new_session": True}
 
 #: Called with a Child right after it is terminated, so consumers (the proxy's
 #: per-child connection pool) can release resources tied to that child.
@@ -251,29 +245,16 @@ def _inflight(child: Child) -> int:
 
 
 def _kill_tree(child: Child) -> None:
-    """Stop the child and everything it started; see ai/supervisor._kill_tree
-    for why each platform needs its own mechanism."""
+    """Stop the child and everything it started: its process group when it
+    leads one (it was spawned `start_new_session`), else just the pid."""
     pid = child.pid
     if not pid:
-        return
-    if os.name == "nt":
-        try:
-            os.kill(pid, signal.CTRL_BREAK_EVENT)
-        except (OSError, AttributeError, ValueError):
-            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
-                           capture_output=True)
-        deadline = time.monotonic() + 3.0
-        while time.monotonic() < deadline and _alive(child):
-            time.sleep(0.05)
-        if _alive(child):
-            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
-                           capture_output=True)
         return
     try:
         leader = os.getpgid(pid) == pid
     except OSError:
         leader = False
-    for sig in (signal.SIGTERM, _SIGKILL):
+    for sig in (signal.SIGTERM, signal.SIGKILL):
         if not _alive(child):
             return
         try:

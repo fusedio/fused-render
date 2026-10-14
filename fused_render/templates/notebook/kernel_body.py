@@ -8,18 +8,14 @@ events on stdout (ready/stream/execute_result/display_data/error/done, one
 object per line). Nothing else may print to the real stdout — sys.stdout/
 stderr/stdin are swapped while user code runs. Cells execute serially on the
 main thread in one shared namespace; interrupt rides the stdin reader thread,
-drops every queued execute, and raises KeyboardInterrupt in the running cell:
-pthread_kill(main_thread, SIGINT) on POSIX (only delivery to the main thread
-itself interrupts a C-blocked time.sleep there) and signal.raise_signal(SIGINT)
-on Windows, where
-the C handler wakes sleeping threads and — unlike console CTRL events — needs
-no console, which neither the daemon nor this process has.
+drops every queued execute, and raises KeyboardInterrupt in the running cell
+via pthread_kill(main_thread, SIGINT) (only delivery to the main thread itself
+interrupts a C-blocked time.sleep).
 """
 import ast
 import base64
 import io
 import json
-import os
 import queue
 import signal
 import sys
@@ -186,39 +182,8 @@ def execute(exec_id, code):
           "duration_ms": int((time.monotonic() - t0) * 1000)})
 
 
-def _stdin_lines():
-    """Request lines from the real stdin. On Windows this must never leave a
-    ReadFile pending while user code runs: a blocked same-process stdin read
-    deadlocks LoadLibrary of C extensions (numpy's CRT init blocks on the
-    handle) — so poll with PeekNamedPipe and only read bytes already there."""
-    if os.name != "nt":
-        for line in sys.stdin:
-            yield line
-        return
-    import ctypes
-    import msvcrt
-    from ctypes import wintypes
-    handle = msvcrt.get_osfhandle(0)
-    avail = wintypes.DWORD()
-    buf = b""
-    while True:
-        if not ctypes.windll.kernel32.PeekNamedPipe(
-                handle, None, 0, None, ctypes.byref(avail), None):
-            break  # pipe closed
-        if not avail.value:
-            time.sleep(0.03)
-            continue
-        chunk = os.read(0, avail.value)
-        if not chunk:
-            break
-        buf += chunk
-        while b"\n" in buf:
-            line, buf = buf.split(b"\n", 1)
-            yield line.decode("utf-8")
-
-
 def read_requests(q):
-    for line in _stdin_lines():
+    for line in sys.stdin:
         line = line.strip()
         if not line:
             continue
@@ -228,8 +193,7 @@ def read_requests(q):
             # executes before signalling so none can start afterwards, and
             # skip the signal entirely when nothing runs — a pending SIGINT
             # with the main thread parked in q.get() would otherwise fire on
-            # the NEXT dequeue and swallow that execute (Windows lock waits
-            # are not signal-interruptible).
+            # the NEXT dequeue and swallow that execute.
             while True:
                 try:
                     nxt = q.get_nowait()
@@ -241,14 +205,11 @@ def read_requests(q):
                 emit({"type": "done", "id": nxt["id"], "duration_ms": 0})
             if not RUNNING.is_set():
                 continue
-            if os.name == "nt":
-                signal.raise_signal(signal.SIGINT)
-            else:
-                # raise_signal from this thread sets the flag but cannot wake
-                # a main thread C-blocked in e.g. time.sleep on POSIX — the
-                # signal must be delivered to the main thread itself
-                signal.pthread_kill(
-                    threading.main_thread().ident, signal.SIGINT)
+            # raise_signal from this thread sets the flag but cannot wake
+            # a main thread C-blocked in e.g. time.sleep — the signal must
+            # be delivered to the main thread itself
+            signal.pthread_kill(
+                threading.main_thread().ident, signal.SIGINT)
         else:
             q.put(req)
     q.put(None)  # stdin closed — the daemon is gone

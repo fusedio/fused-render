@@ -93,11 +93,9 @@ def test_export_writes_an_executable_wrapper_and_publishes_it(monkeypatch, tmp_p
     assert bin_dir == os.path.join(home_dir(), fusedcli.CLI_BIN_SUBDIR)
     assert os.environ[fusedcli.CLI_DIR_ENV] == bin_dir
     assert bin_dir in os.environ["PATH"].split(os.pathsep)
-    wrapper = os.path.join(bin_dir,
-                           "fused.cmd" if os.name == "nt" else "fused")
+    wrapper = os.path.join(bin_dir, "fused")
     assert os.path.isfile(wrapper)
-    if os.name != "nt":
-        assert os.stat(wrapper).st_mode & stat.S_IXUSR
+    assert os.stat(wrapper).st_mode & stat.S_IXUSR
     text = open(wrapper, encoding="utf-8").read()
     # The resolved command is in there, quoted as one argv (the space inside
     # the second element must survive as a single argument).
@@ -127,8 +125,6 @@ def test_wrapper_defaults_fused_env_but_never_clobbers_an_explicit_one(
     export-over-the-top."""
     monkeypatch.setenv("FUSED_RENDER_WORKBENCH_ENV", "stg")
     bin_dir = _export_with_stub(monkeypatch, tmp_path)
-    if os.name == "nt":
-        pytest.skip("sh wrapper semantics; the .cmd branch mirrors them")
     text = open(os.path.join(bin_dir, "fused"), encoding="utf-8").read()
     # Assign only when unset/empty — "default, not override". The assignment
     # sits outside any double quotes so shlex.quote's single quotes actually
@@ -143,8 +139,6 @@ def test_wrapper_scrubs_interpreter_vars_only_for_an_external_cli(
     PYTHONHOME/PYTHONPATH unset (the packaged app's bundle-scoped values break
     any other Python); the in-interpreter shim keeps them — they are what make
     sys.executable work in the bundle."""
-    if os.name == "nt":
-        pytest.skip("asserted on the sh branch; the .cmd branch mirrors it")
     bin_dir = _export_with_stub(monkeypatch, tmp_path, external=True)
     text = open(os.path.join(bin_dir, "fused"), encoding="utf-8").read()
     assert "unset PYTHONHOME PYTHONPATH" in text
@@ -166,8 +160,6 @@ def test_wrapper_exports_the_engines_own_interpreter_for_app_serve(
     registers `<fused-bin>/fused app serve <dir>` globally, so THIS wrapper is
     the only place that value can be put.
     """
-    if os.name == "nt":
-        pytest.skip("asserted on the sh branch; the .cmd branch mirrors it")
     from fused_render import envinstall
 
     monkeypatch.setattr(envinstall, "script_python",

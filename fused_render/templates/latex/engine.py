@@ -32,7 +32,6 @@ import gzip
 import hashlib
 import json
 import os
-import platform
 import re
 import shutil
 import subprocess
@@ -51,7 +50,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(HERE), "shared"))
 from procutil import clean_env as _clean_env
 from procutil import file_lock as _file_lock
 from procutil import pid_alive as _pid_alive
-from procutil import spawn_python as _spawn_python
 
 CACHE_ROOT = os.path.expanduser("~/.fused-render/cache/latex")
 TECTONIC_CACHE = os.path.join(CACHE_ROOT, "tectonic-cache")  # shared package/font cache
@@ -69,15 +67,11 @@ TEX_EXT = (".tex", ".ltx", ".latex")
 
 
 # --------------------------------------------------------------- tectonic ---
-def _tectonic_bin_name():
-    return "tectonic.exe" if platform.system() == "Windows" else "tectonic"
-
-
 def _tectonic_bin():
     found = shutil.which("tectonic")
     if found:
         return found
-    candidate = os.path.join(BIN_DIR, _tectonic_bin_name())
+    candidate = os.path.join(BIN_DIR, "tectonic")
     return candidate if os.path.exists(candidate) else None
 
 
@@ -109,21 +103,16 @@ def _tectonic_install():
     os.makedirs(BIN_DIR, exist_ok=True)
     worker = os.path.join(HERE, "install_worker.py")
     logf = open(os.path.join(INSTALL_DIR, "worker.log"), "ab")
-    # detach: outlive this 30 s subprocess. start_new_session (setsid) is
-    # POSIX-only and silently a no-op on Windows, where DETACHED_PROCESS +
-    # CREATE_NEW_PROCESS_GROUP is the equivalent (mirrors usd_studio).
-    detach_kwargs = (
-        {"creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP}
-        if os.name == "nt" else {"start_new_session": True}
-    )
+    # detach (start_new_session): outlive this 30 s subprocess.
     # The installer warms the base package/font cache on a trivial doc as soon as
     # the binary lands (writing WARM_DIR + `.warmed`), so the ~10-min one-time
     # fetch happens up front instead of gating the user's first document — pass it
     # the cache and warm-progress dirs it needs for that.
     child = subprocess.Popen(
-        [_spawn_python(), worker, TECTONIC_VERSION, BIN_DIR, INSTALL_DIR,
+        [sys.executable, worker, TECTONIC_VERSION, BIN_DIR, INSTALL_DIR,
          TECTONIC_CACHE, WARM_DIR],
-        stdout=logf, stderr=logf, stdin=subprocess.DEVNULL, cwd=HERE, **detach_kwargs)
+        stdout=logf, stderr=logf, stdin=subprocess.DEVNULL, cwd=HERE,
+        start_new_session=True)
     logf.close()
     stamp = os.path.join(INSTALL_DIR, "progress.json")
     with open(stamp + ".tmp", "w", encoding="utf-8") as f:
@@ -178,15 +167,12 @@ def _ensure_warming(main_path: str):
         return
     os.makedirs(WARM_DIR, exist_ok=True)
     worker = os.path.join(HERE, "warm_worker.py")
-    args = [_spawn_python(), worker, bin_path, TECTONIC_CACHE, WARM_DIR,
+    args = [sys.executable, worker, bin_path, TECTONIC_CACHE, WARM_DIR,
             os.path.abspath(main_path), _build_dir_for(main_path)]
     logf = open(os.path.join(WARM_DIR, "worker.log"), "ab")
-    detach_kwargs = (
-        {"creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP}
-        if os.name == "nt" else {"start_new_session": True}
-    )
     child = subprocess.Popen(
-        args, stdout=logf, stderr=logf, stdin=subprocess.DEVNULL, cwd=HERE, **detach_kwargs)
+        args, stdout=logf, stderr=logf, stdin=subprocess.DEVNULL, cwd=HERE,
+        start_new_session=True)
     logf.close()
     stamp = os.path.join(WARM_DIR, "progress.json")
     with open(stamp + ".tmp", "w", encoding="utf-8") as f:
@@ -227,8 +213,7 @@ def _pandoc_venv_python() -> str:
     Concurrent first-exports serialize on a kernel `file_lock`; `deps_ok` is
     written only after a clean install, so a half-built tree is rebuilt not
     reused."""
-    vpy = os.path.join(PANDOC_DIR, "venv", "Scripts" if os.name == "nt" else "bin",
-                       "python.exe" if os.name == "nt" else "python")
+    vpy = os.path.join(PANDOC_DIR, "venv", "bin", "python")
     marker = os.path.join(PANDOC_DIR, "deps_ok")
     ready = lambda: os.path.exists(vpy) and os.path.exists(marker)
     if ready():
@@ -242,12 +227,11 @@ def _pandoc_venv_python() -> str:
         if ready():   # another export finished the build while we waited
             return vpy
         env = _clean_env()   # a bundle-pointing PYTHON* would shadow the venv's pypandoc
-        flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
         if not os.path.exists(vpy):
             subprocess.run([uv, "venv", "--python", "3.12", os.path.join(PANDOC_DIR, "venv")],
-                           check=True, capture_output=True, env=env, creationflags=flags)
+                           check=True, capture_output=True, env=env)
         subprocess.run([uv, "pip", "install", "-p", vpy, "pypandoc-binary"],
-                       check=True, capture_output=True, env=env, creationflags=flags)
+                       check=True, capture_output=True, env=env)
         with open(marker, "w", encoding="utf-8") as f:
             f.write("ok")
     return vpy
@@ -268,7 +252,6 @@ def _pandoc_convert(src, to, out, extra):
         args = json.dumps({"src": src, "to": to, "out": out, "extra": extra})
         p = subprocess.run([vpy, "-c", code, args], capture_output=True, text=True,
                            env=_clean_env(),
-                           creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
                            encoding="utf-8", errors="replace")
         if p.returncode != 0 or not os.path.exists(out):
             detail = (p.stderr or p.stdout or "").strip().splitlines()
@@ -377,7 +360,7 @@ def _run_tectonic(cmd, env, cwd, hard_timeout: int = 28):
     .stdout/.stderr carry the run's output for the usual diagnostics parsing."""
     p = subprocess.Popen(
         cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
-        cwd=cwd, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+        cwd=cwd,
         encoding="utf-8", errors="replace")
     out_chunks, err_chunks = [], []
 
