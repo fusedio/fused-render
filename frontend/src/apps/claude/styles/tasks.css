@@ -76,6 +76,22 @@
   padding: 5px 0;
   border-top: 1px solid var(--c-border);
 }
+.chat-root .chat-task.is-ended:not(.is-failed) {
+  opacity: 0.5;
+}
+.chat-root .chat-tasks-more {
+  margin: 2px 0 6px 12px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--c-dim);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.chat-root .chat-tasks-more:hover {
+  text-decoration: underline;
+}
 .chat-root .chat-task:first-child {
   border-top: 0;
 }

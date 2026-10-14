@@ -18,6 +18,7 @@ import { runAgent } from "../protocol/agent";
 import {
   elapsedLabel,
   hasOutput,
+  isActive,
   isLive,
   kindLabel,
   sortTasks,
@@ -53,6 +54,18 @@ export function useTasksOpen(scope: string): [boolean, () => void] {
     setSt((prev) => ({ open: !(prev.open && prev.scope === scope), scope }));
   }, [scope]);
   return [open, toggle];
+}
+
+/** An ended, non-failed row stays this long (ms) before it leaves the open
+ *  list; "Show N finished" brings it back. */
+export const TASK_ENDED_GRACE_MS = 5000;
+
+/** When (ms epoch) an ended, non-failed row leaves the list; `null` for a row
+ *  that never auto-hides (live, paused, failed). No `ended_at` = long ended. */
+function hideAfterMs(t: TaskRecord): number | null {
+  if (isActive(t.status) || t.status === "failed") return null;
+  const end = Number(t.ended_at) || 0;
+  return end ? end * 1000 + TASK_ENDED_GRACE_MS : -Infinity;
 }
 
 export type FetchTaskOutput = (runId: string, taskId: string) => Promise<TaskOutputResponse | ErrorOnly>;
@@ -101,7 +114,11 @@ export function TasksPanel({ tasks, runId, open, onToggle, fetchOutput = default
   // Answers for a run that is no longer the panel's are dropped on arrival.
   const runRef = useRef(runId);
   runRef.current = runId;
-  useEffect(() => setOutputs({}), [runId]);
+  const [showEnded, setShowEnded] = useState(false);
+  useEffect(() => {
+    setOutputs({});
+    setShowEnded(false);
+  }, [runId]);
 
   // THE ELAPSED CLOCK TICKS ONLY WHILE SOMETHING IS LIVE AND THE ROWS SHOW: a
   // collapsed strip says no times, and an ended task's time is fixed.
@@ -112,6 +129,21 @@ export function TasksPanel({ tasks, runId, open, onToggle, fetchOutput = default
     const timer = window.setInterval(() => tick((n) => n + 1), 1000);
     return () => window.clearInterval(timer);
   }, [open, anyLive]);
+
+  // FINISHED ROWS LEAVE ON TIME, LIVE TASK OR NOT: one timeout for the next
+  // row's hide moment, re-armed whenever it changes.
+  const nowMs = now();
+  let nextHide = Infinity;
+  for (const t of tasks) {
+    const at = hideAfterMs(t);
+    if (at != null && at >= nowMs && at - nowMs < nextHide) nextHide = at - nowMs;
+  }
+  const hideDelay = open && !showEnded && Number.isFinite(nextHide) ? nextHide + 1 : null;
+  useEffect(() => {
+    if (hideDelay == null) return;
+    const timer = window.setTimeout(() => tick((n) => n + 1), hideDelay);
+    return () => window.clearTimeout(timer);
+  }, [hideDelay]);
 
   const toggleOutput = useCallback(
     (taskId: string) => {
@@ -149,8 +181,20 @@ export function TasksPanel({ tasks, runId, open, onToggle, fetchOutput = default
 
   if (!open && !tasks.length) return null;
   const summary = summarizeTasks(tasks);
-  const rows = sortTasks(tasks);
-  const nowMs = now();
+  const sorted = sortTasks(tasks);
+  const rows = showEnded
+    ? sorted
+    : sorted.filter((t) => {
+        const at = hideAfterMs(t);
+        return at == null || nowMs <= at;
+      });
+  const hiddenCount = sorted.length - rows.length;
+  const finishedToggle =
+    hiddenCount > 0 || showEnded ? (
+      <button type="button" className="chat-tasks-more" onClick={() => setShowEnded((v) => !v)}>
+        {showEnded ? "Hide finished" : `Show ${hiddenCount} finished`}
+      </button>
+    ) : null;
 
   return (
     <section className={cn("chat-tasks", open && "is-open")} aria-label="Background tasks">
@@ -160,13 +204,14 @@ export function TasksPanel({ tasks, runId, open, onToggle, fetchOutput = default
         {summary ? <span className="chat-tasks-summary">{summary}</span> : null}
       </button>
       {open ? (
-        rows.length ? (
+        <>
+        {rows.length ? (
           <ul className="chat-tasks-list">
             {rows.map((t) => {
               const out = outputs[t.id];
               const elapsed = elapsedLabel(t, nowMs);
               return (
-                <li key={t.id} className={cn("chat-task", "is-" + t.kind, isLive(t.status) ? "is-live" : "is-ended")}>
+                <li key={t.id} className={cn("chat-task", "is-" + t.kind, isLive(t.status) ? "is-live" : "is-ended", t.status === "failed" && "is-failed")}>
                   <div className="chat-task-line">
                     <span className="chat-task-kind" title={kindLabel(t.kind)}>
                       <KindIcon kind={t.kind} />
@@ -213,8 +258,10 @@ export function TasksPanel({ tasks, runId, open, onToggle, fetchOutput = default
             })}
           </ul>
         ) : (
-          <div className="chat-tasks-empty">No background tasks in this run.</div>
-        )
+          <div className="chat-tasks-empty">{hiddenCount ? "Nothing running." : "No background tasks in this run."}</div>
+        )}
+        {finishedToggle}
+        </>
       ) : null}
     </section>
   );

@@ -55,7 +55,7 @@ const byClass = (root: ReactTestInstance, cls: string) =>
   root.findAll((n) => typeof n.type === "string" && String(n.props.className ?? "").split(" ").includes(cls));
 
 const TASKS = [
-  rec({ id: "done", kind: "shell", description: "npm test", status: "completed", started_at: 10, ended_at: 40 }),
+  rec({ id: "done", kind: "shell", description: "npm test", status: "completed", started_at: 38, ended_at: 68 }),
   rec({ id: "ag", kind: "agent", description: "Explore the repo", subagent_type: "Explore", started_at: 50, usage: { total_tokens: 4200, tool_uses: 7, duration_ms: 0 } }),
   rec({ id: "mon", kind: "monitor", description: "tail logs", started_at: 60, events: 3, summary: "line 3" }),
 ];
@@ -121,6 +121,67 @@ describe("TasksPanel", () => {
     expect(text(byClass(r.root, "chat-tasks-empty")[0]!)).toBe("No background tasks in this run.");
   });
 
+  describe("finished rows", () => {
+    const NOW = 1_000_000; // ms
+    const ended = (id: string, agoS: number, status = "completed") =>
+      rec({ id, kind: "shell", description: id, status: status as TaskRecord["status"], started_at: 1, ended_at: NOW / 1000 - agoS });
+    const mk = (tasks: TaskRecord[], now: () => number = () => NOW) =>
+      mount(<TasksPanel tasks={tasks} runId="r1" open onToggle={() => {}} now={now} />);
+    const descs = (r: ReactTestRenderer) => byClass(r.root, "chat-task-desc").map((n) => text(n));
+
+    test("an ended row 2 s old is shown, marked is-ended", () => {
+      const r = mk([ended("a", 2)]);
+      expect(descs(r)).toEqual(["a"]);
+      expect(byClass(r.root, "chat-task")[0]!.props.className).toContain("is-ended");
+      expect(byClass(r.root, "chat-tasks-more").length).toBe(0);
+    });
+
+    test("an ended row 6 s old is hidden; Show 1 finished reveals it, Hide finished hides it", () => {
+      const r = mk([ended("a", 6)]);
+      expect(descs(r)).toEqual([]);
+      const more = () => byClass(r.root, "chat-tasks-more")[0]!;
+      expect(text(more())).toBe("Show 1 finished");
+      act(() => more().props.onClick());
+      expect(descs(r)).toEqual(["a"]);
+      expect(text(more())).toBe("Hide finished");
+      act(() => more().props.onClick());
+      expect(descs(r)).toEqual([]);
+    });
+
+    test("a failed row 60 s old is still shown", () => {
+      const r = mk([ended("f", 60, "failed")]);
+      expect(descs(r)).toEqual(["f"]);
+    });
+
+    test("every row hidden says Nothing running. with the toggle", () => {
+      const r = mk([ended("a", 30), ended("b", 40)]);
+      expect(text(byClass(r.root, "chat-tasks-empty")[0]!)).toBe("Nothing running.");
+      expect(text(byClass(r.root, "chat-tasks-more")[0]!)).toBe("Show 2 finished");
+    });
+
+    test("a timer hides a row once the clock passes the grace period, no live task needed", () => {
+      const armed: Array<{ fn: () => void; ms: number }> = [];
+      const realSet = window.setTimeout;
+      const realClear = window.clearTimeout;
+      window.setTimeout = ((fn: () => void, ms: number) => (armed.push({ fn, ms }), armed.length)) as unknown as typeof window.setTimeout;
+      window.clearTimeout = (() => {}) as typeof window.clearTimeout;
+      try {
+        let clock = NOW;
+        const r = mk([ended("a", 2)], () => clock);
+        expect(descs(r)).toEqual(["a"]);
+        const t = armed[armed.length - 1]!;
+        expect(t.ms).toBe(3001);
+        clock += t.ms;
+        act(() => t.fn());
+        expect(descs(r)).toEqual([]);
+        expect(text(byClass(r.root, "chat-tasks-more")[0]!)).toBe("Show 1 finished");
+      } finally {
+        window.setTimeout = realSet;
+        window.clearTimeout = realClear;
+      }
+    });
+  });
+
   test("Output asks task_output and shows it in a CollapsiblePre; a second press hides it", async () => {
     const asked: Array<[string, string]> = [];
     let resolve!: (v: TaskOutputResponse | ErrorOnly) => void;
@@ -128,7 +189,7 @@ describe("TasksPanel", () => {
       asked.push([run, id]);
       return new Promise<TaskOutputResponse | ErrorOnly>((res) => (resolve = res));
     };
-    const r = mount(<TasksPanel tasks={TASKS} runId="r1" open onToggle={() => {}} fetchOutput={fetchOutput} />);
+    const r = mount(<TasksPanel tasks={TASKS} runId="r1" open onToggle={() => {}} fetchOutput={fetchOutput} now={() => 70_000} />);
     const btn = () => byClass(byClass(r.root, "chat-task")[2]!, "chat-task-out-btn")[0]!;
     act(() => btn().props.onClick());
     expect(asked).toEqual([["r1", "done"]]);
@@ -153,6 +214,7 @@ describe("TasksPanel", () => {
         open
         onToggle={() => {}}
         fetchOutput={async () => ({ error: "no live session" })}
+        now={() => 70_000}
       />,
     );
     const btn = byClass(byClass(r.root, "chat-task")[1]!, "chat-task-out-btn")[0]!;
@@ -293,6 +355,9 @@ describe("review #1/#4: an unknown task in the panel", () => {
         now={() => 999_000}
       />,
     );
+    // No end time = long ended: hidden until "Show 1 finished".
+    expect(byClass(r.root, "chat-task").length).toBe(0);
+    act(() => byClass(r.root, "chat-tasks-more")[0]!.props.onClick());
     const row = byClass(r.root, "chat-task")[0]!;
     expect(text(byClass(row, "chat-task-status")[0]!)).toBe("ended");
     expect(byClass(row, "chat-task-status")[0]!.props.className).toContain("is-unknown");
