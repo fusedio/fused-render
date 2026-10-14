@@ -490,7 +490,6 @@ test("a 1x1 search widget is kept by normalizeLayout", () => {
 test("pageTitle is the last path segment", () => {
   expect(pageTitle("/a/b/c.md")).toBe("c.md");
   expect(pageTitle("/a/b/")).toBe("b");
-  expect(pageTitle("C:\\x\\y.html")).toBe("y.html");
   expect(pageTitle("/")).toBe("/");
 });
 

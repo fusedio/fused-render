@@ -130,8 +130,7 @@ export interface BuildTerminalCommandArgs {
 
 /** Build the string to type into a freshly-opened (or already-open) terminal
  * for a "cd here" / "run this" request — POSIX-shell only, matching the pty
- * this session always runs (see pty_session.py: never constructed on
- * Windows). Single-quotes `cwd` the POSIX way (`'` -> `'\''`, ie. close the
+ * this session always runs (see pty_session.py). Single-quotes `cwd` the POSIX way (`'` -> `'\''`, ie. close the
  * quote, an escaped literal quote, reopen the quote) so a path with spaces,
  * `$`, or embedded quotes still lands as one argument to `cd`. With both
  * `cwd` and `command`: `cd '<cwd>' && <command>`. With only `cwd`: `cd

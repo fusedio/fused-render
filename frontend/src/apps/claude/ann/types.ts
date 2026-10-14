@@ -160,7 +160,7 @@ export const ANN_BAR: Record<"comment" | "rec", readonly [string, string]> = {
  * and another in the hint reads as two different shortcuts.
  *
  * JOINED BY `chordLabel`, not by this file: the repo already had the rule
- * ("⌘C on macOS vs Ctrl+C on Windows/Linux", `platform/lib/shortcuts.ts`) and
+ * ("⌘C on macOS vs Ctrl+C on Linux", `platform/lib/shortcuts.ts`) and
  * left it to each caller, and the first caller to inline it — this one — shipped
  * `CtrlEnter` off a Mac, which names no key anybody has (Bugbot, PR #1198). The
  * rule now lives in one function where it can be tested from either platform.

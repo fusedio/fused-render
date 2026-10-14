@@ -13,9 +13,8 @@
 // should navigate?
 //
 // A NUL byte answers that unambiguously: it is illegal inside a POSIX path
-// (the kernel rejects it outright) and inside a Windows path (disallowed by
-// every Win32 file API), so no real row's path can ever equal this string,
-// typed or synced from any filesystem this app can list.
+// (the kernel rejects it outright), so no real row's path can ever equal this
+// string, typed or synced from any filesystem this app can list.
 export const ZERO_MATCH_OFFER_PATH = "\0zero-match-broaden-offer";
 
 export function isZeroMatchOfferPath(path: string): boolean {

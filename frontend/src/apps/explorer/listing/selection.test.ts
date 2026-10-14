@@ -294,11 +294,6 @@ describe("cameFromSelParam", () => {
     expect(cameFromSelParam("", "/etc/hosts")).toBe("etc");
   });
 
-  test("a windows drive root keeps its slash out of the name", () => {
-    expect(cameFromSelParam("C:/", "C:/Users/me")).toBe("Users");
-    expect(cameFromSelParam("C:/Users", "C:/Users/me")).toBe("me");
-  });
-
   test("staying put selects nothing", () => {
     expect(cameFromSelParam("/a/b", "/a/b")).toBeNull();
     expect(cameFromSelParam("/a/b", "/a/b/")).toBeNull();

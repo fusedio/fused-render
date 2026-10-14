@@ -152,9 +152,8 @@ describe("what is in front", () => {
     expect(queueAheadHref({ queue_ahead_target: "/Users/me/app" })).toBe(null);
   });
 
-  it("encodes a path with spaces and a Windows drive", () => {
+  it("encodes a path with spaces", () => {
     expect(chatUrl("/Users/me/my app", "s")).toContain("/explorer/view/Users/me/my%20app");
-    expect(chatUrl("C:\\work\\app", "s")).toContain("/explorer/view/C%3A/work/app");
   });
 
   it("still links a holder that is STARTING, by the entry it is keyed on", () => {

@@ -58,10 +58,6 @@ describe("isPathShapedQuery", () => {
     expect(isPathShapedQuery("/Users/a/Fused/local/random", OPEN, undefined)).toBe(true);
   });
 
-  test("a Windows drive-letter path is path-shaped", () => {
-    expect(isPathShapedQuery("C:\\Users\\a", OPEN, HOME)).toBe(true);
-  });
-
   // FINDING (Bugbot, code review round 3, worktree-search-trailing-space):
   // this predicate used to trim before checking shape, missing that
   // `expand_whitespace_query` (server-side; `expandWhitespaceQuery` here)

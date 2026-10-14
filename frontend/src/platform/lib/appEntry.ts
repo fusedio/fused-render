@@ -114,18 +114,6 @@ export function openTargetFor(app: AppInfo): OpenTarget {
 // in-session layout the user toggled, which a new tab does not inherit. Built
 // through the router's own codec, so an app path with a space, a `#` or a
 // non-ASCII name encodes exactly as in-app navigation encodes it.
-//
-// KNOWN GAP, recorded so it is not "fixed" wrongly: a Windows UNC path
-// (`\\NAS\share\notes`) does not survive this. The
-// codec normalizes backslashes for DRIVE-LETTER paths only, because on POSIX a
-// backslash is a legal filename character. Adding an unconditional
-// `replace(/\\/g, "/")` here would be worse than the gap: `urlForFsPath` strips
-// leading slashes and `rootedFsPath` restores exactly one, so the UNC `\\` would
-// come back as `/NAS/share/notes` — a different, silently wrong path. Real
-// support means teaching BOTH directions of the codec about UNC, which no
-// surface of the explorer has today (such a folder cannot be browsed or
-// bookmarked either); until then a UNC app path is uniformly unsupported
-// rather than supported in one place.
 export function hrefFor(app: AppInfo): string {
   return urlForFsPath(openTargetFor(app).path);
 }

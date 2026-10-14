@@ -14,8 +14,8 @@ import { OVERLAY_EXIT_MS } from "@platform/lib/exit-animation";
 // Validate a single path SEGMENT (a file/folder name, never a path). Returns an
 // inline error message or null when the (already-trimmed) name is usable. Beyond
 // empty and "/", it rejects "." and ".." (which would resolve to the folder or
-// its parent — a directory escape), a backslash (a path separator on the server's
-// OS, and confusing everywhere), and any embedded null char. Shared with
+// its parent — a directory escape), a backslash (confusing as a name), and any
+// embedded null char. Shared with
 // Listing.tsx so its handlers guard before building a path.
 export function nameError(trimmed: string): string | null {
   if (trimmed === "") return "Enter a name.";

@@ -44,11 +44,11 @@ import { completionKeyAction, moveHighlight }
 // name a place" is exactly the divergence one shared rule prevents.
 //
 //   `isPathShapedQuery` — does the text NAME A PLACE at all: true for anything
-//     that escapes its base (leading `/`, `~`, `~/`, a drive, or a `..`
+//     that escapes its base (leading `/`, `~`, `~/`, or a `..`
 //     segment) and names no glob. A bare word is never an address, and the path
 //     check below has nothing to say about one.
 import { isPathShapedQuery } from "@apps/explorer/listing/path-shaped-query";
-//   `listingAddress`   — the Explorer's own `~`/drive/relative expander: the
+//   `listingAddress`   — the Explorer's own `~`/relative expander: the
 //     absolute path a typed address MEANS. The field goes on showing what the
 //     reader typed; everything that touches the disk asks this first.
 import { listingAddress } from "@apps/explorer/listing/listing-address";
@@ -117,7 +117,7 @@ import { onDraftChange } from "./tasksPulse";
 // not one that may not exist (whose only symptom is the server's 400 naming
 // the path). The picker makes changing it a click.
 export const defaultTargetOf = (c: Pick<Config, "home" | "fused_dir">) =>
-  normPath(c.fused_dir || c.home);
+  c.fused_dir || c.home;
 
 // ---- Recent paths --------------------------------------------------------
 // The path field's dropdown offers the last folders the user actually used,
@@ -194,8 +194,8 @@ function leafOf(p: string): string {
  *     a search for its own default would be the card searching for itself. It
  *     is the text that decides, not a "has been edited" flag, so leaving the
  *     field and coming back answers the same way it did before;
- *   · and it must NOT NAME A PLACE (`isPathShapedQuery`): a leading `/`, `~`, a
- *     drive letter or a `..` segment is an address, and an address is the case
+ *   · and it must NOT NAME A PLACE (`isPathShapedQuery`): a leading `/`, `~`
+ *     or a `..` segment is an address, and an address is the case
  *     above — recents, unchanged.
  *
  * Pure, and exported, because that decision is the whole feature and it is
@@ -316,22 +316,12 @@ const SESSION_FOLDERS_SHOWN = 5;
 // IS the pick (a task can target a file); "Use this folder" picks where you
 // stand.
 
-// Forward slashes throughout, including for Windows drive paths — the same
-// normalization every other shell caller applies to `/api/config` values,
-// whose `home` is a raw expanduser and arrives with backslashes there. The
-// server accepts either separator; the PICKER's own string surgery (up(),
-// joins) only understands one.
-const normPath = (p: string) => p.replace(/\\/g, "/");
-
-// A path split into the folder it lives in and its last segment. Drive roots
-// keep their slash — bare "C:" reads as cwd-relative elsewhere in the shell,
-// not as the root (the same trap the picker's climb fixed in PR #548).
+// A path split into the folder it lives in and its last segment.
 export function splitTargetPath(path: string): { parent: string; base: string } {
-  const norm = normPath(path).trim().replace(/\/+$/, "");
+  const norm = path.trim().replace(/\/+$/, "");
   const cut = norm.lastIndexOf("/");
-  const parent = cut > 0 ? norm.slice(0, cut) : "/";
   return {
-    parent: /^[A-Za-z]:$/.test(parent) ? parent + "/" : parent,
+    parent: cut > 0 ? norm.slice(0, cut) : "/",
     base: norm.slice(cut + 1),
   };
 }
@@ -389,16 +379,11 @@ interface Crumb {
 
 // The path as clickable crumbs: every ancestor is one tap away, which is what
 // the old single "up" chevron made people hunt for (Akshil, 2026-08-15 — "not
-// intuitive"). Root renders as "/" (or "C:/"), each segment jumps there.
+// intuitive"). Root renders as "/", each segment jumps there.
 function crumbsOf(path: string): Crumb[] {
-  const trimmed = path.replace(/\/+$/, "");
-  const drive = trimmed.match(/^[A-Za-z]:/)?.[0];
-  const rootPath = drive ? drive + "/" : "/";
-  const rest = (drive ? trimmed.slice(drive.length) : trimmed)
-    .split("/")
-    .filter(Boolean);
-  const out = [{ name: drive ?? "/", path: rootPath }];
-  let acc = drive ?? "";
+  const rest = path.replace(/\/+$/, "").split("/").filter(Boolean);
+  const out = [{ name: "/", path: "/" }];
+  let acc = "";
   for (const seg of rest) {
     acc += "/" + seg;
     out.push({ name: seg, path: acc });
@@ -566,7 +551,7 @@ function ExplorerPanel({
   // A file target starts the panel in its PARENT — listing a file's "children"
   // is a guaranteed error banner.
   const [path, setPath] = useState(() => {
-    const p = normPath(start).replace(/\/+$/, "");
+    const p = start.replace(/\/+$/, "");
     return p || "/";
   });
   const [rows, setRows] = useState<{ name: string; dir: boolean }[] | null>(null);
@@ -609,10 +594,7 @@ function ExplorerPanel({
         if (!climbed.current && cut >= 0) {
           climbed.current = true;
           const parent = path.replace(/\/+$/, "").slice(0, cut);
-          // A drive root keeps its slash — bare "C:" reads as cwd-relative
-          // elsewhere in the shell, not as the root (Bugbot, PR #548; the
-          // same trap the old picker's up() fixed in PR #541).
-          setPath(/^[A-Za-z]:$/.test(parent) ? parent + "/" : parent || "/");
+          setPath(parent || "/");
           return;
         }
         setError(e.message);
@@ -721,8 +703,7 @@ function ExplorerPanel({
           ) : (
             <span key={c.path} className="schedule-picker-crumb-seg">
               {/* The root crumb IS "/", so a separator in front of the first
-                  real segment prints it twice — "//Users" (audit 2026-08-16).
-                  A drive root ("C:") still takes one. */}
+                  real segment prints it twice — "//Users" (audit 2026-08-16). */}
               {i > 0 && !(i === 1 && crumbs[0]?.name === "/") && (
                 <span className="schedule-picker-crumb-sep">/</span>
               )}
@@ -2182,7 +2163,7 @@ const DRAWABLE_MIMES = new Set(["image/png", "image/jpeg", "image/gif",
 
 export function attachmentKindOf(path: string): "image" | "file" {
   const dot = path.lastIndexOf(".");
-  const slash = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+  const slash = path.lastIndexOf("/");
   const ext = dot > slash ? path.slice(dot).toLowerCase() : "";
   return DRAWABLE_EXTS.has(ext) ? "image" : "file";
 }
@@ -3328,7 +3309,7 @@ export default function NewJobModal({
       (r) => {
         if (!alive) return;
         setSessionFolders(
-          r.folders.slice(0, SESSION_FOLDERS_SHOWN).map((f) => normPath(f.path)),
+          r.folders.slice(0, SESSION_FOLDERS_SHOWN).map((f) => f.path),
         );
       },
       () => {},
@@ -3435,8 +3416,7 @@ export default function NewJobModal({
     // segment under it as a folder to be created.
     //
     // Expanded with the EXPLORER'S OWN expander (`listingAddress`), which is
-    // what its address bar resolves `~`, a drive letter and a relative path
-    // with. The field keeps showing `~/…`: what the reader typed is what they
+    // what its address bar resolves `~` and a relative path with. The field keeps showing `~/…`: what the reader typed is what they
     // read back, and the server expands it again on the way in
     // (`schedule.create`: `abspath(expanduser(target))`), so the stored target
     // is the real path either way.

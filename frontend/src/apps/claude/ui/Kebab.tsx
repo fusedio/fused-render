@@ -433,8 +433,8 @@ export function Kebab({
    *  this runs the command there instead of putting it on the clipboard — the
    *  point of a managed terminal is that "continue in terminal" can mean
    *  ACTUALLY continuing, not "go find a terminal and paste". Falls back to the
-   *  old copy behaviour everywhere the drawer does not exist (an embed, or
-   *  Windows), which is also the fallback path if the fetch fails after the
+   *  old copy behaviour everywhere the drawer does not exist (an embed), which
+   *  is also the fallback path if the fetch fails after the
    *  drawer already opened for a different item elsewhere — the row still has
    *  to tell the reader something happened. */
   const onTerminal = useCallback(async () => {

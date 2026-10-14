@@ -441,9 +441,8 @@
   border-top: 1px solid var(--border);
 }
 
-/* `createTerminalSession` failing (server down, the session cap, 501 on
-   Windows) is surfaced here instead of leaving the drawer open and
-   permanently empty. Reuses `.term-drawer-exit`'s layout/tone for the
+/* `createTerminalSession` failing (server down, the session cap) is
+   surfaced here instead of leaving the drawer open and permanently empty. Reuses `.term-drawer-exit`'s layout/tone for the
    message itself; this is the one inline affordance to retry without a
    full page reload. */
 .term-drawer-retry {

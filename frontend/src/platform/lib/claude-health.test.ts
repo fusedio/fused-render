@@ -47,8 +47,8 @@ function healthy(over: Partial<ClaudeHealth> = {}): ClaudeHealth {
     update_manager: null,
     update_blocked_reason: null,
     doctor: null,
-    // `null` is what a healthy source: "path" machine reports only on Windows;
-    // on POSIX it is `true` — but `null` is the never-produces-advice value,
+    // A healthy source: "path" machine reports `true` — but `null` is the
+    // never-produces-advice value,
     // so the baseline stays the quiet one and a test opts into `false`.
     on_shell_path: null,
     path_fix_command: null,
@@ -340,17 +340,7 @@ test("a missing install offers to install itself", () => {
   expect(issue?.action).toEqual({ kind: "install", label: "Install Claude Code" });
 });
 
-test("the install command comes from the server, so Windows gets the Windows one", () => {
-  // The bug this fixes: the bash line was attached to every `missing` card
-  // regardless of platform, so a Windows user was handed a command their shell
-  // cannot run and the PowerShell one was only reachable through the help link.
-  const win = healthy({
-    found: false,
-    source: null,
-    platform: "win32",
-    install_command: "irm https://claude.ai/install.ps1 | iex",
-  });
-  expect(issueById(win, "missing")?.command).toBe("irm https://claude.ai/install.ps1 | iex");
+test("the install command comes from the server", () => {
   const mac = healthy({ found: false, source: null });
   expect(issueById(mac, "missing")?.command).toBe(CLAUDE_INSTALL_COMMAND);
 });

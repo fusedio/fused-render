@@ -39,7 +39,7 @@ function setCachedHome(next: string): void {
 function fetchHome(): Promise<void> {
   if (inFlight) return inFlight;
   inFlight = getConfig()
-    .then((c) => setCachedHome(c.home.replace(/\\/g, "/")))
+    .then((c) => setCachedHome(c.home))
     .catch(() => {
       // Left unresolved — a host that never gets an answer keeps rendering
       // full paths, same as before this fetch had a shared cache. Cleared

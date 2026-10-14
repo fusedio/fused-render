@@ -29,7 +29,7 @@ const EMOJI_RASTER_PX = 128;
  *  literal — no em-box slack), and every reader — the shell, Finder, GitHub,
  *  a bare tab — just paints pixels. The cost is that the file bakes in the
  *  picking OS's emoji font; a pick made on a Mac stays Apple-styled on
- *  Windows, which for an app's own icon is a feature.
+ *  Linux, which for an app's own icon is a feature.
  *
  *  `data-fused-color="default"` stays so readIconColor still recognises the
  *  file as picker-written; there are no currentColor strokes, so themeIconSvg

@@ -209,7 +209,7 @@ const DRAWABLE_MIMES = new Set(["image/png", "image/jpeg", "image/gif",
                                 "image/svg+xml"]);
 function drawablePath(path: string): boolean {
   const dot = path.lastIndexOf(".");
-  const slash = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+  const slash = path.lastIndexOf("/");
   return dot > slash && DRAWABLE_EXTS.has(path.slice(dot).toLowerCase());
 }
 

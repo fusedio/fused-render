@@ -135,7 +135,7 @@ export function useFileOps({
     getConfig().then((c) => {
       guardLoadedRef.current = true;
       setRenameGuard({
-        home: String(c.home ?? "").replace(/\\/g, "/"),
+        home: String(c.home ?? ""),
       });
     }, () => {}).finally(() => {
       guardInFlightRef.current = false;
@@ -713,7 +713,7 @@ export function useFileOps({
   // a platform with no backend) THOSE rows fall back to the existing
   // confirm-then-hard-delete flow, which IS irreversible and so keeps its
   // warning. Since every desktop platform now has a bin backend, that dialog has
-  // stopped being the ordinary Windows/Linux delete and is what it always claimed
+  // stopped being the ordinary Linux delete and is what it always claimed
   // to be: the irreversible case. Success is SILENT (user: "lets not send
   // notifications for file deletion (no need)") — see the removed-notify
   // comment at this function's own success branch below, and
@@ -722,8 +722,8 @@ export function useFileOps({
   // UNDOABLE WHERE THE DESTINATION IS NAMED, as one op for the whole batch: on
   // macOS-local and Linux-XDG the trash is a rename the server chose the
   // destination for (`to`), so the delete records exactly the pair a move would
-  // and Cmd+Z moves the entries back out (lib/fs-undo). The Recycle Bin and the
-  // macOS Finder fallback name nothing, so those rows are recoverable through the
+  // and Cmd+Z moves the entries back out (lib/fs-undo). The macOS Finder
+  // fallback names nothing, so those rows are recoverable through the
   // OS and not through Cmd+Z.
   const doTrash = (allRows: RowCtx[]) => {
     // As in startDelete: trashing a folder takes everything inside it, so a
@@ -734,8 +734,7 @@ export function useFileOps({
     if (!rows.length) return;
     void (async () => {
       // Where each trashed row WENT, for the undo op. `to` is absent wherever the
-      // OS owns the location — the Windows Recycle Bin, and the macOS
-      // cross-device Finder fallback. Those rows ARE in the bin and recoverable
+      // OS owns the location — the macOS cross-device Finder fallback. Those rows ARE in the bin and recoverable
       // from the OS's own UI, but they contribute NO pair (trashUndoPairs drops
       // them), because an undo needs a path to move back FROM and inventing one
       // would aim it at nothing.

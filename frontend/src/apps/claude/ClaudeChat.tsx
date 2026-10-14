@@ -312,7 +312,7 @@ export { localEffortArg, localModelArg } from "./ui/local-commands";
 export function chatWorkdir(file: string | null, noun: TargetNoun): string | null {
   if (!file || !noun) return null;
   if (noun !== "file") return file;
-  const cut = file.replace(/[\\/]+$/, "").search(/[\\/][^\\/]*$/);
+  const cut = file.replace(/\/+$/, "").search(/\/[^/]*$/);
   return cut > 0 ? file.slice(0, cut) : cut === 0 ? file.slice(0, 1) : file;
 }
 
@@ -3719,7 +3719,7 @@ function ChatBody(props: ChatBodyProps) {
     [controller],
   );
 
-  const name = file ? file.split(/[\\/]/).filter(Boolean).pop() || file : "Claude";
+  const name = file ? file.split("/").filter(Boolean).pop() || file : "Claude";
   const running =
     state.status === "running" || state.status === "starting" || state.status === "stopping";
   const worktreeMenu = worktreeTarget ? (

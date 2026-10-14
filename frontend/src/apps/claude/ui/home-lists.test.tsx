@@ -109,8 +109,7 @@ test("the row's own press opens the LOCAL file, and only when it is really there
   expect(artLocalPath({ remote_url: "u", exists: true })).toBe(null);
 });
 
-test("only a DRIVE-LETTER path has its backslashes rewritten", () => {
-  expect(artOpenHref("C:\\x\\y.html")).toBe("/explorer/view/C%3A/x/y.html");
+test("a backslash in a path round-trips", () => {
   // A backslash is a legal POSIX filename char and must round-trip (T:18485).
   expect(artOpenHref("/a/we\\ird.html")).toBe("/explorer/view/a/we%5Cird.html");
 });

@@ -37,10 +37,6 @@ describe("repoName", () => {
     expect(repoName("/Users/me/Work/widget/")).toBe("widget");
   });
 
-  it("normalizes backslashes", () => {
-    expect(repoName("C:\\Users\\me\\widget")).toBe("widget");
-  });
-
   it("is the whole string when there is no separator", () => {
     expect(repoName("widget")).toBe("widget");
   });

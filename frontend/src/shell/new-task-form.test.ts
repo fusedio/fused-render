@@ -1552,12 +1552,6 @@ describe("defaultTargetOf", () => {
       "/data/work",
     );
   });
-
-  test("normalizes a Windows workspace path", () => {
-    expect(
-      defaultTargetOf({ home: "C:\\Users\\v", fused_dir: "C:\\Users\\v\\Fused" }),
-    ).toBe("C:/Users/v/Fused");
-  });
 });
 
 // ---- the when-row opens on now -------------------------------------------------
@@ -1652,11 +1646,6 @@ describe("the path field's verdict on a folder that isn't there yet", () => {
       .toEqual({ kind: "new-folder", name: "ABC1", parent: "/Users/a/fused" });
   });
 
-  test("a backslash path is normalised before it is split", () => {
-    expect(targetVerdict("C:\\Users\\a\\ABC1", ["Desktop"]))
-      .toEqual({ kind: "new-folder", name: "ABC1", parent: "C:/Users/a" });
-  });
-
   test("two missing levels is refused, and says which one is missing", () => {
     // null = the PARENT could not be listed either, so this is not "name me a
     // folder", it is "build me a tree" — the ask a typo makes by accident.
@@ -1677,9 +1666,7 @@ describe("the path field's verdict on a folder that isn't there yet", () => {
       .toEqual({ kind: "bad", text: PATH_MISSING });
   });
 
-  test("splitTargetPath keeps a drive root's slash", () => {
-    // Bare "C:" reads as cwd-relative everywhere else in the shell.
-    expect(splitTargetPath("C:/ABC1")).toEqual({ parent: "C:/", base: "ABC1" });
+  test("splitTargetPath keeps the root's slash", () => {
     expect(splitTargetPath("/ABC1")).toEqual({ parent: "/", base: "ABC1" });
     expect(splitTargetPath("/Users/a/fused/ABC1"))
       .toEqual({ parent: "/Users/a/fused", base: "ABC1" });
@@ -2774,11 +2761,11 @@ describe("the folder field's two lists", () => {
   });
 
   test("text that NAMES A PLACE is an address, and leaves the recents alone", () => {
-    // A leading `/`, `~` or a drive letter is the Explorer's own test for "this
+    // A leading `/`, `~` or a `..` is the Explorer's own test for "this
     // is an address" (`isPathShapedQuery`). The field opens pre-filled with one,
     // so this is the common case: typing edits an address, and the drop goes on
     // offering what the card remembers.
-    for (const typed of ["/Users/me/Desk", "~/Desktop/fu", "C:/proj", "../up"]) {
+    for (const typed of ["/Users/me/Desk", "~/Desktop/fu", "../up"]) {
       const { rows, searching } = ask(typed);
       expect(searching).toBe(false);
       expect(rows.map((r) => r.path)).toEqual(RECENTS);

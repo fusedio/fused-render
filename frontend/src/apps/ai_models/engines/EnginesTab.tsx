@@ -58,7 +58,7 @@ import {
 // entirely about what an `<option>` can render.** The reason an unavailable
 // engine cannot be picked used to be folded into its own option's plain-text
 // label — "MLX Whisper (Apple Silicon) — needs Apple Silicon (this is
-// windows/amd64)" — because a disabled `<option>` has nowhere else to say
+// linux/x86_64)" — because a disabled `<option>` has nowhere else to say
 // anything and its `title` is not reliably shown at all. A registry sentence
 // is not always that short ("Diffusers (CUDA) — needs an NVIDIA GPU with its
 // driver loaded — there is no /dev/nvidiactl or /dev/nvidia0 on this machine
@@ -67,7 +67,7 @@ import {
 // each option is up to two lines, a label and a muted wrapped description, so
 // the reason reads as a sentence instead of a truncated run-on.
 //
-// Unavailable engines stay in the menu, disabled. Hidden, a Windows user would
+// Unavailable engines stay in the menu, disabled. Hidden, a Linux user would
 // have no way to learn that the MLX path exists and why it is not for them —
 // and a stored preference for one is what the control still SHOWS as its
 // value (the trigger's own label), because "your choice, and why it is not in

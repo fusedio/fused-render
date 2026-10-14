@@ -40,15 +40,14 @@ export type SplitDir = "row" | "col";
 // The pieces of config a folder-rename decision needs — both optional because
 // the guard must fail CLOSED (no Rename offered) before /api/config has
 // answered, rather than briefly show a Rename that then can't act on the real
-// home path. Backslashes are the caller's job to normalize (both
-// fields come from `Config`, same as every other consumer of `config.home`).
+// home path.
 export interface RenameBaseGuard {
   home?: string;
 }
 
 // Whether the CURRENT folder (not a row inside it) may be renamed from the
 // crumb bar / folder background menu. False for:
-//   - the filesystem/drive root (its own parent, per fs-actions.dirname)
+//   - the filesystem root (its own parent, per fs-actions.dirname)
 //   - the home folder (~) — the sidebar, bookmarks and countless "~/…" paths
 //     assume it never moves
 // Nothing else is special-cased: an ordinary folder anywhere else is
@@ -60,7 +59,7 @@ function stripSlash(p: string): string {
 export function canRenameBase(dir: string, guard: RenameBaseGuard): boolean {
   const norm = normDir(dir);
   const parent = dirname(norm);
-  if (parent === norm) return false; // filesystem/drive root
+  if (parent === norm) return false; // filesystem root
   // FAILS CLOSED until the config has answered (bugbot, PR #1049): with no
   // home known, this cannot tell a renameable folder from the one it must
   // never move, so it offers nothing rather than everything.

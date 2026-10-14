@@ -330,7 +330,7 @@ export default function TerminalDrawer({ cwd }: { cwd?: string | null }) {
   // The shell name the server reports (`zsh`), learned from the list route;
   // labels a terminal opened with no command.
   const shellRef = useRef<string | null>(null);
-  // `createTerminalSession` can reject (server down, 501 on Windows). The
+  // `createTerminalSession` can reject (server down). The
   // session cap has its own toast. Surfaced here instead of an unhandled
   // rejection that would leave the drawer open and permanently empty.
   const [createError, setCreateError] = useState<string | null>(null);

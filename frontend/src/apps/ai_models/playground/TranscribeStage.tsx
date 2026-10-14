@@ -376,7 +376,7 @@ export function TranscribeStage({ model }: { model: string }) {
     }
   };
 
-  /** The browser path (Windows, Linux — `sources.client`): `MediaRecorder`
+  /** The browser path (Linux — `sources.client`): `MediaRecorder`
    *  encodes, the bytes are uploaded, and the Whisper workers decode whatever
    *  container the browser chose. */
   const recordInBrowser = async () => {

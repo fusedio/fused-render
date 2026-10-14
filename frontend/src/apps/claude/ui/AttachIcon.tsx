@@ -3,8 +3,8 @@
 //
 // T drew these as stroke SVGs in the button's own ink; the port shipped 📄 and 🖼
 // instead, and an emoji is the one glyph an app cannot draw: it arrives at a
-// weight and a hue the platform font picked, it is a different picture on macOS,
-// Windows and Linux, and beside the shell's own icons it reads as text someone
+// weight and a hue the platform font picked, it is a different picture on macOS
+// and Linux, and beside the shell's own icons it reads as text someone
 // pasted in. Every icon in this app comes from `lucide-react` (the shell's
 // sidebar, the explorer's rows, the download manager), so these do too —
 // `currentColor`, `1em` off the type around them, and the same 1.5 stroke T's

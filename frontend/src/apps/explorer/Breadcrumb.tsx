@@ -827,14 +827,9 @@ export function Breadcrumb({
       {underHome ? "~" : "/"}
     </a>,
   ];
-  // A Windows path's first segment is the drive ("C:"); its crumb must target
-  // "C:/" (bare "C:" is cwd-relative to os.stat) and later segments append
-  // without re-rooting at "/".
-  const isDrive = !underHome && /^[A-Za-z]:$/.test(parts[0] || "");
   let acc = underHome ? home : "";
   parts.forEach((part, i) => {
-    if (i === 0 && isDrive) acc = part + "/";
-    else acc = acc + (acc.endsWith("/") ? "" : "/") + part;
+    acc = acc + (acc.endsWith("/") ? "" : "/") + part;
     const target = acc;
     const isLast = i === parts.length - 1;
     // GNOME path-bar compression (nautilus-pathbar.c): a crumb may flex-shrink

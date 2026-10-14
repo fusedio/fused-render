@@ -4,7 +4,7 @@
 // never show "Path" over a box that quietly ran a search anyway.
 //
 // A query is "Path" only when it is ABSOLUTE-ISH shaped (a leading "~", a
-// leading "/", or a Windows drive prefix) AND carries no glob. This is
+// leading "/") AND carries no glob. This is
 // NARROWER than `listingAddress`'s own null/non-null split (decision 5's
 // shape gate, still the right resolver for `useTypedPathAddress` and
 // `completionTarget` — those need to know what to stat/list for ANY
@@ -22,7 +22,7 @@
 //
 // The absolute-ish shape test is `escapesBase` (query-base.ts's own
 // syntactic "does this query's base differ from the box root" predicate,
-// already exactly: leading "~"/"~/", leading "/", a drive prefix, or a ".."
+// already exactly: leading "~"/"~/", leading "/", or a ".."
 // segment) rather than a fourth hand-rolled shape test — reused deliberately,
 // not just for economy: `escapesBase` already gates Enter-required commit
 // (decision 4) for exactly the same queries, and reusing it means "reads as

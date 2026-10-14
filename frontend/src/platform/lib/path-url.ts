@@ -8,8 +8,8 @@
 // treated as a path — "https:/home" is not a folder anyone meant to open.
 
 // A scheme prefix, per RFC 3986's scheme grammar plus the "//" authority
-// marker. Requiring "//" is what keeps a Windows path ("C:\Users") and a
-// relative path with a colon out of this branch entirely.
+// marker. Requiring "//" is what keeps a relative path with a colon out of
+// this branch entirely.
 const SCHEME_RE = /^([A-Za-z][A-Za-z0-9+.-]*):\/\//;
 
 // The lowercased scheme of a URL-looking string, else null (= treat as a path).
@@ -24,7 +24,7 @@ export function fileUrlToPath(url: string): string {
   const rest = url.slice("file://".length);
   const slash = rest.indexOf("/");
   const host = slash === -1 ? rest : rest.slice(0, slash);
-  // "file://server/share" is a remote UNC location, not a local path — the
+  // "file://server/share" names another machine, not a local path — the
   // only hosts that mean "this machine" are the empty one and localhost.
   if (host && host.toLowerCase() !== "localhost") {
     throw new Error(`Can't open a file:// URL on another host (${host})`);
@@ -36,8 +36,5 @@ export function fileUrlToPath(url: string): string {
     throw new Error("That file:// URL is not valid percent-encoding");
   }
   if (!path) throw new Error("That file:// URL names no path");
-  // A Windows file URL roots the drive under the authority's slash
-  // ("file:///C:/Users/x") — drop it; on POSIX the leading slash IS the root.
-  if (/^\/[A-Za-z]:/.test(path)) path = path.slice(1);
   return path;
 }

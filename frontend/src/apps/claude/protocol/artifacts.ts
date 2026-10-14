@@ -39,20 +39,17 @@ export function artLabel(a: Artifact): string {
   return (
     a.title ||
     String(a.file_path || "")
-      .split(/[\\/]/)
+      .split("/")
       .pop() ||
     a.remote_url
   );
 }
 
 /** The shell route for the LOCAL source, mirroring `router.ts urlForFsPath`:
- *  only a DRIVE-LETTER path has its backslashes rewritten, because a backslash
- *  is a legal POSIX filename char and must round-trip (T:18485-18491). */
+ *  a backslash is a legal POSIX filename char and must round-trip
+ *  (T:18485-18491). */
 export function artOpenHref(path: string): string {
-  const norm = /^[A-Za-z]:[\\/]/.test(path)
-    ? String(path).replace(/\\/g, "/")
-    : String(path);
-  const segs = norm
+  const segs = String(path)
     .replace(/^\/+/, "")
     .split("/")
     .filter(Boolean)

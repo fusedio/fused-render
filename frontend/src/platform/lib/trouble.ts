@@ -193,7 +193,6 @@ export function findInstallCommands(): string[] {
     `ls -d /Applications/${app}.app ~/Applications/${app}.app`,
     `ls -d /Applications/${app}.app/Contents/Resources/lib/python3.*/fused_render   # the code a fix edits`,
     "brew list --cask fused-render   # if this answers, Homebrew manages that copy",
-    `dir "%LOCALAPPDATA%\\Programs\\${app}Py"   # Windows`,
   ];
 }
 
@@ -206,7 +205,7 @@ export function userDataDir(): string {
 
 /** This session's log. Per-pid in the persistent log home (fused_render/logs.py:
     `~/Library/Logs/fused-render/` on macOS, where Console.app lists it;
-    `~/.fused-render/logs/app/` on Linux and Windows), so it is a glob rather
+    `~/.fused-render/logs/app/` on Linux), so it is a glob rather
     than a path, and `-t` puts the live one first. `find` with a QUOTED pattern,
     not a shell glob: zsh (the macOS default) aborts the whole line on an
     unmatched glob (`NOMATCH`), so naming both homes as globs listed nothing

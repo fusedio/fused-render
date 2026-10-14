@@ -111,7 +111,7 @@ export function cardTitleLine(task: {
 /** A path as a person reads it: $HOME collapsed to "~". */
 export function tildePath(path: string, home: string): string {
   if (!home) return path;
-  const h = home.replace(/[\\/]+$/, "");
+  const h = home.replace(/\/+$/, "");
   if (path === h) return "~";
   if (path.startsWith(h + "/")) return "~/" + path.slice(h.length + 1);
   return path;
@@ -121,7 +121,7 @@ export function tildePath(path: string, home: string): string {
 export { shortTaskId } from "@platform/lib/task-id";
 
 export function basename(path: string): string {
-  const parts = path.replace(/[\\/]+$/, "").split(/[\\/]/).filter(Boolean);
+  const parts = path.replace(/\/+$/, "").split("/").filter(Boolean);
   return parts[parts.length - 1] ?? path;
 }
 

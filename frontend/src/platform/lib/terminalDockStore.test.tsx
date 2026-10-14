@@ -22,7 +22,6 @@ import {
   usePendingTerminalRequestVersion,
 } from "./terminalDockStore";
 import { IS_EMBED } from "./router";
-import { isWindows } from "./platform";
 
 let renderers: ReactTestRenderer[] = [];
 function renderTracked(node: Parameters<typeof create>[0]): ReactTestRenderer {
@@ -117,16 +116,15 @@ describe("usePendingTerminalRequestVersion", () => {
 describe("canRunInTerminal", () => {
   test("is false before any TerminalDrawer registers as mounted", () => {
     // No drawer mounted (the onboarding route, or a test that renders
-    // nothing) means no Run affordance, whatever !IS_EMBED && !isWindows says.
+    // nothing) means no Run affordance, whatever !IS_EMBED says.
     expect(canRunInTerminal()).toBe(false);
   });
 
-  test("matches the drawer's own !IS_EMBED && !isWindows gate once mounted", () => {
-    // App.tsx gates both `TerminalDrawer` and the `TerminalDock` chip on this
-    // exact pair, so every Run affordance elsewhere in the app must agree
+  test("matches the drawer's own !IS_EMBED gate once mounted", () => {
+    // App.tsx gates `TerminalDrawer` on this exact check, so every Run affordance elsewhere in the app must agree
     // with it rather than re-derive its own version of the check.
     const unregister = registerTerminalDrawerMounted();
-    expect(canRunInTerminal()).toBe(!IS_EMBED && !isWindows);
+    expect(canRunInTerminal()).toBe(!IS_EMBED);
     unregister();
   });
 });
@@ -146,12 +144,12 @@ describe("useCanRunInTerminal", () => {
       unregister = registerTerminalDrawerMounted();
       await Promise.resolve();
     });
-    expect(seen).toEqual([false, !IS_EMBED && !isWindows]);
+    expect(seen).toEqual([false, !IS_EMBED]);
 
     await act(async () => {
       unregister();
       await Promise.resolve();
     });
-    expect(seen).toEqual([false, !IS_EMBED && !isWindows, false]);
+    expect(seen).toEqual([false, !IS_EMBED, false]);
   });
 });

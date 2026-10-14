@@ -336,7 +336,7 @@ function jobProgress(job: Job): number | null | undefined {
  *  exported so it is testable without a render. */
 export function engineLabel(engine: RunningEngine): string {
   if (engine.folder) {
-    const parts = engine.folder.split(/[/\\]/).filter(Boolean);
+    const parts = engine.folder.split("/").filter(Boolean);
     if (parts.length > 0) return parts[parts.length - 1];
   }
   return engine.module || engine.engine_id;

@@ -452,8 +452,7 @@ export default function Panel({ config }: { config: Config }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [version]);
 
-  // Windows expanduser returns backslashes; pane paths are always forward-slash.
-  const ctx: PaneCtx = { syncUrl, split, close, home: config.home.replace(/\\/g, "/") };
+  const ctx: PaneCtx = { syncUrl, split, close, home: config.home };
   return (
     <div className="panel-root">
       <Build node={treeRef.current} ctx={ctx} first />

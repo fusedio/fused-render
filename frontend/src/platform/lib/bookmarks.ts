@@ -207,8 +207,8 @@ export function allBookmarks(): Bookmark[] {
   return out;
 }
 
-// Bookmark name -> uniqueness stem: path separators, the colon (path-hostile
-// on Windows, legacy-HFS on macOS) and control chars become "-". Uniqueness
+// Bookmark name -> uniqueness stem: path separators, the colon (legacy-HFS
+// on macOS) and control chars become "-". Uniqueness
 // below keys on it. Char class must stay in sync with _sanitize_stem in
 // fused_render/shell/bookmarks.py.
 export function sanitizeBookmarkStem(name: string): string {

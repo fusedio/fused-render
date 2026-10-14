@@ -13,7 +13,6 @@
 // No DOM/React here, so it is testable against a stubbed `fetch`.
 import { getJson, mutateJson } from "@platform/lib/api";
 import { IS_EMBED } from "@platform/lib/router";
-import { isWindows } from "@platform/lib/platform";
 
 interface ListedSession {
   id: string;
@@ -34,7 +33,7 @@ let lastSent: string | null | undefined;
  * next change retries. `id === null` means no terminal (drawer has none). */
 export function reportFocusedTerminal(id: string | null, label?: string): void {
   focused = id ? { id, label } : null;
-  if (IS_EMBED || isWindows) return;
+  if (IS_EMBED) return;
   if (lastSent === id) return;
   lastSent = id;
   mutateJson("PUT", "/api/terminal/focus", { id }).catch(() => {
@@ -46,7 +45,7 @@ export function reportFocusedTerminal(id: string | null, label?: string): void {
  * holds no live terminal (or the list is unreachable). With several live
  * terminals and none known to be focused there is no honest answer, so null. */
 export async function terminalHintObject(now: number = Date.now() / 1000): Promise<Record<string, unknown> | null> {
-  if (IS_EMBED || isWindows) return null;
+  if (IS_EMBED) return null;
   let sessions: ListedSession[];
   try {
     sessions = ((await getJson<{ sessions?: ListedSession[] }>("/api/terminal")).sessions ?? []).filter(
