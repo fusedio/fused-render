@@ -2,8 +2,8 @@
 // has got: the sidebar's "Setup 60%" row, the wizard's top-bar pills, and the
 // steps themselves, which are the writers.
 //
-// THE MODEL. Every wizard step is a STAGE with a status the step decides for
-// itself, from the facts it already checks to draw its own rows:
+// THE MODEL. Every setup STAGE has a status the step that hosts it decides for
+// itself (one step may host several — Tools has claude, git and chrome), from the facts it already checks to draw its own rows:
 //
 //   stage    pending                partial                      complete
 //   about    not yet opened         —                            opened once

@@ -80,8 +80,9 @@ VERSION = 1
 
 _KEY = "onboarding"
 
-#: The wizard's step ids (frontend shell/onboarding/OnboardingWizard STEPS).
-#: A closed set: prefs.json is shared state, and an unknown id is refused
+#: The STAGE ids (frontend shell/onboarding/progress STAGE_IDS). Not quite
+#: the wizard's steps: it shows claude/git/chrome as ONE step (ToolsStep) and
+#: keeps the three stages apart underneath. A closed set: prefs.json is shared state, and an unknown id is refused
 #: rather than stored. Fused Bot has no local-models step and no first-app
 #: step (it does not build apps), so there the set is four — `_observe`
 #: keys off the same tuple, so neither stage ever enters the meter's count.
