@@ -5080,6 +5080,7 @@ function ChatBody(props: ChatBodyProps) {
               <TasksPanel
                 tasks={state.tasks}
                 runId={state.tasksRunId}
+                sessionId={state.sessionId ?? null}
                 open={tasksOpen}
                 onToggle={toggleTasksPanel}
                 parentModel={defaults.model}

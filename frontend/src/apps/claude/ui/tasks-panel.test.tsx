@@ -188,6 +188,26 @@ describe("TasksPanel", () => {
       expect(byClass(r.root, "chat-task").length).toBe(1);
     });
 
+    test("state resets when the session changes even with runId null", () => {
+      const failed = rec({ id: "f", kind: "shell", description: "bad", status: "failed", error: "boom" });
+      const el = (sid: string) => (
+        <TasksPanel tasks={[failed]} runId={null} sessionId={sid} open onToggle={() => {}} now={() => 100_000} />
+      );
+      const r = mount(el("s1"));
+      act(() => dismissBtn(r.root)[0]!.props.onClick());
+      act(() => byClass(r.root, "chat-tasks-more")[0]!.props.onClick());
+      expect(byClass(r.root, "chat-task").length).toBe(1);
+      act(() => r.update(el("s2")));
+      expect(byClass(r.root, "chat-task").length).toBe(1);
+      expect(byClass(r.root, "chat-tasks-more").length).toBe(0);
+    });
+
+    test("a paused row is marked is-paused, not faded as finished", () => {
+      const paused = rec({ id: "p", kind: "agent", description: "held", status: "paused" });
+      const r = mount(<TasksPanel tasks={[paused]} runId="r1" open onToggle={() => {}} now={() => 100_000} />);
+      expect(byClass(r.root, "chat-task")[0]!.props.className).toContain("is-paused");
+    });
+
     test("clicking a failed row's error line expands it", () => {
       const failed = rec({ id: "f", kind: "shell", status: "failed", error: "boom\nlong reason" });
       const r = mount(<TasksPanel tasks={[failed]} runId="r1" open onToggle={() => {}} />);

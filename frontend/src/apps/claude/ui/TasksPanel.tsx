@@ -84,6 +84,10 @@ export interface TasksPanelProps {
   /** `ChatState.tasksRunId` — the run `task_output` is asked of. `null` hides
    *  the Output buttons: nothing live to ask. */
   runId: string | null;
+  /** The conversation on screen. History-only sessions all have a null runId,
+   *  so the panel's per-session state (dismissed rows, Show finished, stop
+   *  errors) resets on this as well. */
+  sessionId?: string | null;
   /** Expanded. The host owns it (`/tasks` toggles it). */
   open: boolean;
   onToggle: () => void;
@@ -118,7 +122,7 @@ function KindIcon({ kind }: { kind: TaskKind }) {
   return <CircleDot {...props} />;
 }
 
-export function TasksPanel({ tasks, runId, open, onToggle, parentModel, fetchOutput = defaultFetch, stopTask = defaultStop, now = Date.now }: TasksPanelProps) {
+export function TasksPanel({ tasks, runId, sessionId = null, open, onToggle, parentModel, fetchOutput = defaultFetch, stopTask = defaultStop, now = Date.now }: TasksPanelProps) {
   const [outputs, setOutputs] = useState<Record<string, OutputState>>({});
   // Answers for a run that is no longer the panel's are dropped on arrival.
   const runRef = useRef(runId);
@@ -136,7 +140,7 @@ export function TasksPanel({ tasks, runId, open, onToggle, parentModel, fetchOut
     setDismissed(new Set());
     setStopping({});
     setErrOpen(new Set());
-  }, [runId]);
+  }, [runId, sessionId]);
 
   // THE ELAPSED CLOCK TICKS ONLY WHILE SOMETHING IS LIVE AND THE ROWS SHOW: a
   // collapsed strip says no times, and an ended task's time is fixed.
@@ -257,7 +261,7 @@ export function TasksPanel({ tasks, runId, open, onToggle, parentModel, fetchOut
               const elapsed = elapsedLabel(t, nowMs);
               const modelLabel = t.kind === "agent" ? agentModelLabel(t, parentModel) : "";
               return (
-                <li key={t.id} className={cn("chat-task", "is-" + t.kind, isLive(t.status) ? "is-live" : "is-ended", t.status === "failed" && "is-failed")}>
+                <li key={t.id} className={cn("chat-task", "is-" + t.kind, isLive(t.status) ? "is-live" : t.status === "paused" ? "is-paused" : "is-ended", t.status === "failed" && "is-failed")}>
                   <div className="chat-task-line">
                     <span className="chat-task-kind" title={kindLabel(t.kind)}>
                       <KindIcon kind={t.kind} />
