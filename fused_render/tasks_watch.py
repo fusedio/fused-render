@@ -103,11 +103,13 @@ _registry_mtime: dict[str, float] = {}
 # is the manager's, off a `result` row it tailed, and has no `turn` of its own
 # to race — see `mark_turn_ended`.
 _ended: dict[str, float] = {}
-# session_id -> the pid of the `claude` whose turn `_ended` records, when the
-# session host said (`mark_turn_ended`'s `pid`). A registry row held by a
-# DIFFERENT pid is another process on the same session — a resumed run beside
-# an old host — and the stamp has nothing to say about it (`is_turn_ended`).
-_ended_pid: dict[str, int] = {}
+# session_id -> {pid -> epoch} — the same word, SCOPED: the session host said
+# which `claude` it was holding (`mark_turn_ended`'s `pid`) and that pid is one
+# a registry file has shown on the session (`_session_pids`). Each stamp speaks
+# for its own process's rows only: a resumed run beside an old host is another
+# pid, and its turn is not over (`is_turn_ended`). `_ended` above is what an
+# UNSCOPED event leaves, and it speaks for every process on the session.
+_ended_by_pid: dict[str, dict[str, float]] = {}
 _primed = False
 _sess_mtimes: dict[str, tuple] = {}   # sessions/<pid>.json -> (mtime_ns, size)
 _sess_sids: dict[str, str] = {}       # sessions/<pid>.json -> session_id
@@ -350,41 +352,45 @@ def is_turn_ended(session_id: str) -> bool:
       turn's row, re-read unchanged or re-asserting the same status without a
       fresh write, keeps an mtime from before the stamp and does not clear it
       — see `mark_turn_ended`.
+
+    ONE SESSION, SEVERAL PROCESSES (`_sess_rows`): the registry check runs over
+    every live file on the session, each against the stamps that speak for it
+    — its own pid's (`_ended_by_pid`) and the unscoped one (`_ended`), the
+    newer of the two. Any one of them still busy past its end keeps the turn
+    open: two processes busy at once, one finishing says nothing about the
+    other (CodeRabbit/Bugbot, PR #1642).
     """
     if not session_id:
         return False
     with _cond:
         ended_at = _ended.get(session_id)
-        if ended_at is None:
+        by_pid = _ended_by_pid.get(session_id, {})
+        if ended_at is None and not by_pid:
             return False
+        row = _registry.get(session_id)
+
+        def covering(r: dict) -> float:
+            return max(ended_at or 0.0, by_pid.get(str(r.get("pid") or ""), 0.0))
+
         mark = _marks.get(session_id)
         # `>=`, NOT `>`: a mark stamped in the same clock tick as the ended
         # stamp is the NEXT turn's — the queue marks a session running right
         # after dispatching it, and dispatch follows the previous turn's end
-        # by causality, and a coarse clock can stamp both in one tick.
-        if mark is not None and mark["until"] > time.time() and mark["at"] >= ended_at:
+        # by causality, and a coarse clock can stamp both in one tick. Weighed
+        # against the stamps that could have retired it (`mark_turn_ended`):
+        # the unscoped one and the standing process's.
+        if (mark is not None and mark["until"] > time.time()
+                and mark["at"] >= covering(row or {})):
             return False
-        row = _registry.get(session_id)
-        reg_mtime = _registry_mtime.get(session_id)
-        ended_pid = _ended_pid.get(session_id)
-        # A stamp scoped to one pid says nothing about ANOTHER process still
-        # running on the session — two busy at once (a mid-turn host on one
-        # surface, a resume on another), the newer one finishing first.
-        other_running = ended_pid is not None and any(
-            owner == session_id and path in _sess_rows
-            and _sess_rows[path][0].get("status") in RUNNING_STATUSES
-            and str(_sess_rows[path][0].get("pid") or "") != str(ended_pid)
-            for path, owner in _sess_sids.items())
-    if other_running:
-        return False
-    if (row is not None and ended_pid is not None
-            and str(row.get("pid") or "") != str(ended_pid)):
-        return False   # the stamp is about another process on this session
-    if row is not None:
-        status = row.get("status")
-        if (isinstance(status, str) and status in RUNNING_STATUSES
-                and reg_mtime is not None and reg_mtime > ended_at):
-            return False
+        rows = [_sess_rows[path] for path, owner in _sess_sids.items()
+                if owner == session_id and path in _sess_rows]
+        if row is not None:   # normally one of those files; set alone in tests
+            rows.append((row, _registry_mtime.get(session_id)))
+        for r, mtime in rows:
+            status = r.get("status")
+            if (isinstance(status, str) and status in RUNNING_STATUSES
+                    and mtime is not None and mtime > covering(r)):
+                return False
     return True
 
 
@@ -766,14 +772,15 @@ def mark_turn_ended(session_id: str, run_id: str = "",
     needs it yet; not stored.
 
     `pid` is the `claude` process the session host was holding, when it said.
-    Stored beside the stamp (`_ended_pid`) so `is_turn_ended` reads it as news
-    about THAT process only — a run resumed on the same session while an old
-    host idles toward its reap is another pid, and its turn is not over. For
-    the same reason an event whose pid is not the session's standing registry
-    row is dropped whole — no stamp, no mark retired — so it can neither end
-    the other run nor overwrite that run's own, still-lagging stamp.
-    `None` (the stop paths, an old host) keeps the unscoped stamp, and so does
-    a pid no registry file has ever shown on this session (`_session_pids`).
+    A pid a registry file has shown on this session (`_session_pids`) gets a
+    stamp of its own (`_ended_by_pid`, never backwards per pid), which
+    `is_turn_ended` reads as news about THAT process's rows only — a run
+    resumed on the same session while an old host idles toward its reap is
+    another pid, and its turn is not over. Such an event retires the send
+    mark only when its pid is the session's standing row: the mark is the
+    standing run's floor, not the other process's. `None` (the stop paths, an
+    old host) and a pid never seen on the session (a Windows `.cmd` shim is
+    `cmd.exe`, not the pid Claude Code registers) stamp `_ended`, unscoped.
 
     Bumps and notifies at once, like `mark_running`/`mark_idle` — but only when
     something actually changed; an ignored older/duplicate event costs no
@@ -781,23 +788,19 @@ def mark_turn_ended(session_id: str, run_id: str = "",
     if not session_id:
         return
     ended_at = time.time() if at is None else float(at)
+    pid_s = "" if pid is None else str(pid)
     with _cond:
-        prev_ended = _ended.get(session_id)
+        scoped = pid_s in _session_pids.get(session_id, ())
+        stamps = _ended_by_pid.setdefault(session_id, {}) if scoped else _ended
+        key = pid_s if scoped else session_id
+        prev_ended = stamps.get(key)
         if prev_ended is not None and ended_at <= prev_ended:
-            return  # older or duplicate delivery: `_ended` never moves back
-        if pid is not None and str(pid) not in _session_pids.get(session_id, ()):
-            pid = None  # never seen holding it: cannot scope, keep it unscoped
+            return  # older or duplicate delivery: a stamp never moves back
+        stamps[key] = ended_at
         row = _registry.get(session_id)
-        if (pid is not None and row is not None
-                and str(row.get("pid") or "") != str(pid)):
-            return  # another process stands on this session: not its news
-        _ended[session_id] = ended_at
-        if pid is None:
-            _ended_pid.pop(session_id, None)
-        else:
-            _ended_pid[session_id] = pid
+        standing = not scoped or row is None or str(row.get("pid") or "") == pid_s
         mark = _marks.get(session_id)
-        if mark is not None and mark["at"] <= ended_at:
+        if standing and mark is not None and mark["at"] <= ended_at:
             # The mark describes this turn (or one before it) — it is over.
             # A NEWER mark (`mark["at"] > ended_at`) is left standing; see the
             # docstring above.
@@ -929,6 +932,12 @@ def _settle(sid: str) -> dict | None:
     if best is None:
         _registry.pop(sid, None)
         _session_pids.pop(sid, None)
+        # No process left to tell apart: the newest per-pid end becomes the
+        # session's own, unscoped — the departed session's turn stays ended
+        # for `_running_now`'s transcript-tail read, as it always did.
+        newest = max((_ended_by_pid.pop(sid, None) or {}).values(), default=None)
+        if newest is not None:
+            _ended[sid] = max(newest, _ended.get(sid, newest))
         _departed[sid] = time.time()
         return None
     _registry[sid] = best[1]
@@ -1028,15 +1037,19 @@ def _read_registry() -> set[str]:
             if row.get("pid"):
                 _session_pids.setdefault(sid, set()).add(str(row["pid"]))
             standing = _settle(sid)
-            # A row busy strictly after `_ended[sid]` is the resurrection
-            # `is_turn_ended` watches for — a genuinely later turn on the same
-            # session. Its job is done; drop it here rather than leave it for
-            # `is_turn_ended` to keep discounting on every future read.
-            ended_at = _ended.get(sid)
-            if (ended_at is not None and st.st_mtime > ended_at
-                    and row.get("status") in RUNNING_STATUSES):
-                del _ended[sid]
-                _ended_pid.pop(sid, None)
+            # A row busy strictly after `_ended[sid]` — or after its own
+            # pid's stamp — is the resurrection `is_turn_ended` watches for: a
+            # genuinely later turn on the same session. That stamp's job is
+            # done; drop it here rather than leave it for `is_turn_ended` to
+            # keep discounting on every future read.
+            if row.get("status") in RUNNING_STATUSES:
+                ended_at = _ended.get(sid)
+                if ended_at is not None and st.st_mtime > ended_at:
+                    del _ended[sid]
+                stamps = _ended_by_pid.get(sid, {})
+                pid_s = str(row.get("pid") or "")
+                if pid_s in stamps and st.st_mtime > stamps[pid_s]:
+                    del stamps[pid_s]
         status = (standing or {}).get("status")
         _note_registry_status(sid, status)
         keys.add(sid)
@@ -1351,7 +1364,7 @@ def reset() -> None:
         _departed.clear()
         _registry_mtime.clear()
         _ended.clear()
-        _ended_pid.clear()
+        _ended_by_pid.clear()
         _marks.clear()
         _mark_turns.clear()
         _mark_busy_seen.clear()
