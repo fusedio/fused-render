@@ -249,6 +249,13 @@ export interface KebabProps {
    *  owns them), so the caller only has to leave the transcript — "Back to
    *  chats" IS the way out (T:13352-13366). */
   onErased?(sessionId: string): void;
+  /** The task is FILED. Archive is the other item here that carries the reader
+   *  off this chat, and it leaves the same way Delete does — back to the
+   *  landing (Akshil, 2026-10-14: "when archiving a task, it should go back to
+   *  main new claude page"). Fired on a successful ARCHIVE only: an unarchive
+   *  is the reader choosing to keep reading what they are on, and a failure
+   *  keeps them here with the error on the item. */
+  onArchived?(sessionId: string): void;
   /**
    * A COMMENT ROUND OR A WALKTHROUGH OWNS THE PAGE — `useAnnotations().locked`,
    * which is T's `annNavLocked()` (T:6888, and its refusals at T:18181/18779).
@@ -292,6 +299,7 @@ export function Kebab({
   landing,
   running,
   onErased,
+  onArchived,
   locked = false,
   lockedReason,
   queued = false,
@@ -544,8 +552,15 @@ export function Kebab({
         setArchiveLabel("");
         void refresh();
       }, 2500);
+      return;
     }
-  }, [sessionId, hasTask, filed, later, refresh]);
+    // OUTSIDE THE TRY: the server has the task, and a throw from the hop must
+    // not be dressed as "Could not archive" with the flip put back. Only once
+    // the call is home, and only if this menu still belongs to the conversation
+    // that was filed: a chat the reader already left during the await must not
+    // be hopped out of twice.
+    if (!wasFiled && liveSession.current === sessionId) onArchived?.(sessionId);
+  }, [sessionId, hasTask, filed, later, refresh, onArchived]);
 
   // `rev` is read so a cache write repaints the items it decides.
   void rev;
