@@ -4,27 +4,48 @@
 //   /marketplace                 Discover  (?category=<id>, ?q=<text>)
 //   /marketplace/installed       Installed / Updates
 //   /marketplace/app/<slug>      App detail
+//   /marketplace/file?path=<p>   A `.fused` app file's install page
+//                                (FusedFilePage) — also rendered in place
+//                                for `/explorer/view|embed/<p>.fused` by
+//                                the shell, which passes `fusedFile`
 //
 // The page owns the scroll container, so the sticky header can sit inside it
 // and know when the content has scrolled under it. The search query lives
 // here: on Discover it filters in place (URL kept with replaceState); on the
 // other pages Enter carries it to Discover.
 import { useEffect, useRef, useState } from "react";
-import { navigateUrl, pushHistory, replaceSearch } from "@platform/lib/router";
+import { IS_EMBED, navigateUrl, pushHistory, replaceSearch } from "@platform/lib/router";
 import { MARKETPLACE_HOME, useCatalog } from "@platform/lib/marketplace";
 import { StoreHeader, type StoreTab } from "./StoreHeader";
 import { CatalogFooter, Discover } from "./Discover";
 import { InstalledPage } from "./InstalledPage";
 import { AppDetailPage } from "./AppDetailPage";
+import { FusedFilePage } from "./FusedFilePage";
 import { InstallSheetHost } from "./install-flow";
 import { EmptyState } from "./shared";
 
-type Route = { kind: "discover" } | { kind: "installed" } | { kind: "app"; slug: string } | { kind: "unknown" };
+type Route =
+  | { kind: "discover" }
+  | { kind: "installed" }
+  | { kind: "app"; slug: string }
+  | { kind: "file"; path: string }
+  | { kind: "unknown" };
 
-export function parseMarketplacePath(pathname: string): Route {
+/** The `.fused` install page's own address. */
+export const MARKETPLACE_FILE = MARKETPLACE_HOME + "/file";
+
+export function fusedFileHref(path: string): string {
+  return MARKETPLACE_FILE + "?path=" + encodeURIComponent(path);
+}
+
+export function parseMarketplacePath(pathname: string, search = ""): Route {
   const p = pathname.replace(/\/+$/, "");
   if (p === MARKETPLACE_HOME) return { kind: "discover" };
   if (p === MARKETPLACE_HOME + "/installed") return { kind: "installed" };
+  if (p === MARKETPLACE_FILE) {
+    const path = new URLSearchParams(search).get("path") || "";
+    return path.startsWith("/") ? { kind: "file", path } : { kind: "unknown" };
+  }
   const m = /^\/marketplace\/app\/([^/]+)$/.exec(p);
   if (m) {
     try {
@@ -49,8 +70,11 @@ function searchFor(category: string, q: string): string {
   return MARKETPLACE_HOME + (s ? "?" + s : "");
 }
 
-export function MarketplacePage() {
-  const route = parseMarketplacePath(location.pathname);
+export function MarketplacePage({ fusedFile }: { fusedFile?: string } = {}) {
+  const route: Route = fusedFile ? { kind: "file", path: fusedFile } : parseMarketplacePath(location.pathname, location.search);
+  // A chrome-free embed (the window a `.fused` double-click opened) shows the
+  // page alone: no store header to wander off into the catalog from.
+  const bare = route.kind === "file" && IS_EMBED;
   const snap = useCatalog();
   const initial = route.kind === "discover" ? readParams() : { category: "all", q: "" };
   const [category, setCategory] = useState(initial.category);
@@ -76,7 +100,7 @@ export function MarketplacePage() {
   useEffect(() => {
     if (route.kind !== "discover") return;
     const onPop = () => {
-      if (parseMarketplacePath(location.pathname).kind !== "discover") return;
+      if (parseMarketplacePath(location.pathname, location.search).kind !== "discover") return;
       const next = readParams();
       setCategory(next.category);
       setQ(next.q);
@@ -112,6 +136,8 @@ export function MarketplacePage() {
     body = <InstalledPage snap={snap} />;
   } else if (route.kind === "app") {
     body = <AppDetailPage slug={route.slug} snap={snap} />;
+  } else if (route.kind === "file") {
+    body = <FusedFilePage key={route.path} path={route.path} />;
   } else {
     body = (
       <EmptyState
@@ -127,20 +153,22 @@ export function MarketplacePage() {
   }
 
   return (
-    <div className="mp-page" ref={scrollRef} onScroll={(e) => setScrolled(e.currentTarget.scrollTop > 4)}>
-      <StoreHeader
-        tab={tab}
-        q={q}
-        onQ={onQ}
-        onSubmit={onSubmit}
-        scrolled={scrolled}
-        updates={updates}
-        installedCount={installedCount}
-        inputRef={inputRef}
-      />
+    <div className={"mp-page" + (bare ? " is-bare" : "")} ref={scrollRef} onScroll={(e) => setScrolled(e.currentTarget.scrollTop > 4)}>
+      {!bare && (
+        <StoreHeader
+          tab={tab}
+          q={q}
+          onQ={onQ}
+          onSubmit={onSubmit}
+          scrolled={scrolled}
+          updates={updates}
+          installedCount={installedCount}
+          inputRef={inputRef}
+        />
+      )}
       <main className="mp-inner">
         {body}
-        {route.kind !== "unknown" && <CatalogFooter catalog={snap.catalog} />}
+        {route.kind !== "unknown" && route.kind !== "file" && <CatalogFooter catalog={snap.catalog} />}
       </main>
       <InstallSheetHost />
     </div>

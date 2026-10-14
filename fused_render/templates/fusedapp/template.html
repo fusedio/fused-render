@@ -20,17 +20,17 @@
 <style>
   :root {
     color-scheme: dark;
-    --fg: #e8eaed; --fg-muted: #9aa0a6; --bg: #131417; --panel: #1b1c20;
-    --line: #2a2c31; --accent: #d1e550; --accent-fg: #141414; --error: #ff6b6b;
-    --warn: #f0b429; --warn-bg: #2a2410; --ok: #7ed491; --ok-bg: #12261a;
-    --code: #1f2024;
+    --fg: #e8eaed; --fg-muted: #9aa0a6; --bg: #131417; --panel: #1b1d21;
+    --line: #2a2d33; --accent: #e5ff44; --accent-fg: #10131a; --error: #ff6b6b;
+    --warn: #d29922; --warn-bg: #221d12; --ok: #3fb950; --ok-bg: #152219;
+    --code: #1b1d21; --tile: #24272d;
   }
   :root[data-theme="light"] {
     color-scheme: light;
-    --fg: #1f2023; --fg-muted: #61656c; --bg: #ffffff; --panel: #f6f6f7;
-    --line: #e3e4e8; --accent: #4a5a00; --accent-fg: #ffffff; --error: #c62828;
-    --warn: #8a5a00; --warn-bg: #fff4d6; --ok: #1f6b2f; --ok-bg: #e4f5e8;
-    --code: #f0f1f3;
+    --fg: #1f2023; --fg-muted: #61656c; --bg: #ffffff; --panel: #f4f5f7;
+    --line: #d8dade; --accent: #5f7300; --accent-fg: #ffffff; --error: #c62828;
+    --warn: #8f6a10; --warn-bg: #fbf5e6; --ok: #1a7f37; --ok-bg: #eaf5ec;
+    --code: #f4f5f7; --tile: #eceef1;
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; }
@@ -40,13 +40,14 @@
   }
   .page { max-width: 720px; margin: 0 auto; padding: 48px 24px 96px; }
   .hero { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 12px; }
-  .mark { width: 64px; height: 64px; border-radius: 15px; object-fit: contain; background: var(--panel); padding: 7px; }
-  .mark.ph { display: flex; align-items: center; justify-content: center; padding: 0; color: var(--accent);
-             font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
-  h1 { font-size: 1.9em; font-weight: 650; letter-spacing: -.02em; margin: 0; line-height: 1.15; }
+  /* The mark is the Marketplace's icon tile (AppIcon): a ~22.5% squircle. */
+  .mark { width: 72px; height: 72px; border-radius: 16px; object-fit: contain; background: var(--tile); }
+  .mark.ph { display: flex; align-items: center; justify-content: center; color: var(--fg-muted);
+             font-size: 22px; font-weight: 700; letter-spacing: .01em; }
+  h1 { font-size: 28px; font-weight: 700; letter-spacing: -.022em; margin: 0; line-height: 1.15; }
   .meta { color: var(--fg-muted); font-size: .9em; margin: -4px 0 2px; }
   .meta code { font-size: .92em; }
-  .state { border: 1px solid var(--line); border-radius: 10px; padding: 12px 16px; max-width: 520px;
+  .state { border: 1px solid var(--line); border-radius: 14px; padding: 12px 16px; max-width: 560px;
            text-align: left; width: 100%; background: var(--panel); }
   .state[data-tone="warn"] { border-color: var(--warn); background: var(--warn-bg); }
   .state[data-tone="ok"] { border-color: var(--ok); background: var(--ok-bg); }
@@ -55,14 +56,16 @@
   .state p { margin: 0; color: var(--fg); }
   .state ul { margin: 6px 0 0; padding-left: 18px; color: var(--fg-muted); font-family: ui-monospace, Menlo, monospace; font-size: .85em; }
   .actions { display: flex; gap: 10px; align-items: center; justify-content: center; flex-wrap: wrap; margin-top: 4px; }
-  button { font: inherit; cursor: pointer; border-radius: 8px; padding: 10px 22px; border: 1px solid var(--line);
+  /* Pills, like the Marketplace's action pill. */
+  button { font: inherit; font-weight: 600; cursor: pointer; border-radius: 999px; padding: 8px 22px; border: 1px solid var(--line);
            background: var(--panel); color: var(--fg); }
-  button.primary { background: var(--accent); color: var(--accent-fg); border-color: transparent; font-weight: 600; }
+  button.primary { background: var(--accent); color: var(--accent-fg); border-color: transparent; font-weight: 700; }
   button.danger { border-color: var(--error); color: var(--error); }
   button[disabled] { opacity: .55; cursor: default; }
   .sub { color: var(--fg-muted); font-size: .85em; }
   .sub code { font-family: ui-monospace, Menlo, monospace; }
   .shot { display: block; width: 100%; margin: 40px 0 8px; border-radius: 12px; border: 1px solid var(--line); }
+  .doc { font-size: 15px; line-height: 1.65; }
   .doc { margin-top: 40px; }
   .doc > :first-child { margin-top: 0; }
   .doc h1, .doc h2, .doc h3, .doc h4 { font-weight: 600; letter-spacing: -.01em; margin: 28px 0 10px; line-height: 1.3; }
@@ -84,8 +87,14 @@
   td.n.entry { color: var(--accent); }
   td.s { text-align: right; color: var(--fg-muted); white-space: nowrap; width: 1%; }
   .error { color: var(--error); white-space: pre-wrap; font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
+  /* A card peek / thumbnail (`_preview=1`): the icon tile and the name, as a
+     Marketplace card's body reads. */
   .preview .page { padding: 16px; } .preview .doc, .preview .files, .preview .actions, .preview .state, .preview .shot { display: none; }
-  .preview h1 { font-size: 1.2em; }
+  .preview .hero { gap: 10px; }
+  .preview .mark { width: 56px; height: 56px; border-radius: 13px; }
+  .preview .mark.ph { font-size: 18px; }
+  .preview h1 { font-size: 17px; font-weight: 650; letter-spacing: -.01em; }
+  .preview .meta { font-size: 12px; margin: -2px 0 0; }
 </style>
 </head>
 <body>
@@ -237,6 +246,7 @@
   }
 
   function render(t) {
+    markName = t.name;
     page.innerHTML = "";
     const hero = document.createElement("div"); hero.className = "hero";
     if (t.has_icon) {
@@ -377,8 +387,12 @@
     return row;
   }
 
+  // No icon: the name's initials on a tile, like the Marketplace's AppIcon.
+  let markName = "";
   function placeholderMark() {
-    const d = document.createElement("div"); d.className = "mark ph"; d.textContent = ".fused"; return d;
+    const words = String(markName || "").replace(/[_-]+/g, " ").split(/\s+/).filter(Boolean);
+    const ini = words.length > 1 ? words[0][0] + words[1][0] : (words[0] || ".f").slice(0, 2);
+    const d = document.createElement("div"); d.className = "mark ph"; d.textContent = ini.toUpperCase(); return d;
   }
   // The explorer's URL codec for an absolute fs path (the same rule the
   // server's _view_url_codec applies): every segment percent-encoded.
@@ -386,8 +400,29 @@
   const viewUrl = (p) => "/explorer/view/" + encodePath(p);
   const embedUrl = (p) => "/explorer/embed/" + encodePath(p);
 
+  // BELT AND BRACES for the Marketplace (`marketplace_enabled`): with it on,
+  // the shell already renders the React install page in place of this
+  // template for every `.fused` open (shell/App.tsx). So with the flag on,
+  // this page only stands as the WHOLE WINDOW when something loaded it
+  // directly (a bare /render URL) — and then it hands the window to the
+  // React page. Framed, it never redirects: a shell that chose to frame it
+  // (another mode beside it, a snapshot, a thumbnail) meant it.
+  async function handOffToMarketplace() {
+    if (isPreview || !FILE || window.top !== window) return false;
+    try {
+      const r = await fetch("/api/prefs");
+      if (!r.ok) return false;
+      const prefs = await r.json();
+      if (!(prefs && prefs.marketplace && prefs.marketplace.enabled === true)) return false;
+    } catch (e) { return false; }
+    // `embed=1`: chrome-free, like the bare page this load asked for.
+    location.replace("/marketplace/file?path=" + encodeURIComponent(FILE) + "&embed=1");
+    return true;
+  }
+
   async function load() {
     if (!FILE) return fail("No .fused file selected.");
+    if (await handOffToMarketplace()) return;
     let resp, data;
     try {
       resp = await fetch(api("install") + (isPreview ? "&light=1" : ""));

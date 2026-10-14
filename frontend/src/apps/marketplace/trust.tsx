@@ -1,6 +1,6 @@
 // The "Before you install" rows for a catalog entry — the detail sidebar's
 // trust card and the install confirmation sheet say the same thing.
-import { BadgeCheck, Cpu, Globe2, Terminal } from "lucide-react";
+import { BadgeCheck, Cpu, FileArchive, Globe2, ShieldCheck, Terminal } from "lucide-react";
 import type { TrustItem } from "@platform/ui/appstore";
 import type { AppEntry } from "@platform/lib/marketplace";
 
@@ -43,3 +43,47 @@ export function trustItemsFor(app: AppEntry): TrustItem[] {
   return items;
 }
 
+
+/** The same card for a `.fused` app file (FusedFilePage): Python or page-only
+ *  read off what the file carries, that nothing runs before Install, and that
+ *  a file — unlike a Marketplace app — was reviewed by nobody. */
+export function trustItemsForFile(file: {
+  files: { path: string }[];
+  metadata?: { requires_python: boolean | null } | null;
+}): TrustItem[] {
+  const python =
+    file.metadata?.requires_python ??
+    file.files.some((f) => /\.py$/i.test(f.path) || /(^|\/)(pyproject\.toml|requirements\.txt)$/i.test(f.path));
+  const items: TrustItem[] = [
+    {
+      key: "inert",
+      icon: <ShieldCheck size={15} strokeWidth={2} />,
+      title: "Nothing runs until you install",
+      detail: "This page only reads the file's index and readme. Its pages and code run once it is installed.",
+      tone: "ok",
+    },
+  ];
+  if (python) {
+    items.push({
+      key: "python",
+      icon: <Terminal size={15} strokeWidth={2} />,
+      title: "Runs Python on your machine",
+      detail: "Once installed, its backend runs locally with the same access you have.",
+      tone: "caution",
+    });
+  } else {
+    items.push({
+      key: "static",
+      icon: <Globe2 size={15} strokeWidth={2} />,
+      title: "Runs in the page only",
+      detail: "No Python in this file — just HTML and JavaScript in a sandboxed view.",
+    });
+  }
+  items.push({
+    key: "source",
+    icon: <FileArchive size={15} strokeWidth={2} />,
+    title: "App file, not from the Marketplace",
+    detail: "Nobody reviewed it. Install app files only from people you trust.",
+  });
+  return items;
+}

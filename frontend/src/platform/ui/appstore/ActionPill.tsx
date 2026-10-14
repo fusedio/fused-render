@@ -14,14 +14,17 @@
 import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { Check, RotateCw } from "lucide-react";
 
-export type ActionPillState = "get" | "progress" | "open" | "update" | "retry" | "disabled";
+/** `caution` is a confirm step that loses something (the `.fused` install
+ *  page's "Confirm overwrite") — a warning-toned pill, never the accent. */
+export type ActionPillState = "get" | "progress" | "open" | "update" | "retry" | "caution" | "disabled";
 export type ActionPillSize = "sm" | "md" | "lg";
 
 export interface ActionPillProps {
   state: ActionPillState;
   /** 0..1 while `progress`; null/undefined = indeterminate (a spinning arc). */
   progress?: number | null;
-  /** Override the state's default label ("Get", "Open", "Update", "Retry"). */
+  /** Override the state's default label ("Get", "Open", "Update", "Retry");
+   *  while `progress`, the word beside an indeterminate ring ("Waiting"). */
   label?: ReactNode;
   size?: ActionPillSize;
   onClick?: () => void;
@@ -32,6 +35,10 @@ export interface ActionPillProps {
   /** `filled` paints Get as a solid accent pill (a hero's one call to
    *  action); the default `tinted` Get is the quieter grid version. */
   emphasis?: "tinted" | "filled";
+  /** Let the pill grow past its fixed width for a longer label ("Confirm
+   *  overwrite"); the fixed width stays its minimum, so short labels still
+   *  line up. */
+  wide?: boolean;
   className?: string;
 }
 
@@ -41,6 +48,7 @@ const DEFAULT_LABEL: Record<ActionPillState, string> = {
   open: "Open",
   update: "Update",
   retry: "Retry",
+  caution: "Confirm",
   disabled: "Get",
 };
 
@@ -84,6 +92,7 @@ export function ActionPill({
   title,
   ariaLabel,
   emphasis = "tinted",
+  wide,
   className,
 }: ActionPillProps) {
   // THE CHECK POP: progress → open plays a short check before settling on
@@ -113,7 +122,7 @@ export function ActionPill({
     <button
       type="button"
       className={
-        `as-pill as-pill-${size} is-${state}` + (emphasis === "filled" ? " is-filled" : "") + (popped ? " is-popped" : "") + (className ? " " + className : "")
+        `as-pill as-pill-${size} is-${state}` + (emphasis === "filled" ? " is-filled" : "") + (popped ? " is-popped" : "") + (wide ? " is-wide" : "") + (className ? " " + className : "")
       }
       onClick={click}
       disabled={state === "disabled"}
@@ -127,7 +136,7 @@ export function ActionPill({
         <span className="as-pill-inner">
           <ProgressRing progress={pct === null ? null : pct / 100} size={ringSize} />
           {size !== "sm" || pct !== null ? (
-            <span className="as-pill-pct">{pct === null ? "Waiting" : `${pct}%`}</span>
+            <span className="as-pill-pct">{pct === null ? (label ?? "Waiting") : `${pct}%`}</span>
           ) : null}
         </span>
       ) : (

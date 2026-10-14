@@ -194,6 +194,34 @@ export function InfoList({ title = "Information", rows }: { title?: ReactNode; r
   );
 }
 
+/** The sidebar "Tags" block: a titled row of pills (nothing when empty). */
+export function TagsSection({ tags, title = "Tags" }: { tags: string[]; title?: ReactNode }) {
+  if (tags.length === 0) return null;
+  return (
+    <section className="as-info">
+      <h3 className="as-side-title">{title}</h3>
+      <ul className="as-tags">
+        {tags.map((t) => (
+          <li key={t} className="as-tag">
+            {t}
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+/** A same-document link's click handler: plain left clicks run `go` (an SPA
+ *  navigation, history.back …); a modified click keeps the browser's own
+ *  behaviour (new tab, new window) on the anchor's real `href`. */
+export function plainClick(go: () => void) {
+  return (e: MouseEvent<HTMLAnchorElement>) => {
+    if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    e.preventDefault();
+    go();
+  };
+}
+
 export interface SegmentedTab {
   id: string;
   label: ReactNode;

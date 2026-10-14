@@ -1,15 +1,14 @@
 // /marketplace/app/<slug> — one app, App-Store style, built from the shared
-// detail blocks in @platform/ui/appstore (the phase-2 `.fused` install page
-// uses the same ones): hero with the action and a "⋯" menu, the Information
+// detail blocks in @platform/ui/appstore (the `.fused` install page,
+// FusedFilePage.tsx, uses the same ones): hero with the action and a "⋯" menu, the Information
 // strip, the screenshot stage, Overview (readme) / Files tabs beside an
 // Information list and the "Before you install" card, then "More in
 // <Category>".
 //
-// Readme polish: a readme almost always opens with `# <Name>` and the very
-// screenshot the stage already shows — both are dropped from the rendered
-// copy (only when they ARE the leading lines), so the Overview starts with the
-// prose instead of repeating the hero.
-import { useMemo, useState, type MouseEvent, type ReactNode } from "react";
+// Readme polish (OverviewTabs' trimReadme): a readme almost always opens with
+// `# <Name>` and the very screenshot the stage already shows — both are
+// dropped from the rendered copy, so the Overview starts with the prose.
+import type { ReactNode } from "react";
 import { ArrowUpRight, ExternalLink, FolderOpen, LayoutPanelTop, Trash2 } from "lucide-react";
 import {
   AppIcon,
@@ -19,13 +18,13 @@ import {
   DetailSection,
   DetailSkeleton,
   Delayed,
-  FilesTable,
   InfoList,
   InfoStrip,
-  MarkdownView,
+  OverviewTabs,
   PreviewStage,
-  SegmentedTabs,
+  TagsSection,
   TrustCard,
+  plainClick,
   type InfoStripItem,
 } from "@platform/ui/appstore";
 import type { MenuEntry } from "@platform/ui/ContextMenu";
@@ -46,22 +45,6 @@ import {
 import { AppActionPill, CategoryGlyph, EmptyState, MarketCard } from "./shared";
 import { trustItemsFor } from "./trust";
 
-/** Drop a leading `# Title` and a leading image line that is the preview. */
-export function trimReadme(md: string): string {
-  let lines = md.replace(/\r/g, "").split("\n");
-  const skipBlank = () => {
-    while (lines.length && !lines[0].trim()) lines = lines.slice(1);
-  };
-  skipBlank();
-  if (lines.length && /^#\s+/.test(lines[0])) lines = lines.slice(1);
-  skipBlank();
-  if (lines.length && /^!\[[^\]]*\]\((\.\/)?preview\.(png|jpe?g|webp|gif)(\s+"[^"]*")?\)\s*$/i.test(lines[0])) {
-    lines = lines.slice(1);
-  }
-  skipBlank();
-  return lines.join("\n");
-}
-
 function githubUrl(handle: string): string {
   return `https://github.com/${encodeURIComponent(handle.replace(/^@/, ""))}`;
 }
@@ -71,17 +54,11 @@ export function AppDetailPage({ slug, snap }: { slug: string; snap: CatalogSnaps
   const fromCatalog = snap.catalog?.apps.find((a) => a.slug === slug) ?? null;
   const app: AppEntry | null = detail?.app ?? fromCatalog;
   const job = useJob(slug);
-  const [tab, setTab] = useState("overview");
-  const readme = useMemo(() => (detail ? trimReadme(detail.readme || "") : ""), [detail]);
 
   const back = {
     label: "Marketplace",
     href: MARKETPLACE_HOME,
-    onClick: (e: MouseEvent<HTMLAnchorElement>) => {
-      if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
-      e.preventDefault();
-      navigateUrl(MARKETPLACE_HOME);
-    },
+    onClick: plainClick(() => navigateUrl(MARKETPLACE_HOME)),
   };
 
   if (!app) {
@@ -217,32 +194,12 @@ export function AppDetailPage({ slug, snap }: { slug: string; snap: CatalogSnaps
       <DetailBody
         main={
           <>
-            <SegmentedTabs
-              tabs={[
-                { id: "overview", label: "Overview" },
-                { id: "files", label: "Files", count: detail?.files.length ?? app.file_count },
-              ]}
-              value={tab}
-              onChange={setTab}
-              label="App details"
+            <OverviewTabs
+              readme={detail ? detail.readme || "" : undefined}
+              baseUrl={detail?.readme_base}
+              files={detail?.files}
+              fileCount={app.file_count}
             />
-            {tab === "overview" ? (
-              detail ? (
-                readme.trim() ? (
-                  <MarkdownView source={readme} baseUrl={detail.readme_base} />
-                ) : (
-                  <p className="mp-muted">This app has no readme yet.</p>
-                )
-              ) : (
-                <div className="mp-readme-skel">
-                  {[92, 84, 96, 60, 0, 88, 76].map((w, k) =>
-                    w ? <span key={k} className="as-skel" style={{ width: `${w}%`, height: 12, borderRadius: 4 }} /> : <span key={k} style={{ height: 10 }} />,
-                  )}
-                </div>
-              )
-            ) : detail ? (
-              <FilesTable files={detail.files} />
-            ) : null}
           </>
         }
         aside={
@@ -282,18 +239,7 @@ export function AppDetailPage({ slug, snap }: { slug: string; snap: CatalogSnaps
                   : []),
               ]}
             />
-            {app.tags.length > 0 && (
-              <section className="as-info">
-                <h3 className="as-side-title">Tags</h3>
-                <ul className="as-tags">
-                  {app.tags.map((t) => (
-                    <li key={t} className="as-tag">
-                      {t}
-                    </li>
-                  ))}
-                </ul>
-              </section>
-            )}
+            <TagsSection tags={app.tags} />
             <TrustCard items={trustItemsFor(app)} />
           </>
         }
@@ -305,11 +251,7 @@ export function AppDetailPage({ slug, snap }: { slug: string; snap: CatalogSnaps
             <a
               className="mp-see-all"
               href={`${MARKETPLACE_HOME}?category=${encodeURIComponent(app.category)}`}
-              onClick={(e) => {
-                if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
-                e.preventDefault();
-                navigateUrl(`${MARKETPLACE_HOME}?category=${encodeURIComponent(app.category)}`);
-              }}
+              onClick={plainClick(() => navigateUrl(`${MARKETPLACE_HOME}?category=${encodeURIComponent(app.category)}`))}
             >
               See all
             </a>

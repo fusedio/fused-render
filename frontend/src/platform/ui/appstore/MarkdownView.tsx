@@ -33,9 +33,15 @@ export function resolveAgainst(url: string, base: string | undefined): string {
   return base.replace(/\/?$/, "/") + clean;
 }
 
+/** Maps one URL found in the readme to where it should point: a string to
+ *  rewrite it, `null` to drop it (an image is removed, a link becomes plain
+ *  text). For content with no folder to rebase against — a `.fused` file,
+ *  whose members are not served one by one. Runs after `baseUrl` rebasing. */
+export type UrlResolver = (url: string, kind: "img" | "a") => string | null;
+
 /** Markdown → sanitized HTML with relative URLs rebased. Exported for the
- *  phase-2 install page and tests. Needs a DOM (DOMPurify). */
-export function renderMarkdown(source: string, baseUrl?: string): string {
+ *  `.fused` install page and tests. Needs a DOM (DOMPurify). */
+export function renderMarkdown(source: string, baseUrl?: string, resolveUrl?: UrlResolver): string {
   const html = parser().parse(source, { async: false }) as string;
   const frag = DOMPurify.sanitize(html, {
     FORBID_TAGS: ["style", "form", "input", "iframe", "script", "object", "embed"],
@@ -44,14 +50,26 @@ export function renderMarkdown(source: string, baseUrl?: string): string {
     RETURN_DOM_FRAGMENT: true,
   }) as DocumentFragment;
   frag.querySelectorAll("img[src]").forEach((img) => {
-    img.setAttribute("src", resolveAgainst(img.getAttribute("src") || "", baseUrl));
+    const src = resolveAgainst(img.getAttribute("src") || "", baseUrl);
+    const next = resolveUrl ? resolveUrl(src, "img") : src;
+    if (next === null) {
+      img.remove();
+      return;
+    }
+    img.setAttribute("src", next);
     img.setAttribute("loading", "lazy");
     img.setAttribute("decoding", "async");
   });
   frag.querySelectorAll("a[href]").forEach((a) => {
     const href = a.getAttribute("href") || "";
     if (href.startsWith("#")) return;
-    a.setAttribute("href", resolveAgainst(href, baseUrl));
+    const rebased = resolveAgainst(href, baseUrl);
+    const next = resolveUrl ? resolveUrl(rebased, "a") : rebased;
+    if (next === null) {
+      a.replaceWith(...Array.from(a.childNodes));
+      return;
+    }
+    a.setAttribute("href", next);
     a.setAttribute("target", "_blank");
     a.setAttribute("rel", "noopener noreferrer");
   });
@@ -72,17 +90,19 @@ export interface MarkdownViewProps {
   source: string;
   /** Base for relative image/link URLs (with or without a trailing slash). */
   baseUrl?: string;
+  /** Per-URL rewrite/drop (see UrlResolver). Keep its identity stable. */
+  resolveUrl?: UrlResolver;
   className?: string;
 }
 
-export function MarkdownView({ source, baseUrl, className }: MarkdownViewProps) {
+export function MarkdownView({ source, baseUrl, resolveUrl, className }: MarkdownViewProps) {
   const html = useMemo(() => {
     try {
-      return renderMarkdown(source, baseUrl);
+      return renderMarkdown(source, baseUrl, resolveUrl);
     } catch {
       return "";
     }
-  }, [source, baseUrl]);
+  }, [source, baseUrl, resolveUrl]);
   if (!html) {
     return <pre className={"as-md as-md-raw" + (className ? " " + className : "")}>{source}</pre>;
   }

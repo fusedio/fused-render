@@ -23,6 +23,7 @@ import {
   IS_EMBED,
   IS_NATIVE_WINDOW,
   IS_PREVIEW,
+  IS_SNAPSHOT,
   fsPathFromLocation,
   isPanelPath,
   navHintIsDir,
@@ -451,6 +452,34 @@ function StatView({
   );
 }
 
+// A `.fused` app file opened anywhere — a click in a listing, the explorer
+// view or embed URL a Finder double-click / deeplink / CLI / FetchAppFileBoot
+// lands on — with the Marketplace ON: the React install page
+// (apps/marketplace FusedFilePage) renders IN PLACE of the fusedapp template,
+// at the same URL. One interception for every entry point, no redirect, so
+// nothing flashes and the embed window stays an embed. NOT for a thumbnail
+// (`_preview=1` — card peeks keep the template's small mark-and-name view) or
+// a frozen snapshot, and not when the URL asks for another mode by name
+// (`?_mode=claude`): the mode switcher's other views stay reachable.
+function isFusedInstallView(fsPath: string): boolean {
+  if (IS_PREVIEW || IS_SNAPSHOT || !/\.fused$/i.test(fsPath)) return false;
+  const mode = new URLSearchParams(location.search).get("_mode");
+  return !mode || mode === "fusedapp";
+}
+
+// The install page in place of StatView. Still a file open: it records the
+// file in the explorer's recents like StatView would (a no-op in embed).
+function FusedFileView({ fsPath }: { fsPath: string }) {
+  useRecentsTracking(fsPath, false, null);
+  return (
+    <div id="content">
+      <Suspense fallback={<RouteFallback />}>
+        <MarketplacePage fusedFile={fsPath} />
+      </Suspense>
+    </div>
+  );
+}
+
 // /claude-config: the native Claude Config panel — no mount, no StatView; the
 // availability gate mirrors the sidebar entry's, so a direct URL hit while
 // ~/.claude is absent shows an honest empty state instead of a dead panel.
@@ -795,6 +824,10 @@ export default function App({ config }: { config: Config }) {
     isBots ||
     canvasWorkspaceName !== null;
   const fsPath = isSentinel ? null : fsPathFromLocation();
+  // Behind the Marketplace flag (see isFusedInstallView). While the flag is
+  // still unknown (`null`, one prefs read) the route HOLDS rather than paint
+  // the template it might replace a moment later; off, StatView as ever.
+  const fusedFile = fsPath && marketplaceOn !== false && isFusedInstallView(fsPath) ? fsPath : null;
   // A resolved fsPath mounts StatView below, which owns the title itself.
   useDocumentTitle(
     isPanel
@@ -810,7 +843,10 @@ export default function App({ config }: { config: Config }) {
                 : isMonitor
                 ? "Monitor"
                 : isMarketplace
-                ? "Marketplace"
+                ? // The file page names itself (FusedFilePage) after its app.
+                  pathname === "/marketplace/file"
+                  ? undefined
+                  : "Marketplace"
                 : isAiModels
                   ? "AI Models"
                   : isApps
@@ -1114,6 +1150,15 @@ export default function App({ config }: { config: Config }) {
         </div>
       </>
     );
+  } else if (fusedFile) {
+    main =
+      marketplaceOn === true ? (
+        <FusedFileView key={epoch + ":" + fusedFile} fsPath={fusedFile} />
+      ) : (
+        <div id="content" key={epoch}>
+          <RouteFallback />
+        </div>
+      );
   } else {
     main = (
       <StatView
