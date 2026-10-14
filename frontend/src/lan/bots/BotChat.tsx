@@ -47,6 +47,8 @@ import type { BotDetail, BotEvent, Setup } from "./types";
 
 const PAGE = 80;
 const BACKFILL_PAGES = 5; // on open, at most this many earlier pages to reach the last line seen
+/** Whether "Load earlier" has anything left: the window does not start at the log's first line (seq 1). */
+const hasMore = (evs: BotEvent[]) => evs.length > 0 && evs[0].seq > 1;
 const HOLD_MAX_MS = 20_000; // a card's local "Sending…" hold at most
 const END_GAP = 96; // px from the bottom that still counts as "following along"
 const READABLE = new Set(["done", "question", "approval", "error"]);
@@ -69,7 +71,13 @@ export function BotChat({ id }: { id: string }) {
   const [pill, setPill] = useState(false);
   const seqRef = useRef<number | null>(null);
   const seen = useRef<{ key: string; at: number | null } | null>(null);
-  const [newSeq, setNewSeq] = useState<number | null>(null);
+  // The seen cursor as it was when the chat opened (null: nothing unread then); the "New" divider sits
+  // above the first readable line after it among the events held.
+  const unreadAfter = useRef<number | null>(null);
+  const newSeq = useMemo(() => {
+    const was = unreadAfter.current;
+    return was == null ? null : (events.find((e) => e.seq > was && READABLE.has(e.role))?.seq ?? null);
+  }, [events]);
 
   const thread = useRef<HTMLDivElement>(null);
   const atEnd = useRef(true);
@@ -99,23 +107,28 @@ export function BotChat({ id }: { id: string }) {
       setNow(d.ts || Date.now() / 1000);
       setError(null);
       if (first) {
-        // The seen cursor is written to the end below, so every unread line must be loaded now: page back
-        // until the window reaches the last line seen (capped), or older unread would sit above the
-        // "New" divider unmarked and drop out of the badge.
+        // The seen cursor is written to the end below, so page back (capped) until the window reaches the
+        // last line seen: the unread lines are then loaded and under the "New" divider. A failed earlier
+        // page only stops the walk; the tail already here is shown.
         let evs = d.events;
-        let more = evs.length >= PAGE && (d.first_seq ?? 0) > 1;
+        let more = evs.length >= PAGE && hasMore(evs);
         const was = seen.current?.at ?? null;
-        for (let i = 0; was != null && more && evs.length && evs[0].seq > was + 1 && i < BACKFILL_PAGES; i++) {
-          const e = await api.page(id, { since: 0, before: evs[0].seq, limit: PAGE });
-          evs = mergeEvents(evs, e.events);
-          more = e.events.length >= PAGE;
+        try {
+          for (let i = 0; was != null && more && evs[0].seq > was + 1 && i < BACKFILL_PAGES; i++) {
+            const e = await api.page(id, { since: 0, before: evs[0].seq, limit: PAGE });
+            more = e.events.length >= PAGE;
+            evs = mergeEvents(evs, e.events);
+            more = more && hasMore(evs);
+          }
+        } catch {
+          // keep `more`: "Load earlier" picks up where the walk stopped
         }
+        // The divider sits above the first unread line among the events held, so a backlog past the cap
+        // that "Load earlier" brings in later lands under it too.
+        const unread = was != null && (evs.some((e) => e.seq > was && READABLE.has(e.role)) || (more && evs[0].seq > was + 1));
+        unreadAfter.current = unread ? was : null;
         setEvents(evs);
         setHasEarlier(more);
-        if (was != null) {
-          const n = evs.find((e) => e.seq > was && READABLE.has(e.role));
-          setNewSeq(n ? n.seq : null);
-        }
       } else if (d.events.length) {
         setEvents((old) => mergeEvents(old, d.events));
       }
@@ -182,7 +195,7 @@ export function BotChat({ id }: { id: string }) {
       const el = thread.current;
       if (el && d.events.length) prepend.current = { height: el.scrollHeight, top: el.scrollTop };
       setEvents((old) => mergeEvents(old, d.events));
-      setHasEarlier(d.events.length >= PAGE);
+      setHasEarlier(d.events.length >= PAGE && hasMore(d.events));
     } catch (e) {
       toast((e as Error).message, "error");
     } finally {
