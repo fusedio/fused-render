@@ -16,7 +16,7 @@ import { md } from "../lib/md";
 import { botsRoot } from "../lib/root";
 import { chosenOption, clearIndex, firstNewIndex, foldHint, foldStretches, isHandoff, isNoise, isTaskEnd, liveCards, optionKey, rowKeys, searchCountText, searchHit, sessionBreak } from "../lib/thread";
 import { act, clearScrollSeq, cur, errMsg, eventsOf, getState, jumpTo, markSeen, openDialog, poll, select, setNewCount, setScrollToEnd, showBanner, unviewed, useBots, viewedSet } from "../state/store";
-import { END_GAP, clearSearchHighlight, gapOf, evBox, highlightSearch, pinToEnd, restoreAnchor, topVisible, updateToBottom, type Anchor } from "./threadDom";
+import { END_GAP, clearSearchHighlight, gapOf, evBox, highlightSearch, pinToEnd, restoreAnchor, tableToCsv, topVisible, updateToBottom, type Anchor } from "./threadDom";
 import { HandBackRow, HandoverNote } from "./HandoverCard";
 import { SetupLines } from "./SetupLines";
 
@@ -658,6 +658,23 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
     const t = ev.target as Element, sel = getState().sel;
     const jump = t.closest<HTMLElement>("[data-jump-bot]");
     if (jump) { jumpTo(jump.dataset.jumpBot || "", Number(jump.dataset.jumpSeq)); return; }
+    // Wide-table footer (md.ts): "Show all N rows" toggles the 12-row cap; "Copy as CSV" copies every row, hidden ones too.
+    const more = t.closest<HTMLElement>("[data-tmore]");
+    if (more) {
+      const capped = more.closest(".wide")?.classList.toggle("capped");
+      more.textContent = capped ? `Show all ${more.dataset.tmore} rows` : "Show fewer";
+      return;
+    }
+    const csv = t.closest<HTMLElement>("[data-tcsv]");
+    if (csv) {
+      const table = csv.closest(".wide")?.querySelector("table");
+      if (table) {
+        void navigator.clipboard.writeText(tableToCsv(table));
+        csv.textContent = "Copied";
+        setTimeout(() => { csv.textContent = "Copy as CSV"; }, 1200);
+      }
+      return;
+    }
     const fold = t.closest("[data-fold]");
     if (fold) { onFoldStretch(Number(fold.getAttribute("data-fold"))); return; }
     const rc = t.closest("[data-react]");
