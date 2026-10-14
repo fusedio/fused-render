@@ -304,15 +304,24 @@ export function openBot(id: string): void {
   sendOpen(id);
 }
 
-/** `replace`: the store's own fallback pick (see writeUrl); a user gesture pushes. */
+/** Everything select() does to the store for a new selection, minus the URL: the resets a bot switch needs whoever
+ *  moved it (a click, or the URL under back/forward — syncFromUrl). */
+function applySel(id: string | null): void {
+  if (id !== S.sel) { for (const cb of [...selectListeners]) cb(id); clearToast(); }  // a reply and a status toast belong to one bot
+  commit({ sel: id, scrollThread: S.scrollThread + 1 });
+  const b = cur(); if (b) { setNewMark(b); markSeen(b.id, b.seq); }
+  // A bot waiting for you in its browser opens Stage the moment you pick it.
+  if (b && stageable(b)) requestStage(b.id);
+}
+
+/** `replace`: the store's own fallback pick (see writeUrl); a user gesture pushes. `sel` is committed BEFORE the
+ *  navigation, so the fused:navigate it fires finds syncFromUrl with nothing to do. (navigateUrl asks the shell's leave
+ *  guard first; a cancelled confirm would leave `sel` ahead of the path. Only the shell's own chat composer registers
+ *  one and it is not on this page, so this is noted, not defended.) */
 export function select(id: string | null, opts: { replace?: boolean } = {}): void {
   batch(() => {
-    if (id !== S.sel) { for (const cb of [...selectListeners]) cb(id); clearToast(); }  // a reply and a status toast belong to one bot
-    commit({ sel: id, scrollThread: S.scrollThread + 1 });
+    applySel(id);
     writeUrl(id, opts.replace ? "replace" : "push");
-    const b = cur(); if (b) { setNewMark(b); markSeen(b.id, b.seq); }
-    // A bot waiting for you in its browser opens Stage the moment you pick it.
-    if (b && stageable(b)) requestStage(b.id);
   });
 }
 
@@ -323,11 +332,18 @@ export function jumpTo(id: string, seq: number): void {
 }
 export const clearScrollSeq = (): void => { if (S.scrollSeq) commit({ scrollSeq: null }); };
 
-// The URL moved under us (back/forward, the Dock's fallback rewrite, a sidebar link): follow the path's bot without
-// the select() resets. A gesture of ours already committed `sel` before it navigated, so this is a no-op for it.
+// The URL moved under us (back/forward, the Dock's fallback rewrite, the sidebar's Bots row): follow it. A bot the
+// path names gets the full select resets — Back between two chats is a bot switch like any click, and B's reply
+// quote must not land in A's composer. The bare `/bots` reached while the page is mounted (the sidebar row from a
+// chat) is filled in with the bot on screen, a replace, so the URL never stays behind the view (I4). A gesture of
+// ours already committed `sel` before it navigated, so for it this is a no-op.
 function syncFromUrl() {
   const id = urlSel();
-  if (id && id !== S.sel && (!S.bots.length || S.bots.some((b) => b.id === id))) commit({ sel: id, scrollThread: S.scrollThread + 1 });
+  if (id) {
+    if (id !== S.sel && (!S.bots.length || S.bots.some((b) => b.id === id))) batch(() => applySel(id));
+    return;
+  }
+  if (S.sel && isBotsPath(location.pathname) && parseBotsPath(location.pathname).kind === "list" && (!S.bots.length || S.bots.some((b) => b.id === S.sel))) writeUrl(S.sel, "replace");
 }
 
 /** The menu-bar Dock's bot tile (fused_render/mac_window.py `show_bot`) lands here: a user gesture from outside

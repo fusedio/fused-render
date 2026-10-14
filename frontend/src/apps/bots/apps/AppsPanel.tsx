@@ -17,6 +17,8 @@ import { api, appIconUrl, type AppRow } from "../lib/api";
 import { errMsg, showBanner } from "../state/store";
 import { isBuildDialogOpen, newBuild } from "../builds/builds";
 import { agoShort, appEmbed, appOpenUrl, closeApps, closeView, folderOf, useAppsRoot, viewApp, type AppLike } from "./apps";
+import { appsHref } from "../routes";
+import { replaceSearch } from "@platform/lib/router";
 import { AppViewer } from "./AppViewer";
 import { StartersStrip } from "./StartersStrip";
 import { busyLabel, needsStatus, starterBadge, starterOf, starterRows, updateButton, updateConfirm, withStatus, type StarterRow } from "./starters";
@@ -110,9 +112,17 @@ export function AppsPanel({ folder }: { folder: string | null }) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { void loadApps(); }, []);
 
-  // The viewed app: the listing's row for the folder when it has landed, else the folder itself under the root.
-  const viewed: AppLike | null = !folder ? null
+  // The viewed app: the listing's row for the folder when it has landed, else (a deep link, the listing still in
+  // flight) the folder itself under the root. A listing that landed WITHOUT it is a stale link: the gallery shows,
+  // with a banner, and the URL drops the folder (a replace: the dead address is not worth a history entry).
+  const missing = !!folder && grid.kind === "rows" && !grid.rows.some((a) => folderOf(a) === folder);
+  const viewed: AppLike | null = !folder || missing ? null
     : (grid.kind === "rows" && grid.rows.find((a) => folderOf(a) === folder)) || (root ? { name: folder, folder, dir: `${root}/${folder}` } : null);
+  useEffect(() => {
+    if (!missing) return;
+    showBanner(`No app named "${folder}" under ${root || "the apps root"}.`);
+    replaceSearch(appsHref());
+  }, [missing, folder, root]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
