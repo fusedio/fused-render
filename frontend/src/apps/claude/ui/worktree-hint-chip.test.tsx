@@ -8,7 +8,7 @@ import { act, create, type ReactTestInstance, type ReactTestRenderer } from "rea
 import type { Task } from "@platform/lib/api";
 import type { WorktreeHint } from "../protocol/types";
 
-const { WorktreeHintChip, visibleWorktreeHint } = await import("./WorktreeHintChip");
+const { WorktreeHintChip, visibleWorktreeHint, isSameFolder } = await import("./WorktreeHintChip");
 const { Topbar } = await import("./Topbar");
 
 const mounted: ReactTestRenderer[] = [];
@@ -54,6 +54,20 @@ describe("WorktreeHintChip", () => {
     expect(t({ path: "", branch: "", via: "bash" })).toBe("worktree");
     const c = chip(mount(<WorktreeHintChip hint={{ path: "", branch: "", via: "agent" }} />))[0]!;
     expect(c.props.title).toContain("a subagent's isolated worktree");
+  });
+});
+
+describe("isSameFolder", () => {
+  test("a relative hint matches on its last segment", () => {
+    expect(isSameFolder("../p", "/x/p")).toBe(true);
+    expect(isSameFolder("./p", "/x/p")).toBe(true);
+    expect(isSameFolder("a/p", "/x/p")).toBe(true);
+    expect(isSameFolder("../p", "/x/q")).toBe(false);
+    expect(isSameFolder("..", "/x/p")).toBe(false);
+  });
+  test("an absolute hint must be exactly equal", () => {
+    expect(isSameFolder("/x/p", "/x/p/")).toBe(true);
+    expect(isSameFolder("/y/p", "/x/p")).toBe(false);
   });
 });
 

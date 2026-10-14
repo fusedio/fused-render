@@ -14,13 +14,14 @@ const trim = (p: string): string => (p.length > 1 ? p.replace(/\/+$/, "") : p);
 const base = (p: string): string => trim(p).split("/").filter(Boolean).pop() ?? "";
 
 /** The hint's folder IS the chat's folder: same absolute path, or a relative
- *  path that is just the chat folder's own basename. */
+ *  path (`../p`, `./p`, `p`, `a/p`) whose last segment is the chat folder's
+ *  own basename. */
 export function isSameFolder(hintPath: string, currentPath?: string): boolean {
   if (!hintPath || !currentPath) return false;
   const h = trim(hintPath);
   const c = trim(currentPath);
   if (h.startsWith("/")) return h === c;
-  return h === base(c) || c.endsWith("/" + h.replace(/^\.\//, ""));
+  return base(h) !== "" && base(h) === base(c);
 }
 
 /** A `via: "agent"` hint is true only while an isolated agent is running:
