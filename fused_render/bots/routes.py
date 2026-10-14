@@ -525,7 +525,12 @@ def bot_send(bid: str, body: dict = Body(...), x_fused: str | None = Header(defa
     text = (body.get("text") or "").strip()
     if not text:
         raise ValueError("empty message")
-    _bot(bid).send(text, reply_to=body.get("reply_to"), forever=bool(body.get("forever")))
+    answers = body.get("answers")  # a relayed card's button (docs §11): the seq the click meant, else None
+    try:
+        _bot(bid).send(text, reply_to=body.get("reply_to"), forever=bool(body.get("forever")),
+                       answers=int(answers) if answers is not None else None)
+    except _botmod().CardSettled as e:
+        return Response(json.dumps({"error": str(e), "reason": "settled"}), status_code=409, media_type="application/json")
     return {"ok": True}
 
 
