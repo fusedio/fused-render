@@ -528,16 +528,24 @@ function useShot(bot: BotDetail): string | null {
   latestRef.current = latest;
   const running = bot.status === "running";
 
-  // Each swap takes a generation; a frame that loads after a newer swap began
-  // is dropped, so a slow image never overwrites a fresher one.
+  // Each swap takes a generation; a frame is shown only if it is newer than the
+  // one on screen. A slow image never overwrites a fresher one, yet a frame
+  // that loads after the next swap began still lands (a shot slower than 4 s
+  // must not freeze the tile on the first frame).
   const gen = useRef(0);
+  const shownGen = useRef(0);
   const swap = useMemo(
     () => (url: string | null) => {
       const g = ++gen.current;
-      if (!url) return setShown(null);
+      if (!url) {
+        shownGen.current = g;
+        return setShown(null);
+      }
       const img = new Image();
       img.onload = () => {
-        if (g === gen.current) setShown(url);
+        if (g <= shownGen.current) return;
+        shownGen.current = g;
+        setShown(url);
       };
       img.src = url;
     },
