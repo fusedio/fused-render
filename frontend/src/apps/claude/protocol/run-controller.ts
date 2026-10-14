@@ -592,8 +592,11 @@ export function createChatController(deps: ControllerDeps): ChatController {
    *  backend's "work left the worktree" marker and clears it. */
   const landWorktreeHint = (hint: WorktreeHint | null | undefined) => {
     if (hint === undefined) return;
-    const next = hint && hint.via !== "exit" ? hint : null;
     const cur = state.worktreeHint ?? null;
+    // `git worktree remove <other>` leaves a hint for a different absolute
+    // path standing; everything else that exits clears it.
+    if (hint && hint.via === "exit" && hint.removed && cur && cur.path.startsWith("/") && cur.path !== hint.removed) return;
+    const next = hint && hint.via !== "exit" ? hint : null;
     if (
       next === cur ||
       (next &&

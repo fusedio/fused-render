@@ -58,14 +58,17 @@ describe("WorktreeHintChip", () => {
 });
 
 describe("isSameFolder", () => {
-  test("a relative hint matches on its last segment", () => {
-    expect(isSameFolder("../p", "/x/p")).toBe(true);
+  test("a relative hint matches only by name or trailing path, never with ..", () => {
+    expect(isSameFolder("../p", "/x/p")).toBe(false);
     expect(isSameFolder("./p", "/x/p")).toBe(true);
-    expect(isSameFolder("a/p", "/x/p")).toBe(true);
-    expect(isSameFolder("../p", "/x/q")).toBe(false);
+    expect(isSameFolder("p", "/x/p")).toBe(true);
+    expect(isSameFolder("x/p", "/x/p")).toBe(true);
+    expect(isSameFolder("a/p", "/x/p")).toBe(false);
+    expect(isSameFolder("./p", "/x/q")).toBe(false);
     expect(isSameFolder("..", "/x/p")).toBe(false);
   });
   test("an absolute hint must be exactly equal", () => {
+    expect(isSameFolder("/x/p", "/x/p")).toBe(true);
     expect(isSameFolder("/x/p", "/x/p/")).toBe(true);
     expect(isSameFolder("/y/p", "/x/p")).toBe(false);
   });

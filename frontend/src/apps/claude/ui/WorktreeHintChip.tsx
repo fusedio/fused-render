@@ -13,15 +13,18 @@ import type { TaskRecord, WorktreeHint } from "../protocol/types";
 const trim = (p: string): string => (p.length > 1 ? p.replace(/\/+$/, "") : p);
 const base = (p: string): string => trim(p).split("/").filter(Boolean).pop() ?? "";
 
-/** The hint's folder IS the chat's folder: same absolute path, or a relative
- *  path (`../p`, `./p`, `p`, `a/p`) whose last segment is the chat folder's
- *  own basename. */
+/** The hint's folder IS the chat's folder. The server sends absolute paths,
+ *  compared exactly. A relative one (a legacy hint, or a call with no known
+ *  cwd) matches only as the chat folder's own name (`p`) or as a trailing part
+ *  of its path (`./a/p`), and never when it climbs with `..`. */
 export function isSameFolder(hintPath: string, currentPath?: string): boolean {
   if (!hintPath || !currentPath) return false;
   const h = trim(hintPath);
   const c = trim(currentPath);
   if (h.startsWith("/")) return h === c;
-  return base(h) !== "" && base(h) === base(c);
+  if (h.split("/").includes("..")) return false;
+  const rel = h.replace(/^\.\//, "");
+  return rel !== "" && (rel === base(c) || c.endsWith("/" + rel));
 }
 
 /** A `via: "agent"` hint is true only while an isolated agent is running:

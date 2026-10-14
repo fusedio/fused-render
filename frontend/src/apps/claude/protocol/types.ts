@@ -485,6 +485,9 @@ export interface WorktreeHint {
   branch: string;
   via: "bash" | "enter" | "agent" | "exit";
   label?: string;
+  /** On `via: "exit"` from `git worktree remove <path>`: the absolute path
+   *  removed. A different hint path stays standing. */
+  removed?: string;
 }
 export interface ActivityTask {
   id: string;

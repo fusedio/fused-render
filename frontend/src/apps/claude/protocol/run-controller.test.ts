@@ -4686,6 +4686,26 @@ describe("the run's tasks", () => {
     expect(controller.getState().worktreeHint).toBe(null);
   });
 
+  test("a remove of another path keeps the hint; of the hinted path clears it", async () => {
+    const hint = { path: "/x/wt", branch: "feat/x", via: "bash" as const };
+    const run = async (removed: string) => {
+      const { controller } = makeController({
+        start: () => ({ run_id: "r1" }),
+        poll: (_f, n) =>
+          n === 0
+            ? poll({ worktree_hint: hint })
+            : n === 1
+              ? poll({ worktree_hint: { path: "", branch: "", via: "exit", removed } })
+              : poll({ done: true, segments: [text("ok")], text: "ok" }),
+        history: () => ({ turns: [], transcript: null }),
+      });
+      await controller.sendMessage("go");
+      return controller.getState().worktreeHint;
+    };
+    expect(await run("/x/other")).toEqual(hint);
+    expect(await run("/x/wt")).toBe(null);
+  });
+
   test("an equal worktree hint does not bump rev", async () => {
     const hint = { path: "../wt", branch: "feat/x", via: "bash" as const };
     const revs: number[] = [];

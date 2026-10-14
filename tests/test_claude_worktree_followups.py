@@ -101,7 +101,6 @@ def test_scan_finds_key_split_across_chunks(agent):
 @pytest.mark.parametrize("name,inp", [
     ("ExitWorktree", {"action": "keep"}),
     ("Bash", {"command": "git worktree remove ../wt"}),
-    ("Bash", {"command": "cd x && git worktree prune"}),
 ])
 def test_worktree_hint_exit_marker(agent, name, inp):
     assert agent._worktree_hint(name, inp) == {"via": "exit", "path": "", "branch": ""}
@@ -183,3 +182,55 @@ def test_scan_stops_once_streaming_ends(agent, run_dir):
             _input_json('{"model": "opus"}')]
     tool = _poll(agent, run_dir, rows)["activity"]["tool"]
     assert "model" not in tool
+
+
+def test_worktree_prune_is_not_an_exit(agent):
+    assert agent._worktree_hint("Bash", {"command": "cd x && git worktree prune"}) is None
+
+
+def test_worktree_paths_resolve_against_cwd_and_dash_c(agent):
+    hint = agent._worktree_hint
+    assert hint("Bash", {"command": "git -C /other/repo worktree add ../wt"},
+                "/x/proj")["path"] == "/other/wt"
+    assert hint("Bash", {"command": "git worktree add ../p"}, "/x/proj")["path"] == "/x/p"
+    assert hint("Bash", {"command": "git -C sub worktree add ../p"},
+                "/x/proj")["path"] == "/x/proj/p"
+    assert hint("Bash", {"command": "git worktree add /abs/../p"}, "/x/proj")["path"] == "/p"
+    # No cwd: a relative path stays as typed.
+    assert hint("Bash", {"command": "git worktree add ../p"})["path"] == "../p"
+
+
+def test_worktree_quoted_separator_does_not_split(agent):
+    got = agent._worktree_hint(
+        "Bash", {"command": 'echo "a;b" && git worktree add ../p'}, "/x/proj")
+    assert got == {"path": "/x/p", "branch": "", "via": "bash"}
+    got = agent._worktree_hint(
+        "Bash", {"command": "ls\ngit worktree add ../p -b f"}, "/x/proj")
+    assert got["path"] == "/x/p" and got["branch"] == "f"
+
+
+def test_worktree_remove_marker_carries_the_resolved_path(agent):
+    got = agent._worktree_hint("Bash", {"command": "git worktree remove ../wt"}, "/x/proj")
+    assert got == {"via": "exit", "path": "", "branch": "", "removed": "/x/wt"}
+
+
+def _hint_after(agent, run_dir, commands):
+    (run_dir / "meta.json").write_text(json.dumps({"file": "/x/proj/a.py"}))
+    rows = [_assistant_tool("Bash", {"command": c}, f"t{i}")
+            for i, c in enumerate(commands)]
+    return _poll(agent, run_dir, rows)["worktree_hint"]
+
+
+def test_poll_prune_keeps_the_hint(agent, run_dir):
+    hint = _hint_after(agent, run_dir, ["git worktree add ../p", "git worktree prune"])
+    assert hint["via"] == "bash" and hint["path"] == "/x/p"
+
+
+def test_poll_removing_another_path_keeps_the_hint(agent, run_dir):
+    hint = _hint_after(agent, run_dir, ["git worktree add ../p", "git worktree remove ../q"])
+    assert hint["via"] == "bash" and hint["path"] == "/x/p"
+
+
+def test_poll_removing_the_hinted_path_clears_it(agent, run_dir):
+    hint = _hint_after(agent, run_dir, ["git worktree add ../p", "git worktree remove ../p"])
+    assert hint["via"] == "exit"

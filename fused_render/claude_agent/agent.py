@@ -5075,7 +5075,7 @@ def _scan_agent_fields(buf: str, frag: str, found: dict) -> str:
     return buf[-_AGENT_SCAN_OVERLAP:]
 
 
-def _worktree_hint(name, inp) -> dict | None:
+def _worktree_hint(name, inp, cwd: str = "") -> dict | None:
     """What a finalized tool call says about work moving into a git worktree,
     or None. `via` is "bash" (a `git worktree add`), "enter" (EnterWorktree)
     or "agent" (an Agent/Task started with `isolation: "worktree"`)."""
@@ -5083,7 +5083,7 @@ def _worktree_hint(name, inp) -> dict | None:
         return None
     name = str(name or "")
     if name == "Bash":
-        return _bash_worktree_hint(str(inp.get("command") or ""))
+        return _bash_worktree_hint(str(inp.get("command") or ""), cwd)
     if name == "ExitWorktree":
         return dict(_WT_EXIT)
     if name == "EnterWorktree":
@@ -5119,24 +5119,68 @@ def _git_words(words: list) -> list | None:
     return None
 
 
-def _bash_worktree_hint(command: str) -> dict | None:
-    for seg in re.split(r"&&|\|\||;|\n", command):
-        try:
-            words = shlex.split(seg)
-        except ValueError:
-            continue
+#: Tokens made only of these chars split a command into segments. Newline is a
+#: separator token (not whitespace) so `a\ngit worktree add x` splits too.
+_SHELL_SEP_CHARS = frozenset(";&|\n()")
+
+
+def _shell_segments(command: str) -> list:
+    """`command` as a list of word lists, one per simple command. Tokenized
+    FIRST (so a quoted `;` or `&&` is just a word) and split on the operator
+    tokens after. [] when the command does not tokenize."""
+    try:
+        lex = shlex.shlex(command, posix=True, punctuation_chars=";&|\n()<>")
+        lex.whitespace_split = True
+        lex.whitespace = " \t\r"
+        tokens = list(lex)
+    except ValueError:
+        return []
+    segs, cur = [], []
+    for tok in tokens:
+        if tok and all(ch in _SHELL_SEP_CHARS for ch in tok):
+            if cur:
+                segs.append(cur)
+            cur = []
+        else:
+            cur.append(tok)
+    if cur:
+        segs.append(cur)
+    return segs
+
+
+def _wt_resolve(path: str, base: str) -> str:
+    """`path` as an absolute normalized path: absolute stays, relative joins
+    `base`. With no usable base a relative path is returned as typed."""
+    if os.path.isabs(path):
+        return os.path.normpath(path)
+    if base and os.path.isabs(base):
+        return os.path.normpath(os.path.join(base, path))
+    return path
+
+
+def _bash_worktree_hint(command: str, cwd: str = "") -> dict | None:
+    for words in _shell_segments(command):
         words = _git_words(words)
         if words is None:
             continue
         i = 1
+        base = cwd
         while i < len(words) and words[i] != "worktree":
+            if words[i] == "-C" and i + 1 < len(words):
+                base = _wt_resolve(words[i + 1], base)
             if words[i] in ("-C", "-c", "--git-dir", "--work-tree"):
                 i += 1
             i += 1
         if i + 1 >= len(words) or words[i] != "worktree":
             continue
-        if words[i + 1] in ("remove", "prune"):
-            return dict(_WT_EXIT)
+        if words[i + 1] == "remove":
+            marker = dict(_WT_EXIT)
+            target = next((w for w in words[i + 2:] if not w.startswith("-")), "")
+            if target:
+                resolved = _wt_resolve(target, base)
+                if os.path.isabs(resolved):
+                    marker["removed"] = resolved
+            return marker
         if words[i + 1] != "add":
             continue
         args, branch, path, j = words[i + 2:], "", "", 0
@@ -5153,7 +5197,22 @@ def _bash_worktree_hint(command: str) -> dict | None:
                 path = path or a  # later positionals are the commit-ish
                 j += 1
         if path:
-            return {"path": path, "branch": branch, "via": "bash"}
+            return {"path": _wt_resolve(path, base), "branch": branch,
+                    "via": "bash"}
+    return None
+
+
+def _next_worktree_hint(cur: dict | None, hint: dict) -> dict | None:
+    """The hint state after `hint` lands on `cur`. An exit marker clears it,
+    except `git worktree remove <other path>`: removing a checkout that is not
+    the one the hint names leaves the hint standing."""
+    if hint.get("via") != "exit":
+        return hint
+    removed = hint.get("removed")
+    if removed and cur and cur.get("via") == "bash" \
+            and os.path.isabs(str(cur.get("path") or "")) \
+            and cur["path"] != removed:
+        return cur
     return None
 
 
@@ -6399,6 +6458,18 @@ def _cancelled_marker_state(run_dir: str, cursor: int) -> bool:
     return False
 
 
+def _run_workdir(run_dir: str, file: str = "") -> str:
+    """The session's working directory for a run: its recorded target
+    (`meta.json` `file`), else the polling page's `file`; "" when neither."""
+    try:
+        with open(os.path.join(run_dir, "meta.json"), encoding="utf-8") as fh:
+            target = json.load(fh).get("file", "")
+    except (OSError, ValueError, AttributeError):
+        target = ""
+    target = target or file
+    return _workdir(target) if target else ""
+
+
 def _poll(run_id: str, file: str = "", app_reads: bool = False,
           inbox: bool = True) -> dict:
     run_dir = os.path.join(RUNS, run_id)
@@ -6502,6 +6573,7 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
     stream_bufs = {}       # Agent/Task id -> partial_json so far
     stream_found = {}      # Agent/Task id -> {"description"/"subagent_type": str}
     worktree_hint = None   # latest `_worktree_hint` over finalized inputs
+    wt_cwd = _run_workdir(run_dir, file)
     thinking_tokens = 0    # CLI's running estimate for the message in flight
     hooks_open = {}        # hook_id -> hook_name, started and not yet responded
     # Seeded from what the last poll persisted (see `_write_bg_tasks`), not
@@ -6608,9 +6680,17 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
                         and blk.get("id"):
                     tool_inputs[blk["id"]] = blk.get("input") or {}
                     tool_names[blk["id"]] = str(blk.get("name") or "")
-                    hint = _worktree_hint(blk.get("name"), tool_inputs[blk["id"]])
+                    hint = _worktree_hint(blk.get("name"), tool_inputs[blk["id"]],
+                                          wt_cwd)
                     if hint is not None:
-                        worktree_hint = hint
+                        if hint["via"] == "exit":
+                            # Stays a marker unless this window can see the
+                            # hint is for another checkout; the page makes the
+                            # same comparison for state this window cannot see.
+                            kept = _next_worktree_hint(worktree_hint, hint)
+                            worktree_hint = kept if kept is not None else hint
+                        else:
+                            worktree_hint = hint
                     if blk["id"] in tools_open:
                         tools_open[blk["id"]]["detail"] = _tool_detail(
                             blk.get("name"), tool_inputs[blk["id"]])
@@ -8058,9 +8138,10 @@ def _history(file: str, session_id: str, app_reads: bool = False,
         if role == "assistant" and isinstance(content, list):
             for blk in content:
                 if isinstance(blk, dict) and blk.get("type") == "tool_use":
-                    hint = _worktree_hint(blk.get("name"), blk.get("input"))
+                    hint = _worktree_hint(blk.get("name"), blk.get("input"),
+                                          _workdir(file))
                     if hint is not None:
-                        worktree_hint = None if hint["via"] == "exit" else hint
+                        worktree_hint = _next_worktree_hint(worktree_hint, hint)
         if row.get("type") == "system" and row.get("subtype") == "compact_boundary":
             meta = row.get("compactMetadata")
             compacted = meta if isinstance(meta, dict) else {}

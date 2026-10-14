@@ -103,7 +103,7 @@ def test_finalized_agent_row_carries_subagent_type(agent, run_dir):
 @pytest.mark.parametrize("command,expected", [
     ("cd x && git worktree add -q .claude/worktrees/foo -b feat/foo origin/main",
      (".claude/worktrees/foo", "feat/foo")),
-    ("git -C /r worktree add ../p", ("../p", "")),
+    ("git -C /r worktree add ../p", ("/p", "")),
     ("git worktree add --detach p", ("p", "")),
     ("git worktree add -B hot /tmp/hot HEAD", ("/tmp/hot", "hot")),
     ("git worktree add --orphan nb ../nb", ("../nb", "nb")),
