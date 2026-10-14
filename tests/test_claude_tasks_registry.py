@@ -325,10 +325,11 @@ def test_task_stop_passes_the_clis_refusal_through(agent, run_dir, monkeypatch):
     assert agent._task_stop("run", "b9") == {"error": "No task found with ID: b9"}
 
 
-def test_task_stop_shares_the_task_output_lane():
+def test_task_stop_has_its_own_lane():
     import importlib
     pool = importlib.import_module("fused_render.claude_agent.pool")
-    assert pool.pool_for("task_stop") is pool.pool_for("task_output")
+    assert pool.pool_for("task_stop") is pool.TASK_STOP_POOL
+    assert pool.pool_for("task_stop") is not pool.pool_for("task_output")
     assert pool.budget("task_stop") == 15.0
 
 
