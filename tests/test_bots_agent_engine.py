@@ -1446,3 +1446,68 @@ def test_super_ask_user_question_multi_select_keeps_commas_in_labels(server, fak
     # Labels in option order (the join the CLI checks), the typed remainder last and whole.
     assert ans["answers"] == {"Which days?": "Mon, Tue, Wed, and Fri if free"}
     assert [o["label"] for o in ans["questions"][0]["options"]] == ["Mon, Tue", "Wed", "Thu", "and Fri if free"]
+
+
+# ---- local-file / browser-internal URLs are off limits for ordinary bots ----
+class _UrlBrowser:
+    def __init__(self):
+        self.calls = []
+
+    def goto(self, url):
+        self.calls.append(("goto", url))
+        return {"url": url}
+
+    def tab_new(self, url="about:blank"):
+        self.calls.append(("tab_new", url))
+        return {"url": url}
+
+
+class _UrlBot:
+    def __init__(self, kind=None):
+        self.meta = {"kind": kind} if kind else {}
+        self.browser = _UrlBrowser()
+
+
+_BLOCKED_URLS = [
+    "file:///etc/hosts",
+    "FILE:///etc/hosts",
+    "  file:///etc/hosts",
+    "fi\tle:///etc/hosts",
+    "fi\nle:///etc/hosts",
+    "view-source:file:///etc/hosts",
+    "chrome://settings",
+]
+_ALLOWED_URLS = ["https://example.com", "example.com", "localhost:8080/x", "data:text/html,hi", "about:blank"]
+
+
+@pytest.mark.parametrize("url", _BLOCKED_URLS)
+def test_ordinary_bot_goto_refuses_local_urls(url):
+    bot = _UrlBot()
+    _label, res = tools.execute(bot, "goto", {"url": url}, {})
+    assert res.startswith("error: this bot can't open ")
+    assert "Super Bot" in res
+    assert bot.browser.calls == []
+
+
+@pytest.mark.parametrize("url", ["file:///etc/hosts", "view-source:file:///etc/hosts", "chrome://settings"])
+def test_ordinary_bot_tab_new_refuses_local_urls(url):
+    bot = _UrlBot()
+    _label, res = tools.execute(bot, "tab", {"tab": "new", "url": url}, {})
+    assert res.startswith("error: this bot can't open ")
+    assert bot.browser.calls == []
+
+
+@pytest.mark.parametrize("url", _ALLOWED_URLS)
+def test_ordinary_bot_still_opens_web_urls(url):
+    bot = _UrlBot()
+    tools.execute(bot, "goto", {"url": url}, {})
+    tools.execute(bot, "tab", {"tab": "new", "url": url}, {})
+    assert bot.browser.calls == [("goto", url), ("tab_new", url)]
+
+
+def test_super_bot_may_open_file_urls():
+    bot = _UrlBot("super")
+    _label, res = tools.execute(bot, "goto", {"url": "file:///etc/hosts"}, {})
+    assert not res.startswith("error")
+    tools.execute(bot, "tab", {"tab": "new", "url": "file:///etc/hosts"}, {})
+    assert bot.browser.calls == [("goto", "file:///etc/hosts"), ("tab_new", "file:///etc/hosts")]
