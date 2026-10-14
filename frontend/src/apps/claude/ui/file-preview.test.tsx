@@ -13,7 +13,7 @@ import { afterEach, expect, test } from "bun:test";
 import { act, create, type ReactTestInstance } from "react-test-renderer";
 
 import { ArtifactRow } from "./ArtifactRow";
-import { FilePreviewContext, FilePreviewProvider } from "./filePreview";
+import { FilePreviewContext, FilePreviewProvider, useFilePreview } from "./filePreview";
 import { FilePreviewModal } from "./FilePreviewModal";
 import { PathLabel } from "./ToolChip";
 
@@ -157,4 +157,37 @@ test("a gone file falls back to the hosted page even inside a chat", () => {
   }
   expect(opened).toEqual([]);
   expect(calls[0][0]).toBe("https://x.test/a");
+});
+
+function Opener({ p }: { p: string }) {
+  const open = useFilePreview();
+  return <button onClick={() => open?.(p)} />;
+}
+const modals = (r: ReturnType<typeof create>) => r.root.findAllByType(FilePreviewModal);
+
+test("leaving the chat (enabled off) drops the open preview", () => {
+  const tree = (enabled: boolean) => (
+    <FilePreviewProvider cwd="/p" enabled={enabled} sessionKey="s1">
+      <Opener p="/p/a.html" />
+    </FilePreviewProvider>
+  );
+  const r = mount(tree(true));
+  act(() => byType(r, "button")[0].props.onClick());
+  expect(modals(r)).toHaveLength(1);
+  act(() => r.update(tree(false)));
+  act(() => r.update(tree(true)));
+  expect(modals(r)).toHaveLength(0);
+});
+
+test("a different session drops the open preview", () => {
+  const tree = (sessionKey: string) => (
+    <FilePreviewProvider cwd="/p" sessionKey={sessionKey}>
+      <Opener p="/p/a.html" />
+    </FilePreviewProvider>
+  );
+  const r = mount(tree("s1"));
+  act(() => byType(r, "button")[0].props.onClick());
+  expect(modals(r)).toHaveLength(1);
+  act(() => r.update(tree("s2")));
+  expect(modals(r)).toHaveLength(0);
 });
