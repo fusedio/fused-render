@@ -1346,8 +1346,11 @@ unstamped texted yes/no is held with a system line and one text back
 `channels.base.approvals_by_text`), written by the Settings dialog only;
 `GET /api/bots/imessage` returns it as `approvals`. No "don't ask again"
 from the phone (`forever_rule` is None for a phone-started task); offers,
-builds' "waiting for your OK", `login` and a hand-off target's cards stay at
-the Mac. The CHANNEL paragraph tells the model which way the switch stands.
+builds' "waiting for your OK" and `login` stay at the Mac. A hand-off
+target's approval card, or its question with options, comes the same way,
+relayed through Super Bot (§11 "Relayed cards", 2026-10-14): the record
+names the target and the reply goes to the target's gate. The CHANNEL
+paragraph tells the model which way the switch stands.
 `Router.on_event` also skips any event whose via kind is `handoff` (a
 handed-off task reports to Super Bot, not to a phone). `Router.targets()` is
 the whole policy, the origin rule: an event whose `via` is this channel's kind
@@ -1440,11 +1443,14 @@ Super Bot can give an ordinary bot a task. Design page:
 1. One voice on the phone: Super Bot is the only bot reachable over iMessage
    and texts only in reply to a phone-started task (§10). Its own approval
    cards on such a task are texted and answerable from the phone (§10
-   "Approve by text", 2026-10-13); a target bot's are not.
+   "Approve by text", 2026-10-13), and so is a target bot's card, relayed
+   through Super Bot ("Relayed cards" below, 2026-10-14; this reverses the
+   2026-10-13 "a target's cards stay at the Mac").
 2. Task text goes down, status and ONE result come up. A bot never asks Super
-   Bot anything: its `ask`, `login`, approval gate and `offer` stay in its own
-   chat for the user at the Mac. To Super Bot a bot is at most "blocked".
-   Super Bot cannot approve anything for it.
+   Bot anything: its `ask`, `login`, approval gate and `offer` are answered by
+   the USER, never by Super Bot. To Super Bot's model a bot is at most
+   "blocked": no tool answers a card, and the relay below never touches its
+   inbox.
 3. Depth one: only Super Bot hands off; a hand-off to Super Bot is refused.
 4. Super Bot can stop a hand-off it started (`handoff_stop`); no pause,
    resume or steer. Each hand-off is independent; one result per hand-off.
@@ -1556,12 +1562,9 @@ one, or one whose `bot.json` is gone, is skipped), finds the row and moves it:
 | `system "Stopped"` | `cancelled` "<Bot> was stopped before it finished." |
 
 Every change happens under Super Bot's lock and is saved (only while its
-`bot.json` exists); nothing is emitted under that lock. The first `blocked`
-of a hand-off (remembered in memory) emits on Super Bot `{"role":
-"question", "text": "<Bot> needs you at the laptop: <the card's text>
-Answer it at the Mac.", "source": "handoff", "handoff": {id, target,
-target_name, state: "blocked"}, "via": <origin>}` (a trailing "Approve?" is
-dropped: nothing on the phone invites a texted yes). A terminal transition
+`bot.json` exists); nothing is emitted under that lock. Each `blocked` card
+of a hand-off (once per target card seq, remembered in memory) is put up in
+Super Bot's chat by `handoffs._relay_card`, "Relayed cards" below. A terminal transition
 emits on Super Bot `{"role": "done", "text": <the bot's final text
 verbatim>, "summary": <its summary, else the first sentence ≤ 600>,
 "source": "handoff", "handoff": {id, target, target_name, task, state,
@@ -1575,6 +1578,60 @@ the rest. `task_dir` is the target's live task folder when its `task_via` is
 this hand-off's, else its `last_task_dir` when that was this hand-off's, else
 "". The via is unique per hand-off, so a queued follow-up never lends its
 events or folder to an earlier result.
+
+**Relayed cards** (2026-10-14, design
+<https://claude.ai/artifact/4vziWX3pdD1Wh38B8MPZz5>). Owner's ask: a bot
+Super Bot handed a task to blocks on a card; the card must reach the phone
+through Super Bot and the reply must settle it, and Super Bot must have no
+way to approve on its own. So the relay is the router's, not a tool. The
+target's `approval` card, or its `question` with options, is emitted on
+Super Bot as `{"role": "question", "text": "<Bot> needs your OK: <card>" |
+"<Bot> asks: <card>", "source": "handoff", "handoff": {...}, "relay": {bot:
+<target id>, seq: <that card's seq>, kind, options}, "options": [...], "via":
+<origin>}`; `login` and a question without options stay the old notice
+("<Bot> needs you at the laptop: … Answer it at the Mac."). Top-level
+`options` is present only while "Approve by text" (§10) is on: it is what
+the phone is numbered with; off, the text goes out unnumbered and ends
+"Needs your OK at the Mac." Two doors, both the user's:
+
+- *The page.* `HandoffCard` shows Approve / Deny (or the options) and POSTs
+  to `/api/bots/<relay.bot>/send` as the web, the same request a click in
+  that bot's own chat makes; live while that bot's `waiting_on` is the
+  card's seq (Q3: web-started hand-offs get this too).
+- *The phone.* `Router.deliver` records the texted card as `{bot: <target>,
+  seq, opts, sent_at}` (Super Bot's own approval card records itself, same
+  shape). `Router.dispatch` reads the record when Super Bot has no live
+  numbered question of its own (that one, texted later, takes the reply):
+  a reply that is a number of the card's, a yes or a no (`_relay`) is
+  stamped `via["answers"] = <target seq>` and handed to
+  `target.receive(...)` while the target still waits on that seq and the
+  reply postdates the send; the target's `_gate` reads it as the web's. It
+  never enters Super Bot's inbox. Super Bot's chat gets a quiet line, "You
+  approved <Bot>'s card from your phone: …" (source `handoff`, no ref;
+  `past_conversation` labels it THE USER ANSWERED A BOT'S CARD). A verdict
+  for a card that was settled meanwhile (at the Mac, or the task ended) is
+  held: one text back, nothing starts (without this an idle Super Bot would
+  start a task named "1"). Free text never redirects: Super Bot's
+  instruction or new task, as ever. No "don't ask again" by either door.
+
+One live texted card per phone: a second card (a relay, or Super Bot's own)
+waits in `_parked` and is texted when the first settles (`_settle`), after a
+re-check that it is still waited on, so a "1" never has two readings. The
+record follows the bot that WAITS: `Router.on_event` clears a relay on the
+target's next `action` / `thought` (its wait ended, whoever answered), its
+`done`, fatal `error` or `Stopped`, checked before the hand-off early return;
+Super Bot ending an unrelated task leaves it alone. Not relayed: cards of a
+target's routine- or app-started tasks (Super Bot owns no row for them; BOTS
+NOW only reports them).
+
+Why Super Bot cannot approve, and where: no `SUPER_TOOLS` entry (`roster()`
+and `execute()` untouched); `Router.dispatch` is the one writer of
+`via["answers"]`, from the door's own handle; `_gate` honours it only on an
+`Outside` message, and `Bot._texted_approval` holds an unstamped outside
+yes/no before any engine sees the inbox (the steps engine's only protection);
+botsend and app vias have no stamp path; the relayed event is data to the
+model (`question`, source `handoff`); `bot_chat` stays read-only; the page's
+buttons are the user's own POST.
 
 **Sweep** (`handoffs.sweep(registry)`, every scheduler pass of the owner
 process (§7: since 2026-10-13 only the owner holds Bots, so the queue and the

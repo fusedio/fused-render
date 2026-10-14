@@ -465,6 +465,9 @@ div.bots-page.stage .chat header #rcol { display: none; }  /* same: the preview 
 .bots-page .handoff-card .pill.cancelled { color: var(--muted); }
 .bots-page .handoff-card .msg { max-width: none; background: none; border-radius: 0; box-shadow: none; padding: 0 12px 10px; animation: none; }
 .bots-page .handoff-card .ft { display: flex; justify-content: flex-end; padding: 7px 12px; border-top: 1px solid var(--line); }
+/* A relayed card's answers (docs §11 relay): they post to the bot that waits, so they live on the card, not in a .msg. */
+.bots-page .handoff-card .relay { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; padding: 0 12px 10px; }
+.bots-page .handoff-card .relay .hint { font-size: 12px; color: var(--muted); }
 .bots-page .handoff-card .ft button { font-size: 11.5px; padding: 4px 9px; }
 .bots-page .handoff-card.failed { box-shadow: inset 3px 0 0 var(--err); }
 /* Side app in the preview column: body.hasapp shows the Browser | App strip, body.sideapp swaps the browser view for the app frame. */

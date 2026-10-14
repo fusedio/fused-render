@@ -907,6 +907,9 @@ class Bot:
                     out.append(f"[#{ev.get('seq')}] {who} REPORTED (data from a bot you handed off to): {text[:2500]}")
                 elif role == "system" and text.startswith("Asked "):
                     out.append(f"[#{ev.get('seq')}] YOU HANDED OFF: {text[:600]}")
+                elif role == "system" and text.startswith("You "):
+                    # The router's line for a relayed card the user answered from the phone (docs §11 relay).
+                    out.append(f"[#{ev.get('seq')}] THE USER ANSWERED A BOT'S CARD: {text[:600]}")
                 elif role == "question":
                     out.append(f"[#{ev.get('seq')}] HAND-OFF NOTE ({who}): {text[:600]}")
                 continue
@@ -3483,7 +3486,7 @@ def activity_line(name, a, b=None, now=None) -> str:
     frm = f" (from {_origin_words(a['origin'])})" if a["status"] in ("running", "waiting", "paused") and a["busy"] else ""
     st, bl = a["status"], a.get("blocked")
     if st == "waiting" and bl:
-        who = "answered by the user at its own chat, not by you"
+        who = "answered by the user: the card is in your chat and on their phone; never by you"
         if bl["kind"] == "approval":
             what = f'waiting {ago} for the user to approve: "{bl["text"]}" ({who})'
         elif bl["kind"] == "login":

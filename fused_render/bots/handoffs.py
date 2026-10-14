@@ -32,7 +32,7 @@ NOTE_CAP = 160
 BLOCKED_CAP = 300
 RESULT_CAP = 4000
 
-_asked: set = set()  # hand-off ids whose "needs you at the laptop" card went up (in memory: a restart closes every row)
+_asked: set = set()  # (hand-off id, target card seq) already put up in Super Bot's chat (in memory: a restart closes every row)
 
 
 def _botmod():
@@ -122,8 +122,8 @@ def _apply(sb, t, hid, ev):
             # `login: True` is the card's own mark (agent_engine._login); the text test is the older wording.
             kind = "approval" if role == "approval" else ("login" if ev.get("login") or "browser window" in text else "question")
             hd.update(state="blocked", blocked={"kind": kind, "text": _flat(text, BLOCKED_CAP)})
-            if hid not in _asked:  # one "needs you at the laptop" card per hand-off
-                _asked.add(hid)
+            if (hid, ev.get("seq")) not in _asked:  # one card up per target card: a target may block twice in one hand-off
+                _asked.add((hid, ev.get("seq")))
                 card = re.sub(r"\s*Approve\?\s*$", "", _flat(text, 2000))[:BLOCKED_CAP] or "it is waiting for you"
         elif role in ("action", "thought", "note"):
             changed = False
@@ -160,8 +160,34 @@ def _apply(sb, t, hid, ev):
         state, out, summary = final
         sb._handoff_finish(t, hd, state, out, summary=summary, task_dir=_task_dir(t, hv))
     elif card is not None:
-        sb.emit("question", f"{hd.get('target_name') or 'A bot'} needs you at the laptop: {card} Answer it at the Mac.",
+        _relay_card(sb, t, hd, ev, card)
+
+
+def _relay_card(sb, t, hd, ev, card):
+    """The target's card, up in Super Bot's chat (docs §11 relay). An approval card
+    or a question with options is answerable there (`relay`: the card's buttons in
+    Super Bot's chat post to the target) and, with "Approve by text" on, from the
+    phone (`options`: the router numbers them and stamps the reply for the
+    TARGET's card, Router.dispatch). Super Bot's model only reads the event: no
+    tool answers a card. A sign-in, or a question without options, stays a
+    notice: the user answers it at the Mac."""
+    name = hd.get("target_name") or "A bot"
+    role = ev.get("role")
+    opts = []
+    if role == "approval":
+        opts = list(chan.APPROVAL_OPTIONS)
+    elif not (ev.get("login") or "browser window" in (ev.get("text") or "")):
+        opts = [str(o).strip()[:80] for o in (ev.get("options") or []) if str(o).strip()][:5]
+    if len(opts) < 2 or ev.get("seq") is None:
+        sb.emit("question", f"{name} needs you at the laptop: {card} Answer it at the Mac.",
                 source="handoff", handoff=sb._handoff_ref(hd), via=hd.get("origin_via"))
+        return
+    relay = {"bot": t.id, "seq": ev.get("seq"), "kind": "approval" if role == "approval" else "question", "options": opts}
+    text = f"{name} needs your OK: {card}" if role == "approval" else f"{name} asks: {card}"
+    # Top-level `options` is what a phone is numbered with (Router.render), only while the switch is on. Off, the text
+    # goes out unnumbered and render() ends it "Needs your OK at the Mac."; the card in Super Bot's chat still works.
+    numbered = {"options": opts} if chan.approvals_by_text(sb.meta) else {}
+    sb.emit("question", text, source="handoff", handoff=sb._handoff_ref(hd), via=hd.get("origin_via"), relay=relay, **numbered)
 
 
 # ---------------------------------------------------------------- sweep ---
@@ -261,7 +287,7 @@ def handoffs_section(bot) -> str:
             tail = "received (queued behind its current task)" if not h.get("started_at") else "received"
         elif st == "blocked":
             b = h.get("blocked") or {}
-            tail = (f"blocked         asks: \"{_flat(b.get('text'), 120)}\"   (answered at its own chat, not by you)")
+            tail = (f"blocked         asks: \"{_flat(b.get('text'), 120)}\"   (answered by the user, never by you)")
         else:
             tail = f"{st} {_ago(now - float(h.get('done_at') or now))} ago   (result below)"
             results.append(f"h{i} ({who}, {st}):\n{(h.get('result') or '').strip()}")

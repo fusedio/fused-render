@@ -62,6 +62,9 @@ export interface BotEvent {
    *  marker (a note); the thread folds every row before the last one. */
   source?: "build" | "handoff" | "clear" | (string & {});
   handoff?: HandoffRef;
+  /** A hand-off target's card relayed into Super Bot's chat (docs §11 relay): which bot waits on which card, and its
+   *  choices. The card's buttons here post to THAT bot; Super Bot itself never answers it. */
+  relay?: { bot: string; seq: number; kind: "approval" | "question"; options: string[] };
   /** source "build": the build that stopped moving (permission card, question, failure, usage limit); renders as a build card. */
   build?: BuildRef;
   /** A "Sent to Super Bot" line: the card it became in Super Bot's chat ("Read more" opens that chat there). */
