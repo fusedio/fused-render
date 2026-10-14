@@ -3,6 +3,9 @@
 // table, the bot's raw HTML is text, links open away — not the sanitizer.
 import { describe, expect, test } from "bun:test";
 
+import { Marked } from "marked";
+
+import { esc } from "./format";
 import { md, parseMdStage } from "./md";
 
 const parse = parseMdStage;
@@ -17,9 +20,9 @@ describe("md", () => {
   test("a GFM pipe table is a real table (the Restic vs Cryptomator report)", () => {
     const html = parse("| | A: Restic | B: Cryptomator |\n|---|---|---|\n| What it is | A backup tool | A vault |\n| S3 | Built in | Not built in |\n");
     expect(html).toContain('<div class="tablewrap"><table>');  // the wrap is the sideways scroller (Bugbot, #1556)
-    expect(html).toContain("<th>A: Restic</th>");
-    expect(html).toContain("<td>What it is</td>");
-    expect(html).toContain("<td>Not built in</td>");
+    expect(html).toContain('<th class="nw">A: Restic</th>');
+    expect(html).toContain('<td class="nw">What it is</td>');
+    expect(html).toContain('<td class="nw">Not built in</td>');
     expect(html).not.toContain("|");
   });
   test("raw HTML the bot writes is text, never markup", () => {
@@ -44,5 +47,70 @@ describe("md", () => {
   });
   test("without a DOM, md() falls back to escaped <pre> rather than throwing", () => {
     expect(md("**x** <y>")).toBe("<pre>**x** &lt;y&gt;</pre>");
+  });
+  describe("wide blocks", () => {
+    const table = (cols: number, rows: number) => {
+      const row = (p: string) => "| " + Array.from({ length: cols }, (_, i) => p + i).join(" | ") + " |";
+      return [row("h"), "|" + "---|".repeat(cols), ...Array.from({ length: rows }, (_, r) => row("r" + r + "c"))].join("\n");
+    };
+    test("a 2-column table is not wrapped", () => {
+      const html = parse(table(2, 3));
+      expect(html).toContain('<div class="tablewrap"><table>');
+      expect(html).not.toContain('class="wide"');
+    });
+    test("a 4-column table is wrapped with a CSV button and no row cap", () => {
+      const html = parse(table(4, 3));
+      expect(html).toContain('<div class="wide"><div class="tablewrap"><table>');
+      expect(html).toContain("data-tcsv");
+      expect(html).not.toContain("data-tmore");
+      expect(html).not.toContain("capped");
+    });
+    test("more than 12 rows is capped behind Show all N rows", () => {
+      const html = parse(table(4, 13));
+      expect(html).toContain('<div class="wide capped">');
+      expect(html).toContain('data-tmore="13"');
+      expect(html).toContain("Show all 13 rows");
+    });
+    test("a code fence with a line over 80 chars is wide; short lines are not", () => {
+      expect(parse("```\n" + "x".repeat(100) + "\n```")).toContain('<div class="wide"><pre>');
+      expect(parse("```\nshort\n```")).not.toContain("wide");
+    });
+    test("prose around a wide table stays outside the wrapper", () => {
+      const html = parse("before\n\n" + table(4, 2) + "\n\nafter");
+      expect(html.indexOf("<p>before</p>")).toBeLessThan(html.indexOf('<div class="wide"'));
+      expect(html.indexOf("<p>after</p>")).toBeGreaterThan(html.lastIndexOf("</div>"));
+    });
+    test("short cells are nowrap; long ones are bare", () => {
+      const html = parse("| a | b |\n|---|---|\n| What it is | " + "y".repeat(40) + " |\n");
+      expect(html).toContain('<td class="nw">What it is</td>');
+      expect(html).toContain("<td>" + "y".repeat(40) + "</td>");
+    });
+  });
+  test("markdown with no wide block is byte-identical to plain marked with the same renderer", () => {
+    // Mirrors the renderer md.ts configures: what this pins is that lexer -> wrapWide -> parser adds nothing when nothing is wide.
+    const plain = new Marked({
+      gfm: true,
+      breaks: true,
+      renderer: {
+        html: (html: string) => esc(html),
+        link(href: string, _title: string | null | undefined, text: string) {
+          return `<a href="${esc(href || "")}" target="_blank" rel="noopener">${text}</a>`;
+        },
+        tablecell(content: string, flags: { header: boolean; align: "center" | "left" | "right" | null }) {
+          const tag = flags.header ? "th" : "td";
+          const nw = content.replace(/<[^>]+>/g, "").trim().length <= 24 ? ' class="nw"' : "";
+          return `<${tag}${nw}${flags.align ? ` align="${flags.align}"` : ""}>${content}</${tag}>\n`;
+        },
+        table(header: string, body: string) {
+          return `<div class="tablewrap"><table><thead>${header}</thead>${body ? `<tbody>${body}</tbody>` : ""}</table></div>`;
+        },
+      },
+    });
+    const fixtures = [
+      "Some **prose** with `inline code` and a [link](https://example.com/a?b=1).\nSecond line.",
+      "| Name | Value |\n|---|---|\n| a | 1 |\n| b | 2 |\n| c | 3 |\n",
+      "```ts\nconst x = 1;\nconsole.log(x);\n```\n",
+    ];
+    for (const text of fixtures) expect(parse(text)).toBe(plain.parse(text) as string);
   });
 });

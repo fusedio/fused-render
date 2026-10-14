@@ -100,3 +100,24 @@ export function highlightSearch(th: HTMLElement, q: string): number {
   api.set(SEARCH_HL, new Ctor(...ranges));
   return ranges.length;
 }
+
+/** Rows of cell text → CSV: a cell with a comma, a quote or a newline is quoted, inner quotes doubled; rows join with \n. */
+export function rowsToCsv(rows: string[][]): string {
+  const cell = (s: string) => (/[,"\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s);
+  return rows.map((r) => r.map(cell).join(",")).join("\n");
+}
+
+/** Every row of a rendered table (header and body, including rows the cap hides) as CSV; the DOM reader over `rowsToCsv`. */
+export const tableToCsv = (table: HTMLTableElement): string =>
+  rowsToCsv(Array.from(table.querySelectorAll("tr"), (tr) => Array.from(tr.children, (c) => (c.textContent || "").trim())));
+
+/** Copy `csv` to the clipboard; the button label reports the outcome ("Copied" only once the write resolves) and reverts after 1.2 s. */
+export function copyCsv(btn: { textContent: string | null }, csv: string): void {
+  const done = (label: string) => {
+    btn.textContent = label;
+    setTimeout(() => { btn.textContent = "Copy as CSV"; }, 1200);
+  };
+  const clip = typeof navigator === "undefined" ? undefined : navigator.clipboard;
+  if (!clip) { done("Copy failed"); return; }
+  clip.writeText(csv).then(() => done("Copied"), () => done("Copy failed"));
+}

@@ -4925,6 +4925,18 @@ function ChatBody(props: ChatBodyProps) {
               running={running}
               landing={!inChat}
               onErased={onErased}
+              // ARCHIVE LEAVES THROUGH THE SAME DOOR DELETE DOES (Akshil,
+              // 2026-10-14): the task is filed, so the page goes back to the
+              // landing rather than staying on a transcript the reader has just
+              // put away. `onBack`, not `onErased`: the transcript still EXISTS,
+              // so there is no comment mode to tear down ahead of the hop (the
+              // item is greyed while one holds the page anyway), and the
+              // composer's leave guard keeps its say — a Cancel on unsent text
+              // leaves the reader on the filed chat, menu reading "Unarchive",
+              // which is the honest state. The Tasks page's peek is the other
+              // surface and has its own rule (`advancePast` slides to the next
+              // row); this is the chat page's.
+              onArchived={onBack}
               // PR3: Archive and Delete both carry the reader off this chat,
               // and a comment round or a walkthrough is about the app beside it
               // — the same nav lock that greys ← Chats and every recent row

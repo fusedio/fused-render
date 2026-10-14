@@ -81,7 +81,6 @@ from fused_render.server.routers.shell import router as shell_router
 from fused_render.server.routers.current_apps import router as current_apps_router
 from fused_render.server.routers.app_uninstall import router as app_uninstall_router
 from fused_render.server.routers.launcher import router as launcher_router
-from fused_render.server.routers.windows import router as windows_router
 from fused_render.server.routers.dock import router as dock_router
 from fused_render.server.routers.drafts import router as drafts_router
 from fused_render.server.routers.queue_events import router as queue_events_router
@@ -950,7 +949,6 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # apps ranked by a query; bots under Fused Bot.
     app.include_router(launcher_router)
     # An app clicked inside a macOS native window opens in its own window.
-    app.include_router(windows_router)
     # Community marketplace backend for the /apps hub's Showcase tab and the
     # explorer preview's Clone button (routers/community.py).
     app.include_router(community_router)
