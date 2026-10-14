@@ -2745,7 +2745,8 @@ class Bot:
         mode = BUILD_MODES.get(_tools.effective_build_access(self), "default")  # scoped for a phone-started Super Bot task
         r = _tasks_api("POST", "/api/tasks/create", {
             "prompt": _build_prompt(name, d, spec, update=update), "target": d, "title": f"{'Update' if update else 'Build'} · {name}",
-            "model": BUILD_MODEL, "effort": BUILD_EFFORT, "permission_mode": mode})
+            "model": BUILD_MODEL, "effort": BUILD_EFFORT, "permission_mode": mode,
+            "bot": self.id})  # comes back on the task row as `bot`: the panel lists this bot's tasks by it
         bd = {"entry_id": r.get("entry_id") or "", "key": r.get("key") or "", "name": name, "dir": d,
               "mode": mode, "created_at": time.time(),
               # the channel the asking task came from: the "ready" message goes back there (router D5)

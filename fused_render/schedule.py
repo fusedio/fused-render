@@ -1527,7 +1527,7 @@ def create(target: str, message: str, due=None, session_id: str = "",
            immediate=None, images=None, attachments=None,
            create_target: bool = False,
            model: str = "", effort: str = "", priority=None,
-           follow_of: str = "", origin: str = "") -> dict:
+           follow_of: str = "", origin: str = "", bot: str = "") -> dict:
     """Validate and store one scheduled message; return the stored entry.
 
     `title` and `description` are the user's own words about the work, both
@@ -1756,6 +1756,11 @@ def create(target: str, message: str, due=None, session_id: str = "",
     # holding a list of its callers. Normalised like every other string here so
     # "absent", None and "  " are the one thing they mean.
     origin = str(origin or "").strip()
+    # `bot` is WHICH BOT ASKED FOR THIS MESSAGE (bots/bot.py `build` through
+    # `/api/tasks/create`): its id, "" for everything else. Stored like `origin`,
+    # only when there is one. The tasks listing hands it back on the row (`bot`),
+    # which is how a bot's panel lists the tasks it started.
+    bot = str(bot or "").strip()
 
     entry = {
         # Due-time-ordered id: the store is a list a human may well read, and an
@@ -1910,6 +1915,8 @@ def create(target: str, message: str, due=None, session_id: str = "",
     # changes the bytes of every entry main writes. Same rule as `host_sent`.
     if origin:
         entry["origin"] = origin
+    if bot:
+        entry["bot"] = bot
     if spec is not None:
         # The first run of the series, kept where materialization cannot move
         # it — see the docstring. Every occurrence is "the anchor plus k steps",
@@ -3894,6 +3901,12 @@ def _materialize(now: datetime) -> None:
                 "turn_at": "",
                 "claude_session_id": "",
             }
+            # The bot that asked travels with every run, like the title: a
+            # listing filtered to that bot (`?bot=`) must see the occurrences,
+            # and `_collect` never lists the template (CodeRabbit, PR #1646).
+            # Written only when there is one, as `create` writes it.
+            if entry.get("bot"):
+                occurrence["bot"] = str(entry["bot"])
             fresh.append(occurrence)
             # The template's own `due` mirrors its next occurrence — it is what
             # the listing sorts and shows for the recurring row.
@@ -4731,7 +4744,11 @@ def resend(entry_id: str, now: datetime | None = None) -> dict:
         # still that chat's message, and the composer it belongs to should no
         # more be shut by the second ask than it was by the first. An original
         # with no origin copies "" and the new entry has none either.
-        origin=str(original.get("origin") or ""))
+        origin=str(original.get("origin") or ""),
+        # Same rule for the bot that asked (Bugbot, PR #1646): a re-ask of a
+        # bot's build is still that bot's task, and the fresh id matches
+        # nothing else the bot recorded.
+        bot=str(original.get("bot") or ""))
     # Provenance, and the ONLY link between the two rows — the original is not
     # written to, so without this nothing records that the second message is a
     # re-ask of the first. Written after creation rather than threaded through

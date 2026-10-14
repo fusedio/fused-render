@@ -2,8 +2,9 @@
 // the side app strip, the screenshot (click → live view), the status toast, the caption and the info sections
 // (model download, task, Inbox, attached files, routines, usage). In Stage (root .stage) all of that but the header steps
 // aside and the live view (#full, always mounted here) fills the column.
-import { useEffect, type MouseEvent } from "react";
+import { useEffect, useMemo, type MouseEvent } from "react";
 import { appOpenUrl } from "../apps/apps";
+import { botTasks, openBuilds, useBuildRows } from "../builds/builds";
 import { SideApp } from "../apps/SideApp";
 import { embedUrlForFsPath } from "@platform/lib/router";
 import { api, rawFileUrl, shotUrl, type Artifact, type Bot } from "../lib/api";
@@ -113,6 +114,62 @@ function UsageStrip({ b }: { b: Bot }) {
   );
 }
 
+/** The bot's own task as a row (owner, 2026-10-14: "the task row UI there"): the page's status dot, the task, and
+ *  the one fact the status adds. The dot is the list row's (bots.css .dot.<status>): green pulse while it runs, red
+ *  pulse while it waits on you, amber paused, red failed, grey once it is the last task. */
+function BotTask({ b }: { b: Bot }) {
+  const step = b.step && b.step_cap ? `step ${b.step}/${b.step_cap}` : "";
+  const fact = b.status === "running" ? step || "running" : b.status === "waiting" ? "waiting for you"
+    : b.status === "paused" ? "paused" : b.status === "error" ? "failed" : "";
+  return (
+    <section>
+      <h4>{b.status === "idle" ? "Last task" : "Task"}</h4>
+      <div className="trow" title={b.task}>
+        <span className={`dot ${b.status}`} />
+        <span className="ttl">{b.task}</span>
+        {fact ? <small className={b.status === "error" ? "warn" : undefined} title={b.status === "error" ? b.note || "" : ""}>{fact}</small> : null}
+      </div>
+    </section>
+  );
+}
+
+// A shell task row's status (routes/tasks.py `_status`) in this page's two vocabularies: the dot's colour class and
+// the word after the title. A queued or upcoming task is not running yet, so it keeps the bare grey dot.
+const TASK_DOT: Record<string, string> = { in_progress: "running", needs_attention: "waiting", blocked: "error" };
+const TASK_WORD: Record<string, string> = {
+  in_progress: "running", queued: "queued", upcoming: "upcoming", needs_attention: "needs you", blocked: "failed", done: "done", archived: "archived",
+};
+
+/** The Claude tasks this bot started (bot.py `build` → /api/tasks/create, tagged with the bot's id; builds/builds.ts
+ *  botTasks), newest first, four at most. A row opens the task on the Tasks page (/bots/tasks?task=<key>). The rows
+ *  are the builds feed's (startBuilds), so they move as the task does, on the same long poll the footer chip rides. */
+function BotTasks({ b }: { b: Bot }) {
+  const rows = useBuildRows();
+  const mine = useMemo(() => botTasks(rows, b.id, b.builds), [rows, b.id, b.builds]);
+  if (!mine.length) return null;
+  return (
+    <section>
+      <h4>Tasks</h4>
+      {mine.slice(0, 4).map((t) => {
+        const live = t.status === "in_progress";
+        const when = live ? "" : fmtAgo(t.last_active || t.started);
+        return (
+          <button key={t.key} type="button" className="trow" title={t.last_reply || t.title || ""} onClick={() => openBuilds(t.key)}>
+            <span className={`dot ${TASK_DOT[t.status] || ""}`} />
+            <span className="ttl">{t.title || "Task"}</span>
+            <small className={t.status === "blocked" ? "warn" : undefined}>{TASK_WORD[t.status] || t.status}{when ? ` · ${when}` : ""}</small>
+          </button>
+        );
+      })}
+      {mine.length > 4 ? (
+        <div className="fine" style={{ marginTop: 6 }}>
+          <button className="lnk" onClick={() => openBuilds()}>All {mine.length} tasks</button>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 function Info({ b }: { b: Bot }) {
   const files = b.browser?.files || [];
   return (
@@ -120,7 +177,8 @@ function Info({ b }: { b: Bot }) {
       {b.dl_pct != null ? (
         <section><h4>Downloading model</h4><div className="dlbar"><div className="dlfill" style={{ width: `${b.dl_pct}%` }} /></div><div className="fine">{b.dl_pct}%</div></section>
       ) : null}
-      {b.task ? <section><h4>{b.status === "idle" ? "Last task" : "Task"}</h4><div className="task">{b.task}</div></section> : null}
+      {b.task ? <BotTask b={b} /> : null}
+      <BotTasks b={b} />
       <Inbox b={b} />
       {files.length ? (
         <section>

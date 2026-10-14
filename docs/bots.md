@@ -397,7 +397,9 @@ Builds note: OpenBot kept `builds.json` in its own `.fused/data`; here it is
 `GET/POST /api/bots/builds` (`registry.builds_json`, stored at
 `<home>/bots/data/builds.json`). `fused.tasks.*` calls become `tasks-lib`-style
 fetches to `/api/tasks/*` with explicit `target` (no `X-Fused-Page` here):
-`POST /api/tasks/create {prompt, target, title, model, effort, permission_mode}`,
+`POST /api/tasks/create {prompt, target, title, model, effort, permission_mode, bot}`
+(`bot` = the bot's id; the row carries it back as `bot`, and `GET /api/tasks?bot=<id>`
+filters on it — the bot's panel lists the tasks it started by that tag),
 `GET /api/tasks`, `GET /api/tasks/changes` (long poll), `POST /api/tasks/read`.
 
 Keep: every string the user sees, every keyboard shortcut (⌘F search, Esc

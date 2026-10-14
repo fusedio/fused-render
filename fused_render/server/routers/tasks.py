@@ -3331,6 +3331,7 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
     pending_id = tasks_store.pending_entry(task["key"])
     entry_id = pending_id or _minting_entry(task)
     entry_origin = _leader_origin(task, pending_id) if pending_id else ''
+    bot = _entry_bot(task, entry_id)
     status = _status(merged, filed, task["session_id"], live, busy,
                      parked=waiting is not None, queued=bool(queued))
     # THE NEWEST MESSAGE THE USER SENT — one line of it — or None for a task
@@ -3377,6 +3378,11 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
         # on it and does not. `""` for every task that has a session, which is
         # already a chat and already listed as one.
         "entry_origin": entry_origin,
+        # THE BOT THAT STARTED THIS TASK (its id, bots/bot.py `build`), "" for
+        # every other row. Read off the entry the row is keyed by while pending
+        # and the one that minted its session after — `entry_id` either way —
+        # so the tag survives the rekey. The bot's panel lists its tasks by it.
+        "bot": bot,
         # Canonicalized on the way out, like every other fs path this server
         # hands the shell: the frontend's path helpers are forward-slash-only.
         "project": canonical_fs_path(task["project"]),
@@ -3592,6 +3598,18 @@ def _minting_entry(task: dict) -> str:
         and not str(e.get("follow_of") or "")
         and str(e.get("claude_session_id") or "") == session)
     return ids[0] if ids else ""
+
+
+def _entry_bot(task: dict, entry_id: str) -> str:
+    """`bot` off the entry `entry_id` names (schedule.create's `bot`): "" when
+    there is no entry id, the entry carries none, or it is not among this
+    task's entries."""
+    if not entry_id:
+        return ""
+    for entry in task["entries"]:
+        if str(entry.get("id") or "") == entry_id:
+            return str(entry.get("bot") or "")
+    return ""
 
 
 def _leader_origin(task: dict, entry_id: str) -> str:
@@ -5044,7 +5062,7 @@ def _scoped(rows: list[dict], scope_dir: str) -> list[dict]:
 
 
 @router.get("/api/tasks")
-def api_tasks(under: str = Query(""), scope: str = Query(""),
+def api_tasks(under: str = Query(""), scope: str = Query(""), bot: str = Query(""),
               x_fused_page: str | None = Header(default=None),
               accept_encoding: str = Header(default="")):
     """Every task, newest activity first, each with its three newest messages.
@@ -5056,19 +5074,25 @@ def api_tasks(under: str = Query(""), scope: str = Query(""),
 
     `?under=<abs dir>` or `?scope=app` (the app of the `X-Fused-Page` caller)
     keeps only tasks whose target or project is that folder or inside it — the
-    page-side `fused.tasks.list`. No param is the whole listing, unchanged.
+    page-side `fused.tasks.list`. `?bot=<id>` keeps only the tasks that bot
+    started (the row's `bot`), on top of either. No param is the whole
+    listing, unchanged.
     """
     scope_dir, refusal = _scope_dir(under, scope, x_fused_page)
     if refusal is not None:
         return refusal
+    bot = (bot or "").strip()
     # The generation is the one the rows STAND FOR (the snapshot's, with the
     # builder running), never the watcher's current one: a client long-polling
     # `/api/tasks/changes` from it must be told about everything these rows
     # have not seen.
     rows, gen = _listing()
-    if not scope_dir:
+    if not scope_dir and not bot:
         return _listing_response(rows, gen, accept_encoding)
-    return {"tasks": _scoped(rows, scope_dir), "generation": gen}
+    rows = _scoped(rows, scope_dir)
+    if bot:
+        rows = [row for row in rows if row.get("bot") == bot]
+    return {"tasks": rows, "generation": gen}
 
 
 # THE WHOLE LISTING, SERIALISED AND GZIPPED ONCE PER SNAPSHOT (2026-10-09,
@@ -7881,6 +7905,12 @@ def _opt_str(body: dict, field: str):
     return value.strip(), None
 
 
+#: A bot id: bots/bot.py mints `uuid4().hex[:8]`, but a bot is any data-dir
+#: folder holding a bot.json (bots/store.py `list_ids`), so the shape is "a
+#: folder name", not eight hex — only a label with spaces or a path is refused.
+_BOT_ID_RE = re.compile(r"[A-Za-z0-9_.-]{1,64}")
+
+
 _UI_VIEWS = ("list", "board", "cards", "calendar")
 
 
@@ -7994,10 +8024,22 @@ def api_task_create(body: dict = Body(...),
                       + ", ".join(repr(m) for m in _PAGE_PERMISSION_MODES),
                       status=400)
     fields = {}
-    for field in ("target", "title", "model", "effort"):
+    for field in ("target", "title", "model", "effort", "bot"):
         fields[field], refusal = _opt_str(body, field)
         if refusal is not None:
             return refusal
+    # `bot`: the id of the bot starting this task (bots/bot.py `build`), kept on
+    # the entry and handed back on the row so the bot's panel can list what it
+    # started. Checked for the shape of an id (`_BOT_ID_RE`) and then against
+    # the bots that exist, so the tag is a fact about a bot and never a label
+    # some page sent: the bots side lists every tagged row as that bot's build
+    # (builds.ts `isBuild`), which is only true of a bot (CodeRabbit, PR #1646).
+    if fields["bot"]:
+        if not _BOT_ID_RE.fullmatch(fields["bot"]):
+            return _error("bot: expected a bot id", status=400)
+        from fused_render.bots import store as bot_store  # noqa: PLC0415
+        if fields["bot"] not in bot_store.list_ids():
+            return _error(f"bot: no bot {fields['bot']!r}", status=400)
     target = fields["target"] or _page_scope(x_fused_page)[2]
     if not target:
         return _error("target: required — no target given and no X-Fused-Page "
@@ -8021,7 +8063,8 @@ def api_task_create(body: dict = Body(...),
         entry = schedule.create(
             resolved, prompt, when, immediate=immediate,
             title=fields["title"] or None, model=fields["model"],
-            effort=fields["effort"], permission_mode=mode, origin="page")
+            effort=fields["effort"], permission_mode=mode, origin="page",
+            bot=fields["bot"])
     except ValueError as exc:
         return _error(str(exc), status=400)
     entry_id = str(entry.get("id") or "")

@@ -195,7 +195,8 @@ export interface Bot {
   handoffs?: Handoff[];
   /** The channel the running task came from; null/absent for a web task. */
   task_via?: Via | null;
-  builds?: unknown;
+  /** The builds this bot started (bot.py `build`, last 40): the task's entry id and key, the app's name and folder. */
+  builds?: { entry_id?: string; key?: string; name?: string; dir?: string; created_at?: number }[];
   pending_offer?: { seq: number; [k: string]: unknown } | null;
   offers_declined?: unknown;
   artifacts_dir?: string;
