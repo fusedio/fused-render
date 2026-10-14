@@ -17,9 +17,9 @@ describe("md", () => {
   test("a GFM pipe table is a real table (the Restic vs Cryptomator report)", () => {
     const html = parse("| | A: Restic | B: Cryptomator |\n|---|---|---|\n| What it is | A backup tool | A vault |\n| S3 | Built in | Not built in |\n");
     expect(html).toContain('<div class="tablewrap"><table>');  // the wrap is the sideways scroller (Bugbot, #1556)
-    expect(html).toContain("<th>A: Restic</th>");
-    expect(html).toContain("<td>What it is</td>");
-    expect(html).toContain("<td>Not built in</td>");
+    expect(html).toContain('<th class="nw">A: Restic</th>');
+    expect(html).toContain('<td class="nw">What it is</td>');
+    expect(html).toContain('<td class="nw">Not built in</td>');
     expect(html).not.toContain("|");
   });
   test("raw HTML the bot writes is text, never markup", () => {
@@ -44,5 +44,43 @@ describe("md", () => {
   });
   test("without a DOM, md() falls back to escaped <pre> rather than throwing", () => {
     expect(md("**x** <y>")).toBe("<pre>**x** &lt;y&gt;</pre>");
+  });
+  describe("wide blocks", () => {
+    const table = (cols: number, rows: number) => {
+      const row = (p: string) => "| " + Array.from({ length: cols }, (_, i) => p + i).join(" | ") + " |";
+      return [row("h"), "|" + "---|".repeat(cols), ...Array.from({ length: rows }, (_, r) => row("r" + r + "c"))].join("\n");
+    };
+    test("a 2-column table is not wrapped", () => {
+      const html = parse(table(2, 3));
+      expect(html).toContain('<div class="tablewrap"><table>');
+      expect(html).not.toContain('class="wide"');
+    });
+    test("a 4-column table is wrapped with a CSV button and no row cap", () => {
+      const html = parse(table(4, 3));
+      expect(html).toContain('<div class="wide"><div class="tablewrap"><table>');
+      expect(html).toContain("data-tcsv");
+      expect(html).not.toContain("data-tmore");
+      expect(html).not.toContain("capped");
+    });
+    test("more than 12 rows is capped behind Show all N rows", () => {
+      const html = parse(table(4, 13));
+      expect(html).toContain('<div class="wide capped">');
+      expect(html).toContain('data-tmore="13"');
+      expect(html).toContain("Show all 13 rows");
+    });
+    test("a code fence with a line over 80 chars is wide; short lines are not", () => {
+      expect(parse("```\n" + "x".repeat(100) + "\n```")).toContain('<div class="wide"><pre>');
+      expect(parse("```\nshort\n```")).not.toContain("wide");
+    });
+    test("prose around a wide table stays outside the wrapper", () => {
+      const html = parse("before\n\n" + table(4, 2) + "\n\nafter");
+      expect(html.indexOf("<p>before</p>")).toBeLessThan(html.indexOf('<div class="wide"'));
+      expect(html.indexOf("<p>after</p>")).toBeGreaterThan(html.lastIndexOf("</div>"));
+    });
+    test("short cells are nowrap; long ones are bare", () => {
+      const html = parse("| a | b |\n|---|---|\n| What it is | " + "y".repeat(40) + " |\n");
+      expect(html).toContain('<td class="nw">What it is</td>');
+      expect(html).toContain("<td>" + "y".repeat(40) + "</td>");
+    });
   });
 });
