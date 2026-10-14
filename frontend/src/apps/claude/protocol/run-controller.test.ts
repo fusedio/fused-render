@@ -4616,6 +4616,7 @@ describe("the run's tasks", () => {
     kind: "shell" as const,
     type: "local_bash",
     subagent_type: "",
+    isolation: "",
     tool_use_id: "",
     status,
     started_at: 1,

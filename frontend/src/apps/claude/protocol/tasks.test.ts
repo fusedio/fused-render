@@ -25,6 +25,7 @@ function rec(over: Partial<TaskRecord>): TaskRecord {
     kind: "other",
     type: "",
     subagent_type: "",
+    isolation: "",
     tool_use_id: "",
     status: "running",
     started_at: 100,
@@ -121,6 +122,16 @@ describe("taskVerb", () => {
     expect(taskVerb([shell, mon])).toBe("Watching a monitor");
     expect(taskVerb([shell])).toBe("Running a background command");
     expect(taskVerb([shell, rec({ id: "s2", kind: "shell" })])).toBe("Running 2 background commands");
+  });
+  test("typed subagents are named, grouped by type", () => {
+    const a = (id: string, t = "") => rec({ id, kind: "agent", subagent_type: t });
+    expect(taskVerb([a("1", "Explore")])).toBe("Running Explore subagent");
+    expect(taskVerb([a("1", "Explore"), a("2", "Explore")])).toBe("Running 2 subagents: 2 Explore");
+    expect(taskVerb([a("1", "Explore"), a("2", "general-purpose"), a("3", "Explore")])).toBe(
+      "Running 3 subagents: 2 Explore, 1 general-purpose",
+    );
+    expect(taskVerb([a("1", "Explore"), a("2")])).toBe("Running 2 subagents: 1 Explore, 1 other");
+    expect(taskVerb([a("1"), a("2")])).toBe("Running 2 subagents");
   });
   test("ended and unnamed tasks say nothing", () => {
     expect(taskVerb([rec({ kind: "agent", status: "completed" })])).toBe("");

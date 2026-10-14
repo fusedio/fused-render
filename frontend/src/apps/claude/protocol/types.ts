@@ -467,6 +467,15 @@ export interface ActivityTool {
   id: string;
   name: string;
   detail: string;
+  /** Agent/Task only, and only once the streaming input has named it. */
+  subagent_type?: string;
+}
+/** Latest hint that work moved into a git worktree (agent.py `_worktree_hint`). */
+export interface WorktreeHint {
+  path: string;
+  branch: string;
+  via: "bash" | "enter" | "agent";
+  label?: string;
 }
 export interface ActivityTask {
   id: string;
@@ -506,6 +515,8 @@ export interface PollResponse {
   /** Absent on an older agent.py. */
   quota?: Quota | null;
   cancelled: boolean;
+  /** Absent on an older agent.py; null when this window held no hint. */
+  worktree_hint?: WorktreeHint | null;
   tasks_pending: boolean;
   activity: Activity;
   segments: Segment[];
@@ -1021,6 +1032,8 @@ export interface TaskRecord {
   type: string;
   /** "" unless an agent. */
   subagent_type: string;
+  /** "worktree" when the agent was started with isolation: "worktree", else "". */
+  isolation: string;
   /** "" unless known — the `ToolSegment.id` this task was started by. */
   tool_use_id: string;
   status: TaskStatus;

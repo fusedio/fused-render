@@ -22,6 +22,7 @@ function rec(over: Partial<TaskRecord>): TaskRecord {
     kind: "other",
     type: "",
     subagent_type: "",
+    isolation: "",
     tool_use_id: "",
     status: "running",
     started_at: 100,
@@ -201,7 +202,18 @@ describe("working line verbs", () => {
   test("an Agent tool call counts the running subagents", () => {
     const activity = { tool: { id: "x", name: "Agent", detail: "" }, tools_open: 1, tool_input_bytes: 0, thinking_tokens: 0, hook: "", tasks: [], agent_rows: 0 };
     expect(activityVerb({ phase: "tooling", activity, tasks: [agent, rec({ id: "b", kind: "agent" })] }, "x", 0)).toBe("Running 2 subagents");
-    expect(activityVerb({ phase: "tooling", activity, tasks: [] }, "x", 0)).toBe("Running a helper agent");
+    expect(activityVerb({ phase: "tooling", activity, tasks: [] }, "x", 0)).toBe("Starting a subagent");
+  });
+  test("an Agent call still streaming its brief says so, then names the type", () => {
+    const base = { tools_open: 1, thinking_tokens: 0, hook: "", tasks: [], agent_rows: 0 };
+    const briefing = { ...base, tool: { id: "x", name: "Agent", detail: "" }, tool_input_bytes: 300 };
+    expect(activityVerb({ phase: "tooling", activity: briefing, tasks: [] }, "x", 0)).toBe("Briefing a subagent");
+    const typed = { ...base, tool: { id: "x", name: "Agent", detail: "Fix it", subagent_type: "Explore" }, tool_input_bytes: 300 };
+    expect(activityVerb({ phase: "tooling", activity: typed, tasks: [] }, "x", 0)).toBe("Running Explore subagent");
+    const typedRegistry = rec({ id: "t", kind: "agent", subagent_type: "Explore" });
+    expect(activityVerb({ phase: "tooling", activity: briefing, tasks: [typedRegistry, agent] }, "x", 0)).toBe(
+      "Running 2 subagents: 1 Explore, 1 other",
+    );
   });
   test("the quiet-wait line keeps its wording", () => {
     const activity = { tool: null, tools_open: 0, tool_input_bytes: 0, thinking_tokens: 0, hook: "", tasks: [{ id: "s", description: "" }], agent_rows: 0 };

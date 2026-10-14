@@ -176,8 +176,25 @@ export function hasOutput(rec: Pick<TaskRecord, "kind"> & Partial<Pick<TaskRecor
 export function taskVerb(tasks: readonly TaskRecord[] | null | undefined): string {
   const live = (tasks ?? []).filter((t) => t.status === "running" || t.status === "pending");
   const n = (k: TaskKind) => live.filter((t) => asKind(t.kind) === k).length;
-  const agents = n("agent");
-  if (agents) return agents === 1 ? "Running a subagent" : "Running " + agents + " subagents";
+  const liveAgents = live.filter((t) => asKind(t.kind) === "agent");
+  const agents = liveAgents.length;
+  if (agents) {
+    const groups = new Map<string, number>();
+    let untyped = 0;
+    for (const t of liveAgents) {
+      const ty = (t.subagent_type || "").trim();
+      if (ty) groups.set(ty, (groups.get(ty) ?? 0) + 1);
+      else untyped++;
+    }
+    if (agents === 1) return groups.size ? "Running " + [...groups.keys()][0] + " subagent" : "Running a subagent";
+    let out = "Running " + agents + " subagents";
+    if (groups.size) {
+      const parts = [...groups.entries()].sort((a, b) => b[1] - a[1]).map(([ty, c]) => c + " " + ty);
+      if (untyped) parts.push(untyped + " other");
+      out += ": " + parts.join(", ");
+    }
+    return out;
+  }
   const monitors = n("monitor");
   if (monitors) return monitors === 1 ? "Watching a monitor" : "Watching " + monitors + " monitors";
   const shells = n("shell");
