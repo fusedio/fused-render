@@ -595,3 +595,19 @@ def test_discard_inbox_spends_the_spare_on_an_unreadable_first_entry(agent):
         fh.write("{half")                       # the opening prompt, mid-write
     agent._write_inbox_entry(run_dir, "follow-up")
     assert agent._discard_inbox(run_dir, keep_first=True) == ["follow-up"]
+
+
+def test_task_output_rides_a_get_task_output_control_request(
+        agent, monkeypatch, stub_cli, target):
+    """SPEC T-3 against a real host: the request reaches the CLI with its
+    `task_id`, and an answer with no output string reads as empty output.
+    (The stub echoes the request's fields back, so the response here is
+    `{"task_id": ...}` — the "anything else" shape.)"""
+    run_id, run_dir = _start(agent, monkeypatch, stub_cli, target)
+    assert _wait_for(lambda: os.path.exists(os.path.join(run_dir, "host.json")))
+
+    result = agent.main("task_output", run_id=run_id, task_id="b42")
+    assert result == {"output": "", "status": "", "truncated": False}
+    assert any(r.get("type") == "control_response"
+               and (r["response"].get("response") or {}).get("task_id") == "b42"
+               for r in _out_rows(run_dir))

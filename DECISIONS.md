@@ -6864,3 +6864,31 @@ SPEC AI-33.
 - **No MLX, GGUF or Photon.** mlx-vlm and llama.cpp/Ollama drop Moondream's region head (no detect/point); Grounding DINO has neither. Photon 2.x gave corrupted output on an M5, and Moondream 3.1 ships only for Photon.
 - **Load time (M5):** ~4.5 s to ready, ~7 s cold click-to-answer. `accelerate` saves ~1 s of loading but costs ~1.7 s of import, so it is out. Requests run under `torch.inference_mode()` (grad mode is per thread).
 - Apple Silicon only; not in onboarding or the benchmark. Mirror publishing for the three suggestions is pending.
+
+## D1355 — Chat worktrees are git worktrees fused-render makes, opened as folder chats (2026-10-13, claude/happy-mayer-evqehd)
+
+SPEC-chat-worktrees-commands-tasks.md §W.
+
+- **fused-render runs `git worktree add`, not `claude --worktree`.** A chat is keyed on its working directory everywhere — the `~/.claude/projects` session munge, the Tasks rows, the project-queue key (a `.git` FILE already makes a linked worktree its own key, D-project_queue), resume by `_file`. A worktree opened as an ordinary DIRECTORY target inherits all of that; the CLI flag would move cwd under the app and make `--resume` ambiguous. The location is still the CLI's own, `<repo>/.claude/worktrees/<name>`, so its `EnterWorktree` tool and our menu see the same list; the folder is excluded through `.git/info/exclude`, never the tracked `.gitignore`.
+- **Only managed worktrees can be removed** (anything outside `.claude/worktrees/` is refused, the main checkout included), and a dirty one only with a second, forcing click. A failed or timed-out add is undone (unlock, remove, prune, branch delete) so a retry works; `.claude` or `.claude/worktrees` as a symlink is refused, since a cloned repo could commit one and redirect a checkout.
+- **One deadline per request** (16 s inside the route's 20 s) and a two-thread executor of its own: a slow checkout must never queue behind, or starve, the chat's polls on `pool.POOL`.
+- Switching is a navigation to the worktree path with no session, the same URL the Home lists build (`paneChatUrl`), so the leave guard and the landing card apply unchanged. The menu is on the landing card as well as the Topbar because a switch always lands on the landing.
+- **A file chat gets the same menu as a folder chat** (2026-10-14, user: "it should behave the same as the folder level does"): `list` carries the target into every worktree (`mapped: {path, exists}`), so a chat open on `src/app.py` switches to `src/app.py` on the other branch, and to that worktree's root when the file is not there — never to a path that is not on disk.
+
+## D1356 — Slash commands: the CLI's list, a disk scan before it exists, six local ones (2026-10-13, claude/happy-mayer-evqehd)
+
+SPEC-chat-worktrees-commands-tasks.md §C.
+
+- **The CLI's `init` row is the source of truth** for what `/name` expands to (`slash_commands`, with `terminal_slash_commands` dropped — those bind to a terminal the chat does not have). It is captured into the run and into a per-folder state file so the next session in that folder has the list before its first turn. Before any session has run, a disk scan of `.claude/commands`, `.claude/skills`, `.claude/agents` (project, up to the repo root, and `~/.claude`) plus a fixed table of headless-safe built-ins stands in; the scan also supplies the descriptions the CLI list does not carry.
+- **Six commands never reach the CLI:** `/clear`, `/help`, `/model`, `/effort`, `/worktree`, `/tasks` are the chat's own affordances spelled as commands. Everything else is sent verbatim — including names we do not know, because the CLI already answers "no such command" and a second opinion would only be wrong differently.
+- **A menu, not a rewrite:** the composer opens a listbox on `^/[^\s]*$` only, so `/Users/me/x` mid-sentence is prose; Enter/Tab accept, Esc closes, the caret stays in the box.
+- The disk scan opens regular files only (a FIFO blocked a pool thread forever in review), never follows symlinked directories, and caps the walk.
+
+## D1357 — Background tasks are a registry; subagent rows nest under their Agent call (2026-10-13, claude/happy-mayer-evqehd)
+
+SPEC-chat-worktrees-commands-tasks.md §T.
+
+- **`bg_tasks.json` holds TaskRecords, not id→description.** Shell, agent and monitor kinds, status, usage from `task_progress`, the last notification summary and an events count, applied ONCE per row by a byte offset stored in the same file (two files raced: one poll's stale registry overwrote another's, and an apply-once offset made the loss permanent — review, 2026-10-13), written atomically under a per-run lock. `activity.tasks` and `tasks_pending` keep their old shape and meaning; the new `tasks` field beside them carries the whole registry, ended records included, so the panel can show what finished and `_history` can restore it.
+- **A monitor's line notifications keep it running;** only a terminal status, `task_updated`, or a `background_tasks_changed` list that omits it ends a task. An ended record ignores non-terminal patches — a late `paused` must not resurrect it.
+- **Subagent rows nest.** `_segments_from_rows` groups `parent_tool_use_id` rows under their parent tool segment as `children` (one level; grandchildren flatten into the group), and synthesises an orphan parent when the call started before the window. Before this, subagent prose was mixed into the main reply. Turn-boundary detection is untouched; orphans are appended after the seam count.
+- `task_output` relays `get_task_output` to the live host and caps at the last 64 KiB; the Tasks panel shows it on demand rather than streaming every background line into the transcript.

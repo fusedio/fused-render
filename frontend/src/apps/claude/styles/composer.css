@@ -1645,3 +1645,191 @@ select.c-pill {
     transition: none;
   }
 }
+
+/* ---- THE SLASH-COMMAND MENU (SPEC C-3) -------------------------------------
+   Above the composer card, the width of it, eight rows tall at most and
+   scrolling after that. Not a portal: the box keeps the keyboard, so the list
+   is a plain child of the form (`position: relative`) hung off its top edge. */
+.chat-cmd-menu {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 6px);
+  z-index: 30;
+  max-height: calc(8 * 30px + 8px);
+  overflow-y: auto;
+  padding: 4px;
+  background: var(--c-panel);
+  border: 1px solid var(--c-border-strong);
+  border-radius: 10px;
+  box-shadow: 0 6px 24px var(--c-shadow);
+}
+.chat-cmd-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  height: 30px;
+  box-sizing: border-box;
+  padding: 7px 9px;
+  font-size: 12px;
+  line-height: 16px;
+  border-radius: 7px;
+  color: var(--c-fg);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.chat-cmd-row.is-on {
+  background: var(--c-surface-2);
+}
+.chat-cmd-name {
+  flex: 0 0 auto;
+  font-weight: 600;
+  color: var(--c-fg-strong);
+}
+.chat-cmd-hint {
+  flex: 0 0 auto;
+  color: var(--c-faint);
+}
+.chat-cmd-desc {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--c-dim);
+}
+.chat-cmd-tag {
+  flex: 0 0 auto;
+  padding: 0 5px;
+  font-size: 10px;
+  line-height: 14px;
+  border: 1px solid var(--c-border);
+  border-radius: 4px;
+  color: var(--c-faint);
+}
+
+/* ---- THE WORKTREE MENU (SPEC W-4), in the top bar ------------------------- */
+.chat-worktree-menu {
+  flex: 0 0 auto;
+  min-width: 0;
+}
+.c-topbar .chat-worktree-menu {
+  margin-left: auto;
+}
+.chat-worktree-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 180px;
+  padding: 2px 8px;
+  font: inherit;
+  font-size: 11.5px;
+  line-height: 18px;
+  border: 1px solid var(--c-border);
+  border-radius: 999px;
+  background: none;
+  color: var(--c-dim);
+  cursor: pointer;
+}
+.chat-worktree-btn:hover,
+.chat-worktree-btn:focus-visible {
+  color: var(--c-fg);
+  border-color: var(--c-border-strong);
+  background: var(--c-surface);
+}
+.chat-worktree-btn > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-worktree-pop {
+  min-width: 240px;
+  max-width: 360px;
+  padding: 4px;
+  background: var(--c-panel);
+  border: 1px solid var(--c-border-strong);
+  border-radius: 10px;
+  box-shadow: 0 6px 24px var(--c-shadow);
+}
+.chat-worktree-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 9px;
+  font: inherit;
+  font-size: 12px;
+  line-height: 16px;
+  border: 0;
+  border-radius: 7px;
+  background: none;
+  color: var(--c-fg);
+  cursor: pointer;
+  text-align: left;
+}
+.chat-worktree-row:hover:not([disabled]),
+.chat-worktree-row:focus-visible {
+  background: var(--c-surface-2);
+}
+.chat-worktree-row.is-current {
+  cursor: default;
+  font-weight: 600;
+}
+.chat-worktree-row.is-danger {
+  color: var(--c-error);
+}
+.chat-worktree-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-worktree-branch {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--c-dim);
+  font-weight: 400;
+}
+.chat-worktree-miss {
+  display: block;
+  font-size: 11px;
+  color: var(--c-faint);
+  white-space: normal;
+}
+.chat-worktree-dirty {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--c-status-progress);
+}
+.chat-worktree-sep {
+  height: 1px;
+  margin: 4px 2px;
+  background: var(--c-border);
+}
+.chat-worktree-field {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 8px;
+  font: inherit;
+  font-size: 12px;
+  border: 1px solid var(--c-border-strong);
+  border-radius: 7px;
+  background: var(--c-surface);
+  color: var(--c-fg);
+}
+.chat-worktree-note {
+  padding: 6px 9px;
+  font-size: 11.5px;
+  line-height: 16px;
+  color: var(--c-dim);
+  white-space: normal;
+}
+.chat-worktree-note.is-error {
+  color: var(--c-error);
+}

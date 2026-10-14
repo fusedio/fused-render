@@ -2618,3 +2618,17 @@
   white-space: normal;
   word-break: break-word;
 }
+
+/* A user turn that is a slash command (SPEC C-3): its first token as a chip,
+   the rest as the plain words they were. Inline, so the bubble's text reads
+   exactly as sent. */
+.chat-root .turn.user .chat-cmd-chip {
+  display: inline-block;
+  padding: 0 6px;
+  font-family: var(--c-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 0.92em;
+  border: 1px solid var(--c-border);
+  border-radius: 4px;
+  background: var(--c-surface);
+  color: var(--c-fg-strong);
+}

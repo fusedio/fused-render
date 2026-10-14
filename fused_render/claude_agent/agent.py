@@ -66,6 +66,7 @@ Actions:
   main(action="cancel", run_id=...)   -> {"cancelled": ...}
 """
 import datetime
+import errno
 import io
 import json
 import os
@@ -2812,7 +2813,8 @@ def _write_control_request(run_dir: str, subtype: str, **fields) -> str:
 
 def _await_control_response(run_dir: str, request_id: str,
                             timeout: float = 5.0,
-                            start_offset: int = 0) -> dict | None:
+                            start_offset: int = 0,
+                            errors: list | None = None) -> dict | None:
     """Poll `out.jsonl` for the `control_response` row answering
     `request_id`, or None if it never arrives (the host never got to drain
     the request, the CLI died first, ...) or answered with anything other
@@ -2835,7 +2837,11 @@ def _await_control_response(run_dir: str, request_id: str,
     caller captures `start_offset` (the file's size) BEFORE queuing the
     request — every row that can possibly answer it is written after that
     point, since the CLI cannot respond to a request it has not received
-    yet — so nothing before it is ever worth reading, on any pass."""
+    yet — so nothing before it is ever worth reading, on any pass.
+
+    `errors`, when given, receives the CLI's own `error` text when it
+    answered with anything but success — the None return alone cannot tell
+    "it refused" from "it never answered"."""
     out_path = os.path.join(run_dir, "out.jsonl")
     deadline = time.time() + timeout
     while True:
@@ -2856,6 +2862,9 @@ def _await_control_response(run_dir: str, request_id: str,
                     if resp.get("request_id") != request_id:
                         continue
                     if resp.get("subtype") != "success":
+                        if errors is not None:
+                            errors.append(str(resp.get("error") or
+                                              "the session refused the request"))
                         return None
                     inner = resp.get("response")
                     return inner if isinstance(inner, dict) else {}
@@ -3250,6 +3259,29 @@ def _alive(run_dir: str) -> bool:
 #: long as the session host kept the process alive.
 _NOT_A_TURN_ROW = frozenset({"control_response", "rate_limit_event"})
 
+#: `system` rows that are bookkeeping ABOUT a turn rather than a turn
+#: speaking: the CLI writes `task_summary` right AFTER the `result` of a turn
+#: that ran background work (seen live on 2.1.296 — `post_turn_summary`,
+#: `result`, `task_summary`), and `task_progress`/`task_updated`/
+#: `background_tasks_changed` keep arriving while a backgrounded shell or
+#: monitor runs on past the reply. None of them is the run waking up for
+#: another turn — that is `init`, a hook, a `status`, or the reply itself —
+#: so none may reopen it. Before this set, a run that had spawned a monitor
+#: never read as done: the trailing `task_summary` held the quiet-verb window
+#: open for as long as the host lived.
+_BOOKKEEPING_SYSTEM_ROWS = frozenset({
+    "task_summary", "post_turn_summary", "task_progress", "task_updated",
+    "background_tasks_changed"})
+
+
+def _not_a_turn_row(row: dict) -> bool:
+    """Whether `row` is one of the shapes that never opens or reopens a turn
+    (`_NOT_A_TURN_ROW` and `_BOOKKEEPING_SYSTEM_ROWS`)."""
+    t = row.get("type")
+    if t in _NOT_A_TURN_ROW:
+        return True
+    return t == "system" and row.get("subtype") in _BOOKKEEPING_SYSTEM_ROWS
+
 
 def _turn_state(run_dir: str) -> tuple:
     """(turn_open, tasks_pending), read off `out.jsonl` alone — no pid touched.
@@ -3291,14 +3323,14 @@ def _turn_state(run_dir: str) -> tuple:
         if row.get("parent_tool_use_id"):
             continue  # a subagent's own row, not the main turn's (see _poll)
         t = row.get("type")
-        if t in _NOT_A_TURN_ROW:
-            continue
-        idle = t == "result"
         if t == "system" and row.get("subtype") == "background_tasks_changed":
             arr = row.get("tasks")
             if isinstance(arr, list):
                 tasks = {str(x.get("task_id")): True
                          for x in arr if isinstance(x, dict) and x.get("task_id")}
+        if _not_a_turn_row(row):
+            continue
+        idle = t == "result"
     return not idle, bool(tasks)
 
 
@@ -4545,8 +4577,46 @@ def _thinking_delta_text(row) -> str:
     return str(delta.get("thinking") or "")
 
 
+def _subagent_groups(rows: list) -> tuple:
+    """(main_rows, groups) — `rows` split on `parent_tool_use_id` (SPEC T-2).
+
+    `groups` maps a TOP-LEVEL parent tool_use id to the subagent rows under
+    it, in file order. One level only: a row whose parent is a tool call made
+    INSIDE a group (a subagent's own subagent) joins that group rather than
+    opening one of its own, so a grandchild's output is flattened into its
+    subagent's transcript."""
+    main, groups = [], {}
+    owner = {}   # tool_use id made inside a group -> that group's key
+    for row in rows:
+        pid = row.get("parent_tool_use_id") if isinstance(row, dict) else None
+        if not pid:
+            main.append(row)
+            continue
+        pid = str(pid)
+        top = owner.get(pid, pid)
+        groups.setdefault(top, []).append(row)
+        message = row.get("message")
+        content = message.get("content") if isinstance(message, dict) else None
+        for block in content if isinstance(content, list) else []:
+            if isinstance(block, dict) and block.get("type") == "tool_use" \
+                    and block.get("id"):
+                owner[str(block["id"])] = top
+    return main, groups
+
+
+def _window_shape(rows: list) -> tuple:
+    """`_segments_from_rows`' two gates over the MAIN conversation's rows —
+    a subagent's deltas are read by its own group's reader, not this one."""
+    main = [r for r in rows
+            if not (isinstance(r, dict) and r.get("parent_tool_use_id"))]
+    return (any(_is_text_delta(row) for row in main),
+            any(_thinking_delta_text(row) for row in main))
+
+
 def _segments_from_rows(rows: list, shape: tuple = (),
-                        app_reads: bool = False) -> list:
+                        app_reads: bool = False,
+                        task_links: dict | None = None,
+                        _nested: bool = False) -> list:
     """The ordered transcript of a reply: text, thinking and tool segments.
 
     ONE reader with TWO callers — `_poll` over the live `out.jsonl` and
@@ -4600,7 +4670,21 @@ def _segments_from_rows(rows: list, shape: tuple = (),
     what the segments say. Rendering `text` when segments exist therefore shows
     less than the turn contained; the reverse never happens. `text` stays the
     right thing to show for the error paths, which produce no segments at all.
+
+    SUBAGENTS NEST (SPEC T-2). Rows carrying `parent_tool_use_id` are a
+    subagent's, grouped by `_subagent_groups` and read by this same function
+    (one level), and the result hangs off the parent `tool` segment as
+    `children`. A group whose parent call is not in these rows (it started
+    before the cursor) gets a synthetic `Agent` tool segment, `orphan: True`,
+    appended AFTER everything else — at the end, so a prefix of the rows still
+    segments to a prefix of the list (`_seam` leaves orphans out of its
+    count). `task_links` (`tool_use_id -> task_id`, from the task registry)
+    stamps `task_id` on the tool segments it names, children included.
     """
+    groups = {}
+    if not _nested:
+        rows, groups = _subagent_groups(rows)
+    links = task_links or {}
     segments = []
     by_tool_id = {}     # tool_use id -> its segment, for the result to find
     stripped = set()    # tool_use ids of calls deliberately not shown
@@ -4878,7 +4962,30 @@ def _segments_from_rows(rows: list, shape: tuple = (),
         # an empty one is how the page knows the reply's tail is still coming.
         if seg["kind"] == "thinking" and not seg["text"].strip():
             continue
+        if seg["kind"] == "tool" and seg.get("id") in links:
+            seg["task_id"] = links[seg["id"]]
         out.append(seg)
+    for parent_id, group_rows in groups.items():
+        children = _segments_from_rows(group_rows, (), app_reads, links,
+                                       _nested=True)
+        parent = by_tool_id.get(parent_id)
+        if parent is not None:
+            if children:
+                parent["children"] = children
+        elif children and parent_id not in stripped:
+            orphan = {"kind": "tool", "id": parent_id, "name": "Agent",
+                      "input": {}, "detail": "", "status": "running",
+                      "output": None, "images": [], "children": children,
+                      "orphan": True}
+            if parent_id in links:
+                orphan["task_id"] = links[parent_id]
+            # The parent's call is outside the window but its RESULT may be
+            # in it (the subagent handed back): it sat in `orphans` waiting
+            # for a tool_use that never comes, so settle the synthetic
+            # parent from it exactly as a seen parent would be.
+            if parent_id in orphans:
+                settle(orphan, *orphans.pop(parent_id))
+            out.append(orphan)
     return out
 
 
@@ -4941,32 +5048,839 @@ def _write_poll_cursor(run_dir: str, value: int) -> None:
         pass  # costs the next poll a full re-parse; never worth raising over
 
 
-def _read_bg_tasks(run_dir: str) -> dict:
-    """The `task_id -> description` map `_poll` last computed, persisted
-    across cursor advances — see `_write_bg_tasks`."""
+# ------------------------------------------------------------ task registry
+#
+# SPEC T-1. `bg_tasks.json` used to be `{task_id: description}` for the tasks
+# still running — enough for the working line, nothing for a tasks panel that
+# wants a finished subagent's usage or a monitor's line count. It is now
+# `{task_id: TaskRecord}` (`_new_task_record` is the shape), ended records
+# included for the life of the run. The OLD flat shape is still read (a run
+# dir written before this change, or by an older server) and upgraded on the
+# fly: a bare description means "running", which is the only thing the old
+# file ever held.
+#
+# APPLIED ONCE, NOT REPLAYED. `_poll` re-reads every row from the cursor on
+# every call, and the old map got away with that because every operation on it
+# was idempotent (set / pop / replace). A record that COUNTS (`events`) or
+# STAMPS (`started_at`) is not, so the byte offset of the last complete row
+# the registry has absorbed sits beside it in `bg_tasks.offset`, and a poll
+# only applies task rows that end past it. A half-written tail row is applied
+# to the answer but never to what is persisted — it is re-read in full later.
+_TASK_TERMINAL = frozenset({"completed", "failed", "killed", "stopped"})
+_TASK_STATUSES = frozenset({"running", "completed", "failed", "killed",
+                            "paused", "pending"})
+_AGENT_TASK_TYPES = frozenset({"local_agent", "remote_agent",
+                               "in_process_teammate"})
+
+
+def _task_status(value, default: str = "running") -> str:
+    """The CLI's status word in the registry's vocabulary: `stopped` (an older
+    spelling the old reader already honoured) reads as `killed`, anything
+    unknown keeps `default`."""
+    value = str(value or "")
+    if value == "stopped":
+        return "killed"
+    return value if value in _TASK_STATUSES else default
+
+
+def _task_kind(rec: dict, tool_name: str = "") -> str:
+    """SPEC T-1's kind rule: agent, monitor, shell, else other."""
+    ttype = str(rec.get("type") or "")
+    if rec.get("subagent_type") or ttype in _AGENT_TASK_TYPES \
+            or tool_name in ("Agent", "Task"):
+        return "agent"
+    if ttype.startswith("monitor_") or tool_name == "Monitor":
+        return "monitor"
+    if ttype == "local_bash" or tool_name == "Bash":
+        return "shell"
+    return "other"
+
+
+def _new_task_record(task_id: str, description: str = "",
+                     started_at: float | None = None) -> dict:
+    return {"id": task_id, "description": description, "kind": "other",
+            "type": "", "subagent_type": "", "tool_use_id": "",
+            "status": "running",
+            "started_at": started_at if started_at is not None else time.time(),
+            "ended_at": None, "backgrounded": False, "usage": None,
+            "error": "", "summary": "", "events": 0}
+
+
+def _task_active(rec: dict) -> bool:
+    """Still going, as far as `activity.tasks`/`tasks_pending` are concerned —
+    everything short of a terminal status, which is exactly what the old map
+    kept (a `paused` or `pending` patch never removed an entry from it)."""
+    return rec.get("status") not in _TASK_TERMINAL
+
+
+def _task_end(rec: dict, status: str, now: float) -> None:
+    rec["status"] = status
+    if status in _TASK_TERMINAL:
+        if rec.get("ended_at") is None:
+            rec["ended_at"] = now
+    else:
+        rec["ended_at"] = None
+
+
+def _upgrade_task_record(task_id: str, value) -> dict | None:
+    """One stored entry in the current shape, or None for garbage."""
+    if isinstance(value, str):
+        # The pre-T-1 file: a running task's description and nothing else.
+        rec = _new_task_record(task_id, value)
+        return rec
+    if not isinstance(value, dict):
+        return None
+    rec = _new_task_record(task_id, str(value.get("description") or ""),
+                           value.get("started_at")
+                           if isinstance(value.get("started_at"), (int, float))
+                           else None)
+    for key in ("kind", "type", "subagent_type", "tool_use_id", "error",
+                "summary"):
+        if isinstance(value.get(key), str):
+            rec[key] = value[key]
+    rec["status"] = _task_status(value.get("status"))
+    if isinstance(value.get("ended_at"), (int, float)):
+        rec["ended_at"] = value["ended_at"]
+    rec["backgrounded"] = bool(value.get("backgrounded"))
+    if isinstance(value.get("usage"), dict):
+        rec["usage"] = value["usage"]
+    if isinstance(value.get("events"), int):
+        rec["events"] = value["events"]
+    return rec
+
+
+def _parse_registry(data, mtime: float | None = None) -> dict:
+    """`{task_id: TaskRecord}` from a decoded registry body — the current
+    `{"offset", "tasks"}` file's `tasks`, or the older flat map (records, or
+    bare descriptions from before T-1, stamped with `mtime` so a re-read
+    never moves their `started_at`)."""
+    if not isinstance(data, dict):
+        return {}
+    out = {}
+    for task_id, value in data.items():
+        rec = _upgrade_task_record(str(task_id), value)
+        if rec is None:
+            continue
+        if isinstance(value, str) and mtime is not None:
+            rec["started_at"] = mtime
+        out[str(task_id)] = rec
+    return out
+
+
+def _load_registry(run_dir: str) -> tuple:
+    """(registry, offset, current) off `bg_tasks.json`.
+
+    ONE FILE, `{"offset": N, "tasks": {task_id: TaskRecord}}`: the records
+    and the `out.jsonl` byte offset they have absorbed every row up to, so a
+    reader can never pair one poll's records with another poll's offset.
+    Older layouts still read: the flat `{task_id: record | description}` map,
+    with the offset (if any) in the transitional `bg_tasks.offset` file.
+
+    `current` is True only for the current layout. A missing, empty or
+    unparseable file reads as offset 0: the caller rebuilds from its whole
+    window rather than writing an empty registry over records it merely
+    failed to read at a fixed offset. Anything not `current` is rewritten
+    in the current layout by the next poll."""
+    path = os.path.join(run_dir, "bg_tasks.json")
     try:
-        with open(os.path.join(run_dir, "bg_tasks.json"), encoding="utf-8") as fh:
+        mtime = os.path.getmtime(path)
+        with open(path, encoding="utf-8") as fh:
             data = json.load(fh)
     except (OSError, ValueError):
-        return {}
-    return data if isinstance(data, dict) else {}
+        return {}, 0, False
+    if not isinstance(data, dict):
+        return {}, 0, False
+    if isinstance(data.get("tasks"), dict) and isinstance(data.get("offset"), int) \
+            and not isinstance(data.get("offset"), bool):
+        return _parse_registry(data["tasks"], mtime), max(0, data["offset"]), True
+    offset = 0
+    try:
+        with open(os.path.join(run_dir, "bg_tasks.offset"), encoding="utf-8") as fh:
+            offset = max(0, int(fh.read().strip()))
+    except (OSError, ValueError):
+        offset = 0
+    return _parse_registry(data, mtime), offset, False
 
 
-def _write_bg_tasks(run_dir: str, bg_tasks: dict) -> None:
+def _read_bg_tasks(run_dir: str) -> dict:
+    """The task registry `_poll` last persisted (`{task_id: TaskRecord}`),
+    any layout `_load_registry` reads."""
+    return _load_registry(run_dir)[0]
+
+
+def _write_bg_tasks(run_dir: str, bg_tasks: dict, offset: int = 0) -> None:
     """`background_tasks_changed` is the CLI's own AUTHORITATIVE full list,
     sent only when it changes — a page reading `activity.tasks`/
     `tasks_pending` needs the last one it saw for as long as it stays true,
     not just for the one poll whose narrow, cursor-bounded window (see
-    `_read_current_turn`) happened to contain the row. Once a genuine new
-    turn advances the cursor past that row, a poll scanning only what
-    changed since the last one has no way to see it again — so `_poll`
-    persists its own answer here every call and seeds the next call's scan
-    from it, the same way `cursor` itself survives between calls."""
+    `_read_current_turn`) happened to contain the row. So `_poll` persists
+    its registry here every call and seeds the next call from it.
+
+    Atomic (temp file + `os.replace`): a reader sees the old file or the new
+    one, never half of either."""
+    path = os.path.join(run_dir, "bg_tasks.json")
     try:
-        with _private_open(os.path.join(run_dir, "bg_tasks.json")) as fh:
-            json.dump(bg_tasks, fh)
+        tmp = f"{path}.{os.urandom(4).hex()}.tmp"
+        with _private_open(tmp) as fh:
+            json.dump({"offset": int(offset), "tasks": bg_tasks}, fh)
+        os.replace(tmp, path)
     except OSError:
-        pass  # costs the next poll a stale (not wrong-forever) answer
+        return  # costs the next poll a stale (not wrong-forever) answer
+    try:
+        os.remove(os.path.join(run_dir, "bg_tasks.offset"))
+    except OSError:
+        pass  # the transitional layout's offset file; usually not there
+
+
+class _RunLock:
+    """An exclusive, cross-process lock on `<run_dir>/bg_tasks.lock` for one
+    read-apply-write of the registry. Two polls of one run — a page and the
+    spawn bookkeeping loop, or two tabs — otherwise both read offset N, and
+    the later writer's copy drops whatever the earlier one added.
+
+    POSIX: `flock(LOCK_EX)`. Windows: `msvcrt.locking` on byte 0 with a
+    non-blocking retry loop, the same shape as `tasks_store.locked_path`
+    (`LK_LOCK` gives up after ~10 tries, so it is not a blocking wait;
+    CodeRabbit, PR #1635 — the unlocked Windows path let poll B persist past
+    poll A's row). Neither available: unlocked, the posture `_record_settings`
+    takes on such a build.
+
+    `held_elsewhere` is True only when the Windows retry budget ran out on
+    CONTENTION: another poll holds the lock right now and is writing this
+    very registry, so the caller skips its own write and leaves the poll
+    cursor where it was — the next poll re-reads the same rows and absorbs
+    them (CodeRabbit, PR #1635). A PERMANENT failure (no lock primitive, the
+    lock file will not open, `flock` or the byte lock erroring for any other
+    reason) is still the unlocked fallback: skipping there would mean the
+    registry never persists at all."""
+
+    _RETRY_S = 0.05
+    #: How long the Windows byte lock is retried before the unlocked fallback:
+    #: a permanent `OSError` (not contention) must not wedge a poll thread
+    #: (Bugbot, PR #1635).
+    _RETRY_BUDGET_S = 10.0
+
+    def __init__(self, run_dir: str):
+        self.path = os.path.join(run_dir, "bg_tasks.lock")
+        self.fh = None
+        self.byte_locked = False
+        self.held_elsewhere = False
+
+    def __enter__(self):
+        try:
+            import fcntl
+        except ImportError:
+            fcntl = None
+        try:
+            import msvcrt
+        except ImportError:
+            msvcrt = None
+        if fcntl is None and msvcrt is None:
+            return self
+        try:
+            self.fh = os.fdopen(os.open(self.path, os.O_RDWR | os.O_CREAT, 0o600), "r+b")
+            if fcntl is not None:
+                fcntl.flock(self.fh, fcntl.LOCK_EX)
+            else:
+                # `msvcrt.locking` locks a byte RANGE that must exist: a fresh,
+                # empty lock file has no byte 0 and the call fails for good,
+                # which the retry loop would read as contention forever
+                # (Bugbot, PR #1635). Stamp one byte first, the way
+                # `tasks_store._open_lockfile` does.
+                # The stamp's own failure is NOT the lock's: when two polls
+                # both see an empty file, the second's write fails because
+                # the first already holds byte 0 (Windows byte locks are
+                # mandatory) — and by then the byte exists, so the retry
+                # loop below is exactly where it should go (Bugbot, PR
+                # #1635; `_open_lockfile` swallows the same error).
+                try:
+                    if os.fstat(self.fh.fileno()).st_size == 0:
+                        self.fh.write(b"\0")
+                        self.fh.flush()
+                except OSError:
+                    pass
+                deadline = time.monotonic() + self._RETRY_BUDGET_S
+                while True:
+                    try:
+                        self.fh.seek(0)
+                        msvcrt.locking(self.fh.fileno(), msvcrt.LK_NBLCK, 1)
+                        self.byte_locked = True
+                        break
+                    except OSError as exc:
+                        # EACCES / EDEADLOCK: another holder (contention).
+                        # Anything else will not clear by waiting.
+                        contended = exc.errno in (errno.EACCES,
+                                                  getattr(errno, "EDEADLOCK", errno.EDEADLK))
+                        if not contended or time.monotonic() >= deadline:
+                            self.held_elsewhere = contended
+                            self.fh.close()
+                            self.fh = None
+                            break
+                        time.sleep(self._RETRY_S)
+        except OSError:
+            if self.fh is not None:
+                self.fh.close()
+            self.fh = None
+        return self
+
+    def __exit__(self, *exc):
+        if self.fh is not None:
+            if self.byte_locked:
+                try:
+                    import msvcrt
+                    self.fh.seek(0)
+                    msvcrt.locking(self.fh.fileno(), getattr(msvcrt, "LK_UNLCK", 0), 1)
+                except (ImportError, OSError):
+                    pass
+            self.fh.close()   # closing the descriptor releases the flock
+        return False
+
+
+def _update_run_registry(run_dir: str, rows: list, ends: list,
+                         tool_names: dict, tool_inputs: dict,
+                         cursor: int | None = None) -> tuple:
+    """(registry, commands_changed) after applying this window's task and
+    command rows that the persisted registry has not absorbed yet.
+
+    `ends[i]` is `rows[i]`'s end offset (negative for a half-written tail,
+    see `_read_current_turn`). A complete row past the stored offset is
+    applied and persisted; a tail row past it changes THIS answer only (it
+    will be read again, complete, by a later poll). The whole
+    read-apply-write holds `_RunLock`.
+
+    Commands (SPEC C-2): only the newest `init` row among the fresh ones is
+    captured (each one replaces the last anyway, and a run dir polled for
+    the first time would otherwise rewrite the state file once per turn),
+    plus any `commands_changed` after it. `commands_changed` on the payload
+    is True only for a COMPLETE fresh row, so one row is news exactly once.
+
+    `cursor`, when given, is the poll cursor `_read_current_turn` held back
+    (its `pending`); it is persisted here, after the registry write, so a
+    poll that could not take the lock (`_RunLock.held_elsewhere`) leaves
+    both where they were and the next poll re-reads the same rows. That
+    poll still answers with this window applied in memory."""
+    now = time.time()
+    with _RunLock(run_dir) as lock:
+        writable = not lock.held_elsewhere
+        registry, applied, current = _load_registry(run_dir)
+        try:
+            size = os.path.getsize(os.path.join(run_dir, "out.jsonl"))
+        except OSError:
+            size = 0
+        if applied > size:
+            applied = 0   # not the file this offset was taken against
+        new_applied = applied
+        persist = None
+        cap_rows = []         # (row, complete) — init/commands_changed, fresh
+        commands_changed = False
+        for row, end in zip(rows, ends):
+            complete = end is not None and end >= 0
+            stop = end if complete else -(end or 0)
+            if stop <= applied:
+                continue
+            if complete:
+                new_applied = max(new_applied, stop)
+            if not isinstance(row, dict) or row.get("parent_tool_use_id") \
+                    or row.get("type") != "system":
+                continue
+            sub = row.get("subtype")
+            if sub in ("task_started", "task_progress", "task_updated",
+                       "task_notification", "background_tasks_changed"):
+                if not complete and persist is None:
+                    persist = json.loads(json.dumps(registry))
+                registry = _apply_task_row(registry, row, tool_names,
+                                           tool_inputs, now)
+            elif sub == "init":
+                cap_rows = [(row, complete)]
+                commands_changed = commands_changed or (complete and writable)
+            elif sub == "commands_changed":
+                cap_rows.append((row, complete))
+                commands_changed = commands_changed or (complete and writable)
+        # A task whose tool call this window only now names gets its kind
+        # settled here.
+        settled = False
+        for target in (registry, persist or {}):
+            for rec in target.values():
+                if rec.get("kind") == "other" \
+                        and rec.get("tool_use_id") in tool_names:
+                    kind = _task_kind(rec, tool_names[rec["tool_use_id"]])
+                    if kind != "other":
+                        rec["kind"] = kind
+                        settled = True
+        if not writable:
+            return registry, False
+        for row, _complete in cap_rows:
+            _capture_commands(run_dir, row)
+        # Nothing new absorbed and nothing settled: the file already says this.
+        if new_applied != applied or settled or not current:
+            _write_bg_tasks(run_dir,
+                            persist if persist is not None else registry,
+                            new_applied)
+        if cursor is not None:
+            _write_poll_cursor(run_dir, cursor)
+    return registry, commands_changed
+
+
+def _apply_task_row(registry: dict, row: dict, tool_names: dict,
+                    tool_inputs: dict, now: float) -> dict:
+    """Fold one `system` task row into `registry`; returns the registry (a
+    NEW dict for `background_tasks_changed`, which reorders it)."""
+    sub = row.get("subtype")
+    task_id = str(row.get("task_id") or "")
+    if sub == "task_started" and task_id:
+        rec = registry.get(task_id)
+        if rec is None:
+            rec = _new_task_record(task_id, started_at=now)
+            registry[task_id] = rec
+        desc = row.get("description")
+        if desc is not None or not rec["description"]:
+            rec["description"] = str(desc or "")
+        if row.get("task_type"):
+            rec["type"] = str(row["task_type"])
+        tool_use_id = str(row.get("tool_use_id") or "")
+        if tool_use_id:
+            rec["tool_use_id"] = tool_use_id
+        subagent = row.get("subagent_type")
+        if not subagent and tool_names.get(rec["tool_use_id"]) in ("Agent", "Task"):
+            subagent = (tool_inputs.get(rec["tool_use_id"]) or {}).get(
+                "subagent_type")
+        if subagent:
+            rec["subagent_type"] = str(subagent)
+        if "is_backgrounded" in row:
+            rec["backgrounded"] = bool(row.get("is_backgrounded"))
+        _task_end(rec, "running", now)
+        rec["kind"] = _task_kind(rec, tool_names.get(rec["tool_use_id"], ""))
+    elif sub == "task_progress" and task_id in registry:
+        usage = row.get("usage")
+        if isinstance(usage, dict):
+            registry[task_id]["usage"] = {
+                k: int(usage.get(k) or 0) if isinstance(usage.get(k), (int, float))
+                else 0 for k in ("total_tokens", "tool_uses", "duration_ms")}
+    elif sub == "task_updated" and task_id in registry:
+        rec = registry[task_id]
+        patch = row.get("patch") or {}
+        if not isinstance(patch, dict):
+            patch = {}
+        if patch.get("status"):
+            status = _task_status(patch["status"], rec["status"])
+            # An ENDED task stays ended: only a terminal patch (a correction
+            # of how it ended) moves it. `task_started` or a
+            # `background_tasks_changed` listing are what bring one back.
+            if status in _TASK_TERMINAL or rec.get("ended_at") is None:
+                _task_end(rec, status, now)
+        if isinstance(patch.get("description"), str) and patch["description"]:
+            rec["description"] = patch["description"]
+        if patch.get("error") is not None:
+            rec["error"] = str(patch.get("error") or "")
+        if "is_backgrounded" in patch:
+            rec["backgrounded"] = bool(patch.get("is_backgrounded"))
+    elif sub == "task_notification" and task_id in registry:
+        rec = registry[task_id]
+        rec["events"] = int(rec.get("events") or 0) + 1
+        summary = str(row.get("summary") or "").strip()
+        if summary:
+            rec["summary"] = summary
+        status = str(row.get("status") or "")
+        if rec.get("ended_at") is not None:
+            pass  # already ended; a late notification only adds its summary
+        elif status in _TASK_TERMINAL:
+            _task_end(rec, _task_status(status), now)
+        elif status:
+            # A line from a monitor (or any notification that says the task
+            # is still going) keeps it running.
+            _task_end(rec, _task_status(status, rec["status"]), now)
+        elif rec["kind"] != "monitor":
+            # No status at all: what the old map did (any notification ended
+            # the task) for everything but a monitor, whose notifications are
+            # its output lines.
+            _task_end(rec, "completed", now)
+    elif sub == "background_tasks_changed":
+        tasks = row.get("tasks")
+        if isinstance(tasks, list):
+            listed = {}
+            for item in tasks:
+                if not isinstance(item, dict) or not item.get("task_id"):
+                    continue
+                tid = str(item["task_id"])
+                rec = registry.get(tid) or _new_task_record(tid, started_at=now)
+                if item.get("description") is not None:
+                    rec["description"] = str(item.get("description") or "")
+                if item.get("task_type") and not rec["type"]:
+                    rec["type"] = str(item["task_type"])
+                if item.get("tool_use_id") and not rec["tool_use_id"]:
+                    rec["tool_use_id"] = str(item["tool_use_id"])
+                if not _task_active(rec):
+                    _task_end(rec, "running", now)
+                rec["kind"] = _task_kind(rec, tool_names.get(rec["tool_use_id"], ""))
+                listed[tid] = rec
+            for tid, rec in registry.items():
+                if tid in listed:
+                    continue
+                if _task_active(rec):
+                    _task_end(rec, "completed", now)
+                listed[tid] = rec
+            return listed
+    return registry
+
+
+def _task_list(registry: dict) -> list:
+    """Every record, running first, then by `started_at` (SPEC T-1)."""
+    recs = [dict(r) for r in registry.values() if isinstance(r, dict)]
+    return sorted(recs, key=lambda r: (0 if _task_active(r) else 1,
+                                       float(r.get("started_at") or 0)))
+
+
+def _task_links(registry: dict) -> dict:
+    """`tool_use_id -> task_id`, for the tool segments the registry links."""
+    return {r["tool_use_id"]: tid for tid, r in registry.items()
+            if isinstance(r, dict) and r.get("tool_use_id")}
+
+
+# ------------------------------------------------------------ slash commands
+#
+# SPEC C-2. The CLI's `init` row names every slash command the session can
+# run (`slash_commands`, plus the `terminal_slash_commands` subset a
+# non-terminal UI should hide), its `agents` and its `skills`. `_poll` copies
+# that into the run dir (`capabilities.json`) AND into a per-workdir state
+# file, so the next chat in the same folder has the list before its own first
+# turn. `_commands` answers the composer's menu from the state file when there
+# is one, else from a scan of the same `.claude` folders the CLI reads.
+
+#: Headless-safe built-ins (and the chat's own local commands), with the
+#: words the menu shows. The CLI's list carries names only.
+_BUILTIN_COMMANDS = {
+    "compact": "Summarise the conversation so far to free up context",
+    "context": "Show how full the context window is",
+    "cost": "Show the token cost of this session",
+    "review": "Review a pull request",
+    "init": "Write a CLAUDE.md describing this codebase",
+    "clear": "Start a new conversation",
+    "help": "List the available commands",
+    "model": "Switch the model",
+    "effort": "Set the reasoning effort",
+    "worktree": "Switch to or create a git worktree",
+    "tasks": "Show background tasks, subagents and monitors",
+}
+
+_COMMANDS_STATE = "commands"
+_COMMAND_SCAN_CAP = 500   # files per folder walk; a menu, not an index
+_COMMAND_DIR_CAP = 200    # directories per folder walk
+
+
+def _commands_state_path(workdir: str) -> str:
+    return _state_file(_COMMANDS_STATE, _munge(workdir))
+
+
+def _str_list(value) -> list:
+    return [str(v) for v in value if isinstance(v, str) and v] \
+        if isinstance(value, list) else []
+
+
+def _write_json_atomic(path: str, data) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = f"{path}.{os.urandom(4).hex()}.tmp"
+    with _private_open(tmp) as fh:
+        json.dump(data, fh)
+    os.replace(tmp, path)
+
+
+def _capture_commands(run_dir: str, row: dict) -> None:
+    """Record an `init` (or `commands_changed`) row's command list. Never
+    raises: this decorates a menu and must not break a poll."""
+    try:
+        cap_path = os.path.join(run_dir, "capabilities.json")
+        try:
+            with open(cap_path, encoding="utf-8") as fh:
+                prev = json.load(fh)
+            if not isinstance(prev, dict):
+                prev = {}
+        except (OSError, ValueError):
+            prev = {}
+        carries = isinstance(row.get("slash_commands"), list)
+        if carries:
+            skills = [{"name": str(s.get("name")),
+                       "source": str(s.get("source") or ""),
+                       **({"plugin_name": str(s["plugin_name"])}
+                          if s.get("plugin_name") else {})}
+                      for s in (row.get("skills") or [])
+                      if isinstance(s, dict) and s.get("name")]
+            cap = {"slash_commands": _str_list(row.get("slash_commands")),
+                   "terminal_slash_commands":
+                       _str_list(row.get("terminal_slash_commands")),
+                   "agents": _str_list(row.get("agents")),
+                   "skills": skills, "stale": False}
+        elif row.get("subtype") == "commands_changed":
+            # The list moved and this row does not carry the new one: keep
+            # the old list, flagged, until the next `init` replaces it.
+            if not prev:
+                return
+            cap = dict(prev)
+            cap["stale"] = True
+        else:
+            return
+        try:
+            with open(os.path.join(run_dir, "meta.json"), encoding="utf-8") as fh:
+                target = str((json.load(fh) or {}).get("file") or "")
+        except (OSError, ValueError, AttributeError):
+            target = ""
+        workdir = _workdir(os.path.abspath(target)) if target \
+            else str(row.get("cwd") or "")
+        unchanged = {k: v for k, v in prev.items() if k not in ("at", "cwd")} == cap
+        cap["cwd"] = workdir
+        cap["at"] = time.time()
+        if not unchanged:
+            _write_json_atomic(cap_path, cap)
+        if workdir:
+            state_path = _commands_state_path(workdir)
+            if unchanged and os.path.exists(state_path):
+                return
+            _write_json_atomic(state_path, cap)
+    except Exception:  # noqa: BLE001, S110 — see docstring
+        pass
+
+
+def _md_description(path: str) -> str:
+    """Frontmatter `description:`, else the first non-empty line.
+
+    REGULAR FILES ONLY, checked on the open descriptor: a FIFO named
+    `x.md` would block this read (and a pool thread) forever, so the open is
+    non-blocking and anything that is not a plain file is refused before a
+    byte is read."""
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
+    except OSError:
+        return ""
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            os.close(fd)
+            return ""
+        with os.fdopen(fd, encoding="utf-8", errors="replace") as fh:
+            text = fh.read(16384)
+    except (OSError, ValueError):
+        return ""
+    lines = text.splitlines()
+    body = lines
+    if lines and lines[0].strip() == "---":
+        for i in range(1, len(lines)):
+            if lines[i].strip() == "---":
+                for ln in lines[1:i]:
+                    key, sep, value = ln.partition(":")
+                    if sep and key.strip() == "description":
+                        value = value.strip().strip("\"'").strip()
+                        if value:
+                            return value[:200]
+                body = lines[i + 1:]
+                break
+    for ln in body:
+        ln = ln.strip().lstrip("#").strip()
+        if ln:
+            return ln[:200]
+    return ""
+
+
+def _scan_command_dir(root: str, source: str, out: dict) -> None:
+    """`root/**/*.md` — a nested `a/b.md` is `a:b`, the CLI's own spelling.
+
+    Bounded: symlinked subdirectories are not followed, at most
+    `_COMMAND_DIR_CAP` directories and `_COMMAND_SCAN_CAP` files are looked
+    at, and only regular files (by `lstat`) are opened."""
+    if not os.path.isdir(root):
+        return
+    seen = 0
+    dirs = 0
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        dirs += 1
+        if dirs > _COMMAND_DIR_CAP:
+            return
+        dirnames[:] = sorted(d for d in dirnames if not d.startswith("."))
+        for fn in sorted(filenames):
+            if not fn.endswith(".md"):
+                continue
+            try:
+                if not stat.S_ISREG(os.lstat(os.path.join(dirpath, fn)).st_mode):
+                    continue
+            except OSError:
+                continue
+            seen += 1
+            if seen > _COMMAND_SCAN_CAP:
+                return
+            rel = os.path.relpath(os.path.join(dirpath, fn[:-3]), root)
+            name = rel.replace(os.sep, ":").replace("/", ":")
+            if name not in out:
+                out[name] = {"name": name, "source": source,
+                             "description": _md_description(
+                                 os.path.join(dirpath, fn))}
+
+
+def _scan_skill_dir(root: str, source: str, out: dict) -> None:
+    try:
+        names = sorted(os.listdir(root))
+    except OSError:
+        return
+    for name in names[:_COMMAND_SCAN_CAP]:
+        skill_md = os.path.join(root, name, "SKILL.md")
+        if name.startswith(".") or not os.path.isfile(skill_md):
+            continue
+        if name not in out:
+            out[name] = {"name": name, "source": source,
+                         "description": _md_description(skill_md)}
+
+
+def _project_dirs(workdir: str) -> list:
+    """`workdir` and its ancestors up to the enclosing repo's root (the first
+    one holding `.git`), nearest first — where the CLI looks for project
+    `.claude` folders. Just `workdir` outside a repo."""
+    out = []
+    cur = os.path.abspath(workdir)
+    while True:
+        out.append(cur)
+        if os.path.exists(os.path.join(cur, ".git")):
+            return out
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            return out[:1]
+        cur = parent
+
+
+def _disk_commands(workdir: str) -> dict:
+    """name -> {name, description, source} from the folders the CLI reads,
+    nearest first (a project command shadows a user one of the same name)."""
+    out = {}
+    home = os.path.expanduser("~")
+    project = _project_dirs(workdir) if workdir else []
+    # A project's `.claude` (or its `commands`) that is a SYMLINK is not
+    # walked: a repo can point it anywhere, including at a huge tree. The
+    # user's own `~/.claude` is often a dotfiles symlink and is still read —
+    # its walk is bounded like every other.
+    project = [d for d in project
+               if not os.path.islink(os.path.join(d, ".claude"))]
+    for d in project:
+        if not os.path.islink(os.path.join(d, ".claude", "commands")):
+            _scan_command_dir(os.path.join(d, ".claude", "commands"),
+                              "project", out)
+    for d in project:
+        _scan_skill_dir(os.path.join(d, ".claude", "skills"), "project", out)
+    _scan_command_dir(os.path.join(home, ".claude", "commands"), "user", out)
+    _scan_skill_dir(os.path.join(home, ".claude", "skills"), "user", out)
+    return out
+
+
+def _disk_agents(workdir: str) -> list:
+    names = []
+    dirs = [os.path.join(d, ".claude", "agents")
+            for d in (_project_dirs(workdir) if workdir else [])]
+    dirs.append(os.path.join(os.path.expanduser("~"), ".claude", "agents"))
+    for d in dirs:
+        try:
+            files = sorted(os.listdir(d))
+        except OSError:
+            continue
+        for fn in files:
+            if fn.endswith(".md") and fn[:-3] not in names:
+                names.append(fn[:-3])
+    return names
+
+
+def _commands(file: str) -> dict:
+    """SPEC C-2: the command menu for a target.
+
+    `{"commands": [{"name", "description", "source"}], "agents": [names],
+    "stale": bool, "from": "cli" | "disk"}`. `from: "cli"` is the list the
+    CLI itself announced for this folder (the state file `_poll` keeps),
+    with descriptions merged in from the disk scan by name; `from: "disk"` is
+    the scan alone plus the built-in table, for a folder no session has
+    spoken in yet. Names in `terminal_slash_commands` are dropped."""
+    file = os.path.abspath(file)
+    workdir = _workdir(file)
+    disk = _disk_commands(workdir)
+    state = None
+    try:
+        with open(_commands_state_path(workdir), encoding="utf-8") as fh:
+            state = json.load(fh)
+    except (OSError, ValueError):
+        state = None
+    if isinstance(state, dict) and isinstance(state.get("slash_commands"), list):
+        hidden = set(_str_list(state.get("terminal_slash_commands")))
+        skill_src = {s.get("name"): str(s.get("source") or "skill")
+                     for s in (state.get("skills") or []) if isinstance(s, dict)}
+        commands, seen = [], set()
+        for name in _str_list(state.get("slash_commands")):
+            name = name.lstrip("/")
+            if not name or name in hidden or name in seen:
+                continue
+            seen.add(name)
+            found = disk.get(name)
+            if found:
+                desc, source = found["description"], found["source"]
+            else:
+                desc = _BUILTIN_COMMANDS.get(name, "")
+                source = skill_src.get(name) or (
+                    "builtin" if name in _BUILTIN_COMMANDS else "cli")
+            commands.append({"name": name, "description": desc,
+                             "source": source})
+        return {"commands": commands,
+                "agents": _str_list(state.get("agents")),
+                "stale": bool(state.get("stale")), "from": "cli"}
+    commands = [dict(v) for v in disk.values()]
+    for name, desc in _BUILTIN_COMMANDS.items():
+        if name not in disk:
+            commands.append({"name": name, "description": desc,
+                             "source": "builtin"})
+    return {"commands": [{"name": c["name"], "description": c["description"],
+                          "source": c["source"]} for c in commands],
+            "agents": _disk_agents(workdir), "stale": False, "from": "disk"}
+
+
+# --------------------------------------------------------------- task output
+
+#: SPEC T-3: the tail of a task's output the page is handed, at most.
+_TASK_OUTPUT_CAP = 64 * 1024
+
+
+def _task_output(run_id: str, task_id: str) -> dict:
+    """A shell or Monitor task's output, asked of the live CLI through its
+    session host (`get_task_output` control request, 10 s).
+
+    `{"output": str, "status": str, "truncated": bool}`, the output capped to
+    its last 64 KiB; `{"error"}` when there is no live host or it never
+    answered. The response's shape is not pinned by the CLI, so `output`,
+    `content` and `text` are all accepted as the output string."""
+    if _bad_id(run_id):
+        return {"error": "unknown run_id"}
+    task_id = str(task_id or "")
+    if not task_id or len(task_id) > 200:
+        return {"error": "missing task_id"}
+    run_dir = os.path.join(RUNS, run_id)
+    if not os.path.isdir(run_dir):
+        return {"error": "unknown run_id"}
+    if not _host_alive(run_dir):
+        return {"error": "no live session"}
+    try:
+        start_offset = os.path.getsize(os.path.join(run_dir, "out.jsonl"))
+    except OSError:
+        start_offset = 0
+    try:
+        request_id = _write_control_request(run_dir, "get_task_output",
+                                            task_id=task_id)
+    except OSError as exc:
+        return {"error": f"could not reach the session: {exc}"}
+    refused = []
+    resp = _await_control_response(run_dir, request_id, timeout=10.0,
+                                   start_offset=start_offset, errors=refused)
+    if resp is None:
+        return {"error": refused[0] if refused else "the session did not answer"}
+    output = ""
+    for key in ("output", "content", "text"):
+        if isinstance(resp.get(key), str):
+            output = resp[key]
+            break
+    status = resp.get("status")
+    status = status if isinstance(status, str) else ""
+    raw = output.encode("utf-8")
+    truncated = len(raw) > _TASK_OUTPUT_CAP
+    if truncated:
+        output = raw[-_TASK_OUTPUT_CAP:].decode("utf-8", "ignore")
+    return {"output": output, "status": status, "truncated": truncated}
 
 
 def _starts_new_turn(row: dict) -> bool:
@@ -5054,8 +5968,7 @@ def _absorbed_turn_breaks(rows: list, app_reads: bool = False) -> list:
     # Measured through the WINDOW's own gates, not the prefix's — see
     # `_segments_from_rows`'s note on `shape`. Computed once here so every seam
     # in one payload is measured against one segmentation.
-    shape = (any(_is_text_delta(row) for row in rows),
-             any(_thinking_delta_text(row) for row in rows))
+    shape = _window_shape(rows)
     outstanding = 0
     # Whether a `result` has closed a reply since the last echo — the exact
     # test `_read_current_turn`'s cursor makes, and for the same reason: an echo
@@ -5156,13 +6069,17 @@ def _seam(breaks: list, rows: list, end: int, shape: tuple,
     `_segments_from_rows`'s note on why the gates travel."""
     prefix = _segments_from_rows(rows[:end], shape, app_reads)
     breaks.append({
-        "segments": len(prefix),
+        # Orphaned subagent groups sit at the END of the window's list (see
+        # `_segments_from_rows`), never between replies, so they are not
+        # part of any prefix's count.
+        "segments": sum(1 for seg in prefix if not seg.get("orphan")),
         "text": sum(len(seg.get("text") or "")
                     for seg in prefix if seg.get("kind") == "text"),
     })
 
 
-def _read_current_turn(run_dir: str) -> tuple:
+def _read_current_turn(run_dir: str, ends: list | None = None,
+                       pending: list | None = None) -> tuple:
     """(rows, cursor) — the parsed rows of `out.jsonl` from the last proven-safe
     offset onward, and the offset `_poll` should persist for next time.
 
@@ -5219,7 +6136,17 @@ def _read_current_turn(run_dir: str) -> tuple:
     and only a binary seek is guaranteed to land exactly there — a text-mode
     file object's `.seek()` argument is an opaque cookie on some platforms,
     not necessarily a raw byte offset, once `errors="replace"` decoding is in
-    the picture."""
+    the picture.
+
+    `ends`, when given, is filled in step with `rows`: each row's END byte
+    offset in `out.jsonl` (just past its newline) — NEGATED for a parsed but
+    half-written tail row (no newline yet), whose end is where its bytes stop
+    today. `_poll` uses it to apply task rows exactly once (see
+    `_update_run_registry`).
+
+    `pending`, when given, receives the advanced cursor INSTEAD of it being
+    written here: `_poll` hands it to `_update_run_registry`, which persists
+    it only once the registry has absorbed the rows before it."""
     path = os.path.join(run_dir, "out.jsonl")
     try:
         size = os.path.getsize(path)
@@ -5281,6 +6208,8 @@ def _read_current_turn(run_dir: str) -> tuple:
             line_start = pos
             continue  # a stray blank/garbage line; not this poll's problem
         rows.append(row)
+        if ends is not None:
+            ends.append(pos)
         # A subagent's own `result` row is not the main turn's — `_poll` and
         # `_turn_state` both skip it before deciding anything off `type`, and
         # this cursor needs to agree: otherwise a follow-up echoed back after
@@ -5300,11 +6229,16 @@ def _read_current_turn(run_dir: str) -> tuple:
     if tail:
         try:
             rows.append(json.loads(tail.decode("utf-8", "replace")))
+            if ends is not None:
+                ends.append(-(line_start + len(tail)))
         except ValueError:
             pass  # half-written last line; next poll gets it, same as before
 
     if advance_to is not None:
-        _write_poll_cursor(run_dir, advance_to)
+        if pending is not None:
+            pending.append(advance_to)
+        else:
+            _write_poll_cursor(run_dir, advance_to)
     return rows, cursor
 
 
@@ -5461,7 +6395,11 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
     # {} — `background_tasks_changed` is only sent on CHANGE, and once the
     # cursor advances past the row that announced a still-running task, this
     # poll's own window may say nothing about it at all.
-    bg_tasks = _read_bg_tasks(run_dir)
+    #
+    # It is the T-1 task REGISTRY now (`{task_id: TaskRecord}`), applied once
+    # per row rather than replayed, under a lock, AFTER this loop — see
+    # `_update_run_registry`. The loop below only collects what that needs.
+    tool_names = {}        # tool_use id -> tool name, for a task's `kind`
     agent_rows = 0         # rows a subagent wrote (parent_tool_use_id set)
     after_tool = False     # a tool_result landed and nothing has streamed since
     # Every row this poll managed to parse, handed to `_segments_from_rows` once
@@ -5471,7 +6409,9 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
     # list only holds a second reference to objects that pass already built.
     parsed = []
 
-    rows, scan_cursor = _read_current_turn(run_dir)
+    ends = []
+    pending_cursor = []
+    rows, scan_cursor = _read_current_turn(run_dir, ends, pending_cursor)
 
     for row in rows:
         parsed.append(row)
@@ -5481,7 +6421,7 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
         # quiet-verb window closes on the first row of any kind — see `idle` —
         # except the rows that are not the run speaking at all
         # (`_NOT_A_TURN_ROW`).
-        if t != "result" and t not in _NOT_A_TURN_ROW:
+        if t != "result" and not _not_a_turn_row(row):
             idle = False
         # Any of these means the request the retries were for went THROUGH.
         # Rows are in file order, so anything the model produced after an
@@ -5530,21 +6470,6 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
                 hooks_open[row["hook_id"]] = str(row.get("hook_name") or "hook")
             elif sub == "hook_response":
                 hooks_open.pop(row.get("hook_id"), None)
-            elif sub == "task_started" and row.get("task_id"):
-                bg_tasks[row["task_id"]] = str(row.get("description") or "")
-            elif sub == "task_notification":
-                bg_tasks.pop(row.get("task_id"), None)
-            elif sub == "task_updated":
-                if (row.get("patch") or {}).get("status") in (
-                        "completed", "killed", "failed", "stopped"):
-                    bg_tasks.pop(row.get("task_id"), None)
-            elif sub == "background_tasks_changed":
-                # Authoritative list when the CLI sends one.
-                tasks = row.get("tasks")
-                if isinstance(tasks, list):
-                    bg_tasks = {
-                        str(x.get("task_id")): str(x.get("description") or "")
-                        for x in tasks if isinstance(x, dict) and x.get("task_id")}
         elif t == "assistant":
             skills += _skill_calls(row)
             # THE WINDOW AS OF THIS MESSAGE. Same filter and same shape as the
@@ -5558,6 +6483,7 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
                 if isinstance(blk, dict) and blk.get("type") == "tool_use" \
                         and blk.get("id"):
                     tool_inputs[blk["id"]] = blk.get("input") or {}
+                    tool_names[blk["id"]] = str(blk.get("name") or "")
                     if blk["id"] in tools_open:
                         tools_open[blk["id"]]["detail"] = _tool_detail(
                             blk.get("name"), tool_inputs[blk["id"]])
@@ -5622,6 +6548,8 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
                 if block == "tool_use":
                     phase = "tooling"
                     tid = cb.get("id") or ""
+                    if tid:
+                        tool_names[tid] = str(cb.get("name") or "")
                     tools_open[tid] = {
                         "id": tid, "name": str(cb.get("name") or "tool"),
                         "detail": _tool_detail(cb.get("name"), tool_inputs.get(tid, {}))}
@@ -5643,7 +6571,12 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
                 # the turn that then succeeded says nothing about why this ended.
                 gave_up = was_retrying
 
-    _write_bg_tasks(run_dir, bg_tasks)
+    # The task registry (SPEC T-1) and the command list (SPEC C-2): the rows
+    # this window holds that the persisted registry has not absorbed yet,
+    # applied once, under the run's registry lock.
+    bg_tasks, commands_changed = _update_run_registry(
+        run_dir, rows, ends, tool_names, tool_inputs,
+        pending_cursor[-1] if pending_cursor else None)
 
     # Last word on the verb: a run sitting in a retry is not thinking, and
     # saying so is the whole point — "Thinking…" with a frozen token count is
@@ -5972,14 +6905,15 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
             # running is what holds a host open past an otherwise-idle turn
             # (see _turn_state, which computes this same fact off out.jsonl
             # alone for a caller with no reason to parse the whole file).
-            "tasks_pending": bool(bg_tasks),
+            "tasks_pending": any(_task_active(r) for r in bg_tasks.values()),
             "activity": {
                 "tool": next(reversed(tools_open.values())) if tools_open else None,
                 "tools_open": len(tools_open),
                 "tool_input_bytes": tool_input_bytes if tools_open else 0,
                 "thinking_tokens": thinking_tokens if phase == "thinking" else 0,
                 "hook": next(reversed(hooks_open.values())) if hooks_open else "",
-                "tasks": [{"id": k, "description": v} for k, v in bg_tasks.items()],
+                "tasks": [{"id": k, "description": r["description"]}
+                          for k, r in bg_tasks.items() if _task_active(r)],
                 "agent_rows": agent_rows,
             },
             # WHAT THE USER HAS TYPED THAT IS NOT IN THE TRANSCRIPT YET — the
@@ -5991,7 +6925,15 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
             # (see `_inbox_waiting`). Empty on every poll of an idle chat.
             "inbox": _inbox_waiting(run_dir) if inbox else [],
             "segments": [] if echo_pending
-            else _segments_from_rows(parsed, app_reads=app_reads),
+            else _segments_from_rows(parsed, app_reads=app_reads,
+                                     task_links=_task_links(bg_tasks)),
+            # THE TASK REGISTRY (SPEC T-1): every record this run has seen,
+            # running first then by `started_at`. `activity.tasks` above is
+            # the running subset in its old `{id, description}` shape.
+            "tasks": _task_list(bg_tasks),
+            # A NEW `init`/`commands_changed` row landed in this window (SPEC
+            # C-2): the page re-fetches `commands` once.
+            "commands_changed": commands_changed,
             # The seams inside this payload where a mid-stream follow-up was
             # absorbed into the reply already streaming — see
             # `_absorbed_turn_breaks`. Empty on every ordinary poll, and empty
@@ -6834,10 +7776,15 @@ def _history(file: str, session_id: str, app_reads: bool = False,
     timestamp is missing or unparseable (`_row_ts`). Optional throughout, the
     same way `uuid` is: the legacy template reads neither and is unaffected."""
     if _bad_id(session_id):
-        return {"turns": [], "transcript": _transcript_stat(""), "context": None}
+        return {"turns": [], "transcript": _transcript_stat(""), "context": None,
+                "tasks": []}
     file = os.path.abspath(file)
     path = os.path.join(PROJECTS, _munge(_workdir(file)),
                         session_id + ".jsonl")
+    # SPEC T-1: the task registry of this session's LAST run, while its run
+    # dir is still on disk — a reload shows the tasks panel it left.
+    task_registry = _session_task_registry(file, session_id)
+    tasks = _task_list(task_registry)
     # SAMPLED BEFORE THE READ, and the order is the whole guarantee (D415). This
     # is the watermark the page follows the conversation by — it re-renders when
     # the file moves past it — and a stat taken AFTER the read would describe
@@ -6853,10 +7800,14 @@ def _history(file: str, session_id: str, app_reads: bool = False,
         # A run can be live before its transcript exists (the CLI writes the
         # first row after `system/init`), and its card must not wait on that.
         return {"turns": [], "transcript": stat, "context": None,
+                "tasks": tasks,
                 **_history_live(file, session_id, inbox=inbox)}
 
     turns = []
     stretch = []  # rows of the assistant reply being read, for its segments
+    # Each subagent's own transcript, beside this one (SPEC T-2 on reload) —
+    # `{parent tool_use id: (agentType, rows)}`, see `_subagent_transcripts`.
+    subagents = _subagent_transcripts(path)
     # THE LATEST ASSISTANT ROW'S CONTEXT READING, overwritten as the walk finds
     # newer ones — the last one standing is the state of the window right now.
     # Free: these are the same rows already being parsed, no second read.
@@ -6883,7 +7834,10 @@ def _history(file: str, session_id: str, app_reads: bool = False,
         """
         if not stretch:
             return
-        segments = _segments_from_rows(stretch, app_reads=app_reads)
+        segments = _segments_from_rows(stretch, app_reads=app_reads,
+                                       task_links=_task_links(task_registry))
+        _attach_subagent_children(segments, subagents, app_reads,
+                                  _task_links(task_registry))
         # The stretch's own first record id, for a reply that opens NO text turn
         # — see the `uuid` note below. Read before the list is emptied.
         opener = ""
@@ -7056,7 +8010,228 @@ def _history(file: str, session_id: str, app_reads: bool = False,
     # (origin/main, D406) — the stat taken BEFORE this read, so a row appended
     # while we were parsing shows up as a change rather than being missed.
     return {"turns": turns, "transcript": stat, "context": context,
+            "tasks": tasks,
             **_history_live(file, session_id, inbox=inbox)}
+
+
+#: Caps on the subagent transcripts `_history` reads beside a session's own:
+#: a chat with hundreds of subagents still restores in one read.
+_SUBAGENT_FILE_CAP = 50
+_SUBAGENT_BYTES_CAP = 2 * 1024 * 1024
+
+
+#: A meta file is a few hundred bytes; anything bigger is not one.
+_SUBAGENT_META_CAP = 64 * 1024
+#: How many `*.meta.json` names are even looked at.
+_SUBAGENT_META_NAMES_CAP = 500
+
+
+class _SubagentIndex:
+    """The subagents persisted beside a session, parsed ON DEMAND.
+
+    `get(tool_use_id)` → `(agent_type, rows)` or None. Only the metas are read
+    up front (tiny, and only regular files under `_SUBAGENT_META_CAP`); a
+    subagent's `.jsonl` is parsed the first time a restored Agent chip asks
+    for it, so the `_SUBAGENT_FILE_CAP` bounds the transcripts a history call
+    parses rather than which fifty files happen to sort first (Bugbot, PR
+    #1635: a chat with more than fifty subagents restored the ones on screen
+    with no children while unrelated files were the ones read).
+
+    ONE LEVEL, like the poll's nesting: a subagent spawned INSIDE the one
+    asked for (its `toolUseId` is a call in these rows) is folded into the
+    rows, in timestamp order. Nothing here raises."""
+
+    def __init__(self, folder: str, metas: dict):
+        self.folder = folder
+        self.metas = metas        # toolUseId -> [(stem, agent_type), ...]
+        self.cache = {}           # toolUseId -> (agent_type, rows) | None
+        self.parsed = 0
+
+    def __bool__(self) -> bool:
+        return bool(self.metas)
+
+    def _rows(self, stem: str) -> tuple:
+        """(rows, own tool_use ids) of one `.jsonl`, or None when it is
+        unreadable, not a regular file, over the cap, or the cap on parsed
+        files is spent."""
+        if self.parsed >= _SUBAGENT_FILE_CAP:
+            return None
+        self.parsed += 1
+        jsonl = os.path.join(self.folder, stem + ".jsonl")
+        try:
+            st = os.lstat(jsonl)
+            if not stat.S_ISREG(st.st_mode) or st.st_size > _SUBAGENT_BYTES_CAP:
+                return None
+            rows, tool_ids = [], set()
+            with open(jsonl, encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    try:
+                        row = json.loads(line)
+                    except ValueError:
+                        continue
+                    if not isinstance(row, dict) or "attachment" in row \
+                            or row.get("type") not in ("user", "assistant"):
+                        continue
+                    row = dict(row)
+                    row.pop("isSidechain", None)
+                    rows.append(row)
+                    content = (row.get("message") or {}).get("content") \
+                        if isinstance(row.get("message"), dict) else None
+                    for block in content if isinstance(content, list) else []:
+                        if isinstance(block, dict) and block.get("type") == "tool_use":
+                            tool_ids.add(str(block.get("id") or ""))
+        except (OSError, ValueError, AttributeError, TypeError):
+            return None
+        return rows, tool_ids
+
+    def _first_readable(self, tool_use_id: str):
+        """`(agent_type, rows, own tool ids)` from the first meta for this id
+        whose transcript reads — two metas can name one call (a retried
+        spawn), and the readable one is the one to show (Bugbot)."""
+        for stem, agent_type in self.metas.get(tool_use_id) or ():
+            got = self._rows(stem)
+            if got is not None:
+                return agent_type, got[0], got[1]
+        return None
+
+    def get(self, tool_use_id):
+        if tool_use_id in self.cache:
+            return self.cache[tool_use_id]
+        found = self._first_readable(tool_use_id)
+        if found is None:
+            self.cache[tool_use_id] = None
+            return None
+        agent_type, rows, tool_ids = found
+        # Fold the subagents this one spawned, and theirs, and so on: every
+        # deeper sidechain lives in its own file, and the chip shows ONE flat
+        # group of rows (the poll flattens grandchildren the same way).
+        # Breadth-first, bounded by the parse cap and by never visiting an
+        # id twice.
+        seen = {tool_use_id}
+        frontier = sorted(tool_ids & set(self.metas))
+        while frontier:
+            nested_id = frontier.pop(0)
+            if nested_id in seen:
+                continue
+            seen.add(nested_id)
+            nested = self._first_readable(nested_id)
+            self.cache[nested_id] = None
+            if nested is None:
+                continue
+            rows.extend(nested[1])
+            frontier.extend(sorted((nested[2] & set(self.metas)) - seen))
+        rows.sort(key=lambda r: str(r.get("timestamp") or ""))
+        self.cache[tool_use_id] = (agent_type, rows)
+        return self.cache[tool_use_id]
+
+
+def _subagent_transcripts(transcript_path: str) -> _SubagentIndex:
+    """The subagents Claude Code persisted beside a session transcript, as a
+    lazy `_SubagentIndex` (`get(parent tool_use id)` → `(agent_type, rows)`).
+
+    2.1.296 writes each subagent to `<session dir>/subagents/agent-<id>.jsonl`
+    with an `agent-<id>.meta.json` beside it naming the Agent/Task call that
+    spawned it (`toolUseId`) and its `agentType`. The main transcript holds
+    none of those rows, so without this a restored Agent chip has nothing to
+    unfold. Rows are the ordinary transcript shape marked `isSidechain`
+    (which `_segments_from_rows` skips, so the mark is dropped on a copy);
+    only `user`/`assistant` rows are kept — `attachment` rows and the rest
+    are bookkeeping. Metas are read here (regular files only, never a FIFO or
+    a symlink to one — a blocked `open` would hold a pool thread, Bugbot);
+    transcripts are parsed on demand by the index."""
+    base = transcript_path.removesuffix(".jsonl")
+    folder = os.path.join(base, "subagents")
+    try:
+        names = sorted(n for n in os.listdir(folder) if n.endswith(".meta.json"))
+    except OSError:
+        return _SubagentIndex(folder, {})
+    metas = {}
+    for name in names[:_SUBAGENT_META_NAMES_CAP]:
+        stem = name[:-len(".meta.json")]
+        path = os.path.join(folder, name)
+        try:
+            st = os.lstat(path)
+            if not stat.S_ISREG(st.st_mode) or st.st_size > _SUBAGENT_META_CAP:
+                continue
+            with open(path, encoding="utf-8") as fh:
+                meta = json.load(fh)
+            tool_use_id = str(meta.get("toolUseId") or "")
+        except (OSError, ValueError, AttributeError, TypeError):
+            continue
+        if tool_use_id:
+            metas.setdefault(tool_use_id, []).append(
+                (stem, str(meta.get("agentType") or "")))
+    return _SubagentIndex(folder, metas)
+
+
+def _attach_subagent_children(segments: list, subagents,
+                              app_reads: bool = False,
+                              task_links: dict | None = None) -> None:
+    """Hang each persisted subagent's segments off its parent tool segment
+    as `children` (and its `agentType` as `subagent_type`). A segment that
+    already has children (the live nesting) is left alone."""
+    if not subagents:
+        return
+    for seg in segments:
+        if seg.get("kind") != "tool" or seg.get("children"):
+            continue
+        found = subagents.get(seg.get("id"))
+        if not found:
+            continue
+        agent_type, rows = found
+        try:
+            children = _segments_from_rows(rows, (), app_reads, task_links,
+                                           _nested=True)
+        except Exception:  # noqa: BLE001 — a chip with no children, never an error
+            children = []
+        if children:
+            seg["children"] = children
+        if agent_type:
+            seg["subagent_type"] = agent_type
+
+
+def _session_task_registry(file: str, session_id: str,
+                           limit: int | None = _LIVE_SCAN_LIMIT) -> dict:
+    """The task registry (`bg_tasks.json`) of the newest run dir belonging to
+    this chat's session, live or not — {} when none is left. Matched the way
+    `_live_run` matches (target, or folder/member with the session named;
+    `resumed_from` or the run's own session), without its liveness gate.
+
+    A run whose process is gone cannot vouch for a task it last saw running:
+    such records come back with status `unknown` (and `ended_at` null) rather
+    than a confident `running` the panel would tick a live clock for."""
+    if not session_id or _bad_id(session_id):
+        return {}
+    file = os.path.abspath(file)
+    try:
+        names = sorted(os.listdir(RUNS), reverse=True)
+    except OSError:
+        return {}
+    if limit is not None:
+        names = names[:limit]
+    for name in names:
+        run_dir = os.path.join(RUNS, name)
+        try:
+            with open(os.path.join(run_dir, "meta.json"), encoding="utf-8") as fh:
+                meta = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(meta, dict):
+            continue
+        target = os.path.abspath(meta.get("file", "") or "")
+        if target != file and not _folder_and_member(target, file):
+            continue
+        if session_id not in (meta.get("resumed_from", ""),
+                              _run_own_session(run_dir, meta)):
+            continue
+        registry = _read_bg_tasks(run_dir)
+        if registry and not (_host_alive(run_dir) or _alive(run_dir)):
+            for rec in registry.values():
+                if _task_active(rec):
+                    rec["status"] = "unknown"
+                    rec["ended_at"] = None
+        return registry
+    return {}
 
 
 def _history_live(file: str, session_id: str, inbox: bool = True) -> dict:
@@ -7636,7 +8811,7 @@ def main(action: str = "start", file: str = "", message: str = "",
          answers: str = "", note: str = "", custom: str = "",
          read_dirs: str = "", path: str = "", queued: str = "",
          native: str = "", draft_key: str = "", queue: str = "",
-         terminal_hint: str = "") -> dict:
+         terminal_hint: str = "", task_id: str = "") -> dict:
     if action == "start":
         if not file:
             return {"error": "missing target file (no _file param?)"}
@@ -7768,4 +8943,12 @@ def main(action: str = "start", file: str = "", message: str = "",
         # whether that means a control request or a forced respawn.
         return _send(run_id, message, read_dirs, model, effort,
                     permission_mode, terminal_hint)
+    if action == "commands":
+        # The composer's slash-command menu (SPEC C-2).
+        if not file:
+            return {"error": "missing target file (no _file param?)"}
+        return _commands(file)
+    if action == "task_output":
+        # A shell/monitor task's output, asked of the live CLI (SPEC T-3).
+        return _task_output(run_id, task_id)
     return {"error": f"unknown action: {action}"}
