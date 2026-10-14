@@ -12,8 +12,8 @@
 // Differences from builds.js, all forced by the host: builds.json is GET/POST /api/bots/builds (no appDir, no
 // .fused/data); the folder is made by POST /api/bot-apps/mkdir (mkbuild.py); fused.tasks.* are builds/tasks.ts.
 import { useSyncExternalStore } from "react";
-import { api, type BuildRow } from "../lib/api";
-import { errMsg, goChat, setBuildsChip, showBanner, showToast } from "../state/store";
+import { api, type Bot, type BuildRow } from "../lib/api";
+import { errMsg, getState, goChat, setBuildsChip, showBanner, showToast, subscribe } from "../state/store";
 import { botsMounted } from "../lib/root";
 import { parseBotsPath, tasksHref } from "../routes";
 import { navigateUrl } from "@platform/lib/router";
@@ -95,16 +95,23 @@ export const isBuild = (t: TaskRow): boolean =>
   || marked(t.title) || (t.messages || []).some((m) => marked(m.body));
 export const mine = (): TaskRow[] => buildRows.filter(isBuild);
 
-// Entry ids of builds the bots recorded themselves (`meta.builds[].entry_id`, bot.py `build`), gathered from every bot
-// panel drawn this page load. A build made before the row tag existed is a build the Tasks page must still list, or
-// the panel's row would open onto a filtered-out task (Bugbot, PR #1646); builds.json and the prompt markers cover
-// most of them, this covers the rest. A bot's own record is the one source that cannot be wrong about its own builds.
+// Entry ids of builds the bots recorded themselves (`meta.builds[].entry_id`, bot.py `build`), gathered from EVERY
+// bot the store holds (`noteBotBuilds`, on each bots poll and each feed tick) — not from the panels drawn, which would
+// only ever be the selected bot's (CodeRabbit, PR #1646). A build made before the row tag existed is a build the
+// Tasks page must still list, or the panel's row would open onto a filtered-out task (Bugbot, PR #1646); builds.json
+// and the prompt markers cover most of them, this covers the rest. A bot's own record is the one source that cannot
+// be wrong about its own builds.
 const botEntryIds = new Set<string>();
-/** The tasks ONE bot started, newest activity first. By the row's `bot` tag, or — for a task made before the tag
- *  existed — by the bot's own record of it, which this also remembers for `isBuild`. */
+/** Remember the builds these bots recorded; true when a new id turned up (the filter is worth re-applying). */
+export function noteBotBuilds(bots: Pick<Bot, "builds">[]): boolean {
+  let grew = false;
+  for (const b of bots) for (const r of b.builds || []) if (r.entry_id && !botEntryIds.has(r.entry_id)) { botEntryIds.add(r.entry_id); grew = true; }
+  return grew;
+}
+/** The tasks ONE bot started, newest activity first (pure, for tests). By the row's `bot` tag, or — for a task made
+ *  before the tag existed — by the bot's own record of it. */
 export function botTasks(rows: TaskRow[], botId: string, botBuilds: { entry_id?: string }[] | null | undefined): TaskRow[] {
   const ids = new Set((botBuilds || []).map((b) => b.entry_id).filter((id): id is string => !!id));
-  for (const id of ids) botEntryIds.add(id);
   return rows.filter((t) => t.bot === botId || (!!t.entry_id && ids.has(t.entry_id)))
     .sort((a, b) => (b.last_active || b.started || 0) - (a.last_active || a.started || 0));
 }
@@ -240,6 +247,7 @@ export function chipFor(rows: TaskRow[]): { n: string; live: boolean; warn: bool
 
 // Footer chip: how many builds are running or waiting on you; amber when one needs attention.
 export function renderBuildChip(): void {
+  noteBotBuilds(getState().bots);  // before `mine()`: the bots' own records are part of what counts as a build
   adoptBuilds();
   setBuildsChip(chipFor(mine()));
   applyBuildFilter();
@@ -323,7 +331,10 @@ export function startBuilds(): () => void {
   let alive = true;
   loadBuilds().then(() => tasksList({ scope: "all" })).then((rows) => { if (alive) { setRows(rows); renderBuildChip(); } }).catch((e) => console.warn("builds", e));
   const unwatch = tasksWatch((rows) => { setRows(rows); renderBuildChip(); }, { scope: "all" });
+  // The bots poll can land after the first listing (a direct /bots/tasks load): a bot record that names a build the
+  // filter did not know re-draws the chip and the filter at once rather than on the feed's next tick.
+  const unsub = subscribe(() => { if (noteBotBuilds(getState().bots)) renderBuildChip(); });
   const onHide = () => unwatch();
   addEventListener("pagehide", onHide);
-  return () => { alive = false; unwatch(); removeEventListener("pagehide", onHide); };
+  return () => { alive = false; unwatch(); unsub(); removeEventListener("pagehide", onHide); };
 }
