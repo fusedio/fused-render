@@ -16,9 +16,10 @@ import { useEffect, useState, type ReactNode } from "react";
 //                Checklist, not the strip: the strip renders only what is
 //                wrong, a setup step exists to say "installed ✓, signed in ✓".
 //                Open rows get the strip's own IssueRow — same buttons, same
-//                endpoints, same polls (lib/claude-setup). The STAGE is
-//                optional (progress OPTIONAL_STAGES): the explorer, previews
-//                and local models work without the CLI.
+//                endpoints, same polls (lib/claude-setup). Not labelled
+//                optional (owner, 2026-10-14) — only its PATH row is; the
+//                STAGE stays out of the sidebar meter (progress
+//                OPTIONAL_STAGES) but counts in this step's pill.
 //   Git          macOS only, Render only. Every Mac ships /usr/bin/git, but
 //                without the developer tools it is an xcode-select SHIM that
 //                pops Apple's dialog when run, so the server (shell/git_tools)
@@ -197,8 +198,9 @@ function Row({
   );
 }
 
-// A small uppercase label between groups of rows: "Claude Code · optional",
-// "Git", "Chrome" — where a group says what it is for. Rows draw their own
+// A small uppercase label between groups of rows: "Claude Code", "Git",
+// "Chrome" — where a group says what it is for. No "optional" on Claude
+// Code (owner: it is not; only its PATH row is). Rows draw their own
 // top border (not `divide-y` on the list) so a label sits flush over its
 // first row with no hairline between; the label's own top border parts it
 // from the group above, except the first.
@@ -332,7 +334,7 @@ export function ToolsStep({
     : gitWork || chromeWork
       ? "Something still needs installing — the open rows have buttons."
       : claudeActionable
-        ? "Git and Chrome are in place. Claude Code is optional; its open rows have buttons."
+        ? "Git and Chrome are in place. Claude Code still needs doing — its open rows have buttons."
         : claudeDone
           ? "Everything is in place."
           : "Nothing here will block you — carry on.";
@@ -362,7 +364,7 @@ export function ToolsStep({
       </div>
 
       <ol className="m-0 flex list-none flex-col rounded-xl border border-border bg-card p-0">
-        <Group label="Claude Code" optional />
+        <Group label="Claude Code" />
         {!rows &&
           [0, 1, 2, 3].map((i) => (
             <li key={i} className="flex items-center gap-3 px-4 py-3">

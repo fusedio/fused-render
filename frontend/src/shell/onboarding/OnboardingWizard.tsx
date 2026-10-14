@@ -44,7 +44,6 @@ import { bundleName, isBot } from "@platform/lib/flavor";
 import {
   firstOpenStage,
   getProgress,
-  isOptionalStage,
   reportStage,
   seedProgress,
   setProgress,
@@ -90,22 +89,20 @@ function asStepId(v: string | null | undefined): StepId | null {
   return STEPS.some((s) => s.id === v) ? (v as StepId) : null;
 }
 
-/** The Tools pill's mark, from the stages it hosts: the REQUIRED ones only
- *  (git, chrome — Claude Code is optional, progress.ts OPTIONAL_STAGES, and
- *  counting it would keep the pill amber forever on a machine that never
- *  wants the CLI; the meter skips it for the same reason). Complete when
+/** The Tools pill's mark, from all three stages it hosts — Claude Code
+ *  included (owner: it is not optional; progress.ts OPTIONAL_STAGES keeps it
+ *  out of the sidebar METER, which is a different question). Complete when
  *  every one the machine has is complete, partial when any has moved,
- *  pending otherwise. A machine with neither (Bot off macOS, bots off) falls
- *  back to the Claude stage so the pill still says something. */
+ *  pending otherwise. */
 function toolsStatus(stages: Stages | undefined): StageStatus {
   // `stageIds()` drops what this flavor's server never has (Bot: no git), or
   // an absent record would read as pending forever.
-  const required = TOOLS_STAGES.filter((id) => !isOptionalStage(id) && stageIds().includes(id))
+  const have = TOOLS_STAGES.filter((id) => stageIds().includes(id))
     .map((id) => stageStatus(stages, id))
     .filter((s) => s !== "n/a");
-  if (required.length === 0) return stageStatus(stages, "claude");
-  if (required.every((s) => s === "complete")) return "complete";
-  if (required.some((s) => s === "complete" || s === "partial")) return "partial";
+  if (have.length === 0) return "pending";
+  if (have.every((s) => s === "complete")) return "complete";
+  if (have.some((s) => s === "complete" || s === "partial")) return "partial";
   return "pending";
 }
 function stepFromUrl(): StepId | null {
