@@ -357,14 +357,7 @@ def list_worktrees(path: str) -> dict:
     # (Bugbot, PR #1635). The resolved path is only the fallback for a
     # symlinked prefix ABOVE the repo (macOS `/tmp` → `/private/tmp`), where
     # the lexical path does not sit under the worktree root at all.
-    lexical = os.path.normpath(os.path.abspath(path))
-    if lexical == current or _within(lexical, current):
-        target = lexical
-    else:
-        target = os.path.realpath(path)
-    relative = ""
-    if target != current and _within(target, current):
-        relative = os.path.relpath(target, current)
+    target, relative = _carry(path, current)
     for w in worktrees:
         if w["path"] == current:
             w["mapped"] = {"path": target, "exists": os.path.exists(target)}
@@ -374,6 +367,40 @@ def list_worktrees(path: str) -> dict:
                        "exists": os.path.lexists(candidate)}
     return {"root": root, "current": current, "branch_current": branch_current,
             "relative": relative, "worktrees": worktrees}
+
+
+def _carry(path: str, current: str) -> tuple:
+    """`(target, relative)`: the chat's target as it sits under the worktree
+    `current` (a realpath), and its path below it ("" at the root).
+
+    The LEXICAL path is what is carried: a symlink INSIDE the checkout (`src`
+    → a sibling folder) is the user's own layout and the same on every
+    branch, so `src/app.py` must stay `src/app.py` on the other worktrees,
+    never its resolved `real/app.py` (Bugbot, PR #1635 — twice: the first fix
+    still resolved the whole path when a prefix ABOVE the repo was a symlink,
+    macOS `/tmp` → `/private/tmp`). So only the ANCESTOR that is the worktree
+    itself is resolved: walking up from the lexical path, the first ancestor
+    whose realpath is `current` marks the boundary, and everything below it
+    is kept as written. A path with no such ancestor (not inside this
+    worktree lexically or through any prefix) falls back to its realpath."""
+    lexical = os.path.normpath(os.path.abspath(path))
+    if lexical == current:
+        return current, ""
+    if _within(lexical, current):
+        return lexical, os.path.relpath(lexical, current)
+    node = lexical
+    while True:
+        parent = os.path.dirname(node)
+        if not parent or parent == node:
+            break
+        if os.path.realpath(parent) == current:
+            relative = os.path.relpath(lexical, parent)
+            return os.path.join(current, relative), relative
+        node = parent
+    target = os.path.realpath(path)
+    if target != current and _within(target, current):
+        return target, os.path.relpath(target, current)
+    return target, ""
 
 
 def _check_name(name: str) -> str:

@@ -427,3 +427,26 @@ def test_a_symlinked_folder_inside_the_checkout_maps_as_written(repo):
     feat = next(w for w in out["worktrees"] if w["name"] == "feat")
     assert feat["mapped"] == {"path": os.path.join(made["path"], "src", "app.py"),
                               "exists": True}
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlinks need privileges on Windows")
+def test_a_symlinked_prefix_above_the_repo_keeps_the_inner_layout(repo, tmp_path):
+    """macOS-style: the repo reached through a symlinked parent (`/tmp` →
+    `/private/tmp`) AND `src` a symlink inside it. Only the worktree ancestor
+    is resolved; `src/app.py` is carried as written (Bugbot, PR #1635)."""
+    os.mkdir(os.path.join(repo, "real"))
+    with open(os.path.join(repo, "real", "app.py"), "w") as f:
+        f.write("x = 1\n")
+    os.symlink("real", os.path.join(repo, "src"))
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "link")
+    made = wt.create_worktree(repo, "feat")
+    assert "error" not in made
+    alias = str(tmp_path / "alias")
+    os.symlink(repo, alias)  # a symlinked prefix above the checkout
+    out = wt.list_worktrees(os.path.join(alias, "src", "app.py"))
+    assert out["current"] == repo
+    assert out["relative"] == os.path.join("src", "app.py")
+    feat = next(w for w in out["worktrees"] if w["name"] == "feat")
+    assert feat["mapped"] == {"path": os.path.join(made["path"], "src", "app.py"),
+                              "exists": True}
