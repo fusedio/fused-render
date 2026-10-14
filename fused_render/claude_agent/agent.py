@@ -4970,21 +4970,37 @@ _AGENT_FIELD_RES = {
 _AGENT_SCAN_OVERLAP = 256
 
 
-def _scan_agent_fields(buf: str, start: int, found: dict) -> None:
-    """Fill `found` with the complete `description` / `subagent_type` string
-    values of a still-streaming Agent/Task input. Scans only `buf[start:]`
-    plus a little overlap (a value may straddle the chunk boundary), so a
-    30 s brief is not re-scanned from the top on every delta."""
-    tail = buf[max(0, start - _AGENT_SCAN_OVERLAP):]
+_AGENT_OPENER_RES = {
+    k: re.compile(r'"%s"\s*:\s*"' % k) for k in ("description", "subagent_type")}
+
+
+def _scan_agent_fields(buf: str, frag: str, found: dict) -> str:
+    """Append `frag` to `buf`, fill `found` with the complete `description` /
+    `subagent_type` string values of a still-streaming Agent/Task input, and
+    return the BOUNDED text to carry to the next fragment: from the earliest
+    still-unclosed opener (`"description": "` whose value has not ended yet),
+    else only the last `_AGENT_SCAN_OVERLAP` bytes, so a key split across
+    chunks still matches. A long brief is never re-copied whole."""
+    buf += frag
+    keep = None
     for key, rx in _AGENT_FIELD_RES.items():
         if key in found:
             continue
-        m = rx.search(tail)
+        m = rx.search(buf)
         if m:
             try:
                 found[key] = json.loads('"' + m.group(1) + '"')
             except ValueError:
                 pass
+            continue
+        last = None
+        for om in _AGENT_OPENER_RES[key].finditer(buf):
+            last = om
+        if last is not None and (keep is None or last.start() < keep):
+            keep = last.start()
+    if keep is not None:
+        return buf[keep:]
+    return buf[-_AGENT_SCAN_OVERLAP:]
 
 
 def _worktree_hint(name, inp) -> dict | None:
@@ -4996,6 +5012,8 @@ def _worktree_hint(name, inp) -> dict | None:
     name = str(name or "")
     if name == "Bash":
         return _bash_worktree_hint(str(inp.get("command") or ""))
+    if name == "ExitWorktree":
+        return dict(_WT_EXIT)
     if name == "EnterWorktree":
         return {"path": str(inp.get("path") or inp.get("name") or ""),
                 "branch": "", "via": "enter"}
@@ -5007,6 +5025,26 @@ def _worktree_hint(name, inp) -> dict | None:
 
 
 _WT_BRANCH_FLAGS = ("-b", "-B", "--orphan")
+#: Marker for "the work left the worktree" (ExitWorktree, `git worktree
+#: remove` / `prune`): the page drops its hint on it.
+_WT_EXIT = {"via": "exit", "path": "", "branch": ""}
+_ENV_ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+
+
+def _git_words(words: list) -> list | None:
+    """`words` from the `git` command word on, or None when the segment's
+    command is not git. Skips leading `NAME=value` assignments and one
+    `sudo` / `env` / `command` prefix (with its own assignments)."""
+    i = 0
+    while i < len(words) and _ENV_ASSIGN.match(words[i]):
+        i += 1
+    if i < len(words) and words[i] in ("sudo", "env", "command"):
+        i += 1
+        while i < len(words) and _ENV_ASSIGN.match(words[i]):
+            i += 1
+    if i < len(words) and words[i] == "git":
+        return words[i:]
+    return None
 
 
 def _bash_worktree_hint(command: str) -> dict | None:
@@ -5015,14 +5053,19 @@ def _bash_worktree_hint(command: str) -> dict | None:
             words = shlex.split(seg)
         except ValueError:
             continue
-        if "git" not in words:
+        words = _git_words(words)
+        if words is None:
             continue
-        i = words.index("git") + 1
+        i = 1
         while i < len(words) and words[i] != "worktree":
             if words[i] in ("-C", "-c", "--git-dir", "--work-tree"):
                 i += 1
             i += 1
-        if i + 1 >= len(words) or words[i] != "worktree" or words[i + 1] != "add":
+        if i + 1 >= len(words) or words[i] != "worktree":
+            continue
+        if words[i + 1] in ("remove", "prune"):
+            return dict(_WT_EXIT)
+        if words[i + 1] != "add":
             continue
         args, branch, path, j = words[i + 2:], "", "", 0
         while j < len(args):
@@ -6441,6 +6484,7 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
                         tools_open[blk["id"]]["detail"] = _tool_detail(
                             blk.get("name"), tool_inputs[blk["id"]])
                         if blk.get("name") in ("Agent", "Task"):
+                            tools_open[blk["id"]]["streaming"] = False
                             tools_open[blk["id"]]["subagent_type"] = str(
                                 tool_inputs[blk["id"]].get("subagent_type") or "")
         elif t == "user":
@@ -6484,9 +6528,8 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
                     if frag and sid in stream_bufs and sid in tools_open \
                             and len(stream_found[sid]) < 2:
                         found = stream_found[sid]
-                        old = len(stream_bufs[sid])
-                        stream_bufs[sid] += frag
-                        _scan_agent_fields(stream_bufs[sid], old, found)
+                        stream_bufs[sid] = _scan_agent_fields(
+                            stream_bufs[sid], frag, found)
                         if found:
                             tools_open[sid]["detail"] = _tool_detail(
                                 tools_open[sid]["name"], found)
@@ -6527,6 +6570,7 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
                     if cb.get("name") in ("Agent", "Task"):
                         stream_bufs[tid] = ""
                         stream_found[tid] = {}
+                        tools_open[tid]["streaming"] = True
         elif t == "rate_limit_event":
             # Latest wins: the CLI writes one per API response and the newest
             # is the current state of the plan window, warning or not.
@@ -7834,6 +7878,7 @@ def _history(file: str, session_id: str, app_reads: bool = False,
                 reply["uuid"] = opener
             turns.append(reply)
 
+    worktree_hint = None  # `_worktree_hint` over every assistant tool_use, in order
     for line in open(path, encoding="utf-8", errors="replace"):
         try:
             row = json.loads(line)
@@ -7844,6 +7889,12 @@ def _history(file: str, session_id: str, app_reads: bool = False,
         msg = row.get("message") or {}
         role = msg.get("role")
         content = msg.get("content")
+        if role == "assistant" and isinstance(content, list):
+            for blk in content:
+                if isinstance(blk, dict) and blk.get("type") == "tool_use":
+                    hint = _worktree_hint(blk.get("name"), blk.get("input"))
+                    if hint is not None:
+                        worktree_hint = None if hint["via"] == "exit" else hint
         if row.get("type") == "system" and row.get("subtype") == "compact_boundary":
             meta = row.get("compactMetadata")
             compacted = meta if isinstance(meta, dict) else {}
@@ -7988,7 +8039,7 @@ def _history(file: str, session_id: str, app_reads: bool = False,
     # (origin/main, D406) — the stat taken BEFORE this read, so a row appended
     # while we were parsing shows up as a change rather than being missed.
     return {"turns": turns, "transcript": stat, "context": context,
-            "tasks": tasks,
+            "tasks": tasks, "worktree_hint": worktree_hint,
             **_history_live(file, session_id, inbox=inbox)}
 
 

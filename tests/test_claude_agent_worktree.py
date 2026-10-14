@@ -117,7 +117,7 @@ def test_worktree_hint_bash(agent, command, expected):
 
 @pytest.mark.parametrize("command", [
     "git worktree list", "git status", "git worktree add", "git worktree add 'unterminated",
-    "", "ls && git worktree remove x",
+    "", "ls && git worktree move x y",
 ])
 def test_worktree_hint_bash_none(agent, command):
     assert agent._worktree_hint("Bash", {"command": command}) is None
