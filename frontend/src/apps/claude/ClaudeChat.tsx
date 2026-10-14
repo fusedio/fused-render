@@ -145,6 +145,7 @@ import { WorktreeHintChip, visibleWorktreeHint } from "./ui/WorktreeHintChip";
 import { TasksContext, TasksPanel, tasksPanelScope, useTasksOpen } from "./ui";
 import { FilePreviewProvider } from "./ui/filePreview";
 import { SessionFiles } from "./ui/SessionFiles";
+import { DockRow } from "./ui/DockRow";
 import { touchedFiles } from "./protocol/filePaths";
 import { taskIndex } from "./protocol/tasks";
 import { recapAnchor } from "./protocol/recap";
@@ -5076,14 +5077,22 @@ function ChatBody(props: ChatBodyProps) {
             {/* THE RUN'S BACKGROUND TASKS (SPEC T-5), between the transcript and
                 the box: one line until opened. Not in the compact cut — a tile
                 is read, and its chips already say what is running. */}
+            {/* Files (N) shares this row: a pill at the right, its list a popover. */}
             {!compact ? (
-              <TasksPanel
-                tasks={state.tasks}
-                runId={state.tasksRunId}
-                sessionId={state.sessionId ?? null}
-                open={tasksOpen}
-                onToggle={toggleTasksPanel}
-                parentModel={defaults.model}
+              <DockRow
+                tasks={
+                  state.tasks.length || tasksOpen ? (
+                    <TasksPanel
+                      tasks={state.tasks}
+                      runId={state.tasksRunId}
+                      sessionId={state.sessionId ?? null}
+                      open={tasksOpen}
+                      onToggle={toggleTasksPanel}
+                      parentModel={defaults.model}
+                    />
+                  ) : null
+                }
+                files={sessionFiles.length ? <SessionFiles files={sessionFiles} /> : null}
               />
             ) : null}
             {/* …AND ONE SUMMARY OVER THE BOX. The rows are in a transcript that
@@ -5119,7 +5128,6 @@ function ChatBody(props: ChatBodyProps) {
                 (T:1412-1422). The strip rides INSIDE the composer's own block
                 (between the box and the footnote, T:4203) when there is one,
                 and stands alone in the compact tile that has none. */}
-            {!compact ? <SessionFiles files={sessionFiles} /> : null}
             {!compact ? (
               <Composer
                 {...card}
