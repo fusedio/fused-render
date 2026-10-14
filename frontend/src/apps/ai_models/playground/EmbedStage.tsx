@@ -450,7 +450,10 @@ export function EmbedStage({
     setPictures(merged.next);
     if (merged.over) why ??= `Up to ${MAX_PICTURES} files — ${merged.over} not added.`;
     setError(why);
-    if (merged.next.length !== before.length) {
+    // A path picked again while it sits in the list as FAILED is a retry
+    // too — the list does not grow, but the row goes back to pending.
+    const retried = ok.filter((path) => indexRef.current.get(path)?.state === "failed").length;
+    if (merged.next.length !== before.length || retried) {
       setRankedPictures(null);
       // Every new file starts its journey now, not at Search time.
       for (const path of merged.next) {
@@ -915,7 +918,7 @@ export function EmbedStage({
               onClick={() => void (pictureMode ? runPictures() : run())}
             >
               {busy
-                ? pictureMode && progress.busy ? "Indexing…" : "Searching…"
+                ? pictureMode && progress.busy && !halted.current ? "Indexing…" : "Searching…"
                 : "Search"} <kbd className="pg-kbd">⏎</kbd>
             </button>
           </div>
@@ -937,10 +940,15 @@ export function EmbedStage({
               <p className="pg-drop-title">
                 {!pictures.length
                   ? ranksMedia ? "Pictures, sound files and videos" : "Pictures"
-                  : progress.busy
+                  : progress.busy && !halted.current
                     ? `Indexing ${progress.done + progress.failed + progress.indexing} of ${progress.total}…`
-                    : `${progress.done} ${progress.done === 1 ? mediaNoun : `${mediaNoun}s`} ready` +
-                      (progress.failed ? ` · ${progress.failed} could not be read` : "")}
+                    : progress.busy
+                      // The runner stopped on a run-level error (its sentence
+                      // is on the error line); pending rows are waiting, not
+                      // being worked on, and Search restarts the runner.
+                      ? `Indexing stopped — ${progress.total - progress.done - progress.failed} waiting. Search to retry.`
+                      : `${progress.done} ${progress.done === 1 ? mediaNoun : `${mediaNoun}s`} ready` +
+                        (progress.failed ? ` · ${progress.failed} could not be read` : "")}
               </p>
               <p className="pg-drop-hint">
                 Pick several at once, or drop them here from Finder or the Explorer.
@@ -1091,9 +1099,11 @@ export function EmbedStage({
               capability="embeddings"
               note={
                 pictures.length
-                  ? progress.busy
+                  ? progress.busy && !halted.current
                     ? `Indexing ${progress.done + progress.failed + progress.indexing} of ${progress.total} — type what you are looking for meanwhile.`
-                    : `The ${mediaNoun}s come back here, ordered by how close they are to the phrase.`
+                    : progress.busy
+                      ? `Indexing stopped — ${progress.total - progress.done - progress.failed} waiting. Search to retry.`
+                      : `The ${mediaNoun}s come back here, ordered by how close they are to the phrase.`
                   : `Add a ${mediaNoun} or two above, or drop them in, then type what you are looking for.`
               }
             />
