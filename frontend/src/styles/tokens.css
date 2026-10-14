@@ -396,6 +396,16 @@
      rather than a surface of the page. */
   --scrim-letterbox: #000000;
   --task-c7: #a78bfa;
+  /* Marketplace (styles/marketplace.css): the store's card lift, the frosted
+   * sticky header, and the soft drop under a detail page's big icon. Dark
+   * cards carry no resting shadow (a shadow on near-black is mud) — only the
+   * hover lift; light cards get a whisper of one at rest. */
+  --store-card-shadow: 0 0 0 transparent;
+  --store-card-shadow-hover: 0 14px 34px rgba(0, 0, 0, 0.42), 0 2px 8px rgba(0, 0, 0, 0.3);
+  --store-header-bg: rgba(19, 20, 23, 0.86);
+  --store-icon-shadow: 0 12px 28px rgba(0, 0, 0, 0.5), 0 2px 6px rgba(0, 0, 0, 0.35);
+  --store-icon-ring: rgba(255, 255, 255, 0.09);
+  --store-scrim: rgba(6, 7, 9, 0.86);
 }
 
 :root[data-theme="light"] {
@@ -599,6 +609,12 @@
   --scrim-chip-bg: rgba(255, 255, 255, 0.12);
   --scrim-chip-bg-hover: rgba(255, 255, 255, 0.22);
   --scrim-letterbox: #000000;
+  --store-card-shadow: 0 1px 2px rgba(16, 24, 40, 0.04), 0 1px 3px rgba(16, 24, 40, 0.04);
+  --store-card-shadow-hover: 0 14px 32px rgba(16, 24, 40, 0.1), 0 3px 8px rgba(16, 24, 40, 0.06);
+  --store-header-bg: rgba(255, 255, 255, 0.86);
+  --store-icon-shadow: 0 12px 26px rgba(16, 24, 40, 0.16), 0 2px 6px rgba(16, 24, 40, 0.08);
+  --store-icon-ring: rgba(0, 0, 0, 0.07);
+  --store-scrim: rgba(20, 22, 26, 0.72);
 }
 
 /* -- METRICS, NOT COLOURS ----------------------------------------------------

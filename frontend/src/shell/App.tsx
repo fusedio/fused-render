@@ -10,6 +10,7 @@
 //                             bare "/ai-models" redirects to the default tab
 //   "/preferences|/templates" -> settings pages
 //   "/monitor"               -> whole-machine process monitor (shell/monitor)
+//   "/marketplace[/…]"       -> community app store (apps/marketplace)
 // Legacy pre-rename urls (/view/..., /embed/..., /view/_prefs-family) are
 // rewritten in place at boot by router.ts before any of this runs.
 // The active view is keyed by the nav epoch: every navigation remounts it,
@@ -67,6 +68,7 @@ import ModelsDock from "@shell/ModelsDock";
 import SystemDock from "@shell/SystemDock";
 import UpdatesDock from "@shell/UpdatesDock";
 import { useMonitorFeature } from "@platform/lib/monitor-flag";
+import { useMarketplaceFeature } from "@platform/lib/marketplace-flag";
 import ActivityDock from "@shell/ActivityDock";
 import RepoUpdatesDock from "@shell/RepoUpdatesDock";
 import NativeAppSyncNotices from "@shell/NativeAppSyncNotices";
@@ -119,6 +121,9 @@ const AiModels = lazy(() =>
 );
 const Scheduled = lazy(() => import("@shell/Scheduled"));
 const MonitorPage = lazy(() => import("@shell/monitor/MonitorPage"));
+const MarketplacePage = lazy(() =>
+  import("@apps/marketplace").then((m) => ({ default: m.MarketplacePage })),
+);
 
 /** Params that belong to a PAGE rather than to a route — see `useNavEpoch`.
  *  Module-level so the array identity is stable across renders. */
@@ -718,6 +723,14 @@ export default function App({ config }: { config: Config }) {
   // to "monitor" when the pref landed would flash a stat of ~/monitor first.
   const monitorOn = useMonitorFeature();
   const isMonitor = pathname === "/monitor";
+  // The Marketplace (apps/marketplace) — a PREFIX: Discover at the bare path,
+  // `/installed` and `/app/<slug>` beneath it. Behind its flag exactly like
+  // the Monitor above (marketplace-flag.ts, `marketplace_enabled`, default
+  // off), and a sentinel either way for the same no-flash reason. The bare
+  // path is spelled as its own equality literal: tests/test_shell_routes.py
+  // scrapes those literals from this file and GETs each from the server.
+  const marketplaceOn = useMarketplaceFeature();
+  const isMarketplace = pathname === "/marketplace" || pathname.startsWith("/marketplace/");
   // The AI Models page (apps/ai_models/) — a PREFIX, not one path: its five
   // tabs are sub-paths beneath it (`/ai-models/local`, …), and the bare prefix
   // has already been rewritten to the default tab above. Asked through the
@@ -771,6 +784,7 @@ export default function App({ config }: { config: Config }) {
     isTemplates ||
     isTasks ||
     isMonitor ||
+    isMarketplace ||
     isAiModels ||
     isApps ||
     appPagePath !== null ||
@@ -795,6 +809,8 @@ export default function App({ config }: { config: Config }) {
                 ? "Tasks"
                 : isMonitor
                 ? "Monitor"
+                : isMarketplace
+                ? "Marketplace"
                 : isAiModels
                   ? "AI Models"
                   : isApps
@@ -939,6 +955,36 @@ export default function App({ config }: { config: Config }) {
               }}
             >
               Preferences › Monitor
+            </a>
+            .
+          </div>
+        )}
+      </div>
+    );
+  } else if (isMarketplace) {
+    // The Marketplace — chrome-free, the page owns its sticky header and
+    // scroll. Keyed on epoch like its neighbours (its catalog is a module
+    // cache, so a remount repaints instantly). Off, nothing is fetched: the
+    // notice is the whole page.
+    main = (
+      <div id="content" key={epoch}>
+        {marketplaceOn === null ? (
+          <RouteFallback />
+        ) : marketplaceOn ? (
+          <Suspense fallback={<RouteFallback />}>
+            <MarketplacePage key={epoch} />
+          </Suspense>
+        ) : (
+          <div className="monitor-off deploy-muted">
+            The Marketplace is off. Turn it on under{" "}
+            <a
+              href="/preferences"
+              onClick={(e) => {
+                e.preventDefault();
+                navigateUrl("/preferences");
+              }}
+            >
+              Preferences › Marketplace
             </a>
             .
           </div>

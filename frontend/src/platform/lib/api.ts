@@ -1355,6 +1355,12 @@ export interface Prefs {
   // an older server answers without it, and the reader (monitor-flag.ts)
   // treats absence as off.
   monitor?: { enabled: boolean };
+  // Whether the Marketplace is OFFERED (opt-in, default off — shell/prefs.py
+  // `marketplace_enabled`): the sidebar's Marketplace row and the
+  // /marketplace pages. Gates the entry points, not /api/marketplace/*.
+  // OPTIONAL: an older server answers without it, and the reader
+  // (marketplace-flag.ts) treats absence as off.
+  marketplace?: { enabled: boolean };
   // ONE TASK IN PROGRESS PER FOLDER (`project_queue_enabled`, shell/prefs.py).
   // Everything that wants to run in a folder somebody else's task is already
   // running in waits its turn in the scheduler's pending list instead — chat
@@ -1713,6 +1719,10 @@ export function putLivePreviewsEnabled(enabled: boolean): Promise<Prefs> {
 
 export function putMonitorEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { monitor_enabled: enabled });
+}
+
+export function putMarketplaceEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { marketplace_enabled: enabled });
 }
 
 /** Whether a finished-task notification fires for an interactive-terminal

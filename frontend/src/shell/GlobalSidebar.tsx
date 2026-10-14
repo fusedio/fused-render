@@ -11,7 +11,7 @@
 // (SidebarFrame) and explorer-owned sections (Bookmarks), which only
 // the shell is allowed to import together (scripts/check-boundaries.mjs).
 import { useEffect, useRef, useState } from "react";
-import { ListTodo } from "lucide-react";
+import { ListTodo, Store } from "lucide-react";
 import { SidebarFrame, NavItem } from "@platform/ui/sidebar/SidebarFrame";
 import type { SidebarRailItem } from "@platform/ui/sidebar/SidebarFrame";
 import type { Config } from "@platform/lib/api";
@@ -39,6 +39,7 @@ import { useTaskPeekEnabled } from "@shell/task-peek-flag";
 import { useClaudeConfigAvailable } from "@apps/claude_config/available";
 import { useCanvasesLoggedIn } from "@apps/canvases/logged-in";
 import { useCanvasesFeature } from "@apps/canvases/feature-flag";
+import { useMarketplaceFeature } from "@platform/lib/marketplace-flag";
 import { useAiRuntime } from "@apps/ai_models/lib/aiRuntime";
 import { isAiModelsPath, tabHref } from "@apps/ai_models/routes";
 import { isBotsPath } from "@apps/bots/routes";
@@ -121,6 +122,10 @@ const TEMPLATES_ICON = (
 // glyph (shell/AppPage.tsx) so the two read as one thing. Was a clock while the
 // page was "Scheduled".
 const SCHEDULED_ICON = <ListTodo size={16} strokeWidth={2} aria-hidden="true" />;
+
+// A shop front (lucide Store) for the Marketplace: where community apps are
+// browsed and installed, sized like the lucide Tasks glyph above.
+const MARKETPLACE_ICON = <Store size={16} strokeWidth={1.9} aria-hidden="true" />;
 
 // Connected nodes: a canvas is a graph of UDFs.
 const CANVASES_ICON = (
@@ -541,6 +546,12 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   const bot = isBot();
   const canvasesEnabled = useCanvasesFeature() && !bot;
   const canvasesInNav = canvasesEnabled && canvasesLoggedIn;
+  // The Marketplace (apps/marketplace, default off — marketplace-flag.ts):
+  // a row after AI Models when the pref is on, never under Fused Bot. `null`
+  // (the read not landed yet) is off, so nothing flashes in. PREFIX match:
+  // /marketplace/app/<slug> and /marketplace/installed are the same store.
+  const marketplaceInNav = useMarketplaceFeature() === true && !bot;
+  const marketplaceActive = pathname === "/marketplace" || pathname.startsWith("/marketplace/");
   // THE FRONT DOOR: Home, or Bots under the Fused Bot flavor, which has no
   // Home page. Same answer as App.tsx's "/" redirect, so clicking the title
   // lands where "/" lands. Bots is always a row of its own on Render, right
@@ -852,6 +863,18 @@ export default function GlobalSidebar({ config }: { config: Config }) {
             badge: residentDot,
           },
         ]),
+    // Same gate and same order as the expanded row below.
+    ...(marketplaceInNav
+      ? [
+          {
+            key: "marketplace",
+            label: "Marketplace",
+            icon: MARKETPLACE_ICON,
+            href: "/marketplace",
+            active: marketplaceActive,
+          },
+        ]
+      : []),
     ...railNewApp,
     ...railApps,
     ...railPins,
@@ -951,6 +974,15 @@ export default function GlobalSidebar({ config }: { config: Config }) {
                 // the chip skin is the shared one, the modifier only recolours it.
                 <span className="sidebar-count-chip sidebar-beta-chip">Beta</span>
               }
+            />
+          )}
+          {marketplaceInNav && (
+            <NavItem
+              href="/marketplace"
+              id="marketplace-link"
+              label="Marketplace"
+              icon={MARKETPLACE_ICON}
+              active={marketplaceActive}
             />
           )}
         </div>
