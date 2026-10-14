@@ -40,6 +40,7 @@ import { useCardOpen } from "./cardPolicy";
 import { MarkdownView } from "./MarkdownView";
 import { activateOnKey } from "./planAffordance";
 import { PlanModal } from "./PlanModal";
+import { useFilePreview } from "./filePreview";
 import { useTaskIndex } from "./tasksContext";
 
 import "../styles/tasks.css";
@@ -187,6 +188,11 @@ function usedKeys(seg: ToolSegment, inp: Record<string, unknown>): string[] {
       return ["file_path", "old_string", "new_string", "replace_all"];
     case "Write":
       return ["file_path", "content"];
+    case "Read":
+    case "MultiEdit":
+      return ["file_path"];
+    case "NotebookEdit":
+      return ["notebook_path"];
     case "Bash":
       return ["command", "description"];
     case "TodoWrite":
@@ -268,6 +274,19 @@ function renderInput(seg: ToolSegment, inp: Record<string, unknown>, cwd?: strin
           <CopyPre copy={typeof inp.content === "string" ? inp.content : ""}>
             {typeof inp.content === "string" ? inp.content : ""}
           </CopyPre>
+        </>
+      );
+    case "Read":
+    case "MultiEdit":
+      return (
+        <>
+          <PathLabel value={inp.file_path} />
+        </>
+      );
+    case "NotebookEdit":
+      return (
+        <>
+          <PathLabel value={inp.notebook_path} />
         </>
       );
     case "Bash":
@@ -375,9 +394,26 @@ function PlanChipBody({ plan, savedTo }: { plan: string; savedTo?: string }) {
   );
 }
 
-function PathLabel({ value }: { value: unknown }) {
+/** The target path. A button that opens the file in the overlay when the chat
+ *  provides an opener; the plain label everywhere else. */
+export function PathLabel({ value }: { value: unknown }) {
   const s = text(value);
-  return s ? <div className="chip-label chip-label-path">{s}</div> : null;
+  const openPreview = useFilePreview();
+  if (!s) return null;
+  if (!openPreview) return <div className="chip-label chip-label-path">{s}</div>;
+  return (
+    <button
+      type="button"
+      className="chip-label chip-label-path is-link"
+      title="Preview this file"
+      onClick={(ev) => {
+        ev.stopPropagation();
+        openPreview(s);
+      }}
+    >
+      {s}
+    </button>
+  );
 }
 
 /** Renders a subagent's segments with the transcript's own renderer

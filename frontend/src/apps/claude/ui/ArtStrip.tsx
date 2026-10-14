@@ -12,8 +12,10 @@
 // interruption of the poll for the reply.
 import { useCallback, useEffect, useRef, useState } from "react";
 import "../styles/sched.css";
+import { useFilePreview } from "./filePreview";
 import {
   artLabel,
+  artLocalPath,
   artSignature,
   pollArtifacts,
   type Artifact,
@@ -24,17 +26,35 @@ export interface ArtStripProps {
 }
 
 export function ArtStrip({ items }: ArtStripProps) {
+  const openPreview = useFilePreview();
   if (!items.length) return null;
   return (
     <div className="c-artstrip" aria-label="Pages Claude published in this chat">
-      {items.map((a) => (
+      {items.map((a) => {
+        const local = openPreview ? artLocalPath(a) : null;
+        return (
         <a
           key={a.remote_url}
           className="art-chip"
           href={a.remote_url}
           target="_blank"
           rel="noopener noreferrer"
-          title={"Open " + artLabel(a)}
+          title={
+            local
+              ? "Preview " + artLabel(a) + " (⌘-click: published page)"
+              : "Open " + artLabel(a)
+          }
+          // A plain click previews the local file in the overlay; a modified
+          // or middle click keeps the link's own door, the hosted page.
+          onClick={
+            local && openPreview
+              ? (ev) => {
+                  if (ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.button !== 0) return;
+                  ev.preventDefault();
+                  openPreview(local);
+                }
+              : undefined
+          }
         >
           {/* `◻` is the fallback, and it is TEXT: a favicon comes off the wire
               as an emoji or a single glyph, never as markup. */}
@@ -44,7 +64,8 @@ export function ArtStrip({ items }: ArtStripProps) {
             ↗
           </span>
         </a>
-      ))}
+        );
+      })}
     </div>
   );
 }

@@ -8,6 +8,8 @@
 import { memo, useEffect, useMemo, useRef } from "react";
 
 import { enhanceCodeBlocks, renderMd, renderMdInert } from "../protocol/markdown";
+import { useFilePreview } from "./filePreview";
+import { linkifyEnabled, linkifyPaths, PATH_LINK_CLASS } from "./linkifyPaths";
 
 /** The components permitted to call `dangerouslySetInnerHTML`, by name. The
  *  template pins the same list with a test (D246: `addAssistantTurn`,
@@ -52,14 +54,41 @@ export const MarkdownView = memo(function MarkdownView({
   cwd,
 }: MarkdownViewProps) {
   const ref = useRef<HTMLDivElement>(null);
+  const openPreview = useFilePreview();
   const html = useMemo(() => (links ? renderMd(text) : renderMdInert(text)), [text, links]);
   useEffect(() => {
     // After paint, once per FINAL render: hljs rewrites the `<code>` it
     // highlights, and the copy button reads its `<pre>`'s text before joining
     // the tree, so both need the nodes React has already committed.
     if (enhance && ref.current) enhanceCodeBlocks(ref.current, { cwd });
-  }, [html, enhance, cwd]);
-  return <div ref={ref} className={className} dangerouslySetInnerHTML={{ __html: html }} />;
+    // Inline `code` naming a real file becomes a click target for the preview
+    // overlay. The inert variant (`links={false}`) never does, and neither
+    // does a streaming tail (`enhance` false): a stat per frame is not free.
+    const root = ref.current;
+    if (!root || !linkifyEnabled({ links, enhance, hasOpener: !!openPreview })) return;
+    void linkifyPaths(root, { cwd, live: () => ref.current === root });
+  }, [html, enhance, links, cwd, openPreview]);
+  const onPathActivate = (target: EventTarget | null) => {
+    const el = (target as Element | null)?.closest?.("." + PATH_LINK_CLASS);
+    const path = el?.getAttribute("data-path");
+    if (!path || !openPreview) return false;
+    openPreview(path);
+    return true;
+  };
+  return (
+    <div
+      ref={ref}
+      className={className}
+      dangerouslySetInnerHTML={{ __html: html }}
+      onClick={(ev) => {
+        if (onPathActivate(ev.target)) ev.preventDefault();
+      }}
+      onKeyDown={(ev) => {
+        if (ev.key !== "Enter" && ev.key !== " ") return;
+        if (onPathActivate(ev.target)) ev.preventDefault();
+      }}
+    />
+  );
 });
 
 export default MarkdownView;

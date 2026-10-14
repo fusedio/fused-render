@@ -5,14 +5,18 @@
 // place the hosted page opens, which is why its click stops propagating: a
 // press on it must not also count as a press on the row.
 //
-// A new tab either way, never this frame: this window is a chat (often a pane
-// of a split), and navigating it away would end the conversation.
+// A press on the row opens the local file in the chat's preview OVERLAY when
+// the chat provides one (`useFilePreview`) and the file is known to exist —
+// this window is a chat (often a pane of a split), and navigating it away
+// would end the conversation. Everywhere else (the landing page, which has no
+// provider; a file that is gone) it is a new tab, exactly as before.
 import {
   artLabel,
   artLocalPath,
   artOpenHref,
   type Artifact,
 } from "../protocol/artifacts";
+import { useFilePreview } from "./filePreview";
 import { ago } from "./list-rows";
 
 /** The globe (T:18507-18510, verbatim). */
@@ -45,8 +49,13 @@ export interface ArtifactRowProps {
 export function ArtifactRow({ artifact, disabled }: ArtifactRowProps) {
   const local = artLocalPath(artifact);
   const href = local ? artOpenHref(local) : artifact.remote_url;
+  const openPreview = useFilePreview();
   const open = () => {
     if (disabled || !href) return;
+    if (local && openPreview) {
+      openPreview(local);
+      return;
+    }
     window.open(href, "_blank", "noopener");
   };
   const pressable = !!href;

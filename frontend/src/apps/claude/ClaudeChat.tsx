@@ -143,6 +143,9 @@ import { notify } from "@platform/lib/notifications";
 import { WorktreeMenu, paneChatUrl, type WorktreeRequest } from "./ui";
 import { WorktreeHintChip, visibleWorktreeHint } from "./ui/WorktreeHintChip";
 import { TasksContext, TasksPanel, tasksPanelScope, useTasksOpen } from "./ui";
+import { FilePreviewProvider } from "./ui/filePreview";
+import { SessionFiles } from "./ui/SessionFiles";
+import { touchedFiles } from "./protocol/filePaths";
 import { taskIndex } from "./protocol/tasks";
 import { recapAnchor } from "./protocol/recap";
 import {
@@ -4311,6 +4314,8 @@ function ChatBody(props: ChatBodyProps) {
     inChat,
   );
   artTick.current = art.poll;
+  // The files this chat wrote or edited, for the "Files (N)" list.
+  const sessionFiles = useMemo(() => touchedFiles(state.turns), [state.turns]);
   const [snapNonce, setSnapNonce] = useState(0);
   snapInvalidate.current = () => setSnapNonce((n) => n + 1);
 
@@ -4714,6 +4719,7 @@ function ChatBody(props: ChatBodyProps) {
 
   return (
    <CardPolicyProvider value={cardPolicy}>
+   <FilePreviewProvider cwd={chatWorkdir(file, pane.noun)}>
     <div
       ref={rootRef}
       className={rootClass(
@@ -5112,6 +5118,7 @@ function ChatBody(props: ChatBodyProps) {
                 (T:1412-1422). The strip rides INSIDE the composer's own block
                 (between the box and the footnote, T:4203) when there is one,
                 and stands alone in the compact tile that has none. */}
+            {!compact ? <SessionFiles files={sessionFiles} /> : null}
             {!compact ? (
               <Composer
                 {...card}
@@ -5160,6 +5167,7 @@ function ChatBody(props: ChatBodyProps) {
         onDiscard={onDiscardShot}
       />
     </div>
+   </FilePreviewProvider>
    </CardPolicyProvider>
   );
 }

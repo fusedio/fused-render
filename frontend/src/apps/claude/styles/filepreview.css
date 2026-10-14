@@ -1,0 +1,138 @@
+/* The in-chat file preview: the overlay (ui/FilePreviewModal.tsx), the paths
+   that open it (a tool chip's target and inline `code` in a reply), and the
+   "Files (N)" list (ui/SessionFiles.tsx). Imported by ui/filePreview.tsx. */
+
+/* ── the overlay ─────────────────────────────────────────────────────────────
+   A wide dialog over the whole window; the body is one same-origin iframe.
+   Above the app's modals, like `.c-plan-modal`. */
+.modal-dialog.c-filepreview-modal {
+  width: min(1100px, 92vw);
+}
+.modal-overlay:has(> .c-filepreview-modal) {
+  z-index: 1100;
+}
+.chat-root.c-filepreview-root {
+  display: block;
+  width: auto;
+  height: 80vh;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: transparent;
+}
+.c-filepreview-root .c-fp-frame {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+}
+.c-filepreview-root .c-fp-missing {
+  padding: 32px 24px;
+  color: var(--c-faint);
+  text-align: center;
+}
+.c-filepreview-modal .c-fp-path {
+  margin-left: 8px;
+  font-size: 11.5px;
+  font-weight: 400;
+  color: var(--c-faint, #888);
+  font-family: "SF Mono", Menlo, Monaco, "Cascadia Mono", monospace;
+}
+.c-filepreview-modal .c-fp-btn {
+  padding: 3px 10px;
+  border: 1px solid var(--c-border, rgba(128, 128, 128, 0.35));
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.c-filepreview-modal .c-fp-btn:hover {
+  border-color: var(--c-accent, currentColor);
+}
+
+/* ── paths that open it ──────────────────────────────────────────────────────
+   Same look as before; a pointer and an underline on hover. */
+.chat-root .toolchip button.chip-label-path.is-link {
+  display: block;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+.chat-root .toolchip button.chip-label-path.is-link:hover,
+.chat-root code.c-path-link:hover {
+  text-decoration: underline;
+}
+.chat-root code.c-path-link {
+  cursor: pointer;
+}
+
+/* ── "Files (N)" ─────────────────────────────────────────────────────────────
+   Same chip skin as `.art-chip`; the expanded list is a quiet column. */
+.c-files {
+  flex-shrink: 0;
+  max-width: 720px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 2px 24px 6px;
+}
+.c-files .c-files-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 9px;
+  border: 1px solid var(--c-border);
+  border-radius: 999px;
+  background: var(--c-surface);
+  color: var(--c-fg);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.c-files .c-files-head:hover {
+  border-color: var(--c-accent);
+  color: var(--c-accent);
+}
+.c-files .c-files-chev {
+  transition: transform 0.12s;
+}
+.c-files.is-open .c-files-chev {
+  transform: rotate(90deg);
+}
+.c-files .c-files-list {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  max-height: 160px;
+  overflow-y: auto;
+}
+.c-files .c-files-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 3px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--c-fg);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.c-files .c-files-row:hover {
+  background: var(--c-surface);
+  color: var(--c-accent);
+}
+.c-files .c-files-name {
+  flex-shrink: 0;
+}
+.c-files .c-files-dir {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--c-faint);
+  font-size: 11px;
+}
