@@ -1333,7 +1333,8 @@ class Bot:
                 # A refused start (start_task's gates) drops it the same way.
                 self.emit("system", "Opening the sign-in page now so you can log in before the first task.")
                 started = self.start_task(setup, label=f"Sign in to {self.meta.get('name') or 'the site'}", origin="setup")
-            if not started:
+            if not started and not self.running():
+                # Not when a task typed meanwhile won the slot: that one owns the status now.
                 self.set_status("idle", note="")
         self.thread = threading.Thread(target=go, daemon=True, name=f"greet-{self.id}")
         self.thread.start()
@@ -1902,7 +1903,12 @@ class Bot:
                 # finds the routine by last_result == "started") never lands the result and the row runs forever.
                 if r.get("last_result") != "started":
                     r["last_result"] = f"skipped: {why}"
-                ev = self.emit("system", f"Routine \"{r['task'][:60]}\" skipped: {why if stale else ('you had the browser' if held else 'bot busy')}")
+                if stale and self._restart_said == stale and not manual:
+                    ev = {}  # the run row keeps the record; the chat heard it once (an interval fires until the restart)
+                else:
+                    ev = self.emit("system", f"Routine \"{r['task'][:60]}\" skipped: {why if stale else ('you had the browser' if held else 'bot busy')}")
+                    if stale:
+                        self._restart_said = stale
                 self._run_add(r, "skipped", why, seq=ev.get("seq"), manual=manual)
             else:
                 r["last_result"] = "started"
