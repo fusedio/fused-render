@@ -37,6 +37,7 @@
 // `openTargetFor` resolve the same target, so a new tab and a left click can't
 // land in different places.
 import { type AppInfo, getPrefs } from "./api";
+import { isMac } from "./platform";
 import { embedUrlForFsPath, IS_NATIVE_WINDOW, navigate, urlForFsPath } from "./router";
 
 // The ONE ordering every app grid uses (/home's strip, the /apps hub):
@@ -129,9 +130,11 @@ export function openApp(app: AppInfo): void {
 // IS_EMBED is fixed at load — and the window becomes the app's window (the URL
 // observer re-keys it, mac_window.py; its title-bar Edit is the way into the
 // explorer). The `apps_open_in_explorer` preference keeps the explorer there
-// too. A failed prefs read takes the default, the embed.
+// too. A failed prefs read takes the default, the embed. macOS only: a Linux
+// window has no title-bar Edit and EmbedStrip hides in native windows, so an
+// embed there would leave no way back — Linux keeps the explorer.
 export function openAppEntry(entry: string, inExplorer: () => void): void {
-  if (!IS_NATIVE_WINDOW) {
+  if (!IS_NATIVE_WINDOW || !isMac) {
     inExplorer();
     return;
   }

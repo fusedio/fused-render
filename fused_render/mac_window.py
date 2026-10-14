@@ -698,8 +698,16 @@ class _WebDelegate(NSObject):
         elif key == "URL":
             u = obj.URL()
             current = str(u.absoluteString()) if u is not None else None
+            was_embed = window.view == "embed"
             window.key = window_policy.window_key_of(current)
             window.view = window_policy.window_view_of(current)
+            if window.view == "embed" and not was_embed and window.key:
+                # A shell window turned into an app's run window (an app
+                # clicked inside it, appEntry.ts `openAppEntry`): it takes the
+                # app window's frame and lets go of the one it was opened
+                # under, so Home's saved frame is never the app's to move.
+                self._manager.hand_frame(
+                    window, window_policy.frame_autosave_name(window.key, "embed"))
             window.sync_edit_button()
 
     # ---- NSWindowDelegate --------------------------------------------------
@@ -1410,15 +1418,27 @@ class WindowManager:
         if path is None:
             return None
         url = f"http://127.0.0.1:{self.port}" + path
-        name = window_policy.frame_autosave_name(window_policy.window_key_of(url), "view")
-        if win.ns is not None and name != win.frame_name and self.frame_owner(name) is None:
-            win.save_frame()
-            win.ns.setFrameAutosaveName_("")
-            win.ns.setFrameUsingName_(name)
-            win.frame_name = name if win.ns.setFrameAutosaveName_(name) else None
-            win.place_name = name
+        self.hand_frame(win, window_policy.frame_autosave_name(window_policy.window_key_of(url), "view"))
         win.load(url)
         return win
+
+    def hand_frame(self, win: _Window, name: str | None) -> None:
+        """``win`` now shows something else, so its frame changes hands: its
+        size and place are saved under the name it holds, it lets that name
+        go (resizing it from here on must not move what it showed before),
+        and it takes ``name``'s saved frame and autosaves under it — unless
+        another open window already owns ``name``, in which case it stays
+        where it is and autosaves under nothing. Main thread."""
+        if win.ns is None or not name or name == win.frame_name:
+            return
+        win.save_frame()
+        win.ns.setFrameAutosaveName_("")
+        win.frame_name = None
+        if self.frame_owner(name) is not None:
+            return
+        win.ns.setFrameUsingName_(name)
+        win.frame_name = name if win.ns.setFrameAutosaveName_(name) else None
+        win.place_name = name
 
     def focus_or_open(self, fs_path: str) -> _Window:
         """Dock semantics: an app already open comes to the front (its most
