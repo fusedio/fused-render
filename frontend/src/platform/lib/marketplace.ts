@@ -201,23 +201,34 @@ function setSnapshot(next: Partial<CatalogSnapshot>) {
   for (const l of catalogListeners) l(snapshot);
 }
 
+/** Monotonic id of the latest catalog read: an `again`/`force` read can
+ *  overtake one already in flight, and the older answer — which may predate
+ *  an install — must never land on top of the newer one. */
+let catalogSeq = 0;
+
 /** Re-read the catalog. Single-flight unless `force` (a "Retry"/refresh
  *  press, which also asks the server to bypass its 10-minute cache) or
  *  `again` (something just changed on disk — a read already in flight may
  *  have been answered before the change, so joining it would miss it). */
 export function refreshCatalog(opts: { force?: boolean; again?: boolean } = {}): Promise<void> {
   if (catalogFlight && !opts.force && !opts.again) return catalogFlight;
+  const seq = ++catalogSeq;
   setSnapshot({ loading: true });
   // Finished jobs this read will reconcile: whatever had settled BEFORE it
   // left is reflected in its answer (see `reconciled` below).
-  const settling = [...awaiting];
+  const settling = [...awaiting.keys()];
   const flight = fetchCatalog(!!opts.force)
     .then((c) => {
+      // Superseded: a newer read is in flight (or already landed) and owns
+      // the snapshot — and the `awaiting` slugs this one would have settled,
+      // since they are still pending when that one left.
+      if (seq !== catalogSeq) return;
       if (c.status === "error") {
         // Total failure (nothing cached server-side either): `apps` is empty.
         // Keep whatever is already on screen and say why the read failed; with
         // nothing on screen, the page shows its error state.
         setSnapshot({ error: c.message || c.error || "Couldn't load the catalog", loading: false });
+        retryAwaiting();
       } else {
         for (const slug of settling) {
           awaiting.delete(slug);
@@ -228,7 +239,9 @@ export function refreshCatalog(opts: { force?: boolean; again?: boolean } = {}):
       }
     })
     .catch((e: Error) => {
+      if (seq !== catalogSeq) return;
       setSnapshot({ error: e.message || "Couldn't reach the server", loading: false });
+      retryAwaiting();
     })
     .finally(() => {
       if (catalogFlight === flight) catalogFlight = null;
@@ -239,6 +252,37 @@ export function refreshCatalog(opts: { force?: boolean; again?: boolean } = {}):
   // the poll only if something is active.
   void pollJobsOnce();
   return flight;
+}
+
+/** The re-read after a job finished failed, so nothing on screen has the
+ *  new `installed` stamp yet and the finished jobs stay `awaiting` (read as
+ *  Open). Try again a few seconds later; past AWAIT_MAX_MS (the server
+ *  forgets a finished job after ~60s anyway) give up on them — the next
+ *  successful read, whenever it comes, is the truth. */
+const AWAIT_RETRY_MS = 4000;
+const AWAIT_MAX_MS = 60_000;
+let awaitRetry: ReturnType<typeof setTimeout> | null = null;
+function retryAwaiting() {
+  if (awaitRetry || awaiting.size === 0) return;
+  awaitRetry = setTimeout(() => {
+    awaitRetry = null;
+    const now = Date.now();
+    let dropped = false;
+    for (const [slug, since] of awaiting) {
+      if (now - since >= AWAIT_MAX_MS) {
+        awaiting.delete(slug);
+        reconciled.add(slug);
+        dropped = true;
+      }
+    }
+    if (dropped) emitJobs();
+    if (awaiting.size > 0) void refreshCatalog({ again: true });
+  }, AWAIT_RETRY_MS);
+}
+
+/** The current catalog snapshot, outside React (tests, one-off reads). */
+export function peekCatalog(): CatalogSnapshot {
+  return snapshot;
 }
 
 /** The catalog, from the module cache when there is one (instant on a Back),
@@ -346,9 +390,9 @@ const startedHere = new Map<string, string>();
 const announced = new Set<string>();
 
 /** Done jobs whose result the catalog does not show yet (the re-read is in
- *  flight): the pill reads them as installed, so it never flashes back to
- *  Get in the gap. */
-const awaiting = new Set<string>();
+ *  flight), with when they finished: the pill reads them as Open, so it
+ *  never flashes back to Get — or, for an update, to Update — in the gap. */
+const awaiting = new Map<string, number>();
 /** Done jobs the catalog HAS caught up with. The server keeps a finished job
  *  listed for ~60s; past reconciliation it says nothing the catalog does not,
  *  and holding on to it would be wrong the moment the app is uninstalled
@@ -382,7 +426,7 @@ function setJobs(next: Record<string, InstallJob>) {
     if (job.state === "done" && (!before || before.state !== "done")) {
       settled = true;
       reconciled.delete(slug);
-      awaiting.add(slug);
+      awaiting.set(slug, Date.now());
       announceDone(job);
     } else if (job.state === "error" && (!before || before.state !== "error")) {
       settled = true;
@@ -512,8 +556,11 @@ export function actionFor(app: AppEntry, job: InstallJob | null): AppAction {
     return { kind: "retry", progress: null, error: job.error || job.message || "Install failed", path };
   }
   // A job that finished but whose catalog re-read has not landed yet still
-  // reads as installed — the pill must not flash back to Get in between.
-  if (job && job.state === "done" && !app.installed) {
+  // reads as installed and current — the pill must not flash back to Get
+  // (install) or Update (update) in between. Readers only ever see a done
+  // job until the catalog has caught up with it (`visibleJobs`), so this
+  // never overrides a fresher catalog.
+  if (job && job.state === "done") {
     return { kind: "open", progress: null, error: null, path };
   }
   if (app.installed) {

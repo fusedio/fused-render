@@ -11,6 +11,7 @@ import { FolderOpen, LayoutPanelTop, PackageOpen, RefreshCw, Trash2 } from "luci
 import { AppIcon, Delayed, MoreMenuButton, RowSkeleton } from "@platform/ui/appstore";
 import type { MenuEntry } from "@platform/ui/ContextMenu";
 import { navigateUrl } from "@platform/lib/router";
+import { isBrowserHandledClick } from "@platform/lib/appEntry";
 import { openUninstallApp } from "@platform/lib/uninstall-app";
 import { useCurrentAppsChanged } from "@platform/lib/tasksChanged";
 import {
@@ -20,7 +21,6 @@ import {
   appPageHref,
   categoryLabel,
   fetchInstalled,
-  installApp,
   isActive,
   showInstalledFolder,
   useJobs,
@@ -29,6 +29,7 @@ import {
 } from "@platform/lib/marketplace";
 import { AppActionPill, EmptyState, MarketCard, openDetail } from "./shared";
 import { CatalogNotices } from "./Discover";
+import { runUpdateAll } from "./install-flow";
 
 export function InstalledPage({ snap }: { snap: CatalogSnapshot }) {
   const [extra, setExtra] = useState<AppEntry[] | null>(null);
@@ -127,11 +128,7 @@ export function InstalledPage({ snap }: { snap: CatalogSnapshot }) {
                   type="button"
                   className="mp-btn is-primary is-small"
                   disabled={updatingAll}
-                  onClick={() => {
-                    for (const a of updates) {
-                      if (!isActive(jobs[a.slug])) installApp({ slug: a.slug, name: a.name }).catch(() => {});
-                    }
-                  }}
+                  onClick={() => runUpdateAll(updates, jobs)}
                 >
                   <RefreshCw size={13} strokeWidth={2.3} aria-hidden="true" className={updatingAll ? "is-spinning" : ""} />
                   {updatingAll ? "Updating…" : "Update all"}
@@ -182,7 +179,7 @@ function InstalledRow({ app, snap }: { app: AppEntry; snap: CatalogSnapshot }) {
   }
   const have = app.installed?.version;
   const version =
-    action.kind === "update" && have ? (
+    action.kind === "update" && have && have !== app.version ? (
       <>
         <span className="mp-row-v-old">{have}</span>
         <span aria-hidden="true"> → </span>
@@ -201,22 +198,30 @@ function InstalledRow({ app, snap }: { app: AppEntry; snap: CatalogSnapshot }) {
           : !inCatalog
             ? "No longer in the Marketplace"
             : null;
+  // Stretched link, as on the store cards: the name is the row's one anchor
+  // (its overlay makes the whole row open the detail page), and the pill and
+  // "⋯" sit above it as siblings rather than buttons nested in a link. An app
+  // no longer in the catalog has no detail page, so its name is plain text.
   return (
-    <div
-      className="as-row mp-row"
-      role="link"
-      tabIndex={inCatalog ? 0 : -1}
-      aria-label={app.name}
-      onClick={() => inCatalog && openDetail(app.slug)}
-      onKeyDown={(e) => {
-        if (e.key === "Enter" && inCatalog && e.target === e.currentTarget) openDetail(app.slug);
-      }}
-      data-href={inCatalog ? appDetailHref(app.slug) : undefined}
-    >
+    <div className={"as-row mp-row" + (inCatalog ? " is-linked" : "")}>
       <AppIcon src={app.icon_url} name={app.name} seed={app.slug} size={40} />
       <span className="as-row-text">
         <span className="as-row-name">
-          {app.name}
+          {inCatalog ? (
+            <a
+              className="as-row-link"
+              href={appDetailHref(app.slug)}
+              onClick={(e) => {
+                if (e.defaultPrevented || isBrowserHandledClick(e)) return;
+                e.preventDefault();
+                openDetail(app.slug);
+              }}
+            >
+              {app.name}
+            </a>
+          ) : (
+            <span className="as-row-title">{app.name}</span>
+          )}
           <span className="as-row-cat">{categoryLabel(snap.catalog, app.category)}</span>
         </span>
         <span className="as-row-desc">{app.description}</span>

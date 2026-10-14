@@ -3,7 +3,8 @@
 // bleeding off the right edge over a soft wash tinted from the app's own
 // hue. Auto-advances every 7s, pauses while hovered or focused (and when
 // the tab is hidden), dots to jump. Slides cross-fade; reduced motion
-// collapses that to a cut (reduced-motion.css).
+// collapses that to a cut (reduced-motion.css) and turns auto-advance off
+// altogether — a slide that changes on its own is motion too.
 import { useEffect, useState } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { AppIcon, tintIndex } from "@platform/ui/appstore";
@@ -11,18 +12,39 @@ import { appDetailHref, type AppEntry, type Catalog } from "@platform/lib/market
 import { AppActionPill, metaLine, openDetail } from "./shared";
 
 const ADVANCE_MS = 7000;
+const REDUCE_QUERY = "(prefers-reduced-motion: reduce)";
+
+function useReducedMotion(): boolean {
+  const [reduce, setReduce] = useState(() => typeof window !== "undefined" && !!window.matchMedia?.(REDUCE_QUERY).matches);
+  useEffect(() => {
+    const mq = window.matchMedia?.(REDUCE_QUERY);
+    if (!mq) return;
+    const on = () => setReduce(mq.matches);
+    mq.addEventListener("change", on);
+    return () => mq.removeEventListener("change", on);
+  }, []);
+  return reduce;
+}
 
 export function HeroCarousel({ apps, catalog }: { apps: AppEntry[]; catalog: Catalog | null }) {
-  const [i, setI] = useState(0);
+  const [raw, setI] = useState(0);
   const [paused, setPaused] = useState(false);
+  const reduce = useReducedMotion();
   const n = apps.length;
+  // The featured list can shrink under us (a catalog refresh): never point
+  // past its end, even for the one render before the state catches up.
+  const i = n ? Math.min(raw, n - 1) : 0;
   useEffect(() => {
-    if (n < 2 || paused) return;
+    if (raw !== i) setI(i);
+  }, [raw, i]);
+  const auto = n > 1 && !paused && !reduce;
+  useEffect(() => {
+    if (!auto) return;
     const id = setInterval(() => {
       if (document.visibilityState === "visible") setI((v) => (v + 1) % n);
     }, ADVANCE_MS);
     return () => clearInterval(id);
-  }, [n, paused, i]);
+  }, [n, auto, i]);
   if (n === 0) return null;
   const go = (k: number) => setI(((k % n) + n) % n);
   return (
@@ -42,6 +64,11 @@ export function HeroCarousel({ apps, catalog }: { apps: AppEntry[]; catalog: Cat
           aria-roledescription="slide"
           aria-label={`${k + 1} of ${n}: ${app.name}`}
           aria-hidden={k !== i}
+          // Off-screen slides keep their pill and link out of the Tab order
+          // (aria-hidden alone leaves them focusable).
+          ref={(el) => {
+            if (el) el.inert = k !== i;
+          }}
           onClick={(e) => {
             if ((e.target as HTMLElement).closest("button, a")) return;
             openDetail(app.slug);
@@ -99,7 +126,7 @@ export function HeroCarousel({ apps, catalog }: { apps: AppEntry[]; catalog: Cat
                 className={"mp-hero-dot" + (k === i ? " is-current" : "")}
                 onClick={() => go(k)}
               >
-                {k === i && !paused && <span className="mp-hero-dot-fill" key={i} />}
+                {k === i && auto && <span className="mp-hero-dot-fill" key={i} />}
               </button>
             ))}
           </div>

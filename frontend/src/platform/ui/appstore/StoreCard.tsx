@@ -1,8 +1,12 @@
 // A store tile: a 16:10 screenshot on top, then icon · name · two-line
 // description, and a foot row with the meta line left and the action pill
-// right (the pill on its own row leaves the name the card's full width). The whole card
-// is ONE anchor (so Cmd-click / middle-click open the detail in a new tab,
-// like the /apps cards — appEntry.ts); the pill inside swallows its own click.
+// right (the pill on its own row leaves the name the card's full width).
+//
+// The whole card is clickable through a STRETCHED LINK: the name is the one
+// anchor (its `::after` covers the card, so Cmd-click / middle-click anywhere
+// open the detail in a new tab, like the /apps cards — appEntry.ts), and the
+// pill is a sibling stacked above that overlay — never a button nested in an
+// anchor, which is invalid and reads to a screen reader as one long link.
 //
 // `compact` drops the screenshot — the detail page's "More in …" shelf and any
 // dense list. Generic: every piece is a prop or a slot.
@@ -23,7 +27,7 @@ export interface StoreCardProps {
   /** Corner chip over the screenshot ("Installed", "Update"). */
   badge?: ReactNode;
   variant?: "default" | "compact";
-  /** Accessible name for the anchor (default: the visible text). */
+  /** Accessible name for the card's link (default: the visible name). */
   ariaLabel?: string;
 }
 
@@ -35,8 +39,13 @@ export function StoreCard({ href, onOpen, icon, name, description, meta, action,
     e.preventDefault();
     onOpen();
   };
+  const link = (
+    <a className="as-card-link" href={href} onClick={click} aria-label={ariaLabel}>
+      {name}
+    </a>
+  );
   return (
-    <a className={"as-card is-" + variant} href={href} onClick={click} aria-label={ariaLabel}>
+    <div className={"as-card is-" + variant}>
       {variant === "default" && (
         <span className="as-card-thumb" aria-hidden="true">
           {thumb && !failed ? (
@@ -61,7 +70,7 @@ export function StoreCard({ href, onOpen, icon, name, description, meta, action,
         <span className="as-card-body">
           <span className="as-card-icon">{icon}</span>
           <span className="as-card-text">
-            <span className="as-card-name">{name}</span>
+            <span className="as-card-name">{link}</span>
             {description && <span className="as-card-desc">{description}</span>}
           </span>
           {action && <span className="as-card-action">{action}</span>}
@@ -71,7 +80,7 @@ export function StoreCard({ href, onOpen, icon, name, description, meta, action,
           <span className="as-card-body">
             <span className="as-card-icon">{icon}</span>
             <span className="as-card-text">
-              <span className="as-card-name">{name}</span>
+              <span className="as-card-name">{link}</span>
               {description && <span className="as-card-desc">{description}</span>}
             </span>
           </span>
@@ -83,7 +92,7 @@ export function StoreCard({ href, onOpen, icon, name, description, meta, action,
           )}
         </>
       )}
-    </a>
+    </div>
   );
 }
 

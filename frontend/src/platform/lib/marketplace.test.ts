@@ -2,13 +2,13 @@
 // installed row must agree on Get / ring / Open / Update / Retry, including
 // the gap between a job finishing and the catalog re-read that stamps it
 // installed (the pill must not flash back to Get there).
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 
 import { installDomShim } from "./testDomShim";
 
 installDomShim();
 
-const { actionFor, isActive, installedAppHref, categoryLabel } = await import("./marketplace");
+const { actionFor, isActive, installedAppHref, categoryLabel, refreshCatalog, peekCatalog } = await import("./marketplace");
 type AppEntry = import("./marketplace").AppEntry;
 type InstallJob = import("./marketplace").InstallJob;
 
@@ -62,6 +62,11 @@ describe("actionFor", () => {
     expect(a).toMatchObject({ kind: "open", path: "/ws/community/sine-starter" });
   });
 
+  test("a finished UPDATE reads as open until the catalog drops update_available", () => {
+    const stale = app({ installed: stamp, update_available: true });
+    expect(actionFor(stale, job({ action: "update", state: "done", path: stamp.path })).kind).toBe("open");
+  });
+
   test("installed → open, or update when the tree moved", () => {
     expect(actionFor(app({ installed: stamp }), null).kind).toBe("open");
     expect(actionFor(app({ installed: stamp, update_available: true }), null).kind).toBe("update");
@@ -85,5 +90,33 @@ describe("helpers", () => {
 
   test("category label falls back to a title-cased id", () => {
     expect(categoryLabel(null, "local-ai")).toBe("Local AI");
+  });
+});
+
+describe("refreshCatalog", () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  test("an older read that answers last never overwrites a newer one", async () => {
+    const resolvers: Array<(body: unknown) => void> = [];
+    globalThis.fetch = ((url: string) => {
+      if (String(url).includes("/jobs")) {
+        return Promise.resolve(new Response(JSON.stringify({ jobs: {} }), { status: 200 }));
+      }
+      return new Promise((res) => {
+        resolvers.push((body) => res(new Response(JSON.stringify(body), { status: 200 })));
+      });
+    }) as typeof fetch;
+    const cat = (commit: string) => ({ status: "ok", commit, categories: [], apps: [] });
+    const first = refreshCatalog({ again: true });
+    const second = refreshCatalog({ again: true });
+    resolvers[1](cat("new"));
+    await second;
+    resolvers[0](cat("old"));
+    await first;
+    expect(peekCatalog().catalog?.commit).toBe("new");
+    expect(peekCatalog().loading).toBe(false);
   });
 });

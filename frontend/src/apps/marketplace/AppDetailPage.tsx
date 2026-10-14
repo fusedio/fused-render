@@ -45,6 +45,10 @@ import {
 import { AppActionPill, CategoryGlyph, EmptyState, MarketCard } from "./shared";
 import { trustItemsFor } from "./trust";
 
+/** U+202F NARROW NO-BREAK SPACE: "12.4 MB" never wraps between number and
+ *  unit in the info strip's narrow cell, and sits tighter than a full NBSP. */
+const NNBSP = "\u202f";
+
 function githubUrl(handle: string): string {
   return `https://github.com/${encodeURIComponent(handle.replace(/^@/, ""))}`;
 }
@@ -162,7 +166,7 @@ export function AppDetailPage({ slug, snap }: { slug: string; snap: CatalogSnaps
     { label: "Category", value: <CategoryGlyph id={app.category} size={18} />, caption: cat },
     { label: "Version", value: app.version, caption: app.installed?.version && app.installed.version !== app.version ? `You have ${app.installed.version}` : "Latest" },
     { label: "Developer", value: <span className="mp-strip-dev">{app.author?.name || "—"}</span>, caption: app.author?.github ? "@" + app.author.github.replace(/^@/, "") : "Community" },
-    { label: "Size", value: app.size_bytes ? formatSize(app.size_bytes).replace(/\s/, " ") : "—", caption: "Download" },
+    { label: "Size", value: app.size_bytes ? formatSize(app.size_bytes).replace(/\s/, NNBSP) : "—", caption: "Download" },
     { label: "Python", value: app.requires_python ? "Required" : "Not required", caption: app.requires_python ? "Runs locally" : "Page only" },
     { label: "Files", value: String(detail?.files.length ?? app.file_count), caption: "In folder" },
   ];

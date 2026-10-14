@@ -24,6 +24,9 @@
   /* The header is sticky INSIDE this scroller; anchor jumps and focus
      scrolling must clear it. */
   scroll-padding-top: 72px;
+  /* The page's own width (the room right of the sidebar) — what decides
+     whether the content column may widen past 1120px for a 4-up grid. */
+  container: mp-page / inline-size;
 }
 
 .mp-header {
@@ -35,11 +38,17 @@
   -webkit-backdrop-filter: saturate(180%) blur(20px);
   backdrop-filter: saturate(180%) blur(20px);
   border-bottom: 1px solid transparent;
-  transition: border-color 160ms ease-out;
+  transition:
+    border-color 160ms ease-out,
+    box-shadow 160ms ease-out;
+  /* The header's own width drives its narrow layout (brand text, then the
+     mark, give way before the search does). */
+  container: mp-head / inline-size;
 }
 
 .mp-header.is-scrolled {
   border-bottom-color: var(--border);
+  box-shadow: 0 6px 18px -14px var(--shadow-ink-soft);
 }
 
 .mp-header-inner {
@@ -620,7 +629,8 @@
   position: absolute;
   top: 40px;
   left: 24px;
-  width: 600px;
+  /* Always past the right edge, however wide the hero gets (4-up pages). */
+  width: max(600px, calc(100% + 24px));
   max-width: none;
   aspect-ratio: 16 / 10;
   object-fit: cover;
@@ -810,6 +820,22 @@
   gap: 12px;
 }
 
+/* Wide pages: the content column grows to 1280px and shelves go 4-up (the
+   spec's "3 columns, 4 at ≥1280px"). The header widens with it so its edges
+   stay on the content's. Page ≥ 1344 = 1280 content + 2 × 32 gutters. */
+@container mp-page (min-width: 1344px) {
+  .mp-header-inner,
+  .mp-inner {
+    max-width: 1344px;
+  }
+}
+
+@container mp (min-width: 1280px) {
+  .mp-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
 @container mp (max-width: 860px) {
   .mp-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -834,15 +860,56 @@
   }
 }
 
-@media (max-width: 720px) {
+@container mp-page (max-width: 720px) {
   .mp-header-inner,
   .mp-inner {
-    padding-left: 18px;
-    padding-right: 18px;
+    padding-left: 16px;
+    padding-right: 16px;
   }
 
+  .mp-header-inner {
+    gap: 10px;
+  }
+}
+
+/* Narrow header: the subtitle goes first, then the whole wordmark (the mark
+   alone still says where you are), then the "/" hint; the search keeps
+   whatever is left rather than pushing the switch off the edge. */
+@container mp-head (max-width: 760px) {
   .mp-brand-sub {
     display: none;
+  }
+
+  .mp-search {
+    min-width: 0;
+  }
+}
+
+@container mp-head (max-width: 600px) {
+  .mp-brand-text {
+    display: none;
+  }
+
+  .mp-brand {
+    margin-right: 0;
+  }
+
+  .mp-switch {
+    margin-right: auto;
+  }
+
+  .mp-search {
+    flex: 1 1 200px;
+  }
+}
+
+@container mp-head (max-width: 400px) {
+  .mp-search-kbd {
+    display: none;
+  }
+
+  .mp-switch-btn {
+    padding: 0 10px;
   }
 }
 
@@ -895,7 +962,7 @@
   border-radius: 14px;
 }
 
-.mp-row {
+.mp-row.is-linked {
   cursor: pointer;
 }
 
@@ -942,10 +1009,66 @@
 }
 
 .mp-row-actions {
+  position: relative;
+  z-index: 2;
   display: flex;
   align-items: center;
   gap: 6px;
   flex: none;
+}
+
+/* Narrow content: the category tag goes, then the version/status column
+   folds under the name (icon · text+meta · actions) so the pill and "⋯"
+   keep their room. */
+@container mp (max-width: 620px) {
+  .mp-row .as-row-cat {
+    display: none;
+  }
+
+  .mp-row-meta {
+    min-width: 0;
+  }
+
+  .mp-row-status {
+    max-width: 140px;
+  }
+}
+
+@container mp (max-width: 480px) {
+  .mp-row {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-areas:
+      "icon text actions"
+      "icon meta actions";
+    column-gap: 12px;
+    row-gap: 2px;
+    padding: 10px 12px;
+  }
+
+  .mp-row > .as-icon {
+    grid-area: icon;
+  }
+
+  .mp-row .as-row-text {
+    grid-area: text;
+  }
+
+  .mp-row-meta {
+    grid-area: meta;
+    flex-direction: row;
+    align-items: baseline;
+    gap: 8px;
+    text-align: left;
+  }
+
+  .mp-row-actions {
+    grid-area: actions;
+  }
+
+  .mp-row-status {
+    max-width: none;
+  }
 }
 
 /* ---- Detail page bits (Marketplace side) --------------------------------- */
@@ -1058,6 +1181,58 @@
   font-size: 13.5px;
   line-height: 1.5;
   color: var(--fg-muted);
+}
+
+.mp-sheet-lede.is-first {
+  margin: 2px 0 0;
+}
+
+.mp-sheet .as-callout.mp-sheet-warn {
+  margin-top: 0;
+}
+
+.mp-sheet-head + .as-callout.mp-sheet-warn {
+  margin-top: 18px;
+}
+
+.mp-sheet-apps {
+  display: flex;
+  flex-direction: column;
+  margin: 0 0 4px;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+.mp-sheet-apps li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 8px 12px;
+}
+
+.mp-sheet-apps li + li {
+  border-top: 1px solid var(--border);
+}
+
+.mp-sheet-app-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--fg);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.mp-sheet-app-v {
+  flex: none;
+  font-size: 12px;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
 }
 
 .mp-sheet-install {
@@ -1329,8 +1504,8 @@
 
 .as-pill:focus-visible,
 .as-more:focus-visible,
-.as-card:focus-visible,
-.as-row:focus-visible,
+.as-card:has(.as-card-link:focus-visible),
+.as-row:has(.as-row-link:focus-visible),
 .mp-chip:focus-visible,
 .mp-btn:focus-visible,
 .mp-hero-dot:focus-visible,
@@ -1339,6 +1514,12 @@
 .mp-switch-btn:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
+}
+
+/* A row sits inside the clipped list card: draw its ring inside. */
+.as-row:has(.as-row-link:focus-visible) {
+  outline-offset: -2px;
+  border-radius: 12px;
 }
 
 .as-pill-pct {
@@ -1560,9 +1741,29 @@
 }
 
 .as-card-action {
+  position: relative;
+  z-index: 2;
   display: flex;
   flex: none;
   align-self: center;
+}
+
+/* Stretched link: the name's anchor covers the whole card (and row, below);
+   the pill and "⋯" stack above the overlay. The focus ring is drawn on the
+   card itself (see the :focus-visible group), so the link draws none. */
+.as-card-link,
+.as-row-link {
+  color: inherit;
+  text-decoration: none;
+  outline: none;
+}
+
+.as-card-link::after,
+.as-row-link::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
 }
 
 .as-card.is-compact .as-card-body {
@@ -1586,6 +1787,7 @@
 /* ---- List row ------------------------------------------------------------------ */
 
 .as-row {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 14px;

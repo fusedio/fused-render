@@ -1,7 +1,8 @@
 // /marketplace — the browse page. Two modes off the same catalog:
 //
 //   * HOME (All, no search): the featured carousel, then a shelf per category
-//     (six apps, "See all" → that category's grid).
+//     (up to two whole rows of the grid as it is laid out right now — 2, 3
+//     or 4 columns — "See all" → that category's grid).
 //   * FILTERED (`?category=<id>` and/or `?q=`): one flat grid of matches, or
 //     the empty state with "Clear search".
 //
@@ -9,14 +10,46 @@
 // replaceState (a typed query) / pushState (a chip) — no navigation, so
 // nothing remounts and the field keeps focus — and Back out of a chip lands
 // on the previous filter, which App.tsx remounts from the URL.
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { RefreshCw, SearchX } from "lucide-react";
 import { CardSkeleton, Delayed } from "@platform/ui/appstore";
 import { refreshCatalog, type AppEntry, type Catalog, type CatalogSnapshot } from "@platform/lib/marketplace";
 import { HeroCarousel } from "./HeroCarousel";
 import { CategoryGlyph, EmptyState, MarketCard, Notice, ago } from "./shared";
 
-const SHELF_MAX = 6;
+/** A shelf holds at most this many rows of the grid. */
+const SHELF_ROWS = 2;
+
+/** How many columns `.mp-grid` resolves to inside `root` right now — the
+ *  CSS (container queries on the content width) owns the breakpoints, so
+ *  this reads the result rather than repeating them. */
+function useGridColumns(root: RefObject<HTMLElement>, fallback = 3): number {
+  const [cols, setCols] = useState(fallback);
+  useEffect(() => {
+    const el = root.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const measure = () => {
+      const grid = el.querySelector<HTMLElement>(".mp-grid");
+      if (!grid) return;
+      const n = getComputedStyle(grid).gridTemplateColumns.split(" ").filter(Boolean).length;
+      if (n > 0) setCols(n);
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [root]);
+  return cols;
+}
+
+/** Whole rows only: a 4-app shelf on a 3-column grid showing 3 + 1 orphan
+ *  reads as a layout bug, so a shelf shows the largest whole number of rows
+ *  (up to SHELF_ROWS) and "See all" carries the rest. Fewer apps than one
+ *  row are all shown. */
+export function shelfCount(available: number, cols: number): number {
+  if (cols < 1 || available <= cols) return available;
+  return Math.min(SHELF_ROWS * cols, Math.floor(available / cols) * cols);
+}
 
 /** Case-insensitive match over the fields a reader would search by. Every
  *  word must hit somewhere ("local chat" finds Local Chat, not every app
@@ -59,9 +92,11 @@ export function Discover({
   }, [apps, category, q]);
   const featured = useMemo(() => apps.filter((a) => a.featured), [apps]);
   const home = category === "all" && !q.trim();
+  const rootRef = useRef<HTMLDivElement>(null);
+  const cols = useGridColumns(rootRef);
 
   return (
-    <div className="mp-discover">
+    <div className="mp-discover" ref={rootRef}>
       <CatalogNotices snap={snap} />
       <Chips catalog={catalog} total={apps.length} value={category} onChange={onCategory} />
 
@@ -97,10 +132,7 @@ export function Discover({
             .map((c) => {
               const inCat = apps.filter((a) => a.category === c.id);
               if (!inCat.length) return null;
-              // Whole rows only: a 4-app shelf showing 3 + 1 orphan reads as
-              // a layout bug, so a shelf shows the largest multiple of the
-              // three columns (up to SHELF_MAX) and "See all" carries the rest.
-              const shown = inCat.length >= 3 ? Math.min(SHELF_MAX, Math.floor(inCat.length / 3) * 3) : inCat.length;
+              const shown = shelfCount(inCat.length, cols);
               return (
                 <section className="mp-shelf" key={c.id} aria-labelledby={`shelf-${c.id}`}>
                   <div className="mp-shelf-head">
