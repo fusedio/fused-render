@@ -20,6 +20,26 @@ export interface StripTab {
 // selects.
 const DRAG_THRESHOLD_PX = 4;
 
+// A press on the strip itself, not on anything in it.
+function isEmptyStrip(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) return false;
+  return !target.closest("[data-tab-id], .shell-tab-add");
+}
+
+// The macOS window's own script handler (mac_window.py); undefined anywhere
+// else, which makes this a no-op in a browser.
+function postWindow(msg: "drag" | "zoom"): void {
+  try {
+    (
+      window as unknown as {
+        webkit?: { messageHandlers?: { fusedWindow?: { postMessage(m: string): void } } };
+      }
+    ).webkit?.messageHandlers?.fusedWindow?.postMessage(msg);
+  } catch {
+    /* no native window to ask */
+  }
+}
+
 export default function TabStrip({
   tabs,
   onSelect,
@@ -111,6 +131,18 @@ export default function TabStrip({
       className="shell-tabs-strip"
       role="tablist"
       ref={stripRef}
+      // THE EMPTY STRIP IS THE WINDOW'S TITLE BAR in the macOS app (the page
+      // runs under it, shell-tabs.css): a press there drags the window and a
+      // double-click zooms it, as a title bar does — asked of the native side
+      // through its message handler. Absent in a browser, where both are
+      // no-ops. Never from a tab or the +: those have gestures of their own.
+      onPointerDown={(e) => {
+        if (e.button !== 0 || !isEmptyStrip(e.target)) return;
+        postWindow("drag");
+      }}
+      onDoubleClick={(e) => {
+        if (isEmptyStrip(e.target)) postWindow("zoom");
+      }}
       // The press starts on a tab; everything after it is the strip's, where
       // the capture lives. A capture lost any other way (the window blurred,
       // the pointer went away) ends the drag where it stands.

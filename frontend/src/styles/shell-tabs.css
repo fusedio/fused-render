@@ -19,6 +19,9 @@
   flex: 0 0 auto;
   display: flex;
   align-items: stretch;
+  /* Packed from the left, each tab as wide as its label — never distributed
+     across the strip (owner, 2026-10-14: tabs sat ~400px apart). */
+  justify-content: flex-start;
   gap: 2px;
   height: 36px;
   padding: 4px 8px 0;
@@ -40,15 +43,22 @@
   display: none;
 }
 
-.shell-tab {
+/* SIZED TO ITS LABEL, as Notion's are: the tab is the label (plus the × only
+   while that shows, see .shell-tab-close), clamped 72–220px, and may shrink
+   toward the floor when the strip runs out of room before it scrolls. It used
+   to be a fixed 200px box whatever it said (owner, 2026-10-14). Scoped under
+   the strip so no element-level rule elsewhere can out-rank it. */
+.shell-tabs-strip > .shell-tab {
   position: relative;
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  flex: 0 1 200px;
-  min-width: 96px;
+  flex: 0 1 auto;
+  width: auto;
+  margin: 0;
+  min-width: 72px;
   max-width: 220px;
-  padding: 0 6px 0 12px;
+  padding: 0 10px;
   border: 1px solid transparent;
   border-bottom: none;
   border-radius: 7px 7px 0 0;
@@ -84,16 +94,21 @@
 }
 
 .shell-tab-label {
-  flex: 1 1 auto;
+  /* Shrinks (ellipsis at the 220px cap), never grows: the tab is the label. */
+  flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+/* Out of the layout entirely unless shown — the active tab, a hovered tab —
+   so a background tab is exactly its label's width, not its label plus an
+   invisible 18px. A hovered tab growing by the × is what Notion does too.
+   Closing a background tab without hovering it is middle-click (TabStrip). */
 .shell-tab-close {
   flex: 0 0 auto;
-  display: inline-flex;
+  display: none;
   align-items: center;
   justify-content: center;
   width: 18px;
@@ -106,18 +121,13 @@
   font-size: 14px;
   line-height: 1;
   cursor: pointer;
-  /* Shown on the active tab and on hover, so a strip of many tabs reads as
-     labels rather than a row of crosses. Still focusable and clickable. */
-  opacity: 0;
-  transition:
-    opacity var(--dur-fast) var(--ease-out),
-    background-color var(--dur-fast) var(--ease-out);
+  transition: background-color var(--dur-fast) var(--ease-out);
 }
 
 .shell-tab.is-active .shell-tab-close,
 .shell-tab:hover .shell-tab-close,
-.shell-tab-close:focus-visible {
-  opacity: 1;
+.shell-tab:focus-within .shell-tab-close {
+  display: inline-flex;
 }
 
 .shell-tab-close:hover {
@@ -171,4 +181,35 @@
 
 .shell-tab-frame.is-loaded {
   opacity: 1;
+}
+
+/* THE STRIP IS THE TITLE BAR in the macOS app's windows (TabHost adds
+   `.shell-tabs--native` under router.ts IS_NATIVE_WINDOW). The native side
+   makes the window full-size-content with its title hidden, so the page runs
+   up under the title bar: the strip takes that row — the traffic lights on
+   its left, the window's own trailing buttons (Edit / Browser / Home) on its
+   right — and tabs sit centred in it, as Notion and Chrome draw theirs. Its
+   empty area drags the window (TabStrip posts to the native handler). */
+.shell-tabs--native .shell-tabs-strip {
+  height: 38px;
+  padding: 0 112px 0 78px;
+  align-items: center;
+}
+
+.shell-tabs--native .shell-tabs-strip > .shell-tab {
+  height: 28px;
+  border-bottom: 1px solid transparent;
+  border-radius: 7px;
+}
+
+.shell-tabs--native .shell-tabs-strip > .shell-tab.is-active {
+  border-color: var(--border);
+}
+
+/* The sidebar runs up under the title bar too, and its brand row would sit
+   beneath the traffic lights: it starts one title bar lower. A body class
+   (TabHost, mount to unmount) because #sidebar is outside the host's subtree.
+   Its own --bg-alt fills the inset, so the bar reads as one row across. */
+body.is-tab-host-native #sidebar {
+  padding-top: 38px;
 }

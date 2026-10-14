@@ -27,7 +27,7 @@
 // Every method is synchronous, so the state they read and write lives in a
 // ref and React renders from it; a version counter is the re-render.
 import { useEffect, useLayoutEffect, useReducer, useRef } from "react";
-import { installNavSink, NAVIGATE_URL_EVENT, type NavCall, type NavDetail } from "@platform/lib/router";
+import { installNavSink, IS_NATIVE_WINDOW, NAVIGATE_URL_EVENT, type NavCall, type NavDetail } from "@platform/lib/router";
 import { attachEmbedUrlChange, detachEmbedUrlChange, type UrlChangeHook } from "@platform/lib/layout-codec";
 import { TAB_VISIBILITY_EVENT } from "@platform/lib/pause-while-hidden";
 import { displayName } from "@platform/lib/flavor";
@@ -635,13 +635,22 @@ export default function TabHost({ config: _config }: { config: Config }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // The strip is the title bar in a native window (shell-tabs.css): the
+  // sidebar, outside this subtree, starts one title bar lower to clear the
+  // traffic lights, keyed off a body class that lives exactly as long as this.
+  useLayoutEffect(() => {
+    if (!IS_NATIVE_WINDOW) return;
+    document.body.classList.add("is-tab-host-native");
+    return () => document.body.classList.remove("is-tab-host-native");
+  }, []);
+
   const stripTabs = st.order.map((id) => {
     const t = st.tabs.get(id)!;
     return { id, label: labelOf(t), active: id === st.active };
   });
 
   return (
-    <div className="shell-tabs">
+    <div className={"shell-tabs" + (IS_NATIVE_WINDOW ? " shell-tabs--native" : "")}>
       <TabStrip
         tabs={stripTabs}
         onSelect={(id) => activate(id, "push")}

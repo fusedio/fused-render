@@ -120,6 +120,7 @@ from AppKit import (
     NSUserDomainMask,
     NSWindow,
     NSWindowStyleMaskClosable,
+    NSWindowStyleMaskFullSizeContentView,
     NSWindowStyleMaskMiniaturizable,
     NSWindowStyleMaskResizable,
     NSWindowStyleMaskTitled,
@@ -167,6 +168,9 @@ USER_AGENT_MARKER = f"FusedRender/{__version__}"
 TITLEBAR_BG = {"dark": (0x13, 0x14, 0x17), "light": (0xFF, 0xFF, 0xFF)}
 # Name of the WKScriptMessageHandler the shell posts its theme preference to.
 THEME_HANDLER_NAME = "fusedTheme"
+# Name of the WKScriptMessageHandler a tab host's strip posts window
+# gestures to (`_WindowBridge`): "drag" / "zoom".
+WINDOW_HANDLER_NAME = "fusedWindow"
 THEME_PREFS = ("system", "light", "dark")
 
 
@@ -222,6 +226,51 @@ class _ThemeBridge(NSObject):
                     break
         except Exception:  # noqa: BLE001 — a bad message must not hurt the app
             logger.debug("theme message failed", exc_info=True)
+
+
+class _WindowBridge(NSObject):
+    """WKScriptMessageHandler for ``window.webkit.messageHandlers.fusedWindow``:
+    the window gestures a page standing IN the title bar has to ask for.
+    Under Shell Tabs the host's tab strip sits where the title bar was (a
+    full-size content view, `_Window`), so the web view covers the area
+    AppKit would drag the window by; the strip posts ``"drag"`` on a
+    pointerdown over its empty space and ``"zoom"`` on a double-click there,
+    and this does what the title bar would have. Registered on every
+    configuration — a window with a real title bar never posts. Main frame
+    only, like `_ThemeBridge`, and the same plain-NSObject shape."""
+
+    def initWithManager_(self, manager):
+        self = objc.super(_WindowBridge, self).init()
+        if self is None:
+            return None
+        self._manager = manager
+        return self
+
+    def userContentController_didReceiveScriptMessage_(self, _controller, message):
+        try:
+            if not message.frameInfo().isMainFrame():
+                return  # a tab's own iframe never moves the window
+            what = str(message.body())
+            manager = self._manager
+            if manager is None or what not in ("drag", "zoom"):
+                return
+            webview = message.webView()
+            for win in manager._windows:
+                if win.webview is webview and win.ns is not None:
+                    if what == "zoom":
+                        win.ns.performZoom_(None)
+                    else:
+                        # The message lands while the mouse is still down
+                        # (it is posted from the pointerdown), so the current
+                        # event is that press; AppKit tracks the drag from
+                        # it. Anything else (the button already up) is a
+                        # no-op rather than a drag nobody is holding.
+                        event = NSApp.currentEvent()
+                        if event is not None and int(event.type()) in (1, 6):
+                            win.ns.performWindowDragWithEvent_(event)
+                    break
+        except Exception:  # noqa: BLE001 — a bad message must not hurt the app
+            logger.debug("window message failed", exc_info=True)
 
 
 _SHIFT = 1 << 17
@@ -792,8 +841,19 @@ class _Window:
         # one window per name gets ``frame_name``), so siblings can find it.
         self.place_name: str | None = None
         self._popup = not load
+        # Shell Tabs, decided once at creation (`manager._tab_mode()`): the
+        # host's tab strip goes IN the title bar, Notion-style — a full-size
+        # content view under a hidden title, so the web view starts at the
+        # window's top edge and the strip shares the row with the traffic
+        # lights (left, ~78pt) and the Edit/Browser/Home accessory (right).
+        # Dragging and zooming by that row is the page's to ask for
+        # (`_WindowBridge`). A popup, and every window made with the
+        # preference off, keeps today's chrome exactly.
+        self.tab_chrome = (not self._popup) and bool(manager._tab_mode())
         style = (NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
                  | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable)
+        if self.tab_chrome:
+            style |= NSWindowStyleMaskFullSizeContentView
         w, h = DEFAULT_SIZE
         self.ns = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
             NSMakeRect(0, 0, w, h), style, NSBackingStoreBuffered, False)
@@ -810,6 +870,10 @@ class _Window:
         # preference (`set_theme_pref`), so a fresh window never flashes grey.
         self.ns.setTitlebarAppearsTransparent_(True)
         self.ns.setBackgroundColor_(_dynamic_titlebar_color())
+        if self.tab_chrome:
+            # NSWindowTitleHidden: the active tab names itself in the strip;
+            # `set_title` still feeds the Window menu and Mission Control.
+            self.ns.setTitleVisibility_(1)
 
         self.webview = WKWebView.alloc().initWithFrame_configuration_(
             NSMakeRect(0, 0, w, h), configuration)
@@ -886,6 +950,9 @@ class _Window:
         bh = max(b.frame().size.height for b in buttons)
         # Title-bar height; the accessory is bottom-aligned, so a holder this
         # tall with the buttons centred lines them up with the title text.
+        # Holds under Shell Tabs' full-size content view too: the content
+        # VIEW then spans the title bar, but `contentLayoutRect` still
+        # excludes it, so this is the title-bar height either way.
         bar = self.ns.frame().size.height - self.ns.contentLayoutRect().size.height
         hh = max(bh, bar)
         total = sum(b.frame().size.width for b in buttons) + gap * (len(buttons) - 1)
@@ -1360,6 +1427,12 @@ class WindowManager:
         self._theme_bridge = _ThemeBridge.alloc().initWithManager_(self)
         config.userContentController().addScriptMessageHandler_name_(
             self._theme_bridge, THEME_HANDLER_NAME)
+        # A tab host's strip, standing in the title bar, drags and zooms the
+        # window through this (`_WindowBridge`). Always registered; a page
+        # with a real title bar above it never posts.
+        self._window_bridge = _WindowBridge.alloc().initWithManager_(self)
+        config.userContentController().addScriptMessageHandler_name_(
+            self._window_bridge, WINDOW_HANDLER_NAME)
         return config
 
     # ---- what app.py calls --------------------------------------------------
