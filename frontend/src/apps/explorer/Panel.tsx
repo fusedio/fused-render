@@ -11,7 +11,8 @@
 // or the pane would reload on every re-render (the vanilla shell set src once
 // at creation; crumb clicks write it imperatively).
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { navigateUrl, urlForFsPath, IS_EMBED, VIEW_PREFIX, EMBED_PREFIX } from "@platform/lib/router";
+import { navigateUrl, urlForFsPath, viewUrlForFsPath, IS_EMBED, VIEW_PREFIX, EMBED_PREFIX } from "@platform/lib/router";
+import { hasTabHost, openInTab } from "@platform/lib/open-in-tab";
 import {
   leaf,
   encodeNode,
@@ -291,7 +292,14 @@ function Pane({ node, ctx, first }: { node: LayoutLeaf; ctx: PaneCtx; first: boo
             items={[
               {
                 label: "Open in a new tab",
-                onClick: () => window.open(urlForFsPath(loc.path, loc.query), "_blank"),
+                // A tab of the shell tabs host when one is above (open-in-tab.ts),
+                // given the VIEW url: tab documents run under the embed prefix, so urlForFsPath would make an embed tab.
+                onClick: () =>
+                  openInTab(
+                    hasTabHost()
+                      ? viewUrlForFsPath(loc.path, loc.query)
+                      : urlForFsPath(loc.path, loc.query),
+                  ),
               },
             ]}
           />

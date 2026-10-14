@@ -23,6 +23,7 @@ import {
 import type { StatResult, TemplateEntry, RegistryEntryForPath } from "@platform/lib/api";
 import { captureAppPreview, cropRect } from "@platform/lib/appShot";
 import { confirmLeave, navigate, navigateUrl, urlForFsPath, viewUrlForFsPath, embedUrlForFsPath, replaceSearch, IS_EMBED, IS_FOREIGN_EMBED, IS_PREVIEW } from "@platform/lib/router";
+import { hasTabHost, openInTab } from "@platform/lib/open-in-tab";
 import { explainErrorPrompt, explainWithAi } from "@platform/lib/explain-with-ai";
 import { useUrlVersion } from "@platform/lib/hooks";
 import { formatSize, formatMtimeFull, basename } from "@platform/lib/format";
@@ -582,7 +583,12 @@ function usePreviewFileMenu(
       {
         label: "Open in New Tab",
         icon: MenuIcons.newTab,
-        onClick: () => window.open(urlForFsPath(fsPath), "_blank", "noopener"),
+        // A tab of the shell tabs host when one is above, else window.open. The
+        // host gets the VIEW url: tab documents run under the embed prefix, so urlForFsPath would make an embed tab.
+        onClick: () =>
+          openInTab(hasTabHost() ? viewUrlForFsPath(fsPath) : urlForFsPath(fsPath), {
+            features: "noopener",
+          }),
       },
       // Absent where no TerminalDrawer is mounted to open (an embedded pane,
       // App.tsx).
@@ -667,7 +673,12 @@ function usePreviewFileMenu(
                   tone: "error",
                 })
               ),
-            onOpenInNewTab: () => window.open(urlForFsPath(crumb), "_blank", "noopener"),
+            // A tab of the shell tabs host when one is above (open-in-tab.ts),
+            // given the view url like the ⋮ menu's row above.
+            onOpenInNewTab: () =>
+              openInTab(hasTabHost() ? viewUrlForFsPath(crumb) : urlForFsPath(crumb), {
+                features: "noopener",
+              }),
           })
         : barMenuItems(),
     });
@@ -1953,7 +1964,9 @@ function TemplatePreview({
       const stamped = new URLSearchParams(search).has("_mode")
         ? search
         : (search ? search + "&" : "?") + "_mode=" + encodeURIComponent(entry.mode);
-      window.open(embedUrlForFsPath(fsPath, stamped), "_blank", "noopener");
+      // The embed url as is: the shell tabs host keeps it an embed tab
+      // (open-in-tab.ts); without a host, window.open as before.
+      openInTab(embedUrlForFsPath(fsPath, stamped), { features: "noopener" });
     },
     // No MCP row on a surface that never probed the parent (a panel/tab
     // pane): the prop's own comment says why silence beats a wrong reason

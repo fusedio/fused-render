@@ -4,7 +4,8 @@ import { createRoot } from "react-dom/client";
 import { TroubleCard } from "@platform/ui/TroubleCard";
 import { ShellErrorBoundary } from "@platform/ui/ShellErrorBoundary";
 import { installShellErrorReporter, reportShellError } from "@platform/lib/shell-errors";
-import { IS_EMBED, IS_SNAPSHOT } from "@platform/lib/router";
+import { IS_EMBED, IS_SHELL_TAB, IS_SNAPSHOT } from "@platform/lib/router";
+import { TAB_VISIBILITY_EVENT } from "@platform/lib/pause-while-hidden";
 import { clearListPrefetch, getConfig } from "@platform/lib/api";
 import { notifyFsChanged } from "@apps/explorer/listing/fsChangeBus";
 import { hydrateBookmarks, refreshBookmarks } from "@platform/lib/bookmarks";
@@ -121,7 +122,26 @@ getConfig({ signal: AbortSignal.timeout(CONFIG_TIMEOUT_MS) }).then(
     // sidebar, so hydrating its bookmark and recents stores in every iframe is
     // unrelated work — and multiplies the two bounded filesystem checks by the
     // number of preview cards on Home.
-    if (IS_EMBED) return;
+    //
+    // EXCEPT a shell tab (router.ts IS_SHELL_TAB): an embed only by framing,
+    // it is the whole page on screen — Home in a tab draws the recents and
+    // bookmark folders like Home in a window. One read of each at load, and
+    // again each time the tab is shown (the host's `fused:tab-visibility`),
+    // which is when anything changed elsewhere becomes visible here; the 30 s
+    // bookmark poll stays the host's, whose sidebar is the surface it serves.
+    if (IS_EMBED) {
+      if (IS_SHELL_TAB) {
+        const hydrateTab = () => {
+          hydrateBookmarks().then(notifyBookmarksChanged);
+          void hydrateRecents();
+        };
+        hydrateTab();
+        window.addEventListener(TAB_VISIBILITY_EVENT, () => {
+          if (!window._fusedTabHidden) hydrateTab();
+        });
+      }
+      return;
+    }
     // Load the bookmark cache from the server (async; renders empty first, then
     // the sidebar/breadcrumb re-read once it resolves). Independent of config —
     // fire after mount so a config failure still shows its error screen.

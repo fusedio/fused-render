@@ -22,8 +22,10 @@ import {
   IS_EMBED,
   IS_NATIVE_WINDOW,
   IS_PREVIEW,
+  IS_SHELL_TAB,
   fsPathFromLocation,
   isPanelPath,
+  isTabHost,
   navHintIsDir,
   navigateUrl,
 } from "@platform/lib/router";
@@ -93,6 +95,7 @@ import Panel from "@apps/explorer/Panel";
 import Tabs from "@apps/explorer/Tabs";
 import FilesHome from "@apps/explorer/FilesHome";
 import Home from "@shell/Home";
+import TabHost from "@shell/TabHost";
 import { useClaudeConfigAvailable } from "@apps/claude_config/available";
 import {
   AI_MODELS_PREFIX,
@@ -469,6 +472,14 @@ function ClaudeConfigView() {
 }
 
 export default function App({ config }: { config: Config }) {
+  // SHELL TABS (router.ts isTabHost): this document's content column is a
+  // strip of tab iframes, not a route. Every fact it rests on is fixed for the
+  // document's life, so it is read once. The host's URL still MIRRORS the
+  // active tab (shell/TabHost.tsx), which is what keeps the sidebar's
+  // highlight and the terminal's cwd right — but the effects below that act
+  // on "the route this document shows" are about a page that lives in a tab,
+  // and each is gated where it would misfire.
+  const [tabHost] = useState(() => isTabHost(config));
   // …and only while the feature is on (shell/task-peek-flag.ts): off, the epoch
   // is judged on the whole URL, which is what it did before any of this.
   const taskPeekOn = useTaskPeekEnabled();
@@ -655,9 +666,19 @@ export default function App({ config }: { config: Config }) {
   // re-render (via fused:urlchange) derives the real route. (Legacy
   // /view/_home, /view/_account, and the whole /view//embed namespaces are
   // rewritten at boot by router.ts.)
+  //
+  // Under shell tabs only, the QUERY and the entry state ride along: a tab
+  // opens Home as `/?embed=1` and leaves the front door to this rewrite
+  // (shell/tabs-lib tabSrc), and a tab host on `/` must keep its `_tabs` and
+  // the tab ids Back matches on. Everywhere else the rewrite is what it always
+  // was, a bare front door with no state.
   const frontDoor = isBot() ? "/bots" : "/home";
   if (location.pathname === "/") {
-    history.replaceState(null, "", frontDoor);
+    if (tabHost || IS_SHELL_TAB) {
+      history.replaceState(history.state, "", frontDoor + location.search);
+    } else {
+      history.replaceState(null, "", frontDoor);
+    }
   }
   // A fresh install's first load lands on the setup wizard instead (its own
   // route, shell/onboarding). Once per page load and only from the front
@@ -732,9 +753,12 @@ export default function App({ config }: { config: Config }) {
   const isHome = pathname === "/home";
   // A fresh page from either home starts on the default companion: drop the
   // remembered sidebar tab (lib/side-tab-store). Open/closed and width are global.
+  // Not in a tab host: the store is per document, and the Home that should
+  // clear it is the one inside the tab, which does so in its own copy.
   useEffect(() => {
+    if (tabHost) return;
     if (isHome || isExplorerHome) setSideTab(null);
-  }, [isHome, isExplorerHome]);
+  }, [tabHost, isHome, isExplorerHome]);
   const isClaudeConfig = pathname === "/claude-config";
   // Canvases: the listing plus the parameterized workspace route. The name is
   // constrained to the CLI's own canvas-name alphabet, so the match below is
@@ -782,8 +806,12 @@ export default function App({ config }: { config: Config }) {
     canvasWorkspaceName !== null;
   const fsPath = isSentinel ? null : fsPathFromLocation();
   // A resolved fsPath mounts StatView below, which owns the title itself.
+  // A tab host's title is the active tab's (TabHost), so App's is `undefined`
+  // — the hook's "not mine to set" — or the two would trade it on every render.
   useDocumentTitle(
-    isPanel
+    tabHost
+      ? undefined
+      : isPanel
       ? "Panel"
       : isTabs
         ? "Tabs"
@@ -832,8 +860,13 @@ export default function App({ config }: { config: Config }) {
   // must not fire on top of each other. Keyed on pathname already, so the
   // tour for wherever the wizard lets go fires on that navigation.
   const firedTours = useRef<Set<string>>(new Set());
+  //
+  // Not in a tab host either: the sidebar is here but the page the tour is
+  // about is in a tab's frame, so `presentSteps` would drop every page step,
+  // run the sidebar ones, and mark the whole tour seen — skipping its page
+  // steps forever. (The tab itself is an embed, where tours never start.)
   useEffect(() => {
-    if (IS_EMBED || pathname === ONBOARDING_PATH) return;
+    if (IS_EMBED || tabHost || pathname === ONBOARDING_PATH) return;
     const tour = autoStartTourFor(pathname);
     if (!tour || firedTours.current.has(tour.id)) return;
     // Retries IN PLACE, not only on the next route change: a tour can be held
@@ -863,7 +896,12 @@ export default function App({ config }: { config: Config }) {
   // params bumps useUrlVersion, which re-renders chrome without remounting, so
   // param changes never re-trigger the fade.
   let main;
-  if (isPanel) {
+  if (tabHost) {
+    // UNKEYED, and no `#content` wrapper keyed on the epoch: a Back across the
+    // host's own tab entries bumps the epoch (useNavEpoch's popstate), and a
+    // remount here would reload every tab. TabHost reconciles in place.
+    main = <TabHost config={config} />;
+  } else if (isPanel) {
     // No title row: a whole 48px bar that said only "Panel" (plus a ★) is
     // 48px of the grid the panes actually need. The ★ moved into each pane
     // bar's left edge (Panel.tsx) — it bookmarks the same `_layout` URL it
@@ -1094,7 +1132,13 @@ export default function App({ config }: { config: Config }) {
   // status bar, no docks — a pre-app surface, which is why it is not one more
   // `main` branch above. Keyed on the epoch like every route, so reopening it
   // from Help starts at step 1.
-  if (pathname === ONBOARDING_PATH && !IS_EMBED) {
+  //
+  // A tab host shows it too, but only BEFORE its tabs exist (a fresh install's
+  // first window, or the sink's full load of the wizard, TabHost): once the
+  // strip is up, the host URL mirrors whatever a tab is on, and a tab that
+  // somehow lands on this path must not swap the whole window out from under
+  // every other tab.
+  if (pathname === ONBOARDING_PATH && !IS_EMBED && !(tabHost && window._fusedTabs)) {
     return (
       <div id="app">
         <OnboardingWizard key={epoch} config={config} />

@@ -160,6 +160,7 @@ import type {
 } from "./tasks-lib";
 import { missingFolderHint, taskFolder, toastMissingFolder } from "./useMissingFolders";
 import { useProjectQueueEnabled } from "@apps/claude/feature-flag";
+import { openInTab } from "@platform/lib/open-in-tab";
 
 // The page composes these from one import; re-exported here so Scheduled.tsx
 // takes its filter type, its empty value and its filter function from the same
@@ -4057,11 +4058,12 @@ function TaskNode({
             // tooltip), which is exactly what made it the one dead pixel-run
             // on the row. So it spends the same gesture the link spends — a
             // modified press goes to a new tab, a plain one to `activate` —
-            // and nothing on the row has a private meaning.
+            // and nothing on the row has a private meaning. "New tab" is
+            // openInTab: a shell tabs host's tab when one is above.
             onClick={(e) => {
               if (!href) return;
               if (opensElsewhere(e)) {
-                window.open(href, "_blank", "noopener");
+                openInTab(href, { features: "noopener" });
                 return;
               }
               activate();
@@ -4072,7 +4074,7 @@ function TaskNode({
             onAuxClick={(e) => {
               if (e.button !== 1 || !href) return;
               e.preventDefault();
-              window.open(href, "_blank", "noopener");
+              openInTab(href, { features: "noopener" });
             }}
             // …and the default a middle press STARTS is autoscroll, which the
             // <a> never triggers and this span otherwise would (Bugbot).
@@ -4099,7 +4101,7 @@ function TaskNode({
             onClick={(e) => {
               if (!href) return;
               if (opensElsewhere(e)) {
-                window.open(href, "_blank", "noopener");
+                openInTab(href, { features: "noopener" });
                 return;
               }
               activate();
@@ -4107,7 +4109,7 @@ function TaskNode({
             onAuxClick={(e) => {
               if (e.button !== 1 || !href) return;
               e.preventDefault();
-              window.open(href, "_blank", "noopener");
+              openInTab(href, { features: "noopener" });
             }}
             onMouseDown={(e) => {
               if (e.button === 1 && href) e.preventDefault();

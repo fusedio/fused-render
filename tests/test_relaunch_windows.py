@@ -149,7 +149,7 @@ class _FakeManager:
         self.enabled = enabled
         self.opened = []
 
-    def open(self, url, html=None):
+    def open(self, url, html=None, *, force_window=False):
         win = _FakeWindow(url)
         self.opened.append((url, html, win))
         return win
@@ -160,7 +160,8 @@ def test_the_fake_matches_the_real_window_manager_signatures():
     from _theme_sources import read_repo_file
 
     src = read_repo_file("fused_render/mac_window.py")
-    assert "def open(self, url: str, html: str | None = None)" in src
+    assert ("def open(self, url: str, html: str | None = None, *,\n"
+            "             force_window: bool = False)") in src
     assert "def save_frames(self)" in src
     assert "def load(self, url: str)" in src
 

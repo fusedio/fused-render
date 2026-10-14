@@ -9,6 +9,21 @@ import { navigateUrl, currentUrl, rootedFsPath, VIEW_PREFIX } from "@platform/li
 // from a folder's children. This sidebar -> Tabs import is the documented
 // acyclic exception (Tabs never imports back), mirroring Breadcrumb -> Panel.
 import { composeFolderTabsUrl } from "@apps/explorer/Tabs";
+import { hasTabHost } from "@platform/lib/open-in-tab";
+
+// A shell tabs host carries its open tabs in `_tabs` on its own url (once two
+// or more are open), which no bookmark ever saved — so the exact-url active
+// match drops it first. Other params keep their exact spelling (no
+// URLSearchParams round trip, which would re-encode them). Restated rather
+// than imported from shell/tabs-lib: the explorer does not import the shell.
+function stripTabsParam(url: string): string {
+  const q = url.indexOf("?");
+  if (q < 0) return url;
+  const h = url.indexOf("#", q);
+  const search = url.slice(q + 1, h < 0 ? undefined : h);
+  const kept = search.split("&").filter((p) => p !== "_tabs" && !p.startsWith("_tabs="));
+  return url.slice(0, q) + (kept.length ? "?" + kept.join("&") : "") + (h < 0 ? "" : url.slice(h));
+}
 import {
   loadBookmarks,
   isFolder,
@@ -606,6 +621,12 @@ export default function BookmarksSection() {
     // Tabs are bookmarks-only: direct bookmark children open as tabs, nested
     // folders are skipped (not flattened) — they open via their own row.
     const tabChildren = folder ? folder.children.filter((c): c is Bookmark => !isFolder(c)) : [];
+    // Under a shell tabs host the folder-as-tabs view would be a tab strip
+    // inside a tab, so the row click just opens/closes the folder there.
+    if (folder && hasTabHost()) {
+      void applyToggle(folder);
+      return;
+    }
     if (!folder || !tabChildren.length) {
       // Nothing to open as tabs, but still expand a collapsed folder so its
       // nested contents become reachable.
@@ -906,7 +927,7 @@ export default function BookmarksSection() {
   // (matching never arms).
   const armed = getArmedBookmarkFor(location.pathname);
   const rowActive = (b: Bookmark): boolean =>
-    armed ? armed.id === b.id : b.url === currentUrl();
+    armed ? armed.id === b.id : b.url === stripTabsParam(currentUrl());
   // Dirty = the armed row's current params differ from its saved url — the
   // exact visibility condition of the Update-bookmark button (Breadcrumb).
   // Pathname already matches (the gate above), so only the search differs.

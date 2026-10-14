@@ -9,6 +9,9 @@
 @import "./styles/sidebar.css";
 @import "./styles/explorer.css";
 @import "./styles/preview.css";
+/* After preview.css, beside the explorer's own Tab mode it borrows its iframe
+   discipline from; its classes are its own, so order is not load-bearing. */
+@import "./styles/shell-tabs.css";
 /* After explorer.css: the chat placeholder's skeleton bars are explorer.css's
    `.skel-bar` (and its `@keyframes skel-shimmer`), imported above. */
 @import "./styles/chat-frame.css";

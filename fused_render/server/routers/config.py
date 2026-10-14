@@ -100,6 +100,11 @@ def api_config(
     from fused_render.shell import onboarding as shell_onboarding
 
     config["onboarding"] = shell_onboarding.snapshot()
+    # Shell Tabs (shell/prefs.py `shell_tabs_enabled`): a native window's
+    # top document becomes a tab host. Here as well as on /api/prefs because
+    # the shell decides at BOOT whether it is a host, before any Preferences
+    # page has loaded — the same read that tells it which flavor it is.
+    config["shell_tabs"] = {"enabled": shell_prefs.shell_tabs_enabled()}
     # Which app this is (fused_render/_flavor.py): "render" or "bot", with the
     # deep-link scheme and the name the shell shows for it. Under the bot
     # flavor `/` lands on /bots instead of /home (shell/App.tsx).

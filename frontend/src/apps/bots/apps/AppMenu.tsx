@@ -10,6 +10,7 @@ import { buildsOn, newAppTask } from "../builds/builds";
 import { appOpenUrl, appStateParams, closeApps, copyAppState, type AppLike } from "./apps";
 import { showAppBeside } from "./side";
 import { openUninstallApp } from "@platform/lib/uninstall-app";
+import { openInTab } from "@platform/lib/open-in-tab";
 
 const mi = (d: ReactNode) => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{d}</svg>
@@ -31,7 +32,7 @@ function run(a: Act, app: AppLike, reload: () => void) {
     case "reload": reload(); break;  // reload keeps the state, like a browser does (AppViewer re-reads the params)
     case "copy": copyAppState(app); break;
     case "side": closeApps(); showAppBeside({ ...app, params }); break;
-    case "tab": window.open(appOpenUrl(app.dir, params), "_blank", "noopener"); break;
+    case "tab": openInTab(appOpenUrl(app.dir, params), { features: "noopener" }); break;  // a shell tabs host's tab when one is above (open-in-tab.ts)
     case "finder": api.revealApp(app.dir).catch((e) => showBanner("Could not open Finder: " + errMsg(e))); break;
     case "task": void newAppTask(app); break;
     // The shell's shared uninstall dialog (UninstallAppModal): off every list and, by choice, off disk.

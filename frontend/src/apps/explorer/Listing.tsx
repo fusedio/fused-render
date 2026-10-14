@@ -42,6 +42,7 @@ import {
   navigate,
   replaceSearch,
 } from "@platform/lib/router";
+import { openInTab } from "@platform/lib/open-in-tab";
 import { dirname, normDir } from "@apps/explorer/lib/fs-actions";
 import { useUrlVersion } from "@platform/lib/hooks";
 import { OPEN_CHAT_EVENT, armFocusOnRegister } from "@platform/lib/chat-focus";
@@ -998,7 +999,9 @@ export default function Listing({
           const stamped = new URLSearchParams(search).has("_mode")
             ? search
             : (search ? search + "&" : "?") + "_mode=_listing";
-          window.open(embedUrlForFsPath(fsPath, stamped), "_blank", "noopener");
+          // The embed url as is: a shell tabs host keeps it an embed tab
+          // (open-in-tab.ts); without a host, window.open as before.
+          openInTab(embedUrlForFsPath(fsPath, stamped), { features: "noopener" });
         }
       : undefined,
   });

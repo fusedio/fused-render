@@ -13,7 +13,8 @@
 // appends (new tab) or removes (close); src is frozen at mount and never
 // written again by React.
 import { useEffect, useRef, useState } from "react";
-import { navigateUrl, rootedFsPath, urlForFsPath, IS_EMBED, VIEW_PREFIX, EMBED_PREFIX } from "@platform/lib/router";
+import { navigateUrl, rootedFsPath, urlForFsPath, viewUrlForFsPath, IS_EMBED, VIEW_PREFIX, EMBED_PREFIX } from "@platform/lib/router";
+import { hasTabHost, openInTab } from "@platform/lib/open-in-tab";
 import { basename } from "@platform/lib/format";
 import {
   leaf,
@@ -335,9 +336,16 @@ export default function Tabs({ config }: { config: Config }) {
               title="Open in a new tab"
               onClick={(e) => {
                 // Open this tab's live location as a plain (non-layout) view
-                // in a new browser tab; don't also activate the tab.
+                // in a new browser tab — a shell tabs host's tab when one is
+                // above (open-in-tab.ts), given the VIEW url since tab
+                // documents run under the embed prefix; don't also activate
+                // the tab.
                 e.stopPropagation();
-                window.open(urlForFsPath(t.path, t.query), "_blank");
+                openInTab(
+                  hasTabHost()
+                    ? viewUrlForFsPath(t.path, t.query)
+                    : urlForFsPath(t.path, t.query),
+                );
               }}
             >
               <ShareIcon size={12} />

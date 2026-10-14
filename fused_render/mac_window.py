@@ -52,6 +52,20 @@ and its `pushState` navigations never pass through the policy delegate.
 A main menu is installed too (rumps never builds one): without an Edit menu
 a WKWebView has no ⌘C/⌘V/⌘X/⌘Z/⌘A, and there would be no ⌘W/⌘N/⌘R/⌘P/⌘M.
 
+SHELL TABS (`prefs.shell_tabs_enabled`, opt-in, read at call time). On, the
+shell in every window is a TAB HOST (`window._fusedTabs`, the frontend's):
+whatever would have opened or focused a window of ours — an app click, the
+launcher, the menu-bar Dock, ⌘-click, Tasks, a bot — opens or selects a TAB
+in the key window instead (`WindowManager._host_open`), and the menu's
+page actions (⌘R, ⌘[, ⌘P, Edit, ⌘W) act on the active tab. Nothing native
+knows tabs exist beyond that: every call is a JS string from
+`window_policy` evaluated in the window's top document, and a ``false``
+answer — no host on that page — falls back to exactly today's window. ⌘N,
+a script's `window.open` (its opener handle must work) and a relaunch's
+placeholders always make a window. A host's URL mirrors its tabs
+(`window_policy.TABS_PARAM`), which is how `open_keys` / `window_for` see
+an app open in a background tab without asking the page.
+
 macOS-only. `app.py` imports this lazily inside `main()` and falls back to
 `webbrowser.open` if construction fails — the app is never left without a
 surface. Every method must run on the main thread; `app.py` hops with
@@ -63,6 +77,7 @@ opens this app's own explorer instead of handing off to another app.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import subprocess
@@ -105,12 +120,14 @@ from AppKit import (
     NSUserDomainMask,
     NSWindow,
     NSWindowStyleMaskClosable,
+    NSWindowStyleMaskFullSizeContentView,
     NSWindowStyleMaskMiniaturizable,
     NSWindowStyleMaskResizable,
     NSWindowStyleMaskTitled,
     NSWorkspace,
 )
 from Foundation import NSKeyValueObservingOptionNew, NSThread, NSURLRequest
+import WebKit as _WebKit
 from WebKit import (
     WKNavigationActionPolicyAllow,
     WKNavigationActionPolicyCancel,
@@ -126,7 +143,13 @@ from WebKit import (
     WKWebViewConfiguration,
 )
 
-from fused_render import __version__, _flavor, window_policy
+# WKNavigationType.linkActivated (0 in WKNavigationAction.h), looked up
+# rather than imported: a PyObjC build without the constant must cost Shell
+# Tabs' link-to-tab routing, never the import of this module (which would
+# take every native window with it).
+WK_NAVIGATION_LINK_ACTIVATED = getattr(_WebKit, "WKNavigationTypeLinkActivated", 0)
+
+from fused_render import __version__, _flavor, window_policy  # noqa: E402
 from fused_render._view_url_codec import app_page_path, view_url_path
 from fused_render.logs import log_dir
 
@@ -145,6 +168,9 @@ USER_AGENT_MARKER = f"FusedRender/{__version__}"
 TITLEBAR_BG = {"dark": (0x13, 0x14, 0x17), "light": (0xFF, 0xFF, 0xFF)}
 # Name of the WKScriptMessageHandler the shell posts its theme preference to.
 THEME_HANDLER_NAME = "fusedTheme"
+# Name of the WKScriptMessageHandler a tab host's strip posts window
+# gestures to (`_WindowBridge`): "drag" / "zoom".
+WINDOW_HANDLER_NAME = "fusedWindow"
 THEME_PREFS = ("system", "light", "dark")
 
 
@@ -200,6 +226,51 @@ class _ThemeBridge(NSObject):
                     break
         except Exception:  # noqa: BLE001 — a bad message must not hurt the app
             logger.debug("theme message failed", exc_info=True)
+
+
+class _WindowBridge(NSObject):
+    """WKScriptMessageHandler for ``window.webkit.messageHandlers.fusedWindow``:
+    the window gestures a page standing IN the title bar has to ask for.
+    Under Shell Tabs the host's tab strip sits where the title bar was (a
+    full-size content view, `_Window`), so the web view covers the area
+    AppKit would drag the window by; the strip posts ``"drag"`` on a
+    pointerdown over its empty space and ``"zoom"`` on a double-click there,
+    and this does what the title bar would have. Registered on every
+    configuration — a window with a real title bar never posts. Main frame
+    only, like `_ThemeBridge`, and the same plain-NSObject shape."""
+
+    def initWithManager_(self, manager):
+        self = objc.super(_WindowBridge, self).init()
+        if self is None:
+            return None
+        self._manager = manager
+        return self
+
+    def userContentController_didReceiveScriptMessage_(self, _controller, message):
+        try:
+            if not message.frameInfo().isMainFrame():
+                return  # a tab's own iframe never moves the window
+            what = str(message.body())
+            manager = self._manager
+            if manager is None or what not in ("drag", "zoom"):
+                return
+            webview = message.webView()
+            for win in manager._windows:
+                if win.webview is webview and win.ns is not None:
+                    if what == "zoom":
+                        win.ns.performZoom_(None)
+                    else:
+                        # The message lands while the mouse is still down
+                        # (it is posted from the pointerdown), so the current
+                        # event is that press; AppKit tracks the drag from
+                        # it. Anything else (the button already up) is a
+                        # no-op rather than a drag nobody is holding.
+                        event = NSApp.currentEvent()
+                        if event is not None and int(event.type()) in (1, 6):
+                            win.ns.performWindowDragWithEvent_(event)
+                    break
+        except Exception:  # noqa: BLE001 — a bad message must not hurt the app
+            logger.debug("window message failed", exc_info=True)
 
 
 _SHIFT = 1 << 17
@@ -402,8 +473,18 @@ class _WebDelegate(NSObject):
         elif verdict == "download":
             decision(WKNavigationActionPolicyDownload)
         elif verdict == "new_window":
-            self._manager.open(url)
+            # Cancel FIRST: the host answer is asynchronous, and WebKit must
+            # have its decision before this callback returns either way.
             decision(WKNavigationActionPolicyCancel)
+            manager = self._manager
+            if manager._tab_mode():
+                # Shell Tabs: a tab of the window the click came from — its top
+                # document is the host even when the link was inside a tab's
+                # iframe. No host there → the window it always was.
+                manager._host_open(
+                    url, lambda: manager.open(url, force_window=True), self._window)
+            else:
+                manager.open(url)
         else:  # open_external
             _open_external(url)
             decision(WKNavigationActionPolicyCancel)
@@ -521,6 +602,18 @@ class _WebDelegate(NSObject):
         request = action.request()
         url = str(request.URL().absoluteString()) if request and request.URL() else None
         kind = window_policy.classify(url, self._manager.port)
+        manager = self._manager
+        if (kind == "app" and manager._tab_mode()
+                and int(action.navigationType()) == WK_NAVIGATION_LINK_ACTIVATED):
+            # Shell Tabs: a `target=_blank` LINK that reached here becomes a
+            # tab — a link has no opener to hand a view back to. A script's
+            # `window.open` arrives as "other" and stays the real popup
+            # below: its opener handle must work. So does the right-click
+            # menu's "Open Link in New Window" (WebKit sends it as "other"
+            # too), which is why that label is NOT retitled to "New Tab".
+            manager._host_open(
+                url, lambda: manager.open(url, force_window=True), self._window)
+            return None
         if kind == "app":
             # A real popup, like a browser's: built on the configuration
             # WebKit handed us (same process as the opener), so the opener
@@ -648,6 +741,9 @@ class _WebDelegate(NSObject):
         # miss is a one-line fix read off Show Logs, not a guess.
         logger.debug("context menu %s: %s", urls,
                      [(str(i.identifier() or ""), str(i.title())) for i in items])
+        # No `tab_mode=`: WebKit delivers these items as navigation type
+        # "other", which keeps them a window under Shell Tabs too (see the
+        # popup delegate), so "in New Window" stays the true label.
         for item in items:
             ident = item.identifier()
             verdict, title = window_policy.context_menu_item(
@@ -699,6 +795,7 @@ class _WebDelegate(NSObject):
             current = str(u.absoluteString()) if u is not None else None
             window.key = window_policy.window_key_of(current)
             window.view = window_policy.window_view_of(current)
+            window.set_tabs(current)
             window.sync_edit_button()
 
     # ---- NSWindowDelegate --------------------------------------------------
@@ -731,6 +828,11 @@ class _Window:
         # HOW it shows ``key`` (app page / explorer view / embed): an app's
         # run window and an explorer window on it share a key and differ only here.
         self.view: str | None = window_policy.window_view_of(url)
+        # Shell Tabs: what EVERY tab of a host shows, read off its URL mirror
+        # (`window_policy.tab_identities`) — ``key``/``view`` above are the
+        # active tab's. Reassigned whole by `set_tabs`, never mutated, so a
+        # server-thread reader (`open_keys`) sees one set or the other.
+        self.set_tabs(url)
         # The saved frame's owner is fixed at creation: `key` follows in-window
         # navigation, but a window must never jump or resize because the page
         # inside it navigated. The frame belongs to the window as opened.
@@ -739,8 +841,19 @@ class _Window:
         # one window per name gets ``frame_name``), so siblings can find it.
         self.place_name: str | None = None
         self._popup = not load
+        # Shell Tabs, decided once at creation (`manager._tab_mode()`): the
+        # host's tab strip goes IN the title bar, Notion-style — a full-size
+        # content view under a hidden title, so the web view starts at the
+        # window's top edge and the strip shares the row with the traffic
+        # lights (left, ~78pt) and the Edit/Browser/Home accessory (right).
+        # Dragging and zooming by that row is the page's to ask for
+        # (`_WindowBridge`). A popup, and every window made with the
+        # preference off, keeps today's chrome exactly.
+        self.tab_chrome = (not self._popup) and bool(manager._tab_mode())
         style = (NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
                  | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable)
+        if self.tab_chrome:
+            style |= NSWindowStyleMaskFullSizeContentView
         w, h = DEFAULT_SIZE
         self.ns = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
             NSMakeRect(0, 0, w, h), style, NSBackingStoreBuffered, False)
@@ -757,6 +870,10 @@ class _Window:
         # preference (`set_theme_pref`), so a fresh window never flashes grey.
         self.ns.setTitlebarAppearsTransparent_(True)
         self.ns.setBackgroundColor_(_dynamic_titlebar_color())
+        if self.tab_chrome:
+            # NSWindowTitleHidden: the active tab names itself in the strip;
+            # `set_title` still feeds the Window menu and Mission Control.
+            self.ns.setTitleVisibility_(1)
 
         self.webview = WKWebView.alloc().initWithFrame_configuration_(
             NSMakeRect(0, 0, w, h), configuration)
@@ -785,6 +902,16 @@ class _Window:
                 self.webview.loadHTMLString_baseURL_(html, _nsurl(url))
             else:
                 self.webview.loadRequest_(NSURLRequest.requestWithURL_(_nsurl(url)))
+
+    def set_tabs(self, url: str | None) -> None:
+        """Re-read the tab identities off ``url`` (the URL observer). EMPTY
+        unless the URL carries a ``_tabs`` list (`window_policy.has_tabs`):
+        a window that never hosted — every window with Shell Tabs off — has
+        none, so nothing that reads these changes for it; a single-tab host
+        is its ``key``/``view``."""
+        ids = window_policy.tab_identities(url) if window_policy.has_tabs(url) else ()
+        self.tab_ids: frozenset = frozenset(ids)
+        self.tab_keys: frozenset = frozenset(k for k, _v in self.tab_ids)
 
     def set_theme_pref(self, pref: str) -> None:
         """Apply the shell's light/dark/system preference to the window
@@ -823,6 +950,9 @@ class _Window:
         bh = max(b.frame().size.height for b in buttons)
         # Title-bar height; the accessory is bottom-aligned, so a holder this
         # tall with the buttons centred lines them up with the title text.
+        # Holds under Shell Tabs' full-size content view too: the content
+        # VIEW then spans the title bar, but `contentLayoutRect` still
+        # excludes it, so this is the title-bar height either way.
         bar = self.ns.frame().size.height - self.ns.contentLayoutRect().size.height
         hh = max(bh, bar)
         total = sum(b.frame().size.width for b in buttons) + gap * (len(buttons) - 1)
@@ -846,10 +976,19 @@ class _Window:
 
     def sync_edit_button(self) -> None:
         """Edit follows the page (URL KVO): enabled while the window runs an
-        app (an embed or an app page), off on Home and in the explorer."""
+        app (an embed or an app page), off on Home and in the explorer.
+
+        Shell Tabs: also on a ``view`` key — the host mirrors an embed tab
+        under ``/explorer/view/``, and a tab frame never shows the explorer
+        itself, so a keyed tab is always something running
+        (`window_policy.tab_edit_target`)."""
         button = getattr(self, "edit_button", None)
-        if button is not None:
-            button.setEnabled_(self.view in ("embed", "app") and bool(self.key))
+        if button is None:
+            return
+        views = ("embed", "app")
+        if not self._popup and self.manager._tab_mode():
+            views = ("embed", "app", "view")
+        button.setEnabled_(self.view in views and bool(self.key))
 
     def _place(self, key: str | None, view: str | None = None) -> None:
         """Size and position the new window.
@@ -1043,9 +1182,77 @@ class _MenuTarget(NSObject):
         return self
 
     def newWindow_(self, _s):
-        # Also the Dock menu's item, where the app may be inactive.
+        # Also the Dock menu's item, where the app may be inactive. Always a
+        # WINDOW, Shell Tabs or not: ⌘T is the new tab, ⌘N stays a window
+        # (which is a host of its own).
         NSApp.activateIgnoringOtherApps_(True)
-        self._m.open(self._m.home_url)
+        self._m.open(self._m.home_url, force_window=True)
+
+    # ---- Shell Tabs: the tab chords --------------------------------------
+    # Every one is enabled in every mode (`validateMenuItem_` only greys the
+    # tab-only ones while the preference is off); the action asks the key
+    # window's host and, with none there, does what the chord did before
+    # tabs existed — or nothing, for a chord that had no meaning then.
+
+    def newTab_(self, _s):
+        w = self._m.key() or self._m.front()
+        if w is None or not self._m._tab_mode():
+            self.newWindow_(_s)
+            return
+        self._m._tab_do(w, window_policy.tabs_js("t.openHome()"),
+                        lambda: self.newWindow_(_s))
+
+    def closeTab_(self, sender):
+        # ⌘W. Tabs off, or the key window is not one of ours (the launcher
+        # panel, an alert's window): `performClose:` down the responder
+        # chain, exactly what the nil-target "Close Window" item sent.
+        w = self._m.key()
+        if w is None or w.webview is None or not self._m._tab_mode():
+            NSApp.sendAction_to_from_(b"performClose:", None, sender)
+            return
+
+        def answered(result):
+            if result != "tab" and w.ns is not None:
+                w.ns.performClose_(None)
+
+        self._m._tab_eval(w, window_policy.TABS_CLOSE_JS,
+                          lambda r: answered(str(r) if r is not None else None))
+
+    def previousTab_(self, _s):
+        self._tab_chord(window_policy.tabs_js("t.prev()"))
+
+    def nextTab_(self, _s):
+        self._tab_chord(window_policy.tabs_js("t.next()"))
+
+    def selectTab_(self, sender):
+        self._tab_chord(window_policy.tabs_nth_js(int(sender.tag())))
+
+    def _tab_chord(self, js: str) -> None:
+        w = self._m.key()
+        if w is not None and self._m._tab_mode():
+            self._m._tab_do(w, js, lambda: None)
+
+    # Pinned to BOOL: AppKit's informal-protocol metadata gives it that
+    # already, but an object return would read as YES and grey nothing.
+    @objc.typedSelector(b"Z@:@")
+    def validateMenuItem_(self, item):
+        # Only the tab items depend on the preference; everything else this
+        # target serves stays enabled, as it was with no validator.
+        action = item.action()
+        action = action.decode() if isinstance(action, bytes) else str(action)
+        if action == "closeTab:":
+            # ⌘W off Shell Tabs is the old nil-target "Close Window",
+            # byte-for-byte: that title, and enabled exactly when something
+            # down the responder chain takes `performClose:` (nothing does
+            # with no window open).
+            if self._m._tab_mode():
+                item.setTitle_("Close Tab")
+                return True
+            item.setTitle_("Close Window")
+            return NSApp.targetForAction_to_from_(b"performClose:", None, None) is not None
+        if action in ("newTab:", "previousTab:", "nextTab:", "selectTab:"):
+            return bool(self._m._tab_mode())
+        return True
 
     def openDocument_(self, _s):
         panel = NSOpenPanel.openPanel()
@@ -1058,19 +1265,38 @@ class _MenuTarget(NSObject):
                 self._m.open_path(str(u.path()))
 
     def reload_(self, _s):
+        # Shell Tabs: the active tab reloads, not the host around every tab.
+        if (w := self._m.key()) is not None:
+            self._m._tab_or(w, window_policy.tabs_js("t.reloadActive()"),
+                            lambda: w.webview.reload())
+
+    def reloadWindow_(self, _s):
+        # ⌘⇧R: the WINDOW's own document — under Shell Tabs the host around
+        # the tabs, which ⌘R never touches. The tabs come back from the URL
+        # (`_tabs`). Also the one way to pick up a rebuilt shell bundle in the
+        # host: a host and its tabs must run the same bundle (the navigation
+        # sink is a protocol between them), and a dev watcher rebuilds under a
+        # running window.
         if (w := self._m.key()) is not None:
             w.webview.reload()
 
     def goBack_(self, _s):
         if (w := self._m.key()) is not None:
-            w.webview.goBack()
+            self._m._tab_or(w, window_policy.tabs_js("t.back()"),
+                            lambda: w.webview.goBack())
 
     def goForward_(self, _s):
         if (w := self._m.key()) is not None:
-            w.webview.goForward()
+            self._m._tab_or(w, window_policy.tabs_js("t.forward()"),
+                            lambda: w.webview.goForward())
 
     def goHome_(self, _s):
-        if (w := self._m.key()) is not None:
+        w = self._m.key()
+        if w is not None and self._m._tab_mode():
+            # Shell Tabs: the Home TAB comes forward (or opens) in this window,
+            # instead of the active tab — some app — being replaced by Home.
+            self._m._host_open(self._m.home_tab_url(), lambda: w.load(self._m.home_url), w)
+        elif w is not None:
             w.load(self._m.home_url)
         else:
             self._m.open(self._m.home_url)
@@ -1080,6 +1306,18 @@ class _MenuTarget(NSObject):
         # window's button makes that window key first — so `front()` is the
         # window whose button was pressed.
         if (w := self._m.front()) is not None:
+            if not w._popup and self._m._tab_mode():
+                # Shell Tabs: the explorer of the ACTIVE tab (`key`/`view`
+                # mirror it) opens in a STANDALONE window. Not in the tab: a
+                # tab frame always shows the embed (the host maps view →
+                # embed), so `navigateActive` there would re-render the app.
+                # And never `edit(w)`: that loads the explorer over the HOST,
+                # and every tab in it would go.
+                path = window_policy.tab_edit_target(w.view, w.key)
+                if path is not None:
+                    self._m.open(f"http://127.0.0.1:{self._m.port}{path}",
+                                 force_window=True)
+                return
             self._m.edit(w)
 
     def showTasks_(self, _s):
@@ -1094,18 +1332,24 @@ class _MenuTarget(NSObject):
             launcher()
 
     def openInBrowser_(self, _s):
+        # `active_tab_url`: a host's URL is its active tab's plus the strip
+        # (or `/home` plus it, for a runtime-page tab); a browser tab can
+        # show the active tab, never the strip.
         w = self._m.key()
-        _open_external((w and w.current_url()) or self._m.home_url)
+        _open_external(window_policy.active_tab_url(w and w.current_url()) or self._m.home_url)
 
     def copyUrl_(self, _s):
         w = self._m.key()
-        url = (w and w.current_url()) or self._m.home_url
+        url = window_policy.active_tab_url(w and w.current_url()) or self._m.home_url
         subprocess.run(["pbcopy"], input=url.encode(), check=False)
 
     def printDocument_(self, _s):
         if (w := self._m.key()) is None:
             return
-        _run_print_panel(w, None)
+        # Shell Tabs: the host prints its active tab's frame (`window.print()`
+        # there lands in `webView_printFrame_` with that frame), not itself.
+        self._m._tab_or(w, window_policy.tabs_js("t.print()"),
+                        lambda: _run_print_panel(w, None))
 
     def showLogs_(self, _s):
         # The log FOLDER, not `-R` on this pid's file (SPEC §50): after a crash
@@ -1183,23 +1427,154 @@ class WindowManager:
         self._theme_bridge = _ThemeBridge.alloc().initWithManager_(self)
         config.userContentController().addScriptMessageHandler_name_(
             self._theme_bridge, THEME_HANDLER_NAME)
+        # A tab host's strip, standing in the title bar, drags and zooms the
+        # window through this (`_WindowBridge`). Always registered; a page
+        # with a real title bar above it never posts.
+        self._window_bridge = _WindowBridge.alloc().initWithManager_(self)
+        config.userContentController().addScriptMessageHandler_name_(
+            self._window_bridge, WINDOW_HANDLER_NAME)
         return config
 
     # ---- what app.py calls --------------------------------------------------
 
-    def open(self, url: str, html: str | None = None) -> _Window | None:
+    def open(self, url: str, html: str | None = None, *,
+             force_window: bool = False) -> _Window | None:
         """Open ``url`` in a NEW window and bring it to the front — or, with
         native windows switched off, in the default browser (None).
 
         ``html`` shows that static page in the window instead of loading
-        ``url``; the caller `load`s ``url`` itself when it is ready."""
+        ``url``; the caller `load`s ``url`` itself when it is ready.
+
+        Shell Tabs: a page of ours opens as a TAB of the key window instead
+        (`_host_open`, falling back to the window), and the HOST window is
+        returned — optimistically, the tab is the page's to make after this
+        returns. ``force_window`` (⌘N, the fallbacks themselves) and ``html``
+        (a relaunch's placeholder, which the caller loads into) always make
+        a window, as does having no window to host the tab."""
         if not self.enabled:
             _open_external(url)
             return None
+        if (not force_window and html is None and self._tab_mode()
+                and window_policy.classify(url, self.port) == "app"):
+            host = self._tab_host(self._window_with_tab(url))
+            if host is not None:
+                self._host_open(url, lambda: self.open(url, force_window=True), host)
+                return host
         win = _Window(self, url, self._configuration, html=html)
         self._windows.append(win)
         win.show()
         return win
+
+    # ---- Shell Tabs: asking a host page ---------------------------------------
+
+    def _tab_mode(self) -> bool:
+        """Shell Tabs on (`prefs.shell_tabs_enabled`, read per call like
+        `apps_open_in_home`) and windows on at all."""
+        if not self.enabled:
+            return False
+        try:
+            from fused_render.shell import prefs
+
+            return prefs.shell_tabs_enabled()
+        except Exception:  # noqa: BLE001 — an unreadable pref is "off"
+            logger.debug("shell_tabs pref unreadable", exc_info=True)
+            return False
+
+    def _tab_host(self, prefer: _Window | None = None) -> _Window | None:
+        """The window a tab should open in: ``prefer`` when it can host, else
+        the key window, else the front, else the most recently used — never a
+        popup (a page's `window.open` is its opener's business) and never a
+        torn-down window."""
+        def ok(w):
+            return w is not None and w.webview is not None and not w._popup
+        for w in (prefer, self.key(), self.front()):
+            if ok(w):
+                return w
+        for w in reversed(self._windows):
+            if ok(w):
+                return w
+        return None
+
+    def _window_with_tab(self, url: str, match=None) -> _Window | None:
+        """The most recently used non-popup window with a tab on ``url``'s
+        page (`window_policy.same_tab_page`, or ``match(path)``), read off
+        each live URL — so focus-existing selects the tab where it already
+        is instead of opening a duplicate in the key window. Main thread."""
+        if match is None:
+            want = window_policy.tab_path(url)
+            match = lambda p: window_policy.same_tab_page(p, want)  # noqa: E731
+        for w in reversed(self._windows):
+            if w.webview is None or w._popup:
+                continue
+            if any(match(p) for p in window_policy.tab_urls(w.current_url())):
+                return w
+        return None
+
+    def home_tab_url(self) -> str:
+        """Home as a TAB's address: the path the shell's `/` settles on
+        (`/home`; `/bots` under Fused Bot), so focus-existing finds the Home
+        tab instead of opening a second one on `/`."""
+        path = "/bots" if _flavor.is_bot() else "/home"
+        return f"http://127.0.0.1:{self.port}{path}"
+
+    def _tab_eval(self, win: _Window, js: str, on_result) -> None:
+        """Evaluate ``js`` in ``win``'s top document; ``on_result(value)``
+        runs on the main thread with the JS value, or None on any failure
+        (no web view, a JS error, an unsupported result type).
+
+        Nothing may raise out of the completion block: an exception escaping
+        a WebKit callback into PyObjC is a silent SIGABRT (the open-panel
+        RCA), so the handler swallows and logs whatever ``on_result`` does."""
+        def done(result, error):
+            try:
+                on_result(None if error is not None else result)
+            except Exception:  # noqa: BLE001 — see the docstring
+                logger.exception("tab host answer handler failed")
+
+        webview = win.webview if win is not None else None
+        if webview is None:
+            done(None, True)
+            return
+        try:
+            webview.evaluateJavaScript_completionHandler_(js, done)
+        except Exception:  # noqa: BLE001 — no host is the fallback, never a crash
+            logger.debug("evaluateJavaScript failed", exc_info=True)
+            done(None, True)
+
+    def _tab_do(self, win: _Window, js: str, fallback, on_done=None) -> None:
+        """Run a `window_policy.tabs_js` string in ``win``; a ``true`` answer
+        runs ``on_done``, anything else (no host, an error) ``fallback``."""
+        def answered(result):
+            if result is not None and bool(result) and not isinstance(result, str):
+                if on_done is not None:
+                    on_done()
+            else:
+                fallback()
+
+        self._tab_eval(win, js, answered)
+
+    def _tab_or(self, win: _Window, js: str, fallback) -> None:
+        """A page action (⌘R, ⌘[, ⌘P): the active tab's under Shell Tabs,
+        else — or with no host on that page — ``fallback`` straight away."""
+        if self._tab_mode():
+            self._tab_do(win, js, fallback)
+        else:
+            fallback()
+
+    def _host_open(self, url: str, fallback, win: _Window | None = None) -> None:
+        """Open or select ``url`` (a page of ours) as a tab of ``win`` — else
+        of `_tab_host` — and bring that window forward; ``fallback()`` when
+        no window can host or its page answers that it is no host. The
+        address goes over as `window_policy.tab_path` (path+query, no
+        origin, no ``_tabs``)."""
+        host = self._tab_host(win if win is not None else self._window_with_tab(url))
+        if host is None:
+            fallback()
+            return
+        # Home under Fused Bot selects any Bots tab, chat and all, instead of
+        # opening a second one on `/bots` (`tabs_open_or_home_js`).
+        js = window_policy.tabs_open_or_home_js(window_policy.tab_path(url), _flavor.is_bot())
+        self._tab_do(host, js, fallback, on_done=host.show)
 
     def set_enabled(self, on: bool) -> None:
         """The preference flipped. Off closes every open window first, so
@@ -1279,14 +1654,22 @@ class WindowManager:
 
     def show_page(self, path: str) -> None:
         """A window already on this shell page comes to the front, else one
-        opens on it. Main thread."""
+        opens on it. Shell Tabs: the page's TAB, selected or opened in the
+        key window (`_host_open`), with that as the fallback. Main thread."""
+        url = f"http://127.0.0.1:{self.port}{path}"
+        if self._tab_mode():
+            self._host_open(url, lambda: self._show_page_window(path))
+            return
+        self._show_page_window(path)
+
+    def _show_page_window(self, path: str) -> None:
         url = f"http://127.0.0.1:{self.port}{path}"
         for w in reversed(self._windows):
             current = w.current_url() or ""
             if urllib.parse.urlsplit(current).path == path:
                 w.show()
                 return
-        self.open(url)
+        self.open(url, force_window=True)
 
     def _is_home(self, w: _Window) -> bool:
         # The shell's home is `/`, which the SPA rewrites in place to `/home`
@@ -1322,11 +1705,18 @@ class WindowManager:
         Dock icon (`reopen`), the menu-bar Dock's Home tile and utility menu,
         the launcher's Home row / <modifier>+0: a Home window already open
         (the key/front one if several) comes forward, else one opens. Never
-        a second Home while one is up — that is File → New Window. Main
+        a second Home while one is up — that is File → New Window. Shell
+        Tabs: the Home TAB, selected or opened in the key window. Main
         thread."""
+        if self._tab_mode():
+            self._host_open(self.home_tab_url(), self._focus_or_open_home_window)
+            return
+        self._focus_or_open_home_window()
+
+    def _focus_or_open_home_window(self) -> None:
         win = self._pick([w for w in self._windows if w.ns is not None and self._is_home(w)])
         if win is None:
-            self.open(self.home_url)
+            self.open(self.home_url, force_window=True)
         else:
             win.show()
 
@@ -1345,9 +1735,27 @@ class WindowManager:
         carries the bot: the path is rewritten (keeping `history.state`,
         which holds the shell's nav hints) and ``fused:urlchange`` fired, so
         the store reads it on mount or follows it (`syncFromUrl`) — never a
-        raised window on the wrong chat. Main thread."""
-        import json
+        raised window on the wrong chat.
 
+        Shell Tabs: no event at all — the key window's Bots TAB (the first
+        tab on ``/bots``, `window_policy.tabs_bot_js`) is selected and routed
+        to ``/bots/<id>``, else a tab opens there; the store follows its own
+        URL, so the route is the whole message. No host → the window path
+        below. Main thread."""
+        from fused_render import dock
+
+        view = dock.bot_view_path(bid)
+        if self._tab_mode():
+            # The window that already has a Bots tab, else the key window.
+            host = self._tab_host(self._window_with_tab(
+                view, match=lambda p: _is_bots_path(p.split("?", 1)[0].rstrip("/"))))
+            if host is not None:
+                self._tab_do(host, window_policy.tabs_bot_js(view),
+                             lambda: self._show_bot_window(bid), on_done=host.show)
+                return
+        self._show_bot_window(bid)
+
+    def _show_bot_window(self, bid: str) -> None:
         from fused_render import dock
 
         view = dock.bot_view_path(bid)
@@ -1355,7 +1763,7 @@ class WindowManager:
                 and _is_bots_path(urllib.parse.urlsplit(w.current_url() or "").path.rstrip("/"))]
         win = self._pick(bots)
         if win is None:
-            self.open(f"http://127.0.0.1:{self.port}{view}")
+            self.open(f"http://127.0.0.1:{self.port}{view}", force_window=True)
             return
         win.webview.evaluateJavaScript_completionHandler_(
             "(function(){"
@@ -1400,13 +1808,28 @@ class WindowManager:
         """The app folders / files currently showing in a window. Safe from
         ANY thread: reads Python attributes only, never WebKit."""
         keys = set()
+        tabs = None  # the preference, read only if a window needs it
         for w in list(self._windows):
             if w.key:
                 keys.add(w.key)
                 # An app's run window is keyed on its entry FILE (an embed);
-                # the launcher's running dot keys on the app FOLDER.
-                if w.view == "embed" and w.key.lower().endswith(".html"):
-                    keys.add(os.path.dirname(w.key))
+                # the launcher's running dot keys on the app FOLDER. Under
+                # Shell Tabs a single-tab host mirrors its embed as a
+                # ``view`` (`window_policy.tab_view`) — still running.
+                if w.key.lower().endswith(".html"):
+                    if w.view == "view" and not w._popup and tabs is None:
+                        tabs = self._tab_mode()
+                    if w.view == "embed" or (w.view == "view" and not w._popup and tabs):
+                        keys.add(os.path.dirname(w.key))
+            # Every tab of a host, not just the active one (`tab_keys`, off
+            # its URL mirror; empty for a window that never hosted, so this
+            # adds nothing with the preference off — and keeps a host's tabs
+            # counted if it is switched off under them). A tab RUNS the
+            # .html it shows, so each counts its folder too.
+            for key in w.tab_keys:
+                keys.add(key)
+                if key.lower().endswith(".html"):
+                    keys.add(os.path.dirname(key))
         return keys
 
     def window_for(self, fs_path: str, view: str | None = None) -> _Window | None:
@@ -1417,19 +1840,43 @@ class WindowManager:
         for w in reversed(self._windows):
             if w.key == fs_path and (view is None or w.view == view):
                 return w
+            # Shell Tabs: a host with that thing in a background tab is the
+            # window too — `_host_open` there selects the tab. Matched in a
+            # tab's terms (`window_policy.tab_view`: embed is view there).
+            # `tab_ids` is empty for a window that never hosted.
+            if w.tab_ids and (fs_path in w.tab_keys if view is None
+                              else (fs_path, window_policy.tab_view(view)) in w.tab_ids):
+                return w
         return None
 
     def focus_or_open_url(self, url: str) -> _Window | None:
         """Dock semantics for a shell URL: the window already showing the same
         thing the same way (key AND view) comes to the front, else one opens.
-        A keyless URL always opens fresh."""
+        A keyless URL always opens fresh.
+
+        Shell Tabs: a TAB instead — in the window that already has it (which
+        then selects it), else the key window — with this as the fallback."""
+        key = window_policy.window_key_of(url)
+        win = self.window_for(key, window_policy.window_view_of(url)) if key else None
+        if self._tab_mode():
+            host = self._tab_host(win)
+            if host is not None:
+                self._host_open(url, lambda: self._focus_or_open_window(url), host)
+                return host
+        return self._focus_or_open_window(url)
+
+    def _focus_or_open_window(self, url: str) -> _Window | None:
+        # A window SHOWING it, scanned directly: `window_for` would also
+        # return a host holding it only in a background tab, and that is no
+        # window to raise here — the fallback is today's window rule.
         key = window_policy.window_key_of(url)
         if key:
-            win = self.window_for(key, window_policy.window_view_of(url))
-            if win is not None:
-                win.show()
-                return win
-        return self.open(url)
+            view = window_policy.window_view_of(url)
+            for w in reversed(self._windows):
+                if w.key == key and w.view == view:
+                    w.show()
+                    return w
+        return self.open(url, force_window=True)
 
     def focus_or_open_app(self, fs_path: str) -> _Window | None:
         """An app clicked in the shell or picked in the launcher: its OWN
@@ -1447,8 +1894,20 @@ class WindowManager:
 
         The window changes hands for its frame like `edit`: its size and
         place are saved where they are, and it takes the explorer's saved
-        frame for this target, kept as it is if there is none yet."""
+        frame for this target, kept as it is if there is none yet.
+
+        Shell Tabs: the app's explorer view is a TAB (selected if open) of
+        the key window, no frame hand-off — the window is not what changed;
+        this method's window path is the fallback."""
         url = f"http://127.0.0.1:{self.port}" + window_policy.app_home_path(fs_path)
+        if self._tab_mode():
+            host = self._tab_host()
+            if host is not None:
+                self._host_open(url, lambda: self._open_app_in_home_window(url), host)
+                return host
+        return self._open_app_in_home_window(url)
+
+    def _open_app_in_home_window(self, url: str) -> _Window:
         homes = [w for w in self._windows if w.ns is not None and self._is_home(w)]
         win = homes[-1] if homes else None
         if win is not None:
@@ -1459,7 +1918,7 @@ class WindowManager:
         elif self._windows:
             win = self.front()
         if win is None:
-            return self.open(url)
+            return self.open(url, force_window=True)
         name = window_policy.frame_autosave_name(window_policy.window_key_of(url), "view")
         if win.ns is not None and name != win.frame_name and self.frame_owner(name) is None:
             win.save_frame()
@@ -1497,12 +1956,26 @@ class WindowManager:
 
     def focus_or_open(self, fs_path: str) -> _Window:
         """Dock semantics: an app already open comes to the front (its most
-        recently used window if several), otherwise it opens fresh."""
+        recently used window if several), otherwise it opens fresh. Shell
+        Tabs: its tab, selected in the window that has it, else opened in the
+        key window."""
         win = self.window_for(fs_path)
-        if win is not None:
-            win.show()
-            return win
-        return self.open_path(fs_path)
+        if self._tab_mode():
+            host = self._tab_host(win)
+            if host is not None:
+                url = self.url_for_path(fs_path)
+                self._host_open(url, lambda: self._focus_or_open_path_window(fs_path), host)
+                return host
+        return self._focus_or_open_path_window(fs_path)
+
+    def _focus_or_open_path_window(self, fs_path: str) -> _Window:
+        # Direct scan, for `_focus_or_open_window`'s reason.
+        fs_path = os.path.abspath(fs_path)
+        for w in reversed(self._windows):
+            if w.key == fs_path:
+                w.show()
+                return w
+        return self.open(self.url_for_path(fs_path), force_window=True)
 
     def front(self) -> _Window | None:
         return self.key() or (self._windows[-1] if self._windows else None)
@@ -1609,11 +2082,18 @@ def _build_main_menu(target) -> NSMenu:
         item(f"Quit {APP_NAME}", b"quitApp:", "q"),
     ], main)
 
+    # ⌘T / ⌘W are Shell Tabs' (`_MenuTarget.newTab_` / `closeTab_`): ⌘W
+    # closes the active tab, or the window when it has none to spare (or
+    # tabs are off — then it is the old nil-target `performClose:`, sent
+    # down the same responder chain). "Close Window" ⌘⇧W always closes
+    # the window, tabs and all.
     submenu("File", [
         item("New Window", b"newWindow:", "n"),
+        item("New Tab", b"newTab:", "t"),
         item("Open…", b"openDocument:", "o"),
         sep(),
-        item("Close Window", b"performClose:", "w", tgt=None),
+        item("Close Tab", b"closeTab:", "w"),
+        item("Close Window", b"performClose:", "W", CMD | _SHIFT, tgt=None),
         sep(),
         item("Print…", b"printDocument:", "p"),
     ], main)
@@ -1636,6 +2116,7 @@ def _build_main_menu(target) -> NSMenu:
     # to the front door, which is the Bots page there.
     submenu("View", [
         item("Reload Page", b"reload:", "r"),
+        item("Reload Window", b"reloadWindow:", "R", CMD | _SHIFT),
         item("Back", b"goBack:", "["),
         item("Forward", b"goForward:", "]"),
         item("Home", b"goHome:", "H", CMD | _SHIFT),
@@ -1649,9 +2130,24 @@ def _build_main_menu(target) -> NSMenu:
         item("Enter Full Screen", b"toggleFullScreen:", "f", CMD | _CTRL, tgt=None),
     ], main)
 
+    # Shell Tabs' chords: ⌘⇧[ / ⌘⇧] (Safari's; the brace IS shift-bracket,
+    # so the key equivalent is the shifted character with plain ⌘) and
+    # ⌘1…⌘9 — those nine kept out of sight (hidden, but still answering
+    # their keys) rather than nine rows in the Window menu.
+    tab_numbers = []
+    for n in range(1, 10):
+        it = item(f"Show Tab {n}", b"selectTab:", str(n))
+        it.setTag_(n)
+        it.setHidden_(True)
+        it.setAllowsKeyEquivalentWhenHidden_(True)
+        tab_numbers.append(it)
     window_menu = submenu("Window", [
         item("Minimize", b"performMiniaturize:", "m", tgt=None),
         item("Zoom", b"performZoom:", tgt=None),
+        sep(),
+        item("Show Previous Tab", b"previousTab:", "{"),
+        item("Show Next Tab", b"nextTab:", "}"),
+        *tab_numbers,
         sep(),
         item("Tasks", b"showTasks:", "T", CMD | _SHIFT),
         sep(),

@@ -60,6 +60,11 @@ export interface Config {
   scheme?: string;
   /** "Fused Render" / "Fused Bot" — the brand as copy shows it. */
   display_name?: string;
+  /** Shell tabs (experimental, `shell_tabs_enabled`, default off): a native
+   *  window's top-level shell hosts every surface as an iframe tab. Read at
+   *  boot by the window's top document, so a flip lands on the next window.
+   *  Mirrors `Prefs.shell_tabs`. Absent on an older server = off. */
+  shell_tabs?: { enabled: boolean };
   // No claude_config gate here any more: the Claude Config app stopped being a
   // mounted html+py app and became native React over its own server bridge, so
   // its availability is GET /api/claude-config/status (useClaudeConfigAvailable
@@ -1459,6 +1464,10 @@ export interface Prefs {
   // Desktop app: apps open inside the Home window's explorer instead of a
   // window each (`apps_open_in_home`, opt-in). OPTIONAL like `launcher`.
   apps_open_in_home?: { enabled: boolean };
+  // Shell tabs inside one native window (`shell_tabs_enabled`, opt-in,
+  // experimental). Only meaningful where `native_windows.available`.
+  // OPTIONAL like `launcher`.
+  shell_tabs?: { enabled: boolean };
 }
 
 export interface LauncherPrefs {
@@ -1698,6 +1707,10 @@ export function putLauncherRowModifier(modifier: string): Promise<Prefs> {
 
 export function putNativeWindowsEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { native_windows_enabled: enabled });
+}
+
+export function putShellTabsEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { shell_tabs_enabled: enabled });
 }
 
 export function putAppsOpenInHome(enabled: boolean): Promise<Prefs> {

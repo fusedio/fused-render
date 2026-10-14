@@ -62,6 +62,7 @@ import {
   putAppsOpenInHome,
   putMenubarPinEnabled,
   putNativeWindowsEnabled,
+  putShellTabsEnabled,
   putGitAutoSyncEnabled,
   putAutoDownloadUpdates,
   putProjectQueueEnabled,
@@ -907,6 +908,22 @@ function NativeWindowsSection({ prefs, onChange }: { prefs: Prefs; onChange: (p:
   if (!nw || !nw.available) return null;
   const enabled = nw.enabled;
   const inHome = prefs.apps_open_in_home?.enabled === true;
+  // Shell tabs: read once by a window's top document at boot, so the
+  // flip shows on the next window, not the ones already open.
+  const tabs = prefs.shell_tabs?.enabled === true;
+
+  const toggleTabs = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      onChange(await putShellTabsEnabled(!tabs));
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const toggleInHome = async () => {
     if (busy) return;
@@ -962,6 +979,17 @@ function NativeWindowsSection({ prefs, onChange }: { prefs: Prefs; onChange: (p:
             Apps open inside the Home window's file explorer, like in a browser, instead of each in
             its own window. On macOS, clicking the Dock icon brings back the window you last used
             instead of going to Home.
+          </span>
+        </span>
+      </label>
+      <label className="prefs-radio">
+        <input type="checkbox" checked={tabs} disabled={busy || !enabled} onChange={toggleTabs} />
+        <span>
+          <b>Tabs in the app window</b> (experimental)
+          <br />
+          <span className="deploy-muted">
+            Open apps, files and pages as tabs inside one window, with the sidebar outside the
+            tabs. Takes effect the next time a window opens.
           </span>
         </span>
       </label>

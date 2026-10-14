@@ -28,9 +28,10 @@ same decisions ran a year of `.fused` windows.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
-from urllib.parse import unquote, urlsplit
+from urllib.parse import quote, unquote, urlsplit
 
 from fused_render._view_url_codec import (
     app_page_path,
@@ -120,6 +121,292 @@ def edit_target(view: str | None, key: str | None) -> str | None:
     return explorer_view_path(target)
 
 
+# ---- Shell Tabs: a host window's URL names every tab -----------------------
+#
+# With `shell_tabs_enabled` on, a native window's page is a TAB HOST: one
+# shell drawing a tab strip, each surface an iframe. The host mirrors its
+# state into its own URL so the window code — which only ever sees a URL,
+# read live (KVO on macOS, `get_uri` on Linux) — can tell what is open
+# without asking the page: the path+query is the ACTIVE tab's (its embed
+# marker stripped), and one extra query param lists every tab in strip
+# order, comma-joined, each non-active one ``encodeURIComponent``-ed and the
+# active one's slot the literal ``.``. One tab = no param at all, so a
+# non-host window and a single-tab host read the same. A relaunch snapshot
+# records that URL as it is and reopens the whole strip from it.
+#
+#   /apps/map?_tabs=%2Fhome,.,%2Ftasks   — [Home, the map app (active), Tasks]
+#
+# One exception: an active tab that is not a page of the shell SPA (a
+# ``/render?path=…`` runtime page) cannot be the host's own location — a
+# reload there would boot the bare runtime, no strip — so the host sits on
+# ``/home`` and the active slot is ``!`` + the encoded url instead of ``.``,
+# written even for a single tab (``/home?_tabs=!%2Frender%3F…``). The host
+# location is then no tab at all.
+
+#: The host URL's tab-list query param (see above).
+TABS_PARAM = "_tabs"
+_TABS_PREFIX = TABS_PARAM + "="
+
+
+def _split_tabs(query: str) -> tuple[list[str], str | None]:
+    """``query`` without its ``_tabs`` items, and the raw value of the last
+    one (None when absent). Raw, NOT `parse_qs`: an item's own commas are
+    ``%2C`` and must survive the split on ``,`` before anything decodes."""
+    kept, raw = [], None
+    for part in query.split("&") if query else ():
+        if part == TABS_PARAM or part.startswith(_TABS_PREFIX):
+            raw = part[len(_TABS_PREFIX):] if part != TABS_PARAM else ""
+        elif part:
+            kept.append(part)
+    return kept, raw
+
+
+def strip_tabs(url: str | None) -> str:
+    """``url`` without the ``_tabs`` param, the rest of it (scheme, host,
+    other params in their order, fragment) untouched — what Open in Browser
+    and Copy URL hand out: the active tab, not a strip a browser cannot draw."""
+    if not url:
+        return url or ""
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return url
+    kept, raw = _split_tabs(parts.query)
+    if raw is None:
+        return url
+    return parts._replace(query="&".join(kept)).geturl()
+
+
+def tab_path(url: str | None) -> str:
+    """The same-origin PATH+QUERY of ``url``, ``_tabs`` dropped — the form
+    `window._fusedTabs.open` takes (`/apps/x`, `/tasks?a=1`), with its
+    ``#fragment`` kept when it has one. For a host URL that is its ACTIVE
+    tab's, a ``!`` slot included (`active_tab_url`). "/" for an empty or
+    unparsable URL."""
+    try:
+        parts = urlsplit(active_tab_url(url))
+    except ValueError:
+        return "/"
+    path = parts.path or "/"
+    return (path + ("?" + parts.query if parts.query else "")
+            + ("#" + parts.fragment if parts.fragment else ""))
+
+
+def has_tabs(url: str | None) -> bool:
+    """Does ``url`` carry a ``_tabs`` list — a host showing more than one
+    tab, or a runtime-page tab (``!``)? False for every window that never
+    hosted, which is what keeps the pref-off paths byte-for-byte."""
+    if not url:
+        return False
+    try:
+        return _split_tabs(urlsplit(url).query)[1] is not None
+    except ValueError:
+        return False
+
+
+def same_tab_page(a: str, b: str) -> bool:
+    """Two tab paths name the same PAGE, the host's `samePage` rule: path
+    only (a tab that changed its sort is still that tab), ``/`` is
+    ``/home``, and an explorer view is its embed (the frame's spelling)."""
+    def norm(u: str) -> str:
+        path = urlsplit(u).path.rstrip("/") or "/home"
+        if path.startswith("/explorer/view/"):
+            path = "/explorer/embed/" + path[len("/explorer/view/"):]
+        return path
+    try:
+        return norm(a) == norm(b)
+    except ValueError:
+        return False
+
+
+def tab_edit_target(view: str | None, key: str | None) -> str | None:
+    """`edit_target` for a TAB HOST: the explorer URL PATH Edit opens. The
+    host mirrors an embed tab under ``/explorer/view/``, so a ``view`` key
+    is an app or file RUNNING in a tab (a tab frame never shows the
+    explorer itself) and edits like an embed; a folder key edits its entry
+    page. None for a keyless tab (Home, /tasks)."""
+    if not key or view not in ("embed", "app", "view"):
+        return None
+    target = key
+    if os.path.isdir(key):
+        try:
+            from fused_render.app_listing import app_entry
+
+            target = app_entry(key) or key
+        except OSError:
+            pass
+    return explorer_view_path(target)
+
+
+def tab_urls(url: str | None) -> list[str]:
+    """Every tab of a host window, in strip order, each as a PATH+QUERY
+    (`tab_path`'s form, the origin dropped — they are all the host's own).
+    The ``.`` slot is the host URL itself minus ``_tabs``; a ``!``-prefixed
+    slot is an active tab the host could not sit on (the host location is
+    then no tab); a URL with no ``_tabs`` is one tab, itself. Empty items
+    are skipped, and a list with neither marker still counts the host
+    location as the active tab, first. Empty for no URL."""
+    if not url:
+        return []
+    try:
+        query = urlsplit(url).query
+    except ValueError:
+        return []
+    active = tab_path(url)
+    _kept, raw = _split_tabs(query)
+    if raw is None:
+        return [active]
+    out, seen_active = [], False
+    for item in raw.split(","):
+        if item == ".":
+            if not seen_active:
+                out.append(active)
+                seen_active = True
+        elif item.startswith("!"):
+            if len(item) > 1:
+                out.append(unquote(item[1:]))
+            seen_active = True
+        elif item:
+            out.append(unquote(item))
+    if not seen_active:
+        out.insert(0, active)
+    return out
+
+
+def active_tab_url(url: str | None) -> str:
+    """The full URL of a host's ACTIVE tab: `strip_tabs` of the host URL,
+    or — with a ``!`` slot (see above) — that tab's path+query on the host's
+    origin. What Open in Browser and Copy URL hand out."""
+    stripped = strip_tabs(url)
+    if not url:
+        return stripped
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return stripped
+    _kept, raw = _split_tabs(parts.query)
+    for item in (raw or "").split(","):
+        if item.startswith("!") and len(item) > 1:
+            path, _, query = unquote(item[1:]).partition("?")
+            return parts._replace(path=path or "/", query=query, fragment="").geturl()
+    return stripped
+
+
+def tab_view(view: str | None) -> str | None:
+    """A `window_view_of` view in a TAB's terms. Inside a tab the explorer
+    view and the embed of one file are the same page — the frame always
+    shows the embed, and the host mirrors it under ``/explorer/view/`` (a
+    host reloaded on an embed URL would boot chrome-free, no strip) — so
+    both read ``"view"``. Only for matching against tabs: between WINDOWS
+    an app's run window and its explorer window stay two things."""
+    return "view" if view == "embed" else view
+
+
+def tab_identities(url: str | None) -> set[tuple[str, str | None]]:
+    """(`window_key_of`, `tab_view`) of every keyed tab of ``url``: what a
+    host window SHOWS, tab by tab, for focus-or-open to match on."""
+    out = set()
+    for u in tab_urls(url):
+        key = window_key_of(u)
+        if key is not None:
+            out.add((key, tab_view(window_view_of(u))))
+    return out
+
+
+def tab_keys(url: str | None) -> set[str]:
+    """`window_key_of` of every tab of ``url`` (keyless tabs — Home, /tasks
+    — contribute nothing): the launcher's running dot for a host window."""
+    return {key for key, _view in tab_identities(url)}
+
+
+def tab_url_of(path: str) -> str:
+    """One ``_tabs`` item for a non-active tab: ``encodeURIComponent`` of its
+    path+query (JS's safe set, so the host decodes exactly what it wrote).
+    The inverse of the split in `tab_urls`; tests build host URLs with it."""
+    return quote(path, safe="-_.!~*'()")
+
+
+# ---- Shell Tabs: what the window code says to a host page -------------------
+#
+# The host page owns `window._fusedTabs` (the frontend); the window code only
+# EVALUATES these strings in a window's top document — `evaluateJavaScript`
+# on macOS, `run_javascript` on Linux — and acts on the answer. Every one is
+# synchronous and answers a plain value, so "no host here" (the flag off when
+# that page booted, a popup, a page still loading) is just a ``false`` /
+# ``'win'`` the caller turns into today's window behaviour. One copy, here,
+# so both platforms say exactly the same thing to the same API.
+
+
+def tabs_js(expr: str) -> str:
+    """Run ``expr`` (JS, with the host API bound to ``t``) if this page is a
+    tab host: evaluates to ``true`` when it ran, ``false`` when there is no
+    host."""
+    return ("(function(){var t=window._fusedTabs; if(!t) return false; "
+            f"{expr}; return true;}})()")
+
+
+def tabs_open_js(path: str) -> str:
+    """Open ``path`` (`tab_path`'s form) as a tab, or select the tab already
+    showing it."""
+    return tabs_js(f"t.open({json.dumps(path)},{{focusExisting:true}})")
+
+
+def tabs_navigate_js(path: str) -> str:
+    """Point the ACTIVE tab at ``path`` (Edit: the run tab becomes its explorer)."""
+    return tabs_js(f"t.navigateActive({json.dumps(path)})")
+
+
+def tabs_nth_js(n: int) -> str:
+    """Select the ``n``-th tab (1-based; ⌘1…⌘9)."""
+    return tabs_js(f"t.nth({int(n)})")
+
+
+def tabs_bot_js(view: str) -> str:
+    """Show bot chat ``view`` (``/bots/<id>``) in the host's Bots tab: the
+    first tab anywhere on ``/bots`` is selected and pointed at it — a second
+    Bots tab per bot would be the per-window pile-up tabs exist to end —
+    else a new tab opens on it. The Bots store reads the URL on mount and
+    follows it after, so the route alone selects the chat."""
+    v = json.dumps(view)
+    return _tabs_bots_scan(f"t.navigateActive({v}); ", view)
+
+
+def tabs_bots_home_js() -> str:
+    """Home under Fused Bot, whose front door is the Bots page: the first
+    tab anywhere on ``/bots`` (``/bots/<id>`` included) is SELECTED, left
+    on whatever chat it shows — `focusExisting` matches by path, so
+    `tabs_open_js("/bots")` would open a second Bots tab beside one on a
+    chat — else a new tab opens on ``/bots``."""
+    return _tabs_bots_scan("", "/bots")
+
+
+def _tabs_bots_scan(then: str, fallback: str) -> str:
+    # One loop for `tabs_bot_js` / `tabs_bots_home_js`: select the first tab
+    # on /bots or /bots/*, run ``then``; none → open ``fallback``.
+    f = json.dumps(fallback)
+    return tabs_js(
+        "var l=t.list(), i, p; for(i=0;i<l.length;i++){"
+        "p=String(l[i].url||'').split('?')[0];"
+        "if(p==='/bots'||p.indexOf('/bots/')===0){"
+        f"t.select(l[i].id); {then}return true;}}}} "
+        f"t.open({f},{{focusExisting:true}})")
+
+
+def tabs_open_or_home_js(path: str, is_bot: bool) -> str:
+    """`tabs_open_js`, except Home under Fused Bot (``/``, ``/home`` or
+    ``/bots`` itself) goes through `tabs_bots_home_js`."""
+    if is_bot and path.split("?", 1)[0].rstrip("/") in ("", "/home", "/bots"):
+        return tabs_bots_home_js()
+    return tabs_open_js(path)
+
+
+#: ⌘W / Ctrl+W: ``'tab'`` when a tab closed, ``'win'`` when the WINDOW should
+#: close instead — no host, or this is its last tab (closing the last tab of
+#: a host would only make it open a fresh Home, which is not what ⌘W means).
+TABS_CLOSE_JS = ("(function(){var t=window._fusedTabs; if(!t) return 'win'; "
+                 "if(t.list().length<=1) return 'win'; t.close(); return 'tab';})()")
+
+
 _LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "[::1]", "::1"}
 
 HOME_FRAME_NAME = "FusedRenderWindow"
@@ -172,6 +459,10 @@ def window_key_of(url: str | None) -> str | None:
     This is a window's identity for focus-or-open and the launcher's
     "running" dot; it is read live from the web view, since the shell is an
     SPA whose `pushState` navigations never pass through the policy delegate.
+
+    Only the PATH is read, so a tab host's ``_tabs`` query (`TABS_PARAM`)
+    never leaks into the key: a host window's URL is its ACTIVE tab's, and
+    this is that tab's key. The other tabs' keys are `tab_keys`.
     """
     if not url:
         return None
@@ -298,6 +589,14 @@ _OPEN_IN_NEW_WINDOW_ITEMS = {
 }
 
 
+#: The same items' labels under Shell Tabs, for a URL of ours (`context_menu_item`).
+_OPEN_IN_NEW_TAB_TITLES = {
+    "image": "Open Image in New Tab",
+    "link": "Open Link in New Tab",
+    "media": "Open Media in New Tab",
+}
+
+
 def context_menu_item(
     identifier: str | None,
     port: int,
@@ -305,6 +604,7 @@ def context_menu_item(
     image_url: str | None = None,
     link_url: str | None = None,
     media_url: str | None = None,
+    tab_mode: bool = False,
 ) -> tuple[str, str | None]:
     """What to do with one item of the right-click menu WebKit proposes:
     ``("keep", None)``, ``("drop", None)`` or ``("retitle", "<title>")``.
@@ -318,6 +618,10 @@ def context_menu_item(
     it, Copy Image and Download Image are still there. Every other item
     stays: Copy, Copy Image, Look Up, Share, Inspect Element and the
     downloads, which `mac_window` adopts the way it adopts link downloads.
+
+    ``tab_mode`` (Shell Tabs, `shell_tabs_enabled`): a page of ours opens as
+    a TAB of the window it was clicked in, not a window, so that label says
+    "in New Tab" instead — same item, same delegate path.
     """
     entry = _OPEN_IN_NEW_WINDOW_ITEMS.get(identifier or "")
     if entry is None:
@@ -326,6 +630,8 @@ def context_menu_item(
     url = {"image": image_url, "link": link_url, "media": media_url}[which]
     kind = classify(url, port)
     if kind == "app":
+        if tab_mode:
+            return ("retitle", _OPEN_IN_NEW_TAB_TITLES[which])
         return ("keep", None)
     if kind == "external":
         return ("retitle", browser_title)

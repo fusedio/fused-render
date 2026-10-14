@@ -100,10 +100,33 @@ export const EMBED_PARAM = "embed";
 // embed prefix without changing what the prefix-embed panes already do.
 export const IS_QUERY_EMBED = new URLSearchParams(boot.search).get(EMBED_PARAM) === "1";
 
+// AM I A TAB OF A SHELL-TABS HOST? (shell/TabHost.tsx) — a document whose
+// DIRECT parent carries the host's `_fusedTabs`. Asked of the parent, like
+// the framing flags further down ask their ancestors; the host installs the
+// global in a layout effect, before any tab frame mounts, so this module-init
+// read always sees it.
+//
+// It is the third spelling of embed mode, and the one that does not depend on
+// the URL at all: a tab is loaded with its marker (the prefix or `?embed=1`),
+// but a FULL load inside it — a plain anchor, a `location.assign`, a server
+// redirect — arrives without one, and booting chrome-full there would put a
+// second sidebar and status bar inside the window's own. Also the one embed
+// that is the whole page the reader is looking at, not a card or a pane, so
+// it hydrates the stores a top-level page does (main.tsx).
+export const IS_SHELL_TAB = (function inShellTabHost(): boolean {
+  if (typeof window === "undefined" || window === window.parent) return false;
+  try {
+    return !!window.parent._fusedTabs;
+  } catch {
+    return false;
+  }
+})();
+
 export const IS_EMBED =
   boot.pathname.startsWith(EMBED_PREFIX) ||
   boot.pathname === "/explorer/embed" ||
-  IS_QUERY_EMBED;
+  IS_QUERY_EMBED ||
+  IS_SHELL_TAB;
 
 // The param a display-only card peek stamps on its embed URL (BookmarkCards'
 // LivePreview), and the flag GET /render takes to skip open recording (D301).
@@ -227,6 +250,18 @@ export const IS_NATIVE_WINDOW =
   window === window.top && /\bFused(?:Render|Bot)\/\S+/.test(navigator.userAgent) &&
   !/\bLauncher\b/.test(navigator.userAgent);
 
+// AM I A SHELL-TABS HOST? — the native window's top-level shell drawing its
+// content as a strip of tabs (shell/TabHost.tsx) instead of one route. Three
+// facts, all fixed for the document's life: the server's `shell_tabs` flag
+// (config is fetched before the first render and never re-read), being one of
+// the app's native windows at top level, and NOT being an embed — an embed is
+// what every tab inside the host is, and a host reloaded on an embed url would
+// otherwise nest a strip inside a strip. Structural parameter rather than the
+// Config type: this module imports nothing from api.ts.
+export function isTabHost(config: { shell_tabs?: { enabled?: boolean } | null }): boolean {
+  return config.shell_tabs?.enabled === true && IS_NATIVE_WINDOW && window === window.top && !IS_EMBED;
+}
+
 // Is this pathname panel mode's sentinel route? Both prefixes, because panel
 // mode lives under the page's own one (Panel.tsx's PANEL_PATH) so that
 // entering/refreshing/exiting stays in the active mode — which means the shell
@@ -321,6 +356,17 @@ export const IS_FOREIGN_EMBED = (function foreignHost(): boolean {
     while (win !== win.parent) {
       win = win.parent;
       if (win.location.pathname.startsWith("/explorer")) return false;
+      // A shell-tabs host (shell/TabHost.tsx) is the shell itself, not a
+      // foreign page — but its pathname MIRRORS whichever tab is active, so a
+      // tab on /home or /tasks sees a non-explorer ancestor and would read as
+      // foreign, turning every in-tab push into a replace (pushHistory below):
+      // Back inside those tabs would silently do nothing while explorer tabs
+      // kept theirs. The host's global is installed before any tab frame
+      // mounts, so this module-init read always sees it.
+      // Only for the host's DIRECT child: a frame inside a tab (Home's app
+      // widgets) is framed by that tab's page, not by the shell, and stays
+      // foreign — its pushes must keep becoming replaces.
+      if (win._fusedTabs) return win !== window.parent;
     }
     return true;
   } catch {
@@ -348,7 +394,13 @@ export const IS_CROSS_ORIGIN_EMBED = (function crossOriginHost(): boolean {
 
 // URL prefix for this page's mode. Keeps refresh, in-listing navigation, and
 // param sync (iframe runtime's history.replaceState) inside the active prefix.
-const PREFIX = IS_EMBED ? EMBED_PREFIX : VIEW_PREFIX;
+//
+// BY PATH for a shell tab: one that was full-loaded on a VIEW url (the
+// unmarked load IS_SHELL_TAB exists for) is embed by framing, but its own URL
+// is a view one, and a prefix that disagreed with it would make
+// fsPathFromLocation answer null — "Unrecognized URL" in place of the folder.
+const PREFIX =
+  IS_EMBED && !(IS_SHELL_TAB && boot.pathname.startsWith(VIEW_PREFIX)) ? EMBED_PREFIX : VIEW_PREFIX;
 
 // There was a SECOND URL namespace for app folders here — /apps/<tag>/<name>,
 // a pretty route decoded against fused_dir (with the virtual "linked" tag
@@ -543,6 +595,47 @@ function destOptsQuery(opts?: { mode?: string; sel?: string | null; q?: string }
   return parts;
 }
 
+// ---- the navigation sink ---------------------------------------------------
+//
+// A SHELL-TABS HOST SHOWS NO ROUTE OF ITS OWN (shell/TabHost.tsx): its content
+// column is a strip of tab iframes, and an in-app hop made from the host's own
+// chrome — a sidebar row, a notification, the status bar — means "take the
+// ACTIVE TAB there", not "push this document". The host installs a sink while
+// it is mounted; `navigate`/`navigateUrl` hand it the href they would have
+// pushed (so the host can see WHERE the hop goes) together with the CALL
+// itself, and push nothing.
+//
+// THE CALL, NOT THE RESULT, is what reaches the tab: everything navigate()
+// derives from "the page you are leaving" — the `_side` carry, `snapshot`,
+// the `qCommitted` and `fsDir` hints in history.state — is about the TAB's
+// page, not the host's mirror of it, so the same function runs again in there
+// and derives it from the right place. The leave guard likewise: the composer
+// whose words a hop could lose lives INSIDE the tab, in the tab's own copy of
+// this module, and no sink is installed in there, so its guard asks.
+export type NavCall =
+  | {
+      fn: "navigate";
+      fsPath: string;
+      opts?: { isDir?: boolean; mode?: string; sel?: string | null; q?: string };
+    }
+  | { fn: "navigateUrl"; url: string; opts?: { isDir?: boolean } };
+
+export type NavSink = (href: string, call: NavCall) => void;
+
+/** What a tab host puts in a NAVIGATE_URL_EVENT's detail: the call to re-run,
+ *  or — `load` — a url this document's router cannot show (a `/render` page),
+ *  which it leaves for by a full load, still behind its own leave guard. */
+export type NavDetail = NavCall | { fn: "load"; url: string };
+
+let navSink: NavSink | null = null;
+
+export function installNavSink(sink: NavSink | null): void {
+  navSink = sink;
+}
+
+/** The event a tab host dispatches on a tab's window to navigate it. */
+export const NAVIGATE_URL_EVENT = "fused:navigate-url";
+
 export function navigate(
   fsPath: string,
   opts?: { isDir?: boolean; mode?: string; sel?: string | null; q?: string },
@@ -664,6 +757,10 @@ export function navigate(
   // THE URL IS BUILT NOW AND PUSHED WHEN THE GUARD ANSWERS: everything above
   // reads `location.search`, which is still this page's while the question is up.
   const href = urlForFsPath(fsPath, search);
+  if (navSink) {
+    navSink(href, { fn: "navigate", fsPath, opts });
+    return;
+  }
   guarded(() => {
     pushHistory(state, href);
     notifyNavigate();
@@ -755,10 +852,40 @@ export function navigateUrl(url: string, opts?: { isDir?: boolean }): void {
   // Stored urls (bookmarks, recents) may predate the
   // /explorer prefix rename; an in-app push skips the module-init rewrite, so
   // map here or the dispatcher won't recognize the path.
-  const href = rewriteLegacyUrl(url);
+  let href = rewriteLegacyUrl(url);
+  if (navSink) {
+    navSink(href, { fn: "navigateUrl", url, opts });
+    return;
+  }
+  // A shell tab shows the explorer under ITS OWN prefix (see PREFIX): a
+  // stored or host-built url in the other spelling names the same folder, and
+  // pushed as-is it would be a path this document's dispatcher does not
+  // recognise.
+  if (IS_SHELL_TAB) {
+    const other = PREFIX === EMBED_PREFIX ? VIEW_PREFIX : EMBED_PREFIX;
+    if (href.startsWith(other)) href = PREFIX + href.slice(other.length);
+  }
   guarded(() => {
     pushHistory(state, href);
     notifyNavigate();
+  });
+}
+
+// The receiving end of a tab host's sink (above), in EVERY document: a tab
+// cannot know it is one until its host speaks, and registering costs one
+// listener. Inside a tab no sink is installed, so the call is an ordinary
+// in-app hop — the leave guard asks, history gets its entry, the route
+// remounts. Guarded like the `location` reads above: bun has no window.
+if (typeof window !== "undefined") {
+  window.addEventListener(NAVIGATE_URL_EVENT, (e: Event) => {
+    const d = (e as CustomEvent<NavDetail | null>).detail;
+    if (!d || typeof d !== "object") return;
+    if (d.fn === "navigate" && typeof d.fsPath === "string") navigate(d.fsPath, d.opts);
+    else if (d.fn === "navigateUrl" && typeof d.url === "string") navigateUrl(d.url, d.opts);
+    else if (d.fn === "load" && typeof d.url === "string") {
+      const target = d.url;
+      guarded(() => location.assign(target));
+    }
   });
 }
 
