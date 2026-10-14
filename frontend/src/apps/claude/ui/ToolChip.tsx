@@ -441,28 +441,40 @@ function ChipTaskInfo({ seg, m }: { seg: ToolSegment; m: SubagentChipModel }) {
 }
 
 /**
- * THE CHIP'S HEADER, and the one place a chip reads the task index: the
- * orphan title, the subagent type, the model label and the "Started in an
- * earlier turn" tooltip all depend on the task's record, so a registry update
- * re-renders this and not the memoized chip body (Bugbot, PR #1653).
+ * THE CHIP'S HEADER. Only a task-linked chip reads the task index (through
+ * `LinkedChipHeader`): the orphan title, the subagent type, the model label and
+ * the "Started in an earlier turn" tooltip depend on the task's record, so a
+ * registry update re-renders those headers and not every chip (Bugbot, PR #1653).
+ * An unlinked chip has no record to look up and never subscribes.
  */
-function ChipHeader({
-  seg,
-  raw,
-  linked,
-  parts,
-  full,
-  status,
-}: {
+interface ChipHeaderProps {
   seg: ToolSegment;
   raw: string;
   linked: boolean;
   parts: ReturnType<typeof toolChipSummaryParts>;
   full: string;
   status: string;
-}) {
+}
+
+function LinkedChipHeader(props: ChipHeaderProps) {
   const taskIndex = useTaskIndex();
-  const model = subagentChipModel(seg, taskFor(seg, taskIndex));
+  return <ChipHeaderView {...props} model={subagentChipModel(props.seg, taskFor(props.seg, taskIndex))} />;
+}
+
+function ChipHeader(props: ChipHeaderProps) {
+  if (props.linked) return <LinkedChipHeader {...props} />;
+  return <ChipHeaderView {...props} model={subagentChipModel(props.seg, null)} />;
+}
+
+function ChipHeaderView({
+  seg,
+  raw,
+  linked,
+  parts,
+  full,
+  status,
+  model,
+}: ChipHeaderProps & { model: SubagentChipModel }) {
   const pretty = seg.orphan ? model.title : prettyToolName(raw);
   return (
       <CollapsibleTrigger

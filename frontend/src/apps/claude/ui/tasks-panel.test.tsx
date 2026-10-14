@@ -391,7 +391,11 @@ describe("agent chip", () => {
     const start = src.indexOf("export const ToolChip = memo(");
     expect(start).toBeGreaterThan(0);
     expect(src.slice(start)).not.toContain("useTaskIndex");
-    expect(src).toContain("const taskIndex = useTaskIndex();");
+    // Only the linked header reads it; the unlinked path never calls the hook.
+    const linkedStart = src.indexOf("function LinkedChipHeader(");
+    expect(src.match(/useTaskIndex\(\)/g)?.length).toBe(1);
+    expect(src.indexOf("useTaskIndex()")).toBeGreaterThan(linkedStart);
+    expect(src).toContain("if (props.linked) return <LinkedChipHeader");
   });
 
   test("a Monitor chip says watching and the events count while its task runs", () => {
