@@ -169,3 +169,10 @@ test("a marker-only send without annotations still says its marker words", () =>
   const r = mount(<Turn turn={user(MARKER_FILE + MARKER_JOIN + MARKER_VIEW)} />);
   expect(bubbleText(r)).toBe("files" + MARKER_JOIN + "pane screenshot");
 });
+
+test("a marker-only send whose only annotation has no words says its marker words, not an empty bubble", () => {
+  const raw = annWire("", [{ label: "A", content: "", tag: "button" }]);
+  const r = mount(<Turn turn={{ role: "user", key: "u:e", text: MARKER_ANN, raw }} />);
+  expect(classCount(r, "bubble-ann")).toBe(0);
+  expect(bubbleText(r)).toBe("annotations");
+});
