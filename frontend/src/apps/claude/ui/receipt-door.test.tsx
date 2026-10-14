@@ -83,25 +83,26 @@ const ANN_WIRE =
   annStanza({ label: "A", content: "make this bigger", tag: "button#go" }) +
   "\n</annotations>";
 
-test("annotation receipts are the door — no second hover control (P3R1-7)", () => {
+test("annotation receipts are the door — the thumbnail, no note rows, no hover control (P3R1-7)", () => {
   const seen: UserTurn[] = [];
-  const turn = user({ text: "look at this", raw: ANN_WIRE });
+  const turn = user({
+    text: "look at this",
+    raw: ANN_WIRE,
+    attachments: [{ kind: "overview", label: "annotated overview attached", view: "/shots/o.png", thumb: "blob:o" }],
+  });
   const r = mount(
     <Turn turn={turn} onOpenShot={() => {}} onShowSent={(t) => seen.push(t)} />,
   );
 
-  // The rows exist and each is pressable, carrying T's own sentence
-  // (T:11059/11072) — the affordance the owner expected to be the only one.
-  const rows = find(r, "annsum-note");
-  expect(rows.length).toBeGreaterThan(0);
-  expect((rows[0].props as { title?: string }).title).toBe(
-    "Click to see exactly what was sent to the agent",
-  );
-  // ONE DOOR: the hover "what was sent" button is gone.
+  // The comments are in the bubble, so there are no note rows to press; the
+  // overview thumbnail is the one door, and it opens what was sent.
+  expect(find(r, "annsum-note")).toHaveLength(0);
   expect(find(r, "sentbtn")).toHaveLength(0);
+  const thumbs = find(r, "annsum-pane");
+  expect(thumbs.length).toBeGreaterThan(0);
 
   act(() => {
-    (rows[0].props as { onClick: () => void }).onClick();
+    (thumbs[0].props as { onClick: () => void }).onClick();
   });
   expect(seen).toEqual([turn]);
 });
