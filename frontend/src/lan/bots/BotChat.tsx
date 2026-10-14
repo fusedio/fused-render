@@ -46,6 +46,9 @@ import { Toaster, toast } from "./Toast";
 import type { BotDetail, BotEvent, Setup } from "./types";
 
 const PAGE = 80;
+const BACKFILL_PAGES = 5; // on open, at most this many earlier pages to reach the last line seen
+/** Whether "Load earlier" has anything left: the window does not start at the log's first line (seq 1). */
+const hasMore = (evs: BotEvent[]) => evs.length > 0 && evs[0].seq > 1;
 const HOLD_MAX_MS = 20_000; // a card's local "Sending…" hold at most
 const END_GAP = 96; // px from the bottom that still counts as "following along"
 const READABLE = new Set(["done", "question", "approval", "error"]);
@@ -68,7 +71,20 @@ export function BotChat({ id }: { id: string }) {
   const [pill, setPill] = useState(false);
   const seqRef = useRef<number | null>(null);
   const seen = useRef<{ key: string; at: number | null } | null>(null);
-  const [newSeq, setNewSeq] = useState<number | null>(null);
+  // The seen cursor as it was when the chat opened (null: nothing unread then); the "New" divider sits
+  // above the first readable line after it among the events held.
+  const unreadAfter = useRef<number | null>(null);
+  // The oldest line held and whether earlier ones exist: while unread lines between the last seen and the
+  // oldest held are not loaded yet (a failed or capped backfill), the seen cursor is not advanced, so the
+  // badge and the next visit's divider still count them. "Load earlier" closing the gap lifts it.
+  const oldest = useRef<number | null>(null);
+  const earlier = useRef(false);
+  const unloadedUnread = () =>
+    earlier.current && unreadAfter.current != null && oldest.current != null && oldest.current > unreadAfter.current + 1;
+  const newSeq = useMemo(() => {
+    const was = unreadAfter.current;
+    return was == null ? null : (events.find((e) => e.seq > was && READABLE.has(e.role))?.seq ?? null);
+  }, [events]);
 
   const thread = useRef<HTMLDivElement>(null);
   const atEnd = useRef(true);
@@ -98,19 +114,37 @@ export function BotChat({ id }: { id: string }) {
       setNow(d.ts || Date.now() / 1000);
       setError(null);
       if (first) {
-        setEvents(d.events);
-        setHasEarlier(d.events.length >= PAGE && (d.first_seq ?? 0) > 1);
+        // The seen cursor is written to the end below, so page back (capped) until the window reaches the
+        // last line seen: the unread lines are then loaded and under the "New" divider. A failed earlier
+        // page only stops the walk; the tail already here is shown.
+        let evs = d.events;
+        let more = evs.length >= PAGE && hasMore(evs);
         const was = seen.current?.at ?? null;
-        if (was != null) {
-          const n = d.events.find((e) => e.seq > was && READABLE.has(e.role));
-          setNewSeq(n ? n.seq : null);
+        try {
+          for (let i = 0; was != null && more && evs[0].seq > was + 1 && i < BACKFILL_PAGES; i++) {
+            const e = await api.page(id, { since: 0, before: evs[0].seq, limit: PAGE });
+            more = e.events.length >= PAGE;
+            evs = mergeEvents(evs, e.events);
+            more = more && hasMore(evs);
+          }
+        } catch {
+          // keep `more`: "Load earlier" picks up where the walk stopped
         }
+        // The divider sits above the first unread line among the events held, so a backlog past the cap
+        // that "Load earlier" brings in later lands under it too.
+        const unread = was != null && (evs.some((e) => e.seq > was && READABLE.has(e.role)) || (more && evs[0].seq > was + 1));
+        unreadAfter.current = unread ? was : null;
+        oldest.current = evs.length ? evs[0].seq : null;
+        earlier.current = more;
+        setEvents(evs);
+        setHasEarlier(more);
       } else if (d.events.length) {
         setEvents((old) => mergeEvents(old, d.events));
       }
       seqRef.current = Math.max(seqRef.current ?? 0, d.seq);
-      if (document.visibilityState === "visible") writeSeen(skey, d.seq);
+      if (document.visibilityState === "visible" && !unloadedUnread()) writeSeen(skey, d.seq);
       // The poll that brings a card's answer back releases its local hold.
+      for (const s of heldRef.current) if (d.bot.waiting_seq !== s) heldRef.current.delete(s);
       setHeld((h) => (h.size ? new Set([...h].filter((s) => d.bot.waiting_seq === s)) : h));
     } catch (e) {
       if (e instanceof ApiError && e.status === 404) setGone(true);
@@ -170,7 +204,9 @@ export function BotChat({ id }: { id: string }) {
       const el = thread.current;
       if (el && d.events.length) prepend.current = { height: el.scrollHeight, top: el.scrollTop };
       setEvents((old) => mergeEvents(old, d.events));
-      setHasEarlier(d.events.length >= PAGE);
+      if (d.events.length) oldest.current = Math.min(oldest.current ?? Infinity, d.events[0].seq);
+      earlier.current = d.events.length >= PAGE && hasMore(d.events);
+      setHasEarlier(earlier.current);
     } catch (e) {
       toast((e as Error).message, "error");
     } finally {
@@ -201,31 +237,40 @@ export function BotChat({ id }: { id: string }) {
     [id, kick],
   );
 
-  const release = (seq: number) =>
+  // `held` drives the render; heldRef is the same set read synchronously, so a second tap that lands
+  // before the re-render is still refused (it would pass the server's waiting check as a second answer).
+  const heldRef = useRef<Set<number>>(new Set());
+  const release = (seq: number) => {
+    heldRef.current.delete(seq);
     setHeld((h) => {
       if (!h.has(seq)) return h;
       const n = new Set(h);
       n.delete(seq);
       return n;
     });
+  };
   // The hold stops a double tap while the answer is in flight; the poll that shows the bot moved on clears
   // it. A hold the poll never clears (a question the bot did not take as its answer, a message parked while
   // the Mac holds the browser) would leave the card dead, so every hold also expires on its own.
-  const hold = (seq: number) => {
+  /** Take the hold on a card; false when it is already held (a double tap). */
+  const hold = (seq: number): boolean => {
+    if (heldRef.current.has(seq)) return false;
+    heldRef.current.add(seq);
     setHeld((h) => new Set(h).add(seq));
     window.setTimeout(() => release(seq), HOLD_MAX_MS);
+    return true;
   };
 
   const onVerdict = useCallback(
     (seq: number, yes: boolean) => {
-      hold(seq);
+      if (!hold(seq)) return;
       void send(yes ? "approve" : "deny", { answer: seq }).then((ok) => !ok && release(seq));
     },
     [send],
   );
   const onAnswer = useCallback(
     (seq: number, text: string) => {
-      hold(seq);
+      if (!hold(seq)) return;
       void send(text).then((ok) => !ok && release(seq));
     },
     [send],
@@ -528,11 +573,25 @@ function useShot(bot: BotDetail): string | null {
   latestRef.current = latest;
   const running = bot.status === "running";
 
+  // Each swap takes a generation; a frame is shown only if it is newer than the
+  // one on screen. A slow image never overwrites a fresher one, yet a frame
+  // that loads after the next swap began still lands (a shot slower than 4 s
+  // must not freeze the tile on the first frame).
+  const gen = useRef(0);
+  const shownGen = useRef(0);
   const swap = useMemo(
     () => (url: string | null) => {
-      if (!url) return setShown(null);
+      const g = ++gen.current;
+      if (!url) {
+        shownGen.current = g;
+        return setShown(null);
+      }
       const img = new Image();
-      img.onload = () => setShown(url);
+      img.onload = () => {
+        if (g <= shownGen.current) return;
+        shownGen.current = g;
+        setShown(url);
+      };
       img.src = url;
     },
     [],
