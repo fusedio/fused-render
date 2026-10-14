@@ -94,6 +94,20 @@ def _drain_inbox(agent, run_dir: str, cli_stdin) -> None:
     they should reach the CLI in, which is exactly filename order."""
     inbox = os.path.join(run_dir, "inbox")
     done = os.path.join(inbox, "done")
+    # `getattr`: a test drives this with no agent at all.
+    fresh = getattr(agent, "_supersede_fresh", None)
+    if fresh is not None:
+        superseded = fresh(run_dir)
+    else:
+        superseded = os.path.exists(os.path.join(run_dir, "superseded"))
+    if superseded:
+        # Being ended for a resume (agent._end_idle_hosts): an entry that
+        # arrives now is `_send`'s to take back once we are gone, and
+        # delivering it here too would be the second copy. A supersede that
+        # is called off removes the marker, and the next tick delivers; a
+        # STALE one (a pass that never finished) is removed by that same
+        # call and ignored, so it cannot hold this inbox shut for good.
+        return
     try:
         names = sorted(n for n in os.listdir(inbox) if n.endswith(".json"))
     except FileNotFoundError:
@@ -549,7 +563,15 @@ def _reap_loop(agent, run_dir: str, cli, host_json: str,
         # turn_ended posts: this process is about to return out of `main` and
         # a daemon thread dies with it, so the last word has to be waited for
         # — briefly, and never longer than the post's own timeout.
-        last = _post_event(run_dir, "exited", code=cli.poll(), at=exited_at)
+        #
+        # EXCEPT A HOST ENDED TO MAKE ROOM FOR A RESUME (`superseded`, written
+        # by agent._end_idle_hosts before its kill). It was idle, so it owned
+        # nothing — and the resume taking its place is claimed under the same
+        # session, which is all an owner with no run id yet can be matched by:
+        # this `exited` would release the NEW run's folder. Not news to anyone.
+        last = None
+        if not os.path.exists(os.path.join(run_dir, "superseded")):
+            last = _post_event(run_dir, "exited", code=cli.poll(), at=exited_at)
         if last is not None:
             try:
                 last.join(_EVENT_TIMEOUT + 1.0)

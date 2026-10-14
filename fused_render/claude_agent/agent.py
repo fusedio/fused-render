@@ -2891,6 +2891,15 @@ def _start(file: str, message: str, session_id: str, model: str,
     if not os.path.exists(file):
         return {"error": f"target not found: {file}"}
 
+    # A RESUME NEVER SPAWNS BESIDE AN IDLE HOST ON THE SAME SESSION — see
+    # `_end_idle_hosts`. Before this run's own dir exists, so the scan cannot
+    # find it; under its own guard, so a failure here is a spawn as before.
+    if session_id:
+        try:
+            _end_idle_hosts(session_id)
+        except Exception:  # noqa: BLE001 — never stands between a send and a run
+            pass
+
     run_id = time.strftime("%Y%m%d-%H%M%S") + "-" + os.urandom(3).hex()
     run_dir = os.path.join(RUNS, run_id)
     _private_dir(run_dir)
@@ -3692,9 +3701,249 @@ def _live_host(file: str, session_id: str = "",
             own = _run_own_session(run_dir, meta)
             if session_id not in (meta.get("resumed_from", ""), own):
                 continue
+        # A host being ended for a resume (`_end_idle_hosts`) is no place to
+        # send a follow-up: the page falls back to `_start`, which is the run
+        # that replaces it.
+        if _supersede_fresh(run_dir):
+            continue
         if _host_alive(run_dir):
             return {"run_id": name}
     return {"run_id": ""}
+
+
+# How long a resume waits for an idle host it ended to actually be gone. A
+# SIGTERMed CLI exits in tens of ms and its host notices on its next drain tick
+# (`session_host._DRAIN_INTERVAL_SECONDS`, 0.2 s); the cap is for a box under
+# load, and past it the resume spawns anyway — today's behaviour, not a hang.
+_SUPERSEDE_WAIT_SEC = 3.0
+
+
+def _superseded_path(run_dir: str) -> str:
+    """`run_dir/superseded`: this host is being ended to make room for a resume
+    of its session (`_end_idle_hosts`). Read by `_live_host` and `_send` (do not
+    hand it a follow-up), and by session_host.py (do not drain, do not announce
+    `exited`)."""
+    return os.path.join(run_dir, "superseded")
+
+
+# A marker older than this belongs to a pass that never finished — a server
+# that died between the write and the kill or the clean-up — and nothing will
+# ever remove it: a host still alive under it would hold every follow-up
+# forever (`_send` waits it out, the host drains nothing). Every honest pass
+# settles within its own wait, so past that plus a margin it is ignored and
+# removed.
+_SUPERSEDE_STALE_SEC = _SUPERSEDE_WAIT_SEC + 2.0
+
+
+def _supersede_fresh(run_dir: str) -> bool:
+    """Whether `run_dir` carries a LIVE `superseded` marker — one an ending
+    pass is still acting on. A stale one is removed here and answers False.
+
+    The marker holds the `time.time()` it was written at; empty or garbled
+    (read in the instant between `_end_idle_hosts`' exclusive create and its
+    write) falls back to the file's mtime, which is that same moment."""
+    path = _superseded_path(run_dir)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            raw = fh.read().strip()
+    except OSError:
+        return False
+    try:
+        stamp = float(raw)
+    except ValueError:
+        try:
+            stamp = os.path.getmtime(path)
+        except OSError:
+            return False
+    if time.time() - stamp <= _SUPERSEDE_STALE_SEC:
+        return True
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+    return False
+
+
+def _echo_pending(run_dir: str) -> bool:
+    """A `_send` that has not been echoed yet — `_poll`'s own `pending_echo`
+    test, read-only (clearing the file stays `_poll`'s job).
+
+    The window this covers: the host drained the follow-up into the CLI's stdin
+    (the inbox is empty again) but the CLI has not written its echo, so
+    `out.jsonl` still ends on the previous turn's `result` and `_turn_state`
+    reads idle. A marker that will not parse is pending too: skipping a kill is
+    the old behaviour, losing a message `_send` already called sent is not."""
+    path = os.path.join(run_dir, "pending_echo")
+    if not os.path.exists(path):
+        return False
+    try:
+        with open(path, encoding="utf-8") as fh:
+            offset = int(fh.read().strip())
+        with open(os.path.join(run_dir, "out.jsonl"), "rb") as fh:
+            fh.seek(offset)
+            tail = fh.read()
+    except (OSError, ValueError):
+        return True
+    for raw in tail.split(b"\n"):
+        try:
+            row = json.loads(raw.decode("utf-8", "replace"))
+        except ValueError:
+            continue
+        if isinstance(row, dict) and _starts_new_turn(row):
+            return False
+    return True
+
+
+def _host_busy(run_dir: str) -> bool:
+    """Anything in this host a kill would lose: an open turn, a background
+    task, an inbox entry not drained yet, or a drained follow-up not echoed."""
+    if any(_turn_state(run_dir)) or _echo_pending(run_dir):
+        return True
+    try:
+        return any(n.endswith(".json") for n in os.listdir(_inbox_dir(run_dir)))
+    except OSError:
+        return False
+
+
+def _end_idle_hosts(session_id: str,
+                    limit: int | None = _LIVE_SCAN_LIMIT) -> list:
+    """ONE PROCESS PER CONVERSATION: end every IDLE session host still holding
+    `session_id`, whatever target it was started for, before `_start` spawns a
+    `claude --resume` on that same session. Returns the run ids whose host it
+    saw die.
+
+    `_live_host` matches on the file AND the session, and it has to: `_poll`
+    refuses a run whose target is not the polling page's ("run is for another
+    target"), so handing a page a host started for some other surface would
+    cost it the stream. But that means a follow-up from a surface whose file
+    differs — a task modal on the project folder, another panel — misses the
+    host sitting idle on the very same conversation, falls back to `_start`,
+    and two `claude` processes then write one transcript (D676/D679). `_send`'s
+    respawn has the same shape: it SIGTERMs the tree and the caller's `_start`
+    can spawn before the old one is actually gone. So the session is matched
+    here alone — `_live_host`'s rules minus the file — and the old host is
+    ended rather than adopted, and waited for.
+
+    ONLY AN IDLE ONE (`_host_busy`). A turn open in it, a background task, or a
+    follow-up on its way in is somebody's live work on another surface, and
+    killing it to make room for this message would lose that work; it is left
+    alone and the spawn goes ahead as it always did. That overlap is the
+    rarer, older behaviour, and it beats ending a reply mid-stream.
+
+    MARKER FIRST, THEN LOOK AGAIN — the other half is in `_send`. A follow-up
+    can land between the first look and the kill, and the host would take it
+    to its grave after `_send` had answered `sent`. So `superseded` is written
+    BEFORE the second look, and `_send` checks for it AFTER writing its entry:
+    whichever of the two writes lands second, its writer sees the other's.
+    Either this sees the send (marker removed, host left alone, `_send` waits
+    that out and answers `sent`), or `_send` sees the marker and waits for the
+    kill to land before taking its entry back and answering `respawn`.
+
+    QUIETLY, NOT `_cancel`. `_cancel_run` writes the `cancelled` marker first,
+    and that marker is the run's own record that the USER stopped it — `_poll`
+    and `_stopped_last` would put "Stopped" under a reply that finished fine
+    (the old run stays the newest one for ITS file). An idle host has no turn
+    to stop, no card to deny and no inbox to hand back, so this goes straight
+    to the tree-kill. `superseded` also tells the host not to announce
+    `exited` (session_host.py): the queue matches an event against an owner
+    with no run id yet by SESSION, and this very resume is claimed under that
+    session — the old run's exit would release the folder out from under the
+    new run before `gate._file_owner` names it. So the marker is KEPT only for
+    a host this saw die; one the kill did not reach gets it back, or it would
+    go on living with its `exited` muted and its sends refused.
+
+    Best-effort: never raises, and anything it cannot decide is left alone."""
+    if not session_id:
+        return []
+    try:
+        names = sorted(os.listdir(RUNS), reverse=True)
+    except OSError:
+        return []
+    if limit is not None:
+        names = names[:limit]
+    ending = []
+    for name in names:
+        run_dir = os.path.join(RUNS, name)
+        marker = _superseded_path(run_dir)
+        owned = False
+        try:
+            with open(os.path.join(run_dir, "meta.json"), encoding="utf-8") as fh:
+                meta = json.load(fh)
+            if not isinstance(meta, dict):
+                continue
+            if session_id not in (meta.get("resumed_from", ""),
+                                  _run_own_session(run_dir, meta)):
+                continue
+            if not _host_alive(run_dir) or _host_busy(run_dir):
+                continue
+            # ONE PASS PER HOST. Two resumes of one session at once share this
+            # file, and a pass that saw a send and removed "the" marker would
+            # be removing the other pass's — which then kills a host whose
+            # follow-up was told `sent`. So the marker is created EXCLUSIVELY
+            # (a stale one cleared first, `_supersede_fresh`), and a pass that
+            # cannot create it leaves the host to the pass that did.
+            if _supersede_fresh(run_dir):
+                continue
+            try:
+                fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                             0o600)
+            except FileExistsError:
+                continue
+            owned = True
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(str(time.time()))
+            if _host_busy(run_dir):
+                os.remove(marker)  # a send landed in between: it wins
+                continue
+            _kill_tree(run_dir)
+            ending.append(run_dir)
+        except Exception:  # noqa: BLE001 — one bad run dir never blocks a resume
+            try:
+                if owned and run_dir not in ending:
+                    os.remove(marker)
+            except OSError:
+                pass
+            continue
+    deadline = time.monotonic() + _SUPERSEDE_WAIT_SEC
+    waiting = list(ending)
+    while waiting and time.monotonic() < deadline:
+        time.sleep(0.05)
+        waiting = [d for d in waiting if _host_alive(d)]
+    for run_dir in waiting:
+        try:
+            os.remove(_superseded_path(run_dir))
+        except OSError:
+            pass
+    return [os.path.basename(d) for d in ending if d not in waiting]
+
+
+def _superseded_outcome(run_dir: str) -> bool:
+    """`_send` found `superseded` on its host: wait for `_end_idle_hosts` to
+    settle it. True = the host is gone (the caller must respawn), False = the
+    supersede was called off (or never took) and the host is live.
+
+    It settles fast — the abort is the next statement after the marker write,
+    the kill is reaped within a drain tick — and `_end_idle_hosts` removes the
+    marker itself once its own wait runs out, so this is bounded by that same
+    wait plus a margin.
+
+    THE MARKER IS ASKED FIRST. Only a kill KEEPS it (`_end_idle_hosts`), so a
+    marker that is gone means the supersede was called off — and a host that
+    is dead in the same tick died of its own idle reap, whose final drain
+    delivered this message: answering `respawn` there would send it twice. A
+    STALE marker (`_supersede_fresh`, removed on the way) is a pass that never
+    finished: the host's own liveness is the whole answer then."""
+    deadline = time.monotonic() + _SUPERSEDE_WAIT_SEC + 1.0
+    while True:
+        if not os.path.exists(_superseded_path(run_dir)):
+            return False
+        if not _supersede_fresh(run_dir):
+            return not _host_alive(run_dir)
+        if not _host_alive(run_dir):
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.05)
 
 
 def _send(run_id: str, message: str, read_dirs: str = "", model: str = "",
@@ -3752,6 +4001,11 @@ def _send(run_id: str, message: str, read_dirs: str = "", model: str = "",
         return {"error": "no live session"}
     if not isinstance(host, dict) or not _pid_alive(str(host.get("pid") or "")):
         return {"error": "no live session"}
+    # A HOST BEING ENDED FOR A RESUME (`_end_idle_hosts`): wait for it to
+    # settle — gone means this message belongs to the run replacing it
+    # (`respawn`); called off means the host is live and takes it as usual.
+    if os.path.exists(_superseded_path(run_dir)) and _superseded_outcome(run_dir):
+        return {"respawn": True}
     wanted = set(_attach_dirs(read_dirs))
     granted = set(host.get("read_dirs") or [])
     if not wanted <= granted or (effort and effort != host.get("effort", "")):
@@ -3826,6 +4080,32 @@ def _send(run_id: str, message: str, read_dirs: str = "", model: str = "",
     with open(os.path.join(run_dir, "pending_echo"), "w", encoding="utf-8") as f:
         f.write(str(pending_offset))
     _write_inbox_entry(run_dir, _with_terminal_hint(message, terminal_hint))
+    # …AND LOOK AGAIN, AFTER THE WRITE — the other half of `_end_idle_hosts`'
+    # marker-then-recheck. If a supersede began after the check above, either
+    # it sees `pending_echo`/this entry and calls itself off (then this waits
+    # that out and the host delivers as usual), or this sees its marker and
+    # the host is killed. Only once the host is GONE is anything taken back:
+    # session_host drains nothing while the marker stands, and `host.json` is
+    # removed after its last drain, so no drain can still be holding the entry
+    # — taking it back cannot race a delivery into a second copy. What is
+    # left undrained is everything this send queued (control requests too),
+    # in a run that will never drain again.
+    if os.path.exists(_superseded_path(run_dir)) and _superseded_outcome(run_dir):
+        inbox = _inbox_dir(run_dir)
+        try:
+            for name in os.listdir(inbox):
+                if name.endswith(".json"):
+                    try:
+                        os.remove(os.path.join(inbox, name))
+                    except OSError:
+                        pass
+        except OSError:
+            pass
+        try:
+            os.remove(os.path.join(run_dir, "pending_echo"))
+        except OSError:
+            pass
+        return {"respawn": True}
     return {"sent": True}
 
 
