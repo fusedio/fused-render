@@ -92,10 +92,11 @@ export function SettingsSheet({
 
   const changes: SettingsBody = {};
   if (form.name.trim() && form.name.trim() !== base.name) changes.name = form.name.trim();
-  if (form.instructions !== base.instructions) changes.instructions = form.instructions;
+  // Super Bot's instructions and approval steer every task it runs, routines included: set at the Mac (docs §14).
+  if (!isSuper && form.instructions !== base.instructions) changes.instructions = form.instructions;
   if (form.model && form.model !== base.model) changes.model = form.model;
   if (form.effort && form.effort !== base.effort) changes.effort = form.effort;
-  if (form.approval !== base.approval) changes.approval = form.approval;
+  if (!isSuper && form.approval !== base.approval) changes.approval = form.approval;
   if (form.max_steps.trim() !== base.max_steps) {
     // "" clears the override (routes._settings drops it on "" or 0; null reads as "not sent").
     const n = form.max_steps.trim() === "" ? "" : Math.round(Number(form.max_steps));
@@ -154,10 +155,11 @@ export function SettingsSheet({
               className="h-11 rounded-xl text-base"
             />
           </Field>
-          <Field label="Instructions" htmlFor="st-instr">
+          <Field label="Instructions" htmlFor="st-instr" hint={isSuper ? "Set at the Mac." : undefined}>
             <Textarea
               id="st-instr"
               value={form.instructions}
+              readOnly={isSuper}
               onChange={(e) => set("instructions")(e.target.value)}
               rows={5}
               className="max-h-72 min-h-28 rounded-xl text-base"
@@ -171,26 +173,23 @@ export function SettingsSheet({
               <Choice id="st-effort" value={form.effort} options={setup?.efforts || []} onChange={set("effort")} />
             </Field>
           </div>
-          <Field
-            label="Approval"
-            hint={
-              isSuper
-                ? "Tasks you start from the phone always ask before writing, running or building."
-                : form.approval === "ask"
-                  ? "Asks before anything that changes something."
-                  : "Acts without asking."
-            }
-          >
-            <Segmented
-              label="Approval"
-              value={form.approval}
-              onChange={set("approval")}
-              options={[
-                { value: "ask", label: "Ask" },
-                { value: "auto", label: "Auto" },
-              ]}
-            />
-          </Field>
+          {isSuper ? (
+            <Field label="Approval" hint="Tasks you start from the phone always ask before writing, running or building. Set at the Mac.">
+              <div className="text-base">{form.approval === "auto" ? "Auto" : "Ask"}</div>
+            </Field>
+          ) : (
+            <Field label="Approval" hint={form.approval === "ask" ? "Asks before anything that changes something." : "Acts without asking."}>
+              <Segmented
+                label="Approval"
+                value={form.approval}
+                onChange={set("approval")}
+                options={[
+                  { value: "ask", label: "Ask" },
+                  { value: "auto", label: "Auto" },
+                ]}
+              />
+            </Field>
+          )}
           <Field label="Max steps per task" htmlFor="st-steps" hint="Empty: the default.">
             <Input
               id="st-steps"

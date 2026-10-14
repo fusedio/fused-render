@@ -58,6 +58,7 @@ EVENT_KEYS = ("seq", "ts", "role", "text", "result", "thumb", "options", "multi"
 LAST_ROLES = ("user", "done", "question", "approval", "error")
 # The settings sheet's keys (routes._settings with nothing else from the desktop dialog).
 SETTINGS_KEYS = ("name", "instructions", "model", "effort", "approval", "max_steps", "memory")
+SUPER_MAC_KEYS = ("instructions", "approval", "memory")  # Super Bot: Mac only (see _settings)
 ROUTINE_KEYS = ("id", "task", "kind", "minutes", "time", "weekdays", "at", "enabled", "next", "last", "last_result",
                 "last_message")
 _DEVICE_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
@@ -324,6 +325,11 @@ def _send(b, body, device):
 
 
 def _settings(b, body, _device):
+    if _botmod().is_super(b.meta) and any(k in body for k in SUPER_MAC_KEYS):
+        # Super Bot's standing instructions, memory and approval go into every task it runs, a routine's
+        # included, and a routine runs with its own access (channels.base.is_local): written from here they
+        # would steer an unattended run the way a routine's text would (docs §14).
+        raise ValueError("Super Bot's instructions, memory and approval are set at the Mac")
     return routes._settings(b.id, {k: body[k] for k in SETTINGS_KEYS if k in body})
 
 

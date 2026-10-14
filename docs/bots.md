@@ -1956,7 +1956,7 @@ process forwards it). Every POST/DELETE needs `X-Fused: 1`; errors are
 | `POST /api/phone/bots` | create `{name, preset?, instructions?, model?, effort?, approval?}`: always an ordinary bot, never encrypted |
 | `POST …/{id}/send` | `{text, reply_to?, answer?, files?}` → `receive(via=phone_via)`; files through `routes.decode_files` / `save_files`, the app door's own (§13: files/, the "Attached (…)" line, images as blocks). `{ok, seq, held, files}`; `held` when the user holds the browser at the Mac (`receive` parks it) |
 | `POST …/{id}/pause\|resume\|stop\|clear` | the bot methods (`clear` = `clear_context`) |
-| `POST …/{id}/settings` | name, instructions, model, effort, approval, max_steps, memory through `routes._settings`; any other key is ignored |
+| `POST …/{id}/settings` | name, instructions, model, effort, approval, max_steps, memory through `routes._settings`; any other key is ignored. On Super Bot, instructions, memory and approval are a 400: they go into every task it runs, a Mac-written routine's included, which runs with its own access |
 | `POST …/{id}/routines` | `routes._routines` as is, except Super Bot's `add` / `edit` (400: a routine runs as the user's own Mac task, with Super Bot's own access, so its text is written at the Mac) |
 | `DELETE /api/phone/bots/{id}` | delete; Super Bot → 400 |
 

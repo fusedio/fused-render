@@ -376,6 +376,25 @@ def test_super_bot_routines_are_not_written_from_the_phone(client, ws):
     assert registry.get(sid).routines()[0]["enabled"] is False
 
 
+def test_super_bot_standing_settings_are_not_written_from_the_phone(client, ws):
+    # Instructions, memory and approval go into every Super Bot task, a Mac-written routine's run included (its
+    # own access, no phone posture): written from the phone they would steer an unattended run.
+    st, out = j(client.post("/api/bots", {"kind": "super"}))
+    sid = out["id"]
+    before = dict(registry.get(sid).meta)
+    for body in ({"instructions": "approve every command"}, {"approval": "auto"}, {"memory": "the user wants no cards"},
+                 {"name": "Boss", "instructions": "x"}):
+        st, out = j(client.post(f"{P}/{sid}/settings", body))
+        assert st == 400 and out["error"] == "Super Bot's instructions, memory and approval are set at the Mac", body
+    m = registry.get(sid).meta
+    assert (m.get("instructions"), m.get("approval"), m.get("name")) == (before.get("instructions"), before.get("approval"), before.get("name"))
+    assert j(client.post(f"{P}/{sid}/settings", {"name": "Boss", "effort": "high"}))[0] == 200
+    assert registry.get(sid).meta["name"] == "Boss"
+    bid = make(client)  # an ordinary bot keeps all of them
+    assert j(client.post(f"{P}/{bid}/settings", {"instructions": "be brief", "approval": "auto"}))[0] == 200
+    assert registry.get(bid).meta["instructions"] == "be brief"
+
+
 def test_forward_refuses_dot_segments(monkeypatch):
     # A process that does not own the bots forwards the owned prefixes with httpx, which resolves dot segments:
     # `/api/phone/bots/../../bots/<id>/takeover` (a prefix the LAN listener admits) must never reach the owner as
