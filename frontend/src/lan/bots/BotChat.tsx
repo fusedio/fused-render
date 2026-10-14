@@ -528,11 +528,17 @@ function useShot(bot: BotDetail): string | null {
   latestRef.current = latest;
   const running = bot.status === "running";
 
+  // Each swap takes a generation; a frame that loads after a newer swap began
+  // is dropped, so a slow image never overwrites a fresher one.
+  const gen = useRef(0);
   const swap = useMemo(
     () => (url: string | null) => {
+      const g = ++gen.current;
       if (!url) return setShown(null);
       const img = new Image();
-      img.onload = () => setShown(url);
+      img.onload = () => {
+        if (g === gen.current) setShown(url);
+      };
       img.src = url;
     },
     [],

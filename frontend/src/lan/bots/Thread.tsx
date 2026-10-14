@@ -26,6 +26,7 @@ import {
   groupRows,
   markdownLite,
   multiAnswer,
+  multiPicked,
   oneLine,
   optionKey,
   type Item,
@@ -416,7 +417,7 @@ function MultiOptions({
   onSend: (text: string) => void;
 }) {
   const [picked, setPicked] = useState<ReadonlySet<string>>(() => new Set());
-  const answered = answer != null ? new Set(answer.split(/\s*(?:,|\band\b)\s*/).map(optionKey).filter(Boolean)) : null;
+  const answered = answer != null ? multiPicked(options, answer) : null;
   const on = (o: string) => (live ? picked.has(o) : !!answered?.has(optionKey(o)));
   return (
     <div className="mt-2.5 flex flex-col gap-1">

@@ -140,6 +140,25 @@ export function multiAnswer(options: string[], picked: ReadonlySet<string>): str
   return options.filter((x) => picked.has(x)).join(", ") || "None";
 }
 
+/** The options a settled multi-select answer names. Whole options are found
+ *  in the answer, longest first, each bounded by the start, the end, a comma
+ *  or "and", so an option that itself holds a comma or "and" stays one tick. */
+export function multiPicked(options: string[], answer: string): Set<string> {
+  let rest = answer.toLowerCase();
+  const out = new Set<string>();
+  const esc = (x: string) => x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  for (const o of [...options].sort((a, b) => b.length - a.length)) {
+    const k = optionKey(o);
+    if (!k) continue;
+    const re = new RegExp(`(^|,|\\band\\b)\\s*${esc(k)}\\s*(?=,|\\band\\b|$)`);
+    const m = re.exec(rest);
+    if (!m) continue;
+    out.add(k);
+    rest = rest.slice(0, m.index) + m[1] + " \u0000 " + rest.slice(m.index + m[0].length);
+  }
+  return out;
+}
+
 export const optionKey = (s: string | null | undefined): string => String(s ?? "").trim().toLowerCase();
 
 /** A one-line quote of an event, for the reply strip. */
