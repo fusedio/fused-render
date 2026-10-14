@@ -1476,8 +1476,11 @@ _BLOCKED_URLS = [
     "fi\nle:///etc/hosts",
     "view-source:file:///etc/hosts",
     "chrome://settings",
+    "about:settings",
+    "about:version",
+    "ABOUT:settings",
 ]
-_ALLOWED_URLS = ["https://example.com", "example.com", "localhost:8080/x", "data:text/html,hi", "about:blank"]
+_ALLOWED_URLS = ["https://example.com", "example.com", "localhost:8080/x", "data:text/html,hi", "about:blank", "about:blank#x"]
 
 
 @pytest.mark.parametrize("url", _BLOCKED_URLS)
@@ -1489,7 +1492,7 @@ def test_ordinary_bot_goto_refuses_local_urls(url):
     assert bot.browser.calls == []
 
 
-@pytest.mark.parametrize("url", ["file:///etc/hosts", "view-source:file:///etc/hosts", "chrome://settings"])
+@pytest.mark.parametrize("url", ["file:///etc/hosts", "view-source:file:///etc/hosts", "chrome://settings", "about:settings"])
 def test_ordinary_bot_tab_new_refuses_local_urls(url):
     bot = _UrlBot()
     _label, res = tools.execute(bot, "tab", {"tab": "new", "url": url}, {})
@@ -1503,6 +1506,12 @@ def test_ordinary_bot_still_opens_web_urls(url):
     tools.execute(bot, "goto", {"url": url}, {})
     tools.execute(bot, "tab", {"tab": "new", "url": url}, {})
     assert bot.browser.calls == [("goto", url), ("tab_new", url)]
+
+
+def test_ordinary_bot_tab_new_without_url_defaults_to_blank():
+    bot = _UrlBot()
+    tools.execute(bot, "tab", {"tab": "new"}, {})
+    assert bot.browser.calls == [("tab_new", "about:blank")]
 
 
 def test_super_bot_may_open_file_urls():

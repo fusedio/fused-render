@@ -1048,7 +1048,9 @@ def _copied(info: dict, cap: int = 500) -> str:
     return f"; COPIED to the browser clipboard: \"{text[:cap]}\"" + (f" …[{len(text) - cap} more chars]" if len(text) > cap else "")
 
 
-_WEB_SCHEMES = {"http", "https", "about", "data", "blob", "javascript"}
+_WEB_SCHEMES = {"http", "https", "data", "blob", "javascript"}
+# Chromium rewrites most about:X to chrome://X (about:settings), so only the inert pages pass.
+_ABOUT_OK = re.compile(r"about:(blank|srcdoc)([#?].*)?", re.IGNORECASE | re.DOTALL)
 
 
 def _url_refusal(bot, url: str) -> str | None:
@@ -1060,7 +1062,7 @@ def _url_refusal(bot, url: str) -> str | None:
     from fused_render.bots import browser as _browser
     u = re.sub(r"[\t\r\n]", "", url or "").strip("".join(chr(c) for c in range(0x21)))
     scheme = _browser._with_scheme(u).split(":", 1)[0].lower()
-    if scheme in _WEB_SCHEMES:
+    if scheme in _WEB_SCHEMES or _ABOUT_OK.fullmatch(u):
         return None
     return (f"error: this bot can't open {scheme}: pages (local files and browser-internal pages are off limits). "
             "Ask the user to attach the files to the task, or to give it to Super Bot.")
