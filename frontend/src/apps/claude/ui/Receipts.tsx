@@ -103,15 +103,18 @@ function ShotRow({
 
   if (!src) {
     const door = glyphDoor(shot);
+    // An overview with no picture still has to be a way into "What was sent",
+    // now that the comment rows are gone.
+    const sentDoor = shot.kind === "overview" && !!onShowSent;
     return (
       <div className="annsum-row">
-        {door ? (
+        {door || sentDoor ? (
           <button
             type="button"
             className="annsum-lbl"
-            title="Click to see what was attached"
+            title={sentDoor ? "Click to see exactly what was sent to the agent" : "Click to see what was attached"}
             aria-label={alt + " — open details"}
-            onClick={() => onOpenShot(shot)}
+            onClick={sentDoor ? () => onShowSent!() : () => onOpenShot(shot)}
           >
             <AttachIcon kind={shot.kind} />
           </button>

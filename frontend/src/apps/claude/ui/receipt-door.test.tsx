@@ -107,6 +107,23 @@ test("annotation receipts are the door — the thumbnail, no note rows, no hover
   expect(seen).toEqual([turn]);
 });
 
+test("an overview receipt with no thumbnail still has a door to what was sent", () => {
+  const seen: UserTurn[] = [];
+  const turn = user({
+    text: "look at this",
+    raw: ANN_WIRE,
+    attachments: [{ kind: "overview", label: "annotated overview attached", view: "" }],
+  });
+  const r = mount(<Turn turn={turn} onOpenShot={() => {}} onShowSent={(t) => seen.push(t)} />);
+  const doors = find(r, "annsum-lbl").filter((n) => n.type === "button");
+  expect(doors).toHaveLength(1);
+  expect((doors[0].props as { title: string }).title).toBe("Click to see exactly what was sent to the agent");
+  act(() => {
+    (doors[0].props as { onClick: () => void }).onClick();
+  });
+  expect(seen).toEqual([turn]);
+});
+
 test("no receipt line at all → NO door, and no hover control either (P3R1-7)", () => {
   // R4-1 kept a `.sentbtn` for exactly this turn: a differing wire with no
   // receipt line to press. The owner took it out everywhere (2026-09-10) — a
