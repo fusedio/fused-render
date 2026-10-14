@@ -149,9 +149,14 @@ on the FSEvents path, its walk structures) so a queued worker is not parked on t
 
 ## 5. Compaction threads
 
-The merge connects through `background_connect()`, which issues
-`SET threads TO compaction_threads()` — a quarter of the cores, at most
-`MAX_COMPACTION_THREADS` (4). Readers get no cap at all (`query.py` connects plain):
+The merge connects through `background_connect(temp_dir=<index dir>/duckdb-tmp)`, which
+issues `SET threads TO compaction_threads()` — a quarter of the cores, at most
+`MAX_COMPACTION_THREADS` (4) — and `SET memory_limit` to `compaction_memory_mb()`: an
+eighth of physical RAM clamped to `[MIN_COMPACTION_MEMORY_MB, MAX_COMPACTION_MEMORY_MB]`
+(512 MB-2 GB; 1 GB when RAM is unknown). DuckDB's default is ~80% of RAM, which pushed
+a 16 GB Mac into swap; past the cap the merge spills to `temp_directory` instead of
+growing RSS (slower, never frozen). `preserve_insertion_order` stays on — the
+LIMIT/OFFSET partition split relies on the merged table's order. Readers get no cap at all (`query.py` connects plain):
 the compaction runs inside a niced scan worker nobody is waiting on, while
 `/api/index/rank` is a keystroke, and an all-cores merge starved it for seconds
 (`scan.md §4`, scheduling priority).

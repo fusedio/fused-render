@@ -377,7 +377,7 @@ def test_the_blocking_merge_statement_itself_heartbeats(tmp_path, monkeypatch):
             return getattr(self._real, name)
 
     monkeypatch.setattr(store_mod, "background_connect",
-                        lambda: _SlowDuringMerge(real_connect()))
+                        lambda **kw: _SlowDuringMerge(real_connect(**kw)))
 
     cfg = _cfg(tmp_path, part_rows=5)
     rows = [_row(f"/r/f{i}.txt") for i in range(23)]
@@ -926,3 +926,63 @@ def test_load_dir_cache_still_drops_an_ignored_descendant(tmp_path):
     _write_dirs_rg(cfg, _TRAPS)
     assert sorted(load_dir_cache(cfg, "/r/a", pq)) == ["/r/a"]
 
+
+
+# -- compaction DuckDB memory cap --------------------------------------------------
+
+def _fake_sysconf(monkeypatch, total_bytes):
+    page = 4096
+
+    def sysconf(name):
+        if name == "SC_PAGE_SIZE":
+            return page
+        if name == "SC_PHYS_PAGES":
+            return total_bytes // page
+        raise ValueError(name)
+
+    monkeypatch.setattr(os, "sysconf", sysconf)
+
+
+@pytest.mark.parametrize("gb,expect", [(4, 512), (8, 1024), (16, 2048), (64, 2048)])
+def test_compaction_memory_clamps_an_eighth_of_ram(monkeypatch, gb, expect):
+    _fake_sysconf(monkeypatch, gb * 1024 ** 3)
+    assert store_mod.compaction_memory_mb() == expect
+
+
+def test_compaction_memory_with_unknown_ram_is_a_gigabyte(monkeypatch):
+    def boom(name):
+        raise ValueError(name)
+
+    monkeypatch.setattr(os, "sysconf", boom)
+    assert store_mod.compaction_memory_mb() == 1024
+
+
+def test_background_connect_caps_memory_and_spills_to_the_temp_dir(
+        tmp_path, monkeypatch):
+    import duckdb
+
+    _fake_sysconf(monkeypatch, 8 * 1024 ** 3)  # 8 GB -> 1024 MB
+    tmp = tmp_path / "t"
+    con = store_mod.background_connect(temp_dir=str(tmp))
+    ref = duckdb.connect()
+    ref.execute("SET memory_limit = '1024MB'")
+    assert (con.execute("SELECT current_setting('memory_limit')").fetchone()
+            == ref.execute("SELECT current_setting('memory_limit')").fetchone())
+    assert con.execute("SELECT current_setting('temp_directory')").fetchone()[0] == str(tmp)
+    assert tmp.is_dir()
+
+
+def test_compact_gives_the_merge_a_temp_directory_under_the_store(
+        tmp_path, monkeypatch):
+    seen = {}
+    real = store_mod.background_connect
+
+    def spy(temp_dir=None):
+        seen["temp_dir"] = temp_dir
+        return real(temp_dir=temp_dir)
+
+    monkeypatch.setattr(store_mod, "background_connect", spy)
+    cfg = _cfg(tmp_path)
+    shards = _shard(tmp_path, cfg, [("/r", _scanned("s", [_row("/r/a.txt")], 10, 1, 0))])
+    compact(cfg, "/r", shards, pa, pq)
+    assert seen["temp_dir"] == os.path.join(cfg.dir, "duckdb-tmp")

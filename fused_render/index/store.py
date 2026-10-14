@@ -53,12 +53,42 @@ def search_threads() -> int:
     return max(1, min(MAX_SEARCH_THREADS, (os.cpu_count() or 4) // 2))
 
 
-def background_connect():
-    """An in-memory DuckDB for the scan side, capped to `compaction_threads`."""
+# Bounds for the memory DuckDB may use during a compaction. An unset
+# memory_limit is ~80% of RAM, and the merge runs inside a scan worker beside
+# the user's apps: on a 16 GB Mac that is enough to push the machine into swap.
+# DuckDB spills past the limit to `temp_directory` instead of growing RSS, so
+# the cap trades merge speed for not freezing the box. An eighth of RAM, never
+# below the floor (a merge that cannot fit just spills harder) nor above the
+# ceiling (more than this buys no measurable speed).
+MIN_COMPACTION_MEMORY_MB = 512
+MAX_COMPACTION_MEMORY_MB = 2048
+
+
+def compaction_memory_mb() -> int:
+    try:
+        total = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+    except (ValueError, OSError, AttributeError):
+        return 1024  # unknown RAM: a middle value, still far under 80%
+    total_mb = total // (1024 * 1024)
+    return max(MIN_COMPACTION_MEMORY_MB,
+               min(MAX_COMPACTION_MEMORY_MB, total_mb // 8))
+
+
+def background_connect(temp_dir=None):
+    """An in-memory DuckDB for the scan side, capped to `compaction_threads`
+    cores and `compaction_memory_mb` of RAM. With `temp_dir`, a merge larger
+    than the memory cap spills there rather than growing the worker's RSS.
+
+    `preserve_insertion_order` is deliberately left on: the compaction's
+    LIMIT/OFFSET partition split relies on the merged table's order."""
     import duckdb
 
     con = duckdb.connect()
     con.execute(f"SET threads TO {compaction_threads()}")
+    con.execute(f"SET memory_limit = '{compaction_memory_mb()}MB'")
+    if temp_dir is not None:
+        os.makedirs(temp_dir, exist_ok=True)
+        con.execute(f"SET temp_directory = '{_sql(temp_dir)}'")
     return con
 
 
@@ -598,7 +628,8 @@ def _compact_locked(cfg: IndexConfig, root, shards_dir, pa, pq, emit=None):
     dirs_parquet = cfg.dirs_parquet
     old_manifest = read_manifest(cfg) or {}
     generation = int(old_manifest.get("generation") or 0) + 1
-    con = background_connect()
+    con = background_connect(
+        temp_dir=os.path.join(cfg.dir, "duckdb-tmp"))
     rootp = root.rstrip("/") or "/"
     prefix_like = (like_literal(rootp) + "/") if rootp != "/" else "/"
     outside = (f"(dir <> '{_sql(rootp)}' "
