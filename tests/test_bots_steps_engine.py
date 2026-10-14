@@ -464,6 +464,30 @@ def test_an_outside_yes_approves_only_the_card_it_was_stamped_for(steps_bot, mon
     assert not any(e["role"] == "system" and e["text"].startswith("Denied") for e in _events(b))
 
 
+def test_an_outside_instruction_at_the_card_is_read_not_dropped(steps_bot, monkeypatch):
+    # Only a stale-stamped yes or no is left out at the gate; a phone's "try the other one" is an instruction, read
+    # as the chat's own would be in this engine: the action is denied and the words reach the model.
+    from fused_render.bots.channels import base as chan
+    b = steps_bot
+    ai = FakeAI([
+        json.dumps({"thought": "Buying.", "action": "click", "ref": "sb2"}),
+        json.dumps({"thought": "Ok.", "action": "done", "message": "Left it."}),
+    ])
+    monkeypatch.setattr(botmod, "_fused_ai", lambda: ai)
+
+    def answer():
+        assert _wait_for(lambda: b.asking)
+        b.receive("try the other shop instead", via=chan.phone_via("dev1"))
+    t = threading.Thread(target=answer)
+    t.start()
+    b.start_task("buy it")
+    b.thread.join(15)
+    t.join(5)
+    assert ("click", "sb2", "Buy now") not in b.browser.calls
+    assert any(e["role"] == "system" and e["text"].startswith("Denied") for e in _events(b))
+    assert any("USER: try the other shop instead" in p for p, _kw in ai.calls)
+
+
 def test_a_repeated_call_is_a_note_and_actions_carry_a_one_liner_and_detail(steps_bot, monkeypatch):
     b = steps_bot
     ai = FakeAI([

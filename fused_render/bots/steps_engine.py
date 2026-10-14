@@ -369,12 +369,15 @@ def run(bot, task, label=None):
                     _wait_for_user(bot)
                     if bot.stop_flag.is_set():
                         break
-                    # An outside message (a text, an app, the phone) counts only when stamped for THIS card
+                    # An outside yes or no (a text, an app, the phone) counts only when stamped for THIS card
                     # (channels.base.answers_card), as in the agent engine's gate: bot._texted_approval checks the
                     # card before the inbox write, and a yes stamped for a card settled in between is neither the
-                    # approval nor a denial of this one — the card stays up and the wait goes on.
+                    # approval nor a denial of this one — the card stays up and the wait goes on. Anything else an
+                    # outside sender says is an instruction, read exactly as the chat's would be (below: not a yes,
+                    # so the action is denied and the words ride the DENIED line to the model).
                     answers = [a for a in bot._drain_inbox()
-                               if not channels.base.is_texted(a) or channels.base.answers_card(a, ev["seq"])]
+                               if not channels.base.is_texted(a) or channels.base.answers_card(a, ev["seq"])
+                               or not (botmod._YES.match(a) or botmod._NO.match(a))]
                     if answers:
                         break
                     bot.set_status("waiting", waiting_on=ev["seq"])  # bot.send() flipped it to running
