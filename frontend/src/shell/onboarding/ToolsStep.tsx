@@ -329,28 +329,33 @@ export function ToolsStep({
   };
   const working = checking || busy;
 
+  // The status line names only the rows this machine HAS and the server has
+  // ANSWERED for (bugbot: "Git and Chrome are in place" on a Bot, or before
+  // the chrome record arrived, was a false all-clear).
+  const otherRows = [showGit && gitFound ? "Git" : null, chromeFound ? "Chrome" : null].filter(Boolean);
+  const othersPending = (showGit && !git) || !chrome;
   const status = !loaded
     ? "Checking this machine…"
     : gitWork || chromeWork
       ? "Something still needs installing — the open rows have buttons."
       : claudeActionable
-        ? "Git and Chrome are in place. Claude Code still needs doing — its open rows have buttons."
-        : claudeDone
+        ? `${otherRows.length ? `${otherRows.join(" and ")} ${otherRows.length > 1 ? "are" : "is"} in place. ` : ""}Claude Code still needs doing — its open rows have buttons.`
+        : claudeDone && !othersPending
           ? "Everything is in place."
           : "Nothing here will block you — carry on.";
+  // Fused Bot builds no apps and clones nothing: its lead names what it has.
+  const lead = isBot()
+    ? "Bots think with Claude Code running on this machine and drive a real Google Chrome window of their own. Nothing here blocks you — each row says what it is for, and you can finish any of it later."
+    : showGit
+      ? `${bundleName()} hands your brief to Claude Code to build apps, fetches showcase apps with git, and drives Google Chrome for bots. Nothing here blocks you — each row says what it is for, and you can finish any of it later.`
+      : `${bundleName()} hands your brief to Claude Code to build apps and drives Google Chrome for bots. Nothing here blocks you — each row says what it is for, and you can finish any of it later.`;
 
   return (
     <div className="flex flex-col gap-6">
       <StepHeader
         eyebrow={eyebrow}
         title="Install the tools"
-        lead={
-          <>
-            {bundleName()} hands your brief to Claude Code to build apps, fetches showcase apps with git,
-            and drives Google Chrome for bots. Nothing here blocks you — each row says what it is for, and
-            you can finish any of it later.
-          </>
-        }
+        lead={lead}
       />
 
       <div className="flex items-center justify-between">
