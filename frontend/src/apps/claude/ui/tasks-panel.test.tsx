@@ -386,6 +386,14 @@ describe("agent chip", () => {
     expect(byClass(r.root, "chip-summary")[0]!.props.title).toBe("Started in an earlier turn");
   });
 
+  test("the memoized ToolChip body does not subscribe to the task index", async () => {
+    const src = await Bun.file(new URL("./ToolChip.tsx", import.meta.url)).text();
+    const start = src.indexOf("export const ToolChip = memo(");
+    expect(start).toBeGreaterThan(0);
+    expect(src.slice(start)).not.toContain("useTaskIndex");
+    expect(src).toContain("const taskIndex = useTaskIndex();");
+  });
+
   test("a Monitor chip says watching and the events count while its task runs", () => {
     const r = chip({ name: "Monitor", id: "tuM", input: { command: "tail -f x" } }, [rec({ id: "M", kind: "monitor", tool_use_id: "tuM", events: 4 })]);
     expect(byClass(r.root, "chip-task-meta").map(text)).toEqual(["watching · 4 events"]);

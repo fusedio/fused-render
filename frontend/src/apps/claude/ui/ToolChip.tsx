@@ -440,54 +440,31 @@ function ChipTaskInfo({ seg, m }: { seg: ToolSegment; m: SubagentChipModel }) {
   );
 }
 
-export interface ToolChipProps {
+/**
+ * THE CHIP'S HEADER, and the one place a chip reads the task index: the
+ * orphan title, the subagent type, the model label and the "Started in an
+ * earlier turn" tooltip all depend on the task's record, so a registry update
+ * re-renders this and not the memoized chip body (Bugbot, PR #1653).
+ */
+function ChipHeader({
+  seg,
+  raw,
+  linked,
+  parts,
+  full,
+  status,
+}: {
   seg: ToolSegment;
-  /** Collapse-policy key (cardPolicy.cardKey). */
-  cardKey: string;
-  /** The chat's working directory — the Bash chip's "run" button `cd`'s here
-   *  first, so re-running a past command lands where the chat is actually
-   *  working rather than wherever the drawer happens to be. */
-  cwd?: string | null;
-  /** How a subagent's `children` are drawn — `SegmentView` hands itself down. */
-  nested?: NestedRenderer;
-}
-
-/** MEMOIZED: a replayed tool call is the same segment object poll after poll,
- *  and a chip's body is the most expensive thing in a long turn. */
-export const ToolChip = memo(function ToolChip({ seg, cardKey, cwd, nested }: ToolChipProps) {
-  const [open, toggle] = useCardOpen(cardKey);
-  const raw = String(seg.name || "tool");
-  // A synthetic parent (its tool_use was before this window) has no input to
-  // describe, only the subagent's rows: it says so instead of "Agent".
+  raw: string;
+  linked: boolean;
+  parts: ReturnType<typeof toolChipSummaryParts>;
+  full: string;
+  status: string;
+}) {
   const taskIndex = useTaskIndex();
   const model = subagentChipModel(seg, taskFor(seg, taskIndex));
   const pretty = seg.orphan ? model.title : prettyToolName(raw);
-  // Whether the header asks the task registry anything at all.
-  const linked =
-    !!seg.task_id || !!seg.orphan || (Array.isArray(seg.children) && seg.children.length > 0) ||
-    isAgentTool(raw) || raw === "Monitor";
-  const parts = toolChipSummaryParts(seg);
-  const full = toolChipSummary(seg);
-  const status = String(seg.status || "running");
-  // The lane stamp says how long AGO: re-rendered on the page's minute tick
-  // so a chip left on screen does not keep saying `just now` (Bugbot, PR #1430).
-  useMinuteTick();
   return (
-    <Collapsible
-      open={open}
-      onOpenChange={toggle}
-      className={cn("toolchip", open && "is-open", !!seg.children?.length && "has-subagent")}
-    >
-      {/* WHEN THIS CALL WAS MADE, in the lane beside the chip — the message
-          stamp's words (`chipWhen`), shown on hover like the message stamp is,
-          and its hover says the exact instant and how long the call ran
-          (`chipHint`, the app's one instant tooltip). Nothing on a chip whose
-          row carried no clock. */}
-      {chipWhen(seg.ts) ? (
-        <span className="chip-stamp" aria-hidden="true" {...(chipHint(seg) ? { "data-hint": chipHint(seg)! } : {})}>
-          {chipWhen(seg.ts)}
-        </span>
-      ) : null}
       <CollapsibleTrigger
         className="chip-summary"
         {...(model.hint ? { title: model.hint } : pretty !== raw ? { title: raw } : {})}
@@ -517,6 +494,55 @@ export const ToolChip = memo(function ToolChip({ seg, cardKey, cwd, nested }: To
           {linked ? <ChipTaskInfo seg={seg} m={model} /> : null}
         </span>
       </CollapsibleTrigger>
+  );
+}
+
+export interface ToolChipProps {
+  seg: ToolSegment;
+  /** Collapse-policy key (cardPolicy.cardKey). */
+  cardKey: string;
+  /** The chat's working directory — the Bash chip's "run" button `cd`'s here
+   *  first, so re-running a past command lands where the chat is actually
+   *  working rather than wherever the drawer happens to be. */
+  cwd?: string | null;
+  /** How a subagent's `children` are drawn — `SegmentView` hands itself down. */
+  nested?: NestedRenderer;
+}
+
+/** MEMOIZED: a replayed tool call is the same segment object poll after poll,
+ *  and a chip's body is the most expensive thing in a long turn. */
+export const ToolChip = memo(function ToolChip({ seg, cardKey, cwd, nested }: ToolChipProps) {
+  const [open, toggle] = useCardOpen(cardKey);
+  const raw = String(seg.name || "tool");
+  // A synthetic parent (its tool_use was before this window) has no input to
+  // describe, only the subagent's rows: it says so instead of "Agent".
+  // Whether the header asks the task registry anything at all.
+  const linked =
+    !!seg.task_id || !!seg.orphan || (Array.isArray(seg.children) && seg.children.length > 0) ||
+    isAgentTool(raw) || raw === "Monitor";
+  const parts = toolChipSummaryParts(seg);
+  const full = toolChipSummary(seg);
+  const status = String(seg.status || "running");
+  // The lane stamp says how long AGO: re-rendered on the page's minute tick
+  // so a chip left on screen does not keep saying `just now` (Bugbot, PR #1430).
+  useMinuteTick();
+  return (
+    <Collapsible
+      open={open}
+      onOpenChange={toggle}
+      className={cn("toolchip", open && "is-open", !!seg.children?.length && "has-subagent")}
+    >
+      {/* WHEN THIS CALL WAS MADE, in the lane beside the chip — the message
+          stamp's words (`chipWhen`), shown on hover like the message stamp is,
+          and its hover says the exact instant and how long the call ran
+          (`chipHint`, the app's one instant tooltip). Nothing on a chip whose
+          row carried no clock. */}
+      {chipWhen(seg.ts) ? (
+        <span className="chip-stamp" aria-hidden="true" {...(chipHint(seg) ? { "data-hint": chipHint(seg)! } : {})}>
+          {chipWhen(seg.ts)}
+        </span>
+      ) : null}
+      <ChipHeader seg={seg} raw={raw} linked={linked} parts={parts} full={full} status={status} />
       <CollapsibleContent className="chip-body">
         <ChipBody seg={seg} cwd={cwd} {...(nested ? { nested } : {})} />
       </CollapsibleContent>
