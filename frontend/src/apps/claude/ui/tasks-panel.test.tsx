@@ -71,7 +71,8 @@ describe("TasksPanel", () => {
     const r = mount(<TasksPanel tasks={TASKS} runId="r1" open={false} onToggle={() => toggles++} />);
     const root = r.root;
     expect(byClass(root, "chat-tasks").length).toBe(1);
-    expect(text(byClass(root, "chat-tasks-summary")[0]!)).toBe("2 running (1 agent, 1 monitor) · 1 done");
+    expect(text(byClass(root, "chat-tasks-summary")[0]!)).toBe("1 agent · 1 monitor running");
+    expect(text(byClass(root, "chat-tasks-title")[0]!)).toBe("Agents & shells");
     expect(byClass(root, "chat-task").length).toBe(0);
     const head = byClass(root, "chat-tasks-head")[0]!;
     expect(head.props["aria-expanded"]).toBe(false);
@@ -206,7 +207,7 @@ describe("TasksPanel", () => {
 
   test("open with no tasks says so", () => {
     const r = mount(<TasksPanel tasks={[]} runId="r1" open onToggle={() => {}} />);
-    expect(text(byClass(r.root, "chat-tasks-empty")[0]!)).toBe("No background tasks in this run.");
+    expect(text(byClass(r.root, "chat-tasks-empty")[0]!)).toBe("No agents or shells in this run.");
   });
 
   describe("finished rows", () => {
@@ -353,6 +354,16 @@ describe("agent chip", () => {
   test("an orphan parent is named as started earlier", () => {
     const r = chip({ children: [child], orphan: true }, []);
     expect(text(byClass(r.root, "chip-name")[0]!)).toBe("Subagent (started earlier)");
+  });
+
+  test("an orphan parent with a record is titled by its description, with type, model and a tooltip", () => {
+    const r = chip({ children: [child], orphan: true, task_id: "T1" }, [
+      rec({ id: "T1", kind: "agent", description: "Fix the build", subagent_type: "Explore", model: "sonnet", effort: "medium" }),
+    ]);
+    expect(text(byClass(r.root, "chip-name")[0]!)).toBe("Fix the build");
+    expect(text(byClass(r.root, "chip-task-type")[0]!)).toBe("Explore");
+    expect(byClass(r.root, "chip-task-meta").map(text)).toContain("Sonnet · medium");
+    expect(byClass(r.root, "chip-summary")[0]!.props.title).toBe("Started in an earlier turn");
   });
 
   test("a Monitor chip says watching and the events count while its task runs", () => {

@@ -81,10 +81,10 @@ export function statusLabel(status: TaskStatus | string): string {
 }
 
 /**
- * The collapsed panel's one line: "2 running (1 agent, 1 shell) · 1 done".
- * Paused tasks are their own count. Ended tasks are counted by outcome ("done",
- * "failed", "stopped", and "ended" for an `unknown` one whose run died) so a
- * failure is never folded into a reassuring "done". "" for an empty list.
+ * The collapsed panel's one line: "1 agent · 2 shells running · 1 failed".
+ * Only what needs attention: the live breakdown by kind, then paused and
+ * failed counts. Finished counts (done, stopped, ended) are dropped; the
+ * panel's "Show N finished" covers them. "" when there is nothing to say.
  */
 export function summarizeTasks(tasks: readonly TaskRecord[]): string {
   const live = tasks.filter((t) => isLive(t.status));
@@ -94,22 +94,21 @@ export function summarizeTasks(tasks: readonly TaskRecord[]): string {
       const n = live.filter((t) => asKind(t.kind) === k).length;
       return n ? plural(n, KIND_NOUN[k]) : "";
     }).filter(Boolean);
-    parts.push(live.length + " running (" + kinds.join(", ") + ")");
+    parts.push(kinds.join(" · ") + " running");
   }
-  const ended = (status: TaskStatus, word: string) => {
+  const count = (status: TaskStatus, word: string) => {
     const n = tasks.filter((t) => t.status === status).length;
     if (n) parts.push(n + " " + word);
   };
-  ended("paused", "paused");
-  ended("completed", "done");
-  ended("failed", "failed");
-  ended("killed", "stopped");
-  ended("unknown", "ended");
+  count("paused", "paused");
+  count("failed", "failed");
   return parts.join(" · ");
 }
 
-/** Active (live or paused) first, then ended; each group by `started_at`, ties kept in arrival
- *  order. A new array — the input is the published state. */
+const KIND_RANK: Record<TaskKind, number> = { agent: 0, shell: 1, monitor: 2, other: 3 };
+
+/** Active (live or paused) first, then ended; within each, agents, then shells, then monitors and
+ *  other kinds, each by `started_at`, ties kept in arrival order. A new array — the input is the published state. */
 export function sortTasks(tasks: readonly TaskRecord[]): TaskRecord[] {
   return tasks
     .map((t, i) => ({ t, i }))
@@ -117,6 +116,9 @@ export function sortTasks(tasks: readonly TaskRecord[]): TaskRecord[] {
       const la = isActive(a.t.status) ? 0 : 1;
       const lb = isActive(b.t.status) ? 0 : 1;
       if (la !== lb) return la - lb;
+      const ka = KIND_RANK[asKind(a.t.kind)];
+      const kb = KIND_RANK[asKind(b.t.kind)];
+      if (ka !== kb) return ka - kb;
       const sa = Number(a.t.started_at) || 0;
       const sb = Number(b.t.started_at) || 0;
       if (sa !== sb) return sa - sb;
@@ -276,6 +278,12 @@ export interface SubagentChipModel {
   statusKey: string;
   /** Tokens · tool uses, "" when none. */
   usage: string;
+  /** The subagent type, shown beside an orphan's description title. "" otherwise. */
+  agentType: string;
+  /** "Sonnet · medium"; "" when the record names neither. */
+  model: string;
+  /** The header's tooltip: "Started in an earlier turn" for an orphan with a record. */
+  hint: string;
   /** A Monitor's "watching · 3 events" / "3 events". */
   monitor: string;
 }
@@ -294,8 +302,9 @@ export function subagentChipModel(
   const inp = seg.input && typeof seg.input === "object" ? (seg.input as Record<string, unknown>) : {};
   const agent = isAgentTool(String(seg.name)) || !!seg.orphan || rec?.kind === "agent";
   let title = "";
-  if (seg.orphan) title = "Subagent (started earlier)";
-  else if (agent) {
+  if (seg.orphan) {
+    title = rec?.description?.trim() || (rec?.subagent_type ? "Subagent: " + rec.subagent_type : "Subagent (started earlier)");
+  } else if (agent) {
     const type = rec?.subagent_type || (typeof inp.subagent_type === "string" ? inp.subagent_type : "");
     title = type ? "Subagent: " + type : childCount ? "Subagent" : "";
   }
@@ -313,5 +322,8 @@ export function subagentChipModel(
     statusKey: rec ? String(rec.status) : "",
     usage: agent && rec ? usageLabel(rec.usage) : "",
     monitor,
+    agentType: seg.orphan && rec?.description?.trim() ? rec.subagent_type || "" : "",
+    model: agent && rec ? agentModelLabel(rec) : "",
+    hint: seg.orphan && rec ? "Started in an earlier turn" : "",
   };
 }

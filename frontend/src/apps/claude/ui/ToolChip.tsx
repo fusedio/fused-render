@@ -34,7 +34,7 @@ import {
 } from "../protocol/summaries";
 import { COPY_RESET_MS } from "../protocol/markdown";
 import { useCanRunInTerminal, openTerminal } from "@platform/lib/terminalDockStore";
-import { isAgentTool, subagentChipModel, taskFor } from "../protocol/tasks";
+import { isAgentTool, subagentChipModel, taskFor, type SubagentChipModel } from "../protocol/tasks";
 import type { Segment, ToolSegment } from "../protocol/types";
 import { useCardOpen } from "./cardPolicy";
 import { MarkdownView } from "./MarkdownView";
@@ -426,15 +426,14 @@ export type NestedRenderer = (segments: Segment[], live: boolean) => React.React
  * status and usage, or a Monitor's "watching · 3 events". The one consumer of
  * the task index, so a task's progress re-renders this span and nothing else.
  */
-function ChipTaskInfo({ seg }: { seg: ToolSegment }) {
-  const index = useTaskIndex();
-  const m = subagentChipModel(seg, taskFor(seg, index));
-  const title = seg.orphan ? "" : m.title.replace(/^Subagent: /, "");
-  if (!title && !m.status && !m.usage && !m.monitor) return null;
+function ChipTaskInfo({ seg, m }: { seg: ToolSegment; m: SubagentChipModel }) {
+  const title = seg.orphan ? m.agentType : m.title.replace(/^Subagent: /, "");
+  if (!title && !m.status && !m.usage && !m.monitor && !m.model) return null;
   return (
     <span className="chip-task">
       {title && title !== "Subagent" ? <span className="chip-task-type">{title}</span> : null}
       {m.status ? <span className={"chip-task-status is-" + m.statusKey}>{m.status}</span> : null}
+      {m.model ? <span className="chip-task-meta">{m.model}</span> : null}
       {m.monitor ? <span className="chip-task-meta">{m.monitor}</span> : null}
       {m.usage ? <span className="chip-task-meta">{m.usage}</span> : null}
     </span>
@@ -460,7 +459,9 @@ export const ToolChip = memo(function ToolChip({ seg, cardKey, cwd, nested }: To
   const raw = String(seg.name || "tool");
   // A synthetic parent (its tool_use was before this window) has no input to
   // describe, only the subagent's rows: it says so instead of "Agent".
-  const pretty = seg.orphan ? "Subagent (started earlier)" : prettyToolName(raw);
+  const taskIndex = useTaskIndex();
+  const model = subagentChipModel(seg, taskFor(seg, taskIndex));
+  const pretty = seg.orphan ? model.title : prettyToolName(raw);
   // Whether the header asks the task registry anything at all.
   const linked =
     !!seg.task_id || !!seg.orphan || (Array.isArray(seg.children) && seg.children.length > 0) ||
@@ -489,7 +490,7 @@ export const ToolChip = memo(function ToolChip({ seg, cardKey, cwd, nested }: To
       ) : null}
       <CollapsibleTrigger
         className="chip-summary"
-        {...(pretty !== raw ? { title: raw } : {})}
+        {...(model.hint ? { title: model.hint } : pretty !== raw ? { title: raw } : {})}
       >
         <span className="chip-marker" aria-hidden="true">
           ▶
@@ -513,7 +514,7 @@ export const ToolChip = memo(function ToolChip({ seg, cardKey, cwd, nested }: To
               <bdi>{parts.path}</bdi>
             </span>
           </span>
-          {linked ? <ChipTaskInfo seg={seg} /> : null}
+          {linked ? <ChipTaskInfo seg={seg} m={model} /> : null}
         </span>
       </CollapsibleTrigger>
       <CollapsibleContent className="chip-body">

@@ -1,8 +1,8 @@
-// The run's background tasks — subagents, shells, monitors (SPEC T-5).
+// The run's agents and shells — subagents, shells, monitors (SPEC T-5).
 //
 // A strip between the transcript and the composer (`.chat-tasks`), there
 // whenever the run on screen has tasks, COLLAPSED by default to one line
-// ("2 running (1 agent, 1 shell) · 1 done"). Opened, one row per task: kind
+// ("1 agent · 2 shells running · 1 failed"). Opened, one row per task: kind
 // icon, description (its tooltip names the subagent type and worktree), status
 // pill, elapsed (live while running), and for a shell or a monitor an "Output"
 // button that asks the live CLI for it (`task_output`).
@@ -35,7 +35,7 @@ import "../styles/tasks.css";
  * WHAT AN OPEN PANEL BELONGS TO (review #5): the run and the conversation on
  * screen. Opened, the panel stays open for THIS scope only — a later run, a
  * restored session or a new chat starts collapsed again, rather than carrying
- * an empty "No background tasks" strip into every conversation after it.
+ * an empty "No agents or shells" strip into every conversation after it.
  */
 export function tasksPanelScope(s: {
   lastRunId: string | null;
@@ -242,10 +242,10 @@ export function TasksPanel({ tasks, runId, open, onToggle, parentModel, fetchOut
     ) : null;
 
   return (
-    <section className={cn("chat-tasks", open && "is-open")} aria-label="Background tasks">
+    <section className={cn("chat-tasks", open && "is-open")} aria-label="Agents & shells">
       <button type="button" className="chat-tasks-head" aria-expanded={open} onClick={onToggle}>
         <ChevronRight className="chat-tasks-chev" size={14} aria-hidden="true" />
-        <span className="chat-tasks-title">Background tasks</span>
+        <span className="chat-tasks-title">Agents &amp; shells</span>
         {summary ? <span className="chat-tasks-summary">{summary}</span> : null}
       </button>
       {open ? (
@@ -348,7 +348,7 @@ export function TasksPanel({ tasks, runId, open, onToggle, parentModel, fetchOut
           </ul>
         ) : (
           <div className="chat-tasks-empty">
-            {hiddenCount ? "Nothing running." : "No background tasks in this run."}
+            {hiddenCount ? "Nothing running." : "No agents or shells in this run."}
             {finishedToggle ? <div className="chat-tasks-more-row">{finishedToggle}</div> : null}
           </div>
         )}
