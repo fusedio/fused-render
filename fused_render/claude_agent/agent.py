@@ -2359,8 +2359,13 @@ _SLASH_COMMAND = re.compile(r"^/[A-Za-z][\w:.-]*(\s|$)")
 def _is_slash_command(words: str) -> bool:
     """True when the user's own words are a CLI slash command (`/compact`,
     `/plugin:skill args`). The token may hold no further `/`, so a path like
-    `/Users/x` is not one."""
-    return bool(_SLASH_COMMAND.match((words or "").strip()))
+    `/Users/x` is not one, nor is prose that opens with a root path
+    (`/tmp is filling up`)."""
+    text = (words or "").strip()
+    if not _SLASH_COMMAND.match(text):
+        return False
+    name = text.split(None, 1)[0][1:]
+    return not os.path.exists("/" + name)
 
 
 def _compose_turn(message: str, raw_hint) -> str:

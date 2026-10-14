@@ -152,6 +152,15 @@ def test_non_command_still_gets_hint(agent, words):
     assert agent._pane_file(out) == "/a/b.html"
 
 
+def test_root_path_prose_is_not_a_command(agent):
+    words = "/tmp is full"
+    assert not agent._is_slash_command(words)
+    out = agent._compose_turn(STATE + words, HINT)
+    assert out.startswith(STATE) and "<terminal-hint>" in out
+    assert out.endswith("\n\n" + words)
+    assert agent._is_slash_command("/compact")
+
+
 def test_bare_command_tolerated_by_readers(agent):
     assert agent._pane_file("/compact") == ""
     assert agent._strip_terminal_hint("/compact") == "/compact"
