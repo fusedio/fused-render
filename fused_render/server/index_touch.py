@@ -36,6 +36,10 @@ it exists because the caller is a mutation endpoint rather than a person:
   * **Never a fused-render home, never `/`.** The first is the structural
     refusal every path into the scanner carries; the second is a whole-disk crawl one loose file in the root would
     otherwise buy.
+  * **Capped.** At most `runner.MAX_CONCURRENT_RUNS` index runs are alive at
+    once, process-wide; folders past the budget stay pending for the next
+    cycle. Every run is a worker holding hundreds of MB, and the watcher can
+    note a dozen folders per cycle.
   * **Waits out a scan already covering the folder** instead of racing it —
     and does not JOIN it, which is what `runner.start` would do on an exact
     root match: a run in flight may already have walked past the folder we
@@ -65,7 +69,9 @@ COALESCE_S = 1.5
 # How long a folder may keep waiting for a scan that covers it to finish before
 # it is scanned anyway. A whole-home incremental scan is seconds; this is far
 # past that, and it exists only so a wedged worker cannot keep one folder
-# circling for the lifetime of the process.
+# circling for the lifetime of the process. It never overrides the cap on
+# concurrent runs (runner.MAX_CONCURRENT_RUNS): a folder past this deadline
+# still waits while that many runs are alive.
 DEFER_DEADLINE_S = 120.0
 
 # How long a folder must have been left alone before it is rescanned again.
@@ -164,7 +170,14 @@ class RescanQueue:
     def __init__(self, start, live_run_covers, blocked, last_scan, schedule, now,
                  coalesce_s: float = COALESCE_S,
                  deadline_s: float = DEFER_DEADLINE_S,
-                 floor_s: float = MUTATION_SCAN_FLOOR_S):
+                 floor_s: float = MUTATION_SCAN_FLOOR_S,
+                 live_count=None, max_runs: int | None = None):
+        # `live_count` answers "how many index runs are alive process-wide";
+        # None means no cap (the injected fakes that never model one).
+        # `max_runs` defaults to runner.MAX_CONCURRENT_RUNS, imported lazily
+        # for the same cycle-avoidance reason as the `_real_*` deps below.
+        self._live_count = live_count
+        self._max_runs = max_runs
         self._start = start
         self._live = live_run_covers
         self._blocked = blocked
@@ -259,6 +272,16 @@ class RescanQueue:
             self._hinted.clear()
         now = self._now()
         defer = {}
+        # Room under the run cap, computed once: runs started below do not
+        # show up in `live_count` until their spec is written, so it is
+        # decremented by hand for each start.
+        budget = None
+        if self._live_count is not None:
+            max_runs = self._max_runs
+            if max_runs is None:
+                from fused_render.index import runner
+                max_runs = runner.MAX_CONCURRENT_RUNS
+            budget = max_runs - self._live_count()
         outermost, excess = self._outermost(pending)
         for folder in excess:
             # Past MAX_FOLDERS for this cycle, not dropped: kept pending so
@@ -298,6 +321,14 @@ class RescanQueue:
                 for member in _members_of(folder, pending):
                     defer[member] = pending[member]
                 continue
+            if budget is not None and budget <= 0:
+                # The run cap. Deferred like a live covering run, but
+                # `deadline_s` does NOT release it: that deadline escapes a
+                # wedged covering run, and exceeding the cap is what piled
+                # up dozens of ~800 MB workers. Retried next cycle.
+                for member in _members_of(folder, pending):
+                    defer[member] = pending[member]
+                continue
             # `outermost_folders` (index_touch.py, shared with index_watch.py)
             # can collapse several separately-noted folders into one scan
             # root (a watcher flush of `{proj, proj/sub}` starts only
@@ -320,6 +351,8 @@ class RescanQueue:
                     self._start(folder, hint=hint)
                 else:
                     self._start(folder)
+                if budget is not None:
+                    budget -= 1
             except Exception as e:  # noqa: BLE001 - one bad folder, not the rest
                 logger.info("index: not rescanning %s (%s)", folder, e)
         if defer:
@@ -366,6 +399,13 @@ def _real_live(root: str) -> bool:
     from fused_render.server.routers.index import _scan_in_flight
 
     return _scan_in_flight(load_config(), root)
+
+
+def _real_live_count() -> int:
+    from fused_render.index import runner
+    from fused_render.index.config import load_config
+
+    return runner.live_run_count(load_config())
 
 
 def _real_last_scan(root: str):
@@ -437,6 +477,7 @@ def _real_schedule(delay: float, fn) -> None:
 
 _queue = RescanQueue(start=_real_start, live_run_covers=_real_live,
                      blocked=_real_blocked, last_scan=_real_last_scan,
+                     live_count=_real_live_count,
                      schedule=_real_schedule, now=__import__("time").time)
 
 

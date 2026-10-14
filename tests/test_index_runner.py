@@ -609,3 +609,44 @@ def test_has_ended_on_a_run_that_has_not_written_a_log_yet(tmp_path):
     run_dir = tmp_path / "fresh"
     run_dir.mkdir()
     assert runner.has_ended(str(run_dir)) == (False, 0)
+
+
+# -- live_run_count --------------------------------------------------------------
+
+def test_live_run_count_counts_running_runs_across_roots(tmp_path, spawned):
+    cfg = _cfg(tmp_path)
+    other = tmp_path / "other"
+    other.mkdir()
+    assert runner.live_run_count(cfg) == 0
+    runner.start(cfg, str(tmp_path))
+    runner.start(cfg, str(other))
+    assert runner.live_run_count(cfg) == 2
+
+
+def test_live_run_count_counts_a_cancelled_run_still_winding_down(tmp_path, spawned):
+    """A cancelled worker keeps its memory until it exits, so it still counts
+    against the cap (unlike `active_run`, which will not offer it for a join)."""
+    cfg = _cfg(tmp_path)
+    first = runner.start(cfg, str(tmp_path))
+    runner.cancel(cfg, first["run_id"])
+    assert runner.live_run_count(cfg) == 1
+
+
+def test_live_run_count_ignores_a_run_that_has_ended(tmp_path, spawned):
+    cfg = _cfg(tmp_path)
+    first = runner.start(cfg, str(tmp_path))
+    rd = os.path.join(cfg.runs_dir, first["run_id"])
+    with open(os.path.join(rd, "events.jsonl"), "a") as f:
+        f.write(json.dumps({"t": time.time(), "type": "run_end",
+                            "msg": "done"}) + "\n")
+    assert runner.live_run_count(cfg) == 0
+
+
+def test_live_run_count_ignores_an_abandoned_run(tmp_path, spawned):
+    cfg = _cfg(tmp_path)
+    first = runner.start(cfg, str(tmp_path))
+    rd = os.path.join(cfg.runs_dir, first["run_id"])
+    dead = time.time() - runner.ABANDONED_RUN_S - 60
+    for name in os.listdir(rd):
+        os.utime(os.path.join(rd, name), (dead, dead))
+    assert runner.live_run_count(cfg) == 0

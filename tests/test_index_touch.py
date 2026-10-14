@@ -722,3 +722,68 @@ def test_the_write_response_says_whether_it_created(tmp_path, monkeypatch):
                        headers={"X-Fused": "1"}).json()["created"] is True
     assert client.post("/api/fs/write", json={"path": str(fresh), "content": "b"},
                        headers={"X-Fused": "1"}).json()["created"] is False
+
+
+# -- the cap on concurrent index runs ---------------------------------------------
+#
+# Every scan is a detached worker that can hold hundreds of MB, and the rescan
+# queue starts one per folder. Without a cap a busy watcher piled up dozens of
+# them (44-93 at ~800 MB each froze a Mac). The cap counts live runs
+# process-wide, so it holds even across cycles.
+
+def _capped(f, live_counts, max_runs=2, **kw):
+    """A queue whose live-run count is whatever `live_counts[0]` says now."""
+    return f.queue(live_count=lambda: live_counts[0], max_runs=max_runs, **kw)
+
+
+def test_the_cap_starts_only_as_many_scans_as_it_has_room_for():
+    f = Fake()
+    count = [0]
+    q = _capped(f, count)
+    many = [f"/home/me/d{i}" for i in range(5)]
+    q.note_folders(*many)
+    f.fire()
+    assert len(f.started) == 2
+    assert f.armed[-1] == q.coalesce_s  # the other three are re-armed
+    assert len(q._pending) == 3
+    assert set(q._pending) == {canonical_root(p) for p in many} - set(f.started)
+
+
+def test_a_full_house_starts_nothing_even_past_the_deadline():
+    """`deadline_s` exists to escape a wedged COVERING run, not to exceed the
+    cap: a folder that has waited forever still waits while two runs live."""
+    f = Fake()
+    count = [2]
+    q = _capped(f, count)
+    q.note_folders("/home/me/a", "/home/me/b", "/home/me/c")
+    f.t += q.deadline_s * 10
+    f.fire()
+    assert f.started == []
+    assert len(q._pending) == 3
+    assert f.armed[-1] == q.coalesce_s
+
+
+def test_deferred_folders_start_once_room_opens_with_their_hints_intact():
+    f = Fake()
+    count = [2]
+    q = _capped(f, count)
+    q.note_folders("/home/me/proj", "/home/me/proj/sub", "/home/me/other")
+    f.fire()
+    assert f.started == []
+    count[0] = 0
+    f.fire()
+    assert sorted(f.started) == ["/home/me/other", "/home/me/proj"]
+    hints = dict(zip(f.started, f.start_hints))
+    assert hints["/home/me/proj"] == (["/home/me/proj", "/home/me/proj/sub"], [])
+    assert hints["/home/me/other"] == (["/home/me/other"], [])
+    assert q._pending == {}
+
+
+def test_the_budget_counts_scans_started_this_cycle():
+    f = Fake()
+    count = [1]  # one run already live: room for exactly one more
+    q = _capped(f, count)
+    q.note_folders("/home/me/a", "/home/me/b")
+    f.fire()
+    assert f.started == ["/home/me/a"]
+    assert list(q._pending) == ["/home/me/b"]
