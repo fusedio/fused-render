@@ -440,7 +440,12 @@ def _reap_loop(agent, run_dir: str, cli, host_json: str,
                 # request-arrival order, which is what lets an overlapping
                 # follow-up's own (earlier-arriving) mark survive a slow
                 # delivery of this event (bugbot, 2026-09-17).
-                _post_event(run_dir, "turn_ended", at=time.time())
+                # `pid` names WHICH `claude` ended: a second run resumed on
+                # the same session (a follow-up from another surface, while
+                # this host idles toward its reap) is a different process the
+                # listing must not read as over (`tasks_watch.is_turn_ended`).
+                _post_event(run_dir, "turn_ended", at=time.time(),
+                            pid=getattr(cli, "pid", None))
                 _mark_cmd_log_turn_ended(agent, chat_id)
             was_open = turn_open
             if turn_open or tasks_pending:
@@ -498,7 +503,8 @@ def _reap_loop(agent, run_dir: str, cli, host_json: str,
         # turn_ended posts: this process is about to return out of `main` and
         # a daemon thread dies with it, so the last word has to be waited for
         # — briefly, and never longer than the post's own timeout.
-        last = _post_event(run_dir, "exited", code=cli.poll(), at=exited_at)
+        last = _post_event(run_dir, "exited", code=cli.poll(), at=exited_at,
+                           pid=getattr(cli, "pid", None))
         if last is not None:
             try:
                 last.join(_EVENT_TIMEOUT + 1.0)

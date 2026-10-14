@@ -145,6 +145,7 @@ class _FakeCli:
     def __init__(self):
         self.stdin = _FakeStdin()
         self.dead = False
+        self.pid = 4242
 
     def poll(self):
         return 7 if self.dead else None
@@ -203,6 +204,8 @@ def test_the_host_posts_turn_ended_once_when_a_result_row_lands(
     # `mark_turn_ended`'s ordering runs off it.
     assert isinstance(body["at"], float)
     assert abs(body["at"] - time.time()) < 5.0
+    # WHICH `claude` ended: a resumed run on the same session is another pid.
+    assert body["pid"] == 4242
 
 
 def test_the_host_announces_a_second_turn_on_the_same_session(
@@ -224,6 +227,7 @@ def test_the_host_posts_exited_with_the_childs_return_code(
     exited = posts.wait_for("exited")
     assert len(exited) == 1
     assert exited[0]["body"]["code"] == 7
+    assert exited[0]["body"]["pid"] == 4242
     assert exited[0]["body"]["run_id"] == "20260917-120000-abcd"
     assert isinstance(exited[0]["body"]["at"], float)
     assert abs(exited[0]["body"]["at"] - time.time()) < 5.0
@@ -648,6 +652,23 @@ def test_a_manager_with_no_card_cleared_yet_is_not_an_error(client, flag,
     assert r.status_code == 200
     assert r.json() == {"ok": True}
     assert manager.calls == []
+
+
+@pytest.mark.parametrize("pid,expected", [(4242, 4242), (None, None),
+                                          ("4242", None), (True, None)])
+def test_a_turn_over_event_hands_the_cli_pid_to_the_listing(
+        client, flag, manager, monkeypatch, pid, expected):
+    """The stamp is scoped to the process that ended (`is_turn_ended`); an old
+    host without the field, or a body with junk in it, keeps it unscoped."""
+    flag(False)
+    seen = []
+    monkeypatch.setattr(tasks_watch, "mark_turn_ended",
+                        lambda key, run_id, at, pid=None: seen.append((key, pid)))
+    r = client.post("/api/tasks/queue/event", headers=HEADERS,
+                    json={"kind": "exited", "run_id": "r1",
+                          "session_id": "sess-1", "at": 1.0, "pid": pid})
+    assert r.status_code == 200
+    assert seen == [("sess-1", expected)]
 
 
 def test_exited_carries_the_return_code(client, flag, manager):

@@ -75,6 +75,14 @@ def _registry(root, sid, pid=None, status="busy", name="p"):
     return path
 
 
+def _later(seconds):
+    """An event stamp strictly after every registry write AND every mark so
+    far. `_STAMP` starts ten seconds ahead of collection, and a long suite run
+    (CI) can outlive that lead — a mark stamped "now" would then read newer
+    than an `_STAMP`-relative event."""
+    return max(_STAMP[0], time.time()) + seconds
+
+
 # ------------------------------------------------------------------ the tick
 
 def test_first_tick_is_a_baseline(claude_home):
@@ -688,6 +696,176 @@ def test_the_plain_case_still_ends(claude_home):
 
     tasks_watch.mark_turn_ended(SID, at=time.time() + 1.0)
     assert not tasks_watch.is_marked_running(SID)
+    assert tasks_watch.is_turn_ended(SID)
+
+
+def test_a_second_process_on_the_session_outlives_the_first_ones_exit(claude_home):
+    """T134 (2026-10-13): a follow-up resumed the session in a SECOND `claude`
+    while the first one's host idled toward its reap. The first exiting is not
+    the session departing — the live run read `done` for the rest of its turn,
+    and only opening the chat (a fresh mark) brought the ring back."""
+    tasks_watch.reset()
+    tasks_watch.tick()
+    old = _registry(claude_home, SID, pid=os.getppid(), status="idle", name="old")
+    _registry(claude_home, SID, status="busy", name="new")
+    tasks_watch.tick()
+    assert tasks_watch.registry_row(SID)["status"] == "busy"
+    # The idle one rewriting itself later does not outvote the running one.
+    _registry(claude_home, SID, pid=os.getppid(), status="idle", name="old")
+    tasks_watch.tick()
+    assert tasks_watch.registry_row(SID)["status"] == "busy"
+    assert tasks_watch.session_for_pid(os.getppid()) == SID
+    old.unlink()
+    tasks_watch.tick()
+    assert tasks_watch.live_from_registry(SID, transcript_mtime=0.0) == (True, 1787824059.664)
+    assert tasks_watch.session_for_pid(os.getpid()) == SID
+
+
+def test_an_ended_event_from_another_process_on_the_session_is_not_this_turns(
+        claude_home):
+    """The same overlap, told by the session host: the old host's `exited`
+    lands after the new run's `busy` row was written, so no rewrite will ever
+    be newer than the stamp. Scoped to its pid, it says nothing about the run
+    that is still going — nor about that run's send mark. Its file is already
+    gone by then; the pid is still known to have held the session."""
+    tasks_watch.reset()
+    tasks_watch.tick()
+    old = _registry(claude_home, SID, pid=os.getppid(), status="idle", name="old")
+    _registry(claude_home, SID, status="busy", name="new")
+    tasks_watch.tick()
+    old.unlink()
+    tasks_watch.tick()
+    tasks_watch.mark_running(SID, ttl_sec=60)
+    tasks_watch.mark_turn_ended(SID, "run-old", at=_later(5), pid=os.getppid())
+    assert not tasks_watch.is_turn_ended(SID)
+    assert tasks_watch.is_marked_running(SID)
+    assert tasks_watch.live_from_registry(SID)[0] is True
+    # The live process's own end still ends it…
+    tasks_watch.mark_turn_ended(SID, "run-new", at=_later(6), pid=os.getpid())
+    assert tasks_watch.is_turn_ended(SID)
+    assert not tasks_watch.is_marked_running(SID)
+    # …and a later foreign event cannot overwrite that stamp while the row lags.
+    tasks_watch.mark_turn_ended(SID, "run-old", at=_later(7), pid=os.getppid())
+    assert tasks_watch.is_turn_ended(SID)
+
+
+def test_the_newer_of_two_busy_processes_ending_leaves_the_older_running(
+        claude_home):
+    """Bugbot, PR #1642: both processes on the session busy, the newer (the
+    standing row) finishes first. Its own scoped stamp must not end a session
+    another process is still working in."""
+    tasks_watch.reset()
+    tasks_watch.tick()
+    _registry(claude_home, SID, pid=os.getppid(), status="busy", name="old")
+    _registry(claude_home, SID, status="busy", name="new")
+    tasks_watch.tick()
+    assert str(tasks_watch.registry_row(SID)["pid"]) == str(os.getpid())
+    tasks_watch.mark_turn_ended(SID, "run-new", at=_later(5), pid=os.getpid())
+    assert not tasks_watch.is_turn_ended(SID)
+    assert tasks_watch.live_from_registry(SID)[0] is True
+
+
+def test_an_ended_event_from_a_pid_whose_file_the_watcher_has_not_read_is_scoped(
+        claude_home):
+    """CodeRabbit, PR #1642: the new process has written its registry file but
+    no tick has read it yet. Its pid is looked up in the file, so its end is
+    scoped to it and cannot end the older process still busy on the session."""
+    tasks_watch.reset()
+    tasks_watch.tick()
+    _registry(claude_home, SID, pid=os.getppid(), status="busy", name="old")
+    tasks_watch.tick()
+    # Named `<pid>.json`, as Claude Code names it — the direct lookup reads that.
+    _registry(claude_home, SID, status="busy", name=str(os.getpid()))  # not ticked
+    tasks_watch.mark_turn_ended(SID, "run-new", at=_later(5), pid=os.getpid())
+    assert not tasks_watch.is_turn_ended(SID)
+    assert tasks_watch.live_from_registry(SID)[0] is True
+
+
+def test_an_ended_event_from_a_pid_the_registry_never_showed_stays_unscoped(
+        claude_home):
+    """A launcher shim: the host's `cli.pid` is not the pid Claude Code
+    registers. A pid with no registry file on the session cannot be scoped,
+    so the event ends the turn exactly as an unscoped one always did."""
+    tasks_watch.reset()
+    tasks_watch.tick()
+    _registry(claude_home, SID, status="busy", name="new")
+    tasks_watch.tick()
+    tasks_watch.mark_running(SID, ttl_sec=60)
+    tasks_watch.mark_turn_ended(SID, "run-1", at=_later(5), pid=2 ** 22 + 777)
+    assert tasks_watch.is_turn_ended(SID)
+    assert not tasks_watch.is_marked_running(SID)
+
+
+def _two_busy_processes(claude_home):
+    """SID held by two live `claude`s, both busy: `os.getppid()` older,
+    `os.getpid()` newer and standing. Returns the older one's file."""
+    tasks_watch.reset()
+    tasks_watch.tick()
+    old = _registry(claude_home, SID, pid=os.getppid(), status="busy", name="old")
+    _registry(claude_home, SID, status="busy", name="new")
+    tasks_watch.tick()
+    assert str(tasks_watch.registry_row(SID)["pid"]) == str(os.getpid())
+    return old
+
+
+def test_both_busy_processes_ending_ends_the_turn(claude_home):
+    """CodeRabbit, PR #1642: both processes finish before either rewrites its
+    `busy` file. Each end speaks for its own row, so once both are in, no row
+    is left running — the later event must not leave the other's stale row
+    reading busy."""
+    _two_busy_processes(claude_home)
+    tasks_watch.mark_turn_ended(SID, "run-new", at=_later(5), pid=os.getpid())
+    assert not tasks_watch.is_turn_ended(SID)
+    tasks_watch.mark_turn_ended(SID, "run-old", at=_later(6), pid=os.getppid())
+    assert tasks_watch.is_turn_ended(SID)
+    assert tasks_watch.live_from_registry(SID)[0] is False
+
+
+def test_the_older_busy_process_ending_is_kept_not_dropped(claude_home):
+    """The older (non-standing) process ends first: its event is stored for
+    its own row — the newer one is still working, and the send mark is the
+    newer one's floor, so neither ends. When the newer one ends too, the turn
+    is over without waiting for either file's rewrite."""
+    _two_busy_processes(claude_home)
+    tasks_watch.mark_running(SID, ttl_sec=60)
+    at = _later(5)
+    tasks_watch.mark_turn_ended(SID, "run-old", at=at, pid=os.getppid())
+    assert tasks_watch._ended_by_pid[SID] == {str(os.getppid()): at}
+    assert not tasks_watch.is_turn_ended(SID)
+    assert tasks_watch.is_marked_running(SID)
+    assert tasks_watch.live_from_registry(SID)[0] is True
+    tasks_watch.mark_turn_ended(SID, "run-new", at=_later(6), pid=os.getpid())
+    assert not tasks_watch.is_marked_running(SID)
+    assert tasks_watch.is_turn_ended(SID)
+
+
+def test_a_busy_rewrite_after_its_own_pids_end_reopens_the_turn(claude_home):
+    """The mtime rule, per process: a file rewritten busy strictly after its
+    own pid's stamp is a genuinely later turn — the stamp is dropped and the
+    session reads running again."""
+    old = _two_busy_processes(claude_home)
+    tasks_watch.mark_turn_ended(SID, "run-new", at=_later(5), pid=os.getpid())
+    tasks_watch.mark_turn_ended(SID, "run-old", at=_later(6), pid=os.getppid())
+    assert tasks_watch.is_turn_ended(SID)
+    stamp = tasks_watch._ended_by_pid[SID][str(os.getppid())]
+    _registry(claude_home, SID, pid=os.getppid(), status="busy", name="old")
+    os.utime(old, (stamp + 1, stamp + 1))
+    tasks_watch.tick()
+    assert str(os.getppid()) not in tasks_watch._ended_by_pid[SID]
+    assert not tasks_watch.is_turn_ended(SID)
+    assert tasks_watch.live_from_registry(SID)[0] is True
+
+
+def test_per_pid_ends_outlive_the_session_departing(claude_home):
+    """No process left to tell apart: the per-pid stamps fold into the
+    session's own, so a departed session's turn still reads ended."""
+    old = _two_busy_processes(claude_home)
+    tasks_watch.mark_turn_ended(SID, "run-new", at=_later(5), pid=os.getpid())
+    tasks_watch.mark_turn_ended(SID, "run-old", at=_later(6), pid=os.getppid())
+    old.unlink()
+    (claude_home / "sessions" / "new.json").unlink()
+    tasks_watch.tick()
+    assert SID not in tasks_watch._ended_by_pid
     assert tasks_watch.is_turn_ended(SID)
 
 

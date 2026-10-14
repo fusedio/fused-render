@@ -103,9 +103,30 @@ _registry_mtime: dict[str, float] = {}
 # is the manager's, off a `result` row it tailed, and has no `turn` of its own
 # to race — see `mark_turn_ended`.
 _ended: dict[str, float] = {}
+# session_id -> {pid -> epoch} — the same word, SCOPED: the session host said
+# which `claude` it was holding (`mark_turn_ended`'s `pid`) and that pid is one
+# a registry file has shown on the session (`_session_pids`). Each stamp speaks
+# for its own process's rows only: a resumed run beside an old host is another
+# pid, and its turn is not over (`is_turn_ended`). `_ended` above is what an
+# UNSCOPED event leaves, and it speaks for every process on the session.
+_ended_by_pid: dict[str, dict[str, float]] = {}
 _primed = False
 _sess_mtimes: dict[str, tuple] = {}   # sessions/<pid>.json -> (mtime_ns, size)
 _sess_sids: dict[str, str] = {}       # sessions/<pid>.json -> session_id
+# sessions/<pid>.json -> (parsed row, the file's own st_mtime), for every LIVE
+# file. ONE SESSION CAN BE HELD BY TWO PROCESSES: a follow-up that misses the
+# chat's idle host (sent from another surface, or a respawn) starts a second
+# `claude --resume` while the first host idles toward its reap. `_registry` is
+# one row per session, so it is DERIVED from these (`_settle`) — before, the
+# first process exiting popped the session outright and the live run read as
+# departed, `done` for the rest of its turn (T134, 2026-10-13).
+_sess_rows: dict[str, tuple] = {}
+# session_id -> every pid a registry file has shown holding it, departed ones
+# included, until the session itself departs. What `mark_turn_ended` scopes a
+# host's `pid` by: the CLI the host spawned is not always the pid Claude Code
+# registers (a launcher shim), and a pid no registry file has shown on the
+# session cannot be told apart from that — so it stays unscoped.
+_session_pids: dict[str, set] = {}
 _tr_paths: dict[str, str] = {}        # session_id -> transcript path
 _tr_sizes: dict[str, int] = {}        # session_id -> size
 # session_id -> the live "a turn just started here" MARK, a record:
@@ -251,9 +272,9 @@ def session_for_pid(pid) -> str:
     if not pid_s.isdigit():
         return ""
     with _cond:
-        for sid, row in _registry.items():
+        for row, _mtime in _sess_rows.values():
             if str(row.get("pid") or "") == pid_s:
-                return sid
+                return str(row.get("sessionId") or "")
     try:
         with open(os.path.join(SESSIONS_DIR, pid_s + ".json"),
                   encoding="utf-8") as fh:
@@ -331,27 +352,45 @@ def is_turn_ended(session_id: str) -> bool:
       turn's row, re-read unchanged or re-asserting the same status without a
       fresh write, keeps an mtime from before the stamp and does not clear it
       — see `mark_turn_ended`.
+
+    ONE SESSION, SEVERAL PROCESSES (`_sess_rows`): the registry check runs over
+    every live file on the session, each against the stamps that speak for it
+    — its own pid's (`_ended_by_pid`) and the unscoped one (`_ended`), the
+    newer of the two. Any one of them still busy past its end keeps the turn
+    open: two processes busy at once, one finishing says nothing about the
+    other (CodeRabbit/Bugbot, PR #1642).
     """
     if not session_id:
         return False
     with _cond:
         ended_at = _ended.get(session_id)
-        if ended_at is None:
+        by_pid = _ended_by_pid.get(session_id, {})
+        if ended_at is None and not by_pid:
             return False
+        row = _registry.get(session_id)
+
+        def covering(r: dict) -> float:
+            return max(ended_at or 0.0, by_pid.get(str(r.get("pid") or ""), 0.0))
+
         mark = _marks.get(session_id)
         # `>=`, NOT `>`: a mark stamped in the same clock tick as the ended
         # stamp is the NEXT turn's — the queue marks a session running right
         # after dispatching it, and dispatch follows the previous turn's end
-        # by causality, and a coarse clock can stamp both in one tick.
-        if mark is not None and mark["until"] > time.time() and mark["at"] >= ended_at:
+        # by causality, and a coarse clock can stamp both in one tick. Weighed
+        # against the stamps that could have retired it (`mark_turn_ended`):
+        # the unscoped one and the standing process's.
+        if (mark is not None and mark["until"] > time.time()
+                and mark["at"] >= covering(row or {})):
             return False
-        row = _registry.get(session_id)
-        reg_mtime = _registry_mtime.get(session_id)
-    if row is not None:
-        status = row.get("status")
-        if (isinstance(status, str) and status in RUNNING_STATUSES
-                and reg_mtime is not None and reg_mtime > ended_at):
-            return False
+        rows = [_sess_rows[path] for path, owner in _sess_sids.items()
+                if owner == session_id and path in _sess_rows]
+        if row is not None:   # normally one of those files; set alone in tests
+            rows.append((row, _registry_mtime.get(session_id)))
+        for r, mtime in rows:
+            status = r.get("status")
+            if (isinstance(status, str) and status in RUNNING_STATUSES
+                    and mtime is not None and mtime > covering(r)):
+                return False
     return True
 
 
@@ -680,7 +719,7 @@ def mark_idle(session_id: str, turn: float | None = None) -> None:
 
 
 def mark_turn_ended(session_id: str, run_id: str = "",
-                    at: float | None = None) -> None:
+                    at: float | None = None, pid: int | None = None) -> None:
     """The queue manager's own word that this session's TURN just ended —
     `POST /api/tasks/queue/event` (`turn_ended`/`exited`), the session host
     reporting a `result` row it tailed off `out.jsonl`. Sooner and more certain
@@ -732,19 +771,46 @@ def mark_turn_ended(session_id: str, run_id: str = "",
     `run_id` is accepted because the endpoint has it on hand and nothing else
     needs it yet; not stored.
 
+    `pid` is the `claude` process the session host was holding, when it said.
+    A pid a registry file has shown on this session (`_session_pids`) gets a
+    stamp of its own (`_ended_by_pid`, never backwards per pid), which
+    `is_turn_ended` reads as news about THAT process's rows only — a run
+    resumed on the same session while an old host idles toward its reap is
+    another pid, and its turn is not over. Such an event retires the send
+    mark only when its pid is the session's standing row: the mark is the
+    standing run's floor, not the other process's. `None` (the stop paths, an
+    old host) and a pid that holds no registry file for the session — not the
+    pid Claude Code registered (a launcher shim), or one that never got to
+    write its file — stamp `_ended`, unscoped. A pid whose file is written but
+    not yet read by the watcher is looked up directly (`session_for_pid`).
+
     Bumps and notifies at once, like `mark_running`/`mark_idle` — but only when
     something actually changed; an ignored older/duplicate event costs no
     generation."""
     if not session_id:
         return
     ended_at = time.time() if at is None else float(at)
+    pid_s = "" if pid is None else str(pid)
     with _cond:
-        prev_ended = _ended.get(session_id)
+        known = pid_s in _session_pids.get(session_id, ())
+    # A process can have written its registry file before the watcher's next
+    # tick has read it (CodeRabbit, PR #1642): ask the file itself before
+    # calling the pid unknown. Outside the lock — it can read a file.
+    if pid_s and not known and session_for_pid(pid_s) == session_id:
+        with _cond:
+            _session_pids.setdefault(session_id, set()).add(pid_s)
+    with _cond:
+        scoped = pid_s in _session_pids.get(session_id, ())
+        stamps = _ended_by_pid.setdefault(session_id, {}) if scoped else _ended
+        key = pid_s if scoped else session_id
+        prev_ended = stamps.get(key)
         if prev_ended is not None and ended_at <= prev_ended:
-            return  # older or duplicate delivery: `_ended` never moves back
-        _ended[session_id] = ended_at
+            return  # older or duplicate delivery: a stamp never moves back
+        stamps[key] = ended_at
+        row = _registry.get(session_id)
+        standing = not scoped or row is None or str(row.get("pid") or "") == pid_s
         mark = _marks.get(session_id)
-        if mark is not None and mark["at"] <= ended_at:
+        if standing and mark is not None and mark["at"] <= ended_at:
             # The mark describes this turn (or one before it) — it is over.
             # A NEWER mark (`mark["at"] > ended_at`) is left standing; see the
             # docstring above.
@@ -856,6 +922,57 @@ def _wake_schedule() -> None:
         pass
 
 
+def _settle(sid: str) -> dict | None:
+    """Re-derive `_registry[sid]` from every live registry file naming the
+    session (`_sess_rows`); the row now standing, or None when no file holds it
+    any more — and then the session has DEPARTED. Caller holds `_cond`.
+
+    Two files, one session: a running status beats an idle one (the session is
+    mid-turn if any process on it is), then the newest rewrite wins.
+    `_registry_mtime` follows the row that stands — it is that row's rewrite
+    `is_turn_ended` must measure."""
+    best = None
+    for path, owner in _sess_sids.items():
+        if owner != sid or path not in _sess_rows:
+            continue
+        row, mtime = _sess_rows[path]
+        rank = (row.get("status") in RUNNING_STATUSES, mtime)
+        if best is None or rank > best[0]:
+            best = (rank, row, mtime)
+    if best is None:
+        _registry.pop(sid, None)
+        _session_pids.pop(sid, None)
+        # No process left to tell apart: the newest per-pid end becomes the
+        # session's own, unscoped — the departed session's turn stays ended
+        # for `_running_now`'s transcript-tail read, as it always did.
+        newest = max((_ended_by_pid.pop(sid, None) or {}).values(), default=None)
+        if newest is not None:
+            _ended[sid] = max(newest, _ended.get(sid, newest))
+        _departed[sid] = time.time()
+        return None
+    _registry[sid] = best[1]
+    _registry_mtime[sid] = best[2]
+    _departed.pop(sid, None)
+    return best[1]
+
+
+def _depart_path(path: str, keys: set[str]) -> None:
+    """One registry file stopped counting (deleted, its pid dead, or it now
+    names another session): forget it, and re-settle the session it held. The
+    session departs only when no other live file still holds it."""
+    with _cond:
+        sid = _sess_sids.pop(path, None)
+        _sess_rows.pop(path, None)
+        if not sid:
+            return
+        standing = _settle(sid)
+    if standing is None:
+        _tr_paths.pop(sid, None)
+        _tr_sizes.pop(sid, None)
+    _note_registry_status(sid, None if standing is None else standing.get("status"))
+    keys.add(sid)
+
+
 def _read_registry() -> set[str]:
     """Reconcile `sessions/*.json` with `_registry`; return the session ids
     whose record appeared, changed, or went away.
@@ -886,21 +1003,13 @@ def _read_registry() -> set[str]:
         if _sess_mtimes.get(path) == mtime:
             # Unchanged file — but a crash or a kill leaves the file behind
             # untouched, so the pid is asked every tick, not only on rewrite
-            # (bugbot, PR #892). One kill(pid, 0) per live session.
-            sid = _sess_sids.get(path)
-            if sid:
-                with _cond:
-                    pid = (_registry.get(sid) or {}).get("pid")
-                if not _pid_alive(pid):
-                    _sess_sids.pop(path, None)
-                    with _cond:
-                        _registry.pop(sid, None)
-                        _departed[sid] = time.time()
-                    _tr_paths.pop(sid, None)
-                    _tr_sizes.pop(sid, None)
-                    _note_registry_status(sid, None)
-                    keys.add(sid)
-                    stopped = True
+            # (bugbot, PR #892). One kill(pid, 0) per live session. THIS
+            # file's pid, not the session's standing row's: that can be
+            # another process on the same session (`_sess_rows`).
+            held = _sess_rows.get(path)
+            if held is not None and not _pid_alive(held[0].get("pid")):
+                _depart_path(path, keys)
+                stopped = True
             continue
         _sess_mtimes[path] = mtime
         try:
@@ -913,67 +1022,58 @@ def _read_registry() -> set[str]:
         sid = row.get("sessionId")
         if not isinstance(sid, str) or not sid:
             continue
-        old_sid = _sess_sids.get(path)
-        with _cond:
-            was = (_registry.get(sid) or {}).get("status")
         if not _pid_alive(row.get("pid")):
             # A crashed claude leaves its file behind; a dead pid is not a
             # live session, and must not paint a running badge forever. The
             # mtime stays recorded so the file is not re-read every tick.
-            if old_sid:
-                _sess_sids.pop(path, None)
-                with _cond:
-                    _registry.pop(old_sid, None)
-                    _departed[old_sid] = time.time()
-                _note_registry_status(old_sid, None)
-                keys.add(old_sid)
+            if _sess_sids.get(path):
+                _depart_path(path, keys)
                 stopped = True
             continue
+        old_sid = _sess_sids.get(path)
         if old_sid and old_sid != sid:
-            _registry.pop(old_sid, None)
-            _note_registry_status(old_sid, None)
-            keys.add(old_sid)
+            _depart_path(path, keys)
             stopped = True
-        _sess_sids[path] = sid
         with _cond:
-            _registry[sid] = row
-            _departed.pop(sid, None)
-            # THE FILE'S OWN mtime, not `time.time()`: `is_turn_ended` compares
-            # this against a `mark_turn_ended` stamp to tell a genuine REWRITE
-            # from the same stale row being re-parsed after an unrelated file
-            # elsewhere changed — this branch only runs when `_sess_mtimes`
-            # above already proved the file moved, so recording it here (and
-            # nowhere on the unchanged-file path) is exactly "seen freshly
-            # busy since the stamp."
-            _registry_mtime[sid] = st.st_mtime
-            # A row busy strictly after `_ended[sid]` is the resurrection
-            # `is_turn_ended` watches for — a genuinely later turn on the same
-            # session. Its job is done; drop it here rather than leave it for
-            # `is_turn_ended` to keep discounting on every future read.
-            ended_at = _ended.get(sid)
-            if (ended_at is not None and st.st_mtime > ended_at
-                    and row.get("status") in RUNNING_STATUSES):
-                del _ended[sid]
-        _note_registry_status(sid, row.get("status"))
+            was = (_registry.get(sid) or {}).get("status")
+        # THE FILE'S OWN mtime, not `time.time()`: `is_turn_ended` compares
+        # it against a `mark_turn_ended` stamp to tell a genuine REWRITE from
+        # the same stale row being re-parsed after an unrelated file elsewhere
+        # changed — this branch only runs when `_sess_mtimes` above already
+        # proved the file moved.
+        with _cond:
+            _sess_sids[path] = sid
+            _sess_rows[path] = (row, st.st_mtime)
+            if row.get("pid"):
+                _session_pids.setdefault(sid, set()).add(str(row["pid"]))
+            standing = _settle(sid)
+            # A row busy strictly after `_ended[sid]` — or after its own
+            # pid's stamp — is the resurrection `is_turn_ended` watches for: a
+            # genuinely later turn on the same session. That stamp's job is
+            # done; drop it here rather than leave it for `is_turn_ended` to
+            # keep discounting on every future read.
+            if row.get("status") in RUNNING_STATUSES:
+                ended_at = _ended.get(sid)
+                if ended_at is not None and st.st_mtime > ended_at:
+                    del _ended[sid]
+                stamps = _ended_by_pid.get(sid, {})
+                pid_s = str(row.get("pid") or "")
+                if pid_s in stamps and st.st_mtime > stamps[pid_s]:
+                    del stamps[pid_s]
+        status = (standing or {}).get("status")
+        _note_registry_status(sid, status)
         keys.add(sid)
         # busy/shell -> anything else: the turn ended, and whatever was queued
         # behind that folder can go now. `waiting` counts as stopped on purpose
         # — a run parked on a card holds nothing (project_queue.holders).
-        if was in RUNNING_STATUSES and row.get("status") not in RUNNING_STATUSES:
+        if was in RUNNING_STATUSES and status not in RUNNING_STATUSES:
             stopped = True
     for path in list(_sess_mtimes):
         if path in seen:
             continue
         _sess_mtimes.pop(path, None)
-        sid = _sess_sids.pop(path, None)
-        if sid:
-            with _cond:
-                _registry.pop(sid, None)
-                _departed[sid] = time.time()
-            _tr_paths.pop(sid, None)
-            _tr_sizes.pop(sid, None)
-            _note_registry_status(sid, None)
-            keys.add(sid)
+        if _sess_sids.get(path):
+            _depart_path(path, keys)
             stopped = True
     if stopped:
         _wake_schedule()
@@ -1274,6 +1374,7 @@ def reset() -> None:
         _departed.clear()
         _registry_mtime.clear()
         _ended.clear()
+        _ended_by_pid.clear()
         _marks.clear()
         _mark_turns.clear()
         _mark_busy_seen.clear()
@@ -1290,6 +1391,8 @@ def reset() -> None:
     _primed = False
     _sess_mtimes.clear()
     _sess_sids.clear()
+    _sess_rows.clear()
+    _session_pids.clear()
     _tr_paths.clear()
     _tr_sizes.clear()
     _perm_stamps.clear()
