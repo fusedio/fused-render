@@ -309,6 +309,21 @@ div.bots-page.stage .chat header #rcol { display: none; }  /* same: the preview 
 .bots-page .msg.md th, .bots-page .msg.md td { padding: .3em .6em; border-bottom: 1px solid var(--line); vertical-align: top; text-align: left; }
 .bots-page .msg.md th { font-weight: 500; color: var(--muted); }
 .bots-page .msg.md tr:last-child td { border-bottom: 0; }
+/* A bubble holding a wide block (md.ts .wide: a 4+ column table or a long-lined code fence) takes the whole thread
+   width; everything else in it keeps the 42rem reading measure. The thread is the inline-size container, so `100%`
+   here is the thread's content width, not the bubble's. */
+.bots-page .msg.md:has(> .wide) { max-width: none; width: 100%; }
+.bots-page .msg.md:has(> .wide) > :not(.wide) { max-width: 42rem; }
+.bots-page .msg.md .wide { margin: 0 0 .6em; }
+.bots-page .msg.md .wide .tablewrap { margin: 0; }
+.bots-page .msg.md .wide :is(th, td).nw { white-space: nowrap; }
+.bots-page .msg.md .wide.capped tbody tr:nth-child(n + 13) { display: none; }
+.bots-page .msg.md .wide .tfoot { display: flex; gap: 12px; margin-top: 6px; }
+.bots-page .msg.md .wide .tfoot button { background: none; padding: 0; border: 0; font: inherit; font-size: 11.5px; color: var(--muted); text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+.bots-page .msg.md .wide .tfoot button:hover { color: var(--text); background: none; }
+/* The hover affordances assume a bubble narrower than the thread: on a full-width bubble the react/reply pair and the time move inside its top-right corner. */
+.bots-page .msg.md:has(> .wide) .acts { left: auto; right: 10px; top: 10px; transform: none; margin: 0; }
+.bots-page .msg.md:has(> .wide) .when { left: auto; right: 64px; top: 10px; transform: none; }
 .bots-page .msg.md th:first-child, .bots-page .msg.md td:first-child { padding-left: 0; }
 .bots-page .msg.md th:last-child, .bots-page .msg.md td:last-child { padding-right: 0; }
 .bots-page .msg.md a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
