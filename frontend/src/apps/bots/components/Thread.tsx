@@ -148,7 +148,8 @@ function HandoffCard({ e, state: rawState, targetLive, targetWaiting }: { e: Bot
   // confirms it (a second click would send another answer).
   const [sent, setSent] = useState(false);
   const live = !!relay && targetLive && targetWaiting === relay.seq && !sent;
-  const answer = (t: string) => { setSent(true); void act(() => api.send(relay!.bot, t)).catch(() => setSent(false)); };
+  // act() swallows the error (banner) and resolves undefined: that is the failed send, and the buttons come back.
+  const answer = (t: string) => { setSent(true); void act(() => api.send(relay!.bot, t)).then((r) => { if (r === undefined) setSent(false); }); };
   return (
     <div className={`handoff-card ${state}`} data-seq={e.seq} title={fmtWhen(e.ts)}>
       <div className="hd"><span className="ttl">{head}</span><span className={`pill ${state}`}>{state}</span></div>

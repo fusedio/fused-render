@@ -190,7 +190,8 @@ class Router:
             # (`opts`), takes the reply instead: it went out later and is what the phone is looking at.
             if self._relay(ch, bot, card, text, m.ts or 0, via):
                 return
-        elif card and waiting == card["seq"] and (m.ts or 0) >= card["sent_at"]:
+        elif card and card["bot"] == bid and waiting == card["seq"] and (m.ts or 0) >= card["sent_at"]:
+            # (card["bot"] == bid: a relay's seq is the TARGET's counter and may collide with Super Bot's own.)
             # The bot still waits on the card this sender was texted, and the reply was written after the card went
             # out: it is that card's answer and nothing else's (docs §10). A reply older than the card (typed for an
             # earlier card the Mac then answered, delivered late) is left unstamped, so the gate treats it as an
@@ -215,13 +216,19 @@ class Router:
         except Exception:  # noqa: BLE001 — the target is gone (deleted mid-wait)
             target = None
         twait = (getattr(target, "meta", None) or {}).get("waiting_on") if target is not None else None
-        if target is None or twait != card["seq"] or ts < card["sent_at"]:
-            # Answered at the Mac already (or the task ended, or the reply predates the card): one text back, nothing
-            # starts. Without this an idle Super Bot would start a task named "1".
-            door.emit("system", f"Texted \"{text.strip()[:80]}\" for {card.get('name') or 'a bot'}'s card after it was settled; not applied.", via=None)
-            door.emit("error", f"That card of {card.get('name') or 'the bot'}'s was answered already (at the Mac, or the task ended).",
-                      via=dict(via), source="hold")
+        who = card.get("name") or "the bot"
+        if target is None or twait != card["seq"]:
+            # Answered at the Mac already (or the task ended): one text back, nothing starts. Without this an idle
+            # Super Bot would start a task named "1".
+            door.emit("system", f"Texted \"{text.strip()[:80]}\" for {who}'s card after it was settled; not applied.", via=None)
+            door.emit("error", f"That card of {who}'s was answered already (at the Mac, or the task ended).", via=dict(via), source="hold")
             self._settle(door.id, card)
+            return True
+        if ts < card["sent_at"]:
+            # Written before the card went out (typed for an earlier one, delivered late): not this card's answer. The
+            # card is still up and still waited on, so the record STAYS: the next "1" must still reach it.
+            door.emit("system", f"Texted \"{text.strip()[:80]}\" before {who}'s card went out; not applied.", via=None)
+            door.emit("error", f"That reply was sent before {who}'s card reached you. Reply again to answer it.", via=dict(via), source="hold")
             return True
         via["answers"] = card["seq"]
         target.receive(verdict, via=via)
@@ -245,7 +252,8 @@ class Router:
             nxt = self._parked.get(door) or []
             item = nxt.pop(0) if nxt else None
         if item is not None:
-            self._q.put(item)
+            b, ev = item
+            self._q.put((b, {**ev, "parked": True}))  # deliver re-checks a parked card is still waited on
 
     # ----------------------------------------------------------------- outbound
     def on_event(self, bot, ev: dict) -> None:
@@ -295,16 +303,19 @@ class Router:
         text, numbered = render(ev, ch.caps, approvals=base.approvals_by_text(getattr(bot, "meta", None)))
         relay = base.relay_of(ev)
         if numbered and (relay is not None or ev.get("role") == "approval"):
-            # A card a reply may settle takes the door's one slot. Still live? (a parked card may have been answered
-            # at the Mac while it waited: then it is dropped, the Mac saw it). Slot taken by another card: park it,
+            # A card a reply may settle takes the door's one slot. A card flushed from _parked may have been answered
+            # at the Mac while it waited: then it is dropped, the Mac saw it. A FRESH card is never checked: it is
+            # queued inside the waiting bot's own emit(), before that bot has written waiting_on (the engines emit
+            # first, set_status next), so a check here would drop every card. Slot taken by another card: park it,
             # _settle texts it when that one is answered. The same reply must never have two readings.
             wbot, wseq = (relay["bot"], relay["seq"]) if relay else (bot.id, ev.get("seq"))
-            try:
-                waiter = bot if wbot == bot.id else self._registry.get(wbot)
-            except Exception:  # noqa: BLE001
-                return []
-            if (getattr(waiter, "meta", None) or {}).get("waiting_on") != wseq:
-                return []
+            if ev.pop("parked", False):
+                try:
+                    waiter = bot if wbot == bot.id else self._registry.get(wbot)
+                except Exception:  # noqa: BLE001
+                    return []
+                if (getattr(waiter, "meta", None) or {}).get("waiting_on") != wseq:
+                    return []
             with self._lock:
                 cur = self._texted_card.get(bot.id)
                 if cur is not None and (cur["bot"], cur["seq"]) != (wbot, wseq):
