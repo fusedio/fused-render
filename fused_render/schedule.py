@@ -1533,7 +1533,7 @@ def create(target: str, message: str, due=None, session_id: str = "",
            immediate=None, images=None, attachments=None,
            create_target: bool = False,
            model: str = "", effort: str = "", priority=None,
-           follow_of: str = "", origin: str = "") -> dict:
+           follow_of: str = "", origin: str = "", bot: str = "") -> dict:
     """Validate and store one scheduled message; return the stored entry.
 
     `title` and `description` are the user's own words about the work, both
@@ -1762,6 +1762,11 @@ def create(target: str, message: str, due=None, session_id: str = "",
     # holding a list of its callers. Normalised like every other string here so
     # "absent", None and "  " are the one thing they mean.
     origin = str(origin or "").strip()
+    # `bot` is WHICH BOT ASKED FOR THIS MESSAGE (bots/bot.py `build` through
+    # `/api/tasks/create`): its id, "" for everything else. Stored like `origin`,
+    # only when there is one. The tasks listing hands it back on the row (`bot`),
+    # which is how a bot's panel lists the tasks it started.
+    bot = str(bot or "").strip()
 
     entry = {
         # Due-time-ordered id: the store is a list a human may well read, and an
@@ -1916,6 +1921,8 @@ def create(target: str, message: str, due=None, session_id: str = "",
     # changes the bytes of every entry main writes. Same rule as `host_sent`.
     if origin:
         entry["origin"] = origin
+    if bot:
+        entry["bot"] = bot
     if spec is not None:
         # The first run of the series, kept where materialization cannot move
         # it — see the docstring. Every occurrence is "the anchor plus k steps",

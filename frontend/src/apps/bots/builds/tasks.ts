@@ -31,6 +31,10 @@ export interface TaskRow {
   started?: number;
   last_reply?: string;
   session_id?: string;
+  /** The id of the bot that started this task (bot.py `build` sends it on create); "" on every other row. */
+  bot?: string;
+  /** Epoch seconds of the newest activity (the listing's sort key). */
+  last_active?: number;
   [k: string]: unknown;
 }
 

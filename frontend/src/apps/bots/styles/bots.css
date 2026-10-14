@@ -576,7 +576,19 @@ div.bots-page.sideapp .preview > :is(.shotwrap, .toast, .cap, .info) { display: 
 /* Below the screen: a few quiet sections, each a small heading and its lines. */
 .bots-page .info { margin: 18px 14px 14px; padding: 0 4px; color: var(--muted); font-size: 12px; line-height: 1.55; overflow: hidden auto;  /* the inbox rows bleed 4px into the side padding on purpose; that must never become a horizontal scrollbar (which then forces a vertical one) */ display: flex; flex-direction: column; gap: 18px; }
 .bots-page .info h4 { margin: 0 0 4px; font-size: 10px; font-weight: 400; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); opacity: .8; }
-.bots-page .info .task { white-space: pre-wrap; color: var(--text); }
+/* A task row (the bot's own task; the Claude tasks it started): status dot, title, one fact. A <button> when it
+   opens the task on the Tasks page, a <div> for the bot's own task (nowhere to go) — the reset below makes the
+   button look like the div, not like the page's pill buttons. The dot's `flex: none` is restated because the
+   `.info .rt span` rule's three classes outrank `.dot`'s two, and a centred 8px span has no baseline to sit on. */
+.bots-page .info .trow { display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 0; border: none; border-top: 1px solid var(--line); border-radius: 0; background: none; color: var(--text); font: inherit; text-align: left; cursor: default; }
+.bots-page .info .trow:first-of-type { border-top: none; }
+.bots-page .info button.trow { cursor: pointer; }
+.bots-page .info button.trow:hover { background: none; }
+.bots-page .info button.trow:hover .ttl { text-decoration: underline; }
+.bots-page .info .trow .dot { flex: none; align-self: center; }
+.bots-page .info .trow .ttl { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bots-page .info .trow small { white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--muted); }
+.bots-page .info .trow small.warn { color: var(--err); }
 .bots-page .info .note { text-align: center; padding: 28px 12px 8px; font-size: 13px; line-height: 1.5; }
 .bots-page .info .rt { display: flex; gap: 10px; align-items: baseline; padding: 6px 0; border-top: 1px solid var(--line); }
 .bots-page .info .rt:first-of-type { border-top: none; }

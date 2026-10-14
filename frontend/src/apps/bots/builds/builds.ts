@@ -53,6 +53,13 @@ let buildsLoaded = false;
 const buildHandles: Record<string, TaskHandle> = {};
 export const getBuilds = (): BuildRow[] => builds;
 export const getBuildRows = (): TaskRow[] => buildRows;
+// The rows for React (the bot panel's Tasks section): one listener set, told on every feed tick. `buildRows` is
+// swapped, never mutated, so useSyncExternalStore's identity check is the whole change detection.
+const rowSubs = new Set<() => void>();
+function setRows(rows: TaskRow[]): void { buildRows = rows; for (const l of [...rowSubs]) l(); }
+export function useBuildRows(): TaskRow[] {
+  return useSyncExternalStore((l) => { rowSubs.add(l); return () => { rowSubs.delete(l); }; }, getBuildRows, getBuildRows);
+}
 /** Tests: seed the module state. */
 export function _setBuildsState(b: BuildRow[], rows: TaskRow[]): void { builds = b; buildRows = rows; adoptSeen = null; }
 /** Tests: a feed tick (rows move; builds and the adopt "seen" set stay). */
@@ -80,9 +87,19 @@ const panelShown = onTasksPage;
 // A row without an entry id (a bare session) must never match a recorded build whose id is "" — seen live: one such
 // record made EVERY session row a build, and the panel showed the whole task list.
 const sameEntry = (b: BuildRow, t: TaskRow): boolean => !!t.entry_id && b.entryId === t.entry_id;
+// A row tagged with a bot id (`bot`, the server's answer since the bot's create carried it) is a build by definition:
+// a bot's only road into the tasks API is `build`. Older rows carry no tag and still match the two heuristics.
 export const isBuild = (t: TaskRow): boolean =>
-  builds.some((b) => sameEntry(b, t)) || marked(t.title) || (t.messages || []).some((m) => marked(m.body));
+  !!t.bot || builds.some((b) => sameEntry(b, t)) || marked(t.title) || (t.messages || []).some((m) => marked(m.body));
 export const mine = (): TaskRow[] => buildRows.filter(isBuild);
+
+/** The tasks ONE bot started, newest activity first (pure, for tests). By the row's `bot` tag, or — for a task made
+ *  before the tag existed — by the bot's own record of it (`meta.builds[].entry_id`, bot.py `build`). */
+export function botTasks(rows: TaskRow[], botId: string, botBuilds: { entry_id?: string }[] | null | undefined): TaskRow[] {
+  const ids = new Set((botBuilds || []).map((b) => b.entry_id).filter((id): id is string => !!id));
+  return rows.filter((t) => t.bot === botId || (!!t.entry_id && ids.has(t.entry_id)))
+    .sort((a, b) => (b.last_active || b.started || 0) - (a.last_active || a.started || 0));
+}
 /** The name/folder a build prompt (or its title) carries. */
 export const BUILD_RE = /(?:named|Build) "([^"]+)"(?: in the folder | · (?:new fused-render app|update to the fused-render app) in )(\S+)/;
 let adoptSeen: Set<string> | null = null;
@@ -294,8 +311,8 @@ export function followBuild(h: TaskHandle, name: string, _dir: string): void {
 export function startBuilds(): () => void {
   if (!buildsOn()) { setBuildsChip({ hidden: true }); return () => {}; }
   let alive = true;
-  loadBuilds().then(() => tasksList({ scope: "all" })).then((rows) => { if (alive) { buildRows = rows; renderBuildChip(); } }).catch((e) => console.warn("builds", e));
-  const unwatch = tasksWatch((rows) => { buildRows = rows; renderBuildChip(); }, { scope: "all" });
+  loadBuilds().then(() => tasksList({ scope: "all" })).then((rows) => { if (alive) { setRows(rows); renderBuildChip(); } }).catch((e) => console.warn("builds", e));
+  const unwatch = tasksWatch((rows) => { setRows(rows); renderBuildChip(); }, { scope: "all" });
   const onHide = () => unwatch();
   addEventListener("pagehide", onHide);
   return () => { alive = false; unwatch(); removeEventListener("pagehide", onHide); };
