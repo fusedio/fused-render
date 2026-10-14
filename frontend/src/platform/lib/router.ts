@@ -220,9 +220,7 @@ export const IS_TOP_EMBED = IS_EMBED && window === window.top && !IS_PREVIEW && 
 // add to the user agent. NOT the `native_windows_enabled` preference: that
 // is also on in a browser tab, which must keep navigating in place. Top
 // level only — a frame inside such a window carries the same user agent but
-// is never the surface an app click should leave. There, an app click opens
-// the app in a window of its own (platform/lib/native-window.ts) instead of
-// navigating this one.
+// is never the surface an app click should leave.
 export const IS_NATIVE_WINDOW =
   window === window.top && /\bFused(?:Render|Bot)\/\S+/.test(navigator.userAgent) &&
   !/\bLauncher\b/.test(navigator.userAgent);

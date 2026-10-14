@@ -15,13 +15,12 @@ second window comes from what would have been a second tab: `target=_blank`,
 `window.open`, ⌘-click / middle-click on an app link, a Finder open, a deep
 link, the launcher.
 
-APPS RUN IN WINDOWS OF THEIR OWN. Inside a native window the shell knows it
-is one (the ``FusedRender/`` user-agent marker, router.ts
-``IS_NATIVE_WINDOW``): an app click — a card, the app page's Open — asks the
-server (POST /api/windows/open) to focus-or-open that app's window, which
-runs its entry page as a chrome-free embed (`window_policy.app_window_path`)
-under its own saved size and place; the launcher's pick lands the same way.
-The title bar's Edit button (⌘⇧E) switches the SAME window to the explorer
+ONLY THE NATIVE DOORS SPAWN APP WINDOWS. An app click inside the shell — a
+card, the app page's Open — navigates the window it happened in, like any
+other shell link. The launcher's pick and the menu-bar Dock's app tile
+focus-or-open the app's OWN window (`focus_or_open_app`), which runs its
+entry page as a chrome-free embed (`window_policy.app_window_path`) under its
+own saved size and place. The title bar's Edit button (⌘⇧E) switches the SAME window to the explorer
 view of what it runs (`window_policy.edit_target`).
 
 What the browser used to do for a page, the delegates here do instead
@@ -1241,36 +1240,9 @@ class WindowManager:
         return self._dock_menu
 
     def reopen(self) -> None:
-        """A macOS Dock-icon click on the running app. By default the Home
-        window comes forward (the key/front one if several; `show` restores a
-        minimized one), else a Home window opens — the same rule as the
-        menu-bar Dock's Home tile and the launcher's Home row
-        (`focus_or_open_home`): the owner wants the app icon to mean Home
-        wherever it is clicked, so an app window on top never swallows the
-        click. With "Single window experience" on (`prefs.apps_open_in_home`)
-        it is the standard macOS behaviour instead: the window last used
-        comes forward (`focus_or_open_recent`). A new window is File → New
-        Window."""
-        from fused_render.shell import prefs
-
-        if prefs.apps_open_in_home():
-            self.focus_or_open_recent()
-        else:
-            self.focus_or_open_home()
-
-    def focus_or_open_recent(self) -> None:
-        """The Dock icon under "Single window experience": the most recently
-        used fused-render window comes forward (the key/front one, else the
-        MRU — `_pick`), the opt-in standard macOS Dock behaviour; with none,
-        Home (`focus_or_open_home`). An app's own run window (view "embed")
-        is skipped — it is the native app's window, not fused-render's — and
-        so is a popup. Main thread."""
-        win = self._pick([w for w in self._windows
-                          if w.ns is not None and w.view != "embed" and not w._popup])
-        if win is None:
-            self.focus_or_open_home()
-        else:
-            win.show()
+        """A macOS Dock-icon click on the running app: `focus_or_open_home`.
+        A new window is File → New Window."""
+        self.focus_or_open_home()
 
     def show_tasks(self) -> None:
         """Window → Tasks (⌘⇧T): a window already on the Tasks page comes to
@@ -1288,25 +1260,6 @@ class WindowManager:
                 return
         self.open(url)
 
-    def _is_home(self, w: _Window) -> bool:
-        # The shell's home is `/`, which the SPA rewrites in place to `/home`
-        # (shell/App.tsx); `/apps` is the Apps hub, and a window on /tasks or
-        # /preferences has no key either — none of those is Home. Under the
-        # Fused Bot flavor `/` lands on `/bots`, so that window IS Home —
-        # without this `open_app_in_home` found no home window and opened a
-        # fresh one every time.
-        path = urllib.parse.urlsplit(w.current_url() or "").path.rstrip("/")
-        if path in ("", "/home"):
-            return True
-        # The whole /bots/* space (the selected bot is a sub-path now,
-        # frontend apps/bots/routes.ts): a Bots window is Home under the bot
-        # flavor whichever chat or page it shows.
-        if _is_bots_path(path):
-            from fused_render import _flavor
-
-            return _flavor.is_bot()
-        return False
-
     def _pick(self, candidates: list["_Window"]) -> "_Window | None":
         """The key window among ``candidates``, else the front one, else the
         most recently used (``_windows`` is MRU, newest last)."""
@@ -1320,11 +1273,14 @@ class WindowManager:
     def focus_or_open_home(self) -> None:
         """The app icon's one meaning, everywhere it is clicked — the macOS
         Dock icon (`reopen`), the menu-bar Dock's Home tile and utility menu,
-        the launcher's Home row / <modifier>+0: a Home window already open
-        (the key/front one if several) comes forward, else one opens. Never
-        a second Home while one is up — that is File → New Window. Main
-        thread."""
-        win = self._pick([w for w in self._windows if w.ns is not None and self._is_home(w)])
+        the launcher's Home row / <modifier>+0: any fused-render window
+        already open comes forward (the key/front one, else the MRU —
+        `_pick`) — Home, Apps, Tasks, Bots, the explorer, Preferences alike —
+        else a Home window opens. An app's own run window (view "embed") is
+        skipped — it is the app's window, not fused-render's — and so is a
+        popup. Main thread."""
+        win = self._pick([w for w in self._windows
+                          if w.ns is not None and w.view != "embed" and not w._popup])
         if win is None:
             self.open(self.home_url)
         else:
@@ -1437,39 +1393,6 @@ class WindowManager:
         (`window_policy.app_window_path`). Already open → to the front."""
         return self.focus_or_open_url(
             f"http://127.0.0.1:{self.port}" + window_policy.app_window_path(fs_path))
-
-    def open_app_in_home(self, fs_path: str) -> _Window:
-        """`apps_open_in_home`: the app loads into the Home window's
-        explorer (`window_policy.app_home_path`) instead of a window of its
-        own. The Home window, else the most recently used one, else a fresh
-        window. Once loaded the URL observer re-keys that window, so the next
-        app falls to the MRU rule — intended: apps take over Home.
-
-        The window changes hands for its frame like `edit`: its size and
-        place are saved where they are, and it takes the explorer's saved
-        frame for this target, kept as it is if there is none yet."""
-        url = f"http://127.0.0.1:{self.port}" + window_policy.app_home_path(fs_path)
-        homes = [w for w in self._windows if w.ns is not None and self._is_home(w)]
-        win = homes[-1] if homes else None
-        if win is not None:
-            for w in reversed(homes):  # prefer the key/front one
-                if w is self.key() or w is self.front():
-                    win = w
-                    break
-        elif self._windows:
-            win = self.front()
-        if win is None:
-            return self.open(url)
-        name = window_policy.frame_autosave_name(window_policy.window_key_of(url), "view")
-        if win.ns is not None and name != win.frame_name and self.frame_owner(name) is None:
-            win.save_frame()
-            win.ns.setFrameAutosaveName_("")
-            win.ns.setFrameUsingName_(name)
-            win.frame_name = name if win.ns.setFrameAutosaveName_(name) else None
-            win.place_name = name
-        win.load(url)
-        win.show()
-        return win
 
     def edit(self, win: _Window) -> _Window | None:
         """The Edit button: ``win`` itself switches to the explorer view of

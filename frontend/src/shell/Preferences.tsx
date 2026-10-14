@@ -59,7 +59,6 @@ import {
   putCanvasesEnabled,
   putLivePreviewsEnabled,
   putMonitorEnabled,
-  putAppsOpenInHome,
   putMenubarPinEnabled,
   putNativeWindowsEnabled,
   putGitAutoSyncEnabled,
@@ -906,20 +905,6 @@ function NativeWindowsSection({ prefs, onChange }: { prefs: Prefs; onChange: (p:
   const nw = prefs.native_windows;
   if (!nw || !nw.available) return null;
   const enabled = nw.enabled;
-  const inHome = prefs.apps_open_in_home?.enabled === true;
-
-  const toggleInHome = async () => {
-    if (busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      onChange(await putAppsOpenInHome(!inHome));
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  };
 
   const toggle = async () => {
     if (busy) return;
@@ -938,31 +923,14 @@ function NativeWindowsSection({ prefs, onChange }: { prefs: Prefs; onChange: (p:
     <section className="prefs-section">
       <h2>Native windows</h2>
       <p className="deploy-muted">
-        Open {displayName()} in its own windows instead of browser tabs: a window per app, with
-        native window controls. On by default. Turning it off closes the open windows and the app
+        Open {displayName()} in its own windows instead of browser tabs, with native window
+        controls. An app opened from the launcher gets a window of its own. On by default. Turning it off closes the open windows and the app
         opens everything in your default browser instead.
       </p>
       <label className="prefs-radio">
         <input type="checkbox" checked={enabled} disabled={busy} onChange={toggle} />
         <span>
           <b>Use native windows</b> instead of browser tabs.
-        </span>
-      </label>
-      <label className="prefs-radio">
-        <input
-          type="checkbox"
-          checked={inHome}
-          disabled={busy || !enabled}
-          onChange={toggleInHome}
-        />
-        <span>
-          <b>Single window experience</b>
-          <br />
-          <span className="deploy-muted">
-            Apps open inside the Home window's file explorer, like in a browser, instead of each in
-            its own window. On macOS, clicking the Dock icon brings back the window you last used
-            instead of going to Home.
-          </span>
         </span>
       </label>
       {error && <ErrorBanner>{error}</ErrorBanner>}

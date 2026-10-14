@@ -132,7 +132,6 @@ nothing is lost, and no command dispatches before that read. It listens on
 | Caller | Path |
 |---|---|
 | Supervisor open / OPEN_HOME / tray | `core._open_browser` asks the host, else `xdg-open` |
-| Shell inside a window clicking an app | `POST /api/windows/open` -> `window_policy.native_hooks["open_app"]` (`linux_windows.py`) -> host, else a browser tab |
 | Preference toggle | `native_hooks["apply"]` -> `set_enabled`; off closes every window and the host declines opens |
 
 The server only installs hooks when the supervisor put

@@ -64,51 +64,9 @@ def test_installs_nothing_without_the_supervisor_env():
     assert window_policy.native_hooks == {}
 
 
-def test_installs_the_three_hooks(sock):
+def test_installs_the_two_hooks(sock):
     assert linux_windows.install(8123, {ipc.ENV_SOCKET: sock}, platform="linux") is True
-    assert set(window_policy.native_hooks) == {"apply", "open_app", "usable"}
-
-
-@needs_unix
-def test_open_app_sends_the_apps_window_url_to_the_host(sock, host, tmp_path):
-    seen, _ = host
-    linux_windows.install(8123, {ipc.ENV_SOCKET: sock}, platform="linux")
-    window_policy.native_hooks["open_app"](str(tmp_path))
-    opens = [c for c in seen if c["cmd"] == "open"]
-    assert len(opens) == 1
-    assert opens[0]["url"] == "http://127.0.0.1:8123" + window_policy.app_window_path(str(tmp_path))
-
-
-@needs_unix
-def test_open_app_in_home_pref_sends_the_explorer_url(sock, host, tmp_path, monkeypatch):
-    from fused_render.shell import prefs
-
-    monkeypatch.setattr(prefs, "apps_open_in_home", lambda: True)
-    seen, _ = host
-    linux_windows.install(8123, {ipc.ENV_SOCKET: sock}, platform="linux")
-    window_policy.native_hooks["open_app"](str(tmp_path))
-    assert [c["cmd"] for c in seen] == ["open_in_home"]
-    assert seen[0]["url"] == "http://127.0.0.1:8123" + window_policy.app_home_path(str(tmp_path))
-
-
-@needs_unix
-def test_open_app_falls_back_to_a_browser_tab_when_declined(sock, host, tmp_path, monkeypatch):
-    _, reply = host
-    reply["open"] = {"ok": False, "reason": "disabled"}
-    tabs = []
-    monkeypatch.setattr(linux_windows, "_open_in_browser", tabs.append)
-    linux_windows.install(8123, {ipc.ENV_SOCKET: sock}, platform="linux")
-    window_policy.native_hooks["open_app"](str(tmp_path))
-    assert tabs == ["http://127.0.0.1:8123" + window_policy.app_window_path(str(tmp_path))]
-
-
-@needs_unix
-def test_open_app_falls_back_when_the_host_is_gone(sock, tmp_path, monkeypatch):
-    tabs = []
-    monkeypatch.setattr(linux_windows, "_open_in_browser", tabs.append)
-    linux_windows.install(8123, {ipc.ENV_SOCKET: sock}, platform="linux")  # nothing listening
-    window_policy.native_hooks["open_app"](str(tmp_path))
-    assert len(tabs) == 1
+    assert set(window_policy.native_hooks) == {"apply", "usable"}
 
 
 @needs_unix
@@ -122,12 +80,12 @@ def test_apply_forwards_the_preference(sock, host):
 
 
 @needs_unix
-def test_apply_and_open_app_use_the_shared_caller_timeout(sock, host, tmp_path, monkeypatch):
+def test_apply_uses_the_shared_caller_timeout(sock, host, monkeypatch):
     """`apply` (the preference toggle) used to time out at 2s, shorter than
     the host's own 3s main-thread deadline — the caller could give up on a
     `set_enabled` the host was still about to carry out, desyncing the two.
-    Both calls must use the same timeout as `open_app`, and it must stay
-    above the host's deadline."""
+    It must use the shared caller timeout, and that must stay above the
+    host's deadline."""
     from fused_render.supervisor._linux import window_host as wh
 
     seen = []
@@ -140,8 +98,7 @@ def test_apply_and_open_app_use_the_shared_caller_timeout(sock, host, tmp_path, 
     monkeypatch.setattr(ipc, "request", spy)
     linux_windows.install(8123, {ipc.ENV_SOCKET: sock}, platform="linux")
     window_policy.native_hooks["apply"](True)
-    window_policy.native_hooks["open_app"](str(tmp_path))
-    assert seen == [ipc.CALLER_TIMEOUT_S, ipc.CALLER_TIMEOUT_S]
+    assert seen == [ipc.CALLER_TIMEOUT_S]
     assert ipc.CALLER_TIMEOUT_S > wh._MAIN_DEADLINE_S
 
 

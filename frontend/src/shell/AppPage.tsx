@@ -75,15 +75,13 @@ import {
   appIconUrl,
   getAppEntry,
   getAppIcon,
-  getPrefs,
   statPath,
   type Config,
 } from "@platform/lib/api";
 import { useFavicon, useUrlVersion } from "@platform/lib/hooks";
 import { isRasterIconUrl, useThemedIconSrc } from "@platform/lib/app-icon-src";
 import { isOverlayOpen } from "@platform/lib/ui-overlay";
-import { IS_NATIVE_WINDOW, navigateUrl, spaLinkProps, urlForFsPath } from "@platform/lib/router";
-import { openAppWindow } from "@platform/lib/native-window";
+import { navigateUrl, spaLinkProps, urlForFsPath } from "@platform/lib/router";
 import { snapshotFrameSrc } from "@platform/lib/snapshot-param";
 import {
   AppWindow,
@@ -316,14 +314,6 @@ export default function AppPage({
   // what busts the browser's image and (far more stubborn) favicon caches, so
   // an optimistic set would show the old glyph under a new URL-less src.
   const [iconHref, setIconHref] = useState<string | null>(null);
-  // `apps_open_in_home`: the Open button lands in this window, so its tooltip
-  // must not promise a window of its own. False until prefs load.
-  const [openInHome, setOpenInHome] = useState(false);
-  useEffect(() => {
-    let live = true;
-    getPrefs().then((p) => live && setOpenInHome(p.apps_open_in_home?.enabled === true)).catch(() => {});
-    return () => { live = false; };
-  }, []);
   // The generation token stands in for the effect's usual `live` flag: a pick
   // reloads outside any effect, and a bare boolean captured per-effect cannot
   // cancel THAT read when the folder changes under it. A stale response is one
@@ -715,20 +705,12 @@ export default function AppPage({
                     control that does that hop, so this page offers one route (the
                     explorer) and the explorer offers the next (the embed). The
                     folder link opposite is the same route one level up. */}
-                {/* Inside a macOS native window the app RUNS in a window of
-                    its own instead (native-window.ts) — the sidebar row keeps
-                    landing here, and this is the door out to the app; that
-                    window's title-bar Edit is the way into the explorer. */}
                 <Button
                   size="sm"
                   variant="default"
                   className="app-page-open"
-                  title={IS_NATIVE_WINDOW ? (openInHome ? "Open the app here" : "Open the app in its own window") : "Open the app in the Explorer"}
-                  onClick={() => {
-                    const inPlace = () => navigateUrl(urlForFsPath(entry), { isDir: false });
-                    if (IS_NATIVE_WINDOW) void openAppWindow(dir).then((ok) => ok || inPlace());
-                    else inPlace();
-                  }}
+                  title="Open the app in the Explorer"
+                  onClick={() => navigateUrl(urlForFsPath(entry), { isDir: false })}
                 >
                   <span className={APP_PAGE_FIT_LABEL}>Open</span>
                   <FolderOpen data-icon="inline-end" />

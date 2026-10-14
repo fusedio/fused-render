@@ -219,18 +219,6 @@ def native_windows_enabled() -> bool:
     return read_prefs().get("native_windows_enabled") is not False
 
 
-def apps_open_in_home() -> bool:
-    """Whether the desktop app (macOS and Linux) opens an app inside the Home
-    window's explorer, like the browser shell, instead of in a window of its
-    own (default OFF — opt-in). Read at open time by the click route, the
-    launcher and the window hooks; there is no live hook to apply.
-
-    Shown as "Single window experience". On macOS it also governs the Dock
-    icon click: ON, it brings back the window last used (an app's own run
-    window excepted) instead of always going to Home (`WindowManager.reopen`)."""
-    return read_prefs().get("apps_open_in_home") is True
-
-
 def app_sharing_enabled() -> bool:
     """Whether the unified Share sheet is offered (default off — opt-in).
 
@@ -676,11 +664,6 @@ def _prefs_response() -> dict:
         # `available` is the same test as the windows above: this process is
         # the macOS app (the hook is installed), not a `fused-render serve`.
         "menubar": _menubar_state(),
-        # Apps open inside the Home window's explorer instead of per-app
-        # native windows (desktop app only; opt-in, default off). This is the
-        # "Single window experience" pref; on macOS it also makes a Dock click
-        # bring back the last-used window instead of Home.
-        "apps_open_in_home": {"enabled": apps_open_in_home()},
         # A task on the Tasks page opens in a side panel beside the list —
         # always, since 2026-09-20 (`task_peek_enabled`). Still sent, because
         # the client's flag module reads it.
@@ -975,12 +958,6 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
             if apply_menubar is not None:
                 apply_menubar(value)
             changed = True
-        if "apps_open_in_home" in body:
-            value = body.get("apps_open_in_home")
-            if not isinstance(value, bool):
-                return JSONResponse({"error": "'apps_open_in_home' must be a boolean"}, status_code=400)
-            prefs["apps_open_in_home"] = value
-            changed = True
         if "task_notify_terminal_sessions" in body:
             value = body.get("task_notify_terminal_sessions")
             if not isinstance(value, bool):
@@ -1142,7 +1119,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
             return JSONResponse(
                 {"error": "no known preference in request (expected 'engine', "
                           "'engines', 'reader_enabled', 'canvases_enabled', 'app_sharing_enabled', 'live_previews_enabled', 'monitor_enabled', "
-                          "'native_windows_enabled', 'apps_open_in_home', "
+                          "'native_windows_enabled', "
                           "'task_notify_terminal_sessions', "
                           "'project_queue_enabled', "
                           "'lan_enabled', "
