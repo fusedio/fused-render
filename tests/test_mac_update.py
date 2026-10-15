@@ -1501,7 +1501,14 @@ def _never_sweep_the_real_applications(monkeypatch):
     monkeypatch.setattr(mac, "sweep_old_bundles", lambda parent, **kw: [])
 
 
+def _sweep(parent, **kw):
+    """The real sweep with `ps` faked empty unless the test says otherwise."""
+    kw.setdefault("executables", lambda: ["/bin/ps", "/usr/bin/zsh"])
+    return _sweep_old_bundles(str(parent), **kw)
+
+
 def _old_bundles(parent):
+    """Names in `parent` that look like a swap's hidden sibling."""
     return sorted(d for d in os.listdir(parent) if mac._old_bundle_re().match(d))
 
 
@@ -1617,6 +1624,8 @@ def test_two_swaps_in_one_process_keep_both_old_bundles(monkeypatch, tmp_path):
 
 
 def test_a_failed_second_rename_rolls_the_bundle_back(monkeypatch, tmp_path):
+    """The rollback rename is unchanged by the swap keeping its old name:
+    the bundle comes back under its real name and no sibling is left."""
     manager = _dmg_manager(monkeypatch, tmp_path)
     (tmp_path / "FusedRender.app" / "Contents").mkdir()
     (tmp_path / "FusedRender.app" / "Contents" / "marker").write_text("the running bundle")
@@ -1630,6 +1639,9 @@ def test_a_failed_second_rename_rolls_the_bundle_back(monkeypatch, tmp_path):
 
 
 def test_sweep_removes_only_dead_pids_leftovers_of_this_flavor(tmp_path):
+    """Everything that is not exactly a dead-pid sibling of THIS flavor stays:
+    live pids, our own pid, FusedBot's, a branch build's, the real bundle,
+    the staged copy, an unparseable name, a symlink wearing the name."""
     parent = tmp_path / "Applications"
     parent.mkdir()
 
@@ -1650,7 +1662,7 @@ def test_sweep_removes_only_dead_pids_leftovers_of_this_flavor(tmp_path):
     link = parent / ".FusedRender-old-444.app"
     link.symlink_to(current)
 
-    removed = _sweep_old_bundles(str(parent), alive=lambda pid: pid == 111)
+    removed = _sweep(parent, alive=lambda pid: pid == 111)
 
     assert sorted(removed) == sorted([str(dead), str(dead_stamped)])
     assert not dead.exists() and not dead_stamped.exists()
@@ -1660,17 +1672,20 @@ def test_sweep_removes_only_dead_pids_leftovers_of_this_flavor(tmp_path):
 
 
 def test_sweep_scopes_to_the_branch_suffixed_bundle_name(monkeypatch, tmp_path):
+    """A branch build (`FusedRender-feature.app`) sweeps its own leftovers
+    only — the main build's are another install's."""
     monkeypatch.setattr(mac, "_BUNDLE_NAME", "FusedRender-feature")
     (tmp_path / ".FusedRender-feature-old-222.app").mkdir()
     (tmp_path / ".FusedRender-old-222.app").mkdir()
 
-    removed = _sweep_old_bundles(str(tmp_path), alive=lambda pid: False)
+    removed = _sweep(tmp_path, alive=lambda pid: False)
 
     assert removed == [str(tmp_path / ".FusedRender-feature-old-222.app")]
     assert (tmp_path / ".FusedRender-old-222.app").is_dir()  # main build's, not ours
 
 
 def test_sweep_keeps_going_past_a_bad_entry(monkeypatch, tmp_path):
+    """One entry whose probe blows up costs that entry, not the sweep."""
     (tmp_path / ".FusedRender-old-1.app").mkdir()
     (tmp_path / ".FusedRender-old-2.app").mkdir()
 
@@ -1679,16 +1694,19 @@ def test_sweep_keeps_going_past_a_bad_entry(monkeypatch, tmp_path):
             raise RuntimeError("probe blew up")
         return False
 
-    assert _sweep_old_bundles(str(tmp_path), alive=alive) == [
+    assert _sweep(tmp_path, alive=alive) == [
         str(tmp_path / ".FusedRender-old-2.app")]
     assert (tmp_path / ".FusedRender-old-1.app").is_dir()
 
 
 def test_sweep_survives_an_unreadable_parent(tmp_path):
-    assert _sweep_old_bundles(str(tmp_path / "missing")) == []
+    """A parent that cannot be listed is an empty sweep, not an exception."""
+    assert _sweep(tmp_path / "missing") == []
 
 
 def test_pid_alive_only_trusts_a_real_no_such_process(monkeypatch):
+    """Only ESRCH means dead; EPERM, an overflowing pid and pid 0 all read as
+    alive, because a wrong "dead" deletes running code."""
     def kill(pid, sig, *, error):
         if error is not None:
             raise error
@@ -1716,7 +1734,7 @@ def test_sweep_on_a_real_dead_pid(tmp_path):
     alive = tmp_path / f".FusedRender-old-{os.getpid()}.app"
     (alive / "Contents").mkdir(parents=True)
 
-    assert _sweep_old_bundles(str(tmp_path)) == [str(gone)]
+    assert _sweep(tmp_path) == [str(gone)]
     assert alive.is_dir()
 
 
@@ -1732,8 +1750,8 @@ def test_start_sweeps_the_resolved_bundle_parent_once(monkeypatch, tmp_path):
     swept = []
     done = threading.Event()
 
-    def record(parent):
-        swept.append(parent)
+    def record(parent, *, keep):
+        swept.append((parent, keep))
         done.set()
 
     monkeypatch.setattr(mac, "_manager", None)
@@ -1743,10 +1761,13 @@ def test_start_sweeps_the_resolved_bundle_parent_once(monkeypatch, tmp_path):
     first = mac.start()
     assert first is not None and mac.start() is first
     assert done.wait(5)
-    assert swept == [os.path.realpath(str(real_parent))]
+    real = os.path.realpath(str(real_parent / "FusedRender.app"))
+    assert swept == [(os.path.dirname(real), real)]
 
 
 def test_a_check_only_manager_never_sweeps_old_bundles(monkeypatch):
+    """A dev run (no bundle) has nothing to sweep and no /Applications to
+    look in — `start()` must not even try."""
     monkeypatch.setattr(mac, "_manager", None)
     monkeypatch.setattr(mac, "bundle_path", lambda: None)
     monkeypatch.setattr(mac, "sweep_old_bundles",
@@ -1754,3 +1775,59 @@ def test_a_check_only_manager_never_sweeps_old_bundles(monkeypatch):
     monkeypatch.setenv(mac.DEV_MANAGER_ENV, "1")
     monkeypatch.setenv("FUSED_RENDER_NO_AUTO_UPDATE", "1")
     assert mac.start() is not None
+
+
+def test_sweep_never_removes_the_callers_own_bundle(tmp_path):
+    """Someone launched the hidden sibling itself (double-click in Finder):
+    that app's `start()` sweeps a parent holding a dead-pid name that is the
+    very bundle it runs from. `keep` is that bundle, by resolved path."""
+    mine = tmp_path / ".FusedRender-old-222.app"
+    (mine / "Contents").mkdir(parents=True)
+    other = tmp_path / ".FusedRender-old-333.app"
+    (other / "Contents").mkdir(parents=True)
+    link = tmp_path / "link-to-mine.app"
+    link.symlink_to(mine)
+
+    removed = _sweep(tmp_path, keep=str(link), alive=lambda pid: False)
+
+    assert removed == [str(other)]
+    assert mine.is_dir()
+
+
+def test_sweep_keeps_a_bundle_something_still_runs_from(tmp_path):
+    """The pid in the name is the process that swapped, not the only thing
+    that can execute from the bundle: a worker it spawned may outlive it.
+    Any running executable under the bundle keeps it for another boot."""
+    orphaned = tmp_path / ".FusedRender-old-222.app"
+    (orphaned / "Contents" / "MacOS").mkdir(parents=True)
+    free = tmp_path / ".FusedRender-old-333.app"
+    (free / "Contents" / "MacOS").mkdir(parents=True)
+    ps = [str(orphaned / "Contents" / "MacOS" / "python"), "/usr/bin/zsh"]
+
+    removed = _sweep(tmp_path, alive=lambda pid: False, executables=lambda: ps)
+
+    assert removed == [str(free)]
+    assert orphaned.is_dir()
+
+
+def test_sweep_keeps_everything_when_ps_has_no_answer(tmp_path):
+    """No `ps` listing means no second opinion: nothing goes."""
+    gone = tmp_path / ".FusedRender-old-222.app"
+    (gone / "Contents").mkdir(parents=True)
+
+    assert _sweep(tmp_path, alive=lambda pid: False, executables=lambda: []) == []
+    assert gone.is_dir()
+    assert mac._running_executables(
+        run=lambda *a, **k: (_ for _ in ()).throw(OSError())) == []
+
+
+def test_running_executables_reads_ps(monkeypatch):
+    """`ps -axo comm=` lines, stripped, empty on a non-zero exit."""
+    ok = subprocess.CompletedProcess([], 0, "/a/b\n  /c/d  \n\n", "")
+    assert mac._running_executables(run=lambda *a, **k: ok) == ["/a/b", "/c/d"]
+    bad = subprocess.CompletedProcess([], 1, "", "")
+    assert mac._running_executables(run=lambda *a, **k: bad) == []
+    assert mac._in_use("/x/.FusedRender-old-1.app",
+                       ["/x/.FusedRender-old-1.app/Contents/MacOS/python"])
+    assert not mac._in_use("/x/.FusedRender-old-1.app",
+                           ["/x/.FusedRender-old-10.app/Contents/MacOS/python"])

@@ -186,14 +186,44 @@ def detect_method(bundle: str | None, *, brew: str | None = None,
 # It is removed by `sweep_old_bundles` on a later boot, once that pid is
 # gone — never by the process still running from it.
 def _old_bundle_re() -> re.Pattern[str]:
-    # Built per call, not at import: `_BUNDLE_NAME` carries the branch
-    # suffix and tests rebind it.
+    """The hidden-sibling shape the swap writes, group 1 the swapping pid.
+    Built per call, not at import: `_BUNDLE_NAME` carries the branch suffix
+    and tests rebind it. The stamp is optional so leftovers written before
+    it existed (`-old-<pid>.app`) are matched too."""
     return re.compile(
         r"^\." + re.escape(_BUNDLE_NAME) + r"-old-(\d+)(?:-\d+)?\.app$")
 
 
 def _old_bundle_path(parent: str, pid: int) -> str:
+    """Where this swap parks the bundle it replaces: unique per call."""
     return os.path.join(parent, f".{_BUNDLE_NAME}-old-{pid}-{time.time_ns()}.app")
+
+
+def _running_executables(run=subprocess.run) -> list[str]:
+    """Every live process's executable path, from `ps`. Empty on any
+    failure (a real listing always holds at least `ps` itself) — the caller
+    then has no second opinion and keeps every bundle."""
+    try:
+        result = run(["/bin/ps", "-axo", "comm="], capture_output=True,
+                     text=True, encoding="utf-8", errors="replace", timeout=10)
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return []
+    if result.returncode != 0:
+        return []
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
+def _in_use(bundle: str, executables: list[str]) -> bool:
+    """True when any running executable lives inside `bundle` — an app
+    launched from the hidden sibling itself, or anything it spawned. Limits,
+    stated: `ps` reports the path a process was exec'd under, so a worker
+    spawned BEFORE the swap still reads `/Applications/<Bundle>.app/…` after
+    its bundle was renamed away, and is not caught here; the app's own
+    shutdown reaps those, so the gap is a crash-then-relaunch-before-the-
+    children-die window, and the dead-pid check is what actually guards
+    the common case."""
+    prefix = bundle.rstrip(os.sep) + os.sep
+    return any(exe.startswith(prefix) for exe in executables)
 
 
 def _pid_alive(pid: int) -> bool:
@@ -213,10 +243,13 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
-def sweep_old_bundles(parent: str, *, alive=_pid_alive) -> list[str]:
+def sweep_old_bundles(parent: str, *, keep: str | None = None,
+                      alive=_pid_alive,
+                      executables=_running_executables) -> list[str]:
     """Remove the `.<Bundle>-old-<pid>[-<ns>].app` siblings earlier swaps
-    left in `parent`, for every pid that is no longer running. Returns the
-    paths it removed.
+    left in `parent`, for every pid that is no longer running and no
+    process still executes from. Returns the paths it removed. `keep` is
+    the caller's own resolved bundle, never removed whatever its name.
 
     Why the old bundle must outlive the process that swapped it away
     (verified 2026-10-15, FusedRender 0.6.46 -> 0.6.48 on macOS 26): TCC
@@ -237,7 +270,14 @@ def sweep_old_bundles(parent: str, *, alive=_pid_alive) -> list[str]:
     exact hidden-sibling shape the swap writes, and to pids that `alive`
     says are gone. A recycled pid only ever makes the sweep SKIP a bundle
     (deleted on a later boot), never delete one a live process is running
-    from. The sweep is best-effort: an unreadable `parent`, a bundle that
+    from. The pid in the name is the process that did the swap, not the
+    only thing that can be running from the bundle (CodeRabbit, PR #1667):
+    a child worker that outlived it, or — someone double-clicking the
+    hidden sibling — a whole app launched from it, whose own `start()`
+    would otherwise sweep the code it is executing. So the caller's own
+    bundle is excluded by resolved path, and every candidate is checked
+    against the executables `ps` lists before it goes. An empty `ps` answer
+    keeps everything. The sweep is best-effort: an unreadable `parent`, a bundle that
     will not delete, or a name that will not parse costs nothing but that
     one entry. It runs regardless of FUSED_RENDER_NO_AUTO_UPDATE — that
     flag is about not checking for updates, and the leftovers are from
@@ -248,6 +288,8 @@ def sweep_old_bundles(parent: str, *, alive=_pid_alive) -> list[str]:
     except OSError:
         return removed
     pattern = _old_bundle_re()
+    keep_real = os.path.realpath(keep) if keep else None
+    running: list[str] | None = None  # one `ps`, and only if a candidate needs it
     for name in names:
         try:
             match = pattern.match(name)
@@ -259,6 +301,12 @@ def sweep_old_bundles(parent: str, *, alive=_pid_alive) -> list[str]:
             full = os.path.join(parent, name)
             if os.path.islink(full) or not os.path.isdir(full):
                 continue  # not something the swap wrote
+            if keep_real is not None and os.path.realpath(full) == keep_real:
+                continue  # the bundle this very process runs from
+            if running is None:
+                running = executables()
+            if not running or _in_use(full, running):
+                continue  # `ps` failed, or something still runs from it
             shutil.rmtree(full)
         except Exception:  # noqa: BLE001 - one entry must never end the sweep
             logger.debug("could not sweep old bundle %s in %s", name, parent,
@@ -557,9 +605,10 @@ def start() -> UpdateManager | None:
                 # directory `_install_dmg` swaps in, which for a symlinked
                 # bundle is not the link's) — a dev run has no swaps to clean
                 # up after and no /Applications to look in.
-                parent = os.path.dirname(os.path.realpath(_manager._bundle))
-                threading.Thread(target=sweep_old_bundles, args=(parent,),
-                                 daemon=True,
+                own = os.path.realpath(_manager._bundle)
+                threading.Thread(target=sweep_old_bundles,
+                                 args=(os.path.dirname(own),),
+                                 kwargs={"keep": own}, daemon=True,
                                  name="fused-render-update-sweep-old").start()
             _manager.start_auto_checks()
         return _manager
