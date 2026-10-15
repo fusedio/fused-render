@@ -10,10 +10,10 @@ import { Bot, Code2, Cpu, Mic } from "lucide-react";
 import { bundleName } from "@platform/lib/flavor";
 import { StepHeader } from "./StepHeader";
 
-// Versioned filename: render.fused.io sits behind CloudFront with a one-day
-// cache and no query-string keying, so a new cut has to ship under a new name
-// or every installed app keeps showing the old one. Rename here AND in
-// scripts/download_page/index.html together.
+// Versioned filename: the asset ships with a one-day browser cache and
+// CloudFront ignores query strings, so a new cut has to ship under a new name
+// or an app that already played the old one keeps showing it. Rename here AND
+// in scripts/download_page/index.html together.
 const HERO_VIDEO = "https://render.fused.io/assets/showcase/hero-v3.mp4";
 
 const FEATURES = [
