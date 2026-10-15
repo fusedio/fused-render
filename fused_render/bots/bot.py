@@ -26,6 +26,7 @@ import threading
 import time
 import uuid
 
+from fused_render import __version__, _flavor, installed
 from fused_render.bots import apptools, imessage, store
 from fused_render.bots import browser as browser_mod
 from fused_render.bots import browsers
@@ -564,6 +565,7 @@ class Bot:
         self.task_origin = "manual"
         self.task_images = []  # image blocks of an app-started task (docs §13), consumed by the agent engine
         self.task_via = dict(chan.WEB)  # where the running task came from (channels/base.py Via); web by default
+        self._restart_said = None  # the on-disk version start_task's restart gate last told a non-chat starter about
         self.engine = None        # "steps" | "agent" while a task runs
         self.wake = threading.Event()
         self.asking = False       # the task thread is blocked on a question/approval for the user
@@ -1317,16 +1319,19 @@ class Bot:
                 queued = self._drain_inbox()
                 if self.thread is threading.current_thread():
                     self.thread = None
+            started = False
             if queued:
-                self.start_task("\n".join(queued), label=queued[0])
+                started = self.start_task("\n".join(queued), label=queued[0])
             elif setup:
                 # A site preset's setup task: open the sign-in page and pop the
                 # login window, so the user is asked to log in now rather than
                 # when the first real task hits the wall. A task the user typed
                 # meanwhile wins; the setup is dropped (its first task will ask).
+                # A refused start (start_task's gates) drops it the same way.
                 self.emit("system", "Opening the sign-in page now so you can log in before the first task.")
-                self.start_task(setup, label=f"Sign in to {self.meta.get('name') or 'the site'}", origin="setup")
-            else:
+                started = self.start_task(setup, label=f"Sign in to {self.meta.get('name') or 'the site'}", origin="setup")
+            if not started and not self.running():
+                # Not when a task typed meanwhile won the slot: that one owns the status now.
                 self.set_status("idle", note="")
         self.thread = threading.Thread(target=go, daemon=True, name=f"greet-{self.id}")
         self.thread.start()
@@ -1383,8 +1388,8 @@ class Bot:
         if not setup:
             return "none"
         self.emit("system", "Opening Google's sign-in in my browser: once you are signed in, every bot sharing it is too.")
-        self.start_task(setup, label="Sign in to Google", origin="setup")
-        return "started"
+        # A refused start (start_task's gates) has dropped the setup: the first real task asks to sign in instead.
+        return "started" if self.start_task(setup, label="Sign in to Google", origin="setup") else "none"
 
     def _setup_probe(self):
         """The background measure behind a cold health cache, then the open it
@@ -1882,17 +1887,25 @@ class Bot:
                 return
             # While the user holds the browser the bot stays stopped: the slot is skipped like a busy one.
             held = bool(self.meta.get("control"))
-            busy = held or (self.thread is not None and self.thread.is_alive())
+            # An app updated on disk under this process skips the slot like a busy one (start_task would refuse it
+            # anyway, see its gate), with its own reason, so the run row says "restart", not "busy".
+            stale = installed.pending_restart()
+            busy = held or bool(stale) or (self.thread is not None and self.thread.is_alive())
             prev_last = r.get("last")
             r["last"] = fired_at = time.time()  # `fired_at` is this fire's stamp: the refusal below checks it is still r["last"]
             run = None  # the row this fire adds when it starts the task; the refusal below patches that one
             if busy:
-                why = "you had the browser" if held else "bot was busy"
+                why = "you had the browser" if held else (f"app updated to v{stale}, restart it" if stale else "bot was busy")
                 # The busy task may be this routine's own run ("started"): that stays, or `_routine_outcome` (which
                 # finds the routine by last_result == "started") never lands the result and the row runs forever.
                 if r.get("last_result") != "started":
                     r["last_result"] = f"skipped: {why}"
-                ev = self.emit("system", f"Routine \"{r['task'][:60]}\" skipped: {'you had the browser' if held else 'bot busy'}")
+                if stale and self._restart_said == stale and not manual:
+                    ev = {}  # the run row keeps the record; the chat heard it once (an interval fires until the restart)
+                else:
+                    ev = self.emit("system", f"Routine \"{r['task'][:60]}\" skipped: {why if stale else ('you had the browser' if held else 'bot busy')}")
+                    if stale:
+                        self._restart_said = stale
                 self._run_add(r, "skipped", why, seq=ev.get("seq"), manual=manual)
             else:
                 r["last_result"] = "started"
@@ -2299,6 +2312,26 @@ class Bot:
             return False
         if self.browser.headed():
             self.emit("system", f"Not started: the browser is open as a real window on your desktop. Click \"Back here\" (or close the window), then try again: {label or task}")
+            return False
+        stale = installed.pending_restart()
+        if stale:
+            # The app updated itself on disk (or a DMG was dragged over it) while this process kept running. The
+            # engines below are imported lazily: `from fused_render.bots import agent_engine` reads the NEW file into
+            # this OLD process, and the new engine calling into the bot.py already in memory is an AttributeError
+            # (a pre-#1617 bot.py has no `step_cap`; Akshil, 2026-10-14). The restart card is dismissible and the
+            # auto-download pref swaps with nobody watching, so the task says why instead of tripping over the skew.
+            # Explicit via, as the Super Bot gate above: this runs on the caller's thread, and a phone or text sender
+            # is answered by the router from the via (`via=None` for the web, or emit() would stamp a serving
+            # thread's). Said once per version to anything but the chat: a queued hand-off retries on every pump
+            # (_handoff_start) and would write this line each time; the user typing sees it every time.
+            line = (f"Not started: {_flavor.display_name()} is now v{stale} on disk, and this run is still "
+                    f"v{__version__}. Restart the app, then try again: {label or task}")
+            if chan.is_web(via):
+                self.emit("system", line, via=None)
+            elif self._restart_said != stale:
+                self._restart_said = stale
+                self.emit("system", line, via=dict(via))
+            logger.info("bot %s: start_task refused, app on disk is v%s, running v%s", self.id, stale, __version__)
             return False
         with self.lock:
             if self.deleted:

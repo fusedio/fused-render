@@ -35,7 +35,11 @@ nothing about what an install does, and nothing in the UI mentions Homebrew.
   <scheme>://relaunch (app.begin_relaunch; fused-render:// or fused-bot://
   per flavor) respawns from disk. That
   relaunch guard REQUIRES the drift, which is why the swap happens on install
-  rather than being deferred to quit.
+  rather than being deferred to quit. The cost of swapping under a live
+  process: a module imported LAZILY after the swap is the new file in the old
+  process (the frontend has the same story with a lazily-loaded chunk, see
+  `_manager._install`). Work that lazy-loads code asks
+  `installed.pending_restart()` first and says "restart" (bots: `start_task`).
 
 An install also mirrors itself into the Activity dock as a server-owned job
 (`sys:update:<version>`, the same bridge shape `server/routers/index.py`'s
