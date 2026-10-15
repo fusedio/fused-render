@@ -316,7 +316,8 @@ export function CatalogNotices({ snap }: { snap: CatalogSnapshot }) {
 }
 
 /** The quiet last line of the page: where the catalog came from and when,
- *  plus a refresh that drops the local cache and re-reads the repo. */
+ *  plus a refresh that drops the local cache and re-fetches the catalog
+ *  from udf.ai (it does not re-ingest the repo). */
 export function CatalogFooter({ catalog, loading = false }: { catalog: Catalog | null; loading?: boolean }) {
   if (!catalog || catalog.source !== "udf-api") return null;
   const version = String(catalog.catalog_version ?? "").slice(0, 8);
@@ -332,7 +333,7 @@ export function CatalogFooter({ catalog, loading = false }: { catalog: Catalog |
         className="mp-footer-refresh"
         onClick={() => void refreshCatalog({ force: true })}
         disabled={loading}
-        title="Refresh catalog"
+        title="Re-fetch catalog from udf.ai"
         aria-label="Refresh catalog"
       >
         <RefreshCw size={12} strokeWidth={2.2} aria-hidden="true" className={loading ? "is-spinning" : ""} />
