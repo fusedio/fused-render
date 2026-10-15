@@ -30,6 +30,7 @@ import {
 } from "@platform/lib/layout-codec";
 import type { Config } from "@platform/lib/api";
 import { SplitRightIcon, SplitDownIcon } from "@platform/ui/SplitIcons";
+import { MaximizeIcon, RestoreIcon } from "@platform/ui/MaximizeIcons";
 import PaneModeMenu from "@apps/explorer/PaneModeMenu";
 import { OverflowMenu } from "@apps/explorer/BarMenu";
 import { BookmarkStar, UpdateBookmarkButton } from "@apps/explorer/Breadcrumb";
@@ -91,26 +92,8 @@ function findLeaf(node: LayoutNode, id: number): LayoutLeaf | null {
 const ICONS = {
   splitRight: <SplitRightIcon />,
   splitDown: <SplitDownIcon />,
-  max: (
-    <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-      <path
-        d="M9.5 2.5h4v4M6.5 13.5h-4v-4M13.5 2.5L9.75 6.25M2.5 13.5l3.75-3.75"
-        stroke="currentColor"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  ),
-  restore: (
-    <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-      <path
-        d="M6.5 5.5h-4v-4M9.5 10.5h4v4M2.5 5.5l3.5-3.5M13.5 10.5L10 14"
-        stroke="currentColor"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  ),
+  max: <MaximizeIcon />,
+  restore: <RestoreIcon />,
   close: (
     <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
       <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" strokeLinecap="round" />

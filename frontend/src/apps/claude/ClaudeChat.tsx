@@ -28,7 +28,9 @@ import {
   useState,
   useSyncExternalStore,
   type MutableRefObject,
+  type ReactElement,
 } from "react";
+import { createPortal } from "react-dom";
 
 import { confirmLeave, currentUrl, navigateUrl } from "@platform/lib/router";
 import { registerChatComposer } from "@platform/lib/chat-focus";
@@ -97,6 +99,7 @@ import {
   type PaneSrcFlags,
   type TargetNoun,
 } from "./pane";
+import { useSideMaximized } from "@platform/lib/side-maximized-store";
 import {
   AnnStrip,
   ArtStrip,
@@ -144,10 +147,8 @@ import { WorktreeMenu, paneChatUrl, type WorktreeRequest } from "./ui";
 import { WorktreeHintChip, visibleWorktreeHint } from "./ui/WorktreeHintChip";
 import { TasksContext, TasksPanel, tasksPanelScope, useTasksOpen } from "./ui";
 import { FilePreviewProvider } from "./ui/filePreview";
-import { SessionFiles } from "./ui/SessionFiles";
 import { DockRow } from "./ui/DockRow";
-import { touchedFiles } from "./protocol/filePaths";
-import { taskIndex } from "./protocol/tasks";
+import { summarizeTasks, taskIndex } from "./protocol/tasks";
 import { recapAnchor } from "./protocol/recap";
 import {
   queueEnabled,
@@ -677,6 +678,31 @@ function ChatBody(props: ChatBodyProps) {
     onArriveChat: () => annRef.current?.arriveNarrowChat(),
     onRemeasure: () => annRef.current?.remeasure(),
   });
+  // Full screen hides the file preview, and the Screenshot / Comment / Annotate
+  // row (hidden by CSS then) acts on it, so entering full screen disarms the
+  // mode the same way arriving in the narrow chat view does. `arriveNarrowChat`
+  // only turns the armed mode off; it does not touch a recording. Gated on the
+  // chat living in a side pane: the store is global, other hosts are unaffected.
+  const sideMaximized = useSideMaximized();
+  useEffect(() => {
+    if (!sideMaximized) return;
+    if (!rootRef.current?.closest(".preview-side, .listing-pane-slot")) return;
+    annRef.current?.arriveNarrowChat();
+  }, [sideMaximized]);
+  // Full screen merges the pane's header and this chat's `.c-anntools` row into
+  // ONE top row: the host's header renders an empty `.side-header-lead` where its
+  // close button was, and the row is portaled into it. State set from an effect,
+  // so the first render (and every non-maximized one) keeps the row in place.
+  const [leadHost, setLeadHost] = useState<HTMLElement | null>(null);
+  useEffect(() => {
+    if (!sideMaximized) {
+      setLeadHost(null);
+      return;
+    }
+    const host = rootRef.current?.closest(".preview-side, .listing-pane-slot");
+    setLeadHost((host?.querySelector(".side-header-lead") as HTMLElement | null) ?? null);
+  }, [sideMaximized]);
+  const inLead = (row: ReactElement) => (leadHost ? createPortal(row, leadHost) : row);
   // The noun the app-state block reads (see `paneNounRef`'s own note). Written
   // on every render rather than in an effect: the watcher pulls it lazily at
   // BLOCK time, so what matters is that the ref is current whenever a send
@@ -4315,8 +4341,6 @@ function ChatBody(props: ChatBodyProps) {
     inChat,
   );
   artTick.current = art.poll;
-  // The files this chat wrote or edited, for the "Files (N)" list.
-  const sessionFiles = useMemo(() => touchedFiles(state.turns), [state.turns]);
   const [snapNonce, setSnapNonce] = useState(0);
   snapInvalidate.current = () => setSnapNonce((n) => n + 1);
 
@@ -4784,7 +4808,7 @@ function ChatBody(props: ChatBodyProps) {
         onDragLeave={onDragLeave}
         onDrop={onDrop}
       >
-        {!compact && !peek ? (
+        {!compact && !peek ? inLead(
           // ONE HEADER ROW, WHICH IS WHAT T HAS (T:3934-4010, P2-1). `#anntools`
           // is a real layout row above both views and it carries FIVE things:
           // `← Chats` at its left end, then the picker, the three preview seats,
@@ -5091,11 +5115,10 @@ function ChatBody(props: ChatBodyProps) {
             {/* THE RUN'S BACKGROUND TASKS (SPEC T-5), between the transcript and
                 the box: one line until opened. Not in the compact cut — a tile
                 is read, and its chips already say what is running. */}
-            {/* Files (N) shares this row: a pill at the right, its list a popover. */}
             {!compact ? (
               <DockRow
                 tasks={
-                  state.tasks.length || tasksOpen ? (
+                  summarizeTasks(state.tasks) || tasksOpen ? (
                     <TasksPanel
                       tasks={state.tasks}
                       runId={state.tasksRunId}
@@ -5106,7 +5129,6 @@ function ChatBody(props: ChatBodyProps) {
                     />
                   ) : null
                 }
-                files={sessionFiles.length ? <SessionFiles files={sessionFiles} /> : null}
               />
             ) : null}
             {/* …AND ONE SUMMARY OVER THE BOX. The rows are in a transcript that

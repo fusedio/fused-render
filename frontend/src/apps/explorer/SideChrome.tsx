@@ -26,6 +26,7 @@
 // any moment, and each sits where its own action makes sense.
 import { useRef, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import PanelIcon from "@platform/ui/PanelIcon";
+import { MaximizeIcon, RestoreIcon } from "@platform/ui/MaximizeIcons";
 import { modeTitle } from "@platform/lib/mode-name";
 import { Tabs, TabsList, TabsTrigger } from "@platform/shadcn/ui/tabs";
 import { reopenWidth } from "@platform/lib/panel-drag";
@@ -56,6 +57,32 @@ export function SideCloseButton({ what, onClick }: { what: string; onClick: () =
           window read as one idea rather than as two chevrons pointing
           opposite ways for unrelated reasons. */}
       <PanelIcon side="right" />
+    </button>
+  );
+}
+
+// FULL SCREEN for the column: expands it over the whole window (and back). Lives
+// in the header's tail, after the tab strip, on both surfaces. The state is
+// lib/side-maximized-store; the layout is `.preview-side.maximized` /
+// `.listing-pane-slot.maximized` (preview.css, explorer.css).
+export function SideMaximizeButton({
+  maximized,
+  onToggle,
+}: {
+  maximized: boolean;
+  onToggle: () => void;
+}) {
+  const label = maximized ? "Exit full screen" : "Full screen";
+  return (
+    <button
+      type="button"
+      className="bar-ctl bar-ctl-icon side-maximize"
+      title={label}
+      aria-label={label}
+      aria-pressed={maximized}
+      onClick={onToggle}
+    >
+      {maximized ? <RestoreIcon /> : <MaximizeIcon />}
     </button>
   );
 }

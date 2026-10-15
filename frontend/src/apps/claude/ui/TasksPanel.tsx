@@ -227,8 +227,8 @@ export function TasksPanel({ tasks, runId, sessionId = null, open, onToggle, par
     });
   const dismiss = (taskId: string) => setDismissed((s) => new Set(s).add(taskId));
 
-  if (!open && !tasks.length) return null;
   const summary = summarizeTasks(tasks);
+  if (!open && !summary) return null;
   const sorted = sortTasks(tasks);
   const rows = showEnded
     ? sorted
@@ -249,7 +249,6 @@ export function TasksPanel({ tasks, runId, sessionId = null, open, onToggle, par
     <section className={cn("chat-tasks", open && "is-open")} aria-label="Agents & shells">
       <button type="button" className="chat-tasks-head" aria-expanded={open} onClick={onToggle}>
         <ChevronRight className="chat-tasks-chev" size={14} aria-hidden="true" />
-        <span className="chat-tasks-title">Agents &amp; shells</span>
         {summary ? <span className="chat-tasks-summary">{summary}</span> : null}
       </button>
       {open ? (
