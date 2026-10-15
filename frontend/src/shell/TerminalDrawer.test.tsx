@@ -447,6 +447,79 @@ test("a non-409 send failure propagates as-is, with no clipboard fallback", asyn
   expect(copied).toEqual([]);
 });
 
+// ---- a read-only Claude tab is not a pty: treated like a busy terminal -----
+
+test("Claude tab as target + create: never sends to the Claude id, opens a new terminal in the request's cwd", async () => {
+  const sent: Array<[string, string]> = [];
+  const adopted: Array<[string, unknown]> = [];
+  const created: Array<string | undefined> = [];
+  await sendPendingRequestIfAny(
+    "claude:c1",
+    { fallbackCwd: "/drawer" },
+    {
+      take: () => ({ cwd: "/tmp/foo", command: "ls" }),
+      send: async (id: string, data: string) => {
+        sent.push([id, data]);
+        return { ok: true };
+      },
+      create: async (cwd?: string) => {
+        created.push(cwd);
+        return "term-9";
+      },
+      adopt: (id: string, tab: unknown) => adopted.push([id, tab]),
+    },
+  );
+  expect(sent.map(([id]) => id)).toEqual(["term-9"]);
+  expect(created).toEqual(["/tmp/foo"]);
+  expect(adopted.map(([id]) => id)).toEqual(["term-9"]);
+});
+
+test("Claude tab as target + create, request without cwd: new terminal starts in fallbackCwd", async () => {
+  const sent: Array<[string, string]> = [];
+  const created: Array<string | undefined> = [];
+  await sendPendingRequestIfAny(
+    "claude:c1",
+    { fallbackCwd: "/drawer" },
+    {
+      take: () => ({ command: "ls" }),
+      send: async (id: string, data: string) => {
+        sent.push([id, data]);
+        return { ok: true };
+      },
+      create: async (cwd?: string) => {
+        created.push(cwd);
+        return "term-9";
+      },
+      adopt: () => {},
+    },
+  );
+  expect(created).toEqual(["/drawer"]);
+  expect(sent.map(([id]) => id)).toEqual(["term-9"]);
+});
+
+test("Claude tab as target + no create: copies the full command and throws TerminalBusyError without sending", async () => {
+  const sent: string[] = [];
+  const copied: string[] = [];
+  const attempt = sendPendingRequestIfAny(
+    "claude:c1",
+    {},
+    {
+      take: () => ({ cwd: "/tmp/foo", command: "ls" }),
+      send: async (id: string) => {
+        sent.push(id);
+        return { ok: true };
+      },
+      copy: async (text: string) => {
+        copied.push(text);
+        return true;
+      },
+    },
+  );
+  await expect(attempt).rejects.toThrow(TerminalBusyError);
+  expect(sent).toEqual([]);
+  expect(copied).toEqual(["cd '/tmp/foo' && ls"]);
+});
+
 test("closeTerminalDock stays idempotent when called on an already-closed drawer", () => {
   let calls = 0;
   function Probe() {
