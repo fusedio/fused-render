@@ -9093,10 +9093,10 @@ def main(action: str = "start", file: str = "", message: str = "",
         # `file` rides along so the poll can refuse a run that is not about
         # this page's target (see _poll) — optional, because not every caller
         # has a page (claude_spawn's record loop).
-        # `inbox` rows are the queue's own picture of a mid-turn follow-up; the
-        # page says whether it draws them (`queue`), and a template cannot read
-        # the pref itself. Flag off, the payload is main's.
-        return _poll(run_id, file, app_reads=native == "1", inbox=queue == "1")
+        # `inbox` rows are the CLI's own picture of a mid-turn follow-up. They
+        # are reported regardless of the queue pref (`queue` is no longer
+        # read here): a reload must redraw the follow-ups the CLI still holds.
+        return _poll(run_id, file, app_reads=native == "1", inbox=True)
     if action == "decide":
         # `answers` arrives as a JSON string for the same reason `state` does
         # below — params cross into python string-shaped — and is only read for
@@ -9134,7 +9134,7 @@ def main(action: str = "start", file: str = "", message: str = "",
     if action == "history":
         if not file:
             return {"error": "missing target file (no _file param?)"}
-        return _history(file, session_id, app_reads=native == "1", inbox=queue == "1")
+        return _history(file, session_id, app_reads=native == "1", inbox=True)
     if action == "snapshots":
         # `enrich` arrives as a STRING like every other param (the binder is
         # str-shaped), so "" and "0" both mean don't — the boot call sends

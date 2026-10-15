@@ -977,9 +977,11 @@ describe("a follow-up the live run is still holding", () => {
     // seconds: a line saying so would be this feature narrating the app's normal
     // behaviour back at the reader (design.md, UI). So no `.c-waiting-line`, no
     // dashed edge, no delete — the transcript's own user turn, full strength.
-    // Drawn only under the flag (review, 2026-09-16): flag off, a mid-turn
-    // reload paints exactly what main paints.
-    const at = CHAT.search(/\{queueOn &&\s+inboxRows\.map\(\(row\) => \(/);
+    // Drawn WHATEVER THE FLAG SAYS: a mid-turn reload must redraw the
+    // follow-ups the CLI still holds, and flag off the composer's "queued"
+    // line counts them too (next test).
+    const at = CHAT.search(/\{inboxRows\.map\(\(row\) => \(/);
+    expect(CHAT).not.toMatch(/queueOn &&\s+inboxRows\.map/);
     expect(at).toBeGreaterThan(-1);
     // INSIDE THE LOG (Akshil, 2026-10-04): the rows ride Transcript's
     // `trailing` slot, after the last turn and the recap, so they scroll with
@@ -1001,5 +1003,16 @@ describe("a follow-up the live run is still holding", () => {
     expect(inbox).toContain("max-width: 720px");
     expect(inbox).toContain("padding: 0 20px 6px");
     expect(inbox).not.toContain("dashed");
+  });
+
+  it("counts inbox rows in the composer's queued line, flag off", () => {
+    // A reload drops `state.queued` (page memory) but the run still reports the
+    // inbox; `inboxRows` is already deduped against it, so appending is safe.
+    expect(CHAT).toContain(
+      "queued: [...state.queued, ...inboxRows.map((r) => r.text)],",
+    );
+    expect(CHAT).toContain("      state.queued,\n      inboxRows,\n");
+    // The Composer draws that line only with the flag off.
+    expect(COMPOSER).toContain("!queueOn");
   });
 });
