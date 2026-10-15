@@ -122,7 +122,11 @@ export default function ListingPreviewPane({
   // the search row's kebab, which is there whether or not this column is.
   const strip = () => (
     <div className="pane-header">
-      <SideCloseButton what={modeTitle(side)} onClick={onClose} />
+      {maximized ? (
+        <div className="side-header-lead" />
+      ) : (
+        <SideCloseButton what={modeTitle(side)} onClick={onClose} />
+      )}
       <div className="side-header-tail">
         {sideTabs}
         <SideMaximizeButton maximized={maximized} onToggle={() => setSideMaximized(!maximized)} />

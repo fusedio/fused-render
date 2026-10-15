@@ -445,6 +445,24 @@ html.side-reopening iframe {
   width: 100%;
   margin-inline: auto;
 }
+/* Full screen is ONE top row: the header drops its close button for an empty
+   .side-header-lead, and the chat's `.c-anntools` ("← Chats", the ⋮) is portaled
+   into it. In there the row is a bare flex item: no border, fill, padding or own
+   height, so the header does not grow. */
+.side-header-lead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.side-header-lead .c-anntools,
+.chat-root .side-header-lead .c-anntools {
+  padding: 0;
+  height: auto;
+  min-height: 0;
+  border: 0;
+  background: none;
+}
 /* The Screenshot / Comment / Annotate row acts on the file preview, which full
    screen hides. Scoped by ancestor so a chat in another host keeps it. */
 .preview-side.maximized .c-anncta,

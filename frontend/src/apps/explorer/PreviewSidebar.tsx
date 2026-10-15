@@ -330,7 +330,13 @@ export default function PreviewSidebar({
           {/* Leftmost, on the seam (SideChrome): the way out of this column, and
               while it is up, the only one — the title bar's opener is not
               rendered. The listing pane's header opens with the same button. */}
-          <SideCloseButton what={modeTitle(active)} onClick={onClose} />
+          {maximized ? (
+            // Full screen: no close button (the maximize button or Esc is the
+            // way out); the chat's `.c-anntools` row is portaled in here.
+            <div className="side-header-lead" />
+          ) : (
+            <SideCloseButton what={modeTitle(active)} onClick={onClose} />
+          )}
           {/* The switcher, at the strip's far end (the tail's auto margin packs
               it there — .side-header-tail, the same wrapper the listing pane's
               header uses). A TAB STRIP over the two companions (SideChrome's
