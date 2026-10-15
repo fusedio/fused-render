@@ -504,6 +504,27 @@
   text-decoration: underline;
 }
 
+.mp-footer-refresh {
+  display: inline-flex;
+  vertical-align: -2px;
+  margin-left: 6px;
+  padding: 2px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--fg-faint);
+  cursor: pointer;
+}
+
+.mp-footer-refresh:hover:not(:disabled) {
+  color: var(--fg);
+  background: var(--bg-hover, rgba(127, 127, 127, 0.12));
+}
+
+.mp-footer-refresh:disabled {
+  cursor: default;
+}
+
 /* ---- Hero carousel --------------------------------------------------------- */
 
 .mp-hero {
