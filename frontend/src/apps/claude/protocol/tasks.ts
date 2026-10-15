@@ -81,28 +81,17 @@ export function statusLabel(status: TaskStatus | string): string {
 }
 
 /**
- * The collapsed panel's one line: "1 agent · 2 shells running · 1 failed".
- * Only what needs attention: the live breakdown by kind, then paused and
- * failed counts. Finished counts (done, stopped, ended) are dropped; the
- * panel's "Show N finished" covers them. "" when there is nothing to say.
+ * The collapsed panel's one line: "1 agent · 2 shells". Per-kind counts over ALL
+ * tasks whatever their status, in SUMMARY_KINDS order; no status words (the rows
+ * carry those). "" when there are no tasks.
  */
 export function summarizeTasks(tasks: readonly TaskRecord[]): string {
-  const live = tasks.filter((t) => isLive(t.status));
-  const parts: string[] = [];
-  if (live.length) {
-    const kinds = SUMMARY_KINDS.map((k) => {
-      const n = live.filter((t) => asKind(t.kind) === k).length;
-      return n ? plural(n, KIND_NOUN[k]) : "";
-    }).filter(Boolean);
-    parts.push(kinds.join(" · ") + " running");
-  }
-  const count = (status: TaskStatus, word: string) => {
-    const n = tasks.filter((t) => t.status === status).length;
-    if (n) parts.push(n + " " + word);
-  };
-  count("paused", "paused");
-  count("failed", "failed");
-  return parts.join(" · ");
+  return SUMMARY_KINDS.map((k) => {
+    const n = tasks.filter((t) => asKind(t.kind) === k).length;
+    return n ? plural(n, KIND_NOUN[k]) : "";
+  })
+    .filter(Boolean)
+    .join(" · ");
 }
 
 const KIND_RANK: Record<TaskKind, number> = { agent: 0, shell: 1, monitor: 2, other: 3 };

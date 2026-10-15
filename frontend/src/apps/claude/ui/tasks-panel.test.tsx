@@ -71,8 +71,8 @@ describe("TasksPanel", () => {
     const r = mount(<TasksPanel tasks={TASKS} runId="r1" open={false} onToggle={() => toggles++} />);
     const root = r.root;
     expect(byClass(root, "chat-tasks").length).toBe(1);
-    expect(text(byClass(root, "chat-tasks-summary")[0]!)).toBe("1 agent · 1 monitor running");
-    expect(text(byClass(root, "chat-tasks-title")[0]!)).toBe("Agents & shells");
+    expect(text(byClass(root, "chat-tasks-summary")[0]!)).toBe("1 agent · 1 shell · 1 monitor");
+    expect(byClass(root, "chat-tasks-title").length).toBe(0);
     expect(byClass(root, "chat-task").length).toBe(0);
     const head = byClass(root, "chat-tasks-head")[0]!;
     expect(head.props["aria-expanded"]).toBe(false);

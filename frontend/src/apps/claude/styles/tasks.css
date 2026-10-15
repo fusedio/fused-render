@@ -46,11 +46,6 @@
 .chat-root .chat-tasks.is-open .chat-tasks-chev {
   transform: rotate(90deg);
 }
-.chat-root .chat-tasks-title {
-  flex-shrink: 0;
-  color: var(--c-fg);
-  font-weight: 600;
-}
 .chat-root .chat-tasks-summary {
   min-width: 0;
   overflow: hidden;

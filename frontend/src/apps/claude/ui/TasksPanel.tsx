@@ -249,7 +249,6 @@ export function TasksPanel({ tasks, runId, sessionId = null, open, onToggle, par
     <section className={cn("chat-tasks", open && "is-open")} aria-label="Agents & shells">
       <button type="button" className="chat-tasks-head" aria-expanded={open} onClick={onToggle}>
         <ChevronRight className="chat-tasks-chev" size={14} aria-hidden="true" />
-        <span className="chat-tasks-title">Agents &amp; shells</span>
         {summary ? <span className="chat-tasks-summary">{summary}</span> : null}
       </button>
       {open ? (
