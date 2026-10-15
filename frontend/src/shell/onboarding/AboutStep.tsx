@@ -10,7 +10,11 @@ import { Bot, Code2, Cpu, Mic } from "lucide-react";
 import { bundleName } from "@platform/lib/flavor";
 import { StepHeader } from "./StepHeader";
 
-const HERO_VIDEO = "https://render.fused.io/assets/showcase/hero.mp4";
+// Versioned filename: render.fused.io sits behind CloudFront with a one-day
+// cache and no query-string keying, so a new cut has to ship under a new name
+// or every installed app keeps showing the old one. Rename here AND in
+// scripts/download_page/index.html together.
+const HERO_VIDEO = "https://render.fused.io/assets/showcase/hero-v3.mp4";
 
 const FEATURES = [
   {
