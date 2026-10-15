@@ -247,6 +247,26 @@ def test_history_carries_the_last_runs_tasks(agent, run_dir, tmp_path, monkeypat
     assert agent._history(str(target), "other")["tasks"] == []
 
 
+@pytest.mark.parametrize("host", [True, False])
+def test_history_names_the_host_run_after_the_turn_ended(
+        agent, run_dir, tmp_path, monkeypatch, host):
+    """No open turn means no `live_run`, but a live host can still stop the
+    task: history names its run (`tasks_run`) so Stop/Output can reach it."""
+    target = tmp_path / "proj"
+    target.mkdir()
+    (run_dir / "meta.json").write_text(json.dumps(
+        {"file": str(target), "session_id": "s"}))
+    _append(run_dir, [_sys("task_started", task_id="b1", description="bg",
+                           task_type="local_bash"), _result()])
+    agent._poll("run")
+    if host:
+        (run_dir / "host.json").write_text(json.dumps({"pid": os.getpid()}))
+    monkeypatch.setattr(agent, "PROJECTS", str(tmp_path / "projects"))
+    hist = agent._history(str(target), "s")
+    assert hist["tasks"][0]["status"] == "running"
+    assert hist["tasks_run"] == ("run" if host else "")
+
+
 # ------------------------------------------------------------- task_output
 
 def test_task_output_with_no_live_host_is_an_error(agent, run_dir):
