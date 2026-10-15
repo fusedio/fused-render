@@ -11,6 +11,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
@@ -245,10 +246,24 @@ class FakeBot:
     def all_files(self):
         return [{"name": n, "size": os.path.getsize(p), "kind": "saved"} for n, p in self.files.items()]
 
-    def resolve_file(self, name):
+    granted: list = []  # bot.json `folders`: the user's folders this bot may read (set by a test)
+
+    def folders(self):
+        return list(self.granted)
+
+    def folder_roots(self):
+        return [os.path.join(tempfile.gettempdir(), f"fake-inbox-{self.id}")] + self.folders()
+
+    def resolve_path(self, name, dirs=False):
         if name in self.files:
             return self.files[name]
+        p = os.path.expanduser(name)
+        if os.path.isabs(p) and any(os.path.realpath(p).startswith(os.path.realpath(r) + os.sep) for r in self.granted):
+            return p
         raise ValueError(f"file not found: {name}")
+
+    def folders_section(self):
+        return ("FOLDERS:\n" + "\n".join(f"- {f}" for f in self.granted)) if self.granted else ""
 
     def task_artifacts(self):
         return []
@@ -695,6 +710,10 @@ def test_roster_follows_the_bot(server, tmp_path):
     bot.files = {"notes.txt": str(f)}
     names = [t["name"] for t in tools.roster(bot)]
     assert "upload" in names and "readfile" in names
+    bot.files = {}
+    bot.granted = [str(tmp_path)]
+    names = [t["name"] for t in tools.roster(bot)]
+    assert "readfile" in names and "ls" in names and "find" in names and "upload" not in names
 
 
 @pytest.mark.skipif(not shutil.which("sips"), reason="filereader shrinks images through sips (macOS only)")
@@ -1231,11 +1250,27 @@ def test_super_permission_card_denied_and_not_asked_twice(server, fake_cli, monk
     assert bot.roles().count("approval") == 1
 
 
-def test_super_reads_never_ask(server, fake_cli, monkeypatch):
+def test_super_reads_never_ask(server, fake_cli, monkeypatch, tmp_path):
     bot = super_bot()
-    run_task(bot, [_perm("Read", file_path="/etc/hosts"), _perm("Grep", pattern="x"), {"result": "ok"}], monkeypatch)
+    bot.granted = [str(tmp_path)]
+    run_task(bot, [_perm("Read", file_path=str(tmp_path / "notes.md")), _perm("Grep", pattern="x"), {"result": "ok"}], monkeypatch)
     assert "approval" not in bot.roles()
     assert _answer(fake_cli, 0)["behavior"] == "allow" and _answer(fake_cli, 1)["behavior"] == "allow"
+
+
+def test_super_folder_fence(server, fake_cli, monkeypatch, tmp_path):
+    """The read lens (docs §2 `folders`): a read outside the bot's roots is denied ahead of the
+    "reads never ask" allow, a write INTO a granted folder is denied as read-only, a write elsewhere
+    still reaches the card. No card for either deny."""
+    bot = super_bot()
+    bot.granted = [str(tmp_path)]
+    run_task(bot, [_perm("Read", file_path="/etc/hosts"), _perm("Write", file_path=str(tmp_path / "new.md"), content="x"),
+                   {"result": "ok"}], monkeypatch)
+    assert "approval" not in bot.roles()
+    a0, a1 = _answer(fake_cli, 0), _answer(fake_cli, 1)
+    assert a0["behavior"] == "deny" and "outside the folders" in a0["message"]
+    assert a1["behavior"] == "deny" and "read-only" in a1["message"]
+    assert [e["text"] for e in bot.events if e["role"] == "note" and e["text"].startswith("Refused")]
 
 
 def test_super_unattended_allows_until_the_web_is_touched(server, fake_cli, monkeypatch):

@@ -23,8 +23,8 @@ import { Switch } from "@platform/shadcn/ui/switch";
 import { Textarea } from "@platform/shadcn/ui/textarea";
 import { cn } from "@platform/lib/utils";
 import { Face } from "../components/Face";
-import { Trash2Icon } from "lucide-react";
-import { api, type AllowRule, type AppRow, type Bot, type ChromeProfile, type Face as FaceT } from "../lib/api";
+import { FolderPlusIcon, Trash2Icon } from "lucide-react";
+import { ApiError, api, request, type AllowRule, type AppRow, type Bot, type ChromeProfile, type Face as FaceT } from "../lib/api";
 import { EFFORTS, loginGroups, loginHint, loginLabel, loginValue, modelsFor, normApp } from "../lib/botform";
 import { faceOf } from "../lib/face";
 import { act, autoStage, clearContextOn, getState, setAutoStage, setClearContext, setSounds, soundsOn } from "../state/store";
@@ -59,6 +59,7 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
     maxSteps: bot.max_steps ? String(bot.max_steps) : "",
     imessage: bot.imessage || "", imessageEnabled: !!bot.imessage_enabled, imessageTo: bot.imessage_to || "",
     superAccess: bot.super_access || "ask", trustedApps: bot.trusted_apps || [], allowRules: bot.allow_rules || [],
+    folders: bot.folders || [],
     browserId: isSuper ? "" : loginValue(bot),
   }));
   const [name, setName] = useState(init.name);
@@ -82,6 +83,13 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
   const [profiles, setProfiles] = useState<ChromeProfile[]>([]);
   const [trustedApps, setTrustedApps] = useState<string[]>(init.trustedApps);
   const [allowRules, setAllowRules] = useState<AllowRule[]>(init.allowRules);
+  // Folders it may read (docs §2 `folders`): the user's own folders, read-only for the bot. The native folder dialog
+  // (POST /api/fs/pick-folder, the same one the templates use) when this machine has one; a typed path otherwise.
+  const [folders, setFolders] = useState<string[]>(init.folders);
+  const [folderTyped, setFolderTyped] = useState<string | null>(null);  // the typed-path fallback, open or not
+  const [picking, setPicking] = useState(false);
+  const pickingRef = useRef(false);  // the state above is for the button; a double-click lands before the re-render
+  const missing = new Set(bot.browser?.folders_missing || []);
   const [appRows, setAppRows] = useState<AppRow[]>([]);
   const [browserId, setBrowserId] = useState(init.browserId);
   // The Logins menu: one option per other browser (bots sharing one collapse into one; Super Bot's browser included),
@@ -97,7 +105,7 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
   const bm = useMemo(() => ({ id: bot.id, name: init.name, face }), [bot.id, init.name, face]);
   const read = (): BotDialogValue => ({ name: name.trim(), model, effort, instructions, memory, approval, buildAccess, encrypt, profile, maxSteps,
     face: faceOf(bm), imessage: imessage.trim(), imessageEnabled, imessageTo: imessageTo.trim(), preset: "",
-    kind: isSuper ? "super" : "bot", superAccess, browserId, trustedApps,
+    kind: isSuper ? "super" : "bot", superAccess, browserId, trustedApps, folders,
     allowRulesRemoved: init.allowRules.filter((r) => !allowRules.some((x) => x.kind === r.kind && x.key === r.key)) });  // the face shown is the face kept
   const [initial] = useState(() => JSON.stringify(read()));
   const okDisabled = JSON.stringify(read()) === initial;
@@ -110,6 +118,31 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
     void act(() => api.apps(), true).then((r) => { if (live) setAppRows(r?.apps || []); });
     return () => { live = false; };
   }, []);
+  const addFolder = (p: string) => {
+    const v = p.trim().replace(/\/+$/, "");
+    if (!v) return;
+    setFolders((cur) => (cur.includes(v) ? cur : [...cur, v]));
+    setFolderTyped(null);
+  };
+  const pickFolder = async () => {
+    if (pickingRef.current) return;
+    pickingRef.current = true;
+    setPicking(true);
+    const held = busy.current;
+    busy.current = true;  // the OS dialog is modal over the page: its close must not read as an outside press here
+    try {
+      const r = await request<{ path: string | null }>("POST", "/api/fs/pick-folder", { title: "Choose a folder the bot may read" }, "pick-folder");
+      if (r?.path) addFolder(r.path);
+    } catch (e) {
+      // 501: no native dialog on this machine (a hosted session); 409: one is already open. Fall back to a typed path.
+      if (e instanceof ApiError && (e.status === 501 || e.status === 409)) setFolderTyped("");
+      else throw e;
+    } finally {
+      pickingRef.current = false;
+      setPicking(false);
+      window.setTimeout(() => { busy.current = held; }, 0);  // restore, never clear: a confirm may hold it meanwhile
+    }
+  };
   const toggleTrusted = (folder: string, on: boolean) => {
     const k = normApp(folder);
     setTrustedApps((cur) => on ? (cur.includes(k) ? cur : [...cur, k]) : cur.filter((x) => x !== k));
@@ -228,6 +261,31 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
                     </div>
                   </Row>
                 ) : null}
+                <Row title="Folders it may read" stack
+                  text={"Files and folders here are open to its ls, find and readfile. It never writes there. Apps it runs read what they read." + (isSuper ? " Its shell is not fenced." : "")}>
+                  {folders.length ? (
+                    <div className="max-h-48 divide-y divide-foreground/5 overflow-y-auto rounded-lg border border-input" id="bmfolders">
+                      {folders.map((f) => (
+                        <div key={f} className="flex items-center gap-2.5 px-3 py-1.5 text-sm">
+                          <span className="min-w-0 flex-1 truncate font-mono text-[13px]" title={f}>{f}</span>
+                          {missing.has(f) ? <span className="text-xs text-muted-foreground">missing</span> : null}
+                          <Button variant="ghost" size="icon-xs" aria-label="Remove folder" title="Remove" className="text-muted-foreground hover:text-destructive"
+                            onClick={() => setFolders((cur) => cur.filter((x) => x !== f))}><Trash2Icon /></Button>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                  {folderTyped !== null ? (
+                    <div className="flex items-center gap-2">
+                      <Input autoFocus placeholder="/full/path/to/folder" value={folderTyped} onChange={(e) => setFolderTyped(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === "Enter") addFolder(folderTyped); if (e.key === "Escape") setFolderTyped(null); }} />
+                      <Button type="button" size="sm" disabled={!folderTyped.trim()} onClick={() => addFolder(folderTyped)}>Add</Button>
+                      <Button type="button" variant="ghost" size="sm" onClick={() => setFolderTyped(null)}>Cancel</Button>
+                    </div>
+                  ) : (
+                    <div><Button type="button" variant="outline" size="sm" disabled={picking} onClick={() => void pickFolder()}><FolderPlusIcon />Add folder…</Button></div>
+                  )}
+                </Row>
                 {appRows.length ? (
                   <Row title="Apps it may use without asking" text="A ticked app's tools and scripts run at once. Everything else keeps the rule above." stack>
                     <div className="max-h-48 divide-y divide-foreground/5 overflow-y-auto rounded-lg border border-input" id="bmtrusted">

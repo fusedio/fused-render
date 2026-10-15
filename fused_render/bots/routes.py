@@ -676,6 +676,10 @@ def _settings(bid, body):
         b.meta["build_access"] = body["build_access"]
     if isinstance(body.get("trusted_apps"), list):
         b.meta["trusted_apps"] = _apptools().clean_trusted_apps(body["trusted_apps"])
+    if isinstance(body.get("folders"), list):
+        # The folders this bot may READ (docs §2). The dialog is the only writer, so the full list is taken as sent;
+        # a bot's own `bot_settings` never carries this key (a bot granting folders to a bot is escalation).
+        b.meta["folders"] = bm.clean_folders(body["folders"])  # ValueError past FOLDERS_MAX -> 400, nothing saved
     if isinstance(body.get("allow_rules_remove"), list):
         # Removals only, applied to the list as it stands now: allow_rules has a second writer (the task thread,
         # on a card answered "don't ask again"), so a full list from the dialog would overwrite a rule written

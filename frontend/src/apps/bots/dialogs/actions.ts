@@ -29,6 +29,8 @@ export interface BotDialogValue {
    *  Removals only: the task thread writes new rules while Settings is open (it is non-modal), so a full list would
    *  overwrite them; the backend drops these from the list as it stands at Save. */
   allowRulesRemoved: AllowRule[];
+  /** Folders the bot may read (Settings > Permissions > Folders it may read), the whole list as it should be saved. */
+  folders: string[];
   /** Logins: "" = a fresh browser of its own; else the `browser_id` of the bot whose sign-ins it shares. */
   browserId: string;
 }
@@ -64,7 +66,7 @@ export async function saveSettings(id: string, v: BotDialogValue): Promise<void>
   await act(() => api.settings(id, { name: v.name, model: v.model, effort: v.effort, instructions: v.instructions, memory: v.memory, approval: v.approval,
     build_access: v.buildAccess, ...encrypt, ...phone(v), super_access: v.superAccess,
     ...(v.maxSteps !== undefined ? { max_steps: Number(v.maxSteps) || 0 } : {}),
-    trusted_apps: v.trustedApps, ...rules }));
+    trusted_apps: v.trustedApps, folders: v.folders, ...rules }));
   if (v.face && v.kind !== "super") await act(() => api.flag(id, { face: v.face }));
   if (v.profile) await act(() => api.profile(id, v.profile));
 }
