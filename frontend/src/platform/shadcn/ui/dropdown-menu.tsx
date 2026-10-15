@@ -31,8 +31,9 @@ function DropdownMenuContent({
   >) {
   return (
     <MenuPrimitive.Portal>
+      {/* Must sit above the full-screen side pane (950), modal overlays (1000) and the file-preview overlay (1100), like popover.tsx. */}
       <MenuPrimitive.Positioner
-        className="isolate z-50 outline-none"
+        className="isolate z-[1200] outline-none"
         align={align}
         alignOffset={alignOffset}
         side={side}

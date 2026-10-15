@@ -1051,8 +1051,9 @@ select.c-pill {
   margin: 0 auto;
   /* No air above the card (Akshil, 2026-09-16): the transcript's own bottom
      padding is the gap, and a folded one-line card sat visibly low with 8px
-     more on top of it. */
-  padding: 0 20px 6px;
+     more on top of it. 16px below it, so the card is not flush with the
+     column's bottom edge. */
+  padding: 0 20px 16px;
 }
 
 /* ---- "what was sent" (T:1145-1185) -------------------------------------

@@ -66,13 +66,25 @@ describe("TasksPanel", () => {
     expect(r.toJSON()).toBeNull();
   });
 
+  test("closed with only completed tasks renders nothing", () => {
+    const tasks = [rec({ id: "d", kind: "shell", status: "completed" })];
+    const r = mount(<TasksPanel tasks={tasks} runId="r1" open={false} onToggle={() => {}} />);
+    expect(r.toJSON()).toBeNull();
+  });
+
+  test("collapsed summary counts live work and appends failures", () => {
+    const tasks = [rec({ id: "a", kind: "agent" }), rec({ id: "f", kind: "agent", status: "failed" })];
+    const r = mount(<TasksPanel tasks={tasks} runId="r1" open={false} onToggle={() => {}} />);
+    expect(text(byClass(r.root, "chat-tasks-summary")[0]!)).toBe("1 agent · 1 failed");
+  });
+
   test("collapsed: one line with the summary, no rows", () => {
     let toggles = 0;
     const r = mount(<TasksPanel tasks={TASKS} runId="r1" open={false} onToggle={() => toggles++} />);
     const root = r.root;
     expect(byClass(root, "chat-tasks").length).toBe(1);
-    expect(text(byClass(root, "chat-tasks-summary")[0]!)).toBe("1 agent · 1 monitor running");
-    expect(text(byClass(root, "chat-tasks-title")[0]!)).toBe("Agents & shells");
+    expect(text(byClass(root, "chat-tasks-summary")[0]!)).toBe("1 agent · 1 monitor");
+    expect(byClass(root, "chat-tasks-title").length).toBe(0);
     expect(byClass(root, "chat-task").length).toBe(0);
     const head = byClass(root, "chat-tasks-head")[0]!;
     expect(head.props["aria-expanded"]).toBe(false);
