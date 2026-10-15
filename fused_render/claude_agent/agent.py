@@ -2675,6 +2675,13 @@ def _spawn_env(chat_id: str = "") -> dict:
     way — it is ANDed into the same branch — so this cannot override it."""
     env = os.environ.copy()
     env.pop("FUSED_ENV", None)
+    # A Finder-launched .app gets a minimal PATH (/usr/bin:/bin), so the
+    # session's Bash tool cannot find Homebrew tools (gh, node, brew) that
+    # work fine from a terminal claude. Append the usual install dirs.
+    parts = [p for p in env.get("PATH", "").split(os.pathsep) if p]
+    extra = ["/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin",
+             os.path.expanduser("~/.local/bin")]
+    env["PATH"] = os.pathsep.join(parts + [p for p in extra if p not in parts])
     # The claude CLI is node, and its hooks, MCP servers and the shell-prefix
     # wrapper run the *system* python3, which dies on the packaged app's
     # PYTHONHOME ("No module named 'encodings'") and fails every Bash command.
