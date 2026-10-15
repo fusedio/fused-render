@@ -73,7 +73,8 @@ def api_marketplace_app(slug: str):
 @router.get("/api/marketplace/asset/{slug}/{path:path}")
 def api_marketplace_asset(slug: str, path: str, v: str | None = None):
     """Raw bytes of one file in a catalog app (preview.png, icon.svg, readme
-    images…). 404 unless `path` is in that app's file list.
+    images…). 404 unless `path` is the app's own icon or preview or a file in
+    its detail's file list.
 
     Browser caching follows the URL: the catalog's icon/preview URLs carry
     `?v=<release id, first 12>`, so a day is safe (new content, new URL). Any other

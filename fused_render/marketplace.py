@@ -54,7 +54,10 @@ URLs pinned to the app's commit; they are served through our own proxy
 (`/api/marketplace/asset/<slug>/<rel>?v=<release_id[:12]>`) so the browser
 never talks to GitHub and a readme's relative images resolve against the same
 base. The proxy fetches only under `https://raw.githubusercontent.com/<owner>/
-<repo>/<commit>/<slug>/` derived from the snapshot row.
+<repo>/<commit>/<slug>/` derived from the snapshot row, and only for a path
+that is the row's own icon or preview or one the app's detail lists (the
+detail row is memoised per (slug, release_id) in `_DETAIL_MEMO`, so the page
+and the proxy share one API call).
 
 **Install / update** run as background jobs (one per slug, idempotent while
 running; finished jobs linger 60 s for the UI's success state). `_stage` asks
@@ -251,8 +254,9 @@ def _http_get(url: str, *, headers: dict | None = None,
     return r, None
 
 
-def _udf_get(endpoint: str, **params) -> list[dict]:
+def _udf_get(endpoint: str, *, timeout: float = HTTP_TIMEOUT_S, **params) -> list[dict]:
     """GET `<api>/<endpoint>?format=json&...` → the list of row dicts.
+    `timeout` (seconds) bounds the request; it is never sent as a parameter.
     Params that are None are dropped (an empty string is kept: the release
     endpoint reads ``release_id=`` as "latest"). Raises SourceError on a
     transport failure, a body that is not a list of objects, or an error row
@@ -263,7 +267,8 @@ def _udf_get(endpoint: str, **params) -> list[dict]:
     query["format"] = "json"
     url = f"{api_base()}/{endpoint}?{urlencode(query)}"
     r, err = _http_get(url, headers={"Accept": "application/json",
-                                     "User-Agent": f"fused-render/{__version__}"})
+                                     "User-Agent": f"fused-render/{__version__}"},
+                       timeout=timeout)
     if err:
         raise SourceError(err)
     try:
@@ -296,9 +301,13 @@ def _group_collections(rows: list[dict], apps: dict) -> list[dict]:
     slugs the catalog does not hold dropped."""
     groups: dict[tuple, dict] = {}
     for r in rows:
+        if not isinstance(r, dict):
+            continue
         kind = r.get("collection")
         if kind not in ("shelf", "new_and_updated"):
             continue
+        if kind == "shelf" and not r.get("shelf_id"):
+            continue  # an unnamed shelf has no id to key, link or order by
         key = (kind, r.get("shelf_id"))
         g = groups.setdefault(key, {
             "id": (r.get("shelf_id") if kind == "shelf" else None) or "new-and-updated",
@@ -314,6 +323,18 @@ def _group_collections(rows: list[dict], apps: dict) -> list[dict]:
     return out
 
 
+def _opt_text(v) -> str | None:
+    """`str(v)` for anything the API sent, None when it sent nothing."""
+    return None if v is None else str(v)
+
+
+def _count(v) -> int:
+    try:
+        return int(v or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _build_snapshot() -> dict:
     """A fresh snapshot from the API (three calls, in parallel). Raises
     SourceError when any of them fails."""
@@ -327,13 +348,14 @@ def _build_snapshot() -> dict:
         rows, cats, cols = f_cat.result(), f_cats.result(), f_cols.result()
     apps = {r["slug"]: r for r in rows if is_slug(r.get("slug"))}
     first = rows[0] if rows else {}
+    cats = [c for c in cats if isinstance(c, dict)]
     categories = [{"id": c["id"], "label": _opt_str(c.get("label")) or str(c["id"]),
-                   "count": int(c.get("count") or 0), "order": c.get("order")}
+                   "count": _count(c.get("count")), "order": c.get("order")}
                   for c in sorted(cats, key=lambda c: c.get("order") if isinstance(c.get("order"), (int, float)) else 0)
                   if isinstance(c.get("id"), str) and c["id"]]
     return {"source": SOURCE, "api": api_base(),
-            "catalog_version": first.get("catalog_version"),
-            "generated_at": first.get("generated_at"),
+            "catalog_version": _opt_text(first.get("catalog_version")),
+            "generated_at": _opt_text(first.get("generated_at")),
             "apps": apps, "categories": categories,
             "collections": _group_collections(cols, apps)}
 
@@ -447,21 +469,23 @@ def _build_locked(cached: dict | None) -> tuple[dict | None, str | None]:
         _write_cache(snap)
     except OSError:
         logger.warning("marketplace: could not write %s", catalog_path(), exc_info=True)
-    if not cached or cached.get("catalog_version") != snap.get("catalog_version"):
+    if (not cached or snap.get("catalog_version") is None
+            or cached.get("catalog_version") != snap.get("catalog_version")):
         _prune_asset_cache(_release_ids(snap))
     return snap, None
 
 
-def get_snapshot(refresh: bool = False) -> tuple[dict | None, str | None]:
+def get_snapshot(refresh: bool = False, force: bool = False) -> tuple[dict | None, str | None]:
     """The catalog snapshot for GET /catalog — the ONLY caller allowed to
     rebuild a cache because it is old: rebuilt when older than CACHE_TTL_S,
     or on ``refresh`` when the last attempt is over REFRESH_MIN_INTERVAL_S
-    old. While another request is already rebuilding, the existing cache is
+    old (``force`` skips both age checks: a rebuild now, for a caller that
+    just learned the cache is wrong). While another request is already rebuilding, the existing cache is
     answered at once rather than waiting. Answers (snapshot, None) or, when
     there is no cache at all and the build failed, (None, message). Never
     raises. Everything else uses `cached_snapshot()`."""
     cached = _read_cache()
-    if _fresh_enough(cached, refresh, time.time()):
+    if not force and _fresh_enough(cached, refresh, time.time()):
         return cached, None
     if cached is not None:
         if not _CATALOG_LOCK.acquire(blocking=False):
@@ -471,7 +495,7 @@ def get_snapshot(refresh: bool = False) -> tuple[dict | None, str | None]:
     try:
         # Re-read: the build we may have waited behind just stored one.
         cached = _read_cache()
-        if _fresh_enough(cached, refresh, time.time()):
+        if not force and _fresh_enough(cached, refresh, time.time()):
             return cached, None
         return _build_locked(cached)
     finally:
@@ -637,14 +661,21 @@ def _asset_version(row: dict) -> str | None:
     return rid[:12] if isinstance(rid, str) and _ID_RE.fullmatch(rid) else None
 
 
-def _proxied(slug: str, row: dict, url) -> str | None:
-    """Our /api/marketplace/asset URL for a row's raw GitHub icon/preview URL;
-    None when the row has none or it is not under the app's own base."""
+def _asset_rel(slug: str, row: dict, url) -> str | None:
+    """The path of a row's raw GitHub icon/preview `url` under the app's own
+    base; None when the row has none or it is not under that base."""
     base = _asset_base(slug, row)
     if not base or not isinstance(url, str) or not url.startswith(base):
         return None
     rel = unquote(url[len(base):].split("?", 1)[0].split("#", 1)[0])
-    if not _safe_rel(rel):
+    return rel if _safe_rel(rel) else None
+
+
+def _proxied(slug: str, row: dict, url) -> str | None:
+    """Our /api/marketplace/asset URL for a row's raw GitHub icon/preview URL;
+    None when the row has none or it is not under the app's own base."""
+    rel = _asset_rel(slug, row, url)
+    if rel is None:
         return None
     ver = _asset_version(row)
     return f"/api/marketplace/asset/{slug}/{quote(rel, safe='/')}" + (f"?v={ver}" if ver else "")
@@ -722,12 +753,16 @@ def search(q: str, category: str = "", cursor: str = "", limit: int = 24) -> dic
     except SourceError as exc:
         return {"status": "error", "message": str(exc)}
     installed = installed_apps()
+    snap, _err = cached_snapshot()
+    catalog_apps = (snap or {}).get("apps") or {}
     apps = []
     for row in rows:
         slug = row.get("slug")
         if not is_slug(slug):
             continue
-        entry = app_entry(slug, row, installed.get(slug))
+        # The catalog's row underneath: a search row without `release_id`
+        # must not read an installed current app as updatable.
+        entry = app_entry(slug, {**(catalog_apps.get(slug) or {}), **row}, installed.get(slug))
         entry["score"] = row.get("score") if isinstance(row.get("score"), (int, float)) else 0
         entry["highlights"] = [{"field": str(h.get("field") or ""), "snippet": str(h.get("snippet") or "")}
                                for h in row.get("highlights") or [] if isinstance(h, dict)]
@@ -783,6 +818,66 @@ def installed_list() -> dict:
 # assets + detail
 # ---------------------------------------------------------------------------
 
+#: (slug, release_id) → the parsed `marketplace_app_detail` row. Answers the
+#: detail page without a network call and is what the asset proxy checks a
+#: path against (the snapshot lists no files). Bounded; the oldest-used entry
+#: goes first.
+_DETAIL_MEMO: dict[tuple, dict] = {}
+_DETAIL_MEMO_LOCK = threading.Lock()
+_DETAIL_MEMO_MAX = 256
+#: The detail page and the asset proxy must not hang on a slow API.
+DETAIL_TIMEOUT_S = 8
+
+
+def _memo_get(key: tuple) -> dict | None:
+    with _DETAIL_MEMO_LOCK:
+        row = _DETAIL_MEMO.pop(key, None)
+        if row is not None:
+            _DETAIL_MEMO[key] = row  # most recently used goes last
+        return row
+
+
+def _memo_put(key: tuple, row: dict) -> None:
+    with _DETAIL_MEMO_LOCK:
+        _DETAIL_MEMO.pop(key, None)
+        while len(_DETAIL_MEMO) >= _DETAIL_MEMO_MAX:
+            _DETAIL_MEMO.pop(next(iter(_DETAIL_MEMO)))
+        _DETAIL_MEMO[key] = row
+
+
+def _detail_row(slug: str, snap_row: dict | None) -> dict | None:
+    """The API's `marketplace_app_detail` row for `slug` (None when the API
+    does not list it). Memoised under the snapshot row's (slug, release_id),
+    and only while the answer is that very release. Raises SourceError."""
+    key = (slug, snap_row.get("release_id") if snap_row else None)
+    if snap_row is not None:
+        hit = _memo_get(key)
+        if hit is not None:
+            return hit
+    from fused_render import __version__
+
+    rows = _udf_get("marketplace_app_detail", timeout=DETAIL_TIMEOUT_S,
+                    slug=slug, client_version=__version__)
+    row = next((r for r in rows if r.get("slug") == slug), None)
+    if row is not None and snap_row is not None and row.get("release_id") == key[1]:
+        _memo_put(key, row)
+    return row
+
+
+def _asset_allowed(slug: str, rel: str, snap_row: dict) -> bool:
+    """The asset proxy's allow-list: the snapshot row's own icon or preview, or
+    a file the app's detail lists. Anything else is a 404 — the proxy is not a
+    window onto the whole repo."""
+    if rel in (_asset_rel(slug, snap_row, snap_row.get("icon_url")),
+               _asset_rel(slug, snap_row, snap_row.get("preview_url"))):
+        return True
+    try:
+        row = _detail_row(slug, snap_row)
+    except SourceError:
+        return False
+    return any(isinstance(f, dict) and f.get("path") == rel for f in (row or {}).get("files") or [])
+
+
 def _content_type(path: str) -> str:
     low = path.lower()
     if low.endswith(".svg"):
@@ -816,7 +911,9 @@ def get_asset_versioned(slug: str, rel: str) -> tuple[bytes, str, str | None] | 
     request's `v` equals it — an arbitrary `?v=1` in a readme link proves
     nothing — and reading the key from a second cache read could pair new-key
     with old bytes if a refresh landed in between. Only ever fetches under
-    the row's own raw-GitHub base."""
+    the row's own raw-GitHub base, and only for the row's icon/preview or a
+    file its detail lists (`_asset_allowed`; bytes already on disk were
+    admitted by that check when they were fetched)."""
     if not is_slug(slug) or not _safe_rel(rel):
         return None
     snap, _err = cached_snapshot()
@@ -836,6 +933,8 @@ def get_asset_versioned(slug: str, rel: str) -> tuple[bytes, str, str | None] | 
             return f.read(), _content_type(rel), version
     except OSError:
         pass
+    if not _asset_allowed(slug, rel, row):
+        return None
     data = _fetch_asset_bytes(base, rel)
     if data is None or len(data) > MAX_ASSET_BYTES:
         return None
@@ -868,15 +967,13 @@ def _installed_detail(slug: str, rec: dict) -> dict:
 
 def app_detail(slug: str) -> dict | None:
     """GET /api/marketplace/app/{slug}'s payload, or None (→ 404)."""
-    from fused_render import __version__
-
     if not is_slug(slug):
         return None
     installed = installed_apps()
     snap, _error = cached_snapshot()
     snap_row = ((snap or {}).get("apps") or {}).get(slug)
     try:
-        rows = _udf_get("marketplace_app_detail", slug=slug, client_version=__version__)
+        row = _detail_row(slug, snap_row)
     except SourceError as exc:
         if exc.error_code != "app_not_found" and snap_row is not None:
             # The API is unreachable, but the cached catalog knows the app:
@@ -884,8 +981,7 @@ def app_detail(slug: str) -> dict | None:
             return {"status": "ok", "app": app_entry(slug, snap_row, installed.get(slug)),
                     "readme": "", "files": [], "readme_base": f"/api/marketplace/asset/{slug}/",
                     "releases": []}
-        rows = []
-    row = next((r for r in rows if r.get("slug") == slug), None)
+        row = None
     if row is not None:
         files = [{"path": f["path"], "size": _int(f.get("size"))}
                  for f in row.get("files") or []
@@ -895,7 +991,7 @@ def app_detail(slug: str) -> dict | None:
                      "revoked": bool(r.get("revoked"))}
                     for r in row.get("releases") or [] if isinstance(r, dict)]
         readme = row.get("readme_markdown")
-        return {"status": "ok", "app": app_entry(slug, row, installed.get(slug)),
+        return {"status": "ok", "app": app_entry(slug, {**(snap_row or {}), **row}, installed.get(slug)),
                 "readme": readme[:MAX_README_BYTES] if isinstance(readme, str) else "",
                 "files": files, "readme_base": f"/api/marketplace/asset/{slug}/",
                 "releases": releases}
@@ -1035,6 +1131,17 @@ def _refuse_case_collisions(files: list[dict]) -> None:
                            f"({clashes[0]}), which cannot be installed safely")
 
 
+def _rebuild_after_drift() -> None:
+    """The release the user's page named is gone or moved on: rebuild the
+    catalog now, past the refresh throttle, so the "refresh" the error asks for
+    shows the new release. A failed rebuild changes nothing (the caller's
+    InstallError still raises)."""
+    try:
+        get_snapshot(force=True)
+    except Exception:  # noqa: BLE001
+        logger.debug("marketplace: catalog rebuild after a release change failed", exc_info=True)
+
+
 def _fetch_release(slug: str, release_id: str | None) -> dict:
     """The `marketplace_release` row for `release_id` (the one the user chose
     from the catalog), validated: not revoked, the release asked for, with a
@@ -1047,8 +1154,10 @@ def _fetch_release(slug: str, release_id: str | None) -> dict:
     if not isinstance(rel, dict):
         raise InstallError("the marketplace returned no release for this app")
     if rel.get("revoked"):
+        _rebuild_after_drift()
         raise InstallError("This release was withdrawn — refresh the Marketplace")
     if release_id and rel.get("release_id") != release_id:
+        _rebuild_after_drift()
         raise InstallError("the marketplace changed since this page loaded — "
                            "refresh and try again")
     files = rel.get("files")

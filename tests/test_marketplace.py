@@ -68,6 +68,7 @@ class FakeUdf:
         self.packages: dict[str, bytes] = {}   # package_url -> tar.gz bytes
         self.revoked: set[str] = set()
         self.calls: list[tuple] = []
+        self.timeouts: list[tuple] = []         # (endpoint, timeout) per call
         self.fail: str | None = None            # set → every call raises SourceError
         self.catalog_version = "cv1"
         self.release_override: dict = {}        # tweaks applied to marketplace_release rows
@@ -106,8 +107,9 @@ class FakeUdf:
         self.apps[slug] = {"row": r, "files": files, "url": url}
 
     # -- the API ---------------------------------------------------------
-    def __call__(self, endpoint, **params):
+    def __call__(self, endpoint, timeout=None, **params):
         self.calls.append((endpoint, params))
+        self.timeouts.append((endpoint, timeout))
         if self.fail:
             raise mp.SourceError(self.fail)
         return getattr(self, f"_{endpoint}")(**params)
@@ -210,6 +212,8 @@ def env(tmp_path, monkeypatch):
     with mp._JOBS_LOCK:
         mp._JOBS.clear()
         mp._JOB_FINISHED.clear()
+    with mp._DETAIL_MEMO_LOCK:
+        mp._DETAIL_MEMO.clear()
     return {"home": tmp_path / "home", "ws": tmp_path / "ws", "api": api, "raw": raw}
 
 
@@ -384,7 +388,7 @@ def test_search_route(env):
     assert hit["slug"] == "local-chat" and hit["score"] == 1.5
     assert hit["highlights"] == [{"field": "name", "snippet": "<b>chat</b>"}]
     assert hit["icon_url"].startswith("/api/marketplace/asset/local-chat/icon.svg?v=")
-    assert env["api"].calls[-1][1]["client_version"]
+    assert [p for e, p in env["api"].calls if e == "marketplace_search"][-1]["client_version"]
     # Paging + category: the cursor round-trips; empty cursor/category are not sent.
     r = client.get("/api/marketplace/search", params={"q": "app", "limit": 1}).json()
     assert [a["slug"] for a in r["apps"]] == ["local-chat"] and r["next_cursor"] == "1"
@@ -932,3 +936,146 @@ def test_old_github_backend_is_gone():
                  "forced_source", "mirror_dir", "_ls_tree", "_raw_url", "_download_api",
                  "_copy_from_mirror", "_write_blobs", "_git", "_git_out", "_mirror_lock"):
         assert not hasattr(mp, name), name
+
+
+# --- review round 1: the asset allow-list, the detail memo, drift, odd rows -------------
+
+def _calls(env, endpoint):
+    return [p for e, p in env["api"].calls if e == endpoint]
+
+
+def test_asset_proxy_serves_only_icon_preview_or_listed_files(env):
+    mp.catalog()
+    api = env["api"]
+    # A file the app does not list is a 404 and is never fetched from GitHub.
+    api.apps["local-chat"]["files"]["secret.env"] = b"TOKEN"
+    api.apps["local-chat"]["row"]["file_count"] = 99
+    detail = api._marketplace_app_detail
+
+    def unlisted(slug, client_version=None):
+        [row] = detail(slug, client_version)
+        row["files"] = [f for f in row["files"] if f["path"] != "secret.env"]
+        return [row]
+
+    api._marketplace_app_detail = unlisted
+    assert mp.get_asset("local-chat", "secret.env") is None
+    assert not any(u.endswith("secret.env") for u in env["raw"].get("urls", []))
+    # The denial cost one detail call, memoised; the row's own icon needs none
+    # and a listed file is answered from the memo.
+    before = len(_calls(env, "marketplace_app_detail"))
+    assert mp.get_asset("local-chat", "icon.svg")[0] == b"<svg/>"
+    assert len(_calls(env, "marketplace_app_detail")) == before
+    assert mp.get_asset("local-chat", "index.html")[0] == b"<html>chat</html>"
+    assert before == 1 and len(_calls(env, "marketplace_app_detail")) == 1
+
+
+def test_detail_memo_answers_without_a_network_call(env):
+    mp.catalog()
+    first = mp.app_detail("local-chat")
+    n = len(_calls(env, "marketplace_app_detail"))
+    assert n == 1 and ("marketplace_app_detail", mp.DETAIL_TIMEOUT_S) in env["api"].timeouts
+    assert mp.DETAIL_TIMEOUT_S == 8
+    again = mp.app_detail("local-chat")
+    assert again == first and len(_calls(env, "marketplace_app_detail")) == n
+    # The asset proxy shares the memo: a listed file costs no further call.
+    assert mp.get_asset("local-chat", "readme.md") is not None
+    assert len(_calls(env, "marketplace_app_detail")) == n
+    # A new release is a new key, so a fresh call.
+    env["api"].set_files("local-chat", {"index.html": "<html>2</html>", "icon.svg": "<svg2/>"}, "1.3.0")
+    mp.catalog(refresh=True)
+    mp.app_detail("local-chat")
+    assert len(_calls(env, "marketplace_app_detail")) == n + 1
+
+
+def test_detail_memo_is_bounded(env, monkeypatch):
+    monkeypatch.setattr(mp, "_DETAIL_MEMO_MAX", 3)
+    for i in range(5):
+        mp._memo_put(("a", str(i)), {"i": i})
+    assert list(mp._DETAIL_MEMO) == [("a", "2"), ("a", "3"), ("a", "4")]
+
+
+@pytest.mark.parametrize("mode", ["moved", "revoked"])
+def test_install_after_the_release_moved_on_rebuilds_the_catalog(env, monkeypatch, mode):
+    monkeypatch.setattr(mp, "REFRESH_MIN_INTERVAL_S", 60)  # the throttle must not matter
+    snap, _ = mp.get_snapshot()
+    old = snap["apps"]["sine-starter"]["release_id"]
+    api = env["api"]
+    if mode == "moved":
+        api.release_override = {"release_id": "f" * 40}
+        api.set_files("sine-starter", {"index.html": "<html>v2</html>"}, "1.1.0")
+    else:
+        api.revoked.add(old)
+    builds = len(_calls(env, "marketplace_catalog"))
+    with pytest.raises(mp.InstallError):
+        mp.install_app("sine-starter", snap)
+    assert len(_calls(env, "marketplace_catalog")) == builds + 1
+    # A plain catalog read (no refresh) already shows the post-rebuild state.
+    assert _entry("sine-starter")["release_id"] == api.apps["sine-starter"]["row"]["release_id"]
+    assert len(_calls(env, "marketplace_catalog")) == builds + 1
+
+
+def test_a_failing_rebuild_after_drift_still_raises_the_install_error(env, monkeypatch):
+    snap, _ = mp.get_snapshot()
+    env["api"].revoked.add(snap["apps"]["sine-starter"]["release_id"])
+    monkeypatch.setattr(mp, "get_snapshot", lambda **kw: 1 / 0)
+    with pytest.raises(mp.InstallError, match="withdrawn"):
+        mp.install_app("sine-starter", snap)
+
+
+def test_snapshot_fields_survive_odd_types(env):
+    api = env["api"]
+    for a in api.apps.values():
+        a["row"]["catalog_version"] = 20261015
+    orig_cats, orig_cols = api._marketplace_categories, api._marketplace_collections
+    api._marketplace_categories = lambda: orig_cats() + ["junk", {"id": "weird", "label": "W", "count": "n/a"}]
+    api._marketplace_collections = lambda new_and_updated_limit: orig_cols(new_and_updated_limit) + ["junk", 7]
+    cat = mp.catalog()
+    assert cat["status"] == "ok"
+    assert cat["catalog_version"] == "20261015" and isinstance(cat["generated_at"], str)
+    assert {"id": "weird", "label": "W", "count": 0} in cat["categories"]
+    assert [c["id"] for c in cat["collections"]] == ["starters", "local-ai", "new-and-updated"]
+
+
+def test_shelf_rows_without_a_shelf_id_are_skipped():
+    apps = {"a-app": {}}
+    out = mp._group_collections([
+        {"collection": "shelf", "shelf_id": None, "title": "Nameless", "position": 0, "slug": "a-app"},
+        {"collection": "shelf", "shelf_id": "", "title": "Blank", "position": 0, "slug": "a-app"},
+        {"collection": "shelf", "shelf_id": "x", "title": "X", "position": 0, "slug": "a-app"},
+        {"collection": "new_and_updated", "shelf_id": None, "title": "New", "position": 0, "slug": "a-app"},
+    ], apps)
+    assert [(c["id"], c["kind"]) for c in out] == [("x", "shelf"), ("new-and-updated", "new_and_updated")]
+
+
+def test_search_row_without_release_id_does_not_flag_an_installed_current_app(env):
+    mp.install_app("sine-starter", mp.get_snapshot()[0])
+    orig = env["api"]._marketplace_search
+
+    def no_release(*a, **kw):
+        return [{k: v for k, v in r.items() if k != "release_id"} for r in orig(*a, **kw)]
+
+    env["api"]._marketplace_search = no_release
+    [hit] = mp.search("sine")["apps"]
+    assert hit["installed"] is not None and hit["update_available"] is False
+    assert hit["release_id"] == env["api"].apps["sine-starter"]["row"]["release_id"]
+
+
+def test_detail_row_without_release_id_falls_back_to_the_catalog(env):
+    mp.install_app("sine-starter", mp.get_snapshot()[0])
+    mp.catalog()
+    orig = env["api"]._marketplace_app_detail
+    env["api"]._marketplace_app_detail = lambda slug, client_version=None: [
+        {k: v for k, v in r.items() if k != "release_id"} for r in orig(slug, client_version)]
+    assert mp.app_detail("sine-starter")["app"]["update_available"] is False
+
+
+def test_asset_cache_is_pruned_when_the_catalog_has_no_version(env):
+    env["api"].catalog_version = None
+    mp.catalog()
+    mp.get_asset("local-chat", "icon.svg")
+    root = os.path.join(mp.state_dir(), "assets")
+    old = env["api"].apps["local-chat"]["row"]["release_id"]
+    assert os.listdir(root) == [old]
+    env["api"].set_files("local-chat", {"index.html": "<html>2</html>", "icon.svg": "<svg2/>"}, "1.3.0")
+    mp.catalog(refresh=True)
+    assert not os.path.exists(os.path.join(root, old))
