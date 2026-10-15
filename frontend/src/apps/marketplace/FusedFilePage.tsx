@@ -236,6 +236,7 @@ interface StateView {
 }
 
 function describe(t: AppFileProbe): StateView {
+  if (t.git) return describeGit(t, t.git);
   const when = (s: string | null) => fmtStamp(s) || "an unknown date";
   const at = <code title={t.path}>{tail(t.path)}</code>;
   const keeps = <>.fused, .venv and files the app file does not carry stay.</>;
@@ -340,9 +341,115 @@ function describe(t: AppFileProbe): StateView {
   return { callout: true, tone: "warn", title: "Unknown state", body: String(t.state), status: "—", statusCaption: "" };
 }
 
+/** A GitHub-link build (SPEC §26 DL-9) installs as a git clone of the repo —
+ *  the vanilla template's describeGit. */
+function describeGit(t: AppFileProbe, git: { url: string; commit: string }): StateView {
+  const at = <code title={t.path}>{tail(t.path)}</code>;
+  const repo = <code>{repoLabel(git.url)}</code>;
+  const commit = <code>{git.commit.slice(0, 7)}</code>;
+  switch (t.state) {
+    case "new":
+      return {
+        callout: true,
+        tone: "info",
+        title: "Not installed yet",
+        body: (
+          <>
+            Install clones {repo} into {at}. The app stays a git clone of the repo: it keeps pulling the author's changes,
+            and you can push yours or open a pull request.
+          </>
+        ),
+        status: "Not installed",
+        statusCaption: "Ready to clone",
+      };
+    case "update":
+      return {
+        callout: true,
+        tone: "ok",
+        title: "Update available",
+        body: <>The installed clone can fast-forward to {commit}, the newest commit on {repo}.</>,
+        status: "Update",
+        statusCaption: "Newer commit",
+      };
+    case "same":
+      return {
+        callout: true,
+        tone: "ok",
+        title: "This version is installed",
+        body: (
+          <>
+            {at} is a clone of {repo} at {commit} or newer.
+          </>
+        ),
+        status: "Installed",
+        statusCaption: "Up to date",
+      };
+    case "local":
+      return t.found_by === "git"
+        ? {
+            callout: true,
+            tone: "warn",
+            title: "Your copy has changes of its own",
+            body: (
+              <>
+                {at} has commits or edits that are not in {repo}, so it is not updated from here. Update it with git (git
+                pull), or ask Claude.
+              </>
+            ),
+            status: "Edited",
+            statusCaption: "Local changes",
+          }
+        : {
+            callout: true,
+            tone: "warn",
+            title: "Your copy was edited since it was installed",
+            body: (
+              <>
+                {at} holds this app installed from a .fused file, and these files changed since. Rename or uninstall it,
+                then open the link again.
+              </>
+            ),
+            list: t.changed,
+            status: "Edited",
+            statusCaption: "Local changes",
+          };
+    case "replace":
+      return {
+        callout: true,
+        tone: "warn",
+        title: "Installed without git",
+        body: (
+          <>
+            {at} holds this app, but not as a git clone. Replacing it clones {repo} in its place and keeps its data
+            (.fused) and environment (.venv); the old folder goes to the Trash.
+          </>
+        ),
+        status: "Installed",
+        statusCaption: "Not a clone",
+      };
+    case "clash":
+      return {
+        callout: true,
+        tone: "warn",
+        title: "A different app is installed under this name",
+        body: <>{at} holds another app. Rename or uninstall it, then open the link again.</>,
+        status: "Name taken",
+        statusCaption: "Another app",
+      };
+  }
+  return { callout: true, tone: "warn", title: "Unknown state", body: String(t.state), status: "—", statusCaption: "" };
+}
+
+/** "https://github.com/owner/repo" → "github.com/owner/repo". */
+function repoLabel(url: string): string {
+  return url.replace(/^https?:\/\//i, "").replace(/\.git$/i, "");
+}
+
 /** The first-click label of each state's primary action. */
 function primaryLabel(t: AppFileProbe): string {
   switch (t.state) {
+    case "replace":
+      return "Replace with git clone";
     case "update":
       return "Update";
     case "diverged":
@@ -382,14 +489,20 @@ export function FusedFilePage({ path }: { path: string }) {
     setPhase((p) => (p.kind === "armed" || p.kind === "error" ? { kind: "idle" } : p));
   }, [probe?.state, probe?.installed]);
 
+  // A deep-link download lives in an internal cache folder: no way "back"
+  // into it, and no "Show in Explorer" pointing there. Only the probe knows,
+  // so the folder link waits for it rather than flashing the cache's name.
+  const downloaded = probe?.downloaded === true;
   const canBack = navReach().back && !IS_TOP_EMBED;
-  const back: BackLink = canBack
+  const back: BackLink | undefined = canBack
     ? { label: "Back", href: explorerHref(folder, fileName), onClick: plainClick(() => history.back()) }
-    : {
-        label: basename(folder) || "Files",
-        href: explorerHref(folder, fileName),
-        onClick: plainClick(() => openInExplorer(folder, { isDir: true, sel: fileName })),
-      };
+    : !probe || downloaded
+      ? undefined
+      : {
+          label: basename(folder) || "Files",
+          href: explorerHref(folder, fileName),
+          onClick: plainClick(() => openInExplorer(folder, { isDir: true, sel: fileName })),
+        };
 
   const resolveUrl = useMemo<UrlResolver>(
     () => (url, kind) => {
@@ -479,7 +592,7 @@ export function FusedFilePage({ path }: { path: string }) {
       state: "caution",
       emphasis: "filled",
       wide: true,
-      label: t.state === "same" ? "Confirm reinstall" : "Confirm overwrite",
+      label: t.state === "same" ? "Confirm reinstall" : t.state === "replace" ? "Confirm replace" : "Confirm overwrite",
       onClick: () => install(true),
     };
     note = (
@@ -487,7 +600,9 @@ export function FusedFilePage({ path }: { path: string }) {
         <span className="is-warn">
           {t.state === "diverged"
             ? `Replaces ${t.changed.length} edited file${t.changed.length === 1 ? "" : "s"}`
-            : t.state === "same"
+            : t.state === "replace"
+              ? "Old folder goes to the Trash"
+              : t.state === "same"
               ? "Resets the app's files"
               : "Replaces the installed files"}
         </span>
@@ -500,16 +615,25 @@ export function FusedFilePage({ path }: { path: string }) {
   } else if (t.state === "clash") {
     pill = { state: "disabled", label: "Install", title: "Another app is installed under this name" };
     note = <span className="is-warn">Name taken by another app</span>;
+  } else if (t.state === "local") {
+    pill = installedEntry
+      ? { state: "open", onClick: () => openEntry(installedEntry) }
+      : { state: "disabled", label: "Update", title: "Your copy has changes of its own" };
+    note = <span className="is-warn">Installed · changes of its own</span>;
   } else if (t.state === "same") {
     pill = installedEntry
       ? { state: "open", onClick: () => openEntry(installedEntry) }
-      : { state: "caution", label, onClick: () => setPhase({ kind: "armed" }) };
+      : t.git
+        ? { state: "disabled", label: "Installed", title: "This commit is already installed" }
+        : { state: "caution", label, onClick: () => setPhase({ kind: "armed" }) };
     note = <>Installed{shortDate(t.exported_at) ? <> · exported {shortDate(t.exported_at)}</> : null}</>;
   } else if (t.needs_force) {
     pill = { state: "caution", label, onClick: () => setPhase({ kind: "armed" }) };
     note =
       t.state === "diverged" ? (
         <span className="is-warn">Installed · edited locally</span>
+      ) : t.state === "replace" ? (
+        <span className="is-warn">Installed · not a git clone</span>
       ) : t.state === "downgrade" ? (
         <span className="is-warn">Older than installed</span>
       ) : (
@@ -531,14 +655,14 @@ export function FusedFilePage({ path }: { path: string }) {
 
   // ---- ⋯ menu ----
   const menu: MenuEntry[] = [];
-  if (installedEntry && t.state !== "same" && t.state !== "clash") {
+  if (installedEntry && t.state !== "same" && t.state !== "clash" && t.state !== "local") {
     menu.push({
       label: "Open installed app",
       icon: <Play size={14} strokeWidth={2} />,
       onClick: () => openEntry(installedEntry),
     });
   }
-  if (t.state === "same" && phase.kind === "idle") {
+  if (t.state === "same" && !t.git && phase.kind === "idle") {
     menu.push({
       label: "Reinstall from this file…",
       icon: <RotateCcw size={14} strokeWidth={2} />,
@@ -675,7 +799,7 @@ export function FusedFilePage({ path }: { path: string }) {
     ),
   });
 
-  const topRight = (
+  const topRight = downloaded ? undefined : (
     <a className="as-toplink" href={explorerHref(folder, fileName)} onClick={plainClick(() => openInExplorer(folder, { isDir: true, sel: fileName }))}>
       Show in Explorer <ArrowUpRight size={13} strokeWidth={2.2} aria-hidden="true" />
     </a>
@@ -694,6 +818,12 @@ export function FusedFilePage({ path }: { path: string }) {
         menu={menu}
         menuLabel={`More actions for ${name}`}
       />
+      {t.git && (
+        <StatusCallout tone="warn" title="Unverified code from GitHub">
+          This app is cloned from <code>{repoLabel(t.git.url)}</code>. Fused has not reviewed or verified it, and it can
+          contain malicious code that runs with your access once installed. Install it only if you trust its author.
+        </StatusCallout>
+      )}
       {view.callout && (
         <StatusCallout tone={view.tone} title={view.title} list={view.list} listMax={12}>
           {view.body}
