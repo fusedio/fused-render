@@ -8,7 +8,7 @@ import { installDomShim } from "./testDomShim";
 
 installDomShim();
 
-const { actionFor, isActive, installedAppHref, categoryLabel, refreshCatalog, peekCatalog, installApp, peekJobs } = await import("./marketplace");
+const { actionFor, isActive, installedAppHref, categoryLabel, refreshCatalog, peekCatalog, installApp, peekJobs, searchApps } = await import("./marketplace");
 type AppEntry = import("./marketplace").AppEntry;
 type InstallJob = import("./marketplace").InstallJob;
 
@@ -30,7 +30,10 @@ function app(over: Partial<AppEntry> = {}): AppEntry {
     preview_url: null,
     size_bytes: 1,
     file_count: 1,
-    tree_sha: "a",
+    release_id: "r1",
+    commit: "c1",
+    published_at: null,
+    updated_at: null,
     source_url: null,
     featured: false,
     installed: null,
@@ -44,7 +47,7 @@ function job(over: Partial<InstallJob> = {}): InstallJob {
   return { slug: "sine-starter", action: "install", state: "downloading", progress: 0.4, bytes_done: 4, bytes_total: 10, message: "", ...over };
 }
 
-const stamp = { path: "/ws/community/sine-starter", version: "1.0.0", tree_sha: "b", installed_at: "", modified: false };
+const stamp = { path: "/ws/community/sine-starter", version: "1.0.0", release_id: "r0", installed_at: "", modified: false };
 
 describe("actionFor", () => {
   test("not installed → get; incompatible → incompatible", () => {
@@ -109,14 +112,14 @@ describe("refreshCatalog", () => {
         resolvers.push((body) => res(new Response(JSON.stringify(body), { status: 200 })));
       });
     }) as typeof fetch;
-    const cat = (commit: string) => ({ status: "ok", commit, categories: [], apps: [] });
+    const cat = (commit: string) => ({ status: "ok", catalog_version: commit, categories: [], collections: [], apps: [] });
     const first = refreshCatalog({ again: true });
     const second = refreshCatalog({ again: true });
     resolvers[1](cat("new"));
     await second;
     resolvers[0](cat("old"));
     await first;
-    expect(peekCatalog().catalog?.commit).toBe("new");
+    expect(peekCatalog().catalog?.catalog_version).toBe("new");
     expect(peekCatalog().loading).toBe(false);
   });
 });
@@ -143,7 +146,7 @@ describe("jobs poll", () => {
       if (u.includes("/jobs")) {
         return Promise.resolve(new Response(JSON.stringify({ jobs: { "race-app": queued } }), { status: 200 }));
       }
-      return Promise.resolve(new Response(JSON.stringify({ status: "ok", commit: "c", categories: [], apps: [] }), { status: 200 }));
+      return Promise.resolve(new Response(JSON.stringify({ status: "ok", catalog_version: "c", categories: [], collections: [], apps: [] }), { status: 200 }));
     }) as typeof fetch;
     // The catalog read fires one jobs read, held open here.
     void refreshCatalog({ again: true });
@@ -153,5 +156,26 @@ describe("jobs poll", () => {
     releaseJobs!({ jobs: {} });
     await new Promise((r) => setTimeout(r, 0));
     expect(peekJobs()["race-app"]?.state).toBe("queued");
+  });
+});
+
+describe("searchApps", () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  test("builds the query: q always, category/cursor/limit only when set", async () => {
+    const urls: string[] = [];
+    globalThis.fetch = ((url: string) => {
+      urls.push(String(url));
+      return Promise.resolve(new Response(JSON.stringify({ status: "ok", apps: [], next_cursor: null }), { status: 200 }));
+    }) as typeof fetch;
+    await searchApps({ q: "local chat" });
+    await searchApps({ q: "x", category: "all", cursor: "" });
+    await searchApps({ q: "x", category: "starters", cursor: "24", limit: 12 });
+    expect(urls[0]).toBe("/api/marketplace/search?q=local+chat");
+    expect(urls[1]).toBe("/api/marketplace/search?q=x");
+    expect(urls[2]).toBe("/api/marketplace/search?q=x&category=starters&cursor=24&limit=12");
   });
 });
