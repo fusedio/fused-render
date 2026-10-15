@@ -46,6 +46,55 @@ test("the modal frames /render for the path once it exists", async () => {
   expect(textOf(byType(r, "h2")[0])).toContain("my file.html");
 });
 
+const statOf = (v: unknown) => (async () => v) as unknown as (p: string) => Promise<unknown>;
+
+test("the modal frames the file's default template, interactive but not recorded", async () => {
+  const p = "/p/notes.md";
+  const r = mount(
+    <FilePreviewModal
+      path={p}
+      onClose={() => {}}
+      stat={statOf({ is_dir: false, templates: [{ mode: "md", path: "/tpl/md" }] })}
+    />,
+  );
+  await tick();
+  expect(byType(r, "iframe")[0].props.src).toBe(
+    "/render?path=" + encodeURIComponent("/tpl/md") + "&_file=" + encodeURIComponent(p) + "&_noopen=1",
+  );
+});
+
+test("a conditional first entry is skipped for the next offerable one", async () => {
+  const p = "/p/notes.md";
+  const r = mount(
+    <FilePreviewModal
+      path={p}
+      onClose={() => {}}
+      stat={statOf({
+        is_dir: false,
+        templates: [
+          { mode: "x", path: "/tpl/x", conditional: true },
+          { mode: "md", path: "/tpl/md" },
+        ],
+      })}
+    />,
+  );
+  await tick();
+  expect(String(byType(r, "iframe")[0].props.src)).toContain(encodeURIComponent("/tpl/md"));
+});
+
+test("a folder falls back to the bare /render", async () => {
+  const p = "/p/dir";
+  const r = mount(
+    <FilePreviewModal
+      path={p}
+      onClose={() => {}}
+      stat={statOf({ is_dir: true, templates: [{ mode: "md", path: "/tpl/md" }] })}
+    />,
+  );
+  await tick();
+  expect(byType(r, "iframe")[0].props.src).toBe("/render?path=" + encodeURIComponent(p));
+});
+
 test("a missing file says so instead of framing", async () => {
   const r = mount(
     <FilePreviewModal path="/p/gone.html" onClose={() => {}} stat={() => Promise.reject(new Error("404"))} />,
