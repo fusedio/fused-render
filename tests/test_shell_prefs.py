@@ -212,6 +212,27 @@ def test_put_rejects_bad_monitor_enabled(tmp_path, monkeypatch):
     assert not (home / "prefs.json").exists()
 
 
+def test_marketplace_enabled_defaults_off_and_toggles(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    # Default off: the Marketplace entry points are opt-in.
+    assert client.get("/api/prefs").json()["marketplace"]["enabled"] is False
+    body = client.put("/api/prefs", json={"marketplace_enabled": True}, headers=FUSED).json()
+    assert body["marketplace"]["enabled"] is True
+    stored = json.loads((home / "prefs.json").read_text(encoding="utf-8"))
+    assert stored["marketplace_enabled"] is True
+    assert prefs_mod.marketplace_enabled() is True
+    assert client.put("/api/prefs", json={"marketplace_enabled": False}, headers=FUSED).json()[
+        "marketplace"
+    ]["enabled"] is False
+    # A hand-edited junk value reads as off; a non-boolean PUT is refused.
+    (home / "prefs.json").write_text(json.dumps({"marketplace_enabled": "yes"}), encoding="utf-8")
+    assert prefs_mod.marketplace_enabled() is False
+    assert (
+        client.put("/api/prefs", json={"marketplace_enabled": "yes"}, headers=FUSED).status_code
+        == 400
+    )
+
+
 def test_put_rejects_empty_body(tmp_path, monkeypatch):
     client, home = _client(tmp_path, monkeypatch)
     # A PUT naming no known preference is rejected without a write.

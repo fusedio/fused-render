@@ -74,4 +74,8 @@
 @import "./styles/canvases.css";
 @import "./styles/reduced-motion.css";
 @import "./styles/apps.css";
+/* After apps.css: the Marketplace (/marketplace) and the App-Store blocks it
+   is built from (platform/ui/appstore) — a page-family surface one notch up
+   from the /apps cards, reusing their hairline/--bg-alt card vocabulary. */
+@import "./styles/marketplace.css";
 @import "./styles/scrollbars.css";

@@ -78,6 +78,12 @@ def shell_explorer(path: str = "", shell_path: str = Depends(get_shell_path)):
 # frontend apps/bots/routes.ts owns the list), served by the wildcard below;
 # `?new=1` / `?phone=1` stay client-side query state.
 @router.get("/bots")
+# Marketplace (frontend shell/marketplace, backend fused_render/marketplace.py):
+# browse at the bare prefix; `/marketplace/installed`, `/marketplace/app/<slug>`
+# and `/marketplace/file?path=` are sub-paths served by the wildcard stacked
+# here too — the client owns that list and parses the rest.
+@router.get("/marketplace")
+@router.get("/marketplace/{path:path}")
 def shell_page(shell_path: str = Depends(get_shell_path)):
     return FileResponse(shell_path)
 

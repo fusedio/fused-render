@@ -104,6 +104,29 @@ def test_target_is_app_slug_and_reports_new_first(tmp_path):
     assert t["entry"] == "index.html"
 
 
+def test_probe_reports_metadata_json_fields_type_checked(tmp_path):
+    # The listing card a community app carries rides the probe for the
+    # install page's hero; each field is checked on its own, junk dropped.
+    meta = {
+        "name": "Demo App", "description": "Does demo things.", "version": "1.2.0",
+        "author": {"name": "Isaac", "github": "isaac"}, "tags": ["a", 3, "b"],
+        "requires_python": "yes", "category": ["nope"],
+    }
+    fused = export(tmp_path, extra={"metadata.json": json.dumps(meta)})
+    m = appfile.install_target(str(fused))["metadata"]
+    assert m["name"] == "Demo App" and m["description"] == "Does demo things."
+    assert m["version"] == "1.2.0"
+    assert m["author"] == {"name": "Isaac", "github": "isaac"}
+    assert m["tags"] == ["a", "b"]
+    assert m["requires_python"] is None and m["category"] is None
+    # No metadata.json, or one that is not an object: None. The light probe
+    # (a card thumbnail) never reads it.
+    assert appfile.install_target(str(export(tmp_path, out_name="plain.fused")))["metadata"] is None
+    bad = export(tmp_path, out_name="bad.fused", extra={"metadata.json": "[1, 2]"})
+    assert appfile.install_target(str(bad))["metadata"] is None
+    assert "metadata" not in appfile.install_target(str(fused), light=True)
+
+
 def test_a_missing_file_is_an_appfile_error(tmp_path):
     with pytest.raises(appfile.AppFileError, match="no such file"):
         appfile.install_target(str(tmp_path / "nope.fused"))

@@ -1355,6 +1355,12 @@ export interface Prefs {
   // an older server answers without it, and the reader (monitor-flag.ts)
   // treats absence as off.
   monitor?: { enabled: boolean };
+  // Whether the Marketplace is OFFERED (opt-in, default off — shell/prefs.py
+  // `marketplace_enabled`): the sidebar's Marketplace row and the
+  // /marketplace pages. Gates the entry points, not /api/marketplace/*.
+  // OPTIONAL: an older server answers without it, and the reader
+  // (marketplace-flag.ts) treats absence as off.
+  marketplace?: { enabled: boolean };
   // ONE TASK IN PROGRESS PER FOLDER (`project_queue_enabled`, shell/prefs.py).
   // Everything that wants to run in a folder somebody else's task is already
   // running in waits its turn in the scheduler's pending list instead — chat
@@ -1713,6 +1719,10 @@ export function putLivePreviewsEnabled(enabled: boolean): Promise<Prefs> {
 
 export function putMonitorEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { monitor_enabled: enabled });
+}
+
+export function putMarketplaceEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { marketplace_enabled: enabled });
 }
 
 /** Whether a finished-task notification fires for an interactive-terminal
@@ -2225,6 +2235,93 @@ export async function downloadTemplatesExport(names: string[]): Promise<void> {
 // the file ships without one — the card's onError fallback owns that case.
 export function appfilePreviewUrl(path: string): string {
   return "/api/appfile/preview?path=" + encodeURIComponent(path);
+}
+
+/** The payload's icon.svg / icon.png (404 without one). */
+export function appfileIconUrl(path: string): string {
+  return "/api/appfile/icon?path=" + encodeURIComponent(path);
+}
+
+// -- Installing a `.fused` (SPEC §43 AF-14) ------------------------------------
+// The install page's two calls: the read-only probe (what installing would
+// do) and the X-Fused install POST. Server: fused_render/server/routers/
+// appfile.py over appfile.install_target / install_app_file.
+
+/** What installing would do. `new` installs; `update` replaces an unchanged
+ *  copy; the WARN states (`needs_force`) — `diverged` (copy edited since),
+ *  `same`, `downgrade`, `unknown` (no install record) — need a confirmed
+ *  second click; `clash` (another app holds the folder) cannot install. */
+export type AppFileState = "new" | "update" | "diverged" | "same" | "downgrade" | "unknown" | "clash";
+
+/** The payload's `metadata.json`, type-checked field by field (display only). */
+export interface AppFileMetadata {
+  name: string | null;
+  description: string | null;
+  version: string | null;
+  category: string | null;
+  requires_python: boolean | null;
+  author: { name: string; github: string | null } | null;
+  tags: string[];
+}
+
+export interface AppFileProbe {
+  name: string;
+  slug: string;
+  app_id: string | null;
+  /** Where the copy is, or would be (absolute, forward slashes). */
+  path: string;
+  installed: boolean;
+  found_by: "id" | "slug" | null;
+  /** A keep-data uninstall left this app's `.fused/` there. */
+  husk: boolean;
+  state: AppFileState;
+  needs_force: boolean;
+  exported_at: string | null;
+  installed_exported_at: string | null;
+  installed_at: string | null;
+  /** `diverged`: the installed files that differ from the install. */
+  changed: string[];
+  other_name: string | null;
+  /** The entry page, relative to the app folder. */
+  entry: string;
+  /** The installed copy's entry page (absolute), when installed. */
+  entry_path: string | null;
+  files: { path: string; size: number }[];
+  bytes: number;
+  format: number | null;
+  has_icon: boolean;
+  has_preview: boolean;
+  readme?: string | null;
+  metadata?: AppFileMetadata | null;
+}
+
+export interface AppFileInstallResult extends AppFileProbe {
+  action: "installed" | "updated";
+  /** The installed entry page (absolute). */
+  entry: string;
+  entry_view: string;
+  entry_embed: string;
+}
+
+export function getAppFileProbe(path: string, opts?: { signal?: AbortSignal }): Promise<AppFileProbe> {
+  return getJson<AppFileProbe>("/api/appfile/install?path=" + encodeURIComponent(path), opts);
+}
+
+/** Install (or update) the `.fused` at `file`. A warn state answers 409 with
+ *  the fresh probe until `force` — that comes back as `{needsConfirm}` rather
+ *  than a throw, so the page can re-render the state the copy is really in. */
+export async function installAppFile(
+  file: string,
+  force: boolean,
+): Promise<{ ok: AppFileInstallResult } | { needsConfirm: AppFileProbe }> {
+  try {
+    return { ok: await postJson<AppFileInstallResult>("/api/appfile/install", { file, force }) };
+  } catch (e) {
+    const err = e as HttpError;
+    const target = (err.body as { target?: AppFileProbe } | undefined)?.target;
+    if (err.status === 409 && target) return { needsConfirm: target };
+    throw e;
+  }
 }
 
 // The `.fused` app file export (SPEC §43, D385). Once a browser blob download

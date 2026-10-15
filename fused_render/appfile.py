@@ -640,6 +640,8 @@ README_NAMES = ("readme.md", "readme.markdown", "readme", "readme.txt")
 ICON_NAMES = ("icon.svg", "icon.png")
 MAX_README_BYTES = 200_000
 MAX_ICON_BYTES = 2 * 1024 * 1024
+METADATA_NAME = "metadata.json"
+MAX_METADATA_BYTES = 64_000
 
 
 def install_dir() -> str:
@@ -907,6 +909,60 @@ def read_icon(fused_path: str, manifest: dict | None = None) -> tuple[str, bytes
     return mime, raw
 
 
+def read_metadata(fused_path: str, manifest: dict | None = None) -> dict | None:
+    """The payload's top-level ``metadata.json`` (the community-app listing
+    card: description, author, tags, version …), reduced to the fields the
+    install page shows and type-checked one by one, or None — absent, over
+    the cap, not JSON, not an object, or a v1 zip. Display only: nothing
+    about the install (slug, identity, target) is ever taken from it, so a
+    file that lies here can mislabel its own page and nothing else."""
+    manifest = manifest or read_manifest(fused_path)
+    if manifest.get("fused_app_file") != container.VERSION:
+        return None
+    rel = _find_member(manifest, (METADATA_NAME,))
+    if rel is None:
+        return None
+    try:
+        raw = container.read_member(fused_path, manifest, rel, MAX_METADATA_BYTES)
+    except container.ContainerError:
+        return None
+    if raw is None or len(raw) > MAX_METADATA_BYTES:
+        return None
+    try:
+        data = json.loads(raw.decode("utf-8", "replace"))
+    except ValueError:
+        return None
+    if not isinstance(data, dict):
+        return None
+
+    def text(key: str, cap: int = 500) -> str | None:
+        v = data.get(key)
+        return v.strip()[:cap] if isinstance(v, str) and v.strip() else None
+
+    out: dict = {
+        "name": text("name", 120),
+        "description": text("description", 600),
+        "version": text("version", 40),
+        "category": text("category", 40),
+        "requires_python": data.get("requires_python") if isinstance(data.get("requires_python"), bool) else None,
+        "author": None,
+        "tags": [],
+    }
+    author = data.get("author")
+    if isinstance(author, str) and author.strip():
+        out["author"] = {"name": author.strip()[:120], "github": None}
+    elif isinstance(author, dict) and isinstance(author.get("name"), str) and author["name"].strip():
+        gh = author.get("github")
+        out["author"] = {
+            "name": author["name"].strip()[:120],
+            "github": gh.strip()[:60] if isinstance(gh, str) and gh.strip() else None,
+        }
+    tags = data.get("tags")
+    if isinstance(tags, list):
+        out["tags"] = [t.strip()[:40] for t in tags if isinstance(t, str) and t.strip()][:12]
+    return out
+
+
 def _has_preview(fused_path: str, manifest: dict) -> bool:
     """Whether the page should ask `/api/appfile/preview`: the index says so
     for a v2 container; a v1 zip lists no members, so its `preview.png` is
@@ -1036,6 +1092,7 @@ def install_target(fused_path: str, *, light: bool = False) -> dict:
     }
     if not light:
         out["readme"] = read_readme(fused_path, manifest)
+        out["metadata"] = read_metadata(fused_path, manifest)
     return out
 
 

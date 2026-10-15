@@ -297,6 +297,11 @@ _LOG_SKIP_PREFIXES = ("/static/", "/template-assets/", "/template-shared/")
 # shell-dist/index.html, runtime.js and /template-assets are NOT hashed and
 # keep no-cache (the stale-half-old-UI reason above still holds for them).
 _IMMUTABLE_PREFIX = "/static/shell-dist/assets/"
+# Marketplace asset bytes (routers/marketplace.py) are cached per catalog
+# commit server-side and answered with their own `max-age=3600`, which this
+# middleware keeps instead of overwriting with no-cache — the browse grid
+# re-requests every preview on each visit otherwise.
+_OWN_CACHE_PREFIX = "/api/marketplace/asset/"
 
 async def no_cache_and_log(request, call_next):
     # The app call log's single write point (calls.py, design §4.5). begin()
@@ -378,6 +383,9 @@ async def _no_cache_and_log_inner(request, call_next, call, path, logged, start)
     # asset cached back when it was no-cache gets upgraded on its next look.
     if path.startswith(_IMMUTABLE_PREFIX) and response.status_code in (200, 304):
         response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    elif (path.startswith(_OWN_CACHE_PREFIX) and response.status_code == 200
+          and "cache-control" in response.headers):
+        pass
     else:
         response.headers["Cache-Control"] = "no-cache"
     return response

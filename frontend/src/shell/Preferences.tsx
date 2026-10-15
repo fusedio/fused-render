@@ -59,6 +59,7 @@ import {
   putCanvasesEnabled,
   putLivePreviewsEnabled,
   putMonitorEnabled,
+  putMarketplaceEnabled,
   putMenubarPinEnabled,
   putNativeWindowsEnabled,
   putGitAutoSyncEnabled,
@@ -85,6 +86,7 @@ import { publishCanvasesEnabled } from "@apps/canvases/feature-flag";
 import { publishAppSharingEnabled } from "@platform/lib/share-app-flag";
 import { publishLivePreviewsEnabled } from "@platform/lib/live-previews-flag";
 import { publishMonitorEnabled } from "@platform/lib/monitor-flag";
+import { publishMarketplaceEnabled } from "@platform/lib/marketplace-flag";
 import { publishProjectQueueEnabled } from "@apps/claude/feature-flag";
 import type { CallsParamsMode, HfAuth, LanDevice, Prefs } from "@platform/lib/api";
 import { IS_QUERY_EMBED, navigate, navigateUrl } from "@platform/lib/router";
@@ -562,6 +564,51 @@ function MonitorSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs
         <input type="checkbox" checked={enabled} disabled={busy} onChange={toggle} />
         <span>
           <b>Enable the process Monitor</b> — show the System chip and the Monitor page.
+        </span>
+      </label>
+      {error && <ErrorBanner>{error}</ErrorBanner>}
+    </section>
+  );
+}
+
+// Marketplace: the sidebar's Marketplace row and the /marketplace pages (a
+// store of community apps, installed into <workspace>/community). Off by
+// default, and this is the only place it can be turned on. Same one-checkbox
+// shape and publish-after-PUT as Monitor above, so the sidebar row appears the
+// moment the checkbox settles. `?.enabled === true` because the key is
+// optional on the wire (an older server) and absence means off.
+function MarketplaceSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const enabled = prefs.marketplace?.enabled === true;
+
+  const toggle = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const next = await putMarketplaceEnabled(!enabled);
+      onChange(next);
+      publishMarketplaceEnabled(next.marketplace?.enabled === true);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="prefs-section">
+      <h2>Marketplace</h2>
+      <p className="deploy-muted">
+        Browse and install community apps from the Fused app gallery, right from the sidebar. Off
+        by default.
+      </p>
+      <label className="prefs-radio">
+        <input type="checkbox" checked={enabled} disabled={busy} onChange={toggle} />
+        <span>
+          <b>Enable Marketplace</b> — show the Marketplace in the sidebar to discover, install and
+          update community apps.
         </span>
       </label>
       {error && <ErrorBanner>{error}</ErrorBanner>}
@@ -1880,6 +1927,7 @@ export default function Preferences() {
                 <TaskNotifyTerminalSection prefs={prefs} onChange={setPrefs} />
                 {!bot && <LivePreviewsSection prefs={prefs} onChange={setPrefs} />}
                 <MonitorSection prefs={prefs} onChange={setPrefs} />
+                {!bot && <MarketplaceSection prefs={prefs} onChange={setPrefs} />}
                 <PhoneSection />
                 <DiagnosticsSection />
               </>

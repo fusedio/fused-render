@@ -10,6 +10,7 @@
 //                             bare "/ai-models" redirects to the default tab
 //   "/preferences|/templates" -> settings pages
 //   "/monitor"               -> whole-machine process monitor (shell/monitor)
+//   "/marketplace[/…]"       -> community app store (apps/marketplace)
 // Legacy pre-rename urls (/view/..., /embed/..., /view/_prefs-family) are
 // rewritten in place at boot by router.ts before any of this runs.
 // The active view is keyed by the nav epoch: every navigation remounts it,
@@ -22,6 +23,7 @@ import {
   IS_EMBED,
   IS_NATIVE_WINDOW,
   IS_PREVIEW,
+  IS_SNAPSHOT,
   fsPathFromLocation,
   isPanelPath,
   navHintIsDir,
@@ -67,6 +69,7 @@ import ModelsDock from "@shell/ModelsDock";
 import SystemDock from "@shell/SystemDock";
 import UpdatesDock from "@shell/UpdatesDock";
 import { useMonitorFeature } from "@platform/lib/monitor-flag";
+import { useMarketplaceFeature } from "@platform/lib/marketplace-flag";
 import ActivityDock from "@shell/ActivityDock";
 import RepoUpdatesDock from "@shell/RepoUpdatesDock";
 import NativeAppSyncNotices from "@shell/NativeAppSyncNotices";
@@ -119,6 +122,9 @@ const AiModels = lazy(() =>
 );
 const Scheduled = lazy(() => import("@shell/Scheduled"));
 const MonitorPage = lazy(() => import("@shell/monitor/MonitorPage"));
+const MarketplacePage = lazy(() =>
+  import("@apps/marketplace").then((m) => ({ default: m.MarketplacePage })),
+);
 
 /** Params that belong to a PAGE rather than to a route — see `useNavEpoch`.
  *  Module-level so the array identity is stable across renders. */
@@ -446,6 +452,34 @@ function StatView({
   );
 }
 
+// A `.fused` app file opened anywhere — a click in a listing, the explorer
+// view or embed URL a Finder double-click / deeplink / CLI / FetchAppFileBoot
+// lands on — with the Marketplace ON: the React install page
+// (apps/marketplace FusedFilePage) renders IN PLACE of the fusedapp template,
+// at the same URL. One interception for every entry point, no redirect, so
+// nothing flashes and the embed window stays an embed. NOT for a thumbnail
+// (`_preview=1` — card peeks keep the template's small mark-and-name view) or
+// a frozen snapshot, and not when the URL asks for another mode by name
+// (`?_mode=claude`): the mode switcher's other views stay reachable.
+function isFusedInstallView(fsPath: string): boolean {
+  if (IS_PREVIEW || IS_SNAPSHOT || !/\.fused$/i.test(fsPath)) return false;
+  const mode = new URLSearchParams(location.search).get("_mode");
+  return !mode || mode === "fusedapp";
+}
+
+// The install page in place of StatView. Still a file open: it records the
+// file in the explorer's recents like StatView would (a no-op in embed).
+function FusedFileView({ fsPath }: { fsPath: string }) {
+  useRecentsTracking(fsPath, false, null);
+  return (
+    <div id="content">
+      <Suspense fallback={<RouteFallback />}>
+        <MarketplacePage fusedFile={fsPath} />
+      </Suspense>
+    </div>
+  );
+}
+
 // /claude-config: the native Claude Config panel — no mount, no StatView; the
 // availability gate mirrors the sidebar entry's, so a direct URL hit while
 // ~/.claude is absent shows an honest empty state instead of a dead panel.
@@ -718,6 +752,14 @@ export default function App({ config }: { config: Config }) {
   // to "monitor" when the pref landed would flash a stat of ~/monitor first.
   const monitorOn = useMonitorFeature();
   const isMonitor = pathname === "/monitor";
+  // The Marketplace (apps/marketplace) — a PREFIX: Discover at the bare path,
+  // `/installed` and `/app/<slug>` beneath it. Behind its flag exactly like
+  // the Monitor above (marketplace-flag.ts, `marketplace_enabled`, default
+  // off), and a sentinel either way for the same no-flash reason. The bare
+  // path is spelled as its own equality literal: tests/test_shell_routes.py
+  // scrapes those literals from this file and GETs each from the server.
+  const marketplaceOn = useMarketplaceFeature();
+  const isMarketplace = pathname === "/marketplace" || pathname.startsWith("/marketplace/");
   // The AI Models page (apps/ai_models/) — a PREFIX, not one path: its five
   // tabs are sub-paths beneath it (`/ai-models/local`, …), and the bare prefix
   // has already been rewritten to the default tab above. Asked through the
@@ -771,6 +813,7 @@ export default function App({ config }: { config: Config }) {
     isTemplates ||
     isTasks ||
     isMonitor ||
+    isMarketplace ||
     isAiModels ||
     isApps ||
     appPagePath !== null ||
@@ -781,6 +824,10 @@ export default function App({ config }: { config: Config }) {
     isBots ||
     canvasWorkspaceName !== null;
   const fsPath = isSentinel ? null : fsPathFromLocation();
+  // Behind the Marketplace flag (see isFusedInstallView). While the flag is
+  // still unknown (`null`, one prefs read) the route HOLDS rather than paint
+  // the template it might replace a moment later; off, StatView as ever.
+  const fusedFile = fsPath && marketplaceOn !== false && isFusedInstallView(fsPath) ? fsPath : null;
   // A resolved fsPath mounts StatView below, which owns the title itself.
   useDocumentTitle(
     isPanel
@@ -795,6 +842,11 @@ export default function App({ config }: { config: Config }) {
                 ? "Tasks"
                 : isMonitor
                 ? "Monitor"
+                : isMarketplace
+                ? // The file page names itself (FusedFilePage) after its app.
+                  pathname === "/marketplace/file"
+                  ? undefined
+                  : "Marketplace"
                 : isAiModels
                   ? "AI Models"
                   : isApps
@@ -945,6 +997,36 @@ export default function App({ config }: { config: Config }) {
         )}
       </div>
     );
+  } else if (isMarketplace) {
+    // The Marketplace — chrome-free, the page owns its sticky header and
+    // scroll. Keyed on epoch like its neighbours (its catalog is a module
+    // cache, so a remount repaints instantly). Off, nothing is fetched: the
+    // notice is the whole page.
+    main = (
+      <div id="content" key={epoch}>
+        {marketplaceOn === null ? (
+          <RouteFallback />
+        ) : marketplaceOn ? (
+          <Suspense fallback={<RouteFallback />}>
+            <MarketplacePage key={epoch} />
+          </Suspense>
+        ) : (
+          <div className="monitor-off deploy-muted">
+            The Marketplace is off. Turn it on under{" "}
+            <a
+              href="/preferences"
+              onClick={(e) => {
+                e.preventDefault();
+                navigateUrl("/preferences");
+              }}
+            >
+              Preferences › Marketplace
+            </a>
+            .
+          </div>
+        )}
+      </div>
+    );
   } else if (isCanvases) {
     // Canvases listing — same chrome-free settings pattern as Scheduled.
     main = (
@@ -1068,6 +1150,15 @@ export default function App({ config }: { config: Config }) {
         </div>
       </>
     );
+  } else if (fusedFile) {
+    main =
+      marketplaceOn === true ? (
+        <FusedFileView key={epoch + ":" + fusedFile} fsPath={fusedFile} />
+      ) : (
+        <div id="content" key={epoch}>
+          <RouteFallback />
+        </div>
+      );
   } else {
     main = (
       <StatView

@@ -1,0 +1,2782 @@
+/* -- Marketplace (/marketplace) + the App-Store building blocks ---------------
+   Two vocabularies in one file, because they are one look:
+
+   .as-*  the presentational blocks in platform/ui/appstore (icon tile, action
+          pill, info strip, preview stage + lightbox, readme typography, files
+          table, trust card, detail layout, store card, skeletons). The phase-2
+          `.fused` install page is built on these too, so nothing under .as-
+          may assume it is inside the Marketplace page.
+   .mp-*  the Marketplace pages themselves (apps/marketplace): the scrolling
+          page + sticky header, chips, hero carousel, shelves, installed list.
+
+   Every colour is a token (tokens.css; the `--store-*` ones are this file's),
+   so light and dark both hold. Accent (lime / olive) is spent on exactly
+   three things: the Get / Update pills, the selected chip, the focus ring. */
+
+/* ---- Page + sticky header ------------------------------------------------ */
+
+.mp-page {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  background: var(--bg);
+  /* The header is sticky INSIDE this scroller; anchor jumps and focus
+     scrolling must clear it. */
+  scroll-padding-top: 72px;
+  /* The page's own width (the room right of the sidebar) — what decides
+     whether the content column may widen past 1120px for a 4-up grid. */
+  container: mp-page / inline-size;
+}
+
+.mp-header {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  height: 56px;
+  background: var(--store-header-bg);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+  backdrop-filter: saturate(180%) blur(20px);
+  border-bottom: 1px solid transparent;
+  transition:
+    border-color 160ms ease-out,
+    box-shadow 160ms ease-out;
+  /* The header's own width drives its narrow layout (brand text, then the
+     mark, give way before the search does). */
+  container: mp-head / inline-size;
+}
+
+.mp-header.is-scrolled {
+  border-bottom-color: var(--border);
+  box-shadow: 0 6px 18px -14px var(--shadow-ink-soft);
+}
+
+.mp-header-inner {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  height: 100%;
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 0 32px;
+}
+
+.mp-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  margin-right: auto;
+  color: var(--fg);
+  text-decoration: none;
+}
+
+.mp-brand-mark {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  color: var(--on-accent);
+  background: var(--accent);
+}
+
+.mp-brand-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.2;
+}
+
+.mp-brand-title {
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.mp-brand-sub {
+  overflow: hidden;
+  font-size: 11.5px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* Discover | Installed — a segmented switch, the neutral grey plate of the
+   /apps filter selector (apps.css) rather than accent. */
+.mp-switch {
+  display: inline-flex;
+  flex: none;
+  padding: 3px;
+  background: rgba(var(--tint), 0.05);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.mp-switch-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 12px;
+  font-size: 12.5px;
+  font-weight: 550;
+  color: var(--fg-muted);
+  text-decoration: none;
+  border-radius: 7px;
+  transition:
+    color 140ms ease-out,
+    background-color 140ms ease-out;
+}
+
+.mp-switch-btn:hover {
+  color: var(--fg);
+}
+
+.mp-switch-btn.is-active {
+  color: var(--fg);
+  background: var(--bg-panel);
+  box-shadow:
+    0 0 0 1px var(--border),
+    0 1px 2px var(--shadow-ink-soft);
+}
+
+.mp-switch-count {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--fg-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.mp-switch-badge {
+  display: inline-grid;
+  place-items: center;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 5px;
+  font-size: 10.5px;
+  font-weight: 700;
+  color: var(--on-accent);
+  background: var(--accent);
+  border-radius: 999px;
+  font-variant-numeric: tabular-nums;
+}
+
+.mp-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 0 1 280px;
+  min-width: 160px;
+  height: 36px;
+  padding: 0 10px 0 34px;
+  background: rgba(var(--tint), 0.05);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  transition:
+    border-color 140ms ease-out,
+    background-color 140ms ease-out,
+    box-shadow 140ms ease-out;
+}
+
+.mp-search:hover {
+  border-color: color-mix(in srgb, var(--fg-muted) 30%, var(--border));
+}
+
+.mp-search:focus-within {
+  background: var(--bg);
+  border-color: color-mix(in srgb, var(--accent) 60%, var(--border));
+  box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.16);
+}
+
+.mp-search-glyph {
+  position: absolute;
+  left: 11px;
+  color: var(--fg-muted);
+  pointer-events: none;
+}
+
+.mp-search input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  font: inherit;
+  font-size: 13px;
+  color: var(--fg);
+  background: none;
+  border: none;
+  outline: none;
+}
+
+.mp-search input::placeholder {
+  color: var(--fg-muted);
+}
+
+.mp-search input::-webkit-search-cancel-button {
+  display: none;
+}
+
+.mp-search-kbd {
+  display: inline-grid;
+  place-items: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  font: 500 11px/1 ui-monospace, Menlo, Consolas, monospace;
+  color: var(--fg-faint);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: 5px;
+}
+
+.mp-search-clear {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  color: var(--bg);
+  background: var(--fg-faint);
+  border: none;
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.mp-search-clear:hover {
+  background: var(--fg-muted);
+}
+
+.mp-inner {
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 24px 32px 56px;
+  /* Breakpoints below are on the CONTENT width, not the window: the sidebar
+     (and its collapse) decides how much room the page really has. */
+  container: mp / inline-size;
+}
+
+/* ---- Chips ----------------------------------------------------------------- */
+
+.mp-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 24px;
+}
+
+.mp-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 32px;
+  padding: 0 13px 0 11px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 550;
+  color: var(--fg-muted);
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+  transition:
+    color 140ms ease-out,
+    border-color 140ms ease-out,
+    background-color 140ms ease-out,
+    transform 120ms ease-out;
+}
+
+.mp-chip:hover:not(:disabled) {
+  color: var(--fg);
+  border-color: color-mix(in srgb, var(--fg-muted) 35%, var(--border));
+}
+
+.mp-chip:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.mp-chip:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.mp-chip-count {
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--fg-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.mp-chip.is-active {
+  color: var(--on-accent);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.mp-chip.is-active .mp-chip-count {
+  color: var(--on-accent);
+  opacity: 0.7;
+}
+
+/* ---- Notices, empty state, buttons ----------------------------------------- */
+
+.mp-notice {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 18px;
+  padding: 10px 12px 10px 14px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--fg);
+  background: rgba(var(--warning-rgb), 0.1);
+  border: 1px solid rgba(var(--warning-rgb), 0.3);
+  border-radius: 12px;
+}
+
+.mp-notice.is-info {
+  background: var(--bg-alt);
+  border-color: var(--border);
+}
+
+.mp-notice.is-error {
+  background: rgba(var(--error-rgb), 0.08);
+  border-color: rgba(var(--error-rgb), 0.3);
+}
+
+.mp-notice-glyph {
+  flex: none;
+  color: var(--warning);
+}
+
+.mp-notice.is-info .mp-notice-glyph {
+  color: var(--fg-muted);
+}
+
+.mp-notice-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.mp-notice-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  height: 28px;
+  padding: 0 11px;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.mp-notice-btn:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--fg-muted) 40%, var(--border));
+}
+
+.is-spinning {
+  animation: mp-spin 0.9s linear infinite;
+}
+
+@keyframes mp-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.mp-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  height: 34px;
+  padding: 0 16px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg);
+  background: rgba(var(--tint), 0.07);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+  transition:
+    background-color 140ms ease-out,
+    border-color 140ms ease-out,
+    transform 120ms ease-out;
+}
+
+.mp-btn:hover:not(:disabled) {
+  background: rgba(var(--tint), 0.11);
+}
+
+.mp-btn:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.mp-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.mp-btn.is-primary {
+  color: var(--on-accent);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.mp-btn.is-primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 88%, var(--fg));
+}
+
+.mp-btn.is-small {
+  height: 28px;
+  padding: 0 12px;
+  font-size: 12.5px;
+}
+
+.mp-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  max-width: 420px;
+  margin: 56px auto;
+  text-align: center;
+}
+
+.mp-empty-glyph {
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  margin-bottom: 16px;
+  color: var(--fg-muted);
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+}
+
+.mp-empty-title {
+  font-size: 17px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  color: var(--fg);
+}
+
+.mp-empty-body {
+  margin-top: 6px;
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--fg-muted);
+}
+
+.mp-empty-action {
+  margin-top: 18px;
+}
+
+.mp-muted {
+  font-size: 14px;
+  color: var(--fg-muted);
+}
+
+.mp-footer {
+  margin-top: 48px;
+  padding-top: 18px;
+  font-size: 12px;
+  color: var(--fg-faint);
+  text-align: center;
+  border-top: 1px solid var(--border);
+}
+
+.mp-footer a {
+  color: var(--fg-muted);
+  text-decoration: none;
+}
+
+.mp-footer a:hover {
+  color: var(--fg);
+  text-decoration: underline;
+}
+
+/* ---- Hero carousel --------------------------------------------------------- */
+
+.mp-hero {
+  position: relative;
+  height: 280px;
+  margin-bottom: 40px;
+  overflow: hidden;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  isolation: isolate;
+}
+
+.mp-hero.is-skeleton {
+  display: block;
+  border-color: transparent;
+}
+
+.mp-hero-slide {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
+  /* The wash: the slide's own hue (as-tint-N, from the slug) in from the top
+     left, fading to the card ground — so each featured app has a colour
+     without the page turning into a rainbow. */
+  background:
+    radial-gradient(120% 140% at 0% 0%, color-mix(in srgb, var(--tint-hue) 26%, transparent) 0%, transparent 55%),
+    linear-gradient(120deg, color-mix(in srgb, var(--tint-hue) 10%, var(--bg-alt)) 0%, var(--bg-alt) 70%);
+  opacity: 0;
+  visibility: hidden;
+  cursor: pointer;
+  transition:
+    opacity 480ms ease-out,
+    visibility 0s linear 480ms;
+}
+
+.mp-hero-slide.is-current {
+  opacity: 1;
+  visibility: visible;
+  transition:
+    opacity 480ms ease-out,
+    visibility 0s;
+}
+
+.mp-hero-copy {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-width: 0;
+  padding: 32px 8px 40px 40px;
+}
+
+.mp-hero-eyebrow {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--tint-hue) 70%, var(--fg));
+}
+
+.mp-hero-title {
+  margin: 8px 0 0;
+  font-size: 30px;
+  font-weight: 700;
+  line-height: 1.12;
+  letter-spacing: -0.022em;
+}
+
+.mp-hero-title a {
+  color: var(--fg);
+  text-decoration: none;
+}
+
+.mp-hero-desc {
+  display: -webkit-box;
+  max-width: 400px;
+  margin: 10px 0 0;
+  overflow: hidden;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--fg-muted);
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.mp-hero-foot {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-top: 20px;
+  min-width: 0;
+}
+
+.mp-hero-by {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 12.5px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.mp-hero-by > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The screenshot bleeds off the right and bottom edges, tilted toward the
+   reader by a soft shadow; its left edge fades into the wash. */
+.mp-hero-art {
+  position: relative;
+  z-index: 1;
+  min-width: 0;
+}
+
+.mp-hero-art img {
+  position: absolute;
+  top: 40px;
+  left: 24px;
+  /* Always past the right edge, however wide the hero gets (4-up pages). */
+  width: max(600px, calc(100% + 24px));
+  max-width: none;
+  aspect-ratio: 16 / 10;
+  object-fit: cover;
+  object-position: top left;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--store-card-shadow-hover);
+  transition: transform 600ms cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+.mp-hero-slide.is-current .mp-hero-art img {
+  transform: translateY(0);
+}
+
+.mp-hero-slide:not(.is-current) .mp-hero-art img {
+  transform: translateY(10px);
+}
+
+.mp-hero-slide:hover .mp-hero-art img {
+  transform: translateY(-3px);
+}
+
+.mp-hero-art .as-icon {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+}
+
+.mp-hero-nav {
+  position: absolute;
+  top: 50%;
+  z-index: 3;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  margin-top: -16px;
+  padding: 0;
+  color: var(--fg);
+  background: var(--store-header-bg);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  opacity: 0;
+  cursor: pointer;
+  transition:
+    opacity 160ms ease-out,
+    transform 120ms ease-out;
+}
+
+.mp-hero-nav.is-prev {
+  left: 12px;
+}
+
+.mp-hero-nav.is-next {
+  right: 12px;
+}
+
+.mp-hero:hover .mp-hero-nav,
+.mp-hero-nav:focus-visible {
+  opacity: 1;
+}
+
+.mp-hero-nav:active {
+  transform: scale(0.94);
+}
+
+.mp-hero-dots {
+  position: absolute;
+  bottom: 16px;
+  left: 40px;
+  z-index: 3;
+  display: flex;
+  gap: 6px;
+}
+
+.mp-hero-dot {
+  position: relative;
+  width: 7px;
+  height: 7px;
+  padding: 0;
+  overflow: hidden;
+  background: rgba(var(--tint), 0.2);
+  border: none;
+  border-radius: 999px;
+  cursor: pointer;
+  transition:
+    width 240ms ease-out,
+    background-color 160ms ease-out;
+}
+
+.mp-hero-dot:hover {
+  background: rgba(var(--tint), 0.35);
+}
+
+.mp-hero-dot.is-current {
+  width: 22px;
+  background: rgba(var(--tint), 0.28);
+}
+
+/* The current dot fills over the 7s the slide is held — a countdown, so the
+   advance never comes as a surprise. Absent while paused. */
+.mp-hero-dot-fill {
+  position: absolute;
+  inset: 0;
+  background: var(--fg);
+  border-radius: inherit;
+  transform-origin: left center;
+  animation: mp-dot-fill 7s linear forwards;
+}
+
+@keyframes mp-dot-fill {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+
+/* ---- Shelves + grid ------------------------------------------------------ */
+
+.mp-shelf {
+  margin-bottom: 40px;
+}
+
+.mp-shelf-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.mp-shelf-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 17px;
+  font-weight: 650;
+  letter-spacing: -0.012em;
+  color: var(--fg);
+}
+
+.mp-q {
+  color: var(--fg);
+}
+
+.mp-results-in {
+  font-weight: 500;
+  color: var(--fg-muted);
+}
+
+.mp-results-count {
+  font-size: 12.5px;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.mp-see-all {
+  padding: 2px 0;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 550;
+  color: var(--fg-muted);
+  text-decoration: none;
+  background: none;
+  border: none;
+  cursor: pointer;
+  transition: color 140ms ease-out;
+}
+
+.mp-see-all:hover {
+  color: var(--fg);
+}
+
+.mp-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 20px;
+}
+
+.mp-grid.is-compact {
+  gap: 12px;
+}
+
+/* Wide pages: the content column grows to 1280px and shelves go 4-up (the
+   spec's "3 columns, 4 at ≥1280px"). The header widens with it so its edges
+   stay on the content's. Page ≥ 1344 = 1280 content + 2 × 32 gutters. */
+@container mp-page (min-width: 1344px) {
+  .mp-header-inner,
+  .mp-inner {
+    max-width: 1344px;
+  }
+}
+
+@container mp (min-width: 1280px) {
+  .mp-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+@container mp (max-width: 860px) {
+  .mp-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .mp-hero-slide {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 0.8fr);
+  }
+}
+
+@container mp (max-width: 560px) {
+  .mp-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .mp-hero-slide {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .mp-hero-art {
+    display: none;
+  }
+}
+
+@container mp-page (max-width: 720px) {
+  .mp-header-inner,
+  .mp-inner {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
+  .mp-header-inner {
+    gap: 10px;
+  }
+}
+
+/* Narrow header: the subtitle goes first, then the whole wordmark (the mark
+   alone still says where you are), then the "/" hint; the search keeps
+   whatever is left rather than pushing the switch off the edge. */
+@container mp-head (max-width: 760px) {
+  .mp-brand-sub {
+    display: none;
+  }
+
+  .mp-search {
+    min-width: 0;
+  }
+}
+
+@container mp-head (max-width: 600px) {
+  .mp-brand-text {
+    display: none;
+  }
+
+  .mp-brand {
+    margin-right: 0;
+  }
+
+  .mp-switch {
+    margin-right: auto;
+  }
+
+  .mp-search {
+    flex: 1 1 200px;
+  }
+}
+
+@container mp-head (max-width: 400px) {
+  .mp-search-kbd {
+    display: none;
+  }
+
+  .mp-switch-btn {
+    padding: 0 10px;
+  }
+}
+
+/* ---- Installed list -------------------------------------------------------- */
+
+.mp-page-title {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin: 4px 0 24px;
+}
+
+.mp-page-title h1 {
+  margin: 0;
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.mp-page-sub {
+  font-size: 13px;
+  color: var(--fg-muted);
+}
+
+.mp-list-section {
+  margin-bottom: 32px;
+}
+
+.mp-list-section .mp-shelf-head {
+  align-items: center;
+}
+
+.mp-count-badge {
+  display: inline-grid;
+  place-items: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--on-accent);
+  background: var(--accent);
+  border-radius: 999px;
+}
+
+.mp-list {
+  overflow: hidden;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+}
+
+.mp-row.is-linked {
+  cursor: pointer;
+}
+
+.mp-row-meta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
+  flex: none;
+  min-width: 110px;
+  text-align: right;
+}
+
+.mp-row-v {
+  font-size: 12.5px;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.mp-row-v-old {
+  color: var(--fg-faint);
+}
+
+.mp-row-v-new {
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.mp-row-status {
+  max-width: 200px;
+  overflow: hidden;
+  font-size: 11.5px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.mp-row-status.is-error {
+  color: var(--error);
+}
+
+.mp-row-status.is-warn {
+  color: var(--warning);
+}
+
+.mp-row-actions {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+
+/* Narrow content: the category tag goes, then the version/status column
+   folds under the name (icon · text+meta · actions) so the pill and "⋯"
+   keep their room. */
+@container mp (max-width: 620px) {
+  .mp-row .as-row-cat {
+    display: none;
+  }
+
+  .mp-row-meta {
+    min-width: 0;
+  }
+
+  .mp-row-status {
+    max-width: 140px;
+  }
+}
+
+@container mp (max-width: 480px) {
+  .mp-row {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-areas:
+      "icon text actions"
+      "icon meta actions";
+    column-gap: 12px;
+    row-gap: 2px;
+    padding: 10px 12px;
+  }
+
+  .mp-row > .as-icon {
+    grid-area: icon;
+  }
+
+  .mp-row .as-row-text {
+    grid-area: text;
+  }
+
+  .mp-row-meta {
+    grid-area: meta;
+    flex-direction: row;
+    align-items: baseline;
+    gap: 8px;
+    text-align: left;
+  }
+
+  .mp-row-actions {
+    grid-area: actions;
+  }
+
+  .mp-row-status {
+    max-width: none;
+  }
+}
+
+/* ---- Detail page bits (Marketplace side) --------------------------------- */
+
+.mp-author-link {
+  color: var(--fg);
+  text-decoration: none;
+  font-weight: 550;
+}
+
+.mp-author-link:hover {
+  text-decoration: underline;
+}
+
+.mp-strip-dev {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+}
+
+/* ---- The .fused install page (FusedFilePage.tsx) -------------------------- */
+
+.mp-strip-warn {
+  color: var(--warning);
+}
+
+.mp-file-byline {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 4px;
+  min-width: 0;
+}
+
+.mp-file-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  overflow: hidden;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 12px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.mp-file-name svg {
+  flex: none;
+  color: var(--fg-faint);
+}
+
+/* A chrome-free embed window (a double-click, a deeplink, the CLI) has no
+   store header above the page: give the top row the header's breathing room. */
+.mp-page.is-bare .mp-inner {
+  padding-top: 28px;
+}
+
+.mp-path {
+  max-width: 160px;
+  overflow: hidden;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 12px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.as-readme-skel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 680px;
+}
+
+.as-muted {
+  margin: 0;
+  font-size: 14px;
+  color: var(--fg-muted);
+}
+
+/* ---- Install sheet ---------------------------------------------------------- */
+
+.mp-sheet .modal-body {
+  padding-top: 6px;
+}
+
+.mp-sheet-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.mp-sheet-name {
+  font-size: 17px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  color: var(--fg);
+}
+
+.mp-sheet-meta {
+  margin-top: 3px;
+  font-size: 12.5px;
+  color: var(--fg-muted);
+}
+
+.mp-sheet-lede {
+  margin: 18px 0 12px;
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--fg-muted);
+}
+
+.mp-sheet-lede.is-first {
+  margin: 2px 0 0;
+}
+
+.mp-sheet .as-callout.mp-sheet-warn {
+  margin-top: 0;
+}
+
+.mp-sheet-head + .as-callout.mp-sheet-warn {
+  margin-top: 18px;
+}
+
+.mp-sheet-apps {
+  display: flex;
+  flex-direction: column;
+  margin: 0 0 4px;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+.mp-sheet-apps li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 8px 12px;
+}
+
+.mp-sheet-apps li + li {
+  border-top: 1px solid var(--border);
+}
+
+.mp-sheet-app-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--fg);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.mp-sheet-app-v {
+  flex: none;
+  font-size: 12px;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.mp-sheet-install {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* ===========================================================================
+   .as-* — platform/ui/appstore
+   =========================================================================== */
+
+/* ---- Tints: the ten hues an initials tile / hero wash is hashed onto ---- */
+
+.as-tint-0 {
+  --tint-hue: var(--app-icon-blue);
+}
+.as-tint-1 {
+  --tint-hue: var(--app-icon-green);
+}
+.as-tint-2 {
+  --tint-hue: var(--app-icon-purple);
+}
+.as-tint-3 {
+  --tint-hue: var(--app-icon-orange);
+}
+.as-tint-4 {
+  --tint-hue: var(--app-icon-pink);
+}
+.as-tint-5 {
+  --tint-hue: var(--series-5);
+}
+.as-tint-6 {
+  --tint-hue: var(--app-icon-red);
+}
+.as-tint-7 {
+  --tint-hue: var(--task-c7);
+}
+.as-tint-8 {
+  --tint-hue: var(--series-1);
+}
+.as-tint-9 {
+  --tint-hue: var(--app-icon-brown);
+}
+
+/* ---- App icon ------------------------------------------------------------- */
+
+.as-icon {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  overflow: hidden;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--tile-fg);
+  /* A soft two-stop gradient of the hue, lit from the top left, with a faint
+     inner highlight — reads as a crafted tile, not a flat swatch. */
+  background:
+    radial-gradient(120% 90% at 20% 0%, color-mix(in srgb, var(--tile-fg) 24%, transparent) 0%, transparent 60%),
+    linear-gradient(150deg, color-mix(in srgb, var(--tint-hue) 82%, var(--tile-fg)) 0%, var(--tint-hue) 55%, color-mix(in srgb, var(--tint-hue) 78%, var(--face-eye)) 100%);
+  box-shadow: inset 0 0 0 1px var(--store-icon-ring);
+  user-select: none;
+}
+
+.as-icon::after {
+  /* The hairline ring drawn OVER the image too, so a white or near-black icon
+     still has an edge against the card. */
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  box-shadow: inset 0 0 0 1px var(--store-icon-ring);
+  pointer-events: none;
+}
+
+.as-icon.has-img {
+  background: var(--bg-alt);
+}
+
+.as-icon-initials {
+  line-height: 1;
+  text-shadow: 0 1px 1px color-mix(in srgb, var(--face-eye) 25%, transparent);
+  transition: opacity 160ms ease-out;
+}
+
+.as-icon.has-img .as-icon-initials {
+  opacity: 0;
+}
+
+.as-icon-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0;
+  transition: opacity 200ms ease-out;
+}
+
+.as-icon-img.is-loaded {
+  opacity: 1;
+}
+
+.as-icon.is-raised {
+  box-shadow: var(--store-icon-shadow);
+}
+
+/* ---- Action pill ------------------------------------------------------------ */
+
+.as-pill {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  padding: 0;
+  font: inherit;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  border: none;
+  border-radius: 999px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    background-color 140ms ease-out,
+    color 140ms ease-out,
+    transform 120ms ease-out,
+    box-shadow 140ms ease-out;
+}
+
+.as-pill-sm {
+  width: 68px;
+  height: 28px;
+  font-size: 12.5px;
+}
+
+.as-pill-md {
+  width: 84px;
+  height: 32px;
+  font-size: 13px;
+}
+
+.as-pill-lg {
+  width: 112px;
+  height: 36px;
+  font-size: 14px;
+}
+
+.as-pill:active:not(:disabled):not(.is-progress) {
+  transform: scale(0.97);
+}
+
+.as-pill-inner {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  animation: as-pill-in 160ms ease-out;
+}
+
+@keyframes as-pill-in {
+  from {
+    opacity: 0;
+    transform: scale(0.9);
+  }
+}
+
+/* Get: tinted accent — inviting, but quieter than Update's solid fill. */
+.as-pill.is-get {
+  color: var(--accent);
+  background: rgba(var(--accent-rgb), 0.14);
+}
+
+.as-pill.is-get:hover {
+  background: rgba(var(--accent-rgb), 0.22);
+}
+
+:root[data-theme="light"] .as-pill.is-get:not(.is-filled) {
+  background: rgba(var(--accent-rgb), 0.1);
+}
+
+:root[data-theme="light"] .as-pill.is-get:not(.is-filled):hover {
+  background: rgba(var(--accent-rgb), 0.17);
+}
+
+.as-pill.is-update,
+.as-pill.is-get.is-filled {
+  color: var(--on-accent);
+  background: var(--accent);
+}
+
+.as-pill.is-get.is-filled:hover {
+  background: color-mix(in srgb, var(--accent) 88%, var(--fg));
+}
+
+.as-pill.is-update:hover {
+  background: color-mix(in srgb, var(--accent) 88%, var(--fg));
+}
+
+.as-pill.is-open {
+  color: var(--fg);
+  background: rgba(var(--tint), 0.09);
+}
+
+.as-pill.is-open:hover {
+  background: rgba(var(--tint), 0.14);
+}
+
+.as-pill.is-progress {
+  color: var(--fg-muted);
+  background: rgba(var(--tint), 0.06);
+  cursor: default;
+}
+
+.as-pill.is-retry {
+  color: var(--error);
+  background: rgba(var(--error-rgb), 0.1);
+}
+
+.as-pill.is-retry:hover {
+  background: rgba(var(--error-rgb), 0.16);
+}
+
+/* Caution: a confirm step that replaces something (the .fused page's
+   "Confirm overwrite"). Warning-toned, never the accent — the accent says
+   "go", this says "are you sure". Filled = the armed second click. */
+.as-pill.is-caution {
+  color: var(--warning);
+  background: rgba(var(--warning-rgb), 0.14);
+}
+
+.as-pill.is-caution:hover {
+  background: rgba(var(--warning-rgb), 0.22);
+}
+
+.as-pill.is-caution.is-filled {
+  color: var(--on-accent);
+  background: var(--warning);
+}
+
+.as-pill.is-caution.is-filled:hover {
+  background: color-mix(in srgb, var(--warning) 88%, var(--fg));
+}
+
+.as-pill.is-wide {
+  width: auto;
+  padding: 0 18px;
+}
+
+.as-pill-sm.is-wide {
+  min-width: 68px;
+  padding: 0 12px;
+}
+
+.as-pill-md.is-wide {
+  min-width: 84px;
+}
+
+.as-pill-lg.is-wide {
+  min-width: 112px;
+}
+
+.as-pill.is-disabled,
+.as-pill:disabled {
+  color: var(--fg-faint);
+  background: rgba(var(--tint), 0.05);
+  cursor: not-allowed;
+}
+
+.as-pill:focus-visible,
+.as-more:focus-visible,
+.as-card:has(.as-card-link:focus-visible),
+.as-row:has(.as-row-link:focus-visible),
+.mp-chip:focus-visible,
+.mp-btn:focus-visible,
+.mp-hero-dot:focus-visible,
+.as-tab:focus-visible,
+.as-stage-btn:focus-visible,
+.mp-switch-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* A row sits inside the clipped list card: draw its ring inside. */
+.as-row:has(.as-row-link:focus-visible) {
+  outline-offset: -2px;
+  border-radius: 12px;
+}
+
+.as-pill-pct {
+  font-size: 12px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg);
+}
+
+.as-pill.is-popped .as-pill-check {
+  color: var(--success-bright);
+  animation: as-check-pop 420ms cubic-bezier(0.3, 1.6, 0.5, 1);
+}
+
+@keyframes as-check-pop {
+  0% {
+    transform: scale(0);
+  }
+  60% {
+    transform: scale(1.25);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+.as-ring-track {
+  stroke: rgba(var(--tint), 0.14);
+}
+
+.as-ring-fill {
+  stroke: var(--accent);
+  transition: stroke-dasharray 300ms ease-out;
+}
+
+.as-ring.is-indeterminate {
+  animation: mp-spin 0.9s linear infinite;
+}
+
+/* ---- "⋯" menu button --------------------------------------------------------- */
+
+.as-more {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  padding: 0;
+  color: var(--fg-muted);
+  background: rgba(var(--tint), 0.06);
+  border: none;
+  border-radius: 50%;
+  cursor: pointer;
+  transition:
+    color 140ms ease-out,
+    background-color 140ms ease-out;
+}
+
+.as-more-md {
+  width: 36px;
+  height: 36px;
+}
+
+.as-more-sm {
+  width: 28px;
+  height: 28px;
+}
+
+.as-more:hover,
+.as-more.is-open {
+  color: var(--fg);
+  background: rgba(var(--tint), 0.12);
+}
+
+/* ---- Store card --------------------------------------------------------------- */
+
+.as-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--fg);
+  text-decoration: none;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: var(--store-card-shadow);
+  transition:
+    transform 180ms ease-out,
+    box-shadow 180ms ease-out,
+    border-color 180ms ease-out;
+}
+
+.as-card:not(.is-skeleton):hover {
+  border-color: color-mix(in srgb, var(--accent) 28%, var(--border));
+  box-shadow: var(--store-card-shadow-hover);
+  transform: translateY(-2px);
+}
+
+.as-card:not(.is-skeleton):active {
+  transform: translateY(-1px) scale(0.995);
+}
+
+.as-card-thumb {
+  position: relative;
+  display: block;
+  aspect-ratio: 16 / 10;
+  overflow: hidden;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+
+.as-card-thumb img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: top center;
+  opacity: 0;
+  transition:
+    opacity 240ms ease-out,
+    transform 320ms cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+.as-card-thumb img.is-loaded {
+  opacity: 1;
+}
+
+.as-card:hover .as-card-thumb img {
+  transform: scale(1.03);
+}
+
+.as-card-thumb-empty {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  background: radial-gradient(80% 80% at 50% 40%, rgba(var(--tint), 0.06), transparent);
+}
+
+.as-card-thumb-empty .as-icon {
+  transform: scale(1.5);
+}
+
+.as-card-badge {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  padding: 3px 8px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--scrim-fg);
+  background: var(--scrim-bg);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  border-radius: 999px;
+}
+
+.as-card-body {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px 14px 0;
+  min-width: 0;
+}
+
+.as-card-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: auto;
+  padding: 12px 14px 14px;
+}
+
+.as-card-icon {
+  display: flex;
+  flex: none;
+}
+
+.as-card-text {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+
+.as-card-name {
+  overflow: hidden;
+  font-size: 15px;
+  font-weight: 650;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.as-card-desc {
+  display: -webkit-box;
+  margin-top: 3px;
+  overflow: hidden;
+  font-size: 13px;
+  line-height: 1.42;
+  color: var(--fg-muted);
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  min-height: calc(13px * 1.42 * 2);
+}
+
+.as-card-meta {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 11.5px;
+  color: var(--fg-faint);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.as-card-action {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex: none;
+  align-self: center;
+}
+
+/* Stretched link: the name's anchor covers the whole card (and row, below);
+   the pill and "⋯" stack above the overlay. The focus ring is drawn on the
+   card itself (see the :focus-visible group), so the link draws none. */
+.as-card-link,
+.as-row-link {
+  color: inherit;
+  text-decoration: none;
+  outline: none;
+}
+
+.as-card-link::after,
+.as-row-link::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+}
+
+.as-card.is-compact .as-card-body {
+  align-items: center;
+  padding: 12px;
+}
+
+.as-card.is-compact .as-card-desc {
+  -webkit-line-clamp: 1;
+  min-height: 0;
+}
+
+.as-card.is-compact .as-card-body {
+  padding-bottom: 12px;
+}
+
+.as-card.is-skeleton {
+  pointer-events: none;
+}
+
+/* ---- List row ------------------------------------------------------------------ */
+
+.as-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-height: 64px;
+  padding: 11px 14px 11px 16px;
+  transition: background-color 140ms ease-out;
+}
+
+.as-row + .as-row {
+  border-top: 1px solid var(--border);
+}
+
+.as-row:not(.is-skeleton):hover {
+  background: rgba(var(--tint), 0.03);
+}
+
+.as-row-text {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+
+.as-row-name {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  font-size: 14.5px;
+  font-weight: 650;
+  letter-spacing: -0.008em;
+}
+
+.as-row-cat {
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--fg-faint);
+}
+
+.as-row-desc {
+  margin-top: 2px;
+  overflow: hidden;
+  font-size: 12.5px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* ---- Skeletons -------------------------------------------------------------------- */
+
+.as-skel {
+  display: block;
+  flex: none;
+  background: linear-gradient(90deg, rgba(var(--tint), 0.05) 25%, rgba(var(--tint), 0.1) 50%, rgba(var(--tint), 0.05) 75%);
+  background-size: 200% 100%;
+  animation: skel-shimmer 1.2s ease-in-out infinite;
+}
+
+.as-shimmer {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, rgba(var(--tint), 0.03) 25%, rgba(var(--tint), 0.08) 50%, rgba(var(--tint), 0.03) 75%);
+  background-size: 200% 100%;
+  animation: skel-shimmer 1.2s ease-in-out infinite;
+}
+
+.as-card.is-skeleton .as-card-thumb {
+  border-bottom-color: transparent;
+}
+
+/* ---- Detail layout ---------------------------------------------------------------- */
+
+.as-detail {
+  min-width: 0;
+  /* Its own container, so the two-column body folds on the room the page
+     gives it — whichever page hosts it (Marketplace, the .fused install). */
+  container: as-detail / inline-size;
+}
+
+.as-detail-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: -4px 0 20px;
+}
+
+.as-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: -5px;
+  padding: 4px 8px 4px 4px;
+  font-size: 13px;
+  font-weight: 550;
+  color: var(--fg-muted);
+  text-decoration: none;
+  border-radius: 8px;
+  transition:
+    color 140ms ease-out,
+    background-color 140ms ease-out;
+}
+
+.as-back:hover {
+  color: var(--fg);
+  background: rgba(var(--tint), 0.05);
+}
+
+.as-toplink {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 12.5px;
+  font-weight: 550;
+  color: var(--fg-muted);
+  text-decoration: none;
+}
+
+.as-toplink:hover {
+  color: var(--fg);
+}
+
+.as-hero {
+  display: flex;
+  align-items: center;
+  gap: 28px;
+}
+
+.as-hero-icon {
+  display: flex;
+  flex: none;
+}
+
+.as-hero-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.as-hero-name {
+  margin: 0;
+  font-size: 28px;
+  font-weight: 700;
+  line-height: 1.15;
+  letter-spacing: -0.022em;
+  color: var(--fg);
+}
+
+.as-hero-sub {
+  max-width: 620px;
+  margin: 6px 0 0;
+  font-size: 15px;
+  line-height: 1.45;
+  color: var(--fg-muted);
+}
+
+.as-hero-author {
+  margin-top: 8px;
+  font-size: 13px;
+  color: var(--fg-muted);
+}
+
+.as-hero .as-tags {
+  margin-top: 12px;
+}
+
+.as-hero-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  flex: none;
+  align-self: center;
+}
+
+.as-hero-action-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.as-hero-note {
+  max-width: 220px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  text-align: right;
+}
+
+.as-hero-note b {
+  color: var(--fg);
+  font-weight: 650;
+}
+
+.as-hero-note .is-warn {
+  color: var(--warning);
+}
+
+.as-hero-note .is-error {
+  color: var(--error);
+}
+
+.as-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.as-tag {
+  padding: 3px 9px;
+  font-size: 11.5px;
+  font-weight: 550;
+  color: var(--fg-muted);
+  background: rgba(var(--tint), 0.06);
+  border-radius: 999px;
+}
+
+/* ---- Info strip ---------------------------------------------------------------- */
+
+.as-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  margin: 28px 0;
+  padding: 14px 0;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+
+.as-strip-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 4px 12px;
+  text-align: center;
+}
+
+.as-strip-cell + .as-strip-cell {
+  border-left: 1px solid var(--border);
+}
+
+.as-strip-label {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-faint);
+}
+
+.as-strip-value {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  max-width: 100%;
+  min-height: 22px;
+  margin: 0;
+  font-size: 17px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  color: var(--fg);
+}
+
+.as-strip-text {
+  display: inline-flex;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--fg-muted);
+}
+
+.as-strip-value .as-strip-text {
+  color: var(--fg);
+}
+
+.as-strip-caption {
+  max-width: 100%;
+  margin: 0;
+  overflow: hidden;
+  font-size: 12px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* ---- Preview stage + lightbox ------------------------------------------------- */
+
+.as-stage {
+  position: relative;
+  margin: 0 0 36px;
+  overflow: hidden;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--store-card-shadow);
+}
+
+.as-stage-btn {
+  display: block;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  background: none;
+  border: none;
+  cursor: zoom-in;
+}
+
+.as-stage-btn.is-loading {
+  background: linear-gradient(90deg, rgba(var(--tint), 0.04) 25%, rgba(var(--tint), 0.08) 50%, rgba(var(--tint), 0.04) 75%);
+  background-size: 200% 100%;
+  animation: skel-shimmer 1.2s ease-in-out infinite;
+}
+
+.as-stage-img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: top center;
+  opacity: 0;
+  transition: opacity 300ms ease-out;
+}
+
+.as-stage-img.is-loaded {
+  opacity: 1;
+}
+
+.as-stage-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 100%;
+  font-size: 13px;
+  color: var(--fg-faint);
+}
+
+.as-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  padding: 48px;
+  background: var(--store-scrim);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+  animation: as-fade-in 160ms ease-out;
+  cursor: zoom-out;
+}
+
+.as-lightbox-img {
+  max-width: 100%;
+  max-height: 100%;
+  border-radius: 10px;
+  box-shadow: 0 24px 80px var(--shadow-ink-deep);
+  cursor: default;
+  animation: as-zoom-in 200ms cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+.as-lightbox-close {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  color: var(--scrim-fg);
+  background: var(--scrim-chip-bg);
+  border: 1px solid var(--scrim-border);
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.as-lightbox-close:hover {
+  background: var(--scrim-chip-bg-hover);
+}
+
+@keyframes as-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes as-zoom-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+}
+
+/* ---- Body: tabs + aside ------------------------------------------------------------ */
+
+.as-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 280px;
+  gap: 48px;
+  align-items: start;
+}
+
+.as-body.is-single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+@container as-detail (max-width: 860px) {
+  .as-body {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 32px;
+  }
+
+  /* Six ~115px cells ellipsize their values ("Not installed", "Not
+     required"): fold the ribbon into rows of three, a divider only between
+     cells of one row. */
+  .as-strip {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    row-gap: 16px;
+  }
+
+  .as-strip-cell:nth-child(3n + 1) {
+    border-left: none;
+  }
+}
+
+.as-body-aside {
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+}
+
+.as-tabs {
+  display: flex;
+  gap: 24px;
+  margin-bottom: 22px;
+  border-bottom: 1px solid var(--border);
+}
+
+.as-tab {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 38px;
+  padding: 0;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--fg-muted);
+  background: none;
+  border: none;
+  cursor: pointer;
+  transition: color 140ms ease-out;
+}
+
+.as-tab:hover {
+  color: var(--fg);
+}
+
+.as-tab.is-active {
+  color: var(--fg);
+}
+
+.as-tab.is-active::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  bottom: -1px;
+  left: 0;
+  height: 2px;
+  background: var(--fg);
+  border-radius: 2px 2px 0 0;
+}
+
+.as-tab-count {
+  min-width: 18px;
+  padding: 1px 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg-muted);
+  background: rgba(var(--tint), 0.07);
+  border-radius: 999px;
+  font-variant-numeric: tabular-nums;
+}
+
+.as-side-title {
+  margin: 0 0 10px;
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--fg);
+}
+
+.as-info-list {
+  margin: 0;
+}
+
+.as-info-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 9px 0;
+  font-size: 13px;
+  border-top: 1px solid var(--border);
+}
+
+.as-info-row:last-child {
+  border-bottom: 1px solid var(--border);
+}
+
+.as-info-row dt {
+  flex: none;
+  color: var(--fg-muted);
+}
+
+.as-info-row dd {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  font-weight: 550;
+  color: var(--fg);
+  text-align: right;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.as-info-row dd a {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  color: var(--fg);
+  text-decoration: none;
+}
+
+.as-info-row dd a:hover {
+  text-decoration: underline;
+}
+
+.as-link-btn {
+  padding: 0;
+  font: inherit;
+  color: var(--fg);
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+.as-link-btn:hover {
+  text-decoration: underline;
+}
+
+/* ---- Status callout (StatusCallout.tsx) ------------------------------------------ */
+
+.as-callout {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin: 24px 0 0;
+  padding: 13px 16px 13px 14px;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+}
+
+.as-callout.is-warn {
+  background: rgba(var(--warning-rgb), 0.08);
+  border-color: rgba(var(--warning-rgb), 0.32);
+}
+
+.as-callout-glyph {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  color: var(--fg-muted);
+  background: rgba(var(--tint), 0.06);
+  border-radius: 8px;
+}
+
+.as-callout.is-ok .as-callout-glyph {
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 12%, transparent);
+}
+
+.as-callout.is-warn .as-callout-glyph {
+  color: var(--warning);
+  background: rgba(var(--warning-rgb), 0.14);
+}
+
+.as-callout-copy {
+  flex: 1;
+  min-width: 0;
+  padding-top: 4px;
+}
+
+.as-callout-title {
+  font-size: 13.5px;
+  font-weight: 650;
+  line-height: 1.35;
+  color: var(--fg);
+}
+
+.as-callout-body {
+  max-width: 760px;
+  margin-top: 3px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--fg-muted);
+}
+
+.as-callout-body code {
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 12px;
+  color: var(--fg);
+}
+
+.as-callout-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 10px 0 2px;
+  padding: 0;
+  list-style: none;
+}
+
+.as-callout-list li {
+  padding: 2px 8px;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 11.5px;
+  color: var(--fg);
+  background: rgba(var(--tint), 0.06);
+  border-radius: 6px;
+}
+
+.as-callout-list li.is-more {
+  font-family: inherit;
+  color: var(--fg-muted);
+  background: none;
+}
+
+.as-callout-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  align-self: center;
+}
+
+/* ---- Trust card ---------------------------------------------------------------- */
+
+.as-trust {
+  padding: 16px 16px 14px;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+}
+
+.as-trust.is-bare {
+  padding: 0;
+  background: none;
+  border: none;
+}
+
+.as-trust-list {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.as-trust-item {
+  display: flex;
+  gap: 11px;
+}
+
+.as-trust-glyph {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  color: var(--fg-muted);
+  background: rgba(var(--tint), 0.06);
+  border-radius: 8px;
+}
+
+.as-trust-item.is-caution .as-trust-glyph {
+  color: var(--warning);
+  background: rgba(var(--warning-rgb), 0.12);
+}
+
+.as-trust-item.is-ok .as-trust-glyph {
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 12%, transparent);
+}
+
+.as-trust-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  padding-top: 1px;
+}
+
+.as-trust-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.as-trust-detail {
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--fg-muted);
+}
+
+.as-trust-footer {
+  margin-top: 12px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+/* ---- Sections ---------------------------------------------------------------------- */
+
+.as-section {
+  margin-top: 48px;
+}
+
+.as-section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.as-section-title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 650;
+  letter-spacing: -0.012em;
+  color: var(--fg);
+}
+
+/* ---- Files table --------------------------------------------------------------------- */
+
+.as-files-table {
+  width: 100%;
+  font-size: 13px;
+  border-collapse: collapse;
+}
+
+.as-files-table th {
+  padding: 0 0 8px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-align: left;
+  text-transform: uppercase;
+  color: var(--fg-faint);
+  border-bottom: 1px solid var(--border);
+}
+
+.as-files-table td {
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.as-files-table .is-num {
+  width: 90px;
+  text-align: right;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.as-files-table tfoot td {
+  padding-top: 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg-muted);
+  border-bottom: none;
+}
+
+.as-files-name {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 12.5px;
+}
+
+.as-files-name a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.as-files-name a:hover {
+  text-decoration: underline;
+}
+
+.as-files-glyph {
+  flex: none;
+  color: var(--fg-faint);
+}
+
+.as-files-dir {
+  color: var(--fg-faint);
+}
+
+.as-files-base {
+  color: var(--fg);
+}
+
+.as-files-more {
+  margin-top: 12px;
+  font-size: 13px;
+  font-weight: 550;
+  color: var(--fg-muted);
+}
+
+/* ---- Readme typography ------------------------------------------------------------- */
+
+.as-md {
+  max-width: 680px;
+  font-size: 15px;
+  line-height: 1.65;
+  color: var(--fg);
+  overflow-wrap: break-word;
+}
+
+.as-md > :first-child {
+  margin-top: 0;
+}
+
+.as-md p,
+.as-md ul,
+.as-md ol,
+.as-md blockquote,
+.as-md pre,
+.as-md .as-md-tablewrap {
+  margin: 0 0 16px;
+}
+
+.as-md h1,
+.as-md h2,
+.as-md h3,
+.as-md h4 {
+  margin: 32px 0 10px;
+  font-weight: 650;
+  line-height: 1.3;
+  letter-spacing: -0.012em;
+  color: var(--fg);
+}
+
+.as-md h1 {
+  font-size: 24px;
+}
+
+.as-md h2 {
+  font-size: 20px;
+}
+
+.as-md h3 {
+  font-size: 17px;
+}
+
+.as-md h4 {
+  font-size: 15px;
+}
+
+.as-md strong {
+  font-weight: 650;
+  color: var(--fg);
+}
+
+.as-md a {
+  color: var(--fg);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--fg-muted) 50%, transparent);
+  text-underline-offset: 3px;
+}
+
+.as-md a:hover {
+  text-decoration-color: var(--fg);
+}
+
+.as-md ul,
+.as-md ol {
+  padding-left: 22px;
+}
+
+.as-md li + li {
+  margin-top: 5px;
+}
+
+.as-md li::marker {
+  color: var(--fg-faint);
+}
+
+.as-md img {
+  max-width: 100%;
+  height: auto;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.as-md code {
+  padding: 2px 5px;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 0.86em;
+  background: rgba(var(--tint), 0.07);
+  border-radius: 5px;
+}
+
+.as-md pre {
+  padding: 14px 16px;
+  overflow-x: auto;
+  font-size: 13px;
+  line-height: 1.55;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.as-md pre code {
+  padding: 0;
+  font-size: inherit;
+  background: none;
+}
+
+.as-md blockquote {
+  padding: 2px 0 2px 16px;
+  color: var(--fg-muted);
+  border-left: 3px solid var(--border);
+}
+
+.as-md hr {
+  margin: 28px 0;
+  border: none;
+  border-top: 1px solid var(--border);
+}
+
+.as-md-tablewrap {
+  overflow-x: auto;
+}
+
+.as-md table {
+  width: 100%;
+  font-size: 13.5px;
+  border-collapse: collapse;
+}
+
+.as-md th,
+.as-md td {
+  padding: 7px 12px 7px 0;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+
+.as-md th {
+  font-weight: 650;
+}
+
+.as-md-raw {
+  white-space: pre-wrap;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 13px;
+}
+
+@container as-detail (max-width: 600px) {
+  .as-hero {
+    flex-wrap: wrap;
+    gap: 18px;
+  }
+
+  .as-hero-actions {
+    align-items: flex-start;
+    width: 100%;
+  }
+
+  .as-hero-note {
+    text-align: left;
+  }
+}
