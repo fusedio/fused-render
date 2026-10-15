@@ -1,8 +1,8 @@
 """Backend for the Marketplace (the shell's /marketplace pages).
 
 A browsable catalog of community apps served by the udf.ai marketplace API,
-with one-click install into the user's workspace (``<workspace>/community/
-<slug>``) and in-place update. Deliberately SELF-CONTAINED — this module plus
+with one-click install into the user's workspace (``<workspace>/app/
+<slug>``, the same tag folder the `.fused` installer uses) and in-place update. Deliberately SELF-CONTAINED — this module plus
 the thin router in server/routers/marketplace.py, a pref
 (`shell/prefs.marketplace_enabled`) and the shell routes.
 
@@ -66,9 +66,9 @@ moved-on release, streams the presigned tar.gz to a temp file (size and
 sha256 verified), extracts it with a hand-rolled safe walk (regular files
 only; no absolute, `..`, link or device members) and checks the extracted set
 equals the release's `files` list path-for-path, byte-for-byte (sha256+size).
-Files are staged in a dot-dir inside `community/` (same filesystem, so a new
+Files are staged in a dot-dir inside `app/` (same filesystem, so a new
 install is one rename and never flashes half-written in the explorer), then:
-  new     → rename into `community/<slug>`
+  new     → rename into `app/<slug>`
   update  → merged over the copy (appfile._merge_tree — the hardened walk the
             `.fused` installer uses): app files replace their counterparts;
             `.venv`, `.fused`, `.git` and every file the app does not track
@@ -77,7 +77,7 @@ install is one rename and never flashes half-written in the explorer), then:
             old stamp (the author's deletion, not the user's edit).
 The stamp `<app>/.fused/marketplace.json` = {slug, version, release_id,
 commit, api, installed_at, source, files{path: sha256}} is what "installed"
-means: the catalog finds installs by globbing `community/*/.fused/
+means: the catalog finds installs by globbing `app/*/.fused/
 marketplace.json`, reports `modified` when a stamped file's bytes changed, and
 `update_available` when the catalog's release_id differs from the stamp's (a
 stamp from before releases, holding only a tree sha, therefore reads as
@@ -133,7 +133,6 @@ MAX_README_BYTES = 512 * 1024
 MAX_PACKAGE_BYTES = 1024 * 1024 * 1024
 
 STAMP_NAME = "marketplace.json"
-COMMUNITY_DIRNAME = "community"
 #: Never written, never deleted by an install or update — the same set the
 #: `.fused` installer keeps (appfile._INSTALL_KEEP): the user's venv, the
 #: app's own data dir, the copy's repo.
@@ -175,11 +174,13 @@ def catalog_path() -> str:
     return os.path.join(state_dir(), "catalog.json")
 
 
-def community_dir() -> str:
-    """``<workspace>/community`` — where Marketplace apps install."""
-    from fused_render.shell.seed import fused_dir
+def install_root() -> str:
+    """``<workspace>/app`` — where Marketplace apps install: the same tag
+    folder a `.fused` file installs into (one place for every installed app,
+    the two stamps `appfile.json`/`marketplace.json` tell them apart)."""
+    from fused_render.appfile import install_dir
 
-    return os.path.join(fused_dir(), COMMUNITY_DIRNAME)
+    return install_dir()
 
 
 def api_base() -> str:
@@ -190,7 +191,7 @@ def api_base() -> str:
 
 def is_slug(slug) -> bool:
     # The shape the community repo's CI enforces; also what keeps a crafted
-    # slug from ever forming a path outside community/ or the cache.
+    # slug from ever forming a path outside app/ or the cache.
     return isinstance(slug, str) and bool(_SLUG_RE.fullmatch(slug))
 
 
@@ -577,13 +578,13 @@ def _modified(app_dir: str, stamp: dict) -> bool:
 
 
 def installed_apps() -> dict[str, dict]:
-    """slug → {path, stamp} for every `community/*/.fused/marketplace.json`
+    """slug → {path, stamp} for every `app/*/.fused/marketplace.json`
     whose folder still holds the app. A keep-data uninstall
     (routers/app_uninstall._strip_app_files) removes the app's files but
     keeps `.fused/` — and the stamp with it — so a husk is NOT installed;
     it stays an install TARGET (install_app merges into it, reusing the
     data)."""
-    root = community_dir()
+    root = install_root()
     out: dict[str, dict] = {}
     try:
         names = sorted(os.listdir(root))
@@ -1050,7 +1051,7 @@ def start_install(slug: str) -> dict:
         raise InstallError(error or "the catalog is unavailable")
     if slug not in snap["apps"]:
         raise InstallError(f"no app named {slug!r} in the catalog")
-    dest = os.path.join(community_dir(), slug)
+    dest = os.path.join(install_root(), slug)
     action = "update" if read_stamp(dest) and not _is_husk(dest) else "install"
     # An estimate (the unpacked size); install_app swaps in the package's size.
     total = _int(snap["apps"][slug].get("size_bytes"))
@@ -1316,12 +1317,12 @@ def _write_stamp(dest: str, stamp: dict) -> None:
 
 
 def install_app(slug: str, snap: dict, report=lambda **kw: None) -> dict:
-    """Install or update `slug` from `snap` into `community/<slug>`,
+    """Install or update `slug` from `snap` into `app/<slug>`,
     synchronously. `report(**job_fields)` receives progress. Answers
     {action, path, stamp, pruned}. Raises InstallError."""
     from fused_render import appfile
 
-    root = community_dir()
+    root = install_root()
     os.makedirs(root, exist_ok=True)
     _sweep_staging(root)
     dest = os.path.join(root, slug)

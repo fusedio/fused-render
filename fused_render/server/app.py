@@ -955,7 +955,7 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     app.include_router(community_router)
     # The Marketplace (TEMPORARY backend, routers/marketplace.py): the
     # community-apps catalog, assets, and install/update jobs into
-    # <workspace>/community/. Not gated by the `marketplace_enabled` pref —
+    # <workspace>/app/. Not gated by the `marketplace_enabled` pref —
     # that switches the shell's entry points only.
     app.include_router(marketplace_router)
     # Git repositories on this machine for the Explorer homepage's "Repos" tab
