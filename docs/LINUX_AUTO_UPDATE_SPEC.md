@@ -55,7 +55,7 @@ Subclass hooks (abstract or NotImplementedError on the base):
 
 Then `mac.py` becomes `MacUpdateManager(UpdateManager)` keeping `bundle_path`,
 `find_brew`, `detect_method`, `_install_dmg`, `_attach`, `_find_app`,
-`_verify_app_version`, `_discard_old_bundle`, `MANIFEST_URL`, `CASK_NAME`,
+`_verify_app_version`, `sweep_old_bundles`, `MANIFEST_URL`, `CASK_NAME`,
 `MAC_STARTUP_DELAY_S`.
 
 **Hard constraint: `tests/test_mac_update.py` must pass unmodified.** If a test
