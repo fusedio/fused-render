@@ -168,7 +168,7 @@ export function MarketplacePage({ fusedFile }: { fusedFile?: string } = {}) {
       )}
       <main className="mp-inner">
         {body}
-        {route.kind !== "unknown" && route.kind !== "file" && <CatalogFooter catalog={snap.catalog} />}
+        {route.kind !== "unknown" && route.kind !== "file" && <CatalogFooter catalog={snap.catalog} loading={snap.loading} />}
       </main>
       <InstallSheetHost />
     </div>

@@ -315,17 +315,28 @@ export function CatalogNotices({ snap }: { snap: CatalogSnapshot }) {
   return null;
 }
 
-/** The quiet last line of the page: where the catalog came from and when. */
-export function CatalogFooter({ catalog }: { catalog: Catalog | null }) {
+/** The quiet last line of the page: where the catalog came from and when,
+ *  plus a refresh that drops the local cache and re-reads the repo. */
+export function CatalogFooter({ catalog, loading = false }: { catalog: Catalog | null; loading?: boolean }) {
   if (!catalog || catalog.source !== "udf-api") return null;
   const version = String(catalog.catalog_version ?? "").slice(0, 8);
   return (
     <footer className="mp-footer" title={catalog.warning ?? undefined}>
       Apps from{" "}
-      <a href="https://udf.ai" target="_blank" rel="noopener noreferrer">
-        udf.ai
+      <a href="https://github.com/fusedio/fused-render-community-apps" target="_blank" rel="noopener noreferrer">
+        fused-render-community-apps
       </a>
       {version && <> · catalog {version}</>} · updated {ago(catalog.fetched_at)}
+      <button
+        type="button"
+        className="mp-footer-refresh"
+        onClick={() => void refreshCatalog({ force: true })}
+        disabled={loading}
+        title="Refresh catalog"
+        aria-label="Refresh catalog"
+      >
+        <RefreshCw size={12} strokeWidth={2.2} aria-hidden="true" className={loading ? "is-spinning" : ""} />
+      </button>
     </footer>
   );
 }
