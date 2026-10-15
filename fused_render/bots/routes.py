@@ -654,6 +654,9 @@ def _settings(bid, body):
     model, effort = body.get("model") or "", body.get("effort") or ""
     max_steps = body.get("max_steps")
     bm.check_settings(b.meta, model, effort, max_steps)  # shared with Super Bot's `bot_settings` (docs §12)
+    # Validate before any key lands on the live meta: a ValueError past this line would leave half the dialog's
+    # edits in memory for the next save() to persist.
+    folders = bm.clean_folders(body["folders"]) if isinstance(body.get("folders"), list) else None  # ValueError -> 400
     if name and name != b.meta.get("name") and b.meta.get("artifacts_dir") and not os.path.isdir(b.meta["artifacts_dir"]):
         b.meta.pop("artifacts_dir", None)  # never used on disk: let the new name pick the folder
     b.meta["name"] = name or b.meta.get("name")
@@ -676,10 +679,10 @@ def _settings(bid, body):
         b.meta["build_access"] = body["build_access"]
     if isinstance(body.get("trusted_apps"), list):
         b.meta["trusted_apps"] = _apptools().clean_trusted_apps(body["trusted_apps"])
-    if isinstance(body.get("folders"), list):
+    if folders is not None:
         # The folders this bot may READ (docs §2). The dialog is the only writer, so the full list is taken as sent;
         # a bot's own `bot_settings` never carries this key (a bot granting folders to a bot is escalation).
-        b.meta["folders"] = bm.clean_folders(body["folders"])  # ValueError past FOLDERS_MAX -> 400, nothing saved
+        b.meta["folders"] = folders
     if isinstance(body.get("allow_rules_remove"), list):
         # Removals only, applied to the list as it stands now: allow_rules has a second writer (the task thread,
         # on a card answered "don't ask again"), so a full list from the dialog would overwrite a rule written

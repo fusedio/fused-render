@@ -1192,7 +1192,7 @@ def test_super_argv_prompt_and_roster(server, fake_cli, monkeypatch):
     assert "--tools=" not in argv
     assert argv[argv.index("--permission-mode") + 1] == "default"
     assert argv[argv.index("--permission-prompt-tool") + 1] == "mcp__bot__permission"
-    assert argv[argv.index("--add-dir") + 1] == os.path.expanduser("~")
+    assert "--add-dir" not in argv  # the read lens lives in _permission; the cwd (Inbox) is the only free dir
     assert "--setting-sources=" in argv and "--allowedTools" in argv
     assert "permission" in fake_cli("tools")[0]["tools"]
     with open(argv[argv.index("--system-prompt-file") + 1], encoding="utf-8") as f:

@@ -1687,11 +1687,13 @@ class Bot:
             names = sorted(os.listdir(d), key=str.lower)
         except OSError as e:
             return f"ls {home_rel(d)}", f"error: cannot list {home_rel(d)}: {e.strerror or e}"
-        rows = []
+        rows, roots = [], self.folder_roots()
         for n in names:
             if n.startswith("."):
                 continue
             full = os.path.join(d, n)
+            if os.path.islink(full) and inside(full, roots) is None:
+                continue  # a link pointing out of the granted folders: not listed, not stat'ed, not sniffed
             rows.append((not os.path.isdir(full), n, full))
         rows.sort()
         lines = []
@@ -3824,8 +3826,9 @@ def clean_folders(raw) -> list:
             continue
         p = os.path.abspath(os.path.expanduser(p.strip()))
         r = os.path.realpath(p)
-        if r in (os.path.sep, os.path.realpath(os.path.expanduser("~"))):
-            continue  # the whole disk or the whole home is not a folder grant (a symlink to them neither)
+        whole = (os.path.sep, os.path.realpath(os.path.expanduser("~")))
+        if r in whole or (_ids(r) is not None and _ids(r) in {_ids(w) for w in whole}):
+            continue  # the whole disk or the whole home is not a folder grant: not by string, symlink or case (APFS)
         if any(r == x or r.startswith(x + os.sep) for x in reals):
             continue
         # a parent arriving after its child replaces it
