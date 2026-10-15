@@ -85,27 +85,32 @@ export interface HomeSection {
   title: string;
   /** The category "See all" opens; null for a collection with no category. */
   category: string | null;
+  /** How many apps "See all" leads to: the category's own count for a category
+   *  shelf (the collection lists only a few slugs), else the apps shown. */
+  count: number;
   apps: AppEntry[];
 }
 
 /** The home page's sections, in order: the server's collections (slugs mapped
- *  through the catalog, unknown or empty ones dropped); with none, a section
- *  per non-empty category as before. */
+ *  through the catalog, unknown or empty ones dropped; a shelf whose id is a
+ *  known category links to it, any other shelf has no See all), then the
+ *  per-category shelf of every non-empty category no shelf collection covers. */
 export function homeSections(catalog: Catalog, apps: AppEntry[]): HomeSection[] {
   const bySlug = new Map(apps.map((a) => [a.slug, a]));
-  const fromCollections = (catalog.collections ?? [])
-    .map((c) => ({
-      id: c.id,
-      title: c.title,
-      category: c.kind === "shelf" ? c.id : null,
-      apps: c.slugs.map((s) => bySlug.get(s)).filter((a): a is AppEntry => !!a),
-    }))
+  const cats = new Map(catalog.categories.map((c) => [c.id, c]));
+  const fromCollections: HomeSection[] = (catalog.collections ?? [])
+    .map((c) => {
+      const cat = c.kind === "shelf" ? cats.get(c.id) : undefined;
+      const shelf = c.slugs.map((s) => bySlug.get(s)).filter((a): a is AppEntry => !!a);
+      return { id: c.id, title: c.title, category: cat ? cat.id : null, count: cat ? cat.count : shelf.length, apps: shelf };
+    })
     .filter((s) => s.apps.length > 0);
-  if (fromCollections.length) return fromCollections;
-  return catalog.categories
-    .filter((c) => c.count > 0)
-    .map((c) => ({ id: c.id, title: c.label, category: c.id, apps: apps.filter((a) => a.category === c.id) }))
+  const covered = new Set(fromCollections.filter((s) => s.category).map((s) => s.id));
+  const rest: HomeSection[] = catalog.categories
+    .filter((c) => c.count > 0 && !covered.has(c.id))
+    .map((c) => ({ id: c.id, title: c.label, category: c.id, count: c.count, apps: apps.filter((a) => a.category === c.id) }))
     .filter((s) => s.apps.length > 0);
+  return fromCollections.concat(rest);
 }
 
 export function Discover({
@@ -181,7 +186,7 @@ export function Discover({
                   </h2>
                   {sec.category && (
                     <button type="button" className="mp-see-all" onClick={() => onCategory(sec.category!)}>
-                      {sec.apps.length > shown ? `See all ${sec.apps.length}` : "See all"}
+                      {sec.count > shown ? `See all ${sec.count}` : "See all"}
                     </button>
                   )}
                 </div>
@@ -313,13 +318,14 @@ export function CatalogNotices({ snap }: { snap: CatalogSnapshot }) {
 /** The quiet last line of the page: where the catalog came from and when. */
 export function CatalogFooter({ catalog }: { catalog: Catalog | null }) {
   if (!catalog || catalog.source !== "udf-api") return null;
+  const version = String(catalog.catalog_version ?? "").slice(0, 8);
   return (
     <footer className="mp-footer" title={catalog.warning ?? undefined}>
       Apps from{" "}
       <a href="https://udf.ai" target="_blank" rel="noopener noreferrer">
         udf.ai
       </a>
-      {catalog.catalog_version && <> · catalog {catalog.catalog_version.slice(0, 8)}</>} · updated {ago(catalog.fetched_at)}
+      {version && <> · catalog {version}</>} · updated {ago(catalog.fetched_at)}
     </footer>
   );
 }
