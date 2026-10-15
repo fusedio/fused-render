@@ -1074,11 +1074,7 @@ export function ComposerCard({
   const dirtyRef = useRef(false);
   {
     const fresh = freshBox(spent.current, text, trayDraft.length);
-    // WHILE ↑ IS WALKING HISTORY the box shows a recalled prompt, but the
-    // DRAFT — what autosave writes, what the unmount flush keeps — stays the
-    // words the walk took the box from. A recalled line becomes the draft the
-    // moment the reader edits it (`onChange` ends the walk).
-    if (fresh.text) textRef.current = histIdx.current === null ? text : histDraft.current;
+    if (fresh.text) textRef.current = text;
     if (fresh.tray) trayDraftRef.current = trayDraft;
     // Only a box that has moved on in BOTH halves is the reader's again.
     if (fresh.text && fresh.tray) spent.current = null;
@@ -1193,7 +1189,15 @@ export function ComposerCard({
         // 2026-09-17): stated on every change, written when the window loses
         // focus, when the page goes, and when this composer unmounts — never
         // 600 ms after a keystroke. One rule for every composer.
-        draftSyncer(draftKeyRef.current).setText(value.text, value.attachments, undefined, {
+        // WHILE ↑ IS WALKING HISTORY the box shows a recalled prompt, but the
+        // DRAFT on the record stays the words the walk took the box from: a
+        // tab switch mid-walk must not file an old prompt over an unsent
+        // line. The recalled line becomes the draft the moment the reader
+        // edits it (`onChange` ends the walk and the next change states it).
+        // Only the record's words: `textRef` stays the box's truth for the
+        // send latch and the seed GET (Bugbot, PR #1686).
+        const words = histIdx.current === null ? value.text : histDraft.current;
+        draftSyncer(draftKeyRef.current).setText(words, value.attachments, undefined, {
           defer: true,
         });
         return;
