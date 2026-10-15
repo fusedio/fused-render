@@ -2012,3 +2012,56 @@ the pairing record (`_paired_record`, the cookie lookup `_paired` now wraps;
 the `last_seen` bump unchanged). `/api/bots` itself stays a 404 on the LAN.
 On loopback (D3: trusted) the routes answer too; without the header the via
 addr is "".
+
+## 15. The Marketplace — `marketplace_search` / `marketplace_install` (`tools.MARKET_TOOLS`, 2026-10-15)
+
+Every bot (not Super Bot alone) can find a community app in the Marketplace
+(`fused_render/marketplace.py`, the shell's `/marketplace` pages) and install
+it, behind an approval card. Owner's ask: "give the bots tools so they can
+search for an app in the marketplace and then ask the user the approval in
+order to install it and use it".
+
+**Roster.** Both tools are on the roster only while `shell.prefs.marketplace_enabled()`
+(`tools.marketplace_on`): the pref gates entry points, and a bot tool is one,
+like the sidebar row and the `/marketplace` routes. The steps engine mounts its
+two action lines (`MARKETPLACE_ACTIONS`) under the same condition; the agent
+engine's prompt says what to do "when `marketplace_search` is among your tools".
+
+**`marketplace_search {query?}`** (read, no card, repeatable; `call_key` None).
+With a query, the server's ranked `marketplace.search` (README text included,
+PR #1672's udf.ai backend); with none, or when the search answers an error,
+`marketplace.catalog()` (the one caller allowed to rebuild a stale cache)
+filtered here (every word against name, slug, description, tags and category;
+name/slug hits rank above tags above description; no query = the whole
+catalog, featured first). Capped at `MARKET_HITS` (12). One line per
+hit: `slug: name vX [category] — description (flags)`, the flags being
+`INSTALLED` (`, update available`), `needs Python`, `needs fused-render N+`,
+`uses AI: …`. The INSTALLED flag is what stops the model installing twice.
+
+**`marketplace_install {slug, update?}`** (`ALWAYS_ASK`, with `bot_create` /
+`bot_settings`: the card is raised under "Never ask" too, in both engines —
+the steps engine's gate now checks `ALWAYS_ASK` beside the approval setting —
+and `forever_rule` returns None, so there is no "approve forever" button; a
+phone-started Super Bot task asks anyway). `_market_target` resolves the call
+before anything is raised: a non-slug, a slug the cached catalog does not
+list, or an installed app without `update: true` is an ERROR the model reads
+(`risk` returns "", no card), never a card the user has to deny. `describe`
+says `install|update the Marketplace app "Name" vX into <workspace>/app/<slug>`
+— the same install-vs-update decision `start_install` makes, so what the user
+approves is what runs. `execute` calls `marketplace.start_install` and polls
+`list_jobs` up to `MARKET_INSTALL_WAIT_S` (240 s; mcp.json's timeout is above
+the hour-long approval wait, so the poll is never the longest wait), then
+forces `apptools.apps` / `registry` to rebuild so the 10 s cache never hides
+the new folder, and answers `Installed Name vX at <path>. It is now in APPS as
+`<slug>`: `show <slug>` …`. `call_key` is the slug: a second install of the
+same slug on one instruction is NOT RUN AGAIN.
+
+**"Use it".** Installs land in `<workspace>/app/<slug>` (`marketplace.install_root()`,
+#1674), the builds root every bot's APPS already scans (`apptools.ROOTS`), so
+the installed app is in APPS, `show`, `tool`, `py` and `offer` with no further
+plumbing; `_market_install` only forces the 10 s `apps` / `registry` caches
+to rebuild.
+
+Chips: `marketplace_search` → "N apps found"; `marketplace_install` → the
+first sentence ("Installed Name v1.2 at …"). Both are `_NO_THUMB` in the
+steps engine (the browser did not move).

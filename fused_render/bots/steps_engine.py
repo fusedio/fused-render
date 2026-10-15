@@ -32,11 +32,11 @@ Each turn you see the current page (URL, title, interactive elements with refs l
 
 Reply with strict JSON only, no prose, no code fences:
 {"thought": "<one short sentence for the user, what you see and what you'll do>",
- "action": "<goto|click|type|press|select|hover|scroll|wait|read|back|tab|readfile|ls|find|upload|save|text|texts|remember|forget|recall|note|learn|build|show|offer|tool|py|done|ask|login>",
+ "action": "<goto|click|type|press|select|hover|scroll|wait|read|back|tab|readfile|ls|find|upload|save|text|texts|remember|forget|recall|note|learn|build|show|offer|tool|py|marketplace_search|marketplace_install|done|ask|login>",
  "file": "<for readfile / upload: file name from FILES or a path under FOLDERS; for ls / find: the folder (optional); for py: the .py file in the app, omit to load its SKILL.md>", "name": "<for save: file name, e.g. posts.md; for build: short app name; for show: app name or folder; for offer: an app from APPS, or the name of the app to build; for tool: the tool name>",
  "app": "<for tool: the app folder from APP TOOLS; for py: the app folder or name from APPS>", "args": {<for tool / py: the parameters as a JSON object>},
  "to": "<for text / texts: a CONTACTS name or handle>", "seconds": <for texts: wait up to this long for a NEW reply, max 300>,
- "seq": <for recall: a message number, the n in [#n]>, "query": "<for recall: keywords an earlier message must contain; for find: the words a file name (or, with content, a line) must contain>", "content": true|false (find: search inside text files),
+ "seq": <for recall: a message number, the n in [#n]>, "query": "<for recall: keywords an earlier message must contain; for find: the words a file name (or, with content, a line) must contain; for marketplace_search: the words to match, omit for the whole catalog>", "slug": "<for marketplace_install: the app's slug from marketplace_search>", "update": true|false (marketplace_install: update an installed copy), "content": true|false (find: search inside text files),
  "url": "<for goto / tab new>", "ref": "<element ref, e.g. sb12>", "text": "<for type; for wait: text to wait for; for build / offer: the app spec>",
  "submit": true|false, "key": "<for press, e.g. Escape, Enter, Tab, ArrowDown, Control+a>",
  "value": "<for select: option label or value>", "direction": "up|down",
@@ -68,7 +68,7 @@ Actions:
 - offer name [text]: PROPOSE an app and wait for the user's one-click answer. `name` is an app from APPS that would serve them better than a browsing answer (they get its card with "Use it" / "Not now"), or, when none fits, the name of a small app you would `build`, with `text` = its spec exactly as for `build` (they get "Build it" / "Not now", and a yes starts the build right away). `message`: one or two plain sentences on what it would do for them; when the offer comes at the end of the task, put your full findings in `message` too, so the answer is there whichever they pick. At most ONE offer per task; never on a routine task; never for a quick fact or a single click. You then get a USER line: accepted -> the build has started (or the card is in the chat), so `done` in one line with the link; declined -> `done` in one line (never repeat the findings) or carry on browsing; anything else is an instruction about the offer.
 - tool app name args: call one of the APP TOOLS (functions that local apps on this Mac expose; the list is in your prompt when any exist). `app` is the app folder, `name` the tool, `args` a JSON object with exactly the parameters shown. Prefer a tool over browsing when it does the job directly (reading or editing a document, sending mail, querying data the app owns). Tools marked [approval] change something and go through the approval gate; the rest run at once. The result comes back under CURRENT RESULT in your next step: use it (report with `done`); the same call with the same args is refused until the user speaks again. Never put passwords or keys in args. If no APP TOOLS section is present, there are none.
 - py app file args: run one .py of a local fused app DIRECTLY (its main(**args), no browsing), the same way the app's own page runs it. Apps marked [py] in APPS ship a SKILL.md that says what each file does and how to call it. `py` app with NO file loads that SKILL.md into APP SKILLS for the rest of the task (apps you just built and apps the task names are loaded already); then `py` app file args, with `file` one of its `## file.py` sections and `args` exactly as that section shows. A file without a section cannot be called; an app without a SKILL.md has no callable Python (use its page). The value comes back under CURRENT RESULT in your next step (60 s max): USE it — report with `done` — and never issue the same call again unless the user asks again or the args differ (a repeat is refused). An args error means re-read the section and fix the call. Prefer it over clicking through an app when the file does the job. Apps you built run at once (unless their SKILL.md marks the file for approval); a file of any other app pauses for the user's yes. Never put passwords or keys in args.
-- remember text: save one short durable note to your MEMORY (persists across tasks; the page is unchanged). Use it for site quirks ("LinkedIn feed is at /feed; dismiss the messaging overlay first"), user preferences ("user wants summaries as bullet lists"), and where things live. Never store passwords, codes or other secrets. One note per fact; do not repeat what MEMORY already says.
+@MARKETPLACE@- remember text: save one short durable note to your MEMORY (persists across tasks; the page is unchanged). Use it for site quirks ("LinkedIn feed is at /feed; dismiss the messaging overlay first"), user preferences ("user wants summaries as bullet lists"), and where things live. Never store passwords, codes or other secrets. One note per fact; do not repeat what MEMORY already says.
 
 Rules:
 - Use `type` with submit=true to search (it presses Enter). Prefer the site's own search or Google.
@@ -97,7 +97,20 @@ Rules:
 
 def system_prompt() -> str:
     """SYSTEM_PROMPT with the apps root filled in (resolved now, so FUSED_RENDER_DIR applies)."""
-    return SYSTEM_PROMPT.replace("@APPS_ROOT@", botmod._builds_root())
+    return SYSTEM_PROMPT.replace("@APPS_ROOT@", botmod._builds_root()).replace(
+        "@MARKETPLACE@", MARKETPLACE_ACTIONS if tools.marketplace_on() else "")
+
+
+# The Marketplace's two actions (docs §15), in the prompt only while the Marketplace is on (tools.marketplace_on):
+# the same pref that shows the shell its entry points.
+MARKETPLACE_ACTIONS = (
+    "- marketplace_search [query]: search the Marketplace, the catalog of community apps the user can install (`query` words "
+    "against name, description, tags, category; omit it for the whole catalog). Each hit gives the app's slug, what it does and "
+    "whether it is INSTALLED already (then it is in APPS: `show` it, do not install again). Read-only. Use it when the user asks "
+    "for an app that is not in APPS, or when a community app would do the task better than browsing.\n"
+    "- marketplace_install slug [update]: install one Marketplace app (slug from marketplace_search) into the user's workspace. "
+    "ALWAYS raises an approval card first (say which app and why in `thought`); `update: true` only when the user asks to "
+    "update an installed one. The result names its folder, now in APPS: `show` it, `goto` its link, or call its tools.\n")
 
 
 # The model's `ask` sometimes claims it has no browser actions (it saw the host's
@@ -108,7 +121,7 @@ _TOOL_CONFUSION = re.compile(
     r"|only [^.]{0,30}?(gmail|slack|calendar|mcp)[^.]{0,20}tools?", re.I)
 
 # Actions whose step leaves the browser as it was: no thumbnail (an empty box under the chip).
-_NO_THUMB = ("readfile", "ls", "find", "tool", "py", "build", "show", "save", "remember", "forget", "recall", "note", "learn", "text", "texts", "done", "ask")
+_NO_THUMB = ("readfile", "ls", "find", "tool", "py", "marketplace_search", "marketplace_install", "build", "show", "save", "remember", "forget", "recall", "note", "learn", "text", "texts", "done", "ask")
 
 
 def _one_liner(act, result, obs, label=""):
@@ -359,7 +372,8 @@ def run(bot, task, label=None):
             # An "Approve forever" rule from an earlier card skips it (tools.forever_rule; the same rule set as
             # the agent engine, so a bot moved to a local model keeps what the user allowed).
             rule = tools.forever_rule(bot, act, decision, obs) if why else None
-            ask = bool(why) and (bot.meta.get("approval") or "ask") != "auto"
+            # ALWAYS_ASK (marketplace_install) raises the card under "Never ask" too, like the agent engine's _act.
+            ask = bool(why) and (act in tools.ALWAYS_ASK or (bot.meta.get("approval") or "ask") != "auto")
             if ask and tools.forever_match(bot, rule):
                 bot.emit("note", f"Running without asking ({rule['label']}: approved forever).")
                 history.append(f"APPROVED by a standing rule the user set: {tools.describe(bot, act, decision, obs)}")
@@ -399,7 +413,7 @@ def run(bot, task, label=None):
             browser_step = act not in _NO_THUMB
             # `result` is the user's one-liner; `detail` keeps the raw text where it adds something.
             bot.emit("action", lbl, result=_one_liner(act, result, obs, lbl),
-                     **({"detail": result[:1500]} if act in ("read", "readfile", "ls", "find", "tool", "py") else {}),
+                     **({"detail": result[:1500]} if act in ("read", "readfile", "ls", "find", "tool", "py", "marketplace_search") else {}),
                      thumb=bot._step_thumb() if browser_step else None)
             # A `read` result is long; keep it whole for one turn only, then trim
             # it so the prompt does not fill up with stale page text.
