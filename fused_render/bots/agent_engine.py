@@ -150,6 +150,7 @@ Rules:
 - `py` and `tool` return their value as RESULT: use it and report it. The same call with the same args is refused until the user speaks again (NOT RUN AGAIN).
 - OFFER APPS PROACTIVELY. An app is cheap for the user and often better than chat text. At the START of a task check APPS: if one already does what the task needs (same data, same site, a tracker, dashboard or form that fits), `offer` it before browsing (or `show` it when they plainly asked to see it). If no app fits but the task is something they will do again, keep updating, or would rather look at as a page (a list to re-check, numbers to track, a comparison, a calculation, a form, a schedule, more than a screen of results), `offer` to build one: mid-task when it replaces the browsing, else right before finishing with your findings in `message`. An APP HINT line in the task message points at a likely fit. Never offer for a one-off lookup, and never an app listed under OFFERS DECLINED.
 - `build` runs on its own for minutes and hands you a link at once: report the link and finish (the user hears again when it is ready). After `show`, the card is the answer: finish in one line.
+- When `marketplace_search` is among your tools, the Marketplace (community apps the user can install) is on: search it when the user asks for an app APPS does not have, or when a community app would do the task better than browsing; `marketplace_install` puts one in the user's workspace behind an approval card, every time, and the app is then in APPS (`show` it). Never install what the search marked INSTALLED.
 - The user may ask about you or this app instead of giving a browsing task ("can you run this daily?", "how do I make you faster?"). When that happens an APP GUIDE section is in the task message: answer from it without touching the browser. Never claim a feature is missing when the guide lists it, and never invent one it does not.
 
 Finishing: when the task is complete, stop calling tools and write your final answer as your last message. Put the concrete findings in it (names, numbers, prices, dates, links), not a description of the steps you took; for a build or an app, include its link. Plain text or short Markdown (lists, links)."""
@@ -1827,10 +1828,11 @@ def _act(bot, sess: Turn, name: str, args: dict, notes: list | None = None) -> d
     parts = pre + [result]
     if name == "py" and result.startswith("RESULT:"):
         parts.extend(_loaded_skill(bot, args))
-    if ckey is not None and name in ("handoff",) + tools.MANAGE_TOOLS and not result.startswith("error") \
-            and not result.startswith("SETTINGS of "):
-        # The same hand-off / create / change twice in one instruction is refused like a repeated `py`
-        # (a second `bot_create` would mint a second bot). A read (`bot_settings {bot}`) may repeat.
+    if ckey is not None and name in ("handoff", "marketplace_install") + tools.MANAGE_TOOLS \
+            and not result.startswith("error") and not result.startswith("SETTINGS of "):
+        # The same hand-off / create / change / install twice in one instruction is refused like a repeated `py`
+        # (a second `bot_create` would mint a second bot; a second install would raise a second card). A read
+        # (`bot_settings {bot}`) may repeat.
         sess.ran_calls[ckey] = result
     if ckey is not None and result.startswith("RESULT:"):
         sess.ran_calls[ckey] = result

@@ -118,6 +118,8 @@ FACE_DESC = ("avatar: shape circle|oval|square|pill|triangle|hexagon|cloud|drop;
              "(any #rrggbb only together with an icon); icon a preset key (github, gmail, …) or empty")
 CREATE_BATCH_CAP = 10  # bots one `bot_create` may make: one card the user can still read whole
 CHAT_LINES, CHAT_LINES_MAX = 30, 80  # bot_chat's default / ceiling for `last`
+MARKET_HITS = 12             # marketplace_search's result cap
+MARKET_INSTALL_WAIT_S = 240  # how long marketplace_install waits for the download job
 REF = {"type": "string", "description": "an element ref from the element list, e.g. sb12"}
 REF_REQ = (REF, True)
 
@@ -289,7 +291,24 @@ TOOL_SPECS: dict[str, dict] = {
                      "inputSchema": _s(bot=({"type": "string", "description": "the bot's current name from BOTS"}, True),
                                        name=STR, instructions=STR, model=STR, effort=STR,
                                        face={"type": "object", "description": FACE_DESC})},
+    # The Marketplace (every bot, only while the Marketplace is enabled in Preferences; docs §15).
+    "marketplace_search": {
+        "description": "Search the Marketplace, the catalog of community apps the user can install on this Mac: `query` "
+                       "words are matched against each app's name, description, tags and category (omit it for the "
+                       f"whole catalog; at most {MARKET_HITS} results). Each hit gives the app's slug, what it does, its "
+                       "version, whether it needs Python, and whether it is already INSTALLED (then it is in APPS: `show` "
+                       "or use it, do not install it again). Read-only, no approval. Use it when the user asks for an app "
+                       "that is not in APPS, or when a community app would do the task better than browsing.",
+        "inputSchema": _s(query={"type": "string", "description": "words to match; omit for the whole catalog"})},
+    "marketplace_install": {
+        "description": "Install one Marketplace app (by `slug` from marketplace_search) into the user's workspace. ALWAYS "
+                       "raises an approval card first: say which app and why in one sentence before calling it, and never "
+                       "call it for an app the search marked installed (use `update: true` only when the user asks to "
+                       "update it). Waits for the download; the result names the app's folder, which is then in APPS: "
+                       "`show` it as a card, `goto` its link, or call its tools.",
+        "inputSchema": _s(slug=REQ, update={"type": "boolean", "description": "true: update an installed copy to the catalog's version"})},
 }
+
 
 HANDOFF_TOOLS = ("handoff", "handoff_stop")
 # Super Bot's read door into a bot's chat (docs §11 BOTS NOW): no card, repeatable, and
@@ -301,7 +320,12 @@ READ_TOOLS = ("bot_chat",)
 # effective_approval. Creating or reshaping an agent is the user's call every time.
 MANAGE_TOOLS = ("bot_create", "bot_settings")
 SUPER_TOOLS = HANDOFF_TOOLS + MANAGE_TOOLS + READ_TOOLS
-ALWAYS_ASK = frozenset(MANAGE_TOOLS)
+# Every bot's door into the Marketplace (docs §15), on the roster only while
+# `shell.prefs.marketplace_enabled()` (the pref gates entry points; a bot tool
+# is one). Installing third-party code onto the Mac is ALWAYS_ASK like bot
+# management: the card is raised under "Never ask" too, never approved forever.
+MARKET_TOOLS = ("marketplace_search", "marketplace_install")
+ALWAYS_ASK = frozenset(MANAGE_TOOLS + ("marketplace_install",))
 
 ALL_TOOLS = tuple(TOOL_SPECS)
 
@@ -481,6 +505,9 @@ def roster(bot) -> list[dict]:
             names.remove(n)
     if not apptools.available():
         names.remove("tool")
+    if not marketplace_on():
+        for n in MARKET_TOOLS:
+            names.remove(n)
     if not bot.contacts():
         names.remove("text")
         names.remove("texts")
@@ -802,6 +829,11 @@ def ui_summary(name: str, result: str, change: str = "", obs: dict | None = None
     if name == "build":
         doing = "updating" if "updating" in _NOW_DONE.sub("", raw) else "building"
         return f"Claude is {doing} it now · link posted"
+    if name == "marketplace_search":
+        m = re.match(r"(\d+) apps?", raw)
+        return f"{m.group(1)} app{'s' if m.group(1) != '1' else ''} found" if m else _clip(_first_line(raw))
+    if name == "marketplace_install":
+        return _clip(_first_line(raw).split(". ", 1)[0])
     if name == "save":
         m = re.search(r"([\d,]+) chars\)", raw)
         return f"saved to Inbox · {int(m.group(1).replace(',', '')):,} chars" if m else _clip(_first_line(raw))
@@ -912,6 +944,17 @@ def describe(bot, act: str, d: dict, obs: dict) -> str:
         verb = "update the app" if os.path.isfile(os.path.join(tgt, "index.html")) and d.get("new") is not True else "build the app"
         spec = " ".join((d.get("spec") or d.get("text") or d.get("message") or "").split())
         return f"{verb} \"{(d.get('name') or 'app')[:60]}\" in {tgt}" + (f" — {spec[:160]}{'…' if len(spec) > 160 else ''}" if spec else "")
+    if act == "marketplace_search":
+        q = " ".join(str(d.get("query") or d.get("text") or "").split())
+        return f"search the Marketplace for \"{q[:80]}\"" if q else "list the Marketplace"
+    if act == "marketplace_install":
+        slug, update, err = _market_target(d)
+        if err:
+            return f"install Marketplace app \"{slug or '?'}\" ({err})"
+        name, ver = _market_name(slug)
+        from fused_render import marketplace as _mkt
+        return (f"{'update' if update else 'install'} the Marketplace app \"{name}\"" + (f" v{ver}" if ver else "")
+                + f" into {os.path.join(_mkt.install_root(), slug)}")
     if act == "tool":
         app, name, args = apptools.tool_ref(d)
         rec = apptools.find(apptools.registry(), app, name)
@@ -1016,6 +1059,14 @@ def risk(bot, act: str, d: dict, obs: dict) -> str:
         return f"It rewrites {t.meta.get('name')}'s settings as shown; the bot behaves differently from its next task on."
     if act == "text":
         return "" if not bot.contact(d) else "An iMessage cannot be unsent."  # unknown contact fails in execute instead
+    if act == "marketplace_install":
+        # A call that cannot start gets no card: execute() returns the error to the model.
+        slug, update, err = _market_target(d)
+        if err or not marketplace_on():
+            return ""
+        return ("It downloads this community app's files (code written by someone else) onto this Mac and "
+                + ("replaces the installed copy's app files with the catalog's version." if update
+                   else "puts them under the apps folder, where every bot and the Apps page can open it."))
     if act == "build":
         return ("It starts a Claude Code session that writes files and spends model credit"
                 + (", unattended (Builds: full access)." if effective_build_access(bot) == "full" else "."))
@@ -1069,6 +1120,8 @@ def call_key(bot, act: str, d: dict):
                " ".join(str(d.get("task") or d.get("text") or "").split())]
     elif act in MANAGE_TOOLS:
         ref = [{k: d[k] for k in sorted(d)}]
+    elif act == "marketplace_install":
+        ref = [_market_target(d)[0]]
     elif act == "py":
         app_dir, file, args = bot.py_ref(d)
         if not app_dir or not file:
@@ -1109,6 +1162,152 @@ def _url_refusal(bot, url: str) -> str | None:
         return None
     return (f"error: this bot can't open {scheme}: pages (local files and browser-internal pages are off limits). "
             "Ask the user to attach the files to the task, or to give it to Super Bot.")
+
+
+# ---- the Marketplace (docs §15) ------------------------------------------------
+def marketplace_on() -> bool:
+    """Whether the Marketplace tools are on the roster: the same pref that shows the shell its entry points."""
+    try:
+        from fused_render.shell import prefs
+        return bool(prefs.marketplace_enabled())
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _market_target(d: dict) -> tuple[str, bool, str]:
+    """(slug, update, error) for a `marketplace_install` decision: the error names why
+    no card is raised (bad slug, unknown app, already installed without `update`)."""
+    from fused_render import marketplace as _mkt
+    slug = str((d or {}).get("slug") or (d or {}).get("name") or (d or {}).get("value") or "").strip()
+    update = (d or {}).get("update") is True
+    if not _mkt.is_slug(slug):
+        return slug, update, "not a Marketplace slug; take it from marketplace_search"
+    snap, err = _mkt.cached_snapshot()
+    if snap is not None and slug not in (snap.get("apps") or {}):
+        # The server's search (marketplace_search) can rank an app the cached catalog predates: rebuild it
+        # once (force: the cache is known wrong) before calling the slug unknown; start_install reads the
+        # same cache file, so what passed here is what it installs.
+        snap, err = _mkt.get_snapshot(force=True)
+    if snap is None:
+        return slug, update, f"the Marketplace catalog is unavailable ({err or 'no catalog'})"
+    if slug not in (snap.get("apps") or {}):
+        return slug, update, "no such app in the catalog; take the slug from marketplace_search"
+    rec = _mkt.installed_apps().get(slug)
+    if rec and not update:
+        return slug, update, f"already installed at {rec['path']} (in APPS; pass update: true only to update it)"
+    if not rec and update:
+        update = False  # nothing to update: a plain install
+    dest = os.path.join(_mkt.install_root(), slug)
+    if not rec and os.path.lexists(dest) and not _mkt._is_husk(dest):
+        # install_app refuses a folder it did not stamp; refuse here, before the user approves a write into it.
+        return slug, update, f"a local app already occupies {dest} (not a Marketplace install); the user has to move or rename it first"
+    return slug, update, ""
+
+
+def _market_name(slug: str) -> tuple[str, str]:
+    """(display name, version) of a catalog app, from the cached snapshot."""
+    from fused_render import marketplace as _mkt
+    snap, _ = _mkt.cached_snapshot()
+    row = ((snap or {}).get("apps") or {}).get(slug) or {}  # a flat catalog row (marketplace.py "Snapshot")
+    name = row.get("name") if isinstance(row.get("name"), str) and row.get("name").strip() else slug
+    ver = row.get("version") if isinstance(row.get("version"), str) else ""
+    return name, ver
+
+
+def _market_hits(q: str) -> tuple[list[dict], int, str]:
+    """(hits, total, error) for a query: the server's ranked search
+    (`marketplace.search`, README text included) when there is a query, the
+    cached catalog filtered here when there is none or the search failed."""
+    from fused_render import marketplace as _mkt
+    if q:
+        got = _mkt.search(q, limit=MARKET_HITS)
+        if got.get("status") == "ok":
+            apps = got.get("apps") or []
+            return apps[:MARKET_HITS], len(apps) + (1 if got.get("next_cursor") else 0), ""
+    cat = _mkt.catalog()
+    if cat.get("status") != "ok":
+        return [], 0, f"error: the Marketplace is unavailable ({cat.get('message') or 'no catalog'})"
+    words = [w for w in re.split(r"[^a-z0-9+#.]+", q) if w]
+    scored = []
+    for a in cat.get("apps") or []:
+        hay = {"name": (a.get("name") or "").lower(), "slug": (a.get("slug") or "").lower(),
+               "desc": (a.get("description") or "").lower(), "tags": " ".join(a.get("tags") or []).lower(),
+               "cat": (a.get("category") or "").lower()}
+        if words:
+            blob = " ".join(hay.values())
+            if not all(w in blob for w in words):
+                continue
+            score = sum(3 for w in words if w in hay["name"] or w in hay["slug"]) \
+                + sum(2 for w in words if w in hay["tags"]) + sum(1 for w in words if w in hay["desc"])
+        else:
+            score = 1 if a.get("featured") else 0
+        scored.append((score, a))
+    scored.sort(key=lambda t: (-t[0], (t[1].get("name") or "").lower()))
+    return [a for _, a in scored[:MARKET_HITS]], len(scored), ""
+
+
+def _market_search(d: dict) -> str:
+    """`marketplace_search`: the matching catalog apps, best first, as lines the model reads."""
+    q = " ".join(str((d or {}).get("query") or (d or {}).get("text") or "").split()).lower()
+    hits, total, err = _market_hits(q)
+    if err:
+        return err
+    if not hits:
+        return "0 apps match" + (f" \"{q}\"" if q else "") + ". Try other words, or omit the query for the whole catalog."
+    lines = []
+    for a in hits:
+        inst = a.get("installed") or {}
+        flags = []
+        if inst:
+            flags.append("INSTALLED" + (", update available" if a.get("update_available") else ""))
+        if a.get("requires_python"):
+            flags.append("needs Python")
+        if a.get("compatible") is False:
+            flags.append(f"needs fused-render {a.get('min_fused_render')}+ (not installable here)")
+        if a.get("ai_capabilities"):
+            flags.append("uses AI: " + ", ".join(a["ai_capabilities"][:4]))
+        desc = " ".join((a.get("description") or "").split())[:200]
+        lines.append(f"- {a['slug']}: {a.get('name') or a['slug']} v{a.get('version') or '?'} [{a.get('category') or 'other'}]"
+                     + (f" — {desc}" if desc else "") + (f" ({'; '.join(flags)})" if flags else ""))
+    head = f"{total} app{'s match' if total != 1 else ' matches'}" + (f" \"{q}\"" if q else " (whole catalog)")
+    if total > len(hits):
+        head += f", top {len(hits)} shown"  # (the catalog filter's count, or the server's page plus one for "more")
+    return (head + " (slug: name version [category] — what it does). INSTALLED ones are in APPS already; "
+            "`marketplace_install` with a slug installs one after the user approves.\n" + "\n".join(lines))
+
+
+def _market_install(bot, d: dict) -> str:
+    """`marketplace_install`: start the install/update job and wait for it (Stop ends the
+    wait; the job finishes on its own), then make sure APPS sees the new folder (the
+    caches rebuild at most every TTL_S)."""
+    from fused_render import marketplace as _mkt
+    slug, update, err = _market_target(d)
+    if err:
+        return f"error: {err}"
+    try:
+        job = _mkt.start_install(slug)
+    except _mkt.InstallError as e:
+        return f"error: {e}"
+    deadline = time.monotonic() + MARKET_INSTALL_WAIT_S
+    while job.get("state") not in ("done", "error"):
+        if bot.stop_flag.is_set():
+            return f"error: stopped while the {job.get('action') or 'install'} of {slug} was running; it finishes on its own (see the Marketplace page)."
+        if time.monotonic() > deadline:
+            return (f"error: the {job.get('action') or 'install'} of {slug} is still running after "
+                    f"{MARKET_INSTALL_WAIT_S} s ({job.get('message') or '…'}); the user can follow it on the Marketplace page.")
+        time.sleep(1.0)
+        job = (_mkt.list_jobs().get("jobs") or {}).get(slug) or job
+    if job.get("state") == "error":
+        return f"error: {job.get('error') or job.get('message') or 'install failed'}"
+    apptools.apps(force=True)
+    apptools.registry(force=True)
+    path = job.get("path") or os.path.join(_mkt.install_root(), slug)
+    name, ver = _market_name(slug)
+    folder = os.path.basename(path.rstrip("/"))
+    verb = "Updated" if job.get("action") == "update" else "Installed"
+    return (f"{verb} {name}" + (f" v{ver}" if ver else "") + f" at {path}. It is now in APPS as `{folder}`: "
+            f"`show {folder}` puts it in the chat as a card the user opens; its tools (if any) are under APP TOOLS. "
+            "Tell the user it is installed in one line.")
 
 
 # --------------------------------------------------------------- execute ---
@@ -1231,6 +1430,12 @@ def execute(bot, act: str, d: dict, obs: dict) -> tuple[str, str]:
             if not is_super(bot):
                 return "bot_chat", "error: only Super Bot reads other bots' chats"
             return describe(bot, act, d, obs), botmod.bot_chat(bot, d.get("bot") or d.get("name") or "", d.get("last"))
+        if act in MARKET_TOOLS:
+            label = describe(bot, act, d, obs)  # BEFORE the install: afterwards the same call describes as "already installed"
+            if not marketplace_on():
+                # The roster and the steps prompt drop these while the pref is off; a model that names one anyway is refused.
+                return label, "error: the Marketplace is off (the user turns it on in Preferences > Marketplace)"
+            return label, (_market_search(d) if act == "marketplace_search" else _market_install(bot, d))
         if act == "note":
             text = " ".join(str(d.get("text") or d.get("message") or "").split())[:300]
             if not text:
