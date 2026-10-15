@@ -343,28 +343,31 @@ def api_appfile_install(body: dict = Body(...), x_fused: str | None = Header(def
 
 @router.post("/api/appfile/fetch")
 def api_appfile_fetch(body: dict = Body(...), x_fused: str | None = Header(default=None)):
-    """Download the ``.fused`` at the http(s) ``url`` — or build one from
-    the single app in a public GitHub repo link (appfetch.py) — into the
-    managed downloads dir and answer ``{file}`` — the saved absolute path, which the
-    caller then opens like any other ``.fused`` (DL-8): on its install page.
-    The one caller is the shell's ``FetchAppFileBoot``, fed by a
-    ``fused-render://open?url=`` link.
+    """Download the ``.fused`` at the http(s) ``url`` (DL-8), or build one
+    from the single app in the public GitHub repo at ``git`` (DL-9), into the
+    managed downloads dir and answer ``{file}`` — the saved absolute path,
+    which the caller then opens like any other ``.fused``: on its install
+    page. The one caller is the shell's ``FetchAppFileBoot``, fed by a
+    ``fused-render://open?url=`` / ``open?git=`` link.
 
     X-Fused-guarded: it writes (a file into the downloads dir, nothing
     else). There is no confirm before the DOWNLOAD (the deep-link click is
     the gesture); the install page is the confirm before anything runs. The
     recorded cost is that a web page which can navigate the browser to this
-    origin with ``?_fetch_appfile=`` gets a remote ``.fused`` downloaded
-    without a prompt."""
+    origin with ``?_fetch_appfile=`` / ``?_fetch_appgit=`` gets a remote
+    ``.fused`` downloaded without a prompt."""
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
+    repo = str(body.get("git") or "").strip()
     url = str(body.get("url") or "").strip()
-    if not appfetch.is_url(url):
-        return _error("url must be an http:// or https:// link to a .fused file "
-                      "or a public GitHub repository")
     try:
-        file = appfetch.download_app_file(url)
+        if repo:
+            file = appfetch.download_github_app(repo)
+        elif appfetch.is_url(url):
+            file = appfetch.download_app_file(url)
+        else:
+            return _error("url must be an http:// or https:// link to a .fused file")
     except appfetch.FetchError as exc:
         return _error(str(exc))
     return JSONResponse({"file": file.replace(os.sep, "/")})

@@ -174,8 +174,7 @@ def repo_root(path):
 
 def _default_branch(root):
     """The remote's default branch name, off the `refs/remotes/origin/HEAD`
-    symref a clone records — `deeplink.py::_default_branch`'s own logic
-    (deeplink.py:274-282), including its `remote set-head --auto` re-ask
+    symref a clone records, with a `remote set-head --auto` re-ask
     fallback for a clone (or a hand-init'd repo) missing that symref. None
     when there is no `origin` remote, or git cannot resolve it — either way,
     nothing to compare HEAD against."""

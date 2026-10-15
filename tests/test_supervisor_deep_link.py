@@ -2,7 +2,7 @@
 (Task B, SPEC §26 D110). A deep link arrives as a plain Open("fused-render://…")
 over the same wire protocol as a file path (Rust-compatible — no new opcode), so
 core must distinguish it: never cwd-join it, and route it to the server's /clone
-confirm page instead of a /view URL. Verified headlessly by capturing the URL
+link router instead of a /view URL. Verified headlessly by capturing the URL
 core would open."""
 from pathlib import Path
 from urllib.parse import quote

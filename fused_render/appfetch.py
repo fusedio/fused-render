@@ -19,26 +19,22 @@ again, so a redirect to ``file://`` (or anything else urllib knows how to
 open) is refused. Size is capped both by ``Content-Length`` and while
 streaming — servers lie.
 
-A public GitHub REPOSITORY link (``https://github.com/<owner>/<repo>``, or
-``…/tree/<ref>[/<subdir>]`` — ``deeplink.parse_github_url``'s shapes) is the
-other accepted source: ``download_github_app`` fetches the archive at that
-ref (``HEAD`` when none), extracts it through the hardened
-``zip_import.extract_to_staging``, finds THE one folder whose page carries
-``<meta name="fused-app">`` (the subdir when the link names one; zero or
+``download_github_app(url)`` is the ``fused-render://open?git=`` source
+(DL-9): a public ``https://github.com/<owner>/<repo>`` link — that shape
+only, the repo holding ONE app. It fetches the default branch's archive,
+extracts it through the hardened ``zip_import.extract_to_staging``, finds
+THE one folder whose page carries ``<meta name="fused-app">`` (zero or
 several is an error, never a guess) and exports it with
 ``appfile.export_app_file`` into the same downloads dir — so the caller gets
 a ``.fused`` path and the install page is the step after, exactly as for a
 hosted file. Two stamps keep a re-click an UPDATE and not a new app:
   * an entry with no ``fused-app-id`` is given one derived from the repo
-    (``<name>-<sha256(github.com/owner/repo/subdir)[:8]>``), stable across
-    clicks, written into the extracted page before export;
+    (``<name>-<sha256(github.com/owner/repo/)[:8]>``), stable across clicks,
+    written into the extracted page before export;
   * ``exported_at`` is the commit's time (the archive's newest member mtime,
     which GitHub sets from the commit), so the same commit reads as SAME and
     a newer one as UPDATE on the install page.
-Any other github.com URL (a release asset, ``/raw/``) is not a repo link and
-takes the plain download path. This is not ``fused-render://open?git=``
-(deeplink.py): that one clones an editable tree into the workspace; this one
-installs the app under ``app/<slug>`` like any ``.fused``.
+The ``fused-render open <github url>`` CLI rides the same function.
 
 Ported from Render App's ``fetch.py`` (fused-render-lite PRs #27/#30) so a
 ``fused-render://open?url=`` link downloads like ``render-app://open?url=``
@@ -157,30 +153,34 @@ def _stream(resp, out_path: str) -> None:
         raise FetchError("the URL answered an empty body")
 
 
-def github_repo_spec(url: str) -> dict | None:
-    """``deeplink.parse_github_url``'s spec when ``url`` is a github.com
-    repository or ``/tree/`` link, else None — a release asset or ``/raw/``
-    link to a ``.fused`` is a plain download, not a repo."""
-    from fused_render.deeplink import DeeplinkError, parse_github_url
+#: ``https://github.com/<owner>/<repo>`` — optional ``www.``, ``.git`` and
+#: trailing slash; nothing after the repo. Conservative owner/repo shapes so
+#: nothing can smuggle path tricks into the archive URL.
+_GITHUB_REPO_RE = re.compile(
+    r"^https?://(?:www\.)?github\.com/"
+    r"(?P<owner>[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)/"
+    r"(?P<repo>[A-Za-z0-9._-]+?)(?:\.git)?/?$",
+    re.I,
+)
 
-    try:
-        return parse_github_url(url)
-    except DeeplinkError:
-        return None
+
+def parse_github_repo(url: str) -> tuple[str, str]:
+    """``(owner, repo)`` of a ``https://github.com/<owner>/<repo>`` link;
+    ``FetchError`` for any other shape."""
+    m = _GITHUB_REPO_RE.match((url or "").strip())
+    if not m or m.group("repo") in (".", ".."):
+        raise FetchError("only public https://github.com/<owner>/<repo> links can be "
+                         f"installed: {url or '(empty)'}")
+    return m.group("owner"), m.group("repo")
 
 
 def download_app_file(url: str) -> str:
     """Download ``url`` and answer the absolute path of the saved ``.fused``.
     Raises ``FetchError`` for a bad URL, transfer failure, oversize body or
-    a body that is not a fused app file (nothing is left on disk then). A
-    GitHub repository link is built into a ``.fused`` first
-    (``download_github_app``)."""
+    a body that is not a fused app file (nothing is left on disk then)."""
     url = (url or "").strip()
     if not is_url(url):
         raise FetchError("only http:// and https:// URLs can be opened")
-    spec = github_repo_spec(url)
-    if spec is not None:
-        return download_github_app(spec)
     resp = _open(url)
     with resp:
         dest_dir = downloads_dir()
@@ -229,8 +229,8 @@ def _find_app_dir(root: str, where: str) -> str:
                          "so there is no app to install")
     if len(found) > 1:
         rels = ", ".join(os.path.relpath(d, root).replace(os.sep, "/") for d in found[:5])
-        raise FetchError(f"{where} holds more than one app ({rels}); link to one with "
-                         "https://github.com/<owner>/<repo>/tree/<ref>/<folder>")
+        raise FetchError(f"{where} holds more than one app ({rels}); "
+                         "only single-app repositories can be installed from a link")
     return found[0]
 
 
@@ -244,14 +244,14 @@ def _commit_time(zf: zipfile.ZipFile) -> str | None:
     return f"{y:04d}-{mo:02d}-{d:02d}T{h:02d}:{mi:02d}:{s:02d}Z"
 
 
-def download_github_app(spec: dict) -> str:
-    """Build the one app in a public GitHub repo (``spec`` from
-    ``github_repo_spec``) into ``downloads/<app_id>.fused`` and answer its
-    path. See the module docstring for the identity and time stamps."""
-    owner, repo, sub = spec["owner"], spec["repo"], spec["subpath"]
-    where = f"github.com/{owner}/{repo}" + (f"/{sub}" if sub else "")
-    archive = (f"https://github.com/{owner}/{repo}/archive/"
-               f"{urllib.parse.quote(spec['ref'] or 'HEAD', safe='')}.zip")
+def download_github_app(url: str) -> str:
+    """Build the one app in the public GitHub repo at ``url``
+    (``https://github.com/<owner>/<repo>``) into ``downloads/<app_id>.fused``
+    and answer its path. See the module docstring for the identity and time
+    stamps."""
+    owner, repo = parse_github_repo(url)
+    where = f"github.com/{owner}/{repo}"
+    archive = f"https://github.com/{owner}/{repo}/archive/HEAD.zip"
     dest_dir = downloads_dir()
     work = tempfile.mkdtemp(dir=dest_dir, prefix=".github-")
     try:
@@ -260,7 +260,7 @@ def download_github_app(spec: dict) -> str:
             resp = _open(archive)
         except FetchError as exc:
             if "HTTP 404" in str(exc):
-                raise FetchError(f"GitHub has no public repository or ref at {where} "
+                raise FetchError(f"GitHub has no public repository at {where} "
                                  "(private repositories cannot be installed from a link)")
             raise
         with resp:
@@ -281,10 +281,7 @@ def download_github_app(spec: dict) -> str:
         if len(tops) != 1 or not os.path.isdir(os.path.join(extracted, tops[0])):
             raise FetchError(f"unexpected archive layout from GitHub for {where}")
         top = os.path.join(extracted, tops[0])
-        root = os.path.join(top, *sub.split("/")) if sub else top
-        if not os.path.isdir(root):
-            raise FetchError(f"no folder {sub!r} in github.com/{owner}/{repo}")
-        found = _find_app_dir(root, where)
+        found = _find_app_dir(top, where)
         # The folder name is the app's name (manifest `name`, hence its slug
         # under app/): the repo's own name for a root-level app — never the
         # archive's `<repo>-<sha>` wrapper.
@@ -294,9 +291,9 @@ def download_github_app(spec: dict) -> str:
         os.rename(found, app_dir)
         entry = app_listing.app_entry(app_dir)
         if entry is not None and app_identity.app_id(entry) is None:
-            # Stable per repo (+ subdir), so export_app_file never mints a
-            # random one and a re-click finds the installed copy.
-            key = f"github.com/{owner.lower()}/{repo.lower()}/{sub}".encode("utf-8")
+            # Stable per repo, so export_app_file never mints a random one
+            # and a re-click finds the installed copy.
+            key = f"github.com/{owner.lower()}/{repo.lower()}/".encode("utf-8")
             app_identity.stamp_entry(
                 entry, f"{app_identity.kebab(name)}-{hashlib.sha256(key).hexdigest()[:8]}")
         built = os.path.join(work, "app.fused")
@@ -305,9 +302,8 @@ def download_github_app(spec: dict) -> str:
         except appfile.AppFileError as exc:
             raise FetchError(str(exc))
         app_id = appfile.app_id_of(manifest)
-        canonical = f"https://github.com/{owner}/{repo}" + (f"/{sub}" if sub else "")
         dest = os.path.join(dest_dir, f"{app_id}.fused" if app_id
-                            else _name_from(f"{canonical}/{name}.fused", None))
+                            else _name_from(f"https://{where}/{name}.fused", None))
         os.replace(built, dest)
     except OSError as exc:
         raise FetchError(f"could not build the app from {where}: {exc}")

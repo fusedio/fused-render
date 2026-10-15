@@ -67,7 +67,7 @@ def view_url_path(fs_path: str) -> str:
 
 def clone_url_path(raw_url: str) -> str:
     """Shell URL path for an OS-delivered `<scheme>://` deep link (SPEC
-    §26, D110): the /clone confirm page with the raw link as ?src=. Parsing
+    §26, D110): the /clone router with the raw link as ?src=. Parsing
     and validation happen server-side (deeplink.py); this only ferries the
     string. Module-level (not a closure) so it is testable without AppKit.
 
@@ -1672,8 +1672,8 @@ def main() -> None:
     # fused-bot://); deeplink.py builds the accepted forms from it.
     # AppKit delivers URL-scheme opens (CFBundleURLTypes in the py2app plist)
     # to application:openURLs:. Same delegate-patch mechanism as openFiles
-    # above; the /clone confirm page does all parsing and asks before any
-    # clone, so this handler only ferries the raw URL to the server.
+    # above; GET /clone does all parsing and every open link ends on an
+    # install page, so this handler only ferries the raw URL to the server.
     #
     # AppKit also routes plain document opens (Finder double-click on a
     # registered file type, e.g. .fused) through this same selector as a

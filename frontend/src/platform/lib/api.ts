@@ -2369,8 +2369,10 @@ export async function saveAppFileToDisk(
 // (keyed on the app id, so a re-click updates one file) and answer the saved
 // absolute path (DL-8). Caller opens it like any other .fused: on its install
 // page (AF-14) — the download has no confirm, the install page is one.
-export function fetchAppFile(url: string): Promise<{ file: string }> {
-  return postJson<{ file: string }>("/api/appfile/fetch", { url });
+/** `{url}`: download a hosted `.fused`; `{git}`: build one from the single
+ *  app in a public GitHub repo. Either answers the saved file's path. */
+export function fetchAppFile(src: { url: string } | { git: string }): Promise<{ file: string }> {
+  return postJson<{ file: string }>("/api/appfile/fetch", src);
 }
 
 // Delete one USER template folder (core templates are read-only, 404 here).
