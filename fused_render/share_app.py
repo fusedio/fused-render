@@ -30,6 +30,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -441,3 +442,83 @@ def api_share_remove(body: dict = Body(...), x_fused: str | None = Header(defaul
         return {"ok": True, "deleted_canvas": bool(out.get("deleted_canvas"))}
     finally:
         lock.release()
+
+
+# -- the GitHub link -----------------------------------------------------------
+
+# A hosted page that installs an app straight from its GitHub repo:
+# `?repo=<owner>/<name>`. Nothing is uploaded — the link points at what is
+# already pushed, so it is only offered when the folder IS the repo and every
+# change in it is on the remote.
+GITHUB_LINK_BASE = "https://udf.ai/fc_1XxeHZKmYjTdzf14pLsSnY/fused_app_github.html"
+
+_GITHUB_REMOTE = re.compile(
+    r"^(?:git@github\.com:|(?:https?|ssh)://(?:[^@/]+@)?(?:www\.)?github\.com/)"
+    r"([^/\s]+)/([^/\s]+?)(?:\.git)?/?$", re.I)
+
+
+def _github_repo(remote_url: str) -> str | None:
+    """`owner/name` for a GitHub remote URL (https or ssh), or None."""
+    m = _GITHUB_REMOTE.match((remote_url or "").strip())
+    return f"{m.group(1)}/{m.group(2)}" if m else None
+
+
+def github_link_state(path: str) -> dict:
+    """Whether the folder at `path` can be shared as a GitHub link, and why not.
+
+    Three conditions, checked in order, the first failure being the `reason`:
+    the git root IS the app folder (an app inside the shared `local` repo, or
+    any larger repo, would link to the whole repo), `origin` is a GitHub
+    remote, and nothing is unpushed — a clean tree (untracked files count:
+    they are code the link would not carry) and no commit on HEAD missing
+    from the remote's default branch, which is what the link installs
+    (falling back to the branch's own upstream when the default is unknown).
+
+    NO NETWORK CALL — "pushed" is as of the last fetch, the same local-refs
+    trade `app_doctor._pushed_pending` makes; this runs when the dialog opens.
+    """
+    from fused_render import git_upstream as gu
+
+    def no(reason: str, repo: str | None = None) -> dict:
+        return {"ok": False, "url": None, "repo": repo, "reason": reason}
+
+    if not path or not os.path.isabs(path) or not os.path.isdir(path):
+        return no("path must be an absolute app folder path")
+    root = gu.repo_root(path)
+    if root is None:
+        return no("This app is not a git repository.")
+    if os.path.realpath(path) != root:
+        return no("This app sits inside a larger git repository — "
+                  "the link needs the app folder to be the repository root.")
+    remote = gu._run(root, "remote", "get-url", "origin")
+    if not gu._ok(remote):
+        return no("This app has no remote repository — push it to GitHub first.")
+    repo = _github_repo(gu._out(remote))
+    if repo is None:
+        return no("The app's remote is not on GitHub.")
+    if not gu._is_clean(root):
+        return no("This app has changes that are not committed and pushed.", repo)
+    # The symref a clone records, read locally — not `_default_branch`, whose
+    # fallback (`remote set-head --auto`) asks the network.
+    head = gu._run(root, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
+    short = gu._out(head) if gu._ok(head) else ""
+    default = short.split("/", 1)[1] if "/" in short else None
+    base = f"origin/{default}" if default else "@{upstream}"
+    count = gu._run(root, "rev-list", "--count", f"{base}..HEAD")
+    if not gu._ok(count):
+        return no("This app's branch is not on the remote yet — push it first.", repo)
+    try:
+        ahead = int(gu._out(count) or "0")
+    except ValueError:
+        ahead = 1
+    if ahead > 0:
+        where = f" to {default}" if default else ""
+        return no(f"{ahead} commit{'' if ahead == 1 else 's'} not pushed{where} yet.", repo)
+    return {"ok": True, "url": f"{GITHUB_LINK_BASE}?repo={repo}", "repo": repo, "reason": None}
+
+
+@router.get("/api/share/github")
+def api_share_github(path: str = ""):
+    """Read-only, local git only: the GitHub install link for this app, or the
+    one sentence saying why it is not offered (github_link_state)."""
+    return github_link_state(path)

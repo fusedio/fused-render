@@ -80,6 +80,19 @@ export interface ShareStatus {
 export const getShareStatus = (path: string) =>
   getJson<ShareStatus>("/api/share/status?path=" + encodeURIComponent(path));
 
+/** The GitHub install link (share_app.py `github_link_state`): `url` when the
+ *  folder is its own GitHub repo with nothing unpushed, else the one sentence
+ *  saying which condition failed. Local git only — no network. */
+export interface GithubLinkState {
+  ok: boolean;
+  url: string | null;
+  repo: string | null;
+  reason: string | null;
+}
+
+export const getGithubLink = (path: string) =>
+  getJson<GithubLinkState>("/api/share/github?path=" + encodeURIComponent(path));
+
 export type ShareError = Error & { status?: number; code?: string };
 
 // `postJson` throws an HttpError with the status but drops the body's `code`.
