@@ -1,7 +1,7 @@
 """The menu-bar Dock: a click on the status item drops a macOS-Dock-like
 tray (``fused_render/dock.py`` decides the tiles: under Fused Render the
-user's APPS, under Fused Bot their BOTS — a Home tile, the pinned ones, then
-up to three recent), each a tile — an app's own ``icon.svg`` / ``icon.png`` or
+user's APPS and BOTS, under Fused Bot their BOTS — a Home tile, the pinned
+ones, then up to three recent of each kind), each a tile — an app's own ``icon.svg`` / ``icon.png`` or
 a bot's face — with its name beneath, and a dot when a bot is busy. A click
 opens the app in its own window (or selects the bot in a Bots window);
 right-click pins, reveals, opens in the browser. The default surface of the

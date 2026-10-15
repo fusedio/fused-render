@@ -6,7 +6,7 @@ the status item) reads and writes through these; a plain browser tab on
 `/dock` works too, with an HTML context menu instead of the native one.
 
     GET  /dock                              the tray page
-    GET  /api/dock                       -> {kind, pinned, recent, tilesize}
+    GET  /api/dock                       -> {kind, pinned, recent, tilesize}   apps then bots (Fused Render), bots (Fused Bot)
     POST /api/dock/open  {kind, id|path} -> {ok, native: true}                 the app opened it
                                             {ok, native: false, view: <path>}  navigate there yourself
     POST /api/dock/home                  -> {ok, native: true} | {ok, native: false, view: "/"}

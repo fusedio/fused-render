@@ -4,8 +4,8 @@
 // (scripts/check-boundaries.mjs); face.ts is pure data, and its only import is a type.
 //
 // What the tiles ARE is the server's call (fused_render/dock.py, by flavor): `kind: "apps"` under Fused Render — the
-// user's apps, folders and exported .fused files alike — `kind: "bots"` under Fused Bot. The page draws whichever
-// rows arrive; only the Home tile's picture keys off `kind`.
+// user's apps, folders and exported .fused files alike, THEN their bots — `kind: "bots"` under Fused Bot. The page
+// draws whichever rows arrive; only the Home tile's picture and the empty hint key off `kind`.
 import { BRANDS, FACE_SHAPES, faceOf } from "../apps/bots/lib/face";
 
 export interface DockFace { shape?: string; color?: string; icon?: string }
@@ -22,7 +22,7 @@ export type Row = BotRow | AppRow;
 /** GET /api/dock. `pinned` is the pinned zone in tray order; `recent` excludes the pinned. */
 export interface DockPayload { kind?: "apps" | "bots"; pinned?: Row[]; recent?: Row[]; tilesize?: number }
 
-/** How many recent rows the tray shows right of the separator. */
+/** How many recent rows OF EACH KIND (apps, bots) the tray shows right of the separator. */
 export const RECENT_CAP = 3;
 
 /** The node-map key: one button per bot or app path, kept across polls. */
@@ -36,20 +36,24 @@ export const isApp = (r: unknown): r is AppRow =>
 const isRow = (r: unknown): r is Row => isBot(r) || isApp(r);
 
 /**
- * Left of the separator: the pinned rows in the server's order. Right of it: up to RECENT_CAP recent rows. A row
- * pinned in the payload never shows twice (a recent that is also pinned is dropped before the cap counts it), and
- * every row's `pinned` is set by the zone it lands in.
+ * Left of the separator: the pinned rows in the server's order. Right of it: up to RECENT_CAP recent APPS and up
+ * to RECENT_CAP recent BOTS, in the server's order (apps first under Fused Render). A row pinned in the payload
+ * never shows twice (a recent that is also pinned is dropped before the cap counts it), and every row's `pinned`
+ * is set by the zone it lands in.
  */
 export function trayOrder(d: DockPayload | null | undefined): { pinned: Row[]; recent: Row[] } {
   const seen = new Set<string>();
   const take = (rows: unknown[], pinned: boolean, cap = Infinity): Row[] => {
     const out: Row[] = [];
+    const count = { bot: 0, app: 0 };
     for (const r of rows) {
-      if (out.length >= cap) break;
       if (!isRow(r)) continue;
+      const bucket = r.kind === "bot" ? "bot" : "app";
+      if (count[bucket] >= cap) continue;
       const k = tileKey(r);
       if (seen.has(k)) continue;
       seen.add(k);
+      count[bucket]++;
       out.push({ ...r, pinned });
     }
     return out;
