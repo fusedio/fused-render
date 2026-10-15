@@ -2043,8 +2043,11 @@ hit: `slug: name vX [category] — description (flags)`, the flags being
 the steps engine's gate now checks `ALWAYS_ASK` beside the approval setting —
 and `forever_rule` returns None, so there is no "approve forever" button; a
 phone-started Super Bot task asks anyway). `_market_target` resolves the call
-before anything is raised: a non-slug, a slug the cached catalog does not
-list, or an installed app without `update: true` is an ERROR the model reads
+before anything is raised: a non-slug, a slug the catalog does not list (the
+cached snapshot first; when it is missing there, ONE forced rebuild, since the
+server's search can rank an app the cache predates), an installed app without
+`update: true`, or a folder at `app/<slug>` that is not a Marketplace install
+(install_app would refuse it after the approval) is an ERROR the model reads
 (`risk` returns "", no card), never a card the user has to deny. `describe`
 says `install|update the Marketplace app "Name" vX into <workspace>/app/<slug>`
 — the same install-vs-update decision `start_install` makes, so what the user
@@ -2053,8 +2056,10 @@ approves is what runs. `execute` calls `marketplace.start_install` and polls
 the hour-long approval wait, so the poll is never the longest wait), then
 forces `apptools.apps` / `registry` to rebuild so the 10 s cache never hides
 the new folder, and answers `Installed Name vX at <path>. It is now in APPS as
-`<slug>`: `show <slug>` …`. `call_key` is the slug: a second install of the
-same slug on one instruction is NOT RUN AGAIN.
+`<slug>`: `show <slug>` …`. `call_key` is the slug, and both engines record a
+non-error install under it (beside hand-offs and bot management; a plain
+result, not `RESULT:`), so a second install of the same slug on one
+instruction is NOT RUN AGAIN and never a second card.
 
 **"Use it".** Installs land in `<workspace>/app/<slug>` (`marketplace.install_root()`,
 #1674), the builds root every bot's APPS already scans (`apptools.ROOTS`), so

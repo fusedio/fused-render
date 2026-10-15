@@ -1183,6 +1183,11 @@ def _market_target(d: dict) -> tuple[str, bool, str]:
     if not _mkt.is_slug(slug):
         return slug, update, "not a Marketplace slug; take it from marketplace_search"
     snap, err = _mkt.cached_snapshot()
+    if snap is not None and slug not in (snap.get("apps") or {}):
+        # The server's search (marketplace_search) can rank an app the cached catalog predates: rebuild it
+        # once (force: the cache is known wrong) before calling the slug unknown; start_install reads the
+        # same cache file, so what passed here is what it installs.
+        snap, err = _mkt.get_snapshot(force=True)
     if snap is None:
         return slug, update, f"the Marketplace catalog is unavailable ({err or 'no catalog'})"
     if slug not in (snap.get("apps") or {}):
@@ -1192,6 +1197,10 @@ def _market_target(d: dict) -> tuple[str, bool, str]:
         return slug, update, f"already installed at {rec['path']} (in APPS; pass update: true only to update it)"
     if not rec and update:
         update = False  # nothing to update: a plain install
+    dest = os.path.join(_mkt.install_root(), slug)
+    if not rec and os.path.lexists(dest) and not _mkt._is_husk(dest):
+        # install_app refuses a folder it did not stamp; refuse here, before the user approves a write into it.
+        return slug, update, f"a local app already occupies {dest} (not a Marketplace install); the user has to move or rename it first"
     return slug, update, ""
 
 

@@ -419,6 +419,8 @@ def run(bot, task, label=None):
             # it so the prompt does not fill up with stale page text.
             history = [h if len(h) <= 800 else h[:800] + " …[trimmed]" for h in history]
             history.append(f"{lbl} -> {result}")
+            if ckey is not None and act == "marketplace_install" and not result.startswith("error"):
+                ran_calls[ckey] = result  # one install per instruction, as the agent engine's _act keeps it
             if ckey is not None and result.startswith("RESULT:"):
                 ran_calls[ckey] = result
                 # An app call changes nothing the bot can see: make the result the
