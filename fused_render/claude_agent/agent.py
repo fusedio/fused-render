@@ -8069,12 +8069,12 @@ def _history(file: str, session_id: str, app_reads: bool = False,
     same way `uuid` is: the legacy template reads neither and is unaffected."""
     if _bad_id(session_id):
         return {"turns": [], "transcript": _transcript_stat(""), "context": None,
-                "tasks": []}
+                "tasks": [], "tasks_run": ""}
     file = os.path.abspath(file)
     path = _session_transcript_path(_workdir(file), session_id)
     # SPEC T-1: the task registry of this session's LAST run, while its run
     # dir is still on disk — a reload shows the tasks panel it left.
-    task_registry = _session_task_registry(file, session_id)
+    task_registry, host_run_id = _session_task_registry(file, session_id)
     tasks = _task_list(task_registry)
     # SAMPLED BEFORE THE READ, and the order is the whole guarantee (D415). This
     # is the watermark the page follows the conversation by — it re-renders when
@@ -8091,7 +8091,7 @@ def _history(file: str, session_id: str, app_reads: bool = False,
         # A run can be live before its transcript exists (the CLI writes the
         # first row after `system/init`), and its card must not wait on that.
         return {"turns": [], "transcript": stat, "context": None,
-                "tasks": tasks,
+                "tasks": tasks, "tasks_run": host_run_id,
                 **_history_live(file, session_id, inbox=inbox)}
 
     turns = []
@@ -8319,7 +8319,8 @@ def _history(file: str, session_id: str, app_reads: bool = False,
     # (origin/main, D406) — the stat taken BEFORE this read, so a row appended
     # while we were parsing shows up as a change rather than being missed.
     return {"turns": turns, "transcript": stat, "context": context,
-            "tasks": tasks, "worktree_hint": worktree_hint,
+            "tasks": tasks, "tasks_run": host_run_id,
+            "worktree_hint": worktree_hint,
             **_history_live(file, session_id, inbox=inbox)}
 
 
@@ -8500,9 +8501,15 @@ def _attach_subagent_children(segments: list, subagents,
 
 
 def _session_task_registry(file: str, session_id: str,
-                           limit: int | None = _LIVE_SCAN_LIMIT) -> dict:
-    """The task registry (`bg_tasks.json`) of the newest run dir belonging to
-    this chat's session, live or not — {} when none is left. Matched the way
+                           limit: int | None = _LIVE_SCAN_LIMIT) -> tuple[dict, str]:
+    """`(registry, host_run_id)`: the task registry (`bg_tasks.json`) of the
+    newest run dir belonging to this chat's session, live or not — {} when none
+    is left — and that run's id when its HOST is still alive, else "".
+
+    HOST RUN ID: `_live_run` needs an OPEN turn, so once the main turn ended
+    while a background subagent still runs, history has no `live_run` and the
+    page could not address Stop/Output at the task. `_task_stop` only needs the
+    host, so the host's run id is the owner the page needs. Matched the way
     `_live_run` matches (target, or folder/member with the session named;
     `resumed_from` or the run's own session), without its liveness gate.
 
@@ -8510,12 +8517,12 @@ def _session_task_registry(file: str, session_id: str,
     such records come back with status `unknown` (and `ended_at` null) rather
     than a confident `running` the panel would tick a live clock for."""
     if not session_id or _bad_id(session_id):
-        return {}
+        return {}, ""
     file = os.path.abspath(file)
     try:
         names = sorted(os.listdir(RUNS), reverse=True)
     except OSError:
-        return {}
+        return {}, ""
     if limit is not None:
         names = names[:limit]
     for name in names:
@@ -8539,8 +8546,8 @@ def _session_task_registry(file: str, session_id: str,
                 if _task_active(rec):
                     rec["status"] = "unknown"
                     rec["ended_at"] = None
-        return registry
-    return {}
+        return registry, (name if _host_alive(run_dir) else "")
+    return {}, ""
 
 
 def _history_live(file: str, session_id: str, inbox: bool = True) -> dict:

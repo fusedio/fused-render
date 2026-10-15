@@ -4764,6 +4764,23 @@ describe("the run's tasks", () => {
     expect(controller.getState().tasksRunId).toBe("r2");
   });
 
+  test("a restore with no open turn but a live host owns the list by `tasks_run`", async () => {
+    const { controller } = makeController({
+      history: () => ({
+        turns: [],
+        transcript: null,
+        live_run: "",
+        tasks_run: "r1",
+        tasks: [T("h", "running")],
+      }),
+      live_run: () => ({ run_id: "" }),
+      live_host: () => ({ run_id: "" }),
+    });
+    await controller.openSession("s9");
+    expect(controller.getState().tasks.map((t) => t.id)).toEqual(["h"]);
+    expect(controller.getState().tasksRunId).toBe("r1");
+  });
+
   test("a restore lands history's tasks", async () => {
     const { controller } = makeController({
       history: () => ({ turns: [], transcript: null, live_run: "", tasks: [T("h", "completed")] }),

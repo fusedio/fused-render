@@ -791,6 +791,9 @@ export interface HistoryResponse {
    *  cards, so transcript and card paint in one frame. `""` = nothing live (an
    *  answer too); absent = an older server, and the page discovers as before. */
   live_run?: string;
+  /** agent.py `_session_task_registry`: the run whose HOST is still alive,
+   *  when no turn is open (`live_run` ""), so Stop/Output can address `tasks`. */
+  tasks_run?: string;
   /** The transcript is gone AND the task was deleted (`/api/tasks/erase`
    *  tombstoned it): a stale row was pressed. Absent for a chat that has not
    *  written its first row yet — the other way a transcript can be missing. */
