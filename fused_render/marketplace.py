@@ -889,7 +889,7 @@ def app_entry(slug: str, app: dict, snap: dict, installed: dict | None,
     branch = snap.get("branch") or DEFAULT_BRANCH
     inst = _installed_info(installed)
     tree_sha = app.get("tree_sha")
-    ver = f"?v={tree_sha[:12]}" if isinstance(tree_sha, str) and tree_sha else ""
+    ver = f"?v={_asset_version(tree_sha)}" if _asset_version(tree_sha) else ""
     return {
         "slug": slug,
         "name": _opt_str(meta.get("name")) or slug,
@@ -1050,6 +1050,22 @@ def _fetch_asset_bytes(snap: dict, slug: str, rel: str) -> bytes | None:
     except (OSError, SourceError):
         return None
     return None
+
+
+def _asset_version(tree_sha) -> str | None:
+    """The `?v=` cache key catalog asset URLs carry: the app folder's tree
+    sha (it changes whenever any file in the folder does), shortened."""
+    return tree_sha[:12] if isinstance(tree_sha, str) and tree_sha else None
+
+
+def asset_version(slug: str) -> str | None:
+    """The `?v=` value this slug's asset URLs carry right now (cache only,
+    never a rebuild). The asset route grants long browser caching only to a
+    URL whose `v` equals it — an arbitrary `?v=1` in a readme link proves
+    nothing about the bytes behind it."""
+    snap, _err = cached_snapshot()
+    app = (snap or {}).get("apps", {}).get(slug) if is_slug(slug) else None
+    return _asset_version(app.get("tree_sha")) if app else None
 
 
 def get_asset(slug: str, rel: str) -> tuple[bytes, str] | None:

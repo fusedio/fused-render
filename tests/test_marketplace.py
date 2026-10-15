@@ -306,6 +306,9 @@ def test_asset_and_detail_routes(env):
     assert "?v=" in entry["icon_url"]
     r2 = client.get(entry["icon_url"])
     assert r2.status_code == 200 and r2.headers["cache-control"] == "max-age=86400"
+    # A `v` that is not the app's tree sha (a readme's own `?v=1`) earns nothing.
+    r3 = client.get("/api/marketplace/asset/local-chat/icon.svg?v=1")
+    assert r3.status_code == 200 and r3.headers["cache-control"] == "no-cache"
     assert r.content == b"<svg/>"
     # Disk-cached per commit.
     commit = mp.get_snapshot()[0]["commit"]

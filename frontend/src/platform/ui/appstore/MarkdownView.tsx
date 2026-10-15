@@ -44,6 +44,9 @@ export type UrlResolver = (url: string, kind: "img" | "a") => string | null;
 export function renderMarkdown(source: string, baseUrl?: string, resolveUrl?: UrlResolver): string {
   const html = parser().parse(source, { async: false }) as string;
   const frag = DOMPurify.sanitize(html, {
+    // HTML only: inline SVG/MathML could name image URLs (`<image href>`)
+    // that never pass through the resolver below.
+    USE_PROFILES: { html: true },
     // Media that names its URL anywhere but `img[src]` (srcset, <source>,
     // poster) would load without passing through the resolver below.
     FORBID_TAGS: ["style", "form", "input", "iframe", "script", "object", "embed", "video", "audio", "picture", "source"],

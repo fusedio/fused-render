@@ -67,14 +67,16 @@ def api_marketplace_asset(slug: str, path: str, v: str | None = None):
     images…). 404 unless `path` is in that app's file list.
 
     Browser caching follows the URL: the catalog's icon/preview URLs carry
-    `?v=<app tree sha>`, so a day is safe (new content, new URL). Unversioned
-    URLs (readme images resolved against `readme_base`) revalidate every time,
-    so a catalog that moved on is never shadowed by an old cached copy."""
+    `?v=<app tree sha>`, so a day is safe (new content, new URL). Any other
+    URL — unversioned readme images resolved against `readme_base`, or a `v`
+    that is not the app's current tree sha (a readme's own `?v=1`) —
+    revalidates every time, so a catalog that moved on is never shadowed by
+    an old cached copy."""
     got = marketplace.get_asset(slug, path)
     if got is None:
         return _error("not found", status=404)
     data, content_type = got
-    cache = "max-age=86400" if v else "no-cache"
+    cache = "max-age=86400" if v and v == marketplace.asset_version(slug) else "no-cache"
     return Response(data, media_type=content_type,
                     headers={**_ASSET_HEADERS, "Cache-Control": cache})
 
