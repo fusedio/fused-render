@@ -1103,6 +1103,7 @@ def install_target(fused_path: str, *, light: bool = False) -> dict:
         "state": state,
         "needs_force": state in WARN_STATES or state == STATE_REPLACE,
         "git": git,
+        "downloaded": _is_download(fused_path),
         "exported_at": incoming_at,
         "installed_exported_at": (stamp or {}).get("exported_at") if stamp else None,
         "installed_at": (stamp or {}).get("installed_at") if stamp else None,
@@ -1120,6 +1121,16 @@ def install_target(fused_path: str, *, light: bool = False) -> dict:
         out["readme"] = read_readme(fused_path, manifest)
         out["metadata"] = read_metadata(fused_path, manifest)
     return out
+
+
+def _is_download(fused_path: str) -> bool:
+    """Whether the file is a deep-link fetch (appfetch's downloads dir, or a
+    clone staged under it) — an internal cache, so the install page offers no
+    way "back" into its folder."""
+    from fused_render import appfetch
+
+    root = os.path.realpath(appfetch.downloads_dir())
+    return os.path.realpath(fused_path).startswith(root + os.sep)
 
 
 def _git_target(manifest: dict) -> dict | None:

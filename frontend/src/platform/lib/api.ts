@@ -2250,8 +2250,20 @@ export function appfileIconUrl(path: string): string {
 /** What installing would do. `new` installs; `update` replaces an unchanged
  *  copy; the WARN states (`needs_force`) — `diverged` (copy edited since),
  *  `same`, `downgrade`, `unknown` (no install record) — need a confirmed
- *  second click; `clash` (another app holds the folder) cannot install. */
-export type AppFileState = "new" | "update" | "diverged" | "same" | "downgrade" | "unknown" | "clash";
+ *  second click; `clash` (another app holds the folder) cannot install.
+ *  A GitHub-link build (`git` set, DL-9) adds `local` (the copy has changes
+ *  of its own — update it with git) and `replace` (a file-installed copy the
+ *  clone replaces; `needs_force`). */
+export type AppFileState =
+  | "new"
+  | "update"
+  | "diverged"
+  | "same"
+  | "downgrade"
+  | "unknown"
+  | "clash"
+  | "local"
+  | "replace";
 
 /** The payload's `metadata.json`, type-checked field by field (display only). */
 export interface AppFileMetadata {
@@ -2271,11 +2283,15 @@ export interface AppFileProbe {
   /** Where the copy is, or would be (absolute, forward slashes). */
   path: string;
   installed: boolean;
-  found_by: "id" | "slug" | null;
+  found_by: "id" | "slug" | "git" | null;
   /** A keep-data uninstall left this app's `.fused/` there. */
   husk: boolean;
   state: AppFileState;
   needs_force: boolean;
+  /** A GitHub-link build (`open?git=`): installs as a clone of `url`. */
+  git?: { url: string; commit: string } | null;
+  /** The file sits in the deep-link downloads cache, not a folder of the user's. */
+  downloaded?: boolean;
   exported_at: string | null;
   installed_exported_at: string | null;
   installed_at: string | null;
