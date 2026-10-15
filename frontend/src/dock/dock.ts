@@ -1,5 +1,5 @@
 // The menu-bar Dock tray (dock.html → here): Render App's dock.html script, as FusedBot ported it, now with
-// fused-render's tiles — the user's APPS (Fused Render) or BOTS (Fused Bot); fused_render/dock.py decides, lib.ts
+// fused-render's tiles — the user's APPS and BOTS (Fused Render) or BOTS (Fused Bot); fused_render/dock.py decides, lib.ts
 // holds the data model and the face drawing. Everything the data model does not force is the old page's logic, kept
 // as it was: the fisheye, the rest layout, the bubble, the keyboard, drag-to-reorder, the separator resize with ⌥
 // snaps, report()/dockAnchor/dockShown/dockMenuClosed, the size/tray/resize/menu messages to the native panel
@@ -162,7 +162,7 @@ const homeBtn = utilItem("Home", "", async () => {
   try { const r = await post("/api/dock/home"); if (!r.ok || r.native === false) location.href = r.view || "/"; }
   catch (_) { location.href = "/"; }
 });
-const hint = document.createElement("span"); hint.className = "hint"; hint.textContent = "Apps you use appear here";
+const hint = document.createElement("span"); hint.className = "hint"; hint.textContent = "Apps and bots you use appear here";
 homeBtn.classList.add("home");
 let homeKind: "apps" | "bots" | null = null;
 function setHome(kind: "apps" | "bots") {
@@ -173,7 +173,7 @@ function setHome(kind: "apps" | "bots") {
   im.src = kind === "bots" ? botHomeImg : renderHomeImg;
   tile.replaceChildren(im);
   homeBtn.style.setProperty("--home-scale", kind === "bots" ? "124.3%" : "113.7%");
-  hint.textContent = kind === "bots" ? "Bots you use appear here" : "Apps you use appear here";
+  hint.textContent = kind === "bots" ? "Bots you use appear here" : "Apps and bots you use appear here";
 }
 setHome("apps");
 const sepA = document.createElement("div"); sepA.className = "sep"; sepA.dataset.role = "pin-sep";
@@ -191,8 +191,9 @@ function render() {
     if (!n) { n = makeItem(r); state.nodes.set(k, n); }
     updateItem(n, r); seen.add(k); order.push(n);
   };
-  // Home leads the pinned zone (then pinned bots, then pinned apps); the separator divides pinned from recent
-  // (up to 3 bots, then up to 3 apps: lib.trayOrder). It is always there (the Dock's is too): it is the resize handle.
+  // Home leads the pinned zone (pinned apps, then pinned bots: the server's order, so the draggable app pins stay one
+  // run); the separator divides pinned from recent (up to 3 apps, then up to 3 bots: lib.trayOrder). It is always
+  // there (the Dock's is too): it is the resize handle.
   order.push(homeBtn);
   state.pinned.forEach(place);
   order.push(sepA);

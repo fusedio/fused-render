@@ -5,13 +5,17 @@ the same module answers `fused-render serve` and the tests.
 What the tray shows depends on the FLAVOR (`_flavor.is_bot()`), not on a
 preference:
 
-    Fused Render    tiles are APPS — every app this machine can open
-                    (the launcher's registry: workspace, linked folders,
-                    exported `.fused` files)
-    Fused Bot       tiles are BOTS — the bots page's list (bot.json rows)
+    Fused Render    tiles are APPS AND BOTS — every app this machine can
+                    open (the launcher's registry: workspace, linked folders,
+                    exported `.fused` files), then the bots page's list
+                    (bot.json rows); owner's call 2026-10-15, bots are a
+                    first-class thing to reach from the menu bar too
+    Fused Bot       tiles are BOTS only
 
 Either way the tray is laid out like the Dock: a Home tile, then the PINNED
-zone, a separator, then up to `RECENT_CAP` RECENT rows that are not pinned.
+zone, a separator, then the RECENT rows that are not pinned — up to
+`RECENT_CAP` PER KIND, apps before bots in both zones (so the draggable app
+pins stay one contiguous run; bots have no order route).
 
 Pins:
 
@@ -388,9 +392,23 @@ def _app_entries() -> dict:
 # ---------------------------------------------------------------- entries ---
 
 def entries() -> dict:
-    """``{"kind": "apps"|"bots", "pinned": [...], "recent": [≤RECENT_CAP]}``
+    """``{"kind": "apps"|"bots", "pinned": [...], "recent": [...]}`` — under
+    Fused Render the apps' rows then the bots', each zone capped per kind
     (see the module docstring for the row shapes)."""
-    out = _bot_entries() if _flavor.is_bot() else _app_entries()
+    if _flavor.is_bot():
+        out = _bot_entries()
+    else:
+        out = _app_entries()
+        # A bots-side failure (a torn bot.json, a registry that cannot be
+        # imported) must never blank the apps tray: this runs on every 1.5 s
+        # poll of every Fused Render user, bots or none.
+        try:
+            bots = _bot_entries()
+        except Exception:  # noqa: BLE001
+            logger.debug("bot rows failed", exc_info=True)
+            bots = {"pinned": [], "recent": []}
+        out["pinned"] += bots["pinned"]
+        out["recent"] += bots["recent"]
     out["kind"] = kind()
     return out
 
