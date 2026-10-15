@@ -8,6 +8,7 @@ command at all), and the /api/update endpoints' guards.
 """
 import os
 import subprocess
+import sys
 import threading
 import time
 import types
@@ -1481,3 +1482,275 @@ def test_auto_install_never_retries_a_failed_install(monkeypatch):
     assert manager.status()["state"] == "error"
     manager.maybe_auto_install()
     assert calls == [1]
+
+
+# ---- the swapped-away bundle outlives the process that swapped it ------------
+
+
+# The real sweep, captured before the autouse fixture below replaces the
+# module attribute `start()` goes through — the direct tests call this.
+_sweep_old_bundles = mac.sweep_old_bundles
+
+
+@pytest.fixture(autouse=True)
+def _never_sweep_the_real_applications(monkeypatch):
+    """`mac.start()` sweeps the parent of whatever `bundle_path()` returns.
+    Tests that patch it to a real /Applications path (and call the real
+    `start()`) must not delete anything on the developer's machine — a test
+    that wants the sweep patches it back in explicitly."""
+    monkeypatch.setattr(mac, "sweep_old_bundles", lambda parent, **kw: [])
+
+
+def _old_bundles(parent):
+    return sorted(d for d in os.listdir(parent) if mac._old_bundle_re().match(d))
+
+
+def _swap_through_fakes(monkeypatch, manager, tmp_path, *, fail_second_rename=False):
+    """Drive `_install_dmg` through the real rename swap with the DMG, the
+    mount and `ditto` faked: the "image" is a directory holding a 9.9.9
+    bundle, `ditto` is a copytree, `hdiutil detach` a no-op. Returns the
+    `shutil.rmtree` calls the swap made."""
+    import plistlib
+    import shutil
+
+    def fake_download(manifest, *, dir, prefix, suffix, progress, should_abort):
+        os.makedirs(dir, exist_ok=True)
+        path = os.path.join(dir, prefix + "done" + suffix)
+        with open(path, "wb") as f:
+            f.write(b"x" * 8)
+        return path
+
+    mount = tmp_path / "mount"
+    (mount / "FusedRender.app" / "Contents").mkdir(parents=True)
+    with open(mount / "FusedRender.app" / "Contents" / "Info.plist", "wb") as f:
+        plistlib.dump({"CFBundleShortVersionString": "9.9.9",
+                       "CFBundleIdentifier": mac._flavor.bundle_id()}, f)
+
+    def fake_run(argv, **kwargs):
+        if argv[0] == "/usr/bin/ditto":
+            shutil.copytree(argv[1], argv[2])
+        elif argv[0] == "/usr/bin/hdiutil":
+            pass
+        else:
+            pytest.fail(f"unexpected subprocess during swap: {argv}")
+        return subprocess.CompletedProcess(argv, 0, b"", b"")
+
+    removed = []
+    real_rmtree = shutil.rmtree
+
+    def recording_rmtree(path, *args, **kwargs):
+        removed.append(str(path))
+        return real_rmtree(path, *args, **kwargs)
+
+    real_rename = os.rename
+
+    def failing_rename(src, dst):
+        if src.endswith(".FusedRender-update.app"):
+            raise OSError("simulated: second rename failed")
+        return real_rename(src, dst)
+
+    monkeypatch.setattr(common, "download_verified", fake_download)
+    monkeypatch.setattr(manager, "_attach", lambda dmg: str(mount))
+    monkeypatch.setattr(mac.subprocess, "run", fake_run)
+    monkeypatch.setattr(mac.shutil, "rmtree", recording_rmtree)
+    if fail_second_rename:
+        monkeypatch.setattr(mac.os, "rename", failing_rename)
+    manager.install()
+    manager._install_thread.join(timeout=5)
+    return removed
+
+
+def test_the_swap_leaves_the_old_bundle_on_disk(monkeypatch, tmp_path):
+    """Regression (2026-10-15, 0.6.46 -> 0.6.48): the swap used to `rmtree`
+    the renamed-away bundle at once. macOS TCC keys Full Disk Access on the
+    responsible process's on-disk code and re-validates it per open, so the
+    moment the old bundle vanished every protected read in the still-running
+    app failed with EPERM until relaunch. The old bundle must stay, under the
+    pid-named hidden sibling a later boot's sweep looks for — and no rmtree
+    of any kind may be aimed at it (the old removal ran on a daemon thread,
+    so an existence check alone could pass against the regressed code)."""
+    manager = _dmg_manager(monkeypatch, tmp_path)
+    bundle = tmp_path / "FusedRender.app"
+    (bundle / "Contents").mkdir()
+    (bundle / "Contents" / "marker").write_text("the running bundle")
+
+    removed = _swap_through_fakes(monkeypatch, manager, tmp_path)
+
+    assert manager.status()["state"] == "installed", manager.status()
+    olds = _old_bundles(tmp_path)
+    assert len(olds) == 1 and olds[0].startswith(f".FusedRender-old-{os.getpid()}-")
+    old = tmp_path / olds[0]
+    assert (old / "Contents" / "marker").read_text() == "the running bundle"
+    assert str(old) not in removed
+    assert manager._disk_version() == "9.9.9"  # the new one is in place
+    assert not (tmp_path / ".FusedRender-update.app").exists()
+
+
+def test_two_swaps_in_one_process_keep_both_old_bundles(monkeypatch, tmp_path):
+    """A second install in the same process (a newer manifest after the
+    first landed) must not reuse the first swap's name: that name IS the
+    bundle this process is running from."""
+    manager = _dmg_manager(monkeypatch, tmp_path)
+    (tmp_path / "FusedRender.app" / "Contents").mkdir()
+    (tmp_path / "FusedRender.app" / "Contents" / "marker").write_text("first")
+    removed = _swap_through_fakes(monkeypatch, manager, tmp_path)
+    assert manager.status()["state"] == "installed"
+
+    # Back to "available" the way the loop would get there: this process now
+    # IS 9.9.9 and the manifest has moved on to 9.9.10.
+    monkeypatch.setattr(mac, "__version__", "9.9.9")
+    newer = dict(manager._latest, version="9.9.10")
+    monkeypatch.setattr(common, "fetch_manifest", lambda url, **kwargs: dict(newer))
+    manager.check(force=True)
+    assert manager.status()["state"] == "available", manager.status()
+    (tmp_path / "FusedRender.app" / "Contents" / "marker").write_text("second")
+    import shutil
+    shutil.rmtree(tmp_path / "mount")
+    monkeypatch.setattr(manager, "_verify_app_version", lambda app, version: None)
+    removed += _swap_through_fakes(monkeypatch, manager, tmp_path)
+
+    olds = _old_bundles(tmp_path)
+    assert len(olds) == 2, olds
+    markers = sorted((tmp_path / o / "Contents" / "marker").read_text() for o in olds)
+    assert markers == ["first", "second"]
+    assert not any(r.startswith(str(tmp_path / ".FusedRender-old-")) for r in removed)
+
+
+def test_a_failed_second_rename_rolls_the_bundle_back(monkeypatch, tmp_path):
+    manager = _dmg_manager(monkeypatch, tmp_path)
+    (tmp_path / "FusedRender.app" / "Contents").mkdir()
+    (tmp_path / "FusedRender.app" / "Contents" / "marker").write_text("the running bundle")
+
+    _swap_through_fakes(monkeypatch, manager, tmp_path, fail_second_rename=True)
+
+    assert manager.status()["state"] == "error"
+    assert (tmp_path / "FusedRender.app" / "Contents" / "marker").read_text() == "the running bundle"
+    assert _old_bundles(tmp_path) == []  # renamed back, nothing left behind
+    assert not (tmp_path / ".FusedRender-update.app").exists()
+
+
+def test_sweep_removes_only_dead_pids_leftovers_of_this_flavor(tmp_path):
+    parent = tmp_path / "Applications"
+    parent.mkdir()
+
+    def app(name):
+        d = parent / name
+        (d / "Contents").mkdir(parents=True)
+        return d
+
+    live = app(".FusedRender-old-111.app")
+    dead = app(".FusedRender-old-222.app")
+    dead_stamped = app(".FusedRender-old-333-1760000000000000000.app")
+    mine = app(f".FusedRender-old-{os.getpid()}.app")
+    other_flavor = app(".FusedBot-old-222.app")
+    branch_build = app(".FusedRender-feature-old-222.app")
+    current = app("FusedRender.app")
+    staged = app(".FusedRender-update.app")
+    not_a_pid = app(".FusedRender-old-abc.app")
+    link = parent / ".FusedRender-old-444.app"
+    link.symlink_to(current)
+
+    removed = _sweep_old_bundles(str(parent), alive=lambda pid: pid == 111)
+
+    assert sorted(removed) == sorted([str(dead), str(dead_stamped)])
+    assert not dead.exists() and not dead_stamped.exists()
+    for kept in (live, mine, other_flavor, branch_build, current, staged, not_a_pid):
+        assert kept.is_dir(), kept
+    assert link.is_symlink() and current.is_dir()
+
+
+def test_sweep_scopes_to_the_branch_suffixed_bundle_name(monkeypatch, tmp_path):
+    monkeypatch.setattr(mac, "_BUNDLE_NAME", "FusedRender-feature")
+    (tmp_path / ".FusedRender-feature-old-222.app").mkdir()
+    (tmp_path / ".FusedRender-old-222.app").mkdir()
+
+    removed = _sweep_old_bundles(str(tmp_path), alive=lambda pid: False)
+
+    assert removed == [str(tmp_path / ".FusedRender-feature-old-222.app")]
+    assert (tmp_path / ".FusedRender-old-222.app").is_dir()  # main build's, not ours
+
+
+def test_sweep_keeps_going_past_a_bad_entry(monkeypatch, tmp_path):
+    (tmp_path / ".FusedRender-old-1.app").mkdir()
+    (tmp_path / ".FusedRender-old-2.app").mkdir()
+
+    def alive(pid):
+        if pid == 1:
+            raise RuntimeError("probe blew up")
+        return False
+
+    assert _sweep_old_bundles(str(tmp_path), alive=alive) == [
+        str(tmp_path / ".FusedRender-old-2.app")]
+    assert (tmp_path / ".FusedRender-old-1.app").is_dir()
+
+
+def test_sweep_survives_an_unreadable_parent(tmp_path):
+    assert _sweep_old_bundles(str(tmp_path / "missing")) == []
+
+
+def test_pid_alive_only_trusts_a_real_no_such_process(monkeypatch):
+    def kill(pid, sig, *, error):
+        if error is not None:
+            raise error
+
+    monkeypatch.setattr(mac.os, "kill", lambda pid, sig: kill(pid, sig, error=None))
+    assert mac._pid_alive(1234) is True
+    monkeypatch.setattr(mac.os, "kill",
+                        lambda pid, sig: kill(pid, sig, error=ProcessLookupError()))
+    assert mac._pid_alive(1234) is False
+    monkeypatch.setattr(mac.os, "kill",
+                        lambda pid, sig: kill(pid, sig, error=PermissionError()))
+    assert mac._pid_alive(1234) is True  # someone else's: exists
+    monkeypatch.setattr(mac.os, "kill",
+                        lambda pid, sig: kill(pid, sig, error=OverflowError()))
+    assert mac._pid_alive(10**20) is True  # unparseable as a pid: leave it
+    assert mac._pid_alive(0) is True  # a process group, never swept on
+
+
+def test_sweep_on_a_real_dead_pid(tmp_path):
+    """The default liveness probe, against a pid that has really exited."""
+    proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    proc.wait()
+    gone = tmp_path / f".FusedRender-old-{proc.pid}.app"
+    (gone / "Contents").mkdir(parents=True)
+    alive = tmp_path / f".FusedRender-old-{os.getpid()}.app"
+    (alive / "Contents").mkdir(parents=True)
+
+    assert _sweep_old_bundles(str(tmp_path)) == [str(gone)]
+    assert alive.is_dir()
+
+
+def test_start_sweeps_the_resolved_bundle_parent_once(monkeypatch, tmp_path):
+    """The sweep looks where the swap lands: the REAL bundle's parent, not a
+    symlink's (a /Applications link into a Caskroom artifact dir)."""
+    real_parent = tmp_path / "Caskroom" / "fused-render" / "0.6.46"
+    real_parent.mkdir(parents=True)
+    (real_parent / "FusedRender.app").mkdir()
+    link = tmp_path / "Applications" / "FusedRender.app"
+    link.parent.mkdir()
+    link.symlink_to(real_parent / "FusedRender.app")
+    swept = []
+    done = threading.Event()
+
+    def record(parent):
+        swept.append(parent)
+        done.set()
+
+    monkeypatch.setattr(mac, "_manager", None)
+    monkeypatch.setattr(mac, "bundle_path", lambda: str(link))
+    monkeypatch.setattr(mac, "sweep_old_bundles", record)
+    monkeypatch.setenv("FUSED_RENDER_NO_AUTO_UPDATE", "1")
+    first = mac.start()
+    assert first is not None and mac.start() is first
+    assert done.wait(5)
+    assert swept == [os.path.realpath(str(real_parent))]
+
+
+def test_a_check_only_manager_never_sweeps_old_bundles(monkeypatch):
+    monkeypatch.setattr(mac, "_manager", None)
+    monkeypatch.setattr(mac, "bundle_path", lambda: None)
+    monkeypatch.setattr(mac, "sweep_old_bundles",
+                        lambda parent: pytest.fail("dev run must not sweep"))
+    monkeypatch.setenv(mac.DEV_MANAGER_ENV, "1")
+    monkeypatch.setenv("FUSED_RENDER_NO_AUTO_UPDATE", "1")
+    assert mac.start() is not None

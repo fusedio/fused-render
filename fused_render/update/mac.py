@@ -35,7 +35,10 @@ nothing about what an install does, and nothing in the UI mentions Homebrew.
   <scheme>://relaunch (app.begin_relaunch; fused-render:// or fused-bot://
   per flavor) respawns from disk. That
   relaunch guard REQUIRES the drift, which is why the swap happens on install
-  rather than being deferred to quit.
+  rather than being deferred to quit. The bundle swapped away stays on disk
+  as a hidden `.<Bundle>-old-<pid>-<ns>.app` sibling until a LATER boot's
+  `sweep_old_bundles` finds its pid dead: the running process must keep its
+  on-disk code or macOS TCC drops its Full Disk Access on the spot.
 
 An install also mirrors itself into the Activity dock as a server-owned job
 (`sys:update:<version>`, the same bridge shape `server/routers/index.py`'s
@@ -57,6 +60,7 @@ from __future__ import annotations
 import logging
 import os
 import plistlib
+import re
 import shutil
 import subprocess
 import sys
@@ -175,12 +179,96 @@ def detect_method(bundle: str | None, *, brew: str | None = None,
     return "dmg"
 
 
-def _discard_old_bundle(old: str) -> None:
-    """Best-effort removal of the bundle the swap renamed away."""
+# The swap renames the running bundle to this sibling — pid of the process
+# that did the swap, then a nanosecond clock so two swaps in ONE process
+# never share a name (the second would otherwise have to clear the first,
+# which is the bundle this process is running from) — and LEAVES IT THERE.
+# It is removed by `sweep_old_bundles` on a later boot, once that pid is
+# gone — never by the process still running from it.
+def _old_bundle_re() -> re.Pattern[str]:
+    # Built per call, not at import: `_BUNDLE_NAME` carries the branch
+    # suffix and tests rebind it.
+    return re.compile(
+        r"^\." + re.escape(_BUNDLE_NAME) + r"-old-(\d+)(?:-\d+)?\.app$")
+
+
+def _old_bundle_path(parent: str, pid: int) -> str:
+    return os.path.join(parent, f".{_BUNDLE_NAME}-old-{pid}-{time.time_ns()}.app")
+
+
+def _pid_alive(pid: int) -> bool:
+    """False only when the kernel says there is no such process. Anything
+    else — a pid of another user's (EPERM), a pid too large for the call,
+    an unexpected error — counts as alive: the cost of a wrong "alive" is a
+    bundle that waits one more boot; the cost of a wrong "dead" is deleting
+    the code a running app is executing."""
+    if pid <= 0:
+        return True  # 0 / negatives address process groups, never one process
     try:
-        shutil.rmtree(old, ignore_errors=True)
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except (OSError, OverflowError, ValueError):
+        return True
+    return True
+
+
+def sweep_old_bundles(parent: str, *, alive=_pid_alive) -> list[str]:
+    """Remove the `.<Bundle>-old-<pid>[-<ns>].app` siblings earlier swaps
+    left in `parent`, for every pid that is no longer running. Returns the
+    paths it removed.
+
+    Why the old bundle must outlive the process that swapped it away
+    (verified 2026-10-15, FusedRender 0.6.46 -> 0.6.48 on macOS 26): TCC
+    keys Full Disk Access (and every other per-app grant) on the responsible
+    process's on-disk code, and re-validates it on each protected open. The
+    swap used to `rmtree` the renamed bundle straight away, on the theory
+    that open files keep working on unlinked inodes — true for the files the
+    process already holds, but the executable path itself was gone, so from
+    that moment every `~/Desktop`, `~/Documents` … read failed with
+    EPERM (`/api/fs/list -> 403`, git "Unable to read current working
+    directory") until the user quit and relaunched. Toggling FDA off and on
+    did nothing: the grant was fine, the process could no longer prove who
+    it was. So: the process that swapped keeps its bundle, and the NEXT
+    process to start sweeps whatever the dead ones left behind.
+
+    Scoped to this flavor's own `_BUNDLE_NAME` (FusedRender and FusedBot
+    share /Applications and must never sweep each other's leftovers), to the
+    exact hidden-sibling shape the swap writes, and to pids that `alive`
+    says are gone. A recycled pid only ever makes the sweep SKIP a bundle
+    (deleted on a later boot), never delete one a live process is running
+    from. The sweep is best-effort: an unreadable `parent`, a bundle that
+    will not delete, or a name that will not parse costs nothing but that
+    one entry. It runs regardless of FUSED_RENDER_NO_AUTO_UPDATE — that
+    flag is about not checking for updates, and the leftovers are from
+    installs that already happened."""
+    removed: list[str] = []
+    try:
+        names = os.listdir(parent)
     except OSError:
-        logger.debug("could not remove old bundle %s", old, exc_info=True)
+        return removed
+    pattern = _old_bundle_re()
+    for name in names:
+        try:
+            match = pattern.match(name)
+            if match is None:
+                continue
+            pid = int(match.group(1))
+            if pid == os.getpid() or alive(pid):
+                continue
+            full = os.path.join(parent, name)
+            if os.path.islink(full) or not os.path.isdir(full):
+                continue  # not something the swap wrote
+            shutil.rmtree(full)
+        except Exception:  # noqa: BLE001 - one entry must never end the sweep
+            logger.debug("could not sweep old bundle %s in %s", name, parent,
+                         exc_info=True)
+            continue
+        removed.append(full)
+    if removed:
+        logger.info("update: removed %d old bundle(s) left by earlier swaps: %s",
+                    len(removed), ", ".join(removed))
+    return removed
 
 
 class UpdateManager(_base.UpdateManager):
@@ -354,7 +442,7 @@ class UpdateManager(_base.UpdateManager):
             # The swap: both renames happen inside `parent` so each is atomic
             # on the volume; the running process keeps its open files on the
             # old inode (same situation as a manual DMG drag / brew upgrade).
-            old = os.path.join(parent, f".{_BUNDLE_NAME}-old-{os.getpid()}.app")
+            old = _old_bundle_path(parent, os.getpid())
             os.rename(bundle, old)
             try:
                 os.rename(swap_in, bundle)
@@ -376,13 +464,11 @@ class UpdateManager(_base.UpdateManager):
             # failed one with "Installing".
             beat_stop.set()
             beat.join(timeout=INSTALL_HEARTBEAT_S + 5)
-        # Old bundle: best-effort removal on a worker; open files keep working
-        # on the unlinked inodes until this process exits. `old` is a name this
-        # function just renamed a realpath'd `bundle` to, so it is a real
-        # directory, never a symlink — `rmtree` is the whole story.
-        if old is not None:
-            threading.Thread(target=_discard_old_bundle, args=(old,),
-                             daemon=True).start()
+        # The old bundle is NOT removed here. This process is still running
+        # from it, and macOS TCC re-validates the responsible process's code
+        # path on every protected file access: delete it and Full Disk
+        # Access silently stops working until relaunch (see
+        # `sweep_old_bundles`, which clears it on a later boot instead).
 
     def _attach(self, dmg: str) -> str:
         result = subprocess.run(
@@ -464,5 +550,16 @@ def start() -> UpdateManager | None:
                 _manager = UpdateManager(bundle=None, method="none", check_only=True)
             else:
                 _manager = UpdateManager()
+                # Earlier sessions' swapped-away bundles, now that the
+                # processes that ran from them are gone. A worker: it is an
+                # rmtree of a few hundred MB on the boot path otherwise. Only
+                # the packaged app, by its own bundle's RESOLVED parent (the
+                # directory `_install_dmg` swaps in, which for a symlinked
+                # bundle is not the link's) — a dev run has no swaps to clean
+                # up after and no /Applications to look in.
+                parent = os.path.dirname(os.path.realpath(_manager._bundle))
+                threading.Thread(target=sweep_old_bundles, args=(parent,),
+                                 daemon=True,
+                                 name="fused-render-update-sweep-old").start()
             _manager.start_auto_checks()
         return _manager
