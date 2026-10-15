@@ -74,15 +74,26 @@ export function cardKey(seq: number, seg: Segment | undefined | null, i: number)
  *     ends BEFORE it; the members after it are free to start a new one;
  *   * the end of the list.
  *
- * AND TWO THINGS SUPPRESS ONE (v1's bugbot fix, kept): a stretch holding a tool
- * that is not KNOWN SETTLED — running, or wearing a status this file has no
- * literal for — renders member by member, because while the turn is live the
- * progress is the point; and, while the turn is still streaming, the stretch
- * that runs to the END of the list, because that is the only stretch that can
- * still GROW and a lid that goes on when the second call settles comes straight
- * back off when the third lands. A stretch with any segment AFTER it is closed —
- * the poll only ever appends — so folding that one is final. Suppressed means
- * the members are emitted individually WITH NO TRIGGER, exactly as before.
+ * AND TWO THINGS SUPPRESS ONE: a stretch holding a tool that is not KNOWN
+ * SETTLED — running, or wearing a status this file has no literal for —
+ * renders member by member, because while the turn is live the progress is the
+ * point; and EVERY stretch of a turn that is still streaming, whether or not
+ * something has landed after it. Suppressed means the members are emitted
+ * individually WITH NO TRIGGER; the whole turn folds once, when it ends.
+ *
+ * The second rule used to cover only the trailing stretch (v1's bugbot fix:
+ * the one stretch that can still GROW, so a lid that goes on when the second
+ * call settles comes straight back off when the third lands), and let a
+ * stretch with prose after it fold mid-turn on the argument that the poll only
+ * appends, so that fold is final. Final, but not free (Akshil 2026-10-15,
+ * "follow-up scrolls to somewhere above while streaming"): a reply opens on a
+ * screenful of tool chips, the first prose line arrives, and the chips fold
+ * behind one word in that line — `.chat-log` loses a screen or more in one
+ * frame, the scrollport clamps, and the reader who was watching the chips is
+ * looking at the previous turn. Every later prose segment did it again. A
+ * fold is a layout move the reader did not ask for, and mid-stream the only
+ * safe time for it is never; at the end of the turn the final prose stays
+ * pinned to the bottom while the runs above it fold.
  *
  * RAW INDICES THROUGHOUT. Every row carries the index it had in the list that
  * was handed in — `cardsAfter`, `cardKey` and the streaming tail are all keyed
@@ -161,10 +172,9 @@ function stretchSettled(list: readonly (Segment | null | undefined)[], from: num
 export function groupCollapsibles(
   segments: Segment[] | null | undefined,
   cardsAfter?: Map<number, unknown> | null,
-  /** `AssistantTurn.streaming` — is this turn still being polled? Only a live
-   *  turn can gain segments, so it is the only one whose trailing stretch is
-   *  held open. Defaults to false, which is every history replay and every
-   *  turn that has ended. */
+  /** `AssistantTurn.streaming` — is this turn still being polled? A live turn
+   *  holds every stretch open (see the note above). Defaults to false, which
+   *  is every history replay and every turn that has ended. */
   streaming = false,
 ): GroupedRow[] {
   const list: (Segment | null | undefined)[] = Array.isArray(segments) ? segments : [];
@@ -194,8 +204,8 @@ export function groupCollapsibles(
     while (end < list.length && isCollapsible(list[end])) end += 1;
     // Judged over the WHOLE consecutive stretch, not the piece a card happens
     // to cut off it, so one running call cannot fold the calls in front of it.
-    const growing = streaming && end === list.length;
-    if (growing || !stretchSettled(list, i, end)) {
+    // A live turn folds nothing at all — see the note above.
+    if (streaming || !stretchSettled(list, i, end)) {
       for (let k = i; k < end; k += 1) one(k);
       i = end;
       continue;

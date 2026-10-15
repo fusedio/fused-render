@@ -448,14 +448,20 @@ describe("groupCollapsibles (design.md §A)", () => {
     expect(groupCollapsibles(two, null, false).filter(isRun)).toHaveLength(1);
   });
 
-  test("a CLOSED stretch folds even mid-turn — the poll only ever appends", () => {
-    // Something after it means it can never gain a member, so folding it is
-    // final and there is nothing to take back.
+  test("a CLOSED stretch does NOT fold mid-turn either — the fold is a layout jump", () => {
+    // It can never gain a member, so folding it would be final — and it used
+    // to. But folding a screenful of chips the frame the first prose line
+    // lands shrinks the log under a reader following the tail, who is then
+    // looking at the previous turn (Akshil 2026-10-15). Nothing folds while
+    // the turn is live; the same list folds once it ends.
     const segs = [tool("t1", "ok"), tool("t2", "ok"), text("mid"), tool("t3", "running")];
     const rows = groupCollapsibles(segs, null, true);
-    expect(rows.filter(isRun)).toHaveLength(1);
-    expect(rows.filter(isRun)[0]!.start).toBe(0);
+    expect(rows.filter(isRun)).toHaveLength(0);
     expect(flatten(rows)).toEqual(segs);
+    const settled = [tool("t1", "ok"), tool("t2", "ok"), text("mid"), tool("t3", "ok")];
+    expect(groupCollapsibles(settled, null, true).filter(isRun)).toHaveLength(0);
+    const done = groupCollapsibles(settled, null, false).filter(isRun);
+    expect(done.map((r) => r.start)).toEqual([0, 3]);
   });
 
   test("a null/empty list comes back empty", () => {

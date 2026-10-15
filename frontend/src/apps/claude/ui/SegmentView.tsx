@@ -57,10 +57,10 @@ export interface SegmentViewProps {
    *  at the end of the turn (#18, Transcript's `parkPlan`). */
   cardsAfter?: Map<number, React.ReactNode> | null;
   /** `AssistantTurn.streaming` — this turn is still being polled, so more
-   *  segments may yet land on the end of it. `groupCollapsibles` holds the
-   *  trailing run OPEN while it is true — its members render individually with
-   *  no trigger — or the fold flickers once per tool for the length of a live
-   *  multi-tool turn. */
+   *  segments may yet land on the end of it. `groupCollapsibles` holds every
+   *  run OPEN while it is true — members render individually with no trigger —
+   *  so the fold neither flickers once per tool nor shrinks the log under a
+   *  reader following the tail mid-turn. */
   live?: boolean;
   /** The chat's working directory, threaded down to `MarkdownView`/`ToolChip`
    *  so a shell fence's or a Bash chip's "run" button `cd`'s there first. */

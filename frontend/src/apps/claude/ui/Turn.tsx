@@ -356,11 +356,11 @@ export const Turn = memo(function Turn({
               `text`, so rendering both would print the reply twice
               (T:13486-13504).
 
-              `live` is the turn's own `streaming`: it holds the trailing run
-              OPEN — members individual, no trigger — while more segments can
-              still land on the end of this turn (protocol/segments.ts
-              `groupCollapsibles`), so the fold does not go on and come off once
-              per call mid-run. It folds when the turn ends. */}
+              `live` is the turn's own `streaming`: it holds EVERY run OPEN —
+              members individual, no trigger — until the turn ends
+              (protocol/segments.ts `groupCollapsibles`), so the fold does not
+              flicker once per call mid-run and never shrinks the log under a
+              reader following the tail. It folds when the turn ends. */}
           {/* FOLDED: one ellipsized line and nothing else — no chips, no
               triggers, no parked cards. The line is the reply's own first
               sentence wherever it has one, because that is what the reader is
