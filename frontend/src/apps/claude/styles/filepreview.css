@@ -7,6 +7,21 @@
    Above the app's modals, like `.c-plan-modal`. */
 .modal-dialog.c-filepreview-modal {
   width: min(1100px, 92vw);
+  /* A fixed height (not just the chassis' max-height): the body below fills
+     it, so the previewed page's own scrollbar is the only one. */
+  height: 85vh;
+}
+/* The chassis body pads and scrolls (`.modal-body-plain`, deploy.css), which
+   stacked a second scrollbar on top of the iframe's: the root was 80vh inside a
+   card capped at 85vh with a ~45px head. Here the body is a padless flex column
+   that clips, and the root takes whatever height the head leaves. */
+.modal-dialog.c-filepreview-modal .modal-body {
+  padding: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
 }
 .modal-overlay:has(> .c-filepreview-modal) {
   z-index: 1100;
@@ -14,7 +29,8 @@
 .chat-root.c-filepreview-root {
   display: block;
   width: auto;
-  height: 80vh;
+  flex: 1 1 auto;
+  height: auto;
   min-width: 0;
   min-height: 0;
   overflow: hidden;
