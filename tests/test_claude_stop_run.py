@@ -206,9 +206,9 @@ def test_a_reopened_chat_is_told_the_last_turn_was_stopped(agent, tmp_path,
     proj_dir = projects / agent._munge(str(target))
     proj_dir.mkdir(parents=True)
     (proj_dir / f"{session}.jsonl").write_text("\n".join([
-        json.dumps({"message": {"role": "user",
+        json.dumps({"type": "user", "message": {"role": "user",
                                 "content": [{"type": "text", "text": "build it"}]}}),
-        json.dumps({"message": {"role": "assistant",
+        json.dumps({"type": "assistant", "message": {"role": "assistant",
                                 "content": [{"type": "text", "text": "I was hal"}]}}),
     ]) + "\n")
 

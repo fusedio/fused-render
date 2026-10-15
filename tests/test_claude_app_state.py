@@ -627,7 +627,7 @@ def test_history_hides_the_state_block_from_the_restored_transcript(agent,
     session = os.path.join(agent.PROJECTS, agent._munge(str(project)))
     os.makedirs(session)
     with open(os.path.join(session, "sid.jsonl"), "w", encoding="utf-8") as fh:
-        fh.write(json.dumps({"message": {"role": "user", "content": [
+        fh.write(json.dumps({"type": "user", "message": {"role": "user", "content": [
             {"type": "text",
              "text": "<live-app-state>\n{\"title\": \"x\"}\n</live-app-state>\n\n"
                      "fix the header"}]}}) + "\n")

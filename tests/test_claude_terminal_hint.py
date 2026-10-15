@@ -78,7 +78,7 @@ def _restored_turns(agent, tmp_path, text):
     session = os.path.join(agent.PROJECTS, agent._munge(str(project)))
     os.makedirs(session)
     with open(os.path.join(session, "sid.jsonl"), "w", encoding="utf-8") as fh:
-        fh.write(json.dumps({"message": {"role": "user", "content": [
+        fh.write(json.dumps({"type": "user", "message": {"role": "user", "content": [
             {"type": "text", "text": text}]}}) + "\n")
     return agent._history(str(project), "sid")["turns"]
 

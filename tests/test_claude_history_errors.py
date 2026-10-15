@@ -33,7 +33,8 @@ SESSION = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 
 
 def _user(text):
-    return {"message": {"role": "user",
+    return {"type": "user",
+            "message": {"role": "user",
                         "content": [{"type": "text", "text": text}]}}
 
 
