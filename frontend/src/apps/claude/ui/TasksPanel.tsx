@@ -227,8 +227,8 @@ export function TasksPanel({ tasks, runId, sessionId = null, open, onToggle, par
     });
   const dismiss = (taskId: string) => setDismissed((s) => new Set(s).add(taskId));
 
-  if (!open && !tasks.length) return null;
   const summary = summarizeTasks(tasks);
+  if (!open && !summary) return null;
   const sorted = sortTasks(tasks);
   const rows = showEnded
     ? sorted

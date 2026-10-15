@@ -6989,3 +6989,4 @@ A 6-column table in a bot reply wrapped short cells ("fused-render", "#1641") on
 - `.c-composer-chat` bottom padding 6px -> 16px.
 - **Summary revised, dropdown z-index.** `summarizeTasks` now counts live or paused tasks per kind (all tasks when none are active) and appends " · N failed"; it supersedes the "ALL tasks" rule above.
 - `dropdown-menu.tsx`'s positioner is `z-[1200]` (was z-50) so menus opened from the full-screen header (pane z 950) are visible, matching `popover.tsx`.
+- **Summary revised again.** Finished tasks are not counted at all: `summarizeTasks` is live/paused counts per kind plus " · N failed", "" otherwise, and the dock row and `TasksPanel` render nothing while it is "" (unless open).

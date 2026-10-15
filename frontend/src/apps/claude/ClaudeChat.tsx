@@ -148,7 +148,7 @@ import { WorktreeHintChip, visibleWorktreeHint } from "./ui/WorktreeHintChip";
 import { TasksContext, TasksPanel, tasksPanelScope, useTasksOpen } from "./ui";
 import { FilePreviewProvider } from "./ui/filePreview";
 import { DockRow } from "./ui/DockRow";
-import { taskIndex } from "./protocol/tasks";
+import { summarizeTasks, taskIndex } from "./protocol/tasks";
 import { recapAnchor } from "./protocol/recap";
 import {
   queueEnabled,
@@ -5118,7 +5118,7 @@ function ChatBody(props: ChatBodyProps) {
             {!compact ? (
               <DockRow
                 tasks={
-                  state.tasks.length || tasksOpen ? (
+                  summarizeTasks(state.tasks) || tasksOpen ? (
                     <TasksPanel
                       tasks={state.tasks}
                       runId={state.tasksRunId}

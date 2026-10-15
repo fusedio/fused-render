@@ -82,12 +82,11 @@ export function statusLabel(status: TaskStatus | string): string {
 
 /**
  * The collapsed panel's one line: "1 agent · 2 shells". Per-kind counts of the active
- * (live or paused) tasks, in SUMMARY_KINDS order; with none active, of all tasks. No
- * status words except a trailing " · N failed" when any task failed. "" when empty.
+ * (live or paused) tasks, in SUMMARY_KINDS order; finished tasks are not counted. No
+ * status words except a trailing " · N failed" when any task failed. "" when neither.
  */
 export function summarizeTasks(tasks: readonly TaskRecord[]): string {
-  const active = tasks.filter((t) => isActive(t.status));
-  const counted = active.length ? active : tasks;
+  const counted = tasks.filter((t) => isActive(t.status));
   const parts = SUMMARY_KINDS.map((k) => {
     const n = counted.filter((t) => asKind(t.kind) === k).length;
     return n ? plural(n, KIND_NOUN[k]) : "";

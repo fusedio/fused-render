@@ -56,22 +56,22 @@ describe("summarizeTasks", () => {
     expect(line).toBe("1 agent · 2 shells · 1 monitor");
     expect(summarizeTasks([rec({ kind: "agent" }), rec({ id: "s", kind: "shell", status: "completed" })])).toBe("1 agent");
   });
-  test("no active tasks: count every task per kind", () => {
+  test("no active and no failed tasks: empty", () => {
     expect(
       summarizeTasks([rec({ kind: "shell", status: "completed" }), rec({ id: "s2", kind: "shell", status: "completed" })]),
-    ).toBe("2 shells");
+    ).toBe("");
   });
   test("failures append ' · N failed'", () => {
     expect(summarizeTasks([rec({ id: "a", kind: "agent" }), rec({ id: "f", kind: "agent", status: "failed" })])).toBe(
       "1 agent · 1 failed",
     );
-    expect(summarizeTasks([rec({ kind: "agent", status: "failed" })])).toBe("1 agent · 1 failed");
+    expect(summarizeTasks([rec({ kind: "agent", status: "failed" })])).toBe("1 failed");
     expect(
       summarizeTasks([rec({ kind: "shell", status: "failed" }), rec({ id: "g", kind: "shell", status: "failed" })]),
-    ).toBe("2 shells · 2 failed");
+    ).toBe("2 failed");
   });
   test("nothing", () => {
-    expect(summarizeTasks([rec({ status: "completed" })])).toBe("1 task");
+    expect(summarizeTasks([rec({ status: "completed" })])).toBe("");
     expect(summarizeTasks([])).toBe("");
   });
 });
@@ -252,7 +252,7 @@ describe("chip expand model", () => {
 describe("review #1: unknown (the owning run died)", () => {
   test("labelled ended, counted with the ended group", () => {
     expect(statusLabel("unknown")).toBe("ended");
-    expect(summarizeTasks([rec({ id: "u", status: "unknown" }), rec({ id: "d", status: "completed" })])).toBe("2 tasks");
+    expect(summarizeTasks([rec({ id: "u", status: "unknown" }), rec({ id: "d", status: "completed" })])).toBe("");
   });
   test("no clock against now when not live and ended_at is null", () => {
     expect(elapsedLabel(rec({ status: "unknown", started_at: 100, ended_at: null }), 999_000)).toBe("");

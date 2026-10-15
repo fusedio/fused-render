@@ -66,6 +66,12 @@ describe("TasksPanel", () => {
     expect(r.toJSON()).toBeNull();
   });
 
+  test("closed with only completed tasks renders nothing", () => {
+    const tasks = [rec({ id: "d", kind: "shell", status: "completed" })];
+    const r = mount(<TasksPanel tasks={tasks} runId="r1" open={false} onToggle={() => {}} />);
+    expect(r.toJSON()).toBeNull();
+  });
+
   test("collapsed summary counts live work and appends failures", () => {
     const tasks = [rec({ id: "a", kind: "agent" }), rec({ id: "f", kind: "agent", status: "failed" })];
     const r = mount(<TasksPanel tasks={tasks} runId="r1" open={false} onToggle={() => {}} />);
