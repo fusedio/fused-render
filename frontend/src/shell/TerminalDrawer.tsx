@@ -230,6 +230,10 @@ function errStatus(err: unknown): unknown {
  * behaviour applies. A brand-new terminal that is itself busy (its rc files
  * still running) also copies — no third terminal.
  *
+ * CLAUDE TAB: when `sessionId` is a Claude tab (`isClaudeId`), it is a
+ * read-only log, not a pty, so it is treated like a busy terminal: nothing is
+ * sent to it and a new shell is created for the request.
+ *
  * Exported and dependency-injectable so a test can drive it without a real
  * store slot or a real POST, the same shape `createSessionOrAbandon` uses. */
 export async function sendPendingRequestIfAny(
@@ -262,11 +266,15 @@ export async function sendPendingRequestIfAny(
   const toSend = skipCd ? { command: req.command, execute: req.execute } : req;
   const data = buildTerminalCommand(toSend);
   if (!data) return;
-  try {
-    await send(sessionId, data);
-    return;
-  } catch (err) {
-    if (errStatus(err) !== 409) throw err;
+  // A Claude tab is no pty (the server would 404), so it skips the first send
+  // and takes the busy path below.
+  if (!isClaudeId(sessionId)) {
+    try {
+      await send(sessionId, data);
+      return;
+    } catch (err) {
+      if (errStatus(err) !== 409) throw err;
+    }
   }
   const fullText = plainCommandText(buildTerminalCommand(req));
   if (!deps.create) {
