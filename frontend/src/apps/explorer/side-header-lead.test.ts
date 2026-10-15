@@ -15,7 +15,7 @@ for (const [name, rel] of [
   test(`${name}: close button only when not maximized, lead slot only when maximized`, () => {
     const src = read(rel);
     const m = src.match(
-      /\{maximized \? \(\s*(?:\/\/[^\n]*\n\s*)*<div className="side-header-lead" \/>\s*\) : \(\s*<SideCloseButton[^>]*\/>\s*\)\}/,
+      /\{maximized \? \(\s*(?:\/\/[^\n]*\n\s*)*<div className="side-header-lead c-tokens" \/>\s*\) : \(\s*<SideCloseButton[^>]*\/>\s*\)\}/,
     );
     expect(m).not.toBeNull();
     // No other, unconditional close button in the header.

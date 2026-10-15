@@ -454,9 +454,14 @@ html.side-reopening iframe {
   align-items: center;
   gap: 8px;
   min-width: 0;
+  height: 100%;
+  background: none;
 }
 .side-header-lead .c-anntools,
 .chat-root .side-header-lead .c-anntools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   padding: 0;
   height: auto;
   min-height: 0;

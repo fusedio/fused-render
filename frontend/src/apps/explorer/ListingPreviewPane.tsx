@@ -123,7 +123,7 @@ export default function ListingPreviewPane({
   const strip = () => (
     <div className="pane-header">
       {maximized ? (
-        <div className="side-header-lead" />
+        <div className="side-header-lead c-tokens" />
       ) : (
         <SideCloseButton what={modeTitle(side)} onClick={onClose} />
       )}

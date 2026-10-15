@@ -333,7 +333,7 @@ export default function PreviewSidebar({
           {maximized ? (
             // Full screen: no close button (the maximize button or Esc is the
             // way out); the chat's `.c-anntools` row is portaled in here.
-            <div className="side-header-lead" />
+            <div className="side-header-lead c-tokens" />
           ) : (
             <SideCloseButton what={modeTitle(active)} onClick={onClose} />
           )}
