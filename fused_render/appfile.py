@@ -1126,11 +1126,15 @@ def install_target(fused_path: str, *, light: bool = False) -> dict:
 def _is_download(fused_path: str) -> bool:
     """Whether the file is a deep-link fetch (appfetch's downloads dir, or a
     clone staged under it) — an internal cache, so the install page offers no
-    way "back" into its folder."""
-    from fused_render import appfetch
+    way "back" into its folder. Read-only: the dir is named, never created
+    (appfetch.downloads_dir() makes it)."""
+    from fused_render.shell import storage
 
-    root = os.path.realpath(appfetch.downloads_dir())
-    return os.path.realpath(fused_path).startswith(root + os.sep)
+    try:
+        root = os.path.realpath(os.path.join(storage.home_dir(), "downloads"))
+        return os.path.realpath(fused_path).startswith(root + os.sep)
+    except Exception:  # noqa: BLE001 — a display hint never fails the probe
+        return False
 
 
 def _git_target(manifest: dict) -> dict | None:

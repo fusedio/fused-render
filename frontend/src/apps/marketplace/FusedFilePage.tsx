@@ -490,12 +490,13 @@ export function FusedFilePage({ path }: { path: string }) {
   }, [probe?.state, probe?.installed]);
 
   // A deep-link download lives in an internal cache folder: no way "back"
-  // into it, and no "Show in Explorer" pointing there.
+  // into it, and no "Show in Explorer" pointing there. Only the probe knows,
+  // so the folder link waits for it rather than flashing the cache's name.
   const downloaded = probe?.downloaded === true;
   const canBack = navReach().back && !IS_TOP_EMBED;
   const back: BackLink | undefined = canBack
     ? { label: "Back", href: explorerHref(folder, fileName), onClick: plainClick(() => history.back()) }
-    : downloaded
+    : !probe || downloaded
       ? undefined
       : {
           label: basename(folder) || "Files",
@@ -622,7 +623,9 @@ export function FusedFilePage({ path }: { path: string }) {
   } else if (t.state === "same") {
     pill = installedEntry
       ? { state: "open", onClick: () => openEntry(installedEntry) }
-      : { state: "caution", label, onClick: () => setPhase({ kind: "armed" }) };
+      : t.git
+        ? { state: "disabled", label: "Installed", title: "This commit is already installed" }
+        : { state: "caution", label, onClick: () => setPhase({ kind: "armed" }) };
     note = <>Installed{shortDate(t.exported_at) ? <> · exported {shortDate(t.exported_at)}</> : null}</>;
   } else if (t.needs_force) {
     pill = { state: "caution", label, onClick: () => setPhase({ kind: "armed" }) };
