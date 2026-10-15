@@ -242,7 +242,7 @@ def _entry(slug, refresh=False):
 
 
 def _dest(env, slug="sine-starter"):
-    return os.path.join(str(env["ws"]), "community", slug)
+    return os.path.join(str(env["ws"]), "app", slug)
 
 
 # --- _udf_get: the HTTP seam ---------------------------------------------------
@@ -467,7 +467,7 @@ def test_install_then_update_keeps_venv_and_user_files(env):
     assert (stamp["release_id"], stamp["commit"]) == (row["release_id"], row["commit"])
     assert "tree_sha" not in stamp
     assert stamp["files"] == {p: _sha(d) for p, d in api.apps["sine-starter"]["files"].items()}
-    # No staging left behind in community/.
+    # No staging left behind in app/.
     assert sorted(os.listdir(os.path.dirname(dest))) == ["sine-starter"]
     entry = _entry("sine-starter")
     assert entry["installed"]["modified"] is False
@@ -573,7 +573,7 @@ def test_new_install_stamp_rides_in_with_the_payload(env, monkeypatch):
     real_rename = os.rename
 
     def spy(src, dst):
-        if dst.endswith(os.path.join("community", "sine-starter")):
+        if dst.endswith(os.path.join("app", "sine-starter")):
             seen["stamp_before_rename"] = mp.read_stamp(src)
         return real_rename(src, dst)
 
@@ -600,7 +600,7 @@ def _install_error(env, match):
     with pytest.raises(mp.InstallError, match=match):
         mp.install_app("sine-starter", mp.get_snapshot()[0])
     # A refused install leaves nothing behind: no app folder, no staging dir.
-    root = os.path.join(str(env["ws"]), "community")
+    root = os.path.join(str(env["ws"]), "app")
     assert os.listdir(root) == []
 
 
@@ -800,7 +800,7 @@ def test_install_job_runs_in_background_and_is_idempotent(env):
     job = _wait_job(client, "sine-starter")
     assert job["state"] == "done", job
     assert job["progress"] == 1.0 and job["bytes_done"] == job["bytes_total"]
-    assert job["path"].endswith("/community/sine-starter")
+    assert job["path"].endswith("/app/sine-starter")
     installed = client.get("/api/marketplace/installed").json()["apps"]
     assert [a["slug"] for a in installed] == ["sine-starter"]
     # A second POST after it finished is an update.

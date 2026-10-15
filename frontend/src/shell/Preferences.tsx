@@ -572,7 +572,7 @@ function MonitorSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs
 }
 
 // Marketplace: the sidebar's Marketplace row and the /marketplace pages (a
-// store of community apps, installed into <workspace>/community). Off by
+// store of community apps, installed into <workspace>/app). Off by
 // default, and this is the only place it can be turned on. Same one-checkbox
 // shape and publish-after-PUT as Monitor above, so the sidebar row appears the
 // moment the checkbox settles. `?.enabled === true` because the key is

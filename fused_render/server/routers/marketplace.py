@@ -94,7 +94,7 @@ def api_marketplace_asset(slug: str, path: str, v: str | None = None):
 @router.post("/api/marketplace/install")
 def api_marketplace_install(body: dict = Body(...), x_fused: str | None = Header(default=None)):
     """Start installing `slug` — or updating it, when a Marketplace copy is
-    already in `<workspace>/community/` — in the background. Answers the job
+    already in `<workspace>/app/` — in the background. Answers the job
     immediately (the running one, if any: idempotent). X-Fused-guarded."""
     guard = _require_fused(x_fused)
     if guard is not None:

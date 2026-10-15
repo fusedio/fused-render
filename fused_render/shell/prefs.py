@@ -288,7 +288,7 @@ def marketplace_enabled() -> bool:
 
     ON, the shell offers its entry points: a sidebar row and the `/marketplace`
     pages (browse, installed/updates, app detail) that install community apps
-    from the fused-render-community-apps repo into `<workspace>/community/`.
+    from the fused-render-community-apps repo into `<workspace>/app/`.
     OFF, those entry points are hidden and `/marketplace` shows a notice
     pointing at Preferences.
 
