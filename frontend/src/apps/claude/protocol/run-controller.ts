@@ -575,7 +575,10 @@ export function createChatController(deps: ControllerDeps): ChatController {
    * HISTORY'S TASKS, on a restore and on every refresh — one rule for both
    * (`openSession` has already cleared the last conversation's list).
    * Nothing live (`live_run` "" or absent): history's list IS the answer, empty
-   * included, owned by no run (its host is gone, so no Output). A live run:
+   * included, owned by no run (its host is gone, so no Output) — unless the
+   * session host is still alive (`tasks_run`): the turn ended but a background
+   * task runs on, and the host's run owns the list so Stop/Output can reach
+   * it. A live run:
    * owned by THAT run; an empty answer about the run already drawn keeps the
    * list (the poll owns a live run's tasks), any other answer replaces it.
    */
@@ -583,7 +586,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // An older server sends no `tasks` at all: that says nothing, not "none".
     if (!Array.isArray(res.tasks)) return;
     const rows = res.tasks;
-    const owner = res.live_run || null;
+    const owner = res.live_run || res.tasks_run || null;
     if (owner && !rows.length && state.tasksRunId === owner && state.tasks.length) return;
     publishTasks(rows, owner);
   };
