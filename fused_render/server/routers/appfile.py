@@ -343,8 +343,9 @@ def api_appfile_install(body: dict = Body(...), x_fused: str | None = Header(def
 
 @router.post("/api/appfile/fetch")
 def api_appfile_fetch(body: dict = Body(...), x_fused: str | None = Header(default=None)):
-    """Download the ``.fused`` at the http(s) ``url`` into the managed
-    downloads dir and answer ``{file}`` — the saved absolute path, which the
+    """Download the ``.fused`` at the http(s) ``url`` — or build one from
+    the single app in a public GitHub repo link (appfetch.py) — into the
+    managed downloads dir and answer ``{file}`` — the saved absolute path, which the
     caller then opens like any other ``.fused`` (DL-8): on its install page.
     The one caller is the shell's ``FetchAppFileBoot``, fed by a
     ``fused-render://open?url=`` link.
@@ -360,7 +361,8 @@ def api_appfile_fetch(body: dict = Body(...), x_fused: str | None = Header(defau
         return guard
     url = str(body.get("url") or "").strip()
     if not appfetch.is_url(url):
-        return _error("url must be an http:// or https:// link to a .fused file")
+        return _error("url must be an http:// or https:// link to a .fused file "
+                      "or a public GitHub repository")
     try:
         file = appfetch.download_app_file(url)
     except appfetch.FetchError as exc:

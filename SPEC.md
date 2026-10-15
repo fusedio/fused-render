@@ -2145,6 +2145,19 @@ when one exists, else the folder itself.
   can navigate the browser to this origin with `?_fetch_appfile=` gets a
   remote `.fused` downloaded into the managed downloads dir unprompted — and
   nothing more, since the install page is the gate before anything runs.
+  **GitHub repo payload:** `url=` may instead be a public
+  `https://github.com/{owner}/{repo}[/tree/{ref}[/{subpath}]]` link
+  (`deeplink.parse_github_url`'s shapes; any other github.com URL is a plain
+  download). `appfetch.download_github_app` fetches `archive/{ref|HEAD}.zip`,
+  extracts it with `zip_import.extract_to_staging`, takes THE one folder whose
+  page carries `<meta name="fused-app">` (zero or several → error naming the
+  `/tree/` form), names it the repo (root app) or the folder, and exports it
+  with `appfile.export_app_file` into the same downloads path — then the same
+  install page. An entry without an id gets a stable one
+  (`<name>-<sha256(github.com/owner/repo/subpath)[:8]>`) and `exported_at` is
+  the commit time (archive mtimes), so a re-click on an unchanged repo reads
+  "same" and a new commit "Update". Private repos answer 404 → error. Not
+  `git=` (D110 editable clone into ~/Fused): this installs under `app/<slug>`.
 
 ---
 

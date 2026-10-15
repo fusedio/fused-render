@@ -39,6 +39,11 @@ Finder double-click (D390). In a native window that window becomes the app's
 own (the URL observer re-keys it; title-bar Edit leads to the explorer); in
 a browser tab the EmbedStrip's "Open in explorer" does. No confirm step
 (owner call, mirrors lite PR #30): the link click is the gesture.
+The `url=` payload may also be a public GitHub repo link
+(`https://github.com/{owner}/{repo}[/tree/{ref}/{subpath}]`) holding ONE app:
+appfetch builds it into a `.fused` and the same install page follows. Unlike
+`git=` above (an editable clone into ~/Fused), that INSTALLS the app under
+app/<slug>, update-aware like any `.fused`.
 
 Ref parsing caveat: a GitHub tree URL does not delimit where the ref ends and
 the subpath begins (`/tree/feature/x/docs` is ambiguous). The first segment

@@ -290,7 +290,8 @@ def default_file_name(app_dir: str) -> str:
 
 
 def export_app_file(app_dir: str, out_path: str,
-                    preview_bytes: bytes | None = None) -> dict:
+                    preview_bytes: bytes | None = None,
+                    exported_at: str | None = None) -> dict:
     """Write the app folder at ``app_dir`` as a ``.fused`` file at ``out_path``.
 
     Returns the manifest written into the zip. Raises :class:`AppFileError`
@@ -307,6 +308,9 @@ def export_app_file(app_dir: str, out_path: str,
     bytes come off a best-effort screen grab, drops an over-cap capture before
     it gets here, because a failed grab must cost the thumbnail and not the
     export (routers/appfile.api_appfile_export_with_preview).
+
+    ``exported_at`` overrides the now-stamp: appfetch's GitHub build passes
+    the commit's time, so the same commit installs as SAME, not UPDATE.
     """
     app_dir = os.path.abspath(app_dir)
     if not os.path.isdir(app_dir):
@@ -382,7 +386,7 @@ def export_app_file(app_dir: str, out_path: str,
     try:
         try:
             index: dict = {"name": os.path.basename(app_dir), "entry": entry_rel,
-                           "exported_at": _utc_now()}
+                           "exported_at": exported_at or _utc_now()}
             if app_id is not None:
                 index["app_id"] = app_id
             manifest = container.write(tmp, index, payload)
