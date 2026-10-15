@@ -244,7 +244,7 @@ export function Discover({
           )}
           {useServer && search.nextCursor && (
             <div className="mp-load-more">
-              <button type="button" className="mp-btn" onClick={search.loadMore}>
+              <button type="button" className="mp-btn" onClick={search.loadMore} disabled={search.loadingMore}>
                 Load more
               </button>
             </div>

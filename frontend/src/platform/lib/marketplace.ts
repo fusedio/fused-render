@@ -188,6 +188,8 @@ export interface MarketplaceSearch {
   status: "idle" | "loading" | "ok" | "error";
   apps: SearchHit[];
   nextCursor: string | null;
+  /** A load-more request is in flight (the button disables meanwhile). */
+  loadingMore: boolean;
   loadMore: () => void;
 }
 
@@ -196,34 +198,51 @@ export const SEARCH_DEBOUNCE_MS = 200;
 /** Server-side search for a typed query: 200 ms debounce, a sequence id so a
  *  slow earlier answer never overwrites a later one, and previous results stay
  *  while the next load. `idle` when `q` is blank. An error leaves the caller to
- *  fall back to its own local filter. */
+ *  fall back to its own local filter.
+ *
+ *  A cursor belongs to ONE (term, category): a change drops it at once (Load
+ *  more disappears while the new query debounces and loads), and a load-more
+ *  answer that left before the change is discarded. Only one load-more runs at
+ *  a time, and appended apps are de-duplicated by slug. */
 export function useMarketplaceSearch(q: string, category = "all"): MarketplaceSearch {
-  const [state, setState] = useState<{ status: MarketplaceSearch["status"]; apps: SearchHit[]; nextCursor: string | null }>({
+  const [state, setState] = useState<{
+    status: MarketplaceSearch["status"];
+    apps: SearchHit[];
+    nextCursor: string | null;
+    loadingMore: boolean;
+  }>({
     status: "idle",
     apps: [],
     nextCursor: null,
+    loadingMore: false,
   });
   const seq = useRef(0);
   const cursor = useRef<string | null>(null);
+  const loadingMore = useRef(false);
   const term = q.trim();
+  const key = `${category}\u0000${term}`;
+  const keyRef = useRef(key);
+  keyRef.current = key;
 
   useEffect(() => {
     const id = ++seq.current;
+    cursor.current = null;
+    loadingMore.current = false;
     if (!term) {
-      setState({ status: "idle", apps: [], nextCursor: null });
+      setState({ status: "idle", apps: [], nextCursor: null, loadingMore: false });
       return;
     }
-    setState((s) => ({ ...s, status: "loading" }));
+    setState((s) => ({ ...s, status: "loading", nextCursor: null, loadingMore: false }));
     const t = setTimeout(() => {
       searchApps({ q: term, category })
         .then((r) => {
           if (id !== seq.current) return;
-          if (r.status !== "ok") return setState({ status: "error", apps: [], nextCursor: null });
+          if (r.status !== "ok") return setState({ status: "error", apps: [], nextCursor: null, loadingMore: false });
           cursor.current = r.next_cursor;
-          setState({ status: "ok", apps: r.apps, nextCursor: r.next_cursor });
+          setState({ status: "ok", apps: r.apps, nextCursor: r.next_cursor, loadingMore: false });
         })
         .catch(() => {
-          if (id === seq.current) setState({ status: "error", apps: [], nextCursor: null });
+          if (id === seq.current) setState({ status: "error", apps: [], nextCursor: null, loadingMore: false });
         });
     }, SEARCH_DEBOUNCE_MS);
     return () => clearTimeout(t);
@@ -231,15 +250,32 @@ export function useMarketplaceSearch(q: string, category = "all"): MarketplaceSe
 
   const loadMore = () => {
     const next = cursor.current;
-    if (!next || !term) return;
+    if (!next || !term || loadingMore.current) return;
     const id = seq.current;
+    const issuedFor = key;
+    loadingMore.current = true;
+    setState((s) => ({ ...s, loadingMore: true }));
+    const stale = () => id !== seq.current || issuedFor !== keyRef.current;
     searchApps({ q: term, category, cursor: next })
       .then((r) => {
-        if (id !== seq.current || r.status !== "ok") return;
+        if (stale() || r.status !== "ok") return;
         cursor.current = r.next_cursor;
-        setState((s) => ({ status: "ok", apps: s.apps.concat(r.apps), nextCursor: r.next_cursor }));
+        setState((s) => {
+          const have = new Set(s.apps.map((a) => a.slug));
+          return {
+            status: "ok",
+            apps: s.apps.concat(r.apps.filter((a) => !have.has(a.slug))),
+            nextCursor: r.next_cursor,
+            loadingMore: s.loadingMore,
+          };
+        });
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => {
+        if (stale()) return; // the query change already reset the flag
+        loadingMore.current = false;
+        setState((s) => (s.loadingMore ? { ...s, loadingMore: false } : s));
+      });
   };
 
   return { ...state, loadMore };

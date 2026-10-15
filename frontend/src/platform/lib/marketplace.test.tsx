@@ -3,12 +3,13 @@
 // the gap between a job finishing and the catalog re-read that stamps it
 // installed (the pill must not flash back to Get there).
 import { afterEach, describe, expect, test } from "bun:test";
+import { act, create } from "react-test-renderer";
 
 import { installDomShim } from "./testDomShim";
 
 installDomShim();
 
-const { actionFor, isActive, installedAppHref, categoryLabel, refreshCatalog, peekCatalog, installApp, peekJobs, searchApps } = await import("./marketplace");
+const { actionFor, isActive, installedAppHref, categoryLabel, refreshCatalog, peekCatalog, installApp, peekJobs, searchApps, useMarketplaceSearch, SEARCH_DEBOUNCE_MS } = await import("./marketplace");
 type AppEntry = import("./marketplace").AppEntry;
 type InstallJob = import("./marketplace").InstallJob;
 
@@ -177,5 +178,99 @@ describe("searchApps", () => {
     expect(urls[0]).toBe("/api/marketplace/search?q=local+chat");
     expect(urls[1]).toBe("/api/marketplace/search?q=x");
     expect(urls[2]).toBe("/api/marketplace/search?q=x&category=starters&cursor=24&limit=12");
+  });
+});
+
+describe("useMarketplaceSearch", () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+  const hit = (slug: string) => ({ ...app({ slug }), score: 1, highlights: [] });
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  function mount(initial: { q: string; category?: string }) {
+    let latest!: ReturnType<typeof useMarketplaceSearch>;
+    function Probe({ q, category }: { q: string; category?: string }) {
+      latest = useMarketplaceSearch(q, category);
+      return null;
+    }
+    let r!: ReturnType<typeof create>;
+    act(() => {
+      r = create(<Probe {...initial} />);
+    });
+    return {
+      get: () => latest,
+      set: (next: { q: string; category?: string }) =>
+        act(() => {
+          r.update(<Probe {...next} />);
+        }),
+    };
+  }
+
+  test("a double loadMore sends one request and appends no duplicates", async () => {
+    const calls: string[] = [];
+    let release: (() => void) | null = null;
+    globalThis.fetch = ((url: string) => {
+      const u = String(url);
+      calls.push(u);
+      if (u.includes("cursor=c1")) {
+        return new Promise((res) => {
+          release = () => res(new Response(JSON.stringify({ status: "ok", apps: [hit("a"), hit("b")], next_cursor: null }), { status: 200 }));
+        });
+      }
+      return Promise.resolve(new Response(JSON.stringify({ status: "ok", apps: [hit("a")], next_cursor: "c1" }), { status: 200 }));
+    }) as typeof fetch;
+    const h = mount({ q: "chat" });
+    await act(async () => {
+      await sleep(SEARCH_DEBOUNCE_MS + 30);
+    });
+    expect(h.get().nextCursor).toBe("c1");
+    act(() => {
+      h.get().loadMore();
+      h.get().loadMore();
+    });
+    expect(calls.filter((u) => u.includes("cursor=c1")).length).toBe(1);
+    expect(h.get().loadingMore).toBe(true);
+    await act(async () => {
+      release!();
+      await sleep(0);
+    });
+    expect(h.get().apps.map((a) => a.slug)).toEqual(["a", "b"]);
+    expect(h.get().loadingMore).toBe(false);
+  });
+
+  test("a query change mid-loadMore drops the stale page and clears the cursor", async () => {
+    let release: (() => void) | null = null;
+    globalThis.fetch = ((url: string) => {
+      const u = String(url);
+      if (u.includes("cursor=c1")) {
+        return new Promise((res) => {
+          release = () => res(new Response(JSON.stringify({ status: "ok", apps: [hit("stale")], next_cursor: "c2" }), { status: 200 }));
+        });
+      }
+      if (u.includes("q=other")) {
+        return Promise.resolve(new Response(JSON.stringify({ status: "ok", apps: [hit("fresh")], next_cursor: null }), { status: 200 }));
+      }
+      return Promise.resolve(new Response(JSON.stringify({ status: "ok", apps: [hit("a")], next_cursor: "c1" }), { status: 200 }));
+    }) as typeof fetch;
+    const h = mount({ q: "chat" });
+    await act(async () => {
+      await sleep(SEARCH_DEBOUNCE_MS + 30);
+    });
+    act(() => h.get().loadMore());
+    h.set({ q: "other" });
+    expect(h.get().nextCursor).toBeNull(); // cleared at once, before the debounce
+    await act(async () => {
+      release!();
+      await sleep(0);
+    });
+    expect(h.get().apps.map((a) => a.slug)).not.toContain("stale");
+    await act(async () => {
+      await sleep(SEARCH_DEBOUNCE_MS + 30);
+    });
+    expect(h.get().apps.map((a) => a.slug)).toEqual(["fresh"]);
+    expect(h.get().nextCursor).toBeNull();
+    expect(h.get().loadingMore).toBe(false);
   });
 });
