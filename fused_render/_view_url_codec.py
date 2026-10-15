@@ -106,9 +106,9 @@ def open_target_path(raw: str) -> str:
     """Shell URL path for a raw launch argument, shared by every platform's
     entry point (macOS app.py, the Linux supervisor).
 
-    - a `fused-render:` deep link (case-insensitive) -> the `/clone` confirm
-      page with the raw link ferried verbatim as ?src= (deeplink.py parses and
-      validates it server-side);
+    - a `fused-render:` deep link (case-insensitive) -> the `/clone` link
+      router with the raw link ferried verbatim as ?src= (deeplink.py parses
+      it server-side);
     - a LOCAL `file:` URI (empty authority or `localhost`, RFC 8089) ->
       decoded to its filesystem path, then `view_url_path`;
     - a `file:` URI naming a REMOTE host, or any other `scheme://` URL ->

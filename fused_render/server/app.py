@@ -1026,8 +1026,8 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # Its own endpoint, not a /api/config field: the facts behind it are
     # process spawns, and /api/config is read on every page load.
     app.include_router(github_router)
-    # GitHub deep links (SPEC §26, D110): GET /clone confirm page +
-    # POST /api/clone sparse-clone into ~/Fused. deeplink.py never
+    # Deep links (SPEC §26): GET /clone routes every OS-delivered open link
+    # to an install page or the shell's fetch hand-off. deeplink.py never
     # imports server, so the include stays acyclic like shell/*.
     from fused_render.deeplink import router as deeplink_router
 

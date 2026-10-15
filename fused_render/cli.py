@@ -71,15 +71,15 @@ def _build_parser() -> argparse.ArgumentParser:
         description="Start a minimal local server scoped to one app and open it in "
                     "embed mode (chrome-free) — fast startup, nothing running beyond "
                     "what that app needs to render and run. PATH is an app folder, a "
-                    "file inside one (e.g. index.html), a .fused file, or a GitHub "
-                    "URL (https://github.com/{owner}/{repo}[/tree/{ref}/{subpath}] or "
-                    "fused-render://open?git=…) — cloned or pulled into ~/Fused before "
-                    "opening. Runs until Ctrl-C.",
+                    "file inside one (e.g. index.html), a .fused file, or a public "
+                    "single-app GitHub repo (https://github.com/{owner}/{repo} or "
+                    "fused-render://open?git=…) — built into a .fused and opened on "
+                    "its install page. Runs until Ctrl-C.",
     )
     open_cmd.add_argument(
         "path",
         help="an app folder, a file inside one (e.g. index.html), a .fused file, "
-             "or a GitHub repo/tree URL to clone",
+             "or a single-app GitHub repo URL to install",
     )
     open_cmd.add_argument(
         "--port",
@@ -306,11 +306,11 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
-# The two shapes `open` recognizes as "clone this from GitHub" rather than
-# "open this local path": a plain repo/tree URL, and the deep link the
-# desktop app's own `<scheme>://open?git=…` handler accepts (D110; the scheme
-# is the flavor's, fused-render:// or fused-bot://). Matched by prefix,
-# case-insensitively, same as deeplink.github_url_from.
+# The two shapes `open` recognizes as "install this from GitHub" rather than
+# "open this local path": a plain repo URL, and the deep link the desktop
+# app's own `<scheme>://open?git=…` handler accepts (DL-9; the scheme is the
+# flavor's, fused-render:// or fused-bot://). Matched by prefix,
+# case-insensitively, same as deeplink.git_payload_from.
 _GITHUB_TARGET_PREFIXES = (
     "https://github.com/",
     "http://github.com/",
@@ -329,16 +329,11 @@ def _open_target(path: str) -> str:
     """Absolute fs path `open` renders, from any of the three things `path`
     can name:
 
-    - A GitHub repo/tree URL (`https://github.com/{owner}/{repo}[/tree/{ref}/
-      {sub}]`) or the `fused-render://open?git=…` deep link form: cloned (or
-      pulled, if already cloned) via `deeplink.parse_github_url` +
-      `deeplink.clone_or_pull`, to the same `deeplink.destination(spec)` the
-      deep link itself clones to — a second `open` of the same URL updates
-      the existing checkout rather than re-cloning. There is no confirm
-      prompt here the way the deep link's browser page has one: running the
-      command IS the user's consent. A dirty/diverged tree or an auth
-      failure surfaces git's own message and exits non-zero. The clone
-      target is then resolved exactly like a folder argument, below.
+    - A public single-app GitHub repo URL (`https://github.com/{owner}/
+      {repo}`) or the `fused-render://open?git=…` deep link form: built into
+      a `.fused` by `appfetch.download_github_app` — the same build the deep
+      link's shell hand-off runs — and then treated as that `.fused` file
+      (below), so it opens on its install page. Errors exit non-zero.
     - A `.fused` file: used exactly as given. It is not installed here —
       `/explorer/embed/<path>.fused` renders through the `fusedapp` template,
       the file's install page (AF-14), and the user installs from there via
@@ -351,19 +346,16 @@ def _open_target(path: str) -> str:
       entry-less folder then renders as an embedded directory listing
       rather than failing.
     """
-    from fused_render import app_listing, deeplink
+    from fused_render import app_listing, appfetch, deeplink
 
     if _is_github_target(path):
+        repo = deeplink.git_payload_from(path)
+        repo = path.strip() if repo is None else repo
+        print(f"open: building {repo} into a .fused")
         try:
-            spec = deeplink.parse_github_url(path)
-            dest = deeplink.destination(spec)
-            sub = f"/{spec['subpath']}" if spec["subpath"] else ""
-            ref = f" @ {spec['ref']}" if spec["ref"] else ""
-            print(f"open: cloning {spec['owner']}/{spec['repo']}{sub}{ref} -> {dest}")
-            result = deeplink.clone_or_pull(spec)
-        except deeplink.DeeplinkError as exc:
+            abs_path = appfetch.download_github_app(repo)
+        except appfetch.FetchError as exc:
             raise SystemExit(str(exc))
-        abs_path = os.path.abspath(result["target"])
     else:
         abs_path = os.path.abspath(os.path.expanduser(path))
         if not os.path.exists(abs_path):

@@ -1,6 +1,8 @@
 // The in-shell half of `fused-render://open?url=` (SPEC §26 DL-8): a web
 // page's "Open in fused-render" link to a hosted `.fused`. GET /clone
-// redirected to Home with the http(s) link in `?_fetch_appfile=`. Mounted
+// redirected to Home with the http(s) link in `?_fetch_appfile=` — or, for
+// `open?git=` (DL-9), the GitHub repo link in `?_fetch_appgit=`, which the
+// same POST builds into a `.fused` from the repo's one app. Mounted
 // once in the top document (`!IS_EMBED` guard); it reads the param on first
 // mount, strips it BEFORE any async work (so a reload mid-download or a Back
 // never re-runs the hand-off), then downloads through the guarded
@@ -39,12 +41,16 @@ import { currentUrl, embedUrlForFsPath, replaceSearch } from "@platform/lib/rout
 import {
   editAppFileFromSearch,
   fetchAppFileFromSearch,
+  fetchAppGitFromSearch,
   withoutEditAppFile,
   withoutFetchAppFile,
+  withoutFetchAppGit,
 } from "./edit-appfile-lib";
 
 const BOOT_URL: string | null =
   typeof location === "undefined" ? null : fetchAppFileFromSearch(location.search);
+const BOOT_GIT: string | null =
+  typeof location === "undefined" ? null : fetchAppGitFromSearch(location.search);
 const BOOT_BAD_FILE: string | null =
   typeof location === "undefined" ? null : editAppFileFromSearch(location.search);
 let consumed = false;
@@ -53,28 +59,29 @@ export default function FetchAppFileBoot() {
   useEffect(() => {
     if (consumed) return;
     const url = BOOT_URL;
+    const git = BOOT_GIT;
     const bad = BOOT_BAD_FILE;
-    if (!url && !bad) return;
+    if (!url && !git && !bad) return;
     consumed = true;
-    if (bad) {
-      replaceSearch(withoutEditAppFile(currentUrl()));
-      notify({ title: "Could not open app file link: not an absolute .fused path — " + bad, tone: "error" });
-      if (!url) return;
-    }
-    if (!url) return;
     // Strip first: whatever happens below, this URL must not replay it.
-    replaceSearch(withoutFetchAppFile(currentUrl()));
-    if (!/^https?:\/\//i.test(url)) {
+    replaceSearch(withoutFetchAppGit(withoutFetchAppFile(withoutEditAppFile(currentUrl()))));
+    if (bad) {
+      notify({ title: "Could not open app file link: not an absolute .fused path — " + bad, tone: "error" });
+    }
+    if (url && !/^https?:\/\//i.test(url)) {
       // The server ferried a malformed payload verbatim so the error surfaces
       // here, in-app, rather than on a page of its own.
       notify({ title: "Could not open app link: not an http(s) URL — " + url, tone: "error" });
       return;
     }
+    // A malformed repo link is reported by the server's own validation.
+    const src = git ? { git } : url ? { url } : null;
+    if (!src) return;
     let alive = true;
-    const toast = notify({ title: "Downloading app from " + url + "…", tone: "info" });
+    const toast = notify({ title: "Downloading app from " + (git || url) + "…", tone: "info" });
     (async () => {
       try {
-        const r = await fetchAppFile(url);
+        const r = await fetchAppFile(src);
         if (!alive) return;
         notify({ title: "Opening app file", tone: "info" }, toast);
         // A full load, not navigateUrl: the embed-vs-view prefix (IS_EMBED,

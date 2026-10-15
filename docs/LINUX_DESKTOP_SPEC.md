@@ -43,7 +43,7 @@ would never carry a URL. A multi-file "Open with" therefore launches one
 instance per file; the second and later instances forward their open to the
 primary over the socket and exit, exactly as a second manual launch does — the
 desktop environment coalesces, the supervisor never sees more than one argument
-per process. A deep link routes to the server's `/clone?src=…` confirm page
+per process. A deep link routes to the server's `/clone?src=…` link router
 instead of a `/view` URL; the same shared mapping (`_view_url_codec`) macOS
 uses, so an OS-delivered link resolves identically everywhere.
 

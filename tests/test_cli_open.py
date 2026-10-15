@@ -193,99 +193,49 @@ def test_run_open_no_browser_skips_opening(tmp_path, monkeypatch):
     assert opened == []
 
 
-# ---- _open_target: GitHub URL / deep link -> cloned (or pulled), then
-# resolved like a folder argument
+# ---- _open_target: GitHub URL / deep link -> built into a .fused, opened on
+# its install page (DL-9)
 
 
-def _github_spec(subpath=""):
-    return {"owner": "acme", "repo": "widgets", "ref": None, "subpath": subpath, "name": "widgets"}
+def test_open_target_github_url_builds_a_fused(tmp_path, monkeypatch, capsys):
+    from fused_render import appfetch
 
+    built = tmp_path / "widgets-12345678.fused"
+    built.write_bytes(b"x")
+    seen = []
 
-def test_open_target_github_url_clones_and_resolves_entry(tmp_path, monkeypatch):
-    dest = tmp_path / "widgets"
-    dest.mkdir()
-    (dest / "index.html").write_text(
-        '<html><head><meta name="fused-app" content=""></head><body></body></html>',
-        encoding="utf-8",
-    )
+    def fake(url):
+        seen.append(url)
+        return str(built)
 
-    from fused_render import deeplink
+    monkeypatch.setattr(appfetch, "download_github_app", fake)
 
-    calls = {}
-
-    def fake_parse(src):
-        calls["src"] = src
-        return _github_spec()
-
-    def fake_destination(spec):
-        return str(dest)
-
-    def fake_clone_or_pull(spec):
-        calls["cloned_spec"] = spec
-        return {"dest": str(dest), "target": str(dest), "view": "irrelevant", "updated": False}
-
-    monkeypatch.setattr(deeplink, "parse_github_url", fake_parse)
-    monkeypatch.setattr(deeplink, "destination", fake_destination)
-    monkeypatch.setattr(deeplink, "clone_or_pull", fake_clone_or_pull)
-
-    target = cli_module._open_target("https://github.com/acme/widgets")
-
-    assert calls["src"] == "https://github.com/acme/widgets"
-    assert calls["cloned_spec"] == _github_spec()
-    assert target == str(dest / "index.html")
+    assert cli_module._open_target("https://github.com/acme/widgets") == str(built)
+    assert seen == ["https://github.com/acme/widgets"]
+    assert "acme/widgets" in capsys.readouterr().out
 
 
 def test_open_target_github_deeplink_form_is_also_recognized(tmp_path, monkeypatch):
-    dest = tmp_path / "widgets"
-    dest.mkdir()
+    from fused_render import appfetch
 
-    from fused_render import deeplink
-
-    monkeypatch.setattr(deeplink, "parse_github_url", lambda src: _github_spec())
-    monkeypatch.setattr(deeplink, "destination", lambda spec: str(dest))
-    monkeypatch.setattr(
-        deeplink,
-        "clone_or_pull",
-        lambda spec: {"dest": str(dest), "target": str(dest), "view": "x", "updated": True},
-    )
+    built = tmp_path / "widgets-12345678.fused"
+    built.write_bytes(b"x")
+    seen = []
+    monkeypatch.setattr(appfetch, "download_github_app", lambda url: seen.append(url) or str(built))
 
     target = cli_module._open_target("fused-render://open?git=https://github.com/acme/widgets")
 
-    # No app-entry page in `dest` here, so the bare clone dir is used as-is.
-    assert target == str(dest)
+    assert target == str(built)
+    assert seen == ["https://github.com/acme/widgets"]
 
 
-def test_open_target_github_url_prints_where_it_clones(tmp_path, monkeypatch, capsys):
-    dest = tmp_path / "widgets"
-    dest.mkdir()
+def test_open_target_github_build_error_exits_nonzero(monkeypatch):
+    from fused_render import appfetch
 
-    from fused_render import deeplink
+    def fail(url):
+        raise appfetch.FetchError("GitHub has no public repository at github.com/acme/widgets")
 
-    monkeypatch.setattr(deeplink, "parse_github_url", lambda src: _github_spec())
-    monkeypatch.setattr(deeplink, "destination", lambda spec: str(dest))
-    monkeypatch.setattr(
-        deeplink,
-        "clone_or_pull",
-        lambda spec: {"dest": str(dest), "target": str(dest), "view": "x", "updated": False},
-    )
+    monkeypatch.setattr(appfetch, "download_github_app", fail)
 
-    cli_module._open_target("https://github.com/acme/widgets")
-
-    out = capsys.readouterr().out
-    assert "acme/widgets" in out
-    assert str(dest) in out
-
-
-def test_open_target_github_clone_error_exits_nonzero_with_git_message(monkeypatch):
-    from fused_render import deeplink
-
-    monkeypatch.setattr(deeplink, "parse_github_url", lambda src: _github_spec())
-    monkeypatch.setattr(deeplink, "destination", lambda spec: "/tmp/wherever")
-
-    def fail(spec):
-        raise deeplink.DeeplinkError("fatal: could not read Username for 'https://github.com'")
-
-    monkeypatch.setattr(deeplink, "clone_or_pull", fail)
-
-    with pytest.raises(SystemExit, match="could not read Username"):
+    with pytest.raises(SystemExit, match="no public repository"):
         cli_module._open_target("https://github.com/acme/widgets")

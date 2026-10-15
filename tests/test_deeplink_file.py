@@ -133,21 +133,6 @@ def test_the_redirect_round_trips_a_spicy_path(tmp_path):
     assert unquote(edit_appfile_redirect(spicy)).endswith("My Apps/a&b #1 100%.fused")
 
 
-def test_git_links_still_get_the_confirm_page(tmp_path):
-    resp = _client(tmp_path).get(
-        "/clone", params={"src": "fused-render://open?git=https://github.com/o/r"},
-        follow_redirects=False)
-    assert resp.status_code == 200
-    assert "Clone" in resp.text
-
-
-def test_the_clone_api_stays_git_only(tmp_path):
-    fused = export(tmp_path)
-    assert _client(tmp_path).get("/api/clone/info", params={"src": link(fused)}).status_code == 400
-    resp = _client(tmp_path).post("/api/clone", json={"src": link(fused)}, headers=FUSED)
-    assert resp.status_code == 400
-
-
 def test_openurls_target_routes_a_file_link_to_the_clone_route():
     from fused_render._view_url_codec import open_target_path
 
@@ -156,4 +141,5 @@ def test_openurls_target_routes_a_file_link_to_the_clone_route():
 
 
 def test_prefixes_stay_in_lock_step():
-    assert len(deeplink._OPEN_FILE_PREFIXES) == len(deeplink._OPEN_PREFIXES)
+    assert (len(deeplink._OPEN_FILE_PREFIXES) == len(deeplink._OPEN_GIT_PREFIXES)
+            == len(deeplink._OPEN_URL_PREFIXES))

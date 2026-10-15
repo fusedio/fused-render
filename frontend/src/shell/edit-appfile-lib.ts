@@ -11,6 +11,11 @@ export const EDIT_APPFILE_PARAM = "_edit_appfile";
 // `FetchAppFileBoot` downloads and opens it. Mirrored in deeplink.py
 // (`FETCH_APPFILE_PARAM`).
 export const FETCH_APPFILE_PARAM = "_fetch_appfile";
+// The `?_fetch_appgit=<github repo url>` hand-off (DL-9): a
+// `fused-render://open?git=` link; the server builds the repo's one app into
+// a `.fused` and `FetchAppFileBoot` opens it. Mirrored in deeplink.py
+// (`FETCH_APPGIT_PARAM`).
+export const FETCH_APPGIT_PARAM = "_fetch_appgit";
 
 /** The value of a boot hand-off param in `search`, or null. Empty is null
  *  too: a bare `?_edit_appfile=` names nothing to open. */
@@ -46,4 +51,13 @@ export function fetchAppFileFromSearch(search: string): string | null {
 
 export function withoutFetchAppFile(url: string): string {
   return withoutBootParam(url, FETCH_APPFILE_PARAM);
+}
+
+/** The GitHub repo link a boot URL's search carries, or null. */
+export function fetchAppGitFromSearch(search: string): string | null {
+  return bootParamFromSearch(search, FETCH_APPGIT_PARAM);
+}
+
+export function withoutFetchAppGit(url: string): string {
+  return withoutBootParam(url, FETCH_APPGIT_PARAM);
 }
