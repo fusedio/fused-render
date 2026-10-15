@@ -309,6 +309,10 @@ def test_asset_and_detail_routes(env):
     # A `v` that is not the app's tree sha (a readme's own `?v=1`) earns nothing.
     r3 = client.get("/api/marketplace/asset/local-chat/icon.svg?v=1")
     assert r3.status_code == 200 and r3.headers["cache-control"] == "no-cache"
+    # The key comes back with the bytes, from the one snapshot both were read
+    # from — never from a second cache read a refresh could slip between.
+    data, _ctype, version = mp.get_asset_versioned("local-chat", "icon.svg")
+    assert data == b"<svg/>" and entry["icon_url"].endswith(f"?v={version}")
     assert r.content == b"<svg/>"
     # Disk-cached per commit.
     commit = mp.get_snapshot()[0]["commit"]

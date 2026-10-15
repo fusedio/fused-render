@@ -72,11 +72,11 @@ def api_marketplace_asset(slug: str, path: str, v: str | None = None):
     that is not the app's current tree sha (a readme's own `?v=1`) —
     revalidates every time, so a catalog that moved on is never shadowed by
     an old cached copy."""
-    got = marketplace.get_asset(slug, path)
+    got = marketplace.get_asset_versioned(slug, path)
     if got is None:
         return _error("not found", status=404)
-    data, content_type = got
-    cache = "max-age=86400" if v and v == marketplace.asset_version(slug) else "no-cache"
+    data, content_type, version = got
+    cache = "max-age=86400" if v and v == version else "no-cache"
     return Response(data, media_type=content_type,
                     headers={**_ASSET_HEADERS, "Cache-Control": cache})
 

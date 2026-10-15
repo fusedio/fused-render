@@ -1058,20 +1058,20 @@ def _asset_version(tree_sha) -> str | None:
     return tree_sha[:12] if isinstance(tree_sha, str) and tree_sha else None
 
 
-def asset_version(slug: str) -> str | None:
-    """The `?v=` value this slug's asset URLs carry right now (cache only,
-    never a rebuild). The asset route grants long browser caching only to a
-    URL whose `v` equals it — an arbitrary `?v=1` in a readme link proves
-    nothing about the bytes behind it."""
-    snap, _err = cached_snapshot()
-    app = (snap or {}).get("apps", {}).get(slug) if is_slug(slug) else None
-    return _asset_version(app.get("tree_sha")) if app else None
-
-
 def get_asset(slug: str, rel: str) -> tuple[bytes, str] | None:
     """(bytes, content type) for one file of a catalog app, or None (→ 404):
     unknown slug, a path not in that app's file list (which also refuses
     every traversal shape), too large, or unfetchable."""
+    got = get_asset_versioned(slug, rel)
+    return got[:2] if got else None
+
+
+def get_asset_versioned(slug: str, rel: str) -> tuple[bytes, str, str | None] | None:
+    """`get_asset` plus the `?v=` key of the SAME catalog snapshot the bytes
+    came from. The asset route grants long browser caching only when the
+    request's `v` equals it — an arbitrary `?v=1` in a readme link proves
+    nothing — and reading the key from a second cache read could pair new-key
+    with old bytes if a refresh landed in between."""
     if not is_slug(slug) or not _safe_rel(rel):
         return None
     snap, _err = cached_snapshot()
@@ -1088,9 +1088,10 @@ def get_asset(slug: str, rel: str) -> tuple[bytes, str] | None:
         return None  # never a path segment, never a git argument
     cache_root = os.path.join(state_dir(), "assets", commit, slug)
     cached = os.path.join(cache_root, *rel.split("/"))
+    version = _asset_version(app.get("tree_sha"))
     try:
         with open(cached, "rb") as f:
-            return f.read(), _content_type(rel)
+            return f.read(), _content_type(rel), version
     except OSError:
         pass
     data = _fetch_asset_bytes(snap, slug, rel)
@@ -1104,7 +1105,7 @@ def get_asset(slug: str, rel: str) -> tuple[bytes, str] | None:
         os.replace(tmp, cached)
     except OSError:
         pass  # served uncached
-    return data, _content_type(rel)
+    return data, _content_type(rel), version
 
 
 def app_detail(slug: str) -> dict | None:
