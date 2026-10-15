@@ -1374,8 +1374,9 @@ def _folder_fence(bot, sess: Turn, name: str, inp: dict) -> str | None:
         return None
     path = _builtin_path(name, inp, getattr(sess, "cwd", "") or "")
     botmod = _botmod()
+    cwd = getattr(sess, "cwd", "") or ""
     try:
-        roots = list(bot.folder_roots())
+        roots = list(bot.folder_roots()) + ([cwd] if cwd else [])  # the process's own cwd is readable by definition
         granted = {os.path.realpath(f) for f in bot.folders()}
     except Exception:  # noqa: BLE001 — fail closed: a list that cannot be read grants nothing
         roots, granted = [], None
