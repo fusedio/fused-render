@@ -463,6 +463,23 @@ def _github_repo(remote_url: str) -> str | None:
     return f"{m.group(1)}/{m.group(2)}" if m else None
 
 
+def _origin_default_branch(gu, root: str) -> str | None:
+    """The remote's default branch from local refs only, or None.
+
+    `refs/remotes/origin/HEAD` when a clone recorded it — not
+    `git_upstream._default_branch`, whose fallback (`remote set-head --auto`)
+    asks the network. A `git init` + push never records that symref, so then
+    `origin/main`, then `origin/master` — the names GitHub defaults to."""
+    head = gu._run(root, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
+    short = gu._out(head) if gu._ok(head) else ""
+    if "/" in short:
+        return short.split("/", 1)[1]
+    for name in ("main", "master"):
+        if gu._ok(gu._run(root, "rev-parse", "--verify", "--quiet", f"refs/remotes/origin/{name}")):
+            return name
+    return None
+
+
 def github_link_state(path: str) -> dict:
     """Whether the folder at `path` can be shared as a GitHub link, and why not.
 
@@ -471,8 +488,9 @@ def github_link_state(path: str) -> dict:
     any larger repo, would link to the whole repo), `origin` is a GitHub
     remote, and nothing is unpushed — a clean tree (untracked files count:
     they are code the link would not carry) and no commit on HEAD missing
-    from the remote's default branch, which is what the link installs
-    (falling back to the branch's own upstream when the default is unknown).
+    from the remote's default branch, which is what the link installs — never
+    this branch's own upstream: a pushed feature branch is not what the link
+    would install.
 
     NO NETWORK CALL — "pushed" is as of the last fetch, the same local-refs
     trade `app_doctor._pushed_pending` makes; this runs when the dialog opens.
@@ -498,22 +516,16 @@ def github_link_state(path: str) -> dict:
         return no("The app's remote is not on GitHub.")
     if not gu._is_clean(root):
         return no("This app has changes that are not committed and pushed.", repo)
-    # The symref a clone records, read locally — not `_default_branch`, whose
-    # fallback (`remote set-head --auto`) asks the network.
-    head = gu._run(root, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
-    short = gu._out(head) if gu._ok(head) else ""
-    default = short.split("/", 1)[1] if "/" in short else None
-    base = f"origin/{default}" if default else "@{upstream}"
-    count = gu._run(root, "rev-list", "--count", f"{base}..HEAD")
-    if not gu._ok(count):
-        return no("This app's branch is not on the remote yet — push it first.", repo)
+    default = _origin_default_branch(gu, root)
+    if default is None:
+        return no("Can't tell the repository's default branch — push it to GitHub first.", repo)
+    count = gu._run(root, "rev-list", "--count", f"origin/{default}..HEAD")
     try:
-        ahead = int(gu._out(count) or "0")
+        ahead = int(gu._out(count)) if gu._ok(count) else 1
     except ValueError:
         ahead = 1
     if ahead > 0:
-        where = f" to {default}" if default else ""
-        return no(f"{ahead} commit{'' if ahead == 1 else 's'} not pushed{where} yet.", repo)
+        return no(f"This app has commits not pushed to {default} yet.", repo)
     return {"ok": True, "url": f"{GITHUB_LINK_BASE}?repo={repo}", "repo": repo, "reason": None}
 
 
