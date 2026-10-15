@@ -349,3 +349,15 @@ def test_an_unknown_run_still_answers_the_inbox_field(agent, tmp_path):
     """Shape stability: the error answers a page's stale `run` param gets carry
     every field the good one does, so the client never has to branch on it."""
     assert agent._poll("no-such-run")["inbox"] == []
+
+
+def test_the_poll_reports_the_inbox_whatever_the_queue_pref_says(agent, tmp_path):
+    """A reload must redraw the mid-turn follow-ups the CLI still holds, so the
+    dispatch reports the inbox with the project queue off (queue="0") and
+    with no queue param at all, not only for queue="1"."""
+    run_dir = _run_dir(tmp_path)
+    agent._write_inbox_entry(str(run_dir), "still waiting")
+
+    for kwargs in ({"queue": "0"}, {}, {"queue": "1"}):
+        out = agent.main(action="poll", run_id="run", **kwargs)
+        assert [row["text"] for row in out["inbox"]] == ["still waiting"], kwargs
