@@ -8006,15 +8006,19 @@ def _learn_windows(row: dict) -> None:
         learned[model] = window
     if not learned:
         return
-    known = _model_windows()
-    if all(known.get(m) == w for m, w in learned.items()):
+    if all(_model_windows().get(m) == w for m, w in learned.items()):
         return
-    # Read-modify-write without a lock, on purpose: two pollers racing here
-    # can only drop each other's entry for one lap, and each entry carries the
-    # same number whoever writes it — the next result row for that model puts
-    # it back.
+    # Read-merge-write under a cross-process lock (the `_record_settings`
+    # pattern): two pollers in two server processes racing here would otherwise
+    # each replace the file with their own merge and drop the other's model.
     try:
-        _write_json_atomic(MODEL_WINDOWS, {**known, **learned})
+        os.makedirs(os.path.dirname(MODEL_WINDOWS), exist_ok=True)
+        with open(MODEL_WINDOWS + ".lock", "w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            known = _model_windows()
+            if all(known.get(m) == w for m, w in learned.items()):
+                return
+            _write_json_atomic(MODEL_WINDOWS, {**known, **learned})
     except OSError:
         pass
 
