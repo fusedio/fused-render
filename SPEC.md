@@ -2097,20 +2097,34 @@ one gate before anything runs. Three payloads on the one `open` action:
   nothing more, since the install page is the gate before anything runs.
 - **DL-9** GitHub repo payload: `fused-render://open?git=https://github.com/
   {owner}/{repo}` — that shape only (`.git` / trailing slash tolerated, the
-  embedded URL may be percent-encoded), a PUBLIC repo holding ONE app. `GET
-  /clone` 303s to Home with the link as `?_fetch_appgit=`; `FetchAppFileBoot`
-  posts it as `{git}` to the same `POST /api/appfile/fetch`, where
-  `appfetch.download_github_app` fetches `archive/HEAD.zip`, extracts it with
-  `zip_import.extract_to_staging`, takes THE one folder whose page carries
-  `<meta name="fused-app">` (zero or several → error), names it the repo
-  (root app) or the folder, and exports it with `appfile.export_app_file`
-  into the same downloads path — then the same install page. An entry
-  without an id gets a stable one (`<name>-<sha256(github.com/owner/repo/)
-  [:8]>`) and `exported_at` is the commit time (archive mtimes), so a
-  re-click on an unchanged repo reads "same" and a new commit "Update".
-  Private or missing repos answer 404 → error. `fused-render open <repo url>`
-  runs the same build and opens the `.fused`. *(Replaces DL-3–DL-6's
-  editable clone, 2026-10-15.)*
+  embedded URL may be percent-encoded), a repo holding ONE app at its ROOT
+  (anything else → error). The app installs as a real GIT CLONE so the user
+  can push and open PRs (`appfile_git.py`). `GET /clone` 303s to Home with
+  the link as `?_fetch_appgit=`; `FetchAppFileBoot` posts it as `{git}` to
+  the same `POST /api/appfile/fetch`, where `appfetch.download_github_app`
+  runs `git clone --filter=blob:none` (the user's own git and credentials,
+  so private repos they can read work) into a staging dir
+  `~/.fused-render/downloads/git/<sha256(url)[:16]>/<repo>` and packs the
+  root app into the usual downloads `.fused`, its index carrying `git: {url,
+  commit}`, `exported_at` = commit time, and — when the page has no
+  `fused-app-id` — a repo-derived id (`<repo>-<sha256(github.com/owner/repo/)
+  [:8]>`) in the manifest only: the clone's files are never edited. The same
+  install page follows, git-aware: `install_target` finds the installed copy
+  as the `app/*` clone whose `origin` matches, and answers `new` · `update`
+  (HEAD is an ancestor of the link's commit, nothing tracked modified → one
+  `git merge --ff-only`) · `same` (HEAD is the commit or past it) · `local`
+  (commits or edits of its own → never touched; update with git) ·
+  `replace` (the same app installed from a FILE and unchanged since →
+  confirm, the clone takes its place keeping `.fused/` and `.venv`) ·
+  `clash`. Install MOVES the staged clone into `app/<slug>` — only when that
+  clone exists at exactly the manifest's commit, so a hand-made file cannot
+  aim the installer at a directory — on the repo's default branch (owner
+  call: auto-sync keeps pulling the author's changes; Claude's turn commits
+  land there and auto-sync's push fails without rights, which is where
+  Claude helps set up a fork + PR). `.fused/` and `.venv/` go to
+  `.git/info/exclude`; no local "Installed from" commit; the stamp records
+  `git`. `fused-render open <repo url>` runs the same build and opens the
+  install page. *(Replaces DL-3–DL-6's editable clone, 2026-10-15.)*
 
 ---
 

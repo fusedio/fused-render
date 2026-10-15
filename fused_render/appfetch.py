@@ -21,20 +21,16 @@ streaming — servers lie.
 
 ``download_github_app(url)`` is the ``fused-render://open?git=`` source
 (DL-9): a public ``https://github.com/<owner>/<repo>`` link — that shape
-only, the repo holding ONE app. It fetches the default branch's archive,
-extracts it through the hardened ``zip_import.extract_to_staging``, finds
-THE one folder whose page carries ``<meta name="fused-app">`` (zero or
-several is an error, never a guess) and exports it with
-``appfile.export_app_file`` into the same downloads dir — so the caller gets
-a ``.fused`` path and the install page is the step after, exactly as for a
-hosted file. Two stamps keep a re-click an UPDATE and not a new app:
-  * an entry with no ``fused-app-id`` is given one derived from the repo
-    (``<name>-<sha256(github.com/owner/repo/)[:8]>``), stable across clicks,
-    written into the extracted page before export;
-  * ``exported_at`` is the commit's time (the archive's newest member mtime,
-    which GitHub sets from the commit), so the same commit reads as SAME and
-    a newer one as UPDATE on the install page.
-The ``fused-render open <github url>`` CLI rides the same function.
+only, the repo holding ONE app at its ROOT. It git-clones the repo into a
+staging dir (appfile_git.py, which also owns the install: the clone itself
+moves into ``app/<slug>``) and packs the root app with
+``appfile.export_app_file`` into the same downloads dir, carrying ``git:
+{url, commit}`` — so the caller gets a ``.fused`` path and the install page
+is the step after, exactly as for a hosted file. An entry with no
+``fused-app-id`` gets one derived from the repo
+(``<name>-<sha256(github.com/owner/repo/)[:8]>``) in the MANIFEST only, and
+``exported_at`` is the commit time. The ``fused-render open <github url>``
+CLI rides the same function.
 
 Ported from Render App's ``fetch.py`` (fused-render-lite PRs #27/#30) so a
 ``fused-render://open?url=`` link downloads like ``render-app://open?url=``
@@ -47,21 +43,16 @@ import hashlib
 import http.client
 import os
 import re
-import shutil
 import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
-import zipfile
 
-from fused_render import __version__, app_listing, appfile, zip_import
+from fused_render import __version__, app_listing, appfile
 from fused_render import app_id as app_identity
 
 MAX_BYTES = 1024 * 1024 * 1024
 TIMEOUT_S = 60
-#: Member cap for a GitHub archive: the whole repo is extracted, not just the
-#: app folder, so this sits above appfile.MAX_EXPORT_ENTRIES.
-MAX_ARCHIVE_ENTRIES = 20000
 _USER_AGENT = f"fused-render/{__version__}"
 
 
@@ -207,106 +198,51 @@ def download_app_file(url: str) -> str:
     return dest
 
 
-def _find_app_dir(root: str, where: str) -> str:
-    """THE folder under ``root`` (itself included) whose page carries the
-    fused-app marker (``app_listing.app_entry``). A found app is not
-    descended into; hidden and machinery dirs are skipped. Zero or several
-    candidates is a ``FetchError`` — the link must name one app."""
-    found: list[str] = []
-    for dirpath, dirnames, _ in os.walk(root, followlinks=False):
-        try:
-            entry = app_listing.app_entry(dirpath)
-        except OSError:
-            entry = None
-        if entry is not None:
-            found.append(dirpath)
-            dirnames[:] = []
-            continue
-        dirnames[:] = sorted(d for d in dirnames
-                             if not d.startswith(".") and d not in appfile._SKIP_DIRS)
-    if not found:
-        raise FetchError(f'no page in {where} carries <meta name="fused-app">, '
-                         "so there is no app to install")
-    if len(found) > 1:
-        rels = ", ".join(os.path.relpath(d, root).replace(os.sep, "/") for d in found[:5])
-        raise FetchError(f"{where} holds more than one app ({rels}); "
-                         "only single-app repositories can be installed from a link")
-    return found[0]
-
-
-def _commit_time(zf: zipfile.ZipFile) -> str | None:
-    """The archive's newest member mtime as an ``exported_at`` stamp —
-    GitHub writes every member with the commit's time."""
-    stamps = [i.date_time for i in zf.infolist() if i.date_time[0] >= 1980]
-    if not stamps:
-        return None
-    y, mo, d, h, mi, s = max(stamps)
-    return f"{y:04d}-{mo:02d}-{d:02d}T{h:02d}:{mi:02d}:{s:02d}Z"
-
-
 def download_github_app(url: str) -> str:
-    """Build the one app in the public GitHub repo at ``url``
-    (``https://github.com/<owner>/<repo>``) into ``downloads/<app_id>.fused``
-    and answer its path. See the module docstring for the identity and time
-    stamps."""
+    """Clone the public GitHub repo at ``url`` (``https://github.com/<owner>/
+    <repo>``) into its staging dir (appfile_git.clone) and pack the app at
+    its ROOT into ``downloads/<app_id>.fused`` for the install page; answer
+    that path. Installing the file then moves the clone itself into
+    ``app/<slug>`` (appfile_git.install)."""
+    from fused_render import appfile_git
+
     owner, repo = parse_github_repo(url)
     where = f"github.com/{owner}/{repo}"
-    archive = f"https://github.com/{owner}/{repo}/archive/HEAD.zip"
-    dest_dir = downloads_dir()
-    work = tempfile.mkdtemp(dir=dest_dir, prefix=".github-")
+    canonical = f"https://{where}"
+    appfile_git.sweep_staging()
     try:
-        zip_path = os.path.join(work, "repo.zip")
+        clone_dir, commit, committed_at = appfile_git.clone(canonical, repo)
+    except appfile_git.GitInstallError as exc:
+        raise FetchError(str(exc))
+    try:
+        entry = app_listing.app_entry(clone_dir)
+    except OSError:
+        entry = None
+    if entry is None:
+        raise FetchError(f'no page at the root of {where} carries <meta name="fused-app">; '
+                         "only repositories with one app at their root can be installed")
+    # The page's own id when it has one; else one derived from the repo, kept
+    # in the manifest and the install stamp only — the clone stays clean.
+    key = f"github.com/{owner.lower()}/{repo.lower()}/".encode("utf-8")
+    derived = f"{app_identity.kebab(repo)}-{hashlib.sha256(key).hexdigest()[:8]}"
+    dest_dir = downloads_dir()
+    fd, built = tempfile.mkstemp(dir=dest_dir, prefix=".github-", suffix=".fused")
+    os.close(fd)
+    os.remove(built)
+    try:
         try:
-            resp = _open(archive)
-        except FetchError as exc:
-            if "HTTP 404" in str(exc):
-                raise FetchError(f"GitHub has no public repository at {where} "
-                                 "(private repositories cannot be installed from a link)")
-            raise
-        with resp:
-            _stream(resp, zip_path)
-        extracted = os.path.join(work, "x")
-        try:
-            with zipfile.ZipFile(zip_path) as zf:
-                exported_at = _commit_time(zf)
-                zip_import.extract_to_staging(
-                    zf, extracted, max_entries=MAX_ARCHIVE_ENTRIES,
-                    max_entry_bytes=MAX_BYTES, max_total_bytes=MAX_BYTES)
-        except zipfile.BadZipFile:
-            raise FetchError(f"GitHub did not answer a zip archive for {where}")
-        except (zip_import.ZipRejected, zip_import.ZipTooLarge) as exc:
-            raise FetchError(f"cannot unpack {where}: {exc}")
-        # GitHub wraps the tree in one `<repo>-<sha>/` folder.
-        tops = [n for n in os.listdir(extracted) if not n.startswith(".")]
-        if len(tops) != 1 or not os.path.isdir(os.path.join(extracted, tops[0])):
-            raise FetchError(f"unexpected archive layout from GitHub for {where}")
-        top = os.path.join(extracted, tops[0])
-        found = _find_app_dir(top, where)
-        # The folder name is the app's name (manifest `name`, hence its slug
-        # under app/): the repo's own name for a root-level app — never the
-        # archive's `<repo>-<sha>` wrapper.
-        name = repo if found == top else os.path.basename(found)
-        app_dir = os.path.join(work, "app", name)
-        os.makedirs(os.path.dirname(app_dir))
-        os.rename(found, app_dir)
-        entry = app_listing.app_entry(app_dir)
-        if entry is not None and app_identity.app_id(entry) is None:
-            # Stable per repo, so export_app_file never mints a random one
-            # and a re-click finds the installed copy.
-            key = f"github.com/{owner.lower()}/{repo.lower()}/".encode("utf-8")
-            app_identity.stamp_entry(
-                entry, f"{app_identity.kebab(name)}-{hashlib.sha256(key).hexdigest()[:8]}")
-        built = os.path.join(work, "app.fused")
-        try:
-            manifest = appfile.export_app_file(app_dir, built, exported_at=exported_at)
+            manifest = appfile.export_app_file(
+                clone_dir, built, exported_at=committed_at, app_id=derived,
+                extra={"git": {"url": canonical, "commit": commit}})
         except appfile.AppFileError as exc:
             raise FetchError(str(exc))
         app_id = appfile.app_id_of(manifest)
         dest = os.path.join(dest_dir, f"{app_id}.fused" if app_id
-                            else _name_from(f"https://{where}/{name}.fused", None))
+                            else _name_from(f"{canonical}/{repo}.fused", None))
         os.replace(built, dest)
     except OSError as exc:
         raise FetchError(f"could not build the app from {where}: {exc}")
     finally:
-        shutil.rmtree(work, ignore_errors=True)
+        if os.path.exists(built):
+            os.remove(built)
     return dest

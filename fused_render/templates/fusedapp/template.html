@@ -176,6 +176,7 @@
   // the button asks twice (the second click sends force).
   function describe(t) {
     const when = (s) => fmtStamp(s) || "an unknown date";
+    if (t.git) return describeGit(t);
     switch (t.state) {
       case "new": return { tone: "ok", title: "Not installed yet",
         body: "Install puts the app at " + t.path + " as an editable app of your own.", button: "Install" };
@@ -197,6 +198,28 @@
         body: "A copy is at " + t.path + " but it carries no install record (a clone, a copy by hand, or an export without a date), so this file cannot be compared with it. Overwriting replaces its files; .fused, .venv and files the app file does not carry stay.", button: "Overwrite" };
       case "clash": return { tone: "warn", title: "A different app is installed under this name",
         body: t.path + " holds another app. Rename or uninstall it, then install this file.", button: null };
+    }
+    return { tone: "warn", title: "Unknown state", body: t.state, button: null };
+  }
+
+  // A GitHub-link build (SPEC §26 DL-9): installs as a git clone of the repo.
+  function describeGit(t) {
+    const repo = t.git.url.replace(/^https:\/\//, "");
+    const commit = t.git.commit.slice(0, 7);
+    switch (t.state) {
+      case "new": return { tone: "ok", title: "Not installed yet",
+        body: "Install clones " + repo + " into " + t.path + ". The app stays a git clone of the repo: it keeps pulling the author's changes, and you can push yours or open a pull request.", button: "Install" };
+      case "update": return { tone: "ok", title: "Update available",
+        body: "The installed clone can fast-forward to " + commit + ", the newest commit on " + repo + ".", button: "Update" };
+      case "same": return { tone: "ok", title: "This version is installed",
+        body: t.path + " is a clone of " + repo + " at " + commit + " or newer.", button: null, open: true };
+      case "local": return { tone: "warn", title: "Your copy has changes of its own",
+        body: t.path + " has commits or edits that are not in " + repo + ", so it is not updated from here. Update it with git (git pull), or ask Claude.",
+        list: (t.changed || []).slice(0, 12), button: null };
+      case "replace": return { tone: "warn", title: "Installed from a file, not from git",
+        body: t.path + " holds this app installed from a .fused file. Replacing it with a git clone of " + repo + " keeps its data (.fused) and environment (.venv).", button: "Replace with git clone" };
+      case "clash": return { tone: "warn", title: "A different app is installed under this name",
+        body: t.path + " holds another app. Rename or uninstall it, then open the link again.", button: null };
     }
     return { tone: "warn", title: "Unknown state", body: t.state, button: null };
   }

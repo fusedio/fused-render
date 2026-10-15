@@ -291,7 +291,9 @@ def default_file_name(app_dir: str) -> str:
 
 def export_app_file(app_dir: str, out_path: str,
                     preview_bytes: bytes | None = None,
-                    exported_at: str | None = None) -> dict:
+                    exported_at: str | None = None,
+                    app_id: str | None = None,
+                    extra: dict | None = None) -> dict:
     """Write the app folder at ``app_dir`` as a ``.fused`` file at ``out_path``.
 
     Returns the manifest written into the zip. Raises :class:`AppFileError`
@@ -311,7 +313,11 @@ def export_app_file(app_dir: str, out_path: str,
 
     ``exported_at`` overrides the now-stamp: appfetch's GitHub build passes
     the commit's time, so the same commit installs as SAME, not UPDATE.
+    ``app_id`` is the identity for an entry page that carries none, written
+    to the manifest only — never into the page (a clone stays clean).
+    ``extra`` joins the index as-is (the GitHub build's ``git`` source).
     """
+    id_override = app_id
     app_dir = os.path.abspath(app_dir)
     if not os.path.isdir(app_dir):
         raise AppFileError(f"no such folder: {app_dir}")
@@ -338,7 +344,8 @@ def export_app_file(app_dir: str, out_path: str,
     # of an older `.fused`, no <head> anchor, a tree with a git remote that a
     # write would leave dirty) the export goes out with no `app_id` rather
     # than an id the next export would mint afresh.
-    app_id = app_identity.app_id(entry)
+    app_id = app_identity.app_id(entry) or (
+        id_override if app_identity.is_valid(id_override) else None)
     if app_id is None and not _has_remote(app_dir):
         app_id = app_identity.ensure(entry, os.path.basename(app_dir))
     members = list(_iter_app_files(app_dir))
@@ -389,6 +396,8 @@ def export_app_file(app_dir: str, out_path: str,
                            "exported_at": exported_at or _utc_now()}
             if app_id is not None:
                 index["app_id"] = app_id
+            if extra:
+                index.update(extra)
             manifest = container.write(tmp, index, payload)
         except container.ContainerError as exc:
             raise AppFileError(str(exc))
@@ -623,6 +632,9 @@ STATE_SAME = "same"            # this exact version is installed
 STATE_DOWNGRADE = "downgrade"  # the file is older than the installed one
 STATE_UNKNOWN = "unknown"      # no stamp (a clone, a hand copy) or no dates
 STATE_CLASH = "clash"          # app/<slug> holds a DIFFERENT app
+# Git-source files only (appfile_git.py, DL-9):
+STATE_LOCAL = "local"          # the copy has commits/edits of its own: update with git
+STATE_REPLACE = "replace"      # an unchanged file-installed copy the clone replaces
 WARN_STATES = frozenset({STATE_DIVERGED, STATE_SAME, STATE_DOWNGRADE, STATE_UNKNOWN})
 
 #: Divergence hashes the stamped files on every probe; an app can be large.
@@ -673,10 +685,11 @@ def read_stamp(app_dir: str) -> dict | None:
     return stamp if isinstance(stamp, dict) else None
 
 
-def write_stamp(app_dir: str, manifest: dict, source: str) -> dict:
+def write_stamp(app_dir: str, manifest: dict, source: str, git: dict | None = None) -> dict:
     """Record what was just written: the file's stamp, the per-file hashes
     out of its index (v1 zips carry none, so the stamp has no `files` and a
-    later probe reads the copy as ``unknown`` for divergence), the source."""
+    later probe reads the copy as ``unknown`` for divergence), the source —
+    and for a clone (appfile_git) its ``git`` ``{url, commit}``."""
     from fused_render import app_fused_dir
 
     files = {}
@@ -692,6 +705,8 @@ def write_stamp(app_dir: str, manifest: dict, source: str) -> dict:
         "name": manifest.get("name") if isinstance(manifest.get("name"), str) else None,
         "files": files,
     }
+    if git:
+        stamp["git"] = git
     os.makedirs(app_fused_dir.dot_fused(app_dir), exist_ok=True)
     tmp = stamp_path(app_dir) + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
@@ -1062,6 +1077,12 @@ def install_target(fused_path: str, *, light: bool = False) -> dict:
             else:
                 state = STATE_DOWNGRADE
 
+    git = _git_target(manifest)
+    if git is not None:
+        dest, found_by, husk, state, changed, other_name = _git_state(
+            git, dest, found_by, husk, state, stamp, other_name, light)
+        installed = found_by is not None
+
     files = []
     total = 0
     for f in manifest.get("files") or []:
@@ -1080,7 +1101,8 @@ def install_target(fused_path: str, *, light: bool = False) -> dict:
         "found_by": found_by,
         "husk": husk,
         "state": state,
-        "needs_force": state in WARN_STATES,
+        "needs_force": state in WARN_STATES or state == STATE_REPLACE,
+        "git": git,
         "exported_at": incoming_at,
         "installed_exported_at": (stamp or {}).get("exported_at") if stamp else None,
         "installed_at": (stamp or {}).get("installed_at") if stamp else None,
@@ -1098,6 +1120,41 @@ def install_target(fused_path: str, *, light: bool = False) -> dict:
         out["readme"] = read_readme(fused_path, manifest)
         out["metadata"] = read_metadata(fused_path, manifest)
     return out
+
+
+def _git_target(manifest: dict) -> dict | None:
+    """The file's git source when it is a GitHub-link build (DL-9), else
+    None — the file then installs as files, as ever."""
+    from fused_render import appfile_git
+
+    return appfile_git.source_of(manifest)
+
+
+def _git_state(git: dict, dest: str, found_by: str | None, husk: bool, state: str,
+               stamp: dict | None, other_name: str | None, light: bool):
+    """Re-read ``install_target``'s answer for a git-source file
+    (appfile_git.py): the installed CLONE of the repo is the copy wherever
+    it is under ``app/``; a copy of the same app installed from a file is
+    ``replace`` when unchanged since install and ``local`` when edited; a
+    clone of another repo under the slug is a clash. Answers ``(dest,
+    found_by, husk, state, changed, other_name)``."""
+    from fused_render import appfile_git
+
+    try:
+        clone = appfile_git.installed_clone_of(git["url"])
+        if clone is not None:
+            return clone, "git", False, appfile_git.probe(clone, git), [], None
+        if found_by is None or state == STATE_CLASH:
+            return dest, found_by, husk, state, [], other_name
+        if os.path.isdir(os.path.join(dest, ".git")) and appfile_git._origin(dest):
+            # A clone of some other repository holds the slug.
+            return dest, found_by, False, STATE_CLASH, [], os.path.basename(dest)
+    except appfile_git.GitInstallError:
+        return dest, found_by, husk, STATE_LOCAL, [], other_name
+    diff = None if light else divergence(dest, stamp or {}) if stamp else None
+    if state in (STATE_UPDATE, STATE_SAME, STATE_DOWNGRADE) and (light or diff == []):
+        return dest, found_by, husk, STATE_REPLACE, [], other_name
+    return dest, found_by, husk, STATE_LOCAL, diff or [], other_name
 
 
 def _extract_payload(fused_path: str, manifest: dict, staging: str) -> str:
@@ -1187,6 +1244,15 @@ def install_app_file(fused_path: str, *, force: bool = False) -> dict:
     """
     target = install_target(fused_path)
     state = target["state"]
+    if target.get("git"):
+        # A GitHub-link build installs as a clone (appfile_git.py, DL-9).
+        from fused_render import appfile_git
+
+        try:
+            done = appfile_git.install(fused_path, target, read_manifest(fused_path), force=force)
+        except appfile_git.GitInstallError as exc:
+            raise AppFileError(str(exc))
+        return {**install_target(fused_path, light=True), **done}
     if state == STATE_CLASH:
         raise AppFileError(
             f"{target['path']} already holds a different app ({target['other_name']}); "

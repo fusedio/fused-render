@@ -25,8 +25,9 @@ writes (D3) and has no page of its own:
 
 The shell's `FetchAppFileBoot` reads either hand-off once, downloads through
 the X-Fused `POST /api/appfile/fetch` (appfetch.py — `{url}` downloads the
-`.fused`, `{git}` builds one from the repo's archive; both into
-`~/.fused-render/downloads/<app_id>.fused`) and hard-loads the file's
+`.fused`, `{git}` clones the repo and packs its root app — both into
+`~/.fused-render/downloads/<app_id>.fused`; installing a git build moves
+the clone itself into `app/<slug>`, appfile_git.py) and hard-loads the file's
 chrome-free embed URL, the install page. In a native window that window
 becomes the app's own (the URL observer re-keys it; title-bar Edit leads to
 the explorer); in a browser tab the EmbedStrip's "Open in explorer" does. No
