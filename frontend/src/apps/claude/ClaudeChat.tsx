@@ -4377,7 +4377,7 @@ function ChatBody(props: ChatBodyProps) {
       sessionId: state.sessionId ?? "",
       controls,
       status: state.status,
-      queued: state.queued,
+      queued: [...state.queued, ...inboxRows.map((r) => r.text)],
       // HOW FULL THE WINDOW IS, for the composer's context meter. Straight off
       // the controller — it moves with the transcript and with nothing else, so
       // the landing composer (no conversation) and a brand-new chat both get
@@ -4532,6 +4532,7 @@ function ChatBody(props: ChatBodyProps) {
       state.sessionId,
       state.status,
       state.queued,
+      inboxRows,
       state.context,
       controls,
       onSend,
@@ -5037,15 +5038,16 @@ function ChatBody(props: ChatBodyProps) {
                     is this document's memory and does not survive one, and the
                     transcript cannot help because nothing has consumed the message
                     yet. Deduped against both (`inboxRows`), so no message is ever
-                    two bubbles. */}
-                {queueOn &&
-                  inboxRows.map((row) => (
+                    two bubbles. DRAWN WHATEVER THE QUEUE FLAG SAYS: the server
+                    reports the inbox either way, and with the flag off these rows
+                    also feed the composer's "queued" line (`card.queued`). */}
+                {inboxRows.map((row) => (
                   <div className="c-inbox" key={row.id}>
                     <div className="turn user c-inbox-turn">
                       <div className="bubble">{row.text}</div>
                     </div>
                   </div>
-                  ))}
+                ))}
                 {/* THE MESSAGES THIS CHAT HAS NOT SENT YET, at their place in the
                     conversation. They are the LAST rows of the transcript by
                     construction — the scheduler sends in `due` order, which for a
