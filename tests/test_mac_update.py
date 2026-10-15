@@ -1521,6 +1521,7 @@ def _swap_through_fakes(monkeypatch, manager, tmp_path, *, fail_second_rename=Fa
     import shutil
 
     def fake_download(manifest, *, dir, prefix, suffix, progress, should_abort):
+        """A finished 8-byte "DMG" in the updates dir, no network."""
         os.makedirs(dir, exist_ok=True)
         path = os.path.join(dir, prefix + "done" + suffix)
         with open(path, "wb") as f:
@@ -1534,6 +1535,7 @@ def _swap_through_fakes(monkeypatch, manager, tmp_path, *, fail_second_rename=Fa
                        "CFBundleIdentifier": mac._flavor.bundle_id()}, f)
 
     def fake_run(argv, **kwargs):
+        """`ditto` is a copytree, `hdiutil detach` a no-op, anything else fails the test."""
         if argv[0] == "/usr/bin/ditto":
             shutil.copytree(argv[1], argv[2])
         elif argv[0] == "/usr/bin/hdiutil":
@@ -1546,12 +1548,14 @@ def _swap_through_fakes(monkeypatch, manager, tmp_path, *, fail_second_rename=Fa
     real_rmtree = shutil.rmtree
 
     def recording_rmtree(path, *args, **kwargs):
+        """The real rmtree, with every target recorded."""
         removed.append(str(path))
         return real_rmtree(path, *args, **kwargs)
 
     real_rename = os.rename
 
     def failing_rename(src, dst):
+        """Real renames, except the swap-in one — simulating a failed second rename."""
         if src.endswith(".FusedRender-update.app"):
             raise OSError("simulated: second rename failed")
         return real_rename(src, dst)
@@ -1646,6 +1650,7 @@ def test_sweep_removes_only_dead_pids_leftovers_of_this_flavor(tmp_path):
     parent.mkdir()
 
     def app(name):
+        """A minimal bundle-shaped directory under `parent`."""
         d = parent / name
         (d / "Contents").mkdir(parents=True)
         return d
@@ -1690,6 +1695,7 @@ def test_sweep_keeps_going_past_a_bad_entry(monkeypatch, tmp_path):
     (tmp_path / ".FusedRender-old-2.app").mkdir()
 
     def alive(pid):
+        """A probe that blows up on pid 1 and reports every other pid dead."""
         if pid == 1:
             raise RuntimeError("probe blew up")
         return False
@@ -1708,6 +1714,7 @@ def test_pid_alive_only_trusts_a_real_no_such_process(monkeypatch):
     """Only ESRCH means dead; EPERM, an overflowing pid and pid 0 all read as
     alive, because a wrong "dead" deletes running code."""
     def kill(pid, sig, *, error):
+        """An `os.kill` that raises `error`, or nothing."""
         if error is not None:
             raise error
 
@@ -1751,6 +1758,7 @@ def test_start_sweeps_the_resolved_bundle_parent_once(monkeypatch, tmp_path):
     done = threading.Event()
 
     def record(parent, *, keep):
+        """Capture what `start()` asked the sweep to do."""
         swept.append((parent, keep))
         done.set()
 
