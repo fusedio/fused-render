@@ -769,6 +769,12 @@ class _Window:
 
         self.webview = WKWebView.alloc().initWithFrame_configuration_(
             NSMakeRect(0, 0, w, h), configuration)
+        # WKWebView paints opaque white until the page's first frame; let the
+        # theme-matched window background show through instead (no white flash).
+        try:
+            self.webview.setValue_forKey_(False, "drawsBackground")
+        except Exception:
+            logger.debug("drawsBackground not settable", exc_info=True)
         self.webview.setAllowsBackForwardNavigationGestures_(True)
         self.ns.setContentView_(self.webview)
 
