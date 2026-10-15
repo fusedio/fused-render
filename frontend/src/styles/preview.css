@@ -416,6 +416,36 @@ html.side-reopening iframe {
   position: relative;
 }
 
+/* FULL SCREEN (lib/side-maximized-store; the header's .side-maximize button).
+   The column is lifted over the whole viewport instead of being remounted, so
+   the chat keeps its state and .stat-main stays mounted underneath. No ancestor
+   up to #root sets transform, filter, contain or will-change (#content only
+   animates opacity), so `fixed` resolves against the viewport. z-index 950 sits
+   below every modal overlay (deploy.css 1000, the chat's file-preview and
+   screenshot overlays 1100), so a dialog opened from inside it still covers it.
+   The folder listing's pane gets the same treatment on its slot
+   (.listing-pane-slot.maximized, explorer.css). */
+.preview-side.maximized {
+  position: fixed;
+  inset: 0;
+  z-index: 950;
+  flex-basis: auto !important;
+  width: auto;
+  min-width: 0;
+  max-width: none;
+  background: var(--bg-alt);
+}
+/* Centre the chat for reading: the header row and the Git iframe stay full
+   width. */
+.preview-side.maximized .chat-root .chat-log,
+.listing-pane-slot.maximized .chat-root .chat-log,
+.preview-side.maximized .c-composer-chat,
+.listing-pane-slot.maximized .c-composer-chat {
+  max-width: 880px;
+  width: 100%;
+  margin-inline: auto;
+}
+
 /* NO `isolation: isolate` HERE, considered and rejected (2026-09-10). A stacking
    context keeps the geometry of the chat's `position: fixed` overlays — that is
    not what it changes. What it changes is RANK: `#annpop.sidebar` (ann.css,

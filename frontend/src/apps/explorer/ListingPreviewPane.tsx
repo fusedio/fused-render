@@ -31,7 +31,13 @@ import { modeTitle } from "@platform/lib/mode-name";
 import { withNoFocus } from "@platform/lib/frame-focus";
 import { ChatMount } from "@apps/claude";
 import { usePaneFocusGuard } from "@apps/explorer/listing/usePaneFocusGuard";
-import { SideCloseButton, SideTabs, paneSideIcon } from "@apps/explorer/SideChrome";
+import {
+  SideCloseButton,
+  SideMaximizeButton,
+  SideTabs,
+  paneSideIcon,
+} from "@apps/explorer/SideChrome";
+import { setSideMaximized, useSideMaximized } from "@apps/explorer/lib/side-maximized-store";
 import { paneChatOnly } from "@apps/explorer/listing/pane-modes";
 import {
   paneSideMenu,
@@ -78,6 +84,7 @@ export default function ListingPreviewPane({
   // Keep the keyboard on the listing when a companion iframe mounts (the pane's
   // focus contract — platform/lib/frame-focus.ts).
   const { rootRef, guardProps } = usePaneFocusGuard<HTMLDivElement>();
+  const maximized = useSideMaximized();
 
   // --- the pane's modes (listing/pane-side.ts) --------------------------------
   // A TAB STRIP over the two companions the pane may be on (SideChrome's
@@ -116,7 +123,10 @@ export default function ListingPreviewPane({
   const strip = () => (
     <div className="pane-header">
       <SideCloseButton what={modeTitle(side)} onClick={onClose} />
-      <div className="side-header-tail">{sideTabs}</div>
+      <div className="side-header-tail">
+        {sideTabs}
+        <SideMaximizeButton maximized={maximized} onToggle={() => setSideMaximized(!maximized)} />
+      </div>
     </div>
   );
 

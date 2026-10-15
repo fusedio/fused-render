@@ -102,6 +102,11 @@ import {
   type PaneSideState,
 } from "@apps/explorer/listing/pane-side";
 import { getSideHidden, setSideHidden } from "@apps/explorer/lib/side-hidden-store";
+import {
+  setSideMaximized,
+  useSideMaximized,
+  useSideMaximizedEscape,
+} from "@apps/explorer/lib/side-maximized-store";
 import { getSideTab, setSideTab } from "@apps/explorer/lib/side-tab-store";
 import { useDirMode } from "@apps/explorer/lib/dir-mode";
 import { takeClaudeAsk, claudeEntryReady } from "@apps/explorer/lib/claude-ask";
@@ -573,7 +578,14 @@ export default function Listing({
   // not a reset. Session-only — see paneSideParam on why the URL records only
   // "shut".
   const openSide = () => setSide({ open: true, mode: sideState.mode });
-  const closeSide = () => setSide({ open: false, mode: sideState.mode });
+  // Closing the pane also drops full screen (lib/side-maximized-store), so a
+  // later reopen is not unexpectedly full screen.
+  const closeSide = () => {
+    setSideMaximized(false);
+    setSide({ open: false, mode: sideState.mode });
+  };
+  const paneMaximized = useSideMaximized();
+  useSideMaximizedEscape(paneMaximized && paneOpen);
 
   const clipboard = useClipboard();
 
@@ -2248,14 +2260,16 @@ export default function Listing({
         </div>
         {paneOpen && (
           <>
+            {!paneMaximized && (
+              <div
+                className="listing-divider"
+                onPointerDown={onDividerPointerDown}
+                role="separator"
+                aria-orientation="vertical"
+              />
+            )}
             <div
-              className="listing-divider"
-              onPointerDown={onDividerPointerDown}
-              role="separator"
-              aria-orientation="vertical"
-            />
-            <div
-              className="listing-pane-slot"
+              className={paneMaximized ? "listing-pane-slot maximized" : "listing-pane-slot"}
               // A PERCENTAGE, not a pixel width: the split is a fraction of
               // this container (listing/pane.ts), so a window resize keeps the
               // proportion instead of leaving the pane at one window's

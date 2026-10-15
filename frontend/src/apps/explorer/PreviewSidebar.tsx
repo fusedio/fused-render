@@ -35,7 +35,12 @@
 // flex children of the split container.
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { modeTitle } from "@platform/lib/mode-name";
-import { SideCloseButton, SideTabs } from "@apps/explorer/SideChrome";
+import { SideCloseButton, SideMaximizeButton, SideTabs } from "@apps/explorer/SideChrome";
+import {
+  setSideMaximized,
+  useSideMaximized,
+  useSideMaximizedEscape,
+} from "@apps/explorer/lib/side-maximized-store";
 import {
   publishPreviewSideSlot,
   retractPreviewSideSlot,
@@ -113,7 +118,7 @@ export default function PreviewSidebar({
   active,
   src,
   onSelect,
-  onClose,
+  onClose: closeSide,
   chat,
 }: {
   // The switcher's whole list: every companion, in SIDEBAR_MODES order, the ones
@@ -139,6 +144,15 @@ export default function PreviewSidebar({
    */
   chat?: ReactNode;
 }) {
+  // Full screen (lib/side-maximized-store). Closing the column always drops it,
+  // so a later reopen is not unexpectedly full screen.
+  const maximized = useSideMaximized();
+  useSideMaximizedEscape(maximized);
+  const onClose = () => {
+    setSideMaximized(false);
+    closeSide();
+  };
+
   // A width the user DRAGGED earlier in this document leads (lib/side-store) — that
   // is what makes the divider hold still while you walk from file to file, since
   // this component remounts on every one of those hops. It leads, it does not win
@@ -298,15 +312,17 @@ export default function PreviewSidebar({
 
   return (
     <>
-      <div
-        className="preview-side-divider"
-        ref={dividerRef}
-        onPointerDown={onDividerPointerDown}
-        role="separator"
-        aria-orientation="vertical"
-      />
+      {!maximized && (
+        <div
+          className="preview-side-divider"
+          ref={dividerRef}
+          onPointerDown={onDividerPointerDown}
+          role="separator"
+          aria-orientation="vertical"
+        />
+      )}
       <aside
-        className="preview-side"
+        className={maximized ? "preview-side maximized" : "preview-side"}
         style={{ flexBasis: width }}
         aria-label={modeTitle(active) + " sidebar"}
       >
@@ -327,6 +343,10 @@ export default function PreviewSidebar({
               is up, so the column has nothing to fall back for. */}
           <div className="side-header-tail">
             <SideTabs tabs={entries} active={active} onSelect={onSelect} />
+            <SideMaximizeButton
+              maximized={maximized}
+              onToggle={() => setSideMaximized(!maximized)}
+            />
           </div>
         </div>
         {src === null ? (
