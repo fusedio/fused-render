@@ -593,9 +593,12 @@ jobs:
           EXISTING_MANIFEST_PATH="$RUNNER_TEMP/existing-latest.json" \
             python3 scripts/download_page/write_manifest.py > "$RUNNER_TEMP/latest.json"
           cat "$RUNNER_TEMP/latest.json"
-          # assets/ is synced in one pass per extension: `--content-type` is one
-          # value for the whole sync, and the hero video shipped as image/jpeg
-          # when everything went through a single pass.
+          # assets/ goes up in one pass per extension: `--content-type` is one
+          # value for the whole command, and the hero video shipped as image/jpeg
+          # when everything went through a single pass. The jpg pass is a sync;
+          # the others are `cp --recursive` (a handful of files) because sync
+          # skips unchanged objects and would leave the ones already uploaded
+          # with the old image/jpeg type.
           # Order matters: everything index.html links to (assets, about.html,
           # ai.html) must land before index.html itself — the && chain
           # short-circuits, so a failed dependency upload leaves the OLD page
@@ -607,13 +610,13 @@ jobs:
              && aws s3 sync scripts/download_page/assets "s3://${S3_BUCKET}/assets" \
                --exclude "*" --include "*.jpg" --include "*.jpeg" \
                --content-type "image/jpeg" --cache-control "max-age=86400" \
-             && aws s3 sync scripts/download_page/assets "s3://${S3_BUCKET}/assets" \
+             && aws s3 cp --recursive scripts/download_page/assets "s3://${S3_BUCKET}/assets" \
                --exclude "*" --include "*.png" \
                --content-type "image/png" --cache-control "max-age=86400" \
-             && aws s3 sync scripts/download_page/assets "s3://${S3_BUCKET}/assets" \
+             && aws s3 cp --recursive scripts/download_page/assets "s3://${S3_BUCKET}/assets" \
                --exclude "*" --include "*.gif" \
                --content-type "image/gif" --cache-control "max-age=86400" \
-             && aws s3 sync scripts/download_page/assets "s3://${S3_BUCKET}/assets" \
+             && aws s3 cp --recursive scripts/download_page/assets "s3://${S3_BUCKET}/assets" \
                --exclude "*" --include "*.mp4" \
                --content-type "video/mp4" --cache-control "max-age=86400" \
              && aws s3 cp scripts/download_page/about.html "s3://${S3_BUCKET}/about.html" \
