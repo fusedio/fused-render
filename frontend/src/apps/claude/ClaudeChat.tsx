@@ -97,6 +97,7 @@ import {
   type PaneSrcFlags,
   type TargetNoun,
 } from "./pane";
+import { useSideMaximized } from "@platform/lib/side-maximized-store";
 import {
   AnnStrip,
   ArtStrip,
@@ -677,6 +678,17 @@ function ChatBody(props: ChatBodyProps) {
     onArriveChat: () => annRef.current?.arriveNarrowChat(),
     onRemeasure: () => annRef.current?.remeasure(),
   });
+  // Full screen hides the file preview, and the Screenshot / Comment / Annotate
+  // row (hidden by CSS then) acts on it, so entering full screen disarms the
+  // mode the same way arriving in the narrow chat view does. `arriveNarrowChat`
+  // only turns the armed mode off; it does not touch a recording. Gated on the
+  // chat living in a side pane: the store is global, other hosts are unaffected.
+  const sideMaximized = useSideMaximized();
+  useEffect(() => {
+    if (!sideMaximized) return;
+    if (!rootRef.current?.closest(".preview-side, .listing-pane-slot")) return;
+    annRef.current?.arriveNarrowChat();
+  }, [sideMaximized]);
   // The noun the app-state block reads (see `paneNounRef`'s own note). Written
   // on every render rather than in an effect: the watcher pulls it lazily at
   // BLOCK time, so what matters is that the ref is current whenever a send

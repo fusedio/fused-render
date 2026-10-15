@@ -445,6 +445,12 @@ html.side-reopening iframe {
   width: 100%;
   margin-inline: auto;
 }
+/* The Screenshot / Comment / Annotate row acts on the file preview, which full
+   screen hides. Scoped by ancestor so a chat in another host keeps it. */
+.preview-side.maximized .c-anncta,
+.listing-pane-slot.maximized .c-anncta {
+  display: none;
+}
 
 /* NO `isolation: isolate` HERE, considered and rejected (2026-09-10). A stacking
    context keeps the geometry of the chat's `position: fixed` overlays — that is
