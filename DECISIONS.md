@@ -6987,3 +6987,5 @@ A 6-column table in a bot reply wrapped short cells ("fused-render", "#1641") on
 - **Summary format.** `summarizeTasks` returns per-kind counts over ALL tasks regardless of status ("1 agent · 2 shells", "" when empty): no "running" suffix, no paused/failed parts. The `chat-tasks-title` span is gone (the section keeps its aria-label); the status detail lives in the rows.
 - **Files pill removed.** `SessionFiles.tsx`, its `.c-files*` CSS and the DockRow `files` slot are deleted; `DockRow` takes only `tasks`. `touchedFiles` in `protocol/filePaths.ts` is now unused by the UI but kept (own tests).
 - `.c-composer-chat` bottom padding 6px -> 16px.
+- **Summary revised, dropdown z-index.** `summarizeTasks` now counts live or paused tasks per kind (all tasks when none are active) and appends " · N failed"; it supersedes the "ALL tasks" rule above.
+- `dropdown-menu.tsx`'s positioner is `z-[1200]` (was z-50) so menus opened from the full-screen header (pane z 950) are visible, matching `popover.tsx`.
