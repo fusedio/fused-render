@@ -176,4 +176,11 @@
     letter-spacing: inherit;
     color: inherit;
   }
+  /* The other preflight piece: a button's UA fill. button.tsx's ghost and link
+     variants set no background, so without this they wear WebKit's light-grey
+     `buttonface` — a grey tile behind every ghost icon button (the routine
+     card's pencil and trash). Layered, so every variant's bg-* still wins. */
+  button[data-slot] {
+    background-color: transparent;
+  }
 }
