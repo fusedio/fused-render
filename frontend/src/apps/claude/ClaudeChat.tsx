@@ -147,9 +147,7 @@ import { WorktreeMenu, paneChatUrl, type WorktreeRequest } from "./ui";
 import { WorktreeHintChip, visibleWorktreeHint } from "./ui/WorktreeHintChip";
 import { TasksContext, TasksPanel, tasksPanelScope, useTasksOpen } from "./ui";
 import { FilePreviewProvider } from "./ui/filePreview";
-import { SessionFiles } from "./ui/SessionFiles";
 import { DockRow } from "./ui/DockRow";
-import { touchedFiles } from "./protocol/filePaths";
 import { taskIndex } from "./protocol/tasks";
 import { recapAnchor } from "./protocol/recap";
 import {
@@ -4343,8 +4341,6 @@ function ChatBody(props: ChatBodyProps) {
     inChat,
   );
   artTick.current = art.poll;
-  // The files this chat wrote or edited, for the "Files (N)" list.
-  const sessionFiles = useMemo(() => touchedFiles(state.turns), [state.turns]);
   const [snapNonce, setSnapNonce] = useState(0);
   snapInvalidate.current = () => setSnapNonce((n) => n + 1);
 
@@ -5119,7 +5115,6 @@ function ChatBody(props: ChatBodyProps) {
             {/* THE RUN'S BACKGROUND TASKS (SPEC T-5), between the transcript and
                 the box: one line until opened. Not in the compact cut — a tile
                 is read, and its chips already say what is running. */}
-            {/* Files (N) shares this row: a pill at the right, its list a popover. */}
             {!compact ? (
               <DockRow
                 tasks={
@@ -5134,7 +5129,6 @@ function ChatBody(props: ChatBodyProps) {
                     />
                   ) : null
                 }
-                files={sessionFiles.length ? <SessionFiles files={sessionFiles} /> : null}
               />
             ) : null}
             {/* …AND ONE SUMMARY OVER THE BOX. The rows are in a transcript that
