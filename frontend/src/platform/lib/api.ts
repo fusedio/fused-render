@@ -1361,6 +1361,11 @@ export interface Prefs {
   // OPTIONAL: an older server answers without it, and the reader
   // (marketplace-flag.ts) treats absence as off.
   marketplace?: { enabled: boolean };
+  // Whether the Share sheet offers its GitHub install-link card (opt-in,
+  // default off — shell/prefs.py `github_link_enabled`). Gates the card, not
+  // /api/share/github. OPTIONAL: an older server answers without it, and the
+  // reader (github-link-flag.ts) treats absence as off.
+  github_link?: { enabled: boolean };
   // ONE TASK IN PROGRESS PER FOLDER (`project_queue_enabled`, shell/prefs.py).
   // Everything that wants to run in a folder somebody else's task is already
   // running in waits its turn in the scheduler's pending list instead — chat
@@ -1723,6 +1728,10 @@ export function putMonitorEnabled(enabled: boolean): Promise<Prefs> {
 
 export function putMarketplaceEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { marketplace_enabled: enabled });
+}
+
+export function putGithubLinkEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { github_link_enabled: enabled });
 }
 
 /** Whether a finished-task notification fires for an interactive-terminal

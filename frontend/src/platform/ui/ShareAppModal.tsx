@@ -37,6 +37,14 @@
 //     file — rather than as a toast, because the reader is looking at the
 //     card that did it.
 //
+//   • GitHub link (third card, only with `github_link_enabled` —
+//     github-link-flag.ts): a udf.ai page that installs the app from its
+//     GitHub repo. Nothing is uploaded, so it is copyable only when the
+//     folder IS the repo root, `origin` is GitHub, and nothing is unpushed
+//     (share_app.py `github_link_state`); otherwise the card stays muted with
+//     the one sentence saying which condition failed. Muted for a snapshot
+//     too, like the public link: the repo is the live app.
+//
 // NEITHER ROUTE PHOTOGRAPHS THE SCREEN. The .fused and the public link carry
 // the folder's authored preview.png or none; a missing thumbnail is App
 // Doctor's `preview` check to surface, not this sheet's to paper over with a
@@ -53,6 +61,7 @@ import {
   Copy,
   ExternalLink,
   FolderOpen,
+  GitBranch,
   Globe,
   Loader2,
   Package,
@@ -66,15 +75,18 @@ import { navigate } from "@platform/lib/router";
 import { cn } from "@platform/lib/utils";
 import {
   closeShareApp,
+  getGithubLink,
   getShareStatus,
   lookupShare,
   publishShare,
   removeShare,
   useShareAppRequest,
+  type GithubLinkState,
   type ShareAppRequest,
   type ShareStatus,
   type SharedAppRecord,
 } from "@platform/lib/share-app";
+import { useGithubLinkFeature } from "@platform/lib/github-link-flag";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -186,6 +198,27 @@ export function ShareAppModal({
   const [saved, setSaved] = useState<{ name: string; path: string } | null>(null);
   const loginStampRef = useRef<number | null>(null);
   const pollRef = useRef<number | null>(null);
+  const githubEnabled = useGithubLinkFeature();
+  const [github, setGithub] = useState<GithubLinkState | null>(null);
+  const [githubErr, setGithubErr] = useState("");
+  const [githubCopied, setGithubCopied] = useState(false);
+
+  // Local git only (no fetch), so it answers as fast as the status read. Not
+  // for a snapshot: that card stands down without asking.
+  useEffect(() => {
+    if (!githubEnabled || !linkEligible) return;
+    let cancelled = false;
+    getGithubLink(app.path)
+      .then((g) => {
+        if (!cancelled) setGithub(g);
+      })
+      .catch((e: Error) => {
+        if (!cancelled) setGithubErr(e.message);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [githubEnabled, linkEligible, app.path]);
 
   // `status.logged_in` is the credentials FILE existing (share_app.py, like
   // canvases.py). A file can exist and be dead — the token behind it refused
@@ -373,6 +406,15 @@ export function ShareAppModal({
     if (ok) {
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1500);
+    }
+  };
+
+  const copyGithub = async () => {
+    if (!github?.url) return;
+    const ok = await copyToClipboard(github.url);
+    if (ok) {
+      setGithubCopied(true);
+      window.setTimeout(() => setGithubCopied(false), 1500);
     }
   };
 
@@ -617,7 +659,9 @@ export function ShareAppModal({
               </DialogClose>
             </div>
             <DialogDescription className="sr-only">
-              Share this app as a public link or as a .fused file.
+              {githubEnabled
+                ? "Share this app as a public link, a .fused file, or a GitHub link."
+                : "Share this app as a public link or as a .fused file."}
             </DialogDescription>
           </DialogHeader>
           <div className="flex flex-col gap-3 px-6 pb-5">
@@ -653,6 +697,65 @@ export function ShareAppModal({
                 </p>
               )}
             </OptionCard>
+            {githubEnabled && (
+              <OptionCard
+                icon={<GitBranch />}
+                title="GitHub link"
+                description={
+                  !linkEligible
+                    ? "Links always install the live app. Pick Live in the version picker to share one."
+                    : github?.repo
+                      ? `Installs the app straight from github.com/${github.repo}.`
+                      : "Installs the app straight from its GitHub repository."
+                }
+                muted={!linkEligible || (!!github && !github.ok)}
+                action={
+                  linkEligible && !github && !githubErr ? (
+                    <Skeleton className="h-8 w-24" />
+                  ) : (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={!github?.ok}
+                      onClick={() => void copyGithub()}
+                    >
+                      {githubCopied ? <Check data-icon="inline-start" /> : <Copy data-icon="inline-start" />}
+                      {githubCopied ? "Copied" : "Copy link"}
+                    </Button>
+                  )
+                }
+              >
+                {linkEligible && github?.ok && github.url && (
+                  <div className="flex items-center gap-1.5">
+                    <Input
+                      type="text"
+                      readOnly
+                      value={github.url}
+                      onFocus={(e) => e.currentTarget.select()}
+                      aria-label="GitHub link"
+                      className="h-8 flex-1 truncate bg-muted/40 font-mono text-[12.5px] text-foreground"
+                    />
+                    <Button
+                      size="icon-sm"
+                      variant="outline"
+                      title="Open the install page"
+                      aria-label="Open the install page"
+                      render={<a href={github.url} target="_blank" rel="noopener noreferrer" />}
+                    >
+                      <ExternalLink />
+                    </Button>
+                  </div>
+                )}
+                {linkEligible && github && !github.ok && github.reason && (
+                  <p className="m-0 text-[13px] leading-5 text-muted-foreground">{github.reason}</p>
+                )}
+                {githubErr && (
+                  <p className="m-0 text-[13px] leading-5 text-destructive" role="alert">
+                    {githubErr}
+                  </p>
+                )}
+              </OptionCard>
+            )}
           </div>
           {/* NESTED inside DialogContent, not a sibling of the Dialog: Base UI
               only coordinates dialogs through the React tree — a nested root
