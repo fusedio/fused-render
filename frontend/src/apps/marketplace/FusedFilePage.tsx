@@ -393,7 +393,13 @@ export function FusedFilePage({ path }: { path: string }) {
 
   const resolveUrl = useMemo<UrlResolver>(
     () => (url, kind) => {
-      if (/^(?:[a-z][a-z0-9+.-]*:|\/\/|#)/i.test(url)) return url;
+      if (/^(?:[a-z][a-z0-9+.-]*:|\/\/|#)/i.test(url)) {
+        // An app file is untrusted until installed: a remote image would
+        // tell its author who opened it, and when. Links stay (a click is
+        // consent); images load only from the file itself or inline data.
+        if (kind === "img" && !/^data:image\//i.test(url)) return null;
+        return url;
+      }
       // Members are not served one by one; the two the file has routes for are.
       const rel = url.replace(/^\.\//, "").toLowerCase();
       if (kind === "img" && rel === "preview.png") return appfilePreviewUrl(path);

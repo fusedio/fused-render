@@ -8,7 +8,7 @@ import { installDomShim } from "./testDomShim";
 
 installDomShim();
 
-const { actionFor, isActive, installedAppHref, categoryLabel, refreshCatalog, peekCatalog } = await import("./marketplace");
+const { actionFor, isActive, installedAppHref, categoryLabel, refreshCatalog, peekCatalog, installApp, peekJobs } = await import("./marketplace");
 type AppEntry = import("./marketplace").AppEntry;
 type InstallJob = import("./marketplace").InstallJob;
 
@@ -118,5 +118,40 @@ describe("refreshCatalog", () => {
     await first;
     expect(peekCatalog().catalog?.commit).toBe("new");
     expect(peekCatalog().loading).toBe(false);
+  });
+});
+
+describe("jobs poll", () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  test("a poll that left before an install started never wipes the new job", async () => {
+    let releaseJobs: ((body: unknown) => void) | null = null;
+    const queued = { slug: "race-app", action: "install", state: "queued", progress: 0, bytes_done: 0, bytes_total: 0, message: "" };
+    globalThis.fetch = ((url: string, init?: RequestInit) => {
+      const u = String(url);
+      if (u.includes("/jobs") && !releaseJobs) {
+        return new Promise((res) => {
+          releaseJobs = (body) => res(new Response(JSON.stringify(body), { status: 200 }));
+        });
+      }
+      if (u.includes("/install") && init?.method === "POST") {
+        return Promise.resolve(new Response(JSON.stringify({ status: "ok", job: queued }), { status: 200 }));
+      }
+      if (u.includes("/jobs")) {
+        return Promise.resolve(new Response(JSON.stringify({ jobs: { "race-app": queued } }), { status: 200 }));
+      }
+      return Promise.resolve(new Response(JSON.stringify({ status: "ok", commit: "c", categories: [], apps: [] }), { status: 200 }));
+    }) as typeof fetch;
+    // The catalog read fires one jobs read, held open here.
+    void refreshCatalog({ again: true });
+    await installApp({ slug: "race-app", name: "Race App" });
+    expect(peekJobs()["race-app"]?.state).toBe("queued");
+    // The stale poll lands after the install with an empty map.
+    releaseJobs!({ jobs: {} });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(peekJobs()["race-app"]?.state).toBe("queued");
   });
 });

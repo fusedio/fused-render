@@ -21,12 +21,9 @@ from fused_render import marketplace
 
 router = APIRouter()
 
-#: Asset bytes are content-addressed by the catalog's commit (the disk cache
-#: is per commit), so an hour of browser caching is safe. The CSP keeps a
-#: community SVG/HTML file opened DIRECTLY at its asset URL from running
-#: script on this origin; an <img> of it is unaffected.
+#: The CSP keeps a community SVG/HTML file opened DIRECTLY at its asset URL
+#: from running script on this origin; an <img> of it is unaffected.
 _ASSET_HEADERS = {
-    "Cache-Control": "max-age=3600",
     "X-Content-Type-Options": "nosniff",
     "Content-Security-Policy": "default-src 'none'; img-src data:; style-src 'unsafe-inline'; sandbox",
 }
@@ -65,14 +62,21 @@ def api_marketplace_app(slug: str):
 
 
 @router.get("/api/marketplace/asset/{slug}/{path:path}")
-def api_marketplace_asset(slug: str, path: str):
+def api_marketplace_asset(slug: str, path: str, v: str | None = None):
     """Raw bytes of one file in a catalog app (preview.png, icon.svg, readme
-    images…). 404 unless `path` is in that app's file list."""
+    images…). 404 unless `path` is in that app's file list.
+
+    Browser caching follows the URL: the catalog's icon/preview URLs carry
+    `?v=<app tree sha>`, so a day is safe (new content, new URL). Unversioned
+    URLs (readme images resolved against `readme_base`) revalidate every time,
+    so a catalog that moved on is never shadowed by an old cached copy."""
     got = marketplace.get_asset(slug, path)
     if got is None:
         return _error("not found", status=404)
     data, content_type = got
-    return Response(data, media_type=content_type, headers=_ASSET_HEADERS)
+    cache = "max-age=86400" if v else "no-cache"
+    return Response(data, media_type=content_type,
+                    headers={**_ASSET_HEADERS, "Cache-Control": cache})
 
 
 @router.post("/api/marketplace/install")

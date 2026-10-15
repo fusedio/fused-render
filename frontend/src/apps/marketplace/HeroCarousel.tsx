@@ -28,7 +28,12 @@ function useReducedMotion(): boolean {
 
 export function HeroCarousel({ apps, catalog }: { apps: AppEntry[]; catalog: Catalog | null }) {
   const [raw, setI] = useState(0);
-  const [paused, setPaused] = useState(false);
+  // Hover and keyboard focus pause independently: leaving with the mouse
+  // must not resume while focus is still on a slide's pill or link — the next
+  // tick would mark that slide inert and drop the reader's focus.
+  const [hovered, setHovered] = useState(false);
+  const [focused, setFocused] = useState(false);
+  const paused = hovered || focused;
   const reduce = useReducedMotion();
   const n = apps.length;
   // The featured list can shrink under us (a catalog refresh): never point
@@ -52,10 +57,13 @@ export function HeroCarousel({ apps, catalog }: { apps: AppEntry[]; catalog: Cat
       className="mp-hero"
       aria-roledescription="carousel"
       aria-label="Featured apps"
-      onMouseEnter={() => setPaused(true)}
-      onMouseLeave={() => setPaused(false)}
-      onFocus={() => setPaused(true)}
-      onBlur={() => setPaused(false)}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      onFocus={() => setFocused(true)}
+      onBlur={(e) => {
+        // Focus moving between controls inside the carousel stays paused.
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setFocused(false);
+      }}
     >
       {apps.map((app, k) => (
         <article

@@ -113,8 +113,8 @@ def test_catalog_from_git_mirror(env):
     chat = cat["apps"][0]
     assert chat["name"] == "Local Chat" and chat["version"] == "1.2.0"
     assert chat["author"] == {"name": "Tester", "github": None}
-    assert chat["icon_url"] == "/api/marketplace/asset/local-chat/icon.svg"
-    assert chat["preview_url"] == "/api/marketplace/asset/local-chat/preview.png"
+    assert chat["icon_url"] == f"/api/marketplace/asset/local-chat/icon.svg?v={chat['tree_sha'][:12]}"
+    assert chat["preview_url"] == f"/api/marketplace/asset/local-chat/preview.png?v={chat['tree_sha'][:12]}"
     assert chat["featured"] is True  # curated default set
     assert chat["installed"] is None and chat["update_available"] is False
     assert chat["compatible"] is True
@@ -281,6 +281,15 @@ def test_install_job_runs_in_background_and_is_idempotent(env):
     r = client.post("/api/marketplace/install", json={"slug": "sine-starter"},
                     headers={"X-Fused": "1"})
     assert r.json()["job"]["action"] == "update"
+    # Let the update job finish while the fixture's env still points it at
+    # tmp_path (teardown restores the real home dirs under a live thread).
+    deadline = time.time() + 30
+    while time.time() < deadline:
+        job = client.get("/api/marketplace/jobs").json()["jobs"]["sine-starter"]
+        if job["state"] in ("done", "error"):
+            break
+        time.sleep(0.05)
+    assert job["state"] == "done", job
 
 
 @needs_git
@@ -289,7 +298,14 @@ def test_asset_and_detail_routes(env):
     r = client.get("/api/marketplace/asset/local-chat/icon.svg")
     assert r.status_code == 200
     assert r.headers["content-type"] == "image/svg+xml"
-    assert r.headers["cache-control"] == "max-age=3600"
+    # Unversioned (readme-relative) URLs revalidate; the catalog's own
+    # icon/preview URLs carry ?v=<tree sha> and cache for a day.
+    assert r.headers["cache-control"] == "no-cache"
+    entry = next(a for a in client.get("/api/marketplace/catalog").json()["apps"]
+                 if a["slug"] == "local-chat")
+    assert "?v=" in entry["icon_url"]
+    r2 = client.get(entry["icon_url"])
+    assert r2.status_code == 200 and r2.headers["cache-control"] == "max-age=86400"
     assert r.content == b"<svg/>"
     # Disk-cached per commit.
     commit = mp.get_snapshot()[0]["commit"]
@@ -532,3 +548,32 @@ def test_raw_urls_are_percent_encoded(env, monkeypatch):
     res = mp.install_app("hello", snap)
     assert f"/o/r/{SHA}/hello/img/my%20shot%20%231%3F.png" in requested
     assert open(os.path.join(res["path"], "img", "my shot #1?.png"), "rb").read() == b"data"
+
+
+def test_install_fails_closed_when_the_catalog_commit_is_gone(env):
+    # A catalog naming a commit the mirror can't get must not install the tip
+    # instead — that would put code on disk the user never saw described.
+    snap, _ = mp.get_snapshot()
+    _push(env["seed"], {"sine-starter/index.html": "<html>v2</html>"})
+    bogus = dict(snap, commit="f" * 40)
+    with pytest.raises(mp.InstallError, match="refresh the Marketplace"):
+        mp.install_app("sine-starter", bogus)
+    assert not os.path.exists(os.path.join(mp.community_dir(), "sine-starter"))
+
+
+def test_new_install_stamp_rides_in_with_the_payload(env, monkeypatch):
+    # The stamp is in place the moment the folder appears: a crash right after
+    # the rename leaves an app the Marketplace still owns (updatable), never an
+    # "unowned" folder it refuses to touch.
+    snap, _ = mp.get_snapshot()
+    seen = {}
+    real_rename = os.rename
+
+    def spy(src, dst):
+        if dst.endswith(os.path.join("community", "sine-starter")):
+            seen["stamp_before_rename"] = mp.read_stamp(src)
+        return real_rename(src, dst)
+
+    monkeypatch.setattr(mp.os, "rename", spy)
+    mp.install_app("sine-starter", snap)
+    assert seen["stamp_before_rename"]["tree_sha"] == snap["apps"]["sine-starter"]["tree_sha"]

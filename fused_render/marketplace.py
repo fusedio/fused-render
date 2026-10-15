@@ -889,6 +889,7 @@ def app_entry(slug: str, app: dict, snap: dict, installed: dict | None,
     branch = snap.get("branch") or DEFAULT_BRANCH
     inst = _installed_info(installed)
     tree_sha = app.get("tree_sha")
+    ver = f"?v={tree_sha[:12]}" if isinstance(tree_sha, str) and tree_sha else ""
     return {
         "slug": slug,
         "name": _opt_str(meta.get("name")) or slug,
@@ -902,8 +903,10 @@ def app_entry(slug: str, app: dict, snap: dict, installed: dict | None,
         "ai_capabilities": _str_list(meta.get("ai_capabilities")),
         "ai_models": _str_list(meta.get("ai_models")),
         "ai_model_param": _opt_str(meta.get("ai_model_param")),
-        "icon_url": f"/api/marketplace/asset/{slug}/{icon}" if icon else None,
-        "preview_url": f"/api/marketplace/asset/{slug}/{preview}" if preview else None,
+        # `?v=` (the app folder's tree sha) keys the browser cache to the
+        # content, so a catalog that moved on never shows last hour's icon.
+        "icon_url": f"/api/marketplace/asset/{slug}/{icon}{ver}" if icon else None,
+        "preview_url": f"/api/marketplace/asset/{slug}/{preview}{ver}" if preview else None,
         "size_bytes": sum(int(f.get("size") or 0) for f in files),
         "file_count": len(files),
         "tree_sha": tree_sha,
@@ -1384,8 +1387,13 @@ def _stage(snap: dict, slug: str, payload: str, progress) -> dict:
                 with contextlib.suppress(SourceError):
                     _git("fetch", "--depth", "1", "--no-tags", "origin", want,
                          cwd=mirror_dir(), timeout=CLONE_TIMEOUT_S)
-            # Failing all that, the tip — the stamp records what was copied.
-            ref = want if _git_has_commit(want) else "HEAD"
+            # Fail closed: installing whatever the tip holds now would put
+            # code on disk that differs from the version, readme and trust
+            # notes the user just read.
+            if not _git_has_commit(want):
+                raise InstallError("the community repo changed since this page loaded — "
+                                   "refresh the Marketplace and try again")
+            ref = want
             r = _git("cat-file", "-e", f"{ref}:{slug}", cwd=mirror_dir())
             if r.returncode != 0:
                 raise InstallError(f"{slug} is no longer in the community repo")
@@ -1481,7 +1489,21 @@ def install_app(slug: str, snap: dict, report=lambda **kw: None) -> dict:
             p = os.path.join(payload, *f["path"].split("/"))
             if os.path.isfile(p):
                 hashes[f["path"]] = _sha256_file(p)
+        stamp = {
+            "slug": slug,
+            "version": meta.get("version") if isinstance(meta.get("version"), str) else None,
+            "tree_sha": staged["tree_sha"],
+            "commit": staged["commit"],
+            "repo": snap.get("repo"),
+            "installed_at": _utc_now(),
+            "source": staged["source"],
+            "files": hashes,
+        }
         if not exists:
+            # The stamp rides in with the payload, so the folder appears
+            # already owned: a crash after the rename can never leave app
+            # files the Marketplace refuses to touch as "not installed by us".
+            _write_stamp(payload, stamp)
             try:
                 os.rename(payload, dest)
             except OSError:
@@ -1506,16 +1528,6 @@ def install_app(slug: str, snap: dict, report=lambda **kw: None) -> dict:
         app_fused_dir.ensure(dest)
     except Exception:  # noqa: BLE001 — scaffolding is a nicety, the stamp is not
         logger.debug("marketplace: .fused scaffold failed for %s", dest, exc_info=True)
-    stamp = {
-        "slug": slug,
-        "version": meta.get("version") if isinstance(meta.get("version"), str) else None,
-        "tree_sha": staged["tree_sha"],
-        "commit": staged["commit"],
-        "repo": snap.get("repo"),
-        "installed_at": _utc_now(),
-        "source": staged["source"],
-        "files": hashes,
-    }
     _write_stamp(dest, stamp)
     # The /apps hub's snapshot lags the disk by up to 20 s; never on the one
     # folder just installed (same reset the `.fused` installer does).

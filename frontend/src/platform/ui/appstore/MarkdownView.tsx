@@ -44,8 +44,10 @@ export type UrlResolver = (url: string, kind: "img" | "a") => string | null;
 export function renderMarkdown(source: string, baseUrl?: string, resolveUrl?: UrlResolver): string {
   const html = parser().parse(source, { async: false }) as string;
   const frag = DOMPurify.sanitize(html, {
-    FORBID_TAGS: ["style", "form", "input", "iframe", "script", "object", "embed"],
-    FORBID_ATTR: ["style"],
+    // Media that names its URL anywhere but `img[src]` (srcset, <source>,
+    // poster) would load without passing through the resolver below.
+    FORBID_TAGS: ["style", "form", "input", "iframe", "script", "object", "embed", "video", "audio", "picture", "source"],
+    FORBID_ATTR: ["style", "srcset", "poster"],
     ADD_ATTR: ["target", "rel"],
     RETURN_DOM_FRAGMENT: true,
   }) as DocumentFragment;

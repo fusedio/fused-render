@@ -382,6 +382,11 @@ const POLL_MS = 600;
 let jobs: Record<string, InstallJob> = {};
 let pollTimer: ReturnType<typeof setTimeout> | null = null;
 let polling = false;
+/** Bumped whenever this window merges a job of its own (installApp). A poll
+ *  that left before the bump answers for an older world — its map lacks the
+ *  job just started — so its answer is dropped instead of wiping the new
+ *  job back to Get; the next tick reads the server again. */
+let jobsGen = 0;
 const jobListeners = new Set<(j: Record<string, InstallJob>) => void>();
 /** Slugs whose install THIS window started — the ones that earn a toast. */
 const startedHere = new Map<string, string>();
@@ -468,9 +473,10 @@ function schedule() {
 async function pollJobsOnce(): Promise<void> {
   if (polling) return;
   polling = true;
+  const departed = jobsGen;
   try {
     const r = await fetchJobs();
-    setJobs(r.jobs ?? {});
+    if (departed === jobsGen) setJobs(r.jobs ?? {});
   } catch {
     /* A missed poll is retried by the next tick while anything is active. */
   } finally {
@@ -487,12 +493,14 @@ export async function installApp(app: { slug: string; name: string }): Promise<I
   announced.delete(app.slug);
   try {
     const r = await postInstall(app.slug);
+    jobsGen += 1;
     setJobs({ ...jobs, [app.slug]: r.job });
     schedule();
     return r.job;
   } catch (e) {
     startedHere.delete(app.slug);
     const message = (e as Error).message || "Install failed";
+    jobsGen += 1;
     setJobs({
       ...jobs,
       [app.slug]: {
@@ -508,6 +516,11 @@ export async function installApp(app: { slug: string; name: string }): Promise<I
     });
     throw e;
   }
+}
+
+/** The jobs readers see, synchronously (tests). */
+export function peekJobs(): Record<string, InstallJob> {
+  return visible;
 }
 
 /** Every job the server lists. The poll runs only while one is active. */

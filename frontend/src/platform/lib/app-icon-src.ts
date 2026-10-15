@@ -38,8 +38,10 @@ export function isRasterIconUrl(url: string | null): boolean {
   if (!url || url.startsWith("data:")) return false;
   const q = url.indexOf("?");
   if (q < 0) return /\.png$/i.test(url);
-  const path = new URLSearchParams(url.slice(q + 1)).get("path");
-  return /\.png$/i.test(path ?? "");
+  // A /raw URL names the file in `?path=`; anything else (a Marketplace
+  // asset with a `?v=` cache key) names it in its own path.
+  const path = new URLSearchParams(url.slice(q + 1)).get("path") ?? url.slice(0, q);
+  return /\.png$/i.test(path);
 }
 
 function iconText(url: string): Promise<string | null> {
