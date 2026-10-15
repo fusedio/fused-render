@@ -849,6 +849,11 @@ export interface ContextUsage {
   cache_read_input_tokens: number;
   output_tokens: number;
   model: string;
+  /** The model's context window in tokens AS THE CLI REPORTED IT (the
+   *  `result` row's `modelUsage.<model>.contextWindow`, learned by agent.py).
+   *  `null`/absent when no reply has named this model yet — the page's own
+   *  table stands in. Wins over the table, which is the one that goes stale. */
+  window?: number | null;
   compacted: boolean;
 }
 

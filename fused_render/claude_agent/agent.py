@@ -122,6 +122,14 @@ def _runs_root() -> str:
 
 
 RUNS = _runs_root()
+#: WHAT THE CLI SAYS EACH MODEL'S CONTEXT WINDOW IS — `{model id: tokens}`,
+#: learned from the `modelUsage` on every `result` row and kept beside the runs
+#: tree. The page's meter used to hold a hand-copied table of windows that went
+#: stale with every CLI release (2.1.300 gave Opus 5.5 and Haiku 5.5 a million
+#: tokens; the table still said 200k, and the ring read six times too full —
+#: Akshil, 2026-10-15). The CLI reports the number itself, so the table is
+#: now only the fallback for a model no reply has named yet.
+MODEL_WINDOWS = os.path.join(os.path.dirname(RUNS), "model-windows.json")
 
 # Where annotation screenshots land: a SIBLING of `runs`, not a child of a run
 # dir. The ordering is what forces it — annotations are captured and uploaded as
@@ -6808,6 +6816,7 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
         elif t == "result":
             saw_result = True
             idle = True
+            _learn_windows(row)
             new_session = row.get("session_id", new_session)
             result_text = row.get("result")
             if row.get("is_error"):
@@ -6815,6 +6824,11 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
                 # Only if the failure arrived DURING a retry. A retry earlier in
                 # the turn that then succeeded says nothing about why this ended.
                 gave_up = was_retrying
+
+    # The window the result row just taught, onto the reading built before it:
+    # a chat's FIRST turn names its model and its window in the same batch.
+    if context is not None and saw_result and context.get("window") is None:
+        context["window"] = _known_window(context.get("model", ""))
 
     # The task registry (SPEC T-1) and the command list (SPEC C-2): the rows
     # this window holds that the persisted registry has not absorbed yet,
@@ -7929,6 +7943,82 @@ _CONTEXT_ERROR_TEXTS = (
 _CONTEXT_SKIP_ITERATIONS = ("advisor_message", "compaction")
 
 
+_model_windows_cache: tuple = (None, None, {})   # (path, stamp, map)
+
+
+def _model_windows() -> dict:
+    """The learned `{model: window}` map, re-read only when the file changed.
+
+    The change stamp is (mtime, inode, size), not mtime alone: every rewrite
+    is an `os.replace`, so the inode moves even when two writes land in the
+    same nanosecond."""
+    global _model_windows_cache
+    path = MODEL_WINDOWS
+    try:
+        st = os.stat(path)
+    except OSError:
+        return {}
+    stamp = (st.st_mtime_ns, st.st_ino, st.st_size)
+    cached_path, cached_stamp, cached = _model_windows_cache
+    if cached_path == path and cached_stamp == stamp:
+        return cached
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    out = {}
+    if isinstance(data, dict):
+        for key, value in data.items():
+            if isinstance(key, str) and key and not isinstance(value, bool) \
+                    and isinstance(value, int) and value > 0:
+                out[key] = value
+    _model_windows_cache = (path, stamp, out)
+    return out
+
+
+def _known_window(model: str) -> int | None:
+    """The window the CLI reported for `model`, or None when no result row has
+    named it yet (the page then falls back to its own table)."""
+    model = str(model or "").strip()
+    if not model:
+        return None
+    known = _model_windows()
+    return known.get(model) or known.get(model.lower())
+
+
+def _learn_windows(row: dict) -> None:
+    """Record `modelUsage.<model>.contextWindow` off one `result` row.
+
+    Written only when something is NEW, so the file is not rewritten once per
+    turn; and last-writer-wins is fine because two writers for one model
+    carry the same number — the CLI's."""
+    usage = row.get("modelUsage") if isinstance(row, dict) else None
+    if not isinstance(usage, dict):
+        return
+    learned = {}
+    for model, info in usage.items():
+        if not isinstance(model, str) or not model or not isinstance(info, dict):
+            continue
+        window = info.get("contextWindow")
+        if isinstance(window, bool) or not isinstance(window, int) or window <= 0:
+            continue
+        learned[model] = window
+    if not learned:
+        return
+    known = _model_windows()
+    if all(known.get(m) == w for m, w in learned.items()):
+        return
+    # Read-modify-write without a lock, on purpose: two pollers racing here
+    # can only drop each other's entry for one lap, and each entry carries the
+    # same number whoever writes it — the next result row for that model puts
+    # it back.
+    try:
+        _write_json_atomic(MODEL_WINDOWS, {**known, **learned})
+    except OSError:
+        pass
+
+
 def _context_usage(msg: dict) -> dict | None:
     """The CONTEXT WINDOW READING carried by ONE assistant message, or None.
 
@@ -7996,6 +8086,9 @@ def _context_usage(msg: dict) -> dict | None:
         # 5, Fable and Opus 5 are a million tokens and everything else is 200k.
         # "" when the row does not say, and the page falls back to the picker.
         "model": model,
+        # ...AND HOW BIG ITS WINDOW IS, when the CLI has said so (`_learn_windows`).
+        # None until a result row names this model; the page's table stands in.
+        "window": _known_window(model),
         # True only for the estimate a compaction leaves behind — see `_history`.
         "compacted": False,
     }
@@ -8288,6 +8381,7 @@ def _history(file: str, session_id: str, app_reads: bool = False,
                        "cache_creation_input_tokens": 0,
                        "cache_read_input_tokens": 0, "output_tokens": 0,
                        "model": (context or {}).get("model", ""),
+                       "window": (context or {}).get("window"),
                        "compacted": True}
     # `transcript` is the watermark the page's live watch compares against
     # (origin/main, D406) — the stat taken BEFORE this read, so a row appended
