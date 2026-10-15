@@ -39,7 +39,8 @@ def test_git_payload_verbatim_and_percent_encoded():
 
 @pytest.mark.parametrize(
     "url",
-    [REPO_URL, REPO_URL + "/", REPO_URL + ".git", "https://www.github.com/octocat/sandbox"],
+    [REPO_URL, REPO_URL + "/", REPO_URL + ".git", "https://www.github.com/octocat/sandbox",
+     REPO_URL + "?tab=readme-ov-file", REPO_URL + "#readme", REPO_URL + "/?tab=x#y"],
 )
 def test_parse_github_repo_accepts(url):
     assert appfetch.parse_github_repo(url) == ("octocat", "sandbox")

@@ -213,11 +213,14 @@
         body: "The installed clone can fast-forward to " + commit + ", the newest commit on " + repo + ".", button: "Update" };
       case "same": return { tone: "ok", title: "This version is installed",
         body: t.path + " is a clone of " + repo + " at " + commit + " or newer.", button: null, open: true };
-      case "local": return { tone: "warn", title: "Your copy has changes of its own",
-        body: t.path + " has commits or edits that are not in " + repo + ", so it is not updated from here. Update it with git (git pull), or ask Claude.",
-        list: (t.changed || []).slice(0, 12), button: null };
-      case "replace": return { tone: "warn", title: "Installed from a file, not from git",
-        body: t.path + " holds this app installed from a .fused file. Replacing it with a git clone of " + repo + " keeps its data (.fused) and environment (.venv).", button: "Replace with git clone" };
+      case "local": return t.found_by === "git"
+        ? { tone: "warn", title: "Your copy has changes of its own",
+            body: t.path + " has commits or edits that are not in " + repo + ", so it is not updated from here. Update it with git (git pull), or ask Claude.", button: null }
+        : { tone: "warn", title: "Your copy was edited since it was installed",
+            body: t.path + " holds this app installed from a .fused file, and these files changed since. Rename or uninstall it, then open the link again.",
+            list: (t.changed || []).slice(0, 12), button: null };
+      case "replace": return { tone: "warn", title: "Installed without git",
+        body: t.path + " holds this app, but not as a git clone. Replacing it clones " + repo + " in its place and keeps its data (.fused) and environment (.venv); the old folder goes to the Trash.", button: "Replace with git clone" };
       case "clash": return { tone: "warn", title: "A different app is installed under this name",
         body: t.path + " holds another app. Rename or uninstall it, then open the link again.", button: null };
     }

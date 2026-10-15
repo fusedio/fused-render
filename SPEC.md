@@ -2103,7 +2103,9 @@ one gate before anything runs. Three payloads on the one `open` action:
   the link as `?_fetch_appgit=`; `FetchAppFileBoot` posts it as `{git}` to
   the same `POST /api/appfile/fetch`, where `appfetch.download_github_app`
   runs `git clone --filter=blob:none` (the user's own git and credentials,
-  so private repos they can read work) into a staging dir
+  PATH widened for a Finder-launched app's credential helpers, ssh in
+  BatchMode, an https auth failure retried once over `git@github.com:` — so
+  private repos they can read work) into a staging dir
   `~/.fused-render/downloads/git/<sha256(url)[:16]>/<repo>` and packs the
   root app into the usual downloads `.fused`, its index carrying `git: {url,
   commit}`, `exported_at` = commit time, and — when the page has no
@@ -2114,11 +2116,18 @@ one gate before anything runs. Three payloads on the one `open` action:
   (HEAD is an ancestor of the link's commit, nothing tracked modified → one
   `git merge --ff-only`) · `same` (HEAD is the commit or past it) · `local`
   (commits or edits of its own → never touched; update with git) ·
-  `replace` (the same app installed from a FILE and unchanged since →
-  confirm, the clone takes its place keeping `.fused/` and `.venv`) ·
-  `clash`. Install MOVES the staged clone into `app/<slug>` — only when that
-  clone exists at exactly the manifest's commit, so a hand-made file cannot
-  aim the installer at a directory — on the repo's default branch (owner
+  `replace` (any other copy of the same app — a file install, a hand copy,
+  a leftover — unless its install stamp proves it edited since, which is
+  `local` → confirm; the clone takes its place keeping `.fused/` and `.venv`,
+  the old folder goes to the OS Trash, never deleted) · `clash`. The
+  installed clone is found by `origin` anywhere in the workspace. Install
+  MOVES the staged clone into `app/<slug>` — only when that clone exists at
+  exactly the manifest's commit AND the manifest's name/id are the ones the
+  clone itself yields (`expected_identity`), so a hand-made file cannot aim
+  the installer at a directory, slug or other app — through ONE placement
+  model (`appfile_git._place`: copy into `app/.install-*` first, then
+  same-filesystem renames rolled back on failure, so the user's folder is
+  never half-written) — on the repo's default branch (owner
   call: auto-sync keeps pulling the author's changes; Claude's turn commits
   land there and auto-sync's push fails without rights, which is where
   Claude helps set up a fork + PR). `.fused/` and `.venv/` go to

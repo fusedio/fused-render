@@ -1134,8 +1134,8 @@ def _git_state(git: dict, dest: str, found_by: str | None, husk: bool, state: st
                stamp: dict | None, other_name: str | None, light: bool):
     """Re-read ``install_target``'s answer for a git-source file
     (appfile_git.py): the installed CLONE of the repo is the copy wherever
-    it is under ``app/``; a copy of the same app installed from a file is
-    ``replace`` when unchanged since install and ``local`` when edited; a
+    it is in the workspace; any other copy of the same app is ``replace``,
+    unless its install stamp proves it edited since (``local``); a
     clone of another repo under the slug is a clash. Answers ``(dest,
     found_by, husk, state, changed, other_name)``."""
     from fused_render import appfile_git
@@ -1143,18 +1143,26 @@ def _git_state(git: dict, dest: str, found_by: str | None, husk: bool, state: st
     try:
         clone = appfile_git.installed_clone_of(git["url"])
         if clone is not None:
-            return clone, "git", False, appfile_git.probe(clone, git), [], None
+            return clone, "git", False, appfile_git.probe(clone, git, light=light), [], None
         if found_by is None or state == STATE_CLASH:
             return dest, found_by, husk, state, [], other_name
         if os.path.isdir(os.path.join(dest, ".git")) and appfile_git._origin(dest):
+            if appfile_git.is_clone_of(dest, git["url"]):
+                # This repo's clone, reached by id/slug where the walk did
+                # not list it (a symlinked spelling): still the clone.
+                return dest, "git", False, appfile_git.probe(dest, git, light=light), [], None
             # A clone of some other repository holds the slug.
             return dest, found_by, False, STATE_CLASH, [], os.path.basename(dest)
     except appfile_git.GitInstallError:
         return dest, found_by, husk, STATE_LOCAL, [], other_name
-    diff = None if light else divergence(dest, stamp or {}) if stamp else None
-    if state in (STATE_UPDATE, STATE_SAME, STATE_DOWNGRADE) and (light or diff == []):
-        return dest, found_by, husk, STATE_REPLACE, [], other_name
-    return dest, found_by, husk, STATE_LOCAL, diff or [], other_name
+    # A copy of this app that is not a clone. Replacing it sends the old
+    # folder to the Trash (appfile_git._place), so only a copy the stamp
+    # PROVES edited since its file install is held back; a stamp-less copy
+    # (a hand copy, an emptied leftover) is replaced after the confirm.
+    diff = divergence(dest, stamp) if stamp and not light else None
+    if diff:
+        return dest, found_by, husk, STATE_LOCAL, diff, other_name
+    return dest, found_by, husk, STATE_REPLACE, [], other_name
 
 
 def _extract_payload(fused_path: str, manifest: dict, staging: str) -> str:

@@ -65,13 +65,37 @@ class GitInstallError(Exception):
     """User-reportable; the message goes verbatim to the page."""
 
 
+#: stderr fragments meaning "https auth did not happen": the cue to retry the
+#: clone over ssh (many dev machines authenticate to GitHub by key only).
+_AUTH_FAILURE_MARKERS = (
+    "could not read username",
+    "authentication failed",
+    "repository not found",
+    "terminal prompts disabled",
+)
+
+
+def _env() -> dict:
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_LFS_SKIP_SMUDGE": "1"}
+    # No interactive ssh prompts either (passphrase, unknown host key).
+    env.setdefault("GIT_SSH_COMMAND", "ssh -oBatchMode=yes")
+    # A Finder-launched .app gets a minimal PATH (/usr/bin:/bin): credential
+    # helpers configured as PATH commands (gh's `!gh auth git-credential`, a
+    # Homebrew git-credential-manager) silently fail there and https auth
+    # never happens. Widen with the usual install locations.
+    extra = ["/opt/homebrew/bin", "/usr/local/bin", os.path.expanduser("~/.local/bin")]
+    parts = [p for p in env.get("PATH", "").split(os.pathsep) if p]
+    env["PATH"] = os.pathsep.join(parts + [p for p in extra if p not in parts])
+    return env
+
+
 def _git(*args: str, cwd: str | None = None, timeout: int = TIMEOUT_S) -> subprocess.CompletedProcess:
     """One non-interactive git call. `close_fds=False` + an absolute git path
     keep CPython on posix_spawn (app_git's module docstring has the SIGSEGV
     story). A missing git raises GitInstallError naming the fix."""
     from fused_render.shell import git_tools
 
-    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_LFS_SKIP_SMUDGE": "1"}
+    env = _env()
     cmd = [git_tools.git_bin()] + (["-C", cwd] if cwd else []) + list(args)
     try:
         return subprocess.run(cmd, capture_output=True, text=True, env=env,
@@ -123,12 +147,19 @@ def clone(url: str, repo: str) -> tuple[str, str, str | None]:
         dest = os.path.join(work, repo)
         r = _git("clone", "-q", "--filter=blob:none", "--", url, dest)
         if r.returncode != 0:
-            msg = _err(r)
-            if "not found" in msg.lower() or "could not read username" in msg.lower():
+            https_msg = _err(r)
+            if not any(m in https_msg.lower() for m in _AUTH_FAILURE_MARKERS):
+                raise GitInstallError(f"git clone failed: {https_msg}")
+            # https could not authenticate: retry over ssh. The origin is then
+            # the ssh form, which normalize_url folds onto the same repo.
+            shutil.rmtree(dest, ignore_errors=True)
+            ssh_url = "git@github.com:" + url.split("github.com/", 1)[1] + ".git"
+            r = _git("clone", "-q", "--filter=blob:none", "--", ssh_url, dest)
+            if r.returncode != 0:
                 raise GitInstallError(
-                    f"GitHub has no repository at {url} that your git can read "
-                    "(a private repo needs your git credentials, e.g. `gh auth login`)")
-            raise GitInstallError(f"git clone failed: {msg}")
+                    f"could not clone {url}: it does not exist, or it is private and "
+                    "your git has no access (sign in with `gh auth login`, or add an ssh "
+                    f"key to GitHub). https: {https_msg} — ssh: {_err(r)}")
         commit = _out(_git("rev-parse", "HEAD", cwd=dest))
         if not _SHA_RE.match(commit):
             raise GitInstallError(f"{url} has no commits to install")
@@ -136,9 +167,16 @@ def clone(url: str, repo: str) -> tuple[str, str, str | None]:
         at = (datetime.fromtimestamp(int(ct), timezone.utc).isoformat(timespec="seconds")
               .replace("+00:00", "Z") if ct.isdigit() else None)
         shutil.rmtree(root, ignore_errors=True)
-        os.rename(work, root)
+        try:
+            os.rename(work, root)
+        except OSError:
+            # Another click on the same link landed its clone first.
+            raise GitInstallError("this repository is already being downloaded; "
+                                  "open the link again in a moment")
         work = None
         return os.path.join(root, repo), commit, at
+    except OSError as exc:
+        raise GitInstallError(f"could not download the repository: {exc}")
     finally:
         if work:
             shutil.rmtree(work, ignore_errors=True)
@@ -195,20 +233,21 @@ def is_clone_of(app_dir: str, url: str) -> bool:
 
 
 def installed_clone_of(url: str) -> str | None:
-    """The folder under ``app/`` that is a clone of ``url``, or None."""
-    from fused_render import appfile
+    """The workspace app folder that is a clone of ``url``, or None — the
+    same walk `appfile.workspace_app_with_id` uses, so a clone the user moved
+    out of ``app/`` is still this app's copy. Only folders heading their own
+    ``.git`` cost a git call."""
+    from fused_render import app_listing, appfile
+    from fused_render.shell.seed import fused_dir
 
-    root = appfile.install_dir()
     try:
-        names = sorted(os.listdir(root))
-    except OSError:
+        rows = app_listing.discover_workspace_apps(fused_dir())
+    except Exception:  # noqa: BLE001 — an unwalkable workspace holds no copy we can name
         return None
-    for n in names:
-        p = os.path.join(root, n)
-        if n.startswith(".") or os.path.islink(p) or not os.path.isdir(os.path.join(p, ".git")):
-            continue
-        if is_clone_of(p, url):
-            return p
+    for row in rows:
+        p = row.get("path")
+        if p and os.path.isdir(os.path.join(p, ".git")) and is_clone_of(p, url):
+            return appfile._workspace_spelling(p)
     return None
 
 
@@ -217,60 +256,130 @@ def _dirty(repo_dir: str) -> bool:
     return r.returncode != 0 or bool(_out(r))
 
 
-def probe(app_dir: str, src: dict) -> str:
+def probe(app_dir: str, src: dict, *, light: bool = False) -> str:
     """``same`` | ``update`` | ``local`` for the clone at ``app_dir`` against
     the link's commit. Read-only: the ancestry is asked of the staged clone
-    when it is there (it has the new commit), else of the installed one."""
+    when it is there (it has the new commit), else of the installed one.
+    ``light`` (a card peek, D396) answers off HEAD alone: one git call."""
     head = _head(app_dir)
     if head is None:
         return "local"
     if head == src["commit"]:
         return "same"
+    if light:
+        return "update"
     # Auto-sync fast-forwards the clone on its own, so it may already be past
     # the link's commit: nothing to install then either.
     if _git("merge-base", "--is-ancestor", src["commit"], head, cwd=app_dir, timeout=60).returncode == 0:
         return "same"
     if _dirty(app_dir):
         return "local"
-    ask = staged_clone(src) or app_dir
+    ask = staged_clone(src)
+    if ask is None:
+        if _git("cat-file", "-e", src["commit"] + "^{commit}", cwd=app_dir, timeout=20).returncode != 0:
+            # Neither repo here knows the link's commit (the staged clone was
+            # swept): clean and behind as far as can be told, so offer the
+            # update; its `merge --ff-only` reports a real divergence.
+            return "update"
+        ask = app_dir
     r = _git("merge-base", "--is-ancestor", head, src["commit"], cwd=ask, timeout=60)
     return "update" if r.returncode == 0 else "local"
 
 
-def _place(staged: str, dest: str, *, husk: bool) -> None:
-    """Move the staged clone to ``dest``: a rename (a move across
-    filesystems), or into a husk entry by entry beside its ``.fused/``."""
-    if husk:
-        for n in os.listdir(staged):
-            if os.path.exists(os.path.join(dest, n)):
-                continue
-            shutil.move(os.path.join(staged, n), os.path.join(dest, n))
-        return
-    os.makedirs(os.path.dirname(dest), exist_ok=True)
-    shutil.move(staged, dest)
+def expected_identity(clone_dir: str, url: str) -> tuple[str, str | None]:
+    """``(name, app_id)`` a build of ``clone_dir`` must carry: the repo's
+    folder name, and the entry page's own ``fused-app-id`` — else the id
+    derived from the repo URL. appfetch packs with exactly these, and
+    ``install`` refuses a file whose manifest disagrees, so a hand-made
+    `.fused` cannot steer the clone to another slug or another app's folder."""
+    from fused_render import app_listing
+    from fused_render import app_id as app_identity
+
+    name = os.path.basename(clone_dir)
+    try:
+        entry = app_listing.app_entry(clone_dir)
+    except OSError:
+        entry = None
+    own = app_identity.app_id(entry) if entry else None
+    if own:
+        return name, own
+    key = (normalize_url(url).removeprefix("https://") + "/").encode("utf-8")
+    return name, f"{app_identity.kebab(name)}-{hashlib.sha256(key).hexdigest()[:8]}"
 
 
-def _replace(staged: str, dest: str) -> None:
-    """Swap a file-installed copy for the clone, carrying ``.fused/`` (the
-    app's data) and ``.venv`` over. The old copy is parked beside ``app/``
-    first and restored if the clone cannot be placed."""
+# ---- placing the clone ---------------------------------------------------------
+#
+# ONE model for every way a clone lands (new, into a husk, replacing a
+# file-installed copy), so no step can leave the user's folder half-written:
+#
+#   1. STAGE: the downloaded clone is moved into `app/.install-<slug>-*/` —
+#      the only step that may copy (downloads and the workspace can be
+#      different filesystems). A failure here touches nothing at `dest`.
+#   2. SWAP: from then on only same-filesystem `os.rename`s, each undone in
+#      reverse if a later one fails: whatever sits at `dest` (a husk, the old
+#      copy) is parked inside the staging dir, the clone is renamed onto
+#      `dest` (which must not exist — a folder that appeared since the probe
+#      fails the rename and is left alone), and `.fused/` / `.venv` are
+#      renamed from the parked copy into the clone.
+#   3. RETIRE: what is left of the parked copy goes to the OS Trash
+#      (recoverable — the user's own files beside the app included). Where
+#      there is no bin it stays parked as `app/.replaced-<slug>-<time>/`,
+#      never deleted.
+#
+# The `app/.install-*` staging dir is swept after 24 h like the file
+# installer's (appfile._sweep_install_staging).
+
+_CARRY = (".fused", ".venv")
+
+
+def _place(staged: str, dest: str, *, park_existing: bool) -> None:
     from fused_render import appfile
 
-    aside = tempfile.mkdtemp(dir=appfile.install_dir(), prefix=".install-replace-")
-    old = os.path.join(aside, "old")
-    os.rename(dest, old)
+    root = os.path.dirname(dest)
+    os.makedirs(root, exist_ok=True)
+    work = tempfile.mkdtemp(dir=root, prefix=f".install-{os.path.basename(dest)}-")
     try:
-        shutil.move(staged, dest)
-    except OSError:
-        if not os.path.exists(dest):
-            os.rename(old, dest)
-        shutil.rmtree(aside, ignore_errors=True)
-        raise
-    for keep in (".fused", ".venv"):
-        src = os.path.join(old, keep)
-        if os.path.isdir(src) and not os.path.exists(os.path.join(dest, keep)):
-            shutil.move(src, os.path.join(dest, keep))
-    shutil.rmtree(aside, ignore_errors=True)
+        clone_in = os.path.join(work, "clone")
+        try:
+            shutil.move(staged, clone_in)                       # 1. STAGE
+        except OSError as exc:
+            raise GitInstallError(f"could not copy the clone into {root}: {exc}")
+        parked = None
+        undo: list[tuple[str, str]] = []
+        try:
+            if park_existing:                                   # 2. SWAP
+                parked = os.path.join(work, "old")
+                os.rename(dest, parked)
+                undo.append((parked, dest))
+            elif os.path.lexists(dest):
+                raise GitInstallError(f"{dest} appeared during the install; open the link again")
+            os.rename(clone_in, dest)
+            undo.append((dest, clone_in))
+            for name in _CARRY if parked else ():
+                src = os.path.join(parked, name)
+                if os.path.isdir(src) and not os.path.lexists(os.path.join(dest, name)):
+                    os.rename(src, os.path.join(dest, name))
+                    undo.append((os.path.join(dest, name), src))
+        except BaseException:
+            for a, b in reversed(undo):
+                try:
+                    os.rename(a, b)
+                except OSError:
+                    logger.error("install rollback: could not move %s back to %s", a, b, exc_info=True)
+            raise
+        if parked:                                              # 3. RETIRE
+            leftovers = [n for n in os.listdir(parked) if n != ".DS_Store"]
+            if leftovers:
+                try:
+                    from fused_render.server import fs_mutate
+
+                    fs_mutate._move_to_trash(parked)
+                except Exception:  # noqa: BLE001 — no bin: keep it, never delete
+                    keep = os.path.join(root, f".replaced-{os.path.basename(dest)}-{int(time.time())}")
+                    os.rename(parked, keep)
+                    logger.warning("replace: no Trash for the old copy; kept at %s", keep)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
 
 
 def install(fused_path: str, target: dict, manifest: dict, *, force: bool) -> dict:
@@ -285,8 +394,11 @@ def install(fused_path: str, target: dict, manifest: dict, *, force: bool) -> di
         raise GitInstallError(f"{target['path']} already holds a different app "
                               f"({target['other_name']}); rename or uninstall it first")
     if state == appfile.STATE_LOCAL:
-        raise GitInstallError(f"{target['path']} has changes of its own; update it with git "
-                              "(git pull)")
+        if target.get("found_by") == "git":
+            raise GitInstallError(f"{target['path']} has changes of its own; update it with git "
+                                  "(git pull)")
+        raise GitInstallError(f"{target['path']} was edited since it was installed from a file; "
+                              "rename or uninstall it, then open the link again")
     if state == appfile.STATE_SAME:
         raise GitInstallError("this commit is already installed")
     if state == appfile.STATE_REPLACE and not force:
@@ -302,10 +414,10 @@ def install(fused_path: str, target: dict, manifest: dict, *, force: bool) -> di
         staged = staged_clone(src)
         if staged is None:
             raise GitInstallError("the downloaded clone is gone or out of date; open the link again")
-        if state == appfile.STATE_REPLACE:
-            _replace(staged, dest)
-        else:
-            _place(staged, dest, husk=bool(target.get("husk")))
+        if (manifest.get("name"), appfile.app_id_of(manifest)) != expected_identity(staged, src["url"]):
+            raise GitInstallError("this app file does not match the repository it names; "
+                                  "open the GitHub link again")
+        _place(staged, dest, park_existing=state == appfile.STATE_REPLACE or bool(target.get("husk")))
         action = "installed"
     shutil.rmtree(_staging_root(src["url"]), ignore_errors=True)
 

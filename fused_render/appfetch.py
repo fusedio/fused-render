@@ -49,7 +49,6 @@ import urllib.parse
 import urllib.request
 
 from fused_render import __version__, app_listing, appfile
-from fused_render import app_id as app_identity
 
 MAX_BYTES = 1024 * 1024 * 1024
 TIMEOUT_S = 60
@@ -157,10 +156,13 @@ _GITHUB_REPO_RE = re.compile(
 
 def parse_github_repo(url: str) -> tuple[str, str]:
     """``(owner, repo)`` of a ``https://github.com/<owner>/<repo>`` link;
-    ``FetchError`` for any other shape."""
-    m = _GITHUB_REPO_RE.match((url or "").strip())
+    ``FetchError`` for any other shape. A query or fragment (a link pasted
+    from the address bar: ``?tab=readme-ov-file``, ``#readme``) is dropped
+    first; the path alone decides."""
+    raw = (url or "").strip()
+    m = _GITHUB_REPO_RE.match(re.split(r"[?#]", raw, maxsplit=1)[0])
     if not m or m.group("repo") in (".", ".."):
-        raise FetchError("only public https://github.com/<owner>/<repo> links can be "
+        raise FetchError("only https://github.com/<owner>/<repo> links can be "
                          f"installed: {url or '(empty)'}")
     return m.group("owner"), m.group("repo")
 
@@ -222,9 +224,9 @@ def download_github_app(url: str) -> str:
         raise FetchError(f'no page at the root of {where} carries <meta name="fused-app">; '
                          "only repositories with one app at their root can be installed")
     # The page's own id when it has one; else one derived from the repo, kept
-    # in the manifest and the install stamp only — the clone stays clean.
-    key = f"github.com/{owner.lower()}/{repo.lower()}/".encode("utf-8")
-    derived = f"{app_identity.kebab(repo)}-{hashlib.sha256(key).hexdigest()[:8]}"
+    # in the manifest and the install stamp only — the clone stays clean. The
+    # install re-derives it from the clone and refuses a mismatch.
+    derived = appfile_git.expected_identity(clone_dir, canonical)[1]
     dest_dir = downloads_dir()
     fd, built = tempfile.mkstemp(dir=dest_dir, prefix=".github-", suffix=".fused")
     os.close(fd)
