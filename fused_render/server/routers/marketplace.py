@@ -1,9 +1,9 @@
 """/api/marketplace/* — the Marketplace's routes (backend: fused_render/
-marketplace.py, which documents sources, cache, install semantics).
+marketplace.py, which documents the udf.ai API, cache, install semantics).
 
-TEMPORARY, like the module behind it. Every endpoint is a sync def on purpose:
-the catalog build and installs shell out to git and block on HTTP, and FastAPI
-runs sync endpoints on its threadpool, keeping those waits off the event loop.
+Every endpoint is a sync def on purpose: the catalog build, search and
+installs block on HTTP, and FastAPI runs sync endpoints on its threadpool,
+keeping those waits off the event loop.
 
 NOT gated on the `marketplace_enabled` pref (shell/prefs.py): like every other
 feature flag here, the pref gates the shell's entry points, not the API.
@@ -51,10 +51,19 @@ def api_marketplace_catalog(refresh: str = "0"):
     return marketplace.catalog(refresh=refresh in ("1", "true", "yes"))
 
 
+@router.get("/api/marketplace/search")
+def api_marketplace_search(q: str = "", category: str = "", cursor: str = "", limit: int = 24):
+    """Server-ranked search (the udf.ai `marketplace_search`): every
+    AppEntry plus `score`/`highlights`, and `next_cursor` for the next page.
+    Like /catalog, a failure is `{status:"error", message}` with HTTP 200."""
+    return marketplace.search(q, category=category, cursor=cursor,
+                              limit=max(1, min(int(limit), 100)))
+
+
 @router.get("/api/marketplace/app/{slug}")
 def api_marketplace_app(slug: str):
-    """One app: its AppEntry, readme markdown, file list and the base URL
-    its relative readme links resolve against."""
+    """One app: its AppEntry, readme markdown, file list, releases and the
+    base URL its relative readme links resolve against."""
     detail = marketplace.app_detail(slug)
     if detail is None:
         return _error(f"no app named {slug!r}", status=404)
@@ -64,12 +73,13 @@ def api_marketplace_app(slug: str):
 @router.get("/api/marketplace/asset/{slug}/{path:path}")
 def api_marketplace_asset(slug: str, path: str, v: str | None = None):
     """Raw bytes of one file in a catalog app (preview.png, icon.svg, readme
-    images…). 404 unless `path` is in that app's file list.
+    images…). 404 unless `path` is the app's own icon or preview or a file in
+    its detail's file list.
 
     Browser caching follows the URL: the catalog's icon/preview URLs carry
-    `?v=<app tree sha>`, so a day is safe (new content, new URL). Any other
+    `?v=<release id, first 12>`, so a day is safe (new content, new URL). Any other
     URL — unversioned readme images resolved against `readme_base`, or a `v`
-    that is not the app's current tree sha (a readme's own `?v=1`) —
+    that is not the app's current release (a readme's own `?v=1`) —
     revalidates every time, so a catalog that moved on is never shadowed by
     an old cached copy."""
     got = marketplace.get_asset_versioned(slug, path)

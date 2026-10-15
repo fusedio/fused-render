@@ -1,10 +1,13 @@
 // /marketplace — the browse page. Two modes off the same catalog:
 //
-//   * HOME (All, no search): the featured carousel, then a shelf per category
-//     (up to two whole rows of the grid as it is laid out right now — 2, 3
-//     or 4 columns — "See all" → that category's grid).
+//   * HOME (All, no search): the featured carousel, then one section per
+//     server collection (up to two whole rows of the grid as it is laid out
+//     right now — 2, 3 or 4 columns; a category shelf's "See all" → that
+//     category's grid). No collections → a shelf per category.
 //   * FILTERED (`?category=<id>` and/or `?q=`): one flat grid of matches, or
-//     the empty state with "Clear search".
+//     the empty state with "Clear search". A typed query is answered by the
+//     server search (the local filter takes over silently if it fails); a
+//     chip alone filters the cached catalog locally.
 //
 // Chips and search filter IN PLACE: the URL is kept current with
 // replaceState (a typed query) / pushState (a chip) — no navigation, so
@@ -13,7 +16,13 @@
 import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { RefreshCw, SearchX } from "lucide-react";
 import { CardSkeleton, Delayed } from "@platform/ui/appstore";
-import { refreshCatalog, type AppEntry, type Catalog, type CatalogSnapshot } from "@platform/lib/marketplace";
+import {
+  refreshCatalog,
+  useMarketplaceSearch,
+  type AppEntry,
+  type Catalog,
+  type CatalogSnapshot,
+} from "@platform/lib/marketplace";
 import { HeroCarousel } from "./HeroCarousel";
 import { CategoryGlyph, EmptyState, MarketCard, Notice, ago } from "./shared";
 
@@ -71,6 +80,39 @@ function rank(apps: AppEntry[], q: string): AppEntry[] {
   return named.concat(apps.filter((a) => !named.includes(a)));
 }
 
+export interface HomeSection {
+  id: string;
+  title: string;
+  /** The category "See all" opens; null for a collection with no category. */
+  category: string | null;
+  /** How many apps "See all" leads to: the category's own count for a category
+   *  shelf (the collection lists only a few slugs), else the apps shown. */
+  count: number;
+  apps: AppEntry[];
+}
+
+/** The home page's sections, in order: the server's collections (slugs mapped
+ *  through the catalog, unknown or empty ones dropped; a shelf whose id is a
+ *  known category links to it, any other shelf has no See all), then the
+ *  per-category shelf of every non-empty category no shelf collection covers. */
+export function homeSections(catalog: Catalog, apps: AppEntry[]): HomeSection[] {
+  const bySlug = new Map(apps.map((a) => [a.slug, a]));
+  const cats = new Map(catalog.categories.map((c) => [c.id, c]));
+  const fromCollections: HomeSection[] = (catalog.collections ?? [])
+    .map((c) => {
+      const cat = c.kind === "shelf" ? cats.get(c.id) : undefined;
+      const shelf = c.slugs.map((s) => bySlug.get(s)).filter((a): a is AppEntry => !!a);
+      return { id: c.id, title: c.title, category: cat ? cat.id : null, count: cat ? cat.count : shelf.length, apps: shelf };
+    })
+    .filter((s) => s.apps.length > 0);
+  const covered = new Set(fromCollections.filter((s) => s.category).map((s) => s.id));
+  const rest: HomeSection[] = catalog.categories
+    .filter((c) => c.count > 0 && !covered.has(c.id))
+    .map((c) => ({ id: c.id, title: c.label, category: c.id, count: c.count, apps: apps.filter((a) => a.category === c.id) }))
+    .filter((s) => s.apps.length > 0);
+  return fromCollections.concat(rest);
+}
+
 export function Discover({
   snap,
   category,
@@ -86,10 +128,17 @@ export function Discover({
 }) {
   const { catalog, error, loading } = snap;
   const apps = catalog?.apps ?? [];
-  const filtered = useMemo(() => {
+  const local = useMemo(() => {
     const byCat = category === "all" ? apps : apps.filter((a) => a.category === category);
     return rank(byCat.filter((a) => matches(a, q)), q);
   }, [apps, category, q]);
+  const search = useMarketplaceSearch(q, category);
+  // Server results once they have answered; while loading the previous server
+  // results stay (or the local filter before the first answer); an error is a
+  // silent fall back to the local filter.
+  const useServer = !!q.trim() && (search.status === "ok" || (search.status === "loading" && search.apps.length > 0));
+  const filtered: AppEntry[] = useServer ? search.apps : local;
+  const sections = useMemo(() => (catalog ? homeSections(catalog, apps) : []), [catalog, apps]);
   const featured = useMemo(() => apps.filter((a) => a.featured), [apps]);
   const home = category === "all" && !q.trim();
   const rootRef = useRef<HTMLDivElement>(null);
@@ -127,30 +176,28 @@ export function Discover({
       ) : home ? (
         <>
           {featured.length > 0 && <HeroCarousel apps={featured} catalog={catalog} />}
-          {catalog.categories
-            .filter((c) => c.count > 0)
-            .map((c) => {
-              const inCat = apps.filter((a) => a.category === c.id);
-              if (!inCat.length) return null;
-              const shown = shelfCount(inCat.length, cols);
-              return (
-                <section className="mp-shelf" key={c.id} aria-labelledby={`shelf-${c.id}`}>
-                  <div className="mp-shelf-head">
-                    <h2 className="mp-shelf-title" id={`shelf-${c.id}`}>
-                      {c.label}
-                    </h2>
-                    <button type="button" className="mp-see-all" onClick={() => onCategory(c.id)}>
-                      {inCat.length > shown ? `See all ${inCat.length}` : "See all"}
+          {sections.map((sec) => {
+            const shown = shelfCount(sec.apps.length, cols);
+            return (
+              <section className="mp-shelf" key={sec.id} aria-labelledby={`shelf-${sec.id}`}>
+                <div className="mp-shelf-head">
+                  <h2 className="mp-shelf-title" id={`shelf-${sec.id}`}>
+                    {sec.title}
+                  </h2>
+                  {sec.category && (
+                    <button type="button" className="mp-see-all" onClick={() => onCategory(sec.category!)}>
+                      {sec.count > shown ? `See all ${sec.count}` : "See all"}
                     </button>
-                  </div>
-                  <div className="mp-grid">
-                    {inCat.slice(0, shown).map((a) => (
-                      <MarketCard key={a.slug} app={a} catalog={catalog} />
-                    ))}
-                  </div>
-                </section>
-              );
-            })}
+                  )}
+                </div>
+                <div className="mp-grid">
+                  {sec.apps.slice(0, shown).map((a) => (
+                    <MarketCard key={a.slug} app={a} catalog={catalog} />
+                  ))}
+                </div>
+              </section>
+            );
+          })}
         </>
       ) : (
         <section className="mp-results" aria-live="polite">
@@ -166,7 +213,8 @@ export function Discover({
               )}
             </h2>
             <span className="mp-results-count">
-              {filtered.length} {filtered.length === 1 ? "app" : "apps"}
+              {filtered.length}
+              {useServer && search.nextCursor ? "+" : ""} {filtered.length === 1 ? "app" : "apps"}
             </span>
           </div>
           {filtered.length ? (
@@ -175,7 +223,7 @@ export function Discover({
                 <MarketCard key={a.slug} app={a} catalog={catalog} />
               ))}
             </div>
-          ) : (
+          ) : search.status === "loading" ? null : (
             <EmptyState
               icon={<SearchX size={22} strokeWidth={1.8} />}
               title={q.trim() ? <>No apps match “{q.trim()}”</> : "Nothing here yet"}
@@ -198,6 +246,13 @@ export function Discover({
                 )
               }
             />
+          )}
+          {useServer && search.nextCursor && (
+            <div className="mp-load-more">
+              <button type="button" className="mp-btn" onClick={search.loadMore} disabled={search.loadingMore}>
+                Load more
+              </button>
+            </div>
           )}
         </section>
       )}
@@ -232,8 +287,8 @@ function Chips({ catalog, total, value, onChange }: { catalog: Catalog | null; t
   );
 }
 
-/** Offline / fallback banners: a stale cache served because GitHub was
- *  unreachable, or a server warning (rate limit → git mirror). */
+/** Offline / fallback banners: a stale cache served because the Marketplace
+ *  was unreachable, or a refresh error. */
 export function CatalogNotices({ snap }: { snap: CatalogSnapshot }) {
   const { catalog, error, loading } = snap;
   if (!catalog) return null;
@@ -246,7 +301,7 @@ export function CatalogNotices({ snap }: { snap: CatalogSnapshot }) {
   if (catalog.stale) {
     return (
       <Notice tone="warn" action={retry}>
-        You're offline or GitHub is unreachable. Showing apps cached {ago(catalog.fetched_at)}.
+        You're offline or the Marketplace is unreachable. Showing apps cached {ago(catalog.fetched_at)}.
       </Notice>
     );
   }
@@ -257,23 +312,20 @@ export function CatalogNotices({ snap }: { snap: CatalogSnapshot }) {
       </Notice>
     );
   }
-  // A source `warning` with FRESH data (GitHub's API refused, the git mirror
-  // answered) is not the reader's problem: the apps are current. It is said
-  // quietly in the page footer (CatalogFooter), never as a banner.
   return null;
 }
 
 /** The quiet last line of the page: where the catalog came from and when. */
 export function CatalogFooter({ catalog }: { catalog: Catalog | null }) {
-  if (!catalog || !catalog.repo) return null;
+  if (!catalog || catalog.source !== "udf-api") return null;
+  const version = String(catalog.catalog_version ?? "").slice(0, 8);
   return (
     <footer className="mp-footer" title={catalog.warning ?? undefined}>
       Apps from{" "}
-      <a href={`https://github.com/${catalog.repo}`} target="_blank" rel="noopener noreferrer">
-        {catalog.repo}
+      <a href="https://udf.ai" target="_blank" rel="noopener noreferrer">
+        udf.ai
       </a>
-      {catalog.commit && <> @ {catalog.commit.slice(0, 7)}</>}
-      {catalog.source === "git-mirror" && <> · via git mirror</>} · updated {ago(catalog.fetched_at)}
+      {version && <> · catalog {version}</>} · updated {ago(catalog.fetched_at)}
     </footer>
   );
 }

@@ -1,70 +1,73 @@
-"""Backend for the Marketplace (the shell's /marketplace pages) — TEMPORARY.
+"""Backend for the Marketplace (the shell's /marketplace pages).
 
-A browsable catalog of the community apps in
-github.com/fusedio/fused-render-community-apps, with one-click install into
-the user's workspace (``<workspace>/community/<slug>``) and in-place update.
-A real backend (semantic search, server-side catalog) replaces this; until
-then it is deliberately SELF-CONTAINED — this module plus the thin router in
-server/routers/marketplace.py, a pref (`shell/prefs.marketplace_enabled`) and
-the shell routes — so deleting it is deleting two files and a few hooks.
+A browsable catalog of community apps served by the udf.ai marketplace API,
+with one-click install into the user's workspace (``<workspace>/community/
+<slug>``) and in-place update. Deliberately SELF-CONTAINED — this module plus
+the thin router in server/routers/marketplace.py, a pref
+(`shell/prefs.marketplace_enabled`) and the shell routes.
 
 It is NOT community.py (the /apps hub's Showcase tab). That one clones the
 repo INTO the workspace as the user's editable tree and never syncs it again;
-this one keeps its own private mirror/cache under the state dir and copies one
-app at a time out of it, stamping what it wrote so a later update can tell the
-author's files from the user's.
+this one asks the API for a catalog and a signed release package, and stamps
+what it wrote so a later update can tell the author's files from the user's.
 
-**Two sources behind one interface** (`_build_snapshot`), both producing the
-same "snapshot" — {source, repo, branch, commit, apps: {slug: {meta, files,
-tree_sha}}}:
-
-  github-api  (default) — `GET /repos/{o}/{r}/commits/{branch}` for the head
-              sha, `GET /git/trees/{sha}?recursive=1` for every path, size and
-              per-folder tree sha in one call, then each app's metadata.json
-              from raw.githubusercontent.com pinned AT that sha (parallel).
-              Honours GITHUB_TOKEN (sent to api.github.com only). Unauthenticated
-              GitHub allows 60 req/h/IP; a catalog costs 2 of them and is cached
-              for 10 minutes, so ordinary browsing never gets near it.
-  git-mirror  (fallback when the API errors — 403, 429, offline — or forced by
-              FUSED_RENDER_MARKETPLACE_SOURCE=git) — a shallow single-branch
-              clone at <state>/mirror, refreshed with `fetch --depth 1` +
-              `reset --hard FETCH_HEAD`. The tree shas it reports are git's own
-              (`ls-tree HEAD`), i.e. the SAME values the API reports for the
-              same commit, so an install made through one source compares
-              cleanly against a catalog read through the other.
-
-The repo is `FUSED_RENDER_MARKETPLACE_REPO` (``owner/repo`` on GitHub, or any
-git URL/path — the latter is git-mirror only, which is how the tests point it
-at a local bare repo) and `FUSED_RENDER_MARKETPLACE_BRANCH` (default main).
-Both are read per call, never frozen at import.
+**The API** is a set of GET endpoints under `api_base()` (the constant
+`API_BASE`, overridable by `FUSED_RENDER_MARKETPLACE_API`, read per call).
+Every request carries `format=json` (the default is HTML) and every answer is
+a JSON list of rows; an error is HTTP 200 with ONE row `{error_code,
+error_message}`. `_udf_get` is the single seam: it adds `format=json`, goes
+through `_http_get` (never raises) and raises `SourceError` — `error_code`
+kept on the exception — for a transport failure, a non-list body or an error
+row. Endpoints used: `marketplace_catalog` (one row per app, carrying its
+`release_id`), `marketplace_categories`, `marketplace_collections` (the home
+shelves), `marketplace_search`, `marketplace_app_detail` (readme, files,
+releases) and `marketplace_release` (the file list with sha256 plus a
+presigned tar.gz `package_url`). `client_version` is `fused_render.__version__`.
 
 **State dir** is ``~/.fused-render/marketplace/`` (FUSED_RENDER_HOME honoured)
-— UNNESTED by branch ref, exactly like community.STATE_DIR: the catalog,
-mirror and asset cache describe a remote repo, not this checkout, so parallel
-branches share one copy instead of each cloning their own. What IS per-setup is
-the workspace the apps install into (`seed.fused_dir()`), read per call.
+— UNNESTED by branch ref, exactly like community.STATE_DIR: the catalog and
+asset cache describe a remote service, not this checkout, so parallel branches
+share one copy. What IS per-setup is the workspace the apps install into
+(`seed.fused_dir()`), read per call.
 
-  catalog.json             the last snapshot + fetched_at/checked_at/stale
-  mirror/                  the git-mirror clone (only once that source ran)
-  mirror.lock              flock'd around every mirror clone/fetch/reset/copy
-                           (the state dir is shared across worktree servers)
-  assets/<commit>/<slug>/  bytes served by /api/marketplace/asset, per commit
+  catalog.json                the last snapshot + fetched_at/checked_at/stale
+  assets/<release_id>/<slug>/  bytes served by /api/marketplace/asset
+
+**Snapshot** = {source: "udf-api", api, catalog_version, generated_at,
+apps: {slug: catalog row}, categories: [..], collections: [..]} — one build
+makes three API calls. A catalog.json written by the earlier GitHub-backed
+code (no `source == "udf-api"`) is treated as no cache.
 
 **Cache policy.** A catalog younger than 10 minutes (by `checked_at`, the last
 ATTEMPT — so an offline machine backs off too instead of re-trying the network
 on every page view, and a crashing build likewise) is served as-is unless
 `refresh=1`; a `refresh=1` within 60 s of the last attempt is served the cache
-too. A refresh that fails on both sources serves the old cache with
-`stale: true` and a warning; with no cache at all the answer is
-`{status: "error", message}`. Only GET /catalog (`get_snapshot`) rebuilds an
-OLD cache; assets, detail, install and installed (`cached_snapshot`) take any
-cache regardless of age, without the build lock, and build only when there is
-none — a rebuild never holds up an <img>.
+too. A refresh that fails serves the old cache with `stale: true` and a
+warning; with no cache at all the answer is `{status: "error", message}`.
+Only GET /catalog (`get_snapshot`) rebuilds an OLD cache; assets, detail,
+install and installed (`cached_snapshot`) take any cache regardless of age,
+without the build lock, and build only when there is none — a rebuild never
+holds up an <img>.
+
+**Assets.** The catalog's icon/preview URLs are raw.githubusercontent.com
+URLs pinned to the app's commit; they are served through our own proxy
+(`/api/marketplace/asset/<slug>/<rel>?v=<release_id[:12]>`) so the browser
+never talks to GitHub and a readme's relative images resolve against the same
+base. The proxy fetches only under `https://raw.githubusercontent.com/<owner>/
+<repo>/<commit>/<slug>/` derived from the snapshot row, and only for a path
+that is the row's own icon or preview or one the app's detail lists (the
+detail row is memoised per (slug, release_id) in `_DETAIL_MEMO`, so the page
+and the proxy share one API call).
 
 **Install / update** run as background jobs (one per slug, idempotent while
-running; finished jobs linger 60 s for the UI's success state). Files are
-staged in a dot-dir inside `community/` (same filesystem, so a new install is
-one rename and never flashes half-written in the explorer), then:
+running; finished jobs linger 60 s for the UI's success state). `_stage` asks
+`marketplace_release` for the snapshot's `release_id`, refuses a revoked or
+moved-on release, streams the presigned tar.gz to a temp file (size and
+sha256 verified), extracts it with a hand-rolled safe walk (regular files
+only; no absolute, `..`, link or device members) and checks the extracted set
+equals the release's `files` list path-for-path, byte-for-byte (sha256+size).
+Files are staged in a dot-dir inside `community/` (same filesystem, so a new
+install is one rename and never flashes half-written in the explorer), then:
   new     → rename into `community/<slug>`
   update  → merged over the copy (appfile._merge_tree — the hardened walk the
             `.fused` installer uses): app files replace their counterparts;
@@ -72,21 +75,16 @@ one rename and never flashes half-written in the explorer), then:
             (the user's data) stay. Files the OLD stamp tracked that the new
             version dropped are removed only when their bytes still match the
             old stamp (the author's deletion, not the user's edit).
-The stamp `<app>/.fused/marketplace.json` = {slug, version, tree_sha, commit,
-repo, installed_at, source, files{path: sha256}} is what "installed" means:
-the catalog finds installs by globbing `community/*/.fused/marketplace.json`,
-reports `modified` when a stamped file's bytes changed, and `update_available`
-when the catalog's tree sha differs from the stamp's. A HUSK (a folder holding
-only `.fused/`, what a keep-data uninstall leaves) is not installed, but an
-install into it merges like an update, so its data is reused. A mirror install
-copies the blobs of the catalog's own commit out of the object store (never the
-working tree, which may have moved on). An app whose paths differ only by case
-is refused (they would collide on macOS).
-
-Every git call: an ABSOLUTE git (`git_tools.git_bin()`), `-C` instead of
-`cwd=`, `close_fds=False` — the posix_spawn rule (see community.py and
-tests/test_git_posix_spawn.py) — plus GIT_TERMINAL_PROMPT=0 and a bounded
-timeout. Every HTTP call goes through `_http_get`, which never raises.
+The stamp `<app>/.fused/marketplace.json` = {slug, version, release_id,
+commit, api, installed_at, source, files{path: sha256}} is what "installed"
+means: the catalog finds installs by globbing `community/*/.fused/
+marketplace.json`, reports `modified` when a stamped file's bytes changed, and
+`update_available` when the catalog's release_id differs from the stamp's (a
+stamp from before releases, holding only a tree sha, therefore reads as
+updatable). A HUSK (a folder holding only `.fused/`, what a keep-data
+uninstall leaves) is not installed, but an install into it merges like an
+update, so its data is reused. An app whose paths differ only by case is
+refused (they would collide on macOS).
 """
 from __future__ import annotations
 
@@ -98,53 +96,41 @@ import mimetypes
 import os
 import re
 import shutil
-import subprocess
+import tarfile
 import tempfile
 import threading
 import time
+import zlib
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
-from urllib.parse import quote
-
-try:  # POSIX only — community.py's `_cache_lock` makes the same assumption.
-    import fcntl
-except ImportError:  # pragma: no cover
-    fcntl = None
+from urllib.parse import quote, unquote, urlencode
 
 import httpx
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_REPO = "fusedio/fused-render-community-apps"
-DEFAULT_BRANCH = "main"
-API_BASE = "https://api.github.com"
+API_BASE = "https://udf.ai/fc_1g1McHwVfq5S6gNL43FxBp"
 RAW_BASE = "https://raw.githubusercontent.com"
-
-SOURCE_API = "github-api"
-SOURCE_GIT = "git-mirror"
+SOURCE = "udf-api"
+#: How many "new and updated" apps the home shelf asks the API for.
+NEW_AND_UPDATED_LIMIT = 12
 
 #: A cached catalog younger than this (since the last attempt) is served as-is.
 CACHE_TTL_S = 10 * 60
 #: A forced `refresh=1` within this long of the last attempt serves the cache
-#: (a reload-hammering user must not burn the 60 req/h API budget).
+#: (a reload-hammering user must not hammer the API).
 REFRESH_MIN_INTERVAL_S = 60
 #: Finished jobs stay in /jobs this long, so the UI can show "done"/"error".
 JOB_TTL_S = 60
 #: Install staging dirs older than this are swept (an interrupted install
 #: cannot clean up its own).
 STAGING_TTL_S = 24 * 3600
-#: Parallel raw downloads (metadata during a catalog build, files during an
-#: install).
-WORKERS = 8
 
 HTTP_TIMEOUT_S = 20
-GIT_TIMEOUT_S = 60
-CLONE_TIMEOUT_S = 240
-#: How long a mirror operation waits for another server process (a parallel
-#: worktree sharing the state dir) to finish its own clone/fetch.
-MIRROR_LOCK_WAIT_S = CLONE_TIMEOUT_S + 60
 MAX_ASSET_BYTES = 64 * 1024 * 1024
 MAX_README_BYTES = 512 * 1024
+#: Hard ceiling on a release package, whatever the API claims it weighs.
+MAX_PACKAGE_BYTES = 1024 * 1024 * 1024
 
 STAMP_NAME = "marketplace.json"
 COMMUNITY_DIRNAME = "community"
@@ -153,26 +139,21 @@ COMMUNITY_DIRNAME = "community"
 #: app's own data dir, the copy's repo.
 KEEP = frozenset({".venv", ".fused", ".git"})
 
-#: Category chip order; anything else follows alphabetically.
-CATEGORY_ORDER = ("starters", "local-ai", "productivity", "geospatial")
-CATEGORY_LABELS = {
-    "starters": "Starters",
-    "local-ai": "Local AI",
-    "productivity": "Productivity",
-    "geospatial": "Geospatial",
-}
-#: Featured when no app's metadata declares `featured` (missing ones skipped).
-DEFAULT_FEATURED = ("local-chat", "overture-explorer", "local-transcription",
-                    "hexagon-lab", "midtown-mayhem")
-
 _SLUG_RE = re.compile(r"[a-z0-9][a-z0-9-]{1,63}")
-_GH_SLUG_RE = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 _SHA_RE = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
-_GH_URL_RE = re.compile(r"(?:https?://|git@)github\.com[/:]([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+?)(?:\.git)?/?$")
+#: A release id becomes a cache directory name: no separators, no dots-only.
+_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}")
+_SOURCE_URL_RE = re.compile(
+    r"https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/tree/([0-9a-f]{40,64})/([a-z0-9-]+)/?")
 
 
 class SourceError(Exception):
-    """A source could not produce a snapshot; the message is user-facing."""
+    """The API could not answer; the message is user-facing. ``error_code`` is
+    the API's own code (e.g. ``app_not_found``) when it sent one."""
+
+    def __init__(self, message: str, error_code: str | None = None):
+        super().__init__(message)
+        self.error_code = error_code
 
 
 class InstallError(Exception):
@@ -190,10 +171,6 @@ def state_dir() -> str:
     return os.path.join(base, "marketplace")
 
 
-def mirror_dir() -> str:
-    return os.path.join(state_dir(), "mirror")
-
-
 def catalog_path() -> str:
     return os.path.join(state_dir(), "catalog.json")
 
@@ -205,30 +182,10 @@ def community_dir() -> str:
     return os.path.join(fused_dir(), COMMUNITY_DIRNAME)
 
 
-def repo_config() -> dict:
-    """The configured repo: ``{repo, gh, clone_url, branch}``. ``gh`` is the
-    GitHub ``owner/repo`` when there is one (the API source and the
-    `source_url` links need it), else None — a local path or non-GitHub URL,
-    which only the git-mirror source can read."""
-    raw = (os.environ.get("FUSED_RENDER_MARKETPLACE_REPO") or DEFAULT_REPO).strip()
-    branch = (os.environ.get("FUSED_RENDER_MARKETPLACE_BRANCH") or DEFAULT_BRANCH).strip()
-    if _GH_SLUG_RE.fullmatch(raw) and not os.path.exists(raw):
-        gh = raw
-        clone_url = f"https://github.com/{gh}.git"
-    else:
-        m = _GH_URL_RE.match(raw)
-        gh = m.group(1) if m else None
-        clone_url = raw
-    return {"repo": gh or raw, "gh": gh, "clone_url": clone_url, "branch": branch}
-
-
-def forced_source() -> str | None:
-    v = (os.environ.get("FUSED_RENDER_MARKETPLACE_SOURCE") or "").strip().lower()
-    if v in ("git", SOURCE_GIT):
-        return SOURCE_GIT
-    if v in ("api", SOURCE_API):
-        return SOURCE_API
-    return None
+def api_base() -> str:
+    """The API's base URL (no trailing slash); `FUSED_RENDER_MARKETPLACE_API`
+    overrides the constant, read per call."""
+    return (os.environ.get("FUSED_RENDER_MARKETPLACE_API") or API_BASE).strip().rstrip("/")
 
 
 def is_slug(slug) -> bool:
@@ -238,14 +195,13 @@ def is_slug(slug) -> bool:
 
 
 def is_sha(v) -> bool:
-    """A full git object id (sha1 or sha256) — the only thing a commit may be
-    before it becomes a cache directory name or a git argument."""
+    """A full git object id (sha1 or sha256)."""
     return isinstance(v, str) and bool(_SHA_RE.fullmatch(v))
 
 
 def _safe_rel(path) -> bool:
-    """A repo-relative file path we are willing to write or serve: relative,
-    forward slashes, no empty/`.`/`..` segment, no NUL or backslash."""
+    """A file path we are willing to write or serve: relative, forward
+    slashes, no empty/`.`/`..` segment, no NUL or backslash."""
     if not isinstance(path, str) or not path or path.startswith("/"):
         return False
     if "\\" in path or "\x00" in path:
@@ -277,195 +233,58 @@ def _compatible(min_version) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# HTTP (never raises)
+# HTTP (never raises) and the API seam
 # ---------------------------------------------------------------------------
 
-def _api_headers() -> dict:
-    from fused_render import __version__
-
-    headers = {
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-        "User-Agent": f"fused-render/{__version__}",
-    }
-    token = (os.environ.get("GITHUB_TOKEN") or "").strip()
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    return headers
-
-
-def _http_get(url: str, *, headers: dict | None = None, client: httpx.Client | None = None,
+def _http_get(url: str, *, headers: dict | None = None,
               timeout: float = HTTP_TIMEOUT_S) -> tuple[httpx.Response | None, str | None]:
-    """One GET: (response, error). Never raises — like hub_models._get, a
-    refused or unreachable GitHub is a sentence on the page (and a reason to
-    fall back to the git mirror), not a 500 from this server."""
+    """One GET: (response, error). Never raises — like hub_models._get, an
+    unreachable service is a sentence on the page, not a 500 from this
+    server."""
     try:
-        if client is not None:
-            r = client.get(url, headers=headers, timeout=timeout, follow_redirects=True)
-        else:
-            r = httpx.get(url, headers=headers, timeout=timeout, follow_redirects=True)
+        r = httpx.get(url, headers=headers, timeout=timeout, follow_redirects=True)
     except httpx.HTTPError as e:
-        return None, f"could not reach GitHub ({e.__class__.__name__})"
-    if r.status_code == 429 or (r.status_code == 403
-                                and r.headers.get("x-ratelimit-remaining") == "0"):
-        return None, "GitHub API rate-limited"
-    if r.status_code in (401, 403):
-        return None, f"GitHub API refused the request ({r.status_code})"
+        return None, f"could not reach the marketplace ({e.__class__.__name__})"
+    if r.status_code == 429:
+        return None, "the marketplace is rate-limiting requests"
     if r.status_code == 404:
-        return None, "not found on GitHub (404)"
+        return None, "not found (404)"
     if r.status_code >= 400:
-        return None, f"GitHub answered {r.status_code}"
+        return None, f"the marketplace answered {r.status_code}"
     return r, None
 
 
-# ---------------------------------------------------------------------------
-# git (absolute binary, -C not cwd=, close_fds=False — the posix_spawn rule)
-# ---------------------------------------------------------------------------
+def _udf_get(endpoint: str, *, timeout: float = HTTP_TIMEOUT_S, **params) -> list[dict]:
+    """GET `<api>/<endpoint>?format=json&...` → the list of row dicts.
+    `timeout` (seconds) bounds the request; it is never sent as a parameter.
+    Params that are None are dropped (an empty string is kept: the release
+    endpoint reads ``release_id=`` as "latest"). Raises SourceError on a
+    transport failure, a body that is not a list of objects, or an error row
+    (HTTP 200, one row with `error_code`)."""
+    from fused_render import __version__
 
-def _git(*args, cwd: str | None = None, timeout: float = GIT_TIMEOUT_S) -> subprocess.CompletedProcess:
-    """Run git, returning bytes stdout/stderr. FileNotFoundError and timeouts
-    become SourceError (user-facing)."""
-    from fused_render.shell import git_tools
-
-    where = ["-C", cwd] if cwd is not None else []
-    env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
+    query = {k: v for k, v in params.items() if v is not None}
+    query["format"] = "json"
+    url = f"{api_base()}/{endpoint}?{urlencode(query)}"
+    r, err = _http_get(url, headers={"Accept": "application/json",
+                                     "User-Agent": f"fused-render/{__version__}"},
+                       timeout=timeout)
+    if err:
+        raise SourceError(err)
     try:
-        # argv inlined (not a local) so tests/test_git_posix_spawn.py's sweep
-        # can see this is git and check the posix_spawn clauses.
-        return subprocess.run([git_tools.git_bin(), *where, *args], capture_output=True,
-                              timeout=timeout, env=env, close_fds=False)
-    except FileNotFoundError:
-        raise SourceError("git is not installed (or not on PATH)")
-    except subprocess.TimeoutExpired:
-        raise SourceError("git timed out talking to GitHub")
-
-
-def _git_out(*args, cwd: str | None = None, timeout: float = GIT_TIMEOUT_S) -> str:
-    r = _git(*args, cwd=cwd, timeout=timeout)
-    if r.returncode != 0:
-        lines = r.stderr.decode("utf-8", "replace").strip().splitlines()
-        raise SourceError(f"git {args[0]} failed: {lines[-1] if lines else f'exit {r.returncode}'}")
-    return r.stdout.decode("utf-8", "replace")
-
-
-#: Serializes every touch of the mirror's git state within this process
-#: (a catalog refresh resetting the tree while an install copies out of it).
-#: Reentrant; the OUTERMOST holder also takes `_mirror_lock`'s file lock.
-_MIRROR_LOCK = threading.RLock()
-_MIRROR_DEPTH = [0]
-
-
-def _flock_acquire(fd: int, wait_s: float) -> bool:
-    deadline = time.monotonic() + wait_s
-    while True:
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            return True
-        except OSError:
-            if time.monotonic() >= deadline:
-                return False
-            time.sleep(0.2)
-
-
-@contextlib.contextmanager
-def _mirror_lock(wait_s: float = MIRROR_LOCK_WAIT_S):
-    """Hold the mirror: `_MIRROR_LOCK` within this process plus an OS
-    advisory lock on `<state>/mirror.lock` across processes — the state dir
-    is shared by every worktree's server, so a per-process lock alone lets
-    one server's `reset --hard` run under another's copy (the same reason
-    community.py has `_cache_lock`). Raises SourceError when another process
-    holds it for longer than ``wait_s``."""
-    if not _MIRROR_LOCK.acquire(timeout=wait_s):
-        raise SourceError("the community apps mirror is busy — try again in a moment")
-    fd = None
-    try:
-        if _MIRROR_DEPTH[0] == 0 and fcntl is not None:
-            os.makedirs(state_dir(), exist_ok=True)
-            fd = os.open(os.path.join(state_dir(), "mirror.lock"), os.O_CREAT | os.O_RDWR, 0o644)
-            if not _flock_acquire(fd, wait_s):
-                os.close(fd)
-                fd = None
-                raise SourceError("the community apps mirror is busy (another fused-render "
-                                  "is updating it) — try again in a moment")
-        _MIRROR_DEPTH[0] += 1
-        try:
-            yield
-        finally:
-            _MIRROR_DEPTH[0] -= 1
-    finally:
-        if fd is not None:
-            try:
-                fcntl.flock(fd, fcntl.LOCK_UN)
-            finally:
-                os.close(fd)
-        _MIRROR_LOCK.release()
-
-
-def _ensure_mirror(*, fetch: bool) -> tuple[str, str | None]:
-    """Make sure the mirror exists (shallow clone on first use) and, when
-    ``fetch``, bring it to the branch tip. Answers (head sha, warning) — a
-    failed FETCH over an existing mirror is not fatal: the old checkout is
-    still a catalog, reported with a warning (and `stale`). Caller holds
-    `_mirror_lock()`."""
-    cfg = repo_config()
-    mirror = mirror_dir()
-    warning = None
-    if not os.path.isdir(os.path.join(mirror, ".git")):
-        os.makedirs(state_dir(), exist_ok=True)
-        staging = tempfile.mkdtemp(dir=state_dir(), prefix=".mirror-clone-")
-        try:
-            r = _git("clone", "--depth", "1", "--single-branch", "--no-tags",
-                     "--branch", cfg["branch"], "--", cfg["clone_url"],
-                     os.path.join(staging, "mirror"), timeout=CLONE_TIMEOUT_S)
-            if r.returncode != 0:
-                lines = r.stderr.decode("utf-8", "replace").strip().splitlines()
-                raise SourceError("could not clone the community apps repo: "
-                                  f"{lines[-1] if lines else 'clone failed'}")
-            # A leftover non-repo `mirror` (interrupted earlier run) is ours.
-            shutil.rmtree(mirror, ignore_errors=True)
-            os.rename(os.path.join(staging, "mirror"), mirror)
-        finally:
-            shutil.rmtree(staging, ignore_errors=True)
-    elif fetch:
-        try:
-            # The configured repo may have changed since the clone.
-            _git_out("remote", "set-url", "origin", cfg["clone_url"], cwd=mirror)
-            _git_out("fetch", "--depth", "1", "--no-tags", "origin", cfg["branch"],
-                     cwd=mirror, timeout=CLONE_TIMEOUT_S)
-            _git_out("reset", "--hard", "-q", "FETCH_HEAD", cwd=mirror)
-            _git_out("clean", "-fdqx", cwd=mirror)
-        except SourceError as exc:
-            warning = f"could not update the git mirror ({exc})"
-    head = _git_out("rev-parse", "HEAD", cwd=mirror).strip()
-    return head, warning
-
-
-def _ls_tree(ref: str, *paths: str, recursive: bool = False,
-             skip_symlinks: bool = False) -> list[tuple[str, str, int | None, str]]:
-    """`git ls-tree -l -z` over the mirror: [(type, sha, size, path)]
-    (``skip_symlinks`` drops mode-120000 entries: not something an app
-    ships, and never something an install writes)."""
-    args = ["ls-tree", "-l", "-z"] + (["-r"] if recursive else []) + [ref]
-    if paths:
-        args += ["--", *paths]
-    out = _git_out(*args, cwd=mirror_dir())
-    rows = []
-    for rec in out.split("\x00"):
-        if not rec or "\t" not in rec:
-            continue
-        head, path = rec.split("\t", 1)
-        parts = head.split()
-        if len(parts) < 4:
-            continue
-        mode, typ, sha, size = parts[:4]
-        if skip_symlinks and mode == "120000":
-            continue
-        rows.append((typ, sha, int(size) if size.isdigit() else None, path))
+        rows = r.json()
+    except ValueError:
+        raise SourceError("the marketplace answered something unexpected")
+    if not isinstance(rows, list) or not all(isinstance(x, dict) for x in rows):
+        raise SourceError("the marketplace answered something unexpected")
+    if len(rows) == 1 and rows[0].get("error_code"):
+        code = str(rows[0]["error_code"])
+        raise SourceError(str(rows[0].get("error_message") or code), code)
     return rows
 
 
 # ---------------------------------------------------------------------------
-# sources → snapshot
+# API → snapshot
 # ---------------------------------------------------------------------------
 
 def _parse_metadata(raw: bytes | str) -> dict | None:
@@ -476,118 +295,69 @@ def _parse_metadata(raw: bytes | str) -> dict | None:
     return meta if isinstance(meta, dict) else None
 
 
-def _api_snapshot(cfg: dict) -> dict:
-    gh = cfg["gh"]
-    if not gh:
-        raise SourceError("the configured repo is not on GitHub")
-    headers = _api_headers()
-    r, err = _http_get(f"{API_BASE}/repos/{gh}/commits/{cfg['branch']}", headers=headers)
-    if err:
-        raise SourceError(err)
+def _group_collections(rows: list[dict], apps: dict) -> list[dict]:
+    """Collection rows → [{id, kind, title, slugs}] grouped by (collection,
+    shelf_id), groups in order of first appearance, slugs by `position`,
+    slugs the catalog does not hold dropped."""
+    groups: dict[tuple, dict] = {}
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        kind = r.get("collection")
+        if kind not in ("shelf", "new_and_updated"):
+            continue
+        if kind == "shelf" and not r.get("shelf_id"):
+            continue  # an unnamed shelf has no id to key, link or order by
+        key = (kind, r.get("shelf_id"))
+        g = groups.setdefault(key, {
+            "id": (r.get("shelf_id") if kind == "shelf" else None) or "new-and-updated",
+            "kind": kind, "title": _opt_str(r.get("title")) or "", "_rows": []})
+        slug = r.get("slug")
+        if slug in apps:
+            pos = r.get("position")
+            g["_rows"].append((pos if isinstance(pos, (int, float)) else 0, slug))
+    out = []
+    for g in groups.values():
+        rows_sorted = sorted(g.pop("_rows"), key=lambda t: t[0])  # stable: ties keep API order
+        out.append({**g, "slugs": [s for _p, s in rows_sorted]})
+    return out
+
+
+def _opt_text(v) -> str | None:
+    """`str(v)` for anything the API sent, None when it sent nothing."""
+    return None if v is None else str(v)
+
+
+def _count(v) -> int:
     try:
-        commit = r.json()["sha"]
-        if not is_sha(commit):
-            raise SourceError("GitHub answered something unexpected")
-        r, err = _http_get(f"{API_BASE}/repos/{gh}/git/trees/{commit}?recursive=1",
-                           headers=headers)
-        if err:
-            raise SourceError(err)
-        tree = r.json()
-    except (ValueError, KeyError, TypeError):
-        raise SourceError("GitHub answered something unexpected")
-    if tree.get("truncated"):
-        raise SourceError("GitHub truncated the repo listing")
-    tops: dict[str, str] = {}
-    files: dict[str, list] = {}
-    for e in tree.get("tree") or []:
-        path = e.get("path") or ""
-        if e.get("type") == "tree" and "/" not in path and is_slug(path):
-            tops[path] = e.get("sha")
-        elif e.get("type") == "blob" and "/" in path:
-            top, rel = path.split("/", 1)
-            if is_slug(top) and _safe_rel(rel):
-                files.setdefault(top, []).append({"path": rel, "size": int(e.get("size") or 0)})
-    slugs = sorted(s for s in tops
-                   if any(f["path"] == "metadata.json" for f in files.get(s, [])))
-
-    def fetch_meta(slug):
-        url = _raw_url(gh, commit, slug, "metadata.json")
-        resp, error = _http_get(url, client=client)
-        return slug, (None if error else _parse_metadata(resp.content)), error
-
-    apps = {}
-    with httpx.Client() as client, ThreadPoolExecutor(WORKERS) as pool:
-        for slug, meta, error in pool.map(fetch_meta, slugs):
-            if error and not error.startswith("not found"):
-                # A network failure mid-build is a failed source, not a
-                # silently shorter catalog.
-                raise SourceError(f"could not read {slug}/metadata.json: {error}")
-            if meta is None:
-                continue  # broken metadata.json: not an app
-            apps[slug] = {"meta": meta, "tree_sha": tops[slug],
-                          "files": sorted(files[slug], key=lambda f: f["path"])}
-    return {"source": SOURCE_API, "commit": commit, "apps": apps}
-
-
-def _git_snapshot_locked(head: str) -> dict:
-    tops = {path: sha for typ, sha, _size, path in _ls_tree("HEAD")
-            if typ == "tree" and is_slug(path)}
-    files: dict[str, list] = {}
-    for typ, _sha, size, path in _ls_tree("HEAD", recursive=True):
-        if typ != "blob" or "/" not in path:
-            continue
-        top, rel = path.split("/", 1)
-        if top in tops and _safe_rel(rel):
-            files.setdefault(top, []).append({"path": rel, "size": size or 0})
-    apps = {}
-    for slug in sorted(tops):
-        if not any(f["path"] == "metadata.json" for f in files.get(slug, [])):
-            continue
-        try:
-            with open(os.path.join(mirror_dir(), slug, "metadata.json"), "rb") as f:
-                meta = _parse_metadata(f.read())
-        except OSError:
-            meta = None
-        if meta is None:
-            continue
-        apps[slug] = {"meta": meta, "tree_sha": tops[slug],
-                      "files": sorted(files[slug], key=lambda f: f["path"])}
-    return {"source": SOURCE_GIT, "commit": head, "apps": apps}
-
-
-def _git_snapshot(cfg: dict) -> dict:
-    with _mirror_lock():
-        head, warning = _ensure_mirror(fetch=True)
-        snap = _git_snapshot_locked(head)
-    if warning:
-        snap["warning"] = warning
-        snap["stale"] = True
-    return snap
+        return int(v or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _build_snapshot() -> dict:
-    """A fresh snapshot from the preferred source, falling back to the git
-    mirror. Raises SourceError when neither can produce one."""
-    cfg = repo_config()
-    forced = forced_source()
-    warning = None
-    if forced != SOURCE_GIT and cfg["gh"]:
-        try:
-            snap = _api_snapshot(cfg)
-            snap.setdefault("warning", None)
-            return {**snap, **_cfg_fields(cfg)}
-        except SourceError as exc:
-            if forced == SOURCE_API:
-                raise
-            warning = f"{str(exc)[:1].upper()}{str(exc)[1:]} — using git mirror"
-            logger.info("marketplace: github-api source failed (%s); trying git mirror", exc)
-    snap = _git_snapshot(cfg)
-    snap["warning"] = "; ".join(w for w in (warning, snap.get("warning")) if w) or None
-    return {**snap, **_cfg_fields(cfg)}
+    """A fresh snapshot from the API (three calls, in parallel). Raises
+    SourceError when any of them fails."""
+    from fused_render import __version__
 
-
-def _cfg_fields(cfg: dict) -> dict:
-    return {"repo": cfg["repo"], "branch": cfg["branch"], "clone_url": cfg["clone_url"]}
+    with ThreadPoolExecutor(3) as pool:
+        f_cat = pool.submit(_udf_get, "marketplace_catalog", client_version=__version__)
+        f_cats = pool.submit(_udf_get, "marketplace_categories")
+        f_cols = pool.submit(_udf_get, "marketplace_collections",
+                             new_and_updated_limit=NEW_AND_UPDATED_LIMIT)
+        rows, cats, cols = f_cat.result(), f_cats.result(), f_cols.result()
+    apps = {r["slug"]: r for r in rows if is_slug(r.get("slug"))}
+    first = rows[0] if rows else {}
+    cats = [c for c in cats if isinstance(c, dict)]
+    categories = [{"id": c["id"], "label": _opt_str(c.get("label")) or str(c["id"]),
+                   "count": _count(c.get("count")), "order": c.get("order")}
+                  for c in sorted(cats, key=lambda c: c.get("order") if isinstance(c.get("order"), (int, float)) else 0)
+                  if isinstance(c.get("id"), str) and c["id"]]
+    return {"source": SOURCE, "api": api_base(),
+            "catalog_version": _opt_text(first.get("catalog_version")),
+            "generated_at": _opt_text(first.get("generated_at")),
+            "apps": apps, "categories": categories,
+            "collections": _group_collections(cols, apps)}
 
 
 # ---------------------------------------------------------------------------
@@ -597,8 +367,8 @@ def _cfg_fields(cfg: dict) -> dict:
 #: Held only while a catalog is being BUILT. Never waited on while a cache
 #: exists: readers (assets, detail, install, installed) read catalog.json
 #: without it, and a /catalog request that finds a rebuild already running
-#: serves the cache instead of queueing behind it — a slow build (20 s HTTP,
-#: up to 240 s of git) must not soak up FastAPI's threadpool.
+#: serves the cache instead of queueing behind it — a slow build must not
+#: soak up FastAPI's threadpool.
 _CATALOG_LOCK = threading.Lock()
 
 
@@ -610,9 +380,8 @@ def _read_cache() -> dict | None:
         return None
     if not isinstance(data, dict) or not isinstance(data.get("apps"), dict):
         return None
-    cfg = repo_config()
-    if data.get("clone_url") != cfg["clone_url"] or data.get("branch") != cfg["branch"]:
-        return None  # cached for a different repo/branch
+    if data.get("source") != SOURCE or data.get("api") != api_base():
+        return None  # an older backend's cache, or one for a different API
     return data
 
 
@@ -629,14 +398,20 @@ def _write_cache(snap: dict) -> None:
             os.remove(tmp)
 
 
-def _prune_asset_cache(keep_commit: str | None) -> None:
+def _release_ids(snap: dict) -> set[str]:
+    return {r["release_id"] for r in snap.get("apps", {}).values()
+            if isinstance(r.get("release_id"), str)}
+
+
+def _prune_asset_cache(keep: set[str]) -> None:
+    """Drop `assets/<release_id>` directories no app in the catalog is at."""
     root = os.path.join(state_dir(), "assets")
     try:
         names = os.listdir(root)
     except OSError:
         return
     for n in names:
-        if n != keep_commit:
+        if n not in keep:
             shutil.rmtree(os.path.join(root, n), ignore_errors=True)
 
 
@@ -688,26 +463,29 @@ def _build_locked(cached: dict | None) -> tuple[dict | None, str | None]:
         return None, f"Could not load the community catalog: {exc.__class__.__name__}"
     snap["fetched_at"] = _utc_now()
     snap["checked_at"] = now
-    snap["stale"] = bool(snap.get("stale"))
+    snap["stale"] = False
+    snap["warning"] = None
     try:
         _write_cache(snap)
     except OSError:
         logger.warning("marketplace: could not write %s", catalog_path(), exc_info=True)
-    if not cached or cached.get("commit") != snap.get("commit"):
-        _prune_asset_cache(snap.get("commit"))
+    if (not cached or snap.get("catalog_version") is None
+            or cached.get("catalog_version") != snap.get("catalog_version")):
+        _prune_asset_cache(_release_ids(snap))
     return snap, None
 
 
-def get_snapshot(refresh: bool = False) -> tuple[dict | None, str | None]:
+def get_snapshot(refresh: bool = False, force: bool = False) -> tuple[dict | None, str | None]:
     """The catalog snapshot for GET /catalog — the ONLY caller allowed to
     rebuild a cache because it is old: rebuilt when older than CACHE_TTL_S,
     or on ``refresh`` when the last attempt is over REFRESH_MIN_INTERVAL_S
-    old. While another request is already rebuilding, the existing cache is
+    old (``force`` skips both age checks: a rebuild now, for a caller that
+    just learned the cache is wrong). While another request is already rebuilding, the existing cache is
     answered at once rather than waiting. Answers (snapshot, None) or, when
     there is no cache at all and the build failed, (None, message). Never
     raises. Everything else uses `cached_snapshot()`."""
     cached = _read_cache()
-    if _fresh_enough(cached, refresh, time.time()):
+    if not force and _fresh_enough(cached, refresh, time.time()):
         return cached, None
     if cached is not None:
         if not _CATALOG_LOCK.acquire(blocking=False):
@@ -717,7 +495,7 @@ def get_snapshot(refresh: bool = False) -> tuple[dict | None, str | None]:
     try:
         # Re-read: the build we may have waited behind just stored one.
         cached = _read_cache()
-        if _fresh_enough(cached, refresh, time.time()):
+        if not force and _fresh_enough(cached, refresh, time.time()):
             return cached, None
         return _build_locked(cached)
     finally:
@@ -830,7 +608,7 @@ def _installed_info(rec: dict | None) -> dict | None:
     return {
         "path": rec["path"].replace(os.sep, "/"),
         "version": stamp.get("version"),
-        "tree_sha": stamp.get("tree_sha"),
+        "release_id": stamp.get("release_id"),
         "installed_at": stamp.get("installed_at"),
         "modified": _modified(rec["path"], stamp),
     }
@@ -856,97 +634,141 @@ def _author(v) -> dict:
     return {"name": None, "github": None}
 
 
-def _pick(paths: set[str], *names: str) -> str | None:
-    for n in names:
-        if n in paths:
-            return n
+def _int(v) -> int:
+    return v if isinstance(v, int) and not isinstance(v, bool) and v >= 0 else 0
+
+
+def _asset_base(slug: str, row: dict) -> str | None:
+    """`https://raw.githubusercontent.com/<owner>/<repo>/<commit>/<slug>/` —
+    the only place the asset proxy ever fetches from — read off the row's
+    `source_url` (or, failing that, its icon/preview URL). None when the row
+    names no GitHub folder for this slug."""
+    m = _SOURCE_URL_RE.fullmatch(row.get("source_url") or "")
+    if m and m.group(3) == slug:
+        return f"{RAW_BASE}/{m.group(1)}/{m.group(2)}/{slug}/"
+    for key in ("icon_url", "preview_url"):
+        m = re.match(rf"({re.escape(RAW_BASE)}/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/[0-9a-f]{{40,64}}/{re.escape(slug)}/)",
+                     row.get(key) or "")
+        if m:
+            return m.group(1)
     return None
 
 
-def _featured_mode(snap: dict) -> bool:
-    """True when some app's metadata declares `featured` itself."""
-    return any(isinstance(a.get("meta", {}).get("featured"), bool)
-               for a in snap.get("apps", {}).values())
+def _asset_version(row: dict) -> str | None:
+    """The `?v=` cache key catalog asset URLs carry: the release id,
+    shortened (a new release is new content, so a new URL)."""
+    rid = row.get("release_id")
+    return rid[:12] if isinstance(rid, str) and _ID_RE.fullmatch(rid) else None
 
 
-def app_entry(slug: str, app: dict, snap: dict, installed: dict | None,
-              declared_featured: bool | None = None) -> dict:
-    """One AppEntry (the contract's shape) out of a snapshot app record."""
-    meta = app.get("meta") or {}
-    files = app.get("files") or []
-    paths = {f["path"] for f in files}
-    icon = _pick(paths, "icon.svg", "icon.png")
-    preview = _pick(paths, "preview.png", "preview.jpg", "preview.webp")
-    requires_python = meta.get("requires_python")
-    if not isinstance(requires_python, bool):
-        # Not declared: a pyproject or any top-level .py says it runs Python.
-        requires_python = any(p == "pyproject.toml" or (p.endswith(".py") and "/" not in p)
-                              for p in paths)
-    if declared_featured is None:
-        declared_featured = _featured_mode(snap)
-    featured = (meta.get("featured") is True) if declared_featured else slug in DEFAULT_FEATURED
-    gh = repo_config()["gh"] if snap.get("repo") == repo_config()["repo"] else None
-    branch = snap.get("branch") or DEFAULT_BRANCH
+def _asset_rel(slug: str, row: dict, url) -> str | None:
+    """The path of a row's raw GitHub icon/preview `url` under the app's own
+    base; None when the row has none or it is not under that base."""
+    base = _asset_base(slug, row)
+    if not base or not isinstance(url, str) or not url.startswith(base):
+        return None
+    rel = unquote(url[len(base):].split("?", 1)[0].split("#", 1)[0])
+    return rel if _safe_rel(rel) else None
+
+
+def _proxied(slug: str, row: dict, url) -> str | None:
+    """Our /api/marketplace/asset URL for a row's raw GitHub icon/preview URL;
+    None when the row has none or it is not under the app's own base."""
+    rel = _asset_rel(slug, row, url)
+    if rel is None:
+        return None
+    ver = _asset_version(row)
+    return f"/api/marketplace/asset/{slug}/{quote(rel, safe='/')}" + (f"?v={ver}" if ver else "")
+
+
+def app_entry(slug: str, row: dict, installed: dict | None) -> dict:
+    """One AppEntry (the contract's shape) out of an API catalog row."""
     inst = _installed_info(installed)
-    tree_sha = app.get("tree_sha")
-    ver = f"?v={_asset_version(tree_sha)}" if _asset_version(tree_sha) else ""
     return {
         "slug": slug,
-        "name": _opt_str(meta.get("name")) or slug,
-        "description": meta.get("description") if isinstance(meta.get("description"), str) else "",
-        "author": _author(meta.get("author")),
-        "tags": _str_list(meta.get("tags")),
-        "category": _opt_str(meta.get("category")) or "other",
-        "version": _opt_str(meta.get("version")) or "0.0.0",
-        "requires_python": requires_python,
-        "min_fused_render": _opt_str(meta.get("min_fused_render")),
-        "ai_capabilities": _str_list(meta.get("ai_capabilities")),
-        "ai_models": _str_list(meta.get("ai_models")),
-        "ai_model_param": _opt_str(meta.get("ai_model_param")),
-        # `?v=` (the app folder's tree sha) keys the browser cache to the
-        # content, so a catalog that moved on never shows last hour's icon.
-        "icon_url": f"/api/marketplace/asset/{slug}/{icon}{ver}" if icon else None,
-        "preview_url": f"/api/marketplace/asset/{slug}/{preview}{ver}" if preview else None,
-        "size_bytes": sum(int(f.get("size") or 0) for f in files),
-        "file_count": len(files),
-        "tree_sha": tree_sha,
-        "source_url": f"https://github.com/{gh}/tree/{branch}/{slug}" if gh else None,
-        "featured": featured,
+        "name": _opt_str(row.get("name")) or slug,
+        "description": row.get("description") if isinstance(row.get("description"), str) else "",
+        "author": _author(row.get("author")),
+        "tags": _str_list(row.get("tags")),
+        "category": _opt_str(row.get("category")) or "other",
+        "version": _opt_str(row.get("version")) or "0.0.0",
+        "requires_python": bool(row.get("requires_python")),
+        "min_fused_render": _opt_str(row.get("min_fused_render")),
+        "ai_capabilities": _str_list(row.get("ai_capabilities")),
+        "ai_models": _str_list(row.get("ai_models")),
+        "ai_model_param": _opt_str(row.get("ai_model_param")),
+        "icon_url": _proxied(slug, row, row.get("icon_url")),
+        "preview_url": _proxied(slug, row, row.get("preview_url")),
+        "size_bytes": _int(row.get("size_bytes")),
+        "file_count": _int(row.get("file_count")),
+        "release_id": _opt_str(row.get("release_id")),
+        "commit": _opt_str(row.get("commit")),
+        "published_at": _opt_str(row.get("published_at")),
+        "updated_at": _opt_str(row.get("updated_at")),
+        "source_url": _opt_str(row.get("source_url")),
+        "featured": row.get("featured") is True,
         "installed": inst,
-        "update_available": bool(inst and tree_sha and inst.get("tree_sha") != tree_sha),
-        "compatible": _compatible(meta.get("min_fused_render")),
+        "update_available": bool(inst and inst.get("release_id") != row.get("release_id")),
+        "compatible": _compatible(row.get("min_fused_render")),
     }
-
-
-def _categories(entries: list[dict]) -> list[dict]:
-    counts: dict[str, int] = {}
-    for e in entries:
-        counts[e["category"]] = counts.get(e["category"], 0) + 1
-    ids = list(CATEGORY_ORDER) + sorted(c for c in counts if c not in CATEGORY_ORDER)
-    return [{"id": c, "label": CATEGORY_LABELS.get(c) or c.replace("-", " ").title(),
-             "count": counts.get(c, 0)} for c in ids]
 
 
 def catalog(refresh: bool = False) -> dict:
     """GET /api/marketplace/catalog's payload."""
     snap, error = get_snapshot(refresh=refresh)
     if snap is None:
-        return {"status": "error", "message": error, "apps": [], "categories": []}
+        return {"status": "error", "message": error, "apps": [], "categories": [],
+                "collections": []}
     installed = installed_apps()
-    declared = _featured_mode(snap)
-    entries = [app_entry(slug, app, snap, installed.get(slug), declared)
-               for slug, app in sorted(snap["apps"].items())]
+    apps = snap["apps"]
+    entries = [app_entry(slug, row, installed.get(slug)) for slug, row in sorted(apps.items())]
+    collections = [{"id": c.get("id"), "kind": c.get("kind"), "title": c.get("title") or "",
+                    "slugs": [s for s in c.get("slugs") or [] if s in apps]}
+                   for c in snap.get("collections") or [] if isinstance(c, dict)]
     return {
         "status": "ok",
         "source": snap.get("source"),
-        "repo": snap.get("repo"),
-        "commit": snap.get("commit"),
+        "api": snap.get("api"),
+        "catalog_version": snap.get("catalog_version"),
+        "generated_at": snap.get("generated_at"),
         "fetched_at": snap.get("fetched_at"),
         "stale": bool(snap.get("stale")),
         "warning": snap.get("warning") or None,
-        "categories": _categories(entries),
+        "categories": [{"id": c["id"], "label": c.get("label") or c["id"],
+                        "count": _int(c.get("count"))} for c in snap.get("categories") or []],
+        "collections": collections,
         "apps": entries,
     }
+
+
+def search(q: str, category: str = "", cursor: str = "", limit: int = 24) -> dict:
+    """GET /api/marketplace/search's payload: the server's ranked answer, each
+    AppEntry carrying its `score` and `highlights`. Installed stamps are
+    merged in like the catalog's. SourceError → `{status: "error", message}`."""
+    from fused_render import __version__
+
+    try:
+        rows = _udf_get("marketplace_search", q=q or "", category=category or None,
+                        cursor=cursor or None, limit=limit, client_version=__version__)
+    except SourceError as exc:
+        return {"status": "error", "message": str(exc)}
+    installed = installed_apps()
+    snap, _err = cached_snapshot()
+    catalog_apps = (snap or {}).get("apps") or {}
+    apps = []
+    for row in rows:
+        slug = row.get("slug")
+        if not is_slug(slug):
+            continue
+        # The catalog's row underneath: a search row without `release_id`
+        # must not read an installed current app as updatable.
+        entry = app_entry(slug, {**(catalog_apps.get(slug) or {}), **row}, installed.get(slug))
+        entry["score"] = row.get("score") if isinstance(row.get("score"), (int, float)) else 0
+        entry["highlights"] = [{"field": str(h.get("field") or ""), "snippet": str(h.get("snippet") or "")}
+                               for h in row.get("highlights") or [] if isinstance(h, dict)]
+        apps.append(entry)
+    nxt = next((r.get("next_cursor") for r in rows if r.get("next_cursor")), None)
+    return {"status": "ok", "apps": apps, "next_cursor": nxt if isinstance(nxt, str) else None}
 
 
 def _local_entry(slug: str, rec: dict) -> dict:
@@ -958,19 +780,21 @@ def _local_entry(slug: str, rec: dict) -> dict:
             meta = _parse_metadata(f.read()) or {}
     except OSError:
         meta = {}
-    files = []
-    for rel in sorted((stamp.get("files") or {})):
-        if not _safe_rel(rel):
-            continue
+    paths = [rel for rel in sorted(stamp.get("files") or {}) if _safe_rel(rel)]
+    size = 0
+    for rel in paths:
         try:
-            files.append({"path": rel, "size": os.path.getsize(os.path.join(rec["path"], *rel.split("/")))})
+            size += os.path.getsize(os.path.join(rec["path"], *rel.split("/")))
         except OSError:
-            files.append({"path": rel, "size": 0})
-    entry = app_entry(slug, {"meta": meta, "files": files, "tree_sha": stamp.get("tree_sha")},
-                      {"apps": {}}, rec, declared_featured=True)
-    # No catalog record → nothing to serve assets from, nothing to update to.
-    entry.update(icon_url=None, preview_url=None, source_url=None, update_available=False,
-                 featured=False)
+            pass
+    # Whatever the copy's metadata declares, minus anything that would point
+    # at the catalog: there is no catalog record to serve assets from, nothing
+    # to update to.
+    row = {**{k: v for k, v in meta.items() if k not in ("icon_url", "preview_url", "source_url",
+                                                         "featured", "release_id", "commit")},
+           "size_bytes": size, "file_count": len(paths)}
+    entry = app_entry(slug, row, rec)
+    entry.update(update_available=False, featured=False)
     if not meta.get("version") and stamp.get("version"):
         entry["version"] = stamp["version"]
     return entry
@@ -981,11 +805,10 @@ def installed_list() -> dict:
     where the catalog (cached; never forces a network refresh) still has it."""
     snap, _error = cached_snapshot()
     apps = (snap or {}).get("apps") or {}
-    declared = _featured_mode(snap) if snap else False
     out = []
     for slug, rec in sorted(installed_apps().items()):
         if slug in apps:
-            out.append(app_entry(slug, apps[slug], snap, rec, declared))
+            out.append(app_entry(slug, apps[slug], rec))
         else:
             out.append(_local_entry(slug, rec))
     return {"apps": out}
@@ -994,6 +817,66 @@ def installed_list() -> dict:
 # ---------------------------------------------------------------------------
 # assets + detail
 # ---------------------------------------------------------------------------
+
+#: (slug, release_id) → the parsed `marketplace_app_detail` row. Answers the
+#: detail page without a network call and is what the asset proxy checks a
+#: path against (the snapshot lists no files). Bounded; the oldest-used entry
+#: goes first.
+_DETAIL_MEMO: dict[tuple, dict] = {}
+_DETAIL_MEMO_LOCK = threading.Lock()
+_DETAIL_MEMO_MAX = 256
+#: The detail page and the asset proxy must not hang on a slow API.
+DETAIL_TIMEOUT_S = 8
+
+
+def _memo_get(key: tuple) -> dict | None:
+    with _DETAIL_MEMO_LOCK:
+        row = _DETAIL_MEMO.pop(key, None)
+        if row is not None:
+            _DETAIL_MEMO[key] = row  # most recently used goes last
+        return row
+
+
+def _memo_put(key: tuple, row: dict) -> None:
+    with _DETAIL_MEMO_LOCK:
+        _DETAIL_MEMO.pop(key, None)
+        while len(_DETAIL_MEMO) >= _DETAIL_MEMO_MAX:
+            _DETAIL_MEMO.pop(next(iter(_DETAIL_MEMO)))
+        _DETAIL_MEMO[key] = row
+
+
+def _detail_row(slug: str, snap_row: dict | None) -> dict | None:
+    """The API's `marketplace_app_detail` row for `slug` (None when the API
+    does not list it). Memoised under the snapshot row's (slug, release_id),
+    and only while the answer is that very release. Raises SourceError."""
+    key = (slug, snap_row.get("release_id") if snap_row else None)
+    if snap_row is not None:
+        hit = _memo_get(key)
+        if hit is not None:
+            return hit
+    from fused_render import __version__
+
+    rows = _udf_get("marketplace_app_detail", timeout=DETAIL_TIMEOUT_S,
+                    slug=slug, client_version=__version__)
+    row = next((r for r in rows if r.get("slug") == slug), None)
+    if row is not None and snap_row is not None and row.get("release_id") == key[1]:
+        _memo_put(key, row)
+    return row
+
+
+def _asset_allowed(slug: str, rel: str, snap_row: dict) -> bool:
+    """The asset proxy's allow-list: the snapshot row's own icon or preview, or
+    a file the app's detail lists. Anything else is a 404 — the proxy is not a
+    window onto the whole repo."""
+    if rel in (_asset_rel(slug, snap_row, snap_row.get("icon_url")),
+               _asset_rel(slug, snap_row, snap_row.get("preview_url"))):
+        return True
+    try:
+        row = _detail_row(slug, snap_row)
+    except SourceError:
+        return False
+    return any(isinstance(f, dict) and f.get("path") == rel for f in (row or {}).get("files") or [])
+
 
 def _content_type(path: str) -> str:
     low = path.lower()
@@ -1008,60 +891,16 @@ def _content_type(path: str) -> str:
     return guessed or "application/octet-stream"
 
 
-def _raw_url(gh: str, commit: str, slug: str, rel: str) -> str:
-    """raw.githubusercontent.com URL of `<slug>/<rel>` at `commit`, the path
-    percent-encoded (a `#`, `?`, space or `%` in a file name is a path
-    character there, not URL syntax)."""
-    return f"{RAW_BASE}/{gh}/{commit}/{quote(f'{slug}/{rel}', safe='/')}"
-
-
-def _fetch_asset_bytes(snap: dict, slug: str, rel: str) -> bytes | None:
-    """The bytes of `<slug>/<rel>` at the snapshot's commit, from the
-    snapshot's source (falling back to the mirror's checkout)."""
-    commit = snap.get("commit")
-    if not is_sha(commit):
-        return None
-    cfg = repo_config()
-    if snap.get("source") == SOURCE_API and cfg["gh"]:
-        r, err = _http_get(_raw_url(cfg["gh"], commit, slug, rel))
-        if not err and r is not None:
-            return r.content
-    mirror = mirror_dir()
-    if not os.path.isdir(os.path.join(mirror, ".git")):
-        return None
-    # Reading an object needs no lock (git's object store is safe to read
-    # while a fetch writes it) — so an <img> never waits on a mirror fetch.
-    try:
-        r = _git("cat-file", "blob", f"{commit}:{slug}/{rel}", cwd=mirror)
-        if r.returncode == 0:
-            return r.stdout
-    except SourceError:
-        pass
-    # The commit is gone from the shallow mirror: the checkout is the nearest
-    # thing (a preview a commit newer, never a wrong app). The checkout DOES
-    # change under a reset, so this read holds the mirror — briefly: busy
-    # means no preview, not a stalled request.
-    p = os.path.join(mirror, slug, *rel.split("/"))
-    try:
-        with _mirror_lock(wait_s=1.0):
-            if os.path.isfile(p) and not os.path.islink(p):
-                with open(p, "rb") as f:
-                    return f.read(MAX_ASSET_BYTES + 1)
-    except (OSError, SourceError):
-        return None
-    return None
-
-
-def _asset_version(tree_sha) -> str | None:
-    """The `?v=` cache key catalog asset URLs carry: the app folder's tree
-    sha (it changes whenever any file in the folder does), shortened."""
-    return tree_sha[:12] if isinstance(tree_sha, str) and tree_sha else None
+def _fetch_asset_bytes(base: str, rel: str) -> bytes | None:
+    """The bytes of `<rel>` under the app's raw GitHub `base` (pinned to the
+    release's commit), or None."""
+    r, err = _http_get(base + quote(rel, safe="/"))
+    return r.content if not err and r is not None else None
 
 
 def get_asset(slug: str, rel: str) -> tuple[bytes, str] | None:
     """(bytes, content type) for one file of a catalog app, or None (→ 404):
-    unknown slug, a path not in that app's file list (which also refuses
-    every traversal shape), too large, or unfetchable."""
+    unknown slug, an unsafe path, too large, or unfetchable."""
     got = get_asset_versioned(slug, rel)
     return got[:2] if got else None
 
@@ -1071,30 +910,32 @@ def get_asset_versioned(slug: str, rel: str) -> tuple[bytes, str, str | None] | 
     came from. The asset route grants long browser caching only when the
     request's `v` equals it — an arbitrary `?v=1` in a readme link proves
     nothing — and reading the key from a second cache read could pair new-key
-    with old bytes if a refresh landed in between."""
+    with old bytes if a refresh landed in between. Only ever fetches under
+    the row's own raw-GitHub base, and only for the row's icon/preview or a
+    file its detail lists (`_asset_allowed`; bytes already on disk were
+    admitted by that check when they were fetched)."""
     if not is_slug(slug) or not _safe_rel(rel):
         return None
     snap, _err = cached_snapshot()
     if not snap:
         return None
-    app = snap["apps"].get(slug)
-    if not app:
+    row = snap["apps"].get(slug)
+    if not row:
         return None
-    entry = next((f for f in app.get("files") or [] if f["path"] == rel), None)
-    if entry is None or int(entry.get("size") or 0) > MAX_ASSET_BYTES:
-        return None
-    commit = snap.get("commit")
-    if not is_sha(commit):
-        return None  # never a path segment, never a git argument
-    cache_root = os.path.join(state_dir(), "assets", commit, slug)
-    cached = os.path.join(cache_root, *rel.split("/"))
-    version = _asset_version(app.get("tree_sha"))
+    version = _asset_version(row)
+    base = _asset_base(slug, row)
+    if version is None or base is None:
+        return None  # the release id is a cache directory name; never trust it unshaped
+    rid = row["release_id"]
+    cached = os.path.join(state_dir(), "assets", rid, slug, *rel.split("/"))
     try:
         with open(cached, "rb") as f:
             return f.read(), _content_type(rel), version
     except OSError:
         pass
-    data = _fetch_asset_bytes(snap, slug, rel)
+    if not _asset_allowed(slug, rel, row):
+        return None
+    data = _fetch_asset_bytes(base, rel)
     if data is None or len(data) > MAX_ASSET_BYTES:
         return None
     try:
@@ -1108,40 +949,54 @@ def get_asset_versioned(slug: str, rel: str) -> tuple[bytes, str, str | None] | 
     return data, _content_type(rel), version
 
 
+def _installed_detail(slug: str, rec: dict) -> dict:
+    """Installed but gone from the catalog: describe the local copy."""
+    entry = _local_entry(slug, rec)
+    readme = ""
+    for name in ("readme.md", "README.md", "Readme.md"):
+        try:
+            with open(os.path.join(rec["path"], name), "rb") as f:
+                readme = f.read(MAX_README_BYTES).decode("utf-8", "replace")
+            break
+        except OSError:
+            continue
+    files = [{"path": p, "size": 0} for p in sorted(rec["stamp"].get("files") or {})]
+    return {"status": "ok", "app": entry, "readme": readme, "files": files,
+            "readme_base": f"/api/marketplace/asset/{slug}/", "releases": []}
+
+
 def app_detail(slug: str) -> dict | None:
     """GET /api/marketplace/app/{slug}'s payload, or None (→ 404)."""
     if not is_slug(slug):
         return None
-    snap, error = cached_snapshot()
     installed = installed_apps()
-    if snap and slug in snap["apps"]:
-        app = snap["apps"][slug]
-        entry = app_entry(slug, app, snap, installed.get(slug))
-        files = [{"path": f["path"], "size": f["size"]} for f in app.get("files") or []]
-        readme_rel = next((f["path"] for f in files
-                           if f["path"].lower() in ("readme.md", "readme.markdown", "readme")), None)
-        readme = ""
-        if readme_rel:
-            got = get_asset(slug, readme_rel)
-            if got:
-                readme = got[0][:MAX_README_BYTES].decode("utf-8", "replace")
-        return {"status": "ok", "app": entry, "readme": readme, "files": files,
-                "readme_base": f"/api/marketplace/asset/{slug}/"}
+    snap, _error = cached_snapshot()
+    snap_row = ((snap or {}).get("apps") or {}).get(slug)
+    try:
+        row = _detail_row(slug, snap_row)
+    except SourceError as exc:
+        if exc.error_code != "app_not_found" and snap_row is not None:
+            # The API is unreachable, but the cached catalog knows the app:
+            # the card still renders; only the readme and file list are lost.
+            return {"status": "ok", "app": app_entry(slug, snap_row, installed.get(slug)),
+                    "readme": "", "files": [], "readme_base": f"/api/marketplace/asset/{slug}/",
+                    "releases": []}
+        row = None
+    if row is not None:
+        files = [{"path": f["path"], "size": _int(f.get("size"))}
+                 for f in row.get("files") or []
+                 if isinstance(f, dict) and isinstance(f.get("path"), str)]
+        releases = [{"release_id": r.get("release_id"), "version": r.get("version"),
+                     "changelog": r.get("changelog") or "", "published_at": r.get("published_at"),
+                     "revoked": bool(r.get("revoked"))}
+                    for r in row.get("releases") or [] if isinstance(r, dict)]
+        readme = row.get("readme_markdown")
+        return {"status": "ok", "app": app_entry(slug, {**(snap_row or {}), **row}, installed.get(slug)),
+                "readme": readme[:MAX_README_BYTES] if isinstance(readme, str) else "",
+                "files": files, "readme_base": f"/api/marketplace/asset/{slug}/",
+                "releases": releases}
     if slug in installed:
-        # Installed but gone from the catalog: describe the local copy.
-        rec = installed[slug]
-        entry = _local_entry(slug, rec)
-        readme = ""
-        for name in ("readme.md", "README.md", "Readme.md"):
-            try:
-                with open(os.path.join(rec["path"], name), "rb") as f:
-                    readme = f.read(MAX_README_BYTES).decode("utf-8", "replace")
-                break
-            except OSError:
-                continue
-        files = [{"path": p, "size": 0} for p in sorted(rec["stamp"].get("files") or {})]
-        return {"status": "ok", "app": entry, "readme": readme, "files": files,
-                "readme_base": f"/api/marketplace/asset/{slug}/"}
+        return _installed_detail(slug, installed[slug])
     return None
 
 
@@ -1197,7 +1052,8 @@ def start_install(slug: str) -> dict:
         raise InstallError(f"no app named {slug!r} in the catalog")
     dest = os.path.join(community_dir(), slug)
     action = "update" if read_stamp(dest) and not _is_husk(dest) else "install"
-    total = sum(int(f.get("size") or 0) for f in snap["apps"][slug].get("files") or [])
+    # An estimate (the unpacked size); install_app swaps in the package's size.
+    total = _int(snap["apps"][slug].get("size_bytes"))
     with _JOBS_LOCK:
         job = _JOBS.get(slug)
         if job and job["state"] in _ACTIVE:
@@ -1275,149 +1131,151 @@ def _refuse_case_collisions(files: list[dict]) -> None:
                            f"({clashes[0]}), which cannot be installed safely")
 
 
-def _download_api(snap: dict, slug: str, files: list[dict], payload: str, progress) -> None:
-    gh = repo_config()["gh"]
-    commit = snap["commit"]
-
-    def one(f):
-        url = _raw_url(gh, commit, slug, f["path"])
-        dest = os.path.join(payload, *f["path"].split("/"))
-        os.makedirs(os.path.dirname(dest), exist_ok=True)
-        try:
-            with client.stream("GET", url, timeout=HTTP_TIMEOUT_S * 3,
-                               follow_redirects=True) as r:
-                if r.status_code >= 400:
-                    raise InstallError(f"GitHub answered {r.status_code} for {f['path']}")
-                with open(dest, "wb") as out:
-                    for chunk in r.iter_bytes(256 * 1024):
-                        out.write(chunk)
-                        progress(len(chunk))
-        except httpx.HTTPError as e:
-            raise InstallError(f"could not download {f['path']} ({e.__class__.__name__})")
-
-    with httpx.Client() as client, ThreadPoolExecutor(WORKERS) as pool:
-        for fut in [pool.submit(one, f) for f in files]:
-            fut.result()
-
-
-def _git_has_commit(sha) -> bool:
-    if not is_sha(sha):
-        return False
+def _rebuild_after_drift() -> None:
+    """The release the user's page named is gone or moved on: rebuild the
+    catalog now, past the refresh throttle, so the "refresh" the error asks for
+    shows the new release. A failed rebuild changes nothing (the caller's
+    InstallError still raises)."""
     try:
-        return _git("cat-file", "-e", f"{sha}^{{commit}}", cwd=mirror_dir()).returncode == 0
-    except SourceError:
-        return False
+        get_snapshot(force=True)
+    except Exception:  # noqa: BLE001
+        logger.debug("marketplace: catalog rebuild after a release change failed", exc_info=True)
 
 
-def _write_blobs(shas: dict[str, str], payload: str, progress) -> None:
-    """Write each blob (rel → sha) out of the mirror's object store into
-    `payload`, through ONE `git cat-file --batch` whose output streams to a
-    file (bounded memory, exact bytes — no checkout, no .gitattributes
-    filters). Caller holds `_mirror_lock()`."""
-    from fused_render.shell import git_tools
-
-    if not shas:
-        return
-    order = sorted(shas)
-    batch = os.path.join(os.path.dirname(payload), "blobs.batch")
-    env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
+def _fetch_release(slug: str, release_id: str | None) -> dict:
+    """The `marketplace_release` row for `release_id` (the one the user chose
+    from the catalog), validated: not revoked, the release asked for, with a
+    well-formed file list and package. Raises InstallError."""
     try:
-        with open(batch, "wb") as out:
-            # argv inlined for tests/test_git_posix_spawn.py's sweep.
-            r = subprocess.run([git_tools.git_bin(), "-C", mirror_dir(), "cat-file", "--batch"],
-                               input="".join(f"{shas[rel]}\n" for rel in order).encode(),
-                               stdout=out, stderr=subprocess.PIPE, timeout=CLONE_TIMEOUT_S,
-                               env=env, close_fds=False)
-    except FileNotFoundError:
-        raise SourceError("git is not installed (or not on PATH)")
-    except subprocess.TimeoutExpired:
-        raise SourceError("git timed out reading the community apps mirror")
-    if r.returncode != 0:
-        raise SourceError("git cat-file failed reading the community apps mirror")
-    with open(batch, "rb") as src:
-        for rel in order:
-            header = src.readline().decode("ascii", "replace").split()
-            if len(header) != 3 or header[0] != shas[rel] or header[1] != "blob":
-                raise SourceError(f"the community apps mirror is missing {rel}")
-            left = int(header[2])
-            dest = os.path.join(payload, *rel.split("/"))
-            os.makedirs(os.path.dirname(dest), exist_ok=True)
-            with open(dest, "wb") as out:
-                while left:
-                    chunk = src.read(min(left, 1024 * 1024))
-                    if not chunk:
-                        raise SourceError(f"the community apps mirror cut {rel} short")
-                    out.write(chunk)
-                    left -= len(chunk)
-                    progress(len(chunk))
-            src.read(1)  # the record's trailing newline
-    with contextlib.suppress(OSError):
-        os.remove(batch)
-
-
-def _copy_from_mirror(slug: str, ref: str, payload: str, progress) -> dict:
-    """Copy the app AS OF `ref` (the catalog's commit when the mirror has it)
-    out of the mirror's object store — never its working tree, which may be
-    a different commit than the one the user chose from. Caller holds
-    `_mirror_lock()`; answers the {commit, tree_sha, files} actually
-    copied."""
-    mirror = mirror_dir()
-    commit = _git_out("rev-parse", "--verify", f"{ref}^{{commit}}", cwd=mirror).strip()
-    tree_sha = _git_out("rev-parse", f"{commit}:{slug}", cwd=mirror).strip()
-    files, shas = [], {}
-    for typ, sha, size, path in _ls_tree(commit, f"{slug}/", recursive=True, skip_symlinks=True):
-        if typ == "blob" and path.startswith(slug + "/"):
-            rel = path[len(slug) + 1:]
-            files.append({"path": rel, "size": size or 0})
-            shas[rel] = sha
-    _refuse_case_collisions(files)
-    files = _wanted(files)
-    _write_blobs({f["path"]: shas[f["path"]] for f in files}, payload, progress)
-    return {"commit": commit, "tree_sha": tree_sha, "files": files}
-
-
-def _stage(snap: dict, slug: str, payload: str, progress) -> dict:
-    """Fill `payload` with the app's files; answers {commit, tree_sha,
-    files, source} describing exactly what was staged."""
-    app = snap["apps"][slug]
-    files = _wanted(app.get("files") or [])
-    if snap.get("source") == SOURCE_API and repo_config()["gh"]:
-        try:
-            _download_api(snap, slug, files, payload, progress)
-            return {"commit": snap["commit"], "tree_sha": app["tree_sha"], "files": files,
-                    "source": SOURCE_API}
-        except InstallError as exc:
-            logger.info("marketplace: raw download of %s failed (%s); using git mirror", slug, exc)
-            shutil.rmtree(payload, ignore_errors=True)
-            os.makedirs(payload)
-            progress(None)  # reset the byte count
-    try:
-        with _mirror_lock():
-            want = snap.get("commit")
-            mirror_ok = os.path.isdir(os.path.join(mirror_dir(), ".git"))
-            if not mirror_ok or not _git_has_commit(want):
-                # Clone, or bring the mirror to the branch tip (the catalog is
-                # usually the tip, so that is where its commit turns up).
-                _ensure_mirror(fetch=True)
-            if is_sha(want) and not _git_has_commit(want):
-                # Older than the tip (the branch moved on): ask for it by sha.
-                with contextlib.suppress(SourceError):
-                    _git("fetch", "--depth", "1", "--no-tags", "origin", want,
-                         cwd=mirror_dir(), timeout=CLONE_TIMEOUT_S)
-            # Fail closed: installing whatever the tip holds now would put
-            # code on disk that differs from the version, readme and trust
-            # notes the user just read.
-            if not _git_has_commit(want):
-                raise InstallError("the community repo changed since this page loaded — "
-                                   "refresh the Marketplace and try again")
-            ref = want
-            r = _git("cat-file", "-e", f"{ref}:{slug}", cwd=mirror_dir())
-            if r.returncode != 0:
-                raise InstallError(f"{slug} is no longer in the community repo")
-            got = _copy_from_mirror(slug, ref, payload, progress)
+        rows = _udf_get("marketplace_release", slug=slug, release_id=release_id or "")
     except SourceError as exc:
         raise InstallError(str(exc))
-    return {**got, "source": SOURCE_GIT}
+    rel = rows[0] if rows else None
+    if not isinstance(rel, dict):
+        raise InstallError("the marketplace returned no release for this app")
+    if rel.get("revoked"):
+        _rebuild_after_drift()
+        raise InstallError("This release was withdrawn — refresh the Marketplace")
+    if release_id and rel.get("release_id") != release_id:
+        _rebuild_after_drift()
+        raise InstallError("the marketplace changed since this page loaded — "
+                           "refresh and try again")
+    files = rel.get("files")
+    if not isinstance(files, list) or not files or not all(
+            isinstance(f, dict) and _safe_rel(f.get("path")) and isinstance(f.get("sha256"), str)
+            and isinstance(f.get("size"), int) and f["size"] >= 0 for f in files):
+        raise InstallError("the marketplace returned an unusable file list for this release")
+    if len({f["path"] for f in files}) != len(files):
+        raise InstallError("the release lists the same file twice")
+    url, size, digest = rel.get("package_url"), rel.get("package_size"), rel.get("package_sha256")
+    if (not isinstance(url, str) or not url.startswith("https://") or not isinstance(digest, str)
+            or not isinstance(size, int) or isinstance(size, bool) or not 0 < size <= MAX_PACKAGE_BYTES):
+        raise InstallError("the marketplace returned an unusable package for this release")
+    return rel
+
+
+def _download_package(url: str, dest: str, progress, max_bytes: int) -> None:
+    """Stream the presigned package at `url` to `dest`, calling
+    `progress(n)` per chunk. Raises InstallError (also past `max_bytes`)."""
+    got = 0
+    try:
+        with httpx.stream("GET", url, timeout=HTTP_TIMEOUT_S * 3, follow_redirects=True) as r:
+            if r.status_code >= 400:
+                raise InstallError(f"the package download failed ({r.status_code})")
+            with open(dest, "wb") as out:
+                for chunk in r.iter_bytes(256 * 1024):
+                    got += len(chunk)
+                    if got > max_bytes:
+                        raise InstallError("the downloaded package is larger than announced")
+                    out.write(chunk)
+                    progress(len(chunk))
+    except httpx.HTTPError as e:
+        raise InstallError(f"could not download the package ({e.__class__.__name__})")
+
+
+def _file_sha256(path: str) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _extract_package(tar_path: str, payload: str, files: list[dict]) -> None:
+    """Unpack the release package into `payload`, refusing anything but plain
+    files and folders under safe relative paths (no absolute, `..`, symlink,
+    hardlink, device or duplicate member), then require the extracted set to
+    EQUAL the release's `files` — same paths, same size and sha256 each.
+    Only `_wanted` files are written (nothing under a KEEP name). Hand-rolled
+    rather than `extractall`: every member is vetted before a byte lands.
+    Raises InstallError."""
+    expected = {f["path"]: f for f in files}
+    wanted = {f["path"] for f in _wanted(files)}
+    seen: set[str] = set()
+    try:
+        with tarfile.open(tar_path, "r:gz") as tf:
+            for m in tf:
+                name = m.name[2:] if m.name.startswith("./") else m.name
+                if m.isdir():
+                    if name.rstrip("/") and not _safe_rel(name.rstrip("/")):
+                        raise InstallError(f"the package holds an unsafe path ({m.name!r})")
+                    continue
+                if not m.isreg():
+                    raise InstallError(f"the package holds something that is not a plain file ({m.name!r})")
+                if not _safe_rel(name):
+                    raise InstallError(f"the package holds an unsafe path ({m.name!r})")
+                if name not in expected:
+                    raise InstallError(f"the package holds a file the release does not list ({name})")
+                if name in seen:
+                    raise InstallError(f"the package holds {name} twice")
+                seen.add(name)
+                if m.size != expected[name]["size"]:
+                    raise InstallError(f"{name} does not match the release (size)")
+                src = tf.extractfile(m)
+                if src is None:
+                    raise InstallError(f"the package holds an unreadable member ({name})")
+                h = hashlib.sha256()
+                out = None
+                if name in wanted:
+                    dest = os.path.join(payload, *name.split("/"))
+                    os.makedirs(os.path.dirname(dest), exist_ok=True)
+                    out = open(dest, "wb")
+                try:
+                    for chunk in iter(lambda: src.read(1024 * 1024), b""):
+                        h.update(chunk)
+                        if out is not None:
+                            out.write(chunk)
+                finally:
+                    if out is not None:
+                        out.close()
+                if h.hexdigest() != expected[name]["sha256"]:
+                    raise InstallError(f"{name} does not match the release (checksum)")
+    except (tarfile.TarError, EOFError, zlib.error, UnicodeError):
+        raise InstallError("the downloaded package is not a valid archive")
+    except OSError as exc:
+        if exc.errno is None:  # gzip.BadGzipFile and friends; not the disk
+            raise InstallError("the downloaded package is not a valid archive")
+        raise  # a real disk error: install_app words it as a write failure
+    missing = sorted(set(expected) - seen)
+    if missing:
+        raise InstallError(f"the package is missing {missing[0]} ({len(missing)} file(s))")
+
+
+def _stage(release: dict, staging: str, payload: str, progress) -> list[dict]:
+    """Download the release package, verify it, and unpack it into `payload`.
+    Answers the `{path, sha256, size}` files actually staged."""
+    pkg = os.path.join(staging, "package.tar.gz")
+    _download_package(release["package_url"], pkg, progress, release["package_size"])
+    try:
+        if os.path.getsize(pkg) != release["package_size"]:
+            raise InstallError("the downloaded package has the wrong size")
+        if _file_sha256(pkg) != release["package_sha256"]:
+            raise InstallError("the downloaded package failed its integrity check")
+        _extract_package(pkg, payload, release["files"])
+    finally:
+        with contextlib.suppress(OSError):
+            os.remove(pkg)
+    return _wanted(release["files"])
 
 
 def _prune_dropped(dest: str, old_stamp: dict | None, new_paths: set[str]) -> list[str]:
@@ -1480,40 +1338,37 @@ def install_app(slug: str, snap: dict, report=lambda **kw: None) -> dict:
     # A husk (keep-data uninstall) with our stamp is merged into like an
     # update — its `.fused/` data is reused — but to the user it is an install.
     action = "update" if old_stamp and not _is_husk(dest) else "install"
-    meta = snap["apps"][slug].get("meta") or {}
-    _refuse_case_collisions(snap["apps"][slug].get("files") or [])
-    total = sum(int(f.get("size") or 0) for f in _wanted(snap["apps"][slug].get("files") or []))
+    row = snap["apps"][slug]
+    report(state="downloading", action=action, progress=0.0, message="Downloading…")
+    release = _fetch_release(slug, row.get("release_id"))
+    _refuse_case_collisions(release["files"])
+    total = release["package_size"]
     done = [0]
     lock = threading.Lock()
 
     def progress(n):
         with lock:
-            done[0] = 0 if n is None else done[0] + n
-            frac = min(done[0] / total, 1.0) if total else 0.0
-            report(bytes_done=done[0], progress=round(0.9 * frac, 4))
+            done[0] += n
+            report(bytes_done=done[0], progress=round(0.9 * min(done[0] / total, 1.0), 4))
 
-    report(state="downloading", action=action, bytes_total=total, progress=0.0,
-           message="Downloading…")
+    report(bytes_total=total, bytes_done=0)
     staging = tempfile.mkdtemp(dir=root, prefix=f".marketplace-{slug}-")
     payload = os.path.join(staging, "files")
     os.makedirs(payload)
     try:
-        staged = _stage(snap, slug, payload, progress)
+        staged = _stage(release, staging, payload, progress)
         report(state="installing", progress=0.92,
                message="Updating…" if action == "update" else "Installing…")
-        hashes = {}
-        for f in staged["files"]:
-            p = os.path.join(payload, *f["path"].split("/"))
-            if os.path.isfile(p):
-                hashes[f["path"]] = _sha256_file(p)
+        hashes = {f["path"]: f["sha256"] for f in staged}
+        version = release.get("version") if isinstance(release.get("version"), str) else row.get("version")
         stamp = {
             "slug": slug,
-            "version": meta.get("version") if isinstance(meta.get("version"), str) else None,
-            "tree_sha": staged["tree_sha"],
-            "commit": staged["commit"],
-            "repo": snap.get("repo"),
+            "version": version if isinstance(version, str) else None,
+            "release_id": release.get("release_id"),
+            "commit": release.get("commit") if isinstance(release.get("commit"), str) else row.get("commit"),
+            "api": snap.get("api") or api_base(),
             "installed_at": _utc_now(),
-            "source": staged["source"],
+            "source": SOURCE,
             "files": hashes,
         }
         if not exists:
@@ -1563,7 +1418,7 @@ def _run_job(slug: str, snap: dict) -> None:
 
     try:
         result = install_app(slug, snap, report)
-        name = (snap["apps"][slug].get("meta") or {}).get("name") or slug
+        name = snap["apps"][slug].get("name") or slug
         verb = "Updated" if result["action"] == "update" else "Installed"
         with _JOBS_LOCK:
             total = (_JOBS.get(slug) or {}).get("bytes_total") or 0

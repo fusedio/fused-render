@@ -7,7 +7,7 @@
 // remounts on the nav epoch (App.tsx), so a card → detail → Back hop would
 // otherwise paint skeletons twice for a list that has not changed. The cache
 // answers instantly and a background revalidate (single-flight) lands any
-// change; `refreshCatalog({force: true})` asks the server to re-read GitHub.
+// change; `refreshCatalog({force: true})` asks the server to re-read the udf.ai catalog.
 //
 // JOBS — polled every ~600ms ONLY while a job is active (queued /
 // downloading / installing). The poll stops on its own once everything has
@@ -20,7 +20,7 @@
 // Lives in platform (not apps/marketplace) because the phase-2 `.fused` file
 // install page (/marketplace/file?path=…) is a second consumer of the same
 // jobs + install plumbing.
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { getJson, postJson } from "@platform/lib/api";
 import { notify } from "@platform/lib/notifications";
 import { CURRENT_APPS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
@@ -37,7 +37,9 @@ export interface InstalledStamp {
   path: string;
   /** Null when the stamp predates a version (or could not be read). */
   version: string | null;
-  tree_sha: string;
+  /** The release the copy was installed from; null for a stamp that predates
+   *  the udf.ai backend (it then reads as update-available). */
+  release_id: string | null;
   installed_at: string;
   /** Local files differ from the sha256s stamped at install time. */
   modified: boolean;
@@ -60,7 +62,10 @@ export interface AppEntry {
   preview_url: string | null;
   size_bytes: number;
   file_count: number;
-  tree_sha: string;
+  release_id: string;
+  commit: string;
+  published_at: string | null;
+  updated_at: string | null;
   source_url: string | null;
   featured: boolean;
   installed: InstalledStamp | null;
@@ -74,18 +79,49 @@ export interface MarketplaceCategory {
   count: number;
 }
 
+/** A server-curated group of apps for the home page. `shelf` groups map to a
+ *  category (`id` is its id); `new_and_updated` has no category. */
+export interface MarketplaceCollection {
+  id: string;
+  kind: "shelf" | "new_and_updated";
+  title: string;
+  slugs: string[];
+}
+
 export interface Catalog {
   status: "ok" | "error";
   message?: string;
   error?: string;
-  source?: "github-api" | "git-mirror";
-  repo?: string;
-  commit?: string;
+  source?: "udf-api";
+  api?: string;
+  catalog_version?: string;
+  generated_at?: string;
   fetched_at?: string;
   stale?: boolean;
   warning?: string | null;
   categories: MarketplaceCategory[];
+  collections: MarketplaceCollection[];
   apps: AppEntry[];
+}
+
+export interface AppRelease {
+  release_id: string;
+  version: string;
+  changelog?: string | null;
+  published_at?: string | null;
+  revoked: boolean;
+}
+
+export interface SearchHit extends AppEntry {
+  score?: number;
+  highlights?: { field: string; snippet: string }[];
+}
+
+export interface SearchResult {
+  status: "ok" | "error";
+  message?: string;
+  apps: SearchHit[];
+  next_cursor: string | null;
 }
 
 export interface AppFile {
@@ -99,6 +135,7 @@ export interface AppDetail {
   readme: string;
   files: AppFile[];
   readme_base: string;
+  releases: AppRelease[];
 }
 
 export type JobState = "queued" | "downloading" | "installing" | "done" | "error";
@@ -121,6 +158,14 @@ export function fetchCatalog(refresh = false): Promise<Catalog> {
   return getJson<Catalog>(`/api/marketplace/catalog${refresh ? "?refresh=1" : ""}`);
 }
 
+export function searchApps(opts: { q: string; category?: string; cursor?: string | null; limit?: number }): Promise<SearchResult> {
+  const p = new URLSearchParams({ q: opts.q });
+  if (opts.category && opts.category !== "all") p.set("category", opts.category);
+  if (opts.cursor) p.set("cursor", opts.cursor);
+  if (opts.limit) p.set("limit", String(opts.limit));
+  return getJson<SearchResult>(`/api/marketplace/search?${p}`);
+}
+
 export function fetchApp(slug: string): Promise<AppDetail> {
   return getJson<AppDetail>(`/api/marketplace/app/${encodeURIComponent(slug)}`);
 }
@@ -135,6 +180,105 @@ export function fetchInstalled(): Promise<{ apps: AppEntry[] }> {
 
 export function postInstall(slug: string): Promise<{ status: "ok"; job: InstallJob }> {
   return postJson<{ status: "ok"; job: InstallJob }>("/api/marketplace/install", { slug });
+}
+
+// -- Server search -----------------------------------------------------------
+
+export interface MarketplaceSearch {
+  status: "idle" | "loading" | "ok" | "error";
+  apps: SearchHit[];
+  nextCursor: string | null;
+  /** A load-more request is in flight (the button disables meanwhile). */
+  loadingMore: boolean;
+  loadMore: () => void;
+}
+
+export const SEARCH_DEBOUNCE_MS = 200;
+
+/** Server-side search for a typed query: 200 ms debounce, a sequence id so a
+ *  slow earlier answer never overwrites a later one, and previous results stay
+ *  while the next load. `idle` when `q` is blank. An error leaves the caller to
+ *  fall back to its own local filter.
+ *
+ *  A cursor belongs to ONE (term, category): a change drops it at once (Load
+ *  more disappears while the new query debounces and loads), and a load-more
+ *  answer that left before the change is discarded. Only one load-more runs at
+ *  a time, and appended apps are de-duplicated by slug. */
+export function useMarketplaceSearch(q: string, category = "all"): MarketplaceSearch {
+  const [state, setState] = useState<{
+    status: MarketplaceSearch["status"];
+    apps: SearchHit[];
+    nextCursor: string | null;
+    loadingMore: boolean;
+  }>({
+    status: "idle",
+    apps: [],
+    nextCursor: null,
+    loadingMore: false,
+  });
+  const seq = useRef(0);
+  const cursor = useRef<string | null>(null);
+  const loadingMore = useRef(false);
+  const term = q.trim();
+  const key = `${category}\u0000${term}`;
+  const keyRef = useRef(key);
+  keyRef.current = key;
+
+  useEffect(() => {
+    const id = ++seq.current;
+    cursor.current = null;
+    loadingMore.current = false;
+    if (!term) {
+      setState({ status: "idle", apps: [], nextCursor: null, loadingMore: false });
+      return;
+    }
+    setState((s) => ({ ...s, status: "loading", nextCursor: null, loadingMore: false }));
+    const t = setTimeout(() => {
+      searchApps({ q: term, category })
+        .then((r) => {
+          if (id !== seq.current) return;
+          if (r.status !== "ok") return setState({ status: "error", apps: [], nextCursor: null, loadingMore: false });
+          cursor.current = r.next_cursor;
+          setState({ status: "ok", apps: r.apps, nextCursor: r.next_cursor, loadingMore: false });
+        })
+        .catch(() => {
+          if (id === seq.current) setState({ status: "error", apps: [], nextCursor: null, loadingMore: false });
+        });
+    }, SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(t);
+  }, [term, category]);
+
+  const loadMore = () => {
+    const next = cursor.current;
+    if (!next || !term || loadingMore.current) return;
+    const id = seq.current;
+    const issuedFor = key;
+    loadingMore.current = true;
+    setState((s) => ({ ...s, loadingMore: true }));
+    const stale = () => id !== seq.current || issuedFor !== keyRef.current;
+    searchApps({ q: term, category, cursor: next })
+      .then((r) => {
+        if (stale() || r.status !== "ok") return;
+        cursor.current = r.next_cursor;
+        setState((s) => {
+          const have = new Set(s.apps.map((a) => a.slug));
+          return {
+            status: "ok",
+            apps: s.apps.concat(r.apps.filter((a) => !have.has(a.slug))),
+            nextCursor: r.next_cursor,
+            loadingMore: s.loadingMore,
+          };
+        });
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (stale()) return; // the query change already reset the flag
+        loadingMore.current = false;
+        setState((s) => (s.loadingMore ? { ...s, loadingMore: false } : s));
+      });
+  };
+
+  return { ...state, loadMore };
 }
 
 // -- Small helpers -----------------------------------------------------------
