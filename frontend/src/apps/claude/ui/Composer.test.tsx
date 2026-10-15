@@ -2123,3 +2123,37 @@ test("typing into a recalled line, or sending it, ends the walk; modified arrows
   expect(c.press("ArrowDown")).toBe(false);
   expect(c.box().props.value).toBe("");
 });
+
+test("sending a recalled line straight away ends the walk (Bugbot, PR #1686)", () => {
+  const c = mount({ history: ["older", "newest"] });
+  c.type("draft");
+  expect(c.press("ArrowUp")).toBe(true);
+  expect(c.box().props.value).toBe("newest");
+  c.press("Enter");
+  expect(c.sent.map((s) => s.text)).toEqual(["newest"]);
+  // The pre-walk draft is not waiting behind ↓: the box is empty and stays so.
+  expect(c.press("ArrowDown")).toBe(false);
+  expect(c.box().props.value).toBe("");
+  // A stranded hand-back (`restore`) is the reader's line, and ends a walk too.
+  const r = mount({ history: ["one", "two"] });
+  expect(r.press("ArrowUp")).toBe(true);
+  r.rerender({ history: ["one", "two"], restore: { text: "back", seq: 1 } });
+  expect(r.box().props.value).toBe("two\nback");
+  expect(r.press("ArrowDown")).toBe(false);
+});
+
+test("a recalled slash command keeps the menu shut, so ↑/↓ stay history's (Bugbot, PR #1686)", () => {
+  const c = mount({
+    history: ["hello", "/compact"],
+    slashCommands: [{ name: "compact", description: "Compact the conversation", source: "builtin" }],
+    onLocalCommand: () => {},
+  });
+  expect(c.press("ArrowUp")).toBe(true);
+  expect(c.box().props.value).toBe("/compact");
+  expect(c.box().props["aria-expanded"]).toBe(false);
+  expect(c.press("ArrowUp")).toBe(true);
+  expect(c.box().props.value).toBe("hello");
+  // Typed by hand, the same line is a query and the menu opens as ever.
+  c.type("/compact");
+  expect(c.box().props["aria-expanded"]).toBe(true);
+});

@@ -1074,7 +1074,11 @@ export function ComposerCard({
   const dirtyRef = useRef(false);
   {
     const fresh = freshBox(spent.current, text, trayDraft.length);
-    if (fresh.text) textRef.current = text;
+    // WHILE ↑ IS WALKING HISTORY the box shows a recalled prompt, but the
+    // DRAFT — what autosave writes, what the unmount flush keeps — stays the
+    // words the walk took the box from. A recalled line becomes the draft the
+    // moment the reader edits it (`onChange` ends the walk).
+    if (fresh.text) textRef.current = histIdx.current === null ? text : histDraft.current;
     if (fresh.tray) trayDraftRef.current = trayDraft;
     // Only a box that has moved on in BOTH halves is the reader's again.
     if (fresh.text && fresh.tray) spent.current = null;
@@ -1763,6 +1767,9 @@ export function ComposerCard({
     // Words going back INTO the box, so the stale-render latch stands down for
     // them exactly as it does for a keystroke (`spent`).
     spent.current = null;
+    // …and they are the reader's: a ↑ walk in progress ends here rather than
+    // letting a later ↓ replace the handed-back line with the pre-walk draft.
+    histIdx.current = null;
     const back = restore.text;
     // A single newline, and only when there is something to join to: a press
     // must never eat words the reader is still typing.
@@ -1857,6 +1864,10 @@ export function ComposerCard({
       typedRef.current = true;
       setHelpOpen(false);
       setMenuIdx(0);
+      // A recalled `/compact` is a line to resend, not a query: the command
+      // menu stays shut for it (and so keeps its hands off ↑/↓), exactly as
+      // after an Esc — until the reader edits the line.
+      setMenuDismissed(words);
       setText(words);
       grow();
       const box = boxRef.current;
@@ -1938,6 +1949,9 @@ export function ComposerCard({
     // save as an unfinished task (`spent`).
     spent.current = boxShape(textRef.current, trayDraftRef.current.length);
     textRef.current = "";
+    // A SEND ENDS THE ↑ WALK: the recalled line went out, and ↓ has no draft
+    // to hand back into an empty box.
+    histIdx.current = null;
     // BOTH MIRRORS, not just the words (Bugbot 4036328238). The tray mirror used
     // to be left holding the spent chips until a render replaced it — and the
     // latch, doing its job, is exactly what stops a stale render replacing it.
