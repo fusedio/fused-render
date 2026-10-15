@@ -8009,6 +8009,22 @@ def _context_usage(msg: dict) -> dict | None:
     return reading
 
 
+# The transcript record kinds that are conversation turns. Everything else
+# Claude Code writes beside them (`system`, `summary`, `attachment`,
+# `queue-operation`, `api-request-blob`, …) is bookkeeping, whatever its
+# `message` looks like.
+_TURN_ROW_TYPES = ("user", "assistant")
+
+
+def _is_turn_row(row: dict) -> bool:
+    """Whether a transcript record may be read as a turn by its `message.role`.
+
+    Only a `type: "user"` or `type: "assistant"` record is. Every record Claude
+    Code writes names its kind, so a record with none is not a turn either —
+    the test fixtures that used to omit it now spell it, the way the CLI does."""
+    return row.get("type") in _TURN_ROW_TYPES
+
+
 def _history(file: str, session_id: str, app_reads: bool = False,
              inbox: bool = True) -> dict:
     """Rebuild the conversation from the Claude Code session transcript.
@@ -8139,8 +8155,18 @@ def _history(file: str, session_id: str, app_reads: bool = False,
             continue
         if row.get("isMeta") or row.get("isSidechain"):
             continue
+        # A TURN IS A `type: "user"` OR `type: "assistant"` RECORD, and nothing
+        # else that happens to carry a `message`. Claude Code 2.1.300 began
+        # writing `api-request-blob` records — a copy of every block it put on
+        # the API wire, system prompt and folded slash-command envelopes
+        # included — each with a `message.role` and no `uuid`. Keyed on the
+        # role alone, the walk below took one for a user turn and painted the
+        # `<local-command-caveat>` + `/mcp` output the CLI had folded for the
+        # model as a bubble the user never typed (Akshil, 2026-10-15). The
+        # role is read only off the record kinds that ARE turns; every other
+        # kind keeps its own branch (`compact_boundary` below) or is skipped.
         msg = row.get("message") or {}
-        role = msg.get("role")
+        role = msg.get("role") if _is_turn_row(row) else None
         content = msg.get("content")
         if role == "assistant" and isinstance(content, list):
             for blk in content:
