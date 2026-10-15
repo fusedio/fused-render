@@ -1,36 +1,52 @@
 // A file opened as an OVERLAY over the chat, so reading an artifact or a file
 // Claude touched never switches the screen the reader is on.
 //
-// The body is the same same-origin `/render` iframe the app uses for previews
-// (`paneSrcFor` with the `_render` sentinel), so `/render` picks the right
-// template for the file type. Portals to the TOP document like PlanModal.
+// The body frames the file's DEFAULT template: the first offerable stat entry
+// (`paneOfferable`, the shell's own defaultTemplate rule, same as
+// `previewSrcFor`), interactive and stamped `_noopen=1` so it is not recorded as
+// an app open. A bare `/render` (the `_render` sentinel) is only the fallback
+// for a folder, a file with no offerable template, or a stat without templates.
+// Portals to the TOP document like PlanModal.
 // "Open in explorer" is the one door that navigates, and the reader chose it.
 import { useEffect, useState } from "react";
 
-import { statPath } from "@platform/lib/api";
+import { statPath, type StatResult } from "@platform/lib/api";
 import { navigateUrl, urlForFsPath } from "@platform/lib/router";
 import { Modal } from "@platform/ui/modal/Modal";
 
-import { paneSrcFor } from "../pane/paneUrl";
+import { paneOfferable, paneSrcFor } from "../pane/paneUrl";
 import { topDocumentBody } from "./topContainer";
 
 export interface FilePreviewModalProps {
   path: string;
   onClose: () => void;
   /** Injectable so a suite needs no module mock. */
-  stat?: (path: string) => Promise<unknown>;
+  stat?: (path: string) => Promise<Partial<StatResult> | unknown>;
 }
 
-type Exists = "checking" | "yes" | "no";
+type View = { kind: "checking" } | { kind: "missing" } | { kind: "ready"; src: string; tabSrc: string };
+
+function viewFor(path: string, st: Partial<StatResult> | null | undefined): View {
+  const entry = st && !st.is_dir ? paneOfferable(st.templates)[0] : undefined;
+  if (entry) {
+    return {
+      kind: "ready",
+      src: paneSrcFor(entry, path, { noOpen: true }),
+      tabSrc: paneSrcFor(entry, path),
+    };
+  }
+  const bare = paneSrcFor({ mode: "_render", path: "" }, path);
+  return { kind: "ready", src: bare, tabSrc: bare };
+}
 
 export function FilePreviewModal({ path, onClose, stat = statPath }: FilePreviewModalProps) {
-  const [exists, setExists] = useState<Exists>("checking");
+  const [view, setView] = useState<View>({ kind: "checking" });
   useEffect(() => {
     let live = true;
-    setExists("checking");
+    setView({ kind: "checking" });
     stat(path).then(
-      () => live && setExists("yes"),
-      () => live && setExists("no"),
+      (st) => live && setView(viewFor(path, st as Partial<StatResult> | null | undefined)),
+      () => live && setView({ kind: "missing" }),
     );
     return () => {
       live = false;
@@ -38,7 +54,7 @@ export function FilePreviewModal({ path, onClose, stat = statPath }: FilePreview
   }, [path, stat]);
 
   const name = path.replace(/\/+$/, "").split("/").pop() || path;
-  const src = paneSrcFor({ mode: "_render", path: "" }, path);
+  const tabSrc = view.kind === "ready" ? view.tabSrc : paneSrcFor({ mode: "_render", path: "" }, path);
   return (
     <Modal
       title={
@@ -66,7 +82,7 @@ export function FilePreviewModal({ path, onClose, stat = statPath }: FilePreview
           <button
             type="button"
             className="c-fp-btn"
-            onClick={() => window.open(src, "_blank", "noopener")}
+            onClick={() => window.open(tabSrc, "_blank", "noopener")}
           >
             Open in new tab
           </button>
@@ -74,10 +90,10 @@ export function FilePreviewModal({ path, onClose, stat = statPath }: FilePreview
       }
     >
       <div className="chat-root c-filepreview-root">
-        {exists === "no" ? (
+        {view.kind === "missing" ? (
           <div className="c-fp-missing">File no longer exists</div>
-        ) : exists === "yes" ? (
-          <iframe className="c-fp-frame" src={src} title={"Preview of " + name} />
+        ) : view.kind === "ready" ? (
+          <iframe className="c-fp-frame" src={view.src} title={"Preview of " + name} />
         ) : null}
       </div>
     </Modal>

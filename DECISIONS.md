@@ -7010,3 +7010,8 @@ A 6-column table in a bot reply wrapped short cells ("fused-render", "#1641") on
 - **Odd rows.** `catalog_version`/`generated_at` are `str()`-ed, category `count` falls back to 0, non-dict category/collection rows and `shelf` rows without `shelf_id` are skipped; the asset cache is also pruned on every rebuild whose catalog has no version. Search and detail rows are laid over the snapshot row, so a row without `release_id` no longer flags an installed current app as updatable.
 - **Home shelves.** `HomeSection.count` is the category's own count for a shelf whose id is a known category (See all N), a shelf of an unknown category has no See all, and every non-empty category no shelf covers gets its own shelf after the collections. The footer reads `String(catalog_version ?? "").slice(0, 8)` and hides the segment when empty.
 - **Brief deviation.** The trailer is `Claude Sonnet 5.5` (the session's attribution), not the brief's Opus 5.5.
+
+## D1369 — Chat file preview overlay frames the file's default template (2026-10-15, overlay-default-templates)
+
+- **Default view, not bare /render.** `FilePreviewModal` keeps the `statPath` result and frames the first `paneOfferable(st.templates)` entry (the same rule as `previewSrcFor` and the pane's `decidePane`), so a .md file shows in the md viewer instead of raw text. A folder, a file with no offerable template, or a stat without templates falls back to the bare `/render?path=` sentinel.
+- **`_noopen=1`, not `_preview=1`.** The frame is interactive but not recorded as an app open (the listing pane's D622 reasoning); `_preview=1` would disable `fused.daemon` in the framed template. "Open in new tab" uses the unflagged URL, since that is the user opening it.
