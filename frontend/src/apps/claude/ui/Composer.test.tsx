@@ -2039,3 +2039,87 @@ test("a folded chat card says its model · effort top-right; an open one hides t
   expect(String(n.root.findAll((x) => x.props?.["data-testid"] === "composer-meta")[0]
     .props.className)).toContain("is-hidden");
 });
+
+// ---- ↑/↓ prompt history, Claude Code's -------------------------------------
+
+test("↑ recalls the newest prompt, ↑ again the one before; ↓ walks back and returns the draft", () => {
+  const c = mount({ history: ["first", "second", "third"] });
+  c.type("draft");
+  expect(c.press("ArrowUp")).toBe(true);
+  expect(c.box().props.value).toBe("third");
+  expect(c.press("ArrowUp")).toBe(true);
+  expect(c.box().props.value).toBe("second");
+  expect(c.press("ArrowUp")).toBe(true);
+  expect(c.box().props.value).toBe("first");
+  // The oldest is the end of the road: swallowed, nothing changes.
+  expect(c.press("ArrowUp")).toBe(true);
+  expect(c.box().props.value).toBe("first");
+  expect(c.press("ArrowDown")).toBe(true);
+  expect(c.box().props.value).toBe("second");
+  expect(c.press("ArrowDown")).toBe(true);
+  expect(c.box().props.value).toBe("third");
+  // Past the newest: the draft ↑ took the box from comes back, and ↓ is done.
+  expect(c.press("ArrowDown")).toBe(true);
+  expect(c.box().props.value).toBe("draft");
+  expect(c.press("ArrowDown")).toBe(false);
+});
+
+test("↑ history is the caret's below the first line; ↓ is nobody's when not walking", () => {
+  const c = mount({ history: ["one"] });
+  c.type("line a\nline b");
+  // Caret at the end: on the second line, ↑ moves the caret.
+  let prevented = false;
+  act(() => {
+    c.box().props.onKeyDown({
+      key: "ArrowUp",
+      shiftKey: false,
+      currentTarget: { selectionStart: 13, selectionEnd: 13 },
+      preventDefault() {
+        prevented = true;
+      },
+    });
+  });
+  expect(prevented).toBe(false);
+  expect(c.box().props.value).toBe("line a\nline b");
+  expect(c.press("ArrowDown")).toBe(false);
+  // No history at all: ↑ in an empty box is still nobody's.
+  const bare = mount({ history: [] });
+  expect(bare.press("ArrowUp")).toBe(false);
+});
+
+test("a parked line wins ↑ over history in an empty box; a new prompt ends the walk", () => {
+  const c = mount({
+    history: ["older"],
+    queuedCount: 1,
+    onPullQueued: () => "parked",
+  });
+  expect(c.press("ArrowUp")).toBe(true);
+  expect(c.box().props.value).toBe("parked");
+  c.type("");
+  c.rerender({ history: ["older"], queuedCount: 0, onPullQueued: () => null });
+  expect(c.press("ArrowUp")).toBe(true);
+  expect(c.box().props.value).toBe("older");
+  // The reader sends something: history grows, the walk is over, ↓ idle.
+  c.rerender({ history: ["older", "newer"], queuedCount: 0, onPullQueued: () => null });
+  expect(c.press("ArrowDown")).toBe(false);
+  expect(c.press("ArrowUp")).toBe(true);
+  expect(c.box().props.value).toBe("newer");
+});
+
+test("typing into a recalled line, or sending it, ends the walk; modified arrows are the caret's", () => {
+  const c = mount({ history: ["one", "two"] });
+  expect(c.press("ArrowUp")).toBe(true);
+  expect(c.box().props.value).toBe("two");
+  c.type("two edited");
+  expect(c.press("ArrowDown")).toBe(false);
+  expect(c.box().props.value).toBe("two edited");
+  expect(c.press("ArrowUp", { shiftKey: true })).toBe(false);
+  expect(c.press("ArrowUp", { metaKey: true })).toBe(false);
+  expect(c.box().props.value).toBe("two edited");
+  // Sent: the same history length comes back (a repeat is one step), yet ↓
+  // has nothing to hand back.
+  c.press("Enter");
+  expect(c.sent.map((s) => s.text)).toEqual(["two edited"]);
+  expect(c.press("ArrowDown")).toBe(false);
+  expect(c.box().props.value).toBe("");
+});

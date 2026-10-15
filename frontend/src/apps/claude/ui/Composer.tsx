@@ -269,6 +269,10 @@ export interface ComposerCardProps {
    *  Code's "Press up to edit queued messages". Answers the words, or null when
    *  nothing is parked. */
   onPullQueued?(): string | null;
+  /** THIS SESSION'S OWN PROMPTS, oldest first — Claude Code's prompt history.
+   *  ↑ on the first line of the box recalls the newest, ↑ again the one
+   *  before; ↓ walks forward and, past the newest, hands the draft back. */
+  history?: readonly string[];
   /** Notes or pictures alone are sendable, with no words at all (T:17903). */
   hasAttachments?: boolean;
   /**
@@ -547,6 +551,7 @@ export function ComposerCard({
   queuedCount,
   notSentCount,
   onPullQueued,
+  history,
   hasAttachments,
   hasAttachmentsNow,
   attachPending,
@@ -800,6 +805,15 @@ export function ComposerCard({
    * release the latch and wave the other, still-stale, half through.
    */
   const spent = useRef<BoxShape | null>(null);
+  // WHERE THE ↑/↓ WALK STANDS in `history` (null = not walking) and the words
+  // the box held before the first ↑, for ↓ to hand back. Refs, not state: a
+  // keystroke reads and moves them in the same tick, and nothing renders off
+  // them. A new prompt landing in `history` ends the walk (effect below).
+  const histIdx = useRef<number | null>(null);
+  const histDraft = useRef("");
+  useEffect(() => {
+    histIdx.current = null;
+  }, [history?.length]);
   const draftKeyRef = useRef(draftKey);
   draftKeyRef.current = draftKey;
   const discardAttachments = useRef(onDiscardAttachments);
@@ -1806,6 +1820,9 @@ export function ComposerCard({
     textRef.current = "";
     dirtyRef.current = !hasSessionRef.current && trayDraftRef.current.length > 0;
     episode.current += 1;
+    // A send ends the ↑ walk, even one whose words match the last prompt
+    // (which adds no row to `history`, so the length effect would not notice).
+    histIdx.current = null;
     setText("");
     grow();
   }, [grow]);
@@ -1827,6 +1844,27 @@ export function ComposerCard({
         } catch {
           /* a box that cannot place a caret still has the words */
         }
+      }
+    },
+    [boxRef, grow],
+  );
+
+  // A recalled prompt lands like typed words (the stale-render latch stands
+  // down, the box grows) with the caret at its end, as Claude Code places it.
+  const recall = useCallback(
+    (words: string) => {
+      spent.current = null;
+      typedRef.current = true;
+      setHelpOpen(false);
+      setMenuIdx(0);
+      setText(words);
+      grow();
+      const box = boxRef.current;
+      if (!box) return;
+      try {
+        box.setSelectionRange?.(words.length, words.length);
+      } catch {
+        /* a box that cannot place a caret still has the words */
       }
     },
     [boxRef, grow],
@@ -2022,16 +2060,54 @@ export function ComposerCard({
       // ↑ IN AN EMPTY BOX PULLS THE NEWEST PARKED LINE BACK — Claude Code's
       // "Press up to edit queued messages". Only with nothing typed: in a box
       // with words, ↑ is the caret's.
-      if (ev.key === "ArrowUp") {
-        if (!onPullQueued || !((queuedCount ?? 0) + (notSentCount ?? 0)) || text.trim()) return;
-        const back = onPullQueued();
-        if (back === null) return;
+      // AN IME'S ARROWS PICK ITS CANDIDATES; a modified arrow (Shift extends a
+      // selection, Alt/Cmd jump) is the caret's. Neither walks anything.
+      const arrowOwned =
+        ev.nativeEvent?.isComposing || ev.shiftKey || ev.altKey || ev.metaKey || ev.ctrlKey;
+      if (ev.key === "ArrowUp" && !arrowOwned) {
+        if (onPullQueued && (queuedCount ?? 0) + (notSentCount ?? 0) > 0 && !text.trim()) {
+          const back = onPullQueued();
+          if (back !== null) {
+            ev.preventDefault();
+            // Words going back INTO the box, so the stale-render latch stands
+            // down for them exactly as for a keystroke (`spent`, the restore
+            // seat's rule).
+            spent.current = null;
+            setText(back);
+            grow();
+            return;
+          }
+        }
+        // ↑ ON THE FIRST LINE WALKS BACK THROUGH THIS SESSION'S OWN PROMPTS —
+        // Claude Code's prompt history. Once more is the one before; the caret
+        // lower down is the caret's, as the parked-line pull above is.
+        const caret = ev.currentTarget?.selectionStart ?? 0;
+        if (!history?.length || text.slice(0, caret).includes("\n")) return;
+        const at = histIdx.current;
+        const next = at === null ? history.length - 1 : at - 1;
         ev.preventDefault();
-        // Words going back INTO the box, so the stale-render latch stands down
-        // for them exactly as for a keystroke (`spent`, the restore seat's rule).
-        spent.current = null;
-        setText(back);
-        grow();
+        if (next < 0) return;
+        if (at === null) histDraft.current = text;
+        histIdx.current = next;
+        recall(history[next]);
+        return;
+      }
+      // ↓ ON THE LAST LINE WALKS FORWARD AGAIN, and past the newest prompt
+      // hands back the draft ↑ took the box from. Only while walking: an idle
+      // box's ↓ is nobody's.
+      if (ev.key === "ArrowDown" && !arrowOwned) {
+        const at = histIdx.current;
+        if (at === null || !history) return;
+        const caret = ev.currentTarget?.selectionEnd ?? text.length;
+        if (text.slice(caret).includes("\n")) return;
+        ev.preventDefault();
+        if (at + 1 < history.length) {
+          histIdx.current = at + 1;
+          recall(history[at + 1]);
+        } else {
+          histIdx.current = null;
+          recall(histDraft.current);
+        }
         return;
       }
       if (ev.key !== "Enter") return;
@@ -2047,7 +2123,7 @@ export function ComposerCard({
       ev.preventDefault();
       submit(undefined, ev.ctrlKey && !ev.metaKey);
     },
-    [submit, onPullQueued, queuedCount, notSentCount, text, grow, menuOpen, menuActive, menuRows, menuQ, pickCommand],
+    [submit, onPullQueued, queuedCount, notSentCount, text, grow, history, recall, menuOpen, menuActive, menuRows, menuQ, pickCommand],
   );
 
   const draft = useCallback(() => text, [text]);
@@ -2167,6 +2243,9 @@ export function ComposerCard({
             // as the one that predates the clear.
             spent.current = null;
             typedRef.current = true;
+            // Editing a recalled line makes it the reader's: the walk is over,
+            // and the next ↑ starts again from the newest prompt.
+            histIdx.current = null;
             setText(value);
             setHelpOpen(false);
             setMenuIdx(0);
