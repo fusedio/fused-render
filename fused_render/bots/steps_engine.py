@@ -361,8 +361,12 @@ def run(bot, task, label=None):
             ckey = tools.call_key(bot, act, decision)
             if ckey is not None and ckey in ran_calls:
                 lbl = tools.describe(bot, act, decision, obs)
-                history.append(f"NOT RUN AGAIN: you already ran \"{lbl}\" with those exact args this turn; its value is under "
-                               f"CURRENT RESULT — use it (report with `done`). Run it again only if the user asks again or the args differ.")
+                if ran_calls[ckey].startswith("RESULT:"):
+                    where = "its value is under CURRENT RESULT — use it (report with `done`)"
+                else:  # an install: its outcome is the line it returned in RECENT STEPS, not a CURRENT RESULT
+                    where = f"it already happened: {ran_calls[ckey].splitlines()[0][:200]}"
+                history.append(f"NOT RUN AGAIN: you already ran \"{lbl}\" with those exact args this turn; {where}. "
+                               "Run it again only if the user asks again or the args differ.")
                 bot.emit("note", f"Already ran {lbl}; using the result above.")
                 continue
             # Approval gate: irreversible actions wait for a yes when the bot is
