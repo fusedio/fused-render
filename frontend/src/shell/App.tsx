@@ -461,8 +461,13 @@ function StatView({
 // (`_preview=1` — card peeks keep the template's small mark-and-name view) or
 // a frozen snapshot, and not when the URL asks for another mode by name
 // (`?_mode=claude`): the mode switcher's other views stay reachable.
+// Never an app's own `.fused/` metadata FOLDER (app_fused_dir.py): a bare
+// `.fused` basename has no stem, so it is not an app file, and a navigation
+// that already knows it is opening a directory (navHintIsDir) is not one
+// either — both fall through to StatView's listing.
 function isFusedInstallView(fsPath: string): boolean {
-  if (IS_PREVIEW || IS_SNAPSHOT || !/\.fused$/i.test(fsPath)) return false;
+  if (IS_PREVIEW || IS_SNAPSHOT || !/.\.fused$/i.test(basename(fsPath))) return false;
+  if (navHintIsDir() === true) return false;
   const mode = new URLSearchParams(location.search).get("_mode");
   return !mode || mode === "fusedapp";
 }
