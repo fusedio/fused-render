@@ -32,11 +32,11 @@ Each turn you see the current page (URL, title, interactive elements with refs l
 
 Reply with strict JSON only, no prose, no code fences:
 {"thought": "<one short sentence for the user, what you see and what you'll do>",
- "action": "<goto|click|type|press|select|hover|scroll|wait|read|back|tab|readfile|upload|save|text|texts|remember|forget|recall|note|learn|build|show|offer|tool|py|done|ask|login>",
- "file": "<for readfile / upload: file name from FILES or a path; for py: the .py file in the app, omit to load its SKILL.md>", "name": "<for save: file name, e.g. posts.md; for build: short app name; for show: app name or folder; for offer: an app from APPS, or the name of the app to build; for tool: the tool name>",
+ "action": "<goto|click|type|press|select|hover|scroll|wait|read|back|tab|readfile|ls|find|upload|save|text|texts|remember|forget|recall|note|learn|build|show|offer|tool|py|done|ask|login>",
+ "file": "<for readfile / upload: file name from FILES or a path under FOLDERS; for ls / find: the folder (optional); for py: the .py file in the app, omit to load its SKILL.md>", "name": "<for save: file name, e.g. posts.md; for build: short app name; for show: app name or folder; for offer: an app from APPS, or the name of the app to build; for tool: the tool name>",
  "app": "<for tool: the app folder from APP TOOLS; for py: the app folder or name from APPS>", "args": {<for tool / py: the parameters as a JSON object>},
  "to": "<for text / texts: a CONTACTS name or handle>", "seconds": <for texts: wait up to this long for a NEW reply, max 300>,
- "seq": <for recall: a message number, the n in [#n]>, "query": "<for recall: keywords an earlier message must contain>",
+ "seq": <for recall: a message number, the n in [#n]>, "query": "<for recall: keywords an earlier message must contain; for find: the words a file name (or, with content, a line) must contain>", "content": true|false (find: search inside text files),
  "url": "<for goto / tab new>", "ref": "<element ref, e.g. sb12>", "text": "<for type; for wait: text to wait for; for build / offer: the app spec>",
  "submit": true|false, "key": "<for press, e.g. Escape, Enter, Tab, ArrowDown, Control+a>",
  "value": "<for select: option label or value>", "direction": "up|down",
@@ -55,7 +55,9 @@ Actions:
 - read [ref]: get the full text of an element (an article, a post, a table) or of the whole page when the VISIBLE TEXT excerpt is cut off. Use it before summarising content.
 - tab new url | tab switch index | tab close [index]: links that open a new tab show up under TABS; switch to work there.
 - Clicking a download link saves the file into this bot's downloads folder; DOWNLOADS lists what arrived.
-- readfile file [index]: read a file from FILES by name (text, CSV, JSON, HTML, RTF/DOC/DOCX as text; long files and PDFs come one part/page at a time, `index` picks which; images cannot be shown to you here). Read a file before summarising or acting on it.
+- readfile file [index]: read a file from FILES by name, or by a path under FOLDERS (text, CSV, JSON, HTML, RTF/DOC/DOCX as text; long files and PDFs come one part/page at a time, `index` picks which; images cannot be shown to you here). Read a file before summarising or acting on it. No other path on this Mac can be read.
+- ls [file]: list one of the user's FOLDERS (or a subfolder under one; `file` is the folder): folders first, then files with size and kind. With no folder, the top level of every one. Read-only.
+- find query [file] [content]: search FOLDERS for file names containing every word of `query`; with `content: true`, the lines inside text files that contain it. `file` narrows it to one folder. Then `readfile` the path. Read-only.
 - upload file [ref]: put a local file into the page's file input (the element list marks FILE INPUTs; clicking a styled "Upload" button first often reveals one). `file` is a name from FILES, or a path the user gave you. Always requires the user's approval.
 - save name text: write text (Markdown, CSV, JSON) to this task's folder in the user's INBOX (~/Fused/bots/<you>/<task>/), e.g. the ten posts you collected. The user sees it in the Inbox list beside the chat, with a download link. Use it when the task asks to save/export, or when the result is longer than a chat message. ARTIFACTS (below) lists what this task has saved so far: do not save the same thing twice.
 - text to text: send an iMessage from this Mac to someone in CONTACTS (by name or handle). Only listed contacts can be texted; anyone else -> tell the user in `ask` or `done`. A text cannot be unsent, so it always goes through the approval gate. Keep it short and plain; no Markdown.
@@ -106,7 +108,7 @@ _TOOL_CONFUSION = re.compile(
     r"|only [^.]{0,30}?(gmail|slack|calendar|mcp)[^.]{0,20}tools?", re.I)
 
 # Actions whose step leaves the browser as it was: no thumbnail (an empty box under the chip).
-_NO_THUMB = ("readfile", "tool", "py", "build", "show", "save", "remember", "forget", "recall", "note", "learn", "text", "texts", "done", "ask")
+_NO_THUMB = ("readfile", "ls", "find", "tool", "py", "build", "show", "save", "remember", "forget", "recall", "note", "learn", "text", "texts", "done", "ask")
 
 
 def _one_liner(act, result, obs, label=""):
@@ -397,7 +399,7 @@ def run(bot, task, label=None):
             browser_step = act not in _NO_THUMB
             # `result` is the user's one-liner; `detail` keeps the raw text where it adds something.
             bot.emit("action", lbl, result=_one_liner(act, result, obs, lbl),
-                     **({"detail": result[:1500]} if act in ("read", "readfile", "tool", "py") else {}),
+                     **({"detail": result[:1500]} if act in ("read", "readfile", "ls", "find", "tool", "py") else {}),
                      thumb=bot._step_thumb() if browser_step else None)
             # A `read` result is long; keep it whole for one turn only, then trim
             # it so the prompt does not fill up with stale page text.
@@ -491,6 +493,9 @@ def _prompt(bot, task, history, obs, visited=None, past=None, result=None):
     if files:
         dls_s = "\n\nFILES (attached by the user or downloaded; `readfile` reads one, `upload` any by name):\n" + "\n".join(
             f"- {d['name']} ({d['size']} bytes, {d['kind']})" for d in files)
+    folders_s = bot.folders_section()
+    if folders_s:
+        dls_s += "\n\n" + folders_s
     arts = bot.task_artifacts()
     if arts:
         dls_s += "\n\nARTIFACTS (already saved by this task into the user's Inbox; do not save them again):\n" + "\n".join(

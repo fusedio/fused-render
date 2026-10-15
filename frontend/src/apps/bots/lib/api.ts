@@ -99,6 +99,8 @@ export interface BrowserState {
   files?: FileRow[];
   artifacts?: Artifact[];
   artifacts_dir?: string;
+  /** Granted folders (`folders`) that do not exist right now (an unplugged drive, a renamed folder); detail only. */
+  folders_missing?: string[];
 }
 
 /** meta["routines"] in agents.py. Times are epoch seconds; weekdays Mon=0. */
@@ -167,6 +169,9 @@ export interface Bot {
   trusted_apps?: string[];
   /** Calls the user approved forever from a card; revoked under Settings › Permissions. */
   allow_rules?: AllowRule[];
+  /** Folders on this Mac the bot may READ (`ls` / `find` / `readfile`; Settings › Permissions › Folders it may read).
+   *  Plain absolute paths, the user's own: the bot never writes there and only the dialog edits the list. */
+  folders?: string[];
   /** "super": the one bot per Mac with Claude Code's own tools (docs §5 "Super Bot"); absent for an ordinary bot. */
   kind?: "bot" | "super";
   /** Super Bot's permission posture: ask before writes / edits / shell, or unattended (Claude's own judgement). */
@@ -365,6 +370,8 @@ export interface SettingsBody {
   super_access?: string; trusted_apps?: string[];
   /** Forever rules to drop (kind + key); applied to the live list, since the task thread also writes it. */
   allow_rules_remove?: AllowRule[];
+  /** The whole list of folders the bot may read (the dialog is its only writer). */
+  folders?: string[];
   /** "" or the bot's own id = a browser of its own; another bot's `browser_id` = share its logins. Refused while a task runs. */
   browser_id?: string;
 }

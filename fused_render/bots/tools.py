@@ -29,7 +29,11 @@ What this module expects of `bot` (class Bot in bot.py):
   bot.contacts()                      [(label, handle)]           (imessage.parse_contacts)
   bot.contact(args)                   (label, handle) | None      (imessage.resolve_contact over `to`/`ref`/`name`)
   bot.py_ref(args)                    (app_dir | None, file, args)
-  bot.resolve_file(name)              absolute path for `upload`
+  bot.resolve_path(name, dirs=False)  absolute path for `upload` / `readfile` / `ls` / `find`: a FILES name, or a
+                                      path inside the bot's own folders or the user's granted FOLDERS (raises ValueError)
+  bot.list_dir(path)                  -> (label, result)   `ls`
+  bot.find_files(query, path, content) -> (label, result)  `find`
+  bot.folders()                       the granted folders (bot.json `folders`, Settings > Permissions)
   bot.save_file(name, text)           -> absolute path (Inbox)
   bot.remember(note)                  -> result sentence
   bot.skill_save(title, trigger, body) -> name  (raises ValueError)
@@ -79,7 +83,7 @@ BROWSER_ACTIONS = frozenset({"goto", "click", "type", "press", "select", "hover"
 # (OpenBot's CURRENT RESULT / one-run ledger).
 RESULT_ACTIONS = frozenset({"tool", "py"})
 # Actions whose result is file content the model is now looking at (long, kept whole in the transcript).
-FILE_ACTIONS = frozenset({"readfile"})
+FILE_ACTIONS = frozenset({"readfile", "ls", "find"})
 
 COMPACT_ELEMENTS = 40       # an action result's element list
 COMPACT_TEXT = 1200         # … and its text excerpt
@@ -157,11 +161,20 @@ TOOL_SPECS: dict[str, dict] = {
     "tab": {"description": "Tabs: new (with url), switch (index), close (index; current when omitted). Links that open a "
                            "new tab show up under TABS; switch to work there.",
             "inputSchema": _s(tab=({"type": "string", "enum": ["new", "switch", "close"]}, True), url=STR, index="integer")},
-    "readfile": {"description": "Read a file from FILES (attached, downloaded or saved earlier) by name: text/CSV/JSON/HTML "
-                                "come back as text (long files in parts, `page` picks one), images are attached so you see "
-                                "them, PDFs one page at a time (`page`, text or the page as an image when it is a scan), "
-                                "RTF/DOC/DOCX as text. Use it instead of guessing what a file contains.",
+    "readfile": {"description": "Read a file from FILES (attached, downloaded or saved earlier) by name, or by path under "
+                                "FOLDERS: text/CSV/JSON/HTML come back as text (long files in parts, `page` picks one), "
+                                "images are attached so you see them, PDFs one page at a time (`page`, text or the page as "
+                                "an image when it is a scan), RTF/DOC/DOCX as text. Use it instead of guessing what a file "
+                                "contains. Read-only; no other path on this Mac can be read.",
                  "inputSchema": _s(file=REQ, page={"type": "integer", "description": "part/page number, default 1"})},
+    "ls": {"description": "List one of the user's FOLDERS (or a subfolder under one): folders first, then files with size "
+                          "and kind, up to 200 entries. With no `path`, the top level of every folder in FOLDERS. Read-only.",
+           "inputSchema": _s(path={"type": "string", "description": "a folder from FOLDERS or a path under one; omit for all"})},
+    "find": {"description": "Search the user's FOLDERS: file names containing every word of `query` (default), or with "
+                            "`content: true` the lines inside text files that contain it. `path` narrows it to one folder. "
+                            "Up to 50 hits; then `readfile` the path you want. Read-only.",
+             "inputSchema": _s(query=REQ, path={"type": "string", "description": "a folder from FOLDERS or a path under one"},
+                               content={"type": "boolean", "description": "true: search inside text files, not names"})},
     "upload": {"description": "Put a local file into the page's file input (FILE INPUT elements; a styled Upload button often "
                               "reveals one). `file` is a name from FILES or a path the user gave. Always needs the user's approval.",
                "inputSchema": _s(file=REQ, ref=REF)},
@@ -475,9 +488,14 @@ def roster(bot) -> list[dict]:
         has_files = bool(bot.all_files())
     except Exception:  # noqa: BLE001
         has_files = False
+    folders = bool(_call0(bot.folders))
     if not has_files:
         names.remove("upload")
+    if not has_files and not folders:
         names.remove("readfile")
+    if not folders:
+        names.remove("ls")
+        names.remove("find")
     out = [{"name": n, "description": TOOL_SPECS[n]["description"], "inputSchema": TOOL_SPECS[n]["inputSchema"]}
            for n in names]
     if is_super(bot):
@@ -671,8 +689,22 @@ def text_unchanged(change: str) -> bool:
 UI_CAP = 160        # the action chip's one line
 DETAIL_CAP = 1500   # the raw result behind the chip's disclosure
 # Tools whose raw result is the point (a text, a value, a page): it always rides as detail.
-_DETAIL_ALWAYS = frozenset({"read", "readfile", "tool", "py", "observe", "texts"})
+_DETAIL_ALWAYS = frozenset({"read", "readfile", "ls", "find", "tool", "py", "observe", "texts"})
 _NOW_DONE = re.compile(r"\s*Now `done`.*\Z", re.S)
+
+
+def home_rel(p) -> str:
+    """A path as the user reads it: `~` for their home (chips, labels, results)."""
+    p = str(p or "")
+    home = os.path.expanduser("~")
+    return "~" + p[len(home):] if home and p.startswith(home + os.sep) else p
+
+
+def _call0(fn, default=None):
+    try:
+        return fn()
+    except Exception:  # noqa: BLE001
+        return default
 
 
 def _clip(s: str, cap: int = UI_CAP) -> str:
@@ -714,6 +746,12 @@ def ui_summary(name: str, result: str, change: str = "", obs: dict | None = None
     if name in ("read", "readfile"):
         body = raw[len("TEXT:"):].strip() if raw.startswith("TEXT:") else raw
         return f"{len(body):,} chars"
+    if name == "ls":
+        m = re.search(r"\((\d+) items", raw)
+        return f"{m.group(1)} items" if m else _clip(_first_line(raw))
+    if name == "find":
+        m = re.match(r"(\d+) hits", raw)
+        return f"{m.group(1)} hits" if m else _clip(_first_line(raw))
     if name == "screenshot":
         return "captured"
     if name == "scroll" and change and raw.startswith("ok"):
@@ -858,7 +896,12 @@ def describe(bot, act: str, d: dict, obs: dict) -> str:
         return f"upload \"{d.get('file') or d.get('text') or ''}\"" + (f" into \"{what}\"" if what else "")
     if act == "readfile":
         pg = d.get("page") or d.get("index")
-        return f"read file \"{d.get('file') or d.get('name') or d.get('text') or ''}\"" + (f" page {pg}" if pg and pg != 1 else "")
+        return f"read file \"{home_rel(d.get('file') or d.get('name') or d.get('text') or '')}\"" + (f" page {pg}" if pg and pg != 1 else "")
+    if act == "ls":
+        return f"list {home_rel(d.get('path') or d.get('file') or '') or 'FOLDERS'}"
+    if act == "find":
+        where = home_rel(d.get('path') or d.get('file') or '') or "FOLDERS"
+        return f"find \"{(d.get('query') or d.get('text') or '')[:60]}\" in {where}" + (" (contents)" if d.get("content") else "")
     if act == "text":
         c = bot.contact(d)
         who = f"{c[0]} ({c[1]})" if c else (d.get("to") or "?")
@@ -1201,10 +1244,15 @@ def execute(bot, act: str, d: dict, obs: dict) -> tuple[str, str]:
             if act == "bot_create":
                 return botmod.manage_create(bot, d)
             return botmod.manage_settings(bot, d.get("bot") or "", {k: v for k, v in d.items() if k != "bot"})
+        if act == "ls":
+            return bot.list_dir(d.get("path") or d.get("file") or "")
+        if act == "find":
+            return bot.find_files(d.get("query") or d.get("text") or "", d.get("path") or d.get("file") or "",
+                                  content=d.get("content") is True)
         if act == "readfile":
             from fused_render.bots import filereader
             name = d.get("file") or d.get("name") or d.get("text") or ""
-            path = bot.resolve_file(name)
+            path = bot.resolve_path(name)
             text, img = filereader.read_file(path, d.get("page") or d.get("index") or 1)
             if img is not None:
                 # The steps engine (local model) is text-only; the agent engine
@@ -1213,7 +1261,7 @@ def execute(bot, act: str, d: dict, obs: dict) -> tuple[str, str]:
             return describe(bot, act, d, obs), text
         if act == "upload":
             name = d.get("file") or d.get("text") or ""
-            path = bot.resolve_file(name)
+            path = bot.resolve_path(name)
             _, _, at = target(d, obs)
             info = b.upload(path, **at)
             return f"upload {os.path.basename(path)}", f"ok, file attached; check the page for a preview or a Submit button (now at {info.get('url')})"

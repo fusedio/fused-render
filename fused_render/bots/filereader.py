@@ -19,9 +19,10 @@ to earn its place"):
   rtf doc docx odt
              -> plain text through macOS `textutil`.
 
-Everything is looked up by name through `bot.resolve_file`, which only
-searches the bot's own folders (and the user's explicit paths), so the model
-never gets a filesystem walk.  `read_file(path, page)` returns
+Everything is looked up through `bot.resolve_path`, which admits a FILES name
+or a path inside the bot's own folders and the user's granted FOLDERS
+(Settings > Permissions), realpath-checked, so the model never gets a
+filesystem walk.  `read_file(path, page)` returns
 `(text, jpeg_bytes_or_None)`; `kind(path)` is the classifier.
 """
 from __future__ import annotations

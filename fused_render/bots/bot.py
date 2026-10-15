@@ -212,7 +212,7 @@ APP_GUIDE = """APP GUIDE (Browser Bots, a local desktop app; every bot has its o
 - Skills (same menu): the PLAYBOOKS. The user can write one by hand, click "Learn from last task" (the model condenses your last finished task), or you save one with `learn`. Up to 40 per bot; each mounts into your prompt only when one of its trigger words appears in the task.
 - Chat: the user can pause, resume or stop you at any time; a message sent while you work arrives as USER INSTRUCTION and overrides the task; they can reply to or react with an emoji on one of your messages (you see reactions in CONVERSATION SO FAR); they can search the thread; "Export" saves the whole transcript as Markdown. Attaching, pasting or dropping a file on the composer puts it in FILES so you can `upload` it.
 - Live view: clicking your screenshot widens your browser into the page (the chat becomes a side rail) with a tab strip, back/forward/reload and a URL bar. "Take over" pauses you and lets the user drive (solve a captcha, pass a popup); "Done, hand back" returns control and you continue; "Real window" opens the same browser as a real Chrome window for passkeys and password managers (the live view itself cannot show a passkey prompt: while the user watches it, a passkey request offers them the real window, and declining makes the page fall back, e.g. Google's "Try another way"; with nobody watching, a passkey prompt just waits, so pick another sign-in option or use `login`). Your `login` action hands the page over the same way and waits until the user clicks Done (or replies in chat).
-- Inbox: everything you produce lands in the user's Inbox, a Finder folder at ~/Fused/bots/<your name>/ with one subfolder per task: `save` results, downloads that arrived during the task, and a README with the task and your final answer. The Inbox list under your screenshot shows the most recent items with "Open folder" to reveal them in Finder. Files the user attaches in the composer land in FILES instead, for `upload`. There is no other export path.
+- Inbox: everything you produce lands in the user's Inbox, a Finder folder at ~/Fused/bots/<your name>/ with one subfolder per task: `save` results, downloads that arrived during the task, and a README with the task and your final answer. The Inbox list under your screenshot shows the most recent items with "Open folder" to reveal them in Finder. Files the user attaches in the composer land in FILES instead, for `upload`. There is no other export path. FOLDERS (when present) are the user's own folders they let you READ (`ls`, `find`, `readfile` with a path); you cannot write, move or delete anything there, and no other path on this Mac is readable.
 - iMessage: only Super Bot takes tasks by text (from the phone number or Apple ID set in its Settings > Advanced) and texts its replies back; it can hand a browsing task to a bot like you, whose final answer goes back to it as the result. Other bots are not reachable by text. "Contacts the bot may text" (Settings > Advanced) is the allowlist your `text` action can message and `texts` can read replies from (shown to you as CONTACTS). You cannot add contacts yourself: tell the user where.
 - Builds (button under the bots list): Claude Code sessions that create fused-render apps. The user can start one there, and you can start one with `build` (say so, then `done` with the link it returns). Apps land under @APPS_ROOT@/<name>; the Builds panel tracks progress and holds Claude's chat for each build; a chat message (and a text, if iMessage is on) arrives when one is ready, and a card when one is stuck (Claude waits for an OK or an answer, fails, or hits its usage limit) whose button opens it under Builds. Settings > Advanced > Builds picks "Scoped" (Claude asks the user before risky steps) or "Full access" (unattended).
 - Apps: every fused app under @APPS_ROOT@ is visible to every bot, whoever built it: the APPS section of your prompt lists them all (folder, name, description, link). `show` any of them as a card, `goto` its link to use it in the browser, or `build` with its exact name to update it. You also OFFER apps on your own (`offer`): an existing one that fits the task, or a new one worth building, as a card with "Use it" / "Build it" / "Not now". A yes starts the build with no further step (the yes is the approval), "Not now" keeps that app out of offers for a week, and an unanswered offer stays clickable in the chat after the task ends (a plain yes or no later settles it). When the user asks for an app in so many words you `build` it straight away and the approval card confirms it with one click.
@@ -1623,24 +1623,171 @@ class Bot:
         os.replace(p + ".tmp", p)
         return cand
 
-    def resolve_file(self, name):
-        """A file for `upload`: a bare name is looked up in files/ then downloads/;
-        anything else is treated as a path (~ expanded)."""
+    # -- folders the user lets this bot read (module helpers above; docs §6 `ls` / `find` / `readfile`) --
+    def folders(self):
+        """The granted folders as saved (absolute paths; a missing one stays listed)."""
+        return clean_folders(self.meta.get("folders"))
+
+    def folder_roots(self):
+        """Every root a path may resolve under: this bot's own files/, its browser's
+        downloads, its whole Inbox (earlier tasks' artifacts included), and the
+        granted folders. The ONE list every file tool and Super Bot's permission
+        fence judge by."""
+        own = [self.files_dir, self.browser.downloads, self.artifacts_dir]
+        return [d for d in own if d] + self.folders()
+
+    def _outside(self, path):
+        return ValueError(f"not allowed: {home_rel(path)} is outside the folders this bot may read "
+                          "(Settings > Permissions > Folders it may read)")
+
+    def resolve_path(self, name, dirs=False):
+        """ONE resolver for every file tool (`readfile`, `upload`, `ls`, `find`): a bare
+        name is looked up in files/, downloads/, the task folder and earlier artifacts;
+        anything else is a path (`~` expanded; a relative one is tried under each
+        granted folder) that must lie inside `folder_roots` once symlinks are
+        resolved. `dirs` admits a folder. Never a free filesystem walk."""
         name = (name or "").strip()
         if not name:
             raise ValueError("no file given")
+        roots = self.folder_roots()
+        cands = []
         if os.sep not in name and not name.startswith("~"):
-            for d in (self.files_dir, self.browser.downloads, self.task_dir or ""):
-                p = os.path.join(d, name) if d else ""
-                if p and os.path.isfile(p):
-                    return p
-            for r in self.artifacts(40):  # something this bot produced in an earlier task
-                if r.get("name") == name and os.path.isfile(r.get("path") or ""):
-                    return r["path"]
+            cands += [os.path.join(d, name) for d in (self.files_dir, self.browser.downloads, self.task_dir or "") if d]
+            cands += [r["path"] for r in self.artifacts(40) if r.get("name") == name and r.get("path")]
         p = os.path.expanduser(name)
-        if os.path.isfile(p):
-            return p
-        raise ValueError(f"file not found: {name} (looked in this bot's files/, downloads/, its Inbox, and as a path)")
+        cands += [p] if os.path.isabs(p) else [os.path.join(f, p) for f in self.folders()]
+        for c in cands:
+            if os.path.isfile(c) or (dirs and os.path.isdir(c)):
+                if inside(c, roots) is None:  # a symlink under files/ or a folder pointing out is still out
+                    raise self._outside(c)
+                return os.path.realpath(c)
+        if os.path.isabs(p) and inside(p, roots) is None:
+            raise self._outside(p)
+        raise ValueError(f"file not found: {name} (looked in this bot's files/, downloads/, its Inbox and FOLDERS)")
+
+    def list_dir(self, path=""):
+        """`ls`: one granted folder (or any folder under one), folders first, capped;
+        with no path, the top level of every granted folder."""
+        roots = self.folders()
+        if not path:
+            if not roots:
+                return "ls", "error: no folders granted (Settings > Permissions > Folders it may read)"
+            parts = []
+            for f in roots:
+                if not os.path.isdir(f):
+                    parts.append(f"{home_rel(f)}: missing right now (not mounted, moved or renamed)")
+                    continue
+                _, txt = self.list_dir(f)
+                parts.append(txt)
+            return "ls", "\n\n".join(parts)
+        d = self.resolve_path(path, dirs=True)
+        if not os.path.isdir(d):
+            return f"ls {home_rel(d)}", f"error: {home_rel(d)} is a file; `readfile` reads it"
+        try:
+            names = sorted(os.listdir(d), key=str.lower)
+        except OSError as e:
+            return f"ls {home_rel(d)}", f"error: cannot list {home_rel(d)}: {e.strerror or e}"
+        rows, roots = [], self.folder_roots()
+        for n in names:
+            if n.startswith("."):
+                continue
+            full = os.path.join(d, n)
+            if os.path.islink(full) and inside(full, roots) is None:
+                continue  # a link pointing out of the granted folders: not listed, not stat'ed, not sniffed
+            rows.append((not os.path.isdir(full), n, full))
+        rows.sort()
+        lines = []
+        for is_file, n, full in rows[:LS_MAX]:
+            if is_file:
+                try:
+                    size = os.path.getsize(full)
+                except OSError:
+                    size = 0
+                lines.append(f"- {n} ({size:,} bytes, {_entry_kind(full)})")
+            else:
+                lines.append(f"- {n}/")
+        more = f"\n… {len(rows) - LS_MAX} more (list a subfolder, or `find`)" if len(rows) > LS_MAX else ""
+        head = f"{home_rel(d)} ({len(rows)} items, read-only):"
+        return f"ls {home_rel(d)}", head + ("\n" + "\n".join(lines) if lines else "\n(empty)") + more
+
+    def find_files(self, query="", path="", content=False):
+        """`find`: file names containing every word of `query` (case-insensitive) under
+        the granted folders, or under `path`; with `content`, lines inside text files
+        that contain the query instead. Capped, shallow, skips .git / node_modules /
+        dot-dirs; read-only."""
+        from fused_render.bots import filereader
+        words = [w.lower() for w in (query or "").split() if w.strip()]
+        where = home_rel(path) if path else "FOLDERS"
+        label = f"find \"{(query or '')[:60]}\" in {where}" + (" (contents)" if content else "")
+        if not words:
+            return label, "error: find needs `query`"
+        starts = [self.resolve_path(path, dirs=True)] if path else self.folders()
+        if not starts:
+            return label, "error: no folders granted (Settings > Permissions > Folders it may read)"
+        roots = self.folder_roots()
+        hits, scanned, q = [], 0, " ".join(words)
+        for root in starts:
+            if not os.path.isdir(root):
+                continue
+            base_depth = root.rstrip(os.sep).count(os.sep)
+            for cur, dirs, files in os.walk(root):  # followlinks=False: a linked folder is not descended
+                dirs[:] = sorted(d for d in dirs if not d.startswith(".") and d not in _SKIP_DIRS)
+                if cur.count(os.sep) - base_depth >= FIND_DEPTH:
+                    dirs[:] = []
+                for n in sorted(files):
+                    if n.startswith("."):
+                        continue
+                    full = os.path.join(cur, n)
+                    if os.path.islink(full) and inside(full, roots) is None:
+                        continue  # a symlink pointing out of the granted folders
+                    if not content:
+                        if all(w in n.lower() for w in words):
+                            hits.append(f"- {home_rel(full)}")
+                    elif filereader.kind(full) == "text":
+                        try:
+                            if os.path.getsize(full) > FIND_FILE_MAX:
+                                continue
+                            scanned += 1
+                            with open(full, encoding="utf-8", errors="replace") as fh:
+                                for i, line in enumerate(fh, 1):
+                                    if q in line.lower():
+                                        hits.append(f"- {home_rel(full)}:{i}: {line.strip()[:FIND_LINE]}")
+                                        if len(hits) >= FIND_MAX:
+                                            break
+                        except OSError:
+                            continue
+                    if len(hits) >= FIND_MAX:
+                        break
+                if len(hits) >= FIND_MAX:
+                    break
+            if len(hits) >= FIND_MAX:
+                break
+        if not hits:
+            return label, (f"no file name under {where} contains \"{q}\"" if not content
+                           else f"no line in {scanned} text files under {where} contains \"{q}\"")
+        cap = f"\n(first {FIND_MAX}; narrow the query or the path)" if len(hits) >= FIND_MAX else ""
+        return label, f"{len(hits)} hits:\n" + "\n".join(hits) + cap + "\n`readfile` with one of these paths reads it."
+
+    def folders_section(self):
+        """The FOLDERS prompt section: each granted folder with a peek at its top
+        level, so the model knows what is there without an `ls`; "" with none."""
+        roots = self.folders()
+        if not roots:
+            return ""
+        lines = []
+        for f in roots:
+            if not os.path.isdir(f):
+                lines.append(f"- {home_rel(f)} (missing right now)")
+                continue
+            try:
+                names = sorted((n for n in os.listdir(f) if not n.startswith(".")), key=str.lower)
+            except OSError:
+                lines.append(f"- {home_rel(f)} (cannot be read)")
+                continue
+            peek = ", ".join(n + ("/" if os.path.isdir(os.path.join(f, n)) else "") for n in names[:8])
+            lines.append(f"- {home_rel(f)} ({len(names)} items: {peek}{', …' if len(names) > 8 else ''})")
+        return ("FOLDERS (the user's folders you may READ; `ls` lists one, `find` searches names or contents, "
+                "`readfile` takes a path under them; nothing is written there):\n" + "\n".join(lines))
 
     def all_files(self):
         """Attached (files/) and downloaded files, `[{name, size, path, kind, …}]`."""
@@ -1719,6 +1866,7 @@ class Bot:
             bs["files"] = self.all_files()
             bs["artifacts"] = self.artifacts()
             bs["artifacts_dir"] = self.artifacts_dir
+            bs["folders_missing"] = [f for f in self.folders() if not os.path.isdir(f)]
         shot_ts = self.browser.shot_ts()
         with self.lock:  # hand-off watchers change rows in place (under this lock); copy them as they stand
             meta = dict(self.meta)
@@ -3654,6 +3802,91 @@ def bot_chat(bot, name, last=None) -> str:
             + "\n".join(head) + "\n---\n" + (body or "(no lines yet)"))
 
 
+# -- folders the user lets a bot read (docs §2 `folders`, Settings > Permissions > "Folders it may read") --
+# Plain paths, read-only, the user's own: the bot never creates, renames or writes
+# there, and only the Settings dialog writes the list (Super Bot's `bot_settings`
+# must not: a bot granting folders to a bot is escalation). Missing folders are
+# kept (an unplugged drive comes back); the dialog marks them.
+FOLDERS_MAX = 50
+LS_MAX = 200           # entries one `ls` returns
+FIND_MAX = 50          # hits one `find` returns
+FIND_DEPTH = 8         # how deep `find` walks under a root
+FIND_FILE_MAX = 2 * 1024 * 1024   # content search skips bigger files
+FIND_LINE = 160        # one content hit's line, clipped
+_SKIP_DIRS = frozenset({".git", "node_modules", "__pycache__", ".venv", "venv", ".Trash", "Library"})
+
+
+def clean_folders(raw) -> list:
+    """`folders` off the wire: absolute, `~` expanded, deduplicated on realpath,
+    a child of another entry dropped (its parent already covers it), capped."""
+    out, reals = [], []
+    for item in raw if isinstance(raw, list) else []:
+        p = item.get("path") if isinstance(item, dict) else item
+        if not isinstance(p, str) or not p.strip():
+            continue
+        p = os.path.abspath(os.path.expanduser(p.strip()))
+        r = os.path.realpath(p)
+        whole = (os.path.sep, os.path.realpath(os.path.expanduser("~")))
+        if r in whole or (_ids(r) is not None and _ids(r) in {_ids(w) for w in whole}):
+            continue  # the whole disk or the whole home is not a folder grant: not by string, symlink or case (APFS)
+        if any(r == x or r.startswith(x + os.sep) for x in reals):
+            continue
+        # a parent arriving after its child replaces it
+        keep = [(o, x) for o, x in zip(out, reals) if not x.startswith(r + os.sep)]
+        out, reals = [o for o, _ in keep] + [p], [x for _, x in keep] + [r]
+        if len(out) > FOLDERS_MAX:
+            raise ValueError(f"at most {FOLDERS_MAX} folders per bot; grant a parent folder instead")
+    return out
+
+
+def _ids(path: str):
+    """(st_dev, st_ino) of `path`, or None when it does not exist."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_dev, st.st_ino)
+
+
+def inside(path: str, roots) -> str | None:
+    """The root (realpath) `path` lies in, symlinks resolved on both sides; None
+    outside. Judged by inode, not by string: APFS is case-insensitive and
+    `realpath` keeps the case as typed, so `/users/vasu/x` IS `/Users/vasu/x`.
+    A path that does not exist yet (a write target) is judged by its nearest
+    existing ancestor."""
+    real = os.path.realpath(path)
+    rr = [(os.path.realpath(r), _ids(os.path.realpath(r))) for r in roots]
+    for root, _ in rr:
+        if real == root or real.startswith(root.rstrip(os.sep) + os.sep):
+            return root
+    cur = real
+    while True:
+        ids = _ids(cur)
+        if ids is not None:
+            for root, rid in rr:
+                if rid is not None and ids == rid:
+                    return root
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            return None
+        cur = parent
+
+
+def home_rel(p: str) -> str:
+    home = os.path.expanduser("~")
+    return "~" + p[len(home):] if home and p.startswith(home + os.sep) else p
+
+
+def _entry_kind(path: str) -> str:
+    from fused_render.bots import filereader
+    if os.path.isdir(path):
+        return "folder"
+    try:
+        return filereader.kind(path)
+    except Exception:  # noqa: BLE001
+        return "file"
+
+
 def check_settings(meta, model="", effort="", max_steps=None):
     """The Settings dialog's and `bot_settings`' shared checks (ValueError with the
     sentence the user / model reads). `max_steps`: None leaves the cap alone; 0 / ""
@@ -4065,6 +4298,7 @@ def clone(src_id, name="", share=True):
             "approval": src.meta.get("approval", "ask"), "build_access": src.meta.get("build_access", "scoped"),
             "trusted_apps": apptools.clean_trusted_apps(src.meta.get("trusted_apps")),
             "allow_rules": _tools_mod().clean_allow_rules(src.meta.get("allow_rules")),
+            "folders": clean_folders(src.meta.get("folders")),
             "status": "idle", "created": time.time(), "task": "", "step": 0, "url": None, "title": None}
     if src.meta.get("engine"):
         meta["engine"] = src.meta["engine"]

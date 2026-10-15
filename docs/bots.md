@@ -170,7 +170,7 @@ reply:  {seq, role, text}   (quoted message the user replied to)
 
 Bot summary (`Bot.summary(light, detail)`): every key of `bot.json`
 (`id, name, model, effort, status, instructions, created, task, step, url,
-title, note, updated, approval, build_access, trusted_apps, allow_rules, face, routines, pinned, hidden,
+title, note, updated, approval, build_access, trusted_apps, allow_rules, folders, face, routines, pinned, hidden,
 reactions, encrypt, chrome_profile, browser_id, imessage, imessage_to, builds,
 pending_offer, offers_declined, artifacts_dir, control, dl_pct`) plus
 `seq`, `browser: {running, url, title, headed, sealed, encrypt, shared, tabs?[{i,id,title,url,active,ws}], files?, artifacts?, artifacts_dir?}`,
@@ -203,7 +203,20 @@ the card and beats the model's `risky: true` flag (for a click that flag is the
 only trigger). Never for `bot_create` / `bot_settings` (§12) or a phone-started
 Super Bot task (§5: no button on the card, no match), and for a built-in only
 while the task has not read the web (the posture in §6 stands). Revoked under
-Settings → Permissions → Approved forever (`allow_rules_remove`: removals only, applied to the live list, since the task thread writes it too); the `clone` copies them. Models: `haiku sonnet opus
+Settings → Permissions → Approved forever (`allow_rules_remove`: removals only, applied to the live list, since the task thread writes it too); the `clone` copies them. `folders`: `["<abs path>", …]`, the user's own
+folders this bot may READ (Settings → Permissions → "Folders it may read",
+2026-10-15): plain paths, no per-folder state, nothing managed by the bot. They
+are the only paths a bot's file tools (`readfile`, `upload`, `ls`, `find`) may
+resolve besides its own files/, downloads/ and Inbox (`bot.folder_roots`;
+`bot.resolve_path` realpath-checks both sides, so a symlink cannot escape; before
+this `resolve_file` fell through to `expanduser` and read ANY path). Read-only
+by construction: those tools only open, list and stat; `save` still writes to
+the Inbox alone; `upload` from a folder keeps its card. The dialog is the only
+writer (full list on `settings`), `bot_settings` never carries the key (a bot
+granting folders to a bot is escalation), the `clone` copies them, a hand-off
+target uses its own list, a missing folder stays listed (`browser.folders_missing`
+in the detail summary marks it). Not a sandbox: `py` and `tool` read whatever
+the app reads. Models: `haiku sonnet opus
 fable local-4b local-9b`. Efforts: `low medium high xhigh`.
 
 ## 3. HTTP API (`fused_render/bots/routes.py`, prefix `/api/bots`)
@@ -233,7 +246,8 @@ POST   /api/bots/<id>/attach          {name, data: <base64>}                -> {
 POST   /api/bots/<id>/react           {seq, emoji}                          -> {ok, reactions}
 POST   /api/bots/<id>/flag            {pinned?, hidden?, face?: {shape, color, icon}} -> {ok}   (icon: a preset key = brand mark)
 POST   /api/bots/<id>/settings        {name?, model?, effort?, instructions?, memory?, approval?, build_access?,
-                                       encrypt?, imessage_handle?, imessage_to?, trusted_apps?, allow_rules_remove?}  -> {ok}   ("rename" in OpenBot;
+                                       encrypt?, imessage_handle?, imessage_to?, trusted_apps?, allow_rules_remove?,
+                                       folders?}  -> {ok}   ("rename" in OpenBot;
                                        POST because the server has no do_PATCH)
 POST   /api/bots/<id>/profile         {profile}                             -> {ok}   (import a Chrome profile into the bot's
                                                                                          browser, every bot sharing it included; background)
@@ -501,7 +515,7 @@ disk, a fire writes "Routine fired" then the prompt as a `user` line via `routin
 lands the result on it; ROUTINE_RUNS kept, newest first), skills (`learn`, `skills_for`), memory
 (`remember`, caps), artifacts/Inbox (`save_file`, `collect_task_artifacts`,
 README.md per task, `index.jsonl`), attachments (`save_bytes`,
-`resolve_file`), file inbox (`drain_file_inbox`, botsend / iMessage), offers
+`resolve_path`, `list_dir`, `find_files`, `folders_section`), file inbox (`drain_file_inbox`, botsend / iMessage), offers
 (`_offer`, `_answer_pending_offer`, declined for 7 days, 10 min wait),
 builds (`build`, `_watch_build`, `_build_prompt` update/new), `show_app`,
 `_resolve_app`, `_app_at`, the risk rule (`_risk`, `_RISKY_BTN`, `_YES`,
@@ -684,11 +698,14 @@ Verified on claude 2.1.287 (scratch spike, 2026-10-02):
   `(approval wait + 60) * 1000` ms like `claude_agent/agent.py` does so an
   approval card can sit for an hour.
 
-**Super Bot on the harness** (`agent_engine.argv(…, super_mode, add_dir)`,
+**Super Bot on the harness** (`agent_engine.argv(…, super_mode)`,
 `SUPER_PROMPT`, `_permission`, `_builtin_use` / `_builtin_results`; tests in
 `test_bots_agent_engine.py` "Super Bot"). For `kind: "super"` the argv drops
-`--tools=` (the built-in set stays), adds `--add-dir <home>`,
-`--permission-mode <default|auto>` and `--permission-prompt-tool
+`--tools=` (the built-in set stays), passes NO `--add-dir` (was the whole
+home until 2026-10-15; the granted `folders` of §2 stay out of it on purpose,
+since a working directory's edits can be auto-accepted by the CLI's own modes
+and the folders are read-only: every read outside the Inbox and every write
+reaches `_permission`), adds `--permission-mode <default|auto>` and `--permission-prompt-tool
 mcp__bot__permission`; `--setting-sources=` stays in both modes so the
 user's own CLAUDE.md / skills / hooks never reach a bot. cwd is Super Bot's
 Inbox folder (`_super_cwd`), named in the system prompt as INBOX. `permission`
@@ -697,7 +714,17 @@ needs to list it, the prompt tells the model never to call it): the CLI
 calls it with `{tool_name, input, tool_use_id}` and expects ONE text block
 whose text is JSON `{"behavior": "allow", "updatedInput"}` or `{"behavior":
 "deny", "message"}` (claude_agent/permission_server.py's contract).
-`_permission` answers: BUILTIN_SAFE (reads, searches, web reads) allow at
+`_permission` answers: first the folder fence (`_folder_fence`, ahead of
+every allow: a Read / Glob / Grep / LS / NotebookRead whose path lies outside
+`bot.folder_roots` is denied with a message naming Settings; a Write / Edit /
+MultiEdit / NotebookEdit whose target is inside a GRANTED folder is denied as
+read-only; writes elsewhere fall through to the card as before; relative paths
+resolve against `sess.cwd`, the Inbox, and fail closed without one; a Glob /
+Grep is judged by `path` plus the static prefix of its glob (`_static_prefix`:
+an absolute or `..` pattern moves the search root); `bot.inside` judges by
+inode, since APFS is case-insensitive and realpath keeps the case as typed;
+Bash is not path-confined and the SUPER_PROMPT says so), then
+BUILTIN_SAFE (reads, searches, web reads) allow at
 once; `full` allows until the task has touched the web; otherwise the same
 `approval` card as a risky click through the same `_gate` (yes allows, no
 denies with the user's words, anything else is an instruction and the card
@@ -804,7 +831,7 @@ have no tools" paragraph, no `_TOOL_CONFUSION`).
 Tool table (`tools.py`; names are the MCP tool names, so the model sees
 `mcp__bot__<name>`): `observe`, `screenshot`, `goto`, `click`, `type`,
 `press`, `select`, `hover`, `scroll`, `wait`, `read`, `back`, `tab`,
-`readfile`, `upload`, `save`, `remember`, `learn`, `ask`, `login`, `text`, `texts`,
+`readfile`, `ls`, `find`, `upload`, `save`, `remember`, `learn`, `ask`, `login`, `text`, `texts`,
 `tool` (app MCP tools), `py`, `build`, `show`, `offer`. Every browser action
 returns `ok, now at <url>` + a CHANGE REPORT (`url changed to … (title …)`
 on a navigation, with no controls diff since every control is new there;
@@ -858,13 +885,22 @@ the bot has no contacts, `upload` and `readfile` when it has no files and no
 attachments;
 a tool that can only error gets called anyway.
 
-`readfile` (`filereader.py`) opens a FILES entry by name through
-`bot.resolve_file` (the bot's files/, downloads/, Inbox or a user-given path,
-never a free filesystem walk): text-like files as UTF-8 in 20k-char parts
+`readfile` (`filereader.py`) opens a FILES entry by name, or a path under
+FOLDERS, through `bot.resolve_path` (the bot's files/, downloads/, Inbox and
+the granted `folders` of §2; anything else is refused by name, never a free
+filesystem walk): text-like files as UTF-8 in 20k-char parts
 (`page`), images as a JPEG image block (sips), PDFs one page at a time
 through PDFKit (PyObjC Quartz) with a scanned page rendered to an image
 instead, RTF/DOC/DOCX through `textutil`. No new dependency. The steps
-engine gets the same tool text-only (images come back as a note). The task token is registered
+engine gets the same tool text-only (images come back as a note). `ls`
+(`bot.list_dir`: one folder, dirs first, 200 entries, dot-entries skipped;
+no path = the top level of every granted folder) and `find` (`bot.find_files`:
+names containing every word of `query`, or with `content` the lines of
+text-kind files under 2 MB containing it; 50 hits, depth 8, skips .git /
+node_modules / dot-dirs) are read-only, never ask, and are on the roster only
+with a non-empty `folders` (`readfile` with FILES or folders). A hashed
+FOLDERS section (`bot.folders_section`: each folder with a peek at its first 8
+entries) rides in `_sections`, so a resumed session learns a grant. The task token is registered
 BEFORE mcp.json is written and the process spawned, because `tools/list`
 fires at connect.
 
