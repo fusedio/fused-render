@@ -45,26 +45,30 @@ function tool(over: Partial<ToolSegment>): ToolSegment {
 }
 
 describe("summarizeTasks", () => {
-  test("per-kind counts over every task, whatever the status", () => {
+  test("counts live and paused tasks per kind, not history", () => {
     const line = summarizeTasks([
       rec({ id: "a", kind: "agent" }),
       rec({ id: "b", kind: "shell" }),
-      rec({ id: "b2", kind: "shell" }),
+      rec({ id: "b2", kind: "shell", status: "paused" }),
       rec({ id: "c", kind: "monitor" }),
       rec({ id: "d", kind: "shell", status: "completed" }),
     ]);
-    expect(line).toBe("1 agent · 3 shells · 1 monitor");
+    expect(line).toBe("1 agent · 2 shells · 1 monitor");
+    expect(summarizeTasks([rec({ kind: "agent" }), rec({ id: "s", kind: "shell", status: "completed" })])).toBe("1 agent");
   });
-  test("ended, failed and stopped tasks still count; no status words", () => {
-    const line = summarizeTasks([
-      rec({ id: "a", kind: "agent" }),
-      rec({ id: "c", kind: "shell", status: "failed" }),
-      rec({ id: "d", kind: "shell", status: "killed" }),
-      rec({ id: "e", kind: "agent", status: "completed" }),
-    ]);
-    expect(line).toBe("2 agents · 2 shells");
-    expect(summarizeTasks([rec({ kind: "shell" }), rec({ id: "s2", kind: "shell" })])).toBe("2 shells");
-    expect(summarizeTasks([rec({ id: "a", kind: "agent" }), rec({ id: "s", kind: "shell" })])).toBe("1 agent · 1 shell");
+  test("no active tasks: count every task per kind", () => {
+    expect(
+      summarizeTasks([rec({ kind: "shell", status: "completed" }), rec({ id: "s2", kind: "shell", status: "completed" })]),
+    ).toBe("2 shells");
+  });
+  test("failures append ' · N failed'", () => {
+    expect(summarizeTasks([rec({ id: "a", kind: "agent" }), rec({ id: "f", kind: "agent", status: "failed" })])).toBe(
+      "1 agent · 1 failed",
+    );
+    expect(summarizeTasks([rec({ kind: "agent", status: "failed" })])).toBe("1 agent · 1 failed");
+    expect(
+      summarizeTasks([rec({ kind: "shell", status: "failed" }), rec({ id: "g", kind: "shell", status: "failed" })]),
+    ).toBe("2 shells · 2 failed");
   });
   test("nothing", () => {
     expect(summarizeTasks([rec({ status: "completed" })])).toBe("1 task");
@@ -248,9 +252,7 @@ describe("chip expand model", () => {
 describe("review #1: unknown (the owning run died)", () => {
   test("labelled ended, counted with the ended group", () => {
     expect(statusLabel("unknown")).toBe("ended");
-    expect(summarizeTasks([rec({ id: "a" }), rec({ id: "u", status: "unknown" }), rec({ id: "d", status: "completed" })])).toBe(
-      "3 tasks",
-    );
+    expect(summarizeTasks([rec({ id: "u", status: "unknown" }), rec({ id: "d", status: "completed" })])).toBe("2 tasks");
   });
   test("no clock against now when not live and ended_at is null", () => {
     expect(elapsedLabel(rec({ status: "unknown", started_at: 100, ended_at: null }), 999_000)).toBe("");
@@ -282,7 +284,7 @@ describe("review #1: unknown (the owning run died)", () => {
 });
 
 describe("review #7: paused", () => {
-  test("counted in the summary, but not live", () => {
+  test("counted in the summary as active, but not live", () => {
     expect(summarizeTasks([rec({ id: "a", kind: "agent" }), rec({ id: "p", kind: "shell", status: "paused" })])).toBe(
       "1 agent · 1 shell",
     );

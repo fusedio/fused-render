@@ -81,17 +81,20 @@ export function statusLabel(status: TaskStatus | string): string {
 }
 
 /**
- * The collapsed panel's one line: "1 agent · 2 shells". Per-kind counts over ALL
- * tasks whatever their status, in SUMMARY_KINDS order; no status words (the rows
- * carry those). "" when there are no tasks.
+ * The collapsed panel's one line: "1 agent · 2 shells". Per-kind counts of the active
+ * (live or paused) tasks, in SUMMARY_KINDS order; with none active, of all tasks. No
+ * status words except a trailing " · N failed" when any task failed. "" when empty.
  */
 export function summarizeTasks(tasks: readonly TaskRecord[]): string {
-  return SUMMARY_KINDS.map((k) => {
-    const n = tasks.filter((t) => asKind(t.kind) === k).length;
+  const active = tasks.filter((t) => isActive(t.status));
+  const counted = active.length ? active : tasks;
+  const parts = SUMMARY_KINDS.map((k) => {
+    const n = counted.filter((t) => asKind(t.kind) === k).length;
     return n ? plural(n, KIND_NOUN[k]) : "";
-  })
-    .filter(Boolean)
-    .join(" · ");
+  }).filter(Boolean);
+  const failed = tasks.filter((t) => t.status === "failed").length;
+  if (failed) parts.push(`${failed} failed`);
+  return parts.join(" · ");
 }
 
 const KIND_RANK: Record<TaskKind, number> = { agent: 0, shell: 1, monitor: 2, other: 3 };
