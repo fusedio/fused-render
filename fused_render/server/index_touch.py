@@ -244,6 +244,15 @@ class RescanQueue:
         self.deadline_s = deadline_s
         self.floor_s = floor_s
         self._lock = threading.Lock()
+        # Serializes whole fire cycles. `_armed` only guarantees one TIMER
+        # is pending; a note that lands while a cycle is running arms the
+        # next one, which can fire before this one has called `_start`.
+        # Two overlapping cycles would then each read the same `live_count`
+        # and each admit a scan under a budget of one (CodeRabbit, #1700).
+        # Held for the whole cycle: `runner.start` writes the run's spec
+        # before returning, so a cycle that waits here sees the previous
+        # cycle's starts in `live_count`.
+        self._fire_lock = threading.Lock()
         # folder -> the time it was first noted, for the deferral ceiling.
         self._pending: dict = {}
         # folder -> whether every note it has received so far is one that may
@@ -320,6 +329,10 @@ class RescanQueue:
             logger.exception("could not start the queued index rescans")
 
     def _fire(self) -> None:
+        with self._fire_lock:
+            self._fire_cycle()
+
+    def _fire_cycle(self) -> None:
         with self._lock:
             self._armed = False
             pending = dict(self._pending)
