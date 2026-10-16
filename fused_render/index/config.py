@@ -21,7 +21,7 @@ from fused_render.shell import storage
 # Rows per shard file written by a scan worker before it flushes.
 SHARD_ROWS = 200_000
 # Rows per compacted partition file (the unit partition pruning skips).
-PART_ROWS = 500_000
+PART_ROWS = 25_000
 # Split a pool task whose cached subtree is bigger than this, so one giant
 # folder (~/Library) can't serialize the pool at the tail of a run.
 SPLIT_DIRS = 4_000
