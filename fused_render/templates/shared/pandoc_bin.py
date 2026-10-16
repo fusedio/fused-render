@@ -6,6 +6,7 @@ import subprocess
 import sys
 
 VERSION = "3.12.1"
+MIN_VERSION = (3, 1, 2)
 BIN_DIR = os.path.join(os.path.expanduser("~"), ".fused-render", "bin")
 STAGE_DIR = os.path.join(os.path.expanduser("~"), ".fused-render", "cache", "_pandoc_install")
 CHUNK = 1 << 20
@@ -26,22 +27,35 @@ def _local():
     return os.path.join(BIN_DIR, "pandoc")
 
 
+def _usable(exe):
+    try:
+        out = subprocess.run([exe, "--version"], capture_output=True, text=True, timeout=30).stdout
+        version = tuple(int(n) for n in out.split("\n", 1)[0].split()[-1].split(".")[:3])
+    except (OSError, subprocess.SubprocessError, IndexError, ValueError):
+        return False
+    return version >= MIN_VERSION
+
+
 def path():
     try:
         import pypandoc
         return pypandoc.get_pandoc_path()
     except (ImportError, OSError):
         pass
-    return _local() if os.path.exists(_local()) else None
+    if os.path.exists(_local()):
+        return _local()
+    found = shutil.which("pandoc")
+    return found if found and _usable(found) else None
 
 
 def _report(stage, pct, detail, pid=None, done=False, error=None):
     os.makedirs(STAGE_DIR, exist_ok=True)
     target = os.path.join(STAGE_DIR, "progress.json")
-    with open(target + ".tmp", "w", encoding="utf-8") as f:
+    tmp = f"{target}.{os.getpid()}.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump({"stage": stage, "pct": round(float(pct), 1), "detail": detail,
                    "done": done, "error": error, "pid": pid or os.getpid()}, f)
-    os.replace(target + ".tmp", target)
+    os.replace(tmp, target)
 
 
 def _progress():
@@ -117,7 +131,7 @@ def _run():
     part = f"{_local()}.{os.getpid()}.part"
     try:
         name, member = _asset()
-        archive = os.path.join(STAGE_DIR, name)
+        archive = os.path.join(STAGE_DIR, f"{os.getpid()}-{name}")
         os.makedirs(STAGE_DIR, exist_ok=True)
         _fetch(f"https://github.com/jgm/pandoc/releases/download/{VERSION}/{name}", archive)
         _report("extract", 92, "extracting")

@@ -52,6 +52,7 @@ def test_install_puts_the_release_binary_where_path_finds_it(
     monkeypatch.setattr("platform.system", lambda: system)
     monkeypatch.setattr("platform.machine", lambda: machine)
     monkeypatch.setitem(sys.modules, "pypandoc", None)
+    monkeypatch.setattr(pb.shutil, "which", lambda name: None)
     body = pack(member.format(v=pb.VERSION))
     urls = []
     monkeypatch.setattr("urllib.request.urlopen",
@@ -65,3 +66,14 @@ def test_install_puts_the_release_binary_where_path_finds_it(
     assert pb.path() == str(tmp_path / "bin" / "pandoc")
     assert open(pb.path(), "rb").read() == b"native pandoc" and os.access(pb.path(), os.X_OK)
     assert pb._progress()["done"] is True
+
+
+@pytest.mark.parametrize("version_line, found", [("pandoc 3.8.2", True), ("pandoc 2.12", False)])
+def test_a_pandoc_on_path_is_used_only_when_new_enough(tmp_path, monkeypatch, version_line, found):
+    pb = _load()
+    monkeypatch.setattr(pb, "BIN_DIR", str(tmp_path / "bin"))
+    monkeypatch.setitem(sys.modules, "pypandoc", None)
+    monkeypatch.setattr(pb.shutil, "which", lambda name: "/opt/homebrew/bin/pandoc")
+    monkeypatch.setattr(pb.subprocess, "run",
+                        lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, stdout=version_line + "\n"))
+    assert pb.path() == ("/opt/homebrew/bin/pandoc" if found else None)

@@ -203,8 +203,12 @@ def _export_dir_for(main_path: str) -> str:
 
 
 def _pandoc_convert(exe, src, to, out, extra):
-    p = subprocess.run([exe, "--from=latex+raw_tex", "--to=" + to, src, "--output=" + out, *extra],
-                       capture_output=True, text=True, encoding="utf-8", errors="replace")
+    try:
+        p = subprocess.run([exe, "--from=latex+raw_tex", "--to=" + to, src, "--output=" + out, *extra],
+                           capture_output=True, text=True, encoding="utf-8", errors="replace",
+                           timeout=120)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("pandoc timed out after 120 s")
     if p.returncode != 0 or not os.path.exists(out):
         detail = (p.stderr or p.stdout or "").strip().splitlines()
         raise RuntimeError(detail[-1] if detail else "pandoc conversion failed")
