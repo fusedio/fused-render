@@ -283,8 +283,13 @@ def start(cfg: IndexConfig, root: str, full: bool = False,
     # means compiling the rules just to answer "same rules?". Same reasoning
     # is why `hint`, when given, is written in its own canonical (deduped,
     # sorted) form rather than the caller's raw iterables.
+    # `low_impact` travels in the spec because the worker never reads
+    # prefs.json (index/worker.py): read here, at spawn, like the config.
+    from fused_render.shell.prefs import index_low_impact_enabled
+
     run_spec = {"root": root, "full": bool(full), "started": time.time(),
-               "ignore_sig": sig, "config": cfg.to_dict()}
+               "ignore_sig": sig, "config": cfg.to_dict(),
+               "low_impact": index_low_impact_enabled() is True}
     if hint is not None:
         forced_key, subtrees_key = _hint_key(hint)
         run_spec["hint"] = {"forced": list(forced_key),
