@@ -842,6 +842,7 @@ def _take_in_pr_head(root, record, ident: dict, fork: str, head_branch: str,
     with replay.slot() as held:
         if not held:
             raise PlainError(_BUSY)
+        _gate(root)   # a turn may have opened since `_prepare` let go of the slot
         branch = gu._current_branch(root)
         why = _land_locked(root, branch=branch, old_tip=head, new_tip=merged,
                            why="proposal-their-edits")[0] if branch else "moved"

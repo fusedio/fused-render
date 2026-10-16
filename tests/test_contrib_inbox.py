@@ -685,3 +685,27 @@ def test_a_merge_of_a_moved_proposal_is_not_sent(fits_world, monkeypatch):
     res = inbox.merge_accept(alice, out["job"])
     assert res["ok"] is False and res["reason"] == "moved"
     assert fake.tip("bob/x", "main") == moved
+
+
+def test_a_merge_that_could_not_be_sent_is_sent_on_retry(fits_world, monkeypatch):
+    from fused_render.contrib import merge_job
+    alice, fake = fits_world["alice"], fits_world["fake"]
+    pr = propose(fake, {"index.html": PAGE.replace("hello", "hey")})
+    fake.commit("alice/x", "main", {"NOTES.md": "n\n"}, "Notes", author="alice")
+    out = inbox.merge_start(alice, pr["number"])
+    assert _wait_merge(out["job"])["status"] == "ready"
+    real_push, real_accept = gh.push, merge_job.accept
+    accepts = []
+    monkeypatch.setattr(merge_job, "accept", lambda jid: accepts.append(jid) or real_accept(jid))
+
+    def offline(*a, **k):
+        raise gh.GitHubError("offline")
+
+    monkeypatch.setattr(gh, "push", offline)
+    res = inbox.merge_accept(alice, out["job"])
+    assert res["ok"] is False and res["reason"] == "offline"
+    assert fake.tip("bob/x", "main") == pr["head_sha"]
+    monkeypatch.setattr(gh, "push", real_push)
+    assert inbox.merge_accept(alice, out["job"])["ok"]
+    assert accepts == [out["job"]]                       # the kept result, sent again
+    assert fake.tip("bob/x", "main") != pr["head_sha"]

@@ -90,7 +90,7 @@ class _Proposals(types.ModuleType):
         self.settled = []
         self.withdrawn = []
 
-    def refresh(self, app_dir, *, force=False):
+    def refresh(self, app_dir, *, force=False, tip=None):
         self.refreshes += 1
         p = (store.get(app_dir) or {}).get("proposal")
         if not isinstance(p, dict):
@@ -104,6 +104,8 @@ class _Proposals(types.ModuleType):
             pr = self.w.gh.get_pr(q["repo"], q["number"])
             q["cache"] = {"state": "merged" if pr["merged"] else pr["state"],
                           "merge_commit_sha": pr["merge_commit_sha"] if pr["merged"] else None}
+            if tip:
+                q["checked_tip"] = tip
         store.update(app_dir, fn)
         return {}
 
@@ -678,4 +680,30 @@ def test_old_git_scratch_merge_gives_the_same_answers(w, monkeypatch):
     bad = replay.merge_tree(w.app, w.head(), w.alice())
     assert not bad["clean"] and bad["files"] == ["index.html"]
     assert w.sync()["why"] == "needs-merge"
+    assert os.listdir(replay.work_dir()) == []
+
+
+def test_flags_off_fast_forward_never_overwrites_an_ignored_file(w, monkeypatch):
+    """P1's sharp case: with `changes` off a plain fast-forward would
+    overwrite Bob's ignored file silently — instead a silent skip."""
+    edit(w.app, ".git/info/exclude", "data.csv\n")
+    edit(w.app, "data.csv", "bob's numbers\n")
+    _flags(monkeypatch, changes=False)
+    head = w.head()
+    _alice(w, {"data.csv": "alice's numbers\n"}, "ship data")
+    assert w.sync()["why"] == "changes-off"
+    assert w.head() == head and read(w.app, "data.csv") == "bob's numbers\n"
+    assert store.get(w.app)["needs_merge"] is None
+
+
+@pytest.mark.parametrize("method", ["merge", "squash"])
+def test_row7_return_through_the_old_git_path(w, monkeypatch, method):
+    monkeypatch.setattr(replay, "_FORCE_SCRATCH_MERGE", True)
+    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
+    n = _propose(w)
+    claude_commit(w.app, {"app.py": APP_LOUD}, "louder")
+    w.fake.merge(REPO, n, method)
+    assert w.sync()["status"] == "synced"
+    assert w.g("rev-parse", "HEAD^") == w.alice()
+    assert w.g("diff", "--name-only", w.alice(), "HEAD") == "app.py"
     assert os.listdir(replay.work_dir()) == []

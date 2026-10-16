@@ -280,7 +280,8 @@ class _Facts:
 
 def _facts(root, branch) -> _Facts | None:
     """HEAD, the fetched tip, `ok` and `U` (module docstring) — four git
-    processes on the common path."""
+    processes when diverged, three when only ahead and ok (then nothing is
+    picked, so U is not needed: `u` stays None)."""
     ref = _tracking(branch)
     lines = _lines(gu._run(root, "rev-parse", "--git-path", f"logs/{ref}", "HEAD", ref))
     if len(lines) != 3:
@@ -294,12 +295,14 @@ def _facts(root, branch) -> _Facts | None:
     held = set(_lines(gu._run(root, "rev-list", head, f"^{tip}")))
     dropped = any(v in held for v in values)
     ok = not dropped and _published_in_head(root, head, tip, mb, values)
-    u_rows = _lines(gu._run(root, "rev-list", "--topo-order", "--reverse", "--parents",
-                            head, "--not", *values))
-    return _Facts(branch=branch, head=head, tip=tip, tip_in_head=mb == tip, ok=ok,
-                  u=[row.split()[0] for row in u_rows if row],
-                  u_merges=any(len(row.split()) > 2 for row in u_rows),
-                  reason=None if ok else ("dropped" if dropped else "no-history"))
+    f = _Facts(branch=branch, head=head, tip=tip, tip_in_head=mb == tip, ok=ok,
+               reason=None if ok else ("dropped" if dropped else "no-history"))
+    if not (ok and f.tip_in_head):
+        u_rows = _lines(gu._run(root, "rev-list", "--topo-order", "--reverse", "--parents",
+                                head, "--not", *values))
+        f.u = [row.split()[0] for row in u_rows if row]
+        f.u_merges = any(len(row.split()) > 2 for row in u_rows)
+    return f
 
 
 def _published_in_head(root, head, tip, mb, values) -> bool:
@@ -328,7 +331,7 @@ def _result(root, branch, status, why=None, *, pulled=0, pushed=False, ok=True) 
 def _stuck(root, f: _Facts, state: str, *, files=(), then=None) -> dict:
     """Record a state that needs a button; the tree is untouched."""
     _set_state(root, state, head=f.head, tip=f.tip, files=list(files),
-               unpublished=len(f.u or ()), then=then)
+               unpublished=len(f.u or ()), u_merges=bool(f.u_merges), then=then)
     return _result(root, f.branch, "skipped", state)
 
 
@@ -624,6 +627,8 @@ def put_on_top(root) -> dict:
         f, refusal = _fetched_facts(root)
         if refusal:
             return refusal
+        if f.ok and f.tip_in_head:  # GitHub only lacks what is here: just publish
+            return _answer(root, False, "Nothing here needs to go on top — use Publish now.")
         if not f.u and not _dirty_tracked(root):
             return _answer(root, False, "There are no new edits here to put on top. Use the "
                            "version on GitHub, or publish yours over it.")
@@ -751,14 +756,12 @@ def merge_plan(root) -> dict | None:
             "files": list(st.get("files") or [])}
 
 
-def merge_landed(root, *, old_tip, new_tip, backup=None) -> None:
+def merge_landed(root, *, old_tip=None, new_tip=None) -> None:
     """A Merge with Claude job (purpose `own-sync`) landed `new_tip` over
-    `old_tip` (`backup`: the ref `replay.land` wrote, if any): the stuck
-    state is over; publish it (HEAD now contains GitHub's version, so
-    today's plain sync pushes)."""
+    `old_tip` — called by `engine.merge_landed`, which writes the Activity
+    line: the stuck state is over; publish it (HEAD now contains GitHub's
+    version, so today's plain sync pushes)."""
     _set_state(root, None)
-    _activity(root, "own-sync", "Claude combined your edits with the newer version on "
-              "GitHub.", backup=_with_wip(root, backup))
     gu.schedule_sync(root, "Publish combined version", push=True)
 
 
@@ -790,5 +793,10 @@ def status(root) -> dict:
         files = []
         state = ("published" if not ahead and not behind else
                  "unpublished" if not behind else "github-new")
+    fixes = list(FIXES.get(state, []))
+    if state == "github-changed" and ((st or {}).get("u_merges") or not ahead):
+        # Put my edits on top would only refuse: a merge among the edits
+        # would carry back what GitHub removed, or there is nothing to carry.
+        fixes.remove("put-on-top")
     return {"state": state, "unpublished": ahead, "github_new": behind, "files": files,
-            "message": _message(state, files), "fixes": list(FIXES.get(state, []))}
+            "message": _message(state, files), "fixes": fixes}

@@ -418,10 +418,10 @@ def _proposal_unsettled(p) -> bool:
 
 def _refresh_if_moved(root, tip) -> None:
     """The author's tip moved since the proposal was last checked against
-    it: ask GitHub first (`proposals.refresh(force=True)`, slot NOT held),
-    so a merged proposal is known BEFORE the tip is merged in — row 7, not
-    row 11 (audit R3). `checked_tip` advances only on a good read; an
-    offline read asks again next run."""
+    it: ask GitHub first (`proposals.refresh(force=True, tip=)`, slot NOT
+    held), so a merged proposal is known BEFORE the tip is merged in — row
+    7, not row 11 (audit R3). refresh records `checked_tip = tip` only on a
+    good read, so an offline read asks again next run."""
     rec = store.get(root) or {}
     p = rec.get("proposal")
     if not _proposal_unsettled(p) or p.get("checked_tip") == tip:
@@ -429,18 +429,9 @@ def _refresh_if_moved(root, tip) -> None:
     try:
         from fused_render.contrib import proposals
 
-        proposals.refresh(root, force=True)
+        proposals.refresh(root, force=True, tip=tip)
     except Exception:  # noqa: BLE001 — the cached state stands; next run asks again
         logger.exception("contrib: proposal refresh failed for %s", root)
-        return
-    number = p.get("number")
-
-    def fn(r):
-        q = r.get("proposal")
-        if isinstance(q, dict) and q.get("number") == number \
-                and not (q.get("cache") or {}).get("error"):
-            q["checked_tip"] = tip
-    store.update(root, fn)
 
 
 # ------------------------------------------------------------ the decision

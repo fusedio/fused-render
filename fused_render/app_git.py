@@ -161,15 +161,34 @@ def _git_retry_lock(repo_dir: str, *args: str, identity=None) -> subprocess.Comp
     return r
 
 
+def _fused_path(spec: str) -> str:
+    return ("" if spec == "." else spec + "/") + ".fused"
+
+
+def _fused_spec(spec: str) -> str:
+    """The app's own `.fused/` folder as a literal pathspec."""
+    return ":(literal)" + _fused_path(spec)
+
+
 def _scope_specs(spec: str) -> list[str]:
-    """`spec` as pathspecs, with the app's `.fused/` excluded
-    (docs/CONTRIB_LOOP.md §16.1). The `.fused/` ignore line keeps an
+    """`spec` as pathspecs for `diff`/`commit`, with the app's `.fused/`
+    excluded (docs/CONTRIB_LOOP.md §16.1). The `.fused/` ignore line keeps an
     UNtracked state folder out, but a repo that commits `.fused/` (an author
-    did) tracks it, and an ignore rule never hides a tracked file's edits —
-    a scoped `add -A`/`commit --` would then carry this machine's state into
-    history, and on to the author. The exclusion holds for any repo."""
-    prefix = "" if spec == "." else spec + "/"
-    return [_pathspec(spec), ":(exclude,literal)" + prefix + ".fused"]
+    did) tracks it, and an ignore rule never hides a tracked file's edits — a
+    scoped `add -A`/`commit --` would then carry this machine's state into
+    history, and on to the author. NOT for `add`: an exclude pathspec naming
+    an ignored path makes `add` exit 1 ("paths are ignored") after staging —
+    `_add_scoped` unstages `.fused` instead."""
+    return [_pathspec(spec), ":(exclude,literal)" + _fused_path(spec)]
+
+
+def _add_scoped(repo_dir: str, spec: str) -> subprocess.CompletedProcess:
+    """`add -A -- <spec>`, then `.fused/` taken back out of the index
+    (`_scope_specs`)."""
+    r = _git_retry_lock(repo_dir, "add", "-A", "--", _pathspec(spec))
+    if r.returncode == 0:
+        _git_retry_lock(repo_dir, "reset", "-q", "--", _fused_spec(spec))
+    return r
 
 
 def _identity_for(repo_dir: str) -> list[str]:
@@ -309,7 +328,7 @@ def init_repo(app_dir: str, message: str = "New app from starter") -> bool:
             name = os.path.basename(app_dir)
             local = local_repo_root()
             specs = _scope_specs(name)
-            if _git_retry_lock(local, "add", "-A", "--", *specs).returncode != 0:
+            if _add_scoped(local, name).returncode != 0:
                 return False
             if _git(local, "diff", "--cached", "--quiet",
                     "--", *specs).returncode == 0:
@@ -333,7 +352,7 @@ def init_repo(app_dir: str, message: str = "New app from starter") -> bool:
         if not os.path.exists(gi):
             with open(gi, "w", encoding="utf-8") as f:
                 f.write(_GITIGNORE)
-        if _git(app_dir, "add", "-A", "--", *_scope_specs(".")).returncode != 0:
+        if _git(app_dir, "add", "-A").returncode != 0:
             return False
         return _git(app_dir, "commit", "-q", "-m", message).returncode == 0
     except Exception:
@@ -383,7 +402,7 @@ def commit(path: str, message: str, only_shared: bool = False,
         # sweep new bookkeeping files into history via the scoped add below.
         _ensure_excludes(repo_dir)
         specs = _scope_specs(spec)
-        r = _git_retry_lock(repo_dir, "add", "-A", "--", *specs)
+        r = _add_scoped(repo_dir, spec)
         if r.returncode != 0:
             logger.warning("app commit skipped (%s): add failed rc=%s "
                            "stdout=%r stderr=%r", app_dir, r.returncode,

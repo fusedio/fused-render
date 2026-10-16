@@ -474,29 +474,36 @@ def api_contrib_merge_start(body: dict = Body(...), x_fused: str | None = Header
     return out
 
 
-def _merge_job_for(t: _Target, body) -> tuple[str | None, dict | None]:
-    """`(job_id, None)` when the posted merge job is one of this app's —
-    whoever started it (merge/start, the engine's return-to-following,
-    remix's bring-in) — else `(None, refusal)`. A job id is never trusted on
-    its own: the job's own `app_dir` must be this app's store key."""
+def _merge_job_for(t: _Target, body) -> tuple[dict | None, dict | None]:
+    """`(job, None)` when the posted merge job is one of this app's —
+    whoever started it (Merge with Claude, ownsync, the inbox, remix's
+    bring-in) — else `(None, refusal)`. A job id is never trusted on its
+    own: the job's own `app_dir` must be this app's store key."""
     job_id = _text(body, "job")
     merge = _safely("merge job", _mod("merge_job").get, job_id) if job_id else None
     if not isinstance(merge, dict) or merge.get("app_dir") != _mod("store").key(t.app_dir):
         return None, _refuse("unknown-job", "That merge isn't waiting any more.")
-    return job_id, None
+    return {**merge, "id": job_id}, None
 
 
 @router.post("/api/contrib/merge/accept")
 def api_contrib_merge_accept(body: dict = Body(...), x_fused: str | None = Header(default=None)):
-    """Keep the merge (any purpose: the job itself says which, and an own
-    app's own-sync merge is offered with the sources phase alone)."""
+    """Keep the merge. Any purpose (the job itself says which; an own app's
+    own-sync merge is offered with the sources phase alone) — except an
+    inbox proposal's (purpose "proposal" in the author's app), whose Keep
+    is `inbox.merge_accept`: it sends the result onto the sender's
+    proposal, which `merge_job.accept` alone never does."""
     t = _gate(body, x_fused, "sources")
     if not isinstance(t, _Target):
         return t
-    job_id, refused = _merge_job_for(t, body)
+    job, refused = _merge_job_for(t, body)
     if refused is not None:
         return refused
-    return _call("merge accept", _mod("merge_job").accept, job_id)
+    if job.get("purpose") == "proposal" and t.record.get("kind") == "own":
+        if not _phase_on("inbox"):
+            return _disabled()
+        return _call("inbox merge accept", _mod("inbox").merge_accept, t.app_dir, job["id"])
+    return _call("merge accept", _mod("merge_job").accept, job["id"])
 
 
 @router.post("/api/contrib/merge/discard")
@@ -504,10 +511,10 @@ def api_contrib_merge_discard(body: dict = Body(...), x_fused: str | None = Head
     t = _gate(body, x_fused, "sources")
     if not isinstance(t, _Target):
         return t
-    job_id, refused = _merge_job_for(t, body)
+    job, refused = _merge_job_for(t, body)
     if refused is not None:
         return refused
-    return _call("merge discard", _mod("merge_job").discard, job_id)
+    return _call("merge discard", _mod("merge_job").discard, job["id"])
 
 
 @router.post("/api/contrib/refresh")

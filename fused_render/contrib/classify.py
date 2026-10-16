@@ -366,9 +366,13 @@ def _adopt(app_dir, repo, rc) -> dict | None:
     for the same repo whose folder is gone is THIS copy's — but only one with
     the SAME root commit (§16.1). Among several, the one whose sent proposal
     this repo has wins (it is the moved copy, not a deleted sibling), else
-    the newest."""
-    cands = [(k, r) for k, r in store.find_by_repo(repo)
-             if not os.path.isdir(k) and r.get("root_commit") == rc]
+    the newest. A v1 orphan never got a root commit (its folder was gone
+    before any v2 read): it is adopted only when it is the ONLY orphan of
+    the repo — nothing to confuse it with."""
+    orphans = [(k, r) for k, r in store.find_by_repo(repo) if not os.path.isdir(k)]
+    cands = [(k, r) for k, r in orphans if r.get("root_commit") == rc]
+    if not cands and len(orphans) == 1 and not orphans[0][1].get("root_commit"):
+        cands = orphans
 
     def has_sent(r):
         p = r.get("proposal")

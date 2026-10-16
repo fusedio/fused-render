@@ -506,6 +506,47 @@ def test_C_one_diverged_sync_costs_few_processes(env, monkeypatch):
     assert calls["anc"] <= 1 and calls["n"] <= 40, calls
 
 
+def _resolve(root, push=True):
+    """The hook's call for an own copy that is only AHEAD (TL ruling: also
+    when pushing with ahead > 0 and behind == 0), after its fetch."""
+    with replay.slot():
+        git_upstream._run(root, "fetch", "--", "origin", "main")
+        return ownsync.resolve(root, action="test", push=push)
+
+
+def test_rewind_never_republishes_what_github_removed(env):
+    _commit(env.lap, "x.txt", "x\n", "kept")
+    assert _sync(env.lap)["pushed"] is True
+    kept = _remote(env)
+    removed = _commit(env.lap, "y.txt", "y\n", "removed later")
+    assert _sync(env.lap)["pushed"] is True
+    git(env.other, "fetch", "-q", "origin")
+    git(env.other, "push", "-q", "--force", "origin", f"{kept}:refs/heads/main")
+    res = _resolve(env.lap)
+    assert res["status"] == "skipped" and res["why"] == "github-changed"
+    assert _remote(env) == kept and _head(env.lap) == removed
+    st = ownsync.status(env.lap)
+    assert st["state"] == "github-changed" and st["fixes"] == ["use-github", "publish-over"]
+    assert ownsync.use_github(env.lap)["ok"] and _head(env.lap) == kept
+
+
+def test_plain_ahead_publishes_in_few_processes(env, monkeypatch):
+    mine = _commit(env.lap, "c.txt", "c\n", "c")
+    calls = []
+    real = git_upstream._run
+
+    def counting(root, *a, **k):
+        calls.append(a[0])
+        return real(root, *a, **k)
+
+    with replay.slot():
+        real(env.lap, "fetch", "--", "origin", "main")
+        monkeypatch.setattr(git_upstream, "_run", counting)
+        res = ownsync.resolve(env.lap, action="test", push=True)
+    assert res["status"] == "synced" and res["pushed"] is True and _remote(env) == mine
+    assert calls.count("push") == 1 and len(calls) - 1 <= 6, calls
+
+
 # --------------------------------------------------------------- audit G
 
 

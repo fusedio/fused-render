@@ -3182,12 +3182,14 @@ def _commit_turn(file: str, message: str) -> None:
             capture_output=True, text=True, timeout=30, close_fds=False,
             encoding="utf-8", errors="replace")
 
-    # `.fused/` excluded by PATHSPEC as well as by info/exclude below: an
+    # `.fused/` kept out by PATHSPEC as well as by info/exclude below: an
     # ignore rule never hides a TRACKED file's edits, and a repo that commits
     # `.fused/` would otherwise carry this machine's state into the turn's
-    # commit (docs/CONTRIB_LOOP.md §16.1). Mirrors app_git._scope_specs.
-    specs = [spec, ":(exclude,literal)" + ("" if spec == "." else
-                                           spec.removeprefix(":(literal)") + "/") + ".fused"]
+    # commit (docs/CONTRIB_LOOP.md §16.1). `add` is unscoped-by-exclude and
+    # `.fused` unstaged after it (an exclude naming an ignored path makes
+    # `add` exit 1); diff/commit exclude it. Mirrors app_git._scope_specs.
+    fused = ("" if spec == "." else spec.removeprefix(":(literal)") + "/") + ".fused"
+    specs = [spec, ":(exclude,literal)" + fused]
     # A GitHub-link copy (the contribution loop marks it `fused.kind=github`
     # in the repo's own config, and sets the user's GitHub identity there):
     # the turn commits as the user, crediting Claude in a trailer, instead of
@@ -3230,8 +3232,9 @@ def _commit_turn(file: str, message: str) -> None:
             if missing:
                 with open(exclude, "a", encoding="utf-8") as fh:
                     fh.write("\n".join(missing) + "\n")
-        if git("add", "-A", "--", *specs).returncode != 0:
+        if git("add", "-A", "--", spec).returncode != 0:
             return
+        git("reset", "-q", "--", ":(literal)" + fused)
         if git("diff", "--cached", "--quiet", "--", *specs).returncode == 0:
             return  # nothing to commit (turn changed no files under this app)
         git("commit", "-q", "-m", subject + trailer, "--", *specs)

@@ -275,3 +275,452 @@ def test_org_role_is_asked_once_per_owner(home, tmp_path, monkeypatch):
     for n in ("a", "b", "c"):
         classify.ensure(_clone(tmp_path, n, f"https://github.com/acme/{n}"))
     assert calls == ["acme"]
+
+
+# ===================================================== v2 guards (§16.1, §16.8)
+#
+# Ported from the 2026-10-16 audit (scratchpad audit-user/test_audit.py): each
+# test below reproduced a v1 bug and now asserts the FIXED behaviour. Bob's
+# copy is a real clone of a bare "GitHub" repo (insteadOf maps the URL), so a
+# push that should never happen would really land.
+
+import shutil  # noqa: E402
+import subprocess  # noqa: E402
+
+from fused_render import app_git, appfile_git, git_upstream  # noqa: E402
+
+REPO = "alice/sine"
+URL = "https://github.com/" + REPO
+
+
+@pytest.fixture
+def world(tmp_path, monkeypatch, home):
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    for name, value in (("_checked", {}), ("_state", {}), ("_sync_failures", {}),
+                        ("_pulled_events", []), ("_pending", {}), ("_last_fetch", {})):
+        monkeypatch.setattr(git_upstream, name, value)
+    monkeypatch.setattr(git_upstream, "auto_sync_enabled", lambda: True)
+    monkeypatch.setattr(classify, "_kind_memo", {})
+    monkeypatch.setattr(classify, "_guarded", {})
+    monkeypatch.setattr(store, "_bind_memo", {})
+    remote = str(tmp_path / "remote.git")
+    alice = str(tmp_path / "alice")
+    git(str(tmp_path), "init", "-q", "--bare", "-b", "main", remote)
+    os.makedirs(alice)
+    git(alice, "init", "-q", "-b", "main")
+    write(alice, "index.html", "<p>hello</p>\n")
+    git(alice, "add", "-A")
+    git(alice, "commit", "-q", "-m", "c1")
+    git(alice, "remote", "add", "origin", remote)
+    git(alice, "push", "-q", "-u", "origin", "main")
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "2")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", f"url.{remote}.insteadOf")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", URL + ".git")
+    monkeypatch.setenv("GIT_CONFIG_KEY_1", f"url.{remote}.insteadOf")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_1", URL)
+
+    class W:
+        pass
+
+    w = W()
+    w.tmp, w.home, w.remote, w.alice, w.mp = tmp_path, home, remote, alice, monkeypatch
+    w.ws = tmp_path / "ws"
+    return w
+
+
+def _install(w, name="sine", **kw):
+    """Bob's copy as a GitHub-link install leaves it (record_install)."""
+    bob = os.path.join(str(w.ws), "app", name)
+    os.makedirs(os.path.dirname(bob), exist_ok=True)
+    git(str(w.tmp), "clone", "-q", URL, bob)
+    classify.record_install(bob, URL)
+    if kw:
+        store.update(bob, lambda r: r.update(kw))
+    return os.path.realpath(bob)
+
+
+def _alice_push(w, name, text, msg="alice change"):
+    write(w.alice, name, text)
+    git(w.alice, "add", "-A")
+    git(w.alice, "commit", "-q", "-m", msg)
+    git(w.alice, "push", "-q", "origin", "main")
+    return git(w.alice, "rev-parse", "HEAD").strip()
+
+
+def _commit(repo, name, text, msg):
+    write(repo, name, text)
+    git(repo, "add", "-A", "--", ".")
+    git(repo, "commit", "-q", "-m", msg, "--", ".")
+    return git(repo, "rev-parse", "HEAD").strip()
+
+
+def _remote_main(w):
+    return git(w.remote, "rev-parse", "refs/heads/main").strip()
+
+
+def _raw_push(repo):
+    """`git push origin main` exactly as a terminal or a Claude session runs it."""
+    return subprocess.run(["git", "-C", repo, "push", "-q", "origin", "main"],
+                          capture_output=True, text=True,
+                          env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
+
+
+def _sync(root, push=False):
+    return git_upstream.sync_repo(root, action="test", push=push)
+
+
+def _all_on(home):
+    _prefs(home, contrib_sources_enabled=True, contrib_changes_enabled=True,
+           contrib_inbox_enabled=True, contrib_loop_enabled=True)
+
+
+def _ident():
+    return {"login": "bob", "id": 7, "name": "Bob B", "email": "7+bob@users.noreply.github.com"}
+
+
+def test_install_records_root_commit_and_push_guard(world):
+    bob = _install(world)
+    rec = store.get(bob)
+    assert rec["v"] == 2 and rec["kind"] == "github"
+    assert rec["root_commit"] == git(bob, "rev-list", "--max-parents=0", "HEAD").strip()
+    assert git(bob, "config", "--get", "remote.origin.pushurl").strip() == classify.NO_PUSH_URL
+    assert git(bob, "config", "--local", "--get", "fused.kind").strip() == "github"
+    assert classify.kind_of(bob) == "github"
+
+
+@pytest.mark.parametrize("flags_on", [{}, {"contrib_sources_enabled": True}])
+def test_flags_off_github_copy_never_pushes_to_the_author(world, flags_on):
+    """P0-1/P0-2 (audit F1, F1d, L1): a GitHub-link copy's Claude turn with
+    the loop off (or only A1 on) used to `git push origin main` straight to
+    the author. v2: the kind alone routes it to the engine, which never
+    pushes; and no standing failure row quoting git."""
+    _prefs(world.home, **flags_on)
+    bob = _install(world)
+    before = _remote_main(world)
+    _commit(bob, "b.txt", "bob\n", "Claude: tweak")
+    r = _sync(bob, push=True)
+    assert r["status"] != "failed" and r.get("pushed") is not True
+    assert _remote_main(world) == before
+    assert git_upstream.sync_failures() == []
+
+
+def test_unchecked_migration_record_never_pushes(world):
+    """Audit F2: a pre-existing clone classified signed out (unknown owner)
+    was synced plainly and pushed. v2: unknown owner counts as github."""
+    _all_on(world.home)
+    bob = _install(world, classified_by="migration", owner_checked=False)
+    before = _remote_main(world)
+    _commit(bob, "b.txt", "bob\n", "Claude: b")
+    r = _sync(bob, push=True)
+    assert r.get("pushed") is not True and _remote_main(world) == before
+
+
+def test_engine_error_is_skipped_never_a_plain_push(world, monkeypatch):
+    """P2's first lock: an engine exception is a silent `skipped`, never a
+    fall-through to `_sync_plain`."""
+    bob = _install(world)
+    _commit(bob, "b.txt", "bob\n", "mine")
+    from fused_render.contrib import engine as eng
+
+    def boom(*a, **k):
+        raise RuntimeError("engine broke")
+
+    monkeypatch.setattr(eng, "sync", boom)
+    monkeypatch.setattr(git_upstream, "_sync_plain",
+                        lambda *a, **k: pytest.fail("plain sync of a GitHub-link copy"))
+    before = _remote_main(world)
+    r = _sync(bob, push=True)
+    assert r == {"ok": True, "status": "skipped", "why": "contrib-error"}
+    assert _remote_main(world) == before
+
+
+def test_raw_git_push_is_refused_by_the_push_guard(world):
+    """P1-5 (audit O2): a Claude session's own `git push origin main` reached
+    the author (pushurl unset). v2: `no-push://fused` stops every push by
+    remote name."""
+    bob = _install(world)
+    _commit(bob, "b.txt", "bob\n", "mine")
+    before = _remote_main(world)
+    assert _raw_push(bob).returncode != 0
+    assert _remote_main(world) == before
+
+
+def test_push_guard_removed_when_kind_becomes_own(world):
+    bob = _install(world)
+    store.update(bob, lambda r: r.__setitem__("kind", "own"))
+    assert classify.ensure_push_guard(bob, "own")
+    assert git(bob, "config", "--get-all", "remote.origin.pushurl", check=False).strip() == ""
+    assert git(bob, "config", "--local", "--get", "fused.kind", check=False).strip() == ""
+    _commit(bob, "b.txt", "bob\n", "mine")
+    assert _raw_push(bob).returncode == 0  # the author's own copy pushes as ever
+
+
+def test_repointed_origin_is_reset_to_the_record(world):
+    """P1-4 (audit O5): a `git remote set-url` (an app, a README, Claude)
+    re-pointed the copy, and the plain path followed it. v2: the record's
+    repo wins, with an activity line; nothing reaches the other repo."""
+    evil = str(world.tmp / "evil.git")
+    git(str(world.tmp), "init", "-q", "--bare", "-b", "main", evil)
+    bob = _install(world)
+    git(bob, "remote", "set-url", "origin", evil)
+    _commit(bob, "b.txt", "bob\n", "mine")
+    _sync(bob, push=True)
+    assert git(bob, "config", "--get", "remote.origin.url").strip() == URL
+    assert git(evil, "for-each-ref", "refs/heads/").strip() == ""
+    lines = [a for a in store.activity(bob) if a["kind"] == "repointed"]
+    assert len(lines) == 1 and REPO in lines[0]["text"]
+
+
+def test_fused_dir_never_unprotected_and_never_committed(world, monkeypatch):
+    """P0-3 (audit F4): A1 off cleared skip-worktree on the author's committed
+    `.fused/`, and the next Claude-turn sweep committed this machine's state
+    (then pushed it). v2: protected for any recorded copy whatever the flags,
+    never undone, and every commit fused makes excludes `.fused` anyway."""
+    os.makedirs(os.path.join(world.alice, ".fused"))
+    _alice_push(world, ".fused/meta.json", '{"author": true}\n', "alice commits .fused")
+    _all_on(world.home)
+    bob = _install(world)
+    write(bob, ".fused/meta.json", '{"machine": "bob-laptop"}\n')
+    assert git(bob, "status", "--porcelain").strip() == ""
+    _prefs(world.home)  # every flag off
+    _sync(bob)
+    assert git(bob, "status", "--porcelain").strip() == ""
+    # Even unprotected by hand, fused's own commits leave it out.
+    git(bob, "update-index", "--no-skip-worktree", "--", ".fused/meta.json")
+    write(bob, "index.html", "<p>bob</p>\n")
+    monkeypatch.setattr(git_upstream, "schedule_sync", lambda *a, **k: None)
+    assert app_git.commit(os.path.join(bob, "index.html"), "Edit")
+    assert git(bob, "show", "--name-only", "--format=", "HEAD").split() == ["index.html"]
+
+
+def test_app_git_commits_in_a_github_copy_use_the_users_identity(world, monkeypatch):
+    bob = _install(world)
+    assert classify.apply_identity(bob, _ident())
+    monkeypatch.setattr(git_upstream, "schedule_sync", lambda *a, **k: None)
+    write(bob, "index.html", "<p>bob</p>\n")
+    assert app_git.commit(os.path.join(bob, "index.html"), "Edit")
+    out = subprocess.run(["git", "-C", bob, "log", "-1", "--format=%an <%ae>"],
+                         capture_output=True, text=True).stdout.strip()
+    assert out == "Bob B <7+bob@users.noreply.github.com>"
+
+
+def test_claude_turn_in_a_github_copy_credits_claude(world, monkeypatch):
+    import importlib.util
+
+    from fused_render.claude_agent import AGENT_PATH
+
+    bob = _install(world)
+    classify.apply_identity(bob, _ident())
+    monkeypatch.setenv("FUSED_RENDER_WORKSPACE_DIR", str(world.ws))
+    spec = importlib.util.spec_from_file_location("test_contrib_agent", AGENT_PATH)
+    agent = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(agent)
+    monkeypatch.setattr(agent, "_request_sync", lambda app_dir: None)
+    write(bob, "index.html", "<p>by claude</p>\n")
+    agent._commit_turn(os.path.join(bob, "index.html"), "make it pretty")
+    out = subprocess.run(["git", "-C", bob, "log", "-1", "--format=%an <%ae>%n%B"],
+                         capture_output=True, text=True).stdout
+    assert out.startswith("Bob B <7+bob@users.noreply.github.com>\nClaude: make it pretty")
+    assert "Co-authored-by: Claude <noreply@anthropic.com>" in out
+
+
+def test_switch_card_stays_hidden_for_a_github_copy_flags_off(world):
+    """P2-8 (audit O1b): flags off, a GitHub-link copy on another branch got
+    the old Switch card (a plain checkout behind the engine's back). v2: the
+    kind hides it whatever the flags."""
+    bob = _install(world)
+    git(bob, "checkout", "-q", "-b", "feature")
+    _alice_push(world, "c.txt", "alice\n")
+    git_upstream.note_app_opened(bob, _runner=lambda fn: fn())
+    assert git_upstream.known_repos() == []
+    assert git_upstream.update_repo(bob)["reason"] == "contrib"
+
+
+# ------------------------------------------------------------- binding
+
+
+def test_a_different_repo_at_the_path_drops_the_record(world):
+    """P1-6 (audit R3, R3b): the folder replaced by a clone of another repo
+    kept the old record — and the engine reset HEAD onto the old author's
+    tip, deleting the new project's files. v2: bound to the root commit."""
+    _all_on(world.home)
+    a = _install(world)
+    other = str(world.tmp / "other.git")
+    git(str(world.tmp), "init", "-q", "--bare", "-b", "main", other)
+    work = str(world.tmp / "otherwork")
+    git(str(world.tmp), "clone", "-q", other, work)
+    _commit(work, "x.txt", "x\n", "other project")
+    git(work, "push", "-q", "origin", "main")
+    shutil.rmtree(a)
+    git(str(world.tmp), "clone", "-q", other, a)
+    before = git(a, "rev-parse", "HEAD").strip()
+    assert classify.kind_of(a) is None and store.get(a) is None
+    assert store.get_raw(store.key(a)) is None  # dropped, not orphaned
+    _sync(a)
+    assert git(a, "rev-parse", "HEAD").strip() == before
+    assert os.path.exists(os.path.join(a, "x.txt"))
+
+
+def test_a_new_local_app_with_the_same_name_is_not_a_copy(world):
+    """Audit R4: a brand-new app made where a deleted copy was got the old
+    `github` record by folder key."""
+    a = _install(world)
+    shutil.rmtree(a)
+    os.makedirs(a)
+    git(a, "init", "-q", "-b", "main")
+    _commit(a, "index.html", "<p>mine</p>\n", "New app from starter")
+    assert classify.kind_of(a) is None
+
+
+def test_v1_record_gets_its_root_commit_filled_on_first_read(world):
+    bob = _install(world)
+    store.update(bob, lambda r: r.pop("root_commit"))
+    assert store.get_raw(store.key(bob)).get("root_commit") is None
+    assert store.get(bob)["root_commit"]
+    assert store.get_raw(store.key(bob))["root_commit"]
+
+
+def test_fresh_reinstall_at_the_same_path_starts_clean(world):
+    """Audit R2: deleting the copy in Finder and installing the link again
+    inherited the old proposal and overlap. v2: a fresh place drops the
+    folder's record before recording the install."""
+    a = _install(world, proposal={"repo": REPO, "number": 7, "url": "u",
+                                  "proposed_head": "d" * 40, "cache": {"state": "open"}},
+                  needs_merge={"onto": "1" * 40, "purpose": "update"})
+    shutil.rmtree(a)
+    git(str(world.tmp), "clone", "-q", URL, a)
+    appfile_git._drop_record(a)  # what install() does right after `_place`
+    classify.record_install(a, URL)
+    rec = store.get(a)
+    assert rec["proposal"] is None and rec["needs_merge"] is None
+
+
+def test_adoption_needs_the_same_root_commit_and_prefers_the_moved_copy(world):
+    """Audit R1: of two orphans of one repo, adoption took the newest — the
+    deleted sibling — not the moved copy holding the proposal."""
+    import time as _t
+
+    a = _install(world, name="sine")
+    sent = _commit(a, "b.txt", "bob\n", "proposed")
+    store.update(a, lambda r: r.__setitem__("proposal", {"repo": REPO, "number": 7,
+                                                        "sent": sent, "cache": {"state": "open"}}))
+    _t.sleep(0.01)
+    b = _install(world, name="sine-2")
+    c = os.path.join(str(world.ws), "app", "renamed")
+    os.rename(a, c)
+    shutil.rmtree(b)
+    assert classify.ensure(c)["proposal"]["number"] == 7
+    # An orphan with another root commit is never adopted.
+    d = os.path.join(str(world.ws), "app", "unrelated")
+    os.makedirs(d)
+    git(d, "init", "-q", "-b", "main")
+    _commit(d, "y.txt", "y\n", "y")
+    git(d, "remote", "add", "origin", URL)
+    store.put(os.path.join(str(world.ws), "app", "gone"),
+              {**store.new_record("github", repo=REPO, branch="main"),
+               "root_commit": "f" * 40, "proposal": {"number": 9}})
+    assert classify.ensure(d)["proposal"] is None
+
+
+# ---------------------------------------------------------- v1 -> v2 + activity
+
+
+def test_first_v2_sync_migrates_a_v1_record_and_deletes_v1_refs(world):
+    bob = _install(world)
+    head = git(bob, "rev-parse", "HEAD").strip()
+    for ref in store.V1_REFS:
+        git(bob, "update-ref", ref, head)
+    git(bob, "update-ref", "refs/fused/backup/1-update", head)
+
+    def v1(r):
+        r.pop("v")
+        r.update({"needs_merge": {"onto": head, "purpose": "needs-merge"},
+                  "backups": [{"ref": "refs/fused/backup/1-update", "at": 5.0, "why": "update"}],
+                  "proposal": {"number": 3, "pushed_head": head, "proposed_head": "x"}})
+
+    store.update(bob, v1)
+    _sync(bob)
+    rec = store.get(bob)
+    assert rec["v"] == 2 and rec["needs_merge"] is None and "backups" not in rec
+    assert rec["proposal"]["sent"] == head and "pushed_head" not in rec["proposal"]
+    assert store.referenced_backups(bob) == {"refs/fused/backup/1-update"}
+    assert git(bob, "for-each-ref", "--format=%(refname)", "refs/fused/").split() \
+        == ["refs/fused/backup/1-update"]
+
+
+def test_v1_proposal_reads_as_sent(home, tmp_path):
+    d = tmp_path / "a"
+    d.mkdir()
+    store.put(str(d), {"kind": "github", "repo": "alice/x",
+                       "proposal": {"number": 1, "proposed_head": "abc"}})
+    assert store.get(str(d))["proposal"]["sent"] == "abc"
+    assert store.get(str(d))["proposal"]["checked_tip"] is None
+
+
+def test_activity_api(home, tmp_path):
+    d = tmp_path / "a"
+    d.mkdir()
+    store.put(str(d), store.new_record("github", repo="alice/x", branch="main"))
+    first = store.add_activity(str(d), "update", "Got alice's latest")
+    undo = store.add_activity(str(d), "moved", "Got alice's latest",
+                              backup=["refs/fused/backup/9-x", "refs/fused/backup/9-x-wip"])
+    lines = store.activity(str(d))
+    assert [(a["id"], a["undo"]) for a in lines] == [(undo, True), (first, False)]
+    assert set(lines[0]) == {"id", "at", "kind", "text", "undo"}
+    assert store.activity_entry(str(d), undo)["backup"][1] == "refs/fused/backup/9-x-wip"
+    assert store.referenced_backups(str(d)) == {"refs/fused/backup/9-x",
+                                                "refs/fused/backup/9-x-wip"}
+    assert store.mark_restored(str(d), undo)
+    assert store.activity(str(d))[0]["undo"] is False
+    for i in range(store.ACTIVITY_KEEP + 5):
+        store.add_activity(str(d), "update", f"line {i}")
+    lines = store.activity(str(d))
+    assert len(lines) == store.ACTIVITY_KEEP
+    assert lines[0]["text"] == f"line {store.ACTIVITY_KEEP + 4}"
+    assert store.add_activity(str(tmp_path / "none"), "x", "y") is None
+
+
+# ------------------------------------------------------------ own copies
+
+
+def test_own_copy_divergence_goes_to_ownsync(world, monkeypatch):
+    """§16.7: an own copy's diverged branch is `ownsync.resolve`'s; its None
+    ("not handled") keeps today's diverged failure row."""
+    import types
+
+    import fused_render.contrib as pkg
+
+    a = _install(world)
+    store.update(a, lambda r: r.__setitem__("kind", "own"))
+    _commit(a, "b.txt", "mine\n", "mine")
+    _alice_push(world, "c.txt", "alice\n")
+    calls = []
+    fake = types.ModuleType("fused_render.contrib.ownsync")
+    fake.resolve = lambda root, action, push: calls.append(push) or {
+        "ok": True, "status": "synced", "pulled": 1, "pushed": push}
+    monkeypatch.setitem(sys.modules, "fused_render.contrib.ownsync", fake)
+    monkeypatch.setattr(pkg, "ownsync", fake, raising=False)
+    assert _sync(a, push=True)["status"] == "synced" and calls == [True]
+    fake.resolve = lambda root, action, push: None
+    r = _sync(a)
+    assert r["status"] == "failed" and r["failure"]["reason"] == "diverged"
+    assert git_upstream.last_checked(a)
+
+
+# ---------------------------------------------------------- install page
+
+
+def test_install_page_for_a_github_copy_with_changes_is_plain(world):
+    bob = _install(world)
+    _commit(bob, "b.txt", "bob\n", "mine")
+    tip = _alice_push(world, "c.txt", "alice\n")
+    src = {"url": URL, "commit": tip}
+    assert appfile_git.probe(bob, src) == "local"
+    target = {"git": src, "state": "local", "path": bob, "found_by": "git"}
+    with pytest.raises(appfile_git.GitInstallError) as exc:
+        appfile_git.install("x.fused", target, {}, force=False)
+    msg = str(exc.value)
+    assert msg.startswith("You have your own changes in this app. Open it to bring in")
+    for word in ("git", "commit", "pull", "branch", "push"):
+        assert word not in msg.lower()

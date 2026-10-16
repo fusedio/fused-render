@@ -557,6 +557,23 @@ def test_merge_accept_only_for_this_apps_job(env):
     assert _post(env, "merge/accept", path=a, job="mj") == {"ok": True, "message": "Kept."}
 
 
+def test_keeping_an_inbox_merge_sends_it_to_the_proposal(env):
+    """An inbox proposal's merge (purpose "proposal", in the author's app)
+    is kept through inbox.merge_accept — never merge_job.accept alone."""
+    mine = env.app("mine", kind="own", repo="bob/mine")
+    env.merge_job.get = lambda i: {"id": i, "status": "ready", "purpose": "proposal",
+                                   "app_dir": store.key(mine)}
+    kept, discarded = [], []
+    env.inbox.merge_accept = lambda d, job: kept.append(job) or {"ok": True, "message": "Sent."}
+    env.merge_job.discard = lambda i: discarded.append(i) or {"ok": True}
+    assert _post(env, "merge/accept", path=mine, job="mj") == {"ok": True, "message": "Sent."}
+    assert kept == ["mj"]
+    assert _post(env, "merge/discard", path=mine, job="mj") == {"ok": True}
+    assert discarded == ["mj"]
+    env.flags["inbox"] = False
+    assert _post(env, "merge/accept", path=mine, job="mj")["reason"] == "disabled"
+
+
 def test_job_endpoint_reads_both_registries(env):
     env.merge_job.get = lambda i: {"status": "ready", "summary": "Both kept.", "files": ["a"],
                                    "purpose": "needs-merge", "error": None} if i == "mj" else None

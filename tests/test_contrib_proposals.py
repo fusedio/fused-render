@@ -399,6 +399,9 @@ def test_r8_nothing_moves_or_leaves_while_claude_works(w, monkeypatch):
             call()
         assert e.value.reason == "claude" and "Claude is still working" in e.value.message
     assert _p().credit_once(w.app)["reason"] == "claude"
+    from fused_render.contrib import engine
+    w.fake.add_collaborator("alice/sine", "bob")
+    assert engine.push_to_main(w.app)["reason"] == "claude"       # end to end
     w.store.update(w.app, lambda r: r.update(proposal=None))
     with pytest.raises(PlainError) as e:
         _send(w)
@@ -959,3 +962,88 @@ def test_no_git_words_in_messages():
         for word in ("branch", "rebase", "fork", "commit", "push", "pushed", "conflict",
                      "origin", "head", "sha", "merge"):
             assert not re.search(rf"\b{word}\b", low), (word, msg)
+
+
+# ------------------------------------------- with the engine's sync (v2 table)
+
+
+def _pr_head(w):
+    return w.gh.get_pr("alice/sine", 1)["head_sha"]
+
+
+@pytest.mark.parametrize("method", ["merge", "squash", "rebase"])
+def test_lifecycle_propose_update_merge_return(sw, method):
+    """The whole loop on the v2 model: propose → the author pushes (the
+    engine MERGES her latest in; the proposal on GitHub is not rewritten)
+    → Update is a fast-forward push → she merges (any method) → the copy
+    returns to her latest keeping exactly the edits made after the last
+    send."""
+    w = sw
+    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
+    _send(w)
+    sent1 = _proposal(w)["sent"]
+    w.fake.commit("alice/sine", "main", {"NOTES.md": "n\n"}, "notes", author="alice")
+    w.sync()
+    assert _anc(w, sent1, _head(w)) and read(w.app, "NOTES.md") == "n\n"
+    assert _pr_head(w) == sent1                                     # untouched
+    assert _p().view(w.app)["unproposed"] == 0
+    claude_commit(w.app, {"app.py": APP_PY_LOUD}, "louder")
+    _p().update(w.app)
+    sent2 = _proposal(w)["sent"]
+    assert _pr_head(w) == sent2 == _head(w) and _anc(w, sent1, sent2)   # fast-forward
+    w.fake.merge("alice/sine", 1, method)
+    claude_commit(w.app, {"EXTRA.md": "after sending\n"}, "extra")  # never proposed
+    w.sync()
+    p = _proposal(w)
+    assert p["cache"]["state"] == "merged" and p["returned_at"], p
+    tip = _tip(w)
+    assert tip == w.fake.tip("alice/sine", "main")
+    assert git(w.app, "diff", "--name-only", tip, "HEAD").split() == ["EXTRA.md"]
+    # In history too: exactly the one edit made after the last send.
+    assert git(w.app, "log", "--first-parent", "--no-merges", "--format=%s", "HEAD",
+               f"^{tip}").splitlines() == ["Claude: extra"]
+    assert "red" in read(w.app, "index.html") and "return 9" in read(w.app, "app.py")
+    assert _p().view(w.app)["state"] == "merged"
+
+
+def test_r11_an_author_push_racing_send_keeps_the_sent_commit(sw, monkeypatch):
+    """R11 fixed: Alice pushes (and Bob's copy syncs) while Send is between
+    pushing and recording. The engine merges, never rewrites, so what was
+    sent stays in Bob's history and the next sync keeps it there too."""
+    w = sw
+    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
+    real = w.gh.open_pr
+
+    def racing(*a, **k):
+        w.fake.commit("alice/sine", "main", {"NOTES.md": "n\n"}, "notes", author="alice")
+        w.sync()
+        return real(*a, **k)
+
+    monkeypatch.setattr(w.gh, "open_pr", racing)
+    _send(w)
+    sent = _proposal(w)["sent"]
+    assert _anc(w, sent, _head(w))
+    w.fake.commit("alice/sine", "main", {"MORE.md": "m\n"}, "more", author="alice")
+    w.sync()
+    assert _anc(w, sent, _head(w)) and _pr_head(w) == sent
+    assert _p().view(w.app)["unproposed"] == 0
+
+
+def test_r10_everything_sent_is_bobs(sw):
+    """R10 fixed: the engine's "Your edits" commit and its merge carry the
+    copy's own identity (Bob's GitHub one, set at install) and the credit
+    covers Fused-authored commits — no machine or Fused identity reaches the
+    proposal."""
+    w = sw
+    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
+    edit(w.app, "app.py", APP_PY_LOUD)              # uncommitted; Alice changes app.py too
+    w.fake.commit("alice/sine", "main", {"app.py": APP_PY + "\n# alice\n"}, "alice app.py",
+                  author="alice")
+    w.sync()
+    _send(w)
+    branch = _proposal(w)["head_branch"]
+    fork = w.fake.bare_path("bob/sine")
+    git(fork, "fetch", "-q", w.fake.bare_path("alice/sine"), "+main:refs/tmp/alice")
+    emails = set(git(fork, "log", "--format=%ae", f"refs/heads/{branch}", "^refs/tmp/alice"
+                     ).split())
+    assert emails == {w.fake.email_of("bob")}, emails
