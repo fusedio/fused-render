@@ -166,6 +166,58 @@ test("a reader who WAS at the tail is still carried down by the fold", () => {
   expect(scroller.scrollTop).toBe(400);
 });
 
+test("THE COMPOSER FOLDING AFTER A SEND DOES NOT DROP THE FOLLOW (Akshil 2026-10-16)", () => {
+  const { scroller, followRef } = mount();
+  // A reader at the tail who has just sent a reply.
+  scroller.scrollTop = 700;
+  act(() => scroller.fire("scroll", {}));
+  // The composer card folds back to one line, so the scrollport GROWS by the
+  // rows the card gave up — and the browser clamps `scrollTop` down by the same
+  // amount. The reader did not move; the viewport did.
+  scroller.clientHeight = 340;
+  scroller.scrollTop = 660;
+  act(() => scroller.fire("scroll", {}));
+  // The reply streams in. A port that still follows carries them down with it.
+  scroller.scrollHeight = 1400;
+  followRef.current?.();
+  expect(scroller.scrollTop).toBe(1400);
+});
+
+test("…EVEN WHEN THE REPLY GREW THE LOG IN THE SAME FRAME (CodeRabbit, PR #1703)", () => {
+  const { scroller, followRef } = mount();
+  scroller.scrollTop = 700;
+  act(() => scroller.fire("scroll", {}));
+  // The port grows and clamps the reader, and the streaming reply lands more
+  // log in the same layout — so when the scroll event runs, the clamped
+  // position is already short of the new maximum.
+  scroller.clientHeight = 340;
+  scroller.scrollHeight = 1400;
+  scroller.scrollTop = 660;
+  act(() => scroller.fire("scroll", {}));
+  followRef.current?.();
+  expect(scroller.scrollTop).toBe(1400);
+});
+
+test("a drag up the bar after the port grew is still a gesture", () => {
+  const { scroller, followRef } = mount();
+  scroller.scrollTop = 700;
+  act(() => scroller.fire("scroll", {}));
+  // The port grows and clamps the reader to the new bottom edge…
+  scroller.clientHeight = 340;
+  scroller.scrollTop = 660;
+  act(() => scroller.fire("scroll", {}));
+  // …which left the follow armed (the clamp is a no-op on the flag; the stub
+  // port does not clamp the write, so "armed" reads as the full height)…
+  followRef.current?.();
+  expect(scroller.scrollTop).toBe(1000);
+  // …and then they drag the scrollbar up to read. Off the edge, so a gesture.
+  scroller.scrollTop = 500;
+  act(() => scroller.fire("scroll", {}));
+  scroller.scrollHeight = 1400;
+  followRef.current?.();
+  expect(scroller.scrollTop).toBe(500);
+});
+
 test("the handle is dropped with the scrollport", () => {
   const { followRef } = mount();
   expect(followRef.current).not.toBe(null);

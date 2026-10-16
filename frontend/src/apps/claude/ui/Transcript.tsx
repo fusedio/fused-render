@@ -195,17 +195,50 @@ export const Transcript = memo(function Transcript({
     // either direction. A reader who WAS following is untouched — the flag is
     // already true and nothing here turns it off — so the fold still carries
     // them down with the new reply.
+    //
+    // …NOR THE PORT GROWING (Akshil 2026-10-16: "every time I add a reply to an
+    // ongoing convo it doesn't scroll"). The composer card folds back to one
+    // line once a send goes out, and the scrollport gains the rows the card
+    // gave up: `clientHeight` grows, `scrollHeight` does not, and a reader
+    // pinned at the tail has their `scrollTop` CLAMPED down by exactly that
+    // much. That is the mirror image of the fold above — the viewport moved,
+    // not the reader — but it came in on the `h >= lastHeight` side, read as
+    // "top < lastTop", and dropped the follow in the one moment the reader had
+    // just asked for the tail; the reply then streamed below a port that no
+    // longer followed it, until the turn's settle write caught up. A clamp has
+    // one signature a gesture never has: it leaves `scrollTop` AT THE MAXIMUM.
+    // A reader who dragged the bar or pressed a key is, by definition, no
+    // longer there — so a decrease that lands on the bottom edge is not read
+    // as one — and not as a return to the tail either: a clamp is a no-op on
+    // the flag in both directions, like the fold. (macOS rubber-banding off
+    // the bottom edge ends the same way, at the maximum, and is covered by the
+    // same read.)
+    //
+    // AND THE SAME CLAMP SEEN A FRAME LATE (CodeRabbit, PR #1703): the reply
+    // can grow the log in the very frame the composer folds, and the scroll
+    // event is dispatched AFTER that layout — so by the time it runs the
+    // clamped position is no longer the maximum, and the first read alone
+    // calls it a gesture. The second signature covers that frame: the port
+    // grew since the last event and the reader WAS on the previous maximum.
+    // A reader who was not on the edge gets no such pass, so a drag up the
+    // bar after the fold still disarms.
     let lastTop = 0;
     let lastHeight = 0;
+    let lastClient = 0;
     const onScroll = () => {
       const top = wrap.scrollTop;
       const h = wrap.scrollHeight;
+      const c = wrap.clientHeight;
+      const atMax = top >= h - c - 1;
+      const clampedFromMax = c > lastClient && lastHeight > 0 && lastTop >= lastHeight - lastClient - 1;
       if (h >= lastHeight) {
-        if (top < lastTop - 1) followTail.current = false;
-        else if (nearBottom()) followTail.current = true;
+        if (top < lastTop - 1) {
+          if (!atMax && !clampedFromMax) followTail.current = false;
+        } else if (nearBottom()) followTail.current = true;
       }
       lastTop = top;
       lastHeight = h;
+      lastClient = c;
     };
     const followBottom = () => {
       if (followTail.current) wrap.scrollTop = wrap.scrollHeight;
